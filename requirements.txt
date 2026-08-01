@@ -1,0 +1,4 @@
+polib
+PyQt5
+PyQtWebEngine
+pefile
