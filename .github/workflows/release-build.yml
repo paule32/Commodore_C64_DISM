@@ -68,7 +68,6 @@ jobs:
               "pyinstaller",
               "--noconfirm",
               "--clean",
-              "--name", "c64_dism",
               "--add-data", "src/C64Pro.ttf:."
               "--paths", "src",
           ]
@@ -79,7 +78,7 @@ jobs:
           else:
               args.append("--onedir")
 
-          args.append("c64_dism.py")
+          args.append("src/c64_dism.py")
 
           print("Running:", " ".join(args))
           subprocess.run(args, check=True)
