@@ -60,10 +60,11 @@ jobs:
         shell: pwsh
         run: |
           python -m PyInstaller --noconfirm --clean --onefile src/d64_dism.py
+          dir
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v6
         with:
           name: d64_dism-${{ inputs.build_mode }}-${{ inputs.os_label }}
           path: |
-            dist/d64_dism
+            d64_dism
