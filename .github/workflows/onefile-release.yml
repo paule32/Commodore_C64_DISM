@@ -1,0 +1,110 @@
+name: onefile Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        required: true
+        default: "v0.0.1"
+        type: string
+      target_os:
+        required: true
+        type: choice
+        default: "windows"
+        options:
+          - windows
+          - linux
+          - beide
+      python_version:
+        required: true
+        default: "3.14"
+        type: string
+      java_version:
+        required: true
+        default: "17"
+        type: string
+      antlr_tool_version:
+        required: true
+        default: "4.13.2"
+        type: string
+      antlr_runtime_version:
+        required: true
+        default: "4.13.2"
+        type: string
+
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+      target_os:
+        required: true
+        type: string
+      python_version:
+        required: true
+        type: string
+      java_version:
+        required: true
+        type: string
+      antlr_tool_version:
+        required: true
+        type: string
+      antlr_runtime_version:
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  prepare-os-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.make.outputs.matrix }}
+    steps:
+      - id: make
+        shell: python
+        run: |
+          import json
+          import os
+
+          os_in = "${{ inputs.target_os }}"
+
+          if os_in == "both":
+              matrix = {
+                  "include": [
+                      {"os_label": "windows", "runner_os": "windows-latest"},
+                      {"os_label": "linux", "runner_os": "ubuntu-latest"},
+                  ]
+              }
+          elif os_in == "windows":
+              matrix = {
+                  "include": [
+                      {"os_label": "windows", "runner_os": "windows-latest"}
+                  ]
+              }
+          else:
+              matrix = {
+                  "include": [
+                      {"os_label": "linux", "runner_os": "ubuntu-latest"}
+                  ]
+              }
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write(f"matrix={json.dumps(matrix)}\n")
+
+  build:
+    needs: prepare-os-matrix
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare-os-matrix.outputs.matrix) }}
+
+    uses: ./.github/workflows/release-build.yml
+    with:
+      tag: ${{ inputs.tag }}
+      build_mode: onefile
+      language: Python
+      runner_os: ${{ matrix.runner_os }}
+      os_label: ${{ matrix.os_label }}
+      python_version: ${{ inputs.python_version }}
+    secrets: inherit

@@ -1,0 +1,66 @@
+name: Delete all workflow runs and artifacts
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Zum Bestätigen genau DELETE-ALL eingeben'
+        required: true
+        type: string
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Bestätigung prüfen
+        shell: bash
+        run: |
+          if [[ "${{ github.event.inputs.confirm }}" != "DELETE-ALL" ]]; then
+            echo "Abbruch: Bestätigung fehlt."
+            exit 1
+          fi
+
+      - name: Alle Artifacts löschen
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          echo "Liste Artifacts..."
+          gh api --paginate "/repos/$REPO/actions/artifacts?per_page=100" --jq '.artifacts[].id' |
+          while read -r artifact_id; do
+            if [[ -n "$artifact_id" ]]; then
+              echo "Lösche Artifact $artifact_id"
+              gh api \
+                --method DELETE \
+                -H "Accept: application/vnd.github+json" \
+                "/repos/$REPO/actions/artifacts/$artifact_id"
+            fi
+          done
+
+      - name: Alle Workflow-Runs löschen außer diesem Run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          CURRENT_RUN_ID: ${{ github.run_id }}
+        shell: bash
+        run: |
+          echo "Liste Workflow-Runs..."
+          gh api --paginate "/repos/$REPO/actions/runs?per_page=100" --jq '.workflow_runs[].id' |
+          while read -r run_id; do
+            if [[ -n "$run_id" && "$run_id" != "$CURRENT_RUN_ID" ]]; then
+              echo "Lösche Workflow-Run $run_id"
+              gh api \
+                --method DELETE \
+                -H "Accept: application/vnd.github+json" \
+                "/repos/$REPO/actions/runs/$run_id" || true
+            fi
+          done
+
+      - name: Fertig
+        run: echo "Cleanup abgeschlossen."

@@ -1,0 +1,125 @@
+name: Reusable release build
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+      build_mode:
+        required: true
+        type: string
+      language:
+        required: true
+        type: string
+      runner_os:
+        required: true
+        type: string
+      os_label:
+        required: true
+        type: string
+      python_version:
+        required: true
+        type: string
+      java_version:
+        required: true
+        type: string
+      antlr_tool_version:
+        required: true
+        type: string
+      antlr_runtime_version:
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  REQUIREMENTS_FILE: requirements.txt
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build-release:
+    runs-on: ${{ inputs.runner_os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Resolve selected language
+        shell: python
+        run: |
+          import os
+
+          cfg = {
+              "c64DISM": {
+                  "runner": "src/c64_dism.py",
+                  "app_name": "c64_dism",
+              },
+          }
+
+          lang = "${{ inputs.language }}"
+          if lang not in cfg:
+              raise SystemExit(f"Unsupported language: {lang}")
+
+          c = cfg[lang]
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
+              f.write(f"APP_ENTRY={c['runner']}\n")
+              f.write(f"APP_NAME={c['app_name']}\n")
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ inputs.python_version }}
+          cache: pip
+          cache-dependency-path: ${{ env.REQUIREMENTS_FILE }}
+
+      - name: Install build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip wheel setuptools
+          python -m pip install -r $env:REQUIREMENTS_FILE
+          python -m pip install pyinstaller antlr4-python3-runtime==${{ inputs.antlr_runtime_version }}
+          python -m pip install PyQt5
+
+      - name: Show tool versions
+        shell: pwsh
+        run: |
+          python --version
+          java -version
+          pyinstaller --version
+          python -c "import antlr4; print('ANTLR runtime ok')"
+
+      - name: Build executable
+        shell: python
+        run: |
+          import os
+          import subprocess
+
+          add_data_sep = ";" if os.name == "nt" else ":"
+
+          args = [
+              "pyinstaller",
+              "--noconfirm",
+              "--clean",
+              "--name", os.environ["APP_NAME"],
+              "--paths", "src",
+          ]
+
+          build_mode = "${{ inputs.build_mode }}"
+          if build_mode == "onefile":
+              args.append("--onefile")
+          else:
+              args.append("--onedir")
+
+          args.append(os.environ["APP_ENTRY"])
+
+          print("Running:", " ".join(args))
+          subprocess.run(args, check=True)
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ env.APP_NAME }}-${{ inputs.build_mode }}-${{ inputs.os_label }}
+          path: |
+            dist/${{ env.APP_NAME }}*
