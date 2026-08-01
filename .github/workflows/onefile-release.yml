@@ -82,7 +82,6 @@ jobs:
     with:
       tag: ${{ inputs.tag }}
       build_mode: onefile
-      language: python
       runner_os: ${{ matrix.runner_os }}
       os_label: ${{ matrix.os_label }}
       python_version: ${{ inputs.python_version }}
