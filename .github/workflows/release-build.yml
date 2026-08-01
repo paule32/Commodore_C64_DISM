@@ -24,7 +24,7 @@ permissions:
 
 env:
   REQUIREMENTS_FILE: requirements.txt
-  APP_NAME: c64_dism
+  APP_NAME: d64_dism
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
@@ -78,7 +78,7 @@ jobs:
           else:
               args.append("--onedir")
 
-          args.append("src/c64_dism.py")
+          args.append("src/d64_dism.py")
 
           print("Running:", " ".join(args))
           subprocess.run(args, check=True)
@@ -86,6 +86,6 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@v6
         with:
-          name: c64_dism-${{ inputs.build_mode }}-${{ inputs.os_label }}
+          name: d64_dism-${{ inputs.build_mode }}-${{ inputs.os_label }}
           path: |
             dist/c64_dism.exe
