@@ -1,0 +1,109 @@
+name: Build Windows executable
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  APP_SCRIPT: src/d64_dism.py
+  FONT_FILE: src/C64Pro.ttf
+  APP_NAME: d64_dism
+
+jobs:
+  build-windows:
+    name: Windows x86-64
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@v7
+
+      - name: Python einrichten
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Eingabedateien pruefen
+        shell: pwsh
+        run: |
+          if (-not (Test-Path -LiteralPath $env:APP_SCRIPT -PathType Leaf)) {
+            throw "Python-Datei fehlt: $env:APP_SCRIPT"
+          }
+          if (-not (Test-Path -LiteralPath $env:FONT_FILE -PathType Leaf)) {
+            throw "Font-Datei fehlt: $env:FONT_FILE"
+          }
+
+      - name: Build-Abhaengigkeiten installieren
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install `
+            "PyInstaller==6.21.0" `
+            "PyQt5==5.15.11" `
+            "PyQtWebEngine==5.15.7"
+
+      - name: Python-Syntax pruefen
+        shell: pwsh
+        run: python -m py_compile "$env:APP_SCRIPT"
+
+      - name: Windows-EXE erzeugen
+        shell: pwsh
+        run: |
+          python -m PyInstaller `
+            --noconfirm `
+            --clean `
+            --onefile `
+            --windowed `
+            --noupx `
+            --name "$env:APP_NAME" `
+            --add-data "$env:FONT_FILE;." `
+            --hidden-import argparse `
+            --hidden-import collections `
+            --hidden-import contextlib `
+            --hidden-import dataclasses `
+            --hidden-import hashlib `
+            --hidden-import io `
+            --hidden-import math `
+            --hidden-import os `
+            --hidden-import pathlib `
+            --hidden-import shutil `
+            --hidden-import socket `
+            --hidden-import struct `
+            --hidden-import subprocess `
+            --hidden-import sys `
+            --hidden-import time `
+            --hidden-import typing `
+            "$env:APP_SCRIPT"
+
+      - name: EXE kurz starten
+        shell: pwsh
+        run: |
+          $env:QT_QPA_PLATFORM = "offscreen"
+          $executable = Resolve-Path "dist/$env:APP_NAME.exe"
+          $process = Start-Process -FilePath $executable -PassThru
+          try {
+            Start-Sleep -Seconds 8
+            if ($process.HasExited) {
+              throw "Das Programm wurde beim Start mit Exit-Code $($process.ExitCode) beendet."
+            }
+          }
+          finally {
+            if (-not $process.HasExited) {
+              Stop-Process -Id $process.Id -Force
+              $process.WaitForExit()
+            }
+          }
+
+      - name: Windows-Programm bereitstellen
+        uses: actions/upload-artifact@v7
+        with:
+          name: d64_dism-windows-x86_64
+          path: dist/d64_dism.exe
+          if-no-files-found: error
+          retention-days: 30
+          archive: false

@@ -14,11 +14,13 @@
 #  * PETSCII-Zeichenauswahl fuer das aktuelle Byte im Hex-Editor
 #  * Neu/Oeffnen/Speichern/Speichern unter mit sicherer Schliessabfrage
 #  * Syntax-Hervorhebung fuer 6502/6510-Assembler und Kommentare
+#  * integrierter 6502/6510-Assembler mit C64-PRG- und VICE-Start
 #  * Operanden-Rechner fuer Dezimal-, Hexadezimal- und Binaerwerte
+#  * integrierter CHM-Viewer mit Themen, Keywords und Favoriten
 #  * Editor-Zoom sowie umschaltbarer Hell-/Dunkelmodus
 #
 # Installation:
-#    py -m pip install PyQt5
+#    py -m pip install PyQt5 PyQtWebEngine
 #
 # Start:
 #    py qt5_d64_explorer.py
@@ -27,15 +29,23 @@
 from __future__ import annotations
 
 import argparse
+import ast
+import hashlib
+import html
+from html.parser import HTMLParser
+import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from decimal import Decimal, localcontext
 from fractions import Fraction
 from pathlib import Path
-from typing import Iterable, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +62,285 @@ C64_PRO_PETSCII_GLYPHS: Tuple[str, ...] = tuple(
     else C64_PRO_CONTROL_GLYPH
     for byte_value in range(0x100)
 )
+
+
+# ---------------------------------------------------------------------------
+# CHM-Hilfe: Projekt-, Inhalts- und Indexdaten
+# ---------------------------------------------------------------------------
+@dataclass
+class ChmSitemapEntry:
+    title: str
+    local: str = ""
+    children: List["ChmSitemapEntry"] = field(default_factory=list)
+
+
+class ChmSitemapParser(HTMLParser):
+    """Toleranter Parser fuer die OBJECT/PARAM-Struktur von HHC und HHK."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.roots: List[ChmSitemapEntry] = []
+        self.parents: List[Optional[ChmSitemapEntry]] = []
+        self.last_at_depth: Dict[int, ChmSitemapEntry] = {}
+        self.params: Optional[Dict[str, str]] = None
+
+    def handle_starttag(self, tag, attrs) -> None:
+        tag = tag.lower()
+        if tag == "ul":
+            depth = len(self.parents)
+            parent = self.last_at_depth.get(depth)
+            if parent is None and self.parents:
+                parent = self.parents[-1]
+            self.parents.append(parent)
+            return
+
+        if tag == "object":
+            self.params = {}
+            return
+
+        if tag == "param" and self.params is not None:
+            values = {key.lower(): value or "" for key, value in attrs}
+            name = values.get("name", "").strip().lower()
+            if name:
+                self.params[name] = values.get("value", "").strip()
+
+    def handle_endtag(self, tag) -> None:
+        tag = tag.lower()
+        if tag == "object" and self.params is not None:
+            title = self.params.get("name", "").strip()
+            local = self.params.get("local", "").strip()
+            if title or local:
+                entry = ChmSitemapEntry(
+                    title or Path(local).name or "(ohne Titel)",
+                    local,
+                )
+                parent = self.parents[-1] if self.parents else None
+                if parent is None:
+                    self.roots.append(entry)
+                else:
+                    parent.children.append(entry)
+                self.last_at_depth[len(self.parents)] = entry
+            self.params = None
+            return
+
+        if tag == "ul" and self.parents:
+            self.parents.pop()
+            maximum_depth = len(self.parents)
+            for depth in list(self.last_at_depth):
+                if depth > maximum_depth:
+                    del self.last_at_depth[depth]
+
+
+def decode_chm_text(path: Path) -> str:
+    data = path.read_bytes()
+    if data.startswith(b"\xef\xbb\xbf"):
+        return data.decode("utf-8-sig", errors="replace")
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return data.decode("utf-16", errors="replace")
+
+    header = data[:8192].decode("ascii", errors="ignore")
+    match = re.search(
+        r"charset\s*=\s*[\"']?\s*([A-Za-z0-9._-]+)",
+        header,
+        re.IGNORECASE,
+    )
+    encodings = [match.group(1)] if match else []
+    encodings.extend(["utf-8", "cp1252", "latin-1"])
+    for encoding in encodings:
+        try:
+            return data.decode(encoding)
+        except (LookupError, UnicodeDecodeError):
+            continue
+    return data.decode("latin-1", errors="replace")
+
+
+def parse_chm_sitemap(path: Optional[Path]) -> List[ChmSitemapEntry]:
+    if path is None or not path.is_file():
+        return []
+    parser = ChmSitemapParser()
+    parser.feed(decode_chm_text(path))
+    parser.close()
+    return parser.roots
+
+
+def iter_chm_files(root: Path) -> Iterable[Path]:
+    for path in root.rglob("*"):
+        if path.is_file():
+            yield path
+
+
+def find_chm_file_by_suffix(root: Path, suffix: str) -> Optional[Path]:
+    suffix = suffix.lower()
+    candidates = [
+        path for path in iter_chm_files(root)
+        if path.suffix.lower() == suffix
+    ]
+    return min(
+        candidates,
+        key=lambda path: (len(path.parts), str(path).lower()),
+        default=None,
+    )
+
+
+def clean_chm_local(value: str) -> Tuple[str, str]:
+    """Zerlegt ein HHC/HHK-Local-Feld in relativen Pfad und Sprungmarke."""
+
+    value = html.unescape(value.strip()).strip("\"'").replace("\\", "/")
+    lowered = value.lower()
+    if "::/" in lowered:
+        value = value[lowered.index("::/") + 3:]
+    value = value.split("?", 1)[0]
+    path_part, separator, fragment = value.partition("#")
+    from urllib.parse import unquote
+    path_part = unquote(path_part).lstrip("/")
+    parts = [
+        part for part in path_part.split("/")
+        if part not in ("", ".")
+    ]
+    if any(part == ".." for part in parts):
+        return "", ""
+    return "/".join(parts), unquote(fragment) if separator else ""
+
+
+def resolve_chm_path(root: Path, relative: str) -> Optional[Path]:
+    """Loest Windows-typische, nicht case-sensitive CHM-Pfade sicher auf."""
+
+    current = root
+    for part in Path(relative).parts:
+        exact = current / part
+        if exact.exists():
+            current = exact
+            continue
+        try:
+            current = next(
+                child for child in current.iterdir()
+                if child.name.casefold() == part.casefold()
+            )
+        except (StopIteration, OSError):
+            return None
+
+    try:
+        current.resolve().relative_to(root.resolve())
+    except (OSError, ValueError):
+        return None
+    return current if current.is_file() else None
+
+
+def read_chm_project_options(project_file: Optional[Path]) -> Dict[str, str]:
+    if project_file is None:
+        return {}
+    result: Dict[str, str] = {}
+    in_options = False
+    for raw_line in decode_chm_text(project_file).splitlines():
+        line = raw_line.strip()
+        if line.startswith("[") and line.endswith("]"):
+            in_options = line.casefold() == "[options]"
+            continue
+        if in_options and "=" in line:
+            key, value = line.split("=", 1)
+            result[key.strip().casefold()] = value.strip()
+    return result
+
+
+class ChmExtractor:
+    """Entpackt CHM per 7-Zip oder unter Windows per hh.exe."""
+
+    @staticmethod
+    def seven_zip_command() -> Optional[str]:
+        for command in ("7zz", "7z", "7za"):
+            found = shutil.which(command)
+            if found:
+                return found
+        if os.name == "nt":
+            for variable in ("ProgramFiles", "ProgramFiles(x86)"):
+                base = os.environ.get(variable)
+                if base:
+                    candidate = Path(base) / "7-Zip" / "7z.exe"
+                    if candidate.is_file():
+                        return str(candidate)
+        return None
+
+    @staticmethod
+    def extract_with_7zip(command: str, source: Path, target: Path) -> None:
+        completed = subprocess.run(
+            [command, "x", "-y", f"-o{target}", str(source)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+            check=False,
+        )
+        if completed.returncode not in (0, 1):
+            raise RuntimeError(
+                "7-Zip konnte die CHM-Datei nicht entpacken.\n\n"
+                + completed.stdout[-1500:].strip()
+            )
+
+    @staticmethod
+    def extract_with_windows_help(source: Path, target: Path) -> None:
+        helper = Path(os.environ.get("WINDIR", r"C:\Windows")) / "hh.exe"
+        if not helper.is_file():
+            raise RuntimeError("hh.exe wurde nicht gefunden.")
+
+        process = subprocess.Popen(
+            [str(helper), "-decompile", str(target), str(source)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.terminate()
+
+        deadline = time.monotonic() + 30.0
+        previous_count = -1
+        stable_rounds = 0
+        while time.monotonic() < deadline:
+            count = sum(1 for _ in iter_chm_files(target))
+            if count > 0 and count == previous_count:
+                stable_rounds += 1
+                if stable_rounds >= 4:
+                    return
+            else:
+                stable_rounds = 0
+            previous_count = count
+            time.sleep(0.25)
+        if previous_count <= 0:
+            raise RuntimeError("Windows HTML Help hat keine Dateien extrahiert.")
+
+    @classmethod
+    def extract(cls, source: Path, target: Path) -> None:
+        errors: List[str] = []
+        command = cls.seven_zip_command()
+        if command:
+            try:
+                cls.extract_with_7zip(command, source, target)
+                if any(iter_chm_files(target)):
+                    return
+            except Exception as exc:
+                errors.append(str(exc))
+
+        if os.name == "nt":
+            try:
+                cls.extract_with_windows_help(source, target)
+                if any(iter_chm_files(target)):
+                    return
+            except Exception as exc:
+                errors.append(str(exc))
+
+        hint = (
+            "Installiere 7-Zip und stelle 7z/7zz ueber PATH bereit."
+            if os.name == "nt"
+            else "Installiere 7-Zip, z. B. mit 'sudo apt install p7zip-full'."
+        )
+        details = "\n\n".join(errors)
+        raise RuntimeError(
+            "Kein verwendbares CHM-Entpackprogramm gefunden.\n"
+            f"{hint}\n\n{details}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -318,12 +607,14 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             QListWidgetItem,
             QMainWindow,
             QMenu,
+            QMenuBar,
             QMessageBox,
             QPlainTextEdit,
             QPushButton,
             QScrollArea,
             QSizePolicy,
             QSplitter,
+            QStatusBar,
             QStyle,
             QTabBar,
             QTabWidget,
@@ -332,6 +623,9 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             QToolBar,
             QToolButton,
             QTreeView,
+            QTreeWidget,
+            QTreeWidgetItem,
+            QTreeWidgetItemIterator,
             QVBoxLayout,
             QWidget,
         )
@@ -344,6 +638,21 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
         )
         print(f"Technischer Fehler: {exc}", file=sys.stderr)
         return 2
+
+    try:
+        from PyQt5.QtWebEngineWidgets import (
+            QWebEnginePage,
+            QWebEngineSettings,
+            QWebEngineView,
+        )
+        QT_WEBENGINE_AVAILABLE = True
+        QT_WEBENGINE_ERROR = ""
+    except ImportError as exc:
+        QWebEnginePage = QObject
+        QWebEngineSettings = None
+        QWebEngineView = None
+        QT_WEBENGINE_AVAILABLE = False
+        QT_WEBENGINE_ERROR = str(exc)
 
     class AssemblerSyntaxHighlighter(QSyntaxHighlighter):
         """Hervorhebung fuer MOS-6502/6510-Assemblerquelltext."""
@@ -421,10 +730,11 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
 
         def set_dark_mode(self, enabled: bool) -> None:
             enabled = bool(enabled)
-            if self.dark_mode == enabled:
-                return
             self.dark_mode = enabled
             self._update_theme_formats()
+            # Auch bei unveraendertem Modus neu hervorheben. Beim Einfuegen
+            # eines Editors in eine neue Registerkarte kann Qt die Palette
+            # des Dokuments noch einmal vom Eltern-Widget uebernehmen.
             self.rehighlight()
 
         def set_enabled(self, enabled: bool) -> None:
@@ -2713,6 +3023,8 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
         """Ein Dateidokument mit Rohdaten-, Hex- und Hinweisansicht."""
 
         modification_changed = pyqtSignal(bool)
+        assemble_requested = pyqtSignal(object)
+        start_requested = pyqtSignal(object)
 
         ASSEMBLER_EXTENSIONS = {".asm", ".s", ".a65", ".inc"}
         BINARY_EXTENSIONS = {".prg", ".ram", ".bin"}
@@ -2738,6 +3050,9 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             self._syncing_views = False
             self._data_source = "text"
             self._last_modified_state = False
+            self.assembled_program = None
+            self.assembled_program_path: Optional[Path] = None
+            self.assembled_source_digest = ""
 
             layout = QVBoxLayout(self)
             layout.setContentsMargins(0, 0, 0, 0)
@@ -2753,7 +3068,61 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             fixed_font.setFixedPitch(True)
             fixed_font.setStyleHint(QFont.Monospace)
 
-            self.raw_editor = SourceTextEdit(self.views)
+            self.source_page = QWidget(self.views)
+            source_layout = QVBoxLayout(self.source_page)
+            source_layout.setContentsMargins(0, 0, 0, 0)
+            source_layout.setSpacing(0)
+
+            self.assembler_panel = QFrame(self.source_page)
+            self.assembler_panel.setObjectName("assembler_action_panel")
+            self.assembler_panel.setFrameShape(QFrame.StyledPanel)
+            assembler_panel_layout = QHBoxLayout(self.assembler_panel)
+            assembler_panel_layout.setContentsMargins(6, 5, 6, 5)
+            assembler_panel_layout.setSpacing(6)
+
+            self.assemble_button = QPushButton(
+                "Assemble",
+                self.assembler_panel,
+            )
+            self.assemble_button.setObjectName("assemble_button")
+            self.assemble_button.setToolTip(
+                "Assemblerquelltext in ein C64-PRG übersetzen"
+            )
+            self.assemble_button.clicked.connect(
+                lambda checked=False: self.assemble_requested.emit(self)
+            )
+
+            self.start_assembled_button = QPushButton(
+                "Start",
+                self.assembler_panel,
+            )
+            self.start_assembled_button.setObjectName(
+                "start_assembled_button"
+            )
+            self.start_assembled_button.setToolTip(
+                "Das zuletzt assemblierte Programm in VICE starten"
+            )
+            self.start_assembled_button.setEnabled(False)
+            self.start_assembled_button.clicked.connect(
+                lambda checked=False: self.start_requested.emit(self)
+            )
+
+            self.assembly_status_label = QLabel(
+                "Noch nicht assembliert",
+                self.assembler_panel,
+            )
+            self.assembly_status_label.setObjectName(
+                "assembly_status_label"
+            )
+            self.assembly_status_label.setTextFormat(Qt.PlainText)
+
+            assembler_panel_layout.addWidget(self.assemble_button)
+            assembler_panel_layout.addWidget(self.start_assembled_button)
+            assembler_panel_layout.addSpacing(6)
+            assembler_panel_layout.addWidget(self.assembly_status_label, 1)
+            source_layout.addWidget(self.assembler_panel)
+
+            self.raw_editor = SourceTextEdit(self.source_page)
             self.raw_editor.setObjectName("raw_data_editor")
             self.raw_editor.setFont(fixed_font)
             self.raw_editor.setLineWrapMode(QPlainTextEdit.NoWrap)
@@ -2762,7 +3131,8 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             )
             self.raw_editor.setPlainText(text)
             self.raw_editor.document().setModified(False)
-            self.views.addTab(self.raw_editor, "Rohdaten")
+            source_layout.addWidget(self.raw_editor, 1)
+            self.views.addTab(self.source_page, "Rohdaten")
 
             self.syntax_highlighter = AssemblerSyntaxHighlighter(
                 self.raw_editor.document()
@@ -2845,7 +3215,7 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
                 self.views.setCurrentWidget(self.hex_editor)
                 self.hex_editor.setFocus()
             else:
-                self.views.setCurrentWidget(self.raw_editor)
+                self.views.setCurrentWidget(self.source_page)
                 self.raw_editor.setFocus()
 
         def _view_modification_changed(self, _modified: bool) -> None:
@@ -2859,6 +3229,7 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
         def _raw_text_changed(self) -> None:
             if self._syncing_views:
                 return
+            self.invalidate_assembly_result("Quelltext geändert")
             try:
                 data = self.text_for_saving().encode(self.encoding)
             except UnicodeError:
@@ -2904,9 +3275,58 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
                 self.path is not None
                 and self.path.suffix.lower() in self.ASSEMBLER_EXTENSIONS
             )
+            self.assembler_panel.setVisible(is_assembler)
             self.syntax_highlighter.set_enabled(is_assembler)
             self.raw_editor.set_assembler_completion_enabled(is_assembler)
             self.raw_editor.set_assembler_navigation_enabled(is_assembler)
+
+        @property
+        def is_assembler_document(self) -> bool:
+            return bool(
+                self.path is not None
+                and self.path.suffix.lower() in self.ASSEMBLER_EXTENSIONS
+            )
+
+        def invalidate_assembly_result(self, reason: str = "") -> None:
+            had_result = bool(
+                self.assembled_program is not None
+                or self.assembled_program_path is not None
+                or self.assembled_source_digest
+            )
+            self.assembled_program = None
+            self.assembled_program_path = None
+            self.assembled_source_digest = ""
+            self.start_assembled_button.setEnabled(False)
+            if reason and had_result and self.is_assembler_document:
+                self.assembly_status_label.setText(reason)
+
+        def set_assembly_result(
+            self,
+            program,
+            output_path: Path,
+            source_digest: str,
+        ) -> None:
+            self.assembled_program = program
+            self.assembled_program_path = Path(output_path).resolve()
+            self.assembled_source_digest = str(source_digest)
+            self.start_assembled_button.setEnabled(True)
+            self.assembly_status_label.setText(
+                f"Erzeugt: {self.assembled_program_path.name}"
+            )
+
+        def show_assembly_error(self, message: str, line: int = 0) -> None:
+            self.invalidate_assembly_result()
+            self.assembly_status_label.setText("Assemblerfehler")
+            self.hints_editor.setPlainText(message)
+            self.views.setCurrentWidget(self.source_page)
+            if line > 0:
+                block = self.raw_editor.document().findBlockByNumber(line - 1)
+                if block.isValid():
+                    cursor = QTextCursor(block)
+                    cursor.select(QTextCursor.LineUnderCursor)
+                    self.raw_editor.setTextCursor(cursor)
+                    self.raw_editor.centerCursor()
+            self.raw_editor.setFocus(Qt.OtherFocusReason)
 
         def _show_assembler_help(self, mnemonic: str, help_text: str) -> None:
             window = self.window()
@@ -2943,8 +3363,27 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
                             QPalette.PlaceholderText,
                             QColor(210, 210, 80),
                         )
+                else:
+                    # Die Editorfarben werden absichtlich explizit gesetzt.
+                    # Nur so sind neu erzeugte oder gerade geoeffnete Tabs
+                    # unabhaengig von geerbten Windows-/Qt-Paletten sofort
+                    # korrekt dargestellt.
+                    palette.setColor(QPalette.Base, QColor(255, 255, 255))
+                    palette.setColor(QPalette.Text, QColor(0, 0, 0))
+                    palette.setColor(QPalette.Highlight, QColor(0, 120, 215))
+                    palette.setColor(
+                        QPalette.HighlightedText,
+                        QColor(255, 255, 255),
+                    )
+                    if hasattr(QPalette, "PlaceholderText"):
+                        palette.setColor(
+                            QPalette.PlaceholderText,
+                            QColor(100, 100, 100),
+                        )
                 editor.setPalette(palette)
+                editor.viewport().setPalette(palette)
                 editor.set_gutter_dark_mode(enabled)
+                editor.viewport().update()
 
             hex_palette = QPalette(QApplication.palette())
             if enabled:
@@ -2955,7 +3394,16 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
                     QPalette.HighlightedText,
                     QColor(255, 255, 255),
                 )
+            else:
+                hex_palette.setColor(QPalette.Base, QColor(255, 255, 255))
+                hex_palette.setColor(QPalette.Text, QColor(0, 0, 0))
+                hex_palette.setColor(QPalette.Highlight, QColor(0, 120, 215))
+                hex_palette.setColor(
+                    QPalette.HighlightedText,
+                    QColor(255, 255, 255),
+                )
             self.hex_editor.setPalette(hex_palette)
+            self.hex_editor.viewport().setPalette(hex_palette)
             self.hex_editor.viewport().update()
 
             self.syntax_highlighter.set_dark_mode(enabled)
@@ -2991,6 +3439,933 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
                 standard_output.getvalue(),
                 error_output.getvalue(),
             )
+
+    CHM_ROLE_LOCAL = Qt.UserRole + 100
+    CHM_ROLE_TITLE = Qt.UserRole + 101
+
+    class ChmSearchTab(QWidget):
+        search_requested = pyqtSignal(str)
+
+        def __init__(self, placeholder: str, parent=None):
+            super().__init__(parent)
+            self.search_edit = QLineEdit(self)
+            self.search_edit.setPlaceholderText(placeholder)
+            self.search_edit.setClearButtonEnabled(True)
+
+            self.search_button = QPushButton(self)
+            self.search_button.setObjectName("chm_search_button")
+            self.search_button.setIcon(self._magnifier_icon())
+            self.search_button.setIconSize(QSize(18, 18))
+            self.search_button.setFixedWidth(36)
+            self.search_button.setToolTip("Ersten Treffer suchen")
+
+            self.tree = QTreeWidget(self)
+            self.tree.setHeaderHidden(True)
+            self.tree.setUniformRowHeights(True)
+
+            search_layout = QHBoxLayout()
+            search_layout.setContentsMargins(0, 0, 0, 0)
+            search_layout.addWidget(self.search_edit, 1)
+            search_layout.addWidget(self.search_button)
+
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(6, 6, 6, 6)
+            layout.addLayout(search_layout)
+            layout.addWidget(self.tree, 1)
+
+            self.search_edit.returnPressed.connect(self.emit_search)
+            self.search_button.clicked.connect(self.emit_search)
+
+        def _magnifier_icon(self) -> QIcon:
+            pixmap = QPixmap(22, 22)
+            pixmap.fill(Qt.transparent)
+            painter = QPainter(pixmap)
+            painter.setRenderHint(QPainter.Antialiasing)
+            color = self.palette().color(QPalette.ButtonText)
+            painter.setPen(
+                QPen(color, 2.0, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+            )
+            painter.drawEllipse(4, 3, 10, 10)
+            painter.drawLine(13, 12, 19, 18)
+            painter.end()
+            return QIcon(pixmap)
+
+        def emit_search(self) -> None:
+            self.search_requested.emit(self.search_edit.text().strip())
+
+    class ChmWebPage(QWebEnginePage):
+        """QWebEnginePage fuer lokale CHM-Inhalte."""
+
+        def acceptNavigationRequest(
+            self,
+            url: QUrl,
+            navigation_type,
+            is_main_frame: bool,
+        ) -> bool:
+            if (
+                is_main_frame
+                and url.scheme().lower() in ("mk", "ms-its")
+            ):
+                view = self.view()
+                dialog = view.window() if view is not None else None
+                if dialog is not None and hasattr(dialog, "load_local"):
+                    dialog.load_local(url.toString())
+                return False
+            if (
+                is_main_frame
+                and navigation_type == QWebEnginePage.NavigationTypeLinkClicked
+                and url.scheme().lower() in ("http", "https", "mailto")
+            ):
+                QDesktopServices.openUrl(url)
+                return False
+            return super().acceptNavigationRequest(
+                url,
+                navigation_type,
+                is_main_frame,
+            )
+
+    class ChmSourceDialog(QDialog):
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.setWindowTitle("Seiten-Quelltext")
+            self.resize(900, 650)
+            self.editor = QPlainTextEdit(self)
+            self.editor.setReadOnly(True)
+            self.editor.setLineWrapMode(QPlainTextEdit.NoWrap)
+            close_button = QPushButton("Schließen", self)
+            close_button.clicked.connect(self.accept)
+            button_layout = QHBoxLayout()
+            button_layout.addStretch(1)
+            button_layout.addWidget(close_button)
+            layout = QVBoxLayout(self)
+            layout.addWidget(self.editor, 1)
+            layout.addLayout(button_layout)
+
+    class ChmViewerDialog(QDialog):
+        """In die D64-Anwendung integrierter CHM-Hilfedialog."""
+
+        CONTENT_THEME_STYLE_ID = "d64-chm-content-theme"
+
+        def __init__(self, parent=None, dark_mode: bool = False):
+            super().__init__(parent)
+            # Der Modus muss feststehen, bevor WebEngine oder ein sichtbares
+            # Dialog-Widget erzeugt wird. Andernfalls zeichnet Chromium beim
+            # ersten Anzeigen kurz seine weisse Standardflaeche.
+            self.dark_mode_enabled = bool(dark_mode)
+            self.setObjectName("chm_viewer_dialog")
+            self.setWindowTitle("CHM Viewer")
+            self.setWindowFlags(
+                self.windowFlags()
+                | Qt.WindowMinMaxButtonsHint
+                | Qt.WindowSystemMenuHint
+            )
+            self.resize(1180, 760)
+            self.setMinimumSize(800, 500)
+
+            self.settings = QSettings(
+                ExplorerWindow.ORGANIZATION,
+                ExplorerWindow.APPLICATION,
+            )
+            self.temporary = None
+            self.content_root = None
+            self.chm_path = None
+            self.home_local = ""
+            self.source_dialogs = []
+
+            self.create_actions()
+            self.create_menu()
+            self.create_toolbar()
+            self.create_content()
+            self.create_statusbar()
+            self.connect_signals()
+            self.restore_state()
+            self.update_navigation()
+
+        # ----- Aufbau --------------------------------------------------
+
+        def create_actions(self) -> None:
+            style = self.style()
+            self.open_action = QAction(
+                style.standardIcon(QStyle.SP_DialogOpenButton),
+                "Hilfe öffnen …",
+                self,
+            )
+            self.open_action.setShortcut(QKeySequence.Open)
+            self.open_action.setToolTip("CHM-Datei öffnen")
+
+            self.quit_action = QAction("Programm beenden", self)
+            self.quit_action.setShortcut(QKeySequence.Quit)
+            self.copy_action = QAction("Kopieren", self)
+            self.copy_action.setShortcut(QKeySequence.Copy)
+            self.source_action = QAction("Seiten Quelltext", self)
+            self.source_action.setShortcut(QKeySequence("Ctrl+U"))
+            self.about_action = QAction("Über …", self)
+
+            self.home_action = QAction(
+                style.standardIcon(QStyle.SP_DirHomeIcon),
+                "Start",
+                self,
+            )
+            self.home_action.setToolTip("index.html anzeigen")
+            self.back_action = QAction(
+                style.standardIcon(QStyle.SP_ArrowBack),
+                "Zurück",
+                self,
+            )
+            self.forward_action = QAction(
+                style.standardIcon(QStyle.SP_ArrowForward),
+                "Vor",
+                self,
+            )
+
+        def create_menu(self) -> None:
+            self.menu_bar = QMenuBar(self)
+            file_menu = self.menu_bar.addMenu("Datei")
+            file_menu.addAction(self.open_action)
+            file_menu.addSeparator()
+            file_menu.addAction(self.quit_action)
+
+            edit_menu = self.menu_bar.addMenu("Bearbeiten")
+            edit_menu.addAction(self.copy_action)
+            edit_menu.addAction(self.source_action)
+
+            help_menu = self.menu_bar.addMenu("Hilfe")
+            help_menu.addAction(self.about_action)
+
+        def create_toolbar(self) -> None:
+            self.navigation_toolbar = QToolBar("Navigation", self)
+            self.navigation_toolbar.setObjectName("chm_navigation_toolbar")
+            self.navigation_toolbar.setMovable(False)
+            self.navigation_toolbar.setIconSize(QSize(20, 20))
+            self.navigation_toolbar.setToolButtonStyle(
+                Qt.ToolButtonTextBesideIcon
+            )
+            self.navigation_toolbar.addAction(self.open_action)
+            self.navigation_toolbar.addSeparator()
+            self.navigation_toolbar.addAction(self.home_action)
+            self.navigation_toolbar.addAction(self.back_action)
+            self.navigation_toolbar.addAction(self.forward_action)
+
+        def create_content(self) -> None:
+            self.tabs = QTabWidget(self)
+            self.topics_tab = ChmSearchTab(
+                "Thema/Topic suchen …",
+                self.tabs,
+            )
+            self.keywords_tab = ChmSearchTab(
+                "Schlüsselwort suchen …",
+                self.tabs,
+            )
+            self.favorites_tab = ChmSearchTab(
+                "Favorit suchen …",
+                self.tabs,
+            )
+            self.tabs.addTab(self.topics_tab, "Themen")
+            self.tabs.addTab(self.keywords_tab, "Schlüsselwörter")
+            self.tabs.addTab(self.favorites_tab, "Favoriten")
+
+            favorites_layout = QHBoxLayout()
+            self.add_favorite_button = QPushButton(
+                "Aktuelle Seite hinzufügen",
+                self.favorites_tab,
+            )
+            self.remove_favorite_button = QPushButton(
+                "Entfernen",
+                self.favorites_tab,
+            )
+            favorites_layout.addWidget(self.add_favorite_button)
+            favorites_layout.addWidget(self.remove_favorite_button)
+            favorites_layout.addStretch(1)
+            self.favorites_tab.layout().addLayout(favorites_layout)
+
+            self.web_view = QWebEngineView(self)
+            self.web_view.setObjectName("chm_content_view")
+            self.apply_content_view_theme()
+            self.web_page = ChmWebPage(self.web_view)
+            self.web_page.setBackgroundColor(
+                self.content_background_color()
+            )
+            self.web_view.setPage(self.web_page)
+            web_settings = self.web_page.settings()
+            web_settings.setAttribute(
+                QWebEngineSettings.LocalContentCanAccessFileUrls,
+                True,
+            )
+            web_settings.setAttribute(
+                QWebEngineSettings.LocalContentCanAccessRemoteUrls,
+                False,
+            )
+            self.show_empty_page()
+
+            self.splitter = QSplitter(Qt.Horizontal, self)
+            self.splitter.setChildrenCollapsible(False)
+            self.splitter.addWidget(self.tabs)
+            self.splitter.addWidget(self.web_view)
+            self.splitter.setSizes([360, 820])
+            self.splitter.setStretchFactor(0, 0)
+            self.splitter.setStretchFactor(1, 1)
+
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setMenuBar(self.menu_bar)
+            layout.addWidget(self.navigation_toolbar)
+            layout.addWidget(self.splitter, 1)
+
+        def create_statusbar(self) -> None:
+            self.status_bar = QStatusBar(self)
+            self.file_status = QLabel("Keine CHM-Datei geöffnet", self)
+            self.file_status.setSizePolicy(
+                QSizePolicy.Expanding,
+                QSizePolicy.Preferred,
+            )
+            self.status_bar.addPermanentWidget(self.file_status, 1)
+            self.layout().addWidget(self.status_bar)
+            self.status_bar.showMessage("Bereit", 3000)
+
+        def connect_signals(self) -> None:
+            self.open_action.triggered.connect(self.choose_chm)
+            self.quit_action.triggered.connect(self.close)
+            self.copy_action.triggered.connect(
+                lambda: self.web_page.triggerAction(QWebEnginePage.Copy)
+            )
+            self.source_action.triggered.connect(self.show_page_source)
+            self.about_action.triggered.connect(self.show_about)
+            self.home_action.triggered.connect(self.go_home)
+            self.back_action.triggered.connect(self.web_view.back)
+            self.forward_action.triggered.connect(self.web_view.forward)
+
+            self.topics_tab.search_requested.connect(
+                lambda text: self.find_first(self.topics_tab.tree, text)
+            )
+            self.keywords_tab.search_requested.connect(
+                lambda text: self.find_first(self.keywords_tab.tree, text)
+            )
+            self.favorites_tab.search_requested.connect(
+                lambda text: self.find_first(self.favorites_tab.tree, text)
+            )
+            self.topics_tab.tree.currentItemChanged.connect(
+                self.tree_item_changed
+            )
+            self.keywords_tab.tree.currentItemChanged.connect(
+                self.tree_item_changed
+            )
+            self.favorites_tab.tree.currentItemChanged.connect(
+                self.tree_item_changed
+            )
+            self.favorites_tab.tree.currentItemChanged.connect(
+                lambda *_args: self.update_navigation()
+            )
+            self.add_favorite_button.clicked.connect(
+                self.add_current_favorite
+            )
+            self.remove_favorite_button.clicked.connect(
+                self.remove_current_favorite
+            )
+
+            self.web_view.loadStarted.connect(
+                lambda: self.status_bar.showMessage("Lade Seite …")
+            )
+            self.web_view.loadProgress.connect(
+                lambda value: self.status_bar.showMessage(
+                    f"Lade Seite … {value} %"
+                )
+            )
+            self.web_view.loadFinished.connect(self.load_finished)
+            self.web_view.urlChanged.connect(
+                lambda _url: self.update_navigation()
+            )
+            self.web_view.titleChanged.connect(self.title_changed)
+
+        # ----- Theme des HTML-Inhalts --------------------------------
+
+        def content_background_color(self) -> QColor:
+            return QColor("#000000" if self.dark_mode_enabled else "#ffffff")
+
+        def content_foreground_color(self) -> QColor:
+            return QColor("#ffffff" if self.dark_mode_enabled else "#000000")
+
+        def apply_content_view_theme(self) -> None:
+            """Faerbt die Web-Oberflaeche schon vor dem ersten Seitenbild."""
+            if not hasattr(self, "web_view"):
+                return
+
+            background = self.content_background_color()
+            foreground = self.content_foreground_color()
+            palette = QPalette(self.web_view.palette())
+            palette.setColor(QPalette.Window, background)
+            palette.setColor(QPalette.Base, background)
+            palette.setColor(QPalette.WindowText, foreground)
+            palette.setColor(QPalette.Text, foreground)
+            self.web_view.setPalette(palette)
+            self.web_view.setAutoFillBackground(True)
+            self.web_view.setStyleSheet(
+                "QWebEngineView#chm_content_view {"
+                f" background-color: {background.name()};"
+                f" color: {foreground.name()};"
+                "}"
+            )
+
+        def content_theme_css(self) -> str:
+            if self.dark_mode_enabled:
+                background = "#000000"
+                foreground = "#ffffff"
+                link = "#66b3ff"
+                visited = "#c792ea"
+                active = "#ffcc66"
+                scheme = "dark"
+            else:
+                background = "#ffffff"
+                foreground = "#000000"
+                link = "#0000ee"
+                visited = "#551a8b"
+                active = "#ee0000"
+                scheme = "light"
+
+            return (
+                ":root { color-scheme: " + scheme + "; }\n"
+                "html, body {"
+                f" background-color: {background} !important;"
+                f" color: {foreground} !important;"
+                "}\n"
+                f"a:link {{ color: {link}; }}\n"
+                f"a:visited {{ color: {visited}; }}\n"
+                f"a:active {{ color: {active}; }}\n"
+            )
+
+        def apply_content_theme(self) -> None:
+            """Wendet das Anwendungstheme auf die aktuelle HTML-Seite an."""
+            self.apply_content_view_theme()
+            if not hasattr(self, "web_page"):
+                return
+
+            background = (
+                "#000000" if self.dark_mode_enabled else "#ffffff"
+            )
+            foreground = (
+                "#ffffff" if self.dark_mode_enabled else "#000000"
+            )
+            css = self.content_theme_css()
+            self.web_page.setBackgroundColor(QColor(background))
+
+            script = (
+                "(function () {"
+                f"var id = {json.dumps(self.CONTENT_THEME_STYLE_ID)};"
+                "var style = document.getElementById(id);"
+                "if (!style) {"
+                "style = document.createElement('style');"
+                "style.id = id;"
+                "(document.head || document.documentElement)"
+                ".appendChild(style);"
+                "}"
+                f"style.textContent = {json.dumps(css)};"
+                f"document.documentElement.style.backgroundColor = "
+                f"{json.dumps(background)};"
+                "if (document.body) {"
+                f"document.body.style.backgroundColor = "
+                f"{json.dumps(background)};"
+                f"document.body.style.color = {json.dumps(foreground)};"
+                "}"
+                "})();"
+            )
+            self.web_page.runJavaScript(script)
+
+        def set_dark_mode(self, enabled: bool) -> None:
+            self.dark_mode_enabled = bool(enabled)
+            self.apply_content_theme()
+
+        # ----- CHM laden ----------------------------------------------
+
+        def choose_chm(self) -> None:
+            start_directory = str(
+                self.settings.value("chm/last_directory", "") or ""
+            )
+            filename, _ = QFileDialog.getOpenFileName(
+                self,
+                "CHM-Hilfedatei öffnen",
+                start_directory,
+                "CHM-Hilfedateien (*.chm);;Alle Dateien (*)",
+            )
+            if filename:
+                self.settings.setValue(
+                    "chm/last_directory",
+                    str(Path(filename).parent),
+                )
+                self.open_chm(filename)
+
+        def open_chm(self, filename: str) -> bool:
+            source = Path(filename).expanduser().resolve()
+            if not source.is_file():
+                QMessageBox.warning(
+                    self,
+                    "CHM Viewer",
+                    f"Datei nicht gefunden:\n{source}",
+                )
+                return False
+
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            self.status_bar.showMessage("CHM-Datei wird entpackt …")
+            QApplication.processEvents()
+            new_temporary = None
+            try:
+                new_temporary = tempfile.TemporaryDirectory(
+                    prefix="d64_chm_viewer_"
+                )
+                root = Path(new_temporary.name)
+                ChmExtractor.extract(source, root)
+                topics, keywords, home_local = self.read_metadata(root)
+            except Exception as exc:
+                if new_temporary is not None:
+                    new_temporary.cleanup()
+                QMessageBox.critical(self, "CHM Viewer", str(exc))
+                self.status_bar.showMessage(
+                    "CHM-Datei konnte nicht geöffnet werden",
+                    6000,
+                )
+                return False
+            finally:
+                QApplication.restoreOverrideCursor()
+
+            old_temporary = self.temporary
+            self.web_view.setUrl(QUrl("about:blank"))
+            QApplication.processEvents()
+            self.temporary = new_temporary
+            self.content_root = root
+            self.chm_path = source
+            self.home_local = home_local
+            if old_temporary is not None:
+                try:
+                    old_temporary.cleanup()
+                except OSError:
+                    pass
+
+            self.populate_tree(self.topics_tab.tree, topics)
+            self.populate_tree(self.keywords_tab.tree, keywords)
+            self.load_favorites()
+            self.tabs.setCurrentWidget(self.topics_tab)
+            self.file_status.setText(str(source))
+            self.settings.setValue("chm/last_file", str(source))
+            self.setWindowTitle(f"{source.name} – CHM Viewer")
+
+            topic_count = self.tree_count(self.topics_tab.tree)
+            keyword_count = self.tree_count(self.keywords_tab.tree)
+            self.status_bar.showMessage(
+                f"{topic_count} Themen und {keyword_count} "
+                "Schlüsselwörter geladen",
+                6000,
+            )
+
+            first_item = self.first_local_item(self.topics_tab.tree)
+            if first_item is not None:
+                self.topics_tab.tree.setCurrentItem(first_item)
+                self.topics_tab.tree.scrollToItem(first_item)
+            elif self.home_local:
+                self.load_local(self.home_local)
+            else:
+                self.show_empty_page("Keine anzeigbare Hilfeseite gefunden.")
+            self.update_navigation()
+            return True
+
+        def read_metadata(self, root: Path):
+            project = find_chm_file_by_suffix(root, ".hhp")
+            options = read_chm_project_options(project)
+            contents = self.metadata_file(
+                root,
+                options.get("contents file", ""),
+                ".hhc",
+            )
+            index = self.metadata_file(
+                root,
+                options.get("index file", ""),
+                ".hhk",
+            )
+            topics = parse_chm_sitemap(contents)
+            keywords = parse_chm_sitemap(index)
+
+            if not topics:
+                html_files = [
+                    path for path in iter_chm_files(root)
+                    if path.suffix.casefold() in (".html", ".htm")
+                ]
+                html_files.sort(
+                    key=lambda path: str(path.relative_to(root)).casefold()
+                )
+                topics = [
+                    ChmSitemapEntry(
+                        path.stem,
+                        path.relative_to(root).as_posix(),
+                    )
+                    for path in html_files
+                ]
+
+            home_local = self.find_index(root)
+            if not home_local:
+                default_topic = options.get("default topic", "")
+                relative, fragment = clean_chm_local(default_topic)
+                if relative and resolve_chm_path(root, relative):
+                    home_local = relative
+                    if fragment:
+                        home_local += "#" + fragment
+            if not home_local:
+                home_local = self.first_entry_local(topics)
+            return topics, keywords, home_local
+
+        def metadata_file(
+            self,
+            root: Path,
+            configured: str,
+            suffix: str,
+        ) -> Optional[Path]:
+            if configured:
+                relative, _fragment = clean_chm_local(configured)
+                resolved = resolve_chm_path(root, relative) if relative else None
+                if resolved is not None:
+                    return resolved
+            return find_chm_file_by_suffix(root, suffix)
+
+        def find_index(self, root: Path) -> str:
+            candidates = [
+                path for path in iter_chm_files(root)
+                if path.name.casefold() in ("index.html", "index.htm")
+            ]
+            if not candidates:
+                return ""
+            result = min(
+                candidates,
+                key=lambda path: (
+                    len(path.relative_to(root).parts),
+                    str(path).casefold(),
+                ),
+            )
+            return result.relative_to(root).as_posix()
+
+        def first_entry_local(self, entries) -> str:
+            for entry in entries:
+                if entry.local:
+                    return entry.local
+                nested = self.first_entry_local(entry.children)
+                if nested:
+                    return nested
+            return ""
+
+        # ----- Themen, Suche und Anzeige ------------------------------
+
+        def populate_tree(self, tree: QTreeWidget, entries) -> None:
+            tree.blockSignals(True)
+            tree.clear()
+
+            def add_entries(parent, values) -> None:
+                for entry in values:
+                    item = QTreeWidgetItem(parent, [entry.title])
+                    item.setData(0, CHM_ROLE_LOCAL, entry.local)
+                    item.setData(0, CHM_ROLE_TITLE, entry.title)
+                    if entry.children:
+                        add_entries(item, entry.children)
+
+            add_entries(tree, entries)
+            tree.blockSignals(False)
+            if tree.topLevelItemCount():
+                tree.topLevelItem(0).setExpanded(True)
+
+        def tree_count(self, tree: QTreeWidget) -> int:
+            iterator = QTreeWidgetItemIterator(tree)
+            count = 0
+            while iterator.value() is not None:
+                count += 1
+                iterator += 1
+            return count
+
+        def first_local_item(self, tree: QTreeWidget):
+            iterator = QTreeWidgetItemIterator(tree)
+            while iterator.value() is not None:
+                item = iterator.value()
+                if str(item.data(0, CHM_ROLE_LOCAL) or "").strip():
+                    return item
+                iterator += 1
+            return None
+
+        def tree_item_changed(self, current, _previous) -> None:
+            if current is None:
+                return
+            local = str(current.data(0, CHM_ROLE_LOCAL) or "").strip()
+            if local:
+                self.load_local(local)
+
+        def find_first(self, tree: QTreeWidget, text: str) -> None:
+            if not text:
+                return
+            needle = text.casefold()
+            iterator = QTreeWidgetItemIterator(tree)
+            while iterator.value() is not None:
+                item = iterator.value()
+                if needle in item.text(0).casefold():
+                    parent = item.parent()
+                    while parent is not None:
+                        parent.setExpanded(True)
+                        parent = parent.parent()
+                    tree.setCurrentItem(item)
+                    tree.scrollToItem(item)
+                    self.status_bar.showMessage(
+                        f"Treffer: {item.text(0)}",
+                        4000,
+                    )
+                    return
+                iterator += 1
+            QApplication.beep()
+            self.status_bar.showMessage(
+                f"Kein Treffer für „{text}“",
+                5000,
+            )
+
+        def local_url(self, value: str) -> Optional[QUrl]:
+            if self.content_root is None:
+                return None
+            relative, fragment = clean_chm_local(value)
+            if not relative:
+                return None
+            target = resolve_chm_path(self.content_root, relative)
+            if target is None:
+                return None
+            url = QUrl.fromLocalFile(str(target))
+            if fragment:
+                url.setFragment(fragment)
+            return url
+
+        def load_local(self, value: str) -> None:
+            url = self.local_url(value)
+            if url is None:
+                self.status_bar.showMessage(
+                    f"Hilfeseite nicht gefunden: {value}",
+                    6000,
+                )
+                return
+            self.web_view.setUrl(url)
+
+        def go_home(self) -> None:
+            if self.home_local:
+                self.load_local(self.home_local)
+
+        def show_empty_page(self, message="Öffne eine CHM-Hilfedatei.") -> None:
+            css = self.content_theme_css()
+            self.web_view.setHtml(
+                "<html><head><style id='"
+                + self.CONTENT_THEME_STYLE_ID
+                + "'>"
+                + css
+                + "</style></head>"
+                "<body style='font-family:sans-serif;margin:3em'>"
+                "<h2>CHM Viewer</h2>"
+                f"<p>{html.escape(message)}</p>"
+                "</body></html>"
+            )
+
+        # ----- Favoriten ---------------------------------------------
+
+        def current_local(self) -> str:
+            if self.content_root is None:
+                return ""
+            url = self.web_view.url()
+            if not url.isLocalFile():
+                return ""
+            try:
+                relative = Path(url.toLocalFile()).resolve().relative_to(
+                    self.content_root.resolve()
+                )
+            except (OSError, ValueError):
+                return ""
+            result = relative.as_posix()
+            if url.fragment():
+                result += "#" + url.fragment()
+            return result
+
+        def favorites_key(self) -> str:
+            if self.chm_path is None:
+                return ""
+            digest = hashlib.sha256(
+                str(self.chm_path).casefold().encode("utf-8")
+            ).hexdigest()
+            return "chm/favorites/" + digest
+
+        def favorite_values(self):
+            key = self.favorites_key()
+            if not key:
+                return []
+            raw = str(self.settings.value(key, "[]") or "[]")
+            try:
+                values = json.loads(raw)
+            except (TypeError, json.JSONDecodeError):
+                return []
+            if not isinstance(values, list):
+                return []
+            return [
+                {
+                    "title": str(item.get("title", "")),
+                    "local": str(item.get("local", "")),
+                }
+                for item in values
+                if isinstance(item, dict) and item.get("local")
+            ]
+
+        def save_favorite_values(self, values) -> None:
+            key = self.favorites_key()
+            if key:
+                self.settings.setValue(
+                    key,
+                    json.dumps(values, ensure_ascii=False),
+                )
+
+        def load_favorites(self) -> None:
+            tree = self.favorites_tab.tree
+            tree.blockSignals(True)
+            tree.clear()
+            for favorite in self.favorite_values():
+                item = QTreeWidgetItem(
+                    tree,
+                    [favorite["title"] or favorite["local"]],
+                )
+                item.setData(0, CHM_ROLE_LOCAL, favorite["local"])
+                item.setData(0, CHM_ROLE_TITLE, favorite["title"])
+            tree.blockSignals(False)
+            self.update_navigation()
+
+        def add_current_favorite(self) -> None:
+            local = self.current_local()
+            if not local:
+                self.status_bar.showMessage(
+                    "Die aktuelle Seite kann nicht gespeichert werden",
+                    5000,
+                )
+                return
+            title = self.web_view.title().strip()
+            if not title:
+                title = Path(local.split("#", 1)[0]).name
+            values = self.favorite_values()
+            if any(
+                value["local"].casefold() == local.casefold()
+                for value in values
+            ):
+                self.status_bar.showMessage(
+                    "Diese Seite ist bereits als Favorit gespeichert",
+                    4000,
+                )
+                return
+            values.append({"title": title, "local": local})
+            self.save_favorite_values(values)
+            self.load_favorites()
+            self.status_bar.showMessage(
+                f"Favorit gespeichert: {title}",
+                4000,
+            )
+
+        def remove_current_favorite(self) -> None:
+            item = self.favorites_tab.tree.currentItem()
+            if item is None:
+                return
+            local = str(item.data(0, CHM_ROLE_LOCAL) or "")
+            values = [
+                value for value in self.favorite_values()
+                if value["local"].casefold() != local.casefold()
+            ]
+            self.save_favorite_values(values)
+            self.load_favorites()
+            self.status_bar.showMessage("Favorit entfernt", 3000)
+
+        # ----- Menuefunktionen und Status ----------------------------
+
+        def show_page_source(self) -> None:
+            dialog = ChmSourceDialog(self)
+            dialog.editor.setPlainText("Quelltext wird geladen …")
+            dialog.setAttribute(Qt.WA_DeleteOnClose, True)
+            self.source_dialogs.append(dialog)
+
+            def remove_dialog(*_args) -> None:
+                if dialog in self.source_dialogs:
+                    self.source_dialogs.remove(dialog)
+
+            def receive_source(source: str) -> None:
+                try:
+                    dialog.editor.setPlainText(source)
+                    cursor = dialog.editor.textCursor()
+                    cursor.movePosition(QTextCursor.Start)
+                    dialog.editor.setTextCursor(cursor)
+                except RuntimeError:
+                    pass
+
+            dialog.destroyed.connect(remove_dialog)
+            dialog.show()
+            self.web_page.toHtml(receive_source)
+
+        def show_about(self) -> None:
+            QMessageBox.about(
+                self,
+                "Über CHM Viewer",
+                "<h3>CHM Viewer</h3>"
+                "<p>Integrierte HTML-Hilfeanzeige mit Themen, "
+                "Schlüsselwörtern und Favoriten.</p>"
+                "<p>Die Inhalte werden mit QWebEnginePage angezeigt.</p>",
+            )
+
+        def load_finished(self, success: bool) -> None:
+            self.apply_content_theme()
+            if success:
+                self.status_bar.showMessage("Seite geladen", 2500)
+            else:
+                self.status_bar.showMessage(
+                    "Die Seite konnte nicht geladen werden",
+                    5000,
+                )
+            self.update_navigation()
+
+        def title_changed(self, title: str) -> None:
+            if self.chm_path is not None:
+                visible_title = title.strip() or self.chm_path.name
+                self.setWindowTitle(f"{visible_title} – CHM Viewer")
+
+        def update_navigation(self) -> None:
+            history = self.web_view.history()
+            has_content = self.content_root is not None
+            self.home_action.setEnabled(
+                has_content and bool(self.home_local)
+            )
+            self.back_action.setEnabled(history.canGoBack())
+            self.forward_action.setEnabled(history.canGoForward())
+            self.copy_action.setEnabled(has_content)
+            self.source_action.setEnabled(has_content)
+            self.add_favorite_button.setEnabled(has_content)
+            self.remove_favorite_button.setEnabled(
+                self.favorites_tab.tree.currentItem() is not None
+            )
+
+        def restore_state(self) -> None:
+            geometry = self.settings.value("chm/window_geometry")
+            splitter_sizes = self.settings.value("chm/splitter_sizes")
+            if geometry is not None:
+                self.restoreGeometry(geometry)
+            if splitter_sizes:
+                try:
+                    self.splitter.setSizes(
+                        [int(value) for value in splitter_sizes]
+                    )
+                except (TypeError, ValueError):
+                    pass
+
+        def done(self, result: int) -> None:
+            self.settings.setValue(
+                "chm/window_geometry",
+                self.saveGeometry(),
+            )
+            self.settings.setValue(
+                "chm/splitter_sizes",
+                self.splitter.sizes(),
+            )
+            self.web_view.setUrl(QUrl("about:blank"))
+            QApplication.processEvents()
+            if self.temporary is not None:
+                try:
+                    self.temporary.cleanup()
+                except OSError:
+                    pass
+                self.temporary = None
+            super().done(result)
 
     class ExplorerWindow(QMainWindow):
         ORGANIZATION = "paule32"
@@ -3142,6 +4517,13 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             self.about_action = QAction("Über …", self)
             self.about_action.triggered.connect(self.show_about_dialog)
 
+            self.chm_viewer_action = QAction("CHM-Viewer …", self)
+            self.chm_viewer_action.setShortcut(QKeySequence.HelpContents)
+            self.chm_viewer_action.setStatusTip(
+                "CHM-Hilfedatei mit Themen und Schlüsselwörtern öffnen"
+            )
+            self.chm_viewer_action.triggered.connect(self.show_chm_viewer)
+
             self.zoom_in_action = QAction(
                 self._toolbar_symbol_icon("zoom_in"),
                 "Schrift vergrößern",
@@ -3269,6 +4651,8 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             self.dism_start_menu.addAction(self.dism_program_action)
             self.dism_menu.addMenu(self.dism_start_menu)
             help_menu = self.menuBar().addMenu("&Hilfe")
+            help_menu.addAction(self.chm_viewer_action)
+            help_menu.addSeparator()
             help_menu.addAction(self.about_action)
 
         def _create_toolbar(self) -> None:
@@ -4007,6 +5391,8 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             # und bereits sichtbare Item-Views sofort neu gezeichnet werden.
             for widget in application.allWidgets():
                 widget.update()
+                if isinstance(widget, ChmViewerDialog):
+                    widget.set_dark_mode(enabled)
 
         def toggle_editor_theme(self) -> None:
             self.dark_mode_enabled = not self.dark_mode_enabled
@@ -4095,11 +5481,14 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
 
         def new_document(self) -> None:
             self.untitled_counter += 1
+            dark_mode = self.application_dark_mode(
+                self.dark_mode_enabled
+            )
             document = DocumentEditor(
                 self.document_tabs,
                 untitled_number=self.untitled_counter,
                 editor_font=self._make_editor_font(),
-                dark_mode=self.dark_mode_enabled,
+                dark_mode=dark_mode,
             )
             self._add_document_tab(document)
             document.focus_preferred_editor()
@@ -4131,6 +5520,7 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             existing = self._find_open_document(path)
             if existing is not None:
                 self.document_tabs.setCurrentWidget(existing)
+                self._apply_document_theme(existing)
                 existing.focus_preferred_editor()
                 self.statusBar().showMessage(f"Bereits geöffnet: {path.name}")
                 return True
@@ -4145,6 +5535,9 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
                 return False
 
             self.untitled_counter += 1
+            dark_mode = self.application_dark_mode(
+                self.dark_mode_enabled
+            )
             document = DocumentEditor(
                 self.document_tabs,
                 untitled_number=self.untitled_counter,
@@ -4154,7 +5547,7 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
                 newline=newline,
                 raw_bytes=raw_bytes,
                 editor_font=self._make_editor_font(),
-                dark_mode=self.dark_mode_enabled,
+                dark_mode=dark_mode,
             )
             self._add_document_tab(document)
             document.focus_preferred_editor()
@@ -4189,9 +5582,30 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
                     value, modified
                 )
             )
+            document.assemble_requested.connect(self.assemble_document)
+            document.start_requested.connect(self.start_assembled_document)
             self.document_tabs.setCurrentWidget(document)
             self._update_document_actions()
             self._update_document_tab(document)
+            self._apply_document_theme(document)
+
+            # Nach der Rueckkehr in die Qt-Ereignisschleife ist der neue Tab
+            # vollstaendig in seine Widget-Hierarchie eingebunden. Eine zweite
+            # explizite Anwendung verhindert, dass eine spaete PaletteChange-
+            # Verarbeitung die ASM-Farben wieder mit Standardwerten ersetzt.
+            QTimer.singleShot(
+                0,
+                lambda value=document: self._apply_document_theme(value),
+            )
+
+        def _apply_document_theme(self, document: DocumentEditor) -> None:
+            """Setzt die aktiven Editorfarben nach Erzeugen/Oeffnen erneut."""
+            if self._document_index(document) < 0:
+                return
+            dark_mode = self.application_dark_mode(
+                self.dark_mode_enabled
+            )
+            document.set_dark_mode(dark_mode)
 
         @staticmethod
         def _document_tooltip(document: DocumentEditor) -> str:
@@ -4269,6 +5683,7 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
         def _save_document(
             self, document: DocumentEditor, *, save_as: bool
         ) -> bool:
+            previous_path = document.path
             target = document.path
             if save_as or target is None:
                 target = self._choose_document_filename(document)
@@ -4315,12 +5730,216 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
 
             document.path = target.resolve()
             document.update_syntax_highlighting()
+            self._apply_document_theme(document)
+            if previous_path != document.path:
+                document.invalidate_assembly_result("Dateipfad geändert")
             document.mark_saved()
             self._update_document_tab(document)
             self.log(f"Datei gespeichert: {document.path}")
             self.statusBar().showMessage(f"Gespeichert: {document.path}")
             if document.path.parent == self.current_directory:
                 self.populate_file_list()
+            return True
+
+        @staticmethod
+        def _assembler_output_path(document: DocumentEditor) -> Path:
+            if document.path is None:
+                raise AssemblerError(
+                    "Der Assemblerquelltext muss zuerst als ASM-Datei "
+                    "gespeichert werden."
+                )
+            return document.path.with_suffix(".prg")
+
+        @staticmethod
+        def _write_assembled_program(path: Path, data: bytes) -> None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            file_descriptor, temporary_name = tempfile.mkstemp(
+                prefix=f".{path.name}.",
+                suffix=".tmp",
+                dir=str(path.parent),
+            )
+            try:
+                with os.fdopen(file_descriptor, "wb") as stream:
+                    stream.write(data)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary_name, path)
+            except Exception:
+                try:
+                    os.unlink(temporary_name)
+                except OSError:
+                    pass
+                raise
+
+        def assemble_document(self, document: DocumentEditor) -> bool:
+            """Assemblieren des Quelltexts aus genau einer ASM-Registerkarte."""
+            if not isinstance(document, DocumentEditor):
+                return False
+            self.document_tabs.setCurrentWidget(document)
+            if not document.is_assembler_document:
+                self.show_error(
+                    "Kein ASM-Dokument",
+                    "Assemble steht für Dateien mit den Endungen .asm, "
+                    ".s, .a65 und .inc zur Verfügung.",
+                )
+                return False
+
+            source = document.raw_editor.toPlainText()
+            source_digest = hashlib.sha256(
+                source.encode("utf-8")
+            ).hexdigest()
+            try:
+                output_path = self._assembler_output_path(document)
+                program = assemble_mos6510_source(
+                    source,
+                    filename=document.display_name,
+                )
+                self._write_assembled_program(output_path, program.prg)
+            except AssemblerError as exc:
+                message = str(exc)
+                document.show_assembly_error(message, exc.line or 0)
+                self.show_error("Assemblerfehler", message)
+                self.statusBar().showMessage("Assemblieren fehlgeschlagen")
+                return False
+            except OSError as exc:
+                message = (
+                    "Das C64-Programm konnte nicht gespeichert werden:\n"
+                    f"{output_path}\n\n{exc}"
+                )
+                document.show_assembly_error(message)
+                self.show_error("PRG konnte nicht gespeichert werden", message)
+                self.statusBar().showMessage("Assemblieren fehlgeschlagen")
+                return False
+
+            document.set_assembly_result(
+                program,
+                output_path,
+                source_digest,
+            )
+            document.hints_editor.setPlainText(
+                "Assembler erfolgreich beendet\n"
+                "\n"
+                f"Quelle       : {document.display_name}\n"
+                f"Ausgabe      : {output_path}\n"
+                f"Ladeadresse  : ${program.load_address:04X}\n"
+                f"Einsprung    : ${program.entry_address:04X}\n"
+                f"Letztes Byte : ${program.end_address:04X}\n"
+                f"PRG-Größe    : {len(program.prg)} Bytes\n"
+                f"Instruktionen: {program.instruction_count}\n"
+                f"BASIC-Stub   : {'ja' if program.has_basic_stub else 'nein'}\n"
+            )
+            self.log(
+                "ASSEMBLE: "
+                f"{document.display_name} -> {output_path.name}, "
+                f"${program.load_address:04X}-${program.end_address:04X}, "
+                f"Start ${program.entry_address:04X}"
+            )
+            self.statusBar().showMessage(
+                f"Assemblieren erfolgreich: {output_path.name}"
+            )
+            if output_path.parent == self.current_directory:
+                self.populate_file_list()
+            return True
+
+        def _resolve_vice_for_program_start(self) -> Optional[Path]:
+            if self.dism_vice_path:
+                configured = Path(self.dism_vice_path).expanduser()
+                if configured.is_file():
+                    return configured.resolve()
+                self.show_error(
+                    "VICE nicht gefunden",
+                    "Das gespeicherte VICE-Programm existiert nicht mehr:\n"
+                    f"{configured}\n\nBitte wähle VICE erneut aus.",
+                )
+                self.dism_vice_path = ""
+
+            executable = (
+                shutil.which("x64sc.exe")
+                or shutil.which("x64sc")
+                or shutil.which("x64.exe")
+                or shutil.which("x64")
+            )
+            if executable:
+                return Path(executable).resolve()
+
+            self.choose_dism_vice()
+            if self.dism_vice_path:
+                selected = Path(self.dism_vice_path)
+                if selected.is_file():
+                    return selected.resolve()
+            self.statusBar().showMessage("VICE-Start abgebrochen")
+            return None
+
+        def start_assembled_document(self, document: DocumentEditor) -> bool:
+            """Lädt den letzten Build per VICE-Autostart und führt ihn aus."""
+            if not isinstance(document, DocumentEditor):
+                return False
+            self.document_tabs.setCurrentWidget(document)
+
+            current_digest = hashlib.sha256(
+                document.raw_editor.toPlainText().encode("utf-8")
+            ).hexdigest()
+            output_path = document.assembled_program_path
+            if (
+                output_path is None
+                or document.assembled_source_digest != current_digest
+                or not output_path.is_file()
+            ):
+                if not self.assemble_document(document):
+                    return False
+                output_path = document.assembled_program_path
+
+            if output_path is None:
+                return False
+            vice_path = self._resolve_vice_for_program_start()
+            if vice_path is None:
+                return False
+
+            command = [
+                str(vice_path),
+                "-autostartprgmode",
+                "1",
+                "-autostart",
+                str(output_path),
+            ]
+            options = {
+                "cwd": str(output_path.parent),
+                "stdin": subprocess.DEVNULL,
+                "stdout": subprocess.DEVNULL,
+                "stderr": subprocess.DEVNULL,
+            }
+            if os.name == "nt" and hasattr(
+                subprocess,
+                "CREATE_NEW_PROCESS_GROUP",
+            ):
+                options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+
+            try:
+                process = subprocess.Popen(command, **options)
+            except OSError as exc:
+                self.show_error(
+                    "VICE konnte nicht gestartet werden",
+                    f"Programm: {vice_path}\nPRG: {output_path}\n\n{exc}",
+                )
+                return False
+
+            processes = [
+                running
+                for running in getattr(self, "_vice_processes", [])
+                if running.poll() is None
+            ]
+            processes.append(process)
+            self._vice_processes = processes
+            document.assembly_status_label.setText(
+                f"In VICE gestartet: {output_path.name}"
+            )
+            self.log(
+                "VICE START: "
+                + self._display_dism_command(command)
+            )
+            self.statusBar().showMessage(
+                f"In VICE gestartet: {output_path.name}"
+            )
             return True
 
         def _confirm_close_document(self, document: DocumentEditor) -> bool:
@@ -4902,6 +6521,53 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             self._show_message_box(QMessageBox.Warning, title, text)
             if hasattr(self, "log_edit"):
                 self.log(f"FEHLER: {title}: {text.replace(chr(10), ' ')}")
+
+        @staticmethod
+        def application_dark_mode(fallback: bool = False) -> bool:
+            """Ermittelt den aktiven Modus direkt aus der App-Palette."""
+            application = QApplication.instance()
+            if application is None:
+                return bool(fallback)
+            palette = application.palette()
+            background = palette.color(QPalette.Window)
+            foreground = palette.color(QPalette.WindowText)
+            return background.lightness() < foreground.lightness()
+
+        def show_chm_viewer(self) -> None:
+            if not QT_WEBENGINE_AVAILABLE:
+                self._show_message_box(
+                    QMessageBox.Warning,
+                    "CHM-Viewer nicht verfügbar",
+                    "Für den CHM-Viewer wird PyQtWebEngine benötigt.<br><br>"
+                    "Installation:<br>"
+                    "<code>py -m pip install PyQtWebEngine</code><br><br>"
+                    f"Technische Meldung: {html.escape(QT_WEBENGINE_ERROR)}",
+                    rich_text=True,
+                )
+                return
+
+            # Unmittelbar vor dem Oeffnen wird die tatsaechlich aktive
+            # Anwendungspalette abgefragt. Das ist verlaesslicher als ein
+            # moeglicherweise noch nicht synchronisiertes Umschalt-Flag.
+            dark_mode = self.application_dark_mode(
+                self.dark_mode_enabled
+            )
+
+            dialog = ChmViewerDialog(
+                self,
+                dark_mode=dark_mode,
+            )
+            # Noch vor CHM-Extraktion, erstem Seitenladen und exec_() wird die
+            # Web-Oberflaeche auf den zuvor ermittelten Modus festgelegt.
+            dialog.set_dark_mode(dark_mode)
+            last_file = str(
+                self.settings.value("chm/last_file", "") or ""
+            )
+            if last_file and Path(last_file).is_file():
+                dialog.open_chm(last_file)
+            else:
+                QTimer.singleShot(0, dialog.choose_chm)
+            dialog.exec_()
 
         def show_about_dialog(self) -> None:
             self._show_message_box(
@@ -9067,6 +10733,1090 @@ exec(
     _D64INFO_MODULE.__dict__,
 )
 del _d64info_types
+
+
+# ---------------------------------------------------------------------------
+# Integrierter MOS-6502/6510-Assembler
+# ---------------------------------------------------------------------------
+
+
+class AssemblerError(Exception):
+    """Quelltextfehler mit optionaler ASM-Zeilennummer."""
+
+    def __init__(self, message: str, line: Optional[int] = None):
+        self.message = str(message)
+        self.line = int(line) if line else None
+        super().__init__(self.message)
+
+    def __str__(self) -> str:
+        if self.line is None:
+            return self.message
+        return f"Zeile {self.line}: {self.message}"
+
+
+@dataclass(frozen=True)
+class AssemblerStatement:
+    line: int
+    source: str
+    label: str = ""
+    kind: str = "empty"
+    operation: str = ""
+    operand: str = ""
+
+
+@dataclass(frozen=True)
+class AssemblerLayoutItem:
+    statement: AssemblerStatement
+    address: int
+    size: int = 0
+    mode: str = ""
+
+
+@dataclass(frozen=True)
+class AssemblerLayout:
+    symbols: Dict[str, int]
+    items: Tuple[AssemblerLayoutItem, ...]
+    basic_mode: Optional[bool]
+
+
+@dataclass(frozen=True)
+class AssembledProgram:
+    prg: bytes
+    load_address: int
+    entry_address: int
+    end_address: int
+    instruction_count: int
+    has_basic_stub: bool
+    symbols: Dict[str, int]
+
+
+_ASSEMBLER_SYMBOL = r"[A-Za-z_.$][A-Za-z0-9_.$]*"
+_ASSEMBLER_BRANCHES = frozenset(
+    {"BCC", "BCS", "BEQ", "BMI", "BNE", "BPL", "BVC", "BVS"}
+)
+_ASSEMBLER_DIRECTIVE_ALIASES = {
+    "org": "org",
+    "entry": "entry",
+    "byte": "byte",
+    "db": "byte",
+    "word": "word",
+    "dw": "word",
+    "text": "text",
+    "ascii": "text",
+    "fill": "fill",
+    "nostub": "nostub",
+    "basic": "basic",
+}
+
+
+def _assembler_opcode_map() -> Dict[Tuple[str, str], int]:
+    """Verwendet dieselbe offizielle Opcode-Tabelle wie der Disassembler."""
+    return {
+        (mnemonic.upper(), mode): opcode
+        for opcode, (mnemonic, mode)
+        in _D64INFO_MODULE.MOS6510_OPCODES.items()
+    }
+
+
+def _assembler_mode_sizes() -> Dict[str, int]:
+    return dict(_D64INFO_MODULE.MOS6510_MODE_SIZE)
+
+
+def _strip_assembler_comment(line: str) -> str:
+    quote = ""
+    escaped = False
+    for index, character in enumerate(line):
+        if escaped:
+            escaped = False
+            continue
+        if character == "\\" and quote:
+            escaped = True
+            continue
+        if quote:
+            if character == quote:
+                quote = ""
+            continue
+        if character in {"'", '"'}:
+            quote = character
+            continue
+        if character == ";":
+            return line[:index]
+    return line
+
+
+def _split_assembler_arguments(text: str, line: int) -> List[str]:
+    if not text.strip():
+        return []
+    arguments: List[str] = []
+    start = 0
+    quote = ""
+    escaped = False
+    depth = 0
+    for index, character in enumerate(text):
+        if escaped:
+            escaped = False
+            continue
+        if character == "\\" and quote:
+            escaped = True
+            continue
+        if quote:
+            if character == quote:
+                quote = ""
+            continue
+        if character in {"'", '"'}:
+            quote = character
+            continue
+        if character == "(":
+            depth += 1
+        elif character == ")":
+            depth -= 1
+            if depth < 0:
+                raise AssemblerError("Unerwartete schließende Klammer.", line)
+        elif character == "," and depth == 0:
+            argument = text[start:index].strip()
+            if not argument:
+                raise AssemblerError("Leeres Direktivenargument.", line)
+            arguments.append(argument)
+            start = index + 1
+    if quote:
+        raise AssemblerError("Nicht abgeschlossene Zeichenkette.", line)
+    if depth:
+        raise AssemblerError("Nicht abgeschlossene Klammer.", line)
+    argument = text[start:].strip()
+    if not argument:
+        raise AssemblerError("Leeres Direktivenargument.", line)
+    arguments.append(argument)
+    return arguments
+
+
+def _assembler_string_bytes(text: str, line: int) -> Optional[bytes]:
+    stripped = text.strip()
+    if len(stripped) < 2 or stripped[0] not in {"'", '"'}:
+        return None
+    if stripped[-1] != stripped[0]:
+        raise AssemblerError("Nicht abgeschlossene Zeichenkette.", line)
+    try:
+        value = ast.literal_eval(stripped)
+    except (SyntaxError, ValueError) as exc:
+        raise AssemblerError("Ungültige Zeichenkette.", line) from exc
+    if not isinstance(value, str):
+        return None
+    result = bytearray()
+    for character in value:
+        codepoint = ord(character)
+        if codepoint > 0xFF:
+            raise AssemblerError(
+                f"Zeichen U+{codepoint:04X} passt nicht in ein Byte.",
+                line,
+            )
+        result.append(codepoint)
+    return bytes(result)
+
+
+def _parse_assembler_source(source: str) -> Tuple[AssemblerStatement, ...]:
+    statements: List[AssemblerStatement] = []
+    label_pattern = re.compile(
+        rf"^\s*(?P<label>{_ASSEMBLER_SYMBOL})\s*:\s*(?P<rest>.*)$"
+    )
+    equ_pattern = re.compile(
+        rf"^(?P<name>{_ASSEMBLER_SYMBOL})\s+(?:\.equ|equ)\s+"
+        rf"(?P<value>.+)$",
+        re.IGNORECASE,
+    )
+    assignment_pattern = re.compile(
+        rf"^(?P<name>{_ASSEMBLER_SYMBOL})\s*=\s*(?P<value>.+)$"
+    )
+
+    for line_number, original in enumerate(source.splitlines(), 1):
+        code = _strip_assembler_comment(original).strip()
+        if not code:
+            statements.append(AssemblerStatement(line_number, original))
+            continue
+
+        label = ""
+        match = label_pattern.match(code)
+        if match is not None:
+            label = match.group("label")
+            code = match.group("rest").strip()
+            if not code:
+                statements.append(
+                    AssemblerStatement(
+                        line_number,
+                        original,
+                        label=label,
+                    )
+                )
+                continue
+
+        if re.match(r"^\*\s*=", code):
+            operand = code.split("=", 1)[1].strip()
+            statements.append(
+                AssemblerStatement(
+                    line_number,
+                    original,
+                    label=label,
+                    kind="org",
+                    operation=".org",
+                    operand=operand,
+                )
+            )
+            continue
+
+        match = equ_pattern.match(code) or assignment_pattern.match(code)
+        if match is not None:
+            if label:
+                raise AssemblerError(
+                    "Eine Konstantendefinition darf nicht zusätzlich eine "
+                    "Marke besitzen.",
+                    line_number,
+                )
+            statements.append(
+                AssemblerStatement(
+                    line_number,
+                    original,
+                    kind="const",
+                    operation=match.group("name"),
+                    operand=match.group("value").strip(),
+                )
+            )
+            continue
+
+        parts = code.split(None, 1)
+        operation = parts[0]
+        operand = parts[1].strip() if len(parts) == 2 else ""
+        directive_name = operation.lstrip(".!").lower()
+        kind = _ASSEMBLER_DIRECTIVE_ALIASES.get(directive_name)
+        if directive_name == "equ":
+            arguments = _split_assembler_arguments(operand, line_number)
+            if len(arguments) != 2 or not re.fullmatch(
+                _ASSEMBLER_SYMBOL,
+                arguments[0],
+            ):
+                raise AssemblerError(
+                    ".equ erwartet '.equ NAME, Ausdruck'.",
+                    line_number,
+                )
+            statements.append(
+                AssemblerStatement(
+                    line_number,
+                    original,
+                    label=label,
+                    kind="const",
+                    operation=arguments[0],
+                    operand=arguments[1],
+                )
+            )
+            continue
+        if kind is not None:
+            statements.append(
+                AssemblerStatement(
+                    line_number,
+                    original,
+                    label=label,
+                    kind=kind,
+                    operation=operation,
+                    operand=operand,
+                )
+            )
+            continue
+
+        statements.append(
+            AssemblerStatement(
+                line_number,
+                original,
+                label=label,
+                kind="instruction",
+                operation=operation.upper(),
+                operand=operand,
+            )
+        )
+
+    return tuple(statements)
+
+
+def _tokenize_assembler_expression(
+    expression: str,
+    line: int,
+) -> List[Tuple[str, object]]:
+    tokens: List[Tuple[str, object]] = []
+    index = 0
+    length = len(expression)
+    while index < length:
+        character = expression[index]
+        if character.isspace():
+            index += 1
+            continue
+
+        if character == "$" and index + 1 < length and expression[index + 1] in "0123456789abcdefABCDEF":
+            end = index + 1
+            while end < length and expression[end] in "0123456789abcdefABCDEF":
+                end += 1
+            tokens.append(("number", int(expression[index + 1:end], 16)))
+            index = end
+            continue
+        if character == "%" and index + 1 < length and expression[index + 1] in "01":
+            end = index + 1
+            while end < length and expression[end] in "01":
+                end += 1
+            tokens.append(("number", int(expression[index + 1:end], 2)))
+            index = end
+            continue
+        if expression[index:index + 2].lower() in {"0x", "0b"}:
+            base = 16 if expression[index + 1].lower() == "x" else 2
+            valid = (
+                "0123456789abcdefABCDEF"
+                if base == 16
+                else "01"
+            )
+            end = index + 2
+            while end < length and expression[end] in valid:
+                end += 1
+            if end == index + 2:
+                raise AssemblerError("Ungültiger Zahlenwert.", line)
+            tokens.append(("number", int(expression[index + 2:end], base)))
+            index = end
+            continue
+        if character.isdigit():
+            end = index + 1
+            while end < length and expression[end].isdigit():
+                end += 1
+            tokens.append(("number", int(expression[index:end], 10)))
+            index = end
+            continue
+        if character in {"'", '"'}:
+            quote = character
+            end = index + 1
+            escaped = False
+            while end < length:
+                current = expression[end]
+                if escaped:
+                    escaped = False
+                elif current == "\\":
+                    escaped = True
+                elif current == quote:
+                    break
+                end += 1
+            if end >= length:
+                raise AssemblerError("Nicht abgeschlossenes Zeichenliteral.", line)
+            literal = expression[index:end + 1]
+            try:
+                value = ast.literal_eval(literal)
+            except (SyntaxError, ValueError) as exc:
+                raise AssemblerError("Ungültiges Zeichenliteral.", line) from exc
+            if not isinstance(value, str) or len(value) != 1:
+                raise AssemblerError(
+                    "In Ausdrücken ist genau ein Zeichen erlaubt.",
+                    line,
+                )
+            tokens.append(("number", ord(value)))
+            index = end + 1
+            continue
+        symbol_match = re.match(_ASSEMBLER_SYMBOL, expression[index:])
+        if symbol_match is not None:
+            symbol = symbol_match.group(0)
+            tokens.append(("symbol", symbol))
+            index += len(symbol)
+            continue
+        two_character = expression[index:index + 2]
+        if two_character in {"<<", ">>"}:
+            tokens.append(("operator", two_character))
+            index += 2
+            continue
+        if character in "+-*/&|^~()<>":
+            tokens.append(("operator", character))
+            index += 1
+            continue
+        raise AssemblerError(
+            f"Ungültiges Zeichen im Ausdruck: {character!r}.",
+            line,
+        )
+    tokens.append(("end", ""))
+    return tokens
+
+
+class _AssemblerExpressionParser:
+    PRECEDENCE = {
+        "|": 1,
+        "^": 2,
+        "&": 3,
+        "<<": 4,
+        ">>": 4,
+        "+": 5,
+        "-": 5,
+        "*": 6,
+        "/": 6,
+    }
+
+    def __init__(
+        self,
+        expression: str,
+        symbols: Dict[str, int],
+        pc: int,
+        line: int,
+    ):
+        self.tokens = _tokenize_assembler_expression(expression, line)
+        self.symbols = symbols
+        self.pc = pc
+        self.line = line
+        self.index = 0
+        self.unresolved: set[str] = set()
+
+    def _peek(self) -> Tuple[str, object]:
+        return self.tokens[self.index]
+
+    def _take(self) -> Tuple[str, object]:
+        token = self.tokens[self.index]
+        self.index += 1
+        return token
+
+    def parse(self) -> Tuple[int, set[str]]:
+        value = self._expression(0)
+        if self._peek()[0] != "end":
+            raise AssemblerError("Unerwarteter Ausdrucksteil.", self.line)
+        return value, self.unresolved
+
+    def _expression(self, minimum_precedence: int) -> int:
+        token_kind, token_value = self._take()
+        if token_kind == "number":
+            left = int(token_value)
+        elif token_kind == "symbol":
+            name = str(token_value).casefold()
+            if name in self.symbols:
+                left = int(self.symbols[name])
+            else:
+                self.unresolved.add(str(token_value))
+                left = 0
+        elif token_kind == "operator" and token_value == "(":
+            left = self._expression(0)
+            if self._take() != ("operator", ")"):
+                raise AssemblerError("Schließende Klammer fehlt.", self.line)
+        elif token_kind == "operator" and token_value in {"+", "-", "~", "<", ">"}:
+            right = self._expression(7)
+            if token_value == "+":
+                left = right
+            elif token_value == "-":
+                left = -right
+            elif token_value == "~":
+                left = ~right
+            elif token_value == "<":
+                left = right & 0xFF
+            else:
+                left = (right >> 8) & 0xFF
+        elif token_kind == "operator" and token_value == "*":
+            left = self.pc
+        else:
+            raise AssemblerError("Ausdruck erwartet.", self.line)
+
+        while True:
+            next_kind, next_value = self._peek()
+            if next_kind != "operator" or next_value not in self.PRECEDENCE:
+                break
+            precedence = self.PRECEDENCE[str(next_value)]
+            if precedence < minimum_precedence:
+                break
+            self._take()
+            right = self._expression(precedence + 1)
+            operator = str(next_value)
+            if operator == "+":
+                left += right
+            elif operator == "-":
+                left -= right
+            elif operator == "*":
+                left *= right
+            elif operator == "/":
+                if right == 0:
+                    raise AssemblerError("Division durch null.", self.line)
+                quotient = abs(left) // abs(right)
+                left = -quotient if (left < 0) != (right < 0) else quotient
+            elif operator == "<<":
+                if right < 0:
+                    raise AssemblerError("Negative Schiebeweite.", self.line)
+                left <<= right
+            elif operator == ">>":
+                if right < 0:
+                    raise AssemblerError("Negative Schiebeweite.", self.line)
+                left >>= right
+            elif operator == "&":
+                left &= right
+            elif operator == "^":
+                left ^= right
+            elif operator == "|":
+                left |= right
+        return left
+
+
+def _evaluate_assembler_expression(
+    expression: str,
+    symbols: Dict[str, int],
+    pc: int,
+    line: int,
+) -> Tuple[int, set[str]]:
+    if not expression.strip():
+        raise AssemblerError("Ausdruck erwartet.", line)
+    return _AssemblerExpressionParser(expression, symbols, pc, line).parse()
+
+
+def _assembler_operand_expression(mode: str, operand: str, line: int) -> str:
+    text = operand.strip()
+    if mode in {"imp", "acc"}:
+        return ""
+    if mode == "imm":
+        return text[1:].strip()
+    if mode == "izx":
+        match = re.fullmatch(r"\(\s*(.+?)\s*,\s*[Xx]\s*\)", text)
+    elif mode == "izy":
+        match = re.fullmatch(r"\(\s*(.+?)\s*\)\s*,\s*[Yy]", text)
+    elif mode == "ind":
+        match = re.fullmatch(r"\(\s*(.+?)\s*\)", text)
+    elif mode in {"zpx", "absx"}:
+        match = re.fullmatch(r"(.+?)\s*,\s*[Xx]", text)
+    elif mode in {"zpy", "absy"}:
+        match = re.fullmatch(r"(.+?)\s*,\s*[Yy]", text)
+    else:
+        return text
+    if match is None:
+        raise AssemblerError("Ungültige Operandenform.", line)
+    return match.group(1).strip()
+
+
+def _select_assembler_mode(
+    statement: AssemblerStatement,
+    pc: int,
+    symbols: Dict[str, int],
+    opcode_map: Dict[Tuple[str, str], int],
+    *,
+    final: bool,
+) -> str:
+    mnemonic = statement.operation.upper()
+    operand = statement.operand.strip()
+    available = {
+        mode
+        for candidate, mode in opcode_map
+        if candidate == mnemonic
+    }
+    if not available:
+        raise AssemblerError(
+            f"Unbekannter oder nicht unterstützter Opcode: {mnemonic}.",
+            statement.line,
+        )
+
+    if not operand:
+        if "imp" in available:
+            return "imp"
+        if "acc" in available:
+            return "acc"
+        raise AssemblerError(
+            f"{mnemonic} benötigt einen Operanden.",
+            statement.line,
+        )
+    if operand.upper() == "A" and "acc" in available:
+        return "acc"
+    if mnemonic in _ASSEMBLER_BRANCHES:
+        if "rel" not in available:
+            raise AssemblerError("Relativer Sprung nicht unterstützt.", statement.line)
+        return "rel"
+    if operand.startswith("#"):
+        if "imm" not in available:
+            raise AssemblerError(
+                f"{mnemonic} unterstützt keine unmittelbare Adressierung.",
+                statement.line,
+            )
+        return "imm"
+
+    explicit_modes = (
+        ("izx", r"\(\s*(.+?)\s*,\s*[Xx]\s*\)"),
+        ("izy", r"\(\s*(.+?)\s*\)\s*,\s*[Yy]"),
+        ("ind", r"\(\s*(.+?)\s*\)"),
+    )
+    for mode, pattern in explicit_modes:
+        if re.fullmatch(pattern, operand):
+            if mode not in available:
+                raise AssemblerError(
+                    f"{mnemonic} unterstützt den Adressierungsmodus "
+                    f"'{operand}' nicht.",
+                    statement.line,
+                )
+            return mode
+
+    index_match = re.fullmatch(r"(.+?)\s*,\s*([XxYy])", operand)
+    if index_match is not None:
+        expression = index_match.group(1).strip()
+        register = index_match.group(2).upper()
+        value, unresolved = _evaluate_assembler_expression(
+            expression,
+            symbols,
+            pc,
+            statement.line,
+        )
+        short_mode, long_mode = (
+            ("zpx", "absx") if register == "X" else ("zpy", "absy")
+        )
+    else:
+        value, unresolved = _evaluate_assembler_expression(
+            operand,
+            symbols,
+            pc,
+            statement.line,
+        )
+        short_mode, long_mode = "zp", "abs"
+
+    if final and unresolved:
+        names = ", ".join(sorted(unresolved, key=str.casefold))
+        raise AssemblerError(f"Unbekanntes Symbol: {names}.", statement.line)
+    if not unresolved and 0 <= value <= 0xFF and short_mode in available:
+        return short_mode
+    if long_mode in available:
+        return long_mode
+    if short_mode in available:
+        return short_mode
+    raise AssemblerError(
+        f"{mnemonic} unterstützt den Operanden '{operand}' nicht.",
+        statement.line,
+    )
+
+
+def _define_assembler_symbol(
+    symbols: Dict[str, int],
+    defined: set[str],
+    name: str,
+    value: int,
+    line: int,
+) -> None:
+    key = name.casefold()
+    if key in defined:
+        raise AssemblerError(f"Symbol mehrfach definiert: {name}.", line)
+    defined.add(key)
+    symbols[key] = int(value)
+
+
+def _assembler_directive_size(
+    statement: AssemblerStatement,
+    pc: int,
+    symbols: Dict[str, int],
+    *,
+    final: bool,
+) -> int:
+    arguments = _split_assembler_arguments(statement.operand, statement.line)
+    if statement.kind in {"byte", "text"}:
+        if not arguments:
+            raise AssemblerError("Mindestens ein Wert wird erwartet.", statement.line)
+        size = 0
+        for argument in arguments:
+            string_data = _assembler_string_bytes(argument, statement.line)
+            size += len(string_data) if string_data is not None else 1
+        return size
+    if statement.kind == "word":
+        if not arguments:
+            raise AssemblerError("Mindestens ein Wort wird erwartet.", statement.line)
+        for argument in arguments:
+            if _assembler_string_bytes(argument, statement.line) is not None:
+                raise AssemblerError(
+                    ".word akzeptiert keine Zeichenketten.",
+                    statement.line,
+                )
+        return len(arguments) * 2
+    if statement.kind == "fill":
+        if not 1 <= len(arguments) <= 2:
+            raise AssemblerError(
+                ".fill erwartet Anzahl und optional einen Bytewert.",
+                statement.line,
+            )
+        count, unresolved = _evaluate_assembler_expression(
+            arguments[0],
+            symbols,
+            pc,
+            statement.line,
+        )
+        if unresolved:
+            names = ", ".join(sorted(unresolved, key=str.casefold))
+            raise AssemblerError(
+                f"Die .fill-Anzahl muss bereits bekannt sein: {names}.",
+                statement.line,
+            )
+        if not 0 <= count <= 0x10000:
+            raise AssemblerError(
+                ".fill-Anzahl liegt außerhalb 0..65536.",
+                statement.line,
+            )
+        return count
+    raise AssertionError(statement.kind)
+
+
+def _layout_assembler(
+    statements: Tuple[AssemblerStatement, ...],
+    seed_symbols: Dict[str, int],
+    *,
+    final: bool,
+) -> AssemblerLayout:
+    opcode_map = _assembler_opcode_map()
+    mode_sizes = _assembler_mode_sizes()
+    symbols: Dict[str, int] = {}
+    defined: set[str] = set()
+    items: List[AssemblerLayoutItem] = []
+    pc = 0x080D
+    basic_mode: Optional[bool] = None
+
+    for statement in statements:
+        visible_symbols = dict(seed_symbols)
+        visible_symbols.update(symbols)
+        if statement.label:
+            _define_assembler_symbol(
+                symbols,
+                defined,
+                statement.label,
+                pc,
+                statement.line,
+            )
+            visible_symbols[statement.label.casefold()] = pc
+
+        address = pc
+        size = 0
+        mode = ""
+        if statement.kind == "const":
+            value, unresolved = _evaluate_assembler_expression(
+                statement.operand,
+                visible_symbols,
+                pc,
+                statement.line,
+            )
+            if final and unresolved:
+                names = ", ".join(sorted(unresolved, key=str.casefold))
+                raise AssemblerError(f"Unbekanntes Symbol: {names}.", statement.line)
+            key = statement.operation.casefold()
+            if unresolved and key in seed_symbols:
+                value = seed_symbols[key]
+            _define_assembler_symbol(
+                symbols,
+                defined,
+                statement.operation,
+                value,
+                statement.line,
+            )
+        elif statement.kind == "org":
+            value, unresolved = _evaluate_assembler_expression(
+                statement.operand,
+                visible_symbols,
+                pc,
+                statement.line,
+            )
+            if unresolved:
+                names = ", ".join(sorted(unresolved, key=str.casefold))
+                raise AssemblerError(
+                    f"Die .org-Adresse muss bereits bekannt sein: {names}.",
+                    statement.line,
+                )
+            if not 0 <= value <= 0xFFFF:
+                raise AssemblerError(
+                    ".org-Adresse liegt außerhalb $0000..$FFFF.",
+                    statement.line,
+                )
+            pc = value
+            address = pc
+        elif statement.kind == "entry":
+            if not statement.operand:
+                raise AssemblerError(".entry erwartet eine Adresse.", statement.line)
+        elif statement.kind == "nostub":
+            if statement.operand:
+                raise AssemblerError(".nostub hat keinen Operanden.", statement.line)
+            basic_mode = False
+        elif statement.kind == "basic":
+            if statement.operand:
+                raise AssemblerError(".basic hat keinen Operanden.", statement.line)
+            basic_mode = True
+        elif statement.kind in {"byte", "word", "text", "fill"}:
+            size = _assembler_directive_size(
+                statement,
+                pc,
+                visible_symbols,
+                final=final,
+            )
+        elif statement.kind == "instruction":
+            mode = _select_assembler_mode(
+                statement,
+                pc,
+                visible_symbols,
+                opcode_map,
+                final=final,
+            )
+            size = mode_sizes[mode]
+        elif statement.kind != "empty":
+            raise AssemblerError(
+                f"Unbekannte Direktive: {statement.operation}.",
+                statement.line,
+            )
+
+        items.append(AssemblerLayoutItem(statement, address, size, mode))
+        if size:
+            if pc + size > 0x10000:
+                raise AssemblerError(
+                    "Ausgabe überschreitet das Ende des C64-Adressraums.",
+                    statement.line,
+                )
+            pc += size
+
+    return AssemblerLayout(symbols, tuple(items), basic_mode)
+
+
+def _converged_assembler_layout(
+    statements: Tuple[AssemblerStatement, ...],
+) -> AssemblerLayout:
+    seed: Dict[str, int] = {}
+    previous_signature = None
+    for _iteration in range(16):
+        layout = _layout_assembler(statements, seed, final=False)
+        signature = tuple(
+            (item.address, item.size, item.mode)
+            for item in layout.items
+        )
+        if layout.symbols == seed and signature == previous_signature:
+            return _layout_assembler(statements, layout.symbols, final=True)
+        seed = dict(layout.symbols)
+        previous_signature = signature
+    raise AssemblerError(
+        "Symboladressen konnten nach 16 Durchläufen nicht stabilisiert werden."
+    )
+
+
+def _check_assembler_byte(value: int, line: int, description: str) -> int:
+    if not -128 <= value <= 0xFF:
+        raise AssemblerError(
+            f"{description} liegt außerhalb -128..255: {value}.",
+            line,
+        )
+    return value & 0xFF
+
+
+def _check_assembler_word(value: int, line: int, description: str) -> int:
+    if not -32768 <= value <= 0xFFFF:
+        raise AssemblerError(
+            f"{description} liegt außerhalb -32768..65535: {value}.",
+            line,
+        )
+    return value & 0xFFFF
+
+
+def _basic_sys_stub(entry_address: int) -> bytes:
+    digits = str(entry_address).encode("ascii")
+    next_line = 0x0801 + 2 + 2 + 1 + len(digits) + 1
+    return bytes(
+        (
+            next_line & 0xFF,
+            (next_line >> 8) & 0xFF,
+            10,
+            0,
+            0x9E,
+        )
+    ) + digits + b"\x00\x00\x00"
+
+
+def assemble_mos6510_source(
+    source: str,
+    *,
+    filename: str = "<ASM-Editor>",
+) -> AssembledProgram:
+    """Übersetzt offiziellen MOS-6502/6510-Quelltext in ein C64-PRG."""
+    del filename  # Der Anzeigename wird von der GUI geführt.
+    statements = _parse_assembler_source(source)
+    if not any(statement.kind != "empty" for statement in statements):
+        raise AssemblerError("Der Assemblerquelltext ist leer.")
+    layout = _converged_assembler_layout(statements)
+    opcode_map = _assembler_opcode_map()
+    memory: Dict[int, int] = {}
+    first_instruction: Optional[int] = None
+    instruction_count = 0
+
+    def write_byte(address: int, value: int, line: int) -> None:
+        if not 0 <= address <= 0xFFFF:
+            raise AssemblerError("Adresse außerhalb $0000..$FFFF.", line)
+        if address in memory:
+            raise AssemblerError(
+                f"Adresse ${address:04X} wird mehrfach beschrieben.",
+                line,
+            )
+        memory[address] = value & 0xFF
+
+    entry_address: Optional[int] = None
+    for item in layout.items:
+        statement = item.statement
+        symbols = layout.symbols
+        if statement.kind == "entry":
+            value, unresolved = _evaluate_assembler_expression(
+                statement.operand,
+                symbols,
+                item.address,
+                statement.line,
+            )
+            if unresolved:
+                names = ", ".join(sorted(unresolved, key=str.casefold))
+                raise AssemblerError(f"Unbekanntes Symbol: {names}.", statement.line)
+            if not 0 <= value <= 0xFFFF:
+                raise AssemblerError(
+                    ".entry-Adresse liegt außerhalb $0000..$FFFF.",
+                    statement.line,
+                )
+            entry_address = value
+            continue
+        if statement.kind in {"byte", "text"}:
+            address = item.address
+            for argument in _split_assembler_arguments(
+                statement.operand,
+                statement.line,
+            ):
+                string_data = _assembler_string_bytes(argument, statement.line)
+                if string_data is not None:
+                    for value in string_data:
+                        write_byte(address, value, statement.line)
+                        address += 1
+                    continue
+                value, unresolved = _evaluate_assembler_expression(
+                    argument,
+                    symbols,
+                    address,
+                    statement.line,
+                )
+                if unresolved:
+                    names = ", ".join(sorted(unresolved, key=str.casefold))
+                    raise AssemblerError(f"Unbekanntes Symbol: {names}.", statement.line)
+                write_byte(
+                    address,
+                    _check_assembler_byte(value, statement.line, "Bytewert"),
+                    statement.line,
+                )
+                address += 1
+            continue
+        if statement.kind == "word":
+            address = item.address
+            for argument in _split_assembler_arguments(
+                statement.operand,
+                statement.line,
+            ):
+                value, unresolved = _evaluate_assembler_expression(
+                    argument,
+                    symbols,
+                    address,
+                    statement.line,
+                )
+                if unresolved:
+                    names = ", ".join(sorted(unresolved, key=str.casefold))
+                    raise AssemblerError(f"Unbekanntes Symbol: {names}.", statement.line)
+                value = _check_assembler_word(value, statement.line, "Wortwert")
+                write_byte(address, value & 0xFF, statement.line)
+                write_byte(address + 1, value >> 8, statement.line)
+                address += 2
+            continue
+        if statement.kind == "fill":
+            arguments = _split_assembler_arguments(
+                statement.operand,
+                statement.line,
+            )
+            fill_value = 0
+            if len(arguments) == 2:
+                fill_value, unresolved = _evaluate_assembler_expression(
+                    arguments[1],
+                    symbols,
+                    item.address,
+                    statement.line,
+                )
+                if unresolved:
+                    names = ", ".join(sorted(unresolved, key=str.casefold))
+                    raise AssemblerError(f"Unbekanntes Symbol: {names}.", statement.line)
+                fill_value = _check_assembler_byte(
+                    fill_value,
+                    statement.line,
+                    "Füllbyte",
+                )
+            for offset in range(item.size):
+                write_byte(item.address + offset, fill_value, statement.line)
+            continue
+        if statement.kind != "instruction":
+            continue
+
+        instruction_count += 1
+        if first_instruction is None:
+            first_instruction = item.address
+        opcode = opcode_map[(statement.operation, item.mode)]
+        write_byte(item.address, opcode, statement.line)
+        if item.mode in {"imp", "acc"}:
+            continue
+
+        expression = _assembler_operand_expression(
+            item.mode,
+            statement.operand,
+            statement.line,
+        )
+        value, unresolved = _evaluate_assembler_expression(
+            expression,
+            layout.symbols,
+            item.address,
+            statement.line,
+        )
+        if unresolved:
+            names = ", ".join(sorted(unresolved, key=str.casefold))
+            raise AssemblerError(f"Unbekanntes Symbol: {names}.", statement.line)
+        if item.mode == "rel":
+            if not 0 <= value <= 0xFFFF:
+                raise AssemblerError("Sprungziel außerhalb des Adressraums.", statement.line)
+            displacement = (
+                (value - (item.address + 2) + 0x8000) & 0xFFFF
+            ) - 0x8000
+            if not -128 <= displacement <= 127:
+                raise AssemblerError(
+                    f"Relativer Sprung nach ${value:04X} ist außer Reichweite "
+                    f"({displacement:+d} Bytes).",
+                    statement.line,
+                )
+            write_byte(item.address + 1, displacement & 0xFF, statement.line)
+        elif item.mode in {"imm", "zp", "zpx", "zpy", "izx", "izy"}:
+            write_byte(
+                item.address + 1,
+                _check_assembler_byte(value, statement.line, "Operand"),
+                statement.line,
+            )
+        else:
+            value = _check_assembler_word(value, statement.line, "Adresse")
+            write_byte(item.address + 1, value & 0xFF, statement.line)
+            write_byte(item.address + 2, value >> 8, statement.line)
+
+    if not memory:
+        raise AssemblerError("Der Quelltext erzeugt keine Programmdaten.")
+    if entry_address is None:
+        entry_address = first_instruction
+    if entry_address is None:
+        entry_address = min(memory)
+
+    source_start = min(memory)
+    add_basic_stub = (
+        layout.basic_mode is True
+        or (layout.basic_mode is None and source_start >= 0x080D)
+    )
+    if add_basic_stub:
+        stub = _basic_sys_stub(entry_address)
+        for offset, value in enumerate(stub):
+            address = 0x0801 + offset
+            if address in memory:
+                directive = "Entferne .basic oder verwende .nostub."
+                raise AssemblerError(
+                    f"Der BASIC-SYS-Stub überschneidet Programmdaten bei "
+                    f"${address:04X}. {directive}"
+                )
+            memory[address] = value
+
+    load_address = min(memory)
+    end_address = max(memory)
+    payload = bytes(
+        memory.get(address, 0)
+        for address in range(load_address, end_address + 1)
+    )
+    prg = bytes((load_address & 0xFF, load_address >> 8)) + payload
+    return AssembledProgram(
+        prg=prg,
+        load_address=load_address,
+        entry_address=entry_address,
+        end_address=end_address,
+        instruction_count=instruction_count,
+        has_basic_stub=add_basic_stub,
+        symbols=dict(layout.symbols),
+    )
 
 def parse_arguments(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(

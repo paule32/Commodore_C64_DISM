@@ -1,0 +1,135 @@
+name: Build Linux executable
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  APP_SCRIPT: d64_dism.py
+  FONT_FILE: C64Pro.ttf
+  APP_NAME: d64_dism
+
+jobs:
+  build-linux:
+    name: Linux x86-64
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@v7
+
+      - name: Python einrichten
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+
+      - name: Eingabedateien pruefen
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "$APP_SCRIPT" || {
+            echo "Python-Datei fehlt: $APP_SCRIPT" >&2
+            exit 1
+          }
+          test -f "$FONT_FILE" || {
+            echo "Font-Datei fehlt: $FONT_FILE" >&2
+            exit 1
+          }
+
+      - name: Qt5-Systembibliotheken installieren
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libegl1 \
+            libgl1 \
+            libxtst6 \
+            libxcb-cursor0 \
+            libxcb-icccm4 \
+            libxcb-image0 \
+            libxcb-keysyms1 \
+            libxcb-render-util0 \
+            libxcb-xinerama0 \
+            libxcb-xkb1 \
+            libxkbcommon-x11-0
+
+      - name: Build-Abhaengigkeiten installieren
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install \
+            "PyInstaller==6.21.0" \
+            "PyQt5==5.15.11" \
+            "PyQtWebEngine==5.15.7"
+
+      - name: Python-Syntax pruefen
+        shell: bash
+        run: python -m py_compile "$APP_SCRIPT"
+
+      - name: Linux-Programm erzeugen
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m PyInstaller \
+            --noconfirm \
+            --clean \
+            --onefile \
+            --windowed \
+            --noupx \
+            --name "$APP_NAME" \
+            --add-data "$FONT_FILE:." \
+            --hidden-import argparse \
+            --hidden-import collections \
+            --hidden-import contextlib \
+            --hidden-import dataclasses \
+            --hidden-import hashlib \
+            --hidden-import io \
+            --hidden-import math \
+            --hidden-import os \
+            --hidden-import pathlib \
+            --hidden-import shutil \
+            --hidden-import socket \
+            --hidden-import struct \
+            --hidden-import subprocess \
+            --hidden-import sys \
+            --hidden-import time \
+            --hidden-import typing \
+            "$APP_SCRIPT"
+          chmod +x "dist/$APP_NAME"
+
+      - name: Linux-Programm kurz starten
+        shell: bash
+        run: |
+          set +e
+          QT_QPA_PLATFORM=offscreen timeout 8s "dist/$APP_NAME" \
+            > pyinstaller-smoke-test.log 2>&1
+          status=$?
+          set -e
+
+          if [ "$status" -ne 124 ]; then
+            cat pyinstaller-smoke-test.log
+            echo "Das Programm wurde unerwartet mit Exit-Code $status beendet." >&2
+            exit 1
+          fi
+
+      - name: Linux-Archiv erzeugen
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -C dist -czf d64_dism-linux-x86_64.tar.gz "$APP_NAME"
+
+      - name: Linux-Programm bereitstellen
+        uses: actions/upload-artifact@v7
+        with:
+          name: d64_dism-linux-x86_64
+          path: d64_dism-linux-x86_64.tar.gz
+          if-no-files-found: error
+          retention-days: 30
+          archive: false

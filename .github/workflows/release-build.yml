@@ -47,7 +47,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip wheel setuptools
           python -m pip install --upgrade pip
-          python -m pip install PyQt5 pyinstaller
+          python -m pip install PyQt5==5.15.11 pyinstaller PyQtWebEngine==5.15.7"
           python -m PyInstaller --version
 
       - name: Show tool versions
