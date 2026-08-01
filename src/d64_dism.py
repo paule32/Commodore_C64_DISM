@@ -11,8 +11,10 @@
 #  * integrierte Anzeige des C64-Verzeichnisses einer D64-Datei
 #  * zentraler Texteditor mit Dokument- und Unterregisterkarten
 #  * bytegenauer Hex-Editor mit 16-Bit-Offset, 4+4-Darstellung und C64-Pro-Schrift
+#  * PETSCII-Zeichenauswahl fuer das aktuelle Byte im Hex-Editor
 #  * Neu/Oeffnen/Speichern/Speichern unter mit sicherer Schliessabfrage
 #  * Syntax-Hervorhebung fuer 6502/6510-Assembler und Kommentare
+#  * Operanden-Rechner fuer Dezimal-, Hexadezimal- und Binaerwerte
 #  * Editor-Zoom sowie umschaltbarer Hell-/Dunkelmodus
 #
 # Installation:
@@ -30,6 +32,8 @@ import re
 import sys
 import tempfile
 from dataclasses import dataclass
+from decimal import Decimal, localcontext
+from fractions import Fraction
 from pathlib import Path
 from typing import Iterable, Optional, Sequence, Tuple
 
@@ -299,6 +303,8 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             QAction,
             QApplication,
             QButtonGroup,
+            QComboBox,
+            QDialog,
             QDockWidget,
             QFileDialog,
             QFileIconProvider,
@@ -315,6 +321,7 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             QMessageBox,
             QPlainTextEdit,
             QPushButton,
+            QScrollArea,
             QSizePolicy,
             QSplitter,
             QStyle,
@@ -641,6 +648,765 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
         )
     }
 
+    @dataclass(frozen=True)
+    class AssemblerOperandContext:
+        """Positionen des per Kontextmenue angeklickten ASM-Operanden."""
+
+        insert_position: int
+        replace_start: int
+        replace_end: int
+        original_value: str
+
+    class NumberCalculatorDialog(QDialog):
+        """Button-Rechner und Basisumrechner fuer ASM-Operanden."""
+
+        _memory_value: Optional[Fraction] = None
+
+        PRIORITY_ITEMS = (
+            ("Dezimal", "decimal"),
+            ("Hexadezimal", "hex"),
+            ("Binär", "binary"),
+        )
+        OPERATORS = ("+", "-", "*", "/")
+        OPERATOR_LABELS = {
+            "+": "+",
+            "-": "−",
+            "*": "×",
+            "/": "÷",
+        }
+        PRECEDENCE = {
+            "+": 1,
+            "-": 1,
+            "*": 2,
+            "/": 2,
+        }
+
+        def __init__(
+            self,
+            editor: "SourceTextEdit",
+            context: AssemblerOperandContext,
+        ):
+            super().__init__(editor)
+            self.editor = editor
+            self.context = context
+            self._result: Optional[Fraction] = None
+            self._tokens = []
+            self._just_evaluated = False
+            self._digit_buttons = {}
+
+            self.setObjectName("assembler_number_calculator")
+            self.setWindowTitle("Rechner für Assembler-Operand")
+            self.setWindowModality(Qt.WindowModal)
+            self.setMinimumWidth(620)
+
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(12, 12, 12, 12)
+            layout.setSpacing(9)
+
+            hint = QLabel(
+                "Die Eingabe erfolgt über die Zahlentasten. "
+                "Multiplikation und Division werden vor Addition und "
+                "Subtraktion ausgewertet.",
+                self,
+            )
+            hint.setWordWrap(True)
+            layout.addWidget(hint)
+
+            priority_layout = QHBoxLayout()
+            priority_layout.addWidget(QLabel("Priorität der Umrechnung", self))
+            self.priority_combo = self._make_combo(self.PRIORITY_ITEMS)
+            self.priority_combo.setObjectName("calculator_priority")
+            priority_layout.addWidget(self.priority_combo, 1)
+            layout.addLayout(priority_layout)
+
+            self.expression_display = QLineEdit(self)
+            self.expression_display.setObjectName("calculator_expression")
+            self.expression_display.setReadOnly(True)
+            self.expression_display.setAlignment(Qt.AlignRight)
+            expression_font = QFont(self.expression_display.font())
+            expression_font.setPointSize(
+                max(12, expression_font.pointSize() + 3)
+            )
+            expression_font.setBold(True)
+            self.expression_display.setFont(expression_font)
+            layout.addWidget(self.expression_display)
+
+            keypad = QGridLayout()
+            keypad.setHorizontalSpacing(6)
+            keypad.setVerticalSpacing(6)
+            for digit, row, column in (
+                ("7", 0, 0), ("8", 0, 1), ("9", 0, 2),
+                ("4", 1, 0), ("5", 1, 1), ("6", 1, 2),
+                ("1", 2, 0), ("2", 2, 1), ("3", 2, 2),
+                ("0", 3, 0),
+                ("A", 0, 4), ("B", 0, 5),
+                ("C", 1, 4), ("D", 1, 5),
+                ("E", 2, 4), ("F", 2, 5),
+            ):
+                button = QPushButton(digit, self)
+                button.setObjectName(f"calculator_digit_{digit}")
+                button.setMinimumHeight(36)
+                button.clicked.connect(
+                    lambda checked=False, value=digit:
+                    self._append_digit(value)
+                )
+                if digit == "0":
+                    keypad.addWidget(button, row, column, 1, 3)
+                else:
+                    keypad.addWidget(button, row, column)
+                self._digit_buttons[digit] = button
+
+            for operator_name, row in (
+                ("/", 0),
+                ("*", 1),
+                ("-", 2),
+                ("+", 3),
+            ):
+                button = QPushButton(
+                    self.OPERATOR_LABELS[operator_name],
+                    self,
+                )
+                button.setObjectName(
+                    "calculator_operator_" + {
+                        "/": "divide",
+                        "*": "multiply",
+                        "-": "subtract",
+                        "+": "add",
+                    }[operator_name]
+                )
+                button.setMinimumHeight(36)
+                button.clicked.connect(
+                    lambda checked=False, value=operator_name:
+                    self._append_operator(value)
+                )
+                keypad.addWidget(button, row, 3)
+
+            self.backspace_button = QPushButton("←", self)
+            self.backspace_button.setObjectName("calculator_backspace")
+            self.backspace_button.setToolTip("Letzte Eingabe löschen")
+            self.backspace_button.clicked.connect(self._backspace)
+            keypad.addWidget(self.backspace_button, 3, 4)
+
+            self.clear_button = QPushButton("Löschen", self)
+            self.clear_button.setObjectName("calculator_clear")
+            self.clear_button.setToolTip("Ausdruck und Ergebnis löschen")
+            self.clear_button.clicked.connect(self._clear)
+            keypad.addWidget(self.clear_button, 3, 5)
+
+            self.equals_button = QPushButton("=", self)
+            self.equals_button.setObjectName("calculator_equals")
+            self.equals_button.setMinimumHeight(38)
+            self.equals_button.setDefault(True)
+            self.equals_button.clicked.connect(self._calculate_clicked)
+            keypad.addWidget(self.equals_button, 4, 0, 1, 6)
+            layout.addLayout(keypad)
+
+            result_layout = QGridLayout()
+            result_layout.setHorizontalSpacing(8)
+            result_layout.setVerticalSpacing(6)
+            self.result_copy_buttons = {}
+            self.result_insert_buttons = {}
+            self.decimal_result = self._add_result_row(
+                result_layout,
+                0,
+                "Dezimal",
+                "decimal",
+            )
+            self.hex_result = self._add_result_row(
+                result_layout,
+                1,
+                "Hexadezimal",
+                "hex",
+            )
+            self.binary_result = self._add_result_row(
+                result_layout,
+                2,
+                "Binär",
+                "binary",
+            )
+            layout.addLayout(result_layout)
+
+            memory_layout = QHBoxLayout()
+            self.memory_label = QLabel(self)
+            self.memory_label.setObjectName("calculator_memory_label")
+            memory_layout.addWidget(self.memory_label, 1)
+            self.store_button = QPushButton("Speichern", self)
+            self.recall_button = QPushButton("Abrufen", self)
+            memory_layout.addWidget(self.store_button)
+            memory_layout.addWidget(self.recall_button)
+            layout.addLayout(memory_layout)
+
+            self.error_label = QLabel(self)
+            self.error_label.setObjectName("calculator_error")
+            self.error_label.setWordWrap(True)
+            self.error_label.setStyleSheet("color: #c02020; font-weight: bold;")
+            layout.addWidget(self.error_label)
+
+            button_layout = QHBoxLayout()
+            self.calculate_button = QPushButton("Berechnen", self)
+            self.change_button = QPushButton("Ändern", self)
+            self.close_button = QPushButton("Schließen", self)
+            button_layout.addWidget(self.calculate_button)
+            button_layout.addStretch(1)
+            button_layout.addWidget(self.change_button)
+            button_layout.addWidget(self.close_button)
+            layout.addLayout(button_layout)
+
+            self.priority_combo.currentIndexChanged.connect(
+                self._priority_changed
+            )
+            self.calculate_button.clicked.connect(self._calculate_clicked)
+            self.change_button.clicked.connect(
+                lambda checked=False: self._write_to_editor(replace=True)
+            )
+            self.store_button.clicked.connect(self._store_result)
+            self.recall_button.clicked.connect(self._recall_result)
+            self.close_button.clicked.connect(self.reject)
+
+            original = context.original_value.strip()
+            if original:
+                self._select_detected_base(self.priority_combo, original)
+                self._tokens = [self._strip_number_prefix(original)]
+            else:
+                self._tokens = ["0"]
+
+            self._refresh_expression_display()
+            self._update_digit_buttons()
+            self._refresh_memory_label()
+            self._update_result(silent=True)
+
+        def _make_combo(self, items) -> QComboBox:
+            combo = QComboBox(self)
+            for label, item_data in items:
+                combo.addItem(label, item_data)
+            return combo
+
+        def _add_result_row(
+            self,
+            layout: QGridLayout,
+            row: int,
+            label: str,
+            base_name: str,
+        ) -> QLineEdit:
+            layout.addWidget(QLabel(label, self), row, 0)
+            result = QLineEdit(self)
+            result.setReadOnly(True)
+            result.setObjectName("calculator_result")
+            result.setAlignment(Qt.AlignRight)
+            layout.addWidget(result, row, 1)
+
+            copy_button = QPushButton("Kopieren", self)
+            copy_button.setObjectName(
+                f"calculator_copy_{base_name}"
+            )
+            copy_button.clicked.connect(
+                lambda checked=False, selected_base=base_name:
+                self._copy_result(selected_base)
+            )
+            layout.addWidget(copy_button, row, 2)
+
+            insert_button = QPushButton("Einfügen", self)
+            insert_button.setObjectName(
+                f"calculator_insert_{base_name}"
+            )
+            insert_button.clicked.connect(
+                lambda checked=False, selected_base=base_name:
+                self._write_to_editor(
+                    replace=False,
+                    base_name=selected_base,
+                )
+            )
+            layout.addWidget(insert_button, row, 3)
+
+            self.result_copy_buttons[base_name] = copy_button
+            self.result_insert_buttons[base_name] = insert_button
+            return result
+
+        @staticmethod
+        def _select_detected_base(combo: QComboBox, text: str) -> None:
+            value = text.strip().lstrip("#").lstrip("+-")
+            if value.startswith("$") or value.lower().startswith("0x"):
+                combo.setCurrentIndex(combo.findData("hex"))
+            elif value.startswith("%") or value.lower().startswith("0b"):
+                combo.setCurrentIndex(combo.findData("binary"))
+            else:
+                combo.setCurrentIndex(combo.findData("decimal"))
+
+        @staticmethod
+        def _strip_number_prefix(text: str) -> str:
+            value = text.strip()
+            if value.startswith("#"):
+                value = value[1:].strip()
+            sign = ""
+            if value.startswith(("+", "-")):
+                sign, value = value[0], value[1:]
+            if value.startswith("$") or value.startswith("%"):
+                value = value[1:]
+            elif value.lower().startswith(("0x", "0b")):
+                value = value[2:]
+            return sign + value.upper()
+
+        @staticmethod
+        def _parse_integer(text: str, base_name: str) -> int:
+            value = text.strip().replace("_", "")
+            if value.startswith("#"):
+                value = value[1:].strip()
+            if not value:
+                raise ValueError("Bitte einen Zahlenwert eingeben.")
+
+            sign = 1
+            if value[0] in "+-":
+                if value[0] == "-":
+                    sign = -1
+                value = value[1:]
+            if not value:
+                raise ValueError("Der Zahlenwert ist unvollständig.")
+
+            if base_name == "hex":
+                if value.startswith("$"):
+                    value = value[1:]
+                elif value.lower().startswith("0x"):
+                    value = value[2:]
+                if value.lower().endswith("h"):
+                    value = value[:-1]
+                digits = r"[0-9A-Fa-f]+"
+                radix = 16
+                base_label = "Hexadezimalzahl"
+            elif base_name == "binary":
+                if value.startswith("%"):
+                    value = value[1:]
+                elif value.lower().startswith("0b"):
+                    value = value[2:]
+                digits = r"[01]+"
+                radix = 2
+                base_label = "Binärzahl"
+            else:
+                digits = r"[0-9]+"
+                radix = 10
+                base_label = "Dezimalzahl"
+
+            if re.fullmatch(digits, value or "") is None:
+                raise ValueError(f"Ungültige {base_label}: {text}")
+            return sign * int(value, radix)
+
+        @staticmethod
+        def _decimal_text(value: Fraction) -> str:
+            if value.denominator == 1:
+                return str(value.numerator)
+            with localcontext() as context:
+                context.prec = 32
+                decimal_value = (
+                    Decimal(value.numerator) / Decimal(value.denominator)
+                )
+            text = format(decimal_value, "f")
+            if "." in text:
+                text = text.rstrip("0").rstrip(".")
+            return text
+
+        @staticmethod
+        def _integer_text(
+            value: Fraction,
+            base_name: str,
+            *,
+            original: str = "",
+            preserve_width: bool = False,
+        ) -> Optional[str]:
+            if value.denominator != 1:
+                return None
+            integer = value.numerator
+            sign = "-" if integer < 0 else ""
+            magnitude = abs(integer)
+
+            original_body = original.strip().lstrip("#").lstrip("+-")
+            if base_name == "hex":
+                digits = format(magnitude, "X")
+                prefix = "$"
+                width = 0
+                if preserve_width:
+                    if original_body.startswith("$"):
+                        width = len(original_body) - 1
+                    elif original_body.lower().startswith("0x"):
+                        width = len(original_body) - 2
+                        prefix = original_body[:2]
+                if width:
+                    digits = digits.rjust(width, "0")
+                return sign + prefix + digits
+
+            if base_name == "binary":
+                digits = format(magnitude, "b")
+                prefix = "%"
+                width = 0
+                if preserve_width:
+                    if original_body.startswith("%"):
+                        width = len(original_body) - 1
+                    elif original_body.lower().startswith("0b"):
+                        width = len(original_body) - 2
+                        prefix = original_body[:2]
+                if width:
+                    digits = digits.rjust(width, "0")
+                return sign + prefix + digits
+
+            return str(integer)
+
+        def _priority_base(self) -> str:
+            return str(self.priority_combo.currentData())
+
+        @classmethod
+        def _is_operator(cls, token) -> bool:
+            return isinstance(token, str) and token in cls.OPERATORS
+
+        def _token_display(self, token) -> str:
+            if self._is_operator(token):
+                return self.OPERATOR_LABELS[token]
+            if isinstance(token, Fraction):
+                if token.denominator != 1:
+                    return self._decimal_text(token)
+                text = self._integer_text(token, self._priority_base())
+                if text is None:
+                    return self._decimal_text(token)
+                return self._strip_number_prefix(text)
+            return str(token)
+
+        def _refresh_expression_display(self) -> None:
+            self.expression_display.setText(
+                " ".join(self._token_display(token) for token in self._tokens)
+            )
+
+        def _digit_allowed(self, digit: str) -> bool:
+            base_name = self._priority_base()
+            if base_name == "binary":
+                return digit in "01"
+            if base_name == "decimal":
+                return digit in "0123456789"
+            return digit in "0123456789ABCDEF"
+
+        def _update_digit_buttons(self) -> None:
+            for digit, button in self._digit_buttons.items():
+                button.setEnabled(self._digit_allowed(digit))
+
+        def _append_digit(self, digit: str) -> None:
+            digit = digit.upper()
+            if not self._digit_allowed(digit):
+                self.error_label.setText(
+                    f"{digit} ist in dieser Zahlenbasis nicht zulässig."
+                )
+                return
+
+            if self._just_evaluated:
+                self._tokens = []
+                self._just_evaluated = False
+
+            if not self._tokens or self._is_operator(self._tokens[-1]):
+                self._tokens.append(digit)
+            elif isinstance(self._tokens[-1], Fraction):
+                self._tokens = [digit]
+            else:
+                current = str(self._tokens[-1])
+                if current == "0":
+                    current = ""
+                self._tokens[-1] = current + digit
+
+            self._refresh_expression_display()
+            self._update_result(silent=True)
+
+        def _append_operator(self, operator_name: str) -> None:
+            if operator_name not in self.OPERATORS:
+                return
+            if not self._tokens:
+                self.error_label.setText("Zuerst einen Zahlenwert eingeben.")
+                return
+
+            if self._just_evaluated and self._result is not None:
+                self._tokens = [self._result]
+                self._just_evaluated = False
+
+            if self._is_operator(self._tokens[-1]):
+                self._tokens[-1] = operator_name
+            else:
+                self._tokens.append(operator_name)
+            self.error_label.clear()
+            self._refresh_expression_display()
+            self._set_action_state()
+
+        def _backspace(self, *_args) -> None:
+            if not self._tokens:
+                return
+            self._just_evaluated = False
+            last = self._tokens[-1]
+            if self._is_operator(last) or isinstance(last, Fraction):
+                self._tokens.pop()
+            else:
+                shortened = str(last)[:-1]
+                if shortened and shortened not in ("+", "-"):
+                    self._tokens[-1] = shortened
+                else:
+                    self._tokens.pop()
+            if not self._tokens:
+                self._tokens = ["0"]
+            self._refresh_expression_display()
+            self._update_result(silent=True)
+
+        def _clear(self, *_args) -> None:
+            self._tokens = ["0"]
+            self._result = Fraction(0, 1)
+            self._just_evaluated = False
+            self.error_label.clear()
+            self._refresh_expression_display()
+            self._show_result()
+
+        def _infix_to_rpn(self):
+            if not self._tokens or self._is_operator(self._tokens[-1]):
+                raise ValueError("Der Rechenausdruck ist unvollständig.")
+
+            output = []
+            operators = []
+            expect_number = True
+            base_name = self._priority_base()
+            for token in self._tokens:
+                if expect_number:
+                    if self._is_operator(token):
+                        raise ValueError("Zwei Operatoren folgen aufeinander.")
+                    if isinstance(token, Fraction):
+                        output.append(token)
+                    else:
+                        output.append(
+                            Fraction(
+                                self._parse_integer(str(token), base_name),
+                                1,
+                            )
+                        )
+                    expect_number = False
+                    continue
+
+                if not self._is_operator(token):
+                    raise ValueError("Zwischen zwei Werten fehlt ein Operator.")
+                while (
+                    operators
+                    and self.PRECEDENCE[operators[-1]]
+                    >= self.PRECEDENCE[token]
+                ):
+                    output.append(operators.pop())
+                operators.append(token)
+                expect_number = True
+
+            if expect_number:
+                raise ValueError("Der Rechenausdruck ist unvollständig.")
+            while operators:
+                output.append(operators.pop())
+            return output
+
+        @classmethod
+        def _evaluate_rpn(cls, rpn_tokens) -> Fraction:
+            stack = []
+            for token in rpn_tokens:
+                if not cls._is_operator(token):
+                    stack.append(Fraction(token))
+                    continue
+                if len(stack) < 2:
+                    raise ValueError("Der Rechenausdruck ist unvollständig.")
+                right = stack.pop()
+                left = stack.pop()
+                if token == "+":
+                    stack.append(left + right)
+                elif token == "-":
+                    stack.append(left - right)
+                elif token == "*":
+                    stack.append(left * right)
+                else:
+                    if right == 0:
+                        raise ValueError("Division durch 0 ist nicht zulässig.")
+                    stack.append(left / right)
+            if len(stack) != 1:
+                raise ValueError("Der Rechenausdruck ist ungültig.")
+            return stack[0]
+
+        def _calculate(self) -> Fraction:
+            return self._evaluate_rpn(self._infix_to_rpn())
+
+        def _set_action_state(self) -> None:
+            valid = self._result is not None
+            for base_name, button in self.result_copy_buttons.items():
+                available = self._result_text(base_name) is not None
+                button.setEnabled(valid and available)
+            for base_name, button in self.result_insert_buttons.items():
+                available = self._result_text(base_name) is not None
+                button.setEnabled(
+                    valid and available and not self.editor.isReadOnly()
+                )
+            selected_available = self._selected_result_text() is not None
+            self.change_button.setEnabled(
+                valid and selected_available and not self.editor.isReadOnly()
+            )
+            self.store_button.setEnabled(valid)
+            self.recall_button.setEnabled(self._memory_value is not None)
+
+        def _show_result(self) -> None:
+            if self._result is None:
+                self.decimal_result.clear()
+                self.hex_result.clear()
+                self.binary_result.clear()
+                self._set_action_state()
+                return
+            self.decimal_result.setText(self._decimal_text(self._result))
+            hex_text = self._integer_text(self._result, "hex")
+            binary_text = self._integer_text(self._result, "binary")
+            self.hex_result.setText(
+                hex_text if hex_text is not None else "nicht ganzzahlig"
+            )
+            self.binary_result.setText(
+                binary_text if binary_text is not None else "nicht ganzzahlig"
+            )
+            self._set_action_state()
+
+        def _update_result(self, *, silent: bool) -> bool:
+            try:
+                self._result = self._calculate()
+            except ValueError as exc:
+                self._result = None
+                self._show_result()
+                self.error_label.setText("" if silent else str(exc))
+                return False
+            self.error_label.clear()
+            self._show_result()
+            return True
+
+        def _priority_changed(self, *_args) -> None:
+            self._update_digit_buttons()
+            self._refresh_expression_display()
+            self._update_result(silent=True)
+
+        def _calculate_clicked(self, *_args) -> None:
+            if self._update_result(silent=False):
+                self._just_evaluated = True
+
+        def _selected_result_text(
+            self,
+            *,
+            for_editor: bool = False,
+        ) -> Optional[str]:
+            return self._result_text(
+                self._priority_base(),
+                for_editor=for_editor,
+            )
+
+        def _result_text(
+            self,
+            base_name: str,
+            *,
+            for_editor: bool = False,
+        ) -> Optional[str]:
+            if self._result is None:
+                return None
+            if base_name == "decimal":
+                return self._decimal_text(self._result)
+            return self._integer_text(
+                self._result,
+                base_name,
+                original=(
+                    self.context.original_value if for_editor else ""
+                ),
+                preserve_width=for_editor,
+            )
+
+        def _copy_result(
+            self,
+            base_name: Optional[str] = None,
+            *_args,
+        ) -> None:
+            selected_base = base_name or self._priority_base()
+            text = self._result_text(selected_base)
+            if text is None:
+                self.error_label.setText(
+                    "Hexadezimal und Binär benötigen ein ganzzahliges Ergebnis."
+                )
+                return
+            QApplication.clipboard().setText(text)
+            self.error_label.setText(f"Ergebnis kopiert: {text}")
+
+        def _write_to_editor(
+            self,
+            *,
+            replace: bool,
+            base_name: Optional[str] = None,
+        ) -> None:
+            selected_base = base_name or self._priority_base()
+            text = self._result_text(
+                selected_base,
+                for_editor=replace,
+            )
+            if text is None:
+                self.error_label.setText(
+                    "Dieses Ausgabeformat benötigt ein ganzzahliges Ergebnis."
+                )
+                return
+
+            cursor = QTextCursor(self.editor.document())
+            if replace:
+                cursor.setPosition(self.context.replace_start)
+                cursor.setPosition(
+                    self.context.replace_end,
+                    QTextCursor.KeepAnchor,
+                )
+            else:
+                cursor.setPosition(self.context.insert_position)
+
+            cursor.beginEditBlock()
+            cursor.insertText(text)
+            cursor.endEditBlock()
+            self.editor.setTextCursor(cursor)
+            self.editor.ensureCursorVisible()
+            self.editor.setFocus(Qt.OtherFocusReason)
+            self.accept()
+
+        def _store_result(self, *_args) -> None:
+            if self._result is None and not self._update_result(silent=False):
+                return
+            type(self)._memory_value = self._result
+            self._refresh_memory_label()
+            self._set_action_state()
+
+        def _recall_result(self, *_args) -> None:
+            if self._memory_value is None:
+                return
+            self._tokens = [self._memory_value]
+            self._result = self._memory_value
+            self._just_evaluated = True
+            self.error_label.clear()
+            self._refresh_expression_display()
+            self._show_result()
+
+        def _refresh_memory_label(self) -> None:
+            if self._memory_value is None:
+                self.memory_label.setText("Speicher: leer")
+            else:
+                self.memory_label.setText(
+                    "Speicher: " + self._decimal_text(self._memory_value)
+                )
+
+        def keyPressEvent(self, event) -> None:
+            text = event.text().upper()
+            if text in "0123456789ABCDEF":
+                self._append_digit(text)
+                event.accept()
+                return
+            if text in self.OPERATORS:
+                self._append_operator(text)
+                event.accept()
+                return
+            if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+                self._calculate_clicked()
+                event.accept()
+                return
+            if event.key() == Qt.Key_Backspace:
+                self._backspace()
+                event.accept()
+                return
+            if event.key() == Qt.Key_Delete:
+                self._clear()
+                event.accept()
+                return
+            super().keyPressEvent(event)
+
     class SourceTextEdit(QPlainTextEdit):
         """Quelltexteditor mit Gutter und intelligenter Assemblerhilfe."""
 
@@ -767,6 +1533,101 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             self.setFocus(Qt.MouseFocusReason)
             self.viewport().setCursor(Qt.IBeamCursor)
             return True
+
+        def _assembler_operand_context_at_point(self, point):
+            """Ermittelt den editierbaren Hauptwert rechts vom Mnemonic."""
+            if (
+                not self._assembler_navigation_enabled
+                or self.isReadOnly()
+            ):
+                return None
+
+            cursor = self.cursorForPosition(point)
+            block = cursor.block()
+            block_text = block.text()
+            position = cursor.positionInBlock()
+            code = block_text.split(";", 1)[0]
+            match = re.match(
+                r"^\s*(?:[A-Za-z_.$][A-Za-z0-9_.$]*\s*:\s*)?"
+                r"(?P<opcode>[A-Za-z]{3})(?P<spacing>\s+)"
+                r"(?P<operand>.*?)\s*$",
+                code,
+            )
+            if (
+                match is None
+                or match.group("opcode").upper() not in ASSEMBLER_COMMANDS
+            ):
+                return None
+
+            operand_start, operand_end = match.span("operand")
+            while (
+                operand_start < operand_end
+                and code[operand_start].isspace()
+            ):
+                operand_start += 1
+            while (
+                operand_end > operand_start
+                and code[operand_end - 1].isspace()
+            ):
+                operand_end -= 1
+            if operand_start >= operand_end:
+                return None
+
+            # cursorForPosition() kann die Position direkt hinter dem
+            # angeklickten Zeichen liefern; deshalb wird auch das rechte Ende
+            # des Operanden als Treffer akzeptiert.
+            if not (
+                operand_start <= position < operand_end
+                or operand_start < position <= operand_end
+            ):
+                return None
+
+            operand = code[operand_start:operand_end]
+            primary = re.match(
+                r"\s*[#(]*\s*(?P<value>"
+                r"[+-]?(?:\$[0-9A-Fa-f]+|%[01]+|"
+                r"0[xX][0-9A-Fa-f]+|0[bB][01]+|[0-9]+)"
+                r"|[A-Za-z_.$][A-Za-z0-9_.$]*"
+                r")",
+                operand,
+            )
+            if primary is None:
+                replace_start = operand_start
+                replace_end = operand_end
+                original_value = ""
+            else:
+                local_start, local_end = primary.span("value")
+                replace_start = operand_start + local_start
+                replace_end = operand_start + local_end
+                candidate = primary.group("value")
+                original_value = (
+                    candidate
+                    if re.fullmatch(
+                        r"[+-]?(?:\$[0-9A-Fa-f]+|%[01]+|"
+                        r"0[xX][0-9A-Fa-f]+|0[bB][01]+|[0-9]+)",
+                        candidate,
+                    )
+                    else ""
+                )
+
+            block_position = block.position()
+            return AssemblerOperandContext(
+                insert_position=block_position + max(
+                    operand_start,
+                    min(position, operand_end),
+                ),
+                replace_start=block_position + replace_start,
+                replace_end=block_position + replace_end,
+                original_value=original_value,
+            )
+
+        def _open_operand_calculator(
+            self,
+            context: AssemblerOperandContext,
+        ) -> None:
+            self._hide_completion()
+            dialog = NumberCalculatorDialog(self, context)
+            dialog.exec_()
 
         def _schedule_completion_update(self) -> None:
             QTimer.singleShot(0, self._update_completion)
@@ -984,6 +1845,21 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
                     return
             super().mousePressEvent(event)
 
+        def contextMenuEvent(self, event) -> None:
+            operand_context = self._assembler_operand_context_at_point(
+                event.pos()
+            )
+            menu = self.createStandardContextMenu()
+            if operand_context is not None:
+                menu.addSeparator()
+                calculator_action = menu.addAction("Rechner für Operand...")
+                calculator_action.triggered.connect(
+                    lambda checked=False, value=operand_context:
+                    self._open_operand_calculator(value)
+                )
+            menu.exec_(event.globalPos())
+            menu.deleteLater()
+
         def leaveEvent(self, event) -> None:
             self.viewport().setCursor(Qt.IBeamCursor)
             super().leaveEvent(event)
@@ -1078,6 +1954,132 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
                 self.line_number_area.width() - 1,
                 event.rect().bottom(),
             )
+
+    class PetsciiCharacterDialog(QDialog):
+        """Waehlt eines der 255 PETSCII-Zeichen fuer ein Hex-Editor-Byte."""
+
+        byteSelected = pyqtSignal(int)
+
+        def __init__(
+            self,
+            parent: QWidget,
+            *,
+            byte_index: int,
+            current_value: int,
+            font_family: str,
+            point_size: int,
+        ):
+            super().__init__(parent)
+            self.setObjectName("petscii_character_dialog")
+            self.setWindowTitle("PETSCII-Zeichen auswählen")
+            self.setModal(True)
+            self.resize(720, 690)
+
+            dialog_layout = QVBoxLayout(self)
+            dialog_layout.setContentsMargins(12, 12, 12, 12)
+            dialog_layout.setSpacing(8)
+
+            heading = QLabel(
+                f"PETSCII-Zeichen für Byte an Offset ${byte_index & 0xFFFF:04X}",
+                self,
+            )
+            heading.setObjectName("petscii_dialog_heading")
+            dialog_layout.addWidget(heading)
+
+            explanation = QLabel(
+                "Ein Klick ersetzt das Byte sofort in der Hex- und "
+                "Zeichenansicht. $00 ist NUL und daher kein Zeichenbutton.",
+                self,
+            )
+            explanation.setWordWrap(True)
+            dialog_layout.addWidget(explanation)
+
+            scroll_area = QScrollArea(self)
+            scroll_area.setObjectName("petscii_character_scroll_area")
+            scroll_area.setWidgetResizable(True)
+            scroll_area.setFrameShape(QFrame.StyledPanel)
+
+            table_widget = QWidget(scroll_area)
+            table_widget.setObjectName("petscii_character_table")
+            table_layout = QGridLayout(table_widget)
+            table_layout.setContentsMargins(8, 8, 8, 8)
+            table_layout.setHorizontalSpacing(4)
+            table_layout.setVerticalSpacing(4)
+
+            corner_label = QLabel("HEX", table_widget)
+            corner_label.setAlignment(Qt.AlignCenter)
+            table_layout.addWidget(corner_label, 0, 0)
+
+            for nibble in range(0x10):
+                column_label = QLabel(f"{nibble:X}", table_widget)
+                column_label.setAlignment(Qt.AlignCenter)
+                table_layout.addWidget(column_label, 0, nibble + 1)
+
+                row_label = QLabel(f"{nibble:X}", table_widget)
+                row_label.setAlignment(Qt.AlignCenter)
+                table_layout.addWidget(row_label, nibble + 1, 0)
+
+            glyph_font = QFont(font_family, max(11, int(point_size) + 2))
+            glyph_font.setFixedPitch(True)
+            glyph_font.setStyleHint(QFont.Monospace)
+
+            self.button_group = QButtonGroup(self)
+            self.button_group.setExclusive(True)
+            self.character_buttons = {}
+
+            for byte_value in range(0x01, 0x100):
+                high_nibble = byte_value >> 4
+                low_nibble = byte_value & 0x0F
+                button = QPushButton(
+                    C64_PRO_PETSCII_GLYPHS[byte_value],
+                    table_widget,
+                )
+                button.setObjectName(f"petscii_byte_{byte_value:02X}")
+                button.setProperty("byteValue", byte_value)
+                button.setAccessibleName(
+                    f"PETSCII-Byte ${byte_value:02X}"
+                )
+                button.setToolTip(
+                    f"PETSCII ${byte_value:02X} "
+                    f"(dezimal {byte_value})"
+                )
+                button.setFont(glyph_font)
+                button.setCheckable(True)
+                button.setFixedSize(35, 35)
+                button.clicked.connect(
+                    lambda checked=False, value=byte_value:
+                    self._select_byte(value)
+                )
+                self.button_group.addButton(button, byte_value)
+                self.character_buttons[byte_value] = button
+                table_layout.addWidget(
+                    button,
+                    high_nibble + 1,
+                    low_nibble + 1,
+                )
+
+            selected_button = self.character_buttons.get(current_value)
+            if selected_button is not None:
+                selected_button.setChecked(True)
+                QTimer.singleShot(
+                    0,
+                    lambda button=selected_button:
+                    scroll_area.ensureWidgetVisible(button, 20, 20),
+                )
+
+            scroll_area.setWidget(table_widget)
+            dialog_layout.addWidget(scroll_area, 1)
+
+            footer_layout = QHBoxLayout()
+            footer_layout.addStretch(1)
+            close_button = QPushButton("Schließen", self)
+            close_button.setObjectName("petscii_dialog_close_button")
+            close_button.clicked.connect(self.accept)
+            footer_layout.addWidget(close_button)
+            dialog_layout.addLayout(footer_layout)
+
+        def _select_byte(self, byte_value: int) -> None:
+            self.byteSelected.emit(int(byte_value) & 0xFF)
 
     class HexEditor(QAbstractScrollArea):
         """Byteorientierter Hex-Editor mit acht Bytes pro Zeile."""
@@ -1371,7 +2373,7 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
                 left_x,
                 _separator_x,
                 right_x,
-                _character_x,
+                character_x,
                 _content_width,
             ) = self._font_geometry()
             x = position.x() + self.horizontalScrollBar().value()
@@ -1389,13 +2391,19 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
                 candidate = local // byte_cell_width
                 if local % byte_cell_width < character_width * 2:
                     column = self.BYTES_PER_GROUP + candidate
+            elif (
+                character_x
+                <= x
+                < character_x + self.BYTES_PER_ROW * character_width
+            ):
+                column = (x - character_x) // character_width
 
             if column is None:
                 return None
             index = row * self.BYTES_PER_ROW + int(column)
-            if not self._data:
-                return 0 if index == 0 else None
-            return min(index, len(self._data) - 1)
+            if not self._data or index < 0 or index >= len(self._data):
+                return None
+            return index
 
         def _place_cursor_from_mouse(self, position, *, extend: bool) -> bool:
             index = self._index_at_position(position)
@@ -1527,13 +2535,54 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             self.viewport().update()
             self.dataChanged.emit()
 
+        def _replace_byte(self, index: int, byte_value: int) -> None:
+            """Ersetzt genau ein Byte und synchronisiert beide Ansichten."""
+            if index < 0 or index >= len(self._data):
+                return
+
+            byte_value = int(byte_value) & 0xFF
+            changed = self._data[index] != byte_value
+            self._data[index] = byte_value
+            self._cursor_index = index
+            self._active_nibble = 0
+            self._selection_anchor = index
+            self._selection_end = index
+            self._ensure_cursor_visible()
+            self.viewport().update()
+
+            if changed:
+                self._set_modified(True)
+                self.dataChanged.emit()
+
+        def _open_petscii_dialog(self, byte_index: int) -> None:
+            if byte_index < 0 or byte_index >= len(self._data):
+                return
+
+            dialog = PetsciiCharacterDialog(
+                self,
+                byte_index=byte_index,
+                current_value=self._data[byte_index],
+                font_family=self.C64_FONT_FAMILY,
+                point_size=self.font().pointSize(),
+            )
+            dialog.byteSelected.connect(
+                lambda value, index=byte_index:
+                self._replace_byte(index, value)
+            )
+            dialog.exec_()
+
         def contextMenuEvent(self, event) -> None:
             menu = QMenu(self)
             selection_exists = self._selection_range() is not None
+            byte_index = self._index_at_position(event.pos())
 
             copy_action = menu.addAction("Kopieren")
             cut_action = menu.addAction("Ausschneiden")
             paste_action = menu.addAction("Einfügen")
+            menu.addSeparator()
+            petscii_action = menu.addAction(
+                "PETSCII-Zeichen auswählen..."
+            )
             menu.addSeparator()
             save_action = menu.addAction("Speichern")
             save_as_action = menu.addAction("Speichern unter...")
@@ -1547,10 +2596,16 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
                     )
                 )
             )
+            petscii_action.setEnabled(byte_index is not None)
 
             copy_action.triggered.connect(self.copy_selection)
             cut_action.triggered.connect(self.cut_selection)
             paste_action.triggered.connect(self.paste_bytes)
+            if byte_index is not None:
+                petscii_action.triggered.connect(
+                    lambda checked=False, index=byte_index:
+                    self._open_petscii_dialog(index)
+                )
             save_action.triggered.connect(
                 lambda checked=False: self.saveRequested.emit(False)
             )
@@ -2622,203 +3677,203 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
 
         def _dark_application_stylesheet(self) -> str:
             stylesheet = """
-QToolTip {
-color: #ffffff;
-background-color: #2d3746;
-border: 1px solid #64748b;
-padding: 3px;
-}
-QMenuBar, QMenu, QToolBar, QStatusBar {
-background-color: #202630;
-color: #ebeef2;
-}
-QMenuBar::item:selected, QMenu::item:selected {
-background-color: #2a69aa;
-color: #ffffff;
-}
-QMenu::separator {
-height: 1px;
-background: #536072;
-margin: 4px 8px;
-}
-QToolBar {
-border: 1px solid #465164;
-spacing: 3px;
-}
-QDockWidget::title {
-background-color: #293241;
-color: #ebeef2;
-padding: 5px;
-text-align: left;
-}
-QTabWidget::pane {
-border: 1px solid #536072;
-}
-QTabBar::tab {
-background-color: #293241;
-color: #dfe4ea;
-border: 1px solid #536072;
-padding: 6px 10px;
-}
-QTabBar::tab:selected {
-background-color: #3a485d;
-color: #ffffff;
-}
-QTabBar::tab:hover:!selected {
-background-color: #333e4f;
-}
-QMainWindow::separator, QSplitter::handle {
-background-color: #536072;
-}
+                QToolTip {
+                    color: #ffffff;
+                    background-color: #2d3746;
+                    border: 1px solid #64748b;
+                    padding: 3px;
+                }
+                QMenuBar, QMenu, QToolBar, QStatusBar {
+                    background-color: #202630;
+                    color: #ebeef2;
+                }
+                QMenuBar::item:selected, QMenu::item:selected {
+                    background-color: #2a69aa;
+                    color: #ffffff;
+                }
+                QMenu::separator {
+                    height: 1px;
+                    background: #536072;
+                    margin: 4px 8px;
+                }
+                QToolBar {
+                    border: 1px solid #465164;
+                    spacing: 3px;
+                }
+                QDockWidget::title {
+                    background-color: #293241;
+                    color: #ebeef2;
+                    padding: 5px;
+                    text-align: left;
+                }
+                QTabWidget::pane {
+                    border: 1px solid #536072;
+                }
+                QTabBar::tab {
+                    background-color: #293241;
+                    color: #dfe4ea;
+                    border: 1px solid #536072;
+                    padding: 6px 10px;
+                }
+                QTabBar::tab:selected {
+                    background-color: #3a485d;
+                    color: #ffffff;
+                }
+                QTabBar::tab:hover:!selected {
+                    background-color: #333e4f;
+                }
+                QMainWindow::separator, QSplitter::handle {
+                    background-color: #536072;
+                }
 
-QPushButton {
-color: #f0f2f5;
-background-color: #343e4d;
-border: 1px solid #596779;
-border-radius: 3px;
-padding: 4px 8px;
-}
-QPushButton:hover {
-background-color: #414d5f;
-border-color: #718198;
-}
-QPushButton:pressed {
-background-color: #27313e;
-border-color: #455164;
-}
-QPushButton:checked {
-background-color: #245b91;
-border-color: #4f91cf;
-color: #ffffff;
-}
-QPushButton:disabled {
-background-color: #292f39;
-border-color: #3e4653;
-color: #7d8490;
-}
+                QPushButton {
+                    color: #f0f2f5;
+                    background-color: #343e4d;
+                    border: 1px solid #596779;
+                    border-radius: 3px;
+                    padding: 4px 8px;
+                }
+                QPushButton:hover {
+                    background-color: #414d5f;
+                    border-color: #718198;
+                }
+                QPushButton:pressed {
+                    background-color: #27313e;
+                    border-color: #455164;
+                }
+                QPushButton:checked {
+                    background-color: #245b91;
+                    border-color: #4f91cf;
+                    color: #ffffff;
+                }
+                QPushButton:disabled {
+                    background-color: #292f39;
+                    border-color: #3e4653;
+                    color: #7d8490;
+                }
 
-QLineEdit, QAbstractSpinBox, QComboBox {
-color: #ebeef2;
-background-color: #161b23;
-selection-background-color: #2a69aa;
-selection-color: #ffffff;
-border: 1px solid #536072;
-border-radius: 2px;
-padding: 3px 5px;
-}
-QLineEdit:focus, QAbstractSpinBox:focus, QComboBox:focus {
-border-color: #4f91cf;
-}
-QLineEdit:disabled, QAbstractSpinBox:disabled,
-QComboBox:disabled {
-color: #7d8490;
-background-color: #202630;
-}
-QComboBox QAbstractItemView {
-color: #ebeef2;
-background-color: #161b23;
-selection-background-color: #2a69aa;
-selection-color: #ffffff;
-}
+                QLineEdit, QAbstractSpinBox, QComboBox {
+                    color: #ebeef2;
+                    background-color: #161b23;
+                    selection-background-color: #2a69aa;
+                    selection-color: #ffffff;
+                    border: 1px solid #536072;
+                    border-radius: 2px;
+                    padding: 3px 5px;
+                }
+                QLineEdit:focus, QAbstractSpinBox:focus, QComboBox:focus {
+                    border-color: #4f91cf;
+                }
+                QLineEdit:disabled, QAbstractSpinBox:disabled,
+                QComboBox:disabled {
+                    color: #7d8490;
+                    background-color: #202630;
+                }
+                QComboBox QAbstractItemView {
+                    color: #ebeef2;
+                    background-color: #161b23;
+                    selection-background-color: #2a69aa;
+                    selection-color: #ffffff;
+                }
 
-QScrollBar:vertical {
-width: 14px;
-margin: 14px 0 14px 0;
-background: #000080;
-border: 0;
-}
-QScrollBar::handle:vertical {
-min-height: 24px;
-background: #244a9b;
-border: 1px solid #5878ba;
-border-radius: 2px;
-}
-QScrollBar::handle:vertical:hover {
-background: #315bb0;
-}
-QScrollBar::add-line:vertical,
-QScrollBar::sub-line:vertical {
-width: 14px;
-height: 14px;
-background: #10185f;
-border: 1px solid #33458d;
-}
-QScrollBar::sub-line:vertical {
-subcontrol-position: top;
-subcontrol-origin: margin;
-}
-QScrollBar::add-line:vertical {
-subcontrol-position: bottom;
-subcontrol-origin: margin;
-}
-QScrollBar::add-page:vertical,
-QScrollBar::sub-page:vertical {
-background: #000080;
-}
+                QScrollBar:vertical {
+                    width: 14px;
+                    margin: 14px 0 14px 0;
+                    background: #000080;
+                    border: 0;
+                }
+                QScrollBar::handle:vertical {
+                    min-height: 24px;
+                    background: #244a9b;
+                    border: 1px solid #5878ba;
+                    border-radius: 2px;
+                }
+                QScrollBar::handle:vertical:hover {
+                    background: #315bb0;
+                }
+                QScrollBar::add-line:vertical,
+                QScrollBar::sub-line:vertical {
+                    width: 14px;
+                    height: 14px;
+                    background: #10185f;
+                    border: 1px solid #33458d;
+                }
+                QScrollBar::sub-line:vertical {
+                    subcontrol-position: top;
+                    subcontrol-origin: margin;
+                }
+                QScrollBar::add-line:vertical {
+                    subcontrol-position: bottom;
+                    subcontrol-origin: margin;
+                }
+                QScrollBar::add-page:vertical,
+                QScrollBar::sub-page:vertical {
+                    background: #000080;
+                }
 
-QScrollBar:horizontal {
-height: 14px;
-margin: 0 14px 0 14px;
-background: #000080;
-border: 0;
-}
-QScrollBar::handle:horizontal {
-min-width: 24px;
-background: #244a9b;
-border: 1px solid #5878ba;
-border-radius: 2px;
-}
-QScrollBar::handle:horizontal:hover {
-background: #315bb0;
-}
-QScrollBar::add-line:horizontal,
-QScrollBar::sub-line:horizontal {
-width: 14px;
-height: 14px;
-background: #10185f;
-border: 1px solid #33458d;
-}
-QScrollBar::sub-line:horizontal {
-subcontrol-position: left;
-subcontrol-origin: margin;
-}
-QScrollBar::add-line:horizontal {
-subcontrol-position: right;
-subcontrol-origin: margin;
-}
-QScrollBar::add-page:horizontal,
-QScrollBar::sub-page:horizontal {
-background: #000080;
-}
-QScrollBar::corner {
-background: #000080;
-}
-"""
+                QScrollBar:horizontal {
+                    height: 14px;
+                    margin: 0 14px 0 14px;
+                    background: #000080;
+                    border: 0;
+                }
+                QScrollBar::handle:horizontal {
+                    min-width: 24px;
+                    background: #244a9b;
+                    border: 1px solid #5878ba;
+                    border-radius: 2px;
+                }
+                QScrollBar::handle:horizontal:hover {
+                    background: #315bb0;
+                }
+                QScrollBar::add-line:horizontal,
+                QScrollBar::sub-line:horizontal {
+                    width: 14px;
+                    height: 14px;
+                    background: #10185f;
+                    border: 1px solid #33458d;
+                }
+                QScrollBar::sub-line:horizontal {
+                    subcontrol-position: left;
+                    subcontrol-origin: margin;
+                }
+                QScrollBar::add-line:horizontal {
+                    subcontrol-position: right;
+                    subcontrol-origin: margin;
+                }
+                QScrollBar::add-page:horizontal,
+                QScrollBar::sub-page:horizontal {
+                    background: #000080;
+                }
+                QScrollBar::corner {
+                    background: #000080;
+                }
+            """
 
             arrows = self.scrollbar_arrow_assets
             if len(arrows) == 4:
                 stylesheet += """
-QScrollBar::up-arrow:vertical {
-image: url("%(up)s");
-width: 14px;
-height: 14px;
-}
-QScrollBar::down-arrow:vertical {
-image: url("%(down)s");
-width: 14px;
-height: 14px;
-}
-QScrollBar::left-arrow:horizontal {
-image: url("%(left)s");
-width: 14px;
-height: 14px;
-}
-QScrollBar::right-arrow:horizontal {
-image: url("%(right)s");
-width: 14px;
-height: 14px;
-}
-""" % arrows
+                    QScrollBar::up-arrow:vertical {
+                        image: url("%(up)s");
+                        width: 14px;
+                        height: 14px;
+                    }
+                    QScrollBar::down-arrow:vertical {
+                        image: url("%(down)s");
+                        width: 14px;
+                        height: 14px;
+                    }
+                    QScrollBar::left-arrow:horizontal {
+                        image: url("%(left)s");
+                        width: 14px;
+                        height: 14px;
+                    }
+                    QScrollBar::right-arrow:horizontal {
+                        image: url("%(right)s");
+                        width: 14px;
+                        height: 14px;
+                    }
+                """ % arrows
 
             return stylesheet
 
@@ -2843,62 +3898,62 @@ height: 14px;
             """Erzwingt lesbare Dialogfarben unabhaengig vom Windows-Stil."""
             if self.dark_mode_enabled:
                 return """
-QMessageBox {
-color: #ffffff;
-background-color: #202630;
-}
-QMessageBox QLabel {
-color: #ffffff;
-background-color: transparent;
-}
-QMessageBox QPushButton {
-min-width: 78px;
-color: #ffffff;
-background-color: #343e4d;
-border: 1px solid #596779;
-border-radius: 3px;
-padding: 5px 10px;
-}
-QMessageBox QPushButton:hover {
-background-color: #414d5f;
-border-color: #718198;
-}
-QMessageBox QPushButton:pressed {
-background-color: #27313e;
-}
-QMessageBox QPushButton:default {
-border: 2px solid #4f91cf;
-}
-"""
+                    QMessageBox {
+                        color: #ffffff;
+                        background-color: #202630;
+                    }
+                    QMessageBox QLabel {
+                        color: #ffffff;
+                        background-color: transparent;
+                    }
+                    QMessageBox QPushButton {
+                        min-width: 78px;
+                        color: #ffffff;
+                        background-color: #343e4d;
+                        border: 1px solid #596779;
+                        border-radius: 3px;
+                        padding: 5px 10px;
+                    }
+                    QMessageBox QPushButton:hover {
+                        background-color: #414d5f;
+                        border-color: #718198;
+                    }
+                    QMessageBox QPushButton:pressed {
+                        background-color: #27313e;
+                    }
+                    QMessageBox QPushButton:default {
+                        border: 2px solid #4f91cf;
+                    }
+                """
 
             return """
-QMessageBox {
-color: #000000;
-background-color: #f0f0f0;
-}
-QMessageBox QLabel {
-color: #000000;
-background-color: transparent;
-}
-QMessageBox QPushButton {
-min-width: 78px;
-color: #000000;
-background-color: #f5f5f5;
-border: 1px solid #9b9b9b;
-border-radius: 3px;
-padding: 5px 10px;
-}
-QMessageBox QPushButton:hover {
-background-color: #e4f1fb;
-border-color: #5b9bd5;
-}
-QMessageBox QPushButton:pressed {
-background-color: #d5e8f6;
-}
-QMessageBox QPushButton:default {
-border: 2px solid #2a69aa;
-}
-"""
+                QMessageBox {
+                    color: #000000;
+                    background-color: #f0f0f0;
+                }
+                QMessageBox QLabel {
+                    color: #000000;
+                    background-color: transparent;
+                }
+                QMessageBox QPushButton {
+                    min-width: 78px;
+                    color: #000000;
+                    background-color: #f5f5f5;
+                    border: 1px solid #9b9b9b;
+                    border-radius: 3px;
+                    padding: 5px 10px;
+                }
+                QMessageBox QPushButton:hover {
+                    background-color: #e4f1fb;
+                    border-color: #5b9bd5;
+                }
+                QMessageBox QPushButton:pressed {
+                    background-color: #d5e8f6;
+                }
+                QMessageBox QPushButton:default {
+                    border: 2px solid #2a69aa;
+                }
+            """
 
         def _create_message_box(
             self,
