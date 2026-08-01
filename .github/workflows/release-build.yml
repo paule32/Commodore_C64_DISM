@@ -24,6 +24,7 @@ permissions:
 
 env:
   REQUIREMENTS_FILE: requirements.txt
+  APP_NAME: c64_dism
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
@@ -67,7 +68,7 @@ jobs:
               "pyinstaller",
               "--noconfirm",
               "--clean",
-              "--name", os.environ["APP_NAME"],
+              "--name", "c64_dism",
               "--add-data", "src/C64Pro.ttf:."
               "--paths", "src",
           ]
@@ -78,7 +79,7 @@ jobs:
           else:
               args.append("--onedir")
 
-          args.append(os.environ["APP_ENTRY"])
+          args.append("c64_dism.py")
 
           print("Running:", " ".join(args))
           subprocess.run(args, check=True)
@@ -86,6 +87,6 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@v6
         with:
-          name: ${{ env.APP_NAME }}-${{ inputs.build_mode }}-${{ inputs.os_label }}
+          name: c64_dism-${{ inputs.build_mode }}-${{ inputs.os_label }}
           path: |
-            dist/${{ env.APP_NAME }}*
+            dist/c64_dism.exe
