@@ -19,18 +19,6 @@ on:
         required: true
         default: "3.14"
         type: string
-      java_version:
-        required: true
-        default: "17"
-        type: string
-      antlr_tool_version:
-        required: true
-        default: "4.13.2"
-        type: string
-      antlr_runtime_version:
-        required: true
-        default: "4.13.2"
-        type: string
 
   workflow_call:
     inputs:
@@ -41,15 +29,6 @@ on:
         required: true
         type: string
       python_version:
-        required: true
-        type: string
-      java_version:
-        required: true
-        type: string
-      antlr_tool_version:
-        required: true
-        type: string
-      antlr_runtime_version:
         required: true
         type: string
 
@@ -103,7 +82,7 @@ jobs:
     with:
       tag: ${{ inputs.tag }}
       build_mode: onefile
-      language: Python
+      language: python
       runner_os: ${{ matrix.runner_os }}
       os_label: ${{ matrix.os_label }}
       python_version: ${{ inputs.python_version }}
