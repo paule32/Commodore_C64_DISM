@@ -13,7 +13,13 @@ programUnit
     ;
 
 block
-    : constSection? varSection? compoundStatement
+    : declarationSection* methodImplementation* compoundStatement
+    ;
+
+declarationSection
+    : constSection
+    | typeSection
+    | varSection
     ;
 
 constSection
@@ -22,6 +28,87 @@ constSection
 
 constDefinition
     : IDENTIFIER EQ expression SEMI
+    ;
+
+typeSection
+    : TYPE typeDefinition+
+    ;
+
+typeDefinition
+    : IDENTIFIER EQ typeSpecification SEMI
+    ;
+
+typeSpecification
+    : typeIdentifier
+    | enumType
+    | recordType
+    | arrayType
+    | classType
+    ;
+
+enumType
+    : LPAREN identifierList RPAREN
+    ;
+
+recordType
+    : RECORD fieldDeclaration* END
+    ;
+
+arrayType
+    : ARRAY LBRACK expression DOTDOT expression RBRACK OF typeIdentifier
+    ;
+
+classType
+    : CLASS (LPAREN typeIdentifier RPAREN)? classMember* END
+    ;
+
+classMember
+    : visibilitySpecifier
+    | fieldDeclaration
+    | methodDeclaration
+    ;
+
+visibilitySpecifier
+    : PRIVATE
+    | PROTECTED
+    | PUBLIC
+    | PUBLISHED
+    ;
+
+fieldDeclaration
+    : identifierList COLON typeIdentifier SEMI
+    ;
+
+methodDeclaration
+    : routineKind IDENTIFIER formalParameters? (COLON typeIdentifier)? SEMI
+    ;
+
+methodImplementation
+    : routineKind IDENTIFIER DOT IDENTIFIER formalParameters?
+      (COLON typeIdentifier)? SEMI routineBlock SEMI
+    ;
+
+routineKind
+    : PROCEDURE
+    | FUNCTION
+    | CONSTRUCTOR
+    | DESTRUCTOR
+    ;
+
+formalParameters
+    : LPAREN formalParameterList? RPAREN
+    ;
+
+formalParameterList
+    : formalParameterGroup (SEMI formalParameterGroup)*
+    ;
+
+formalParameterGroup
+    : (CONST | VAR)? identifierList COLON typeIdentifier
+    ;
+
+routineBlock
+    : varSection? compoundStatement
     ;
 
 varSection
@@ -41,6 +128,7 @@ typeIdentifier
     | BYTE_TYPE
     | CHAR_TYPE
     | BOOLEAN_TYPE
+    | IDENTIFIER
     ;
 
 compoundStatement
@@ -64,11 +152,11 @@ statement
     ;
 
 assignmentStatement
-    : IDENTIFIER ASSIGN expression
+    : designator ASSIGN expression
     ;
 
 callStatement
-    : IDENTIFIER (LPAREN argumentList? RPAREN)?
+    : designator (LPAREN argumentList? RPAREN)?
     ;
 
 ifStatement
@@ -85,6 +173,15 @@ repeatStatement
 
 forStatement
     : FOR IDENTIFIER ASSIGN expression (TO | DOWNTO) expression DO statement
+    ;
+
+designator
+    : IDENTIFIER designatorSuffix*
+    ;
+
+designatorSuffix
+    : DOT IDENTIFIER
+    | LBRACK expression RBRACK
     ;
 
 argumentList
@@ -125,8 +222,8 @@ primaryExpression
     | STRING_LITERAL
     | TRUE
     | FALSE
-    | IDENTIFIER LPAREN argumentList? RPAREN
-    | IDENTIFIER
+    | designator LPAREN argumentList? RPAREN
+    | designator
     | LPAREN expression RPAREN
     ;
 
@@ -135,4 +232,3 @@ integerLiteral
     | BINARY_INTEGER
     | DECIMAL_INTEGER
     ;
-

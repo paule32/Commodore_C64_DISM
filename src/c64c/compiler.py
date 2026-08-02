@@ -947,6 +947,8 @@ class _CCodeGenerator(_CodeGenerator):
         self.emitter.emit(".basic")
         self.emitter.emit()
         self.emitter.emit("__c_start:", source_line)
+        self.emitter.emit("    lda #$0E", source_line)
+        self.emitter.emit("    jsr $FFD2", source_line)
         for variable, initializer in self.initializers:
             result_type = self._compile_expr(initializer)
             if result_type == STRING_TYPE:

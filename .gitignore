@@ -1,0 +1,6 @@
+/src/1
+/src/2
+*.pyc
+/src/build
+src/dist/d64_dism.zip
+src/dist/d64_dism.exe

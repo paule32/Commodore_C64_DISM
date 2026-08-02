@@ -24,8 +24,8 @@
 #    py -m pip install PyQt5 PyQtWebEngine antlr4-python3-runtime==4.13.2
 #
 # Start:
-#    py d64_dism.py
-#    py d64_dism.py "T:/C64/Images"
+#    py qt5_d64_explorer.py
+#    py qt5_d64_explorer.py "T:/C64/Images"
 # ---------------------------------------------------------------------------
 from __future__ import annotations
 
@@ -686,9 +686,11 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
         )
         PASCAL_KEYWORD_PATTERN = re.compile(
             r"(?<![A-Za-z0-9_])(?:"
-            r"program|const|var|begin|end|if|then|else|while|do|"
+            r"program|const|type|var|begin|end|if|then|else|while|do|"
             r"repeat|until|for|to|downto|break|continue|integer|"
-            r"byte|char|boolean|true|false|div|mod|and|or|xor|not"
+            r"byte|char|boolean|true|false|div|mod|and|or|xor|not|"
+            r"record|array|of|class|private|protected|public|published|"
+            r"procedure|function|constructor|destructor"
             r")(?![A-Za-z0-9_])",
             re.IGNORECASE,
         )
@@ -3169,6 +3171,8 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
         modification_changed = pyqtSignal(bool)
         assemble_requested = pyqtSignal(object)
         start_requested = pyqtSignal(object)
+        assemble_generated_requested = pyqtSignal(object)
+        start_generated_requested = pyqtSignal(object)
 
         ASSEMBLER_EXTENSIONS = {".asm", ".s", ".a65", ".inc"}
         PASCAL_EXTENSIONS    = {".pas", ".pp"}
@@ -3200,6 +3204,10 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             self.assembled_program       = None
             self.assembled_program_path: Optional[Path] = None
             self.assembled_source_digest = ""
+            self.assembled_assembly_digest = ""
+            self.assembled_input_kind = ""
+            self.generated_assembly_path: Optional[Path] = None
+            self._syncing_generated_assembly = False
 
             layout = QVBoxLayout(self)
             layout.setContentsMargins(0, 0, 0, 0)
@@ -3287,7 +3295,116 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             self.raw_editor.set_assembler_navigation_highlighter(
                 self.syntax_highlighter
             )
-            self.update_syntax_highlighting()
+
+            self.generated_assembly_page = QWidget(self.views)
+            generated_assembly_layout = QVBoxLayout(
+                self.generated_assembly_page
+            )
+            generated_assembly_layout.setContentsMargins(0, 0, 0, 0)
+            generated_assembly_layout.setSpacing(0)
+
+            self.generated_assembly_panel = QFrame(
+                self.generated_assembly_page
+            )
+            self.generated_assembly_panel.setObjectName(
+                "generated_assembler_action_panel"
+            )
+            self.generated_assembly_panel.setFrameShape(QFrame.StyledPanel)
+            generated_assembly_panel_layout = QHBoxLayout(
+                self.generated_assembly_panel
+            )
+            generated_assembly_panel_layout.setContentsMargins(6, 5, 6, 5)
+            generated_assembly_panel_layout.setSpacing(6)
+
+            self.assemble_generated_button = QPushButton(
+                "Assembler kompilieren",
+                self.generated_assembly_panel,
+            )
+            self.assemble_generated_button.setObjectName(
+                "assemble_generated_button"
+            )
+            self.assemble_generated_button.setToolTip(
+                "Angezeigten Assemblercode in ein C64-PRG übersetzen"
+            )
+            self.assemble_generated_button.setEnabled(False)
+            self.assemble_generated_button.clicked.connect(
+                lambda checked=False: self.assemble_generated_requested.emit(
+                    self
+                )
+            )
+
+            self.start_generated_button = QPushButton(
+                "Start",
+                self.generated_assembly_panel,
+            )
+            self.start_generated_button.setObjectName(
+                "start_generated_button"
+            )
+            self.start_generated_button.setToolTip(
+                "Das aus dem ASM-Tab erzeugte Programm in VICE starten"
+            )
+            self.start_generated_button.setEnabled(False)
+            self.start_generated_button.clicked.connect(
+                lambda checked=False: self.start_generated_requested.emit(self)
+            )
+
+            self.generated_assembly_status_label = QLabel(
+                "ASM-Daten werden beim Kompilieren erzeugt",
+                self.generated_assembly_panel,
+            )
+            self.generated_assembly_status_label.setObjectName(
+                "generated_assembly_status_label"
+            )
+            self.generated_assembly_status_label.setTextFormat(Qt.PlainText)
+
+            generated_assembly_panel_layout.addWidget(
+                self.assemble_generated_button
+            )
+            generated_assembly_panel_layout.addWidget(
+                self.start_generated_button
+            )
+            generated_assembly_panel_layout.addSpacing(6)
+            generated_assembly_panel_layout.addWidget(
+                self.generated_assembly_status_label,
+                1,
+            )
+            generated_assembly_layout.addWidget(self.generated_assembly_panel)
+
+            self.generated_assembly_editor = SourceTextEdit(
+                self.generated_assembly_page
+            )
+            self.generated_assembly_editor.setObjectName(
+                "generated_assembly_editor"
+            )
+            self.generated_assembly_editor.setFont(fixed_font)
+            self.generated_assembly_editor.setLineWrapMode(
+                QPlainTextEdit.NoWrap
+            )
+            self.generated_assembly_editor.setPlaceholderText(
+                "Nach dem Kompilieren werden hier die ASM-Daten angezeigt."
+            )
+            self.generated_assembly_editor.assembler_help_requested.connect(
+                self._show_assembler_help
+            )
+            generated_assembly_layout.addWidget(
+                self.generated_assembly_editor,
+                1,
+            )
+            self.views.addTab(self.generated_assembly_page, "ASM")
+
+            self.generated_assembly_highlighter = AssemblerSyntaxHighlighter(
+                self.generated_assembly_editor.document()
+            )
+            self.generated_assembly_highlighter.set_enabled(True)
+            self.generated_assembly_editor.set_assembler_navigation_highlighter(
+                self.generated_assembly_highlighter
+            )
+            self.generated_assembly_editor.set_assembler_completion_enabled(
+                True
+            )
+            self.generated_assembly_editor.set_assembler_navigation_enabled(
+                True
+            )
 
             self.hex_editor = HexEditor(self.views)
             self.hex_editor.set_c64_font_size(fixed_font.pointSize())
@@ -3315,6 +3432,11 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             self.raw_editor.document().modificationChanged.connect(
                 self._view_modification_changed
             )
+            self.generated_assembly_editor.textChanged.connect(
+                self._generated_assembly_text_changed
+            )
+
+            self.update_syntax_highlighting()
 
             if (
                 self.path is not None
@@ -3391,6 +3513,19 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
                 self._syncing_views = False
             self._view_modification_changed(True)
 
+        def _generated_assembly_text_changed(self) -> None:
+            if self._syncing_generated_assembly:
+                return
+            self.invalidate_assembly_result("Assemblercode geändert")
+            has_source = bool(
+                self.generated_assembly_editor.toPlainText().strip()
+            )
+            self.assemble_generated_button.setEnabled(has_source)
+            if has_source:
+                self.generated_assembly_status_label.setText(
+                    "Assemblercode geändert"
+                )
+
         def _hex_data_changed(self) -> None:
             if self._syncing_views:
                 return
@@ -3434,6 +3569,14 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
                 self.path is not None
                 and self.path.suffix.lower() in self.C_HEADER_EXTENSIONS
             )
+            assembly_tab_index = self.views.indexOf(
+                self.generated_assembly_page
+            )
+            if assembly_tab_index >= 0:
+                self.views.setTabVisible(
+                    assembly_tab_index,
+                    is_pascal or is_c,
+                )
             self.assembler_panel.setVisible(is_assembler or is_pascal or is_c)
             self.syntax_highlighter.set_enabled(is_assembler)
             self.syntax_highlighter.set_pascal_enabled(is_pascal)
@@ -3496,27 +3639,76 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
                 self.assembled_program is not None
                 or self.assembled_program_path is not None
                 or self.assembled_source_digest
+                or self.assembled_assembly_digest
             )
             self.assembled_program = None
             self.assembled_program_path = None
             self.assembled_source_digest = ""
+            self.assembled_assembly_digest = ""
+            self.assembled_input_kind = ""
             self.start_assembled_button.setEnabled(False)
+            self.start_generated_button.setEnabled(False)
             if reason and had_result and self.is_build_document:
                 self.assembly_status_label.setText(reason)
+                if self.generated_assembly_path is not None:
+                    self.generated_assembly_status_label.setText(reason)
+
+        def set_generated_assembly(
+            self,
+            assembly: str,
+            assembly_path: Path,
+            *,
+            select_tab: bool = False,
+        ) -> None:
+            self.generated_assembly_path = Path(assembly_path).resolve()
+            self._syncing_generated_assembly = True
+            try:
+                self.generated_assembly_editor.setPlainText(assembly)
+                self.generated_assembly_editor.document().setModified(False)
+            finally:
+                self._syncing_generated_assembly = False
+            self.assemble_generated_button.setEnabled(bool(assembly.strip()))
+            self.generated_assembly_status_label.setText(
+                f"Erzeugt: {self.generated_assembly_path.name}"
+            )
+            assembly_tab_index = self.views.indexOf(
+                self.generated_assembly_page
+            )
+            if assembly_tab_index >= 0:
+                self.views.setTabVisible(assembly_tab_index, True)
+            if select_tab:
+                self.views.setCurrentWidget(self.generated_assembly_page)
+
+        def generated_assembly_digest(self) -> str:
+            return hashlib.sha256(
+                self.generated_assembly_editor.toPlainText().encode("utf-8")
+            ).hexdigest()
 
         def set_assembly_result(
             self,
             program,
             output_path: Path,
             source_digest: str,
+            assembly_digest: str = "",
+            input_kind: str = "source",
         ) -> None:
             self.assembled_program = program
             self.assembled_program_path = Path(output_path).resolve()
             self.assembled_source_digest = str(source_digest)
+            self.assembled_assembly_digest = str(assembly_digest)
+            self.assembled_input_kind = str(input_kind)
             self.start_assembled_button.setEnabled(True)
             self.assembly_status_label.setText(
                 f"Erzeugt: {self.assembled_program_path.name}"
             )
+            has_generated_assembly = bool(
+                self.generated_assembly_editor.toPlainText().strip()
+            )
+            self.start_generated_button.setEnabled(has_generated_assembly)
+            if has_generated_assembly:
+                self.generated_assembly_status_label.setText(
+                    f"Erzeugt: {self.assembled_program_path.name}"
+                )
 
         def show_assembly_error(
             self,
@@ -3537,6 +3729,29 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
                     self.raw_editor.centerCursor()
             self.raw_editor.setFocus(Qt.OtherFocusReason)
 
+        def show_generated_assembly_error(
+            self,
+            message: str,
+            line: int = 0,
+            status_text: str = "Assemblerfehler",
+        ) -> None:
+            self.invalidate_assembly_result()
+            self.assembly_status_label.setText(status_text)
+            self.generated_assembly_status_label.setText(status_text)
+            self.hints_editor.setPlainText(message)
+            self.views.setCurrentWidget(self.generated_assembly_page)
+            if line > 0:
+                block = (
+                    self.generated_assembly_editor.document()
+                    .findBlockByNumber(line - 1)
+                )
+                if block.isValid():
+                    cursor = QTextCursor(block)
+                    cursor.select(QTextCursor.LineUnderCursor)
+                    self.generated_assembly_editor.setTextCursor(cursor)
+                    self.generated_assembly_editor.centerCursor()
+            self.generated_assembly_editor.setFocus(Qt.OtherFocusReason)
+
         def _show_assembler_help(self, mnemonic: str, help_text: str) -> None:
             window = self.window()
             if hasattr(window, "_show_message_box"):
@@ -3553,14 +3768,22 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
                 )
 
         def set_editor_font(self, font: QFont) -> None:
-            for editor in (self.raw_editor, self.hints_editor):
+            for editor in (
+                self.raw_editor,
+                self.generated_assembly_editor,
+                self.hints_editor,
+            ):
                 editor.setFont(QFont(font))
                 editor.update_line_number_area_width(0)
             self.hex_editor.set_c64_font_size(font.pointSize())
 
         def set_dark_mode(self, enabled: bool) -> None:
             enabled = bool(enabled)
-            for editor in (self.raw_editor, self.hints_editor):
+            for editor in (
+                self.raw_editor,
+                self.generated_assembly_editor,
+                self.hints_editor,
+            ):
                 palette = QPalette(QApplication.palette())
                 if enabled:
                     palette.setColor(QPalette.Base, QColor(0, 0, 128))
@@ -3616,6 +3839,7 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             self.hex_editor.viewport().update()
 
             self.syntax_highlighter.set_dark_mode(enabled)
+            self.generated_assembly_highlighter.set_dark_mode(enabled)
 
     class DismWorker(QObject):
         """Fuehrt die unveraenderte d64info-Programmlogik ausserhalb der GUI aus."""
@@ -5641,6 +5865,12 @@ border: 2px solid #2a69aa;
             )
             document.assemble_requested.connect(self.assemble_document)
             document.start_requested.connect(self.start_assembled_document)
+            document.assemble_generated_requested.connect(
+                self.assemble_generated_document
+            )
+            document.start_generated_requested.connect(
+                self.start_generated_assembly_document
+            )
             self.document_tabs.setCurrentWidget(document)
             self._update_document_actions()
             self._update_document_tab(document)
@@ -5883,6 +6113,10 @@ border: 2px solid #2a69aa;
                     source,
                     filename=document.display_name,
                 )
+                document.set_generated_assembly(
+                    generated.assembly,
+                    assembly_path,
+                )
                 program = assemble_mos6510_source(
                     generated.assembly,
                     filename=assembly_path.name,
@@ -5912,9 +6146,9 @@ border: 2px solid #2a69aa;
                     else "erzeugter Assembler"
                 )
                 message = f"Interner Assemblerfehler ({location}):\n{exc}"
-                document.show_assembly_error(
+                document.show_generated_assembly_error(
                     message,
-                    pascal_line,
+                    assembly_line,
                     "Assemblerfehler",
                 )
                 self.show_error("Fehler im erzeugten Assembler", message)
@@ -5962,7 +6196,14 @@ border: 2px solid #2a69aa;
                 open_assembly.invalidate_assembly_result("Neu erzeugt")
                 self._update_document_tab(open_assembly)
 
-            document.set_assembly_result(program, output_path, source_digest)
+            document.set_assembly_result(
+                program,
+                output_path,
+                source_digest,
+                document.generated_assembly_digest(),
+                "source",
+            )
+            document.views.setCurrentWidget(document.generated_assembly_page)
             document.hints_editor.setPlainText(
                 "C64-Pascal erfolgreich kompiliert\n"
                 "\n"
@@ -6031,6 +6272,10 @@ border: 2px solid #2a69aa;
                     filename=source_filename,
                     include_paths=include_paths,
                 )
+                document.set_generated_assembly(
+                    generated.assembly,
+                    assembly_path,
+                )
                 program = assemble_mos6510_source(
                     generated.assembly,
                     filename=assembly_path.name,
@@ -6071,9 +6316,9 @@ border: 2px solid #2a69aa;
                     else "erzeugter Assembler"
                 )
                 message = f"Interner Assemblerfehler ({location}):\n{exc}"
-                document.show_assembly_error(
+                document.show_generated_assembly_error(
                     message,
-                    c_line,
+                    assembly_line,
                     "Assemblerfehler",
                 )
                 self.show_error("Fehler im erzeugten Assembler", message)
@@ -6124,7 +6369,14 @@ border: 2px solid #2a69aa;
                 open_assembly.invalidate_assembly_result("Neu erzeugt")
                 self._update_document_tab(open_assembly)
 
-            document.set_assembly_result(program, output_path, source_digest)
+            document.set_assembly_result(
+                program,
+                output_path,
+                source_digest,
+                document.generated_assembly_digest(),
+                "source",
+            )
+            document.views.setCurrentWidget(document.generated_assembly_page)
             diagnostic_lines = []
             if generated.notes:
                 diagnostic_lines.append("Hinweise:")
@@ -6175,6 +6427,139 @@ border: 2px solid #2a69aa;
                 self.statusBar().showMessage(
                     f"C erfolgreich kompiliert: {output_path.name}"
                 )
+            if output_path.parent == self.current_directory:
+                self.populate_file_list()
+            return True
+
+        def assemble_generated_document(
+            self,
+            document: DocumentEditor,
+        ) -> bool:
+            """Übersetzt den editierbaren ASM-Tab in ein C64-PRG."""
+            if not isinstance(document, DocumentEditor):
+                return False
+            self.document_tabs.setCurrentWidget(document)
+            if not (document.is_pascal_document or document.is_c_document):
+                return False
+
+            assembly_source = (
+                document.generated_assembly_editor.toPlainText()
+            )
+            if not assembly_source.strip():
+                message = (
+                    "Es sind noch keine ASM-Daten vorhanden. Kompiliere "
+                    "zuerst den C- oder Pascal-Quelltext."
+                )
+                document.show_generated_assembly_error(
+                    message,
+                    status_text="Keine ASM-Daten",
+                )
+                self.show_error("Keine ASM-Daten", message)
+                return False
+
+            try:
+                output_path = self._assembler_output_path(document)
+                assembly_path = document.generated_assembly_path
+                if assembly_path is None:
+                    assembly_path = (
+                        self._pascal_assembly_output_path(document)
+                        if document.is_pascal_document
+                        else self._c_assembly_output_path(document)
+                    )
+                program = assemble_mos6510_source(
+                    assembly_source,
+                    filename=assembly_path.name,
+                )
+            except AssemblerError as exc:
+                message = str(exc)
+                document.show_generated_assembly_error(
+                    message,
+                    exc.line or 0,
+                )
+                self.show_error("Assemblerfehler", message)
+                self.statusBar().showMessage("Assemblieren fehlgeschlagen")
+                return False
+
+            open_assembly = self._find_open_document(assembly_path)
+            if open_assembly is not None and open_assembly.is_modified:
+                message = (
+                    "Die erzeugte ASM-Datei ist zusätzlich geöffnet und "
+                    "enthält ungespeicherte Änderungen:\n"
+                    f"{assembly_path}\n\n"
+                    "Speichere oder schließe diese Registerkarte vor dem "
+                    "Assemblieren des ASM-Tabs."
+                )
+                document.show_generated_assembly_error(
+                    message,
+                    status_text="ASM-Datei ist geöffnet",
+                )
+                self.show_error("ASM-Ausgabe kann nicht ersetzt werden", message)
+                return False
+
+            try:
+                self._write_assembled_program(
+                    assembly_path,
+                    assembly_source.encode("utf-8"),
+                )
+                self._write_assembled_program(output_path, program.prg)
+            except OSError as exc:
+                message = (
+                    "Die Assembler-Ausgabe konnte nicht gespeichert werden:\n"
+                    f"ASM: {assembly_path}\n"
+                    f"PRG: {output_path}\n\n{exc}"
+                )
+                document.show_generated_assembly_error(
+                    message,
+                    status_text="Ausgabefehler",
+                )
+                self.show_error(
+                    "Assembler-Ausgabe konnte nicht gespeichert werden",
+                    message,
+                )
+                return False
+
+            if open_assembly is not None:
+                open_assembly.raw_editor.setPlainText(assembly_source)
+                open_assembly.mark_saved()
+                open_assembly.invalidate_assembly_result("Neu erzeugt")
+                self._update_document_tab(open_assembly)
+
+            document.generated_assembly_path = Path(assembly_path).resolve()
+            document.generated_assembly_editor.document().setModified(False)
+            source_digest = hashlib.sha256(
+                document.raw_editor.toPlainText().encode("utf-8")
+            ).hexdigest()
+            assembly_digest = hashlib.sha256(
+                assembly_source.encode("utf-8")
+            ).hexdigest()
+            document.set_assembly_result(
+                program,
+                output_path,
+                source_digest,
+                assembly_digest,
+                "assembly",
+            )
+            document.hints_editor.setPlainText(
+                "Assembler aus dem ASM-Tab erfolgreich beendet\n"
+                "\n"
+                f"Quelle       : {assembly_path}\n"
+                f"Ausgabe      : {output_path}\n"
+                f"Ladeadresse  : ${program.load_address:04X}\n"
+                f"Einsprung    : ${program.entry_address:04X}\n"
+                f"Letztes Byte : ${program.end_address:04X}\n"
+                f"PRG-Größe    : {len(program.prg)} Bytes\n"
+                f"Instruktionen: {program.instruction_count}\n"
+                f"BASIC-Stub   : {'ja' if program.has_basic_stub else 'nein'}\n"
+            )
+            self.log(
+                "ASSEMBLE ASM-TAB: "
+                f"{assembly_path.name} -> {output_path.name}, "
+                f"${program.load_address:04X}-${program.end_address:04X}, "
+                f"Start ${program.entry_address:04X}"
+            )
+            self.statusBar().showMessage(
+                f"ASM-Tab erfolgreich assembliert: {output_path.name}"
+            )
             if output_path.parent == self.current_directory:
                 self.populate_file_list()
             return True
@@ -6294,13 +6679,38 @@ border: 2px solid #2a69aa;
             output_path = document.assembled_program_path
             if (
                 output_path is None
+                or document.assembled_input_kind != "source"
                 or document.assembled_source_digest != current_digest
                 or not output_path.is_file()
             ):
                 if not self.assemble_document(document):
                     return False
-                output_path = document.assembled_program_path
+            return self._launch_assembled_document(document)
 
+        def start_generated_assembly_document(
+            self,
+            document: DocumentEditor,
+        ) -> bool:
+            """Startet den aktuellen Build des editierbaren ASM-Tabs."""
+            if not isinstance(document, DocumentEditor):
+                return False
+            self.document_tabs.setCurrentWidget(document)
+            current_digest = document.generated_assembly_digest()
+            output_path = document.assembled_program_path
+            if (
+                output_path is None
+                or document.assembled_assembly_digest != current_digest
+                or not output_path.is_file()
+            ):
+                if not self.assemble_generated_document(document):
+                    return False
+            return self._launch_assembled_document(document)
+
+        def _launch_assembled_document(
+            self,
+            document: DocumentEditor,
+        ) -> bool:
+            output_path = document.assembled_program_path
             if output_path is None:
                 return False
             vice_path = self._resolve_vice_for_program_start()
@@ -6345,6 +6755,10 @@ border: 2px solid #2a69aa;
             document.assembly_status_label.setText(
                 f"In VICE gestartet: {output_path.name}"
             )
+            if document.generated_assembly_path is not None:
+                document.generated_assembly_status_label.setText(
+                    f"In VICE gestartet: {output_path.name}"
+                )
             self.log(
                 "VICE START: "
                 + self._display_dism_command(command)

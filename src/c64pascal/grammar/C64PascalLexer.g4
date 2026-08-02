@@ -6,6 +6,7 @@ options {
 
 PROGRAM      : 'PROGRAM';
 CONST        : 'CONST';
+TYPE         : 'TYPE';
 VAR          : 'VAR';
 BEGIN        : 'BEGIN';
 END          : 'END';
@@ -21,6 +22,19 @@ TO           : 'TO';
 DOWNTO       : 'DOWNTO';
 BREAK        : 'BREAK';
 CONTINUE     : 'CONTINUE';
+
+RECORD       : 'RECORD';
+ARRAY        : 'ARRAY';
+OF           : 'OF';
+CLASS        : 'CLASS';
+PRIVATE      : 'PRIVATE';
+PROTECTED    : 'PROTECTED';
+PUBLIC       : 'PUBLIC';
+PUBLISHED    : 'PUBLISHED';
+PROCEDURE    : 'PROCEDURE';
+FUNCTION     : 'FUNCTION';
+CONSTRUCTOR  : 'CONSTRUCTOR';
+DESTRUCTOR   : 'DESTRUCTOR';
 
 INTEGER_TYPE : 'INTEGER';
 BYTE_TYPE    : 'BYTE';
@@ -49,9 +63,12 @@ STAR         : '*';
 SLASH        : '/';
 LPAREN       : '(';
 RPAREN       : ')';
+LBRACK       : '[';
+RBRACK       : ']';
 COMMA        : ',';
 COLON        : ':';
 SEMI         : ';';
+DOTDOT       : '..';
 DOT          : '.';
 
 HEX_INTEGER
@@ -89,4 +106,3 @@ LINE_COMMENT
 WS
     : [ \t\r\n\f]+ -> skip
     ;
-
