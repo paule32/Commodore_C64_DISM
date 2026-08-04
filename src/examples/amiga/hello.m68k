@@ -1,0 +1,9 @@
+; Minimales Motorola-68000-Programm fuer den internen Amiga-Assembler.
+; Im Editor den RadioButton "Amiga" waehlen und "Assemble" anklicken.
+
+section code,code
+xdef _start
+
+_start:
+    moveq #0,d0
+    rts

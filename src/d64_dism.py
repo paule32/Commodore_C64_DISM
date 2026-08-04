@@ -14,8 +14,9 @@
 #  * PETSCII-Zeichenauswahl fuer das aktuelle Byte im Hex-Editor
 #  * Neu/Oeffnen/Speichern/Speichern unter mit sicherer Schliessabfrage
 #  * Syntax-Hervorhebung fuer 6502/6510-Assembler und Kommentare
-#  * integrierter 6502/6510-Assembler mit C64-PRG- und VICE-Start
-#  * ANTLR-basierte C64-Compiler fuer Pascal und C mit 6510-Zwischencode
+#  * integrierte 6510-/68000-Assembler mit C64-PRG-/Amiga-Hunk-Ausgabe
+#  * ANTLR-Compiler fuer Pascal und C mit C64-/Amiga-Zielauswahl
+#  * zielabhängiger Start in VICE oder WinUAE
 #  * Operanden-Rechner fuer Dezimal-, Hexadezimal- und Binaerwerte
 #  * integrierter CHM-Viewer mit Themen, Keywords und Favoriten
 #  * Editor-Zoom sowie umschaltbarer Hell-/Dunkelmodus
@@ -609,6 +610,7 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             QMessageBox,
             QPlainTextEdit,
             QPushButton,
+            QRadioButton,
             QScrollArea,
             QSizePolicy,
             QSplitter,
@@ -667,11 +669,16 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             "RTS", "SAX", "SBC", "SEC", "SED", "SEI", "SHX", "SHY",
             "SLO", "SRE", "STA", "STX", "STY", "TAS", "TAX", "TAY",
             "TSX", "TXA", "TXS", "TYA", "XAA",
+            "ADD", "ADDA", "ADDI", "ADDQ", "ANDI", "BRA", "BSR",
+            "BGE", "BGT", "BHI", "BHS", "BLE", "BLO", "BLS", "BLT",
+            "CLR", "CMPI", "DIVS", "DIVU", "EORI", "EXT", "LEA",
+            "LSL", "MOVE", "MOVEQ", "MULS", "MULU", "NEG", "ORI",
+            "SUB", "SUBA", "SUBI", "SUBQ", "SWAP", "TST",
         )
         OPCODE_PATTERN = re.compile(
             r"(?<![A-Za-z0-9_])(?:"
             + "|".join(OPCODES)
-            + r")(?![A-Za-z0-9_])",
+            + r")(?:\.[BWL])?(?![A-Za-z0-9_])",
             re.IGNORECASE,
         )
         LABEL_PATTERN = re.compile(
@@ -679,7 +686,8 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
         )
         JUMP_TARGET_PATTERN = re.compile(
             r"^\s*(?:[A-Za-z_.$][A-Za-z0-9_.$]*\s*:\s*)?"
-            r"(?:BCC|BCS|BEQ|BMI|BNE|BPL|BVC|BVS|JMP|JSR)\s+"
+            r"(?:BCC|BCS|BEQ|BGE|BGT|BHI|BHS|BLE|BLO|BLS|BLT|BMI|"
+            r"BNE|BPL|BRA|BSR|BVC|BVS|JMP|JSR)(?:\.[BWL])?\s+"
             r"(?:\(\s*)?"
             r"(?P<target>[A-Za-z_.$][A-Za-z0-9_.$]*)",
             re.IGNORECASE,
@@ -1087,6 +1095,58 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             _OFFICIAL_ASSEMBLER_COMMANDS
             + _UNDOCUMENTED_ASSEMBLER_COMMANDS
         )
+    }
+    _M68K_ASSEMBLER_COMMANDS = (
+        ("ADD", ".B/.W/.L source,Dn", "", "Addiert den Quelloperanden zum Datenregister."),
+        ("ADDA", ".W/.L source,An", "", "Addiert den Quelloperanden zu einem Adressregister."),
+        ("ADDI", ".B/.W/.L #wert,ziel", "", "Addiert eine unmittelbare Konstante."),
+        ("ADDQ", ".B/.W/.L #1..8,ziel", "", "Addiert eine kleine unmittelbare Konstante."),
+        ("AND", ".B/.W/.L source,Dn", "", "Verknüpft den Operanden bitweise mit UND."),
+        ("ANDI", ".B/.W/.L #wert,ziel", "", "Verknüpft das Ziel mit einer unmittelbaren UND-Maske."),
+        ("BRA", "label", "label", "Verzweigt unbedingt zu einer Marke."),
+        ("BSR", "label", "label", "Ruft ein PC-relatives Unterprogramm auf."),
+        ("BEQ", "label", "label", "Verzweigt bei Gleichheit beziehungsweise gesetztem Zero-Flag."),
+        ("BNE", "label", "label", "Verzweigt bei Ungleichheit beziehungsweise gelöschtem Zero-Flag."),
+        ("BGE", "label", "label", "Verzweigt bei vorzeichenbehaftet größer oder gleich."),
+        ("BGT", "label", "label", "Verzweigt bei vorzeichenbehaftet größer."),
+        ("BLE", "label", "label", "Verzweigt bei vorzeichenbehaftet kleiner oder gleich."),
+        ("BLT", "label", "label", "Verzweigt bei vorzeichenbehaftet kleiner."),
+        ("CLR", ".B/.W/.L ziel", "", "Löscht den Zieloperanden."),
+        ("CMP", ".B/.W/.L source,Dn", "", "Vergleicht Quelle und Datenregister."),
+        ("CMPI", ".B/.W/.L #wert,ziel", "", "Vergleicht eine Konstante mit dem Ziel."),
+        ("DIVS", ".W source,Dn", "", "Vorzeichenbehaftete 32/16-Bit-Division."),
+        ("DIVU", ".W source,Dn", "", "Vorzeichenlose 32/16-Bit-Division."),
+        ("EOR", ".B/.W/.L Dn,ziel", "", "Verknüpft den Operanden exklusiv-oder."),
+        ("EXT", ".W/.L Dn", "", "Erweitert das Vorzeichen im Datenregister."),
+        ("JMP", "ziel", "label", "Springt zum Ziel; Marken werden PC-relativ codiert."),
+        ("JSR", "ziel", "label", "Ruft ein Unterprogramm auf."),
+        ("LEA", "adresse,An", "label(pc),a0", "Lädt eine effektive Adresse in ein Adressregister."),
+        ("LSL", ".B/.W/.L #1..8,Dn", "", "Schiebt logisch nach links."),
+        ("LSR", ".B/.W/.L #1..8,Dn", "", "Schiebt logisch nach rechts."),
+        ("MOVE", ".B/.W/.L source,ziel", "", "Überträgt einen Wert zwischen Registern oder Speicher."),
+        ("MOVEQ", "#-128..255,Dn", "#0,d0", "Lädt eine kurze Konstante in ein Datenregister."),
+        ("MULS", ".W source,Dn", "", "Vorzeichenbehaftete 16-Bit-Multiplikation."),
+        ("MULU", ".W source,Dn", "", "Vorzeichenlose 16-Bit-Multiplikation."),
+        ("NEG", ".B/.W/.L ziel", "", "Bildet das Zweierkomplement."),
+        ("NOP", "implizit", "", "Führt keine Operation aus."),
+        ("OR", ".B/.W/.L source,Dn", "", "Verknüpft den Operanden bitweise mit ODER."),
+        ("RTS", "implizit", "", "Kehrt aus einem Unterprogramm zurück."),
+        ("SUB", ".B/.W/.L source,Dn", "", "Subtrahiert die Quelle vom Datenregister."),
+        ("SUBA", ".W/.L source,An", "", "Subtrahiert die Quelle vom Adressregister."),
+        ("SUBI", ".B/.W/.L #wert,ziel", "", "Subtrahiert eine unmittelbare Konstante."),
+        ("SUBQ", ".B/.W/.L #1..8,ziel", "", "Subtrahiert eine kleine unmittelbare Konstante."),
+        ("SWAP", "Dn", "d0", "Vertauscht die beiden 16-Bit-Hälften eines Datenregisters."),
+        ("TST", ".B/.W/.L ziel", "", "Prüft einen Operanden und aktualisiert die Statusflags."),
+    )
+    M68K_ASSEMBLER_COMMANDS = {
+        mnemonic: AssemblerCommandInfo(
+            mnemonic,
+            operands,
+            default_operand,
+            description,
+        )
+        for mnemonic, operands, default_operand, description
+        in _M68K_ASSEMBLER_COMMANDS
     }
 
     @dataclass(frozen=True)
@@ -1861,6 +1921,7 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             self._dark_mode = False
             self._completion_enabled = False
             self._completion_context = None
+            self._assembler_target = "c64"
             self._assembler_navigation_enabled = False
             self._assembler_highlighter = None
             self.line_number_area = LineNumberArea(self)
@@ -1944,6 +2005,18 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             else:
                 self._hide_completion()
 
+        def set_assembler_target(self, target: str) -> None:
+            normalized = str(target).strip().casefold()
+            self._assembler_target = "amiga" if normalized == "amiga" else "c64"
+            self._hide_completion()
+            if self._completion_enabled:
+                self._schedule_completion_update()
+
+        def _assembler_commands(self):
+            if self._assembler_target == "amiga":
+                return M68K_ASSEMBLER_COMMANDS
+            return ASSEMBLER_COMMANDS
+
         def set_assembler_navigation_highlighter(self, highlighter) -> None:
             self._assembler_highlighter = highlighter
 
@@ -1995,13 +2068,14 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             code = block_text.split(";", 1)[0]
             match = re.match(
                 r"^\s*(?:[A-Za-z_.$][A-Za-z0-9_.$]*\s*:\s*)?"
-                r"(?P<opcode>[A-Za-z]{3})(?P<spacing>\s+)"
+                r"(?P<opcode>[A-Za-z]{2,8})(?:\.[BbWwLl])?"
+                r"(?P<spacing>\s+)"
                 r"(?P<operand>.*?)\s*$",
                 code,
             )
             if (
                 match is None
-                or match.group("opcode").upper() not in ASSEMBLER_COMMANDS
+                or match.group("opcode").upper() not in self._assembler_commands()
             ):
                 return None
 
@@ -2078,12 +2152,11 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
         def _schedule_completion_update(self) -> None:
             QTimer.singleShot(0, self._update_completion)
 
-        @staticmethod
-        def _completion_candidates(prefix: str):
+        def _completion_candidates(self, prefix: str):
             wanted = prefix.upper()
             return tuple(
                 info
-                for mnemonic, info in ASSEMBLER_COMMANDS.items()
+                for mnemonic, info in self._assembler_commands().items()
                 if mnemonic.startswith(wanted)
             )
 
@@ -2101,7 +2174,7 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             if ";" in text_before_cursor:
                 return None
 
-            word_match = re.search(r"([A-Za-z]{1,3})$", text_before_cursor)
+            word_match = re.search(r"([A-Za-z]{1,8})$", text_before_cursor)
             if word_match is None:
                 return None
 
@@ -3174,11 +3247,11 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
         assemble_generated_requested = pyqtSignal(object)
         start_generated_requested = pyqtSignal(object)
 
-        ASSEMBLER_EXTENSIONS = {".asm", ".s", ".a65", ".inc"}
+        ASSEMBLER_EXTENSIONS = {".asm", ".s", ".a65", ".m68k", ".inc"}
         PASCAL_EXTENSIONS    = {".pas", ".pp"}
         C_EXTENSIONS         = {".c"}
         C_HEADER_EXTENSIONS  = {".h"}
-        BINARY_EXTENSIONS    = {".prg", ".ram", ".bin"}
+        BINARY_EXTENSIONS    = {".prg", ".amiga", ".adf", ".ram", ".bin"}
 
         def __init__(
             self,
@@ -3206,6 +3279,9 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             self.assembled_source_digest = ""
             self.assembled_assembly_digest = ""
             self.assembled_input_kind = ""
+            self.assembled_target = ""
+            self.build_target = "c64"
+            self._syncing_build_target = False
             self.generated_assembly_path: Optional[Path] = None
             self._syncing_generated_assembly = False
 
@@ -3262,6 +3338,28 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
                 lambda checked=False: self.start_requested.emit(self)
             )
 
+            self.target_button_group = QButtonGroup(self.assembler_panel)
+            self.target_button_group.setExclusive(True)
+            self.c64_target_button = QRadioButton(
+                "C-64",
+                self.assembler_panel,
+            )
+            self.c64_target_button.setObjectName("c64_target_button")
+            self.amiga_target_button = QRadioButton(
+                "Amiga",
+                self.assembler_panel,
+            )
+            self.amiga_target_button.setObjectName("amiga_target_button")
+            self.target_button_group.addButton(self.c64_target_button)
+            self.target_button_group.addButton(self.amiga_target_button)
+            self.c64_target_button.setChecked(True)
+            self.c64_target_button.toggled.connect(
+                lambda checked: checked and self.set_build_target("c64")
+            )
+            self.amiga_target_button.toggled.connect(
+                lambda checked: checked and self.set_build_target("amiga")
+            )
+
             self.assembly_status_label = QLabel(
                 "Noch nicht assembliert",
                 self.assembler_panel,
@@ -3273,6 +3371,9 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
 
             assembler_panel_layout.addWidget(self.assemble_button)
             assembler_panel_layout.addWidget(self.start_assembled_button)
+            assembler_panel_layout.addSpacing(6)
+            assembler_panel_layout.addWidget(self.c64_target_button)
+            assembler_panel_layout.addWidget(self.amiga_target_button)
             assembler_panel_layout.addSpacing(6)
             assembler_panel_layout.addWidget(self.assembly_status_label, 1)
             source_layout.addWidget(self.assembler_panel)
@@ -3348,6 +3449,38 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
                 lambda checked=False: self.start_generated_requested.emit(self)
             )
 
+            self.generated_target_button_group = QButtonGroup(
+                self.generated_assembly_panel
+            )
+            self.generated_target_button_group.setExclusive(True)
+            self.generated_c64_target_button = QRadioButton(
+                "C-64",
+                self.generated_assembly_panel,
+            )
+            self.generated_c64_target_button.setObjectName(
+                "generated_c64_target_button"
+            )
+            self.generated_amiga_target_button = QRadioButton(
+                "Amiga",
+                self.generated_assembly_panel,
+            )
+            self.generated_amiga_target_button.setObjectName(
+                "generated_amiga_target_button"
+            )
+            self.generated_target_button_group.addButton(
+                self.generated_c64_target_button
+            )
+            self.generated_target_button_group.addButton(
+                self.generated_amiga_target_button
+            )
+            self.generated_c64_target_button.setChecked(True)
+            self.generated_c64_target_button.toggled.connect(
+                lambda checked: checked and self.set_build_target("c64")
+            )
+            self.generated_amiga_target_button.toggled.connect(
+                lambda checked: checked and self.set_build_target("amiga")
+            )
+
             self.generated_assembly_status_label = QLabel(
                 "ASM-Daten werden beim Kompilieren erzeugt",
                 self.generated_assembly_panel,
@@ -3362,6 +3495,13 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             )
             generated_assembly_panel_layout.addWidget(
                 self.start_generated_button
+            )
+            generated_assembly_panel_layout.addSpacing(6)
+            generated_assembly_panel_layout.addWidget(
+                self.generated_c64_target_button
+            )
+            generated_assembly_panel_layout.addWidget(
+                self.generated_amiga_target_button
             )
             generated_assembly_panel_layout.addSpacing(6)
             generated_assembly_panel_layout.addWidget(
@@ -3404,6 +3544,9 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             )
             self.generated_assembly_editor.set_assembler_navigation_enabled(
                 True
+            )
+            self.generated_assembly_editor.set_assembler_target(
+                self.build_target
             )
 
             self.hex_editor = HexEditor(self.views)
@@ -3552,6 +3695,49 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
                 window.document_tabs.setCurrentWidget(self)
             window._save_document(self, save_as=bool(save_as))
 
+        def set_build_target(self, target: str) -> None:
+            normalized = (
+                "amiga"
+                if str(target).strip().casefold() == "amiga"
+                else "c64"
+            )
+            if self._syncing_build_target:
+                return
+            changed = normalized != self.build_target
+            self._syncing_build_target = True
+            try:
+                self.build_target = normalized
+                self.c64_target_button.setChecked(normalized == "c64")
+                self.amiga_target_button.setChecked(normalized == "amiga")
+                self.generated_c64_target_button.setChecked(
+                    normalized == "c64"
+                )
+                self.generated_amiga_target_button.setChecked(
+                    normalized == "amiga"
+                )
+            finally:
+                self._syncing_build_target = False
+
+            self.raw_editor.set_assembler_target(normalized)
+            self.generated_assembly_editor.set_assembler_target(normalized)
+            if changed:
+                self.invalidate_assembly_result("Compilerziel geändert")
+                self.generated_assembly_path = None
+                self._syncing_generated_assembly = True
+                try:
+                    self.generated_assembly_editor.clear()
+                    self.generated_assembly_editor.document().setModified(
+                        False
+                    )
+                finally:
+                    self._syncing_generated_assembly = False
+                self.assemble_generated_button.setEnabled(False)
+                target_name = "Amiga 500" if normalized == "amiga" else "C-64"
+                self.generated_assembly_status_label.setText(
+                    f"ASM-Daten für {target_name} werden beim Kompilieren erzeugt"
+                )
+            self.update_syntax_highlighting()
+
         def update_syntax_highlighting(self) -> None:
             is_assembler = (
                 self.path is not None
@@ -3583,24 +3769,52 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             self.syntax_highlighter.set_c_enabled(is_c or is_c_header)
             self.raw_editor.set_assembler_completion_enabled(is_assembler)
             self.raw_editor.set_assembler_navigation_enabled(is_assembler)
+            self.raw_editor.set_assembler_target(self.build_target)
+            self.generated_assembly_editor.set_assembler_target(
+                self.build_target
+            )
+            target_name = (
+                "Amiga 500" if self.build_target == "amiga" else "C-64"
+            )
+            emulator_name = (
+                "WinUAE" if self.build_target == "amiga" else "VICE"
+            )
+            output_name = (
+                "Amiga-Hunk-Programm"
+                if self.build_target == "amiga"
+                else "C64-PRG"
+            )
+            self.start_assembled_button.setToolTip(
+                f"Das zuletzt erzeugte Programm in {emulator_name} starten"
+            )
+            self.start_generated_button.setToolTip(
+                f"Das aus dem ASM-Tab erzeugte Programm in {emulator_name} starten"
+            )
+            self.assemble_generated_button.setToolTip(
+                f"Angezeigten {target_name}-Assemblercode in ein "
+                f"{output_name} übersetzen"
+            )
             if is_pascal:
                 self.assemble_button.setText("Compile")
                 self.assemble_button.setToolTip(
-                    "Pascal mit ANTLR in 6510-Assembler und ein C64-PRG übersetzen"
+                    f"Pascal mit ANTLR in {target_name}-Assembler und ein "
+                    f"{output_name} übersetzen"
                 )
                 if self.assembled_program is None:
                     self.assembly_status_label.setText("Noch nicht kompiliert")
             elif is_c:
                 self.assemble_button.setText("Compile")
                 self.assemble_button.setToolTip(
-                    "C mit ANTLR in 6510-Assembler und ein C64-PRG übersetzen"
+                    f"C mit ANTLR in {target_name}-Assembler und ein "
+                    f"{output_name} übersetzen"
                 )
                 if self.assembled_program is None:
                     self.assembly_status_label.setText("Noch nicht kompiliert")
             else:
                 self.assemble_button.setText("Assemble")
                 self.assemble_button.setToolTip(
-                    "Assemblerquelltext in ein C64-PRG übersetzen"
+                    f"{target_name}-Assemblerquelltext in ein "
+                    f"{output_name} übersetzen"
                 )
                 if is_assembler and self.assembled_program is None:
                     self.assembly_status_label.setText("Noch nicht assembliert")
@@ -3646,6 +3860,7 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             self.assembled_source_digest = ""
             self.assembled_assembly_digest = ""
             self.assembled_input_kind = ""
+            self.assembled_target = ""
             self.start_assembled_button.setEnabled(False)
             self.start_generated_button.setEnabled(False)
             if reason and had_result and self.is_build_document:
@@ -3697,6 +3912,7 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             self.assembled_source_digest = str(source_digest)
             self.assembled_assembly_digest = str(assembly_digest)
             self.assembled_input_kind = str(input_kind)
+            self.assembled_target = self.build_target
             self.start_assembled_button.setEnabled(True)
             self.assembly_status_label.setText(
                 f"Erzeugt: {self.assembled_program_path.name}"
@@ -4811,19 +5027,20 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
         MIN_EDITOR_FONT_SIZE = 9
         MAX_EDITOR_FONT_SIZE = 72
         EDITOR_EXTENSIONS = {
-            ".asm", ".s", ".a65", ".inc",
+            ".asm", ".s", ".a65", ".m68k", ".inc",
             ".pas", ".pp",
             ".c",
             ".txt", ".text", ".log", ".md",
-            ".prg", ".ram", ".bin",
+            ".prg", ".amiga", ".adf", ".ram", ".bin",
         }
         FILTERS = {
             "D64": {".d64"},
             "RAM": {".ram"},
-            "ASM": {".asm", ".s", ".a65", ".inc"},
+            "ASM": {".asm", ".s", ".a65", ".m68k", ".inc"},
             "PAS": {".pas", ".pp"},
             "C": {".c"},
             "PRG": {".prg"},
+            "AMIGA": {".amiga", ".adf"},
             "TXT": {".txt", ".text", ".log", ".md"},
             "ALLE": None,
         }
@@ -4841,6 +5058,10 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             self.dism_vice_path = str(
                 self.settings.value("dism/vice_path", "") or ""
             )
+            self.winuae_path = str(
+                self.settings.value("emulator/winuae_path", "") or ""
+            )
+            self._winuae_boot_directories = []
             self.dism_thread = None
             self.dism_worker = None
             application = QApplication.instance()
@@ -5049,6 +5270,13 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             self.dism_vice_action.triggered.connect(self.choose_dism_vice)
             self._update_dism_vice_action_text()
 
+            self.winuae_action = QAction("WinUAE", self)
+            self.winuae_action.setStatusTip(
+                "WinUAE-Programm für das Starten von Amiga-Builds auswählen"
+            )
+            self.winuae_action.triggered.connect(self.choose_winuae)
+            self._update_winuae_action_text()
+
             self.dism_start_action = QAction("Disketten Image", self)
             self.dism_start_action.setStatusTip(
                 "Disketten-Image mit den ausgewaehlten DISM-Optionen starten"
@@ -5086,6 +5314,7 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             self.dism_menu.addAction(self.dism_disassemble_action)
             self.dism_menu.addAction(self.dism_ram_image_action)
             self.dism_menu.addAction(self.dism_vice_action)
+            self.dism_menu.addAction(self.winuae_action)
             self.dism_menu.addSeparator()
             
             self.dism_start_menu = QMenu("START", self.dism_menu)
@@ -5168,6 +5397,41 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
                 self.log(f"VICE ausgewählt: {self.dism_vice_path}")
             elif not self.dism_vice_path:
                 self.dism_vice_action.setChecked(False)
+
+        def _update_winuae_action_text(self) -> None:
+            if self.winuae_path:
+                native_path = QDir.toNativeSeparators(self.winuae_path)
+                self.winuae_action.setText(f"WinUAE: {native_path}")
+                self.winuae_action.setToolTip(native_path)
+            else:
+                self.winuae_action.setText("WinUAE")
+                self.winuae_action.setToolTip("Pfad zu WinUAE auswählen")
+
+        def choose_winuae(self, _checked: bool = False) -> None:
+            if self.winuae_path:
+                saved_path = Path(self.winuae_path)
+                initial_path = (
+                    saved_path.parent
+                    if saved_path.parent.is_dir()
+                    else self.current_directory
+                )
+            else:
+                initial_path = self.current_directory
+
+            filename, _selected_filter = QFileDialog.getOpenFileName(
+                self,
+                "WinUAE-Programm auswählen",
+                str(initial_path),
+                "WinUAE (winuae64.exe winuae.exe *.exe);;Alle Dateien (*)",
+            )
+            if filename:
+                self.winuae_path = str(Path(filename).resolve())
+                self.settings.setValue(
+                    "emulator/winuae_path",
+                    self.winuae_path,
+                )
+                self._update_winuae_action_text()
+                self.log(f"WinUAE ausgewählt: {self.winuae_path}")
 
         def _choose_dism_image(self) -> Optional[Path]:
             selected_path = self.selected_file_path()
@@ -5779,12 +6043,12 @@ border: 2px solid #2a69aa;
                 str(self.current_directory),
                 (
                     "Unterstützte Dateien "
-                    "(*.txt *.text *.log *.md *.asm *.s *.a65 *.inc "
-                    "*.pas *.pp *.c *.prg *.ram *.bin);;"
+                    "(*.txt *.text *.log *.md *.asm *.s *.a65 *.m68k *.inc "
+                    "*.pas *.pp *.c *.prg *.amiga *.adf *.ram *.bin);;"
                     "C-Dateien (*.c *.h);;"
                     "Pascaldateien (*.pas *.pp);;"
-                    "Assemblerdateien (*.asm *.s *.a65 *.inc);;"
-                    "Binärdateien (*.prg *.ram *.bin);;"
+                    "Assemblerdateien (*.asm *.s *.a65 *.m68k *.inc);;"
+                    "Binärdateien (*.prg *.amiga *.adf *.ram *.bin);;"
                     "Alle Dateien (*)"
                 ),
             )
@@ -5962,9 +6226,9 @@ border: 2px solid #2a69aa;
                 (
                     "C-Dateien (*.c);;"
                     "Pascaldateien (*.pas *.pp);;"
-                    "Assemblerdateien (*.asm *.s *.a65 *.inc);;"
+                    "Assemblerdateien (*.asm *.s *.a65 *.m68k *.inc);;"
                     "Textdateien (*.txt);;"
-                    "Binärdateien (*.prg *.ram *.bin);;"
+                    "Binärdateien (*.prg *.amiga *.adf *.ram *.bin);;"
                     "Alle Dateien (*)"
                 ),
             )
@@ -6032,13 +6296,23 @@ border: 2px solid #2a69aa;
             return True
 
         @staticmethod
-        def _assembler_output_path(document: DocumentEditor) -> Path:
+        def _assembler_output_path(
+            document: DocumentEditor,
+            assembly_source: str = "",
+        ) -> Path:
             if document.path is None:
                 raise AssemblerError(
-                    "Der Quelltext muss vor dem Erzeugen eines C64-PRG "
+                    "Der Quelltext muss vor dem Erzeugen eines Programms "
                     "gespeichert werden."
                 )
-            return document.path.with_suffix(".prg")
+            suffix = ".prg"
+            if document.build_target == "amiga":
+                suffix = ".amiga"
+                if assembly_source:
+                    from amiga500 import is_amiga_boot_source
+                    if is_amiga_boot_source(assembly_source):
+                        suffix = ".adf"
+            return document.path.with_suffix(suffix)
 
         @staticmethod
         def _pascal_assembly_output_path(document: DocumentEditor) -> Path:
@@ -6047,7 +6321,12 @@ border: 2px solid #2a69aa;
                     "Der Pascal-Quelltext muss zuerst gespeichert werden."
                 )
             return document.path.with_name(
-                document.path.stem + ".generated.asm"
+                document.path.stem
+                + (
+                    ".generated.amiga.asm"
+                    if document.build_target == "amiga"
+                    else ".generated.asm"
+                )
             )
 
         @staticmethod
@@ -6057,7 +6336,12 @@ border: 2px solid #2a69aa;
                     "Der C-Quelltext muss zuerst gespeichert werden."
                 )
             return document.path.with_name(
-                document.path.stem + ".generated.asm"
+                document.path.stem
+                + (
+                    ".generated.amiga.asm"
+                    if document.build_target == "amiga"
+                    else ".generated.asm"
+                )
             )
 
         @staticmethod
@@ -6082,13 +6366,17 @@ border: 2px solid #2a69aa;
                 raise
 
         def _compile_pascal_document(self, document: DocumentEditor) -> bool:
-            """ANTLR-Pascal -> 6510-ASM -> interner Assembler -> C64-PRG."""
+            """ANTLR-Pascal -> Ziel-ASM -> internes Programmformat."""
             source = document.raw_editor.toPlainText()
             source_digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
             try:
                 from c64pascal import (
                     C64PascalError,
                     compile_pascal_to_assembly,
+                )
+                from amiga500 import (
+                    AmigaAssemblerError,
+                    assemble_amiga_source,
                 )
             except ImportError as exc:
                 message = (
@@ -6112,15 +6400,22 @@ border: 2px solid #2a69aa;
                 generated = compile_pascal_to_assembly(
                     source,
                     filename=document.display_name,
+                    target=document.build_target,
                 )
                 document.set_generated_assembly(
                     generated.assembly,
                     assembly_path,
                 )
-                program = assemble_mos6510_source(
-                    generated.assembly,
-                    filename=assembly_path.name,
-                )
+                if document.build_target == "amiga":
+                    program = assemble_amiga_source(
+                        generated.assembly,
+                        filename=assembly_path.name,
+                    )
+                else:
+                    program = assemble_mos6510_source(
+                        generated.assembly,
+                        filename=assembly_path.name,
+                    )
             except C64PascalError as exc:
                 message = str(exc)
                 document.show_assembly_error(
@@ -6131,7 +6426,7 @@ border: 2px solid #2a69aa;
                 self.show_error("Pascal-Compilerfehler", message)
                 self.statusBar().showMessage("Pascal-Kompilierung fehlgeschlagen")
                 return False
-            except AssemblerError as exc:
+            except (AssemblerError, AmigaAssemblerError) as exc:
                 assembly_line = exc.line or 0
                 pascal_line = (
                     generated.pascal_line_for_assembly_line(assembly_line)
@@ -6176,12 +6471,17 @@ border: 2px solid #2a69aa;
                     assembly_path,
                     generated.assembly.encode("utf-8"),
                 )
-                self._write_assembled_program(output_path, program.prg)
+                program_data = (
+                    program.executable
+                    if document.build_target == "amiga"
+                    else program.prg
+                )
+                self._write_assembled_program(output_path, program_data)
             except OSError as exc:
                 message = (
                     "Die Compiler-Ausgabe konnte nicht gespeichert werden:\n"
                     f"ASM: {assembly_path}\n"
-                    f"PRG: {output_path}\n\n{exc}"
+                    f"Programm: {output_path}\n\n{exc}"
                 )
                 document.show_assembly_error(
                     message,
@@ -6204,27 +6504,47 @@ border: 2px solid #2a69aa;
                 "source",
             )
             document.views.setCurrentWidget(document.generated_assembly_page)
-            document.hints_editor.setPlainText(
-                "C64-Pascal erfolgreich kompiliert\n"
-                "\n"
-                f"Pascal       : {document.display_name}\n"
-                f"Assembler    : {assembly_path}\n"
-                f"Programm     : {output_path}\n"
-                f"Ladeadresse  : ${program.load_address:04X}\n"
-                f"Einsprung    : ${program.entry_address:04X}\n"
-                f"Letztes Byte : ${program.end_address:04X}\n"
-                f"PRG-Größe    : {len(program.prg)} Bytes\n"
-                f"Variablen    : {generated.variable_count}\n"
-                f"Strings      : {generated.string_count}\n"
-                f"6510-Befehle : {program.instruction_count}\n"
-                f"BASIC-Stub   : {'ja' if program.has_basic_stub else 'nein'}\n"
-            )
-            self.log(
-                "PASCAL: "
-                f"{document.display_name} -> {assembly_path.name} -> "
-                f"{output_path.name}, ${program.load_address:04X}-"
-                f"${program.end_address:04X}"
-            )
+            if document.build_target == "amiga":
+                document.hints_editor.setPlainText(
+                    "Amiga-Pascal erfolgreich kompiliert\n"
+                    "\n"
+                    f"Pascal         : {document.display_name}\n"
+                    f"Assembler      : {assembly_path}\n"
+                    f"Hunk-Programm  : {output_path}\n"
+                    f"Einsprung      : +${program.entry_offset:08X}\n"
+                    f"Code-Größe     : {len(program.code)} Bytes\n"
+                    f"Hunk-Größe     : {len(program.executable)} Bytes\n"
+                    f"Variablen      : {generated.variable_count}\n"
+                    f"Strings        : {generated.string_count}\n"
+                    f"68000-Befehle  : {program.instruction_count}\n"
+                )
+                self.log(
+                    "PASCAL AMIGA: "
+                    f"{document.display_name} -> {assembly_path.name} -> "
+                    f"{output_path.name}, {len(program.executable)} Bytes"
+                )
+            else:
+                document.hints_editor.setPlainText(
+                    "C64-Pascal erfolgreich kompiliert\n"
+                    "\n"
+                    f"Pascal       : {document.display_name}\n"
+                    f"Assembler    : {assembly_path}\n"
+                    f"Programm     : {output_path}\n"
+                    f"Ladeadresse  : ${program.load_address:04X}\n"
+                    f"Einsprung    : ${program.entry_address:04X}\n"
+                    f"Letztes Byte : ${program.end_address:04X}\n"
+                    f"PRG-Größe    : {len(program.prg)} Bytes\n"
+                    f"Variablen    : {generated.variable_count}\n"
+                    f"Strings      : {generated.string_count}\n"
+                    f"6510-Befehle : {program.instruction_count}\n"
+                    f"BASIC-Stub   : {'ja' if program.has_basic_stub else 'nein'}\n"
+                )
+                self.log(
+                    "PASCAL C64: "
+                    f"{document.display_name} -> {assembly_path.name} -> "
+                    f"{output_path.name}, ${program.load_address:04X}-"
+                    f"${program.end_address:04X}"
+                )
             self.statusBar().showMessage(
                 f"Pascal erfolgreich kompiliert: {output_path.name}"
             )
@@ -6233,11 +6553,15 @@ border: 2px solid #2a69aa;
             return True
 
         def _compile_c_document(self, document: DocumentEditor) -> bool:
-            """ANTLR-C -> 6510-ASM -> interner Assembler -> C64-PRG."""
+            """ANTLR-C -> Ziel-ASM -> internes Programmformat."""
             source = document.raw_editor.toPlainText()
             source_digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
             try:
                 from c64c import C64CError, compile_c_to_assembly
+                from amiga500 import (
+                    AmigaAssemblerError,
+                    assemble_amiga_source,
+                )
             except ImportError as exc:
                 message = (
                     "Der ANTLR-basierte C-Compiler konnte nicht geladen "
@@ -6271,15 +6595,22 @@ border: 2px solid #2a69aa;
                     source,
                     filename=source_filename,
                     include_paths=include_paths,
+                    target=document.build_target,
                 )
                 document.set_generated_assembly(
                     generated.assembly,
                     assembly_path,
                 )
-                program = assemble_mos6510_source(
-                    generated.assembly,
-                    filename=assembly_path.name,
-                )
+                if document.build_target == "amiga":
+                    program = assemble_amiga_source(
+                        generated.assembly,
+                        filename=assembly_path.name,
+                    )
+                else:
+                    program = assemble_mos6510_source(
+                        generated.assembly,
+                        filename=assembly_path.name,
+                    )
             except C64CError as exc:
                 message = str(exc)
                 error_line = 0
@@ -6301,7 +6632,7 @@ border: 2px solid #2a69aa;
                 self.show_error("C-Compilerfehler", message)
                 self.statusBar().showMessage("C-Kompilierung fehlgeschlagen")
                 return False
-            except AssemblerError as exc:
+            except (AssemblerError, AmigaAssemblerError) as exc:
                 assembly_line = exc.line or 0
                 c_line = (
                     generated.c_line_for_assembly_line(assembly_line)
@@ -6346,12 +6677,17 @@ border: 2px solid #2a69aa;
                     assembly_path,
                     generated.assembly.encode("utf-8"),
                 )
-                self._write_assembled_program(output_path, program.prg)
+                program_data = (
+                    program.executable
+                    if document.build_target == "amiga"
+                    else program.prg
+                )
+                self._write_assembled_program(output_path, program_data)
             except OSError as exc:
                 message = (
                     "Die Compiler-Ausgabe konnte nicht gespeichert werden:\n"
                     f"ASM: {assembly_path}\n"
-                    f"PRG: {output_path}\n\n{exc}"
+                    f"Programm: {output_path}\n\n{exc}"
                 )
                 document.show_assembly_error(
                     message,
@@ -6391,33 +6727,59 @@ border: 2px solid #2a69aa;
                 if diagnostic_lines
                 else ""
             )
-            document.hints_editor.setPlainText(
-                "C64-C erfolgreich kompiliert\n"
-                "\n"
-                f"C             : {document.display_name}\n"
-                f"Assembler     : {assembly_path}\n"
-                f"Programm      : {output_path}\n"
-                f"Ladeadresse   : ${program.load_address:04X}\n"
-                f"Einsprung     : ${program.entry_address:04X}\n"
-                f"Letztes Byte  : ${program.end_address:04X}\n"
-                f"PRG-Größe     : {len(program.prg)} Bytes\n"
-                f"Variablen     : {generated.variable_count}\n"
-                f"Strings       : {generated.string_count}\n"
-                f"Includes      : {len(generated.included_files)}\n"
-                f"Makros        : {len(generated.macros)}\n"
-                f"Typedefs      : {generated.typedef_count}\n"
-                f"Strukturen    : {generated.structure_count}\n"
-                f"Prototypen    : {generated.prototype_count}\n"
-                f"6510-Befehle  : {program.instruction_count}\n"
-                f"BASIC-Stub    : {'ja' if program.has_basic_stub else 'nein'}\n"
-                f"{diagnostic_text}"
-            )
-            self.log(
-                "C: "
-                f"{document.display_name} -> {assembly_path.name} -> "
-                f"{output_path.name}, ${program.load_address:04X}-"
-                f"${program.end_address:04X}"
-            )
+            if document.build_target == "amiga":
+                document.hints_editor.setPlainText(
+                    "Amiga-C erfolgreich kompiliert\n"
+                    "\n"
+                    f"C               : {document.display_name}\n"
+                    f"Assembler       : {assembly_path}\n"
+                    f"Hunk-Programm   : {output_path}\n"
+                    f"Einsprung       : +${program.entry_offset:08X}\n"
+                    f"Code-Größe      : {len(program.code)} Bytes\n"
+                    f"Hunk-Größe      : {len(program.executable)} Bytes\n"
+                    f"Variablen       : {generated.variable_count}\n"
+                    f"Strings         : {generated.string_count}\n"
+                    f"Includes        : {len(generated.included_files)}\n"
+                    f"Makros          : {len(generated.macros)}\n"
+                    f"Typedefs        : {generated.typedef_count}\n"
+                    f"Strukturen      : {generated.structure_count}\n"
+                    f"Prototypen      : {generated.prototype_count}\n"
+                    f"68000-Befehle   : {program.instruction_count}\n"
+                    f"{diagnostic_text}"
+                )
+                self.log(
+                    "C AMIGA: "
+                    f"{document.display_name} -> {assembly_path.name} -> "
+                    f"{output_path.name}, {len(program.executable)} Bytes"
+                )
+            else:
+                document.hints_editor.setPlainText(
+                    "C64-C erfolgreich kompiliert\n"
+                    "\n"
+                    f"C             : {document.display_name}\n"
+                    f"Assembler     : {assembly_path}\n"
+                    f"Programm      : {output_path}\n"
+                    f"Ladeadresse   : ${program.load_address:04X}\n"
+                    f"Einsprung     : ${program.entry_address:04X}\n"
+                    f"Letztes Byte  : ${program.end_address:04X}\n"
+                    f"PRG-Größe     : {len(program.prg)} Bytes\n"
+                    f"Variablen     : {generated.variable_count}\n"
+                    f"Strings       : {generated.string_count}\n"
+                    f"Includes      : {len(generated.included_files)}\n"
+                    f"Makros        : {len(generated.macros)}\n"
+                    f"Typedefs      : {generated.typedef_count}\n"
+                    f"Strukturen    : {generated.structure_count}\n"
+                    f"Prototypen    : {generated.prototype_count}\n"
+                    f"6510-Befehle  : {program.instruction_count}\n"
+                    f"BASIC-Stub    : {'ja' if program.has_basic_stub else 'nein'}\n"
+                    f"{diagnostic_text}"
+                )
+                self.log(
+                    "C C64: "
+                    f"{document.display_name} -> {assembly_path.name} -> "
+                    f"{output_path.name}, ${program.load_address:04X}-"
+                    f"${program.end_address:04X}"
+                )
             if generated.warnings:
                 self.statusBar().showMessage(
                     f"C mit {len(generated.warnings)} Warnung(en) kompiliert: "
@@ -6435,7 +6797,7 @@ border: 2px solid #2a69aa;
             self,
             document: DocumentEditor,
         ) -> bool:
-            """Übersetzt den editierbaren ASM-Tab in ein C64-PRG."""
+            """Übersetzt den editierbaren ASM-Tab für das gewählte Ziel."""
             if not isinstance(document, DocumentEditor):
                 return False
             self.document_tabs.setCurrentWidget(document)
@@ -6458,7 +6820,20 @@ border: 2px solid #2a69aa;
                 return False
 
             try:
-                output_path = self._assembler_output_path(document)
+                from amiga500 import (
+                    AmigaAssemblerError,
+                    assemble_amiga_boot_source,
+                    assemble_amiga_source,
+                    is_amiga_boot_source,
+                )
+                amiga_bootable = (
+                    document.build_target == "amiga"
+                    and is_amiga_boot_source(assembly_source)
+                )
+                output_path = self._assembler_output_path(
+                    document,
+                    assembly_source,
+                )
                 assembly_path = document.generated_assembly_path
                 if assembly_path is None:
                     assembly_path = (
@@ -6466,11 +6841,22 @@ border: 2px solid #2a69aa;
                         if document.is_pascal_document
                         else self._c_assembly_output_path(document)
                     )
-                program = assemble_mos6510_source(
-                    assembly_source,
-                    filename=assembly_path.name,
-                )
-            except AssemblerError as exc:
+                if document.build_target == "amiga":
+                    assembler = (
+                        assemble_amiga_boot_source
+                        if amiga_bootable
+                        else assemble_amiga_source
+                    )
+                    program = assembler(
+                        assembly_source,
+                        filename=assembly_path.name,
+                    )
+                else:
+                    program = assemble_mos6510_source(
+                        assembly_source,
+                        filename=assembly_path.name,
+                    )
+            except (AssemblerError, AmigaAssemblerError) as exc:
                 message = str(exc)
                 document.show_generated_assembly_error(
                     message,
@@ -6501,12 +6887,19 @@ border: 2px solid #2a69aa;
                     assembly_path,
                     assembly_source.encode("utf-8"),
                 )
-                self._write_assembled_program(output_path, program.prg)
+                program_data = (
+                    program.adf
+                    if amiga_bootable
+                    else program.executable
+                    if document.build_target == "amiga"
+                    else program.prg
+                )
+                self._write_assembled_program(output_path, program_data)
             except OSError as exc:
                 message = (
                     "Die Assembler-Ausgabe konnte nicht gespeichert werden:\n"
                     f"ASM: {assembly_path}\n"
-                    f"PRG: {output_path}\n\n{exc}"
+                    f"Programm: {output_path}\n\n{exc}"
                 )
                 document.show_generated_assembly_error(
                     message,
@@ -6539,24 +6932,59 @@ border: 2px solid #2a69aa;
                 assembly_digest,
                 "assembly",
             )
-            document.hints_editor.setPlainText(
-                "Assembler aus dem ASM-Tab erfolgreich beendet\n"
-                "\n"
-                f"Quelle       : {assembly_path}\n"
-                f"Ausgabe      : {output_path}\n"
-                f"Ladeadresse  : ${program.load_address:04X}\n"
-                f"Einsprung    : ${program.entry_address:04X}\n"
-                f"Letztes Byte : ${program.end_address:04X}\n"
-                f"PRG-Größe    : {len(program.prg)} Bytes\n"
-                f"Instruktionen: {program.instruction_count}\n"
-                f"BASIC-Stub   : {'ja' if program.has_basic_stub else 'nein'}\n"
-            )
-            self.log(
-                "ASSEMBLE ASM-TAB: "
-                f"{assembly_path.name} -> {output_path.name}, "
-                f"${program.load_address:04X}-${program.end_address:04X}, "
-                f"Start ${program.entry_address:04X}"
-            )
+            if document.build_target == "amiga":
+                if amiga_bootable:
+                    document.hints_editor.setPlainText(
+                        "Amiga-Standalone-Assembler aus dem ASM-Tab beendet\n"
+                        "\n"
+                        f"Quelle        : {assembly_path}\n"
+                        f"Boot-ADF      : {output_path}\n"
+                        f"Boot-Einsprung: +${program.entry_offset:08X}\n"
+                        f"Code-Größe    : {len(program.code)} Bytes\n"
+                        f"ADF-Größe     : {len(program.adf)} Bytes\n"
+                        f"Instruktionen : {program.instruction_count}\n"
+                        "Workbench-Libs : keine\n"
+                    )
+                    self.log(
+                        "ASSEMBLE AMIGA BOOT ASM-TAB: "
+                        f"{assembly_path.name} -> {output_path.name}, "
+                        f"{len(program.adf)} Bytes"
+                    )
+                else:
+                    document.hints_editor.setPlainText(
+                        "Amiga-Assembler aus dem ASM-Tab erfolgreich beendet\n"
+                        "\n"
+                        f"Quelle        : {assembly_path}\n"
+                        f"Hunk-Ausgabe  : {output_path}\n"
+                        f"Einsprung     : +${program.entry_offset:08X}\n"
+                        f"Code-Größe    : {len(program.code)} Bytes\n"
+                        f"Hunk-Größe    : {len(program.executable)} Bytes\n"
+                        f"Instruktionen : {program.instruction_count}\n"
+                    )
+                    self.log(
+                        "ASSEMBLE AMIGA ASM-TAB: "
+                        f"{assembly_path.name} -> {output_path.name}, "
+                        f"{len(program.executable)} Bytes"
+                    )
+            else:
+                document.hints_editor.setPlainText(
+                    "C64-Assembler aus dem ASM-Tab erfolgreich beendet\n"
+                    "\n"
+                    f"Quelle       : {assembly_path}\n"
+                    f"Ausgabe      : {output_path}\n"
+                    f"Ladeadresse  : ${program.load_address:04X}\n"
+                    f"Einsprung    : ${program.entry_address:04X}\n"
+                    f"Letztes Byte : ${program.end_address:04X}\n"
+                    f"PRG-Größe    : {len(program.prg)} Bytes\n"
+                    f"Instruktionen: {program.instruction_count}\n"
+                    f"BASIC-Stub   : {'ja' if program.has_basic_stub else 'nein'}\n"
+                )
+                self.log(
+                    "ASSEMBLE C64 ASM-TAB: "
+                    f"{assembly_path.name} -> {output_path.name}, "
+                    f"${program.load_address:04X}-${program.end_address:04X}, "
+                    f"Start ${program.entry_address:04X}"
+                )
             self.statusBar().showMessage(
                 f"ASM-Tab erfolgreich assembliert: {output_path.name}"
             )
@@ -6565,7 +6993,7 @@ border: 2px solid #2a69aa;
             return True
 
         def assemble_document(self, document: DocumentEditor) -> bool:
-            """Erzeugt aus einem ASM-, Pascal- oder C-Dokument ein C64-PRG."""
+            """Erzeugt aus ASM, Pascal oder C das gewählte Zielprogramm."""
             if not isinstance(document, DocumentEditor):
                 return False
             self.document_tabs.setCurrentWidget(document)
@@ -6586,13 +7014,40 @@ border: 2px solid #2a69aa;
                 source.encode("utf-8")
             ).hexdigest()
             try:
-                output_path = self._assembler_output_path(document)
-                program = assemble_mos6510_source(
-                    source,
-                    filename=document.display_name,
+                from amiga500 import (
+                    AmigaAssemblerError,
+                    assemble_amiga_boot_source,
+                    assemble_amiga_source,
+                    is_amiga_boot_source,
                 )
-                self._write_assembled_program(output_path, program.prg)
-            except AssemblerError as exc:
+                amiga_bootable = (
+                    document.build_target == "amiga"
+                    and is_amiga_boot_source(source)
+                )
+                output_path = self._assembler_output_path(document, source)
+                if document.build_target == "amiga":
+                    assembler = (
+                        assemble_amiga_boot_source
+                        if amiga_bootable
+                        else assemble_amiga_source
+                    )
+                    program = assembler(
+                        source,
+                        filename=document.display_name,
+                    )
+                    program_data = (
+                        program.adf
+                        if amiga_bootable
+                        else program.executable
+                    )
+                else:
+                    program = assemble_mos6510_source(
+                        source,
+                        filename=document.display_name,
+                    )
+                    program_data = program.prg
+                self._write_assembled_program(output_path, program_data)
+            except (AssemblerError, AmigaAssemblerError) as exc:
                 message = str(exc)
                 document.show_assembly_error(message, exc.line or 0)
                 self.show_error("Assemblerfehler", message)
@@ -6600,7 +7055,7 @@ border: 2px solid #2a69aa;
                 return False
             except OSError as exc:
                 message = (
-                    "Das C64-Programm konnte nicht gespeichert werden:\n"
+                    "Das Zielprogramm konnte nicht gespeichert werden:\n"
                     f"{output_path}\n\n{exc}"
                 )
                 document.show_assembly_error(message)
@@ -6613,24 +7068,59 @@ border: 2px solid #2a69aa;
                 output_path,
                 source_digest,
             )
-            document.hints_editor.setPlainText(
-                "Assembler erfolgreich beendet\n"
-                "\n"
-                f"Quelle       : {document.display_name}\n"
-                f"Ausgabe      : {output_path}\n"
-                f"Ladeadresse  : ${program.load_address:04X}\n"
-                f"Einsprung    : ${program.entry_address:04X}\n"
-                f"Letztes Byte : ${program.end_address:04X}\n"
-                f"PRG-Größe    : {len(program.prg)} Bytes\n"
-                f"Instruktionen: {program.instruction_count}\n"
-                f"BASIC-Stub   : {'ja' if program.has_basic_stub else 'nein'}\n"
-            )
-            self.log(
-                "ASSEMBLE: "
-                f"{document.display_name} -> {output_path.name}, "
-                f"${program.load_address:04X}-${program.end_address:04X}, "
-                f"Start ${program.entry_address:04X}"
-            )
+            if document.build_target == "amiga":
+                if amiga_bootable:
+                    document.hints_editor.setPlainText(
+                        "Amiga-Standalone-Assembler erfolgreich beendet\n"
+                        "\n"
+                        f"Quelle        : {document.display_name}\n"
+                        f"Boot-ADF      : {output_path}\n"
+                        f"Boot-Einsprung: +${program.entry_offset:08X}\n"
+                        f"Code-Größe    : {len(program.code)} Bytes\n"
+                        f"ADF-Größe     : {len(program.adf)} Bytes\n"
+                        f"Instruktionen : {program.instruction_count}\n"
+                        "Workbench-Libs : keine\n"
+                    )
+                    self.log(
+                        "ASSEMBLE AMIGA BOOT: "
+                        f"{document.display_name} -> {output_path.name}, "
+                        f"{len(program.adf)} Bytes"
+                    )
+                else:
+                    document.hints_editor.setPlainText(
+                        "Amiga-Assembler erfolgreich beendet\n"
+                        "\n"
+                        f"Quelle        : {document.display_name}\n"
+                        f"Hunk-Ausgabe  : {output_path}\n"
+                        f"Einsprung     : +${program.entry_offset:08X}\n"
+                        f"Code-Größe    : {len(program.code)} Bytes\n"
+                        f"Hunk-Größe    : {len(program.executable)} Bytes\n"
+                        f"Instruktionen : {program.instruction_count}\n"
+                    )
+                    self.log(
+                        "ASSEMBLE AMIGA: "
+                        f"{document.display_name} -> {output_path.name}, "
+                        f"{len(program.executable)} Bytes"
+                    )
+            else:
+                document.hints_editor.setPlainText(
+                    "C64-Assembler erfolgreich beendet\n"
+                    "\n"
+                    f"Quelle       : {document.display_name}\n"
+                    f"Ausgabe      : {output_path}\n"
+                    f"Ladeadresse  : ${program.load_address:04X}\n"
+                    f"Einsprung    : ${program.entry_address:04X}\n"
+                    f"Letztes Byte : ${program.end_address:04X}\n"
+                    f"PRG-Größe    : {len(program.prg)} Bytes\n"
+                    f"Instruktionen: {program.instruction_count}\n"
+                    f"BASIC-Stub   : {'ja' if program.has_basic_stub else 'nein'}\n"
+                )
+                self.log(
+                    "ASSEMBLE C64: "
+                    f"{document.display_name} -> {output_path.name}, "
+                    f"${program.load_address:04X}-${program.end_address:04X}, "
+                    f"Start ${program.entry_address:04X}"
+                )
             self.statusBar().showMessage(
                 f"Assemblieren erfolgreich: {output_path.name}"
             )
@@ -6667,6 +7157,35 @@ border: 2px solid #2a69aa;
             self.statusBar().showMessage("VICE-Start abgebrochen")
             return None
 
+        def _resolve_winuae_for_program_start(self) -> Optional[Path]:
+            if self.winuae_path:
+                configured = Path(self.winuae_path).expanduser()
+                if configured.is_file():
+                    return configured.resolve()
+                self.show_error(
+                    "WinUAE nicht gefunden",
+                    "Das gespeicherte WinUAE-Programm existiert nicht mehr:\n"
+                    f"{configured}\n\nBitte wähle WinUAE erneut aus.",
+                )
+                self.winuae_path = ""
+
+            executable = (
+                shutil.which("winuae64.exe")
+                or shutil.which("winuae.exe")
+                or shutil.which("winuae64")
+                or shutil.which("winuae")
+            )
+            if executable:
+                return Path(executable).resolve()
+
+            self.choose_winuae()
+            if self.winuae_path:
+                selected = Path(self.winuae_path)
+                if selected.is_file():
+                    return selected.resolve()
+            self.statusBar().showMessage("WinUAE-Start abgebrochen")
+            return None
+
         def start_assembled_document(self, document: DocumentEditor) -> bool:
             """Lädt den letzten Build per VICE-Autostart und führt ihn aus."""
             if not isinstance(document, DocumentEditor):
@@ -6679,6 +7198,7 @@ border: 2px solid #2a69aa;
             output_path = document.assembled_program_path
             if (
                 output_path is None
+                or document.assembled_target != document.build_target
                 or document.assembled_input_kind != "source"
                 or document.assembled_source_digest != current_digest
                 or not output_path.is_file()
@@ -6699,6 +7219,7 @@ border: 2px solid #2a69aa;
             output_path = document.assembled_program_path
             if (
                 output_path is None
+                or document.assembled_target != document.build_target
                 or document.assembled_assembly_digest != current_digest
                 or not output_path.is_file()
             ):
@@ -6713,6 +7234,8 @@ border: 2px solid #2a69aa;
             output_path = document.assembled_program_path
             if output_path is None:
                 return False
+            if document.build_target == "amiga":
+                return self._launch_amiga_document(document, output_path)
             vice_path = self._resolve_vice_for_program_start()
             if vice_path is None:
                 return False
@@ -6765,6 +7288,142 @@ border: 2px solid #2a69aa;
             )
             self.statusBar().showMessage(
                 f"In VICE gestartet: {output_path.name}"
+            )
+            return True
+
+        def _launch_amiga_document(
+            self,
+            document: DocumentEditor,
+            output_path: Path,
+        ) -> bool:
+            winuae_path = self._resolve_winuae_for_program_start()
+            if winuae_path is None:
+                return False
+
+            if output_path.suffix.casefold() == ".adf":
+                command = [
+                    str(winuae_path),
+                    "-s",
+                    "quickstart=a500,1",
+                    "-s",
+                    "use_gui=no",
+                    "-0",
+                    str(output_path),
+                ]
+                options = {
+                    "cwd": str(output_path.parent),
+                    "stdin": subprocess.DEVNULL,
+                    "stdout": subprocess.DEVNULL,
+                    "stderr": subprocess.DEVNULL,
+                }
+                if os.name == "nt" and hasattr(
+                    subprocess,
+                    "CREATE_NEW_PROCESS_GROUP",
+                ):
+                    options["creationflags"] = (
+                        subprocess.CREATE_NEW_PROCESS_GROUP
+                    )
+                try:
+                    process = subprocess.Popen(command, **options)
+                except OSError as exc:
+                    self.show_error(
+                        "WinUAE konnte nicht gestartet werden",
+                        f"Programm: {winuae_path}\n"
+                        f"Boot-ADF: {output_path}\n\n{exc}",
+                    )
+                    return False
+
+                processes = [
+                    running
+                    for running in getattr(self, "_winuae_processes", [])
+                    if running.poll() is None
+                ]
+                processes.append(process)
+                self._winuae_processes = processes
+                document.assembly_status_label.setText(
+                    f"Standalone in WinUAE gestartet: {output_path.name}"
+                )
+                if document.generated_assembly_path is not None:
+                    document.generated_assembly_status_label.setText(
+                        f"Standalone in WinUAE gestartet: {output_path.name}"
+                    )
+                self.log(
+                    "WINUAE ADF START: "
+                    + self._display_dism_command(command)
+                )
+                self.statusBar().showMessage(
+                    f"Standalone-ADF in WinUAE gestartet: {output_path.name}"
+                )
+                return True
+
+            active_directories = []
+            for process, temporary in self._winuae_boot_directories:
+                if process.poll() is None:
+                    active_directories.append((process, temporary))
+                else:
+                    temporary.cleanup()
+            self._winuae_boot_directories = active_directories
+
+            temporary = tempfile.TemporaryDirectory(
+                prefix="d64_dism_winuae_"
+            )
+            boot_root = Path(temporary.name)
+            startup_directory = boot_root / "S"
+            startup_directory.mkdir(parents=True, exist_ok=True)
+            mounted_program = boot_root / "program"
+            shutil.copy2(output_path, mounted_program)
+            (startup_directory / "startup-sequence").write_text(
+                "program\n",
+                encoding="ascii",
+                newline="\n",
+            )
+
+            command = [
+                str(winuae_path),
+                "-s",
+                "quickstart=a500,1",
+                "-s",
+                "use_gui=no",
+                "-s",
+                f"filesystem2=rw,DH0:DH0:{boot_root},0",
+            ]
+            options = {
+                "cwd": str(output_path.parent),
+                "stdin": subprocess.DEVNULL,
+                "stdout": subprocess.DEVNULL,
+                "stderr": subprocess.DEVNULL,
+            }
+            if os.name == "nt" and hasattr(
+                subprocess,
+                "CREATE_NEW_PROCESS_GROUP",
+            ):
+                options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+
+            try:
+                process = subprocess.Popen(command, **options)
+            except OSError as exc:
+                temporary.cleanup()
+                self.show_error(
+                    "WinUAE konnte nicht gestartet werden",
+                    f"Programm: {winuae_path}\n"
+                    f"Amiga-Hunk: {output_path}\n\n{exc}",
+                )
+                return False
+
+            self._winuae_boot_directories.append((process, temporary))
+            document.assembly_status_label.setText(
+                f"In WinUAE gestartet: {output_path.name}"
+            )
+            if document.generated_assembly_path is not None:
+                document.generated_assembly_status_label.setText(
+                    f"In WinUAE gestartet: {output_path.name}"
+                )
+            self.log(
+                "WINUAE START: "
+                + self._display_dism_command(command)
+            )
+            self.statusBar().showMessage(
+                f"In WinUAE gestartet: {output_path.name}"
             )
             return True
 

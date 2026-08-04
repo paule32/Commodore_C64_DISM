@@ -1,0 +1,43 @@
+; ---------------------------------------------------------------------------
+; Standalone-Amiga-500-Bootblock: grüner Hintergrund und Blitter-Zugriff
+; Keine Workbench-, dos.library- oder graphics.library-Abhängigkeit.
+; ---------------------------------------------------------------------------
+.bootable
+section code,code
+xdef _start
+
+_start:
+    ; Basisadresse der Custom-Chip-Register.
+    move.l #$00DFF000,a5
+
+    ; Interrupts und zunächst alle DMA-Kanäle abschalten.
+    move.w #$7FFF,$9A(a5)       ; INTENA: alle Bits löschen
+    move.w #$7FFF,$96(a5)       ; DMACON: alle Bits löschen
+
+    ; COLOR00 = RGB $0F0: grüner Hintergrund ohne Bitplanes.
+    move.w #$00F0,$180(a5)
+
+    ; Blitter für einen D-only-Löschvorgang vorbereiten.
+    move.w #$0100,$40(a5)       ; BLTCON0: USED + Minterm 0
+    move.w #$0000,$42(a5)       ; BLTCON1
+    move.w #$0000,$66(a5)       ; BLTDMOD
+    lea blitter_target(pc),a0
+    move.l a0,$54(a5)           ; BLTDPTH/BLTDPTL
+
+    ; DMA-Master und Blitter einschalten und 1 Wort x 1 Zeile starten.
+    move.w #$8240,$96(a5)       ; SET + DMAEN + BLTEN
+    move.w #$0041,$58(a5)       ; BLTSIZE: Höhe 1, Breite 1 Wort
+
+.wait_blitter:
+    move.w $02(a5),d0           ; DMACONR
+    andi.w #$4000,d0            ; BBUSY gesetzt?
+    bne .wait_blitter
+
+    ; Die grüne Anzeige bleibt stehen.
+.forever:
+    bra .forever
+
+even
+blitter_target:
+    dc.w $FFFF
+end
