@@ -1,0 +1,18 @@
+C64 BASIC compiler validation
+==============================
+
+BASIC compiler unit tests: 8 successful
+Focused BASIC/project/editor tests: 28 successful
+Full unittest discovery: 118 tests executed
+Successful tests: 105
+Known import errors: 13 (ANTLR runtime mismatch in existing C/Pascal tests)
+New test failures: 0
+
+Demo source: examples/c64basic/basic_demo.bas
+Generated ASM: examples/c64basic/basic_demo.generated.asm
+Generated PRG: examples/c64basic/basic_demo.prg
+ASM instructions: 434
+PRG load address: $0801
+Program entry: $080D
+PRG size: 1103 bytes
+CLI and direct compiler PRG output: byte-identical

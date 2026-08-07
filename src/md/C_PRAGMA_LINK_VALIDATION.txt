@@ -1,0 +1,45 @@
+C #pragma link validation
+=========================
+
+Implemented syntax:
+    #pragma link "module.c"
+    #pragma link("module.c")
+    #pragma d64_link_c "module.c"
+
+Static checks:
+    c64c/preprocessor.py        Python syntax OK
+    c64c/compiler.py            Python syntax OK
+    d64_dism.py                 Python syntax OK
+    tests/test_c_pragma_link.py Python syntax OK
+
+Preprocessor checks:
+    Relative path resolution    OK
+    Header-based pragma         OK
+    Parenthesized syntax        OK
+    Duplicate include removal   OK
+    Self-reference removal      OK
+
+Code-generator checks using the compiler AST directly:
+    Amiga external call         bsr AddValues
+    Amiga parameter offsets     6(sp), 4(sp) for two parameters
+    Amiga function label        AddValues:
+    C64 external call           jsr AddValues
+    C64 function label          AddValues:
+
+Separate-module link check:
+    Main translation unit and module translation unit generated separately.
+    Both assembler sources were statically combined.
+    Existing Amiga assembler accepted the result.
+    ADF size:                  901120 bytes
+    68000 instruction count:  140
+
+Environment note:
+    The bundled generated parsers are ANTLR 4.13.2 files. The execution
+    environment used for this package only contains an older incompatible
+    antlr4-python3-runtime, so the full generated-parser regression test could
+    not be executed here. The project itself requires:
+
+        antlr4-python3-runtime==4.13.2
+
+    The preprocessor, Python syntax, code-generation path, static C-module
+    linker and final Amiga assembly were tested independently.

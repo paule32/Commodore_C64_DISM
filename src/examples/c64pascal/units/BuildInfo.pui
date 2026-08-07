@@ -1,0 +1,24 @@
+{
+  "format": "d64pascal-pui",
+  "version": 1,
+  "unit": "BuildInfo",
+  "guard": "__BUILD_INFO_PAS_",
+  "interface": {
+    "source": "\n\nconst\n  BuildVersion = 2;\n\ntype\n  TBuildState = (Development, Release);\n\n",
+    "uses": [],
+    "symbols": {
+      "constants": [
+        "BuildVersion"
+      ],
+      "types": [
+        "TBuildState"
+      ],
+      "variables": [],
+      "methods": []
+    }
+  },
+  "source": {
+    "file": "BuildInfo.pas",
+    "sha256": "6023c6e32a6142d9cd9becf8ff90bf203ad165785533e1726d76fb230822a26f"
+  }
+}

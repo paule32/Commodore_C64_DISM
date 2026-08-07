@@ -1,0 +1,42 @@
+Validation d64_dism(9) platform targets
+=======================================
+
+Basis:
+64ae1396feec4b6adf36594e5203dd0697ee3fe1a658e8dc2562f8d319e2aa16  /mnt/data/d64_dism(9).py
+c52fbe0883b244646a782e04e94bb6276e859df1e6bd44927e7d44d41dc1a75a  /mnt/data/d64_dism9_platform_targets/d64_dism(9).py
+
+Python:
+- python -m py_compile d64_dism(9).py: OK
+- python -m unittest tests.test_platform_targets -v: 14 tests OK
+- CLI --help: OK
+
+Dateiformate:
+/mnt/data/d64_dism9_platform_targets/examples/pe32/pe32_stackframe.exe: PE32 executable for MS Windows 4.00 (console), Intel i386, 2 sections
+/mnt/data/d64_dism9_platform_targets/examples/pe32/pe32_stackframe.o:   Intel i386 COFF object file, not stripped, 1 section, symbol offset=0x65, 2 symbols, 1st section name ".text"
+/mnt/data/d64_dism9_platform_targets/examples/pe32/libdemo.a:           current ar archive
+
+PE32-Importtabelle:
+The Import Tables (interpreted .idata section contents)
+ vma:            Hint    Time      Forward  DLL       First
+                 Table   Stamp     Chain    Name      Thunk
+ 00002000	00002028 00000000 00000000 00002046 00002030
+
+	DLL Name: kernel32.dll
+	vma:     Ordinal  Hint  Member-Name  Bound-To
+	00002030  <none>  0000  ExitProcess
+
+ 00002014	00000000 00000000 00000000 00000000 00000000
+
+Geprüfte Kernpunkte:
+- Amiga CPU-Profile mk68000, mk68010, mk68020, mk68030, mk68040, mk68060
+- FPU-Auswahl None / 68881 / 68882
+- CPU-Gating für RTD, BKPT, MOVEC, EXTB.L, LINK.L, Bcc.L
+- MOVEC VBR/TC/PCR Profile
+- FPU-Registerarithmetik und FNOP
+- PE32 MZ/PE-Signatur
+- IA-32 Stackframe-/Speicheradressierung
+- COFF32 Objekt lesen/schreiben
+- REL32/DIR32 über mehrere Objekte
+- eigenes .a-Archiv
+- PE32-Linker mit kernel32.dll/ExitProcess Importtabelle
+- Direct2D-/Direct3D-Runtimequellen und Präprozessorprofile

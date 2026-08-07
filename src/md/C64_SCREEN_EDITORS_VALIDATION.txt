@@ -1,0 +1,12 @@
+C64 screen editors validation
+=============================
+Python syntax: successful
+Character layout tests: successful
+Text screen data size: 2000 bytes
+Pixel screen packed size: 32000 bytes
+Text ASM output: $2000-$27CF
+Pixel ASM output: $2000-$9CFF
+Targeted tests: 25 successful
+Parser-independent regression tests: 67 successful
+Full compiler tests: unavailable because installed ANTLR runtime does not match generated parsers
+Qt visual launch: unavailable because PyQt5 is not installed in the validation container

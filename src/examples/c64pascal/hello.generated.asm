@@ -1,7 +1,4 @@
 ; Von C64 Pascal erzeugter MOS-6510-Assembler
-; (c) 2026 by Jens Kallup - paule32
-; alle Rechte vorbehalten.
-;
 ; Programm: HelloC64
 .org $080D
 .entry __pascal_start

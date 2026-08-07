@@ -1,0 +1,502 @@
+{
+  "format": "d64pascal-pui",
+  "version": 2,
+  "unit": "System.Graphics",
+  "guard": null,
+  "interface": {
+    "source": "\n\nconst\n    GraphicsWidth  = 320;\n    GraphicsHeight = 200;\n\n    tmUppercase  = 0;\n    tmUpperLower = 1;\n\n    ColorBlack       = 0;\n    ColorWhite       = 1;\n    ColorRed         = 2;\n    ColorCyan        = 3;\n    ColorPurple      = 4;\n    ColorGreen       = 5;\n    ColorBlue        = 6;\n    ColorYellow      = 7;\n    ColorOrange      = 8;\n    ColorBrown       = 9;\n    ColorLightRed    = 10;\n    ColorDarkGray    = 11;\n    ColorGray        = 12;\n    ColorLightGreen  = 13;\n    ColorLightBlue   = 14;\n    ColorLightGray   = 15;\n\ntype\n    TColor = Byte;\n    TTextMode = Byte;\n\n                                                        \n                      \n                       \n                                        \n\n                                                 \n                                         \n\n                                                           \n                                                           \n                                                                                                  \n                                                                       \n                                                                                                              \n                                                      \n                                                                       \n                                                                                                              \n                                                                                                                          \n\n",
+    "declaration_source": "\n\nconst\n    GraphicsWidth  = 320;\n    GraphicsHeight = 200;\n\n    tmUppercase  = 0;\n    tmUpperLower = 1;\n\n    ColorBlack       = 0;\n    ColorWhite       = 1;\n    ColorRed         = 2;\n    ColorCyan        = 3;\n    ColorPurple      = 4;\n    ColorGreen       = 5;\n    ColorBlue        = 6;\n    ColorYellow      = 7;\n    ColorOrange      = 8;\n    ColorBrown       = 9;\n    ColorLightRed    = 10;\n    ColorDarkGray    = 11;\n    ColorGray        = 12;\n    ColorLightGreen  = 13;\n    ColorLightBlue   = 14;\n    ColorLightGray   = 15;\n\ntype\n    TColor = Byte;\n    TTextMode = Byte;\n\nprocedure SetTextColor(Foreground, Background: Integer);\nprocedure ClearScreen;\nprocedure InitGraphics;\nprocedure DoneGraphics(Mode: TTextMode);\n\nprocedure SetPixel(X, Y: Integer; Color: TColor);\nfunction GetPixel(X, Y: Integer): TColor;\n\nprocedure DrawLine(X1, Y1, X2, Y2: Integer; Color: TColor);\nprocedure DrawRect(X1, Y1, X2, Y2: Integer; Color: TColor);\nprocedure FillRect(X1, Y1, X2, Y2: Integer; FillColor, BorderColor: TColor; BorderWidth: Integer);\nprocedure DrawCircle(CenterX, CenterY, Radius: Integer; Color: TColor);\nprocedure FillCircle(CenterX, CenterY, Radius: Integer; FillColor, BorderColor: TColor; BorderWidth: Integer);\nprocedure FloodFill(X, Y: Integer; FillColor: TColor);\nprocedure DrawTriangle(X1, Y1, X2, Y2, X3, Y3: Integer; Color: TColor);\nprocedure FillTriangle(X1, Y1, X2, Y2, X3, Y3: Integer; FillColor, BorderColor: TColor; BorderWidth: Integer);\nprocedure DrawTriangleAngles(CenterX, CenterY, Radius1, Radius2, Radius3, Angle1, Angle2, Angle3: Integer; Color: TColor);\n\n",
+    "uses": [],
+    "symbols": {
+      "constants": [
+        "GraphicsWidth",
+        "GraphicsHeight",
+        "tmUppercase",
+        "tmUpperLower",
+        "ColorBlack",
+        "ColorWhite",
+        "ColorRed",
+        "ColorCyan",
+        "ColorPurple",
+        "ColorGreen",
+        "ColorBlue",
+        "ColorYellow",
+        "ColorOrange",
+        "ColorBrown",
+        "ColorLightRed",
+        "ColorDarkGray",
+        "ColorGray",
+        "ColorLightGreen",
+        "ColorLightBlue",
+        "ColorLightGray"
+      ],
+      "types": [
+        "TColor",
+        "TTextMode"
+      ],
+      "variables": [],
+      "methods": [],
+      "routines": [
+        "SetTextColor",
+        "ClearScreen",
+        "InitGraphics",
+        "DoneGraphics",
+        "SetPixel",
+        "GetPixel",
+        "DrawLine",
+        "DrawRect",
+        "FillRect",
+        "DrawCircle",
+        "FillCircle",
+        "FloodFill",
+        "DrawTriangle",
+        "FillTriangle",
+        "DrawTriangleAngles"
+      ]
+    },
+    "routines": [
+      {
+        "kind": "procedure",
+        "name": "SetTextColor",
+        "parameters": [
+          {
+            "name": "Foreground",
+            "type": "Integer",
+            "modifier": "value"
+          },
+          {
+            "name": "Background",
+            "type": "Integer",
+            "modifier": "value"
+          }
+        ],
+        "result_type": null,
+        "symbol": "__pas_System_Graphics_SetTextColor"
+      },
+      {
+        "kind": "procedure",
+        "name": "ClearScreen",
+        "parameters": [],
+        "result_type": null,
+        "symbol": "__pas_System_Graphics_ClearScreen"
+      },
+      {
+        "kind": "procedure",
+        "name": "InitGraphics",
+        "parameters": [],
+        "result_type": null,
+        "symbol": "__pas_System_Graphics_InitGraphics"
+      },
+      {
+        "kind": "procedure",
+        "name": "DoneGraphics",
+        "parameters": [
+          {
+            "name": "Mode",
+            "type": "TTextMode",
+            "modifier": "value"
+          }
+        ],
+        "result_type": null,
+        "symbol": "__pas_System_Graphics_DoneGraphics"
+      },
+      {
+        "kind": "procedure",
+        "name": "SetPixel",
+        "parameters": [
+          {
+            "name": "X",
+            "type": "Integer",
+            "modifier": "value"
+          },
+          {
+            "name": "Y",
+            "type": "Integer",
+            "modifier": "value"
+          },
+          {
+            "name": "Color",
+            "type": "TColor",
+            "modifier": "value"
+          }
+        ],
+        "result_type": null,
+        "symbol": "__pas_System_Graphics_SetPixel"
+      },
+      {
+        "kind": "function",
+        "name": "GetPixel",
+        "parameters": [
+          {
+            "name": "X",
+            "type": "Integer",
+            "modifier": "value"
+          },
+          {
+            "name": "Y",
+            "type": "Integer",
+            "modifier": "value"
+          }
+        ],
+        "result_type": "TColor",
+        "symbol": "__pas_System_Graphics_GetPixel"
+      },
+      {
+        "kind": "procedure",
+        "name": "DrawLine",
+        "parameters": [
+          {
+            "name": "X1",
+            "type": "Integer",
+            "modifier": "value"
+          },
+          {
+            "name": "Y1",
+            "type": "Integer",
+            "modifier": "value"
+          },
+          {
+            "name": "X2",
+            "type": "Integer",
+            "modifier": "value"
+          },
+          {
+            "name": "Y2",
+            "type": "Integer",
+            "modifier": "value"
+          },
+          {
+            "name": "Color",
+            "type": "TColor",
+            "modifier": "value"
+          }
+        ],
+        "result_type": null,
+        "symbol": "__pas_System_Graphics_DrawLine"
+      },
+      {
+        "kind": "procedure",
+        "name": "DrawRect",
+        "parameters": [
+          {
+            "name": "X1",
+            "type": "Integer",
+            "modifier": "value"
+          },
+          {
+            "name": "Y1",
+            "type": "Integer",
+            "modifier": "value"
+          },
+          {
+            "name": "X2",
+            "type": "Integer",
+            "modifier": "value"
+          },
+          {
+            "name": "Y2",
+            "type": "Integer",
+            "modifier": "value"
+          },
+          {
+            "name": "Color",
+            "type": "TColor",
+            "modifier": "value"
+          }
+        ],
+        "result_type": null,
+        "symbol": "__pas_System_Graphics_DrawRect"
+      },
+      {
+        "kind": "procedure",
+        "name": "FillRect",
+        "parameters": [
+          {
+            "name": "X1",
+            "type": "Integer",
+            "modifier": "value"
+          },
+          {
+            "name": "Y1",
+            "type": "Integer",
+            "modifier": "value"
+          },
+          {
+            "name": "X2",
+            "type": "Integer",
+            "modifier": "value"
+          },
+          {
+            "name": "Y2",
+            "type": "Integer",
+            "modifier": "value"
+          },
+          {
+            "name": "FillColor",
+            "type": "TColor",
+            "modifier": "value"
+          },
+          {
+            "name": "BorderColor",
+            "type": "TColor",
+            "modifier": "value"
+          },
+          {
+            "name": "BorderWidth",
+            "type": "Integer",
+            "modifier": "value"
+          }
+        ],
+        "result_type": null,
+        "symbol": "__pas_System_Graphics_FillRect"
+      },
+      {
+        "kind": "procedure",
+        "name": "DrawCircle",
+        "parameters": [
+          {
+            "name": "CenterX",
+            "type": "Integer",
+            "modifier": "value"
+          },
+          {
+            "name": "CenterY",
+            "type": "Integer",
+            "modifier": "value"
+          },
+          {
+            "name": "Radius",
+            "type": "Integer",
+            "modifier": "value"
+          },
+          {
+            "name": "Color",
+            "type": "TColor",
+            "modifier": "value"
+          }
+        ],
+        "result_type": null,
+        "symbol": "__pas_System_Graphics_DrawCircle"
+      },
+      {
+        "kind": "procedure",
+        "name": "FillCircle",
+        "parameters": [
+          {
+            "name": "CenterX",
+            "type": "Integer",
+            "modifier": "value"
+          },
+          {
+            "name": "CenterY",
+            "type": "Integer",
+            "modifier": "value"
+          },
+          {
+            "name": "Radius",
+            "type": "Integer",
+            "modifier": "value"
+          },
+          {
+            "name": "FillColor",
+            "type": "TColor",
+            "modifier": "value"
+          },
+          {
+            "name": "BorderColor",
+            "type": "TColor",
+            "modifier": "value"
+          },
+          {
+            "name": "BorderWidth",
+            "type": "Integer",
+            "modifier": "value"
+          }
+        ],
+        "result_type": null,
+        "symbol": "__pas_System_Graphics_FillCircle"
+      },
+      {
+        "kind": "procedure",
+        "name": "FloodFill",
+        "parameters": [
+          {
+            "name": "X",
+            "type": "Integer",
+            "modifier": "value"
+          },
+          {
+            "name": "Y",
+            "type": "Integer",
+            "modifier": "value"
+          },
+          {
+            "name": "FillColor",
+            "type": "TColor",
+            "modifier": "value"
+          }
+        ],
+        "result_type": null,
+        "symbol": "__pas_System_Graphics_FloodFill"
+      },
+      {
+        "kind": "procedure",
+        "name": "DrawTriangle",
+        "parameters": [
+          {
+            "name": "X1",
+            "type": "Integer",
+            "modifier": "value"
+          },
+          {
+            "name": "Y1",
+            "type": "Integer",
+            "modifier": "value"
+          },
+          {
+            "name": "X2",
+            "type": "Integer",
+            "modifier": "value"
+          },
+          {
+            "name": "Y2",
+            "type": "Integer",
+            "modifier": "value"
+          },
+          {
+            "name": "X3",
+            "type": "Integer",
+            "modifier": "value"
+          },
+          {
+            "name": "Y3",
+            "type": "Integer",
+            "modifier": "value"
+          },
+          {
+            "name": "Color",
+            "type": "TColor",
+            "modifier": "value"
+          }
+        ],
+        "result_type": null,
+        "symbol": "__pas_System_Graphics_DrawTriangle"
+      },
+      {
+        "kind": "procedure",
+        "name": "FillTriangle",
+        "parameters": [
+          {
+            "name": "X1",
+            "type": "Integer",
+            "modifier": "value"
+          },
+          {
+            "name": "Y1",
+            "type": "Integer",
+            "modifier": "value"
+          },
+          {
+            "name": "X2",
+            "type": "Integer",
+            "modifier": "value"
+          },
+          {
+            "name": "Y2",
+            "type": "Integer",
+            "modifier": "value"
+          },
+          {
+            "name": "X3",
+            "type": "Integer",
+            "modifier": "value"
+          },
+          {
+            "name": "Y3",
+            "type": "Integer",
+            "modifier": "value"
+          },
+          {
+            "name": "FillColor",
+            "type": "TColor",
+            "modifier": "value"
+          },
+          {
+            "name": "BorderColor",
+            "type": "TColor",
+            "modifier": "value"
+          },
+          {
+            "name": "BorderWidth",
+            "type": "Integer",
+            "modifier": "value"
+          }
+        ],
+        "result_type": null,
+        "symbol": "__pas_System_Graphics_FillTriangle"
+      },
+      {
+        "kind": "procedure",
+        "name": "DrawTriangleAngles",
+        "parameters": [
+          {
+            "name": "CenterX",
+            "type": "Integer",
+            "modifier": "value"
+          },
+          {
+            "name": "CenterY",
+            "type": "Integer",
+            "modifier": "value"
+          },
+          {
+            "name": "Radius1",
+            "type": "Integer",
+            "modifier": "value"
+          },
+          {
+            "name": "Radius2",
+            "type": "Integer",
+            "modifier": "value"
+          },
+          {
+            "name": "Radius3",
+            "type": "Integer",
+            "modifier": "value"
+          },
+          {
+            "name": "Angle1",
+            "type": "Integer",
+            "modifier": "value"
+          },
+          {
+            "name": "Angle2",
+            "type": "Integer",
+            "modifier": "value"
+          },
+          {
+            "name": "Angle3",
+            "type": "Integer",
+            "modifier": "value"
+          },
+          {
+            "name": "Color",
+            "type": "TColor",
+            "modifier": "value"
+          }
+        ],
+        "result_type": null,
+        "symbol": "__pas_System_Graphics_DrawTriangleAngles"
+      }
+    ]
+  },
+  "source": {
+    "file": "Graphics.pas",
+    "sha256": "9df3bef5e2937f01bc05c78af0650fa0a8546aead8f660239792b185c80fe6fd"
+  },
+  "implementation": {
+    "assembly": {
+      "amiga": "Graphics.amiga.asm"
+    }
+  }
+}

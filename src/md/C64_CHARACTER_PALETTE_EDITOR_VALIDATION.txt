@@ -1,0 +1,24 @@
+C64 Character-/Paletten-Editor Validierung
+==========================================
+
+- d64_dism.py: Python-Syntaxprüfung erfolgreich
+- bestehende Character-Editor-Tests: 8/8 erfolgreich
+- neue Character-/Paletten-Editor-Tests: 8/8 erfolgreich
+- Character-Ausgabe: Assembler, Pascal, C und BASIC geprüft
+- Palette: 48-Byte-Roundtrip geprüft
+- Palettenexport: Assembler, Pascal, C und BASIC geprüft
+- Assembler-Palettenexport: $2000-$202F erfolgreich assembliert
+- GUI-Integration statisch geprüft:
+  * Ausgabe Format
+  * Speichern als...
+  * C64 Paletten-Editor
+  * Strg+Alt+P
+  * .pal/.palette Dateiintegration
+
+Hinweis:
+Die komplette Parser-Testreihe ist in dieser Umgebung wegen einer nicht zu den
+generierten ANTLR-Dateien passenden Runtime nicht ausführbar. Die
+parserunabhängigen Tests und die neuen Tests sind erfolgreich.
+- Parser-unabhängige Regressionstests: 58/58 erfolgreich
+- Vollständige Discovery: 13 Module wegen ANTLR-Runtime-Inkompatibilität nicht importierbar; kein Fehler in den neuen Editorfunktionen
+- PyQt5 ist im Prüfcontainer nicht installiert; visueller Qt-Start daher nicht durchgeführt

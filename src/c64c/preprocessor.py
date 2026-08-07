@@ -9,6 +9,7 @@ ihre urspruengliche Datei- und Zeilenposition.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import ast
 from pathlib import Path
 import re
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
@@ -56,6 +57,8 @@ class PreprocessResult:
     included_files: Tuple[str, ...]
     notes: Tuple[PreprocessorDiagnostic, ...]
     warnings: Tuple[PreprocessorDiagnostic, ...]
+    linked_assembly_files: Tuple[str, ...] = ()
+    linked_c_files: Tuple[str, ...] = ()
 
     def location_for_line(self, line: int, column: int = 1) -> SourceLocation:
         index = int(line) - 1
@@ -139,6 +142,8 @@ class C64CPreprocessor:
         self.included_files: List[str] = []
         self.notes: List[PreprocessorDiagnostic] = []
         self.warnings: List[PreprocessorDiagnostic] = []
+        self.linked_assembly_files: List[str] = []
+        self.linked_c_files: List[str] = []
         self.include_stack: List[str] = []
         self.once_files: Set[Path] = set()
         self.completed_once_files: Set[Path] = set()
@@ -160,6 +165,8 @@ class C64CPreprocessor:
             tuple(self.included_files),
             tuple(self.notes),
             tuple(self.warnings),
+            tuple(self.linked_assembly_files),
+            tuple(self.linked_c_files),
         )
 
     @staticmethod
@@ -227,7 +234,7 @@ class C64CPreprocessor:
                 if directive is not None:
                     name = directive.group(1).lower()
                     argument = directive.group(2).strip()
-                    if name in {"ifdef", "ifndef", "else", "endif"}:
+                    if name in {"if", "ifdef", "ifndef", "elif", "else", "endif"}:
                         self._conditional_directive(
                             name,
                             argument,
@@ -273,10 +280,22 @@ class C64CPreprocessor:
         location: SourceLocation,
         stack: List[_Conditional],
     ) -> None:
-        if name in {"ifdef", "ifndef"}:
+        if name in {"if", "ifdef", "ifndef"}:
+            parent_active = stack[-1].active if stack else True
+            if name == "if":
+                condition = self._evaluate_condition(argument, location) if parent_active else False
+                stack.append(
+                    _Conditional(
+                        parent_active,
+                        condition,
+                        parent_active and condition,
+                        False,
+                        location,
+                    )
+                )
+                return
             macro_name = argument.split()[0] if argument else ""
             self._validate_identifier(macro_name, location)
-            parent_active = stack[-1].active if stack else True
             condition = macro_name in self.macros
             if name == "ifndef":
                 condition = not condition
@@ -293,11 +312,25 @@ class C64CPreprocessor:
 
         if not stack:
             raise C64PreprocessorError(
-                f"#{name} ohne passendes #ifdef oder #ifndef.",
+                f"#{name} ohne passendes #if, #ifdef oder #ifndef.",
                 location,
                 self.include_stack,
             )
         current = stack[-1]
+        if name == "elif":
+            if current.else_seen:
+                raise C64PreprocessorError(
+                    "#elif nach #else ist nicht erlaubt.",
+                    location,
+                    self.include_stack,
+                )
+            if not current.parent_active or current.condition:
+                current.active = False
+                return
+            branch = self._evaluate_condition(argument, location)
+            current.condition = bool(branch)
+            current.active = current.parent_active and bool(branch)
+            return
         if name == "else":
             if current.else_seen:
                 raise C64PreprocessorError(
@@ -307,6 +340,7 @@ class C64CPreprocessor:
                 )
             current.else_seen = True
             current.active = current.parent_active and not current.condition
+            current.condition = True
             return
         stack.pop()
 
@@ -328,27 +362,160 @@ class C64CPreprocessor:
             self._validate_identifier(macro_name, location)
             self.macros.pop(macro_name, None)
             return
-        if name in {"note", "warning", "error"}:
+        if name in {"note", "info", "warning", "warn", "error"}:
             message = self._expand_text(argument, location).strip()
             if len(message) >= 2 and message[0] == message[-1] == '"':
                 message = message[1:-1]
             message = message or f"#{name}"
             if name == "error":
                 raise C64PreprocessorError(message, location, self.include_stack)
-            diagnostic = PreprocessorDiagnostic(name, message, location)
-            (self.notes if name == "note" else self.warnings).append(diagnostic)
+            kind = "info" if name in {"note", "info"} else "warning"
+            diagnostic = PreprocessorDiagnostic(kind, message, location)
+            (self.notes if kind == "info" else self.warnings).append(diagnostic)
             return
-        if name == "pragma" and argument.strip().lower() == "once":
-            if self.include_stack:
-                path = self._existing_path(self.include_stack[-1])
-                if path is not None:
-                    self.once_files.add(path)
-            return
+        if name == "pragma":
+            pragma = argument.strip()
+            if pragma.lower() == "once":
+                if self.include_stack:
+                    path = self._existing_path(self.include_stack[-1])
+                    if path is not None:
+                        self.once_files.add(path)
+                return
+            link_match = re.fullmatch(
+                r'd64_link_asm\s+"([^"]+)"',
+                pragma,
+                flags=re.IGNORECASE,
+            )
+            if link_match is not None:
+                module_name = link_match.group(1).strip()
+                module_path = (base_directory / module_name).resolve()
+                if not module_path.is_file():
+                    raise C64PreprocessorError(
+                        f"Assembler-Modul nicht gefunden: {module_name}",
+                        location,
+                        self.include_stack,
+                    )
+                module_text = str(module_path)
+                if module_text not in self.linked_assembly_files:
+                    self.linked_assembly_files.append(module_text)
+                return
+            c_link_match = re.fullmatch(
+                r'(?:link|d64_link_c)\s*(?:\(\s*)?"([^"]+)"(?:\s*\))?',
+                pragma,
+                flags=re.IGNORECASE,
+            )
+            if c_link_match is not None:
+                module_name = c_link_match.group(1).strip()
+                module_path = (base_directory / module_name).resolve()
+                if module_path.suffix.casefold() != ".c":
+                    raise C64PreprocessorError(
+                        f"#pragma link erwartet eine .c-Datei: {module_name}",
+                        location,
+                        self.include_stack,
+                    )
+                if not module_path.is_file():
+                    raise C64PreprocessorError(
+                        f"C-Modul nicht gefunden: {module_name}",
+                        location,
+                        self.include_stack,
+                    )
+                module_text = str(module_path)
+                if module_text not in self.linked_c_files:
+                    self.linked_c_files.append(module_text)
+                return
         raise C64PreprocessorError(
             f"Unbekannte Praeprozessoranweisung: #{name}.",
             location,
             self.include_stack,
         )
+
+    def _evaluate_condition(
+        self,
+        expression: str,
+        location: SourceLocation,
+    ) -> bool:
+        text = re.sub(
+            r"\bdefined\s*\(\s*([A-Za-z_]\w*)\s*\)",
+            lambda match: "1" if match.group(1) in self.macros else "0",
+            expression,
+        )
+        text = re.sub(
+            r"\bdefined\s+([A-Za-z_]\w*)",
+            lambda match: "1" if match.group(1) in self.macros else "0",
+            text,
+        )
+        text = self._expand_text(text, location)
+        text = re.sub(r"\b[A-Za-z_]\w*\b", "0", text)
+        text = text.replace("&&", " and ").replace("||", " or ")
+        text = re.sub(r"!(?!=)", " not ", text)
+        try:
+            tree = ast.parse(text.strip() or "0", mode="eval")
+            return bool(self._evaluate_condition_ast(tree))
+        except (SyntaxError, TypeError, ValueError, ZeroDivisionError) as exc:
+            raise C64PreprocessorError(
+                f"Ungueltiger Ausdruck in #if {expression}: {exc}.",
+                location,
+                self.include_stack,
+            ) from exc
+
+    @classmethod
+    def _evaluate_condition_ast(cls, node: ast.AST):
+        if isinstance(node, ast.Expression):
+            return cls._evaluate_condition_ast(node.body)
+        if isinstance(node, ast.Constant) and isinstance(node.value, (bool, int)):
+            return node.value
+        if isinstance(node, ast.UnaryOp):
+            value = cls._evaluate_condition_ast(node.operand)
+            if isinstance(node.op, ast.Not):
+                return not bool(value)
+            if isinstance(node.op, ast.USub):
+                return -int(value)
+            if isinstance(node.op, ast.UAdd):
+                return +int(value)
+            if isinstance(node.op, ast.Invert):
+                return ~int(value)
+        if isinstance(node, ast.BoolOp):
+            values = [cls._evaluate_condition_ast(item) for item in node.values]
+            if isinstance(node.op, ast.And):
+                return all(bool(item) for item in values)
+            if isinstance(node.op, ast.Or):
+                return any(bool(item) for item in values)
+        if isinstance(node, ast.BinOp):
+            left = cls._evaluate_condition_ast(node.left)
+            right = cls._evaluate_condition_ast(node.right)
+            operations = {
+                ast.Add: lambda: int(left) + int(right),
+                ast.Sub: lambda: int(left) - int(right),
+                ast.Mult: lambda: int(left) * int(right),
+                ast.Div: lambda: int(left) // int(right),
+                ast.FloorDiv: lambda: int(left) // int(right),
+                ast.Mod: lambda: int(left) % int(right),
+                ast.LShift: lambda: int(left) << int(right),
+                ast.RShift: lambda: int(left) >> int(right),
+                ast.BitAnd: lambda: int(left) & int(right),
+                ast.BitOr: lambda: int(left) | int(right),
+                ast.BitXor: lambda: int(left) ^ int(right),
+            }
+            operation = operations.get(type(node.op))
+            if operation is not None:
+                return operation()
+        if isinstance(node, ast.Compare):
+            left = cls._evaluate_condition_ast(node.left)
+            for operator, comparator in zip(node.ops, node.comparators):
+                right = cls._evaluate_condition_ast(comparator)
+                comparisons = {
+                    ast.Eq: left == right,
+                    ast.NotEq: left != right,
+                    ast.Lt: left < right,
+                    ast.LtE: left <= right,
+                    ast.Gt: left > right,
+                    ast.GtE: left >= right,
+                }
+                if type(operator) not in comparisons or not comparisons[type(operator)]:
+                    return False
+                left = right
+            return True
+        raise ValueError("nicht unterstuetzter Operator")
 
     def _define(self, argument: str, location: SourceLocation) -> None:
         match = _IDENTIFIER_RE.match(argument)
@@ -385,12 +552,6 @@ class C64CPreprocessor:
             else:
                 parameters = ()
             replacement = tail[closing + 1:].lstrip()
-        if "##" in replacement or re.search(r"(^|\s)#\s*[A-Za-z_]", replacement):
-            raise C64PreprocessorError(
-                "Die Operatoren # und ## folgen in einer spaeteren Ausbaustufe.",
-                location,
-                self.include_stack,
-            )
         self.macros[name] = Macro(name, replacement, parameters, location)
 
     def _include(
@@ -443,7 +604,50 @@ class C64CPreprocessor:
         canonical_text = str(canonical)
         if canonical_text not in self.included_files:
             self.included_files.append(canonical_text)
+        if canonical_text in self.include_stack:
+            guard = self._include_guard_macro(text)
+            if canonical in self.once_files:
+                return
+            if guard is None or guard not in self.macros:
+                cycle_start = self.include_stack.index(canonical_text)
+                cycle = self.include_stack[cycle_start:] + [canonical_text]
+                raise C64PreprocessorError(
+                    "Zirkulaeres #include ohne wirksamen Include-Guard: "
+                    + " -> ".join(cycle),
+                    location,
+                    self.include_stack + [canonical_text],
+                )
         self._process_text(text, canonical_text, canonical.parent, canonical)
+
+    @staticmethod
+    def _include_guard_macro(source: str) -> Optional[str]:
+        without_comments = re.sub(r"/\*.*?\*/", "", source, flags=re.DOTALL)
+        significant = []
+        for line in without_comments.splitlines():
+            line = re.sub(r"//.*$", "", line).strip()
+            if line:
+                significant.append(line)
+        if len(significant) < 3:
+            return None
+        opening = re.fullmatch(
+            r"#\s*ifndef\s+([A-Za-z_]\w*)",
+            significant[0],
+        )
+        if opening is None:
+            opening = re.fullmatch(
+                r"#\s*if\s*!\s*defined\s*(?:\(\s*)?([A-Za-z_]\w*)(?:\s*\))?",
+                significant[0],
+            )
+        if opening is None:
+            return None
+        name = opening.group(1)
+        definition = re.fullmatch(
+            rf"#\s*define\s+{re.escape(name)}(?:\s+.*)?",
+            significant[1],
+        )
+        if definition is None or re.fullmatch(r"#\s*endif(?:\s+.*)?", significant[-1]) is None:
+            return None
+        return name
 
     def _expand_line(
         self,
@@ -582,11 +786,20 @@ class C64CPreprocessor:
                 location,
                 self.include_stack,
             )
+        raw_values = {
+            parameter: argument.strip()
+            for parameter, argument in zip(parameters, arguments)
+        }
         values = {
             parameter: self._expand_text(argument.strip(), location, disabled, depth + 1)
             for parameter, argument in zip(parameters, arguments)
         }
-        substituted = self._substitute_parameters(macro.replacement, values)
+        substituted = self._substitute_parameters(
+            macro.replacement,
+            values,
+            raw_values,
+            location,
+        )
         return (
             self._expand_text(substituted, location, next_disabled, depth + 1),
             invocation_end,
@@ -631,7 +844,28 @@ class C64CPreprocessor:
             self.include_stack,
         )
 
-    def _substitute_parameters(self, text: str, values: Mapping[str, str]) -> str:
+    def _substitute_parameters(
+        self,
+        text: str,
+        values: Mapping[str, str],
+        raw_values: Mapping[str, str],
+        location: SourceLocation,
+    ) -> str:
+        def stringify(match: re.Match[str]) -> str:
+            parameter = match.group(1)
+            raw = re.sub(r"\s+", " ", raw_values[parameter].strip())
+            escaped = raw.replace("\\", "\\\\").replace('"', '\\"')
+            return f'"{escaped}"'
+
+        parameter_pattern = "|".join(
+            re.escape(name) for name in sorted(raw_values, key=len, reverse=True)
+        )
+        if parameter_pattern:
+            text = re.sub(
+                rf"(?<!#)#\s*\b({parameter_pattern})\b",
+                stringify,
+                text,
+            )
         result: List[str] = []
         index = 0
         while index < len(text):
@@ -647,9 +881,26 @@ class C64CPreprocessor:
                 index += 1
                 continue
             name = match.group(0)
-            result.append(values.get(name, name))
+            before = text[:match.start()].rstrip().endswith("##")
+            after = text[match.end():].lstrip().startswith("##")
+            if name in values:
+                result.append(raw_values[name] if before or after else values[name])
+            else:
+                result.append(name)
             index = match.end()
-        return "".join(result)
+        substituted = "".join(result)
+        while "##" in substituted:
+            pasted, count = re.subn(r"\s*##\s*", "", substituted, count=1)
+            if count == 0:
+                break
+            substituted = pasted
+        if "#" in substituted and re.search(r"(^|[^#])#([^#]|$)", substituted):
+            raise C64PreprocessorError(
+                "# erwartet den Namen eines Makroparameters.",
+                location,
+                self.include_stack,
+            )
+        return substituted
 
     @staticmethod
     def _quoted_end(text: str, opening: int, quote: str) -> int:

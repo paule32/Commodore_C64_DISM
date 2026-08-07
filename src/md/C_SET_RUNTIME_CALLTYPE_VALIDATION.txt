@@ -1,0 +1,23 @@
+C-Set-Runtime / externe Funktionsaufrufe in Ausdrücken
+======================================================
+
+Behoben:
+    value | SetOf(element)
+    value & ~SetOf(element)
+    (value & SetOf(element)) != 0
+
+Ursache:
+    _expression_type() berücksichtigte globale/externe Funktionen nicht und
+    leitete CallExpression fälschlich an die Klassenmethoden-Auflösung weiter.
+
+Korrektur:
+    self.external_routines wird vor _resolve_method_call() geprüft.
+
+Prüfungen:
+    Python-Syntaxprüfung                         erfolgreich
+    test_c_external_call_expression_type         2/2 erfolgreich
+    test_c64_poke_builtin_order                  2/2 erfolgreich
+    test_gui_header_editor                       3/3 erfolgreich
+
+Vollständige ANTLR-Compilerläufe benötigen die zum generierten Parser passende
+antlr4-python3-runtime 4.13.2.

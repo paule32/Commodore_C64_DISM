@@ -1,0 +1,10 @@
+C-FOR optional-parts validation
+===============================
+
+- C64CParser.g4 erlaubt forInitializer?, expression? und assignmentExpression?.
+- Die alte Fehlermeldung fuer fehlende FOR-Kopfbestandteile wurde entfernt.
+- _CForStatement speichert Initialisierung, Bedingung und Update getrennt.
+- Die gemeinsame Codeerzeugung behandelt break und continue mit eigenen Labels.
+- Python-Syntaxpruefung von c64c/compiler.py erfolgreich.
+- Der vollstaendige ANTLR-Test benoetigt die zum generierten Parser passende
+  antlr4-python3-runtime 4.13.2; in der Paketumgebung war 4.9.3 installiert.

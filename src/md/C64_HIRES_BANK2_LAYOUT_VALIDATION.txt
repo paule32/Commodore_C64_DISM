@@ -1,0 +1,5 @@
+[OK] standalone module $C000-$C74C
+[OK] synthetic linked program $0801-$C74C
+[OK] reported program endpoint $61FA remains below graphics bank $8000
+[OK] reserve $8000-$BFFF
+[OK] runtime $C000-$CFFF

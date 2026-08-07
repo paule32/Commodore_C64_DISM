@@ -1,0 +1,23 @@
+dBase2Many C Advanced Features – Prüfprotokoll
+==============================================
+
+Geprüft:
+- Python-Syntax von c64c/compiler.py
+- Python-Syntax von c64c/preprocessor.py
+- Python-Syntax von c64pascal/compiler.py
+- Python-Syntax von d64_dism.py
+- objektartige und funktionsartige Makros
+- #if / #elif / #else
+- 68000-Assembler-Syntax für A6-Stackframes
+- ZIP-Integrität
+
+Mitgelieferte Regressionstests:
+- tests/test_c_advanced_features.py
+- tests/test_c_pragma_link.py
+- tests/test_c64c_system_headers.py
+
+Hinweis zur lokalen Erstellungsumgebung:
+Die installierte antlr4-Python-Runtime ist 4.9.3, die ausgelieferten Parser
+wurden für 4.13.2 generiert. Deshalb wurde der vollständige ANTLR-Testlauf in
+dieser Umgebung nicht ausgeführt. Die Parser-Tests sind im Archiv enthalten
+und laufen in der für das Projekt dokumentierten 4.13.2-Umgebung.

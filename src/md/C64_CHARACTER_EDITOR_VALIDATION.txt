@@ -1,0 +1,25 @@
+C64 Character-Editor validation
+================================
+
+Implemented:
+- 255 selectable/editable characters $01-$FF
+- reserved character $00
+- 8x8 mouse and keyboard pixel grid
+- foreground/background preview palette
+- new/load/save/save-as
+- 2048-byte and 2040-byte imports
+- ASM/C/Pascal source export
+- clear/invert/mirror/shift operations
+- clipboard copy/paste as eight hexadecimal bytes
+- .chr/.charset double-click integration
+- Tools menu, toolbar action and Ctrl+Alt+C shortcut
+
+Validation:
+- python -m py_compile d64_dism.py: PASS
+- tests.test_c64_character_editor: 8/8 PASS
+- raw sample charset size: 2048 bytes
+- exported ASM assembled by internal MOS-6510 assembler: PASS
+- parser-independent targeted suite: 50/50 PASS
+
+Full parser-dependent suite cannot run in this container because the installed
+ANTLR runtime is incompatible with the generated 4.13.2 lexer/parser files.

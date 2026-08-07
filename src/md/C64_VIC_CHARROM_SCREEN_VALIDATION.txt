@@ -1,0 +1,20 @@
+C64 VIC-II character-ROM screen validation
+============================================
+
+- Screen matrix: $8C00-$8FE7
+- Owner table:   $8800-$8BE7
+- Bitmap:        $A000-$BF3F
+- D018:          $38
+- VIC character-ROM window $9000-$9FFF is not used as screen matrix.
+- Owner and screen tails clear 232 bytes with X=$00..$E7.
+
+Full graphics_demo.c compiler/emulator validation
+-------------------------------------------------
+- generated PRG load address: $0801
+- final graphics register $D018: $38
+- final VIC bank bits $DD00: %01 (bank 2)
+- owner table initialized cells: 1000 / 1000
+- screen matrix initialized cells: 1000 / 1000
+- bitmap zero bytes after drawing: 5657 / 8000
+- bitmap nonzero bytes after drawing: 2343 / 8000
+- generated preview contains only the requested primitives, no ROM blocks

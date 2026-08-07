@@ -1,0 +1,31 @@
+C64 FloodFill array limit validation
+====================================
+
+Geprüft am: 2026-08-05
+
+1. Python-Syntaxprüfung:
+   - c64c/compiler.py
+   - c64c/preprocessor.py
+   - c64pascal/compiler.py
+   - d64_dism.py
+   Ergebnis: erfolgreich
+
+2. C99-Syntaxprüfung:
+   - runtime/graphics/common/graphics_api.c
+   Ergebnis: erfolgreich
+
+3. Regressionstests:
+   - tests.test_c64_floodfill_array_limit
+   - tests.test_graphics_fast_primitives
+   Ergebnis: 6 Tests erfolgreich
+
+4. Strukturprüfung:
+   - kein unsigned int GfxFloodX[256]
+   - GfxFloodXLow[256]  = 256 Byte
+   - GfxFloodXHigh[256] = 256 Byte
+   - GfxFloodY[256]     = 256 Byte
+   - X wird als Low | (High << 8) rekonstruiert
+
+Ein vollständiger Lauf der mitgelieferten ANTLR-Parser war in der lokalen
+Testumgebung nicht möglich, weil dort antlr4-python3-runtime 4.9.3 installiert
+ist und die generierten Parser das neuere Format verwenden.

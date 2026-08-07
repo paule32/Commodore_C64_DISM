@@ -17,6 +17,6 @@ int main(void)
         poke(0x0400 + i, 1 + i);
         poke(0xD800 + i, 1);
     }
-printf("Hello World !!!");
+
     return 0;
 }

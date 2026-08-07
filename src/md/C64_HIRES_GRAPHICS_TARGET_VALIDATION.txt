@@ -1,0 +1,20 @@
+C64 HiRes graphics target validation
+=====================================
+
+[OK] graphics_c64.asm assembled standalone
+[OK] runtime start address: $8000
+[OK] runtime end address:   $874C
+[OK] runtime stays below:   $A000
+[OK] instruction count:     445
+[OK] linked synthetic PRG:  $0801-$874C
+[OK] InitGraphics clears before enabling display
+[OK] VIC-II bank $8000-$BFFF is protected by assembler overlap check
+[OK] colour-owner map prevents per-pixel whole-cell recolouring
+[OK] C and Pascal headers select the same C64 assembler target
+[OK] END is accepted as a MOS-6510 assembler no-op
+[OK] 11 focused regression tests passed
+
+The full C/ANTLR frontend could not be executed in this container because the
+installed Python ANTLR runtime does not match the generated parser version.
+The target assembler, linker layout, memory guards and static integration were
+validated directly.

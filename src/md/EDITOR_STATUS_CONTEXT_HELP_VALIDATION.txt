@@ -1,0 +1,29 @@
+Editor-/Status-/Kontexthilfe-Pruefung
+=====================================
+
+Python-Syntaxpruefung:
+  python -m py_compile d64_dism.py
+  Ergebnis: erfolgreich
+
+Gezielte neue Tests:
+  python -m unittest tests.test_editor_status_help_ui -v
+  Ergebnis: 10 von 10 erfolgreich
+
+Projekt- und Editor-Regressionspruefung:
+  tests.test_project_panel
+  tests.test_c64_character_editor
+  tests.test_c64_character_palette_editor
+  tests.test_c64_screen_editors
+  tests.test_gui_header_editor
+  Ergebnis: 39 von 39 erfolgreich
+
+Vollstaendiger Testlauf:
+  104 Tests erkannt
+  91 Tests erfolgreich
+  13 Importfehler durch lokal installierte, inkompatible ANTLR-Runtime
+
+Die 13 Importfehler entstehen vor Ausfuehrung der Compiler-Tests in den
+bereits erzeugten ANTLR-Lexern. Sie betreffen nicht die neue GUI-Logik.
+
+Visueller Qt5-Lauf:
+  Nicht ausgefuehrt, weil PyQt5 im Pruefcontainer nicht installiert ist.

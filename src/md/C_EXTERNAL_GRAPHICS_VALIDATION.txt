@@ -1,0 +1,27 @@
+C external graphics validation
+==============================
+
+Validated locally:
+
+1. Python syntax:
+   - c64c/compiler.py
+   - c64c/preprocessor.py
+   - d64_dism.py
+
+2. Preprocessor:
+   - __D64_TARGET_AMIGA__ selects graphics_amiga.asm
+   - #pragma d64_link_asm is removed from parser input
+   - linked module path resolves relative to graphics.h
+
+3. Amiga assembler:
+   - C symbols SetTextColor, InitGraphics and SetPixel resolve
+   - separate runtime/graphics/amiga/graphics_amiga.asm assembles
+   - resulting smoke-test ADF size: 901120 bytes
+   - instruction count: 1266
+
+Not executable in the container:
+
+The bundled generated ANTLR files require antlr4-python3-runtime 4.13.2.
+The container only provides 4.9.3. The complete C-parser regression test is
+included as tests/test_c_external_graphics.py and runs in the project's stated
+4.13.2 environment.

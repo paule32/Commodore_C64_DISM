@@ -13,7 +13,7 @@ programUnit
     ;
 
 block
-    : declarationSection* methodImplementation* compoundStatement
+    : (declarationSection | methodImplementation)* compoundStatement
     ;
 
 declarationSection
@@ -43,6 +43,7 @@ typeSpecification
     | enumType
     | recordType
     | arrayType
+    | setType
     | classType
     ;
 
@@ -58,6 +59,10 @@ arrayType
     : ARRAY LBRACK expression DOTDOT expression RBRACK OF typeIdentifier
     ;
 
+setType
+    : SET OF typeIdentifier
+    ;
+
 classType
     : CLASS (LPAREN typeIdentifier RPAREN)? classMember* END
     ;
@@ -66,6 +71,7 @@ classMember
     : visibilitySpecifier
     | fieldDeclaration
     | methodDeclaration
+    | propertyDeclaration
     ;
 
 visibilitySpecifier
@@ -80,7 +86,21 @@ fieldDeclaration
     ;
 
 methodDeclaration
-    : routineKind IDENTIFIER formalParameters? (COLON typeIdentifier)? SEMI
+    : routineKind IDENTIFIER formalParameters? (COLON typeIdentifier)? SEMI methodDirective*
+    ;
+
+methodDirective
+    : VIRTUAL SEMI
+    | OVERRIDE SEMI
+    ;
+
+propertyDeclaration
+    : PROPERTY IDENTIFIER COLON typeIdentifier propertyAccessor+ SEMI
+    ;
+
+propertyAccessor
+    : READ IDENTIFIER
+    | WRITE IDENTIFIER
     ;
 
 methodImplementation
@@ -149,6 +169,33 @@ statement
     | forStatement                         # forStatementNode
     | BREAK                                # breakStatementNode
     | CONTINUE                             # continueStatementNode
+    | tryStatement                         # tryStatementNode
+    | raiseStatement                       # raiseStatementNode
+    ;
+
+tryStatement
+    : TRY tryBody (FINALLY finallyBody | EXCEPT exceptBody) END
+    ;
+
+tryBody
+    : statementSequence?
+    ;
+
+finallyBody
+    : statementSequence?
+    ;
+
+exceptBody
+    : exceptionHandler+
+    | statementSequence?
+    ;
+
+exceptionHandler
+    : ON IDENTIFIER COLON typeIdentifier DO statement SEMI?
+    ;
+
+raiseStatement
+    : RAISE expression?
     ;
 
 assignmentStatement
@@ -201,7 +248,7 @@ andExpression
     ;
 
 comparisonExpression
-    : additiveExpression ((EQ | NE | LT | LE | GT | GE) additiveExpression)?
+    : additiveExpression ((EQ | NE | LT | LE | GT | GE | IN) additiveExpression)?
     ;
 
 additiveExpression
@@ -219,12 +266,26 @@ unaryExpression
 
 primaryExpression
     : integerLiteral
+    | setConstructor
     | STRING_LITERAL
     | TRUE
     | FALSE
+    | NIL
     | designator LPAREN argumentList? RPAREN
     | designator
     | LPAREN expression RPAREN
+    ;
+
+setConstructor
+    : LBRACK setElementList? RBRACK
+    ;
+
+setElementList
+    : setElement (COMMA setElement)*
+    ;
+
+setElement
+    : additiveExpression (DOTDOT additiveExpression)?
     ;
 
 integerLiteral

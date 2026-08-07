@@ -1,0 +1,17 @@
+Graphics speed validation
+=========================
+
+- Python syntax check: successful
+- Fast graphics regression tests: 3/3 successful
+- Existing Amiga graphics/Copper tests: 4/4 successful
+- Amiga internal assembler smoke test: successful
+- Generated ADF size: 901120 bytes
+- Assembled instruction count in FillRect smoke image: 1451
+- Amiga SetPixel/GetPixel internal calls use register ABI
+- FillRect uses one horizontal span per scanline
+- FillCircle uses Midpoint spans instead of concentric pixel circles
+- C64 common fills use target-specific __GraphicsHLine
+
+A complete C frontend run was not possible in the build environment because
+its installed ANTLR runtime reports the known serialized-ATN incompatibility
+(ord() expected a one-character string, but received an integer).

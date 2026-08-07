@@ -1,8 +1,9 @@
-"""ANTLR-basierter C-zu-6510-Compiler fuer den Commodore C64."""
+"""ANTLR-basierter C-Compiler für C64 (6510) und Amiga (68000)."""
 
 from .compiler import (
     C64CError,
     GeneratedAssembly,
+    compile_c_module_to_assembly,
     compile_c_to_assembly,
     parse_c,
 )
@@ -19,6 +20,7 @@ __all__ = [
     "C64PreprocessorError",
     "GeneratedAssembly",
     "PreprocessResult",
+    "compile_c_module_to_assembly",
     "compile_c_to_assembly",
     "parse_c",
     "preprocess_c_source",

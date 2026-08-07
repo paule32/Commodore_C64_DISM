@@ -2,7 +2,8 @@
 // (c) 2026 by Jens Kallup - paule32
 // Alle Rechte vorbehalten.
 // ---------------------------------------------------------------------------
-#define USE_WHITE
+#define TARGET_LEVEL 2
+#define COLOR_NAME(suffix) C64_ ## suffix
 #include "config.h"
 #include <stdio.h>
 #include <c64.h>
@@ -11,13 +12,13 @@
 #define CHARACTER_COUNT 26
 #endif
 
-#ifdef USE_WHITE
-#define TEXT_COLOR C64_WHITE
+#if TARGET_LEVEL >= 2
+#define TEXT_COLOR COLOR_NAME(WHITE)
 #else
 #define TEXT_COLOR C64_YELLOW
 #endif
 
-#note C64-Präprozessorbeispiel wird kompiliert
+#info C64-Präprozessorbeispiel Stufe TARGET_LEVEL wird kompiliert
 
 int main(void)
 {

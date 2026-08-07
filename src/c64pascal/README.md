@@ -1,10 +1,11 @@
-# C64 Pascal
+# C64-/Amiga-Pascal
 
 Die Pipeline besteht aus zwei getrennten Stufen:
 
 1. `C64PascalLexer.g4` und `C64PascalParser.g4` parsen Pascal mit ANTLR 4.13.2.
-2. `compiler.py` erzeugt lesbaren MOS-6510-Assembler. Der in
-   `d64_dism(5).py` integrierte Assembler erzeugt daraus das C64-PRG.
+2. `compiler.py` erzeugt je nach Ziel lesbaren MOS-6510- oder
+   Motorola-68000-Assembler. Die internen Assembler erzeugen daraus ein
+   C64-PRG beziehungsweise ein eigenständig bootfähiges Amiga-ADF.
 
 ## Installation
 
@@ -12,7 +13,13 @@ Die Pipeline besteht aus zwei getrennten Stufen:
 py -m pip install antlr4-python3-runtime==4.13.2
 ```
 
-Der Ordner `c64pascal` muss neben `d64_dism(5).py` liegen.
+Der Ordner `c64pascal` muss neben `d64_dism.py` liegen.
+
+In der Oberfläche wird das Ziel mit den RadioButtons `C-64` und `Amiga`
+gewählt. Die Python-Schnittstelle verwendet entsprechend
+`compile_pascal_to_assembly(..., target="c64")` oder `target="amiga"`.
+`include_paths=[...]` ergänzt die Suchpfade für Units und PUI-Dateien;
+`predefined_macros={"NAME": "WERT"}` setzt Makros des Präprozessors.
 
 ## Aktueller Sprachumfang
 
@@ -32,17 +39,84 @@ Der Ordner `c64pascal` muss neben `d64_dism(5).py` liegen.
 - `=`, `<>`, `<`, `<=`, `>`, `>=`
 - `if/then/else`, `while/do`, `repeat/until`, `for/to/downto`
 - `break`, `continue`
-- `Write`, `WriteLn`, `ClrScr`, `Poke`, `Inc`, `Dec`, `Halt`
+- `Write`, `WriteLn`, `ReadLn`, `ClrScr`, `SetTextColor`, `Poke`, `Inc`, `Dec`, `Halt`
 - `Peek`, `Chr`, `Ord`, `Lo`, `Hi`
 - Dezimalzahlen sowie C64-typische Hex- (`$`) und Binärliterale (`%`)
+- `uses` mit rekursiven Pascal-Units
+- bevorzugte Pascal Unit Interfaces (`.pui`)
+- `{$define}`, `{$undef}`, `{$ifdef}`, `{$ifndef}`, `{$if}`, `{$else}` und
+  `{$endif}` mit rekursiver Makroauflösung
+- Präprozessorvergleiche `==`, `=`, `!=`, `<>`, `>=`, `<=`, `<` und `>`
+- `{$info}`, `{$warn}`/`{$warning}` und `{$error}`
 
 `DIV` und `MOD` arbeiten weiterhin vorzeichenlos. Klasseninstanzen werden auf
 dem C64 statisch im Programm reserviert; `Create` initialisiert deshalb ein
 bereits vorhandenes Objekt und fordert noch keinen Heap-Speicher an. Dynamische
-Arrays, Klassenzeiger, virtuelle Methoden, Overloads, `inherited`, Properties,
-allgemeine benutzerdefinierte Prozeduren/Funktionen und Units sind noch nicht
-enthalten. `const`- und `var`-Methodenparameter werden syntaktisch akzeptiert,
-in dieser Stufe aber als Wertparameter übergeben.
+Arrays, Klassenzeiger, virtuelle Methoden, Overloads, `inherited`, Properties
+und allgemeine globale Pascal-Prozeduren/Funktionen mit eigenem
+`implementation`-Code sind noch nicht enthalten. Units können Konstanten,
+Typen, globale Variablen und statische Klassen samt Methodenimplementierungen
+bereitstellen. PUI-Dateien können zusätzlich globale externe Routinen mit
+Parameter- und Rückgabetypen sowie zielabhängige ASM-Implementierungsmodule
+exportieren. `System.Graphics` verwendet diesen Weg. `const`- und
+`var`-Methodenparameter werden syntaktisch akzeptiert, in dieser Stufe aber als
+Wertparameter übergeben.
+
+## Units und PUI
+
+Nach dem Programmkopf bindet `uses` eine oder mehrere Units ein:
+
+```pascal
+program UnitDemo;
+uses BuildInfo, DisplayTypes;
+begin
+  WriteLn(BuildVersion);
+end.
+```
+
+Die Suche erfolgt zuerst im Verzeichnis der Hauptdatei, danach in allen
+`include_paths`. Für jede Unit wird über alle Suchpfade hinweg zuerst eine
+gleichnamige `.pui` gesucht. Ist sie vorhanden, wird ihr Interface auch dann
+bevorzugt, wenn daneben eine neuere `.pas`- oder `.pp`-Datei liegt. Die
+Quelldatei wird dann nur noch für den Implementation-Teil verwendet. Fehlt die
+PUI, erzeugt der Compiler sie atomar aus dem vorverarbeiteten Interface-Teil.
+Eine PUI enthält Formatversion, Unit-Name, Interface-`uses`, den bereinigten
+Interface-Quelltext, exportierte Symbolnamen und den SHA-256-Wert der
+Quelldatei. Version 2 speichert außerdem globale Routinen mit Parametern,
+Rückgabetypen, externen Symbolnamen und optionalen zielabhängigen
+ASM-Implementierungsdateien. Reine Interface-Units funktionieren auch nur mit
+ihrer PUI.
+Ein Unit-Guard nach dem Muster `{$ifndef NAME}` / `{$define NAME}` / `{$endif}`
+wird in der PUI gespeichert. Bei einem direkten oder indirekten erneuten
+`uses` bleibt der Guard-Inhalt inaktiv; ein Zyklus ohne wirksamen Guard wird als
+Fehler gemeldet.
+
+## Pascal-Präprozessor
+
+```pascal
+{$define VERSION 2}
+{$info Übersetze Version VERSION}
+{$if VERSION >= 2}
+const FeatureEnabled = 1;
+{$else}
+{$error Diese Version ist zu alt}
+{$endif}
+```
+
+Makros werden rekursiv in aktivem Pascal-Code und in Bedingungen expandiert,
+nicht jedoch in Zeichenketten oder Kommentaren. `{$error}` in einem aktiven
+Zweig beendet die Kompilierung mit Datei und Zeile; `info` und `warn` erscheinen
+in den Compilerhinweisen.
+
+Für Amiga werden Textausgaben direkt als 8x8-Bitmasken in eine 320x200-
+Bitplane geschrieben. Die Unit `System.Graphics` richtet zusätzlich einen
+320x200-Bildschirm mit vier Bitplanes und 16 Farben ein. Ihre Routinen liegen
+in `c64pascal/units/System/Graphics.amiga.asm` und werden über die PUI als
+normale externe 68000-Unterprogramme verbunden. Der erzeugte Code greift direkt
+auf `$DFF000` zu und verwendet weder Workbench noch `dos.library` oder
+`graphics.library`. `Peek` und `Poke` bleiben bewusst C64-spezifisch und führen
+beim Amiga-Ziel zu einer Compilerdiagnose. Das Amiga-Backend erzeugt
+ausschließlich Code für den originalen Motorola 68000.
 
 ## Beispiel für zusammengesetzte Typen
 
@@ -109,3 +183,19 @@ Records oder Arrays ist noch nicht implementiert.
 ```powershell
 py c64pascal\generate_parser.py T:\Tools\antlr-4.13.2-complete.jar
 ```
+
+
+## Windows PE32 ReadLn
+
+Im Anwendungsmodus `Console` stehen folgende Formen zur Verfügung:
+
+```pascal
+ReadLn;
+foo := ReadLn('Text: ');
+ReadLn(foo, 'Text: ');
+```
+
+`ReadLn;` wartet auf Enter/Return. Die beiden anderen Varianten lesen eine
+Zeile über die interne Win32-`ReadFile`-Runtime ein; CR/LF werden entfernt.
+Die Eingabevariable ist derzeit `String`. Im Windows-Modus `GUI`, `Direct2D`
+oder `Direct3D` wird keine Konsole geöffnet und `ReadLn` deshalb abgewiesen.

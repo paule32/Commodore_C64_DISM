@@ -1,0 +1,3 @@
+Basisdatei: d64_dism(9).py
+Original SHA256: 64ae1396feec4b6adf36594e5203dd0697ee3fe1a658e8dc2562f8d319e2aa16
+Vorgabe: Grundstruktur erhalten; Erweiterungen direkt in dieser Datei ergänzen.

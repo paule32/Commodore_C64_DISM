@@ -1,0 +1,11 @@
+C shift / array operand validation
+==================================
+
+- Python syntax of c64c/compiler.py: passed
+- shift lowering recognizes identifier[index]: passed
+- array lowering runs after shift lowering: passed
+- MOS 6510 shift code path present: passed
+- Motorola 68000 shift code path present: passed
+- existing FloodFill 16-bit coordinate reconstruction retained: passed
+- array get/store lowered to common designator AST: passed
+- row-major multidimensional index builder present: passed

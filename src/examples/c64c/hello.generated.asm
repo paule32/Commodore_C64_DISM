@@ -5,8 +5,6 @@
 .basic
 
 __c_start:
-    lda #$0E
-    jsr $FFD2
     lda #$93
     jsr $FFD2
     lda #<__c_string_0
@@ -165,9 +163,6 @@ __c_for_step_2:
     sta __c_var_i_0
     jmp __c_for_condition_1
 __c_for_end_3:
-    lda #<__c_string_1
-    ldx #>__c_string_1
-    jsr __c_print_string
     jmp __c_program_end
 __c_program_end:
     rts
@@ -195,9 +190,8 @@ __c_rt_count:      .byte 0
 __c_rt_mode:       .byte 0
 
 ; C-Variablen
-__c_var_i_0: .byte $00 ; i: byte
-__c_tmp__for_limit_0_1_1: .byte $00 ; intern: byte
+__c_var_i_0: .byte 0 ; i
+__c_tmp__for_limit_0_1_1: .byte 0 ; intern
 
 ; Nullterminierte PETSCII-Zeichenketten
-__c_string_0: .byte $C3, $36, $34, $20, $C3, $0D, $00
-__c_string_1: .byte $C8, $45, $4C, $4C, $4F, $20, $D7, $4F, $52, $4C, $44, $20, $21, $21, $21, $00
+__c_string_0: .byte $43, $36, $34, $20, $43, $0D, $00

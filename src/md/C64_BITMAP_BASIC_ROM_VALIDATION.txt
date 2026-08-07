@@ -1,0 +1,10 @@
+C64 bitmap/BASIC-ROM validation
+================================
+
+- graphics_c64.asm assembles successfully
+- InitGraphics saves $01
+- InitGraphics clears LORAM before graphics memory is used
+- HIRAM and CHAREN are preserved
+- DoneGraphics restores the saved $01 value
+- bitmap remains at $A000-$BF3F in VIC-II bank 2
+- static regression tests cover the mapping contract

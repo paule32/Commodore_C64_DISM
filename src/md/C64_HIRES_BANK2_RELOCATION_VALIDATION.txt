@@ -1,0 +1,8 @@
+[OK] C64 graphics reserve moved to $8000-$BFFF
+[OK] bitmap moved to $A000-$BF3F
+[OK] screen matrix moved to $9C00-$9FE7
+[OK] owner table moved to $9800-$9BE7
+[OK] graphics assembly runtime moved to $C000-$CFFF
+[OK] CIA2 bank selector changed from bank 1 (%10) to bank 2 (%01)
+[OK] synthetic program ending at $61FA assembles with the graphics target
+[OK] writes inside $8000-$BFFF are still rejected

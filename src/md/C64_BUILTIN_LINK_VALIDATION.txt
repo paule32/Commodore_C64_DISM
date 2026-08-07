@@ -1,0 +1,37 @@
+dBase2Many C64-C Builtin Link Fix - Validierung
+================================================
+
+Geprüfte Python-Dateien:
+    c64c/compiler.py
+    c64pascal/compiler.py
+    tests/test_c64c_system_headers.py
+
+Ergebnis Python-Syntax:
+    erfolgreich
+
+Manueller Codegenerator-Smoke-Test:
+    C-Prototyp void clrscr(void) vorhanden
+    C-Prototyp void poke(uint16_t, uint8_t) vorhanden
+    C-Prototyp uint8_t peek(uint16_t) vorhanden
+
+Geprüfte Bedingungen:
+    kein "jsr clrscr"
+    kein "jsr poke"
+    kein "jsr peek"
+    clrscr -> lda #$93 / jsr $FFD2
+    poke   -> indirekter 6510-Speicherzugriff
+    peek   -> indirekter 6510-Speicherzugriff
+
+Interner MOS-6510-Assembler:
+    erfolgreich
+
+Erzeugtes Smoke-Test-PRG:
+    106 Byte
+    44 Assemblerbefehle
+
+Hinweis:
+    Der vollständige ANTLR-Parserlauf benötigt die zu den generierten
+    Parserdateien passende antlr4-python3-runtime 4.13.2. In der
+    Validierungsumgebung war 4.9.3 installiert. Der Codegenerator und der
+    interne 6510-Assembler wurden deshalb mit einem direkt aufgebauten AST
+    geprüft.
