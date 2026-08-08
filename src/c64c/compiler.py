@@ -48,6 +48,8 @@ from c64pascal.compiler import (
     WhileStatement,
     _AmigaCodeGenerator,
     _PE32CodeGenerator,
+    _PE64CodeGenerator,
+    _normalize_pe64_assembly_text,
     _CodeGenerator,
     _PascalType,
     _StorageAccess,
@@ -3164,6 +3166,164 @@ class _PE32CCodeGenerator(_CFunctionCodegenMixin, _PE32CodeGenerator):
         )
 
 
+class _PE64CCodeGenerator(_CFunctionCodegenMixin, _PE64CodeGenerator):
+    """C-Frontend fuer den internen AMD64-/Windows-PE64-Pfad."""
+
+    def __init__(self, frontend: _FrontendResult, *, module_mode: bool=False,
+                 module_prefix: str="__c", graphics_backend: str="Direct2D",
+                 console_mode: bool=True) -> None:
+        super().__init__(frontend.program, symbol_prefix=module_prefix,
+                         language_name="C", graphics_backend=graphics_backend,
+                         console_mode=console_mode)
+        self.frontend=frontend
+        self._init_c_function_codegen(frontend, storage_prefix=module_prefix,
+                                      module_mode=module_mode)
+
+    @staticmethod
+    def _key(name: str) -> str:
+        return name
+
+    def _error(self, message: str, position: SourcePosition) -> C64CError:
+        return C64CError(message, position.line, position.column - 1,
+                         self.frontend.filename)
+
+    def _new_label(self, prefix: str) -> str:
+        self.label_counter += 1
+        return f"{self.symbol_prefix}_{prefix}_{self.label_counter}"
+
+    def _emit_c_public_symbol(self, definition: _CFunctionDefinition) -> None:
+        if not definition.is_static:
+            self.emitter.emit(f"global {definition.symbol}")
+
+    def _emit_c_branch(self, label: str, line: int) -> None:
+        self.emitter.emit(f"    jmp {label}", line)
+
+    def _c_parameter_offset(self, count: int, index: int) -> int:
+        del count
+        # [rbp]=old rbp, [rbp+8]=return, first custom-ABI arg at +16.
+        return 16 + 8 * index
+
+    @staticmethod
+    def _c_stack_slot_size(type_info) -> int:
+        return max(8, int(type_info.size))
+
+    def _emit_c_prologue(self, state: _CFunctionState, line: int) -> None:
+        self.emitter.emit("    push rbp", line)
+        self.emitter.emit("    mov rbp, rsp", line)
+        if state.frame_size:
+            self.emitter.emit(f"    sub rsp, {state.frame_size}", line)
+
+    def _emit_c_epilogue(self, state: _CFunctionState, line: int) -> None:
+        del state
+        self.emitter.emit("    mov rsp, rbp", line)
+        self.emitter.emit("    pop rbp", line)
+        self.emitter.emit("    ret", line)
+
+    def _emit_address(self, access: _StorageAccess, line: int) -> None:
+        label=access.base_label or ""
+        if label.startswith("@cframe:"):
+            if access.dynamic is not None or access.use_self:
+                raise self._error("Dynamischer Zugriff auf C-Stackvariablen wird noch nicht unterstuetzt.", access.position)
+            offset=int(label.split(":",1)[1])+int(access.constant_offset)
+            self.emitter.emit("    mov rcx, rbp", line)
+            if offset:
+                self.emitter.emit(f"    add rcx, {offset}", line)
+            return
+        super()._emit_address(access,line)
+
+    def _emit_c_zero_variable(self, variable: _Variable, line: int) -> None:
+        self.emitter.emit("    xor eax, eax", line)
+        self._store_variable(variable,line)
+
+    def _emit_c_zero_return(self, line: int) -> None:
+        self.emitter.emit("    xor eax, eax", line)
+
+    def _compile_c_shift(self, expression: BinaryExpression):
+        line=expression.position.line
+        left_type=self._expression_type(expression.left)
+        right_type=self._expression_type(expression.right)
+        if not left_type.scalar or not right_type.scalar:
+            raise self._error("Shift-Operator erwartet skalare Operanden.", expression.position)
+        self._compile_expr(expression.left)
+        self.emitter.emit("    push rax",line)
+        self._compile_expr(expression.right)
+        self.emitter.emit("    mov ecx, eax",line)
+        self.emitter.emit("    pop rax",line)
+        ins="shl" if expression.operator=="shl" else ("sar" if left_type.signed else "shr")
+        self.emitter.emit(f"    {ins} eax, cl",line)
+        return left_type
+
+    def _compile_external_call(self, routine, arguments, position):
+        internal_symbols={state.definition.symbol.casefold() for state in self.c_function_states}
+        if routine.symbol.casefold() not in internal_symbols:
+            return super()._compile_external_call(routine, arguments, position)
+        self._require_argument_count(routine.name, arguments, len(routine.parameters), position)
+        for argument, parameter in zip(arguments, routine.parameters):
+            at=self._expression_type(argument)
+            if not self._types_compatible(parameter.type_info, at):
+                raise self._error(f"Argumenttyp {at.name} passt nicht zu {parameter.type_info.name}.", argument.position)
+        line=position.line
+        for argument in reversed(arguments):
+            self._compile_expr(argument)
+            self.emitter.emit("    push rax",line)
+        self.emitter.emit(f"    call {routine.symbol}",line)
+        if arguments:
+            self.emitter.emit(f"    add rsp, {len(arguments)*8}",line)
+        return routine.result_type if routine.result_type is not None else BYTE_TYPE
+
+    def _compile_call_statement(self, statement: CallStatement) -> None:
+        if self._compile_c_return(statement):
+            return
+        super()._compile_call_statement(statement)
+
+    def generate(self) -> GeneratedAssembly:
+        self._prepare_symbols(); self._prepare_c_functions()
+        source_line=self.program.body.position.line
+        if self.c_module_mode:
+            self.emitter.emit("; Separat kompiliertes C-Modul fuer Windows PE64")
+            self.emitter.emit(f"; Quelldatei: {self.frontend.filename}")
+            self.emitter.emit("bits 64")
+            self._emit_c_functions(); self._emit_runtime(); self._emit_data()
+        else:
+            self.emitter.emit("; Von C erzeugter AMD64-Assembler")
+            self.emitter.emit("; Ziel: Windows PE64")
+            self.emitter.emit(f"; Grafikbackend: {self.graphics_backend}")
+            self.emitter.emit(f"; Programm: {self.program.name}")
+            self.emitter.emit("bits 64"); self.emitter.emit("global _start"); self.emitter.emit("entry _start")
+            for symbol in ("ExitProcess","AllocConsole","GetStdHandle","SetConsoleScreenBufferSize",
+                           "SetConsoleWindowInfo","GetConsoleMode","SetConsoleMode","WriteFile","ReadFile",
+                           "CreateFileA","lstrlenA","wsprintfA","GetProcessHeap","HeapAlloc","HeapFree"):
+                self.emitter.emit(f"extern {symbol}")
+            self.emitter.emit("_start:",source_line)
+            if self.console_mode:
+                self.emitter.emit(f"    call {self.symbol_prefix}_console_init",source_line)
+            for variable,initializer in self.initializers:
+                result_type=self._compile_expr(initializer)
+                if result_type==STRING_TYPE:
+                    raise self._error("C-Stringvariablen werden im PE64-Backend noch nicht unterstuetzt.",initializer.position)
+                if not variable.type_info.scalar:
+                    raise self._error("Aggregate koennen nicht direkt initialisiert werden.",initializer.position)
+                self._store_variable(variable,initializer.position.line)
+            main_state=next(state for state in self.c_function_states if state.definition.name=="main")
+            self.emitter.emit(f"    call {main_state.definition.symbol}",source_line)
+            self.emitter.emit("    push rax",source_line)
+            self.emitter.emit("    call ExitProcess",source_line)
+            self._emit_c_functions(); self._emit_runtime(); self._emit_data()
+        assembly="\n".join(self.emitter.lines).rstrip()+"\n"
+        assembly=_normalize_pe64_assembly_text(assembly)
+        return GeneratedAssembly(
+            program_name=self.program.name, assembly=assembly,
+            source_map=dict(self.emitter.source_map),
+            variable_count=sum(not v.internal for v in self.variable_order),
+            string_count=len(self.strings), included_files=self.frontend.preprocessed.included_files,
+            macros=tuple(sorted(self.frontend.preprocessed.macros)), notes=self.frontend.preprocessed.notes,
+            warnings=self.frontend.preprocessed.warnings, typedef_count=self.frontend.typedef_count,
+            structure_count=self.frontend.structure_count, prototype_count=self.frontend.prototype_count,
+            enum_count=self.frontend.enum_count, set_count=self.frontend.set_count,
+            linked_assembly_files=(), linked_c_files=(),
+        )
+
+
 def _link_c_assembly_modules(
     generated: GeneratedAssembly,
     assembly_files: Sequence[str],
@@ -3171,7 +3331,8 @@ def _link_c_assembly_modules(
     if not assembly_files:
         return generated
 
-    if "Windows PE32" in generated.assembly or "C-Modul fuer Windows PE32" in generated.assembly:
+    if ("Windows PE32" in generated.assembly or "C-Modul fuer Windows PE32" in generated.assembly
+        or "Windows PE64" in generated.assembly or "C-Modul fuer Windows PE64" in generated.assembly):
         linked = []
         for filename in assembly_files:
             path = Path(filename).expanduser().resolve()
@@ -3221,7 +3382,8 @@ def _link_c_assembly_modules(
         )
         linked.append(str(path))
 
-    if "Ziel: Windows PE32" not in generated.assembly and "C-Modul fuer Windows PE32" not in generated.assembly:
+    if ("Ziel: Windows PE32" not in generated.assembly and "C-Modul fuer Windows PE32" not in generated.assembly
+        and "Ziel: Windows PE64" not in generated.assembly and "C-Modul fuer Windows PE64" not in generated.assembly):
         output.append("end")
     return GeneratedAssembly(
         program_name=generated.program_name,
@@ -3325,8 +3487,13 @@ def _compile_linked_c_modules(
                     module_mode=True,
                     module_prefix=prefix,
                 ).generate()
-            elif normalized_target in {"pe32", "win32", "windows", "windows-pe32"}:
-                generated = _PE32CCodeGenerator(
+            elif normalized_target in {"pe32", "win32", "windows", "windows-pe32", "pe64", "win64", "windows64", "windows-pe64"}:
+                generator_cls = (
+                    _PE64CCodeGenerator
+                    if normalized_target in {"pe64", "win64", "windows64", "windows-pe64"}
+                    else _PE32CCodeGenerator
+                )
+                generated = generator_cls(
                     frontend,
                     module_mode=True,
                     module_prefix=prefix,
@@ -3355,9 +3522,9 @@ def _link_c_source_modules(
     if not modules:
         return generated
 
-    if "Windows PE32" in generated.assembly:
-        # PE32-Translation-Units bleiben getrennt. d64_dism.py assembliert
-        # Hauptdatei und jedes #pragma-link-Modul einzeln zu COFF32.
+    if "Windows PE32" in generated.assembly or "Windows PE64" in generated.assembly:
+        # Windows-Translation-Units bleiben getrennt. d64_dism.py assembliert
+        # Hauptdatei und jedes #pragma-link-Modul einzeln zu COFF32/COFF64.
         return GeneratedAssembly(
             program_name=generated.program_name,
             assembly=generated.assembly,
@@ -3394,7 +3561,8 @@ def _link_c_source_modules(
         )
         linked.append(str(Path(filename).resolve()))
 
-    if "Ziel: Windows PE32" not in generated.assembly and "C-Modul fuer Windows PE32" not in generated.assembly:
+    if ("Ziel: Windows PE32" not in generated.assembly and "C-Modul fuer Windows PE32" not in generated.assembly
+        and "Ziel: Windows PE64" not in generated.assembly and "C-Modul fuer Windows PE64" not in generated.assembly):
         output.append("end")
     return GeneratedAssembly(
         program_name=generated.program_name,
@@ -3444,8 +3612,11 @@ def compile_c_module_to_assembly(
         target_macros.setdefault("__D64_TARGET_C64__", 1)
     elif normalized_target in {"amiga", "amiga500", "a500", "m68k", "68000"}:
         target_macros.setdefault("__D64_TARGET_AMIGA__", 1)
-    elif normalized_target in {"pe32", "win32", "windows", "windows-pe32"}:
-        target_macros.setdefault("__D64_TARGET_PE32__", 1)
+    elif normalized_target in {"pe32", "win32", "windows", "windows-pe32", "pe64", "win64", "windows64", "windows-pe64"}:
+        if normalized_target in {"pe64", "win64", "windows64", "windows-pe64"}:
+            target_macros.setdefault("__D64_TARGET_PE64__", 1)
+        else:
+            target_macros.setdefault("__D64_TARGET_PE32__", 1)
         selected_mode = str(windows_application_mode or "").strip().casefold()
         if not selected_mode:
             if "__D64_WINDOWS_CONSOLE__" in target_macros:
@@ -3488,6 +3659,8 @@ def compile_c_module_to_assembly(
             generated = _CCodeGenerator(frontend, module_mode=True, module_prefix=prefix).generate()
         elif normalized_target in {"amiga", "amiga500", "a500", "m68k", "68000"}:
             generated = _AmigaCCodeGenerator(frontend, module_mode=True, module_prefix=prefix).generate()
+        elif normalized_target in {"pe64", "win64", "windows64", "windows-pe64"}:
+            generated = _PE64CCodeGenerator(frontend, module_mode=True, module_prefix=prefix, graphics_backend=graphics_backend, console_mode=False).generate()
         else:
             generated = _PE32CCodeGenerator(frontend, module_mode=True, module_prefix=prefix, graphics_backend=graphics_backend, console_mode=False).generate()
 
@@ -3539,7 +3712,7 @@ def compile_c_to_assembly(
     graphics_backend: str = "Direct2D",
     windows_application_mode: str | None = None,
 ) -> GeneratedAssembly:
-    """Praeprozessiert C und erzeugt 6510-, Motorola-680x0- oder IA-32-/PE32-Assembler."""
+    """Praeprozessiert C und erzeugt 6510-, Motorola-680x0- oder IA-32-/PE32- oder AMD64-/PE64-Assembler."""
     normalized_target = str(target).strip().casefold()
     del cpu_model, fpu_model
     target_macros = dict(predefined_macros or {})
@@ -3547,8 +3720,11 @@ def compile_c_to_assembly(
         target_macros.setdefault("__D64_TARGET_C64__", 1)
     elif normalized_target in {"amiga", "amiga500", "a500", "m68k", "68000"}:
         target_macros.setdefault("__D64_TARGET_AMIGA__", 1)
-    elif normalized_target in {"pe32", "win32", "windows", "windows-pe32"}:
-        target_macros.setdefault("__D64_TARGET_PE32__", 1)
+    elif normalized_target in {"pe32", "win32", "windows", "windows-pe32", "pe64", "win64", "windows64", "windows-pe64"}:
+        if normalized_target in {"pe64", "win64", "windows64", "windows-pe64"}:
+            target_macros.setdefault("__D64_TARGET_PE64__", 1)
+        else:
+            target_macros.setdefault("__D64_TARGET_PE32__", 1)
         selected_mode = str(windows_application_mode or "").strip().casefold()
         if not selected_mode:
             if "__D64_WINDOWS_CONSOLE__" in target_macros:
@@ -3585,21 +3761,18 @@ def compile_c_to_assembly(
             generated = _CCodeGenerator(frontend).generate()
         elif normalized_target in {"amiga", "amiga500", "a500", "m68k", "68000"}:
             generated = _AmigaCCodeGenerator(frontend).generate()
-        elif normalized_target in {"pe32", "win32", "windows", "windows-pe32"}:
+        elif normalized_target in {"pe32", "win32", "windows", "windows-pe32", "pe64", "win64", "windows64", "windows-pe64"}:
             if windows_application_mode is None:
-                uses_graphics = bool(
-                    re.search(r"\bInitGraphics\s*\(", source, re.IGNORECASE)
-                )
+                uses_graphics = bool(re.search(r"\bInitGraphics\s*\(", source, re.IGNORECASE))
                 console_mode = not uses_graphics
             else:
-                console_mode = str(windows_application_mode).strip().casefold() in {
-                    "console", "konsole"
-                }
-            generated = _PE32CCodeGenerator(
-                frontend,
-                graphics_backend=graphics_backend,
-                console_mode=console_mode,
-            ).generate()
+                console_mode = str(windows_application_mode).strip().casefold() in {"console", "konsole"}
+            generator_cls = (
+                _PE64CCodeGenerator
+                if normalized_target in {"pe64", "win64", "windows64", "windows-pe64"}
+                else _PE32CCodeGenerator
+            )
+            generated = generator_cls(frontend, graphics_backend=graphics_backend, console_mode=console_mode).generate()
         else:
             raise C64CError(f"Unbekanntes Compilerziel: {target}.", filename=filename)
 

@@ -7306,7 +7306,7 @@ class _PE32CodeGenerator(_CodeGenerator):
                 "ExitProcess", "AllocConsole", "GetStdHandle",
                 "SetConsoleScreenBufferSize", "SetConsoleWindowInfo",
                 "GetConsoleMode", "SetConsoleMode", "WriteFile", "ReadFile", "CreateFileA", "lstrlenA",
-                "GetProcessHeap", "HeapAlloc", "HeapFree",
+                "GetProcessHeap", "HeapAlloc", "HeapFree", "VirtualAlloc", "VirtualFree",
                 "wsprintfA",
             ):
                 self.emitter.emit(f"extern {symbol}")
@@ -7360,7 +7360,7 @@ class _PE32CodeGenerator(_CodeGenerator):
             "ExitProcess", "AllocConsole", "GetStdHandle",
             "SetConsoleScreenBufferSize", "SetConsoleWindowInfo",
             "GetConsoleMode", "SetConsoleMode", "WriteFile", "ReadFile", "CreateFileA", "lstrlenA",
-            "GetProcessHeap", "HeapAlloc", "HeapFree",
+            "GetProcessHeap", "HeapAlloc", "HeapFree", "VirtualAlloc", "VirtualFree",
             "wsprintfA",
         ):
             self.emitter.emit(f"extern {symbol}")
@@ -7386,6 +7386,535 @@ class _PE32CodeGenerator(_CodeGenerator):
             sum(not variable.internal for variable in self.variable_order),
             len(self.strings),
         )
+
+
+
+
+def _normalize_pe64_assembly_text(source: str) -> str:
+    """Macht aus den wenigen geerbten IA-32-Stackaliasen sichtbaren AMD64-Code."""
+    text = str(source)
+    text = text.replace("bits 32", "bits 64")
+    text = text.replace("IA-32-Assembler", "AMD64-Assembler")
+    text = text.replace("Windows PE32 DLL / integrierter COFF32-Linker", "Windows PE64 DLL / integrierter COFF64-Linker")
+    text = text.replace("Windows PE32 / integrierter COFF32-Linker", "Windows PE64 / integrierter COFF64-Linker")
+    text = text.replace("Ziel: Windows PE32", "Ziel: Windows PE64")
+    replacements = {
+        "push ebp":"push rbp", "pop ebp":"pop rbp", "mov ebp, esp":"mov rbp, rsp",
+        "mov esp, ebp":"mov rsp, rbp", "push esi":"push rsi", "pop esi":"pop rsi",
+        "push edi":"push rdi", "pop edi":"pop rdi", "push ebx":"push rbx", "pop ebx":"pop rbx",
+        "push eax":"push rax", "pop eax":"pop rax", "push ecx":"push rcx", "pop ecx":"pop rcx",
+        "push edx":"push rdx", "pop edx":"pop rdx", "jmp edx":"jmp rdx", "jmp eax":"jmp rax",
+    }
+    lines=[]
+    inserted_text_section = False
+    for line in text.splitlines():
+        stripped=line.strip().casefold()
+        if stripped == "bits 64" and not inserted_text_section:
+            lines.append(line)
+            lines.append("section .text")
+            inserted_text_section = True
+            continue
+        for old,new in replacements.items():
+            if stripped == old:
+                indent=line[:len(line)-len(line.lstrip())]; line=indent+new; stripped=new.casefold(); break
+        # Der alte DLL-Einstieg las fdwReason aus [ebp+12]. Unter Win64 liegt
+        # der zweite Parameter direkt in EDX.
+        if re.fullmatch(r"\s*cmp\s+dword\s+ptr\s+\[ebp\+12\]\s*,\s*1\s*", line, re.I):
+            line="    cmp edx, 1"
+        if re.fullmatch(r"\s*ret\s+12\s*", line, re.I):
+            line="    ret"
+        # Der einzige geerbte cdecl-Cleanup in der PE64-Runtime ist wsprintfA:
+        # drei 8-Byte-Pushes statt drei 4-Byte-Pushes.
+        m=re.fullmatch(r"(\s*)add\s+esp\s*,\s*(\d+)\s*", line, re.I)
+        if m:
+            line=f"{m.group(1)}add rsp, {int(m.group(2))*2}"
+        m=re.fullmatch(r"(\s*)sub\s+esp\s*,\s*(\d+)\s*", line, re.I)
+        if m:
+            line=f"{m.group(1)}sub rsp, {int(m.group(2))*2}"
+        lines.append(line)
+    return "\n".join(lines).rstrip()+"\n"
+
+
+class _PE64CodeGenerator(_PE32CodeGenerator):
+    """AMD64-/Windows-PE64-Backend auf Basis desselben Pascal-AST."""
+
+    _EXCEPTION_FRAME_SIZE = 48
+
+    def _install_builtin_exception_class(self) -> None:
+        position = SourcePosition(1, 1)
+        exception_type = _PascalType(
+            "Exception", 16, False, "class",
+            vmt_label=f"{self.symbol_prefix}_vmt_exception",
+        )
+        message_field = _FieldInfo(
+            "FMessage", STRING_TYPE, 8, position, exception_type, "private"
+        )
+        exception_type.fields["fmessage"] = message_field
+        exception_type.properties["message"] = _PropertyInfo(
+            exception_type, "Message", STRING_TYPE, "FMessage", None,
+            "public", position,
+        )
+        self.types["exception"] = exception_type
+        self.class_types.append(exception_type)
+        self.exception_base_type = exception_type
+
+    def _class_pointer_size(self) -> int:
+        return 8
+
+    @staticmethod
+    def _pe32_storage_size(type_info: _PascalType) -> int:
+        if type_info == STRING_TYPE or type_info.kind == "class":
+            return 8
+        return int(type_info.size)
+
+    def _target_storage_size(self, type_info: "_PascalType") -> int:
+        return self._pe32_storage_size(type_info)
+
+    def _compile_readln_call(self, position: SourcePosition) -> None:
+        if not self.console_mode:
+            raise self._error(
+                "ReadLn ist im Windows-PE64-Modus nur für 'Console' verfügbar.",
+                position,
+            )
+        self.runtime.add("readln")
+        self.emitter.emit(f"    call {self.symbol_prefix}_readln", position.line)
+
+    def _emit_address(self, access: _StorageAccess, line: int) -> None:
+        dynamic = access.dynamic
+        if dynamic is not None:
+            self._compile_expr(dynamic.expression)
+            if dynamic.lower_bound:
+                self.emitter.emit(f"    sub eax, {int(dynamic.lower_bound)}", line)
+            ok=self._new_label("index_range_ok")
+            self.emitter.emit(f"    cmp eax, {int(dynamic.element_count)}", line)
+            self.emitter.emit(f"    jb {ok}", line)
+            self.runtime.add("range_error"); self.emitter.emit(f"    jmp {self.symbol_prefix}_range_error", line)
+            self.emitter.emit(f"{ok}:", line)
+            if dynamic.stride != 1:
+                self.emitter.emit(f"    mov edx, {int(dynamic.stride)}", line)
+                self.emitter.emit("    imul eax, edx", line)
+            self.emitter.emit("    mov edx, eax", line)
+        if access.use_self:
+            self.emitter.emit("    mov rcx, rsi", line)
+        else:
+            assert access.base_label is not None
+            if access.class_deref:
+                self.emitter.emit(f"    mov rcx, qword ptr [{access.base_label}]", line)
+                self._emit_nil_reference_check("rcx", line)
+            else:
+                self.emitter.emit(f"    mov rcx, {access.base_label}", line)
+        if dynamic is not None:
+            self.emitter.emit("    add rcx, rdx", line)
+        if access.constant_offset:
+            self.emitter.emit(f"    add rcx, {int(access.constant_offset)}", line)
+
+    def _emit_load_access(self, access: _StorageAccess, line: int) -> None:
+        size=self._pe32_storage_size(access.type_info); self._emit_address(access,line)
+        if size==1: self.emitter.emit("    movzx eax, byte ptr [rcx]",line)
+        elif size==2:
+            ins="movsx" if access.type_info.signed else "movzx"; self.emitter.emit(f"    {ins} eax, word ptr [rcx]",line)
+        elif size==4: self.emitter.emit("    mov eax, dword ptr [rcx]",line)
+        elif size==8: self.emitter.emit("    mov rax, qword ptr [rcx]",line)
+        else: raise self._error("Das PE64-Backend kann skalare 8-, 16-, 32- und 64-Bit-Werte laden.",access.position)
+
+    def _emit_store_access(self, access: _StorageAccess, line: int) -> None:
+        size=self._pe32_storage_size(access.type_info)
+        self.emitter.emit("    push rax",line); self._emit_address(access,line); self.emitter.emit("    pop rax",line)
+        if size==1: self.emitter.emit("    mov byte ptr [rcx], al",line)
+        elif size==2: self.emitter.emit("    mov word ptr [rcx], ax",line)
+        elif size==4: self.emitter.emit("    mov dword ptr [rcx], eax",line)
+        elif size==8: self.emitter.emit("    mov qword ptr [rcx], rax",line)
+        else: raise self._error("Das PE64-Backend kann skalare 8-, 16-, 32- und 64-Bit-Werte speichern.",access.position)
+
+    def _emit_set_self_address(self, receiver: _StorageAccess, line: int) -> None:
+        if receiver.use_self and receiver.constant_offset==0 and receiver.dynamic is None:
+            self._emit_nil_reference_check("rsi",line); return
+        self._emit_address(receiver,line)
+        if receiver.type_info.kind=="class": self.emitter.emit("    mov rsi, qword ptr [rcx]",line)
+        else: self.emitter.emit("    mov rsi, rcx",line)
+        self._emit_nil_reference_check("rsi",line)
+
+    def _compile_method_call(self, method, receiver, arguments, position):
+        self._require_argument_count(method.name,arguments,len(method.parameters),position); line=position.line
+        for argument,parameter,variable in zip(arguments,method.parameters,method.parameter_variables):
+            at=self._compile_expr(argument)
+            if (not at.scalar and at.kind!="class") or (not parameter.type_info.scalar and parameter.type_info.kind!="class"):
+                raise self._error("Record-/Array-Parameter werden noch nicht unterstützt.",argument.position)
+            if not self._types_compatible(parameter.type_info,at): raise self._error(f"Argumenttyp {at.name} passt nicht zu {parameter.type_info.name}.",argument.position)
+            self._store_variable(variable,line)
+        restore=self.current_method is not None
+        if restore: self.emitter.emit("    push rsi",line)
+        self._emit_set_self_address(receiver,line)
+        if method.virtual:
+            if method.vmt_slot is None: raise self._error("Interner Fehler: virtuelle Methode ohne VMT-Slot.",position)
+            self.emitter.emit("    mov rcx, qword ptr [rsi]",line)
+            self.emitter.emit(f"    call qword ptr [rcx+{method.vmt_slot*8}]",line)
+        else: self.emitter.emit(f"    call {method.label}",line)
+        if restore: self.emitter.emit("    pop rsi",line)
+        return method.result_type if method.result_type is not None else BYTE_TYPE
+
+    def _emit_exception_frame_push(self, handler_label: str, line: int) -> None:
+        self.runtime.update({"exception","heap"})
+        self.emitter.emit(f"    sub rsp, {self._EXCEPTION_FRAME_SIZE}",line)
+        self.emitter.emit(f"    mov rax, qword ptr [{self.symbol_prefix}_exception_top]",line)
+        self.emitter.emit("    mov qword ptr [rsp], rax",line)
+        self.emitter.emit(f"    mov rax, {handler_label}",line)
+        self.emitter.emit("    mov qword ptr [rsp+8], rax",line)
+        self.emitter.emit("    mov qword ptr [rsp+16], rbp",line)
+        self.emitter.emit("    mov qword ptr [rsp+24], rsi",line)
+        self.emitter.emit("    mov qword ptr [rsp+32], rbx",line)
+        self.emitter.emit("    mov qword ptr [rsp+40], rdi",line)
+        self.emitter.emit(f"    mov qword ptr [{self.symbol_prefix}_exception_top], rsp",line)
+
+    def _emit_exception_frame_pop(self, line: int) -> None:
+        self.emitter.emit("    mov rax, qword ptr [rsp]",line)
+        self.emitter.emit(f"    mov qword ptr [{self.symbol_prefix}_exception_top], rax",line)
+        self.emitter.emit(f"    add rsp, {self._EXCEPTION_FRAME_SIZE}",line)
+
+    def _compile_statement(self, statement: Statement) -> None:
+        # Nur TRY..EXCEPT benoetigt direkte Breitenanpassung. TRY..FINALLY kann
+        # den geerbten Kontrollfluss mit unseren Frame-Methoden wiederverwenden.
+        if not isinstance(statement, TryExceptStatement):
+            return super()._compile_statement(statement)
+        line=statement.position.line; handler_label=self._new_label("try_except_handler"); end_label=self._new_label("try_except_end")
+        self._emit_exception_frame_push(handler_label,line)
+        break_cleanup,continue_cleanup=self._compile_try_body_with_control_cleanup(statement.try_statement)
+        self._emit_exception_frame_pop(line); self.emitter.emit(f"    jmp {end_label}",line)
+        self._emit_try_control_cleanup(break_cleanup,line); self._emit_try_control_cleanup(continue_cleanup,line)
+        self.emitter.emit(f"{handler_label}:",line)
+        if statement.handlers:
+            for index,handler in enumerate(statement.handlers):
+                et=self._resolve_exception_class(handler.type_name,handler.position); next_label=self._new_label(f"except_next_{index}")
+                hv=self._allocate_variable(handler.variable_name,et,handler.position,internal=True,label_prefix=f"except_{handler.variable_name}")
+                self.emitter.emit(f"    mov rax, qword ptr [{self.symbol_prefix}_exception_object]",line)
+                self.emitter.emit(f"    mov rdx, {et.vmt_label}",line)
+                self.emitter.emit(f"    call {self.symbol_prefix}_exception_is_a",line); self.emitter.emit("    test eax, eax",line); self.emitter.emit(f"    jz {next_label}",line)
+                self.emitter.emit(f"    mov rax, qword ptr [{self.symbol_prefix}_exception_object]",line); self._store_variable(hv,line)
+                previous=self.scope_variables; self.scope_variables=dict(previous); self.scope_variables[self._key(handler.variable_name)]=hv
+                try: _CodeGenerator._compile_statement(self,handler.body)
+                finally: self.scope_variables=previous
+                self.emitter.emit(f"    call {self.symbol_prefix}_exception_release",line); self.emitter.emit(f"    jmp {end_label}",line); self.emitter.emit(f"{next_label}:",line)
+            self.emitter.emit(f"    jmp {self.symbol_prefix}_reraise",line)
+        else:
+            if statement.except_statement is not None: _CodeGenerator._compile_statement(self,statement.except_statement)
+            self.emitter.emit(f"    call {self.symbol_prefix}_exception_release",line)
+        self.emitter.emit(f"{end_label}:",line)
+
+    def _compile_function(self, expression: CallExpression) -> _PascalType:
+        designator=self._as_designator(expression.designator,expression.position); name=self._key(designator.name) if not designator.selectors else ""
+        if name=="exceptionmessage":
+            self._require_argument_count(designator.name,expression.arguments,0,expression.position); self.runtime.add("exception"); self.emitter.emit(f"    mov rax, qword ptr [{self.symbol_prefix}_exception_message]",expression.position.line); return STRING_TYPE
+        return super()._compile_function(expression)
+
+    def _emit_raise_exception_class(self, class_type, message_expression, position):
+        line=position.line; mt=self._compile_expr(message_expression)
+        if mt!=STRING_TYPE: raise self._error("Exception.Create erwartet eine String-Nachricht.",position)
+        self.runtime.update({"heap","exception"})
+        msg=self._allocate_variable(f"$exception_message_{self.label_counter}_{len(self.variable_order)}",STRING_TYPE,position,internal=True,label_prefix="raised_exception_message"); self._store_variable(msg,line)
+        obj=self._allocate_variable(f"$exception_object_{self.label_counter}_{len(self.variable_order)}",class_type,position,internal=True,label_prefix="raised_exception")
+        self.emitter.emit(f"    mov eax, {int(class_type.size)}",line); self.emitter.emit(f"    mov rdx, {class_type.vmt_label}",line); self.emitter.emit(f"    call {self.symbol_prefix}_new_object",line); self._store_variable(obj,line)
+        field=class_type.fields.get("fmessage")
+        if field is None: raise self._error("Interner Fehler: Exception-Klasse ohne FMessage.",position)
+        self._emit_load_access(_StorageAccess(STRING_TYPE,position,msg.label,False),line); self.emitter.emit("    mov rdx, rax",line); self._emit_load_access(_StorageAccess(class_type,position,obj.label,False),line); self.emitter.emit(f"    mov qword ptr [rax+{field.offset}], rdx",line)
+        ctor=class_type.methods.get("create")
+        if ctor is not None and ctor.kind=="constructor": self._compile_method_call(ctor,_StorageAccess(class_type,position,obj.label,False),(DesignatorExpression(position,msg.name),),position)
+        self._emit_load_access(_StorageAccess(class_type,position,obj.label,False),line); self.emitter.emit(f"    call {self.symbol_prefix}_raise_object",line)
+
+    def _emit_library_exports(self) -> None:
+        if not self.library_exports: return
+        arg_regs=("rcx","rdx","r8","r9")
+        for public,internal in self.library_exports.items():
+            method=self._library_export_method(internal); wrapper="__d64_export_"+self._safe_name(public)
+            self.emitter.emit(); self.emitter.emit(f"global {wrapper}"); self.emitter.emit(f'export "{public}", {wrapper}'); self.emitter.emit(f"{wrapper}:")
+            for index,var in enumerate(method.parameter_variables):
+                size=self._pe32_storage_size(var.type_info)
+                if index<4:
+                    reg64=arg_regs[index]
+                    reg32=("ecx","edx","r8d","r9d")[index]
+                    reg16=("cx","dx","r8w","r9w")[index]
+                    reg8=("cl","dl","r8b","r9b")[index]
+                    if size==8: self.emitter.emit(f"    mov qword ptr [{var.label}], {reg64}")
+                    elif size==4: self.emitter.emit(f"    mov dword ptr [{var.label}], {reg32}")
+                    elif size==2: self.emitter.emit(f"    mov word ptr [{var.label}], {reg16}")
+                    elif size==1: self.emitter.emit(f"    mov byte ptr [{var.label}], {reg8}")
+                else:
+                    off=40+(index-4)*8
+                    self.emitter.emit(f"    mov rax, qword ptr [rsp+{off}]")
+                    if size==8: self.emitter.emit(f"    mov qword ptr [{var.label}], rax")
+                    elif size==4: self.emitter.emit(f"    mov dword ptr [{var.label}], eax")
+                    elif size==2: self.emitter.emit(f"    mov word ptr [{var.label}], ax")
+                    elif size==1: self.emitter.emit(f"    mov byte ptr [{var.label}], al")
+            self.emitter.emit("    xor rsi, rsi"); self.emitter.emit(f"    call {method.label}"); self.emitter.emit("    ret")
+
+
+    def _compile_external_call(self, routine, arguments, position):
+        """PE64 external call via linker-generated Microsoft-x64 adapter."""
+        self._require_argument_count(routine.name, arguments, len(routine.parameters), position)
+        for argument, parameter in zip(arguments, routine.parameters):
+            argument_type = self._expression_type(argument)
+            if (
+                (not argument_type.scalar and argument_type.kind != "class")
+                or (not parameter.type_info.scalar and parameter.type_info.kind != "class")
+            ):
+                raise self._error("Aggregatparameter werden fuer externe Routinen noch nicht unterstuetzt.", argument.position)
+            if not self._types_compatible(parameter.type_info, argument_type):
+                raise self._error(
+                    f"Argumenttyp {argument_type.name} passt nicht zu {parameter.type_info.name}.",
+                    argument.position,
+                )
+        line = position.line
+        # Compilerinternes PE64-ABI: ein 8-Byte-Slot pro Parameter. Der Linker
+        # materialisiert aus dem Alias einen Adapter auf Microsoft x64 ABI.
+        for argument in reversed(arguments):
+            self._compile_expr(argument)
+            self.emitter.emit("    push rax", line)
+        adapter_symbol = f"__d64_argc{len(arguments)}__{routine.symbol}"
+        self.emitter.emit(f"    call {adapter_symbol}", line)
+        return routine.result_type if routine.result_type is not None else BYTE_TYPE
+
+    def _compile_implicit_free(self, statement: CallStatement) -> bool:
+        designator = self._as_designator(statement.designator, statement.position)
+        if not designator.selectors or not isinstance(designator.selectors[-1], FieldSelector):
+            return False
+        if self._key(designator.selectors[-1].name) != "free":
+            return False
+        receiver_designator = DesignatorExpression(
+            designator.position, designator.name, designator.selectors[:-1]
+        )
+        receiver = self._resolve_storage(receiver_designator)
+        if receiver.type_info.kind != "class":
+            return False
+        if receiver.type_info.methods.get("free") is not None:
+            return False
+        if statement.arguments:
+            raise self._error("Free erwartet keine Argumente.", statement.position)
+        line = statement.position.line
+        self._emit_load_access(receiver, line)
+        done = self._new_label("free_done")
+        self.emitter.emit("    test rax, rax", line)
+        self.emitter.emit(f"    jz {done}", line)
+        destructor = receiver.type_info.methods.get("destroy")
+        if destructor is not None:
+            if destructor.kind != "destructor":
+                raise self._error(
+                    f"{receiver.type_info.name}.Destroy ist kein Destruktor.", statement.position
+                )
+            self._compile_method_call(destructor, receiver, (), statement.position)
+        self._emit_load_access(receiver, line)
+        self.runtime.add("heap")
+        self.emitter.emit(f"    call {self.symbol_prefix}_free_object", line)
+        self.emitter.emit("    xor eax, eax", line)
+        self._emit_store_access(receiver, line)
+        self.emitter.emit(f"{done}:", line)
+        return True
+
+    def _emit_runtime(self) -> None:
+        if "exception" in self.runtime:
+            p=self.symbol_prefix; self.emitter.emit(); self.emitter.emit("; Pascal PE64 Exception-Transport / Stack-Unwinding")
+            self.emitter.emit(f"{p}_raise_object:"); done=f"{p}_raise_object_replace_done"; self.emitter.emit("    push rax"); self.emitter.emit(f"    mov rcx, qword ptr [{p}_exception_object]"); self.emitter.emit("    test rcx, rcx"); self.emitter.emit(f"    jz {done}"); self.emitter.emit("    cmp rcx, rax"); self.emitter.emit(f"    je {done}"); self.emitter.emit(f"    cmp dword ptr [{p}_exception_owned], 0"); self.emitter.emit(f"    je {done}"); self.emitter.emit("    mov rax, rcx"); self.emitter.emit(f"    call {p}_free_object"); self.emitter.emit(f"{done}:"); self.emitter.emit("    pop rax"); self.emitter.emit(f"    mov qword ptr [{p}_exception_object], rax"); self.emitter.emit(f"    mov dword ptr [{p}_exception_owned], 1"); self.emitter.emit("    test rax, rax"); no=f"{p}_raise_object_no_message"; self.emitter.emit(f"    jz {no}"); self.emitter.emit("    mov rdx, qword ptr [rax+8]"); self.emitter.emit(f"    mov qword ptr [{p}_exception_message], rdx"); self.emitter.emit(f"{no}:"); self.emitter.emit(f"    mov dword ptr [{p}_exception_code], 1"); self.emitter.emit(f"    jmp {p}_exception_unwind")
+            self.emitter.emit(f"{p}_raise:"); self.emitter.emit(f"    mov qword ptr [{p}_exception_message], rax"); self.emitter.emit(f"    mov qword ptr [{p}_raw_exception_object+8], rax"); self.emitter.emit(f"    mov rax, {p}_raw_exception_object"); self.emitter.emit(f"    mov qword ptr [{p}_exception_object], rax"); self.emitter.emit(f"    mov dword ptr [{p}_exception_owned], 0"); self.emitter.emit(f"    mov dword ptr [{p}_exception_code], 1"); self.emitter.emit(f"    jmp {p}_exception_unwind")
+            self.emitter.emit(f"{p}_reraise:"); self.emitter.emit(f"    cmp qword ptr [{p}_exception_message], 0"); rer=f"{p}_reraise_has_message"; self.emitter.emit(f"    jne {rer}"); self.emitter.emit(f"    mov rax, {p}_generic_exception_message"); self.emitter.emit(f"    mov qword ptr [{p}_exception_message], rax"); self.emitter.emit(f"    mov dword ptr [{p}_exception_code], 1"); self.emitter.emit(f"{rer}:")
+            self.emitter.emit(f"{p}_exception_unwind:"); self.emitter.emit(f"    mov rcx, qword ptr [{p}_exception_top]"); self.emitter.emit("    test rcx, rcx"); un=f"{p}_exception_unhandled"; self.emitter.emit(f"    jz {un}"); self.emitter.emit("    mov rdx, qword ptr [rcx+8]"); self.emitter.emit("    mov rax, qword ptr [rcx]"); self.emitter.emit(f"    mov qword ptr [{p}_exception_top], rax"); self.emitter.emit("    mov rbp, qword ptr [rcx+16]"); self.emitter.emit("    mov rsi, qword ptr [rcx+24]"); self.emitter.emit("    mov rbx, qword ptr [rcx+32]"); self.emitter.emit("    mov rdi, qword ptr [rcx+40]"); self.emitter.emit(f"    lea rsp, [rcx+{self._EXCEPTION_FRAME_SIZE}]"); self.emitter.emit("    jmp rdx"); self.emitter.emit(f"{un}:")
+            if self.console_mode:
+                self.emitter.emit(f"    mov rax, {p}_unhandled_prefix"); self.emitter.emit(f"    call {p}_write_cstring"); nm=f"{p}_exception_no_message"; self.emitter.emit(f"    mov rax, qword ptr [{p}_exception_message]"); self.emitter.emit("    test rax, rax"); self.emitter.emit(f"    jz {nm}"); self.emitter.emit(f"    call {p}_write_cstring"); self.emitter.emit(f"{nm}:"); self.emitter.emit(f"    mov rax, {p}_newline"); self.emitter.emit(f"    call {p}_write_cstring")
+            self.emitter.emit("    push 1"); self.emitter.emit("    call ExitProcess"); self.emitter.emit("    ret")
+            self.emitter.emit(f"{p}_exception_is_a:"); raw=f"{p}_exception_is_a_raw"; loop=f"{p}_exception_is_a_loop"; match=f"{p}_exception_is_a_match"; no_match=f"{p}_exception_is_a_no_match"; self.emitter.emit("    test rax, rax"); self.emitter.emit(f"    jz {raw}"); self.emitter.emit("    mov rcx, qword ptr [rax]"); self.emitter.emit(f"{loop}:"); self.emitter.emit("    test rcx, rcx"); self.emitter.emit(f"    jz {no_match}"); self.emitter.emit("    cmp rcx, rdx"); self.emitter.emit(f"    je {match}"); self.emitter.emit("    mov rcx, qword ptr [rcx-8]"); self.emitter.emit(f"    jmp {loop}"); self.emitter.emit(f"{raw}:"); self.emitter.emit(f"    mov rcx, {self.exception_base_type.vmt_label}"); self.emitter.emit("    cmp rdx, rcx"); self.emitter.emit(f"    je {match}"); self.emitter.emit(f"{no_match}:"); self.emitter.emit("    xor eax, eax"); self.emitter.emit("    ret"); self.emitter.emit(f"{match}:"); self.emitter.emit("    mov eax, 1"); self.emitter.emit("    ret")
+            self.emitter.emit(f"{p}_exception_release:"); self.emitter.emit(f"    mov rax, qword ptr [{p}_exception_object]"); clear=f"{p}_exception_release_clear"; self.emitter.emit("    test rax, rax"); self.emitter.emit(f"    jz {clear}"); self.emitter.emit(f"    cmp dword ptr [{p}_exception_owned], 0"); self.emitter.emit(f"    je {clear}"); self.emitter.emit(f"    call {p}_free_object"); self.emitter.emit(f"{clear}:"); self.emitter.emit("    xor rax, rax"); self.emitter.emit(f"    mov qword ptr [{p}_exception_object], rax"); self.emitter.emit(f"    mov dword ptr [{p}_exception_owned], eax"); self.emitter.emit(f"    mov qword ptr [{p}_exception_message], rax"); self.emitter.emit(f"    mov dword ptr [{p}_exception_code], eax"); self.emitter.emit("    ret")
+        if "heap" in self.runtime:
+            p=self.symbol_prefix; self.emitter.emit(); self.emitter.emit("; Pascal PE64 Class-Reference Heap Runtime"); self.emitter.emit(f"{p}_new_object:"); self.emitter.emit("    push rbx"); self.emitter.emit("    push rsi"); self.emitter.emit("    mov ebx, eax"); self.emitter.emit("    mov rsi, rdx"); self.emitter.emit("    call GetProcessHeap"); self.emitter.emit("    push rbx"); self.emitter.emit("    push 8"); self.emitter.emit("    push rax"); self.emitter.emit("    call HeapAlloc"); ok=f"{p}_heap_alloc_ok"; self.emitter.emit("    test rax, rax"); self.emitter.emit(f"    jnz {ok}"); self.emitter.emit(f"    mov rax, {p}_oom_message"); self.emitter.emit(f"    jmp {p}_raise"); self.emitter.emit(f"{ok}:"); self.emitter.emit("    mov qword ptr [rax], rsi"); self.emitter.emit("    pop rsi"); self.emitter.emit("    pop rbx"); self.emitter.emit("    ret"); self.emitter.emit(f"{p}_free_object:"); fd=f"{p}_heap_free_done"; self.emitter.emit("    test rax, rax"); self.emitter.emit(f"    jz {fd}"); self.emitter.emit("    push rbx"); self.emitter.emit("    mov rbx, rax"); self.emitter.emit("    call GetProcessHeap"); self.emitter.emit("    push rbx"); self.emitter.emit("    push 0"); self.emitter.emit("    push rax"); self.emitter.emit("    call HeapFree"); self.emitter.emit("    pop rbx"); self.emitter.emit(f"{fd}:"); self.emitter.emit("    ret")
+        if self.console_mode:
+            p=self.symbol_prefix; self.emitter.emit(); self.emitter.emit(f"{p}_console_init:"); self.emitter.emit("    call AllocConsole")
+            for label,handle,std in ((f"{p}_conin_name",f"{p}_stdin_handle",-10),(f"{p}_conout_name",f"{p}_stdout_handle",-11)):
+                self.emitter.emit("    push 0"); self.emitter.emit("    push 0"); self.emitter.emit("    push 3"); self.emitter.emit("    push 0"); self.emitter.emit("    push 3"); self.emitter.emit("    push 3221225472"); self.emitter.emit(f"    push {label}"); self.emitter.emit("    call CreateFileA"); ok=self._new_label("console_handle_ok"); self.emitter.emit("    cmp rax, -1"); self.emitter.emit(f"    jne {ok}"); self.emitter.emit(f"    push {std}"); self.emitter.emit("    call GetStdHandle"); self.emitter.emit(f"{ok}:"); self.emitter.emit(f"    mov qword ptr [{handle}], rax")
+            self.emitter.emit(f"    push {p}_console_rect"); self.emitter.emit("    push 1"); self.emitter.emit(f"    push qword ptr [{p}_stdout_handle]"); self.emitter.emit("    call SetConsoleWindowInfo"); self.emitter.emit("    push 1638480"); self.emitter.emit(f"    push qword ptr [{p}_stdout_handle]"); self.emitter.emit("    call SetConsoleScreenBufferSize"); self.emitter.emit(f"    push {p}_console_mode"); self.emitter.emit(f"    push qword ptr [{p}_stdout_handle]"); self.emitter.emit("    call GetConsoleMode"); self.emitter.emit(f"    mov eax, dword ptr [{p}_console_mode]"); self.emitter.emit("    or eax, 4"); self.emitter.emit("    push rax"); self.emitter.emit(f"    push qword ptr [{p}_stdout_handle]"); self.emitter.emit("    call SetConsoleMode"); self.emitter.emit("    ret")
+        if "readln" in self.runtime:
+            p = self.symbol_prefix
+            self.emitter.emit()
+            self.emitter.emit("; ReadLn: Eingabepuffer wird beim ersten Aufruf dynamisch angelegt")
+            self.emitter.emit(f"{p}_readln:")
+
+            # __pas_input_buffer enthaelt nur noch einen 64-Bit-Zeiger. Der
+            # eigentliche Speicher wird erst beim ersten ReadLn reserviert.
+            # VirtualAlloc(NULL, 4096, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE)
+            # wird ueber den PE64 Stack->Microsoft-x64 Adapter aufgerufen.
+            buffer_ready = f"{p}_readln_buffer_ready"
+            alloc_ok = f"{p}_readln_buffer_alloc_ok"
+            self.emitter.emit(f"    mov rax, qword ptr [{p}_input_buffer]")
+            self.emitter.emit("    test rax, rax")
+            self.emitter.emit(f"    jnz {buffer_ready}")
+            self.emitter.emit("    push 4")       # PAGE_READWRITE
+            self.emitter.emit("    push 12288")   # MEM_COMMIT | MEM_RESERVE
+            self.emitter.emit("    push 4096")    # eine Windows-Speicherseite
+            self.emitter.emit("    push 0")       # lpAddress = NULL
+            self.emitter.emit("    call VirtualAlloc")
+            self.emitter.emit("    test rax, rax")
+            self.emitter.emit(f"    jnz {alloc_ok}")
+            self.emitter.emit("    push 1")
+            self.emitter.emit("    call ExitProcess")
+            self.emitter.emit(f"{alloc_ok}:")
+            self.emitter.emit(f"    mov qword ptr [{p}_input_buffer], rax")
+            self.emitter.emit(f"{buffer_ready}:")
+
+            # ReadFile darf maximal 4095 Bytes schreiben; Byte 4095 bleibt fuer
+            # den abschliessenden NUL-Terminator reserviert.
+            self.emitter.emit("    xor eax, eax")
+            self.emitter.emit(f"    mov dword ptr [{p}_read_count], eax")
+            self.emitter.emit("    push 0")
+            self.emitter.emit(f"    push {p}_read_count")
+            self.emitter.emit("    push 4095")
+            self.emitter.emit(f"    push qword ptr [{p}_input_buffer]")
+            self.emitter.emit(f"    push qword ptr [{p}_stdin_handle]")
+            self.emitter.emit("    call ReadFile")
+            self.emitter.emit(f"    mov ecx, dword ptr [{p}_read_count]")
+            self.emitter.emit(f"    mov rax, qword ptr [{p}_input_buffer]")
+            self.emitter.emit("    xor edx, edx")
+            self.emitter.emit("    mov byte ptr [rax+rcx], dl")
+            loop = f"{p}_readln_strip"
+            done = f"{p}_readln_done"
+            strip = f"{p}_readln_strip_char"
+            self.emitter.emit(f"{loop}:")
+            self.emitter.emit("    test ecx, ecx")
+            self.emitter.emit(f"    jz {done}")
+            self.emitter.emit("    dec ecx")
+            self.emitter.emit("    movzx edx, byte ptr [rax+rcx]")
+            self.emitter.emit("    cmp edx, 10")
+            self.emitter.emit(f"    je {strip}")
+            self.emitter.emit("    cmp edx, 13")
+            self.emitter.emit(f"    jne {done}")
+            self.emitter.emit(f"{strip}:")
+            self.emitter.emit("    xor edx, edx")
+            self.emitter.emit("    mov byte ptr [rax+rcx], dl")
+            self.emitter.emit(f"    jmp {loop}")
+            self.emitter.emit(f"{done}:")
+            self.emitter.emit(f"    mov rax, qword ptr [{p}_input_buffer]")
+            self.emitter.emit("    ret")
+        if self.runtime.intersection({"print_string","print_int","print_char","print_newline","clear_screen","range_error"}) or (self.console_mode and "exception" in self.runtime):
+            p=self.symbol_prefix; self.emitter.emit(); self.emitter.emit(f"{p}_write_cstring:"); self.emitter.emit("    push rax"); self.emitter.emit("    push rax"); self.emitter.emit("    call lstrlenA"); self.emitter.emit("    mov edx, eax"); self.emitter.emit("    pop rax"); self.emitter.emit("    push 0"); self.emitter.emit(f"    push {p}_written"); self.emitter.emit("    push rdx"); self.emitter.emit("    push rax"); self.emitter.emit(f"    push qword ptr [{p}_stdout_handle]"); self.emitter.emit("    call WriteFile"); self.emitter.emit("    ret")
+        p=self.symbol_prefix
+        if "print_string" in self.runtime: self.emitter.emit(); self.emitter.emit(f"{p}_print_string:"); self.emitter.emit(f"    call {p}_write_cstring"); self.emitter.emit("    ret")
+        if "print_int" in self.runtime: self.emitter.emit(); self.emitter.emit(f"{p}_print_int:"); self.emitter.emit("    push rax"); self.emitter.emit(f"    push {p}_fmt_d"); self.emitter.emit(f"    push {p}_format_buffer"); self.emitter.emit("    call wsprintfA"); self.emitter.emit("    add rsp, 24"); self.emitter.emit(f"    mov rax, {p}_format_buffer"); self.emitter.emit(f"    call {p}_write_cstring"); self.emitter.emit("    ret")
+        if "print_char" in self.runtime: self.emitter.emit(); self.emitter.emit(f"{p}_print_char:"); self.emitter.emit(f"    mov byte ptr [{p}_char_buffer], al"); self.emitter.emit(f"    mov rax, {p}_char_buffer"); self.emitter.emit(f"    call {p}_write_cstring"); self.emitter.emit("    ret")
+        if "print_newline" in self.runtime: self.emitter.emit(); self.emitter.emit(f"{p}_print_newline:"); self.emitter.emit(f"    mov rax, {p}_newline"); self.emitter.emit(f"    call {p}_write_cstring"); self.emitter.emit("    ret")
+        if "clear_screen" in self.runtime: self.emitter.emit(); self.emitter.emit(f"{p}_clear_screen:"); self.emitter.emit(f"    mov rax, {p}_clear_sequence"); self.emitter.emit(f"    call {p}_write_cstring"); self.emitter.emit("    ret")
+        if "range_error" in self.runtime: self.emitter.emit(); self.emitter.emit(f"{p}_range_error:"); self.emitter.emit(f"    mov rax, {p}_range_message"); self.emitter.emit(f"    call {p}_write_cstring"); self.emitter.emit("    push 1"); self.emitter.emit("    call ExitProcess"); self.emitter.emit("    ret")
+
+    def _emit_data(self) -> None:
+        p = self.symbol_prefix
+        initialized_vars = []
+        bss_vars = []
+        for var in self.variable_order:
+            initial = getattr(var, "c_initial_value", None)
+            if initial in (None, 0):
+                bss_vars.append(var)
+            else:
+                initialized_vars.append(var)
+
+        # Initialisierte Daten: VMTs, konstante Strings, Tabellen und explizit
+        # mit einem Nicht-Nullwert initialisierte globale Variablen.
+        self.emitter.emit()
+        self.emitter.emit("section .data")
+        self.emitter.emit("align 8")
+        if self.class_types:
+            self.emitter.emit("; Virtuelle Methodentabellen (VMT), 64 Bit")
+            for ct in self.class_types:
+                base = ct.base_type.vmt_label if ct.base_type is not None else "0"
+                self.emitter.emit(f"{ct.vmt_label}__parent: dq {base}")
+                self.emitter.emit(f"{ct.vmt_label}:")
+                if ct.vmt_methods:
+                    for method in ct.vmt_methods:
+                        self.emitter.emit(f"    dq {method.label}")
+                else:
+                    self.emitter.emit("    dq 0")
+            self.emitter.emit("align 8")
+        if "exception" in self.runtime:
+            # raw_exception_object contains a VMT relocation and therefore is
+            # initialized data. The mutable exception state itself lives in BSS.
+            self.emitter.emit(f"{p}_raw_exception_object: dq {self.exception_base_type.vmt_label}, 0")
+            self.emitter.emit(f"{p}_generic_exception_message: db 69,120,99,101,112,116,105,111,110,0")
+            self.emitter.emit(f"{p}_unhandled_prefix: db 85,110,104,97,110,100,108,101,100,32,101,120,99,101,112,116,105,111,110,58,32,0")
+            self.emitter.emit(f"{p}_nil_message: db 78,105,108,32,99,108,97,115,115,32,114,101,102,101,114,101,110,99,101,0")
+            self.emitter.emit(f"{p}_oom_message: db 79,117,116,32,111,102,32,109,101,109,111,114,121,0")
+        if self.console_mode:
+            self.emitter.emit(f"{p}_conin_name: db 67,79,78,73,78,36,0")
+            self.emitter.emit(f"{p}_conout_name: db 67,79,78,79,85,84,36,0")
+            self.emitter.emit(f"{p}_console_rect: dw 0,0,79,24")
+        self.emitter.emit(f"{p}_fmt_s: db 37,115,0")
+        self.emitter.emit(f"{p}_fmt_d: db 37,100,0")
+        self.emitter.emit(f"{p}_fmt_c: db 37,99,0")
+        self.emitter.emit(f"{p}_newline: db 13,10,0")
+        self.emitter.emit(f"{p}_clear_sequence: db 27,91,50,74,27,91,72,0")
+        self.emitter.emit(f"{p}_range_message: db 82,97,110,103,101,32,101,114,114,111,114,13,10,0")
+
+        if initialized_vars:
+            self.emitter.emit()
+            self.emitter.emit(f"; {self.language_name}-Variablen mit explizitem Initialwert")
+            for var in initialized_vars:
+                comment = "intern" if var.internal else var.name
+                initial = int(getattr(var, "c_initial_value", 0) or 0)
+                size = self._pe32_storage_size(var.type_info)
+                if size == 8:
+                    self.emitter.emit(f"{var.label}: dq {initial & 0xFFFFFFFFFFFFFFFF} ; {comment}: {var.type_info.name}")
+                elif size == 4:
+                    self.emitter.emit(f"{var.label}: dd {initial & 0xFFFFFFFF} ; {comment}: {var.type_info.name}")
+                elif size == 2:
+                    self.emitter.emit(f"{var.label}: dw {initial & 0xFFFF} ; {comment}: {var.type_info.name}")
+                elif size == 1:
+                    self.emitter.emit(f"{var.label}: db {initial & 0xFF} ; {comment}: {var.type_info.name}")
+                else:
+                    # Aggregate initializers are not emitted by this backend yet.
+                    self.emitter.emit(f"{var.label}: db " + ", ".join("0" for _ in range(size)) +
+                                      f" ; {comment}: {var.type_info.name}")
+
+        if self.strings:
+            self.emitter.emit()
+            self.emitter.emit("; Nullterminierte Windows-Latin-1-Zeichenketten")
+            for data, label in self.strings.items():
+                self.emitter.emit(f"{label}: db " + ", ".join(str(v) for v in data + b"\0"))
+
+        # Uninitialisierte/Null-initialisierte Daten bekommen eine echte BSS-
+        # Sektion. Der COFF64/PE32+-Writer reserviert dafür VirtualSize, schreibt
+        # aber keinerlei Nullbytes in die .o/.exe/.dll-Datei. Windows liefert
+        # die Seiten beim Laden automatisch mit Null initialisiert.
+        need_bss = bool(bss_vars or "exception" in self.runtime or self.console_mode)
+        if need_bss:
+            self.emitter.emit()
+            self.emitter.emit("section .bss")
+            self.emitter.emit("align 8")
+            if "exception" in self.runtime:
+                self.emitter.emit(f"{p}_exception_top: resq 1")
+                self.emitter.emit(f"{p}_exception_object: resq 1")
+                self.emitter.emit(f"{p}_exception_owned: resd 1")
+                self.emitter.emit("align 8")
+                self.emitter.emit(f"{p}_exception_message: resq 1")
+                self.emitter.emit(f"{p}_exception_code: resd 1")
+            if self.console_mode:
+                self.emitter.emit("align 8")
+                self.emitter.emit(f"{p}_stdin_handle: resq 1")
+                self.emitter.emit(f"{p}_stdout_handle: resq 1")
+                self.emitter.emit(f"{p}_console_mode: resd 1")
+                self.emitter.emit(f"{p}_written: resd 1")
+                self.emitter.emit(f"{p}_format_buffer: resb 32")
+                self.emitter.emit(f"{p}_char_buffer: resb 2")
+                if "readln" in self.runtime:
+                    self.emitter.emit(f"{p}_read_count: resd 1")
+                    self.emitter.emit("align 8")
+                    # The 4-KiB ReadLn payload remains VirtualAlloc-backed; BSS
+                    # contains only the nullable pointer to that allocation.
+                    self.emitter.emit(f"{p}_input_buffer: resq 1")
+            if bss_vars:
+                self.emitter.emit()
+                self.emitter.emit(f"; {self.language_name}-Nullvariablen (.bss, keine Raw-Bytes)")
+                for var in bss_vars:
+                    comment = "intern" if var.internal else var.name
+                    size = int(self._pe32_storage_size(var.type_info))
+                    align = 8 if size >= 8 else (4 if size >= 4 else (2 if size >= 2 else 1))
+                    if align > 1:
+                        self.emitter.emit(f"align {align}")
+                    self.emitter.emit(f"{var.label}: resb {size} ; {comment}: {var.type_info.name}")
+
+    def generate(self) -> GeneratedAssembly:
+        generated=super().generate()
+        return replace(generated,assembly=_normalize_pe64_assembly_text(generated.assembly))
 
 
 class _AmigaCodeGenerator(_CodeGenerator):
@@ -8480,6 +9009,15 @@ def _unit_marker_assembly(unit_name: str, target: str) -> str:
     """
     safe_name = re.sub(r"[^A-Za-z0-9_]", "_", unit_name)
     normalized_target = str(target).strip().casefold()
+    if normalized_target in {"pe64", "win64", "windows64", "windows-pe64"}:
+        return (
+            "; Von Pascal erzeugtes Windows-PE64-Unit-Modul\n"
+            f"; Unit: {unit_name}\n"
+            "bits 64\n"
+            f"global __unit_{safe_name}\n"
+            f"__unit_{safe_name}:\n"
+            "    ret\n"
+        )
     if normalized_target in {"pe32", "win32", "windows", "windows-pe32"}:
         return (
             "; Von Pascal erzeugtes Windows-PE32-Unit-Modul\n"
@@ -8626,7 +9164,7 @@ def _link_pascal_assembly_modules(
     if not assembly_files:
         return generated
     normalized_target = str(target).strip().casefold()
-    if normalized_target in {"pe32", "win32", "windows", "windows-pe32"}:
+    if normalized_target in {"pe32", "win32", "windows", "windows-pe32", "pe64", "win64", "windows64", "windows-pe64"}:
         linked: List[str] = []
         for filename in assembly_files:
             path = Path(filename).expanduser().resolve()
@@ -8979,9 +9517,9 @@ def compile_pascal_to_assembly(
     library_exports: Dict[str, str] = {}
     frontend_source = source
     if source_kind == "library":
-        if normalized_target not in {"pe32", "win32", "windows", "windows-pe32"}:
+        if normalized_target not in {"pe32", "win32", "windows", "windows-pe32", "pe64", "win64", "windows64", "windows-pe64"}:
             raise C64PascalError(
-                "Pascal LIBRARY wird derzeit ausschließlich für Windows PE32 unterstützt."
+                "Pascal LIBRARY wird derzeit ausschließlich für Windows PE32/PE64 unterstützt."
             )
         frontend_source, library_name, library_exports = _pascal_library_to_program_source(
             source,
@@ -8999,7 +9537,7 @@ def compile_pascal_to_assembly(
         generated = _CodeGenerator(program).generate()
     elif normalized_target in {"amiga", "amiga500", "a500", "m68k", "68000"}:
         generated = _AmigaCodeGenerator(program).generate()
-    elif normalized_target in {"pe32", "win32", "windows", "windows-pe32"}:
+    elif normalized_target in {"pe32", "win32", "windows", "windows-pe32", "pe64", "win64", "windows64", "windows-pe64"}:
         if windows_application_mode is None:
             uses_graphics = bool(
                 re.search(r"\bInitGraphics\s*\(", source, re.IGNORECASE)
@@ -9010,14 +9548,13 @@ def compile_pascal_to_assembly(
         mode_key = selected_mode.casefold()
         console_mode = mode_key in {"console", "konsole"}
         if console_mode and source_kind != "library":
-            program = _inject_console_breakpoints(
-                program, breakpoint_lines
-            )
+            program = _inject_console_breakpoints(program, breakpoint_lines)
         if mode_key in {"direct3d", "d3d", "d3d9"}:
             graphics_backend = "Direct3D"
         elif mode_key in {"direct2d", "d2d"}:
             graphics_backend = "Direct2D"
-        generated = _PE32CodeGenerator(
+        generator_class = _PE64CodeGenerator if normalized_target in {"pe64", "win64", "windows64", "windows-pe64"} else _PE32CodeGenerator
+        generated = generator_class(
             program,
             graphics_backend=graphics_backend,
             console_mode=(console_mode and source_kind != "library"),

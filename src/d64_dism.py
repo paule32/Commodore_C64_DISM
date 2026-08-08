@@ -33,6 +33,8 @@
 #  * Protokoll-Loeschaktion in der Dock-Leiste und weisse Dock-/Tab-Symbole
 #  * Statusfelder fuer INS/CAPS/NUM, Dateigroesse, Zeile und Spalte
 #  * Registerkarten-Kontextmenue und sprachabhaengige F1-Kontexthilfe
+#  * F2-Ein-Tasten-Build fuer BASIC/C/Pascal: Modul->Objekt, Hauptprogramm->Link/Start
+#  * Projekt-TreeList: Doppelklick fuer Datei-/Archivinfos, Einfachklick fuer Checkboxen
 #  * Datei-Neu-Untermenue fuer BASIC, ASM, Pascal, C und C64-Editoren
 #  * Editor-Zoom sowie umschaltbarer Hell-/Dunkelmodus
 #
@@ -62,6 +64,10 @@ import subprocess
 import struct
 import sys
 import tempfile
+
+import locale
+import gettext
+
 import time
 import zlib      as _d64info_zlib
 import base64    as _d64info_base64
@@ -72,6 +78,7 @@ from fractions   import Fraction
 from pathlib     import Path
 from typing      import Dict, Iterable, List, Optional, Sequence, Tuple
 
+from flags_rc    import *
 
 # ---------------------------------------------------------------------------
 # C64 Pro Mono: direkte PETSCII-Zuordnung fuer die Zeichenansicht des
@@ -121,6 +128,86 @@ C64_CHARACTER_PALETTE: Tuple[Tuple[str, str], ...] = (
     ("Hellgrau",    "#9F9F9F"),
 )
 
+LANGUAGE_CODES = [
+    ("ENU", "English (USA)" , "enu"),
+    ("ENG", "English"       , "eng"),
+    ("DEU", "German"        , "deu"),
+    ("FRA", "French"        , "fra"),
+    ("ESP", "Spanish"       , "esp"),
+    ("ITA", "Italian"       , "ita"),
+    ("NLD", "Dutch"         , "nld"),
+    
+    ("PTB", "Portuguese (Brazil)", "ptb"),
+    
+    ("POR", "Portuguese"    , "por"),
+    ("PLK", "Polish"        , "plk"),
+    ("RUS", "Russian"       , "rus"),
+
+    ("AFR", "Afrikaans"     , "afr"),
+    ("ALB", "Albanian"      , "alb"),
+    ("ARA", "Arabic"        , "ara"),
+    ("ARM", "Armenian"      , "arm"),
+    ("AZE", "Azerbaijani"   , "aze"),
+    ("BAQ", "Basque"        , "baq"),
+    ("BEL", "Belarusian"    , "bel"),
+    ("BEN", "Bengali"       , "ben"),
+    ("BOS", "Bosnian"       , "bos"),
+    ("BGR", "Bulgarian"     , "bgr"),
+    ("CAT", "Catalan"       , "cat"),
+    
+    ("CHS", "Chinese (Simplified)" , "chs"),
+    ("CHT", "Chinese (Traditional)", "cht"),
+    
+    ("HRV", "Croatian"      , "hrv"),
+    ("CSY", "Czech"         , "csy"),
+    ("DAN", "Danish"        , "dan"),
+    ("ETI", "Estonian"      , "eti"),
+    ("FIN", "Finnish"       , "fin"),
+    ("GLC", "Galician"      , "glc"),
+    ("GEO", "Georgian"      , "geo"),
+    ("ELL", "Greek"         , "ell"),
+    ("HEB", "Hebrew"        , "heb"),
+    ("HIN", "Hindi"         , "hin"),
+    ("HUN", "Hungarian"     , "hun"),
+    ("ISL", "Icelandic"     , "isl"),
+    ("IND", "Indonesian"    , "ind"),
+    ("GLE", "Irish"         , "gle"),
+    ("JPN", "Japanese"      , "jpn"),
+    ("KAN", "Kannada"       , "kan"),
+    ("KAZ", "Kazakh"        , "kaz"),
+    ("KOR", "Korean"        , "kor"),
+    ("LVI", "Latvian"       , "lvi"),
+    ("LTH", "Lithuanian"    , "lth"),
+    ("MKD", "Macedonian"    , "mkd"),
+    ("MSL", "Malay"         , "msl"),
+    ("MAL", "Malayalam"     , "mal"),
+    ("MAR", "Marathi"       , "mar"),
+    ("MON", "Mongolian"     , "mon"),
+    ("NEP", "Nepali"        , "nep"),
+    ("NOR", "Norwegian"     , "nor"),
+    
+    ("NOB", "Norwegian Bokmål" , "nob"),
+    ("NNO", "Norwegian Nynorsk", "nno"),
+    
+    ("FAR", "Persian"       , "far"),
+    ("ROM", "Romanian"      , "rom"),
+    ("SRB", "Serbian"       , "srb"),
+    
+    ("SRL", "Serbian (Latin)", "srl"),
+    
+    ("SKY", "Slovak"        , "sky"),
+    ("SLV", "Slovenian"     , "slv"),
+    ("SVE", "Swedish"       , "sve"),
+    ("SWA", "Swahili"       , "swa"),
+    ("TAM", "Tamil"         , "tam"),
+    ("TEL", "Telugu"        , "tel"),
+    ("THA", "Thai"          , "tha"),
+    ("TRK", "Turkish"       , "trk"),
+    ("UKR", "Ukrainian"     , "ukr"),
+    ("URD", "Urdu"          , "urd"),
+    ("VIT", "Vietnamese"    , "vit"),
+]
+
 
 HUNK_HEADER             = 0x000003F3
 HUNK_CODE               = 0x000003E9
@@ -165,7 +252,6 @@ WINDOWS_APPLICATION_MODES: Tuple[str, ...] = (
     "Direct2D",
     "Direct3D",
 )
-
 
 def normalize_amiga_cpu_model(value: str) -> str:
     text = str(value or "mk68000").strip().casefold()
@@ -254,15 +340,19 @@ def normalize_windows_application_mode(value: str) -> str:
     return normalized
 
 
-def windows_application_predefined_macros(mode: str) -> Dict[str, str]:
+def windows_application_predefined_macros(mode: str, target: str = "pe32") -> Dict[str, str]:
     selected = normalize_windows_application_mode(mode)
-    macros = {"__D64_TARGET_PE32__": "1"}
+    target_key = str(target or "pe32").strip().casefold()
+    macros = {
+        "__D64_TARGET_PE64__" if target_key in {"pe64", "win64", "windows64", "windows-pe64"}
+        else "__D64_TARGET_PE32__": "1"
+    }
     if selected == "Console":
         macros["__D64_WINDOWS_CONSOLE__"] = "1"
         return macros
     macros["__D64_WINDOWS_GUI__"] = "1"
     if selected in WINDOWS_GRAPHICS_BACKENDS:
-        macros.update(windows_graphics_predefined_macros(selected))
+        macros.update(windows_graphics_predefined_macros(selected, target))
     return macros
 
 
@@ -1348,6 +1438,8 @@ PE32_DEFAULT_IMPORTS: Dict[str, Tuple[str, str]] = {
     "getprocessheap": ("kernel32.dll", "GetProcessHeap"),
     "heapalloc": ("kernel32.dll", "HeapAlloc"),
     "heapfree": ("kernel32.dll", "HeapFree"),
+    "virtualalloc": ("kernel32.dll", "VirtualAlloc"),
+    "virtualfree": ("kernel32.dll", "VirtualFree"),
     "sleep": ("kernel32.dll", "Sleep"),
     "registerclassexa": ("user32.dll", "RegisterClassExA"),
     "createwindowexa": ("user32.dll", "CreateWindowExA"),
@@ -1635,12 +1727,10 @@ def build_pe32_image_with_imports_exports(
     # zur echten .data-Aufteilung ebenfalls hier und werden zur Laufzeit
     # beschrieben.
     sections.append((b".text\0\0\0", bytes(text), text_rva, 0xE0000020))
-    if idata:
-        sections.append((b".idata\0\0", idata, idata_rva, 0xC0000040))
-    if edata:
-        sections.append((b".edata\0\0", edata, edata_rva, 0x40000040))
-    if reloc:
-        sections.append((b".reloc\0\0", reloc, reloc_rva, 0x42000040))
+    
+    if idata: sections.append((b".idata\0\0", idata, idata_rva, 0xC0000040))
+    if edata: sections.append((b".edata\0\0", edata, edata_rva, 0x40000040))
+    if reloc: sections.append((b".reloc\0\0", reloc, reloc_rva, 0x42000040))
 
     number_of_sections = len(sections)
     headers_unaligned = 0x80 + 4 + 20 + 0xE0 + number_of_sections * 40
@@ -2312,15 +2402,1526 @@ def link_coff32_inputs(
 
 
 # ---------------------------------------------------------------------------
-# Windows-Grafik-ABI. Die Compiler können über target='pe32' und die beiden
+# Interner AMD64-Assembler sowie COFF64-/PE32+-Writer/Linker.
+# Keine externe Toolchain erforderlich.
+# ---------------------------------------------------------------------------
+IMAGE_FILE_MACHINE_AMD64 = 0x8664
+IMAGE_REL_AMD64_ADDR64 = 0x0001
+IMAGE_REL_AMD64_ADDR32 = 0x0002
+IMAGE_REL_AMD64_REL32 = 0x0004
+PE64_IMAGE_BASE = 0x0000000140000000
+PE64_DLL_IMAGE_BASE = 0x0000000180000000
+PE64_SECTION_RVA = 0x00001000
+PE64_FILE_ALIGNMENT = 0x200
+PE64_SECTION_ALIGNMENT = 0x1000
+
+
+class PE64AssemblerError(PE32AssemblerError):
+    pass
+
+
+@dataclass(frozen=True)
+class PE64Relocation:
+    offset: int
+    symbol: str
+    relocation_type: int
+
+
+@dataclass(frozen=True)
+class PE64ObjectProgram:
+    code: bytes
+    symbols: Dict[str, int]
+    externals: Tuple[str, ...]
+    relocations: Tuple[PE64Relocation, ...]
+    entry_symbol: str = "_start"
+    imports: Dict[str, Tuple[str, str]] = field(default_factory=dict)
+    exports: Dict[str, str] = field(default_factory=dict)
+    dll_name: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class PE64Program:
+    executable: bytes
+    code: bytes
+    entry_offset: int
+    instruction_count: int
+    symbols: Dict[str, int] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class Coff64ParsedObject:
+    code: bytes
+    symbols: Dict[str, Optional[int]]
+    relocations: Tuple[PE64Relocation, ...]
+    imports: Dict[str, Tuple[str, str]] = field(default_factory=dict)
+    exports: Dict[str, str] = field(default_factory=dict)
+    dll_name: Optional[str] = None
+
+
+_X64_REG_CODE = {
+    "rax": 0, "rcx": 1, "rdx": 2, "rbx": 3,
+    "rsp": 4, "rbp": 5, "rsi": 6, "rdi": 7,
+    "r8": 8, "r9": 9, "r10": 10, "r11": 11,
+    "r12": 12, "r13": 13, "r14": 14, "r15": 15,
+    "eax": 0, "ecx": 1, "edx": 2, "ebx": 3,
+    "esp": 4, "ebp": 5, "esi": 6, "edi": 7,
+    "r8d": 8, "r9d": 9, "r10d": 10, "r11d": 11,
+    "r12d": 12, "r13d": 13, "r14d": 14, "r15d": 15,
+}
+_X64_REG64 = {name for name in _X64_REG_CODE if name.startswith("r") and not name.endswith("d")}
+_X64_REG32 = {name for name in _X64_REG_CODE if name.endswith("d") or name in {"eax","ecx","edx","ebx","esp","ebp","esi","edi"}}
+_X64_REG16 = {
+    "ax":0,"cx":1,"dx":2,"bx":3,"sp":4,"bp":5,"si":6,"di":7,
+    "r8w":8,"r9w":9,"r10w":10,"r11w":11,"r12w":12,"r13w":13,"r14w":14,"r15w":15,
+}
+_X64_REG8 = {
+    "al":0,"cl":1,"dl":2,"bl":3,"spl":4,"bpl":5,"sil":6,"dil":7,
+    "r8b":8,"r9b":9,"r10b":10,"r11b":11,"r12b":12,"r13b":13,"r14b":14,"r15b":15,
+}
+_X64_ALIAS64 = {
+    "eax":"rax","ecx":"rcx","edx":"rdx","ebx":"rbx",
+    "esp":"rsp","ebp":"rbp","esi":"rsi","edi":"rdi",
+    **{f"r{i}d":f"r{i}" for i in range(8,16)},
+}
+_X64_SIZE_RE = re.compile(r"^\s*(?:(byte|word|dword|qword)\s+(?:ptr\s+)?)?(\[.*\])\s*$", re.I)
+
+
+def _x64_reg_info(name: str, line: int) -> Tuple[int, int]:
+    key = str(name).strip().casefold()
+    if key in _X64_REG64:
+        return _X64_REG_CODE[key], 64
+    if key in _X64_REG32:
+        return _X64_REG_CODE[key], 32
+    if key in _X64_REG16:
+        return _X64_REG16[key], 16
+    if key in _X64_REG8:
+        return _X64_REG8[key], 8
+    raise PE64AssemblerError(f"AMD64-Register erwartet: {name}", line)
+
+
+def _x64_rex(*, w: bool=False, r: int=0, x: int=0, b: int=0, force: bool=False) -> bytes:
+    value = 0x40 | (0x08 if w else 0) | (0x04 if r else 0) | (0x02 if x else 0) | (0x01 if b else 0)
+    return bytes((value,)) if force or value != 0x40 else b""
+
+
+def _x64_memory_operand(text: str, line: int):
+    match = _X64_SIZE_RE.fullmatch(str(text).strip())
+    if match is None:
+        return None
+    size = (match.group(1) or "qword").casefold()
+    inside = match.group(2)[1:-1].strip().replace(" ", "")
+    if not inside:
+        raise PE64AssemblerError("Leerer AMD64-Speicheroperand [].", line)
+    normalized = re.sub(r"(?<!^)-", "+-", inside)
+    terms = [term for term in normalized.split("+") if term]
+    base = None; index = None; scale = 1; disp = 0; symbol = None; rip = False
+    for term in terms:
+        low = term.casefold()
+        if low == "rip":
+            if base is not None:
+                raise PE64AssemblerError("RIP darf nicht mit einem Basisregister kombiniert werden.", line)
+            rip = True
+            continue
+        if "*" in low:
+            reg_text, scale_text = low.split("*", 1)
+            if reg_text not in _X64_REG_CODE:
+                raise PE64AssemblerError(f"AMD64-Indexregister erwartet: {term}", line)
+            parsed = _x86_parse_int(scale_text)
+            if parsed not in {1,2,4,8}:
+                raise PE64AssemblerError("AMD64-Skalierung muss 1, 2, 4 oder 8 sein.", line)
+            index = _X64_ALIAS64.get(reg_text, reg_text); scale = int(parsed); continue
+        if low in _X64_REG_CODE:
+            reg64 = _X64_ALIAS64.get(low, low)
+            if base is None: base = reg64
+            elif index is None: index = reg64
+            else: raise PE64AssemblerError("Zu viele AMD64-Register im Speicheroperanden.", line)
+            continue
+        numeric = _x86_parse_int(term)
+        if numeric is not None:
+            disp += int(numeric); continue
+        if re.fullmatch(r"[A-Za-z_.$?@][A-Za-z0-9_.$?@]*", term):
+            if symbol is not None:
+                raise PE64AssemblerError("Nur ein Symbol pro AMD64-Speicheroperand ist erlaubt.", line)
+            symbol = term.casefold(); continue
+        raise PE64AssemblerError(f"Ungueltiger AMD64-Speicherterm: {term}", line)
+    if rip and (base is not None or index is not None):
+        raise PE64AssemblerError("RIP-relative Adressierung darf kein weiteres Register enthalten.", line)
+    if symbol is not None and (base is not None or index is not None) and not rip:
+        raise PE64AssemblerError("Symbol+Register-Adressierung wird im PE64-Assembler noch nicht unterstützt.", line)
+    return {"size":size,"base":base,"index":index,"scale":scale,"disp":disp,"symbol":symbol,"rip":rip}
+
+
+def _x64_rm_body(reg_field: int, operand: str, line: int):
+    """Return (body, rex_r, rex_x, rex_b, relocation_local, relocation_symbol)."""
+    key = str(operand).strip().casefold()
+    if key in _X64_REG_CODE:
+        rm = _X64_REG_CODE[key]
+        return bytes((0xC0 | ((reg_field & 7) << 3) | (rm & 7),)), (reg_field>>3)&1, 0, (rm>>3)&1, None, None
+    mem = _x64_memory_operand(operand, line)
+    if mem is None:
+        raise PE64AssemblerError(f"Register oder Speicheroperand erwartet: {operand}", line)
+    symbol = mem["symbol"]
+    if symbol is not None and (mem["rip"] or mem["base"] is None):
+        body = bytearray((0x05 | ((reg_field & 7) << 3),))
+        local = len(body); body.extend(b"\0\0\0\0")
+        return bytes(body), (reg_field>>3)&1, 0, 0, local, symbol
+    base_name = mem["base"]
+    index_name = mem["index"]
+    base = _X64_REG_CODE[base_name] if base_name is not None else None
+    index = _X64_REG_CODE[index_name] if index_name is not None else None
+    disp = int(mem["disp"])
+    needs_sib = index is not None or base is None or (base & 7) == 4
+    if base is None:
+        mod=0; disp_size=4
+    elif disp == 0 and (base & 7) != 5:
+        mod=0; disp_size=0
+    elif -128 <= disp <= 127:
+        mod=1; disp_size=1
+    else:
+        mod=2; disp_size=4
+    rm_bits = 4 if needs_sib else (base & 7)
+    out = bytearray(( (mod<<6) | ((reg_field&7)<<3) | rm_bits, ))
+    rex_x = (index>>3)&1 if index is not None else 0
+    rex_b = (base>>3)&1 if base is not None else 0
+    if needs_sib:
+        scale_bits={1:0,2:1,4:2,8:3}[int(mem["scale"])]
+        idx_bits=4 if index is None else index&7
+        base_bits=5 if base is None else base&7
+        out.append((scale_bits<<6)|(idx_bits<<3)|base_bits)
+    if disp_size == 1: out.extend(struct.pack("<b",disp))
+    elif disp_size == 4: out.extend(struct.pack("<i",disp))
+    return bytes(out), (reg_field>>3)&1, rex_x, rex_b, None, None
+
+
+def _x64_append_rm(out: bytearray, opcode: bytes, reg_field: int, operand: str, line: int, *, w: bool=False, force_rex: bool=False, relocs=None, base_offset=0):
+    body, rr, rx, rb, local, symbol = _x64_rm_body(reg_field, operand, line)
+    rex = _x64_rex(w=w, r=rr, x=rx, b=rb, force=force_rex)
+    start = len(out); out.extend(rex); out.extend(opcode); body_start=len(out); out.extend(body)
+    if local is not None and symbol is not None and relocs is not None:
+        relocs.append(PE64Relocation(base_offset + body_start + local, symbol, IMAGE_REL_AMD64_REL32))
+    return start
+
+
+def _x64_is_symbol(token: str) -> bool:
+    key = str(token).strip().casefold()
+    # Register names are lexically valid identifiers too.  They must never
+    # become COFF64 symbols/relocations (e.g. ``call rdx``).
+    if key in _X64_REG_CODE or key in _X64_REG16 or key in _X64_REG8 or key == "rip":
+        return False
+    return bool(re.fullmatch(r"[A-Za-z_.$?@][A-Za-z0-9_.$?@]*", str(token).strip()))
+
+
+def _encode_pe64_instruction(text: str, line: int, offset: int, *, relocs: Optional[List[PE64Relocation]]=None) -> bytes:
+    relocs = relocs if relocs is not None else []
+    raw = str(text).strip(); parts=raw.split(None,1); mnemonic=parts[0].casefold(); ops=_x86_split_operands(parts[1] if len(parts)>1 else "")
+    out=bytearray()
+    def rel32(symbol, prefix=b""):
+        out.extend(prefix); out.extend(b"\0\0\0\0"); relocs.append(PE64Relocation(offset+len(out)-4, symbol.casefold(), IMAGE_REL_AMD64_REL32))
+    if mnemonic == "nop": return b"\x90"
+    if mnemonic == "int3": return b"\xCC"
+    if mnemonic == "cdq": return b"\x99"
+    if mnemonic == "cqo": return b"\x48\x99"
+    if mnemonic == "leave": return b"\xC9"
+    if mnemonic == "ret":
+        if not ops: return b"\xC3"
+        value=_x86_parse_int(ops[0]);
+        if value is None or not 0<=value<=0xFFFF: raise PE64AssemblerError("RET erwartet eine 16-Bit-Stackweite.",line)
+        return b"\xC2"+struct.pack("<H",value)
+    if mnemonic in {"call","jmp"} and len(ops)==1:
+        target=ops[0].strip(); key=target.casefold()
+        # Registers/memory must be recognized before generic identifiers.
+        # Otherwise a register such as RDX is mistaken for a COFF64 symbol.
+        if key in _X64_REG_CODE or _x64_memory_operand(target,line) is not None:
+            ext=2 if mnemonic=="call" else 4
+            _x64_append_rm(out,b"\xFF",ext,target,line,w=False,relocs=relocs,base_offset=offset); return bytes(out)
+        if _x64_is_symbol(target):
+            rel32(key, b"\xE8" if mnemonic=="call" else b"\xE9"); return bytes(out)
+    if mnemonic in _X86_JCC and len(ops)==1 and _x64_is_symbol(ops[0]):
+        out.extend(b"\x0F"+bytes((_X86_JCC[mnemonic],))); out.extend(b"\0\0\0\0")
+        relocs.append(PE64Relocation(offset+2,ops[0].casefold(),IMAGE_REL_AMD64_REL32)); return bytes(out)
+    if mnemonic in {"push","pop"} and len(ops)==1:
+        op=ops[0].strip(); key=op.casefold()
+        if key in _X64_REG_CODE:
+            code=_X64_REG_CODE[key]; rex=_x64_rex(b=(code>>3)&1); return rex+bytes(((0x50 if mnemonic=="push" else 0x58)+(code&7),))
+        if mnemonic=="push" and _x64_is_symbol(op):
+            # Pseudo: mov r11, imm64; push r11. Clobbers only volatile R11.
+            out.extend(b"\x49\xBB"); out.extend(b"\0"*8)
+            relocs.append(PE64Relocation(offset+2,key,IMAGE_REL_AMD64_ADDR64)); out.extend(b"\x41\x53"); return bytes(out)
+        if mnemonic=="push":
+            value=_x86_parse_int(op)
+            if value is not None:
+                if -128<=value<=127: return b"\x6A"+struct.pack("<b",value)
+                signed_value = int(value) & 0xFFFFFFFF
+                if signed_value >= 0x80000000:
+                    signed_value -= 0x100000000
+                return b"\x68" + struct.pack("<i", signed_value)
+            if _x64_memory_operand(op,line) is not None:
+                _x64_append_rm(out,b"\xFF",6,op,line,relocs=relocs,base_offset=offset); return bytes(out)
+    if mnemonic == "mov" and len(ops)==2:
+        dst,src=ops; dk=dst.casefold(); sk=src.casefold()
+        if dk in _X64_REG_CODE:
+            dcode,dwidth=_x64_reg_info(dk,line)
+            if sk in _X64_REG_CODE:
+                scode,swidth=_x64_reg_info(sk,line); width=64 if dwidth==64 or swidth==64 else 32
+                rex=_x64_rex(w=width==64,r=(scode>>3)&1,b=(dcode>>3)&1); return rex+b"\x89"+bytes((0xC0|((scode&7)<<3)|(dcode&7),))
+            mem=_x64_memory_operand(src,line)
+            if mem is not None:
+                w=dwidth==64; _x64_append_rm(out,b"\x8B",dcode,src,line,w=w,force_rex=(dcode>=8),relocs=relocs,base_offset=offset); return bytes(out)
+            value=_x86_parse_int(src)
+            if value is not None:
+                if dwidth==64:
+                    out.extend(_x64_rex(w=True,b=(dcode>>3)&1)); out.append(0xB8+(dcode&7)); out.extend(struct.pack("<Q",value & 0xFFFFFFFFFFFFFFFF)); return bytes(out)
+                out.extend(_x64_rex(b=(dcode>>3)&1)); out.append(0xB8+(dcode&7)); out.extend(struct.pack("<I",value & 0xFFFFFFFF)); return bytes(out)
+            if _x64_is_symbol(src):
+                # Adressen sind unter PE64 immer 64 Bit.
+                reg64=dcode; out.extend(_x64_rex(w=True,b=(reg64>>3)&1)); out.append(0xB8+(reg64&7)); out.extend(b"\0"*8)
+                relocs.append(PE64Relocation(offset+len(out)-8,sk,IMAGE_REL_AMD64_ADDR64)); return bytes(out)
+        mem=_x64_memory_operand(dst,line)
+        if mem is not None:
+            if sk in _X64_REG8:
+                scode=_X64_REG8[sk]; _x64_append_rm(out,b"\x88",scode,dst,line,force_rex=(scode>=4),relocs=relocs,base_offset=offset); return bytes(out)
+            if sk in _X64_REG16:
+                scode=_X64_REG16[sk]; out.extend(b"\x66"); _x64_append_rm(out,b"\x89",scode,dst,line,force_rex=(scode>=8),relocs=relocs,base_offset=offset+1); return bytes(out)
+            if sk in _X64_REG_CODE:
+                scode,swidth=_x64_reg_info(sk,line); w=(mem["size"]=="qword" or swidth==64)
+                _x64_append_rm(out,b"\x89",scode,dst,line,w=w,force_rex=(scode>=8),relocs=relocs,base_offset=offset); return bytes(out)
+            value=_x86_parse_int(src)
+            if value is not None:
+                width=mem["size"]
+                if width=="byte": opcode=b"\xC6"; imm=struct.pack("<B",value&0xFF); w=False
+                elif width=="word":
+                    out.extend(b"\x66"); _x64_append_rm(out,b"\xC7",0,dst,line,relocs=relocs,base_offset=offset+1); out.extend(struct.pack("<H",value&0xFFFF)); return bytes(out)
+                else: opcode=b"\xC7"; imm=struct.pack("<I",value&0xFFFFFFFF); w=(width=="qword")
+                _x64_append_rm(out,opcode,0,dst,line,w=w,relocs=relocs,base_offset=offset); out.extend(imm); return bytes(out)
+    if mnemonic == "lea" and len(ops)==2 and ops[0].casefold() in _X64_REG_CODE:
+        reg,width=_x64_reg_info(ops[0],line); _x64_append_rm(out,b"\x8D",reg,ops[1],line,w=True,force_rex=reg>=8,relocs=relocs,base_offset=offset); return bytes(out)
+    if mnemonic in {"add","sub","and","or","xor","cmp","test"} and len(ops)==2:
+        dst,src=ops; dk=dst.casefold(); sk=src.casefold()
+        op_rr={"add":0x01,"or":0x09,"and":0x21,"sub":0x29,"xor":0x31,"cmp":0x39,"test":0x85}[mnemonic]
+        if sk in _X64_REG_CODE and (dk in _X64_REG_CODE or _x64_memory_operand(dst,line) is not None):
+            scode,swidth=_x64_reg_info(sk,line); w=swidth==64 or (dk in _X64_REG64) or ((_x64_memory_operand(dst,line) or {}).get("size")=="qword")
+            _x64_append_rm(out,bytes((op_rr,)),scode,dst,line,w=w,force_rex=scode>=8,relocs=relocs,base_offset=offset); return bytes(out)
+        if dk in _X64_REG_CODE and _x64_memory_operand(src,line) is not None and mnemonic != "test":
+            dcode,dwidth=_x64_reg_info(dk,line); op_rev={"add":0x03,"or":0x0B,"and":0x23,"sub":0x2B,"xor":0x33,"cmp":0x3B}[mnemonic]
+            _x64_append_rm(out,bytes((op_rev,)),dcode,src,line,w=dwidth==64,force_rex=dcode>=8,relocs=relocs,base_offset=offset); return bytes(out)
+        value=_x86_parse_int(src)
+        if value is not None and (dk in _X64_REG_CODE or _x64_memory_operand(dst,line) is not None):
+            group={"add":0,"or":1,"and":4,"sub":5,"xor":6,"cmp":7}.get(mnemonic)
+            if mnemonic=="test": group=0; opcode=b"\xF7"
+            else: opcode=b"\x81"
+            width64=(dk in _X64_REG64) or ((_x64_memory_operand(dst,line) or {}).get("size")=="qword")
+            _x64_append_rm(out,opcode,group,dst,line,w=width64,relocs=relocs,base_offset=offset); out.extend(struct.pack("<I",value&0xFFFFFFFF)); return bytes(out)
+    if mnemonic == "imul" and len(ops)==2 and ops[0].casefold() in _X64_REG_CODE:
+        reg,width=_x64_reg_info(ops[0],line); _x64_append_rm(out,b"\x0F\xAF",reg,ops[1],line,w=width==64,force_rex=reg>=8,relocs=relocs,base_offset=offset); return bytes(out)
+    if mnemonic in {"idiv","div","neg","not"} and len(ops)==1:
+        group={"not":2,"neg":3,"div":6,"idiv":7}[mnemonic]; op=ops[0]; width64=op.casefold() in _X64_REG64 or ((_x64_memory_operand(op,line) or {}).get("size")=="qword")
+        _x64_append_rm(out,b"\xF7",group,op,line,w=width64,relocs=relocs,base_offset=offset); return bytes(out)
+    if mnemonic in {"movzx","movsx"} and len(ops)==2 and ops[0].casefold() in _X64_REG_CODE:
+        reg,width=_x64_reg_info(ops[0],line); src=ops[1]; sk=src.casefold(); mem=_x64_memory_operand(src,line)
+        source_word = sk in _X64_REG16 or (mem is not None and mem["size"]=="word")
+        opcode=(b"\x0F\xB7" if mnemonic=="movzx" and source_word else b"\x0F\xB6" if mnemonic=="movzx" else b"\x0F\xBF" if source_word else b"\x0F\xBE")
+        _x64_append_rm(out,opcode,reg,src,line,w=width==64,force_rex=reg>=8,relocs=relocs,base_offset=offset); return bytes(out)
+    if mnemonic in _X86_SETCC and len(ops)==1:
+        target=ops[0]; tk=target.casefold(); code=_X86_SETCC[mnemonic]
+        if tk in _X64_REG8:
+            reg=_X64_REG8[tk]; rex=_x64_rex(b=(reg>>3)&1,force=reg>=4); return rex+b"\x0F"+bytes((code,0xC0|(reg&7)))
+        _x64_append_rm(out,b"\x0F"+bytes((code,)),0,target,line,relocs=relocs,base_offset=offset); return bytes(out)
+    if mnemonic in {"shl","sal","shr","sar"} and len(ops)==2:
+        target,count=ops; group={"shl":4,"sal":4,"shr":5,"sar":7}[mnemonic]; width64=target.casefold() in _X64_REG64 or ((_x64_memory_operand(target,line) or {}).get("size")=="qword")
+        if count.casefold()=="cl":
+            _x64_append_rm(out,b"\xD3",group,target,line,w=width64,relocs=relocs,base_offset=offset); return bytes(out)
+        value=_x86_parse_int(count)
+        if value is not None and 0<=value<=255:
+            _x64_append_rm(out,b"\xC1",group,target,line,w=width64,relocs=relocs,base_offset=offset); out.append(value); return bytes(out)
+    if mnemonic in {"inc","dec"} and len(ops)==1:
+        group=0 if mnemonic=="inc" else 1; target=ops[0]; width64=target.casefold() in _X64_REG64 or ((_x64_memory_operand(target,line) or {}).get("size")=="qword")
+        _x64_append_rm(out,b"\xFF",group,target,line,w=width64,relocs=relocs,base_offset=offset); return bytes(out)
+    if mnemonic == "xchg" and len(ops)==2:
+        a,b=ops
+        if b.casefold() in _X64_REG_CODE:
+            reg,width=_x64_reg_info(b,line); _x64_append_rm(out,b"\x87",reg,a,line,w=width==64,force_rex=reg>=8,relocs=relocs,base_offset=offset); return bytes(out)
+        if a.casefold() in _X64_REG_CODE:
+            reg,width=_x64_reg_info(a,line); _x64_append_rm(out,b"\x87",reg,b,line,w=width==64,force_rex=reg>=8,relocs=relocs,base_offset=offset); return bytes(out)
+    raise PE64AssemblerError(f"PE64-Assemblerbefehl nicht unterstützt: {text}", line)
+
+
+def _parse_pe64_source(source: str):
+    lines=[]; labels={}; externals=set(); imports={}; exports={}; dll_name=None; entry="_start"; offset=0
+    for line_no,raw in enumerate(str(source).splitlines(),1):
+        text=_x86_strip_comment(raw)
+        if not text: continue
+        while True:
+            m=re.match(r"^([A-Za-z_.$?@][A-Za-z0-9_.$?@]*)\s*:\s*(.*)$",text)
+            if not m: break
+            key=m.group(1).casefold()
+            if key in labels: raise PE64AssemblerError(f"Symbol mehrfach definiert: {m.group(1)}",line_no)
+            labels[key]=offset; text=m.group(2).strip()
+            if not text: break
+        if not text: continue
+        parts=text.split(None,1); directive=parts[0].casefold().lstrip("."); args=parts[1].strip() if len(parts)>1 else ""
+        if directive in {"section","text","code","global","globl","public","bits","cpu","model"}:
+            lines.append((line_no,text)); continue
+        if directive in {"extern","extrn"}:
+            for item in _x86_split_operands(args):
+                if item: externals.add(item.strip().casefold())
+            lines.append((line_no,text)); continue
+        if directive=="import":
+            ops=_x86_split_operands(args)
+            if len(ops) not in {2,3}: raise PE64AssemblerError('IMPORT erwartet: import symbol, "dll", "member"',line_no)
+            symbol=_pe32_unquote(ops[0]).strip(); dll=_pe32_unquote(ops[1]).strip(); member=_pe32_unquote(ops[2]).strip() if len(ops)==3 else symbol
+            imports[symbol.casefold()]=(dll,member); externals.add(symbol.casefold()); lines.append((line_no,text)); continue
+        if directive=="export":
+            ops=_x86_split_operands(args)
+            if len(ops) not in {1,2}: raise PE64AssemblerError("EXPORT erwartet public_name [, internal_symbol]",line_no)
+            public=_pe32_unquote(ops[0]).strip(); internal=_pe32_unquote(ops[1]).strip() if len(ops)==2 else public
+            exports[public]=internal.casefold(); lines.append((line_no,text)); continue
+        if directive=="dllname": dll_name=_pe32_unquote(args); lines.append((line_no,text)); continue
+        if directive=="entry": entry=args.split()[0]; lines.append((line_no,text)); continue
+        if directive=="align":
+            align=_x86_parse_int(args)
+            if align is None or align<=0 or align&(align-1): raise PE64AssemblerError("ALIGN erwartet eine Zweierpotenz.",line_no)
+            offset=_align_up(offset,align); lines.append((line_no,text)); continue
+        if directive in {"db","byte"}: offset += len(_x86_data_values(args,line_no,1)); lines.append((line_no,text)); continue
+        if directive in {"dw","word"}: offset += 2*len(_x86_split_operands(args)); lines.append((line_no,text)); continue
+        if directive in {"dd","dword","long"}: offset += 4*len(_x86_split_operands(args)); lines.append((line_no,text)); continue
+        if directive in {"dq","qword"}: offset += 8*len(_x86_split_operands(args)); lines.append((line_no,text)); continue
+        encoded=_encode_pe64_instruction(text,line_no,offset,relocs=[]); offset += len(encoded); lines.append((line_no,text))
+    return lines,labels,entry,tuple(sorted(externals)),imports,exports,dll_name
+
+
+def assemble_pe64_object_source(source: str, *, filename: str="<PE64-Assembler>") -> PE64ObjectProgram:
+    del filename
+    lines,labels,entry,externals,imports,exports,dll_name=_parse_pe64_source(source)
+    out=bytearray(); relocs=[]
+    for line_no,text in lines:
+        parts=text.split(None,1); directive=parts[0].casefold().lstrip("."); args=parts[1].strip() if len(parts)>1 else ""
+        if directive in {"section","text","code","global","globl","public","bits","cpu","model","extern","extrn","import","export","dllname","entry"}: continue
+        if directive=="align":
+            align=int(_x86_parse_int(args)); out.extend(bytes(_align_up(len(out),align)-len(out))); continue
+        unit={"db":1,"byte":1,"dw":2,"word":2,"dd":4,"dword":4,"long":4,"dq":8,"qword":8}.get(directive)
+        if unit:
+            for token in _x86_split_operands(args):
+                token=token.strip()
+                if unit==1 and len(token)>=2 and token[0] in {'\"',"'"} and token[-1]==token[0]:
+                    decoded=ast.literal_eval(token); out.extend(str(decoded).encode("latin-1",errors="replace")); continue
+                value=_x86_parse_int(token)
+                if value is not None:
+                    out.extend(int(value & ((1<<(unit*8))-1)).to_bytes(unit,"little")); continue
+                if not _x64_is_symbol(token): raise PE64AssemblerError(f"Numerischer Datenwert oder Symbol erwartet: {token}",line_no)
+                patch=len(out); out.extend(bytes(unit))
+                rel_type=IMAGE_REL_AMD64_ADDR64 if unit==8 else IMAGE_REL_AMD64_ADDR32
+                relocs.append(PE64Relocation(patch,token.casefold(),rel_type))
+            continue
+        encoded=_encode_pe64_instruction(text,line_no,len(out),relocs=relocs); out.extend(encoded)
+    return PE64ObjectProgram(bytes(out),dict(labels),externals,tuple(relocs),entry,dict(imports),dict(exports),dll_name)
+
+
+def _coff64_metadata_bytes(obj: PE64ObjectProgram) -> bytes:
+    document={"format":"d64-coff64-link-v1","entry":obj.entry_symbol,"imports":{s:{"dll":v[0],"member":v[1]} for s,v in sorted(obj.imports.items())},"exports":dict(obj.exports),"dll_name":obj.dll_name}
+    if not document["imports"] and not document["exports"] and not document["dll_name"]: return b""
+    return (json.dumps(document,ensure_ascii=True,sort_keys=True)+"\n").encode("ascii")
+
+
+def write_coff64_object(obj: PE64ObjectProgram) -> bytes:
+    names=list(obj.symbols.keys())
+    for name in obj.externals:
+        if name not in names: names.append(name)
+    index={name:i for i,name in enumerate(names)}; metadata=_coff64_metadata_bytes(obj); sections=2 if metadata else 1
+    header_size=20+sections*40; text_ptr=header_size; meta_ptr=text_ptr+len(obj.code) if metadata else 0; reloc_ptr=text_ptr+len(obj.code)+len(metadata); sym_ptr=reloc_ptr+len(obj.relocations)*10
+    header=struct.pack("<HHIIIHH",IMAGE_FILE_MACHINE_AMD64,sections,0,sym_ptr,len(names),0,0)
+    sh=bytearray(40); sh[:8]=b".text\0\0\0"; struct.pack_into("<I",sh,0x10,len(obj.code)); struct.pack_into("<I",sh,0x14,text_ptr); struct.pack_into("<I",sh,0x18,reloc_ptr if obj.relocations else 0); struct.pack_into("<H",sh,0x20,len(obj.relocations)); struct.pack_into("<I",sh,0x24,0xE0500020)
+    headers=bytearray(sh)
+    if metadata:
+        ds=bytearray(40); ds[:8]=b".drectve"; struct.pack_into("<I",ds,0x10,len(metadata)); struct.pack_into("<I",ds,0x14,meta_ptr); struct.pack_into("<I",ds,0x24,0x00100A00); headers.extend(ds)
+    rb=bytearray()
+    for r in obj.relocations:
+        if r.symbol not in index: raise PE64AssemblerError(f"COFF64-Symbol fehlt: {r.symbol}")
+        rb.extend(struct.pack("<IIH",r.offset,index[r.symbol],r.relocation_type))
+    strings=bytearray(); syms=bytearray()
+    for name in names:
+        syms.extend(_coff_symbol_name_bytes(name,strings)); defined=name in obj.symbols; syms.extend(struct.pack("<IhHBB",int(obj.symbols.get(name,0)),1 if defined else 0,0,2,0))
+    st=struct.pack("<I",4+len(strings))+bytes(strings)
+    return header+bytes(headers)+obj.code+metadata+bytes(rb)+bytes(syms)+st
+
+
+def assemble_pe64_coff_object(source: str, *, filename: str="<PE64-Assembler>") -> bytes:
+    return write_coff64_object(assemble_pe64_object_source(source,filename=filename))
+
+
+def parse_coff64_object(data: bytes) -> Coff64ParsedObject:
+    payload=bytes(data)
+    if len(payload)<60: raise PE64AssemblerError("COFF64-Objekt ist zu klein.")
+    machine,sections,_ts,sym_ptr,sym_count,opt,_chars=struct.unpack_from("<HHIIIHH",payload,0)
+    if machine!=IMAGE_FILE_MACHINE_AMD64 or sections<1 or opt!=0: raise PE64AssemblerError("Nur relocierbare AMD64-COFF-Objekte werden unterstützt.")
+    text=None; meta=b""
+    for i in range(sections):
+        off=20+i*40; name=payload[off:off+8].rstrip(b"\0"); raw_size,raw_ptr,rel_ptr=struct.unpack_from("<III",payload,off+0x10); rel_count=struct.unpack_from("<H",payload,off+0x20)[0]
+        if raw_ptr and raw_ptr+raw_size>len(payload): raise PE64AssemblerError("COFF64-Sektion außerhalb der Datei.")
+        if name==b".text": text=(raw_size,raw_ptr,rel_ptr,rel_count)
+        elif name==b".drectve" and raw_ptr: meta=payload[raw_ptr:raw_ptr+raw_size]
+    if text is None: raise PE64AssemblerError("COFF64-Objekt enthält keine .text-Sektion.")
+    raw_size,raw_ptr,rel_ptr,rel_count=text; code=payload[raw_ptr:raw_ptr+raw_size]
+    st_off=sym_ptr+sym_count*18
+    if st_off+4>len(payload): raise PE64AssemblerError("COFF64-Symboltabelle ist beschädigt.")
+    st_size=struct.unpack_from("<I",payload,st_off)[0]; st=payload[st_off:st_off+max(4,st_size)]
+    names=[]; symbols={}; i=0
+    while i<sym_count:
+        off=sym_ptr+i*18; raw_name=payload[off:off+8]; zeroes,so=struct.unpack("<II",raw_name)
+        if zeroes==0 and so:
+            end=st.find(b"\0",so); end=len(st) if end<0 else end; name=st[so:end].decode("utf-8",errors="replace")
+        else: name=raw_name.rstrip(b"\0").decode("ascii",errors="replace")
+        value,sec,_type,_storage,aux=struct.unpack_from("<IhHBB",payload,off+8); key=name.casefold(); names.append(key); symbols[key]=int(value) if sec==1 else None
+        for _ in range(aux): i+=1; names.append("")
+        i+=1
+    rels=[]
+    for j in range(rel_count):
+        off=rel_ptr+j*10
+        if off+10>len(payload): raise PE64AssemblerError("COFF64-Relocationstabelle ist beschädigt.")
+        va,si,rt=struct.unpack_from("<IIH",payload,off)
+        if si>=len(names): raise PE64AssemblerError("COFF64-Relocation verweist auf ungültiges Symbol.")
+        rels.append(PE64Relocation(va,names[si],rt))
+    imports={}; exports={}; dll_name=None
+    if meta.strip():
+        try: doc=json.loads(meta.decode("ascii"))
+        except Exception as exc: raise PE64AssemblerError("COFF64-.drectve enthält ungültige Metadaten.") from exc
+        if isinstance(doc,dict) and doc.get("format")=="d64-coff64-link-v1":
+            for symbol,spec in (doc.get("imports") or {}).items():
+                if isinstance(spec,dict) and spec.get("dll") and spec.get("member"): imports[str(symbol).casefold()]=(str(spec["dll"]),str(spec["member"]))
+            for public,internal in (doc.get("exports") or {}).items(): exports[str(public)]=str(internal).casefold()
+            if doc.get("dll_name"): dll_name=str(doc["dll_name"])
+    return Coff64ParsedObject(code,symbols,tuple(rels),imports,exports,dll_name)
+
+
+def create_coff64_archive(members: Sequence[Tuple[str, bytes]]) -> bytes:
+    return create_coff32_archive(members)
+
+
+def parse_coff64_archive(data: bytes) -> Tuple[Tuple[str, bytes], ...]:
+    return parse_coff32_archive(data)
+
+
+# Windows-x64-Signaturen fuer die Stack->Microsoft-x64-Adapterthunks des
+# compilerinternen Runtime-ABIs. True = Aufrufer bereinigt (cdecl/variadic).
+PE64_IMPORT_SIGNATURES: Dict[str, Tuple[int, bool]] = {
+    "exitprocess":(1,False), "allocconsole":(0,False), "getstdhandle":(1,False),
+    "setconsolescreenbuffersize":(2,False), "setconsolewindowinfo":(3,False),
+    "getconsolemode":(2,False), "setconsolemode":(2,False), "writefile":(5,False),
+    "readfile":(5,False), "createfilea":(7,False), "lstrlena":(1,False),
+    "getmodulehandlea":(1,False), "getprocaddress":(2,False), "loadlibrarya":(1,False),
+    "getcommandlinea":(0,False), "getprocessheap":(0,False), "heapalloc":(3,False),
+    "heapfree":(3,False), "virtualalloc":(4,False), "virtualfree":(3,False),
+    "sleep":(1,False), "wsprintfa":(3,True),
+    "registerclassexa":(1,False), "createwindowexa":(12,False), "defwindowproca":(4,False),
+    "destroywindow":(1,False), "showwindow":(2,False), "updatewindow":(1,False),
+    "peekmessagea":(5,False), "translatemessage":(1,False), "dispatchmessagea":(1,False),
+    "loadcursora":(2,False), "postquitmessage":(1,False), "getclientrect":(2,False),
+    "messageboxa":(4,False), "d2d1createfactory":(3,False), "direct3dcreate9":(1,False),
+    "printf":(1,True),
+}
+
+
+def _build_pe64_import_section(import_specs: Dict[str, Tuple[str,str]], idata_rva: int):
+    grouped={}
+    for _symbol,(dll,func) in import_specs.items():
+        funcs=grouped.setdefault(dll,[])
+        if func not in funcs: funcs.append(func)
+    if not grouped: return b"",{},0,0
+    items=list(grouped.items()); data=bytearray(20*(len(items)+1)); ilt={}; iat={}; hints={}; names={}
+    for dll,funcs in items: ilt[dll]=len(data); data.extend(bytes(8*(len(funcs)+1)))
+    for dll,funcs in items: iat[dll]=len(data); data.extend(bytes(8*(len(funcs)+1)))
+    for dll,funcs in items:
+        for func in funcs:
+            if len(data)&1: data.append(0)
+            hints[(dll,func)]=len(data); data.extend(struct.pack("<H",0)); data.extend(func.encode("ascii")+b"\0")
+    for dll,_ in items: names[dll]=len(data); data.extend(dll.encode("ascii")+b"\0")
+    spec_iat={}; first=0; total=0
+    for di,(dll,funcs) in enumerate(items):
+        ilt_rva=idata_rva+ilt[dll]; iat_rva=idata_rva+iat[dll]; first=first or iat_rva; total += 8*(len(funcs)+1)
+        struct.pack_into("<IIIII",data,di*20,ilt_rva,0,0,idata_rva+names[dll],iat_rva)
+        for fi,func in enumerate(funcs):
+            hint=idata_rva+hints[(dll,func)]; struct.pack_into("<Q",data,ilt[dll]+fi*8,hint); struct.pack_into("<Q",data,iat[dll]+fi*8,hint); spec_iat[(dll,func)]=iat_rva+fi*8
+    return bytes(data),{symbol:spec_iat[spec] for symbol,spec in import_specs.items()},first,total
+
+
+def _build_pe64_reloc_section(rvas: Sequence[int]) -> bytes:
+    pages={}
+    for rva in sorted({int(x) for x in rvas if int(x)>=0}): pages.setdefault(rva&~0xFFF,[]).append(rva&0xFFF)
+    out=bytearray()
+    for page,offs in sorted(pages.items()):
+        entries=[(10<<12)|off for off in offs]  # IMAGE_REL_BASED_DIR64
+        size=8+2*len(entries)
+        if size&3: entries.append(0); size+=2
+        out.extend(struct.pack("<II",page,size)); [out.extend(struct.pack("<H",e)) for e in entries]
+    return bytes(out)
+
+
+def build_pe64_image_with_imports_exports(code: bytes, entry_offset: Optional[int], import_specs: Dict[str,Tuple[str,str]], iat_call_patches: Dict[str,List[int]], *, exports=None, dll_name="library.dll", gui=False, dll=False, image_base=PE64_IMAGE_BASE, base_relocations=()):
+    text=bytearray(code); text_rva=PE64_SECTION_RVA; next_rva=_align_up(text_rva+max(1,len(text)),PE64_SECTION_ALIGNMENT)
+    idata=b""; iat_rvas={}; first_iat=0; iat_size=0; idata_rva=0
+    if import_specs:
+        idata_rva=next_rva; idata,iat_rvas,first_iat,iat_size=_build_pe64_import_section(import_specs,idata_rva); next_rva=_align_up(idata_rva+max(1,len(idata)),PE64_SECTION_ALIGNMENT)
+    for symbol,patches in iat_call_patches.items():
+        if symbol not in iat_rvas: raise PE64AssemblerError(f"PE64-IAT-Eintrag fehlt: {symbol}")
+        for patch in patches:
+            # patch zeigt auf disp32 eines RIP-relativen CALL/JMP [RIP+disp32]
+            instruction_end=text_rva+patch+4; disp=iat_rvas[symbol]-instruction_end; struct.pack_into("<i",text,patch,disp)
+    export_offsets=dict(exports or {}); edata=b""; edata_rva=0
+    if export_offsets:
+        edata_rva=next_rva; edata=_build_pe32_export_section(export_offsets,dll_name,edata_rva,text_rva); next_rva=_align_up(edata_rva+max(1,len(edata)),PE64_SECTION_ALIGNMENT)
+    reloc=b""; reloc_rva=0
+    if base_relocations:
+        reloc_rva=next_rva; reloc=_build_pe64_reloc_section(base_relocations); next_rva=_align_up(reloc_rva+max(1,len(reloc)),PE64_SECTION_ALIGNMENT)
+    sections=[(b".text\0\0\0",bytes(text),text_rva,0xE0000020)]
+    if idata: sections.append((b".idata\0\0",idata,idata_rva,0xC0000040))
+    if edata: sections.append((b".edata\0\0",edata,edata_rva,0x40000040))
+    if reloc: sections.append((b".reloc\0\0",reloc,reloc_rva,0x42000040))
+    headers_unaligned=0x80+4+20+0xF0+40*len(sections); headers_size=_align_up(headers_unaligned,PE64_FILE_ALIGNMENT); raw_ptr=headers_size; layout=[]; code_size=0; data_size=0
+    for name,data,rva,chars in sections:
+        raw_size=_align_up(len(data),PE64_FILE_ALIGNMENT); layout.append((name,data,rva,chars,raw_ptr,raw_size)); raw_ptr+=raw_size; code_size += raw_size if name.startswith(b".text") else 0; data_size += 0 if name.startswith(b".text") else raw_size
+    image_size=_align_up(next_rva,PE64_SECTION_ALIGNMENT)
+    dos=bytearray(0x80); dos[:2]=b"MZ"; struct.pack_into("<I",dos,0x3C,0x80)
+    pe=bytearray(b"PE\0\0"); chars=0x0022|(0x2000 if dll else 0); pe.extend(struct.pack("<HHIIIHH",IMAGE_FILE_MACHINE_AMD64,len(sections),0,0,0,0xF0,chars))
+    opt=bytearray(0xF0); struct.pack_into("<H",opt,0,0x020B); opt[2]=1; struct.pack_into("<I",opt,4,code_size); struct.pack_into("<I",opt,8,data_size); struct.pack_into("<I",opt,0x10,0 if entry_offset is None else text_rva+int(entry_offset)); struct.pack_into("<I",opt,0x14,text_rva); struct.pack_into("<Q",opt,0x18,int(image_base)); struct.pack_into("<I",opt,0x20,PE64_SECTION_ALIGNMENT); struct.pack_into("<I",opt,0x24,PE64_FILE_ALIGNMENT); struct.pack_into("<HHHH",opt,0x28,6,0,0,0); struct.pack_into("<HH",opt,0x30,6,0); struct.pack_into("<I",opt,0x38,image_size); struct.pack_into("<I",opt,0x3C,headers_size); struct.pack_into("<H",opt,0x44,2 if gui else 3); struct.pack_into("<H",opt,0x46,0x0160); struct.pack_into("<QQQQ",opt,0x48,0x400000,0x4000,0x100000,0x2000); struct.pack_into("<II",opt,0x68,0,16)
+    if edata: struct.pack_into("<II",opt,0x70,edata_rva,len(edata))
+    if idata: struct.pack_into("<II",opt,0x78,idata_rva,len(idata)); struct.pack_into("<II",opt,0xD0,first_iat,iat_size)
+    if reloc: struct.pack_into("<II",opt,0x98,reloc_rva,len(reloc))
+    pe.extend(opt)
+    for name,data,rva,schars,rptr,rsize in layout:
+        sh=bytearray(40); sh[:8]=name[:8].ljust(8,b"\0"); struct.pack_into("<I",sh,8,len(data)); struct.pack_into("<I",sh,0x0C,rva); struct.pack_into("<I",sh,0x10,rsize); struct.pack_into("<I",sh,0x14,rptr); struct.pack_into("<I",sh,0x24,schars); pe.extend(sh)
+    headers=bytes(dos)+bytes(pe); headers += bytes(headers_size-len(headers)); image=bytearray(headers)
+    for _n,data,_r,_c,_p,rsize in layout: image.extend(data); image.extend(bytes(rsize-len(data)))
+    return bytes(image),bytes(text)
+
+
+def _pe64_import_adapter_bytes(arg_count: int, caller_cleanup: bool):
+    """Stack-ABI des Compilers -> Microsoft x64 ABI. Return (code, iat_disp_offset)."""
+    n=max(0,int(arg_count)); out=bytearray(b"\x55\x48\x89\xE5\x48\x83\xE4\xF0")  # push rbp; mov rbp,rsp; and rsp,-16
+    stack_args=max(0,n-4); reserve=_align_up(32+stack_args*8,16)
+    if reserve<=127: out.extend(b"\x48\x83\xEC"+bytes((reserve,)))
+    else: out.extend(b"\x48\x81\xEC"+struct.pack("<I",reserve))
+    loads=[b"\x48\x8B\x4D",b"\x48\x8B\x55",b"\x4C\x8B\x45",b"\x4C\x8B\x4D"]
+    for i in range(min(n,4)):
+        disp=16+i*8
+        if disp<=127: out.extend(loads[i]+bytes((disp,)))
+        else: raise PE64AssemblerError("Zu viele Stackparameter im PE64-Adapter.")
+    for i in range(4,n):
+        src=16+i*8; dst=32+(i-4)*8
+        # mov rax,[rbp+src]
+        if src<=127: out.extend(b"\x48\x8B\x45"+bytes((src,)))
+        else: out.extend(b"\x48\x8B\x85"+struct.pack("<i",src))
+        # mov [rsp+dst],rax
+        if dst<=127: out.extend(b"\x48\x89\x44\x24"+bytes((dst,)))
+        else: out.extend(b"\x48\x89\x84\x24"+struct.pack("<i",dst))
+    out.extend(b"\xFF\x15"); patch=len(out); out.extend(b"\0\0\0\0")
+    out.extend(b"\x48\x89\xEC\x5D")
+    if caller_cleanup: out.append(0xC3)
+    elif n: out.extend(b"\xC2"+struct.pack("<H",n*8))
+    else: out.append(0xC3)
+    return bytes(out),patch
+
+
+def link_coff64_objects(objects: Sequence[bytes], *, entry_symbol="_start", gui=False, dll=False, imports=None, exports=None, dll_name=None) -> PE64Program:
+    parsed=[parse_coff64_object(x) for x in objects]; code=bytearray(); bases=[]; globals_map={}; declared_imports={}; declared_exports={}; declared_dll=None
+    for obj in parsed:
+        declared_imports.update(obj.imports); declared_exports.update(obj.exports); declared_dll=obj.dll_name or declared_dll
+    for s,v in (imports or {}).items(): declared_imports[str(s).casefold()]=(str(v[0]),str(v[1]))
+    for p,i in (exports or {}).items(): declared_exports[str(p)]=str(i).casefold()
+    if dll_name: declared_dll=str(dll_name)
+    effective_dll=bool(dll or declared_exports); image_base=PE64_DLL_IMAGE_BASE if effective_dll else PE64_IMAGE_BASE; base_relocs=[]
+    for obj in parsed:
+        base=_align_up(len(code),16); code.extend(bytes(base-len(code))); bases.append(base); code.extend(obj.code)
+        for name,value in obj.symbols.items():
+            if value is None: continue
+            if name in globals_map: raise PE64AssemblerError(f"COFF64-Symbol mehrfach definiert: {name}")
+            globals_map[name]=base+value
+    import_specs={}; iat_patches={}; unresolved=[]
+    # Alle noch externen Symbole erhalten entweder einen Stackadapter fuer die
+    # Compiler-Runtime oder einen direkten JMP-[RIP+IAT]-Thunk.
+    external_names=[]
+    for obj in parsed:
+        for r in obj.relocations:
+            s=r.symbol.casefold()
+            if s not in globals_map and s not in external_names: external_names.append(s)
+    for symbol in external_names:
+        alias_match = re.fullmatch(r"__d64_argc(\d+)__(.+)", symbol, re.IGNORECASE)
+        original_symbol = alias_match.group(2).casefold() if alias_match else symbol
+        spec=(
+            declared_imports.get(symbol)
+            or declared_imports.get(original_symbol)
+            or _resolve_pe32_default_import(original_symbol)
+        )
+        if spec is None: unresolved.append(symbol); continue
+        start=_align_up(len(code),16); code.extend(bytes(start-len(code)))
+        if alias_match:
+            sig=(int(alias_match.group(1)), False)
+        else:
+            sig=PE64_IMPORT_SIGNATURES.get(original_symbol)
+        if sig is not None:
+            thunk,local_patch=_pe64_import_adapter_bytes(*sig); code.extend(thunk); iat_patches.setdefault(symbol,[]).append(start+local_patch)
+        else:
+            # Direkter Win64-ABI-Thunk fuer handgeschriebenen PE64-Assembler.
+            code.extend(b"\xFF\x25\0\0\0\0"); iat_patches.setdefault(symbol,[]).append(start+2)
+        globals_map[symbol]=start; import_specs[symbol]=spec
+    if unresolved: raise PE64AssemblerError("COFF64-Linker: externe Symbole nicht aufgeloest: "+", ".join(unresolved))
+    for obj,base in zip(parsed,bases):
+        for r in obj.relocations:
+            target=globals_map.get(r.symbol.casefold())
+            if target is None: raise PE64AssemblerError(f"COFF64-Symbol nicht aufgeloest: {r.symbol}")
+            patch=base+r.offset
+            if r.relocation_type==IMAGE_REL_AMD64_REL32: struct.pack_into("<i",code,patch,target-(patch+4))
+            elif r.relocation_type==IMAGE_REL_AMD64_ADDR64:
+                struct.pack_into("<Q",code,patch,image_base+PE64_SECTION_RVA+target); base_relocs.append(PE64_SECTION_RVA+patch)
+            elif r.relocation_type==IMAGE_REL_AMD64_ADDR32: struct.pack_into("<I",code,patch,(image_base+PE64_SECTION_RVA+target)&0xFFFFFFFF)
+            else: raise PE64AssemblerError(f"COFF64-Relocation 0x{r.relocation_type:04X} nicht unterstützt.")
+    wanted=str(entry_symbol or "").casefold(); entry=globals_map.get(wanted)
+    if entry is None and not effective_dll:
+        for fallback in ("_start","start","main","_main"):
+            if fallback in globals_map: entry=globals_map[fallback]; break
+    if entry is None and not effective_dll: entry=0
+    export_offsets={}
+    for public,internal in declared_exports.items():
+        if internal.casefold() not in globals_map: raise PE64AssemblerError(f"DLL-Export {public} verweist auf unbekanntes Symbol {internal}.")
+        export_offsets[public]=globals_map[internal.casefold()]
+    effective_dll=bool(effective_dll or export_offsets); final_name=declared_dll or "library.dll"
+    image,patched=build_pe64_image_with_imports_exports(bytes(code),entry,import_specs,iat_patches,exports=export_offsets,dll_name=final_name,gui=gui,dll=effective_dll,image_base=image_base,base_relocations=base_relocs)
+    return PE64Program(image,patched,int(entry or 0),0,globals_map)
+
+
+def link_coff64_inputs(paths: Sequence[Path], *, entry_symbol="_start", gui=False, dll=False, imports=None, exports=None, dll_name=None) -> PE64Program:
+    objects=[]
+    for p in paths:
+        path=Path(p); data=path.read_bytes()
+        if path.suffix.casefold() in {".a",".lib"}:
+            for _name,member in parse_coff64_archive(data): objects.append(member)
+        else: objects.append(data)
+    if not objects: raise PE64AssemblerError("Der COFF64-Linker benötigt mindestens ein Objekt.")
+    return link_coff64_objects(objects,entry_symbol=entry_symbol,gui=gui,dll=dll,imports=imports,exports=exports,dll_name=dll_name)
+
+
+def assemble_pe64_source(source: str, *, filename="<PE64-Assembler>", gui=False) -> PE64Program:
+    obj=assemble_pe64_object_source(source,filename=filename)
+    return link_coff64_objects((write_coff64_object(obj),),entry_symbol=obj.entry_symbol or "_start",gui=gui)
+
+
+# ---------------------------------------------------------------------------
+# PE64 section model v2
+# ---------------------------------------------------------------------------
+# PE64 uses real, separate COFF/PE sections now:
+#   .text = code, READ|EXECUTE
+#   .data = initialized runtime/program data, READ|WRITE
+# This deliberately replaces the earlier temporary RWX single-section model.
+
+@dataclass(frozen=True)
+class PE64Relocation:
+    offset: int
+    symbol: str
+    relocation_type: int
+    section: str = ".text"
+
+
+@dataclass(frozen=True)
+class PE64ObjectProgram:
+    code: bytes
+    symbols: Dict[str, int]
+    externals: Tuple[str, ...]
+    relocations: Tuple[PE64Relocation, ...]
+    entry_symbol: str = "_start"
+    imports: Dict[str, Tuple[str, str]] = field(default_factory=dict)
+    exports: Dict[str, str] = field(default_factory=dict)
+    dll_name: Optional[str] = None
+    data: bytes = b""
+    bss_size: int = 0
+    symbol_sections: Dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class Coff64ParsedObject:
+    code: bytes
+    symbols: Dict[str, Optional[int]]
+    relocations: Tuple[PE64Relocation, ...]
+    imports: Dict[str, Tuple[str, str]] = field(default_factory=dict)
+    exports: Dict[str, str] = field(default_factory=dict)
+    dll_name: Optional[str] = None
+    data: bytes = b""
+    bss_size: int = 0
+    symbol_sections: Dict[str, str] = field(default_factory=dict)
+
+
+def _pe64_section_from_directive(directive: str, args: str, current: str, line: int) -> Optional[str]:
+    key = str(directive).strip().casefold().lstrip(".")
+    if key in {"text", "code"}:
+        return ".text"
+    if key == "data":
+        return ".data"
+    if key in {"bss", "uninitialized"}:
+        return ".bss"
+    if key != "section":
+        return None
+    token = str(args or "").strip().split(",", 1)[0].split(None, 1)[0].casefold()
+    token = token.lstrip(".")
+    if token in {"text", "code"}:
+        return ".text"
+    if token in {"data", "rdata"}:
+        # rdata is kept in writable .data for now because some generated
+        # runtime structures are initialized there.
+        return ".data"
+    if token in {"bss", "uninitialized"}:
+        return ".bss"
+    raise PE64AssemblerError(f"PE64-Sektion nicht unterstützt: {args}", line)
+
+
+def _parse_pe64_source(source: str):
+    lines = []
+    labels: Dict[str, int] = {}
+    symbol_sections: Dict[str, str] = {}
+    externals = set()
+    imports = {}
+    exports = {}
+    dll_name = None
+    entry = "_start"
+    current = ".text"
+    offsets = {".text": 0, ".data": 0, ".bss": 0}
+
+    for line_no, raw in enumerate(str(source).splitlines(), 1):
+        text = _x86_strip_comment(raw)
+        if not text:
+            continue
+        while True:
+            m = re.match(r"^([A-Za-z_.$?@][A-Za-z0-9_.$?@]*)\s*:\s*(.*)$", text)
+            if not m:
+                break
+            key = m.group(1).casefold()
+            if key in labels:
+                raise PE64AssemblerError(f"Symbol mehrfach definiert: {m.group(1)}", line_no)
+            labels[key] = offsets[current]
+            symbol_sections[key] = current
+            text = m.group(2).strip()
+            if not text:
+                break
+        if not text:
+            continue
+
+        parts = text.split(None, 1)
+        directive = parts[0].casefold().lstrip(".")
+        args = parts[1].strip() if len(parts) > 1 else ""
+        new_section = _pe64_section_from_directive(directive, args, current, line_no)
+        if new_section is not None:
+            current = new_section
+            lines.append((line_no, text, current))
+            continue
+        if directive in {"global", "globl", "public", "bits", "cpu", "model"}:
+            lines.append((line_no, text, current))
+            continue
+        if directive in {"extern", "extrn"}:
+            for item in _x86_split_operands(args):
+                if item:
+                    externals.add(item.strip().casefold())
+            lines.append((line_no, text, current))
+            continue
+        if directive == "import":
+            ops = _x86_split_operands(args)
+            if len(ops) not in {2, 3}:
+                raise PE64AssemblerError('IMPORT erwartet: import symbol, "dll", "member"', line_no)
+            symbol = _pe32_unquote(ops[0]).strip()
+            dll = _pe32_unquote(ops[1]).strip()
+            member = _pe32_unquote(ops[2]).strip() if len(ops) == 3 else symbol
+            imports[symbol.casefold()] = (dll, member)
+            externals.add(symbol.casefold())
+            lines.append((line_no, text, current))
+            continue
+        if directive == "export":
+            ops = _x86_split_operands(args)
+            if len(ops) not in {1, 2}:
+                raise PE64AssemblerError("EXPORT erwartet public_name [, internal_symbol]", line_no)
+            public = _pe32_unquote(ops[0]).strip()
+            internal = _pe32_unquote(ops[1]).strip() if len(ops) == 2 else public
+            exports[public] = internal.casefold()
+            lines.append((line_no, text, current))
+            continue
+        if directive == "dllname":
+            dll_name = _pe32_unquote(args)
+            lines.append((line_no, text, current))
+            continue
+        if directive == "entry":
+            entry = args.split()[0]
+            lines.append((line_no, text, current))
+            continue
+        if directive == "align":
+            align = _x86_parse_int(args)
+            if align is None or align <= 0 or align & (align - 1):
+                raise PE64AssemblerError("ALIGN erwartet eine Zweierpotenz.", line_no)
+            offsets[current] = _align_up(offsets[current], align)
+            lines.append((line_no, text, current))
+            continue
+        reserve_unit = {"resb": 1, "rb": 1, "resw": 2, "rw": 2,
+                        "resd": 4, "rd": 4, "resq": 8, "rq": 8}.get(directive)
+        if reserve_unit is not None:
+            if current != ".bss":
+                raise PE64AssemblerError(f"{directive.upper()} ist nur in .bss erlaubt.", line_no)
+            count = _x86_parse_int(args)
+            if count is None or count < 0:
+                raise PE64AssemblerError(f"{directive.upper()} erwartet eine nichtnegative Anzahl.", line_no)
+            offsets[current] += int(count) * reserve_unit
+            lines.append((line_no, text, current))
+            continue
+        if directive in {"db", "byte"}:
+            if current == ".bss":
+                raise PE64AssemblerError("Initialisierte Daten sind in .bss nicht erlaubt; RESB/RESW/RESD/RESQ verwenden.", line_no)
+            offsets[current] += len(_x86_data_values(args, line_no, 1))
+            lines.append((line_no, text, current))
+            continue
+        if directive in {"dw", "word"}:
+            if current == ".bss":
+                raise PE64AssemblerError("Initialisierte Daten sind in .bss nicht erlaubt.", line_no)
+            offsets[current] += 2 * len(_x86_split_operands(args))
+            lines.append((line_no, text, current))
+            continue
+        if directive in {"dd", "dword", "long"}:
+            if current == ".bss":
+                raise PE64AssemblerError("Initialisierte Daten sind in .bss nicht erlaubt.", line_no)
+            offsets[current] += 4 * len(_x86_split_operands(args))
+            lines.append((line_no, text, current))
+            continue
+        if directive in {"dq", "qword"}:
+            if current == ".bss":
+                raise PE64AssemblerError("Initialisierte Daten sind in .bss nicht erlaubt.", line_no)
+            offsets[current] += 8 * len(_x86_split_operands(args))
+            lines.append((line_no, text, current))
+            continue
+        if current != ".text":
+            raise PE64AssemblerError(
+                f"Ausführbarer AMD64-Befehl ist in {current} nicht erlaubt: {text}", line_no
+            )
+        encoded = _encode_pe64_instruction(text, line_no, offsets[current], relocs=[])
+        offsets[current] += len(encoded)
+        lines.append((line_no, text, current))
+
+    return (
+        lines, labels, symbol_sections, entry, tuple(sorted(externals)),
+        imports, exports, dll_name, int(offsets[".bss"]),
+    )
+
+
+def assemble_pe64_object_source(source: str, *, filename: str = "<PE64-Assembler>") -> PE64ObjectProgram:
+    del filename
+    lines, labels, symbol_sections, entry, externals, imports, exports, dll_name, bss_size = _parse_pe64_source(source)
+    buffers = {".text": bytearray(), ".data": bytearray(), ".bss": bytearray()}
+    relocs: List[PE64Relocation] = []
+
+    for line_no, text, section in lines:
+        parts = text.split(None, 1)
+        directive = parts[0].casefold().lstrip(".")
+        args = parts[1].strip() if len(parts) > 1 else ""
+        if _pe64_section_from_directive(directive, args, section, line_no) is not None:
+            continue
+        if directive in {
+            "global", "globl", "public", "bits", "cpu", "model", "extern", "extrn",
+            "import", "export", "dllname", "entry",
+        }:
+            continue
+        if directive in {"resb", "rb", "resw", "rw", "resd", "rd", "resq", "rq"}:
+            continue
+        out = buffers[section]
+        if directive == "align":
+            align = int(_x86_parse_int(args))
+            out.extend(bytes(_align_up(len(out), align) - len(out)))
+            continue
+        unit = {
+            "db": 1, "byte": 1, "dw": 2, "word": 2,
+            "dd": 4, "dword": 4, "long": 4, "dq": 8, "qword": 8,
+        }.get(directive)
+        if unit:
+            for token in _x86_split_operands(args):
+                token = token.strip()
+                if unit == 1 and len(token) >= 2 and token[0] in {'"', "'"} and token[-1] == token[0]:
+                    decoded = ast.literal_eval(token)
+                    out.extend(str(decoded).encode("latin-1", errors="replace"))
+                    continue
+                value = _x86_parse_int(token)
+                if value is not None:
+                    out.extend(int(value & ((1 << (unit * 8)) - 1)).to_bytes(unit, "little"))
+                    continue
+                if not _x64_is_symbol(token):
+                    raise PE64AssemblerError(f"Numerischer Datenwert oder Symbol erwartet: {token}", line_no)
+                patch = len(out)
+                out.extend(bytes(unit))
+                rel_type = IMAGE_REL_AMD64_ADDR64 if unit == 8 else IMAGE_REL_AMD64_ADDR32
+                relocs.append(PE64Relocation(patch, token.casefold(), rel_type, section))
+            continue
+        if section != ".text":
+            raise PE64AssemblerError(f"AMD64-Code darf nicht in {section} assembliert werden.", line_no)
+        tmp: List[PE64Relocation] = []
+        encoded = _encode_pe64_instruction(text, line_no, len(out), relocs=tmp)
+        out.extend(encoded)
+        relocs.extend(PE64Relocation(r.offset, r.symbol, r.relocation_type, section) for r in tmp)
+
+    return PE64ObjectProgram(
+        bytes(buffers[".text"]), dict(labels), externals, tuple(relocs), entry,
+        dict(imports), dict(exports), dll_name,
+        data=bytes(buffers[".data"]), bss_size=int(bss_size),
+        symbol_sections=dict(symbol_sections),
+    )
+
+
+def write_coff64_object(obj: PE64ObjectProgram) -> bytes:
+    names = list(obj.symbols.keys())
+    for name in obj.externals:
+        if name not in names:
+            names.append(name)
+    index = {name: i for i, name in enumerate(names)}
+    metadata = _coff64_metadata_bytes(obj)
+    text_relocs = [r for r in obj.relocations if r.section == ".text"]
+    data_relocs = [r for r in obj.relocations if r.section == ".data"]
+
+    section_defs = [
+        {"name": b".text\0\0\0", "data": bytes(obj.code), "virtual_size": len(obj.code),
+         "chars": 0x60500020, "relocs": text_relocs, "key": ".text"},
+    ]
+    if obj.data or any(v == ".data" for v in obj.symbol_sections.values()):
+        section_defs.append(
+            {"name": b".data\0\0\0", "data": bytes(obj.data), "virtual_size": len(obj.data),
+             "chars": 0xC0500040, "relocs": data_relocs, "key": ".data"}
+        )
+    if int(getattr(obj, "bss_size", 0)) or any(v == ".bss" for v in obj.symbol_sections.values()):
+        section_defs.append(
+            {"name": b".bss\0\0\0\0", "data": b"", "virtual_size": int(getattr(obj, "bss_size", 0)),
+             "chars": 0xC0500080, "relocs": [], "key": ".bss"}
+        )
+    if metadata:
+        section_defs.append(
+            {"name": b".drectve", "data": metadata, "virtual_size": len(metadata),
+             "chars": 0x00100A00, "relocs": [], "key": ".drectve"}
+        )
+
+    section_numbers = {item["key"]: i + 1 for i, item in enumerate(section_defs)}
+    header_size = 20 + len(section_defs) * 40
+    cursor = header_size
+    for item in section_defs:
+        item["raw_ptr"] = cursor if item["data"] else 0
+        cursor += len(item["data"])
+    for item in section_defs:
+        item["reloc_ptr"] = cursor if item["relocs"] else 0
+        cursor += len(item["relocs"]) * 10
+    sym_ptr = cursor
+
+    header = struct.pack(
+        "<HHIIIHH", IMAGE_FILE_MACHINE_AMD64, len(section_defs), 0,
+        sym_ptr, len(names), 0, 0,
+    )
+    headers = bytearray()
+    for item in section_defs:
+        sh = bytearray(40)
+        sh[:8] = item["name"][:8].ljust(8, b"\0")
+        struct.pack_into("<I", sh, 0x08, int(item.get("virtual_size", len(item["data"]))))
+        struct.pack_into("<I", sh, 0x10, len(item["data"]))
+        struct.pack_into("<I", sh, 0x14, item["raw_ptr"])
+        struct.pack_into("<I", sh, 0x18, item["reloc_ptr"])
+        struct.pack_into("<H", sh, 0x20, len(item["relocs"]))
+        struct.pack_into("<I", sh, 0x24, item["chars"])
+        headers.extend(sh)
+
+    raw = bytearray()
+    for item in section_defs:
+        raw.extend(item["data"])
+    reloc_bytes = bytearray()
+    for item in section_defs:
+        for r in item["relocs"]:
+            if r.symbol not in index:
+                raise PE64AssemblerError(f"COFF64-Symbol fehlt: {r.symbol}")
+            reloc_bytes.extend(struct.pack("<IIH", r.offset, index[r.symbol], r.relocation_type))
+
+    strings = bytearray()
+    syms = bytearray()
+    for name in names:
+        syms.extend(_coff_symbol_name_bytes(name, strings))
+        defined = name in obj.symbols
+        section_name = obj.symbol_sections.get(name, ".text") if defined else None
+        sec_no = section_numbers.get(section_name, 0) if defined else 0
+        syms.extend(struct.pack("<IhHBB", int(obj.symbols.get(name, 0)), sec_no, 0, 2, 0))
+    st = struct.pack("<I", 4 + len(strings)) + bytes(strings)
+    return header + bytes(headers) + bytes(raw) + bytes(reloc_bytes) + bytes(syms) + st
+
+
+def parse_coff64_object(data: bytes) -> Coff64ParsedObject:
+    payload = bytes(data)
+    if len(payload) < 60:
+        raise PE64AssemblerError("COFF64-Objekt ist zu klein.")
+    machine, sections, _ts, sym_ptr, sym_count, opt, _chars = struct.unpack_from("<HHIIIHH", payload, 0)
+    if machine != IMAGE_FILE_MACHINE_AMD64 or sections < 1 or opt != 0:
+        raise PE64AssemblerError("Nur relocierbare AMD64-COFF-Objekte werden unterstützt.")
+
+    section_info = []
+    meta = b""
+    text_data = b""
+    init_data = b""
+    bss_size = 0
+    for i in range(sections):
+        off = 20 + i * 40
+        name = payload[off:off + 8].rstrip(b"\0")
+        virtual_size = struct.unpack_from("<I", payload, off + 0x08)[0]
+        raw_size, raw_ptr, rel_ptr = struct.unpack_from("<III", payload, off + 0x10)
+        rel_count = struct.unpack_from("<H", payload, off + 0x20)[0]
+        if raw_ptr and raw_ptr + raw_size > len(payload):
+            raise PE64AssemblerError("COFF64-Sektion außerhalb der Datei.")
+        key = name.decode("ascii", errors="replace")
+        section_info.append((key, raw_size, raw_ptr, rel_ptr, rel_count))
+        content = payload[raw_ptr:raw_ptr + raw_size] if raw_ptr else b""
+        if name == b".text":
+            text_data = content
+        elif name == b".data":
+            init_data = content
+        elif name == b".bss":
+            bss_size = int(virtual_size)
+        elif name == b".drectve":
+            meta = content
+    if not any(item[0] == ".text" for item in section_info):
+        raise PE64AssemblerError("COFF64-Objekt enthält keine .text-Sektion.")
+
+    st_off = sym_ptr + sym_count * 18
+    if st_off + 4 > len(payload):
+        raise PE64AssemblerError("COFF64-Symboltabelle ist beschädigt.")
+    st_size = struct.unpack_from("<I", payload, st_off)[0]
+    st = payload[st_off:st_off + max(4, st_size)]
+
+    names = []
+    symbols: Dict[str, Optional[int]] = {}
+    symbol_sections: Dict[str, str] = {}
+    i = 0
+    while i < sym_count:
+        off = sym_ptr + i * 18
+        raw_name = payload[off:off + 8]
+        zeroes, so = struct.unpack("<II", raw_name)
+        if zeroes == 0 and so:
+            end = st.find(b"\0", so)
+            end = len(st) if end < 0 else end
+            name = st[so:end].decode("utf-8", errors="replace")
+        else:
+            name = raw_name.rstrip(b"\0").decode("ascii", errors="replace")
+        value, sec, _type, _storage, aux = struct.unpack_from("<IhHBB", payload, off + 8)
+        key = name.casefold()
+        names.append(key)
+        if sec > 0 and sec <= len(section_info):
+            sec_name = section_info[sec - 1][0]
+            if sec_name in {".text", ".data", ".bss"}:
+                symbols[key] = int(value)
+                symbol_sections[key] = sec_name
+            else:
+                symbols[key] = None
+        else:
+            symbols[key] = None
+        for _ in range(aux):
+            i += 1
+            names.append("")
+        i += 1
+
+    rels: List[PE64Relocation] = []
+    for sec_name, _raw_size, _raw_ptr, rel_ptr, rel_count in section_info:
+        if sec_name not in {".text", ".data"}:
+            continue
+        for j in range(rel_count):
+            off = rel_ptr + j * 10
+            if off + 10 > len(payload):
+                raise PE64AssemblerError("COFF64-Relocationstabelle ist beschädigt.")
+            va, si, rt = struct.unpack_from("<IIH", payload, off)
+            if si >= len(names):
+                raise PE64AssemblerError("COFF64-Relocation verweist auf ungültiges Symbol.")
+            rels.append(PE64Relocation(va, names[si], rt, sec_name))
+
+    imports = {}
+    exports = {}
+    dll_name = None
+    if meta.strip():
+        try:
+            doc = json.loads(meta.decode("ascii"))
+        except Exception as exc:
+            raise PE64AssemblerError("COFF64-.drectve enthält ungültige Metadaten.") from exc
+        if isinstance(doc, dict) and doc.get("format") == "d64-coff64-link-v1":
+            for symbol, spec in (doc.get("imports") or {}).items():
+                if isinstance(spec, dict) and spec.get("dll") and spec.get("member"):
+                    imports[str(symbol).casefold()] = (str(spec["dll"]), str(spec["member"]))
+            for public, internal in (doc.get("exports") or {}).items():
+                exports[str(public)] = str(internal).casefold()
+            if doc.get("dll_name"):
+                dll_name = str(doc["dll_name"])
+
+    return Coff64ParsedObject(
+        text_data, symbols, tuple(rels), imports, exports, dll_name,
+        data=init_data, bss_size=int(bss_size), symbol_sections=symbol_sections,
+    )
+
+
+def build_pe64_image_with_imports_exports(
+    code: bytes,
+    entry_offset: Optional[int],
+    import_specs: Dict[str, Tuple[str, str]],
+    iat_call_patches: Dict[str, List[int]],
+    *, exports=None, dll_name="library.dll", gui=False, dll=False,
+    image_base=PE64_IMAGE_BASE, base_relocations=(), data: bytes = b"",
+    bss_size: int = 0,
+):
+    """Build a compact, standard PE32+ image with RX/RW/BSS separation.
+
+    We keep the standard 0xF0-byte PE32+ optional header and all 16 data
+    directories for loader compatibility.  Space is saved by using only the
+    mandatory 64-byte DOS header (e_lfanew=0x40) and by storing imports,
+    exports and base-relocation blocks in one linker-data section.  Therefore
+    the normal image has at most four section headers and the complete header
+    fits into one 0x200-byte FileAlignment block.
+    """
+    text = bytearray(code)
+    init_data = bytes(data or b"")
+    bss_size = max(0, int(bss_size or 0))
+
+    text_rva = PE64_SECTION_RVA
+    next_rva = _align_up(text_rva + max(1, len(text)), PE64_SECTION_ALIGNMENT)
+    data_rva = 0
+    if init_data:
+        data_rva = next_rva
+        next_rva = _align_up(data_rva + max(1, len(init_data)), PE64_SECTION_ALIGNMENT)
+    bss_rva = 0
+    if bss_size:
+        bss_rva = next_rva
+        next_rva = _align_up(bss_rva + max(1, bss_size), PE64_SECTION_ALIGNMENT)
+
+    export_offsets = dict(exports or {})
+    link_data = bytearray()
+    link_rva = 0
+    idata_rva = 0
+    idata_size = 0
+    edata_rva = 0
+    edata_size = 0
+    reloc_rva = 0
+    reloc_size = 0
+    iat_rvas = {}
+    first_iat = 0
+    iat_size = 0
+
+    if import_specs or export_offsets or base_relocations:
+        link_rva = next_rva
+        if import_specs:
+            idata_rva = link_rva + len(link_data)
+            idata, iat_rvas, first_iat, iat_size = _build_pe64_import_section(import_specs, idata_rva)
+            idata_size = len(idata)
+            link_data.extend(idata)
+        if export_offsets:
+            pad = _align_up(len(link_data), 8) - len(link_data)
+            link_data.extend(bytes(pad))
+            edata_rva = link_rva + len(link_data)
+            edata = _build_pe32_export_section(export_offsets, dll_name, edata_rva, text_rva)
+            edata_size = len(edata)
+            link_data.extend(edata)
+        if base_relocations:
+            pad = _align_up(len(link_data), 4) - len(link_data)
+            link_data.extend(bytes(pad))
+            reloc_rva = link_rva + len(link_data)
+            reloc = _build_pe64_reloc_section(base_relocations)
+            reloc_size = len(reloc)
+            link_data.extend(reloc)
+        next_rva = _align_up(link_rva + max(1, len(link_data)), PE64_SECTION_ALIGNMENT)
+
+    for symbol, patches in iat_call_patches.items():
+        if symbol not in iat_rvas:
+            raise PE64AssemblerError(f"PE64-IAT-Eintrag fehlt: {symbol}")
+        for patch in patches:
+            instruction_end = text_rva + patch + 4
+            disp = iat_rvas[symbol] - instruction_end
+            struct.pack_into("<i", text, patch, disp)
+
+    sections = [
+        {"name": b".text\0\0\0", "data": bytes(text), "virtual_size": len(text),
+         "rva": text_rva, "chars": 0x60000020, "raw": True},
+    ]
+    if init_data:
+        sections.append({"name": b".data\0\0\0", "data": init_data, "virtual_size": len(init_data),
+                         "rva": data_rva, "chars": 0xC0000040, "raw": True})
+    if bss_size:
+        sections.append({"name": b".bss\0\0\0\0", "data": b"", "virtual_size": bss_size,
+                         "rva": bss_rva, "chars": 0xC0000080, "raw": False})
+    if link_data:
+        if import_specs:
+            link_name = b".idata\0\0"
+            link_chars = 0xC0000040
+        elif export_offsets:
+            link_name = b".edata\0\0"
+            link_chars = 0x40000040
+        else:
+            link_name = b".reloc\0\0"
+            link_chars = 0x42000040
+        sections.append({"name": link_name, "data": bytes(link_data), "virtual_size": len(link_data),
+                         "rva": link_rva, "chars": link_chars, "raw": True})
+
+    dos_size = 0x40
+    optional_size = 0xF0
+    directory_count = 16
+    headers_unaligned = dos_size + 4 + 20 + optional_size + 40 * len(sections)
+    headers_size = _align_up(headers_unaligned, PE64_FILE_ALIGNMENT)
+
+    raw_ptr = headers_size
+    layout = []
+    code_size = 0
+    initialized_size = 0
+    for sec in sections:
+        if sec["raw"] and sec["data"]:
+            raw_size = _align_up(len(sec["data"]), PE64_FILE_ALIGNMENT)
+            rptr = raw_ptr
+            raw_ptr += raw_size
+        else:
+            raw_size = 0
+            rptr = 0
+        item = dict(sec)
+        item.update(raw_ptr=rptr, raw_size=raw_size)
+        layout.append(item)
+        if sec["name"].startswith(b".text"):
+            code_size += raw_size
+        elif sec["raw"]:
+            initialized_size += raw_size
+
+    image_size = _align_up(next_rva, PE64_SECTION_ALIGNMENT)
+
+    dos = bytearray(dos_size)
+    dos[:2] = b"MZ"
+    struct.pack_into("<I", dos, 0x3C, dos_size)
+    pe = bytearray(b"PE\0\0")
+    chars = 0x0022 | (0x2000 if dll else 0)
+    pe.extend(struct.pack("<HHIIIHH", IMAGE_FILE_MACHINE_AMD64, len(sections), 0, 0, 0, optional_size, chars))
+
+    opt = bytearray(optional_size)
+    struct.pack_into("<H", opt, 0, 0x020B)
+    opt[2] = 1
+    struct.pack_into("<I", opt, 4, code_size)
+    struct.pack_into("<I", opt, 8, initialized_size)
+    struct.pack_into("<I", opt, 0x0C, bss_size)
+    struct.pack_into("<I", opt, 0x10, 0 if entry_offset is None else text_rva + int(entry_offset))
+    struct.pack_into("<I", opt, 0x14, text_rva)
+    struct.pack_into("<Q", opt, 0x18, int(image_base))
+    struct.pack_into("<I", opt, 0x20, PE64_SECTION_ALIGNMENT)
+    struct.pack_into("<I", opt, 0x24, PE64_FILE_ALIGNMENT)
+    struct.pack_into("<HHHH", opt, 0x28, 6, 0, 0, 0)
+    struct.pack_into("<HH", opt, 0x30, 6, 0)
+    struct.pack_into("<I", opt, 0x38, image_size)
+    struct.pack_into("<I", opt, 0x3C, headers_size)
+    struct.pack_into("<H", opt, 0x44, 2 if gui else 3)
+    struct.pack_into("<H", opt, 0x46, 0x0160)
+    struct.pack_into("<QQQQ", opt, 0x48, 0x400000, 0x4000, 0x100000, 0x2000)
+    struct.pack_into("<I", opt, 0x68, 0)
+    struct.pack_into("<I", opt, 0x6C, directory_count)
+    if edata_rva:
+        struct.pack_into("<II", opt, 0x70, edata_rva, edata_size)
+    if idata_rva:
+        struct.pack_into("<II", opt, 0x78, idata_rva, idata_size)
+        struct.pack_into("<II", opt, 0xD0, first_iat, iat_size)
+    if reloc_rva:
+        struct.pack_into("<II", opt, 0x98, reloc_rva, reloc_size)
+    pe.extend(opt)
+
+    for sec in layout:
+        sh = bytearray(40)
+        sh[:8] = sec["name"][:8].ljust(8, b"\0")
+        struct.pack_into("<I", sh, 0x08, int(sec["virtual_size"]))
+        struct.pack_into("<I", sh, 0x0C, int(sec["rva"]))
+        struct.pack_into("<I", sh, 0x10, int(sec["raw_size"]))
+        struct.pack_into("<I", sh, 0x14, int(sec["raw_ptr"]))
+        struct.pack_into("<I", sh, 0x24, int(sec["chars"]))
+        pe.extend(sh)
+
+    headers = bytes(dos) + bytes(pe)
+    if len(headers) > headers_size:
+        raise PE64AssemblerError("PE64-Header überschreitet SizeOfHeaders.")
+    image = bytearray(headers_size)
+    image[:len(headers)] = headers
+    for sec in layout:
+        if not sec["raw_size"]:
+            continue
+        start = int(sec["raw_ptr"])
+        end = start + len(sec["data"])
+        if len(image) < start + int(sec["raw_size"]):
+            image.extend(bytes(start + int(sec["raw_size"]) - len(image)))
+        image[start:end] = sec["data"]
+    return bytes(image), bytes(text)
+
+def link_coff64_objects(
+    objects: Sequence[bytes], *, entry_symbol="_start", gui=False, dll=False,
+    imports=None, exports=None, dll_name=None,
+) -> PE64Program:
+    parsed = [parse_coff64_object(x) for x in objects]
+    text = bytearray(); init_data = bytearray()
+    text_bases = []; data_bases = []; bss_bases = []
+    total_bss_size = 0
+    global_refs: Dict[str, Tuple[str, int]] = {}
+    declared_imports = {}; declared_exports = {}; declared_dll = None
+    for obj in parsed:
+        declared_imports.update(obj.imports)
+        declared_exports.update(obj.exports)
+        declared_dll = obj.dll_name or declared_dll
+    for s, v in (imports or {}).items():
+        declared_imports[str(s).casefold()] = (str(v[0]), str(v[1]))
+    for p, i in (exports or {}).items():
+        declared_exports[str(p)] = str(i).casefold()
+    if dll_name:
+        declared_dll = str(dll_name)
+    effective_dll = bool(dll or declared_exports)
+    image_base = PE64_DLL_IMAGE_BASE if effective_dll else PE64_IMAGE_BASE
+
+    for obj in parsed:
+        tbase = _align_up(len(text), 16)
+        text.extend(bytes(tbase - len(text)))
+        text_bases.append(tbase)
+        text.extend(obj.code)
+        dbase = _align_up(len(init_data), 8)
+        init_data.extend(bytes(dbase - len(init_data)))
+        data_bases.append(dbase)
+        init_data.extend(obj.data)
+        bbase = _align_up(total_bss_size, 8)
+        bss_bases.append(bbase)
+        total_bss_size = bbase + int(getattr(obj, "bss_size", 0))
+        for name, value in obj.symbols.items():
+            if value is None:
+                continue
+            if name in global_refs:
+                raise PE64AssemblerError(f"COFF64-Symbol mehrfach definiert: {name}")
+            sec = obj.symbol_sections.get(name, ".text")
+            if sec == ".text":
+                base = tbase
+            elif sec == ".data":
+                base = dbase
+            elif sec == ".bss":
+                base = bbase
+            else:
+                raise PE64AssemblerError(f"Unbekannte COFF64-Symbolsektion: {sec}")
+            global_refs[name] = (sec, base + value)
+
+    import_specs = {}; iat_patches = {}; unresolved = []
+    external_names = []
+    for obj in parsed:
+        for r in obj.relocations:
+            s = r.symbol.casefold()
+            if s not in global_refs and s not in external_names:
+                external_names.append(s)
+    for symbol in external_names:
+        alias_match = re.fullmatch(r"__d64_argc(\d+)__(.+)", symbol, re.IGNORECASE)
+        original_symbol = alias_match.group(2).casefold() if alias_match else symbol
+        spec = (
+            declared_imports.get(symbol)
+            or declared_imports.get(original_symbol)
+            or _resolve_pe32_default_import(original_symbol)
+        )
+        if spec is None:
+            unresolved.append(symbol)
+            continue
+        start = _align_up(len(text), 16)
+        text.extend(bytes(start - len(text)))
+        if alias_match:
+            sig = (int(alias_match.group(1)), False)
+        else:
+            sig = PE64_IMPORT_SIGNATURES.get(original_symbol)
+        if sig is not None:
+            thunk, local_patch = _pe64_import_adapter_bytes(*sig)
+            text.extend(thunk)
+            iat_patches.setdefault(symbol, []).append(start + local_patch)
+        else:
+            text.extend(b"\xFF\x25\0\0\0\0")
+            iat_patches.setdefault(symbol, []).append(start + 2)
+        global_refs[symbol] = (".text", start)
+        import_specs[symbol] = spec
+    if unresolved:
+        raise PE64AssemblerError(
+            "COFF64-Linker: externe Symbole nicht aufgeloest: " + ", ".join(unresolved)
+        )
+
+    text_rva = PE64_SECTION_RVA
+    next_rva = _align_up(text_rva + max(1, len(text)), PE64_SECTION_ALIGNMENT)
+    data_rva = 0
+    if init_data:
+        data_rva = next_rva
+        next_rva = _align_up(data_rva + max(1, len(init_data)), PE64_SECTION_ALIGNMENT)
+    bss_rva = 0
+    if total_bss_size:
+        bss_rva = next_rva
+        next_rva = _align_up(bss_rva + max(1, total_bss_size), PE64_SECTION_ALIGNMENT)
+    base_relocs = []
+
+    def symbol_rva(name: str) -> int:
+        sec, off = global_refs[name]
+        base = {".text": text_rva, ".data": data_rva, ".bss": bss_rva}.get(sec)
+        if base is None:
+            raise PE64AssemblerError(f"Unbekannte COFF64-Zielsektion: {sec}")
+        return base + off
+
+    for obj, tbase, dbase in zip(parsed, text_bases, data_bases):
+        for r in obj.relocations:
+            target = global_refs.get(r.symbol.casefold())
+            if target is None:
+                raise PE64AssemblerError(f"COFF64-Symbol nicht aufgeloest: {r.symbol}")
+            if r.section == ".text":
+                buf = text; patch = tbase + r.offset; patch_rva = text_rva + patch
+            elif r.section == ".data":
+                buf = init_data; patch = dbase + r.offset; patch_rva = data_rva + patch
+            else:
+                raise PE64AssemblerError(f"Unbekannte COFF64-Relocation-Sektion: {r.section}")
+            target_rva = symbol_rva(r.symbol.casefold())
+            if r.relocation_type == IMAGE_REL_AMD64_REL32:
+                struct.pack_into("<i", buf, patch, target_rva - (patch_rva + 4))
+            elif r.relocation_type == IMAGE_REL_AMD64_ADDR64:
+                struct.pack_into("<Q", buf, patch, image_base + target_rva)
+                base_relocs.append(patch_rva)
+            elif r.relocation_type == IMAGE_REL_AMD64_ADDR32:
+                struct.pack_into("<I", buf, patch, (image_base + target_rva) & 0xFFFFFFFF)
+            else:
+                raise PE64AssemblerError(
+                    f"COFF64-Relocation 0x{r.relocation_type:04X} nicht unterstützt."
+                )
+
+    wanted = str(entry_symbol or "").casefold()
+    entry_ref = global_refs.get(wanted)
+    if entry_ref is None and not effective_dll:
+        for fallback in ("_start", "start", "main", "_main"):
+            if fallback in global_refs:
+                entry_ref = global_refs[fallback]
+                break
+    if entry_ref is None and not effective_dll:
+        entry_ref = (".text", 0)
+    if entry_ref is not None and entry_ref[0] != ".text":
+        raise PE64AssemblerError("PE64-Einstiegspunkt muss in der .text-Sektion liegen.")
+    entry = None if entry_ref is None else entry_ref[1]
+
+    export_offsets = {}
+    for public, internal in declared_exports.items():
+        ref = global_refs.get(internal.casefold())
+        if ref is None:
+            raise PE64AssemblerError(
+                f"DLL-Export {public} verweist auf unbekanntes Symbol {internal}."
+            )
+        if ref[0] != ".text":
+            raise PE64AssemblerError(f"DLL-Export {public} muss ausführbaren Code in .text referenzieren.")
+        export_offsets[public] = ref[1]
+
+    effective_dll = bool(effective_dll or export_offsets)
+    final_name = declared_dll or "library.dll"
+    image, patched = build_pe64_image_with_imports_exports(
+        bytes(text), entry, import_specs, iat_patches,
+        exports=export_offsets, dll_name=final_name, gui=gui, dll=effective_dll,
+        image_base=image_base, base_relocations=base_relocs, data=bytes(init_data),
+        bss_size=total_bss_size,
+    )
+    public_symbols = {}
+    for name, (sec, off) in global_refs.items():
+        base = {".text": text_rva, ".data": data_rva, ".bss": bss_rva}.get(sec, text_rva)
+        public_symbols[name] = base - text_rva + off
+    return PE64Program(image, patched, int(entry or 0), 0, public_symbols)
+
+
+# ---------------------------------------------------------------------------
+# Windows-Grafik-ABI. Die Compiler können über target='pe32'/'pe64' und die
 # Präprozessor-Symbole die passende Runtime auswählen. Die eigentliche
 # Direct2D/Direct3D-Runtime kann dadurch plattformgetrennt bleiben, während
 # die öffentliche Grafik-API identisch bleibt.
 # ---------------------------------------------------------------------------
-def windows_graphics_predefined_macros(backend: str) -> Dict[str, str]:
+def windows_graphics_predefined_macros(backend: str, target: str = "pe32") -> Dict[str, str]:
     selected = normalize_windows_graphics_backend(backend)
+    target_key = str(target or "pe32").strip().casefold()
     macros = {
-        "__D64_TARGET_PE32__": "1",
+        "__D64_TARGET_PE64__" if target_key in {"pe64", "win64", "windows64", "windows-pe64"}
+        else "__D64_TARGET_PE32__": "1",
         "__D64_GRAPHICS_WINDOWS__": "1",
     }
     if selected == "Direct3D":
@@ -2363,27 +3964,32 @@ D64_GRAPHICS_API void SetPixel(int x, int y, GraphicsColor color);
 D64_GRAPHICS_API GraphicsColor GetPixel(int x, int y);
 D64_GRAPHICS_API void DrawLine(int x1, int y1, int x2, int y2, GraphicsColor color);
 D64_GRAPHICS_API void DrawRect(int x1, int y1, int x2, int y2, GraphicsColor color);
-D64_GRAPHICS_API void FillRect(int x1, int y1, int x2, int y2,
-                              GraphicsColor fillColor,
-                              GraphicsColor borderColor,
-                              unsigned int borderWidth);
+D64_GRAPHICS_API void FillRect(
+    int x1, int y1, int x2, int y2,
+    GraphicsColor fillColor,
+    GraphicsColor borderColor,
+    unsigned int borderWidth);
 D64_GRAPHICS_API void DrawCircle(int centerX, int centerY, int radius, GraphicsColor color);
-D64_GRAPHICS_API void FillCircle(int centerX, int centerY, int radius,
-                                GraphicsColor fillColor,
-                                GraphicsColor borderColor,
-                                unsigned int borderWidth);
+D64_GRAPHICS_API void FillCircle(
+    int centerX, int centerY, int radius,
+    GraphicsColor fillColor,
+    GraphicsColor borderColor,
+    unsigned int borderWidth);
 D64_GRAPHICS_API void FloodFill(int x, int y, GraphicsColor fillColor);
-D64_GRAPHICS_API void DrawTriangle(int x1, int y1, int x2, int y2,
-                                  int x3, int y3, GraphicsColor color);
-D64_GRAPHICS_API void FillTriangle(int x1, int y1, int x2, int y2,
-                                  int x3, int y3,
-                                  GraphicsColor fillColor,
-                                  GraphicsColor borderColor,
-                                  unsigned int borderWidth);
-D64_GRAPHICS_API void DrawTriangleAngles(int centerX, int centerY,
-                                        int radius1, int radius2, int radius3,
-                                        int angle1, int angle2, int angle3,
-                                        GraphicsColor color);
+D64_GRAPHICS_API void DrawTriangle(
+    int x1, int y1, int x2, int y2,
+    int x3, int y3, GraphicsColor color);
+D64_GRAPHICS_API void FillTriangle(
+    int x1, int y1, int x2, int y2,
+    int x3, int y3,
+    GraphicsColor fillColor,
+    GraphicsColor borderColor,
+    unsigned int borderWidth);
+D64_GRAPHICS_API void DrawTriangleAngles(
+    int centerX, int centerY,
+    int radius1, int radius2, int radius3,
+    int angle1, int angle2, int angle3,
+    GraphicsColor color);
 
 #ifdef __cplusplus
 }
@@ -2626,8 +4232,9 @@ D64_GRAPHICS_API void DrawRect(int x1,int y1,int x2,int y2,GraphicsColor c)
     DrawLine(x2,y2,x1,y2,c); DrawLine(x1,y2,x1,y1,c);
 }
 
-D64_GRAPHICS_API void FillRect(int x1,int y1,int x2,int y2,GraphicsColor fill,
-              GraphicsColor border,unsigned int bw)
+D64_GRAPHICS_API void FillRect(
+    int x1,int y1,int x2,int y2,GraphicsColor fill,
+    GraphicsColor border,unsigned int bw)
 {
     if (x1 > x2) { int t=x1; x1=x2; x2=t; }
     if (y1 > y2) { int t=y1; y1=y2; y2=t; }
@@ -2717,9 +4324,10 @@ static void d64_thick_line(int x1,int y1,int x2,int y2,GraphicsColor color,unsig
     }
 }
 
-D64_GRAPHICS_API void FillTriangle(int x1,int y1,int x2,int y2,int x3,int y3,
-                                   GraphicsColor fillColor,GraphicsColor borderColor,
-                                   unsigned int borderWidth)
+D64_GRAPHICS_API void FillTriangle(
+    int x1,int y1,int x2,int y2,int x3,int y3,
+    GraphicsColor fillColor,GraphicsColor borderColor,
+    unsigned int borderWidth)
 {
     int t;
     if (y1>y2) { t=y1;y1=y2;y2=t; t=x1;x1=x2;x2=t; }
@@ -2769,10 +4377,11 @@ static int d64_sin_deg(int angle)
 }
 static int d64_cos_deg(int angle) { return d64_sin_deg(angle+90); }
 
-D64_GRAPHICS_API void DrawTriangleAngles(int centerX,int centerY,
-                                         int radius1,int radius2,int radius3,
-                                         int angle1,int angle2,int angle3,
-                                         GraphicsColor color)
+D64_GRAPHICS_API void DrawTriangleAngles(
+    int centerX,int centerY,
+    int radius1,int radius2,int radius3,
+    int angle1,int angle2,int angle3,
+    GraphicsColor color)
 {
     int x1=centerX+(d64_cos_deg(angle1)*radius1)/256;
     int y1=centerY+(d64_sin_deg(angle1)*radius1)/256;
@@ -2783,7 +4392,6 @@ D64_GRAPHICS_API void DrawTriangleAngles(int centerX,int centerY,
     DrawTriangle(x1,y1,x2,y2,x3,y3,color);
 }
 '''
-
 
 def write_windows_graphics_runtime_source(path: Path) -> Path:
     target = Path(path)
@@ -5223,6 +6831,12 @@ PROJECT_CATEGORIES: Tuple[Tuple[str, str, Tuple[str, ...]], ...] = (
     ("other", "Sonstiges", ()),
 )
 
+PROJECT_C_ARCHIVES_KEY = "__c_archives__"
+PROJECT_NODE_ARCHIVE_ROOT = "archive_root"
+PROJECT_NODE_ARCHIVE = "archive"
+PROJECT_NODE_ARCHIVE_OBJECT = "archive_object"
+
+
 PROJECT_CATEGORY_TITLES: Dict[str, str] = {
     key: title for key, title, _extensions in PROJECT_CATEGORIES
 }
@@ -5268,7 +6882,12 @@ def project_untitled_filename(
 
 
 def empty_project_entries() -> Dict[str, List[Dict[str, str]]]:
-    return {key: [] for key, _title, _extensions in PROJECT_CATEGORIES}
+    entries = {key: [] for key, _title, _extensions in PROJECT_CATEGORIES}
+    # Verschachtelte COFF-Archive liegen bewusst nicht als neue Root-Kategorie
+    # vor, sondern unter C-Programme -> Archive. Der reservierte Schlüssel
+    # hält diese Hierarchie in der *.pro-Datei getrennt von normalen C-Dateien.
+    entries[PROJECT_C_ARCHIVES_KEY] = []
+    return entries
 
 
 def project_category_for_path(path: Path) -> str:
@@ -5314,7 +6933,7 @@ def format_project_ini(
     parser.optionxform = str
     parser["Project"] = {
         "Format": "dBase2Many Project",
-        "Version": "1",
+        "Version": "2",
     }
     for key, title, _extensions in PROJECT_CATEGORIES:
         section = f"Category.{key}"
@@ -5332,6 +6951,32 @@ def format_project_ini(
                 ensure_ascii=False,
                 separators=(",", ":"),
             )
+    # C-Programme -> Archive -> <archive.a> -> <object.o>
+    # wird als eigener INI-Abschnitt gespeichert, damit alte Projektdateien
+    # weiterhin ohne Migration geladen werden können.
+    archive_section = "Category.c.archives"
+    parser[archive_section] = {"Title": "Archive"}
+    for index, archive in enumerate(entries.get(PROJECT_C_ARCHIVES_KEY, ()), 1):
+        archive_path = str(archive.get("path", "")).strip()
+        archive_title = str(archive.get("title", "")).strip()
+        objects = []
+        for obj in archive.get("objects", ()):
+            object_path = str(obj.get("path", "")).strip()
+            if not object_path:
+                continue
+            objects.append({
+                "title": str(obj.get("title", "") or Path(object_path).name),
+                "path": _project_storage_path(object_path, project_path),
+            })
+        payload = {
+            "title": archive_title or (Path(archive_path).name if archive_path else f"library_{index}.a"),
+            "path": _project_storage_path(archive_path, project_path) if archive_path else "",
+            "objects": objects,
+        }
+        parser[archive_section][f"Item{index:04d}"] = json.dumps(
+            payload, ensure_ascii=False, separators=(",", ":")
+        )
+
     from io import StringIO
     stream = StringIO()
     parser.write(stream)
@@ -5370,6 +7015,50 @@ def parse_project_ini(text: str, project_path: Path) -> Dict[str, List[Dict[str,
                     "path": loaded_path,
                 }
             )
+    archive_section = "Category.c.archives"
+    if parser.has_section(archive_section):
+        values = sorted(
+            (
+                (name, value)
+                for name, value in parser.items(archive_section)
+                if name.casefold().startswith("item")
+            ),
+            key=lambda pair: pair[0].casefold(),
+        )
+        for _name, value in values:
+            try:
+                payload = json.loads(value)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            archive_path = str(payload.get("path", "")).strip()
+            loaded_archive_path = (
+                _project_loaded_path(archive_path, Path(project_path))
+                if archive_path else ""
+            )
+            object_entries = []
+            for obj in payload.get("objects", ()):
+                if not isinstance(obj, dict):
+                    continue
+                object_path = str(obj.get("path", "")).strip()
+                if not object_path:
+                    continue
+                loaded_object_path = _project_loaded_path(
+                    object_path, Path(project_path)
+                )
+                object_entries.append({
+                    "title": str(obj.get("title", "") or Path(loaded_object_path).name),
+                    "path": loaded_object_path,
+                })
+            entries[PROJECT_C_ARCHIVES_KEY].append({
+                "title": str(
+                    payload.get("title", "")
+                    or (Path(loaded_archive_path).name if loaded_archive_path else "library.a")
+                ),
+                "path": loaded_archive_path,
+                "objects": object_entries,
+            })
     return entries
 
 
@@ -5394,6 +7083,253 @@ def load_project_ini(project_path: Path) -> Dict[str, List[Dict[str, str]]]:
     )
 
 
+
+# ---------------------------------------------------------------------------
+# COFF32/COFF64-Informationsanalyse fuer Projekt-Archive und Objektdateien.
+# Die Analyse arbeitet direkt auf den Datei-Bytes und benoetigt keine externe
+# Toolchain. Sie ist absichtlich vom Linker getrennt, damit auch fremde
+# Microsoft-COFF-Objekte im Informations-Tab untersucht werden koennen.
+# ---------------------------------------------------------------------------
+COFF_IMAGE_SCN_CNT_CODE               = 0x00000020
+COFF_IMAGE_SCN_CNT_INITIALIZED_DATA   = 0x00000040
+COFF_IMAGE_SCN_CNT_UNINITIALIZED_DATA = 0x00000080
+COFF_IMAGE_SCN_MEM_EXECUTE            = 0x20000000
+COFF_IMAGE_SCN_MEM_READ               = 0x40000000
+COFF_IMAGE_SCN_MEM_WRITE              = 0x80000000
+
+
+def _coff_human_size(value: int) -> str:
+    size = max(0, int(value or 0))
+    if size < 1024:
+        return f"{size:,} Bytes"
+    if size < 1024 * 1024:
+        return f"{size:,} Bytes ({size / 1024.0:.2f} KiB)"
+    return f"{size:,} Bytes ({size / (1024.0 * 1024.0):.2f} MiB)"
+
+
+def _coff_machine_text(machine: int) -> str:
+    machine = int(machine or 0)
+    if machine == IMAGE_FILE_MACHINE_I386:
+        return "Windows PE32 / COFF32 (Intel i386, 0x014C)"
+    if machine == IMAGE_FILE_MACHINE_AMD64:
+        return "Windows PE64 / COFF64 (AMD64, 0x8664)"
+    return f"Unbekannte COFF-Architektur (0x{machine:04X})"
+
+
+def _coff_section_role(characteristics: int) -> str:
+    value = int(characteristics or 0)
+    if value & COFF_IMAGE_SCN_CNT_CODE or value & COFF_IMAGE_SCN_MEM_EXECUTE:
+        return "Funktion / Code"
+    if value & COFF_IMAGE_SCN_CNT_UNINITIALIZED_DATA:
+        return "Data / BSS"
+    if value & COFF_IMAGE_SCN_CNT_INITIALIZED_DATA:
+        return "Data"
+    return "Sonstige Daten"
+
+
+def _coff_section_permissions(characteristics: int) -> str:
+    value = int(characteristics or 0)
+    flags = []
+    if value & COFF_IMAGE_SCN_MEM_READ:
+        flags.append("R")
+    if value & COFF_IMAGE_SCN_MEM_WRITE:
+        flags.append("W")
+    if value & COFF_IMAGE_SCN_MEM_EXECUTE:
+        flags.append("X")
+    return "".join(flags) or "-"
+
+
+def _coff_storage_class_text(value: int) -> str:
+    return {
+        0: "EndOfFunction",
+        2: "External",
+        3: "Static",
+        6: "Label",
+        101: "Function",
+        103: "File",
+        105: "WeakExternal",
+    }.get(int(value), f"Class {int(value)}")
+
+
+def _coff_string_from_table(table: bytes, offset: int) -> str:
+    offset = int(offset or 0)
+    if offset < 4 or offset >= len(table):
+        return ""
+    end = table.find(b"\0", offset)
+    if end < 0:
+        end = len(table)
+    return table[offset:end].decode("utf-8", errors="replace")
+
+
+def _coff_name_from_raw(raw_name: bytes, string_table: bytes) -> str:
+    raw_name = bytes(raw_name[:8]).ljust(8, b"\0")
+    zeroes, offset = struct.unpack("<II", raw_name)
+    if zeroes == 0 and offset:
+        return _coff_string_from_table(string_table, offset)
+    return raw_name.rstrip(b"\0").decode("ascii", errors="replace")
+
+
+def _coff_section_name(raw_name: bytes, string_table: bytes) -> str:
+    short = bytes(raw_name[:8]).rstrip(b"\0").decode("ascii", errors="replace")
+    # COFF long section names use '/<decimal-offset>' into the string table.
+    if short.startswith("/") and short[1:].isdigit():
+        resolved = _coff_string_from_table(string_table, int(short[1:]))
+        if resolved:
+            return resolved
+    return short or "(ohne Namen)"
+
+
+def analyze_coff_object_bytes(payload: bytes) -> Dict[str, object]:
+    data = bytes(payload)
+    if len(data) < 20:
+        raise ValueError("COFF-Objekt ist zu klein.")
+    (
+        machine, section_count, timestamp, symbol_pointer, symbol_count,
+        optional_size, characteristics,
+    ) = struct.unpack_from("<HHIIIHH", data, 0)
+    if machine not in {IMAGE_FILE_MACHINE_I386, IMAGE_FILE_MACHINE_AMD64}:
+        raise ValueError(f"Unbekannte COFF-Machine 0x{machine:04X}.")
+    section_table = 20 + int(optional_size)
+    if section_table + int(section_count) * 40 > len(data):
+        raise ValueError("COFF-Sektionstabelle ist beschaedigt.")
+
+    string_table = b""
+    string_table_offset = int(symbol_pointer) + int(symbol_count) * 18
+    if symbol_pointer and symbol_count and string_table_offset + 4 <= len(data):
+        string_size = struct.unpack_from("<I", data, string_table_offset)[0]
+        if 4 <= string_size <= len(data) - string_table_offset:
+            string_table = data[string_table_offset:string_table_offset + string_size]
+
+    sections = []
+    for index in range(int(section_count)):
+        offset = section_table + index * 40
+        raw_name = data[offset:offset + 8]
+        virtual_size = struct.unpack_from("<I", data, offset + 0x08)[0]
+        virtual_address = struct.unpack_from("<I", data, offset + 0x0C)[0]
+        raw_size = struct.unpack_from("<I", data, offset + 0x10)[0]
+        raw_pointer = struct.unpack_from("<I", data, offset + 0x14)[0]
+        reloc_pointer = struct.unpack_from("<I", data, offset + 0x18)[0]
+        line_pointer = struct.unpack_from("<I", data, offset + 0x1C)[0]
+        reloc_count = struct.unpack_from("<H", data, offset + 0x20)[0]
+        line_count = struct.unpack_from("<H", data, offset + 0x22)[0]
+        section_chars = struct.unpack_from("<I", data, offset + 0x24)[0]
+        sections.append({
+            "index": index + 1,
+            "name": _coff_section_name(raw_name, string_table),
+            "virtual_size": int(virtual_size),
+            "virtual_address": int(virtual_address),
+            "raw_size": int(raw_size),
+            "raw_pointer": int(raw_pointer),
+            "reloc_pointer": int(reloc_pointer),
+            "reloc_count": int(reloc_count),
+            "line_pointer": int(line_pointer),
+            "line_count": int(line_count),
+            "characteristics": int(section_chars),
+            "role": _coff_section_role(section_chars),
+            "permissions": _coff_section_permissions(section_chars),
+        })
+
+    symbols = []
+    if symbol_pointer and symbol_count:
+        if int(symbol_pointer) + int(symbol_count) * 18 > len(data):
+            raise ValueError("COFF-Symboltabelle liegt ausserhalb der Datei.")
+        index = 0
+        while index < int(symbol_count):
+            offset = int(symbol_pointer) + index * 18
+            name = _coff_name_from_raw(data[offset:offset + 8], string_table)
+            value, section_number, symbol_type, storage_class, aux_count = struct.unpack_from(
+                "<IhHBB", data, offset + 8
+            )
+            section = None
+            if 1 <= section_number <= len(sections):
+                section = sections[section_number - 1]
+            role = "Extern / undefiniert"
+            file_position = None
+            if section is not None:
+                role = section["role"]
+                raw_pointer = int(section["raw_pointer"])
+                raw_size = int(section["raw_size"])
+                if raw_pointer and 0 <= int(value) < raw_size:
+                    file_position = raw_pointer + int(value)
+            # IMAGE_SYM_DTYPE_FUNCTION == 2 in bits 4..5 -> 0x20.
+            if int(symbol_type) & 0x20:
+                role = "Funktion"
+            symbols.append({
+                "index": index,
+                "name": name or "(anonym)",
+                "value": int(value),
+                "section_number": int(section_number),
+                "section": section["name"] if section is not None else "UNDEF",
+                "type": int(symbol_type),
+                "storage_class": int(storage_class),
+                "storage": _coff_storage_class_text(storage_class),
+                "aux_count": int(aux_count),
+                "role": role,
+                "file_position": file_position,
+            })
+            index += 1 + int(aux_count)
+
+    return {
+        "machine": int(machine),
+        "architecture": _coff_machine_text(machine),
+        "section_count": int(section_count),
+        "timestamp": int(timestamp),
+        "symbol_pointer": int(symbol_pointer),
+        "symbol_count": int(symbol_count),
+        "optional_size": int(optional_size),
+        "characteristics": int(characteristics),
+        "size": len(data),
+        "sections": sections,
+        "symbols": symbols,
+    }
+
+
+def analyze_coff_archive_bytes(payload: bytes) -> Dict[str, object]:
+    data = bytes(payload)
+    if not data.startswith(AR_MAGIC):
+        raise ValueError("Datei ist kein ar/.a-Archiv.")
+    members = []
+    offset = len(AR_MAGIC)
+    while offset + 60 <= len(data):
+        header_offset = offset
+        header = data[offset:offset + 60]
+        if header[58:60] != b"`\n":
+            raise ValueError(f"Archivkopf bei 0x{header_offset:X} ist beschaedigt.")
+        raw_name = header[:16].decode("ascii", errors="replace").strip()
+        try:
+            size = int(header[48:58].decode("ascii", errors="replace").strip() or "0")
+        except ValueError as exc:
+            raise ValueError(f"Ungueltige Archivgroesse bei 0x{header_offset:X}.") from exc
+        data_offset = header_offset + 60
+        if data_offset + size > len(data):
+            raise ValueError("Archivmitglied liegt ausserhalb der Datei.")
+        member_data = data[data_offset:data_offset + size]
+        name = raw_name.rstrip("/") or raw_name or "(Spezialmitglied)"
+        object_info = None
+        if len(member_data) >= 20:
+            try:
+                object_info = analyze_coff_object_bytes(member_data)
+            except ValueError:
+                object_info = None
+        members.append({
+            "name": name,
+            "header_offset": int(header_offset),
+            "data_offset": int(data_offset),
+            "size": int(size),
+            "object": object_info,
+        })
+        offset = data_offset + size + (size & 1)
+    architectures = sorted({
+        member["object"]["architecture"]
+        for member in members
+        if member.get("object") is not None
+    })
+    return {
+        "size": len(data),
+        "members": members,
+        "architectures": architectures,
+    }
+
 # ---------------------------------------------------------------------------
 # Qt5-Anwendung
 # ---------------------------------------------------------------------------
@@ -5413,6 +7349,7 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             QTemporaryDir,
             QThread,
             QTimer,
+            QDateTime,
             Qt,
             QUrl,
             pyqtSignal,
@@ -5506,6 +7443,1336 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
         QWebEngineView = None
         QT_WEBENGINE_AVAILABLE = False
         QT_WEBENGINE_ERROR = str(exc)
+
+    # ---------------------------------------------------------------------------
+    # Exception classes ...
+    # ---------------------------------------------------------------------------
+    class ReturnSignal(Exception):
+        def __init__(self, value=None, has_value: bool = False):
+            super().__init__(self, value)
+            self.value = value
+            self.has_value = has_value
+
+    # ---------------------------------------------------------------------------
+    # Stoppt die aktuelle dBase-Abarbeitung kontrolliert und kehrt zur GUI zurück
+    # ---------------------------------------------------------------------------
+    class ProgramAbortSignal(Exception):
+        pass
+
+    class KeyError(Exception):
+        def __init__(self, name, message="Zuordnungs-Fehler"):
+            super().__init__(self, name)
+            self.name    = name
+            self.message = message
+
+    # ---------------------------------------------------------------------------
+    # Interner Control-Flow für BREAK (nur Schleifen fangen das ab).
+    # ---------------------------------------------------------------------------
+    class BreakSignal(Exception):
+        pass
+
+    class PreprocessorError(Exception):
+        pass
+
+    # ---------------------------------------------------------------------------
+    # Interner Control-Flow für RETURN aus einer Methode.
+    # ---------------------------------------------------------------------------
+    class RuntimeReturn(Exception):
+        def __init__(self, value=None):
+            self.value = value
+
+    # ---------------------------------------------------------------------------
+    # Qt5 Application stuff ...
+    # ---------------------------------------------------------------------------
+    class showException(QDialog):
+        def __init__(self, parent=None, etype: str="Ausnahme", message: str=""):
+            super().__init__(parent)
+            self.setWindowTitle("Demo: " + etype)
+            self.resize(320, 200)
+            self.message = message
+            
+            layout = QVBoxLayout(self)
+            
+            self.text = QTextEdit(self)
+            self.text.setText(self.message)
+            
+            layout.addWidget(self.text)
+            
+            self.btn = QPushButton("Schließen", self)
+            self.btn.clicked.connect(self.on_button_clicked)
+            
+            layout.addWidget(self.btn)
+            
+        def on_button_clicked(self):
+            self.close()
+
+    class ErrorMessage(QDialog):
+        def __init__(self, title="Error", message="", log_path=None, parent=None):
+            super().__init__(parent)
+            
+            self.log_path = log_path  # Pfad zur Logdatei (oder None)
+            
+            self.setWindowTitle(self.tr(title))
+            self.resize(750, 420)
+            
+            layout = QVBoxLayout(self)
+            
+            # Textbereich
+            self.text_edit = QPlainTextEdit()
+            self.text_edit.setReadOnly(True)
+            self.text_edit.setPlainText(message)
+            self.text_edit.setLineWrapMode(QPlainTextEdit.NoWrap)
+            
+            font = QFont("Consolas")
+            font.setStyleHint(QFont.Monospace)
+            self.text_edit.setFont(font)
+            
+            layout.addWidget(self.text_edit)
+            
+            # Button-Leiste
+            btn_row = QHBoxLayout()
+            
+            self.btn_delete_log = QPushButton(self.tr("Delete LOG"))
+            self.btn_delete_log.clicked.connect(self._on_delete_log_clicked)
+            self.btn_delete_log.setEnabled(bool(self.log_path))  # nur aktiv, wenn Pfad vorhanden
+            
+            btn_style = """QPushButton {
+            background-color: #2f2f2f;
+            color: white;
+            border: 1px solid black;
+            }"""
+            self.btn_delete_log.setStyleSheet(btn_style)
+            
+            btn_row.addWidget(self.btn_delete_log)
+            btn_row.addStretch()
+            
+            self.btn_close = QPushButton(self.tr("Close"))
+            self.btn_close.clicked.connect(self.accept)
+            self.btn_close.setStyleSheet(btn_style)
+            
+            btn_row.addWidget(self.btn_close)
+            layout.addLayout(btn_row)
+
+        def _on_delete_log_clicked(self):
+            if not self.log_path:
+                return
+            if not os.path.exists(self.log_path):
+                QMessageBox.information(
+                    self,
+                    "LOG nicht gefunden",
+                    "Die LOG-Datei existiert nicht (mehr)."
+                )
+                return
+            err = tr("remove LOG file?")
+            answer = QMessageBox.question(
+                self,
+                tr("delete LOG file?"),
+                f"{err}\n\n{self.log_path}",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            if answer != QMessageBox.Yes:
+                return
+            try:
+                with open(LOG, "w", encoding="utf-8"):
+                    pass
+                os.remove(self.log_path)
+            except Exception as e:
+                err = tr("LOG file could not remove")
+                QMessageBox.critical(
+                    self,
+                    tr("remove file diened."),
+                    f"{err}:\n{e}"
+                )
+                return
+            QMessageBox.information(
+                self,
+                tr("removed"),
+                tr("LOG file have been removed")
+            )
+            # Optional: Button deaktivieren, weil Datei weg ist
+            self.btn_delete_log.setEnabled(False)
+
+    def exception_info(e):
+        last = traceback.extract_tb(e.__traceback__)[-1]
+        return {
+            "file": last.filename,
+            "line": last.lineno,
+            "function": last.name,
+            "code": last.line,
+            "error": str(e),
+        }
+
+
+    # ---------------------------------------------------------------------------
+    # locales (gnu gettext) support ...
+    # Loads GNU gettext .mo files from a zip and provides tr().
+    # ---------------------------------------------------------------------------
+    class TranslationManager:
+        def get_default_lang(self) -> str:
+            loc = locale.getdefaultlocale()
+            
+            if loc is None:
+                return "en"
+            
+            lang = loc[0]
+            if not lang:
+                return "en"
+            
+            return lang
+        
+        def load_mo_from_resource(self, resource_path: str) -> gettext.GNUTranslations | None:
+            f = QFile(resource_path)
+            if not f.open(QFile.ReadOnly):
+                raise FileNotFoundError(resource_path)
+            data = bytes(f.readAll())
+            f.close()
+            return gettext.GNUTranslations(BytesIO(data))
+        
+        def ensure_app(self):
+            try:
+                from PyQt5.QtWidgets import QApplication
+                app = QApplication.instance()
+                if app is None:
+                    app = QApplication(sys.argv)
+                return app
+            except Exception:
+                return False, None
+        
+        def add_trans(self, trans: gettext.GNUTranslations):
+            self.translations.append(trans)
+            
+        def __init__(self, zip_path: Optional[Union[str, Path]] = None, mode: int = 0, domain: str = "dbase"):
+            self.domain       = domain
+            self.zip_path     = Path(zip_path) if zip_path else None
+            self.lang         = self.get_default_lang().split("_")[0].lower()
+            self.mode         = mode
+            self.style_name   = "dark"
+            self.translations = []
+            self.trans        = gettext.NullTranslations()
+
+            self._langSwitch(self.lang)
+        
+        def _trres(self, msgid:str) -> str:
+            for trans in self.translations:
+                text = trans.gettext(msgid)
+                if text != msgid:
+                    return text
+            return msgid
+        
+        def _langSwitch(self, lang: str):
+            try:
+                self.translations.clear()
+                if lang == "en":
+                    return
+                
+                #self.filename = f":/locales/{lang}/dbase.mo"
+                #self.add_trans( self.load_mo_from_resource(self.filename))
+                
+                #self.filename = f":/locales/{lang}/doxygen.mo"
+                #self.add_trans( self.load_mo_from_resource(self.filename))
+                
+                #self.filename = f":/locales/{lang}/runner.mo"
+                #self.add_trans( self.load_mo_from_resource(self.filename))
+                
+            except FileNotFoundError as e:
+                app = self.ensure_app()
+                dlg = ErrorMessage("File not found Error",
+                f"The requested file: {self.filename} could not be found.")
+                dlg.exec_()
+                return
+            except PermissionError as e:
+                app = self.ensure_app()
+                dlg = ErrorMessage("File Permission Error",
+                f"You have not enough permissions to open file: {self.filename}.")
+                dlg.exec_()
+                return
+            except RuntimeError as e:
+                app = self.ensure_app()
+                dlg = ErrorMessage("Runtime Error",
+                f"The Python Library throws a Runtime Error on opening file: {self.filename}.")
+                dlg.exec_()
+                return
+            except OSError as e:
+                app = self.ensure_app()
+                dlg = ErrorMessage("Operating System Error",
+                f"The System is not able to open file: {self.filename}.")
+                dlg.exec_()
+                return
+            except Exception as e:
+                app = self.ensure_app()
+                dlg = ErrorMessage("Common Exception Error",
+                f"Common Exception throwed on open file: {self.filename}.")
+                dlg.exec_()
+                return
+            
+            return
+        
+        def set_zip(self, zip_path: Union[str, Path]):
+            self.zip_path = Path(zip_path)
+        
+        def load_mo(self, lang: str) -> bool:
+            lang            = lang.strip().lower()
+            self.style_name = lang
+            self.lang       = lang
+            self.trans      = gettext.NullTranslations()
+            
+            if not self.zip_path:
+                return False
+            
+            #AppMode.lang   = lang
+            #share.common.AppMode.domain = self.domain
+            
+            if self.mode == 0:
+                inner = f"{lang}/LC_MESSAGES/{self.domain}.mo"
+            elif self.mode == 1:
+                inner = f"styles/default/{self.style_name}.mo"
+            try:
+                with zipfile.ZipFile(str(self.zip_path), "r") as zf:
+                    data = zf.read(inner)  # bytes
+                self.trans = gettext.GNUTranslations(fp=io.BytesIO(data))
+                return True
+            except KeyError:
+                # not found in zip
+                self.trans = gettext.NullTranslations()
+                return False
+            except Exception:
+                self.trans = gettext.NullTranslations()
+                return False
+        
+        def _tr(self, msgid: str) -> str:
+            try:
+                return self.trans.gettext(msgid)
+            except Exception:
+                return msgid
+
+    # ---------------------------------------------------------------------------
+    # Global translation hook used by UI code: tr("File") -> "Datei" (if de loaded)
+    # ---------------------------------------------------------------------------
+    I18N = TranslationManager( mode = 0 )
+    QCSS = TranslationManager( mode = 1 )
+    # TODO
+    # ---- Standard-Locale beim Start setzen ----
+    #I18N.set_zip(Path(__file__).parent / "data/locales.zip"); I18N.load_mo("de"  ) # Deutsch als Default
+    #QCSS.set_zip(Path(__file__).parent / "data/styles.zip" ); QCSS.load_mo("dark") # dark mode style
+
+    def  tr(msgid: str) -> str: return msgid # return I18N._trres(msgid)
+    def css(msgid: str) -> str: return msgid # return QCSS._tr(msgid)
+
+    def  LangSwitch(lang: str): return I18N._langSwitch(lang)
+
+    class _LocalizeLineNumberArea(QWidget):
+        def __init__(self, editor):
+            super().__init__(editor)
+            self.code_editor = editor
+
+        def sizeHint(self):
+            return QSize(self.code_editor.lineNumberAreaWidth(), 0)
+
+        def paintEvent(self, event):
+            self.code_editor.lineNumberAreaPaintEvent(event)
+
+    class LanguageRadioFlag(QWidget):
+        def __init__(self, code: str, text: str, flag_path: str, parent=None):
+            super().__init__(parent)
+
+            self.code      = code
+            self.text      = tr(text)
+            self.flag_path = f":/flags/{flag_path}.png"
+
+            self.radio = QRadioButton(self.code)
+            self.radio.setToolTip(self.text)
+            
+            self.radio.setFont(QFont("Consolas", 10))
+
+            self.flag = QLabel()
+            self.flag.setFixedSize(22, 12)
+            self.flag.setAlignment(Qt.AlignCenter)
+            self.flag.setToolTip(self.text)
+
+            pix = QPixmap(self.flag_path)
+            if not pix.isNull():
+                self.flag.setPixmap(
+                    pix.scaled(
+                        22,
+                        12,
+                        Qt.KeepAspectRatio,
+                        Qt.SmoothTransformation
+                    )
+                )
+
+            lay = QHBoxLayout(self)
+            lay.setContentsMargins(0, 0, 0, 0)
+            lay.setSpacing(6)
+
+            lay.addWidget(self.radio)
+            lay.addWidget(self.flag)
+            lay.addStretch(1)
+
+    class LocalizeCodeEditor(QPlainTextEdit):
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self._line_number_area = _LocalizeLineNumberArea(self)
+            try:
+                self.blockCountChanged    .connect(self.updateLineNumberAreaWidth)
+                self.updateRequest        .connect(self.updateLineNumberArea)
+                self.cursorPositionChanged.connect(self.highlightCurrentLine)
+            except Exception:
+                pass
+            self.updateLineNumberAreaWidth(0)
+            self.highlightCurrentLine()
+            self.setFont(QFont("Arial", 10))
+            self.setLineWrapMode(QPlainTextEdit.NoWrap)
+
+        def lineNumberAreaWidth(self):
+            digits = 1
+            maximum = max(1, self.blockCount())
+            while maximum >= 10:
+                maximum //= 10
+                digits += 1
+            return 10 + self.fontMetrics().horizontalAdvance('9') * digits
+
+        def updateLineNumberAreaWidth(self, _):
+            self.setViewportMargins(self.lineNumberAreaWidth(), 0, 0, 0)
+
+        def updateLineNumberArea(self, rect, dy):
+            if dy:
+                self._line_number_area.scroll(0, dy)
+            else:
+                self._line_number_area.update(0, rect.y(), self._line_number_area.width(), rect.height())
+            if rect.contains(self.viewport().rect()):
+                self.updateLineNumberAreaWidth(0)
+
+        def resizeEvent(self, event):
+            super().resizeEvent(event)
+            cr = self.contentsRect()
+            self._line_number_area.setGeometry(QRect(cr.left(), cr.top(), self.lineNumberAreaWidth(), cr.height()))
+
+        def lineNumberAreaPaintEvent(self, event):
+            painter = QPainter(self._line_number_area)
+            painter.fillRect(event.rect(), QColor(28, 28, 28))
+            block = self.firstVisibleBlock()
+            block_number = block.blockNumber()
+            top = int(self.blockBoundingGeometry(block).translated(self.contentOffset()).top())
+            bottom = top + int(self.blockBoundingRect(block).height())
+            while block.isValid() and top <= event.rect().bottom():
+                if block.isVisible() and bottom >= event.rect().top():
+                    number = str(block_number + 1)
+                    painter.setPen(QColor(170, 170, 170))
+                    painter.drawText(0, top, self._line_number_area.width() - 4, self.fontMetrics().height(), Qt.AlignRight, number)
+                block = block.next()
+                top = bottom
+                bottom = top + int(self.blockBoundingRect(block).height())
+                block_number += 1
+
+        def highlightCurrentLine(self):
+            extra = []
+            if not self.isReadOnly():
+                sel = QTextEdit.ExtraSelection()
+                line_color = QColor(255, 216, 102, 28)
+                sel.format.setBackground(line_color)
+                sel.format.setProperty(QTextFormat.FullWidthSelection, True)
+                sel.cursor = self.textCursor()
+                sel.cursor.clearSelection()
+                extra.append(sel)
+            self.setExtraSelections(extra)
+
+
+    class LocalizeToolWindow(QDialog):
+        HEADER_FIELDS = [
+            "Project-Id-Version",
+            "Report-Msgid-Bugs-To",
+            "POT-Creation-Date",
+            "PO-Revision-Date",
+            "Last-Translator",
+            "Language-Team",
+            "Language",
+            "MIME-Version",
+            "Content-Type",
+            "Content-Transfer-Encoding",
+        ]
+
+        def __init__(self, main_window, parent=None):
+            super().__init__(parent)
+            
+            self.main_window = main_window
+            
+            self.setMinimumWidth (920)
+            self.setMinimumHeight(400)
+            
+            self.entries = []
+            
+            self._current_index = -1
+            self._block_lang_sync = False
+            
+            self.setFont(QFont("Arial", 10))
+            self.setAttribute(Qt.WA_DeleteOnClose, False)
+            
+            self._build_ui()
+            self._load_state()
+            self._apply_default_headers()
+            
+            self.ed_po_path.setText("")
+            self.ed_mo_path.setText("")
+            
+            try:
+                if hasattr(self, "_sync_language_buttons"):
+                    self._sync_language_buttons()
+            except Exception:
+                pass
+            self._refresh_msgid_list()
+
+        def _localize_message_box(
+            self,
+            icon,
+            title: str,
+            message: str,
+            *,
+            buttons=QMessageBox.Ok,
+            default_button=QMessageBox.NoButton,
+        ) -> QMessageBox:
+            """MessageBox im selben Hell-/Dunkelmodus wie das Hauptfenster."""
+            box = QMessageBox(self)
+            box.setObjectName("localize_themed_message_box")
+            box.setIcon(icon)
+            box.setWindowTitle(str(title))
+            box.setText(str(message))
+            box.setStandardButtons(buttons)
+            if default_button != QMessageBox.NoButton:
+                box.setDefaultButton(default_button)
+            host = getattr(self, "main_window", None)
+            if host is not None:
+                try:
+                    box.setWindowIcon(host.windowIcon())
+                except Exception:
+                    pass
+                try:
+                    box.setPalette(host._message_box_palette())
+                    box.setStyleSheet(host._message_box_stylesheet())
+                    box.setAttribute(Qt.WA_StyledBackground, True)
+                    return box
+                except Exception:
+                    pass
+            dark = bool(getattr(host, "dark_mode_enabled", False))
+            if dark:
+                box.setStyleSheet("""
+QMessageBox { color: #ffffff; background-color: #202630; }
+QMessageBox QLabel { color: #ffffff; background-color: transparent; }
+QMessageBox QPushButton {
+    min-width: 78px; color: #ffffff; background-color: #343e4d;
+    border: 1px solid #596779; border-radius: 3px; padding: 5px 10px;
+}
+QMessageBox QPushButton:hover { background-color: #414d5f; }
+""")
+            else:
+                box.setStyleSheet("""
+QMessageBox { color: #000000; background-color: #f0f0f0; }
+QMessageBox QLabel { color: #000000; background-color: transparent; }
+QMessageBox QPushButton {
+    min-width: 78px; color: #000000; background-color: #f5f5f5;
+    border: 1px solid #9b9b9b; border-radius: 3px; padding: 5px 10px;
+}
+QMessageBox QPushButton:hover { background-color: #e4f1fb; }
+""")
+            return box
+
+        def _localize_warning(self, title: str, message: str):
+            return self._localize_message_box(
+                QMessageBox.Warning, title, message
+            ).exec_()
+
+        def _localize_information(self, title: str, message: str):
+            return self._localize_message_box(
+                QMessageBox.Information, title, message
+            ).exec_()
+
+        def _build_ui(self):
+            root = QVBoxLayout(self)
+            root.setContentsMargins(8, 8, 8, 8)
+            root.setSpacing(8)
+
+            self.tabs = QTabWidget(self)
+            root.addWidget(self.tabs, 1)
+            
+            self.tabs.addTab(self._build_entries_tab (), tr("Entries"))
+            self.tabs.addTab(self._build_settings_tab(), tr("Settings"))
+
+            #btn_row = QHBoxLayout()
+            #self.btn_create = QPushButton(tr("Create"), self)
+            #self.btn_help   = QPushButton(tr("Help")  , self)
+            #self.btn_cancel = QPushButton(tr("Cancel"), self)
+            #for b in (self.btn_create, self.btn_help, self.btn_cancel):
+            #    b.setMinimumWidth(95)
+            #    btn_row.addWidget(b)
+            #root.addLayout(btn_row)
+
+            #self.btn_create.clicked.connect(self._create_mo_file)
+            #self.btn_help  .clicked.connect(self._show_help)
+            #self.btn_cancel.clicked.connect(self._close_self)
+
+        def _build_entries_tab(self):
+            content = QWidget()
+            outer = QHBoxLayout(content)
+            outer.setContentsMargins(10, 10, 10, 10)
+            outer.setSpacing(12)
+
+            right_tabs = QTabWidget(content)
+            right_tabs.setMinimumWidth(240)
+
+            msgstr_tab = QWidget(right_tabs)
+            msgstr_lay = QVBoxLayout(msgstr_tab)
+            
+            msgstr_lay.setContentsMargins(6, 6, 6, 6)
+            msgstr_lay.setSpacing(6)
+            
+            
+            lang_tab = QWidget(right_tabs)
+            lang_lay = QVBoxLayout(lang_tab)
+            
+            lang_lay.setContentsMargins(6, 6, 6, 6)
+            lang_lay.setSpacing(6)
+            
+            lang_row = QHBoxLayout()
+            lang_row.setSpacing(8)
+
+            self.gb_source  = QGroupBox(tr("Source"), lang_tab)
+            self.gb_dest    = QGroupBox(tr("Destination"), lang_tab)
+            
+            self.gb_source.setMinimumHeight(1500)
+            self.gb_dest  .setMinimumHeight(1500)
+            
+            self.gb_source.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+            self.gb_dest  .setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+            
+            self.src_group  = QButtonGroup(self)
+            self.dst_group  = QButtonGroup(self)
+            
+            self.src_radios = {}
+            self.dst_radios = {}
+
+            src_lay = QVBoxLayout(self.gb_source)
+            dst_lay = QVBoxLayout(self.gb_dest)
+            
+            src_lay.setSpacing(4)
+            dst_lay.setSpacing(4)
+            
+            for code, title, flag_path in LANGUAGE_CODES:
+                row_src = LanguageRadioFlag(code + " ", title, flag_path, self.gb_source)
+                self.src_group.addButton(row_src.radio)
+                self.src_radios[code] = row_src.radio
+                src_lay.addWidget(row_src)
+                
+                row_dst = LanguageRadioFlag(code + " ", title, flag_path, self.gb_dest)
+                self.dst_group.addButton(row_dst.radio)
+                self.dst_radios[code] = row_dst.radio
+                dst_lay.addWidget(row_dst)
+            
+            lang_row.addWidget(self.gb_source)
+            lang_row.addWidget(self.gb_dest)
+            
+            #lang_lay.addLayout(lang_row)
+            #lang_lay.addStretch(1)
+            
+            lang_scroll = QScrollArea(lang_tab)
+            
+            lang_scroll.setWidgetResizable(True)
+            lang_scroll.setFrameShape(QFrame.NoFrame)
+            
+            lang_scroll.setVerticalScrollBarPolicy  (Qt.ScrollBarAsNeeded )
+            lang_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded )
+            lang_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+            lang_scroll_host = QWidget()
+            lang_scroll_lay = QVBoxLayout(lang_scroll_host)
+            lang_scroll_lay.setContentsMargins(0, 0, 0, 0)
+            lang_scroll_lay.setSpacing(0)
+            lang_scroll_lay.addLayout(lang_row)
+            lang_scroll_lay.addStretch(1)
+
+            lang_scroll.setWidget(lang_scroll_host)
+
+            lang_lay.addWidget(lang_scroll, 1)
+
+            self.msgid_list = QListWidget(msgstr_tab)
+            self.msgid_list.setMinimumWidth(240)
+            
+            msgstr_lay.addWidget(self.msgid_list, 1)
+
+            right_tabs.addTab(msgstr_tab, "MSGSTR")
+            right_tabs.addTab(lang_tab, tr("Language"))
+
+            editor_col = QVBoxLayout()
+            editor_hor = QHBoxLayout()
+            
+            editor_col.setSpacing(6)
+            editor_col.addWidget(QLabel("MSGID:", content))
+            
+            self.btn_insert = QPushButton(tr("Insert"), content)
+            self.btn_apply  = QPushButton(tr("Apply" ), content)
+            self.btn_delete = QPushButton(tr("Delete"), content)
+            
+            self.btn_insert.clicked.connect(self._insert_entry)
+            self.btn_apply .clicked.connect(self._apply_entry)
+            self.btn_delete.clicked.connect(self._delete_selected_entry)
+            
+            self.btn_create = QPushButton(tr("Create"), content)
+            self.btn_cancel = QPushButton(tr("Cancel"), content)
+            
+            self.btn_create.clicked.connect(self._create_mo_file)
+            self.btn_cancel.clicked.connect(self._close_self)
+            
+            editor_hor.addWidget(self.btn_insert)
+            editor_hor.addWidget(self.btn_apply)
+            editor_hor.addWidget(self.btn_delete)
+            
+            editor_col.addLayout(editor_hor)
+            
+            self.ed_msgid = QLineEdit(content)
+            self.ed_msgid.setFont(QFont("Arial", 10))
+            
+            editor_col.addWidget(self.ed_msgid)
+            editor_col.addWidget(QLabel("MSGSTR:", content))
+            
+            self.text_msgstr = LocalizeCodeEditor(content)
+            self.text_msgstr.setMinimumSize(350, 260)
+            editor_col.addWidget(self.text_msgstr, 1)
+            editor_col.addStretch()
+            
+            btn_col = QVBoxLayout()
+            btn_col.setSpacing(6)
+            
+            self.ws1 = QWidget()
+            self.ws1.setMinimumHeight(20)
+            
+            #self.btn_insert       = QPushButton(tr("Insert")        , content)
+            #self.btn_apply        = QPushButton(tr("Apply")         , content)
+            #self.btn_delete_msgid = QPushButton(tr("Delete MSGID")  , content)
+            #
+            self.btn_open_po      = QPushButton(tr("Open")          , content)
+            #
+            self.btn_save_po      = QPushButton(tr("Save")          , content)
+            self.btn_save_as_po   = QPushButton(tr("Save As ...")   , content)
+            #
+            self.btn_paste        = QPushButton(tr("Paste")         , content)
+            self.btn_cut          = QPushButton(tr("Cut")           , content)
+            self.btn_delete_text  = QPushButton(tr("Delete")        , content)
+
+            for b in (
+                #self.btn_insert,
+                #self.btn_apply,
+                #self.btn_delete_msgid,
+                #
+                self.btn_open_po,
+                #
+                self.btn_save_po,
+                self.btn_save_as_po,
+                #
+                self.btn_paste,
+                self.btn_cut,
+                self.btn_delete_text,
+                #
+                self.btn_create,
+                self.btn_cancel,
+            ):
+                b.setMinimumWidth(110)
+            
+            btn_col.addWidget(self.ws1)
+            #btn_col.addWidget(self.btn_insert)
+            #btn_col.addWidget(self.btn_apply)
+            #btn_col.addWidget(self.btn_delete_msgid)
+            btn_col.addSpacing(2)
+            
+            btn_col.addWidget(self.btn_open_po)
+            btn_col.addWidget(self.btn_save_po)
+            btn_col.addWidget(self.btn_save_as_po)
+            btn_col.addSpacing(2)
+            
+            btn_col.addWidget(self.btn_paste)
+            btn_col.addWidget(self.btn_cut)
+            btn_col.addWidget(self.btn_delete_text)
+            btn_col.addSpacing(2)
+
+            btn_col.addStretch(1)
+            
+            btn_col.addWidget(self.btn_create)
+            btn_col.addWidget(self.btn_cancel)
+
+            center_right_splitter = QSplitter(Qt.Horizontal, content)
+
+            editor_host = QWidget(center_right_splitter)
+            editor_host.setLayout(editor_col)
+
+            center_right_splitter.addWidget(editor_host)
+            center_right_splitter.addWidget(right_tabs)
+            center_right_splitter.setStretchFactor(0, 1)
+            center_right_splitter.setStretchFactor(1, 0)
+
+            outer.addLayout(btn_col, 0)
+            outer.addWidget(center_right_splitter, 1)
+            
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.NoFrame)
+            scroll.setWidget(content)
+            
+            self.msgid_list         .currentRowChanged.connect(self._on_msgid_selection_changed)
+            
+            self.src_group          .buttonClicked.connect(self._sync_language_buttons)
+            self.dst_group          .buttonClicked.connect(self._sync_language_buttons)
+            
+            self.btn_save_po        .clicked.connect(self._save_po)
+            self.btn_save_as_po     .clicked.connect(self._save_po_as)
+            
+            self.btn_open_po.clicked.connect(self._choose_and_open_po)
+            self.btn_paste.clicked  .connect(self._paste_into_focused)
+            self.btn_cut.clicked    .connect(self._cut_from_focused)
+            
+            self.btn_delete_text    .clicked.connect(self._delete_in_focused)
+            #self.btn_delete_msgid   .clicked.connect(self._delete_selected_entry)
+            
+            #self.btn_insert.clicked .connect(self._insert_entry)
+            #self.btn_apply.clicked  .connect(self._apply_entry)
+            
+            return scroll
+
+        def _build_settings_tab(self):
+            content = QWidget()
+            lay = QGridLayout(content)
+            lay.setContentsMargins(10, 10, 10, 10)
+            lay.setHorizontalSpacing(8)
+            lay.setVerticalSpacing(8)
+
+            row = 0
+            lay.addWidget(QLabel("Input file (*.po):", content), row, 0)
+            self.ed_po_path = QLineEdit(content)
+            self.ed_po_path.setFont(QFont("Arial", 10))
+            lay.addWidget(self.ed_po_path, row, 1)
+            self.btn_load_po_path = QPushButton(tr("Load"), content)
+            lay.addWidget(self.btn_load_po_path, row, 2)
+            row += 1
+
+            lay.addWidget(QLabel("Output file (*.mo):", content), row, 0)
+            self.ed_mo_path = QLineEdit(content)
+            self.ed_mo_path.setFont(QFont("Arial", 10))
+            lay.addWidget(self.ed_mo_path, row, 1)
+            self.btn_load_mo_path = QPushButton(tr("Load"), content)
+            lay.addWidget(self.btn_load_mo_path, row, 2)
+            row += 1
+
+            self.header_edits = {}
+            for header in self.HEADER_FIELDS:
+                lay.addWidget(QLabel(header + ":", content), row, 0)
+                ed = QLineEdit(content)
+                ed.setFont(QFont("Arial", 10))
+                self.header_edits[header] = ed
+                lay.addWidget(ed, row, 1, 1, 2)
+                row += 1
+
+            lay.setColumnStretch(1, 1)
+            lay.setRowStretch(row, 1)
+
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.NoFrame)
+            scroll.setWidget(content)
+
+            self.btn_load_po_path.clicked.connect(self._choose_and_open_po)
+            self.btn_load_mo_path.clicked.connect(self._choose_mo_path)
+            try:
+                self.header_edits['Language'].editingFinished.connect(self._apply_language_from_header)
+            except Exception:
+                pass
+            return scroll
+
+        def _focused_text_widget(self):
+            fw = QApplication.focusWidget()
+            if isinstance(fw, (QLineEdit, QTextEdit, QPlainTextEdit)):
+                return fw
+            return self.text_msgstr
+
+        def _paste_into_focused(self):
+            w = self._focused_text_widget()
+            try:
+                w.paste()
+            except Exception:
+                pass
+
+        def _cut_from_focused(self):
+            w = self._focused_text_widget()
+            try:
+                w.cut()
+            except Exception:
+                pass
+
+        def _delete_in_focused(self):
+            w = self._focused_text_widget()
+            try:
+                if isinstance(w, QLineEdit):
+                    if w.hasSelectedText():
+                        txt = w.text()
+                        a = w.selectionStart()
+                        b = a + len(w.selectedText())
+                        w.setText(txt[:a] + txt[b:])
+                        w.setCursorPosition(a)
+                    else:
+                        w.clear()
+                else:
+                    tc = w.textCursor()
+                    if tc.hasSelection():
+                        tc.removeSelectedText()
+                        w.setTextCursor(tc)
+                    else:
+                        tc.select(QTextCursor.LineUnderCursor)
+                        tc.removeSelectedText()
+                        w.setTextCursor(tc)
+            except Exception:
+                pass
+
+        def _normalize_text(self, text):
+            return (text or "").replace("\r\n", "\n").replace("\r", "\n")
+
+        def _escape_po_text(self, text):
+            return (text or "").replace('\\', '\\\\').replace('"', '\\"').replace('\t', '\\t')
+
+        def _serialize_po_lines(self, text):
+            text = self._normalize_text(text)
+            parts = text.split('\n')
+            if parts == ['']:
+                return ['""']
+            out = []
+            for idx, part in enumerate(parts):
+                suffix = '\\n' if idx < len(parts) - 1 else ''
+                out.append(f'"{self._escape_po_text(part)}{suffix}"')
+            return out or ['""']
+
+        def _language_schema_value(self):
+            return f"{self._current_source_code()}:{self._current_destination_code()}"
+
+        def _parse_language_schema(self, value):
+            text = (value or '').strip().upper()
+            if ':' not in text:
+                return 'ENU', 'DEU'
+            src, dst = [part.strip() for part in text.split(':', 1)]
+            if src not in self.src_radios or dst not in self.dst_radios or src == dst:
+                return 'ENU', 'DEU'
+            return src, dst
+
+        def _set_language_pair(self, src, dst):
+            src, dst = self._parse_language_schema(f"{src}:{dst}")
+            self._block_lang_sync = True
+            try:
+                if src in self.src_radios:
+                    self.src_radios[src].setChecked(True)
+                else:
+                    self.src_radios['ENU'].setChecked(True)
+                if dst in self.dst_radios:
+                    self.dst_radios[dst].setChecked(True)
+                else:
+                    self.dst_radios['DEU'].setChecked(True)
+            finally:
+                self._block_lang_sync = False
+            self._sync_language_buttons()
+
+        def _apply_language_from_header(self):
+            value = self.header_edits.get('Language', QLineEdit()).text().strip()
+            src, dst = self._parse_language_schema(value)
+            self._set_language_pair(src, dst)
+
+        def _metadata(self):
+            data = {}
+            for key, ed in self.header_edits.items():
+                data[key] = (ed.text() or "").strip()
+            data["Language"] = self._language_schema_value()
+            return data
+
+        def _serialize_po_content(self):
+            meta = self._metadata()
+            lines = []
+            lines.append('msgid ""')
+            lines.append('msgstr ""')
+            for key in self.HEADER_FIELDS:
+                value = meta.get(key, "")
+                value = f"{key}: {value}" if value else f"{key}:"
+                lines.append(f'"{self._escape_po_text(value)}\\n"')
+            lines.append("")
+            for entry in self.entries:
+                msgid = self._normalize_text(entry.get('msgid', ''))
+                msgstr = self._normalize_text(entry.get('msgstr', ''))
+                lines.append('msgid ""')
+                lines.extend(self._serialize_po_lines(msgid))
+                lines.append('msgstr ""')
+                lines.extend(self._serialize_po_lines(msgstr))
+                lines.append("")
+            return "\n".join(lines).rstrip() + "\n"
+
+        def _find_entry_index(self, msgid):
+            msgid = self._normalize_text(msgid)
+            for idx, entry in enumerate(self.entries):
+                if self._normalize_text(entry.get('msgid', '')) == msgid:
+                    return idx
+            return -1
+
+        def _duplicate_msgids(self):
+            counts = {}
+            for entry in self.entries:
+                msgid = self._normalize_text(entry.get('msgid', ''))
+                counts[msgid] = counts.get(msgid, 0) + 1
+            return {msgid for msgid, count in counts.items() if msgid and count > 1}
+
+        def _refresh_msgid_list(self, select_index=None):
+            self.msgid_list.blockSignals(True)
+            self.msgid_list.clear()
+            duplicate_ids = self._duplicate_msgids()
+            for entry in self.entries:
+                raw_msgid = self._normalize_text(entry.get('msgid', ''))
+                title = raw_msgid.replace('\n', ' ⏎ ')
+                item = QListWidgetItem(title)
+                if raw_msgid in duplicate_ids:
+                    item.setBackground(QColor('#b00000'))
+                    item.setForeground(QColor('#ffffff'))
+                self.msgid_list.addItem(item)
+            self.msgid_list.blockSignals(False)
+            if self.entries:
+                if select_index is None:
+                    select_index = 0 if self._current_index < 0 else min(self._current_index, len(self.entries) - 1)
+                self.msgid_list.setCurrentRow(max(0, min(select_index, len(self.entries) - 1)))
+            else:
+                self._current_index = -1
+                self.ed_msgid.clear()
+                self.text_msgstr.clear()
+
+        def _on_msgid_selection_changed(self, row):
+            if row < 0 or row >= len(self.entries):
+                self._current_index = -1
+                return
+            self._current_index = row
+            entry = self.entries[row]
+            self.ed_msgid.setText(self._normalize_text(entry.get('msgid', '')))
+            self.text_msgstr.setPlainText(self._normalize_text(entry.get('msgstr', '')))
+
+        def _insert_entry(self):
+            msgid = self._normalize_text(self.ed_msgid.text())
+            msgstr = self._normalize_text(self.text_msgstr.toPlainText())
+            if not msgid:
+                self._localize_warning( 'Localize', 'Bitte zuerst eine MSGID eingeben.')
+                self.ed_msgid.setFocus()
+                return
+            idx = self._find_entry_index(msgid)
+            if idx >= 0:
+                self.entries[idx]['msgstr'] = msgstr
+                self._current_index = idx
+            else:
+                self.entries.append({'msgid': msgid, 'msgstr': msgstr})
+                self._current_index = len(self.entries) - 1
+            self._refresh_msgid_list(select_index=self._current_index)
+
+        def _apply_entry(self):
+            if self._current_index < 0 or self._current_index >= len(self.entries):
+                self._insert_entry()
+                return
+            msgid = self._normalize_text(self.ed_msgid.text())
+            msgstr = self._normalize_text(self.text_msgstr.toPlainText())
+            if not msgid:
+                self._localize_warning( 'Localize', 'Bitte zuerst eine MSGID eingeben.')
+                return
+            old_msgid = self._normalize_text(self.entries[self._current_index].get('msgid', ''))
+            other = self._find_entry_index(msgid)
+            if other >= 0 and other != self._current_index and msgid != old_msgid:
+                self._localize_warning( 'Localize', 'Die MSGID existiert bereits.')
+                return
+            self.entries[self._current_index] = {'msgid': msgid, 'msgstr': msgstr}
+            self._refresh_msgid_list(select_index=self._current_index)
+
+        def _delete_selected_entry(self):
+            row = self.msgid_list.currentRow()
+            if row < 0 or row >= len(self.entries):
+                return
+            del self.entries[row]
+            self._current_index = -1
+            self._refresh_msgid_list(select_index=min(row, len(self.entries) - 1))
+
+        def _choose_and_open_po(self):
+            start = self.ed_po_path.text().strip() or os.getcwd()
+            title = tr("Load PO-File")
+            exten = tr("PO-Files (*.po);;All Files (*.*)")
+            path, _ = QFileDialog.getOpenFileName(self, title, start, exten)
+            path = (path or '').strip()
+            if not path:
+                return
+            
+            base, ext = os.path.splitext(path)
+            po_file   = base + ".po"
+            mo_file   = base + ".mo"
+            
+            self.ed_po_path.setText(po_file)
+            self.ed_mo_path.setText(mo_file)
+            
+            self._open_po(po_file)
+
+        def _choose_mo_path(self):
+            start = self.ed_mo_path.text().strip() or os.getcwd()
+            title = tr("Select MO-File")
+            exten = tr("MO-Files (*.mo);;All Files (*.*)")
+            path, _ = QFileDialog.getSaveFileName(self, title, start, exten)
+            path = (path or '').strip()
+            if not path:
+                return
+            self.ed_mo_path.setText(path)
+
+        def _open_po(self, path):
+            path = os.path.normpath((path or '').strip())
+            if not path:
+                return
+            try:
+                import polib
+            except Exception as e:
+                title = tr("Localize")
+                error = tr("polib could not be open")
+                self._localize_warning( title, f'{error}:\n{e}')
+                return
+            try:
+                po = polib.pofile(path)
+                self.entries = []
+                for entry in po:
+                    if getattr(entry, 'obsolete', False):
+                        continue
+                    self.entries.append({'msgid': self._normalize_text(entry.msgid), 'msgstr': self._normalize_text(entry.msgstr)})
+                for key in self.HEADER_FIELDS:
+                    self.header_edits[key].setText(po.metadata.get(key, ''))
+                schema = (self.header_edits.get('Language', QLineEdit()).text() or '').strip()
+                src, dst = self._parse_language_schema(schema)
+                self._set_language_pair(src, dst)
+                self.header_edits['Language'].setText(self._language_schema_value())
+                self._refresh_msgid_list(select_index=0)
+                self._save_state()
+            except Exception as e:
+                self._localize_warning( 'Localize', f'PO-Datei konnte nicht geladen werden:\n{e}')
+
+        def _sort_entries_by_msgid(self):
+            current_msgid = self._normalize_text(self.ed_msgid.text())
+            self.entries.sort(key=lambda entry: self._normalize_text(entry.get('msgid', '')))
+            select_index = None
+            if current_msgid:
+                idx = self._find_entry_index(current_msgid)
+                if idx >= 0:
+                    select_index = idx
+            self._refresh_msgid_list(select_index=select_index)
+
+        def _write_po_file(self, path):
+            path = os.path.normpath((path or '').strip())
+            if not path:
+                raise ValueError('Kein Dateiname für die Eingabedatei (*.po) angegeben.')
+            self._sort_entries_by_msgid()
+            folder = os.path.dirname(path) or os.getcwd()
+            os.makedirs(folder, exist_ok=True)
+            with open(path, 'w', encoding='utf-8', newline='\n') as f:
+                f.write(self._serialize_po_content())
+            self.ed_po_path.setText(path)
+            self._save_state()
+
+        def _save_po(self):
+            path = self.ed_po_path.text().strip()
+            if not path:
+                return self._save_po_as()
+            try:
+                self._write_po_file(path)
+                self._localize_information(
+                tr("Locales"),
+                tr("PO-Datei was saved."))
+            except Exception as e:
+                msg = tr("PO-File could not be saved")
+                self._localize_warning( tr("Localies"), f"{msg}:\n{e}")
+
+        def _save_po_as(self):
+            start = self.ed_po_path.text().strip() or os.path.join(os.getcwd(), 'messages.po')
+            path, _ = QFileDialog.getSaveFileName(self,
+                tr('Save PO-File'),
+                start,
+                'PO Dateien (*.po);;Alle Dateien (*.*)')
+            path = (path or '').strip()
+            if not path:
+                return
+            try:
+                self._write_po_file(path)
+                self._localize_information(
+                tr("Locales"),
+                tr("PO-File successfull created."))
+            except Exception as e:
+                msg = tr("PO-File could not be saved")
+                self._localize_warning( tr("Locales"), f"{msg}:\n{e}")
+
+        def _ensure_output_writable(self, path):
+            folder = os.path.dirname(path) or os.getcwd()
+            os.makedirs(folder, exist_ok=True)
+            fd, tmp_path = tempfile.mkstemp(prefix='localize_', suffix='.tmp', dir=folder)
+            os.close(fd)
+            os.remove(tmp_path)
+
+        def _create_mo_file(self):
+            po_path = self.ed_po_path.text().strip()
+            mo_path = self.ed_mo_path.text().strip()
+            if not po_path:
+                self._localize_warning(
+                tr('Locales'),
+                tr("Firstly, select an input file (*.po)"))
+                self.tabs.setCurrentIndex(1)
+                self.ed_po_path.setFocus()
+                return
+            if not mo_path:
+                self._localize_warning(
+                tr('Locales'),
+                tr("Please select an output file (*.mo)"))
+                self.tabs.setCurrentIndex(1)
+                self.ed_mo_path.setFocus()
+                return
+            try:
+                self._write_po_file(po_path)
+                self._ensure_output_writable(mo_path)
+                import polib
+                po = polib.pofile(po_path)
+                po.save_as_mofile(mo_path)
+                self._localize_information(
+                tr('Locales'),
+                tr('MO-File was created.'))
+            except Exception as e:
+                msg = tr("MO-File could not be created")
+                self._localize_warning( tr("Locales"), f'{msg}:\n{e}')
+
+        def _show_help(self):
+            try:
+                help_mw = share.utildef.helpwin.HelpMainWindow()
+                open_helpwindow(self.main_window.mdi, help_mw)
+            except Exception:
+                self._localize_information(
+                    tr('Help'),
+                    tr("No Help Found."))
+
+        def _close_self(self):
+            try:
+                self._save_state()
+            except Exception:
+                pass
+            try:
+                host = self.parent()
+                if isinstance(host, QMdiSubWindow):
+                    host.close()
+                    return
+            except Exception:
+                pass
+            try:
+                self.close()
+            except Exception:
+                pass
+
+        def closeEvent(self, event):
+            try:
+                box = self._localize_message_box(
+                    QMessageBox.Warning,
+                    tr("Close Locales Window"),
+                    tr("Do you want to close the Locales window?"),
+                    buttons=QMessageBox.Yes | QMessageBox.No,
+                    default_button=QMessageBox.No,
+                )
+                box.setEscapeButton(QMessageBox.No)
+                result = box.exec_()
+                
+                if result == QMessageBox.No:
+                    event.ignore()
+                    return
+                
+                event.accept()
+                self._save_state()
+            
+            except Exception as e:
+                print(e)
+
+        def _current_source_code(self):
+            for code, rb in self.src_radios.items():
+                if rb.isChecked():
+                    return code
+            return 'ENU'
+
+        def _current_destination_code(self):
+            for code, rb in self.dst_radios.items():
+                if rb.isChecked():
+                    return code
+            return 'DEU'
+
+        def _sync_language_buttons(self):
+            if self._block_lang_sync:
+                return
+            self._block_lang_sync = True
+            try:
+                src = self._current_source_code()
+                dst = self._current_destination_code()
+                for code, rb in self.src_radios.items():
+                    rb.setEnabled(code != dst)
+                for code, rb in self.dst_radios.items():
+                    rb.setEnabled(code != src)
+                if src == dst:
+                    src, dst = self._parse_language_schema('ENU:DEU')
+                    if src in self.src_radios:
+                        self.src_radios[src].setChecked(True)
+                    if dst in self.dst_radios:
+                        self.dst_radios[dst].setChecked(True)
+                    for code, rb in self.src_radios.items():
+                        rb.setEnabled(code != dst)
+                    for code, rb in self.dst_radios.items():
+                        rb.setEnabled(code != src)
+                self.header_edits.get('Language', QLineEdit()).setText(self._language_schema_value())
+            finally:
+                self._block_lang_sync = False
+
+        def _apply_default_headers(self):
+            now = QDateTime.currentDateTime().toString('yyyy-MM-dd HH:mmZ')
+            defaults = {
+                'Project-Id-Version': '1.0',
+                'Report-Msgid-Bugs-To': '',
+                'POT-Creation-Date': now,
+                'PO-Revision-Date': now,
+                'Last-Translator': '',
+                'Language-Team': '',
+                'Language': self._language_schema_value(),
+                'MIME-Version': '1.0',
+                'Content-Type': 'text/plain; charset=UTF-8',
+                'Content-Transfer-Encoding': '8bit',
+            }
+            for key, value in defaults.items():
+                if not self.header_edits[key].text().strip():
+                    self.header_edits[key].setText(value)
+
+        def _load_state(self):
+            try:
+                schema = (self.main_window._settings.value('localize/header/Language', '', type=str) or '').strip()
+                if not schema:
+                    src_saved = (self.main_window._settings.value('localize/source_lang', 'ENU', type=str) or 'ENU').strip()
+                    dst_saved = (self.main_window._settings.value('localize/dest_lang', 'DEU', type=str) or 'DEU').strip()
+                    schema = f"{src_saved}:{dst_saved}"
+                src, dst = self._parse_language_schema(schema)
+                self._set_language_pair(src, dst)
+                self.ed_po_path.setText((self.main_window._settings.value('localize/po_path', '', type=str) or '').strip())
+                self.ed_mo_path.setText((self.main_window._settings.value('localize/mo_path', '', type=str) or '').strip())
+                for key in self.HEADER_FIELDS:
+                    self.header_edits[key].setText((self.main_window._settings.value(f'localize/header/{key}', '', type=str) or '').strip())
+                self.header_edits['Language'].setText(self._language_schema_value())
+            except Exception:
+                try:
+                    self._set_language_pair('ENU', 'DEU')
+                    self.header_edits['Language'].setText(self._language_schema_value())
+                except Exception:
+                    pass
+
+        def _save_state(self):
+            try:
+                self.header_edits['Language'].setText(self._language_schema_value())
+                self.main_window._settings.setValue('localize/source_lang'  , self._current_source_code())
+                self.main_window._settings.setValue('localize/dest_lang'    , self._current_destination_code())
+                self.main_window._settings.setValue('localize/po_path'      , self.ed_po_path.text().strip())
+                self.main_window._settings.setValue('localize/mo_path'      , self.ed_mo_path.text().strip())
+                for key in self.HEADER_FIELDS:
+                    self.main_window._settings.setValue(f'localize/header/{key}', self.header_edits[key].text().strip())
+            except Exception:
+                pass
 
     # -----------------------------------------------------------------------
     # Hervorhebung für MOS-6510-Assembler, C64-Pascal und C64-C.
@@ -6093,6 +9360,15 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
         for mnemonic, operands, default_operand, description
         in _PE32_ASSEMBLER_COMMANDS
     }
+    PE64_ASSEMBLER_COMMANDS = dict(PE32_ASSEMBLER_COMMANDS)
+    PE64_ASSEMBLER_COMMANDS.update({
+        "MOV": AssemblerCommandInfo("MOV", "r64|r32,r64|r32|imm|symbol", "rax,0", "Überträgt AMD64-Werte oder 64-Bit-Symboladressen."),
+        "PUSH": AssemblerCommandInfo("PUSH", "r64|imm|symbol", "rax", "Legt einen 64-Bit-Wert auf dem AMD64-Stack ab."),
+        "POP": AssemblerCommandInfo("POP", "r64", "rax", "Holt einen 64-Bit-Wert vom AMD64-Stack."),
+        "CALL": AssemblerCommandInfo("CALL", "label|r64|qword ptr [mem]", "label", "AMD64-Aufruf; COFF64 verwendet IMAGE_REL_AMD64_REL32."),
+        "LEA": AssemblerCommandInfo("LEA", "r64,[mem]", "rax,[symbol]", "Lädt eine 64-Bit-Adresse."),
+        "CQO": AssemblerCommandInfo("CQO", "implizit", "", "Erweitert RAX vor einer 64-Bit-Division nach RDX:RAX."),
+    })
 
     @dataclass(frozen=True)
     # -----------------------------------------------------------------------
@@ -6861,6 +10137,7 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
     class SourceTextEdit(QPlainTextEdit):
         assembler_help_requested = pyqtSignal(str, str)
         context_help_requested = pyqtSignal(str)
+        build_requested = pyqtSignal()
         breakpoints_changed = pyqtSignal()
         bookmarks_changed = pyqtSignal()
 
@@ -6963,7 +10240,9 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
 
         def set_assembler_target(self, target: str) -> None:
             normalized = str(target).strip().casefold()
-            if normalized in {"pe32", "windows", "windows pe32"}:
+            if normalized in {"pe64", "windows pe64", "windowspe64", "win64"}:
+                self._assembler_target = "pe64"
+            elif normalized in {"pe32", "windows", "windows pe32"}:
                 self._assembler_target = "pe32"
             elif normalized == "amiga":
                 self._assembler_target = "amiga"
@@ -6981,6 +10260,8 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
                 self._schedule_completion_update()
 
         def _assembler_commands(self):
+            if self._assembler_target == "pe64":
+                return PE64_ASSEMBLER_COMMANDS
             if self._assembler_target == "pe32":
                 return PE32_ASSEMBLER_COMMANDS
             if self._assembler_target == "amiga":
@@ -7285,7 +10566,14 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             self.assembler_help_requested.emit(info.mnemonic, help_text)
 
         def help_word_at_cursor(self) -> str:
-            """Liefert den Bezeichner direkt unter beziehungsweise am Cursor."""
+            """Liefert Schluesselwort/Funktionsname am aktuellen Cursor.
+
+            Neben dem normalen Bezeichner unter dem Cursor wird auch der
+            Funktionsname direkt vor einer oeffnenden Klammer erkannt. Damit
+            funktioniert F1 z. B. auf ``WriteLn(``, ``printf(`` oder
+            ``CreateWindowExA(`` auch dann, wenn der Cursor bereits hinter dem
+            Namen beziehungsweise auf der Klammer steht.
+            """
             source = self.toPlainText()
             position = max(0, min(self.textCursor().position(), len(source)))
             identifier = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -7296,6 +10584,19 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
                 for match in identifier.finditer(source):
                     if match.start() <= position - 1 < match.end():
                         return match.group(0)
+
+            # Cursor auf/kurz hinter '(' -> naechsten Funktionsbezeichner links
+            # davon verwenden. Beschraenkung auf die aktuelle Zeile verhindert,
+            # dass versehentlich ein Bezeichner aus einer vorherigen Anweisung
+            # als Hilfekontext dient.
+            line_start = source.rfind("\n", 0, position) + 1
+            prefix = source[line_start:position]
+            function_match = re.search(
+                r"([A-Za-z_][A-Za-z0-9_]*)\s*\(?\s*$",
+                prefix,
+            )
+            if function_match is not None:
+                return function_match.group(1)
             return ""
 
         def request_context_help(self) -> None:
@@ -7334,6 +10635,10 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
         def keyPressEvent(self, event) -> None:
             if event.key() == Qt.Key_F1:
                 self.request_context_help()
+                event.accept()
+                return
+            if event.key() == Qt.Key_F2:
+                self.build_requested.emit()
                 event.accept()
                 return
             if self.completion_frame.isVisible():
@@ -10656,6 +13961,7 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
         start_generated_requested = pyqtSignal(object)
         coff_requested = pyqtSignal(object)
         context_help_requested = pyqtSignal(object, str, str)
+        build_requested = pyqtSignal(object)
 
         BASIC_EXTENSIONS     = {".bas", ".basic"}
         ASSEMBLER_EXTENSIONS = {".asm", ".s", ".a65", ".m68k", ".inc"}
@@ -10767,9 +14073,9 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             # dynamisch ein-/ausgeblendet.
             self.build_target_combo = QComboBox(self.assembler_panel)
             self.build_target_combo.setObjectName("build_target_combo")
-            self.build_target_combo.addItems(("C= 64", "Amiga", "Windows PE32"))
+            self.build_target_combo.addItems(("C= 64", "Amiga", "Windows PE32", "Windows PE64"))
             self.build_target_combo.setCurrentIndex(0)
-            self.build_target_combo.setFixedWidth(132)
+            self.build_target_combo.setFixedWidth(145)
             self.build_target_combo.setToolTip(
                 "Compiler-/Assemblerziel auswählen"
             )
@@ -10838,6 +14144,9 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             )
             self.raw_editor.context_help_requested.connect(
                 lambda word: self._emit_context_help("source", word)
+            )
+            self.raw_editor.build_requested.connect(
+                lambda: self.build_requested.emit(self)
             )
             self.raw_editor.breakpoints_changed.connect(
                 self._source_breakpoints_changed
@@ -10913,10 +14222,10 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
                 "generated_build_target_combo"
             )
             self.generated_build_target_combo.addItems(
-                ("C= 64", "Amiga", "Windows PE32")
+                ("C= 64", "Amiga", "Windows PE32", "Windows PE64")
             )
             self.generated_build_target_combo.setCurrentIndex(0)
-            self.generated_build_target_combo.setFixedWidth(132)
+            self.generated_build_target_combo.setFixedWidth(145)
             self.generated_build_target_combo.setToolTip(
                 "Compiler-/Assemblerziel auswählen"
             )
@@ -11178,7 +14487,7 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
                 self.modification_changed.emit(modified)
 
         def _source_breakpoints_changed(self) -> None:
-            if self.build_target == "pe32" and self.is_pascal_document:
+            if self.build_target in {"pe32", "pe64"} and self.is_pascal_document:
                 self.invalidate_assembly_result("Breakpoints geändert")
                 count = len(self.raw_editor.breakpoint_lines())
                 if count:
@@ -11254,7 +14563,9 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
 
         def set_build_target(self, target: str) -> None:
             value = str(target).strip().casefold()
-            if value in {"pe32", "windows", "windows pe32", "windowspe32"}:
+            if value in {"pe64", "win64", "windows64", "windows pe64", "windowspe64"}:
+                normalized = "pe64"
+            elif value in {"pe32", "windows", "windows pe32", "windowspe32"}:
                 normalized = "pe32"
             elif value == "amiga":
                 normalized = "amiga"
@@ -11274,6 +14585,7 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
                     "c64": "C= 64",
                     "amiga": "Amiga",
                     "pe32": "Windows PE32",
+                    "pe64": "Windows PE64",
                 }[normalized]
                 self.build_target_combo.setCurrentText(display_name)
                 self.generated_build_target_combo.setCurrentText(display_name)
@@ -11375,7 +14687,7 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
                 self.generated_windows_graphics_combo.setCurrentText(normalized)
             finally:
                 self._syncing_platform_profile = False
-            if changed and self.build_target == "pe32":
+            if changed and self.build_target in {"pe32", "pe64"}:
                 self.invalidate_assembly_result("Windows-Anwendungsmodus geändert")
                 self.assembly_status_label.setText(
                     f"{normalized} – erneut Compile/Assemble ausführen"
@@ -11391,7 +14703,7 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
 
         def _update_platform_profile_visibility(self) -> None:
             is_amiga = self.build_target == "amiga"
-            is_pe32 = self.build_target == "pe32"
+            is_windows = self.build_target in {"pe32", "pe64"}
             for widget in (
                 self.amiga_cpu_combo, self.amiga_fpu_combo,
                 self.generated_amiga_cpu_combo, self.generated_amiga_fpu_combo,
@@ -11400,14 +14712,22 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             for widget in (
                 self.windows_graphics_combo, self.generated_windows_graphics_combo
             ):
-                widget.setVisible(is_pe32)
+                widget.setVisible(is_windows)
             self.coff_object_button.setVisible(
-                is_pe32 and (self.is_pascal_document or self.is_c_document)
+                is_windows and (self.is_pascal_document or self.is_c_document)
             )
+            if self.build_target == "pe64":
+                self.coff_object_button.setText("COFF64 .o")
+                self.coff_object_button.setToolTip("Angezeigten PE64-Assemblercode als relocierbares AMD64-COFF64-Objekt speichern")
+            else:
+                self.coff_object_button.setText("COFF32 .o")
+                self.coff_object_button.setToolTip("Angezeigten PE32-Assemblercode als relocierbares COFF32-Objekt speichern")
 
         def _build_target_name(self) -> str:
             if self.build_target == "amiga":
                 return f"Amiga {self.amiga_cpu_model}"
+            if self.build_target == "pe64":
+                return "Windows PE64"
             if self.build_target == "pe32":
                 return "Windows PE32"
             return "C-64"
@@ -11415,13 +14735,15 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
         def _build_emulator_name(self) -> str:
             if self.build_target == "amiga":
                 return "WinUAE"
-            if self.build_target == "pe32":
+            if self.build_target in {"pe32", "pe64"}:
                 return "Windows"
             return "VICE"
 
         def _build_output_name(self) -> str:
             if self.build_target == "amiga":
                 return "Amiga-Hunk-Programm"
+            if self.build_target == "pe64":
+                return "PE64-EXE"
             if self.build_target == "pe32":
                 return "PE32-EXE"
             return "C64-PRG"
@@ -12991,6 +16313,7 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             self.light_application_stylesheet = application.styleSheet()
             self.theme_asset_directory = QTemporaryDir()
             self.scrollbar_arrow_assets = self._create_scrollbar_arrow_assets()
+            self.project_checkbox_assets = self._create_project_checkbox_assets()
 
             self.setWindowTitle("Qt5 D64- und Dateisystem-Explorer")
             self.setWindowIcon(
@@ -13017,6 +16340,7 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             start_directory = self._choose_start_directory(requested_directory)
             self.set_workspace_root(start_directory, select=True)
             self._restore_window_state()
+            self._focus_project_panel_on_startup()
 
             # Sinnvolle Startgrößen, sofern noch kein gespeicherter Zustand besteht.
             if not self.settings.contains("window/state"):
@@ -13029,14 +16353,56 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
 
         # ----- Aufbau ------------------------------------------------------
 
+        def _focus_project_panel_on_startup(self) -> None:
+            """Zeigt beim Programmstart bewusst die Projekt-TreeList."""
+            if not all(
+                hasattr(self, name)
+                for name in ("right_dock", "right_panel_tabs", "project_tab", "project_tree")
+            ):
+                return
+            self.right_dock.show()
+            self.right_dock.raise_()
+            self.right_panel_tabs.setCurrentWidget(self.project_tab)
+            self.project_tree.setFocus(Qt.OtherFocusReason)
+            self.project_tree.scrollToTop()
+
         def _create_actions(self) -> None:
-            self.new_project_action = QAction("Projekt", self)
-            self.new_project_action.setStatusTip(
-                "Das geöffnete Projekt speichern und ein neues leeres Projekt anlegen"
+            # Projektvorlagen im Datei->Neu-Menü. Der bisherige einzelne
+            # Eintrag "Projekt" wird durch drei konkrete Plattformprojekte
+            # ersetzt; new_project_action bleibt als Alias fuer bestehende
+            # interne Aufrufer erhalten.
+            self.new_windows_project_action = QAction(
+                "Projekt: Windows Anwendung ...", self
             )
-            self.new_project_action.triggered.connect(
-                lambda _checked=False: self.new_project()
+            self.new_windows_project_action.setStatusTip(
+                "Ein neues Windows-Anwendungsprojekt anlegen"
             )
+            self.new_windows_project_action.triggered.connect(
+                lambda _checked=False: self.new_project("windows")
+            )
+
+            self.new_amiga_project_action = QAction(
+                "Projekt: Amiga 500 ADF ...", self
+            )
+            self.new_amiga_project_action.setStatusTip(
+                "Ein neues Amiga-500-ADF-Projekt anlegen"
+            )
+            self.new_amiga_project_action.triggered.connect(
+                lambda _checked=False: self.new_project("amiga500")
+            )
+
+            self.new_c64_project_action = QAction(
+                "Projekt: C= 64 Programm ...", self
+            )
+            self.new_c64_project_action.setStatusTip(
+                "Ein neues C=64-Programmprojekt anlegen"
+            )
+            self.new_c64_project_action.triggered.connect(
+                lambda _checked=False: self.new_project("c64")
+            )
+
+            # Kompatibilitaetsalias fuer Code, der den bisherigen Namen nutzt.
+            self.new_project_action = self.new_windows_project_action
 
             self.new_file_action = QAction(
                 self.style().standardIcon(QStyle.SP_FileIcon),
@@ -13210,8 +16576,12 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
                 self.show_pixel_screen_editor
             )
 
+            self.localize_action = QAction("Localize PO->Mo ...", self)
+            self.localize_action.setStatusTip("Übersetzungen für internationale Anwendungen")
+            self.localize_action.triggered.connect(self.localize_dialog)
+
             self.coff32_archive_action = QAction(
-                "COFF32-Archiv (.a) erstellen …", self
+                "COFF32-Archiv (.a) erstellen ...", self
             )
             self.coff32_archive_action.setStatusTip(
                 "Mehrere COFF32-.o-Dateien in ein statisches .a-Archiv schreiben"
@@ -13221,7 +16591,7 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             )
 
             self.pe32_linker_action = QAction(
-                "Windows PE32 Linker …", self
+                "Windows PE32 Linker ...", self
             )
             self.pe32_linker_action.setStatusTip(
                 "COFF32-.o- und .a-Dateien zu einer Windows-PE32-EXE linken"
@@ -13229,6 +16599,22 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             self.pe32_linker_action.triggered.connect(
                 self.link_pe32_dialog
             )
+
+            self.coff64_archive_action = QAction(
+                "COFF64-Archiv (.a) erstellen …", self
+            )
+            self.coff64_archive_action.setStatusTip(
+                "Mehrere AMD64-COFF64-.o-Dateien in ein statisches .a-Archiv schreiben"
+            )
+            self.coff64_archive_action.triggered.connect(
+                self.create_coff64_archive_dialog
+            )
+
+            self.pe64_linker_action = QAction("Windows PE64 Linker …", self)
+            self.pe64_linker_action.setStatusTip(
+                "COFF64-.o- und .a-Dateien intern zu einer Windows-PE64-EXE oder DLL linken"
+            )
+            self.pe64_linker_action.triggered.connect(self.link_pe64_dialog)
 
             self.windows_graphics_header_action = QAction(
                 "Windows Direct2D/Direct3D Runtime schreiben …", self
@@ -13354,7 +16740,9 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
 
         def _populate_new_document_menu(self, menu: QMenu) -> QMenu:
             """Baut das identische Neu-Untermenü für Haupt- und Tabmenü."""
-            menu.addAction(self.new_project_action)
+            menu.addAction(self.new_windows_project_action)
+            menu.addAction(self.new_amiga_project_action)
+            menu.addAction(self.new_c64_project_action)
             menu.addSeparator()
             menu.addAction(self.new_basic_action)
             menu.addAction(self.new_assembler_action)
@@ -13368,6 +16756,11 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             menu.addAction(self.new_text_file_action)
             return menu
 
+        def localize_dialog(self) -> None:
+            tool_window = LocalizeToolWindow(self)
+            tool_window.exec_()
+            return
+            
         def create_coff32_archive_dialog(self) -> None:
             filenames, _selected = QFileDialog.getOpenFileNames(
                 self,
@@ -13440,6 +16833,67 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             )
             self.statusBar().showMessage(f"PE32-Programm gelinkt: {target.name}")
             if target.parent.resolve() == self.current_directory:
+                self.populate_file_list()
+
+        def create_coff64_archive_dialog(self) -> None:
+            filenames, _selected = QFileDialog.getOpenFileNames(
+                self, "COFF64-Objektdateien auswählen", str(self.current_directory),
+                "AMD64 COFF64-Objekte (*.o *.obj);;Alle Dateien (*)",
+            )
+            if not filenames:
+                return
+            target_name, _selected = QFileDialog.getSaveFileName(
+                self, "COFF64-Archiv speichern", str(self.current_directory / "library64.a"),
+                "Statisches Archiv (*.a);;Alle Dateien (*)",
+            )
+            if not target_name:
+                return
+            target=Path(target_name)
+            if not target.suffix:
+                target=target.with_suffix(".a")
+            try:
+                members=[(Path(name).name,Path(name).read_bytes()) for name in filenames]
+                # Vor dem Archivieren sicherstellen, dass keine i386-Objekte
+                # versehentlich in ein PE64-Archiv geraten.
+                for _name,data in members:
+                    parse_coff64_object(data)
+                target.write_bytes(create_coff64_archive(members))
+            except (OSError,PE64AssemblerError) as exc:
+                self.show_error("COFF64-Archiv fehlgeschlagen",str(exc)); return
+            self.log(f"COFF64 ARCHIVE: {len(filenames)} Objekt(e) -> {target}")
+            self.statusBar().showMessage(f"COFF64-Archiv erzeugt: {target.name}")
+            if target.parent.resolve()==self.current_directory:
+                self.populate_file_list()
+
+        def link_pe64_dialog(self) -> None:
+            filenames, _selected = QFileDialog.getOpenFileNames(
+                self, "COFF64-Objekte/Archive linken", str(self.current_directory),
+                "AMD64 COFF64 (*.o *.obj *.a *.lib);;Alle Dateien (*)",
+            )
+            if not filenames:
+                return
+            target_name, selected_filter = QFileDialog.getSaveFileName(
+                self, "Windows-PE64 EXE/DLL speichern", str(self.current_directory / "program64.exe"),
+                "Windows PE64 EXE (*.exe);;Windows PE64 DLL (*.dll);;Alle Dateien (*)",
+            )
+            if not target_name:
+                return
+            target=Path(target_name)
+            if not target.suffix:
+                target=target.with_suffix(".dll" if "DLL" in selected_filter else ".exe")
+            is_dll=target.suffix.casefold()==".dll"
+            try:
+                program=link_coff64_inputs(
+                    [Path(name) for name in filenames],
+                    entry_symbol="__d64_dll_entry" if is_dll else "_start",
+                    gui=True, dll=is_dll, dll_name=target.name if is_dll else None,
+                )
+                target.write_bytes(program.executable)
+            except (OSError,PE64AssemblerError) as exc:
+                self.show_error("PE64-Linkerfehler",str(exc)); return
+            self.log(f"PE64 LINK: {len(filenames)} Eingabe(n) -> {target}, {len(program.executable)} Bytes")
+            self.statusBar().showMessage(f"PE64-Programm gelinkt: {target.name}")
+            if target.parent.resolve()==self.current_directory:
                 self.populate_file_list()
 
         def write_windows_graphics_header_dialog(self) -> None:
@@ -13552,8 +17006,12 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             tools_menu.addSeparator()
             tools_menu.addAction(self.coff32_archive_action)
             tools_menu.addAction(self.pe32_linker_action)
+            tools_menu.addAction(self.coff64_archive_action)
+            tools_menu.addAction(self.pe64_linker_action)
             tools_menu.addAction(self.windows_graphics_header_action)
             tools_menu.addAction(self.windows_graphics_build_action)
+            tools_menu.addSeparator()
+            tools_menu.addAction(self.localize_action)
             
             help_menu = self.menuBar().addMenu("&Hilfe")
             help_menu.addAction(self.chm_viewer_action)
@@ -14071,6 +17529,83 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             return palette
         
         # Erzeugt die gelben Scrollpfeile fuer das dunkle Qt-Theme.
+        def _create_project_checkbox_assets(self) -> dict:
+            """Erzeugt gut sichtbare Checkbox-PNGs fuer die Projekt-TreeList.
+
+            Der native Windows-Style kann QTreeWidget-Indicators durch das
+            globale Theme nahezu unsichtbar zeichnen. Eigene Assets sorgen
+            dafuer, dass Archiv-/Objekt-Checkboxen in Hell und Dunkel klar
+            erkennbar bleiben, ohne Hauptknoten mit Checkboxen zu versehen.
+            """
+            assets = {}
+            directory = Path(self.theme_asset_directory.path())
+            directory.mkdir(parents=True, exist_ok=True)
+            palettes = {
+                "light": {
+                    "background": QColor(255, 255, 255),
+                    "border": QColor(92, 92, 92),
+                    "fill": QColor(72, 145, 210),
+                    "mark": QColor(255, 255, 255),
+                },
+                "dark": {
+                    "background": QColor(39, 47, 59),
+                    "border": QColor(145, 160, 178),
+                    "fill": QColor(104, 180, 238),
+                    "mark": QColor(15, 26, 36),
+                },
+            }
+            for mode, colors in palettes.items():
+                for state in ("unchecked", "checked", "partial"):
+                    pixmap = QPixmap(18, 18)
+                    pixmap.fill(Qt.transparent)
+                    painter = QPainter(pixmap)
+                    painter.setRenderHint(QPainter.Antialiasing, True)
+                    painter.setPen(QPen(colors["border"], 1.4))
+                    painter.setBrush(
+                        colors["fill"] if state != "unchecked"
+                        else colors["background"]
+                    )
+                    painter.drawRoundedRect(2, 2, 13, 13, 2, 2)
+                    if state == "checked":
+                        painter.setPen(QPen(colors["mark"], 2.1))
+                        path = QPainterPath()
+                        path.moveTo(5.0, 8.7)
+                        path.lineTo(7.4, 11.2)
+                        path.lineTo(12.6, 5.8)
+                        painter.drawPath(path)
+                    elif state == "partial":
+                        painter.setPen(QPen(colors["mark"], 2.2))
+                        painter.drawLine(5, 9, 12, 9)
+                    painter.end()
+                    filename = directory / f"project_checkbox_{mode}_{state}.png"
+                    if pixmap.save(str(filename), "PNG"):
+                        assets[f"{mode}_{state}"] = filename.as_posix()
+            return assets
+
+        def _project_tree_checkbox_stylesheet(self) -> str:
+            assets = getattr(self, "project_checkbox_assets", {})
+            mode = "dark" if self.dark_mode_enabled else "light"
+            unchecked = assets.get(f"{mode}_unchecked", "")
+            checked = assets.get(f"{mode}_checked", "")
+            partial = assets.get(f"{mode}_partial", "")
+            if not unchecked or not checked or not partial:
+                return ""
+            return f"""
+QTreeWidget#project_tree::indicator {{
+    width: 18px;
+    height: 18px;
+}}
+QTreeWidget#project_tree::indicator:unchecked {{
+    image: url(\"{unchecked}\");
+}}
+QTreeWidget#project_tree::indicator:checked {{
+    image: url(\"{checked}\");
+}}
+QTreeWidget#project_tree::indicator:indeterminate {{
+    image: url(\"{partial}\");
+}}
+"""
+
         def _create_scrollbar_arrow_assets(self) -> dict:
             if not self.theme_asset_directory.isValid():
                 return {}
@@ -14308,6 +17843,11 @@ border: 2px solid #2a69aa;
             # QApplication verteilt den Palettenwechsel an alle vorhandenen
             # Widgets. update() sorgt zusaetzlich dafuer, dass auch Dock-Titel
             # und bereits sichtbare Item-Views sofort neu gezeichnet werden.
+            if hasattr(self, "project_tree"):
+                self.project_tree.setStyleSheet(
+                    self._project_tree_checkbox_stylesheet()
+                )
+
             for widget in application.allWidgets():
                 widget.update()
                 if isinstance(widget, ChmViewerDialog):
@@ -14743,6 +18283,9 @@ border: 2px solid #2a69aa;
             document.context_help_requested.connect(
                 self.show_context_help_for_document
             )
+            document.build_requested.connect(
+                self.build_and_run_source_document
+            )
             document.raw_editor.bookmarks_changed.connect(
                 self._refresh_favorites_menu
             )
@@ -14948,7 +18491,7 @@ border: 2px solid #2a69aa;
                     "gespeichert werden."
                 )
             suffix = ".prg"
-            if document.build_target == "pe32":
+            if document.build_target in {"pe32", "pe64"}:
                 suffix = (
                     ".dll"
                     if getattr(document, "generated_source_kind", "program") == "library"
@@ -14984,9 +18527,13 @@ border: 2px solid #2a69aa;
                     ".generated.amiga.asm"
                     if document.build_target == "amiga"
                     else (
-                        ".generated.pe32.asm"
-                        if document.build_target == "pe32"
-                        else ".generated.asm"
+                        ".generated.pe64.asm"
+                        if document.build_target == "pe64"
+                        else (
+                            ".generated.pe32.asm"
+                            if document.build_target == "pe32"
+                            else ".generated.asm"
+                        )
                     )
                 )
             )
@@ -15003,9 +18550,13 @@ border: 2px solid #2a69aa;
                     ".generated.amiga.asm"
                     if document.build_target == "amiga"
                     else (
-                        ".generated.pe32.asm"
-                        if document.build_target == "pe32"
-                        else ".generated.asm"
+                        ".generated.pe64.asm"
+                        if document.build_target == "pe64"
+                        else (
+                            ".generated.pe32.asm"
+                            if document.build_target == "pe32"
+                            else ".generated.asm"
+                        )
                     )
                 )
             )
@@ -15221,7 +18772,7 @@ border: 2px solid #2a69aa;
                 )
                 message = (
                     "Die geladene Pascal-Compiler-Version ist zu alt für "
-                    "die Zielauswahl C-64/Amiga/Windows PE32. Ihre Funktion "
+                    "die Zielauswahl C-64/Amiga/Windows PE32/Windows PE64. Ihre Funktion "
                     "compile_pascal_to_assembly() besitzt keinen Parameter "
                     "'target'.\n\nGeladenes Modul:\n"
                     f"{compiler_file}"
@@ -15259,7 +18810,7 @@ border: 2px solid #2a69aa;
                         compiler_kwargs["cpu_model"] = document.amiga_cpu_model
                     if "fpu_model" in parameter_map:
                         compiler_kwargs["fpu_model"] = document.amiga_fpu_model
-                if document.build_target == "pe32":
+                if document.build_target in {"pe32", "pe64"}:
                     if "graphics_backend" in parameter_map:
                         compiler_kwargs["graphics_backend"] = (
                             document.windows_graphics_backend
@@ -15271,7 +18822,7 @@ border: 2px solid #2a69aa;
                     if "predefined_macros" in parameter_map:
                         compiler_kwargs["predefined_macros"] = (
                             windows_application_predefined_macros(
-                                document.windows_application_mode
+                                document.windows_application_mode, document.build_target
                             )
                         )
                     if (
@@ -15353,7 +18904,7 @@ border: 2px solid #2a69aa;
                         compiler_kwargs["cpu_model"] = document.amiga_cpu_model
                     if "fpu_model" in parameter_map:
                         compiler_kwargs["fpu_model"] = document.amiga_fpu_model
-                if document.build_target == "pe32":
+                if document.build_target in {"pe32", "pe64"}:
                     if "graphics_backend" in parameter_map:
                         compiler_kwargs["graphics_backend"] = (
                             document.windows_graphics_backend
@@ -15365,7 +18916,7 @@ border: 2px solid #2a69aa;
                     if "predefined_macros" in parameter_map:
                         compiler_kwargs["predefined_macros"] = (
                             windows_application_predefined_macros(
-                                document.windows_application_mode
+                                document.windows_application_mode, document.build_target
                             )
                         )
                 generated = compile_c_to_assembly(source, **compiler_kwargs)
@@ -15398,97 +18949,88 @@ border: 2px solid #2a69aa;
             self,
             document: DocumentEditor,
         ) -> bool:
-            """Erzeugt Hauptmodul und PE32-Abhaengigkeiten als COFF32-.o."""
+            """Erzeugt PE32/PE64-Hauptmodul und Abhaengigkeiten als COFF-Objekte."""
             if not isinstance(document, DocumentEditor):
                 return False
             self.document_tabs.setCurrentWidget(document)
-            if document.build_target != "pe32":
+            if document.build_target not in {"pe32", "pe64"}:
                 self.show_error(
-                    "COFF32 nur für Windows PE32",
-                    "Wähle zuerst das Ziel 'Windows PE32'.",
+                    "COFF nur für Windows",
+                    "Wähle zuerst das Ziel 'Windows PE32' oder 'Windows PE64'.",
                 )
                 return False
+            is64 = document.build_target == "pe64"
+            label = "COFF64" if is64 else "COFF32"
             source = document.generated_assembly_editor.toPlainText()
             if not source.strip():
                 self.show_error(
-                    "Keine PE32-Assemblerdaten",
+                    f"Keine {'PE64' if is64 else 'PE32'}-Assemblerdaten",
                     "Kompiliere zuerst die Pascal- oder C-Quelle.",
                 )
                 return False
-            if document.path is None:
-                if not self._save_document(document, save_as=True):
-                    return False
+            if document.path is None and not self._save_document(document, save_as=True):
+                return False
 
             assembly_path = (
                 document.generated_assembly_path
                 if document.generated_assembly_path is not None
-                else document.path.with_suffix(".generated.pe32.asm")
+                else document.path.with_suffix(".generated.pe64.asm" if is64 else ".generated.pe32.asm")
             )
             proxy = argparse.Namespace(
                 assembly=source,
-                linked_pe32_modules=getattr(
-                    document, "generated_pe32_modules", ()
-                ),
-                linked_assembly_files=getattr(
-                    document, "generated_linked_assembly_files", ()
-                ),
+                linked_pe32_modules=getattr(document, "generated_pe32_modules", ()),
+                linked_assembly_files=getattr(document, "generated_linked_assembly_files", ()),
             )
+            writer = _write_pe64_generated_objects if is64 else _write_pe32_generated_objects
+            error_type = PE64AssemblerError if is64 else PE32AssemblerError
             try:
-                object_paths = _write_pe32_generated_objects(
+                object_paths = writer(
                     proxy,
                     source_path=document.path,
                     assembly_path=assembly_path,
                     main_object_path=document.path.with_suffix(".o"),
                 )
-            except (OSError, PE32AssemblerError) as exc:
+            except (OSError, error_type) as exc:
                 message = str(exc)
                 document.show_generated_assembly_error(
-                    message, getattr(exc, "line", 0) or 0, "COFF32-Fehler"
+                    message, getattr(exc, "line", 0) or 0, f"{label}-Fehler"
                 )
-                self.show_error(
-                    "COFF32-Objekt konnte nicht erzeugt werden", message
-                )
+                self.show_error(f"{label}-Objekt konnte nicht erzeugt werden", message)
                 return False
 
-            details = []
-            total_size = 0
+            details=[]; total_size=0
             for path in object_paths:
-                try:
-                    size = path.stat().st_size
-                except OSError:
-                    size = 0
-                total_size += size
-                details.append(f"  {path.name} ({size} Bytes)")
+                try: size=path.stat().st_size
+                except OSError: size=0
+                total_size += size; details.append(f"  {path.name} ({size} Bytes)")
             document.hints_editor.setPlainText(
-                "COFF32-Objekt(e) erfolgreich erzeugt\n\n"
-                f"Quelle : {document.display_name}\n"
-                "Objekte:\n"
+                f"{label}-Objekt(e) erfolgreich erzeugt\n\n"
+                f"Quelle : {document.display_name}\nObjekte:\n"
                 + "\n".join(details)
                 + f"\nGesamt : {total_size} Bytes\n"
-                "Format : Microsoft COFF i386 / relocierbar\n"
+                + ("Format : Microsoft COFF AMD64 / relocierbar\n" if is64
+                   else "Format : Microsoft COFF i386 / relocierbar\n")
             )
             document.generated_assembly_status_label.setText(
-                f"COFF32 erzeugt: {len(object_paths)} Objekt(e)"
+                f"{label} erzeugt: {len(object_paths)} Objekt(e)"
             )
-            self.log(
-                f"COFF32 OBJECTS: {document.display_name} -> "
-                + ", ".join(path.name for path in object_paths)
-            )
-            self.statusBar().showMessage(
-                f"COFF32 erzeugt: {len(object_paths)} Objekt(e)"
-            )
-            if any(
-                path.parent.resolve() == self.current_directory
-                for path in object_paths
-            ):
+            self.log(f"{label} OBJECTS: {document.display_name} -> " + ", ".join(path.name for path in object_paths))
+            self.statusBar().showMessage(f"{label} erzeugt: {len(object_paths)} Objekt(e)")
+            if any(path.parent.resolve() == self.current_directory for path in object_paths):
                 self.populate_file_list()
             return True
 
         def assemble_generated_document(
             self,
             document: DocumentEditor,
+            extra_link_inputs: Sequence[Path] = (),
         ) -> bool:
-            """Übersetzt den editierbaren ASM-Tab für das gewählte Ziel."""
+            """Übersetzt den editierbaren ASM-Tab für das gewählte Ziel.
+
+            ``extra_link_inputs`` wird vom vereinheitlichten F2-Projektbuild
+            benutzt. So koennen bereits erzeugte .o/.obj- und .a/.lib-Dateien
+            der Projektliste beim Hauptprogramm automatisch mitgelinkt werden.
+            """
             if not isinstance(document, DocumentEditor):
                 return False
             self.document_tabs.setCurrentWidget(document)
@@ -15549,7 +19091,8 @@ border: 2px solid #2a69aa;
                         cpu_model=document.amiga_cpu_model,
                         fpu_model=document.amiga_fpu_model,
                     )
-                elif document.build_target == "pe32":
+                elif document.build_target in {"pe32", "pe64"}:
+                    is64 = document.build_target == "pe64"
                     proxy = argparse.Namespace(
                         assembly=assembly_source,
                         linked_pe32_modules=getattr(
@@ -15559,21 +19102,46 @@ border: 2px solid #2a69aa;
                             document, "generated_linked_assembly_files", ()
                         ),
                     )
-                    object_paths = _write_pe32_generated_objects(
+                    object_writer = (
+                        _write_pe64_generated_objects if is64
+                        else _write_pe32_generated_objects
+                    )
+                    object_paths = object_writer(
                         proxy,
                         source_path=document.path,
                         assembly_path=assembly_path,
                     )
+                    # Bereits erzeugte Projektobjekte/-archive beim F2-Build
+                    # eines Hauptprogramms ebenfalls an den internen Linker
+                    # uebergeben. Duplikate werden pfadbezogen entfernt.
+                    known_inputs = {
+                        str(Path(path).expanduser().resolve()).casefold()
+                        for path in object_paths
+                    }
+                    for extra_path in extra_link_inputs or ():
+                        resolved_extra = Path(extra_path).expanduser().resolve()
+                        key = str(resolved_extra).casefold()
+                        if key in known_inputs:
+                            continue
+                        if not resolved_extra.is_file():
+                            continue
+                        if resolved_extra.suffix.casefold() not in {
+                            ".o", ".obj", ".a", ".lib"
+                        }:
+                            continue
+                        object_paths.append(resolved_extra)
+                        known_inputs.add(key)
                     is_library = (
                         getattr(document, "generated_source_kind", "program")
                         == "library"
                     )
-                    program = link_coff32_inputs(
+                    linker = link_coff64_inputs if is64 else link_coff32_inputs
+                    program = linker(
                         object_paths,
                         entry_symbol=(
                             "__d64_dll_entry" if is_library else "_start"
                         ),
-                        gui=True,
+                        gui=(normalize_windows_application_mode(document.windows_application_mode) != "Console"),
                         dll=is_library,
                         dll_name=(
                             document.path.with_suffix(".dll").name
@@ -15585,7 +19153,7 @@ border: 2px solid #2a69aa;
                         assembly_source,
                         filename=assembly_path.name,
                     )
-            except (AssemblerError, AmigaAssemblerError, PE32AssemblerError) as exc:
+            except (AssemblerError, AmigaAssemblerError, PE32AssemblerError, PE64AssemblerError) as exc:
                 message = str(exc)
                 document.show_generated_assembly_error(
                     message,
@@ -15620,7 +19188,7 @@ border: 2px solid #2a69aa;
                     program.adf
                     if amiga_bootable
                     else program.executable
-                    if document.build_target in {"amiga", "pe32"}
+                    if document.build_target in {"amiga", "pe32", "pe64"}
                     else program.prg
                 )
                 self._write_assembled_program(output_path, program_data)
@@ -15695,19 +19263,20 @@ border: 2px solid #2a69aa;
                         f"{assembly_path.name} -> {output_path.name}, "
                         f"{len(program.executable)} Bytes"
                     )
-            elif document.build_target == "pe32":
+            elif document.build_target in {"pe32", "pe64"}:
+                target_label = "PE64" if document.build_target == "pe64" else "PE32"
                 document.hints_editor.setPlainText(
-                    "Windows-PE32-Assembler aus dem ASM-Tab erfolgreich beendet\n"
+                    f"Windows-{target_label}-Assembler aus dem ASM-Tab erfolgreich beendet\n"
                     "\n"
                     f"Quelle       : {assembly_path}\n"
-                    f"PE32-Ausgabe : {output_path}\n"
+                    f"{target_label}-Ausgabe : {output_path}\n"
                     f"Einsprung    : +${program.entry_offset:08X}\n"
                     f"Code-Größe   : {len(program.code)} Bytes\n"
-                    f"EXE-Größe    : {len(program.executable)} Bytes\n"
+                    f"EXE/DLL-Größe: {len(program.executable)} Bytes\n"
                     f"Windows-Modus: {document.windows_application_mode}\n"
                 )
                 self.log(
-                    "ASSEMBLE PE32 ASM-TAB: "
+                    f"ASSEMBLE {target_label} ASM-TAB: "
                     f"{assembly_path.name} -> {output_path.name}, "
                     f"{len(program.executable)} Bytes"
                 )
@@ -15736,6 +19305,214 @@ border: 2px solid #2a69aa;
             if output_path.parent == self.current_directory:
                 self.populate_file_list()
             return True
+
+        @staticmethod
+        def _c_source_has_main_definition(source: str) -> bool:
+            """Erkennt eine echte C-main-Definition, nicht nur einen Prototyp.
+
+            Kommentare sowie String-/Zeichenliterale werden vor der Suche
+            neutralisiert. Ein ``int main(...);`` gilt deshalb nicht als
+            Hauptprogramm; erst ``main(...) {`` markiert die Translation-Unit
+            als Link-/Startmodul.
+            """
+            pattern = re.compile(
+                r'"(?:\\.|[^"\\])*"'
+                r"|'(?:\\.|[^'\\])*'"
+                r"|//[^\r\n]*"
+                r"|/\*.*?\*/",
+                re.DOTALL,
+            )
+
+            def blank(match) -> str:
+                text = match.group(0)
+                # Zeilenumbrueche erhalten, damit spaetere Diagnosen/Debugging
+                # die gleiche Zeilenstruktur sehen.
+                return "".join("\n" if char == "\n" else " " for char in text)
+
+            cleaned = pattern.sub(blank, str(source or ""))
+            return bool(re.search(
+                r"\bmain\s*\([^;{}]*\)\s*\{",
+                cleaned,
+                re.IGNORECASE | re.DOTALL,
+            ))
+
+        def _f2_document_is_main_program(self, document: DocumentEditor) -> bool:
+            if document.is_basic_document:
+                # Der vorhandene BASIC-Compiler erzeugt derzeit ein komplettes
+                # C64-Hauptprogramm; ein separates BASIC-Unit-Modell existiert
+                # noch nicht.
+                return True
+            if document.is_c_document:
+                return self._c_source_has_main_definition(
+                    document.raw_editor.toPlainText()
+                )
+            if document.is_pascal_document:
+                return (
+                    str(getattr(document, "generated_source_kind", "program"))
+                    .strip().casefold() == "program"
+                )
+            return False
+
+        def _project_link_inputs_for_document(
+            self,
+            document: DocumentEditor,
+        ) -> Tuple[Path, ...]:
+            """Sammelt vorhandene Objekt-/Archivdateien fuer den F2-Link.
+
+            Nicht-Hauptdateien werden mit F2 zu ``.o`` erzeugt. Beim spaeteren
+            F2 auf dem Hauptprogramm werden diese vorhandenen Objektdateien
+            automatisch mitgelinkt. Fuer C werden ausserdem die unter
+            ``C-Programme -> Archive`` eingetragenen Archive/Objekte verwendet.
+            """
+            if document.build_target not in {"pe32", "pe64"}:
+                return ()
+            category_key = (
+                "c" if document.is_c_document
+                else "pascal" if document.is_pascal_document
+                else ""
+            )
+            if not category_key:
+                return ()
+
+            result: List[Path] = []
+            seen = set()
+
+            def add(path_value) -> None:
+                if not path_value:
+                    return
+                try:
+                    path = Path(path_value).expanduser().resolve()
+                except OSError:
+                    path = Path(path_value).expanduser()
+                if not path.is_file():
+                    return
+                if path.suffix.casefold() not in {".o", ".obj", ".a", ".lib"}:
+                    return
+                key = str(path).casefold()
+                if key in seen:
+                    return
+                seen.add(key)
+                result.append(path)
+
+            root = getattr(self, "project_root_items", {}).get(category_key)
+            current_path = document.path.resolve() if document.path is not None else None
+            if root is not None:
+                for index in range(root.childCount()):
+                    child = root.child(index)
+                    if self._project_item_kind(child) == PROJECT_NODE_ARCHIVE_ROOT:
+                        continue
+                    source_text = str(child.data(0, Qt.UserRole + 302) or "")
+                    if not source_text:
+                        continue
+                    try:
+                        source_path = Path(source_text).expanduser().resolve()
+                    except OSError:
+                        source_path = Path(source_text).expanduser()
+                    if current_path is not None and source_path == current_path:
+                        continue
+                    # Direkte Objekt-/Archiv-Eintraege werden unveraendert
+                    # verwendet; nur passende Quelltexte liefern ihr
+                    # gleichnamiges .o. Header/sonstige Projektdateien werden
+                    # nicht versehentlich als Linkmodul interpretiert.
+                    suffix = source_path.suffix.casefold()
+                    if suffix in {".o", ".obj", ".a", ".lib"}:
+                        add(source_path)
+                    elif (
+                        document.is_c_document and suffix == ".c"
+                    ) or (
+                        document.is_pascal_document
+                        and suffix in DocumentEditor.PASCAL_EXTENSIONS
+                    ):
+                        add(source_path.with_suffix(".o"))
+
+            if document.is_c_document:
+                archive_root = getattr(self, "project_archive_root", None)
+                if archive_root is not None:
+                    for index in range(archive_root.childCount()):
+                        archive_item = archive_root.child(index)
+                        if self._project_item_kind(archive_item) != PROJECT_NODE_ARCHIVE:
+                            continue
+                        archive_path = str(
+                            archive_item.data(0, Qt.UserRole + 302) or ""
+                        )
+                        if archive_path and Path(archive_path).expanduser().is_file():
+                            add(archive_path)
+                            continue
+                        # Noch nicht erzeugtes Archiv: vorhandene Objektkinder
+                        # einzeln linken.
+                        for child_index in range(archive_item.childCount()):
+                            object_item = archive_item.child(child_index)
+                            if self._project_item_kind(object_item) != PROJECT_NODE_ARCHIVE_OBJECT:
+                                continue
+                            add(object_item.data(0, Qt.UserRole + 302))
+            return tuple(result)
+
+        def build_and_run_source_document(self, document: DocumentEditor) -> bool:
+            """F2: Compile -> Assemble/Object -> Link -> Start vereinheitlichen.
+
+            Hauptprogramme werden bis zum lauffaehigen Ziel gebaut und direkt
+            gestartet. C-Dateien ohne ``main`` und Pascal-Units werden unter
+            Windows lediglich als COFF32/COFF64-Objekt erzeugt. Dadurch bleibt
+            genau ein F2-Arbeitsablauf fuer BASIC, C und Pascal bestehen.
+            """
+            if not isinstance(document, DocumentEditor):
+                return False
+            if not (
+                document.is_basic_document
+                or document.is_c_document
+                or document.is_pascal_document
+            ):
+                self.statusBar().showMessage(
+                    "F2-Build gilt für BASIC-, C- und Pascal-Quelltexte",
+                    5000,
+                )
+                return False
+            self.document_tabs.setCurrentWidget(document)
+            document.views.setCurrentWidget(document.source_page)
+            if document.path is None and not self._save_document(document, save_as=True):
+                return False
+
+            # Bestehenden Compilepfad verwenden. Compilerfehler, Warnungen und
+            # Hinweise bleiben dadurch exakt an ihrer bisherigen Stelle.
+            if not self.assemble_document(document):
+                return False
+
+            if not self._f2_document_is_main_program(document):
+                if document.build_target in {"pe32", "pe64"}:
+                    ok = self.create_coff32_object_document(document)
+                    if ok:
+                        label = "COFF64" if document.build_target == "pe64" else "COFF32"
+                        self.statusBar().showMessage(
+                            f"F2: Modul als {label}-Objekt erzeugt: "
+                            f"{document.path.with_suffix('.o').name}",
+                            7000,
+                        )
+                    return ok
+                # Fuer C64/Amiga existiert derzeit kein relocierbarer
+                # Objektwriter. Das Compile-Ergebnis bleibt als ASM erhalten;
+                # wir erzeugen bewusst kein falsches 'Objekt'.
+                document.hints_editor.appendPlainText(
+                    "\nF2: Kein Hauptprogramm erkannt. Für dieses Ziel gibt es "
+                    "noch kein relocierbares Objektformat; ASM wurde erzeugt."
+                )
+                self.statusBar().showMessage(
+                    "F2: Modul kompiliert; Objektgenerierung ist aktuell nur für PE32/PE64 verfügbar",
+                    7000,
+                )
+                return True
+
+            extra_inputs = self._project_link_inputs_for_document(document)
+            if not self.assemble_generated_document(
+                document,
+                extra_link_inputs=extra_inputs,
+            ):
+                return False
+            if extra_inputs:
+                self.log(
+                    "F2 LINK INPUTS: "
+                    + ", ".join(path.name for path in extra_inputs)
+                )
+            return self._launch_assembled_document(document)
 
         def assemble_document(self, document: DocumentEditor) -> bool:
             """Compile für BASIC/C/Pascal oder Assemble für ASM-Quelltext."""
@@ -15798,7 +19575,14 @@ border: 2px solid #2a69aa;
                     program = assemble_pe32_source(
                         source,
                         filename=document.display_name,
-                        gui=True,
+                        gui=(normalize_windows_application_mode(document.windows_application_mode) != "Console"),
+                    )
+                    program_data = program.executable
+                elif document.build_target == "pe64":
+                    program = assemble_pe64_source(
+                        source,
+                        filename=document.display_name,
+                        gui=(normalize_windows_application_mode(document.windows_application_mode) != "Console"),
                     )
                     program_data = program.executable
                 else:
@@ -15808,7 +19592,7 @@ border: 2px solid #2a69aa;
                     )
                     program_data = program.prg
                 self._write_assembled_program(output_path, program_data)
-            except (AssemblerError, AmigaAssemblerError, PE32AssemblerError) as exc:
+            except (AssemblerError, AmigaAssemblerError, PE32AssemblerError, PE64AssemblerError) as exc:
                 message = str(exc)
                 document.show_assembly_error(message, exc.line or 0)
                 self.show_error("Assemblerfehler", message)
@@ -15863,19 +19647,20 @@ border: 2px solid #2a69aa;
                         f"{document.display_name} -> {output_path.name}, "
                         f"{len(program.executable)} Bytes"
                     )
-            elif document.build_target == "pe32":
+            elif document.build_target in {"pe32", "pe64"}:
+                target_label = "PE64" if document.build_target == "pe64" else "PE32"
                 document.hints_editor.setPlainText(
-                    "Windows-PE32-Assembler erfolgreich beendet\n"
+                    f"Windows-{target_label}-Assembler erfolgreich beendet\n"
                     "\n"
                     f"Quelle       : {document.display_name}\n"
-                    f"PE32-Ausgabe : {output_path}\n"
+                    f"{target_label}-Ausgabe : {output_path}\n"
                     f"Einsprung    : +${program.entry_offset:08X}\n"
                     f"Code-Größe   : {len(program.code)} Bytes\n"
                     f"EXE-Größe    : {len(program.executable)} Bytes\n"
                     f"Windows-Modus: {document.windows_application_mode}\n"
                 )
                 self.log(
-                    "ASSEMBLE PE32: "
+                    f"ASSEMBLE {target_label}: "
                     f"{document.display_name} -> {output_path.name}, "
                     f"{len(program.executable)} Bytes"
                 )
@@ -16013,17 +19798,18 @@ border: 2px solid #2a69aa;
                 return False
             if document.build_target == "amiga":
                 return self._launch_amiga_document(document, output_path)
-            if document.build_target == "pe32":
+            if document.build_target in {"pe32", "pe64"}:
+                target_label = "PE64" if document.build_target == "pe64" else "PE32"
                 if os.name != "nt":
                     self.show_error(
-                        "Windows-PE32-Start",
-                        "PE32-Programme können aus d64_dism nur unter Windows "
+                        "Windows-PE-Start",
+                        "PE32/PE64-Programme können aus d64_dism nur unter Windows "
                         "direkt gestartet werden. Die erzeugte EXE bleibt erhalten:\n"
                         f"{output_path}",
                     )
                     return False
                 # Konsolenprogramme duerfen ihre Standard-Handles nicht auf
-                # DEVNULL umgeleitet bekommen. Der PE32-Code oeffnet seine
+                # DEVNULL umgeleitet bekommen. Der Windows-Code oeffnet seine
                 # Konsole mit AllocConsole und verwendet CONIN$/CONOUT$ fuer
                 # ReadLn/WriteLn. Eine Popen-Umleitung auf DEVNULL fuehrt sonst
                 # exakt dazu, dass WriteFile unsichtbar schreibt und ReadFile
@@ -16040,13 +19826,21 @@ border: 2px solid #2a69aa;
                         "stdout": subprocess.DEVNULL,
                         "stderr": subprocess.DEVNULL,
                     })
+                creationflags = 0
+                if console_mode and hasattr(subprocess, "CREATE_NEW_CONSOLE"):
+                    # Ein Console-Target soll niemals die Konsole des IDE-/Starter-
+                    # Prozesses erben. Andernfalls veraendern SetConsoleWindowInfo
+                    # und SetConsoleScreenBufferSize das bereits laufende Fenster.
+                    creationflags |= subprocess.CREATE_NEW_CONSOLE
                 if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
-                    options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+                    creationflags |= subprocess.CREATE_NEW_PROCESS_GROUP
+                if creationflags:
+                    options["creationflags"] = creationflags
                 try:
                     process = subprocess.Popen([str(output_path)], **options)
                 except OSError as exc:
                     self.show_error(
-                        "PE32-Programm konnte nicht gestartet werden",
+                        "Windows-Programm konnte nicht gestartet werden",
                         f"Programm: {output_path}\n\n{exc}",
                     )
                     return False
@@ -16063,9 +19857,9 @@ border: 2px solid #2a69aa;
                     document.generated_assembly_status_label.setText(
                         f"Unter Windows gestartet: {output_path.name}"
                     )
-                self.log(f"PE32 START: {output_path}")
+                self.log(f"WINDOWS PE START: {output_path}")
                 self.statusBar().showMessage(
-                    f"Windows-PE32 gestartet: {output_path.name}"
+                    f"Windows-PE gestartet: {output_path.name}"
                 )
                 return True
             vice_path = self._resolve_vice_for_program_start()
@@ -16498,7 +20292,11 @@ border: 2px solid #2a69aa;
             self.project_tree.setAlternatingRowColors(True)
             self.project_tree.setContextMenuPolicy(Qt.CustomContextMenu)
             self.project_tree.setToolTip(
-                "Ein Klick öffnet den ausgewählten Dateieintrag"
+                "Doppelklick öffnet Dateien bzw. zeigt Archiv-/Objektinformationen; "
+                "Checkboxen werden mit einfachem Klick umgeschaltet"
+            )
+            self.project_tree.setStyleSheet(
+                self._project_tree_checkbox_stylesheet()
             )
             layout.addWidget(self.project_tree, 1)
 
@@ -16521,7 +20319,8 @@ border: 2px solid #2a69aa;
             self.project_tree.customContextMenuRequested.connect(
                 self.show_project_context_menu
             )
-            self.project_tree.itemClicked.connect(self.open_project_item)
+            self.project_tree.itemDoubleClicked.connect(self.open_project_item)
+            self.project_tree.itemChanged.connect(self._on_project_item_changed)
 
             self.reset_project_tree()
             return tab
@@ -16536,6 +20335,8 @@ border: 2px solid #2a69aa;
             self.project_tree.blockSignals(True)
             self.project_tree.clear()
             self.project_root_items = {}
+            self.project_archive_root = None
+            self._project_checkbox_guard = False
             folder_icon = self.style().standardIcon(QStyle.SP_DirClosedIcon)
             for key, title, _extensions in PROJECT_CATEGORIES:
                 root = QTreeWidgetItem(self.project_tree, [title])
@@ -16543,6 +20344,18 @@ border: 2px solid #2a69aa;
                 root.setIcon(0, folder_icon)
                 root.setToolTip(0, "Geschützte Projektkategorie")
                 self.project_root_items[key] = root
+
+                if key == "c":
+                    archive_root = QTreeWidgetItem(root, ["Archive"])
+                    archive_root.setData(0, Qt.UserRole + 301, "c")
+                    archive_root.setData(0, Qt.UserRole + 303, PROJECT_NODE_ARCHIVE_ROOT)
+                    archive_root.setIcon(0, folder_icon)
+                    archive_root.setToolTip(
+                        0,
+                        "Geschützter Archivknoten für COFF32-/COFF64-Archive",
+                    )
+                    self.project_archive_root = archive_root
+
                 for entry in values.get(key, ()):
                     self._add_project_entry(
                         key,
@@ -16551,6 +20364,27 @@ border: 2px solid #2a69aa;
                         mark_modified=False,
                     )
                 root.setExpanded(True)
+
+            for archive in values.get(PROJECT_C_ARCHIVES_KEY, ()):
+                archive_item = self._add_project_archive(
+                    Path(str(archive.get("path", ""))) if archive.get("path") else None,
+                    title=str(archive.get("title", "")),
+                    mark_modified=False,
+                )
+                if archive_item is None:
+                    continue
+                for obj in archive.get("objects", ()):
+                    object_path = str(obj.get("path", "")).strip()
+                    if object_path:
+                        self._add_project_archive_object(
+                            archive_item,
+                            Path(object_path),
+                            title=str(obj.get("title", "")),
+                            mark_modified=False,
+                        )
+                archive_item.setExpanded(True)
+            if self.project_archive_root is not None:
+                self.project_archive_root.setExpanded(True)
             self.project_tree.blockSignals(False)
 
         def _add_project_entry(
@@ -16585,6 +20419,155 @@ border: 2px solid #2a69aa;
                 self.set_project_modified(True)
             return child
 
+        def _project_item_kind(self, item: Optional[QTreeWidgetItem]) -> str:
+            if item is None:
+                return ""
+            return str(item.data(0, Qt.UserRole + 303) or "")
+
+        def _set_archive_item_checkable(self, item: QTreeWidgetItem) -> None:
+            item.setFlags(
+                item.flags()
+                | Qt.ItemIsUserCheckable
+                | Qt.ItemIsSelectable
+                | Qt.ItemIsEnabled
+            )
+            item.setCheckState(0, Qt.Unchecked)
+
+        def _add_project_archive(
+            self,
+            path: Optional[Path],
+            *,
+            title: str = "",
+            mark_modified: bool = True,
+        ) -> Optional[QTreeWidgetItem]:
+            root = getattr(self, "project_archive_root", None)
+            if root is None:
+                return None
+            path_text = ""
+            resolved = None
+            if path is not None and str(path):
+                try:
+                    resolved = Path(path).expanduser().resolve()
+                except OSError:
+                    resolved = Path(path).expanduser()
+                path_text = str(resolved)
+                for index in range(root.childCount()):
+                    child = root.child(index)
+                    existing = str(child.data(0, Qt.UserRole + 302) or "")
+                    if existing and existing.casefold() == path_text.casefold():
+                        self.project_tree.setCurrentItem(child)
+                        return child
+            display_title = title.strip()
+            if not display_title:
+                display_title = resolved.name if resolved is not None else "library.a"
+            if Path(display_title).suffix.casefold() != ".a":
+                display_title += ".a"
+            item = QTreeWidgetItem(root, [display_title])
+            item.setData(0, Qt.UserRole + 301, "c")
+            item.setData(0, Qt.UserRole + 302, path_text)
+            item.setData(0, Qt.UserRole + 303, PROJECT_NODE_ARCHIVE)
+            # Merkt, ob der Archivknoten selbst explizit angehakt wurde. So
+            # führt das manuelle Anhaken aller Objektkinder nicht automatisch
+            # zum Löschen des gesamten Archivknotens.
+            item.setData(0, Qt.UserRole + 304, False)
+            item.setToolTip(0, path_text or "Archivdatei wird beim Erstellen erzeugt")
+            item.setIcon(0, self.style().standardIcon(QStyle.SP_FileIcon))
+            self._set_archive_item_checkable(item)
+            root.setExpanded(True)
+            if mark_modified:
+                self.set_project_modified(True)
+            return item
+
+        def _add_project_archive_object(
+            self,
+            archive_item: QTreeWidgetItem,
+            path: Path,
+            *,
+            title: str = "",
+            mark_modified: bool = True,
+        ) -> Optional[QTreeWidgetItem]:
+            if self._project_item_kind(archive_item) != PROJECT_NODE_ARCHIVE:
+                return None
+            try:
+                resolved = Path(path).expanduser().resolve()
+            except OSError:
+                resolved = Path(path).expanduser()
+            path_text = str(resolved)
+            for index in range(archive_item.childCount()):
+                child = archive_item.child(index)
+                existing = str(child.data(0, Qt.UserRole + 302) or "")
+                if existing.casefold() == path_text.casefold():
+                    self.project_tree.setCurrentItem(child)
+                    return child
+            item = QTreeWidgetItem(archive_item, [title.strip() or resolved.name])
+            item.setData(0, Qt.UserRole + 301, "c")
+            item.setData(0, Qt.UserRole + 302, path_text)
+            item.setData(0, Qt.UserRole + 303, PROJECT_NODE_ARCHIVE_OBJECT)
+            item.setToolTip(0, path_text)
+            item.setIcon(0, self.icon_provider.icon(QFileInfo(path_text)))
+            self._set_archive_item_checkable(item)
+            archive_item.setExpanded(True)
+            if mark_modified:
+                self.set_project_modified(True)
+            return item
+
+        def _on_project_item_changed(
+            self, item: QTreeWidgetItem, column: int
+        ) -> None:
+            if column != 0 or getattr(self, "_project_checkbox_guard", False):
+                return
+            kind = self._project_item_kind(item)
+            if kind not in {PROJECT_NODE_ARCHIVE, PROJECT_NODE_ARCHIVE_OBJECT}:
+                return
+            self._project_checkbox_guard = True
+            try:
+                if kind == PROJECT_NODE_ARCHIVE:
+                    state = item.checkState(0)
+                    if state in {Qt.Checked, Qt.Unchecked}:
+                        item.setData(
+                            0, Qt.UserRole + 304, state == Qt.Checked
+                        )
+                        for index in range(item.childCount()):
+                            item.child(index).setCheckState(0, state)
+                else:
+                    parent = item.parent()
+                    if parent is None or self._project_item_kind(parent) != PROJECT_NODE_ARCHIVE:
+                        return
+                    # Eine Änderung an einem Kind bedeutet: die Auswahl
+                    # stammt nicht mehr vom Archivknoten selbst.
+                    parent.setData(0, Qt.UserRole + 304, False)
+                    states = [
+                        parent.child(index).checkState(0)
+                        for index in range(parent.childCount())
+                    ]
+                    if states and all(state == Qt.Checked for state in states):
+                        parent.setCheckState(0, Qt.Checked)
+                    elif states and all(state == Qt.Unchecked for state in states):
+                        parent.setCheckState(0, Qt.Unchecked)
+                    else:
+                        parent.setCheckState(0, Qt.PartiallyChecked)
+            finally:
+                self._project_checkbox_guard = False
+
+        def _refresh_archive_check_state(self, archive_item: QTreeWidgetItem) -> None:
+            if self._project_item_kind(archive_item) != PROJECT_NODE_ARCHIVE:
+                return
+            self._project_checkbox_guard = True
+            try:
+                archive_item.setData(0, Qt.UserRole + 304, False)
+                states = [
+                    archive_item.child(index).checkState(0)
+                    for index in range(archive_item.childCount())
+                ]
+                if not states or all(state == Qt.Unchecked for state in states):
+                    archive_item.setCheckState(0, Qt.Unchecked)
+                elif all(state == Qt.Checked for state in states):
+                    archive_item.setCheckState(0, Qt.Checked)
+                else:
+                    archive_item.setCheckState(0, Qt.PartiallyChecked)
+            finally:
+                self._project_checkbox_guard = False
+
         def collect_project_entries(self) -> Dict[str, List[Dict[str, str]]]:
             entries = empty_project_entries()
             for key, _title, _extensions in PROJECT_CATEGORIES:
@@ -16593,6 +20576,8 @@ border: 2px solid #2a69aa;
                     continue
                 for index in range(root.childCount()):
                     child = root.child(index)
+                    if self._project_item_kind(child) == PROJECT_NODE_ARCHIVE_ROOT:
+                        continue
                     path_value = str(child.data(0, Qt.UserRole + 302) or "")
                     if path_value:
                         entries[key].append(
@@ -16601,13 +20586,35 @@ border: 2px solid #2a69aa;
                                 "path": path_value,
                             }
                         )
+
+            archive_root = getattr(self, "project_archive_root", None)
+            if archive_root is not None:
+                for index in range(archive_root.childCount()):
+                    archive_item = archive_root.child(index)
+                    if self._project_item_kind(archive_item) != PROJECT_NODE_ARCHIVE:
+                        continue
+                    objects = []
+                    for obj_index in range(archive_item.childCount()):
+                        obj_item = archive_item.child(obj_index)
+                        path_value = str(obj_item.data(0, Qt.UserRole + 302) or "")
+                        if path_value:
+                            objects.append({
+                                "title": obj_item.text(0),
+                                "path": path_value,
+                            })
+                    entries[PROJECT_C_ARCHIVES_KEY].append({
+                        "title": archive_item.text(0),
+                        "path": str(archive_item.data(0, Qt.UserRole + 302) or ""),
+                        "objects": objects,
+                    })
             return entries
 
         def project_has_entries(self) -> bool:
+            entries = self.collect_project_entries()
             return any(
-                root.childCount() > 0
-                for root in self.project_root_items.values()
-            )
+                bool(entries.get(key))
+                for key, _title, _extensions in PROJECT_CATEGORIES
+            ) or bool(entries.get(PROJECT_C_ARCHIVES_KEY))
 
         def set_project_modified(self, modified: bool) -> None:
             self.project_modified = bool(modified)
@@ -16671,7 +20678,7 @@ border: 2px solid #2a69aa;
                 return bool(self.save_project_as())
             return True
 
-        def new_project(self) -> None:
+        def new_project(self, project_kind: str = "generic") -> None:
             # Ein geöffnetes/gefülltes Projekt wird vor dem Neuanlegen immer
             # gesichert. Bei einem noch namenlosen Projekt fragt save_project_as
             # einmalig nach der gewünschten *.pro-Datei.
@@ -16683,11 +20690,23 @@ border: 2px solid #2a69aa;
             # Hauptknoten aus PROJECT_CATEGORIES wieder auf.
             self.reset_project_tree()
             self.set_project_modified(False)
+            kind = str(project_kind or "generic").strip().casefold()
+            project_names = {
+                "windows": "Windows Anwendung",
+                "amiga500": "Amiga 500 ADF",
+                "c64": "C= 64 Programm",
+            }
+            self.current_project_kind = kind
             self.right_panel_tabs.setCurrentWidget(self.project_tab)
             self.right_dock.show()
             self.right_dock.raise_()
-            self.statusBar().showMessage("Neues leeres Projekt angelegt")
-            self.log("Neues Projekt: Projektbaum auf Hauptknoten zurückgesetzt")
+            self.project_tree.setFocus(Qt.OtherFocusReason)
+            description = project_names.get(kind, "leeres Projekt")
+            self.statusBar().showMessage(f"Neues Projekt angelegt: {description}")
+            self.log(
+                "Neues Projekt: Projektbaum auf Hauptknoten zurückgesetzt "
+                f"[{description}]"
+            )
 
         def load_project_file(
             self,
@@ -16777,13 +20796,16 @@ border: 2px solid #2a69aa;
         def _project_existing_names(self) -> List[str]:
             names: List[str] = []
             for root in self.project_root_items.values():
-                for index in range(root.childCount()):
-                    child = root.child(index)
-                    names.append(child.text(0))
-                    path_value = str(child.data(0, Qt.UserRole + 302) or "")
-                    if path_value:
-                        path = Path(path_value)
-                        names.extend((path.name, path.stem))
+                iterator = QTreeWidgetItemIterator(root)
+                while iterator.value() is not None:
+                    child = iterator.value()
+                    if child is not root:
+                        names.append(child.text(0))
+                        path_value = str(child.data(0, Qt.UserRole + 302) or "")
+                        if path_value:
+                            path = Path(path_value)
+                            names.extend((path.name, path.stem))
+                    iterator += 1
             return names
 
         def _write_new_project_file(self, category_key: str, path: Path) -> None:
@@ -16921,12 +20943,25 @@ border: 2px solid #2a69aa;
             if item is None:
                 return
             self.project_tree.setCurrentItem(item)
+            kind = self._project_item_kind(item)
+            if kind == PROJECT_NODE_ARCHIVE_ROOT:
+                self._show_project_archive_root_menu(item, position)
+                return
+            if kind in {PROJECT_NODE_ARCHIVE, PROJECT_NODE_ARCHIVE_OBJECT}:
+                self._show_project_archive_item_menu(item, position)
+                return
+
             menu = QMenu(self.project_tree)
             help_action = menu.addAction("Hilfe")
             add_action = menu.addAction("Hinzufügen")
             clear_action = menu.addAction("Einträge löschen")
             root = item if item.parent() is None else item.parent()
-            clear_action.setEnabled(root.childCount() > 0)
+            removable_count = sum(
+                1
+                for index in range(root.childCount())
+                if self._project_item_kind(root.child(index)) != PROJECT_NODE_ARCHIVE_ROOT
+            )
+            clear_action.setEnabled(removable_count > 0)
             selected = menu.exec_(
                 self.project_tree.viewport().mapToGlobal(position)
             )
@@ -16936,6 +20971,353 @@ border: 2px solid #2a69aa;
                 self.add_project_entries(item)
             elif selected is clear_action:
                 self.clear_project_entries(item)
+
+        def _show_project_archive_root_menu(
+            self, item: QTreeWidgetItem, position
+        ) -> None:
+            menu = QMenu(self.project_tree)
+            new_action = menu.addAction("Neues Archiv …")
+            remove_action = menu.addAction("Ausgewählte entfernen")
+            remove_action.setEnabled(self._archive_scope_has_checked_items(item))
+            menu.addSeparator()
+            help_action = menu.addAction("Hilfe")
+            selected = menu.exec_(
+                self.project_tree.viewport().mapToGlobal(position)
+            )
+            if selected is new_action:
+                self.create_project_archive_entry()
+            elif selected is remove_action:
+                self.remove_checked_project_archive_items(item)
+            elif selected is help_action:
+                self._show_project_archive_help()
+
+        def _show_project_archive_item_menu(
+            self, item: QTreeWidgetItem, position
+        ) -> None:
+            archive_item = (
+                item if self._project_item_kind(item) == PROJECT_NODE_ARCHIVE
+                else item.parent()
+            )
+            if archive_item is None:
+                return
+            menu = QMenu(self.project_tree)
+            add_objects_action = menu.addAction("Objektdateien hinzufügen …")
+            build_action = menu.addAction("Archiv erstellen")
+            rename_action = menu.addAction("Umbenennen")
+            menu.addSeparator()
+            remove_action = menu.addAction("Ausgewählte entfernen")
+            remove_action.setEnabled(self._archive_scope_has_checked_items(archive_item))
+            build_action.setEnabled(archive_item.childCount() > 0)
+            selected = menu.exec_(
+                self.project_tree.viewport().mapToGlobal(position)
+            )
+            if selected is add_objects_action:
+                self.add_project_archive_objects(archive_item)
+            elif selected is build_action:
+                self.build_project_archive(archive_item)
+            elif selected is rename_action:
+                self.rename_project_archive(archive_item)
+            elif selected is remove_action:
+                self.remove_checked_project_archive_items(archive_item)
+
+        def _show_project_archive_help(self) -> None:
+            self._show_message_box(
+                QMessageBox.Information,
+                "C-Archive im Projekt",
+                "Unter C-Programme -> Archive können COFF32-/COFF64-Archive "
+                "verwaltet werden. Ein Archivknoten besitzt eine Checkbox; "
+                "sie markiert oder entmarkiert alle untergeordneten Objektdateien.\n\n"
+                "'Archiv erstellen' schreibt aus den aufgeführten .o/.obj-Dateien "
+                "eine .a-Datei. Beim Löschen werden ausschließlich Referenzen "
+                "im aktuell gewählten Archivzweig entfernt; Dateien auf dem "
+                "Datenträger bleiben erhalten.",
+            )
+
+        def create_project_archive_entry(self) -> Optional[QTreeWidgetItem]:
+            directory = self._project_new_file_directory()
+            filename, _selected = QFileDialog.getSaveFileName(
+                self,
+                "Archivknoten anlegen",
+                str(directory / "library.a"),
+                "Statisches Archiv (*.a);;Alle Dateien (*)",
+            )
+            if not filename:
+                return None
+            target = Path(filename)
+            if target.suffix.casefold() != ".a":
+                target = target.with_suffix(".a")
+            item = self._add_project_archive(target, title=target.name)
+            if item is not None:
+                self.project_tree.setCurrentItem(item)
+                item.setExpanded(True)
+                if self.current_project_path is not None:
+                    self.save_project()
+                self.statusBar().showMessage(
+                    f"Archivknoten angelegt: {target.name}"
+                )
+            return item
+
+        def add_project_archive_objects(
+            self, archive_item: QTreeWidgetItem
+        ) -> None:
+            if self._project_item_kind(archive_item) != PROJECT_NODE_ARCHIVE:
+                return
+            archive_path = str(archive_item.data(0, Qt.UserRole + 302) or "")
+            initial = (
+                str(Path(archive_path).parent)
+                if archive_path else str(self._project_new_file_directory())
+            )
+            filenames, _selected = QFileDialog.getOpenFileNames(
+                self,
+                f"Objektdateien zu '{archive_item.text(0)}' hinzufügen",
+                initial,
+                "COFF-Objektdateien (*.o *.obj);;Alle Dateien (*)",
+            )
+            added = 0
+            for filename in filenames:
+                child = self._add_project_archive_object(
+                    archive_item, Path(filename), title=Path(filename).name
+                )
+                if child is not None:
+                    added += 1
+            if added:
+                self._refresh_archive_check_state(archive_item)
+                if self.current_project_path is not None:
+                    self.save_project()
+                self.statusBar().showMessage(
+                    f"{added} Objektdatei(en) zu {archive_item.text(0)} hinzugefügt"
+                )
+
+        def _project_archive_object_items(
+            self, archive_item: QTreeWidgetItem
+        ) -> List[QTreeWidgetItem]:
+            return [
+                archive_item.child(index)
+                for index in range(archive_item.childCount())
+                if self._project_item_kind(archive_item.child(index))
+                == PROJECT_NODE_ARCHIVE_OBJECT
+            ]
+
+        def _archive_scope_has_checked_items(
+            self, scope_item: QTreeWidgetItem
+        ) -> bool:
+            kind = self._project_item_kind(scope_item)
+            if kind == PROJECT_NODE_ARCHIVE:
+                if bool(scope_item.data(0, Qt.UserRole + 304)):
+                    return True
+                return any(
+                    child.checkState(0) == Qt.Checked
+                    for child in self._project_archive_object_items(scope_item)
+                )
+            if kind == PROJECT_NODE_ARCHIVE_ROOT:
+                for index in range(scope_item.childCount()):
+                    archive_item = scope_item.child(index)
+                    if bool(archive_item.data(0, Qt.UserRole + 304)):
+                        return True
+                    if any(
+                        child.checkState(0) == Qt.Checked
+                        for child in self._project_archive_object_items(archive_item)
+                    ):
+                        return True
+            return False
+
+        def remove_checked_project_archive_items(
+            self, scope_item: QTreeWidgetItem
+        ) -> None:
+            kind = self._project_item_kind(scope_item)
+            if kind == PROJECT_NODE_ARCHIVE_OBJECT:
+                scope_item = scope_item.parent()
+                kind = self._project_item_kind(scope_item)
+            if kind not in {PROJECT_NODE_ARCHIVE, PROJECT_NODE_ARCHIVE_ROOT}:
+                return
+
+            archives_to_remove: List[QTreeWidgetItem] = []
+            objects_to_remove: List[Tuple[QTreeWidgetItem, QTreeWidgetItem]] = []
+            archive_items = (
+                [scope_item]
+                if kind == PROJECT_NODE_ARCHIVE
+                else [scope_item.child(i) for i in range(scope_item.childCount())]
+            )
+            for archive_item in archive_items:
+                if self._project_item_kind(archive_item) != PROJECT_NODE_ARCHIVE:
+                    continue
+                if bool(archive_item.data(0, Qt.UserRole + 304)):
+                    archives_to_remove.append(archive_item)
+                    continue
+                for child in self._project_archive_object_items(archive_item):
+                    if child.checkState(0) == Qt.Checked:
+                        objects_to_remove.append((archive_item, child))
+
+            total = len(archives_to_remove) + len(objects_to_remove)
+            if total <= 0:
+                return
+            answer = self._show_message_box(
+                QMessageBox.Question,
+                "Archiv-Einträge entfernen",
+                f"Sollen {total} markierte Archiv-/Objekteinträge aus dem "
+                "aktuellen Zweig entfernt werden?\n\n"
+                "Dateien auf dem Datenträger werden nicht gelöscht.",
+                buttons=QMessageBox.Yes | QMessageBox.No,
+                default_button=QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
+
+            touched_archives = set()
+            for archive_item, child in objects_to_remove:
+                if archive_item in archives_to_remove:
+                    continue
+                archive_item.takeChild(archive_item.indexOfChild(child))
+                touched_archives.add(archive_item)
+            for archive_item in archives_to_remove:
+                parent = archive_item.parent()
+                if parent is not None:
+                    parent.takeChild(parent.indexOfChild(archive_item))
+            for archive_item in touched_archives:
+                self._refresh_archive_check_state(archive_item)
+            self.set_project_modified(True)
+            if self.current_project_path is not None:
+                self.save_project()
+            self.statusBar().showMessage(
+                f"{total} Archiv-/Objekteintrag(e) entfernt"
+            )
+
+        def rename_project_archive(self, archive_item: QTreeWidgetItem) -> None:
+            if self._project_item_kind(archive_item) != PROJECT_NODE_ARCHIVE:
+                return
+            current_name = archive_item.text(0) or "library.a"
+            value, accepted = QInputDialog.getText(
+                self,
+                "Archiv umbenennen",
+                "Neuer Archivname:",
+                QLineEdit.Normal,
+                current_name,
+            )
+            if not accepted:
+                return
+            value = value.strip()
+            if not value or Path(value).name != value:
+                self.show_error(
+                    "Ungültiger Archivname",
+                    "Bitte nur einen Dateinamen ohne Verzeichnis angeben.",
+                )
+                return
+            if Path(value).suffix.casefold() != ".a":
+                value += ".a"
+            old_path_text = str(archive_item.data(0, Qt.UserRole + 302) or "")
+            if old_path_text:
+                old_path = Path(old_path_text)
+                target = old_path.with_name(value)
+            else:
+                target = self._project_new_file_directory() / value
+            if old_path_text and old_path.exists() and target != old_path:
+                if target.exists():
+                    self.show_error(
+                        "Archiv existiert bereits",
+                        f"Die Zieldatei existiert bereits:\n{target}",
+                    )
+                    return
+                try:
+                    old_path.rename(target)
+                except OSError as exc:
+                    self.show_error("Archiv konnte nicht umbenannt werden", str(exc))
+                    return
+            archive_item.setText(0, value)
+            archive_item.setData(0, Qt.UserRole + 302, str(target))
+            archive_item.setToolTip(0, str(target))
+            self.set_project_modified(True)
+            if self.current_project_path is not None:
+                self.save_project()
+            self.statusBar().showMessage(f"Archiv umbenannt: {value}")
+
+        def build_project_archive(self, archive_item: QTreeWidgetItem) -> None:
+            if self._project_item_kind(archive_item) != PROJECT_NODE_ARCHIVE:
+                return
+            object_items = self._project_archive_object_items(archive_item)
+            if not object_items:
+                self.show_error(
+                    "Archiv erstellen",
+                    "Dem Archiv sind noch keine Objektdateien zugeordnet.",
+                )
+                return
+            members = []
+            machine = None
+            for child in object_items:
+                path_text = str(child.data(0, Qt.UserRole + 302) or "")
+                path = Path(path_text)
+                if not path.exists():
+                    self.show_error(
+                        "Objektdatei fehlt",
+                        f"Die Objektdatei wurde nicht gefunden:\n{path}",
+                    )
+                    return
+                try:
+                    payload = path.read_bytes()
+                except OSError as exc:
+                    self.show_error("Objektdatei konnte nicht gelesen werden", str(exc))
+                    return
+                if len(payload) < 2:
+                    self.show_error("Ungültige Objektdatei", str(path))
+                    return
+                current_machine = struct.unpack_from("<H", payload, 0)[0]
+                try:
+                    if current_machine == IMAGE_FILE_MACHINE_I386:
+                        parse_coff32_object(payload)
+                    elif current_machine == IMAGE_FILE_MACHINE_AMD64:
+                        parse_coff64_object(payload)
+                    else:
+                        raise ValueError(
+                            f"Unbekannte COFF-Machine 0x{current_machine:04X}"
+                        )
+                except (PE32AssemblerError, PE64AssemblerError, ValueError) as exc:
+                    self.show_error(
+                        "Ungültige COFF-Objektdatei",
+                        f"{path.name}: {exc}",
+                    )
+                    return
+                if machine is None:
+                    machine = current_machine
+                elif machine != current_machine:
+                    self.show_error(
+                        "Gemischte COFF-Architekturen",
+                        "Ein Archiv darf nicht gleichzeitig COFF32-i386- und "
+                        "COFF64-AMD64-Objekte enthalten.",
+                    )
+                    return
+                members.append((path.name, payload))
+
+            target_text = str(archive_item.data(0, Qt.UserRole + 302) or "")
+            if target_text:
+                target = Path(target_text)
+            else:
+                target = self._project_new_file_directory() / archive_item.text(0)
+            if target.suffix.casefold() != ".a":
+                target = target.with_suffix(".a")
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                archive_data = (
+                    create_coff64_archive(members)
+                    if machine == IMAGE_FILE_MACHINE_AMD64
+                    else create_coff32_archive(members)
+                )
+                target.write_bytes(archive_data)
+            except (OSError, PE32AssemblerError, PE64AssemblerError) as exc:
+                self.show_error("Archiv konnte nicht erstellt werden", str(exc))
+                return
+            archive_item.setText(0, target.name)
+            archive_item.setData(0, Qt.UserRole + 302, str(target))
+            archive_item.setToolTip(0, str(target))
+            self.set_project_modified(True)
+            if self.current_project_path is not None:
+                self.save_project()
+            self.log(
+                f"PROJEKT ARCHIV: {len(members)} Objekt(e) -> {target}"
+            )
+            self.statusBar().showMessage(
+                f"Archiv erstellt: {target.name} ({len(members)} Objekt(e))"
+            )
+            if target.parent.resolve() == self.current_directory:
+                self.populate_file_list()
 
         def add_project_entries(self, item: QTreeWidgetItem) -> None:
             """Fügt vorhandene Dateien in die angewählte Projektkategorie ein."""
@@ -16977,24 +21359,30 @@ border: 2px solid #2a69aa;
                 )
 
         def clear_project_entries(self, item: QTreeWidgetItem) -> None:
-            """Entfernt nur Referenzen; Dateien bleiben unverändert erhalten."""
+            """Entfernt nur normale Kategorie-Referenzen; Archive bleiben geschützt."""
             root = item if item.parent() is None else item.parent()
-            count = root.childCount()
+            removable = [
+                root.child(index)
+                for index in range(root.childCount())
+                if self._project_item_kind(root.child(index)) != PROJECT_NODE_ARCHIVE_ROOT
+            ]
+            count = len(removable)
             if count <= 0:
                 return
             answer = self._show_message_box(
                 QMessageBox.Question,
                 "Projekteinträge löschen",
-                f"Sollen alle {count} Einträge aus '{root.text(0)}' "
+                f"Sollen alle {count} normalen Einträge aus '{root.text(0)}' "
                 "entfernt werden?\n\n"
                 "Die Dateien auf dem Datenträger werden nicht gelöscht oder "
-                "umbenannt.",
+                "umbenannt. Der geschützte Archivknoten bleibt erhalten.",
                 buttons=QMessageBox.Yes | QMessageBox.No,
                 default_button=QMessageBox.No,
             )
             if answer != QMessageBox.Yes:
                 return
-            root.takeChildren()
+            for child in removable:
+                root.takeChild(root.indexOfChild(child))
             self.set_project_modified(True)
             if self.current_project_path is not None:
                 self.save_project()
@@ -17094,6 +21482,17 @@ border: 2px solid #2a69aa;
             item: QTreeWidgetItem,
             _column: int = 0,
         ) -> None:
+            kind = self._project_item_kind(item)
+            if kind == PROJECT_NODE_ARCHIVE_ROOT:
+                item.setExpanded(not item.isExpanded())
+                return
+            if kind == PROJECT_NODE_ARCHIVE:
+                item.setExpanded(True)
+                self.show_project_archive_information(item)
+                return
+            if kind == PROJECT_NODE_ARCHIVE_OBJECT:
+                self.show_project_object_information(item)
+                return
             if item.parent() is None:
                 item.setExpanded(not item.isExpanded())
                 return
@@ -17194,8 +21593,52 @@ border: 2px solid #2a69aa;
             )
             file_layout.addWidget(self.content_list, 1)
 
+            self.archive_info_tab = QWidget(self.right_info_tabs)
+            self.archive_info_tab.setObjectName("archive_information_tab")
+            archive_layout = QVBoxLayout(self.archive_info_tab)
+            archive_layout.setContentsMargins(5, 5, 5, 5)
+            archive_layout.setSpacing(6)
+            self.archive_info_summary = QLabel(
+                "Kein Archiv ausgewählt", self.archive_info_tab
+            )
+            self.archive_info_summary.setWordWrap(True)
+            self.archive_info_summary.setFrameShape(QFrame.StyledPanel)
+            self.archive_info_summary.setMargin(7)
+            archive_layout.addWidget(self.archive_info_summary)
+            self.archive_info_list = QListWidget(self.archive_info_tab)
+            self.archive_info_list.setObjectName("archive_information_list")
+            self.archive_info_list.setAlternatingRowColors(True)
+            self.archive_info_list.setSelectionMode(QListWidget.SingleSelection)
+            self.archive_info_list.setFont(
+                QFontDatabase.systemFont(QFontDatabase.FixedFont)
+            )
+            archive_layout.addWidget(self.archive_info_list, 1)
+
+            self.object_info_tab = QWidget(self.right_info_tabs)
+            self.object_info_tab.setObjectName("object_information_tab")
+            object_layout = QVBoxLayout(self.object_info_tab)
+            object_layout.setContentsMargins(5, 5, 5, 5)
+            object_layout.setSpacing(6)
+            self.object_info_summary = QLabel(
+                "Keine Objektdatei ausgewählt", self.object_info_tab
+            )
+            self.object_info_summary.setWordWrap(True)
+            self.object_info_summary.setFrameShape(QFrame.StyledPanel)
+            self.object_info_summary.setMargin(7)
+            object_layout.addWidget(self.object_info_summary)
+            self.object_info_list = QListWidget(self.object_info_tab)
+            self.object_info_list.setObjectName("object_information_list")
+            self.object_info_list.setAlternatingRowColors(True)
+            self.object_info_list.setSelectionMode(QListWidget.SingleSelection)
+            self.object_info_list.setFont(
+                QFontDatabase.systemFont(QFontDatabase.FixedFont)
+            )
+            object_layout.addWidget(self.object_info_list, 1)
+
             self.right_info_tabs.addTab(self.dism_info_tab, "DISM START")
             self.right_info_tabs.addTab(self.file_info_tab, "Datei-Informationen")
+            self.right_info_tabs.addTab(self.archive_info_tab, "Archiv-Informationen")
+            self.right_info_tabs.addTab(self.object_info_tab, "Objekt-Informationen")
             self.right_info_tabs.setCurrentWidget(self.file_info_tab)
             information_layout.addWidget(self.right_info_tabs, 1)
 
@@ -17516,22 +21959,13 @@ border: 2px solid #2a69aa;
                 )
                 return
 
-            last_file = str(self.settings.value("chm/last_file", "") or "")
-            chm_path = (
-                Path(last_file)
-                if last_file and Path(last_file).is_file()
-                else Path(__file__).resolve().with_name("Hilfe.chm")
-            )
-            link = self._context_help_link(chm_path, language, word)
-
-            # DEBUG: Diese MessageBox zeigt vorläufig den erzeugten CHM-Link.
-            # Nach Abschluss der Hilfethemen-Zuordnung kann sie entfernt werden.
-            self._show_message_box(
-                QMessageBox.Information,
-                "DEBUG – F1-Kontexthilfe",
-                f"Sprache: {language.upper()}\n"
-                f"Bezeichner: {word}\n\n"
-                f"Link: {link}",
+            # F1 soll unmittelbar zur dokumentierten Stelle springen. Der
+            # CHM-Viewer sucht das Wort zuerst im Keyword-Index und danach im
+            # Themenbaum. Das funktioniert fuer Sprachschluesselwoerter ebenso
+            # wie fuer dokumentierte Funktions-/Methodennamen.
+            self.statusBar().showMessage(
+                f"F1-Kontexthilfe: {language.upper()} / {word}",
+                5000,
             )
             self.show_chm_viewer(
                 context_language=language,
@@ -17826,6 +22260,166 @@ border: 2px solid #2a69aa;
             self.statusBar().showMessage(
                 f"D64: {directory.disk_name} – {len(directory.entries)} Einträge"
             )
+
+        def _show_information_widget(self, tab: QWidget) -> None:
+            self.right_panel_tabs.setCurrentWidget(self.information_panel_tab)
+            self.right_info_tabs.setCurrentWidget(tab)
+            self.right_dock.show()
+            self.right_dock.raise_()
+
+        @staticmethod
+        def _info_hex(value: Optional[int]) -> str:
+            if value is None:
+                return "–"
+            return f"0x{int(value):X}"
+
+        def _append_coff_object_details(
+            self,
+            target: QListWidget,
+            info: Dict[str, object],
+            *,
+            prefix: str = "",
+        ) -> None:
+            lead = str(prefix)
+            sections = list(info.get("sections", ()))
+            symbols = list(info.get("symbols", ()))
+            target.addItem(f"{lead}Architektur: {info.get('architecture', '–')}")
+            target.addItem(f"{lead}Sektionen: {len(sections)}")
+            target.addItem(f"{lead}Symbole: {len(symbols)}")
+            target.addItem(f"{lead}Symboltabelle: {self._info_hex(info.get('symbol_pointer'))}")
+            target.addItem(f"{lead}----- SEKTIONEN -----")
+            for sec in sections:
+                target.addItem(
+                    f"{lead}[{int(sec['index']):02d}] {sec['name']:<9} "
+                    f"{sec['role']:<16} {sec['permissions']:<3} "
+                    f"Raw={self._info_hex(sec['raw_pointer'])} "
+                    f"Size={int(sec['raw_size'])} "
+                    f"Relocs={int(sec['reloc_count'])}"
+                )
+            target.addItem(f"{lead}----- OBJEKTE / SYMBOLE -----")
+            visible_symbols = [
+                symbol for symbol in symbols
+                if symbol.get("name") and not str(symbol.get("name")).startswith(".")
+            ]
+            if not visible_symbols:
+                target.addItem(f"{lead}(Keine benannten COFF-Symbole)")
+            for symbol in visible_symbols:
+                file_pos = symbol.get("file_position")
+                pos_text = self._info_hex(file_pos) if file_pos is not None else "–"
+                target.addItem(
+                    f"{lead}{symbol['name']}  |  {symbol['role']}  |  "
+                    f"{symbol['section']}+0x{int(symbol['value']):X}  |  "
+                    f"Datei={pos_text}  |  {symbol['storage']}"
+                )
+
+        def show_project_object_information(self, item: QTreeWidgetItem) -> None:
+            self._show_information_widget(self.object_info_tab)
+            self.object_info_list.clear()
+            path_text = str(item.data(0, Qt.UserRole + 302) or "")
+            path = Path(path_text) if path_text else Path(item.text(0))
+            self.object_info_summary.setText(
+                f"<b>{html.escape(item.text(0))}</b><br>COFF-Objektdatei"
+            )
+            self.object_info_list.addItem(f"Name: {item.text(0)}")
+            self.object_info_list.addItem(f"Pfad: {path_text or '(kein Pfad)'}")
+            if not path_text or not path.exists():
+                self.object_info_list.addItem("Status: Datei wurde nicht gefunden")
+                self.statusBar().showMessage(f"Objektdatei fehlt: {item.text(0)}")
+                return
+            try:
+                payload = path.read_bytes()
+                info = analyze_coff_object_bytes(payload)
+            except (OSError, ValueError) as exc:
+                self.object_info_list.addItem(f"Fehler: {exc}")
+                self.statusBar().showMessage(f"Objektanalyse fehlgeschlagen: {path.name}")
+                return
+            self.object_info_list.addItem(f"Größe: {_coff_human_size(len(payload))}")
+            self.object_info_list.addItem(f"Ziel: {info['architecture']}")
+            self.object_info_list.addItem(f"COFF-Machine: 0x{int(info['machine']):04X}")
+            self._append_coff_object_details(self.object_info_list, info)
+            self.statusBar().showMessage(
+                f"Objekt analysiert: {path.name} – {len(info['symbols'])} Symbole"
+            )
+
+        def show_project_archive_information(self, item: QTreeWidgetItem) -> None:
+            self._show_information_widget(self.archive_info_tab)
+            self.archive_info_list.clear()
+            path_text = str(item.data(0, Qt.UserRole + 302) or "")
+            path = Path(path_text) if path_text else Path(item.text(0))
+            self.archive_info_summary.setText(
+                f"<b>{html.escape(item.text(0))}</b><br>COFF .a-Archiv"
+            )
+            self.archive_info_list.addItem(f"Name: {item.text(0)}")
+            self.archive_info_list.addItem(f"Pfad: {path_text or '(noch kein Zielpfad)'}")
+
+            if path_text and path.exists():
+                try:
+                    payload = path.read_bytes()
+                    info = analyze_coff_archive_bytes(payload)
+                except (OSError, ValueError) as exc:
+                    self.archive_info_list.addItem(f"Fehler: {exc}")
+                    self.statusBar().showMessage(f"Archivanalyse fehlgeschlagen: {item.text(0)}")
+                    return
+                architectures = list(info.get("architectures", ()))
+                self.archive_info_list.addItem(f"Größe: {_coff_human_size(len(payload))}")
+                self.archive_info_list.addItem(
+                    "Ziel: " + (", ".join(architectures) if architectures else "kein erkanntes COFF-Objekt")
+                )
+                members = list(info.get("members", ()))
+                self.archive_info_list.addItem(f"Objekte im Archiv: {len(members)}")
+                self.archive_info_list.addItem("----- ARCHIVMITGLIEDER -----")
+                for index, member in enumerate(members, 1):
+                    obj = member.get("object")
+                    arch = obj.get("architecture", "kein COFF") if obj else "kein COFF"
+                    self.archive_info_list.addItem(
+                        f"[{index:02d}] {member['name']}  |  "
+                        f"Header={self._info_hex(member['header_offset'])}  "
+                        f"Objekt={self._info_hex(member['data_offset'])}  "
+                        f"Größe={member['size']}  |  {arch}"
+                    )
+                    if obj is not None:
+                        # Die wichtigsten Objekt-/Symbolpositionen direkt im
+                        # Archiv-Tab anzeigen. Die Dateiposition ist relativ
+                        # zum Objekt und wird um dessen Archivoffset ergaenzt.
+                        for symbol in obj.get("symbols", ()):
+                            name = str(symbol.get("name", ""))
+                            if not name or name.startswith("."):
+                                continue
+                            relative_file = symbol.get("file_position")
+                            absolute_file = (
+                                int(member["data_offset"]) + int(relative_file)
+                                if relative_file is not None else None
+                            )
+                            self.archive_info_list.addItem(
+                                f"    {name}  |  {symbol['role']}  |  "
+                                f"{symbol['section']}+0x{int(symbol['value']):X}  |  "
+                                f"Archiv={self._info_hex(absolute_file)}"
+                            )
+                self.statusBar().showMessage(
+                    f"Archiv analysiert: {path.name} – {len(members)} Objekt(e)"
+                )
+                return
+
+            # Ein noch nicht gebautes Archiv kann trotzdem bereits eine
+            # Projektliste von Objektdateien besitzen.
+            self.archive_info_list.addItem("Status: Archivdatei wurde noch nicht erzeugt")
+            project_objects = self._project_archive_object_items(item)
+            self.archive_info_list.addItem(f"Projekt-Objekte: {len(project_objects)}")
+            for index, child in enumerate(project_objects, 1):
+                child_path_text = str(child.data(0, Qt.UserRole + 302) or "")
+                child_path = Path(child_path_text) if child_path_text else None
+                detail = "nicht gefunden"
+                if child_path is not None and child_path.exists():
+                    try:
+                        payload = child_path.read_bytes()
+                        obj = analyze_coff_object_bytes(payload)
+                        detail = f"{obj['architecture']}, {_coff_human_size(len(payload))}"
+                    except (OSError, ValueError) as exc:
+                        detail = f"Analysefehler: {exc}"
+                self.archive_info_list.addItem(
+                    f"[{index:02d}] {child.text(0)}  |  {detail}  |  {child_path_text}"
+                )
+            self.statusBar().showMessage(f"Archivprojekt: {item.text(0)}")
 
         def show_file_information(self, path: Path) -> None:
             self.right_panel_tabs.setCurrentWidget(self.information_panel_tab)
@@ -19683,10 +24277,22 @@ def parse_arguments(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="C-/Pascal-Quelle intern zu COFF32 und anschließend als PE32-EXE bzw. Pascal-LIBRARY als DLL linken",
     )
     target.add_argument(
+        "--write-pe64",
+        metavar="QUELLE",
+        type=Path,
+        help="C-/Pascal-Quelle intern zu AMD64-COFF64 und anschließend als PE64-EXE bzw. Pascal-LIBRARY als DLL linken",
+    )
+    target.add_argument(
         "--write-coff32",
         metavar="QUELLE",
         type=Path,
         help="C-/Pascal-Quelle als relocierbares internes COFF32-.o erzeugen",
+    )
+    target.add_argument(
+        "--write-coff64",
+        metavar="QUELLE",
+        type=Path,
+        help="C-/Pascal-Quelle als relocierbares internes AMD64-COFF64-.o erzeugen",
     )
     target.add_argument(
         "--archive-coff32",
@@ -19695,10 +24301,22 @@ def parse_arguments(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="COFF32-Objekte aus --object in ein .a-Archiv schreiben",
     )
     target.add_argument(
+        "--archive-coff64",
+        metavar="ARCHIV",
+        type=Path,
+        help="AMD64-COFF64-Objekte aus --object in ein .a-Archiv schreiben",
+    )
+    target.add_argument(
         "--link-pe32",
         metavar="EXE",
         type=Path,
         help="COFF32-Objekte/Archive aus --object intern zu PE32-EXE oder bei .dll-Ziel zu DLL linken",
+    )
+    target.add_argument(
+        "--link-pe64",
+        metavar="EXE",
+        type=Path,
+        help="AMD64-COFF64-Objekte/Archive aus --object intern zu PE64-EXE oder bei .dll-Ziel zu DLL linken",
     )
     target.add_argument(
         "--write-pui",
@@ -19745,7 +24363,7 @@ def parse_arguments(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--windows-graphics",
         choices=WINDOWS_GRAPHICS_BACKENDS,
         default="Direct2D",
-        help="Grafikbackend für Windows PE32",
+        help="Grafikbackend für Windows PE32/PE64",
     )
     parser.add_argument(
         "--object",
@@ -19753,7 +24371,7 @@ def parse_arguments(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         default=[],
         type=Path,
         metavar="DATEI",
-        help="COFF32-.o/.obj oder .a/.lib; für Archiv/Linker wiederholbar",
+        help="COFF32/COFF64-.o/.obj oder .a/.lib; für Archiv/Linker wiederholbar",
     )
     return parser.parse_args(argv)
 
@@ -19834,6 +24452,51 @@ def _write_pe32_generated_objects(
     return result
 
 
+
+def _write_pe64_generated_objects(
+    generated,
+    *,
+    source_path: Path,
+    assembly_path: Path,
+    main_object_path: Optional[Path] = None,
+) -> List[Path]:
+    """Assembliert Hauptmodul und PE64-Abhängigkeiten separat zu AMD64-COFF64."""
+    result: List[Path] = []
+    seen: set[str] = set()
+
+    def add_object(path: Path, assembly: str, asm_name: str) -> None:
+        resolved = path.expanduser().resolve()
+        key = str(resolved).casefold()
+        if key in seen:
+            return
+        data = assemble_pe64_coff_object(assembly, filename=asm_name)
+        _write_cli_file(resolved, data)
+        seen.add(key)
+        result.append(resolved)
+
+    main_path = (
+        main_object_path.expanduser().resolve()
+        if main_object_path is not None
+        else source_path.with_suffix(".o").resolve()
+    )
+    add_object(main_path, generated.assembly, assembly_path.name)
+
+    for module_name, module_assembly in getattr(generated, "linked_pe32_modules", ()):
+        module_source = Path(module_name).expanduser().resolve()
+        module_asm = module_source.with_suffix(".generated.pe64.asm")
+        _write_cli_file(module_asm, str(module_assembly).encode("utf-8"))
+        add_object(module_source.with_suffix(".o"), str(module_assembly), module_asm.name)
+
+    for module_name in getattr(generated, "linked_assembly_files", ()):
+        module_path = Path(module_name).expanduser().resolve()
+        try:
+            module_assembly = module_path.read_text(encoding="utf-8-sig")
+        except UnicodeError:
+            module_assembly = module_path.read_text(encoding="cp1252")
+        add_object(module_path.with_suffix(".o"), module_assembly, module_path.name)
+    return result
+
+
 def _compile_cli(args: argparse.Namespace) -> int:
     if args.write_amiga is not None:
         target = "amiga"
@@ -19841,6 +24504,9 @@ def _compile_cli(args: argparse.Namespace) -> int:
     elif args.write_pe32 is not None or args.write_coff32 is not None:
         target = "pe32"
         source_arg = args.write_pe32 or args.write_coff32
+    elif args.write_pe64 is not None or args.write_coff64 is not None:
+        target = "pe64"
+        source_arg = args.write_pe64 or args.write_coff64
     else:
         target = "c64"
         source_arg = args.write_c64
@@ -19857,8 +24523,8 @@ def _compile_cli(args: argparse.Namespace) -> int:
         if path not in include_paths:
             include_paths.append(path)
     defines = _cli_defines(args.define)
-    if target == "pe32":
-        defines.update(windows_graphics_predefined_macros(args.windows_graphics))
+    if target in {"pe32", "pe64"}:
+        defines.update(windows_graphics_predefined_macros(args.windows_graphics, target))
     suffix = source_path.suffix.casefold()
     if suffix in {".bas", ".basic"}:
         if target != "c64":
@@ -19882,7 +24548,7 @@ def _compile_cli(args: argparse.Namespace) -> int:
                 kwargs["cpu_model"] = args.amiga_cpu
             if "fpu_model" in params:
                 kwargs["fpu_model"] = args.amiga_fpu
-        if target == "pe32" and "graphics_backend" in params:
+        if target in {"pe32", "pe64"} and "graphics_backend" in params:
             kwargs["graphics_backend"] = args.windows_graphics
         generated = compile_pascal_to_assembly(source, **kwargs)
     elif suffix == ".c":
@@ -19900,7 +24566,7 @@ def _compile_cli(args: argparse.Namespace) -> int:
                 kwargs["cpu_model"] = args.amiga_cpu
             if "fpu_model" in params:
                 kwargs["fpu_model"] = args.amiga_fpu
-        if target == "pe32" and "graphics_backend" in params:
+        if target in {"pe32", "pe64"} and "graphics_backend" in params:
             kwargs["graphics_backend"] = args.windows_graphics
         generated = compile_c_to_assembly(source, **kwargs)
     else:
@@ -19911,6 +24577,7 @@ def _compile_cli(args: argparse.Namespace) -> int:
     assembly_suffix = (
         ".generated.amiga.asm" if target == "amiga"
         else ".generated.pe32.asm" if target == "pe32"
+        else ".generated.pe64.asm" if target == "pe64"
         else ".generated.asm"
     )
     assembly_path = source_path.with_suffix(assembly_suffix).resolve()
@@ -19963,6 +24630,58 @@ def _compile_cli(args: argparse.Namespace) -> int:
             default_output = source_path.with_suffix(".dll")
         else:
             linked = link_coff32_inputs(
+                object_paths,
+                entry_symbol="_start",
+                gui=True,
+                dll=False,
+            )
+            image = linked.executable
+            default_output = source_path.with_suffix(".exe")
+    elif target == "pe64":
+        explicit_object_only = args.write_coff64 is not None
+        if explicit_object_only or source_kind == "unit":
+            object_path = (
+                args.output.expanduser().resolve()
+                if args.output is not None
+                else source_path.with_suffix(".o").resolve()
+            )
+            object_paths = _write_pe64_generated_objects(
+                generated,
+                source_path=source_path,
+                assembly_path=assembly_path,
+                main_object_path=object_path,
+            )
+            pui_path = getattr(generated, "pui_path", None)
+            if pui_path:
+                print(f"PUI: {Path(pui_path).resolve()}")
+            print(
+                f"COFF64: {source_path} -> {assembly_path} -> "
+                + ", ".join(str(path) for path in object_paths)
+            )
+            return 0
+
+        object_paths = _write_pe64_generated_objects(
+            generated,
+            source_path=source_path,
+            assembly_path=assembly_path,
+        )
+        for item in getattr(args, "object", ()):
+            path = item.expanduser().resolve()
+            if path not in object_paths:
+                object_paths.append(path)
+
+        if source_kind == "library":
+            linked = link_coff64_inputs(
+                object_paths,
+                entry_symbol="__d64_dll_entry",
+                gui=True,
+                dll=True,
+                dll_name=f"{generated.program_name}.dll",
+            )
+            image = linked.executable
+            default_output = source_path.with_suffix(".dll")
+        else:
+            linked = link_coff64_inputs(
                 object_paths,
                 entry_symbol="_start",
                 gui=True,
@@ -20052,6 +24771,50 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         except Exception as exc:
             print(f"Linkerfehler: {exc}", file=sys.stderr)
             return 1
+    if args.archive_coff64 is not None:
+        if args.directory is not None:
+            print("Fehler: Kein GUI-Arbeitsverzeichnis bei --archive-coff64.", file=sys.stderr)
+            return 2
+        if not args.object:
+            print("Fehler: --archive-coff64 benötigt mindestens ein --object.", file=sys.stderr)
+            return 2
+        try:
+            target = args.archive_coff64.expanduser().resolve()
+            members = []
+            for path_value in args.object:
+                path = path_value.expanduser().resolve()
+                data = path.read_bytes()
+                parse_coff64_object(data)
+                members.append((path.name, data))
+            _write_cli_file(target, create_coff64_archive(members))
+            print(f"COFF64 ARCHIVE: {len(members)} Objekt(e) -> {target}")
+            return 0
+        except Exception as exc:
+            print(f"Archivfehler: {exc}", file=sys.stderr)
+            return 1
+    if args.link_pe64 is not None:
+        if args.directory is not None:
+            print("Fehler: Kein GUI-Arbeitsverzeichnis bei --link-pe64.", file=sys.stderr)
+            return 2
+        if not args.object:
+            print("Fehler: --link-pe64 benötigt mindestens ein --object.", file=sys.stderr)
+            return 2
+        try:
+            target = args.link_pe64.expanduser().resolve()
+            is_dll = target.suffix.casefold() == ".dll"
+            program = link_coff64_inputs(
+                [item.expanduser().resolve() for item in args.object],
+                entry_symbol="__d64_dll_entry" if is_dll else "_start",
+                gui=True,
+                dll=is_dll,
+                dll_name=target.name if is_dll else None,
+            )
+            _write_cli_file(target, program.executable)
+            print(f"PE64 LINK: {len(args.object)} Eingabe(n) -> {target}")
+            return 0
+        except Exception as exc:
+            print(f"Linkerfehler: {exc}", file=sys.stderr)
+            return 1
     if args.write_pui is not None:
         if args.directory is not None:
             print(
@@ -20073,10 +24836,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(f"Compilerfehler: {exc}", file=sys.stderr)
             return 1
     if any((
-        args.write_amiga is not None,
-        args.write_c64 is not None,
-        args.write_pe32 is not None,
+        args.write_amiga  is not None,
+        args.write_c64    is not None,
+        args.write_pe32   is not None,
         args.write_coff32 is not None,
+        args.write_pe64   is not None,
+        args.write_coff64 is not None,
     )):
         if args.directory is not None:
             print(
