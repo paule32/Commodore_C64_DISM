@@ -1,0 +1,10 @@
+; Deutsche und englische Richtungsbefehle
+east steps 30
+south steps 20
+west steps 30
+nord steps 20
+
+rechts steps 15
+runter steps 10
+links steps 15
+hoch steps 10

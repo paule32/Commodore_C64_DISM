@@ -20,7 +20,7 @@ class EditorCompilePipelineSourceTests(unittest.TestCase):
         self.assertIn('self.assembler_panel.setVisible(', block)
         self.assertIn('self.assemble_button.setText("Compile")', block)
         self.assertIn('self.build_target_combo', SOURCE)
-        self.assertIn('("C= 64", "Amiga", "Windows PE32")', SOURCE)
+        self.assertIn('("C= 64", "Amiga", "Windows PE32", "Windows PE64")', SOURCE)
         self.assertIn('self.start_assembled_button.setVisible(is_assembler)', block)
 
     def test_compile_stage_does_not_assemble_program(self) -> None:

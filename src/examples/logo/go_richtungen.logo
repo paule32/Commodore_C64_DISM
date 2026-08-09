@@ -1,0 +1,5 @@
+; Explizite GO-Richtungen
+go east 35
+go south steps 25
+go west 35
+go north steps 25

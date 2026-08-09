@@ -1,0 +1,9 @@
+; Quadrat um den Startpunktbereich
+; Start: (160,100), Richtung Ost
+steps 60
+right 90
+steps 40
+right 90
+steps 60
+right 90
+steps 40
