@@ -1,0 +1,28 @@
+#define VALUE 5
+#define makevar(x) value ## x
+#define join(a,b) a ## b
+
+value1 = 14
+foobar = 9
+
+#ifdef VALUE >= 5
+? "VALUE >= 5"
+#endif
+
+#if defined(VALUE) >= 5
+? "defined(VALUE) >= 5"
+#endif
+
+? "makevar(1) = " + makevar(1)
+? "join(foo,bar) = " + join(foo,bar)
+
+#ifndef NOT_DEFINED
+#define LOCAL_VALUE 123
+? "lokal = " + LOCAL_VALUE
+#endif
+
+#ifdef LOCAL_VALUE
+? "FEHLER: Scope ist ausgelaufen"
+#else
+? "LOCAL_VALUE ist korrekt scoped"
+#endif

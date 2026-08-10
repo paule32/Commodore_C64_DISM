@@ -1,7 +1,7 @@
 lexer grammar DBaseLexer;
 
 // ---------------------------------------------------------------------------
-// dBase lexical layer, stage 3.
+// dBase lexical layer, stage 7: comments, expressions, members.
 // ---------------------------------------------------------------------------
 
 STRING_DOUBLE
@@ -27,6 +27,14 @@ LINE_COMMENT_STAR
 LINE_COMMENT_AMP
     : '&&' ~[\r\n]* -> channel(HIDDEN)
     ;
+
+PROCEDURE    : [Pp][Rr][Oo][Cc][Ee][Dd][Uu][Rr][Ee];
+FUNCTION     : [Ff][Uu][Nn][Cc][Tt][Ii][Oo][Nn];
+RETURN       : [Rr][Ee][Tt][Uu][Rr][Nn];
+ENDPROC      : [Ee][Nn][Dd][Pp][Rr][Oo][Cc];
+ENDPROCEDURE : [Ee][Nn][Dd][Pp][Rr][Oo][Cc][Ee][Dd][Uu][Rr][Ee];
+ENDFUNC      : [Ee][Nn][Dd][Ff][Uu][Nn][Cc];
+ENDFUNCTION  : [Ee][Nn][Dd][Ff][Uu][Nn][Cc][Tt][Ii][Oo][Nn];
 
 QUESTION2 : '??';
 QUESTION  : '?';

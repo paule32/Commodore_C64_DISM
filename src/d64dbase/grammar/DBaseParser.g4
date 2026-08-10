@@ -3,12 +3,39 @@ parser grammar DBaseParser;
 options { tokenVocab=DBaseLexer; }
 
 sourceFile
-    : (statement NEWLINE* | NEWLINE)* EOF
+    : (routineDefinition | statement NEWLINE* | NEWLINE)* EOF
+    ;
+
+routineDefinition
+    : procedureDefinition
+    | functionDefinition
+    ;
+
+procedureDefinition
+    : PROCEDURE IDENTIFIER parameterClause? NEWLINE*
+      routineStatement*
+      (RETURN NEWLINE* (ENDPROC | ENDPROCEDURE)?
+      | (ENDPROC | ENDPROCEDURE))
+    ;
+
+functionDefinition
+    : FUNCTION IDENTIFIER parameterClause? NEWLINE*
+      routineStatement*
+      RETURN expression NEWLINE* (ENDFUNC | ENDFUNCTION)?
+    ;
+
+parameterClause
+    : LPAREN (IDENTIFIER (COMMA IDENTIFIER)*)? RPAREN
+    ;
+
+routineStatement
+    : statement NEWLINE+
     ;
 
 statement
     : (QUESTION | QUESTION2) expression
     | IDENTIFIER EQUAL expression
+    | callExpression
     | setStatement
     ;
 
@@ -39,8 +66,13 @@ primaryExpression
     | HEX_NUMBER
     | STRING_DOUBLE
     | STRING_SINGLE
-    | IDENTIFIER (LPAREN argumentList? RPAREN)?
+    | callExpression
+    | IDENTIFIER
     | LPAREN expression RPAREN
+    ;
+
+callExpression
+    : IDENTIFIER LPAREN argumentList? RPAREN
     ;
 
 argumentList

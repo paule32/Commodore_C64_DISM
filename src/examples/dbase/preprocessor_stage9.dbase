@@ -1,0 +1,27 @@
+#define VALUE 5
+#define HERE __LINE__
+#define makevar(x) value ## x
+
+value1 = 14
+
+#info dBase Stage 9 Beispiel wird kompiliert
+
+#if 0
+    // Dieser Block wird vollständig ignoriert.
+    UNFERTIGER CODE @@@ !!!
+    #error Auch dieses #error ist inaktiv.
+#endif
+
+#ifdef VALUE >= 5
+    ? "VALUE >= 5"
+#else
+    ? "VALUE < 5"
+#endif
+
+#if defined(VALUE) >= 5
+    ? "File: " + __FILE__ + ", Zeile: " + __LINE__
+    ? "Build: " + __DATE__ + " " + __TIME__
+#endif
+
+? "HERE = " + HERE
+? "makevar(1) = " + makevar(1)

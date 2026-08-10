@@ -13,7 +13,7 @@ from .compiler import (
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="dBase-Compiler: Variablen, ?/??, SET DEBUG ON/OFF, eingebettete stdout/stderr-Ausgabe / Windows PE32 + PE32+"
+        description="dBase-Compiler: Qt5-GUI, Variablen, PROCEDURE/FUNCTION, ?/?? / Windows PE32 + PE32+"
     )
     parser.add_argument("source", help="dBase-Quelldatei")
     parser.add_argument(

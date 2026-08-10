@@ -97,13 +97,14 @@ class DBaseEmbeddedConsoleStage4Tests(unittest.TestCase):
 
     def test_d64_gui_source_contains_embedded_console_process_wiring(self):
         text = (ROOT / "d64_dism.py").read_text(encoding="utf-8")
-        self.assertIn("def build_dbase_qt5_runtime_dll", text)
-        self.assertIn("def ensure_dbase_qt5_runtime", text)
+        self.assertNotIn("def build_dbase_qt5_runtime_dll", text)
+        self.assertNotIn("def ensure_dbase_qt5_runtime", text)
         self.assertIn("def _launch_dbase_qt5_gui", text)
         self.assertIn("d64qt5.dll", text)
-        self.assertIn("Qt5Widgets.dll", text)
-        self.assertIn("qwindows.dll", text)
+        self.assertIn("subprocess.Popen([str(output_path)]", text)
         self.assertNotIn("process.readyReadStandardOutput.connect", text)
+        self.assertNotIn("mingw32-make", text)
+        self.assertNotIn("qmake.exe", text)
 
 
 if __name__ == "__main__":

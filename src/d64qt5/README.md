@@ -32,3 +32,9 @@ Links in der oberen Tab-Leiste befinden sich zwei selbst gezeichnete
 Lupen-Schaltflaechen: `+` vergroessert die Schrift, `-` verkleinert sie.
 Die Groesse wird fuer Konsole, DEBUG und DEBUG-Eingabe synchron zwischen
 9 pt und 75 pt gehalten.
+
+## Startverhalten ab dBase Start-Fix
+
+`d64_dism` baut diese DLL beim Start einer dBase-EXE nicht mehr automatisch.
+Eine manuell erzeugte `d64qt5.dll` wird lediglich vom Windows-Loader benutzt
+und sollte neben der erzeugten EXE oder in einem Windows-DLL-Suchpfad liegen.
