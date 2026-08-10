@@ -1,0 +1,19 @@
+// dBase stage 4 – variables, expressions and embedded DEBUG output
+X = 1
+Y = 2 + 3 * 4
+HexValue = 0x10 + $10 + 10h
+Letter = 'A'
+Text = "text 1" + "text 2"
+
+? "Wert von X = " + X
+? "Y = " + Y
+? "HexValue = " + HexValue
+?? "Text = " + Text
+? " / Letter = " + Letter
+
+SET FORMAT TO CONSOLE
+SET DEBUG ON
+? "Debug: X = " + X
+? "Debug: Y = " + Y
+SET DEBUG OFF
+? "Debug-Ausgabe beendet"

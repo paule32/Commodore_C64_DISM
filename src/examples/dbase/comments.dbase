@@ -1,0 +1,13 @@
+// kompletter Zeilenkommentar
+** ebenfalls bis zum Zeilenende
+&& ebenfalls bis zum Zeilenende
+
+? 2 /** text  */ + 2 /*
+text
+*/ * 3       && Kommentar hinter Code
+
+? "// kein Kommentar"
+? '** ebenfalls String'
+? "/* auch kein Blockkommentar */"
+
+? 4 + 5      // Kommentar hinter Ausdruck

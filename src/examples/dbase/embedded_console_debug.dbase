@@ -1,0 +1,15 @@
+// dBase: eingebettete Konsole + DEBUG
+X = 2 + 3 * 4
+
+? "Wert von X = " + X
+?? "Konsole ohne NewLine: "
+? X
+
+SET FORMAT TO CONSOLE
+SET DEBUG ON
+? "DEBUG: X = " + X
+?? "DEBUG ohne NewLine"
+? " ... fertig"
+SET DEBUG OFF
+
+? "Wieder in der Konsole"

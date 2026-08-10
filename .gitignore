@@ -27,3 +27,17 @@ src/examples/pe32/pe32_stackframe.exe
 src/examples/pe32/pe32_stackframe.o
 src/examples/stackframe.exe
 src/examples/two_objects.exe
+src/examples/dbase/variables_debug.o
+src/examples/dbase/variables_debug.exe
+src/examples/dbase/print_expr.exe
+src/examples/dbase/print_expr.o
+src/examples/dbase/embedded_console_debug.o
+src/examples/dbase/embedded_console_debug.exe
+src/examples/dbase/comments_only.o
+src/d64qt5/release/Unbenannt_7.exe
+src/d64qt5/release/d64qt5_bridge.o
+src/d64qt5/release/libd64qt5.a
+src/d64qt5/release/d64qt5.dll
+src/d64qt5/Makefile.Debug
+src/d64qt5/Makefile.Release
+src/d64qt5/Makefile

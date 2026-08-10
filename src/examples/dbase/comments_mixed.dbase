@@ -1,0 +1,10 @@
+// Mischbeispiel zur Kommentar-Lexik.
+// Die dBase-Anweisungen selbst folgen in der nächsten Ausbaustufe.
+
+? 2 /** text  */ + 2 /*
+text
+*/ * 3       && Kommentar hinter Code
+
+** Kommentar über die gesamte Zeile
+? "// kein Kommentar im String"
+? '/* ebenfalls kein Kommentar im String */'

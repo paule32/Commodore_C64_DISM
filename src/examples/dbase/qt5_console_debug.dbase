@@ -1,0 +1,11 @@
+// Qt5-Ausgabe ohne Textkonsole
+X = 2 + 3 * 4
+? "Wert von X = " + X
+
+SET FORMAT TO CONSOLE
+SET DEBUG ON
+? "DEBUG: X = " + X
+?? "DEBUG ohne NewLine"
+
+SET DEBUG OFF
+? "Wieder Konsole"

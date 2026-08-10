@@ -1,0 +1,11 @@
+LIBRARY d64qt5
+EXPORTS
+    DBaseQtInitialize
+    DBaseQtShowWindow
+    DBaseQtProcessEvents
+    DBaseQtSetDebugVisible
+    DBaseQtAppendConsole
+    DBaseQtAppendDebug
+    DBaseQtMarkProgramFinished
+    DBaseQtExec
+    DBaseQtShutdown

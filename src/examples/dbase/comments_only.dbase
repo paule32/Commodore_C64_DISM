@@ -1,0 +1,7 @@
+// dBase Kommentar-Test fuer Windows PE32 / PE32+
+** Diese komplette Zeile ist Kommentar.
+&& Auch diese komplette Zeile ist Kommentar.
+/*
+    Dieser Blockkommentar
+    verläuft über mehrere Zeilen.
+*/

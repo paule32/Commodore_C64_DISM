@@ -1,0 +1,19 @@
+// dBase Ausbaustufe 2: ? und ??
+
+?? "Summe: "
+? 1 + 2 + 3
+
+? "Prioritaet:"
+? 1 + 2 * 3
+? (1 + 2) * 3
+? 10 / 4
+
+?? "String-Konkatenation: "
+? "Hallo " + 'dBase'
+
+? 2 + /* Blockkommentar darf
+ueber mehrere Zeilen laufen */ 3
+
+?? "ohne "
+?? "NewLine "
+? "bis hier"
