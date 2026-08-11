@@ -61,10 +61,11 @@ class DBaseQt5GuiStage5Tests(unittest.TestCase):
 
     def test_bridge_source_builds_two_plaintext_tabs_and_debug_input(self):
         cpp = (ROOT / "d64qt5" / "d64qt5_bridge.cpp").read_text(encoding="utf-8")
-        self.assertIn("new QTabWidget", cpp)
-        self.assertIn("new QPlainTextEdit(g_console_page)", cpp)
-        self.assertIn("new QPlainTextEdit(g_debug_page)", cpp)
-        self.assertIn("new QLineEdit(g_debug_page)", cpp)
+        self.assertIn("new QTabBar(g_header)", cpp)
+        self.assertIn("new QStackedWidget(g_root)", cpp)
+        self.assertIn("new QPlainTextEdit(g_console_frame)", cpp)
+        self.assertIn("new QPlainTextEdit(g_debug_frame)", cpp)
+        self.assertIn("new QLineEdit(g_debug_frame)", cpp)
         self.assertIn('QStringLiteral("Konsole")', cpp)
         self.assertIn('QStringLiteral("DEBUG")', cpp)
         self.assertIn("QFrame::NoFrame", cpp)

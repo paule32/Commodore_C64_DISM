@@ -1,0 +1,7 @@
+? "Ausgabe in Konsole"
+
+SET DEBUG ON
+? "Ausgabe in DEBUG"
+
+SET DEBUG OFF
+? "Wieder Ausgabe in Konsole"

@@ -1,0 +1,10 @@
+_app.MFENSTER = new MENU(_app)
+with (_app.MFENSTER)
+    text = "&Fenster"
+endwith
+_app.MFENSTER.MCLOSE = new MENU(_app.MFENSTER)
+with (_app.MFENSTER.MCLOSE)
+    onClick = class::MCLOSE_ONCLICK
+    text = "Sch&ließen"
+    shortCut = "Ctrl+F4"
+endwith

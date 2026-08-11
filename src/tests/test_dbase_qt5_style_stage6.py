@@ -39,11 +39,11 @@ class DBaseQt5StyleStage6Tests(unittest.TestCase):
         self.assertIn('change_font_size(+1)', self.cpp)
         self.assertIn('change_font_size(-1)', self.cpp)
 
-    def test_zoom_buttons_live_in_top_left_tab_bar_corner(self):
-        self.assertIn('new QToolButton(g_zoom_widget)', self.cpp)
-        self.assertIn('create_zoom_icon(true)', self.cpp)
-        self.assertIn('create_zoom_icon(false)', self.cpp)
-        self.assertIn('setCornerWidget(g_zoom_widget, Qt::TopLeftCorner)', self.cpp)
+    def test_zoom_buttons_live_in_stable_header_before_tabbar(self):
+        self.assertIn('make_zoom_button(true, g_header)', self.cpp)
+        self.assertIn('make_zoom_button(false, g_header)', self.cpp)
+        self.assertIn('new QTabBar(g_header)', self.cpp)
+        self.assertNotIn('setCornerWidget(', self.cpp)
 
     def test_zoom_icons_are_self_drawn_magnifiers(self):
         self.assertIn('painter.drawEllipse', self.cpp)

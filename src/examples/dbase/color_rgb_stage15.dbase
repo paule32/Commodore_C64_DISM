@@ -1,0 +1,17 @@
+#define SYSTEM_COLOR "ActiveBorder"
+
+function getWindowColor()
+    return "Window"
+
+C = RGB(FF,00,80)
+
+_app.colorNormal = SYSTEM_COLOR
+? "Systemfarbe ActiveBorder"
+
+_app.colorNormal = C
+SET COLOR TO "W/N"
+? "Schwarz auf hellgrauem Text-Hintergrund"
+
+_app.colorNormal = getWindowColor()
+SET COLOR TO "N/W+"
+? "Weiss auf schwarzem Text-Hintergrund"

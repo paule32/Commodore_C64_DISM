@@ -1,0 +1,40 @@
+// dBase Stage 10: verschachtelte IF/ELSEIF/ELSE/ENDIF-Bedingungen
+
+X = 14
+S = "abc"
+
+IF X < 0
+    ? "X ist negativ"
+ELSEIF X == 14
+    ? "X ist 14"
+    IF S < "abd"
+        ? "S liegt lexikographisch vor abd"
+    ENDIF
+ELSE
+    ? "anderer Wert"
+ENDIF
+
+IF 0x10 >= 16
+    ? "Hex-Vergleich OK"
+ENDIF
+
+IF 2.5 < 3.0
+    ? "Float-Vergleich OK"
+ENDIF
+
+IF 'A' # 'B'
+    ? "# bedeutet ungleich"
+ENDIF
+
+function max2(a, b)
+    IF a >= b
+        return a
+    ENDIF
+    return b
+
+procedure show(value)
+    ? "value=" + value
+    return
+
+? "max=" + max2(7, 3)
+show(9)

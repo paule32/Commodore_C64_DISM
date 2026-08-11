@@ -1,0 +1,37 @@
+SET DEBUG ON
+SET BORDERCOLOR TO "ActiveBorder"
+SET COLOR TO "N/W+"
+CLEAR SCREEN
+
+_app.MFENSTER = new MENU(_app)
+with (_app.MFENSTER)
+    text = "&Fenster"
+endwith
+
+_app.MFENSTER.MCASCADE = new MENU(_app.MFENSTER)
+with (_app.MFENSTER.MCASCADE)
+    onClick = class::MCASCADE_ONCLICK
+    text = "Ü&berlappend"
+endwith
+
+_app.MFENSTER.MHORIZONTAL = new MENU(_app.MFENSTER)
+with (_app.MFENSTER.MHORIZONTAL)
+    text = "&Horizontal anordnen"
+endwith
+
+_app.MFENSTER.MSEP = new MENU(_app.MFENSTER)
+with (_app.MFENSTER.MSEP)
+    separator = true
+endwith
+
+_app.MFENSTER.MCLOSE = new MENU(_app.MFENSTER)
+with (_app.MFENSTER.MCLOSE)
+    text = "Sch&ließen"
+    shortCut = "Ctrl+F4"
+endwith
+
+procedure MCASCADE_ONCLICK()
+    ? "Überlappend angeklickt"
+    return
+
+? "Stage 18: ASCII-Rahmen nur am Popup-Menü"

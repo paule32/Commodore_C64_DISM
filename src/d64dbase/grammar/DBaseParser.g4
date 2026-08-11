@@ -3,7 +3,15 @@ parser grammar DBaseParser;
 options { tokenVocab=DBaseLexer; }
 
 sourceFile
-    : (routineDefinition | statement NEWLINE* | NEWLINE)* EOF
+    : (routineDefinition | topLevelItem NEWLINE* | NEWLINE)* EOF
+    ;
+
+topLevelItem
+    : statement
+    | ifStatement
+    | menuObjectStatement
+    | appPropertyStatement
+    | withStatement
     ;
 
 routineDefinition
@@ -12,24 +20,50 @@ routineDefinition
     ;
 
 procedureDefinition
-    : PROCEDURE IDENTIFIER parameterClause? NEWLINE*
-      routineStatement*
-      (RETURN NEWLINE* (ENDPROC | ENDPROCEDURE)?
-      | (ENDPROC | ENDPROCEDURE))
+    : PROCEDURE IDENTIFIER parameterClause? NEWLINE+
+      routineBodyItem*
+      RETURN NEWLINE*
     ;
 
 functionDefinition
-    : FUNCTION IDENTIFIER parameterClause? NEWLINE*
-      routineStatement*
-      RETURN expression NEWLINE* (ENDFUNC | ENDFUNCTION)?
+    : FUNCTION IDENTIFIER parameterClause? NEWLINE+
+      routineBodyItem*
+      RETURN expression NEWLINE*
     ;
 
 parameterClause
     : LPAREN (IDENTIFIER (COMMA IDENTIFIER)*)? RPAREN
     ;
 
-routineStatement
+routineBodyItem
     : statement NEWLINE+
+    | ifStatement NEWLINE*
+    ;
+
+ifStatement
+    : IF condition NEWLINE+
+      ifBodyItem*
+      (ELSEIF condition NEWLINE+ ifBodyItem*)*
+      (ELSE NEWLINE+ ifBodyItem*)?
+      ENDIF
+    ;
+
+ifBodyItem
+    : statement NEWLINE+
+    | returnStatement NEWLINE+
+    | ifStatement NEWLINE*
+    ;
+
+returnStatement
+    : RETURN expression?
+    ;
+
+condition
+    : expression comparisonOperator expression
+    ;
+
+comparisonOperator
+    : LT | LE | EQEQ | GT | GE | NEANGLE | HASH
     ;
 
 statement
@@ -37,11 +71,41 @@ statement
     | IDENTIFIER EQUAL expression
     | callExpression
     | setStatement
+    | CLEAR SCREEN
     ;
 
 setStatement
-    : IDENTIFIER IDENTIFIER IDENTIFIER IDENTIFIER   // SET FORMAT TO CONSOLE/SCREEN
-    | IDENTIFIER IDENTIFIER IDENTIFIER              // SET DEBUG ON/OFF
+    : SET FORMAT TO (SCREEN | CONSOLE)
+    | SET DEBUG (ON | OFF)
+    | SET COLOR TO (STRING_DOUBLE | STRING_SINGLE)
+    | SET BORDERCOLOR TO expression
+    ;
+
+// Erste native Klassenstufe: _app und this sind APPLICATION-Objekte.
+menuObjectStatement
+    : objectPath EQUAL NEW MENU LPAREN objectPath RPAREN
+    ;
+
+appPropertyStatement
+    : objectPath EQUAL expression
+    ;
+
+withStatement
+    : WITH LPAREN objectPath RPAREN NEWLINE+
+      menuPropertyStatement*
+      ENDWITH
+    ;
+
+menuPropertyStatement
+    : IDENTIFIER EQUAL (STRING_DOUBLE | STRING_SINGLE | TRUE | FALSE | callbackReference) NEWLINE+
+    ;
+
+callbackReference
+    : CLASS SCOPE IDENTIFIER
+    ;
+
+objectPath
+    : IDENTIFIER (DOT IDENTIFIER)*
     ;
 
 expression

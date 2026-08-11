@@ -186,6 +186,26 @@ class DBaseSetDebugStatement:
 
 
 @dataclass(frozen=True)
+class DBaseSetColorStatement:
+    spec: str
+    line: int
+    column: int
+
+
+@dataclass(frozen=True)
+class DBaseClearScreenStatement:
+    line: int
+    column: int
+
+
+@dataclass(frozen=True)
+class DBaseSetBorderColorStatement:
+    expression: DBaseExpression
+    line: int
+    column: int
+
+
+@dataclass(frozen=True)
 class DBaseReturnStatement:
     expression: Optional[DBaseExpression]
     line: int
@@ -195,6 +215,30 @@ class DBaseReturnStatement:
 @dataclass(frozen=True)
 class DBaseCallStatement:
     call: DBaseCallExpression
+    line: int
+    column: int
+
+
+@dataclass(frozen=True)
+class DBaseCondition:
+    left: DBaseExpression
+    operator: str
+    right: DBaseExpression
+    line: int
+    column: int
+
+
+@dataclass(frozen=True)
+class DBaseIfBranch:
+    condition: Optional[DBaseCondition]
+    body: Tuple[object, ...]
+    line: int
+    column: int
+
+
+@dataclass(frozen=True)
+class DBaseIfStatement:
+    branches: Tuple[DBaseIfBranch, ...]
     line: int
     column: int
 
@@ -1331,6 +1375,24 @@ def _tokenize_dbase_statement(
             index += 2
             column += 2
             continue
+
+        comparison_tokens = (
+            ("<=", "LE"),
+            (">=", "GE"),
+            ("==", "EQEQ"),
+            ("<>", "NEANGLE"),
+        )
+        matched_comparison = False
+        for raw_cmp, cmp_kind in comparison_tokens:
+            if text.startswith(raw_cmp, index):
+                tokens.append(DBaseToken(cmp_kind, raw_cmp, raw_cmp, token_line, token_column, token_offset))
+                index += len(raw_cmp)
+                column += len(raw_cmp)
+                matched_comparison = True
+                break
+        if matched_comparison:
+            continue
+
         if char == "?":
             tokens.append(DBaseToken("QMARK", "?", None, token_line, token_column, token_offset))
             index += 1
@@ -1405,6 +1467,9 @@ def _tokenize_dbase_statement(
             ")": "RPAREN",
             ",": "COMMA",
             "=": "EQUAL",
+            "<": "LT",
+            ">": "GT",
+            "#": "NEHASH",
         }
         kind = punctuation.get(char)
         if kind is not None:
@@ -1523,12 +1588,29 @@ class _DBaseExpressionParser:
                 column=first.column,
             )
 
+        if first.kind == "IDENT" and str(first.value).casefold() == "clear":
+            self.index += 1
+            target = self.current
+            if target.kind != "IDENT" or str(target.value).casefold() != "screen":
+                raise DBaseCompilerError(
+                    "CLEAR erwartet SCREEN.",
+                    line=target.line,
+                    column=target.column,
+                    filename=self.filename,
+                )
+            self.index += 1
+            self._expect_eof()
+            return DBaseClearScreenStatement(
+                line=first.line,
+                column=first.column,
+            )
+
         if first.kind == "IDENT" and str(first.value).casefold() == "set":
             self.index += 1
             command = self.current
             if command.kind != "IDENT":
                 raise DBaseCompilerError(
-                    "Nach SET wird FORMAT oder DEBUG erwartet.",
+                    "Nach SET wird FORMAT, DEBUG, COLOR oder BORDERCOLOR erwartet.",
                     line=command.line,
                     column=command.column,
                     filename=self.filename,
@@ -1568,8 +1650,50 @@ class _DBaseExpressionParser:
                     line=first.line,
                     column=first.column,
                 )
+            if keyword == "bordercolor":
+                self._expect_keyword("to", "Nach SET BORDERCOLOR wird TO erwartet.")
+                if self.current.kind == "EOF":
+                    raise DBaseCompilerError(
+                        "SET BORDERCOLOR TO erwartet einen Farbausdruck.",
+                        line=command.line, column=command.column, filename=self.filename,
+                    )
+                expression = self.parse_expression()
+                self._expect_eof()
+                return DBaseSetBorderColorStatement(
+                    expression=expression,
+                    line=first.line,
+                    column=first.column,
+                )
+            if keyword == "color":
+                self._expect_keyword("to", "Nach SET COLOR wird TO erwartet.")
+                value = self.current
+                if value.kind != "STRING":
+                    raise DBaseCompilerError(
+                        'SET COLOR TO erwartet eine Farbangabe als String, z.B. "W/N".',
+                        line=value.line,
+                        column=value.column,
+                        filename=self.filename,
+                    )
+                literal_kind, literal_value = value.value
+                if literal_kind not in {"string", "char"}:
+                    raise AssertionError(literal_kind)
+                self.index += 1
+                self._expect_eof()
+                spec = str(literal_value).strip().upper()
+                if not _validate_dbase_text_color_spec(spec):
+                    raise DBaseCompilerError(
+                        f"Ungueltige SET COLOR TO-Farbangabe '{literal_value}'.",
+                        line=value.line,
+                        column=value.column,
+                        filename=self.filename,
+                    )
+                return DBaseSetColorStatement(
+                    spec=spec,
+                    line=first.line,
+                    column=first.column,
+                )
             raise DBaseCompilerError(
-                "Nach SET wird FORMAT oder DEBUG erwartet.",
+                "Nach SET wird FORMAT, DEBUG, COLOR oder BORDERCOLOR erwartet.",
                 line=command.line,
                 column=command.column,
                 filename=self.filename,
@@ -1577,7 +1701,8 @@ class _DBaseExpressionParser:
 
         raise DBaseCompilerError(
             "Erwartet wird '?' oder '??', eine Variablenzuweisung, ein Member-Aufruf, "
-            "RETURN, SET FORMAT TO ... oder SET DEBUG ON/OFF.",
+            "RETURN, CLEAR SCREEN, SET FORMAT TO ..., SET DEBUG ON/OFF, "
+            "SET COLOR TO ... oder SET BORDERCOLOR TO ... .",
             line=first.line,
             column=first.column,
             filename=self.filename,
@@ -1764,13 +1889,115 @@ def _parse_dbase_routine_header(
     return kind, name, tuple(parameters), first.line, first.column
 
 
-def _routine_end_kind(keyword: str) -> str:
-    key = str(keyword).casefold()
-    if key in {"endproc", "endprocedure"}:
-        return "procedure"
-    if key in {"endfunc", "endfunction"}:
-        return "function"
-    return ""
+_REMOVED_ROUTINE_END_KEYWORDS = {
+    "endproc", "endprocedure", "endfunc", "endfunction", "endunction",
+}
+_IF_STOP_KEYWORDS = {"elseif", "else", "endif"}
+_COMPARISON_TOKEN_KINDS = {"LT", "LE", "EQEQ", "GT", "GE", "NEANGLE", "NEHASH"}
+_COMPARISON_OPERATOR_MAP = {
+    "LT": "<",
+    "LE": "<=",
+    "EQEQ": "==",
+    "GT": ">",
+    "GE": ">=",
+    "NEANGLE": "!=",
+    "NEHASH": "!=",
+}
+
+
+def _expression_from_token_slice(
+    tokens: Tuple[DBaseToken, ...],
+    *,
+    filename: str,
+    fallback: DBaseToken,
+) -> DBaseExpression:
+    body = tuple(token for token in tokens if token.kind != "EOF")
+    if not body:
+        raise DBaseCompilerError(
+            "Ausdruck in IF-Bedingung erwartet.",
+            line=fallback.line,
+            column=fallback.column,
+            filename=filename,
+        )
+    last = body[-1]
+    eof = DBaseToken(
+        "EOF", "", None,
+        last.line,
+        last.column + max(1, len(last.text)),
+        last.offset + len(last.text),
+    )
+    parser = _DBaseExpressionParser(body + (eof,), filename=filename)
+    expression = parser.parse_expression()
+    parser._expect_eof()
+    return expression
+
+
+def _parse_dbase_condition(
+    tokens: Tuple[DBaseToken, ...],
+    *,
+    filename: str,
+    keyword: str,
+) -> DBaseCondition:
+    """Parst ``IF/ELSEIF <expr> <vergleich> <expr>`` ohne THEN."""
+    first = tokens[0]
+    body = tuple(token for token in tokens[1:] if token.kind != "EOF")
+    if not body:
+        raise DBaseCompilerError(
+            f"Nach {keyword.upper()} wird eine Bedingung erwartet.",
+            line=first.line,
+            column=first.column,
+            filename=filename,
+        )
+
+    depth = 0
+    comparison_index = -1
+    comparison_token: Optional[DBaseToken] = None
+    for index, token in enumerate(body):
+        if token.kind == "LPAREN":
+            depth += 1
+            continue
+        if token.kind == "RPAREN":
+            depth = max(0, depth - 1)
+            continue
+        if depth == 0 and token.kind in _COMPARISON_TOKEN_KINDS:
+            if comparison_token is not None:
+                raise DBaseCompilerError(
+                    "Eine IF-Bedingung darf genau einen Vergleichsoperator enthalten.",
+                    line=token.line,
+                    column=token.column,
+                    filename=filename,
+                )
+            comparison_index = index
+            comparison_token = token
+
+    if comparison_token is None:
+        # Ein einzelnes '=' soll nicht stillschweigend als '==' gelten.
+        equal = next((token for token in body if token.kind == "EQUAL"), None)
+        if equal is not None:
+            raise DBaseCompilerError(
+                "In IF-Bedingungen ist '==' der Gleichheitsoperator; einzelnes '=' ist nur fuer Zuweisungen erlaubt.",
+                line=equal.line,
+                column=equal.column,
+                filename=filename,
+            )
+        raise DBaseCompilerError(
+            "IF/ELSEIF erwartet einen Vergleichsoperator: <, <=, ==, >, >=, <> oder #.",
+            line=first.line,
+            column=first.column,
+            filename=filename,
+        )
+
+    left_tokens = body[:comparison_index]
+    right_tokens = body[comparison_index + 1:]
+    left = _expression_from_token_slice(left_tokens, filename=filename, fallback=comparison_token)
+    right = _expression_from_token_slice(right_tokens, filename=filename, fallback=comparison_token)
+    return DBaseCondition(
+        left=left,
+        operator=_COMPARISON_OPERATOR_MAP[comparison_token.kind],
+        right=right,
+        line=comparison_token.line,
+        column=comparison_token.column,
+    )
 
 
 def parse_dbase_statements(
@@ -1779,60 +2006,20 @@ def parse_dbase_statements(
     filename: str = "<dBase>",
     target: str = "pe32",
 ) -> Tuple[object, ...]:
-    """Parst das dBase-Programm inklusive PROCEDURE/FUNCTION-Membern.
+    """Parst dBase inklusive RETURN-beendeter Member und verschachtelter IF-Bloecke.
 
-    Routinen stehen auf Top-Level. Eine PROCEDURE kann durch ein nacktes
-    ``RETURN`` beendet werden; alternativ werden ENDPROC/ENDPROCEDURE
-    akzeptiert. Eine FUNCTION wird durch ``RETURN <expr>`` beendet und darf
-    optional noch ENDFUNC/ENDFUNCTION folgen. Parameterlisten sind nicht
-    kuenstlich begrenzt.
+    Regeln dieser Stufe:
+    - PROCEDURE endet ausschliesslich mit ``RETURN`` ohne Wert.
+    - FUNCTION endet ausschliesslich mit ``RETURN <expr>``.
+    - ENDPROC/ENDPROCEDURE/ENDFUNC/ENDFUNCTION sind nicht mehr gueltig.
+    - IF/ELSEIF/ELSE/ENDIF darf beliebig verschachtelt werden.
     """
     frontend = preprocess_dbase_source(source, filename=filename, target=target)
     parse_source = frontend.preprocessed_source or frontend.source
     parse_comments = scan_dbase_comments(parse_source, filename=filename)
     cleaned = strip_dbase_comments(parse_source, filename=filename)
-    statements: list[object] = []
 
-    current_kind = ""
-    current_name = ""
-    current_parameters: Tuple[str, ...] = ()
-    current_body: list[object] = []
-    current_line = 0
-    current_column = 0
-    current_has_return = False
-    just_closed_kind = ""
-
-    def close_current(*, implicit: bool = False) -> None:
-        nonlocal current_kind, current_name, current_parameters, current_body
-        nonlocal current_line, current_column, current_has_return, just_closed_kind
-        if not current_kind:
-            return
-        if current_kind == "function" and not current_has_return:
-            raise DBaseCompilerError(
-                f"FUNCTION '{current_name}' benoetigt RETURN <expr>.",
-                line=current_line,
-                column=current_column,
-                filename=filename,
-            )
-        statements.append(
-            DBaseRoutineDefinition(
-                kind=current_kind,
-                name=current_name,
-                parameters=current_parameters,
-                body=tuple(current_body),
-                line=current_line,
-                column=current_column,
-            )
-        )
-        just_closed_kind = current_kind
-        current_kind = ""
-        current_name = ""
-        current_parameters = ()
-        current_body = []
-        current_line = 0
-        current_column = 0
-        current_has_return = False
-
+    records: list[Tuple[Tuple[DBaseToken, ...], str]] = []
     for start, end in _logical_statement_ranges(parse_source, parse_comments):
         fragment = cleaned[start:end]
         if not fragment.strip():
@@ -1845,75 +2032,270 @@ def parse_dbase_statements(
         )
         first = tokens[0]
         keyword = str(first.value).casefold() if first.kind == "IDENT" else ""
+        records.append((tokens, keyword))
 
-        if keyword in {"procedure", "function"}:
-            if current_kind:
-                # Eine PROCEDURE darf vor dem naechsten Member implizit enden.
-                # Eine FUNCTION braucht dagegen immer einen Rueckgabewert.
-                close_current(implicit=True)
-            kind, name, parameters, line, column = _parse_dbase_routine_header(
-                tokens,
-                filename=filename,
-            )
-            current_kind = kind
-            current_name = name
-            current_parameters = parameters
-            current_body = []
-            current_line = line
-            current_column = column
-            current_has_return = False
-            just_closed_kind = ""
-            continue
+    def reject_removed_end(tokens: Tuple[DBaseToken, ...], keyword: str) -> None:
+        if keyword not in _REMOVED_ROUTINE_END_KEYWORDS:
+            return
+        first = tokens[0]
+        raise DBaseCompilerError(
+            f"{first.text.upper()} wird nicht mehr unterstuetzt. "
+            "PROCEDURE endet mit RETURN; FUNCTION endet mit RETURN <expr>.",
+            line=first.line,
+            column=first.column,
+            filename=filename,
+        )
 
-        end_kind = _routine_end_kind(keyword)
-        if end_kind:
-            if current_kind:
-                if current_kind != end_kind:
+    def parse_simple(tokens: Tuple[DBaseToken, ...]) -> object:
+        parser = _DBaseExpressionParser(tokens, filename=filename)
+        return parser.parse_statement()
+
+    def parse_block(
+        index: int,
+        *,
+        stop_keywords: frozenset[str],
+        routine_kind: str = "",
+        routine_name: str = "",
+    ) -> tuple[list[object], int]:
+        result: list[object] = []
+        while index < len(records):
+            tokens, keyword = records[index]
+            first = tokens[0]
+            if keyword in stop_keywords:
+                return result, index
+            reject_removed_end(tokens, keyword)
+            if keyword in {"procedure", "function"}:
+                raise DBaseCompilerError(
+                    "PROCEDURE/FUNCTION darf nicht innerhalb eines IF-Blocks definiert werden.",
+                    line=first.line,
+                    column=first.column,
+                    filename=filename,
+                )
+            if keyword in _IF_STOP_KEYWORDS:
+                raise DBaseCompilerError(
+                    f"Unerwartetes {first.text.upper()} ohne passenden IF-Block.",
+                    line=first.line,
+                    column=first.column,
+                    filename=filename,
+                )
+            if keyword == "if":
+                statement, index = parse_if(
+                    index,
+                    routine_kind=routine_kind,
+                    routine_name=routine_name,
+                )
+                result.append(statement)
+                continue
+            statement = parse_simple(tokens)
+            if isinstance(statement, DBaseReturnStatement):
+                if not routine_kind:
                     raise DBaseCompilerError(
-                        f"{first.text.upper()} passt nicht zu {current_kind.upper()} '{current_name}'.",
-                        line=first.line,
-                        column=first.column,
+                        "RETURN ist nur innerhalb einer PROCEDURE oder FUNCTION erlaubt.",
+                        line=statement.line,
+                        column=statement.column,
                         filename=filename,
                     )
-                close_current()
+                if routine_kind == "procedure" and statement.expression is not None:
+                    raise DBaseCompilerError(
+                        f"PROCEDURE '{routine_name}' darf mit RETURN keinen Wert zurueckgeben.",
+                        line=statement.line,
+                        column=statement.column,
+                        filename=filename,
+                    )
+                if routine_kind == "function" and statement.expression is None:
+                    raise DBaseCompilerError(
+                        f"FUNCTION '{routine_name}' erwartet RETURN <expr>.",
+                        line=statement.line,
+                        column=statement.column,
+                        filename=filename,
+                    )
+            result.append(statement)
+            index += 1
+        return result, index
+
+    def parse_if(
+        index: int,
+        *,
+        routine_kind: str = "",
+        routine_name: str = "",
+    ) -> tuple[DBaseIfStatement, int]:
+        tokens, keyword = records[index]
+        first = tokens[0]
+        if keyword != "if":
+            raise AssertionError(keyword)
+        branches: list[DBaseIfBranch] = []
+        condition = _parse_dbase_condition(tokens, filename=filename, keyword="if")
+        body, index = parse_block(
+            index + 1,
+            stop_keywords=frozenset(_IF_STOP_KEYWORDS),
+            routine_kind=routine_kind,
+            routine_name=routine_name,
+        )
+        branches.append(DBaseIfBranch(condition, tuple(body), first.line, first.column))
+
+        seen_else = False
+        while index < len(records):
+            branch_tokens, branch_keyword = records[index]
+            branch_first = branch_tokens[0]
+            if branch_keyword == "elseif":
+                if seen_else:
+                    raise DBaseCompilerError(
+                        "ELSEIF darf nicht nach ELSE stehen.",
+                        line=branch_first.line,
+                        column=branch_first.column,
+                        filename=filename,
+                    )
+                condition = _parse_dbase_condition(
+                    branch_tokens,
+                    filename=filename,
+                    keyword="elseif",
+                )
+                branch_body, index = parse_block(
+                    index + 1,
+                    stop_keywords=frozenset(_IF_STOP_KEYWORDS),
+                    routine_kind=routine_kind,
+                    routine_name=routine_name,
+                )
+                branches.append(
+                    DBaseIfBranch(condition, tuple(branch_body), branch_first.line, branch_first.column)
+                )
                 continue
-            if just_closed_kind == end_kind:
-                # Optionales END... direkt nach dem RETURN akzeptieren.
-                just_closed_kind = ""
+            if branch_keyword == "else":
+                if seen_else:
+                    raise DBaseCompilerError(
+                        "Ein IF-Block darf nur ein ELSE enthalten.",
+                        line=branch_first.line,
+                        column=branch_first.column,
+                        filename=filename,
+                    )
+                parser = _DBaseExpressionParser(branch_tokens, filename=filename)
+                parser.index += 1
+                parser._expect_eof()
+                seen_else = True
+                branch_body, index = parse_block(
+                    index + 1,
+                    stop_keywords=frozenset({"endif"}),
+                    routine_kind=routine_kind,
+                    routine_name=routine_name,
+                )
+                branches.append(
+                    DBaseIfBranch(None, tuple(branch_body), branch_first.line, branch_first.column)
+                )
                 continue
+            if branch_keyword == "endif":
+                parser = _DBaseExpressionParser(branch_tokens, filename=filename)
+                parser.index += 1
+                parser._expect_eof()
+                return DBaseIfStatement(tuple(branches), first.line, first.column), index + 1
+            break
+
+        raise DBaseCompilerError(
+            "IF-Block ist nicht mit ENDIF abgeschlossen.",
+            line=first.line,
+            column=first.column,
+            filename=filename,
+        )
+
+    statements: list[object] = []
+    index = 0
+    while index < len(records):
+        tokens, keyword = records[index]
+        first = tokens[0]
+        reject_removed_end(tokens, keyword)
+
+        if keyword in _IF_STOP_KEYWORDS:
             raise DBaseCompilerError(
-                f"Unerwartetes {first.text.upper()} ohne offene Routine.",
+                f"Unerwartetes {first.text.upper()} ohne passenden IF-Block.",
                 line=first.line,
                 column=first.column,
                 filename=filename,
             )
 
-        parser = _DBaseExpressionParser(tokens, filename=filename)
-        statement = parser.parse_statement()
-
-        if current_kind:
-            if isinstance(statement, DBaseReturnStatement):
-                if current_kind == "procedure" and statement.expression is not None:
-                    raise DBaseCompilerError(
-                        f"PROCEDURE '{current_name}' darf mit RETURN keinen Wert zurueckgeben.",
-                        line=statement.line,
-                        column=statement.column,
-                        filename=filename,
-                    )
-                if current_kind == "function" and statement.expression is None:
-                    raise DBaseCompilerError(
-                        f"FUNCTION '{current_name}' erwartet RETURN <expr>.",
-                        line=statement.line,
-                        column=statement.column,
-                        filename=filename,
-                    )
-                current_body.append(statement)
-                current_has_return = True
-                close_current()
-            else:
-                current_body.append(statement)
+        if keyword == "if":
+            statement, index = parse_if(index)
+            statements.append(statement)
             continue
 
+        if keyword in {"procedure", "function"}:
+            kind, name, parameters, line, column = _parse_dbase_routine_header(
+                tokens,
+                filename=filename,
+            )
+            body: list[object] = []
+            index += 1
+            closed = False
+            while index < len(records):
+                body_tokens, body_keyword = records[index]
+                body_first = body_tokens[0]
+                reject_removed_end(body_tokens, body_keyword)
+                if body_keyword in {"procedure", "function"}:
+                    raise DBaseCompilerError(
+                        f"{kind.upper()} '{name}' muss vor dem naechsten Member mit "
+                        + ("RETURN <expr>." if kind == "function" else "RETURN.") ,
+                        line=body_first.line,
+                        column=body_first.column,
+                        filename=filename,
+                    )
+                if body_keyword in _IF_STOP_KEYWORDS:
+                    raise DBaseCompilerError(
+                        f"Unerwartetes {body_first.text.upper()} ohne passenden IF-Block.",
+                        line=body_first.line,
+                        column=body_first.column,
+                        filename=filename,
+                    )
+                if body_keyword == "if":
+                    if_statement, index = parse_if(
+                        index,
+                        routine_kind=kind,
+                        routine_name=name,
+                    )
+                    body.append(if_statement)
+                    continue
+
+                statement = parse_simple(body_tokens)
+                if isinstance(statement, DBaseReturnStatement):
+                    if kind == "procedure" and statement.expression is not None:
+                        raise DBaseCompilerError(
+                            f"PROCEDURE '{name}' darf mit RETURN keinen Wert zurueckgeben.",
+                            line=statement.line,
+                            column=statement.column,
+                            filename=filename,
+                        )
+                    if kind == "function" and statement.expression is None:
+                        raise DBaseCompilerError(
+                            f"FUNCTION '{name}' erwartet RETURN <expr>.",
+                            line=statement.line,
+                            column=statement.column,
+                            filename=filename,
+                        )
+                    body.append(statement)
+                    index += 1
+                    closed = True
+                    break
+                body.append(statement)
+                index += 1
+
+            if not closed:
+                expected = "RETURN <expr>" if kind == "function" else "RETURN"
+                raise DBaseCompilerError(
+                    f"{kind.upper()} '{name}' muss mit {expected} enden.",
+                    line=line,
+                    column=column,
+                    filename=filename,
+                )
+            statements.append(
+                DBaseRoutineDefinition(
+                    kind=kind,
+                    name=name,
+                    parameters=parameters,
+                    body=tuple(body),
+                    line=line,
+                    column=column,
+                )
+            )
+            continue
+
+        statement = parse_simple(tokens)
         if isinstance(statement, DBaseReturnStatement):
             raise DBaseCompilerError(
                 "RETURN ist nur innerhalb einer PROCEDURE oder FUNCTION erlaubt.",
@@ -1922,12 +2304,8 @@ def parse_dbase_statements(
                 filename=filename,
             )
         statements.append(statement)
-        just_closed_kind = ""
+        index += 1
 
-    if current_kind:
-        close_current(implicit=True)
-
-    # Doppelte Membernamen werden unabhaengig von Gross-/Kleinschreibung abgelehnt.
     seen: Dict[str, DBaseRoutineDefinition] = {}
     for statement in statements:
         if not isinstance(statement, DBaseRoutineDefinition):
@@ -1944,6 +2322,28 @@ def parse_dbase_statements(
         seen[key] = statement
 
     return tuple(statements)
+
+DBASE_FOREGROUND_COLOR_CODES: Tuple[str, ...] = (
+    "N", "B", "G", "GB", "BG", "R", "RB", "BR", "RG", "GR", "W",
+    "N+", "B+", "G+", "GB+", "BG+", "R+", "RB+", "BR+", "RG+", "GR+", "W+",
+)
+DBASE_BACKGROUND_COLOR_CODES: Tuple[str, ...] = (
+    "N", "B", "G", "GB", "BG", "R", "RB", "BR", "RG", "GR", "W",
+    "N*", "B*", "G*", "GB*", "BG*", "R*", "RB*", "BR*", "RG*", "GR*", "W*",
+)
+
+def _validate_dbase_text_color_spec(spec: str) -> bool:
+    value = str(spec).strip().upper()
+    if value.count("/") != 1:
+        return False
+    # Vom Benutzer gewuenschte Reihenfolge: HINTERGRUND/VORDERGRUND.
+    # Beispiel W/N = hellgrauer Hintergrund, schwarze Schrift.
+    background, foreground = (part.strip() for part in value.split("/", 1))
+    return (
+        background in DBASE_BACKGROUND_COLOR_CODES
+        and foreground in DBASE_FOREGROUND_COLOR_CODES
+    )
+
 
 def _format_dbase_number(value: Decimal) -> str:
     number = Decimal(value)
@@ -1972,6 +2372,44 @@ def _symbol_label(name: str) -> str:
 
 def _constant_concat_text(value: DBaseValue) -> str:
     return _format_dbase_value(value)
+
+
+def _compare_dbase_values(
+    left: DBaseValue,
+    right: DBaseValue,
+    operator: str,
+    *,
+    line: int,
+    column: int,
+    filename: str,
+) -> bool:
+    if left.kind == "number" and right.kind == "number":
+        a = Decimal(left.value)
+        b = Decimal(right.value)
+    elif left.kind in _STRING_KINDS and right.kind in _STRING_KINDS:
+        a = str(left.value)
+        b = str(right.value)
+    else:
+        raise DBaseCompilerError(
+            "IF-Vergleich erwartet zwei numerische Werte oder zwei Textwerte (String/Char).",
+            line=line,
+            column=column,
+            filename=filename,
+        )
+
+    if operator == "<":
+        return a < b
+    if operator == "<=":
+        return a <= b
+    if operator == "==":
+        return a == b
+    if operator == ">":
+        return a > b
+    if operator == ">=":
+        return a >= b
+    if operator == "!=":
+        return a != b
+    raise AssertionError(operator)
 
 
 def _preview_expression(
@@ -2008,6 +2446,11 @@ class _DBaseProgramAnalyzer:
         self.filename = filename
         self.routines: Dict[str, DBaseRoutineDefinition] = {}
         self.global_symbols: Dict[str, _DBaseSymbolState] = {}
+        # Alle jemals angelegten Top-Level-Variablen behalten einen stabilen
+        # Speicherplatz, auch wenn eine Variable nur in einem IF-Zweig vorkommt.
+        # Sichtbarkeit nach dem IF wird separat ueber global_symbols gemerged.
+        self.global_labels: Dict[str, str] = {}
+        self.all_global_states: Dict[str, _DBaseSymbolState] = {}
         self.expression_info: Dict[DBaseExpression, _DBaseExpressionInfo] = {}
         self.call_bindings: Dict[DBaseCallExpression, _DBaseCallBinding] = {}
         self.external_functions: Dict[str, str] = {}
@@ -2254,8 +2697,10 @@ class _DBaseProgramAnalyzer:
         expression_info: Dict[DBaseExpression, _DBaseExpressionInfo],
         call_bindings: Dict[DBaseCallExpression, _DBaseCallBinding],
         instance: Optional[_DBaseRoutineInstance],
+        global_symbols: Optional[Dict[str, _DBaseSymbolState]] = None,
     ) -> None:
-        symbols = self._merged_symbols(self.global_symbols, local_symbols)
+        globals_view = self.global_symbols if global_symbols is None else global_symbols
+        symbols = self._merged_symbols(globals_view, local_symbols)
         info = self.analyze_expression(
             statement.expression,
             symbols=symbols,
@@ -2267,8 +2712,7 @@ class _DBaseProgramAnalyzer:
         if old is not None:
             label = old.label
         elif instance is None:
-            old_global = self.global_symbols.get(key)
-            label = old_global.label if old_global is not None else _symbol_label(statement.name)
+            label = self.global_labels.setdefault(key, _symbol_label(statement.name))
         else:
             label = f"{instance.label}_local_{_safe_member_name(statement.name)}"
             if label not in instance.storage_slots:
@@ -2283,10 +2727,211 @@ class _DBaseProgramAnalyzer:
             last_column=statement.column,
         )
         if instance is None:
-            self.global_symbols[key] = state
+            globals_view[key] = state
+            self.all_global_states[key] = state
         else:
             local_symbols[key] = state
             instance.local_symbols[key] = state
+
+    @staticmethod
+    def _merge_branch_symbols(
+        paths: Tuple[Mapping[str, _DBaseSymbolState], ...],
+    ) -> Dict[str, _DBaseSymbolState]:
+        if not paths:
+            return {}
+        common = set(paths[0])
+        for path in paths[1:]:
+            common.intersection_update(path)
+        merged: Dict[str, _DBaseSymbolState] = {}
+        for key in common:
+            states = [path[key] for path in paths]
+            kinds = {state.value_type for state in states}
+            if len(kinds) != 1:
+                # Nach dem IF ist der Typ nicht eindeutig. Der Speicherplatz
+                # bleibt vorhanden, aber der Name ist ausserhalb nicht sicher typisierbar.
+                continue
+            first = states[0]
+            same_constant = all(
+                state.constant_value == first.constant_value
+                for state in states[1:]
+            )
+            merged[key] = _DBaseSymbolState(
+                name=first.name,
+                label=first.label,
+                value_type=first.value_type,
+                constant_value=first.constant_value if same_constant else None,
+                dynamic=(not same_constant) or any(state.dynamic for state in states),
+                last_line=max(state.last_line for state in states),
+                last_column=states[-1].last_column,
+            )
+        return merged
+
+    def analyze_condition(
+        self,
+        condition: DBaseCondition,
+        *,
+        symbols: Mapping[str, _DBaseSymbolState],
+        expression_info: Dict[DBaseExpression, _DBaseExpressionInfo],
+        call_bindings: Dict[DBaseCallExpression, _DBaseCallBinding],
+    ) -> Optional[bool]:
+        left = self.analyze_expression(
+            condition.left, symbols=symbols, expression_info=expression_info,
+            call_bindings=call_bindings,
+        )
+        right = self.analyze_expression(
+            condition.right, symbols=symbols, expression_info=expression_info,
+            call_bindings=call_bindings,
+        )
+        numeric = left.kind == "number" and right.kind == "number"
+        textual = left.kind in _STRING_KINDS and right.kind in _STRING_KINDS
+        if not numeric and not textual:
+            raise DBaseCompilerError(
+                "IF-Vergleich erwartet zwei numerische Werte oder zwei Textwerte (String/Char).",
+                line=condition.line, column=condition.column, filename=self.filename,
+            )
+        if left.constant_value is None or right.constant_value is None:
+            return None
+        return _compare_dbase_values(
+            left.constant_value, right.constant_value, condition.operator,
+            line=condition.line, column=condition.column, filename=self.filename,
+        )
+
+
+    def _analyze_routine_sequence(
+        self,
+        sequence: Tuple[object, ...],
+        *,
+        definition: DBaseRoutineDefinition,
+        instance: _DBaseRoutineInstance,
+        local_symbols: Dict[str, _DBaseSymbolState],
+    ) -> None:
+        for statement in sequence:
+            if isinstance(statement, DBaseAssignmentStatement):
+                self._analyze_assignment(
+                    statement,
+                    local_symbols=local_symbols,
+                    expression_info=instance.expression_info,
+                    call_bindings=instance.call_bindings,
+                    instance=instance,
+                )
+                continue
+            if isinstance(statement, DBasePrintStatement):
+                symbols = self._merged_symbols(self.global_symbols, local_symbols)
+                self.analyze_expression(
+                    statement.expression,
+                    symbols=symbols,
+                    expression_info=instance.expression_info,
+                    call_bindings=instance.call_bindings,
+                )
+                continue
+            if isinstance(statement, DBaseCallStatement):
+                symbols = self._merged_symbols(self.global_symbols, local_symbols)
+                self.analyze_expression(
+                    statement.call,
+                    symbols=symbols,
+                    expression_info=instance.expression_info,
+                    call_bindings=instance.call_bindings,
+                    require_value=False,
+                )
+                continue
+            if isinstance(statement, DBaseReturnStatement):
+                if definition.is_procedure:
+                    if statement.expression is not None:
+                        raise DBaseCompilerError(
+                            f"PROCEDURE '{definition.name}' darf keinen RETURN-Wert besitzen.",
+                            line=statement.line,
+                            column=statement.column,
+                            filename=self.filename,
+                        )
+                    continue
+                if statement.expression is None:
+                    raise DBaseCompilerError(
+                        f"FUNCTION '{definition.name}' erwartet RETURN <expr>.",
+                        line=statement.line,
+                        column=statement.column,
+                        filename=self.filename,
+                    )
+                symbols = self._merged_symbols(self.global_symbols, local_symbols)
+                info = self.analyze_expression(
+                    statement.expression,
+                    symbols=symbols,
+                    expression_info=instance.expression_info,
+                    call_bindings=instance.call_bindings,
+                )
+                if instance.return_info is not None and instance.return_info.kind != info.kind:
+                    raise DBaseCompilerError(
+                        f"FUNCTION '{definition.name}' verwendet unterschiedliche RETURN-Typen "
+                        f"('{instance.return_info.kind}' und '{info.kind}') in derselben Spezialisierung.",
+                        line=statement.line,
+                        column=statement.column,
+                        filename=self.filename,
+                    )
+                instance.return_info = info
+                continue
+            if isinstance(statement, DBaseIfStatement):
+                base = dict(local_symbols)
+                path_states: list[Mapping[str, _DBaseSymbolState]] = []
+                has_else = False
+                symbols_for_condition = self._merged_symbols(self.global_symbols, base)
+                for branch in statement.branches:
+                    if branch.condition is None:
+                        has_else = True
+                    else:
+                        self.analyze_condition(
+                            branch.condition,
+                            symbols=symbols_for_condition,
+                            expression_info=instance.expression_info,
+                            call_bindings=instance.call_bindings,
+                        )
+                    branch_locals = dict(base)
+                    self._analyze_routine_sequence(
+                        branch.body,
+                        definition=definition,
+                        instance=instance,
+                        local_symbols=branch_locals,
+                    )
+                    path_states.append(branch_locals)
+                if not has_else:
+                    path_states.append(base)
+                merged = self._merge_branch_symbols(tuple(path_states))
+                local_symbols.clear()
+                local_symbols.update(merged)
+                continue
+            if isinstance(statement, DBaseSetBorderColorStatement):
+                expression = statement.expression
+                if isinstance(expression, DBaseCallExpression) and expression.name.casefold() != "rgb":
+                    definition_ref = self.routines.get(expression.name.casefold())
+                    if definition_ref is None or definition_ref.line >= statement.line:
+                        raise DBaseCompilerError(
+                            f"Funktion '{expression.name}' fuer SET BORDERCOLOR muss vor ihrer Verwendung definiert sein.",
+                            line=expression.line, column=expression.column, filename=self.filename,
+                        )
+                symbols = self._merged_symbols(self.global_symbols, local_symbols)
+                info = self.analyze_expression(
+                    expression, symbols=symbols,
+                    expression_info=instance.expression_info,
+                    call_bindings=instance.call_bindings,
+                )
+                if info.kind not in _STRING_KINDS:
+                    raise DBaseCompilerError(
+                        "SET BORDERCOLOR TO erwartet einen Stringfarbnamen, eine String-Variable/Funktion oder RGB(...).",
+                        line=expression.line, column=expression.column, filename=self.filename,
+                    )
+                if info.constant_value is not None:
+                    value = str(info.constant_value.value)
+                    valid_system = value.casefold() in _DBASE_SYSTEM_COLOR_LOOKUP
+                    valid_rgb = bool(re.fullmatch(r"#[0-9A-Fa-f]{6}", value))
+                    if not valid_system and not valid_rgb:
+                        raise DBaseCompilerError(
+                            f"Ungueltiger Farbwert '{value}' fuer SET BORDERCOLOR.",
+                            line=expression.line, column=expression.column, filename=self.filename,
+                        )
+                continue
+            if isinstance(statement, (DBaseSetFormatStatement, DBaseSetDebugStatement, DBaseSetColorStatement, DBaseClearScreenStatement)):
+                continue
+            if isinstance(statement, DBaseRoutineDefinition):
+                continue
+            raise AssertionError(type(statement))
 
     def instantiate_routine(
         self,
@@ -2343,87 +2988,31 @@ class _DBaseProgramAnalyzer:
         self.instances[key] = instance
 
         locals_ = dict(parameter_symbols)
-        return_seen = False
-        for statement in definition.body:
-            if isinstance(statement, DBaseAssignmentStatement):
-                self._analyze_assignment(
-                    statement,
-                    local_symbols=locals_,
-                    expression_info=instance.expression_info,
-                    call_bindings=instance.call_bindings,
-                    instance=instance,
-                )
-                continue
-            if isinstance(statement, DBasePrintStatement):
-                symbols = self._merged_symbols(self.global_symbols, locals_)
-                self.analyze_expression(
-                    statement.expression,
-                    symbols=symbols,
-                    expression_info=instance.expression_info,
-                    call_bindings=instance.call_bindings,
-                )
-                continue
-            if isinstance(statement, DBaseCallStatement):
-                symbols = self._merged_symbols(self.global_symbols, locals_)
-                self.analyze_expression(
-                    statement.call,
-                    symbols=symbols,
-                    expression_info=instance.expression_info,
-                    call_bindings=instance.call_bindings,
-                    require_value=False,
-                )
-                continue
-            if isinstance(statement, DBaseReturnStatement):
-                return_seen = True
-                if definition.is_procedure:
-                    if statement.expression is not None:
-                        raise DBaseCompilerError(
-                            f"PROCEDURE '{definition.name}' darf keinen RETURN-Wert besitzen.",
-                            line=statement.line,
-                            column=statement.column,
-                            filename=self.filename,
-                        )
-                    continue
-                if statement.expression is None:
-                    raise DBaseCompilerError(
-                        f"FUNCTION '{definition.name}' erwartet RETURN <expr>.",
-                        line=statement.line,
-                        column=statement.column,
-                        filename=self.filename,
-                    )
-                symbols = self._merged_symbols(self.global_symbols, locals_)
-                instance.return_info = self.analyze_expression(
-                    statement.expression,
-                    symbols=symbols,
-                    expression_info=instance.expression_info,
-                    call_bindings=instance.call_bindings,
-                )
-                continue
-            if isinstance(statement, (DBaseSetFormatStatement, DBaseSetDebugStatement)):
-                continue
-            raise AssertionError(type(statement))
+        self._analyze_routine_sequence(
+            definition.body,
+            definition=definition,
+            instance=instance,
+            local_symbols=locals_,
+        )
 
-        if definition.is_function and (not return_seen or instance.return_info is None):
+        if definition.is_function and instance.return_info is None:
             raise DBaseCompilerError(
                 f"FUNCTION '{definition.name}' benoetigt RETURN <expr>.",
                 line=definition.line,
                 column=definition.column,
                 filename=self.filename,
             )
-        instance.local_symbols = locals_
+        instance.local_symbols.update(locals_)
         instance.analyzing = False
         self.storage_slots.extend(instance.storage_slots)
         return instance
 
-    def run(self) -> _DBaseAnalysis:
-        console_chunks: list[str] = []
-        debug_chunks: list[str] = []
-        format_target = "console"
-        debug_override: Optional[bool] = None
-        transcript_complete = True
-        uses_debug_output = False
-
-        for statement in self.statements:
+    def _analyze_top_sequence(
+        self,
+        sequence: Tuple[object, ...],
+        globals_work: Dict[str, _DBaseSymbolState],
+    ) -> None:
+        for statement in sequence:
             if isinstance(statement, DBaseRoutineDefinition):
                 continue
             if isinstance(statement, DBaseAssignmentStatement):
@@ -2433,42 +3022,48 @@ class _DBaseProgramAnalyzer:
                     expression_info=self.expression_info,
                     call_bindings=self.call_bindings,
                     instance=None,
+                    global_symbols=globals_work,
                 )
-                continue
-            if isinstance(statement, DBaseSetFormatStatement):
-                format_target = statement.target
-                continue
-            if isinstance(statement, DBaseSetDebugStatement):
-                debug_override = bool(statement.enabled)
-                continue
-            if isinstance(statement, DBaseCallStatement):
-                self.analyze_expression(
-                    statement.call,
-                    symbols=self.global_symbols,
-                    expression_info=self.expression_info,
-                    call_bindings=self.call_bindings,
-                    require_value=False,
-                )
-                transcript_complete = False
                 continue
             if isinstance(statement, DBasePrintStatement):
                 self.analyze_expression(
                     statement.expression,
-                    symbols=self.global_symbols,
+                    symbols=globals_work,
                     expression_info=self.expression_info,
                     call_bindings=self.call_bindings,
                 )
-                output_target = _effective_output_target(format_target, debug_override)
-                if output_target == "debug":
-                    uses_debug_output = True
-                rendered = _preview_expression(statement.expression, self.expression_info)
-                if rendered is None:
-                    transcript_complete = False
-                    continue
-                chunks = debug_chunks if output_target == "debug" else console_chunks
-                chunks.append(rendered)
-                if statement.newline:
-                    chunks.append("\r\n")
+                continue
+            if isinstance(statement, DBaseCallStatement):
+                self.analyze_expression(
+                    statement.call,
+                    symbols=globals_work,
+                    expression_info=self.expression_info,
+                    call_bindings=self.call_bindings,
+                    require_value=False,
+                )
+                continue
+            if isinstance(statement, DBaseIfStatement):
+                base = dict(globals_work)
+                paths: list[Mapping[str, _DBaseSymbolState]] = []
+                has_else = False
+                for branch in statement.branches:
+                    if branch.condition is None:
+                        has_else = True
+                    else:
+                        self.analyze_condition(
+                            branch.condition,
+                            symbols=base,
+                            expression_info=self.expression_info,
+                            call_bindings=self.call_bindings,
+                        )
+                    branch_globals = dict(base)
+                    self._analyze_top_sequence(branch.body, branch_globals)
+                    paths.append(branch_globals)
+                if not has_else:
+                    paths.append(base)
+                merged = self._merge_branch_symbols(tuple(paths))
+                globals_work.clear()
+                globals_work.update(merged)
                 continue
             if isinstance(statement, DBaseReturnStatement):
                 raise DBaseCompilerError(
@@ -2477,24 +3072,165 @@ class _DBaseProgramAnalyzer:
                     column=statement.column,
                     filename=self.filename,
                 )
+            if isinstance(statement, DBaseSetBorderColorStatement):
+                expression = statement.expression
+                if isinstance(expression, DBaseCallExpression) and expression.name.casefold() != "rgb":
+                    definition_ref = self.routines.get(expression.name.casefold())
+                    if definition_ref is None or definition_ref.line >= statement.line:
+                        raise DBaseCompilerError(
+                            f"Funktion '{expression.name}' fuer SET BORDERCOLOR muss vor ihrer Verwendung definiert sein.",
+                            line=expression.line, column=expression.column, filename=self.filename,
+                        )
+                info = self.analyze_expression(
+                    expression, symbols=globals_work,
+                    expression_info=self.expression_info, call_bindings=self.call_bindings,
+                )
+                if info.kind not in _STRING_KINDS:
+                    raise DBaseCompilerError(
+                        "SET BORDERCOLOR TO erwartet einen Stringfarbnamen, eine String-Variable/Funktion oder RGB(...).",
+                        line=expression.line, column=expression.column, filename=self.filename,
+                    )
+                if info.constant_value is not None:
+                    value = str(info.constant_value.value)
+                    valid_system = value.casefold() in _DBASE_SYSTEM_COLOR_LOOKUP
+                    valid_rgb = bool(re.fullmatch(r"#[0-9A-Fa-f]{6}", value))
+                    if not valid_system and not valid_rgb:
+                        raise DBaseCompilerError(
+                            f"Ungueltiger Farbwert '{value}' fuer SET BORDERCOLOR.",
+                            line=expression.line, column=expression.column, filename=self.filename,
+                        )
+                continue
+            if isinstance(statement, (DBaseSetFormatStatement, DBaseSetDebugStatement, DBaseSetColorStatement, DBaseClearScreenStatement)):
+                continue
             raise AssertionError(type(statement))
 
-        variables = tuple(
-            DBaseVariableInfo(
-                name=symbol.name,
-                label=symbol.label,
-                value_type=symbol.value_type,
-                constant_value=symbol.constant_value,
-                dynamic=symbol.dynamic,
-                last_line=symbol.last_line,
-                last_column=symbol.last_column,
-            )
-            for symbol in self.global_symbols.values()
+    def _condition_constant(self, condition: DBaseCondition) -> Optional[bool]:
+        left = self.expression_info.get(condition.left)
+        right = self.expression_info.get(condition.right)
+        if left is None or right is None or left.constant_value is None or right.constant_value is None:
+            return None
+        return _compare_dbase_values(
+            left.constant_value,
+            right.constant_value,
+            condition.operator,
+            line=condition.line,
+            column=condition.column,
+            filename=self.filename,
         )
+
+    def _preview_top_sequence(
+        self,
+        sequence: Tuple[object, ...],
+        *,
+        format_target: str,
+        debug_override: Optional[bool],
+        console_chunks: list[str],
+        debug_chunks: list[str],
+    ) -> tuple[str, Optional[bool], bool, bool]:
+        complete = True
+        uses_debug = False
+        for statement in sequence:
+            if isinstance(statement, DBaseRoutineDefinition):
+                continue
+            if isinstance(statement, DBaseSetFormatStatement):
+                format_target = statement.target
+                continue
+            if isinstance(statement, DBaseSetDebugStatement):
+                debug_override = bool(statement.enabled)
+                continue
+            if isinstance(statement, DBaseSetColorStatement):
+                continue
+            if isinstance(statement, DBaseClearScreenStatement):
+                # CLEAR SCREEN betrifft nur die Konsolen-Textkomponente. Auch
+                # die Compile-Vorschau bildet deshalb den danach sichtbaren
+                # Konsoleninhalt ab.
+                console_chunks.clear()
+                continue
+            if isinstance(statement, DBaseSetBorderColorStatement):
+                continue
+            if isinstance(statement, DBaseAssignmentStatement):
+                continue
+            if isinstance(statement, DBaseCallStatement):
+                complete = False
+                continue
+            if isinstance(statement, DBasePrintStatement):
+                target = _effective_output_target(format_target, debug_override)
+                uses_debug = uses_debug or target == "debug"
+                rendered = _preview_expression(statement.expression, self.expression_info)
+                if rendered is None:
+                    complete = False
+                    continue
+                chunks = debug_chunks if target == "debug" else console_chunks
+                chunks.append(rendered)
+                if statement.newline:
+                    chunks.append("\r\n")
+                continue
+            if isinstance(statement, DBaseIfStatement):
+                selected: Optional[DBaseIfBranch] = None
+                dynamic = False
+                for branch in statement.branches:
+                    if branch.condition is None:
+                        selected = branch
+                        break
+                    value = self._condition_constant(branch.condition)
+                    if value is None:
+                        dynamic = True
+                        break
+                    if value:
+                        selected = branch
+                        break
+                if dynamic:
+                    complete = False
+                    continue
+                if selected is not None:
+                    format_target, debug_override, branch_complete, branch_debug = self._preview_top_sequence(
+                        selected.body,
+                        format_target=format_target,
+                        debug_override=debug_override,
+                        console_chunks=console_chunks,
+                        debug_chunks=debug_chunks,
+                    )
+                    complete = complete and branch_complete
+                    uses_debug = uses_debug or branch_debug
+                continue
+            if isinstance(statement, DBaseReturnStatement):
+                raise AssertionError("RETURN in Top-Level-Vorschau")
+            raise AssertionError(type(statement))
+        return format_target, debug_override, complete, uses_debug
+
+    def run(self) -> _DBaseAnalysis:
+        self._analyze_top_sequence(self.statements, self.global_symbols)
+
+        console_chunks: list[str] = []
+        debug_chunks: list[str] = []
+        _, _, transcript_complete, uses_debug_output = self._preview_top_sequence(
+            self.statements,
+            format_target="console",
+            debug_override=None,
+            console_chunks=console_chunks,
+            debug_chunks=debug_chunks,
+        )
+
+        variables_list: list[DBaseVariableInfo] = []
+        for key, label in self.global_labels.items():
+            state = self.global_symbols.get(key) or self.all_global_states[key]
+            visible = self.global_symbols.get(key)
+            variables_list.append(
+                DBaseVariableInfo(
+                    name=state.name,
+                    label=label,
+                    value_type=state.value_type,
+                    constant_value=(visible.constant_value if visible is not None else None),
+                    dynamic=(visible.dynamic if visible is not None else True),
+                    last_line=state.last_line,
+                    last_column=state.last_column,
+                )
+            )
+
         return _DBaseAnalysis(
             expression_info=dict(self.expression_info),
             call_bindings=dict(self.call_bindings),
-            variables=variables,
+            variables=tuple(variables_list),
             external_functions=tuple(self.external_functions.values()),
             console_transcript="".join(console_chunks),
             debug_transcript="".join(debug_chunks),
@@ -2625,6 +3361,14 @@ class _DBaseEvaluator:
             call_resolver=self._resolve_call,
         )
 
+    def _eval_condition(self, condition: DBaseCondition, scope: Mapping[str, DBaseValue]) -> bool:
+        left = self._eval_expr(condition.left, scope)
+        right = self._eval_expr(condition.right, scope)
+        return _compare_dbase_values(
+            left, right, condition.operator,
+            line=condition.line, column=condition.column, filename=self.filename,
+        )
+
     def _resolve_call(self, call: DBaseCallExpression, env: Mapping[str, DBaseValue]) -> DBaseValue:
         definition = self.routines.get(call.name.casefold())
         if definition is None:
@@ -2745,10 +3489,19 @@ class _DBaseEvaluator:
                     expect_value=False,
                 )
                 continue
+            if isinstance(statement, DBaseIfStatement):
+                for branch in statement.branches:
+                    if branch.condition is None or self._eval_condition(branch.condition, scope):
+                        self._execute_sequence(branch.body, scope, in_routine=in_routine)
+                        break
+                continue
             if isinstance(statement, DBaseReturnStatement):
                 value = None if statement.expression is None else self._eval_expr(statement.expression, scope)
                 raise _DBaseReturnSignal(value)
-            if isinstance(statement, (DBaseSetFormatStatement, DBaseSetDebugStatement)):
+            if isinstance(statement, DBaseClearScreenStatement):
+                self.output.clear()
+                continue
+            if isinstance(statement, (DBaseSetFormatStatement, DBaseSetDebugStatement, DBaseSetColorStatement, DBaseSetBorderColorStatement)):
                 continue
             raise AssertionError(type(statement))
 
@@ -3266,16 +4019,144 @@ class _DBaseCodeGenerator:
     def emit_call_statement(self, statement: DBaseCallStatement) -> None:
         self.emit_user_call(statement.call)
 
+    def emit_condition_jump_false(self, condition: DBaseCondition, false_label: str) -> None:
+        left_info = self.current_expression_info[condition.left]
+        right_info = self.current_expression_info[condition.right]
+        numeric = left_info.kind == "number" and right_info.kind == "number"
+
+        if numeric:
+            # Nach den beiden FLD-Auswertungen gilt ST0=right, ST1=left.
+            # FUCOMIP vergleicht daher right gegen left. Die Sprungabbildung
+            # unten ist entsprechend invertiert und springt bei FALSE.
+            self.emit_numeric_expression(condition.left)
+            self.emit_numeric_expression(condition.right)
+            self.emit("    fucomip st0, st1")
+            self.emit("    fstp st0")
+            false_jump = {
+                "<": "jbe",     # right <= left
+                "<=": "jb",     # right <  left
+                "==": "jne",
+                ">": "jae",     # right >= left
+                ">=": "ja",     # right >  left
+                "!=": "je",
+            }[condition.operator]
+            self.emit(f"    {false_jump} {false_label}")
+            return
+
+        left_slot = self.new_storage_slot("if_left_text")
+        right_slot = self.new_storage_slot("if_right_text")
+        self.emit_store_expression_to_slot(condition.left, left_slot)
+        self.emit_store_expression_to_slot(condition.right, right_slot)
+
+        min_ready = self.new_label("if_text_min_ready")
+        result_ready = self.new_label("if_text_result_ready")
+        self.emit(f"    mov eax, dword ptr [{left_slot}_len]")
+        self.emit(f"    mov ecx, dword ptr [{right_slot}_len]")
+        self.emit("    cmp eax, ecx")
+        self.emit(f"    jbe {min_ready}")
+        self.emit("    mov eax, ecx")
+        self.emit(f"{min_ready}:")
+        if self.is64:
+            self.emit("    mov r8d, eax")
+            self.emit(f"    mov rcx, qword ptr [{left_slot}_ptr]")
+            self.emit(f"    mov rdx, qword ptr [{right_slot}_ptr]")
+            self.emit("    sub rsp, 40")
+            self.emit("    call __dbase_memcmp")
+            self.emit("    add rsp, 40")
+        else:
+            self.emit("    push eax")
+            self.emit(f"    push dword ptr [{right_slot}_ptr]")
+            self.emit(f"    push dword ptr [{left_slot}_ptr]")
+            self.emit("    call __dbase_memcmp")
+            self.emit("    add esp, 12")
+        self.emit("    cmp eax, 0")
+        self.emit(f"    jne {result_ready}")
+        # Gleicher Prefix: die Laenge entscheidet die lexikographische Ordnung.
+        self.emit(f"    mov eax, dword ptr [{left_slot}_len]")
+        self.emit(f"    sub eax, dword ptr [{right_slot}_len]")
+        self.emit(f"{result_ready}:")
+        self.emit("    cmp eax, 0")
+        false_jump = {
+            "<": "jge",
+            "<=": "jg",
+            "==": "jne",
+            ">": "jle",
+            ">=": "jl",
+            "!=": "je",
+        }[condition.operator]
+        self.emit(f"    {false_jump} {false_label}")
+
+    def emit_if_statement(
+        self,
+        statement: DBaseIfStatement,
+        *,
+        routine_end_label: str,
+        routine_result_label: str,
+        format_target: str,
+        debug_override: Optional[bool],
+        debug_visible: bool,
+    ) -> None:
+        end_label = self.new_label("if_end")
+        for branch in statement.branches:
+            next_label = self.new_label("if_next") if branch.condition is not None else ""
+            if branch.condition is not None:
+                self.emit_condition_jump_false(branch.condition, next_label)
+            self._emit_statement_sequence(
+                branch.body,
+                routine_end_label=routine_end_label,
+                routine_result_label=routine_result_label,
+                format_target=format_target,
+                debug_override=debug_override,
+                debug_visible=debug_visible,
+            )
+            self.emit(f"    jmp {end_label}")
+            if next_label:
+                self.emit(f"{next_label}:")
+        self.emit(f"{end_label}:")
+
+    def emit_border_color(self, statement: DBaseSetBorderColorStatement) -> None:
+        expression = statement.expression
+        info = self.current_expression_info[expression]
+        if info.constant_value is not None:
+            value = str(info.constant_value.value)
+            value = _DBASE_SYSTEM_COLOR_LOOKUP.get(value.casefold(), value)
+            label, length = self.text_literal(value)
+            if self.is64:
+                self.emit(f"    mov rcx, {label}")
+                self.emit(f"    mov edx, {length}")
+                self.emit("    sub rsp, 40")
+                self.emit("    call DBaseQtSetBorderColor")
+                self.emit("    add rsp, 40")
+            else:
+                self.emit(f"    push {length}")
+                self.emit(f"    push {label}")
+                self.emit("    call DBaseQtSetBorderColor")
+                self.emit("    add esp, 8")
+            return
+        slot = self.new_storage_slot("border_color")
+        self.emit_store_expression_to_slot(expression, slot)
+        if self.is64:
+            self.emit(f"    mov rcx, qword ptr [{slot}_ptr]")
+            self.emit(f"    mov edx, dword ptr [{slot}_len]")
+            self.emit("    sub rsp, 40")
+            self.emit("    call DBaseQtSetBorderColor")
+            self.emit("    add rsp, 40")
+        else:
+            self.emit(f"    push dword ptr [{slot}_len]")
+            self.emit(f"    push dword ptr [{slot}_ptr]")
+            self.emit("    call DBaseQtSetBorderColor")
+            self.emit("    add esp, 8")
+
     def _emit_statement_sequence(
         self,
         sequence: Tuple[object, ...],
         *,
         routine_end_label: str = "",
         routine_result_label: str = "",
-    ) -> None:
-        format_target = "console"
-        debug_override: Optional[bool] = None
-        debug_visible = False
+        format_target: str = "console",
+        debug_override: Optional[bool] = None,
+        debug_visible: bool = False,
+    ) -> tuple[str, Optional[bool], bool]:
         for statement in sequence:
             if isinstance(statement, DBaseRoutineDefinition):
                 continue
@@ -3287,8 +4168,34 @@ class _DBaseCodeGenerator:
                 debug_override = bool(statement.enabled)
                 debug_visible = bool(statement.enabled)
                 self.emit_qt_call1_int("DBaseQtSetDebugVisible", 1 if debug_visible else 0)
+            elif isinstance(statement, DBaseSetColorStatement):
+                label, length = self.text_literal(statement.spec)
+                if self.is64:
+                    self.emit(f"    mov rcx, {label}")
+                    self.emit(f"    mov edx, {length}")
+                    self.emit("    sub rsp, 40")
+                    self.emit("    call DBaseQtSetOutputColor")
+                    self.emit("    add rsp, 40")
+                else:
+                    self.emit(f"    push {length}")
+                    self.emit(f"    push {label}")
+                    self.emit("    call DBaseQtSetOutputColor")
+                    self.emit("    add esp, 8")
+            elif isinstance(statement, DBaseClearScreenStatement):
+                self.emit_qt_call0("DBaseQtClearScreen")
+            elif isinstance(statement, DBaseSetBorderColorStatement):
+                self.emit_border_color(statement)
             elif isinstance(statement, DBaseCallStatement):
                 self.emit_call_statement(statement)
+            elif isinstance(statement, DBaseIfStatement):
+                self.emit_if_statement(
+                    statement,
+                    routine_end_label=routine_end_label,
+                    routine_result_label=routine_result_label,
+                    format_target=format_target,
+                    debug_override=debug_override,
+                    debug_visible=debug_visible,
+                )
             elif isinstance(statement, DBasePrintStatement):
                 output_target = _effective_output_target(format_target, debug_override)
                 if output_target == "debug" and not debug_visible:
@@ -3309,6 +4216,7 @@ class _DBaseCodeGenerator:
                 self.emit(f"    jmp {routine_end_label}")
             else:
                 raise AssertionError(type(statement))
+        return format_target, debug_override, debug_visible
 
     def emit_routine_instance(self, instance: _DBaseRoutineInstance) -> None:
         previous_info = self.current_expression_info
@@ -3355,6 +4263,9 @@ class _DBaseCodeGenerator:
             "DBaseQtSetDebugVisible",
             "DBaseQtAppendConsole",
             "DBaseQtAppendDebug",
+            "DBaseQtSetOutputColor",
+            "DBaseQtClearScreen",
+            "DBaseQtSetBorderColor",
             "DBaseQtMarkProgramFinished",
             "DBaseQtExec",
             "DBaseQtShutdown",
@@ -3367,6 +4278,7 @@ class _DBaseCodeGenerator:
         self.emit('import __dbase_gcvt, "msvcrt.dll", "_gcvt"')
         self.emit('import __dbase_malloc, "msvcrt.dll", "malloc"')
         self.emit('import __dbase_memcpy, "msvcrt.dll", "memcpy"')
+        self.emit('import __dbase_memcmp, "msvcrt.dll", "memcmp"')
         self.emit('import ExitProcess, "kernel32.dll", "ExitProcess"')
         for function in self.analysis.external_functions:
             self.emit(f"extern {function}")
@@ -3398,9 +4310,12 @@ class _DBaseCodeGenerator:
             self.emit("    push 1")
             self.emit("    call ExitProcess")
         self.emit(f"{init_ok}:")
+        # Vor dem ersten Show/Paint wird der definierte Startzustand hergestellt:
+        # Konsole sichtbar, DEBUG aus. Die Bridge garantiert dabei, dass DEBUG OFF
+        # niemals den Konsolen-Tab entfernt.
+        self.emit_qt_call1_int("DBaseQtSetDebugVisible", 0)
         self.emit_qt_call0("DBaseQtShowWindow")
         self.emit_qt_call0("DBaseQtProcessEvents")
-        self.emit_qt_call1_int("DBaseQtSetDebugVisible", 0)
 
         self._emit_statement_sequence(self.statements)
 
@@ -3508,7 +4423,7 @@ def compile_dbase_to_assembly(
     target: str = "pe32",
     windows_application_mode: str = "Console",
 ) -> DBaseCompileResult:
-    """Kompiliert dBase mit Qt5-GUI, Variablen und PROCEDURE/FUNCTION-Membern.
+    """Kompiliert dBase mit Qt5-GUI, Membern und verschachtelten Bedingungen.
 
     Implementiert:
     - //, **, && und /* ... */ Kommentare
@@ -3517,7 +4432,8 @@ def compile_dbase_to_assembly(
     - Zahl-, Hex-, Char- und Stringliterale
     - arithmetische + - * / Ausdruecke und String-Konkatenation
     - PROCEDURE/FUNCTION mit beliebig vielen Parametern und nativen Member-Aufrufen
-    - RETURN ohne Wert fuer PROCEDURE; RETURN <expr> fuer FUNCTION
+    - PROCEDURE endet ausschliesslich mit RETURN; FUNCTION mit RETURN <expr>
+    - verschachtelte IF/ELSEIF/ELSE/ENDIF-Bloecke mit < <= == > >= <> und #
     - polymorphe FUNCTION-Spezialisierung nach Parameter-Typen (Zahl/String/Char)
     - no-arg Funktionsaufrufe als externe numerische Symbole
     - C-artige Makros: #define/#if/#ifdef/#ifndef/#else/#endif, ## und #pragma link
@@ -3573,7 +4489,7 @@ def compile_dbase_to_assembly(
         target=frontend.target,
         windows_application_mode=mode,
         notes=(
-            f"dBase-Ausbaustufe 9: Praeprozessor/Startlogik fuer {target_label}.",
+            f"dBase-Ausbaustufe 10: verschachtelte Bedingungen fuer {target_label}.",
             "#define unterstuetzt Objekt- und Funktionsmakros; ## verkettet Tokens.",
             "#if/#ifdef/#ifndef sind verschachtelbar und scoped; ausschliesslich #else ist gueltig.",
             "#if 0 ... #endif kann beliebig grosse dBase-Codebereiche vom Compile ausschliessen.",
@@ -3581,7 +4497,10 @@ def compile_dbase_to_assembly(
             "Vordefiniert: __FILE__, __LINE__, __DATE__ und __TIME__.",
             "#pragma link bindet .o/.obj/.a/.lib beim finalen PE-Linkschritt ein.",
             "Variablen koennen Zahl/Hex, Char und String aufnehmen; Zuweisungen erzeugen echte Speicher-Slots.",
-            "PROCEDURE darf nur RETURN ohne Wert verwenden; FUNCTION verwendet RETURN <expr>.",
+            "PROCEDURE endet ausschliesslich mit RETURN ohne Wert; FUNCTION ausschliesslich mit RETURN <expr>.",
+            "ENDPROC/ENDPROCEDURE/ENDFUNC/ENDFUNCTION sind nicht mehr Bestandteil der dBase-Syntax.",
+            "IF/ELSEIF/ELSE/ENDIF ist beliebig verschachtelbar; Operatoren: <, <=, ==, >, >=, <> und # (ungleich).",
+            "Numerische/Hex/Float-Werte werden numerisch, String/Char-Werte lexikographisch verglichen.",
             "Member-Parameterlisten sind nicht kuenstlich begrenzt; Aufrufe werden in Value-Slots uebergeben.",
             "FUNCTION-Instanzen werden anhand der verwendeten Parameter-Typen spezialisiert und koennen Zahl, String oder Char liefern.",
             "? fuegt CR/LF an; ?? schreibt ohne NewLine.",
@@ -3647,8 +4566,14 @@ __all__ = [
     "DBaseAssignmentStatement",
     "DBaseSetFormatStatement",
     "DBaseSetDebugStatement",
+    "DBaseSetColorStatement",
+    "DBaseClearScreenStatement",
+    "DBaseSetBorderColorStatement",
     "DBaseReturnStatement",
     "DBaseCallStatement",
+    "DBaseCondition",
+    "DBaseIfBranch",
+    "DBaseIfStatement",
     "DBaseRoutineDefinition",
     "DBaseVariableInfo",
     "DBaseValue",
@@ -3664,3 +4589,854 @@ __all__ = [
     "dbase_uses_debug_output",
     "compile_dbase_to_assembly",
 ]
+
+# ---------------------------------------------------------------------------
+# dBase Stage 13: erstes Klassen-/Objektmodell + native MENU-Objekte
+# ---------------------------------------------------------------------------
+# Diese Erweiterung bleibt absichtlich additiv. Die bestehende Ausdrucks-,
+# Member-, IF- und Makrologik aus Stage 12 wird weiterverwendet.
+
+_stage12_parse_dbase_statements = parse_dbase_statements
+_Stage12ProgramAnalyzer = _DBaseProgramAnalyzer
+_Stage12CodeGenerator = _DBaseCodeGenerator
+
+
+@dataclass(frozen=True)
+class DBaseObjectPath:
+    parts: Tuple[str, ...]
+    line: int
+    column: int
+
+    @property
+    def canonical_parts(self) -> Tuple[str, ...]:
+        if not self.parts:
+            return ()
+        head = self.parts[0].casefold()
+        if head in {"_app", "this"}:
+            return ("_app",) + tuple(self.parts[1:])
+        return tuple(self.parts)
+
+    @property
+    def dotted(self) -> str:
+        return ".".join(self.canonical_parts)
+
+
+@dataclass(frozen=True)
+class DBaseNewObjectStatement:
+    target: DBaseObjectPath
+    class_name: str
+    owner: DBaseObjectPath
+    line: int
+    column: int
+
+
+@dataclass(frozen=True)
+class DBaseMenuFileStatement:
+    path: str
+    line: int
+    column: int
+
+
+@dataclass(frozen=True)
+class DBaseAppColorStatement:
+    property_name: str
+    expression: DBaseExpression
+    line: int
+    column: int
+
+    @property
+    def color_name(self) -> str:
+        # Rueckwaertskompatible Lesehilfe fuer direkte Stringliterale.
+        if isinstance(self.expression, DBaseLiteralExpression) and self.expression.value_type in _STRING_KINDS:
+            return str(self.expression.value)
+        return ""
+
+
+DBASE_SYSTEM_COLOR_NAMES: Tuple[str, ...] = (
+    "ActiveBorder",
+    "ActiveCaption",
+    "AppWorkspace",
+    "Background",
+    "BtnFace",
+    "BtnHighlight",
+    "BtnShadow",
+    "BtnText",
+    "CaptionText",
+    "GrayText",
+    "Highlight",
+    "HighlightText",
+    "InactiveBorder",
+    "InactiveCaption",
+    "InactiveCaptionText",
+    "InfoText",
+    "InfoBk",
+    "Menu",
+    "MenuText",
+    "Scrollbar",
+    "Window",
+    "WindowFrame",
+    "WindowText",
+)
+_DBASE_SYSTEM_COLOR_LOOKUP = {name.casefold(): name for name in DBASE_SYSTEM_COLOR_NAMES}
+
+
+@dataclass(frozen=True)
+class DBaseMenuProperty:
+    name: str
+    value_kind: str
+    value: object
+    line: int
+    column: int
+
+
+@dataclass(frozen=True)
+class DBaseWithStatement:
+    target: DBaseObjectPath
+    properties: Tuple[DBaseMenuProperty, ...]
+    line: int
+    column: int
+
+
+_DBASE_OBJECT_PATH_RE = re.compile(
+    r"(?i)^(?:_app|this)(?:\.[A-Za-z_][A-Za-z0-9_]*)*$"
+)
+_DBASE_NEW_MENU_RE = re.compile(
+    r"(?i)^\s*((?:_app|this)(?:\.[A-Za-z_][A-Za-z0-9_]*)+)\s*=\s*"
+    r"new\s+MENU\s*\(\s*((?:_app|this)(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\s*\)\s*$"
+)
+_DBASE_MENUFILE_RE = re.compile(
+    r"(?i)^\s*((?:_app|this)\.menuFile)\s*=\s*(.*?)\s*$"
+)
+_DBASE_COLOR_NORMAL_RE = re.compile(
+    r"(?i)^\s*((?:_app|this)\.colorNormal)\s*=\s*(.*?)\s*$"
+)
+_DBASE_WITH_RE = re.compile(
+    r"(?i)^\s*with\s*\(\s*((?:_app|this)(?:\.[A-Za-z_][A-Za-z0-9_]*)+)\s*\)\s*$"
+)
+_DBASE_ENDWITH_RE = re.compile(r"(?i)^\s*endwith\s*$")
+
+
+def _dbase_object_path(text: str, line: int, column: int = 1) -> DBaseObjectPath:
+    value = str(text).strip()
+    if not _DBASE_OBJECT_PATH_RE.fullmatch(value):
+        raise DBaseCompilerError(
+            f"Ungueltiger Objektpfad: {value}", line=line, column=column
+        )
+    return DBaseObjectPath(tuple(value.split(".")), line, column)
+
+
+def _dbase_decode_property_string(text: str, *, filename: str, line: int, column: int) -> str:
+    raw = str(text).strip()
+    if len(raw) < 2 or raw[0] not in {'\"', "'"}:
+        raise DBaseCompilerError(
+            "Stringliteral erwartet.", line=line, column=column, filename=filename
+        )
+    value, end = _decode_dbase_string(raw, 0, line=line, column=column, filename=filename)
+    if raw[end:].strip():
+        raise DBaseCompilerError(
+            "Unerwarteter Text nach dem Stringliteral.",
+            line=line, column=column + end, filename=filename,
+        )
+    return value
+
+
+def _dbase_parse_menu_property(text: str, *, filename: str, line: int) -> DBaseMenuProperty:
+    match = re.match(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$", text)
+    if not match:
+        raise DBaseCompilerError(
+            "WITH erwartet eine Property-Zuweisung NAME = WERT.",
+            line=line, column=1, filename=filename,
+        )
+    name, rhs = match.group(1), match.group(2)
+    key = name.casefold()
+    column = max(1, text.find(name) + 1)
+    if key in {"text", "shortcut"}:
+        return DBaseMenuProperty(
+            name, "string",
+            _dbase_decode_property_string(rhs, filename=filename, line=line, column=column),
+            line, column,
+        )
+    if key == "separator":
+        state = rhs.casefold()
+        if state not in {"true", "false"}:
+            raise DBaseCompilerError(
+                "separator erwartet TRUE oder FALSE.",
+                line=line, column=column, filename=filename,
+            )
+        return DBaseMenuProperty(name, "bool", state == "true", line, column)
+    if key == "onclick":
+        callback = re.fullmatch(r"(?i)class\s*::\s*([A-Za-z_][A-Za-z0-9_]*)", rhs)
+        if callback:
+            return DBaseMenuProperty(name, "callback", callback.group(1), line, column)
+        block = re.fullmatch(r"\{(.*)\}", rhs, flags=re.S)
+        if block:
+            return DBaseMenuProperty(name, "codeblock", block.group(1), line, column)
+        raise DBaseCompilerError(
+            "onClick erwartet class::MEMBER oder einen Codeblock {...}.",
+            line=line, column=column, filename=filename,
+        )
+    raise DBaseCompilerError(
+        f"Unbekannte MENU-Property '{name}'. Erlaubt: text, onClick, shortCut, separator.",
+        line=line, column=column, filename=filename,
+    )
+
+
+def _dbase_menu_file_value(rhs: str, *, filename: str, line: int) -> str:
+    value = rhs.strip()
+    if value.startswith("<") and value.endswith(">"):
+        result = value[1:-1].strip()
+        if not result:
+            raise DBaseCompilerError(
+                "_app.menuFile enthaelt einen leeren Pfad.",
+                line=line, column=1, filename=filename,
+            )
+        return result
+    return _dbase_decode_property_string(value, filename=filename, line=line, column=1)
+
+
+def _dbase_validate_direct_color_literal(
+    expression: DBaseExpression, *, filename: str
+) -> DBaseExpression:
+    if not isinstance(expression, DBaseLiteralExpression):
+        return expression
+    if expression.value_type not in _STRING_KINDS:
+        raise DBaseCompilerError(
+            "_app.colorNormal erwartet einen Farbnamen als String, eine String-Variable/Funktion oder RGB(...).",
+            line=expression.line, column=expression.column, filename=filename,
+        )
+    value = str(expression.value)
+    canonical = _DBASE_SYSTEM_COLOR_LOOKUP.get(value.casefold())
+    if canonical is None:
+        raise DBaseCompilerError(
+            f"Unbekannte Windows-Systemfarbe '{value}'. Verwende einen gueltigen Namen in Anfuehrungszeichen oder RGB(...).",
+            line=expression.line, column=expression.column, filename=filename,
+        )
+    return DBaseLiteralExpression(
+        line=expression.line, column=expression.column, value_type="string",
+        value=canonical, text=expression.text,
+    )
+
+
+def _dbase_mask_line(line_text: str) -> str:
+    return "".join("\t" if ch == "\t" else " " for ch in line_text)
+
+
+def parse_dbase_statements(
+    source: str,
+    *,
+    filename: str = "<dBase>",
+    target: str = "pe32",
+    _menu_include_stack: Tuple[str, ...] = (),
+) -> Tuple[object, ...]:
+    """Stage-12-Syntax plus globales _app-/MENU-Objektmodell.
+
+    Stage 13 implementiert zunaechst die eingebauten Klassen APPLICATION (_app)
+    und MENU. ``this`` ist auf Top-Level ein Alias fuer ``_app``. ``class::X``
+    referenziert eine parameterlose PROCEDURE X als nativen Qt-onClick-Callback.
+    """
+    # Präprozessor zuerst, damit auch Makros in Menuedateien funktionieren.
+    frontend = preprocess_dbase_source(source, filename=filename, target=target)
+    parse_source = frontend.preprocessed_source or frontend.source
+    lines = parse_source.splitlines(keepends=True)
+    masked = list(lines)
+    events: list[tuple[int, int, object, Tuple[object, ...]]] = []
+    event_serial = 0
+
+    i = 0
+    while i < len(lines):
+        raw_with_nl = lines[i]
+        raw = raw_with_nl.rstrip("\r\n")
+        line_no = i + 1
+
+        color_normal = _DBASE_COLOR_NORMAL_RE.fullmatch(raw)
+        if color_normal:
+            rhs = color_normal.group(2)
+            rhs_column = raw.find(rhs) + 1
+            # Tokenpositionen auf die echte physische Quelldatei beziehen.
+            line_start_offset = sum(len(item) for item in lines[:i])
+            rhs_offset = line_start_offset + max(0, rhs_column - 1)
+            tokens = _tokenize_dbase_statement(
+                rhs, filename=filename, base_offset=rhs_offset, source=parse_source
+            )
+            parser = _DBaseExpressionParser(tokens, filename=filename)
+            expression = parser.parse_expression()
+            parser._expect_eof()
+            expression = _dbase_validate_direct_color_literal(expression, filename=filename)
+            statement = DBaseAppColorStatement(
+                property_name="colorNormal",
+                expression=expression,
+                line=line_no,
+                column=max(1, raw.lower().find("colornormal") + 1),
+            )
+            masked[i] = _dbase_mask_line(raw) + raw_with_nl[len(raw):]
+            events.append((line_no, event_serial, statement, ()))
+            event_serial += 1
+            i += 1
+            continue
+
+        menu_file = _DBASE_MENUFILE_RE.fullmatch(raw)
+        if menu_file:
+            path_value = _dbase_menu_file_value(
+                menu_file.group(2), filename=filename, line=line_no
+            )
+            statement = DBaseMenuFileStatement(path_value, line_no, max(1, raw.find(menu_file.group(1)) + 1))
+            masked[i] = _dbase_mask_line(raw) + raw_with_nl[len(raw):]
+
+            base = Path(filename).resolve().parent if filename and not str(filename).startswith("<") else Path.cwd()
+            menu_path = Path(path_value)
+            if not menu_path.is_absolute():
+                menu_path = (base / menu_path).resolve()
+            key = str(menu_path).casefold()
+            if key in {item.casefold() for item in _menu_include_stack}:
+                raise DBaseCompilerError(
+                    f"Zyklische _app.menuFile-Einbindung: {menu_path}",
+                    line=line_no, column=1, filename=filename,
+                )
+            if not menu_path.is_file():
+                raise DBaseCompilerError(
+                    f"Menuedatei nicht gefunden: {menu_path}",
+                    line=line_no, column=1, filename=filename,
+                )
+            included = parse_dbase_statements(
+                menu_path.read_text(encoding="utf-8"),
+                filename=str(menu_path), target=target,
+                _menu_include_stack=_menu_include_stack + (str(menu_path),),
+            )
+            events.append((line_no, event_serial, statement, included))
+            event_serial += 1
+            i += 1
+            continue
+
+        new_menu = _DBASE_NEW_MENU_RE.fullmatch(raw)
+        if new_menu:
+            target_path = _dbase_object_path(new_menu.group(1), line_no)
+            owner_path = _dbase_object_path(new_menu.group(2), line_no)
+            statement = DBaseNewObjectStatement(
+                target=target_path, class_name="MENU", owner=owner_path,
+                line=line_no, column=max(1, raw.find(new_menu.group(1)) + 1),
+            )
+            masked[i] = _dbase_mask_line(raw) + raw_with_nl[len(raw):]
+            events.append((line_no, event_serial, statement, ()))
+            event_serial += 1
+            i += 1
+            continue
+
+        with_match = _DBASE_WITH_RE.fullmatch(raw)
+        if with_match:
+            start_line = line_no
+            target_path = _dbase_object_path(with_match.group(1), line_no)
+            properties: list[DBaseMenuProperty] = []
+            masked[i] = _dbase_mask_line(raw) + raw_with_nl[len(raw):]
+            i += 1
+            while i < len(lines):
+                body_with_nl = lines[i]
+                body = body_with_nl.rstrip("\r\n")
+                body_line = i + 1
+                masked[i] = _dbase_mask_line(body) + body_with_nl[len(body):]
+                if _DBASE_ENDWITH_RE.fullmatch(body):
+                    break
+                if body.strip():
+                    properties.append(
+                        _dbase_parse_menu_property(body, filename=filename, line=body_line)
+                    )
+                i += 1
+            if i >= len(lines):
+                raise DBaseCompilerError(
+                    "WITH-Block ist nicht mit ENDWITH abgeschlossen.",
+                    line=start_line, column=1, filename=filename,
+                )
+            statement = DBaseWithStatement(
+                target=target_path, properties=tuple(properties),
+                line=start_line, column=max(1, raw.lower().find("with") + 1),
+            )
+            events.append((start_line, event_serial, statement, ()))
+            event_serial += 1
+            i += 1
+            continue
+
+        if _DBASE_ENDWITH_RE.fullmatch(raw):
+            raise DBaseCompilerError(
+                "Unerwartetes ENDWITH ohne passenden WITH-Block.",
+                line=line_no, column=1, filename=filename,
+            )
+        i += 1
+
+    base_source = "".join(masked)
+    base_statements = _stage12_parse_dbase_statements(
+        base_source, filename=filename, target=target
+    )
+
+    # Hauptquelldatei nach physischer Zeile mergen. Eingebundene .mnu-Dateien
+    # bleiben geschlossen an der menuFile-Zuweisung und behalten intern ihre
+    # eigene Reihenfolge.
+    base_items = sorted(
+        ((getattr(statement, "line", 10**9), index, statement)
+         for index, statement in enumerate(base_statements)),
+        key=lambda item: (item[0], item[1]),
+    )
+    event_items = sorted(events, key=lambda item: (item[0], item[1]))
+    result: list[object] = []
+    bi = ei = 0
+    while bi < len(base_items) or ei < len(event_items):
+        if ei < len(event_items) and (
+            bi >= len(base_items) or event_items[ei][0] <= base_items[bi][0]
+        ):
+            _line, _serial, event, included = event_items[ei]
+            result.append(event)
+            result.extend(included)
+            ei += 1
+        else:
+            result.append(base_items[bi][2])
+            bi += 1
+    return tuple(result)
+
+
+class _DBaseProgramAnalyzer(_Stage12ProgramAnalyzer):
+    def analyze_expression(
+        self,
+        expression: DBaseExpression,
+        *,
+        symbols: Mapping[str, _DBaseSymbolState],
+        expression_info: Dict[DBaseExpression, _DBaseExpressionInfo],
+        call_bindings: Dict[DBaseCallExpression, _DBaseCallBinding],
+        require_value: bool = True,
+    ) -> _DBaseExpressionInfo:
+        # RGB(rr,gg,bb) ist ein Compiler-Builtin. Die drei Kanaele muessen in
+        # dieser Stufe konstante Ganzzahlen 0..255 (00h..FFh) ergeben. Das
+        # Resultat ist ein normaler Stringwert "#RRGGBB" und kann deshalb
+        # auch Variablen oder FUNCTION-Rueckgaben durchlaufen.
+        if isinstance(expression, DBaseCallExpression) and expression.name.casefold() == "rgb":
+            cached = expression_info.get(expression)
+            if cached is not None:
+                return cached
+            if len(expression.arguments) != 3:
+                raise DBaseCompilerError(
+                    "RGB(rr,gg,bb) erwartet genau drei Farbkomponenten.",
+                    line=expression.line, column=expression.column, filename=self.filename,
+                )
+            values: list[int] = []
+            for argument in expression.arguments:
+                # Komfortsyntax speziell fuer RGB: genau zwei Hexdigits werden
+                # als Hexkanal gelesen, also RGB(FF,00,80) = #FF0080.
+                raw_hex = None
+                if isinstance(argument, DBaseIdentifierExpression):
+                    match = re.fullmatch(r"([0-9A-Fa-f]{2})(?:[hH])?", argument.name)
+                    if match:
+                        raw_hex = int(match.group(1), 16)
+                elif isinstance(argument, DBaseLiteralExpression):
+                    raw = str(argument.text).strip()
+                    if re.fullmatch(r"[0-9A-Fa-f]{2}", raw):
+                        raw_hex = int(raw, 16)
+                if raw_hex is not None:
+                    values.append(raw_hex)
+                    continue
+
+                arg_info = self.analyze_expression(
+                    argument, symbols=symbols, expression_info=expression_info,
+                    call_bindings=call_bindings,
+                )
+                if arg_info.kind != "number" or arg_info.constant_value is None:
+                    raise DBaseCompilerError(
+                        "RGB(rr,gg,bb) erwartet konstante numerische Komponenten im Bereich 00h..FFh.",
+                        line=argument.line, column=argument.column, filename=self.filename,
+                    )
+                number = Decimal(arg_info.constant_value.value)
+                if number != number.to_integral_value() or number < 0 or number > 255:
+                    raise DBaseCompilerError(
+                        "RGB-Komponenten muessen Ganzzahlen von 0 bis 255 (00h..FFh) sein.",
+                        line=argument.line, column=argument.column, filename=self.filename,
+                    )
+                values.append(int(number))
+            text = "#%02X%02X%02X" % tuple(values)
+            info = _DBaseExpressionInfo(
+                kind="string", constant_value=DBaseValue("string", text), dynamic=False
+            )
+            expression_info[expression] = info
+            return info
+        return super().analyze_expression(
+            expression, symbols=symbols, expression_info=expression_info,
+            call_bindings=call_bindings, require_value=require_value,
+        )
+
+    def _analyze_app_color(
+        self, statement: DBaseAppColorStatement, globals_work: Dict[str, _DBaseSymbolState]
+    ) -> None:
+        expression = statement.expression
+        # Ein Funktionsname ohne dBase-Definition darf hier nicht als externer
+        # C-Call durchrutschen. Genau das unterscheidet ActiveBorder() von einer
+        # vorher definierten FUNCTION ActiveBorder().
+        if isinstance(expression, DBaseCallExpression) and expression.name.casefold() != "rgb":
+            definition = self.routines.get(expression.name.casefold())
+            if definition is None or definition.line >= statement.line:
+                raise DBaseCompilerError(
+                    f"Funktion '{expression.name}' fuer _app.colorNormal muss vor ihrer Verwendung definiert sein.",
+                    line=expression.line, column=expression.column, filename=self.filename,
+                )
+        info = self.analyze_expression(
+            expression, symbols=globals_work, expression_info=self.expression_info,
+            call_bindings=self.call_bindings,
+        )
+        if info.kind not in _STRING_KINDS:
+            raise DBaseCompilerError(
+                "_app.colorNormal erwartet einen Stringfarbnamen, eine String-Variable/Funktion oder RGB(...).",
+                line=expression.line, column=expression.column, filename=self.filename,
+            )
+        if info.constant_value is not None:
+            value = str(info.constant_value.value)
+            valid_system = value.casefold() in _DBASE_SYSTEM_COLOR_LOOKUP
+            valid_rgb = bool(re.fullmatch(r"#[0-9A-Fa-f]{6}", value))
+            if not valid_system and not valid_rgb:
+                raise DBaseCompilerError(
+                    f"Ungueltiger Farbwert '{value}' fuer _app.colorNormal.",
+                    line=expression.line, column=expression.column, filename=self.filename,
+                )
+
+    def _validate_menu_statements(self, sequence: Tuple[object, ...]) -> None:
+        for statement in sequence:
+            if not isinstance(statement, DBaseWithStatement):
+                continue
+            for prop in statement.properties:
+                if prop.value_kind != "callback":
+                    continue
+                definition = self.routines.get(str(prop.value).casefold())
+                if definition is None:
+                    raise DBaseCompilerError(
+                        f"onClick-Member '{prop.value}' ist nicht definiert.",
+                        line=prop.line, column=prop.column, filename=self.filename,
+                    )
+                if not definition.is_procedure or definition.parameters:
+                    raise DBaseCompilerError(
+                        f"onClick-Member '{definition.name}' muss eine parameterlose PROCEDURE sein.",
+                        line=prop.line, column=prop.column, filename=self.filename,
+                    )
+                self.instantiate_routine(definition, ())
+
+    @staticmethod
+    def _without_menu(sequence: Tuple[object, ...]) -> Tuple[object, ...]:
+        return tuple(
+            statement for statement in sequence
+            if not isinstance(statement, (DBaseNewObjectStatement, DBaseWithStatement, DBaseMenuFileStatement, DBaseAppColorStatement))
+        )
+
+    def _analyze_top_sequence(self, sequence, globals_work):
+        seq = tuple(sequence)
+        self._validate_menu_statements(seq)
+        for statement in seq:
+            if isinstance(statement, DBaseAppColorStatement):
+                self._analyze_app_color(statement, globals_work)
+                continue
+            if isinstance(statement, (DBaseNewObjectStatement, DBaseWithStatement, DBaseMenuFileStatement)):
+                continue
+            # Jeweils genau ein Basestatement analysieren. Bei IF ruft die
+            # Stage-12-Logik rekursiv wieder self._analyze_top_sequence auf.
+            _Stage12ProgramAnalyzer._analyze_top_sequence(self, (statement,), globals_work)
+        return None
+
+    def _preview_top_sequence(self, sequence, **kwargs):
+        return super()._preview_top_sequence(self._without_menu(tuple(sequence)), **kwargs)
+
+
+def _analyze_program(statements: Tuple[object, ...], *, filename: str) -> _DBaseAnalysis:
+    return _DBaseProgramAnalyzer(statements, filename=filename).run()
+
+
+class _DBaseCodeGenerator(_Stage12CodeGenerator):
+    MENU_IMPORTS = (
+        "DBaseQtMenuCreate",
+        "DBaseQtMenuSetText",
+        "DBaseQtMenuSetSeparator",
+        "DBaseQtMenuSetShortcut",
+        "DBaseQtMenuSetOnClick",
+        "DBaseQtSetColorNormal",
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.object_slots: Dict[Tuple[str, ...], str] = {}
+
+    def _object_slot(self, path: DBaseObjectPath) -> str:
+        parts = path.canonical_parts
+        if parts == ("_app",):
+            return ""
+        key = tuple(part.casefold() for part in parts)
+        label = self.object_slots.get(key)
+        if label is None:
+            label = "__dbase_object_" + "_".join(_safe_member_name(part) for part in parts)
+            self.object_slots[key] = label
+        return label
+
+    def _load_object_handle(self, path: DBaseObjectPath) -> None:
+        slot = self._object_slot(path)
+        if not slot:
+            self.emit("    xor rax, rax" if self.is64 else "    xor eax, eax")
+        elif self.is64:
+            self.emit(f"    mov rax, qword ptr [{slot}]")
+        else:
+            self.emit(f"    mov eax, dword ptr [{slot}]")
+
+    def _callback_label(self, callback_name: str) -> str:
+        definition = self.analysis.routines.get(callback_name.casefold())
+        if definition is None:
+            raise AssertionError(callback_name)
+        for instance in self.analysis.routine_instances:
+            if instance.definition is definition and not instance.signature:
+                return instance.label
+        raise AssertionError(f"Callback-Instanz fehlt: {callback_name}")
+
+    def emit_store_expression_to_slot(self, expression: DBaseExpression, destination: str) -> None:
+        if isinstance(expression, DBaseCallExpression) and expression.name.casefold() == "rgb":
+            info = self.current_expression_info[expression]
+            if info.constant_value is None:
+                raise AssertionError("RGB muss in Stage 15 konstant sein")
+            self.emit_static_text_to_slot(str(info.constant_value.value), "string", destination)
+            return
+        return super().emit_store_expression_to_slot(expression, destination)
+
+    def emit_print_expression(self, expression: DBaseExpression, target: str) -> None:
+        if isinstance(expression, DBaseCallExpression) and expression.name.casefold() == "rgb":
+            info = self.current_expression_info[expression]
+            if info.constant_value is None:
+                raise AssertionError("RGB muss in Stage 15 konstant sein")
+            label, length = self.text_literal(str(info.constant_value.value))
+            self.emit_write_static(label, length, target)
+            return
+        return super().emit_print_expression(expression, target)
+
+    def emit_app_color(self, statement: DBaseAppColorStatement) -> None:
+        expression = statement.expression
+        info = self.current_expression_info[expression]
+
+        if info.constant_value is not None:
+            value = str(info.constant_value.value)
+            # Systemnamen werden kanonisch geschrieben; RGB liefert bereits
+            # #RRGGBB.
+            value = _DBASE_SYSTEM_COLOR_LOOKUP.get(value.casefold(), value)
+            label, length = self.text_literal(value)
+            if self.is64:
+                self.emit(f"    mov rcx, {label}")
+                self.emit(f"    mov edx, {length}")
+                self.emit("    sub rsp, 40")
+                self.emit("    call DBaseQtSetColorNormal")
+                self.emit("    add rsp, 40")
+            else:
+                self.emit(f"    push {length}")
+                self.emit(f"    push {label}")
+                self.emit("    call DBaseQtSetColorNormal")
+                self.emit("    add esp, 8")
+            return
+
+        # Dynamischer String aus Variable oder dBase-FUNCTION: zuerst in einen
+        # Value-Slot materialisieren und Pointer/Laenge an die C-ABI uebergeben.
+        slot = self.new_storage_slot("app_color")
+        self.emit_store_expression_to_slot(expression, slot)
+        if self.is64:
+            self.emit(f"    mov rcx, qword ptr [{slot}_ptr]")
+            self.emit(f"    mov edx, dword ptr [{slot}_len]")
+            self.emit("    sub rsp, 40")
+            self.emit("    call DBaseQtSetColorNormal")
+            self.emit("    add rsp, 40")
+        else:
+            self.emit(f"    push dword ptr [{slot}_len]")
+            self.emit(f"    push dword ptr [{slot}_ptr]")
+            self.emit("    call DBaseQtSetColorNormal")
+            self.emit("    add esp, 8")
+
+    def emit_new_object(self, statement: DBaseNewObjectStatement) -> None:
+        target_slot = self._object_slot(statement.target)
+        self._load_object_handle(statement.owner)
+        if self.is64:
+            self.emit("    mov rcx, rax")
+            self.emit("    sub rsp, 40")
+            self.emit("    call DBaseQtMenuCreate")
+            self.emit("    add rsp, 40")
+            self.emit(f"    mov qword ptr [{target_slot}], rax")
+        else:
+            self.emit("    push eax")
+            self.emit("    call DBaseQtMenuCreate")
+            self.emit("    add esp, 4")
+            self.emit(f"    mov dword ptr [{target_slot}], eax")
+
+    def _emit_menu_string(self, function: str, slot: str, value: str) -> None:
+        label, length = self.text_literal(value)
+        if self.is64:
+            self.emit(f"    mov rcx, qword ptr [{slot}]")
+            self.emit(f"    mov rdx, {label}")
+            self.emit(f"    mov r8d, {length}")
+            self.emit("    sub rsp, 40")
+            self.emit(f"    call {function}")
+            self.emit("    add rsp, 40")
+        else:
+            self.emit(f"    push {length}")
+            self.emit(f"    push {label}")
+            self.emit(f"    push dword ptr [{slot}]")
+            self.emit(f"    call {function}")
+            self.emit("    add esp, 12")
+
+    def emit_with_statement(self, statement: DBaseWithStatement) -> None:
+        slot = self._object_slot(statement.target)
+        for prop in statement.properties:
+            key = prop.name.casefold()
+            if key == "text":
+                self._emit_menu_string("DBaseQtMenuSetText", slot, str(prop.value))
+            elif key == "shortcut":
+                self._emit_menu_string("DBaseQtMenuSetShortcut", slot, str(prop.value))
+            elif key == "separator":
+                value = 1 if prop.value else 0
+                if self.is64:
+                    self.emit(f"    mov rcx, qword ptr [{slot}]")
+                    self.emit(f"    mov edx, {value}")
+                    self.emit("    sub rsp, 40")
+                    self.emit("    call DBaseQtMenuSetSeparator")
+                    self.emit("    add rsp, 40")
+                else:
+                    self.emit(f"    push {value}")
+                    self.emit(f"    push dword ptr [{slot}]")
+                    self.emit("    call DBaseQtMenuSetSeparator")
+                    self.emit("    add esp, 8")
+            elif key == "onclick":
+                callback = "0"
+                if prop.value_kind == "callback":
+                    callback = self._callback_label(str(prop.value))
+                # Ein {...}-Codeblock ist in dieser ersten Klassenstufe ein
+                # valider Callback-Platzhalter. Ein leerer/Kommentarblock wird
+                # deshalb als NULL registriert und fuehrt sicher keine Aktion aus.
+                if self.is64:
+                    self.emit(f"    mov rcx, qword ptr [{slot}]")
+                    self.emit(f"    mov rdx, {callback}")
+                    self.emit("    sub rsp, 40")
+                    self.emit("    call DBaseQtMenuSetOnClick")
+                    self.emit("    add rsp, 40")
+                else:
+                    self.emit(f"    push {callback}")
+                    self.emit(f"    push dword ptr [{slot}]")
+                    self.emit("    call DBaseQtMenuSetOnClick")
+                    self.emit("    add esp, 8")
+            else:
+                raise AssertionError(key)
+
+    def _emit_statement_sequence(self, sequence, **kwargs):
+        format_target = kwargs.get("format_target", "console")
+        debug_override = kwargs.get("debug_override", None)
+        debug_visible = kwargs.get("debug_visible", False)
+        routine_end_label = kwargs.get("routine_end_label", "")
+        routine_result_label = kwargs.get("routine_result_label", "")
+        chunk: list[object] = []
+
+        def flush():
+            nonlocal format_target, debug_override, debug_visible, chunk
+            if not chunk:
+                return
+            format_target, debug_override, debug_visible = super(_DBaseCodeGenerator, self)._emit_statement_sequence(
+                tuple(chunk),
+                routine_end_label=routine_end_label,
+                routine_result_label=routine_result_label,
+                format_target=format_target,
+                debug_override=debug_override,
+                debug_visible=debug_visible,
+            )
+            chunk = []
+
+        for statement in sequence:
+            if isinstance(statement, DBaseAppColorStatement):
+                flush()
+                self.emit_app_color(statement)
+            elif isinstance(statement, DBaseNewObjectStatement):
+                flush()
+                self.emit_new_object(statement)
+            elif isinstance(statement, DBaseWithStatement):
+                flush()
+                self.emit_with_statement(statement)
+            elif isinstance(statement, DBaseMenuFileStatement):
+                flush()
+            else:
+                chunk.append(statement)
+        flush()
+        return format_target, debug_override, debug_visible
+
+    def build(self) -> str:
+        assembly = super().build()
+        marker = 'import DBaseQtShutdown, "d64qt5.dll", "DBaseQtShutdown"\n'
+        extra = "".join(
+            f'import {symbol}, "d64qt5.dll", "{symbol}"\n'
+            for symbol in self.MENU_IMPORTS
+        )
+        if marker in assembly and extra not in assembly:
+            assembly = assembly.replace(marker, marker + extra, 1)
+        if self.object_slots:
+            object_data = []
+            for label in dict.fromkeys(self.object_slots.values()):
+                object_data.append(f"{label}:")
+                object_data.append("    dd 0, 0" if self.is64 else "    dd 0")
+            assembly = assembly.rstrip() + "\n" + "\n".join(object_data) + "\n"
+        return assembly
+
+
+# Öffentliche Exportliste der additiven Stage-13-Klassen.
+for _name in (
+    "DBaseObjectPath", "DBaseNewObjectStatement", "DBaseMenuFileStatement",
+    "DBaseAppColorStatement", "DBASE_SYSTEM_COLOR_NAMES",
+    "DBaseSetColorStatement", "DBaseClearScreenStatement", "DBaseSetBorderColorStatement",
+    "DBASE_FOREGROUND_COLOR_CODES", "DBASE_BACKGROUND_COLOR_CODES",
+    "DBaseMenuProperty", "DBaseWithStatement",
+):
+    if _name not in __all__:
+        __all__.append(_name)
+
+# Stage 13: die semantische Test-Auswertung ignoriert reine GUI-Objektaufbauten.
+_stage12_evaluate_dbase_statements = evaluate_dbase_statements
+
+def evaluate_dbase_statements(
+    statements: Tuple[object, ...],
+    *,
+    filename: str = "<dBase>",
+) -> str:
+    filtered = tuple(
+        statement for statement in statements
+        if not isinstance(statement, (DBaseNewObjectStatement, DBaseWithStatement, DBaseMenuFileStatement, DBaseAppColorStatement))
+    )
+    return _stage12_evaluate_dbase_statements(filtered, filename=filename)
+
+_stage12_compile_dbase_to_assembly = compile_dbase_to_assembly
+
+def compile_dbase_to_assembly(
+    source: str,
+    *,
+    filename: str = "<dBase>",
+    target: str = "pe32",
+    windows_application_mode: str = "Console",
+) -> DBaseCompileResult:
+    result = _stage12_compile_dbase_to_assembly(
+        source,
+        filename=filename,
+        target=target,
+        windows_application_mode=windows_application_mode,
+    )
+    stage13_notes = (
+        "dBase-Ausbaustufe 13: globales APPLICATION-Objekt _app und eingebaute MENU-Klasse.",
+        "this ist auf Top-Level ein Alias fuer _app; Memberpfade werden als native Objekt-Handles gespeichert.",
+        "WITH/ENDWITH setzt MENU-Properties text, onClick, shortCut und separator.",
+        "class::MEMBER bindet eine parameterlose PROCEDURE als nativen Qt-onClick-Callback.",
+        "_app.menuFile = <pfad/menu.mnu> bindet eine externe Menuequelldatei relativ zur dBase-Quelldatei ein.",
+        "Das Qt-Hauptmenue liegt als QMenuBar in der ersten Zeile des Konsolen-Tabs.",
+        "_app.colorNormal akzeptiert direkte Windows-Systemfarben nur als Stringliteral; Variablen/Funktionen und RGB(rr,gg,bb) sind ebenfalls moeglich.",
+        "dBase-Ausbaustufe 16: CLEAR SCREEN leert die Konsole mit der aktuellen SET-COLOR-Hintergrundfarbe, ohne den Editorrahmen zu entfernen.",
+        "SET BORDERCOLOR TO <expr> setzt die Rahmenfarbe der Konsolen-Textkomponente per Windows-Systemfarbe oder RGB(rr,gg,bb).",
+    )
+    return DBaseCompileResult(
+        assembly=result.assembly,
+        target=result.target,
+        windows_application_mode=result.windows_application_mode,
+        source_kind=result.source_kind,
+        notes=stage13_notes + tuple(result.notes),
+        warnings=result.warnings,
+        linked_assembly_files=result.linked_assembly_files,
+        linked_pe32_modules=result.linked_pe32_modules,
+        linked_object_files=result.linked_object_files,
+        frontend=result.frontend,
+        statements=result.statements,
+        transcript=result.transcript,
+        debug_transcript=result.debug_transcript,
+        uses_debug_output=result.uses_debug_output,
+        variables=result.variables,
+        external_functions=result.external_functions,
+    )

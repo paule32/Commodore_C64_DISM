@@ -1,7 +1,7 @@
 # ---------------------------------------------------------------------------
 # (c) 2026 by Jens Kallup - paule32
 # Alle Rechte vorbehalten.
-#
+# ---------------------------------------------------------------------------
 # Funktionen:
 #  * verschiebbare Toolbar
 #  * verschiebbare und skalierbare Dock-Fenster
@@ -23,7 +23,11 @@
 #  * integrierter IA-32-/PE32-Assembler mit Microsoft-COFF32-Objekten
 #  * integrierter COFF32-.a-Archivierer und PE32-Linker samt DLL-Imports/-Exports
 #  * Windows-Grafikziel fuer 320x200 ueber Direct2D oder Direct3D
-#  * C64-BASIC-Compiler sowie ANTLR-Compiler fuer Pascal und C
+#  * C64-BASIC-Compiler sowie Compiler fuer Pascal, C, LISP, PROLOG, LOGO und dBase
+#  * nativer LOGO->Windows-PE32-Compiler mit Console-/320x200-GUI-Ausgabe
+#  * native LISP-/PROLOG->Windows-PE32/PE32+-Assemblergeneratoren mit internem Linker
+#  * PROLOG-Laufzeit mit Listen, Choice Points, Trail, Unifikation, assert/retract und REPL
+#  * PROLOG IEEE-754 Double: Float-Literale, gemischte Arithmetik und echte /-Division
 #  * zielabhängiger Start in VICE, WinUAE oder als Windows-PE32-Programm
 #  * Operanden-Rechner fuer Dezimal-, Hexadezimal- und Binaerwerte
 #  * integrierter CHM-Viewer mit unterschiedlichen Themen-/Blatt-Icons
@@ -33,9 +37,9 @@
 #  * Protokoll-Loeschaktion in der Dock-Leiste und weisse Dock-/Tab-Symbole
 #  * Statusfelder fuer INS/CAPS/NUM, Dateigroesse, Zeile und Spalte
 #  * Registerkarten-Kontextmenue und sprachabhaengige F1-Kontexthilfe
-#  * F2-Ein-Tasten-Build fuer BASIC/C/Pascal: Modul->Objekt, Hauptprogramm->Link/Start
+#  * F2-Ein-Tasten-Build fuer BASIC/C/Pascal/LISP/PROLOG/LOGO/dBase: Compile->Assemble->Link/Start
 #  * Projekt-TreeList: Doppelklick fuer Datei-/Archivinfos, Einfachklick fuer Checkboxen
-#  * Datei-Neu-Untermenue fuer BASIC, ASM, Pascal, C und C64-Editoren
+#  * Datei-Neu-Untermenue fuer BASIC, ASM, Pascal, C, LISP, PROLOG, LOGO, dBase und C64-Editoren
 #  * Editor-Zoom sowie umschaltbarer Hell-/Dunkelmodus
 #
 # Installation:
@@ -79,6 +83,9 @@ from pathlib     import Path
 from typing      import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from flags_rc    import *
+
+# dBase: Start fuehrt ausschliesslich eine vorhandene EXE aus.
+DBASE_START_HARD_NO_BUILD = True
 
 # ---------------------------------------------------------------------------
 # C64 Pro Mono: direkte PETSCII-Zuordnung fuer die Zeichenansicht des
@@ -357,6 +364,14 @@ def windows_application_predefined_macros(mode: str, target: str = "pe32") -> Di
 
 
 # ---------------------------------------------------------------------------
+# dBase Qt5 runtime policy.
+#
+# Die generierte dBase-EXE importiert d64qt5.dll. Diese DLL und ihre Qt5-
+# Abhaengigkeiten werden ausschliesslich vom Benutzer bereitgestellt.
+# d64_dism fuehrt fuer die Qt5-Runtime keinerlei externen Build aus.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
 # Minimaler, aber echter IA-32-Assembler und PE32/COFF32-Linker.
 # Ziel ist eine in d64_dism integrierte, deterministische Toolchain. Der
 # Assembler verwendet Intel-Syntax und erzeugt entweder ein PE32-Image oder
@@ -573,7 +588,7 @@ def _x86_reg(name: str, line: int) -> int:
 
 
 _X86_SIZE_PREFIX_RE = re.compile(
-    r"^\s*(?:(byte|word|dword)\s+(?:ptr\s+)?)?(\[.*\])\s*$",
+    r"^\s*(?:(byte|word|dword|qword)\s+(?:ptr\s+)?)?(\[.*\])\s*$",
     re.IGNORECASE,
 )
 _X86_REGISTERS8 = {"al": 0, "cl": 1, "dl": 2, "bl": 3, "ah": 4, "ch": 5, "dh": 6, "bh": 7}
@@ -679,10 +694,16 @@ def _x86_rm_encoding(reg_field: int, operand: str, line: int):
     output = bytearray()
 
     if symbol is not None:
-        # mod=00, r/m=101 -> disp32 absolute; Relocation zeigt auf die 4 Bytes.
+        # mod=00, r/m=101 -> disp32 absolute.  Bei [symbol+disp] ist
+        # ``disp`` der COFF-DIR32-Addend und MUSS in den vier Bytes stehen
+        # bleiben.  Der Linker addiert spaeter die Symboladresse.  Frueher
+        # wurde hier immer 0 emittiert; dadurch wurde z.B. [value+4] wie
+        # [value] adressiert.
+        if not -(1 << 31) <= displacement < (1 << 31):
+            raise PE32AssemblerError("IA-32-Symbol-Displacement liegt ausserhalb von 32 Bit.", line)
         output.append(((reg_field & 7) << 3) | 0x05)
         reloc_local = len(output)
-        output.extend(b"\x00\x00\x00\x00")
+        output.extend(struct.pack("<i", displacement))
         return bytes(output), symbol, reloc_local
 
     base = _X86_REGISTERS[base_name] if base_name is not None else None
@@ -871,6 +892,14 @@ def _parse_pe32_source_lines(
                 return 1 + _x86_rm_length(operands[1], line)
         if mnemonic in {"shl", "sal", "shr", "sar"} and len(operands) == 2 and _x86_is_rm32(operands[0], line):
             return 1 + _x86_rm_length(operands[0], line) + (0 if operands[1].casefold() == "cl" else 1)
+        # Minimal x87 subset used by the native PROLOG floating-point runtime.
+        if mnemonic in {"fld", "fild", "fstp"} and len(operands) == 1:
+            if operands[0].casefold() == "st0" and mnemonic == "fstp":
+                return 2
+            if _x86_memory_operand(operands[0], line) is not None:
+                return 1 + _x86_rm_length(operands[0], line)
+        if mnemonic in {"faddp", "fsubp", "fmulp", "fdivp", "fchs", "fldz", "fucomip"}:
+            return 2
         raise PE32AssemblerError(f"PE32-Assemblerbefehl nicht unterstützt: {text}", line)
 
     for line_number, raw in enumerate(str(source).splitlines(), 1):
@@ -1064,6 +1093,39 @@ def assemble_pe32_object_source(
         mnemonic = inst_parts[0].casefold()
         operands = _x86_split_operands(inst_parts[1] if len(inst_parts) > 1 else "")
         instruction_count += 1
+
+        # Minimal x87 subset for native PROLOG IEEE-754 Double arithmetic.
+        if mnemonic in {"fld", "fild", "fstp"} and len(operands) == 1:
+            op = operands[0].strip()
+            if mnemonic == "fstp" and op.casefold() == "st0":
+                output.extend((0xDD, 0xD8))
+                continue
+            mem = _x86_memory_operand(op, line_number)
+            if mem is not None:
+                if mnemonic == "fild":
+                    if mem["size"] not in {"dword", "qword"}:
+                        raise PE32AssemblerError("FILD erwartet DWORD/QWORD-Speicher.", line_number)
+                    output.append(0xDB if mem["size"] == "dword" else 0xDF)
+                    emit_rm_operand(0 if mem["size"] == "dword" else 5, op, line_number)
+                elif mnemonic == "fld":
+                    if mem["size"] != "qword":
+                        raise PE32AssemblerError("FLD erwartet QWORD-Speicher für Double.", line_number)
+                    output.append(0xDD); emit_rm_operand(0, op, line_number)
+                else:
+                    if mem["size"] != "qword":
+                        raise PE32AssemblerError("FSTP erwartet QWORD-Speicher für Double.", line_number)
+                    output.append(0xDD); emit_rm_operand(3, op, line_number)
+                continue
+        if mnemonic == "faddp": output.extend((0xDE,0xC1)); continue
+        if mnemonic == "fmulp": output.extend((0xDE,0xC9)); continue
+        if mnemonic == "fsubp": output.extend((0xDE,0xE9)); continue
+        if mnemonic == "fdivp": output.extend((0xDE,0xF9)); continue
+        if mnemonic == "fchs": output.extend((0xD9,0xE0)); continue
+        if mnemonic == "fldz": output.extend((0xD9,0xEE)); continue
+        if mnemonic == "fucomip":
+            if operands and [x.casefold().replace(" ","") for x in operands] != ["st0","st1"]:
+                raise PE32AssemblerError("FUCOMIP unterstützt nur ST0, ST1.", line_number)
+            output.extend((0xDF,0xE9)); continue
 
         # Compilerrelevante r/m32-Adressierungen. Diese Zweige stehen vor den
         # kompakten Register-/Immediate-Faellen weiter unten.
@@ -1343,7 +1405,10 @@ def _pe32_apply_single_object_relocations(obj: PE32ObjectProgram) -> Tuple[bytes
             value = target - (relocation.offset + 4)
             struct.pack_into("<i", code, relocation.offset, value)
         elif relocation.relocation_type == IMAGE_REL_I386_DIR32:
-            value = PE32_IMAGE_BASE + PE32_SECTION_RVA + target
+            # COFF DIR32 verwendet den bereits im Relocation-Feld stehenden
+            # Wert als Addend.  Das ist insbesondere fuer [symbol+4] noetig.
+            addend = struct.unpack_from("<i", code, relocation.offset)[0]
+            value = PE32_IMAGE_BASE + PE32_SECTION_RVA + target + addend
             struct.pack_into("<I", code, relocation.offset, value & 0xFFFFFFFF)
         else:
             raise PE32AssemblerError(
@@ -1461,10 +1526,12 @@ PE32_DEFAULT_IMPORTS: Dict[str, Tuple[str, str]] = {
     "settextcolor": ("d64graphics.dll", "SetTextColor"),
     "clearscreen": ("d64graphics.dll", "ClearScreen"),
     "initgraphics": ("d64graphics.dll", "InitGraphics"),
+    "initgraphics320x200": ("d64graphics.dll", "InitGraphics320x200"),
     "donegraphics": ("d64graphics.dll", "DoneGraphics"),
     "setpixel": ("d64graphics.dll", "SetPixel"),
     "getpixel": ("d64graphics.dll", "GetPixel"),
     "drawline": ("d64graphics.dll", "DrawLine"),
+    "graphicswindowopen": ("d64graphics.dll", "GraphicsWindowOpen"),
     "drawrect": ("d64graphics.dll", "DrawRect"),
     "fillrect": ("d64graphics.dll", "FillRect"),
     "drawcircle": ("d64graphics.dll", "DrawCircle"),
@@ -2299,11 +2366,14 @@ def link_coff32_objects(
             if relocation.relocation_type == IMAGE_REL_I386_REL32:
                 struct.pack_into("<i", code, patch, target - (patch + 4))
             elif relocation.relocation_type == IMAGE_REL_I386_DIR32:
+                # COFF DIR32: vorhandenen 32-Bit-Wert als Addend erhalten.
+                # Ohne dies zeigt [symbol+4] faelschlich auf [symbol].
+                addend = struct.unpack_from("<i", code, patch)[0]
                 struct.pack_into(
                     "<I",
                     code,
                     patch,
-                    image_base + PE32_SECTION_RVA + target,
+                    (image_base + PE32_SECTION_RVA + target + addend) & 0xFFFFFFFF,
                 )
                 if effective_dll:
                     base_relocations.append(PE32_SECTION_RVA + patch)
@@ -2408,7 +2478,15 @@ def link_coff32_inputs(
 IMAGE_FILE_MACHINE_AMD64 = 0x8664
 IMAGE_REL_AMD64_ADDR64 = 0x0001
 IMAGE_REL_AMD64_ADDR32 = 0x0002
-IMAGE_REL_AMD64_REL32 = 0x0004
+IMAGE_REL_AMD64_REL32   = 0x0004
+# COFF/AMD64 REL32_N variants: N bytes follow the 32-bit RIP displacement
+# before the CPU reaches the next instruction.  These are required for
+# instructions such as ``add dword ptr [symbol], imm32``.
+IMAGE_REL_AMD64_REL32_1 = 0x0005
+IMAGE_REL_AMD64_REL32_2 = 0x0006
+IMAGE_REL_AMD64_REL32_3 = 0x0007
+IMAGE_REL_AMD64_REL32_4 = 0x0008
+IMAGE_REL_AMD64_REL32_5 = 0x0009
 PE64_IMAGE_BASE = 0x0000000140000000
 PE64_DLL_IMAGE_BASE = 0x0000000180000000
 PE64_SECTION_RVA = 0x00001000
@@ -2593,12 +2671,33 @@ def _x64_rm_body(reg_field: int, operand: str, line: int):
     return bytes(out), (reg_field>>3)&1, rex_x, rex_b, None, None
 
 
-def _x64_append_rm(out: bytearray, opcode: bytes, reg_field: int, operand: str, line: int, *, w: bool=False, force_rex: bool=False, relocs=None, base_offset=0):
+def _x64_append_rm(
+    out: bytearray, opcode: bytes, reg_field: int, operand: str, line: int, *,
+    w: bool=False, force_rex: bool=False, relocs=None, base_offset=0,
+    rip_tail_bytes: int=0,
+):
+    """Append opcode + ModR/M/SIB/displacement for an AMD64 r/m operand.
+
+    For RIP-relative symbolic memory operands COFF needs REL32_N whenever
+    bytes follow the displacement in the *same instruction*.  Plain REL32
+    is relative to the byte immediately after the disp32 field, while the
+    CPU uses RIP at the end of the complete instruction.  Without the N
+    adjustment ``add dword ptr [symbol], 2`` addresses ``symbol+4``.
+    """
     body, rr, rx, rb, local, symbol = _x64_rm_body(reg_field, operand, line)
     rex = _x64_rex(w=w, r=rr, x=rx, b=rb, force=force_rex)
     start = len(out); out.extend(rex); out.extend(opcode); body_start=len(out); out.extend(body)
     if local is not None and symbol is not None and relocs is not None:
-        relocs.append(PE64Relocation(base_offset + body_start + local, symbol, IMAGE_REL_AMD64_REL32))
+        tail = int(rip_tail_bytes)
+        if not 0 <= tail <= 5:
+            raise PE64AssemblerError(
+                f"Interner AMD64-Assemblerfehler: RIP-Tail {tail} ist ungueltig.",
+                line,
+            )
+        reloc_type = IMAGE_REL_AMD64_REL32 + tail
+        relocs.append(
+            PE64Relocation(base_offset + body_start + local, symbol, reloc_type)
+        )
     return start
 
 
@@ -2627,6 +2726,39 @@ def _encode_pe64_instruction(text: str, line: int, offset: int, *, relocs: Optio
         value=_x86_parse_int(ops[0]);
         if value is None or not 0<=value<=0xFFFF: raise PE64AssemblerError("RET erwartet eine 16-Bit-Stackweite.",line)
         return b"\xC2"+struct.pack("<H",value)
+    # Minimal x87/SSE2 subset used by the native PROLOG Double runtime.
+    if mnemonic in {"fld","fild","fstp"} and len(ops)==1:
+        op=ops[0].strip()
+        if mnemonic=="fstp" and op.casefold()=="st0": return b"\xDD\xD8"
+        mem=_x64_memory_operand(op,line)
+        if mem is not None:
+            if mnemonic=="fild":
+                if mem["size"] not in {"dword","qword"}: raise PE64AssemblerError("FILD erwartet DWORD/QWORD-Speicher.",line)
+                opcode=b"\xDB" if mem["size"]=="dword" else b"\xDF"
+                group=0 if mem["size"]=="dword" else 5
+            elif mnemonic=="fld":
+                if mem["size"]!="qword": raise PE64AssemblerError("FLD erwartet QWORD-Speicher für Double.",line)
+                opcode=b"\xDD"; group=0
+            else:
+                if mem["size"]!="qword": raise PE64AssemblerError("FSTP erwartet QWORD-Speicher für Double.",line)
+                opcode=b"\xDD"; group=3
+            _x64_append_rm(out,opcode,group,op,line,relocs=relocs,base_offset=offset); return bytes(out)
+    if mnemonic=="faddp": return b"\xDE\xC1"
+    if mnemonic=="fmulp": return b"\xDE\xC9"
+    if mnemonic=="fsubp": return b"\xDE\xE9"
+    if mnemonic=="fdivp": return b"\xDE\xF9"
+    if mnemonic=="fchs": return b"\xD9\xE0"
+    if mnemonic=="fldz": return b"\xD9\xEE"
+    if mnemonic=="fucomip":
+        if ops and [x.casefold().replace(" ","") for x in ops] != ["st0","st1"]: raise PE64AssemblerError("FUCOMIP unterstützt nur ST0, ST1.",line)
+        return b"\xDF\xE9"
+    if mnemonic=="movsd" and len(ops)==2:
+        dst,src=ops; dk=dst.casefold(); sk=src.casefold()
+        if dk=="xmm0" and _x64_memory_operand(src,line) is not None:
+            _x64_append_rm(out,b"\xF2\x0F\x10",0,src,line,relocs=relocs,base_offset=offset); return bytes(out)
+        if sk=="xmm0" and _x64_memory_operand(dst,line) is not None:
+            _x64_append_rm(out,b"\xF2\x0F\x11",0,dst,line,relocs=relocs,base_offset=offset); return bytes(out)
+        raise PE64AssemblerError("MOVSD unterstützt derzeit XMM0 <-> QWORD-Speicher.",line)
     if mnemonic in {"call","jmp"} and len(ops)==1:
         target=ops[0].strip(); key=target.casefold()
         # Registers/memory must be recognized before generic identifiers.
@@ -2690,9 +2822,9 @@ def _encode_pe64_instruction(text: str, line: int, offset: int, *, relocs: Optio
                 width=mem["size"]
                 if width=="byte": opcode=b"\xC6"; imm=struct.pack("<B",value&0xFF); w=False
                 elif width=="word":
-                    out.extend(b"\x66"); _x64_append_rm(out,b"\xC7",0,dst,line,relocs=relocs,base_offset=offset+1); out.extend(struct.pack("<H",value&0xFFFF)); return bytes(out)
+                    out.extend(b"\x66"); _x64_append_rm(out,b"\xC7",0,dst,line,relocs=relocs,base_offset=offset+1,rip_tail_bytes=2); out.extend(struct.pack("<H",value&0xFFFF)); return bytes(out)
                 else: opcode=b"\xC7"; imm=struct.pack("<I",value&0xFFFFFFFF); w=(width=="qword")
-                _x64_append_rm(out,opcode,0,dst,line,w=w,relocs=relocs,base_offset=offset); out.extend(imm); return bytes(out)
+                _x64_append_rm(out,opcode,0,dst,line,w=w,relocs=relocs,base_offset=offset,rip_tail_bytes=len(imm)); out.extend(imm); return bytes(out)
     if mnemonic == "lea" and len(ops)==2 and ops[0].casefold() in _X64_REG_CODE:
         reg,width=_x64_reg_info(ops[0],line); _x64_append_rm(out,b"\x8D",reg,ops[1],line,w=True,force_rex=reg>=8,relocs=relocs,base_offset=offset); return bytes(out)
     if mnemonic in {"add","sub","and","or","xor","cmp","test"} and len(ops)==2:
@@ -2710,7 +2842,7 @@ def _encode_pe64_instruction(text: str, line: int, offset: int, *, relocs: Optio
             if mnemonic=="test": group=0; opcode=b"\xF7"
             else: opcode=b"\x81"
             width64=(dk in _X64_REG64) or ((_x64_memory_operand(dst,line) or {}).get("size")=="qword")
-            _x64_append_rm(out,opcode,group,dst,line,w=width64,relocs=relocs,base_offset=offset); out.extend(struct.pack("<I",value&0xFFFFFFFF)); return bytes(out)
+            _x64_append_rm(out,opcode,group,dst,line,w=width64,relocs=relocs,base_offset=offset,rip_tail_bytes=4); out.extend(struct.pack("<I",value&0xFFFFFFFF)); return bytes(out)
     if mnemonic == "imul" and len(ops)==2 and ops[0].casefold() in _X64_REG_CODE:
         reg,width=_x64_reg_info(ops[0],line); _x64_append_rm(out,b"\x0F\xAF",reg,ops[1],line,w=width==64,force_rex=reg>=8,relocs=relocs,base_offset=offset); return bytes(out)
     if mnemonic in {"idiv","div","neg","not"} and len(ops)==1:
@@ -2732,7 +2864,7 @@ def _encode_pe64_instruction(text: str, line: int, offset: int, *, relocs: Optio
             _x64_append_rm(out,b"\xD3",group,target,line,w=width64,relocs=relocs,base_offset=offset); return bytes(out)
         value=_x86_parse_int(count)
         if value is not None and 0<=value<=255:
-            _x64_append_rm(out,b"\xC1",group,target,line,w=width64,relocs=relocs,base_offset=offset); out.append(value); return bytes(out)
+            _x64_append_rm(out,b"\xC1",group,target,line,w=width64,relocs=relocs,base_offset=offset,rip_tail_bytes=1); out.append(value); return bytes(out)
     if mnemonic in {"inc","dec"} and len(ops)==1:
         group=0 if mnemonic=="inc" else 1; target=ops[0]; width64=target.casefold() in _X64_REG64 or ((_x64_memory_operand(target,line) or {}).get("size")=="qword")
         _x64_append_rm(out,b"\xFF",group,target,line,w=width64,relocs=relocs,base_offset=offset); return bytes(out)
@@ -3068,7 +3200,9 @@ def link_coff64_objects(objects: Sequence[bytes], *, entry_symbol="_start", gui=
             target=globals_map.get(r.symbol.casefold())
             if target is None: raise PE64AssemblerError(f"COFF64-Symbol nicht aufgeloest: {r.symbol}")
             patch=base+r.offset
-            if r.relocation_type==IMAGE_REL_AMD64_REL32: struct.pack_into("<i",code,patch,target-(patch+4))
+            if IMAGE_REL_AMD64_REL32 <= r.relocation_type <= IMAGE_REL_AMD64_REL32_5:
+                tail = r.relocation_type - IMAGE_REL_AMD64_REL32
+                struct.pack_into("<i", code, patch, target - (patch + 4 + tail))
             elif r.relocation_type==IMAGE_REL_AMD64_ADDR64:
                 struct.pack_into("<Q",code,patch,image_base+PE64_SECTION_RVA+target); base_relocs.append(PE64_SECTION_RVA+patch)
             elif r.relocation_type==IMAGE_REL_AMD64_ADDR32: struct.pack_into("<I",code,patch,(image_base+PE64_SECTION_RVA+target)&0xFFFFFFFF)
@@ -3859,8 +3993,12 @@ def link_coff64_objects(
             else:
                 raise PE64AssemblerError(f"Unbekannte COFF64-Relocation-Sektion: {r.section}")
             target_rva = symbol_rva(r.symbol.casefold())
-            if r.relocation_type == IMAGE_REL_AMD64_REL32:
-                struct.pack_into("<i", buf, patch, target_rva - (patch_rva + 4))
+            if IMAGE_REL_AMD64_REL32 <= r.relocation_type <= IMAGE_REL_AMD64_REL32_5:
+                tail = r.relocation_type - IMAGE_REL_AMD64_REL32
+                struct.pack_into(
+                    "<i", buf, patch,
+                    target_rva - (patch_rva + 4 + tail),
+                )
             elif r.relocation_type == IMAGE_REL_AMD64_ADDR64:
                 struct.pack_into("<Q", buf, patch, image_base + target_rva)
                 base_relocs.append(patch_rva)
@@ -3959,6 +4097,8 @@ typedef uint8_t TextMode;
 D64_GRAPHICS_API void SetTextColor(unsigned int foreground, unsigned int background);
 D64_GRAPHICS_API void ClearScreen(void);
 D64_GRAPHICS_API void InitGraphics(void);
+D64_GRAPHICS_API void InitGraphics320x200(void);
+D64_GRAPHICS_API int GraphicsWindowOpen(void);
 D64_GRAPHICS_API void DoneGraphics(TextMode mode);
 D64_GRAPHICS_API void SetPixel(int x, int y, GraphicsColor color);
 D64_GRAPHICS_API GraphicsColor GetPixel(int x, int y);
@@ -4025,6 +4165,8 @@ static uint32_t g_logical_pixels[320 * 200];
 static unsigned int g_present_divider = 0;
 static unsigned int g_text_foreground = 1;
 static unsigned int g_text_background = 0;
+static unsigned int g_output_width = 640;
+static unsigned int g_output_height = 400;
 
 static const uint32_t g_c64_palette[16] = {
     0x000000,0xFFFFFF,0x883932,0x67B6BD,
@@ -4066,8 +4208,8 @@ static int d64_create_renderer(void)
     pp.Windowed = TRUE;
     pp.SwapEffect = D3DSWAPEFFECT_DISCARD;
     pp.hDeviceWindow = g_hwnd;
-    pp.BackBufferWidth = 640;
-    pp.BackBufferHeight = 400;
+    pp.BackBufferWidth = g_output_width;
+    pp.BackBufferHeight = g_output_height;
     pp.BackBufferFormat = D3DFMT_X8R8G8B8;
     pp.PresentationInterval = D3DPRESENT_INTERVAL_ONE;
     pp.Flags = D3DPRESENTFLAG_LOCKABLE_BACKBUFFER;
@@ -4089,10 +4231,13 @@ static void d64_present(void)
     if (FAILED(g_device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &back))) return;
     D3DLOCKED_RECT lock;
     if (SUCCEEDED(back->LockRect(&lock, 0, 0))) {
-        for (int y = 0; y < 400; ++y) {
+        for (unsigned int y = 0; y < g_output_height; ++y) {
             uint32_t *dst = (uint32_t *)((unsigned char *)lock.pBits + y * lock.Pitch);
-            const uint32_t *src = &g_pixels[(y >> 1) * 320];
-            for (int x = 0; x < 640; ++x) dst[x] = src[x >> 1];
+            unsigned int src_y = (y * 200u) / g_output_height;
+            for (unsigned int x = 0; x < g_output_width; ++x) {
+                unsigned int src_x = (x * 320u) / g_output_width;
+                dst[x] = g_pixels[src_y * 320u + src_x];
+            }
         }
         back->UnlockRect();
     }
@@ -4117,7 +4262,7 @@ static int d64_create_renderer(void)
     if (FAILED(hr)) return 0;
     D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties();
     D2D1_HWND_RENDER_TARGET_PROPERTIES hwndProps =
-        D2D1::HwndRenderTargetProperties(g_hwnd, D2D1::SizeU(640, 400));
+        D2D1::HwndRenderTargetProperties(g_hwnd, D2D1::SizeU(g_output_width, g_output_height));
     hr = g_factory->CreateHwndRenderTarget(props, hwndProps, &g_target);
     if (FAILED(hr)) return 0;
     D2D1_BITMAP_PROPERTIES bp = D2D1::BitmapProperties(
@@ -4134,7 +4279,7 @@ static void d64_present(void)
     g_target->Clear(D2D1::ColorF(D2D1::ColorF::Black));
     g_target->DrawBitmap(
         g_bitmap,
-        D2D1::RectF(0.0f, 0.0f, 640.0f, 400.0f),
+        D2D1::RectF(0.0f, 0.0f, (FLOAT)g_output_width, (FLOAT)g_output_height),
         1.0f,
         D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
     g_target->EndDraw();
@@ -4155,8 +4300,12 @@ D64_GRAPHICS_API void SetTextColor(unsigned int foreground, unsigned int backgro
     g_text_background = background;
 }
 
-D64_GRAPHICS_API void InitGraphics(void)
+static void d64_init_graphics_window(unsigned int client_width, unsigned int client_height)
 {
+    if (g_hwnd) DoneGraphics(0);
+    g_output_width = client_width ? client_width : 320u;
+    g_output_height = client_height ? client_height : 200u;
+
     WNDCLASSEXA wc;
     ZeroMemory(&wc, sizeof(wc));
     wc.cbSize = sizeof(wc);
@@ -4165,15 +4314,39 @@ D64_GRAPHICS_API void InitGraphics(void)
     wc.hCursor = LoadCursorA(0, IDC_ARROW);
     wc.lpszClassName = "dBase2ManyGraphicsWindow";
     RegisterClassExA(&wc);
+
+    const DWORD style = WS_OVERLAPPEDWINDOW | WS_VISIBLE;
+    RECT window_rect = {0, 0, (LONG)g_output_width, (LONG)g_output_height};
+    AdjustWindowRect(&window_rect, style, FALSE);
     g_hwnd = CreateWindowExA(
         0, wc.lpszClassName, "dBase2Many - 320x200 Graphics",
-        WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-        CW_USEDEFAULT, CW_USEDEFAULT, 656, 439,
+        style,
+        CW_USEDEFAULT, CW_USEDEFAULT,
+        window_rect.right - window_rect.left,
+        window_rect.bottom - window_rect.top,
         0, 0, wc.hInstance, 0);
     memset(g_pixels, 0, sizeof(g_pixels));
     memset(g_logical_pixels, 0, sizeof(g_logical_pixels));
     d64_create_renderer();
     d64_present();
+}
+
+D64_GRAPHICS_API void InitGraphics(void)
+{
+    /* Bestehendes Verhalten: 320x200 logisch, 2x vergrößert dargestellt. */
+    d64_init_graphics_window(640u, 400u);
+}
+
+D64_GRAPHICS_API void InitGraphics320x200(void)
+{
+    /* LOGO: tatsächliche Client-Zeichenfläche exakt 320x200 Pixel. */
+    d64_init_graphics_window(320u, 200u);
+}
+
+D64_GRAPHICS_API int GraphicsWindowOpen(void)
+{
+    d64_pump_messages();
+    return g_hwnd ? 1 : 0;
 }
 
 D64_GRAPHICS_API void DoneGraphics(TextMode mode)
@@ -6751,13 +6924,13 @@ class D64Image:
     def directory(self) -> D64Directory:
         bam = self.read_sector(18, 0)
         disk_name = petscii_to_text(bam[0x90:0xA0]) or "UNBENANNT"
-        disk_id = petscii_to_text(bam[0xA2:0xA4])
-        dos_type = petscii_to_text(bam[0xA5:0xA7])
+        disk_id   = petscii_to_text(bam[0xA2:0xA4])
+        dos_type  = petscii_to_text(bam[0xA5:0xA7])
 
-        track = bam[0] or 18
-        sector = bam[1] if bam[0] else 1
-        visited = set()
-        entries = []
+        track     = bam[0] or 18
+        sector    = bam[1] if bam[0] else 1
+        visited   = set()
+        entries   = []
 
         while track:
             location = (track, sector)
@@ -6821,6 +6994,10 @@ PROJECT_CATEGORIES: Tuple[Tuple[str, str, Tuple[str, ...]], ...] = (
     ("assembler", "Assembler-Programme", (".asm", ".s", ".a65", ".m68k", ".inc")),
     ("pascal", "Pascal-Programme", (".pas", ".pp")),
     ("c", "C-Programme", (".c", ".h")),
+    ("lisp", "LISP-Programme", (".lisp", ".lsp")),
+    ("prolog", "PROLOG-Programme", (".pl", ".prolog")),
+    ("logo", "LOGO-Programme", (".logo", ".lgo")),
+    ("dbase", "dBase-Programme", (".dbase", ".dbp")),
     ("character_maps", "Character Map's", (".chr", ".charset")),
     ("palettes", "Paletten", (".pal", ".palette")),
     ("char_screens", "Char Screen's", (".scr", ".screen")),
@@ -6848,19 +7025,19 @@ PROJECT_CATEGORY_DEFAULT_EXTENSIONS: Dict[str, str] = {
     for key, _title, extensions in PROJECT_CATEGORIES
 }
 
-
+# ---------------------------------------------------------------------------
+# Liefert einen freien Namen ``Unbenannt_<n>.<ext>``.
+#
+# Geprueft werden sowohl die bereits sichtbaren Projekteintraege als auch
+# vorhandene Dateien im Zielverzeichnis. Dadurch wird kein Eintrag und keine
+# Datei versehentlich ueberschrieben.
+# ---------------------------------------------------------------------------
 def project_untitled_filename(
     category_key: str,
     existing_names: Iterable[str] = (),
     *,
     directory: Optional[Path] = None,
 ) -> str:
-    """Liefert einen freien Namen ``Unbenannt_<n>.<ext>``.
-
-    Geprueft werden sowohl die bereits sichtbaren Projekteintraege als auch
-    vorhandene Dateien im Zielverzeichnis. Dadurch wird kein Eintrag und keine
-    Datei versehentlich ueberschrieben.
-    """
     extension = PROJECT_CATEGORY_DEFAULT_EXTENSIONS.get(category_key, ".dat")
     if extension and not extension.startswith("."):
         extension = "." + extension
@@ -7345,6 +7522,7 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             QRect,
             QRectF,
             QSettings,
+            QProcess,
             QSize,
             QTemporaryDir,
             QThread,
@@ -7377,7 +7555,9 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             QAbstractScrollArea,
             QAction,
             QApplication,
+            QAbstractItemView,
             QButtonGroup,
+            QCheckBox,
             QComboBox,
             QColorDialog,
             QDialog,
@@ -7388,6 +7568,7 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             QFrame,
             QGridLayout,
             QGroupBox,
+            QHeaderView,
             QHBoxLayout,
             QInputDialog,
             QLabel,
@@ -7404,6 +7585,7 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             QScrollArea,
             QSizePolicy,
             QSplitter,
+            QStackedWidget,
             QStatusBar,
             QStyle,
             QTabBar,
@@ -7760,6 +7942,715 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
     def css(msgid: str) -> str: return msgid # return QCSS._tr(msgid)
 
     def  LangSwitch(lang: str): return I18N._langSwitch(lang)
+
+    class AliasRow(QWidget):
+        def __init__(self, file_path: Path, base_dir: Path, parent=None):
+            super().__init__(parent)
+
+            self.file_path = Path(file_path)
+            self.base_dir = Path(base_dir)
+
+            self.label = QLabel(self.file_path.name)
+            self.label.setToolTip(str(self.file_path))
+            self.label.setMinimumWidth(120)
+            self.label.setMaximumWidth(220)
+            self.label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+
+            self.alias_edit = QLineEdit()
+            self.alias_edit.setText(self.file_path.name)
+            self.alias_edit.setPlaceholderText("Alias, e.g. baz.ico")
+
+            self.dir_edit = QLineEdit()
+            self.dir_edit.setText(self.default_dir_name())
+            self.dir_edit.setPlaceholderText(tr("Directory, e.g. bar"))
+
+            line1 = QHBoxLayout()
+            line1.setContentsMargins(0, 0, 0, 0)
+            line1.setSpacing(6)
+            line1.addWidget(self.label)
+            line1.addWidget(self.alias_edit, 1)
+
+            line2 = QHBoxLayout()
+            line2.setContentsMargins(0, 0, 0, 0)
+            line2.setSpacing(6)
+
+            dir_label = QLabel(tr("Path:"))
+            dir_label.setMinimumWidth(120)
+            dir_label.setMaximumWidth(220)
+            dir_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+            line2.addWidget(dir_label)
+            line2.addWidget(self.dir_edit, 1)
+
+            lay = QVBoxLayout(self)
+            lay.setContentsMargins(2, 2, 2, 4)
+            lay.setSpacing(2)
+            lay.addLayout(line1)
+            lay.addLayout(line2)
+
+        def default_dir_name(self) -> str:
+            parent = self.file_path.parent
+
+            if parent == self.base_dir:
+                return ""
+
+            return parent.name
+
+        def alias_name(self) -> str:
+            return self.alias_edit.text().strip()
+
+        def dir_name(self) -> str:
+            return self.dir_edit.text().strip().replace("\\", "/").strip("/")
+
+        def file_name(self) -> str:
+            return self.file_path.name
+
+        def resource_file_name(self) -> str:
+            directory = self.dir_name()
+            file_name = self.file_name()
+
+            if directory:
+                return f"{directory}/{file_name}"
+
+            return file_name
+
+        def relative_file_name(self) -> str:
+            try:
+                rel = self.file_path.relative_to(self.base_dir)
+            except ValueError:
+                rel = self.file_path
+            return str(rel).replace("\\", "/")
+
+    class ResourceBuilderToolWindow(QDialog):
+        FILTERS = {
+            "ALL" : None,
+            "ICO" : [".ico"],
+            "PNG" : [".png"],
+            "JPG" : [".jpg", ".jpeg"],
+            "XML" : [".xml", ".qrc"],
+            "JSON": [".json"],
+            "HTML": [".html", ".htm"],
+            "CSS" : [".css"],
+            "JS"  : [".js"],
+            "MO"  : [".mo"],
+        }
+        
+        def __init__(self, main_window, parent=None):
+            super().__init__(parent)
+            self.main_window = main_window
+
+            self.setWindowTitle("Qt5 Resource Alias Builder")
+            self.resize(1000, 460)
+
+            self.current_dir = Path.cwd()
+            self.current_filter = "ALL"
+            self.alias_rows = []
+
+            self._build_ui()
+            self._load_directory(self.current_dir)
+
+        def _build_ui(self):
+            main_lay = QHBoxLayout(self)
+            main_lay.setContentsMargins(6, 6, 6, 6)
+
+            splitter = QSplitter(Qt.Horizontal)
+            main_lay.addWidget(splitter)
+
+            self.left_tabs = QTabWidget()
+            self.middle_widget = QWidget()
+            self.right_tabs = QTabWidget()
+
+            splitter.addWidget(self.left_tabs)
+            splitter.addWidget(self.middle_widget)
+            splitter.addWidget(self.right_tabs)
+            splitter.setSizes([420, 130, 560])
+
+            self._build_left_tabs()
+            self._build_middle_buttons()
+            self._build_right_tabs()
+
+        def _build_left_tabs(self):
+            tab_dir = QWidget()
+            dir_lay = QVBoxLayout(tab_dir)
+
+            self.dir_edit = QLineEdit()
+            self.dir_edit.setText(str(self.current_dir))
+
+            btn_choose = QPushButton(tr("Select Directory"))
+            btn_choose.clicked.connect(self._choose_directory)
+
+            btn_reload = QPushButton(tr("Load New"))
+            btn_reload.clicked.connect(lambda: self._load_directory(Path(self.dir_edit.text())))
+
+            dir_lay.addWidget(QLabel(tr("Actual Directory:")))
+            dir_lay.addWidget(self.dir_edit)
+            dir_lay.addWidget(btn_choose)
+            dir_lay.addWidget(btn_reload)
+            dir_lay.addStretch()
+
+            self.left_tabs.addTab(tab_dir, tr("Directory"))
+
+            tab_data = QWidget()
+            data_lay = QVBoxLayout(tab_data)
+
+            filter_lay = QGridLayout()
+            filter_lay.setSpacing(3)
+
+            for index, name in enumerate(self.FILTERS.keys()):
+                btn = QPushButton(name)
+                btn.setCheckable(True)
+                btn.clicked.connect(lambda checked, n=name: self._set_filter(n))
+                filter_lay.addWidget(btn, index // 5, index % 5)
+                if name == "ALL":
+                    btn.setChecked(True)
+                setattr(self, f"filter_btn_{name}", btn)
+
+            self.view_stack = QStackedWidget()
+            
+            self.icon_view = QListWidget()
+            self.icon_view.setViewMode(QListWidget.IconMode)
+            self.icon_view.setIconSize(QSize(32, 32))
+            self.icon_view.setGridSize(QSize(96, 76))
+            self.icon_view.setResizeMode(QListWidget.Adjust)
+            self.icon_view.setMovement(QListWidget.Static)
+            self.icon_view.setSelectionMode(QAbstractItemView.ExtendedSelection)
+            self.icon_view.setWordWrap(True)
+            self.icon_view.setContextMenuPolicy(Qt.CustomContextMenu)
+            
+            self.icon_view.customContextMenuRequested.connect(self._on_resource_view_context_menu)
+            self.icon_view.itemDoubleClicked         .connect(self._on_icon_view_double_clicked)
+
+            self.detail_view = QTreeWidget()
+            self.detail_view.setColumnCount(3)
+            self.detail_view.setHeaderLabels([
+                tr("Name"),
+                tr("Size"),
+                tr("Date")]
+            )
+            self.detail_view.setRootIsDecorated(False)
+            self.detail_view.setAlternatingRowColors(True)
+            self.detail_view.setSelectionMode(QAbstractItemView.ExtendedSelection)
+            self.detail_view.setSelectionBehavior(QAbstractItemView.SelectRows)
+            self.detail_view.setContextMenuPolicy(Qt.CustomContextMenu)
+            
+            self.detail_view.setSortingEnabled(True)
+            
+            self.detail_view.sortByColumn(2, Qt.AscendingOrder)
+            self.detail_view.sortByColumn(0, Qt.AscendingOrder)
+            
+            self.detail_view.customContextMenuRequested.connect(self._on_resource_view_context_menu)
+            self.detail_view.itemDoubleClicked         .connect(self._on_detail_view_double_clicked)
+            
+            self.detail_view.header().setStretchLastSection(False)
+            self.detail_view.header().setSectionsMovable(True)
+            self.detail_view.header().setSectionsClickable(True)
+            
+            self.detail_view.header().setSectionResizeMode(0, QHeaderView.Interactive)
+            self.detail_view.header().setSectionResizeMode(1, QHeaderView.Interactive)
+            self.detail_view.header().setSectionResizeMode(2, QHeaderView.Interactive)
+            
+            self.detail_view.setColumnWidth(0, 130)
+            self.detail_view.setColumnWidth(1,  79)
+            self.detail_view.setColumnWidth(2, 150)
+
+            self.view_stack.addWidget(self.icon_view)
+            self.view_stack.addWidget(self.detail_view)
+
+            self.current_view_mode = "icon"
+
+            button_lay = QHBoxLayout()
+            self.button_view_a = QPushButton(tr("Icon View"))
+            self.button_view_b = QPushButton(tr("List View"))
+            self.button_view_c = QPushButton(tr("Detail View"))
+            
+            self.button_view_a.clicked.connect(self._on_button_view_a)
+            self.button_view_b.clicked.connect(self._on_button_view_b)
+            self.button_view_c.clicked.connect(self._on_button_view_c)
+            
+            button_lay.addWidget(self.button_view_a)
+            button_lay.addWidget(self.button_view_b)
+            button_lay.addWidget(self.button_view_c)
+            
+            data_lay.addLayout(filter_lay)
+            data_lay.addWidget(self.view_stack, 1)
+            data_lay.addLayout(button_lay)
+            
+            self.left_tabs.addTab(tab_data, tr("Data"))
+
+        def _build_middle_buttons(self):
+            lay = QVBoxLayout(self.middle_widget)
+            lay.setContentsMargins(4, 24, 4, 4)
+            lay.setSpacing(8)
+
+            self.btn_apply     = QPushButton(tr("Apply"))
+            self.btn_clear_all = QPushButton(tr("Delete All"))
+            self.btn_delete    = QPushButton(tr("Delete"))
+            self.btn_xml       = QPushButton(tr("Write XML"))
+            self.btn_py        = QPushButton(tr("Write PY"))
+
+            self.chk_root_only = QCheckBox(tr("only Root"))
+            self.chk_root_only.setToolTip(
+                tr(
+                    "When active, the files will be write to the same Directory:\n"
+                    "<file>name</file>."
+                )
+            )
+
+            self.btn_apply     .clicked.connect(self._apply_selected_files)
+            self.btn_clear_all .clicked.connect(self._clear_all_aliases)
+            self.btn_delete    .clicked.connect(self._delete_focused_alias)
+            self.btn_xml       .clicked.connect(self._write_xml_to_editor)
+            self.btn_py        .clicked.connect(self._write_py_resource)
+
+            for btn in [self.btn_apply, self.btn_clear_all, self.btn_delete, self.btn_xml, self.btn_py]:
+                btn.setMinimumHeight(32)
+                lay.addWidget(btn)
+
+            lay.addWidget(self.chk_root_only)
+            lay.addStretch()
+
+        def _build_right_tabs(self):
+            tab_alias = QWidget()
+            alias_lay = QVBoxLayout(tab_alias)
+
+            self.alias_scroll = QScrollArea()
+            self.alias_scroll.setWidgetResizable(True)
+
+            self.alias_host = QWidget()
+            self.alias_lay = QVBoxLayout(self.alias_host)
+            self.alias_lay.setContentsMargins(2, 2, 2, 2)
+            self.alias_lay.setSpacing(2)
+            self.alias_lay.addStretch()
+
+            self.alias_scroll.setWidget(self.alias_host)
+            alias_lay.addWidget(self.alias_scroll)
+
+            self.right_tabs.addTab(tab_alias, "Aliases")
+
+            tab_xml = QWidget()
+            xml_lay = QVBoxLayout(tab_xml)
+
+            self.xml_edit = QPlainTextEdit()
+            self.xml_edit.setFont(QFont("Consolas", 10))
+            self.xml_edit.setPlaceholderText(
+                tr("the .qrc XML will be created hehe..."))
+
+            xml_lay.addWidget(self.xml_edit)
+            self.right_tabs.addTab(tab_xml, "XML")
+
+        def _on_icon_view_context_menu(self, pos):
+            menu = QMenu(self.icon_view)
+
+            act_icon   = menu.addAction(tr("Icon"   ))
+            act_list   = menu.addAction(tr("List"   ))
+            act_detail = menu.addAction(tr("Details"))
+
+            act_icon   .setCheckable(True)
+            act_list   .setCheckable(True)
+            act_detail .setCheckable(True)
+
+            view_mode = self.icon_view.viewMode()
+            if view_mode == QListWidget.IconMode:
+                act_icon.setChecked(True)
+            elif view_mode == QListWidget.ListMode:
+                if self.icon_view.gridSize().width() > 0:
+                    act_detail.setChecked(True)
+                else:
+                    act_list.setChecked(True)
+
+            act = menu.exec_(self.icon_view.viewport().mapToGlobal(pos))
+
+            if   act == act_icon:   self._set_icon_view_mode("icon")
+            elif act == act_list:   self._set_icon_view_mode("list")
+            elif act == act_detail: self._set_icon_view_mode("detail")
+
+        def _set_icon_view_mode(self, mode: str):
+            if mode == "icon":
+                self.icon_view.setViewMode(QListWidget.IconMode)
+                self.icon_view.setIconSize(QSize(32, 32))
+                self.icon_view.setGridSize(QSize(96, 76))
+                self.icon_view.setResizeMode(QListWidget.Adjust)
+                self.icon_view.setMovement(QListWidget.Static)
+                self.icon_view.setWordWrap(True)
+
+            elif mode == "list":
+                self.icon_view.setViewMode(QListWidget.ListMode)
+                self.icon_view.setIconSize(QSize(24, 24))
+                self.icon_view.setGridSize(QSize())
+                self.icon_view.setResizeMode(QListWidget.Adjust)
+                self.icon_view.setMovement(QListWidget.Static)
+                self.icon_view.setWordWrap(False)
+
+            elif mode == "detail":
+                self.icon_view.setViewMode(QListWidget.ListMode)
+                self.icon_view.setIconSize(QSize(32, 32))
+                self.icon_view.setGridSize(QSize(260, 42))
+                self.icon_view.setResizeMode(QListWidget.Adjust)
+                self.icon_view.setMovement(QListWidget.Static)
+                self.icon_view.setWordWrap(False)
+                
+        def _choose_directory(self):
+            path = QFileDialog.getExistingDirectory(self,
+                tr("Select Directory"),
+                str(self.current_dir))
+            if path:
+                self._load_directory(Path(path))
+                self.left_tabs.setCurrentIndex(1)
+
+        def _set_filter(self, filter_name: str):
+            self.current_filter = filter_name
+
+            for name in self.FILTERS:
+                btn = getattr(self, f"filter_btn_{name}", None)
+                if btn:
+                    btn.setChecked(name == filter_name)
+
+            self._load_directory(Path(self.dir_edit.text()))
+
+        def _load_directory(self, directory: Path):
+            directory = Path(directory)
+
+            if not directory.exists() or not directory.is_dir():
+                msg = tr("Verzeichnis existiert nicht")
+                QMessageBox.warning(self, "Fehler", f"{msg}:\n{directory}")
+                return
+
+            self.current_dir = directory
+            self.dir_edit.setText(str(directory))
+
+            self.icon_view  .clear()
+            self.detail_view.clear()
+
+            suffixes = self.FILTERS.get(self.current_filter)
+
+            try:
+                files = sorted([p for p in directory.iterdir() if p.is_file()], key=lambda p: p.name.lower())
+            except Exception as e:
+                QMessageBox.critical(self,
+                    tr("Error"),
+                    str(e))
+                return
+
+            for path in files:
+                suffix = path.suffix.lower()
+
+                if suffixes is not None and suffix not in suffixes:
+                    continue
+
+                icon = self._icon_for_file(path)
+
+                item = QListWidgetItem()
+                item.setText(path.name)
+                item.setToolTip(str(path))
+                item.setData(Qt.UserRole, str(path))
+                item.setIcon(icon)
+                
+                self.icon_view.addItem(item)
+
+                try:
+                    stat = path.stat()
+                    size_text = self._format_file_size(stat.st_size)
+                    date_text = QDateTime.fromSecsSinceEpoch(int(stat.st_mtime)).toString("yyyy-MM-dd  HH:mm:ss")
+                except Exception:
+                    size_text = ""
+                    date_text = ""
+
+                tree_item = QTreeWidgetItem()
+                tree_item.setText(0, path.name)
+                tree_item.setText(1, size_text)
+                tree_item.setText(2, date_text)
+                tree_item.setTextAlignment(1, Qt.AlignRight | Qt.AlignVCenter)
+                tree_item.setToolTip(0, str(path))
+                tree_item.setData(0, Qt.UserRole, str(path))
+                tree_item.setIcon(0, icon)
+                
+                self.detail_view.addTopLevelItem(tree_item)
+
+        def _icon_for_file(self, path: Path) -> QIcon:
+            if path.suffix.lower() in [".png", ".jpg", ".jpeg", ".ico", ".bmp", ".gif"]:
+                icon = QIcon(str(path))
+                if not icon.isNull():
+                    return icon
+                    
+            icon = QIcon.fromTheme("text-x-generic")
+            if not icon.isNull():
+                return icon
+            
+            return self.style().standardIcon(QStyle.SP_FileIcon)
+
+        def _apply_selected_files(self):
+            selected_paths = self._selected_resource_paths()
+
+            if not selected_paths:
+                QMessageBox.information(self,
+                    tr("Note"),
+                    tr("No Files selected."))
+                return
+
+            existing_files = {str(row.file_path) for row in self.alias_rows}
+
+            for path in selected_paths:
+                path = Path(path)
+
+                if str(path) in existing_files:
+                    continue
+
+                row = AliasRow(path, self.current_dir)
+                self.alias_lay.insertWidget(self.alias_lay.count() - 1, row)
+                self.alias_rows.append(row)
+
+            self.right_tabs.setCurrentIndex(0)
+
+        def _on_icon_view_double_clicked(self, item):
+            self._apply_selected_files()
+        
+        def _on_detail_view_double_clicked(self, item, column):
+            self._apply_selected_files()
+        
+        def _on_resource_view_context_menu(self, pos):
+            sender = self.sender()
+
+            menu = QMenu(self)
+
+            act_icon   = menu.addAction(tr("Icon"  ))
+            act_list   = menu.addAction(tr("List"  ))
+            act_detail = menu.addAction(tr("Detail"))
+
+            act_icon.setCheckable(True)
+            act_list.setCheckable(True)
+            act_detail.setCheckable(True)
+
+            act_icon.setChecked  (self.current_view_mode == "icon"  )
+            act_list.setChecked  (self.current_view_mode == "list"  )
+            act_detail.setChecked(self.current_view_mode == "detail")
+
+            if sender is self.detail_view:
+                global_pos = self.detail_view.viewport().mapToGlobal(pos)
+            else:
+                global_pos = self.icon_view.viewport().mapToGlobal(pos)
+
+            act = menu.exec_(global_pos)
+
+            if   act == act_icon:   self._set_resource_view_mode("icon")
+            elif act == act_list:   self._set_resource_view_mode("list")
+            elif act == act_detail: self._set_resource_view_mode("detail")
+
+        def _on_button_view_a(self): self._set_resource_view_mode("icon")
+        def _on_button_view_b(self): self._set_resource_view_mode("list")
+        def _on_button_view_c(self): self._set_resource_view_mode("detail")
+        
+        def _set_resource_view_mode(self, mode: str):
+            self.current_view_mode = mode
+
+            if mode == "detail":
+                self.view_stack.setCurrentWidget(self.detail_view)
+                return
+
+            self.view_stack.setCurrentWidget(self.icon_view)
+
+            if mode == "icon":
+                self.icon_view.setViewMode(QListWidget.IconMode)
+                self.icon_view.setIconSize(QSize(32, 32))
+                self.icon_view.setGridSize(QSize(96, 76))
+                self.icon_view.setResizeMode(QListWidget.Adjust)
+                self.icon_view.setMovement(QListWidget.Static)
+                self.icon_view.setWordWrap(True)
+
+            elif mode == "list":
+                self.icon_view.setViewMode(QListWidget.ListMode)
+                self.icon_view.setIconSize(QSize(24, 24))
+                self.icon_view.setGridSize(QSize())
+                self.icon_view.setResizeMode(QListWidget.Adjust)
+                self.icon_view.setMovement(QListWidget.Static)
+                self.icon_view.setWordWrap(False)
+
+        def _selected_resource_paths(self):
+            result = []
+
+            if self.current_view_mode == "detail":
+                for item in self.detail_view.selectedItems():
+                    path = item.data(0, Qt.UserRole)
+                    if path:
+                        result.append(Path(path))
+            else:
+                for item in self.icon_view.selectedItems():
+                    path = item.data(Qt.UserRole)
+                    if path:
+                        result.append(Path(path))
+
+            return result
+
+        def _format_file_size(self, size: int) -> str:
+            units = ["B", "KB", "MB", "GB", "TB"]
+            value = float(size)
+
+            for unit in units:
+                if value < 1024.0 or unit == units[-1]:
+                    if unit == "B":
+                        return f"{int(value)} {unit}"
+                    return f"{value:.1f} {unit}"
+                value /= 1024.0
+
+            return f"{size} B"
+            
+        def _clear_all_aliases(self):
+            for row in self.alias_rows:
+                row.setParent(None)
+                row.deleteLater()
+
+            self.alias_rows.clear()
+            self.xml_edit.clear()
+
+        def _delete_focused_alias(self):
+            focus = QApplication.focusWidget()
+
+            for row in list(self.alias_rows):
+                if focus is row.alias_edit or focus is row.dir_edit:
+                    self.alias_rows.remove(row)
+                    row.setParent(None)
+                    row.deleteLater()
+                    return
+
+            QMessageBox.information(self,
+                tr("Note"),
+                tr("To delete, set the focus into the Alias EditLine."))
+
+        def _create_xml(self) -> str:
+            lines = [
+                "<RCC>",
+                '    <qresource prefix="/icons">',
+            ]
+
+            root_only = self.chk_root_only.isChecked()
+
+            for row in self.alias_rows:
+                alias = row.alias_name()
+                directory = row.dir_name()
+                file_name = row.file_name()
+
+                if root_only:
+                    if directory:
+                        resource_file = f"{directory}/{file_name}"
+                        alias = alias or file_name
+                        lines.append(
+                            f'        <file alias="{self._xml_escape(alias)}">{self._xml_escape(resource_file)}</file>'
+                        )
+                    else:
+                        lines.append(
+                            f'        <file>{self._xml_escape(file_name)}</file>'
+                        )
+                else:
+                    resource_file = row.resource_file_name()
+
+                    if directory:
+                        alias = alias or file_name
+                        lines.append(
+                            f'        <file alias="{self._xml_escape(alias)}">{self._xml_escape(resource_file)}</file>'
+                        )
+                    else:
+                        lines.append(
+                            f'        <file>{self._xml_escape(resource_file)}</file>'
+                        )
+
+            lines.extend([
+                "    </qresource>",
+                "</RCC>",
+                "",
+            ])
+
+            return "\n".join(lines)
+
+        def _write_xml_to_editor(self):
+            if not self.alias_rows:
+                QMessageBox.information(self,
+                    tr("Note"),
+                    tr("No Aliases found."))
+                return
+
+            self.xml_edit.setPlainText(self._create_xml())
+            self.right_tabs.setCurrentIndex(1)
+
+        def _write_py_resource(self):
+            xml_text = self.xml_edit.toPlainText().strip()
+
+            if not xml_text:
+                self._write_xml_to_editor()
+                xml_text = self.xml_edit.toPlainText().strip()
+
+            if not xml_text:
+                return
+
+            msg = tr("All Files")
+            qrc_file, _ = QFileDialog.getSaveFileName(self,
+                tr("Save QRC-File"),
+                str(self.current_dir / "images.qrc"),
+                f"Qt Resource (*.qrc);;XML (*.xml);;{msg} (*.*)"
+            )
+
+            if not qrc_file:
+                return
+
+            qrc_path = Path(qrc_file)
+            qrc_path.write_text(xml_text + "\n", encoding="utf-8")
+
+            msg = tr("All Files")
+            py_file, _ = QFileDialog.getSaveFileName(
+                self,
+                tr("Save Resource-Python-File"),
+                str(qrc_path.with_name(qrc_path.stem + "_rc.py")),
+                f"Python (*.py);;{msg} (*.*)"
+            )
+
+            if not py_file:
+                return
+
+            py_path = Path(py_file)
+            cmd = ["pyrcc5", str(qrc_path), "-o", str(py_path)]
+
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    cwd=str(self.current_dir),
+                    capture_output=True,
+                    text=True,
+                    shell=False,
+                )
+            except FileNotFoundError:
+                QMessageBox.critical(
+                    self,
+                    tr("pyrcc5 not found."),
+                    tr("pyrcc5 could not found") + ".\n\n"
+                    "Alternative:\npython -m PyQt5.pyrcc_main images.qrc -o images_rc.py"
+                )
+                return
+            except Exception as e:
+                QMessageBox.critical(self, tr("Error"), str(e))
+                return
+            
+            if proc.returncode != 0:
+                cmd = tr("Command")
+                QMessageBox.critical(
+                    self,
+                    tr("pyrcc5 Error"),
+                    f"{cmd}:\n{' '.join(cmd)}\n\nSTDOUT:\n{proc.stdout}\n\nSTDERR:\n{proc.stderr}"
+                )
+                return
+            
+            msg = tr("Resource File successfully writen")
+            QMessageBox.information(
+                self,
+                "Fertig",
+                f"{msg}:\n\n{qrc_path}\n{py_path}"
+            )
+        
+        @staticmethod
+        def _xml_escape(text: str) -> str:
+            return (
+                text.replace("&", "&amp;")
+                    .replace('"', "&quot;")
+                    .replace("<", "&lt;")
+                    .replace(">", "&gt;")
+            )
 
     class _LocalizeLineNumberArea(QWidget):
         def __init__(self, editor):
@@ -8850,12 +9741,50 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
         )
         C_COMMENT_PATTERN = re.compile(r"//.*|/\*.*?\*/")
         C_PREPROCESSOR_PATTERN = re.compile(r"^\s*#.*")
+        LISP_KEYWORD_PATTERN = re.compile(
+            r"(?<![A-Za-z0-9_])(?:"
+            r"defun|start|setq|if|while|break|continue|print|println|read|"
+            r"nil|t|true|false"
+            r")(?![A-Za-z0-9_])",
+            re.IGNORECASE,
+        )
+        LISP_NUMBER_PATTERN = re.compile(r"(?<![A-Za-z0-9_])-?[0-9]+(?![A-Za-z0-9_])")
+        LISP_STRING_PATTERN = re.compile(r'"(?:\\.|[^"\\\r\n])*"')
+        LISP_COMMENT_PATTERN = re.compile(r";.*$")
+        PROLOG_KEYWORD_PATTERN = re.compile(
+            r"(?<![A-Za-z0-9_])(?:"
+            r"true|fail|write|writeln|nl|var|nonvar|atom|integer|float|number|string|member|main"
+            r")(?![A-Za-z0-9_])",
+            re.IGNORECASE,
+        )
+        PROLOG_VARIABLE_PATTERN = re.compile(r"(?<![A-Za-z0-9_])(?:[A-Z_][A-Za-z0-9_]*)")
+        PROLOG_NUMBER_PATTERN = re.compile(r"(?<![A-Za-z0-9_])-?(?:[0-9]+\.[0-9]+(?:[eE][+-]?[0-9]+)?|[0-9]+(?:[eE][+-]?[0-9]+)?)(?![A-Za-z0-9_])")
+        PROLOG_STRING_PATTERN = re.compile(
+            r'"(?:\\.|[^"\\\r\n])*"|\'(?:\'\'|[^\'\r\n])*\''
+        )
+        PROLOG_COMMENT_PATTERN = re.compile(r"%.*$|/\*.*?\*/")
+        LOGO_KEYWORD_PATTERN = re.compile(
+            r"(?<![A-Za-z0-9_])(?:"
+            r"rechts|right|links|left|up|hoch|down|runter|go|steps|step|"
+            r"schritte|schritt|west|east|ost|nord|north|south|sued|süd"
+            r")(?![A-Za-z0-9_])",
+            re.IGNORECASE,
+        )
+        LOGO_NUMBER_PATTERN = re.compile(
+            r"(?<![A-Za-z0-9_])[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?![A-Za-z0-9_])"
+        )
+        LOGO_COMMENT_PATTERN = re.compile(r";.*$|#.*$|//.*$")
+        DBASE_BLOCK_STATE = 0xDBA5
 
         def __init__(self, document):
             super().__init__(document)
             self.enabled = False
             self.pascal_enabled = False
             self.c_enabled = False
+            self.lisp_enabled = False
+            self.prolog_enabled = False
+            self.logo_enabled = False
+            self.dbase_enabled = False
             self.dark_mode = False
             self._jump_target_names = set()
             self._jump_target_refresh_pending = False
@@ -8944,6 +9873,93 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.c_enabled = enabled
             self.rehighlight()
 
+        def set_lisp_enabled(self, enabled: bool) -> None:
+            enabled = bool(enabled)
+            if self.lisp_enabled == enabled:
+                return
+            self.lisp_enabled = enabled
+            self.rehighlight()
+
+        def set_prolog_enabled(self, enabled: bool) -> None:
+            enabled = bool(enabled)
+            if self.prolog_enabled == enabled:
+                return
+            self.prolog_enabled = enabled
+            self.rehighlight()
+
+        def set_logo_enabled(self, enabled: bool) -> None:
+            enabled = bool(enabled)
+            if self.logo_enabled == enabled:
+                return
+            self.logo_enabled = enabled
+            self.rehighlight()
+
+        def set_dbase_enabled(self, enabled: bool) -> None:
+            enabled = bool(enabled)
+            if self.dbase_enabled == enabled:
+                return
+            self.dbase_enabled = enabled
+            self.rehighlight()
+
+        def _highlight_dbase_block(self, text: str) -> None:
+            """Syntaxfarben für exakt dieselbe Kommentar-Lexik wie d64dbase.
+
+            Der Blockzustand wird über QSyntaxHighlighter-BlockStates erhalten,
+            damit /* ... */ über beliebig viele Editorzeilen korrekt bleibt.
+            Kommentarmarker innerhalb von einfachen/doppelten Strings werden
+            nicht hervorgehoben.
+            """
+            self.setCurrentBlockState(0)
+            length = len(text)
+            index = 0
+            in_block = self.previousBlockState() == self.DBASE_BLOCK_STATE
+
+            while index < length:
+                if in_block:
+                    close = text.find("*/", index)
+                    if close < 0:
+                        self.setFormat(index, length - index, self.comment_format)
+                        self.setCurrentBlockState(self.DBASE_BLOCK_STATE)
+                        return
+                    self.setFormat(index, close + 2 - index, self.comment_format)
+                    index = close + 2
+                    in_block = False
+                    continue
+
+                char = text[index]
+                if char in {"\'", "\""}:
+                    quote = char
+                    start = index
+                    index += 1
+                    while index < length:
+                        if text[index] == quote:
+                            if index + 1 < length and text[index + 1] == quote:
+                                index += 2
+                                continue
+                            index += 1
+                            break
+                        if text[index] == "\\" and index + 1 < length:
+                            index += 2
+                            continue
+                        index += 1
+                    self.setFormat(start, index - start, self.pascal_string_format)
+                    continue
+
+                if text.startswith("/*", index):
+                    close = text.find("*/", index + 2)
+                    if close < 0:
+                        self.setFormat(index, length - index, self.comment_format)
+                        self.setCurrentBlockState(self.DBASE_BLOCK_STATE)
+                        return
+                    self.setFormat(index, close + 2 - index, self.comment_format)
+                    index = close + 2
+                    continue
+
+                if any(text.startswith(marker, index) for marker in ("//", "**", "&&")):
+                    self.setFormat(index, length - index, self.comment_format)
+                    return
+                index += 1
+
         def _schedule_jump_target_refresh(self) -> None:
             if self._jump_target_refresh_pending:
                 return
@@ -9007,6 +10023,39 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             return None
 
         def highlightBlock(self, text: str) -> None:
+            if self.dbase_enabled:
+                self._highlight_dbase_block(text)
+                return
+            if self.logo_enabled:
+                for match in self.LOGO_KEYWORD_PATTERN.finditer(text):
+                    self.setFormat(match.start(), match.end() - match.start(), self.pascal_keyword_format)
+                for match in self.LOGO_NUMBER_PATTERN.finditer(text):
+                    self.setFormat(match.start(), match.end() - match.start(), self.pascal_number_format)
+                for match in self.LOGO_COMMENT_PATTERN.finditer(text):
+                    self.setFormat(match.start(), match.end() - match.start(), self.comment_format)
+                return
+            if self.prolog_enabled:
+                for match in self.PROLOG_KEYWORD_PATTERN.finditer(text):
+                    self.setFormat(match.start(), match.end() - match.start(), self.pascal_keyword_format)
+                for match in self.PROLOG_VARIABLE_PATTERN.finditer(text):
+                    self.setFormat(match.start(), match.end() - match.start(), self.pascal_number_format)
+                for match in self.PROLOG_NUMBER_PATTERN.finditer(text):
+                    self.setFormat(match.start(), match.end() - match.start(), self.pascal_number_format)
+                for match in self.PROLOG_STRING_PATTERN.finditer(text):
+                    self.setFormat(match.start(), match.end() - match.start(), self.pascal_string_format)
+                for match in self.PROLOG_COMMENT_PATTERN.finditer(text):
+                    self.setFormat(match.start(), match.end() - match.start(), self.comment_format)
+                return
+            if self.lisp_enabled:
+                for match in self.LISP_KEYWORD_PATTERN.finditer(text):
+                    self.setFormat(match.start(), match.end() - match.start(), self.pascal_keyword_format)
+                for match in self.LISP_NUMBER_PATTERN.finditer(text):
+                    self.setFormat(match.start(), match.end() - match.start(), self.pascal_number_format)
+                for match in self.LISP_STRING_PATTERN.finditer(text):
+                    self.setFormat(match.start(), match.end() - match.start(), self.pascal_string_format)
+                for match in self.LISP_COMMENT_PATTERN.finditer(text):
+                    self.setFormat(match.start(), match.end() - match.start(), self.comment_format)
+                return
             if self.c_enabled:
                 for match in self.C_KEYWORD_PATTERN.finditer(text):
                     self.setFormat(
@@ -10154,6 +11203,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self._amiga_fpu_model = "FPU: None"
             self._assembler_navigation_enabled = False
             self._assembler_highlighter = None
+            self._lisp_help_enabled = False
             self._breakpoint_cursors = []
             self._bookmark_cursors = []
             self.line_number_area = LineNumberArea(self)
@@ -10565,6 +11615,9 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             )
             self.assembler_help_requested.emit(info.mnemonic, help_text)
 
+        def set_lisp_help_enabled(self, enabled: bool) -> None:
+            self._lisp_help_enabled = bool(enabled)
+
         def help_word_at_cursor(self) -> str:
             """Liefert Schluesselwort/Funktionsname am aktuellen Cursor.
 
@@ -10576,7 +11629,11 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             """
             source = self.toPlainText()
             position = max(0, min(self.textCursor().position(), len(source)))
-            identifier = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+            identifier = re.compile(
+                r"[A-Za-z_+\-*/<>=!?][A-Za-z0-9_+\-*/<>=!?]*"
+                if self._lisp_help_enabled
+                else r"[A-Za-z_][A-Za-z0-9_]*"
+            )
             for match in identifier.finditer(source):
                 if match.start() <= position <= match.end():
                     return match.group(0)
@@ -10591,10 +11648,12 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             # als Hilfekontext dient.
             line_start = source.rfind("\n", 0, position) + 1
             prefix = source[line_start:position]
-            function_match = re.search(
-                r"([A-Za-z_][A-Za-z0-9_]*)\s*\(?\s*$",
-                prefix,
+            function_pattern = (
+                r"([A-Za-z_+\-*/<>=!?][A-Za-z0-9_+\-*/<>=!?]*)\s*\(?\s*$"
+                if self._lisp_help_enabled
+                else r"([A-Za-z_][A-Za-z0-9_]*)\s*\(?\s*$"
             )
+            function_match = re.search(function_pattern, prefix)
             if function_match is not None:
                 return function_match.group(1)
             return ""
@@ -13968,6 +15027,10 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
         PASCAL_EXTENSIONS    = {".pas", ".pp"}
         C_EXTENSIONS         = {".c"}
         C_HEADER_EXTENSIONS  = {".h"}
+        LISP_EXTENSIONS      = {".lisp", ".lsp"}
+        PROLOG_EXTENSIONS    = {".pl", ".prolog"}
+        LOGO_EXTENSIONS      = {".logo", ".lgo"}
+        DBASE_EXTENSIONS     = {".dbase", ".dbp"}
         BINARY_EXTENSIONS    = {
             ".prg", ".amiga", ".adf", ".ram", ".bin",
             ".exe", ".o", ".obj", ".a", ".lib",
@@ -14007,13 +15070,18 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.amiga_fpu_model = "FPU: None"
             self.windows_graphics_backend = "Direct2D"
             self.windows_application_mode = "Console"
+            self.prolog_verbose = False
+            self._syncing_prolog_verbose = False
             self._syncing_build_target = False
             self._syncing_platform_profile = False
             self.generated_assembly_path: Optional[Path] = None
             self.generated_source_kind = "program"
             self.generated_linked_assembly_files: Tuple[str, ...] = ()
             self.generated_pe32_modules: Tuple[Tuple[str, str], ...] = ()
+            self.generated_link_object_files: Tuple[str, ...] = ()
             self._syncing_generated_assembly = False
+            self.dbase_process = None
+            self.dbase_uses_debug_output = False
 
             layout = QVBoxLayout(self)
             layout.setContentsMargins(0, 0, 0, 0)
@@ -14114,6 +15182,16 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 self.set_windows_application_mode
             )
 
+            self.prolog_verbose_checkbox = QCheckBox("Verbose", self.assembler_panel)
+            self.prolog_verbose_checkbox.setObjectName("prolog_verbose_checkbox")
+            self.prolog_verbose_checkbox.setChecked(False)
+            self.prolog_verbose_checkbox.setVisible(False)
+            self.prolog_verbose_checkbox.setToolTip(
+                "PROLOG Verbose: aktiviert = automatische Top-Level-Lösungen ausblenden; "
+                "write/writeln bleiben sichtbar"
+            )
+            self.prolog_verbose_checkbox.toggled.connect(self.set_prolog_verbose)
+
             self.assembly_status_label = QLabel(
                 "Noch nicht assembliert",
                 self.assembler_panel,
@@ -14131,6 +15209,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             assembler_panel_layout.addWidget(self.amiga_cpu_combo)
             assembler_panel_layout.addWidget(self.amiga_fpu_combo)
             assembler_panel_layout.addWidget(self.windows_graphics_combo)
+            assembler_panel_layout.addWidget(self.prolog_verbose_checkbox)
             assembler_panel_layout.addSpacing(6)
             assembler_panel_layout.addWidget(self.assembly_status_label, 1)
             source_layout.addWidget(self.assembler_panel)
@@ -14262,6 +15341,22 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 self.set_windows_application_mode
             )
 
+            self.generated_prolog_verbose_checkbox = QCheckBox(
+                "Verbose", self.generated_assembly_panel
+            )
+            self.generated_prolog_verbose_checkbox.setObjectName(
+                "generated_prolog_verbose_checkbox"
+            )
+            self.generated_prolog_verbose_checkbox.setChecked(False)
+            self.generated_prolog_verbose_checkbox.setVisible(False)
+            self.generated_prolog_verbose_checkbox.setToolTip(
+                "PROLOG Verbose: aktiviert = automatische Top-Level-Lösungen ausblenden; "
+                "write/writeln bleiben sichtbar"
+            )
+            self.generated_prolog_verbose_checkbox.toggled.connect(
+                self.set_prolog_verbose
+            )
+
             self.coff_object_button = QPushButton("COFF32 .o", self.generated_assembly_panel)
             self.coff_object_button.setObjectName("coff_object_button")
             self.coff_object_button.setToolTip(
@@ -14294,6 +15389,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             generated_assembly_panel_layout.addWidget(self.generated_amiga_cpu_combo)
             generated_assembly_panel_layout.addWidget(self.generated_amiga_fpu_combo)
             generated_assembly_panel_layout.addWidget(self.generated_windows_graphics_combo)
+            generated_assembly_panel_layout.addWidget(self.generated_prolog_verbose_checkbox)
             generated_assembly_panel_layout.addWidget(self.coff_object_button)
             generated_assembly_panel_layout.addSpacing(6)
             generated_assembly_panel_layout.addWidget(
@@ -14369,6 +15465,12 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             )
             self.views.addTab(self.hints_editor, "Hinweise")
 
+            # dBase besitzt seine Konsole/DEBUG-Ausgabe ab Stage 5 ausschliesslich
+            # in der erzeugten Qt5-EXE. Im d64_dism-Editor werden daher keine
+            # zusaetzlichen IDE-Tabs "Konsole" oder "DEBUG" mehr angelegt.
+            self.console_editor = None
+            self.debug_console_editor = None
+
             self.raw_editor.textChanged.connect(self._raw_text_changed)
             self.raw_editor.document().modificationChanged.connect(
                 self._view_modification_changed
@@ -14415,6 +15517,14 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 return "pascal"
             if suffix in self.C_EXTENSIONS | self.C_HEADER_EXTENSIONS:
                 return "c"
+            if suffix in self.LISP_EXTENSIONS:
+                return "lisp"
+            if suffix in self.PROLOG_EXTENSIONS:
+                return "prolog"
+            if suffix in self.LOGO_EXTENSIONS:
+                return "logo"
+            if suffix in self.DBASE_EXTENSIONS:
+                return "dbase"
             return "text"
 
         def _emit_context_help(self, view_kind: str, word: str) -> None:
@@ -14434,6 +15544,38 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             if current is self.hints_editor:
                 return self.hints_editor
             return None
+
+        def _set_tab_visible_for_widget(self, widget: QWidget, visible: bool) -> None:
+            if widget is None:
+                return
+            index = self.views.indexOf(widget)
+            if index >= 0:
+                self.views.setTabVisible(index, bool(visible))
+
+        def set_dbase_debug_visible(self, visible: bool) -> None:
+            # Sichtbarkeit des DEBUG-Tabs gehoert jetzt zur erzeugten Qt5-EXE,
+            # nicht mehr zur IDE. Der Wert bleibt nur als Compile-Metadatum.
+            self.dbase_uses_debug_output = bool(visible)
+
+        def configure_dbase_output_tabs(self, *, inspect_source: bool = True) -> None:
+            # Keine dBase-Ausgabetabs mehr in d64_dism. "Hinweise" bleibt wie
+            # bei den anderen Compilersprachen sichtbar.
+            self._set_tab_visible_for_widget(self.hints_editor, True)
+
+        def clear_dbase_output(self) -> None:
+            return
+
+        def append_dbase_console_output(self, text: str) -> None:
+            return
+
+        def append_dbase_debug_output(self, text: str) -> None:
+            return
+
+        def focus_dbase_console(self) -> None:
+            # Kompatibilitaetsmethode: Fokus bleibt im Quelltexteditor; die
+            # eigentliche Qt5-Anwendung wird nach dem Linken separat gestartet.
+            if self.is_dbase_document:
+                self.views.setCurrentWidget(self.source_page)
 
         def current_help_context(self) -> Tuple[str, str]:
             editor = self.active_text_editor() or self.raw_editor
@@ -14503,6 +15645,10 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 self.is_basic_document
                 or self.is_pascal_document
                 or self.is_c_document
+                or self.is_lisp_document
+                or self.is_prolog_document
+                or self.is_logo_document
+                or self.is_dbase_document
             ) and self.generated_assembly_editor.toPlainText().strip():
                 self.assemble_generated_button.setEnabled(False)
                 self.generated_assembly_status_label.setText(
@@ -14521,6 +15667,8 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             finally:
                 self._syncing_views = False
             self._view_modification_changed(True)
+            if self.is_dbase_document:
+                self.configure_dbase_output_tabs(inspect_source=True)
 
         def _generated_assembly_text_changed(self) -> None:
             if self._syncing_generated_assembly:
@@ -14693,6 +15841,35 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                     f"{normalized} – erneut Compile/Assemble ausführen"
                 )
 
+        def set_prolog_verbose(self, value: bool) -> None:
+            normalized = bool(value)
+            if self._syncing_prolog_verbose:
+                return
+            changed = normalized != self.prolog_verbose
+            self._syncing_prolog_verbose = True
+            try:
+                self.prolog_verbose = normalized
+                self.prolog_verbose_checkbox.setChecked(normalized)
+                self.generated_prolog_verbose_checkbox.setChecked(normalized)
+            finally:
+                self._syncing_prolog_verbose = False
+            if changed and self.is_prolog_document:
+                self.invalidate_assembly_result("PROLOG-Verbose geändert")
+                self.generated_assembly_path = None
+                self._syncing_generated_assembly = True
+                try:
+                    self.generated_assembly_editor.clear()
+                    self.generated_assembly_editor.document().setModified(False)
+                finally:
+                    self._syncing_generated_assembly = False
+                self.assemble_generated_button.setEnabled(False)
+                self.assembly_status_label.setText(
+                    "PROLOG Verbose " + ("aktiv – Compile erneut ausführen" if normalized else "inaktiv – Compile erneut ausführen")
+                )
+                self.generated_assembly_status_label.setText(
+                    "ASM-Daten werden beim nächsten PROLOG-Compile neu erzeugt"
+                )
+
         def set_windows_graphics_backend(self, value: str) -> None:
             """Kompatibilitätshelfer für ältere Aufrufer und gespeicherte Zustände."""
             try:
@@ -14714,7 +15891,13 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             ):
                 widget.setVisible(is_windows)
             self.coff_object_button.setVisible(
-                is_windows and (self.is_pascal_document or self.is_c_document)
+                is_windows and (
+                    self.is_pascal_document
+                    or self.is_c_document
+                    or self.is_lisp_document
+                    or self.is_prolog_document
+                    or self.is_logo_document
+                )
             )
             if self.build_target == "pe64":
                 self.coff_object_button.setText("COFF64 .o")
@@ -14755,7 +15938,14 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             is_pascal = suffix in self.PASCAL_EXTENSIONS
             is_c = suffix in self.C_EXTENSIONS
             is_c_header = suffix in self.C_HEADER_EXTENSIONS
-            is_compiled_language = is_basic or is_pascal or is_c
+            is_lisp = suffix in self.LISP_EXTENSIONS
+            is_prolog = suffix in self.PROLOG_EXTENSIONS
+            is_logo = suffix in self.LOGO_EXTENSIONS
+            is_dbase = suffix in self.DBASE_EXTENSIONS
+            self.configure_dbase_output_tabs(inspect_source=True)
+            is_compiled_language = (
+                is_basic or is_pascal or is_c or is_lisp or is_prolog or is_logo or is_dbase
+            )
             has_generated_assembly = bool(
                 self.generated_assembly_editor.toPlainText().strip()
             )
@@ -14780,6 +15970,13 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.syntax_highlighter.set_enabled(is_assembler)
             self.syntax_highlighter.set_pascal_enabled(is_pascal)
             self.syntax_highlighter.set_c_enabled(is_c or is_c_header)
+            self.syntax_highlighter.set_lisp_enabled(is_lisp)
+            self.syntax_highlighter.set_prolog_enabled(is_prolog)
+            self.syntax_highlighter.set_logo_enabled(is_logo)
+            self.syntax_highlighter.set_dbase_enabled(is_dbase)
+            self.prolog_verbose_checkbox.setVisible(is_prolog)
+            self.generated_prolog_verbose_checkbox.setVisible(is_prolog)
+            self.raw_editor.set_lisp_help_enabled(is_lisp)
             self.raw_editor.set_assembler_completion_enabled(is_assembler)
             self.raw_editor.set_assembler_navigation_enabled(is_assembler)
             self.raw_editor.set_assembler_target(self.build_target)
@@ -14801,19 +15998,59 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 f"Angezeigten {target_name}-Assemblercode in ein "
                 f"{output_name} übersetzen"
             )
-            # BASIC bleibt wie bisher auf C64 beschränkt. Bei den ComboBoxen
-            # werden deshalb die beiden anderen Ziele deaktiviert.
-            for combo in (
-                self.build_target_combo,
-                self.generated_build_target_combo,
-            ):
+            # BASIC ist C64-only; LISP/PROLOG/dBase sind Windows PE32/PE32+-only;
+            # LOGO ist im aktuellen Stand PE32-only. Alle anderen Sprachen
+            # behalten die volle Zielauswahl.
+            for combo in (self.build_target_combo, self.generated_build_target_combo):
                 model = combo.model()
-                for index in (1, 2):
+                for index in range(combo.count()):
                     item = model.item(index) if hasattr(model, "item") else None
-                    if item is not None:
-                        item.setEnabled(not is_basic)
+                    if item is None:
+                        continue
+                    if is_basic:
+                        item.setEnabled(index == 0)
+                    elif is_logo:
+                        item.setEnabled(index == 2)
+                    elif is_lisp or is_prolog or is_dbase:
+                        item.setEnabled(index in {2, 3})
+                    else:
+                        item.setEnabled(True)
             if is_basic and self.build_target != "c64":
                 self.set_build_target("c64")
+            if (is_lisp or is_prolog or is_dbase) and self.build_target not in {"pe32", "pe64"}:
+                self.set_build_target("pe32")
+            if is_logo and self.build_target != "pe32":
+                self.set_build_target("pe32")
+
+            # LISP, PROLOG, LOGO und dBase unterstützen Windows Console und GUI.
+            # Direct2D/Direct3D bleiben bis zu eigenen Builtins deaktiviert.
+            for mode_combo in (
+                self.windows_graphics_combo,
+                self.generated_windows_graphics_combo,
+            ):
+                mode_combo.setEnabled(True)
+                mode_model = mode_combo.model()
+                for mode_index in range(mode_combo.count()):
+                    mode_item = (
+                        mode_model.item(mode_index)
+                        if hasattr(mode_model, "item")
+                        else None
+                    )
+                    if mode_item is None:
+                        continue
+                    mode_text = mode_combo.itemText(mode_index)
+                    if is_lisp or is_prolog or is_logo or is_dbase:
+                        mode_item.setEnabled(mode_text in {"Console", "GUI"})
+                    else:
+                        # Separatoren bleiben vom Qt-Modell selbst deaktiviert.
+                        if mode_text:
+                            mode_item.setEnabled(True)
+            if (
+                (is_lisp or is_prolog or is_logo or is_dbase)
+                and self.windows_application_mode
+                not in {"Console", "GUI"}
+            ):
+                self.set_windows_application_mode("Console")
 
             if is_basic:
                 self.assemble_button.setText("Compile")
@@ -14833,6 +16070,34 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 self.assemble_button.setText("Compile")
                 self.assemble_button.setToolTip(
                     f"C mit ANTLR in {target_name}-Assembler übersetzen"
+                )
+                if not has_generated_assembly:
+                    self.assembly_status_label.setText("Noch nicht kompiliert")
+            elif is_lisp:
+                self.assemble_button.setText("Compile")
+                self.assemble_button.setToolTip(
+                    f"LISP in {target_name}-Assembler übersetzen"
+                )
+                if not has_generated_assembly:
+                    self.assembly_status_label.setText("Noch nicht kompiliert")
+            elif is_prolog:
+                self.assemble_button.setText("Compile")
+                self.assemble_button.setToolTip(
+                    f"PROLOG in {target_name}-Assembler übersetzen"
+                )
+                if not has_generated_assembly:
+                    self.assembly_status_label.setText("Noch nicht kompiliert")
+            elif is_logo:
+                self.assemble_button.setText("Compile")
+                self.assemble_button.setToolTip(
+                    "LOGO in nativen Windows-PE32-Assembler übersetzen"
+                )
+                if not has_generated_assembly:
+                    self.assembly_status_label.setText("Noch nicht kompiliert")
+            elif is_dbase:
+                self.assemble_button.setText("Compile")
+                self.assemble_button.setToolTip(
+                    f"dBase für {target_name} kompilieren (?/??, Ausdrücke, Kommentare)"
                 )
                 if not has_generated_assembly:
                     self.assembly_status_label.setText("Noch nicht kompiliert")
@@ -14862,12 +16127,32 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             return self.effective_suffix in self.C_EXTENSIONS
 
         @property
+        def is_lisp_document(self) -> bool:
+            return self.effective_suffix in self.LISP_EXTENSIONS
+
+        @property
+        def is_prolog_document(self) -> bool:
+            return self.effective_suffix in self.PROLOG_EXTENSIONS
+
+        @property
+        def is_logo_document(self) -> bool:
+            return self.effective_suffix in self.LOGO_EXTENSIONS
+
+        @property
+        def is_dbase_document(self) -> bool:
+            return self.effective_suffix in self.DBASE_EXTENSIONS
+
+        @property
         def is_build_document(self) -> bool:
             return (
                 self.is_basic_document
                 or self.is_assembler_document
                 or self.is_pascal_document
                 or self.is_c_document
+                or self.is_lisp_document
+                or self.is_prolog_document
+                or self.is_logo_document
+                or self.is_dbase_document
             )
 
         def invalidate_assembly_result(self, reason: str = "") -> None:
@@ -15017,27 +16302,59 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
 
         def set_dark_mode(self, enabled: bool) -> None:
             enabled = bool(enabled)
+            code_suffix = self.effective_suffix
+            source_is_code = (
+                code_suffix in self.BASIC_EXTENSIONS
+                or code_suffix in self.ASSEMBLER_EXTENSIONS
+                or code_suffix in self.PASCAL_EXTENSIONS
+                or code_suffix in self.C_EXTENSIONS
+                or code_suffix in self.C_HEADER_EXTENSIONS
+                or code_suffix in self.LISP_EXTENSIONS
+                or code_suffix in self.PROLOG_EXTENSIONS
+                or code_suffix in self.LOGO_EXTENSIONS
+                or code_suffix in self.DBASE_EXTENSIONS
+            )
+
             for editor in (
                 self.raw_editor,
                 self.generated_assembly_editor,
                 self.hints_editor,
             ):
+                # BASIC, C, Pascal, LISP, PROLOG, LOGO und ASM bleiben auch im hellen
+                # Anwendungstheme navyblau. Der generierte ASM-Editor ist
+                # ebenfalls immer ein Codeeditor. Nur der Hinweis-Tab folgt
+                # weiterhin dem globalen Hell-/Dunkelmodus.
+                navy_code_editor = (
+                    editor is self.generated_assembly_editor
+                    or (editor is self.raw_editor and source_is_code)
+                )
+                asm_editor = (
+                    editor is self.generated_assembly_editor
+                    or (
+                        editor is self.raw_editor
+                        and code_suffix in self.ASSEMBLER_EXTENSIONS
+                    )
+                )
+                editor_dark = enabled or navy_code_editor
                 palette = QPalette(QApplication.palette())
-                if enabled:
+                if editor_dark:
                     palette.setColor(QPalette.Base, QColor(0, 0, 128))
-                    palette.setColor(QPalette.Text, QColor(255, 255, 0))
+                    # Frühere ASM-Palette wiederherstellen: normaler ASM-Text
+                    # gelb, Mnemonics über den Highlighter fett/weiß, Kommentare
+                    # grau und Sprungziele hellblau. Andere Quellsprachen bleiben
+                    # auf Navy mit weißem Grundtext.
+                    palette.setColor(
+                        QPalette.Text,
+                        QColor(255, 255, 0) if asm_editor else QColor(255, 255, 255),
+                    )
                     palette.setColor(QPalette.Highlight, QColor(0, 90, 170))
                     palette.setColor(QPalette.HighlightedText, QColor(255, 255, 255))
                     if hasattr(QPalette, "PlaceholderText"):
                         palette.setColor(
                             QPalette.PlaceholderText,
-                            QColor(210, 210, 80),
+                            QColor(210, 210, 80) if asm_editor else QColor(200, 210, 230),
                         )
                 else:
-                    # Die Editorfarben werden absichtlich explizit gesetzt.
-                    # Nur so sind neu erzeugte oder gerade geoeffnete Tabs
-                    # unabhaengig von geerbten Windows-/Qt-Paletten sofort
-                    # korrekt dargestellt.
                     palette.setColor(QPalette.Base, QColor(255, 255, 255))
                     palette.setColor(QPalette.Text, QColor(0, 0, 0))
                     palette.setColor(QPalette.Highlight, QColor(0, 120, 215))
@@ -15052,7 +16369,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                         )
                 editor.setPalette(palette)
                 editor.viewport().setPalette(palette)
-                editor.set_gutter_dark_mode(enabled)
+                editor.set_gutter_dark_mode(editor_dark)
                 editor.viewport().update()
 
             hex_palette = QPalette(QApplication.palette())
@@ -15076,8 +16393,8 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.hex_editor.viewport().setPalette(hex_palette)
             self.hex_editor.viewport().update()
 
-            self.syntax_highlighter.set_dark_mode(enabled)
-            self.generated_assembly_highlighter.set_dark_mode(enabled)
+            self.syntax_highlighter.set_dark_mode(enabled or source_is_code)
+            self.generated_assembly_highlighter.set_dark_mode(True)
 
     class DismWorker(QObject):
         """Fuehrt die unveraenderte d64info-Programmlogik ausserhalb der GUI aus."""
@@ -16252,6 +17569,10 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             ".asm", ".s", ".a65", ".m68k", ".inc",
             ".pas", ".pp",
             ".c", ".h",
+            ".lisp", ".lsp",
+            ".pl", ".prolog",
+            ".logo", ".lgo",
+            ".dbase", ".dbp",
             ".bas", ".basic",
             ".txt", ".text", ".log", ".md",
             ".prg", ".amiga", ".adf", ".ram", ".bin",
@@ -16268,6 +17589,10 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             "ASM": {".asm", ".s", ".a65", ".m68k", ".inc"},
             "PAS": {".pas", ".pp"},
             "C": {".c", ".h"},
+            "LISP": {".lisp", ".lsp"},
+            "PROLOG": {".pl", ".prolog"},
+            "LOGO": {".logo", ".lgo"},
+            "DBASE": {".dbase", ".dbp"},
             "PRG": {".prg"},
             "AMIGA": {".amiga", ".adf"},
             "PE32": {".exe"},
@@ -16401,6 +17726,36 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 lambda _checked=False: self.new_project("c64")
             )
 
+            self.new_prolog_project_action = QAction(
+                "Projekt: PROLOG", self
+            )
+            self.new_prolog_project_action.setStatusTip(
+                "Ein neues Windows-PROLOG-Projekt anlegen"
+            )
+            self.new_prolog_project_action.triggered.connect(
+                lambda _checked=False: self.new_project("prolog")
+            )
+
+            self.new_logo_project_action = QAction(
+                "Projekt: LOGO", self
+            )
+            self.new_logo_project_action.setStatusTip(
+                "Ein neues Windows-LOGO-Projekt anlegen"
+            )
+            self.new_logo_project_action.triggered.connect(
+                lambda _checked=False: self.new_project("logo")
+            )
+
+            self.new_dbase_project_action = QAction(
+                "Projekt: dBase", self
+            )
+            self.new_dbase_project_action.setStatusTip(
+                "Ein neues Windows-dBase-Projekt für PE32/PE32+ anlegen"
+            )
+            self.new_dbase_project_action.triggered.connect(
+                lambda _checked=False: self.new_project("dbase")
+            )
+
             # Kompatibilitaetsalias fuer Code, der den bisherigen Namen nutzt.
             self.new_project_action = self.new_windows_project_action
 
@@ -16431,6 +17786,22 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.new_c_action.triggered.connect(
                 lambda _checked=False: self.new_source_document("c")
             )
+            self.new_lisp_action = QAction("LISP-Programm", self)
+            self.new_lisp_action.triggered.connect(
+                lambda _checked=False: self.new_source_document("lisp")
+            )
+            self.new_prolog_action = QAction("Prolog-Programm", self)
+            self.new_prolog_action.triggered.connect(
+                lambda _checked=False: self.new_source_document("prolog")
+            )
+            self.new_logo_action = QAction("LOGO-Programm", self)
+            self.new_logo_action.triggered.connect(
+                lambda _checked=False: self.new_source_document("logo")
+            )
+            self.new_dbase_action = QAction("dBase-Programm", self)
+            self.new_dbase_action.triggered.connect(
+                lambda _checked=False: self.new_source_document("dbase")
+            )
             self.new_character_map_action = QAction("C-64 Character Map", self)
             self.new_character_map_action.triggered.connect(
                 self.new_character_map
@@ -16452,7 +17823,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             )
             self.open_file_action.setShortcut(QKeySequence.Open)
             self.open_file_action.setStatusTip(
-                "Eine Text-, Assembler-, Pascal- oder C-Datei öffnen"
+                "Eine Text-, Assembler-, Pascal-, C-, LISP-, PROLOG- oder LOGO-Datei öffnen"
             )
             self.open_file_action.triggered.connect(self.open_document_dialog)
 
@@ -16508,12 +17879,12 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.quit_action.setShortcut(QKeySequence.Quit)
             self.quit_action.triggered.connect(self.close)
 
-            self.about_action = QAction("Über …", self)
+            self.about_action = QAction("Über ...", self)
             self.about_action.triggered.connect(self.show_about_dialog)
 
             self.chm_viewer_action = QAction(
                 self._toolbar_symbol_icon("help"),
-                "CHM-Viewer …",
+                "CHM-Viewer ...",
                 self,
             )
             self.chm_viewer_action.setObjectName("main_help_action")
@@ -16576,6 +17947,10 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 self.show_pixel_screen_editor
             )
 
+            self.resource_action = QAction("Resource Builder", self)
+            self.resource_action.setStatusTip("Create resource files for your Application.")
+            self.resource_action.triggered.connect(self.resource_dialog)
+            
             self.localize_action = QAction("Localize PO->Mo ...", self)
             self.localize_action.setStatusTip("Übersetzungen für internationale Anwendungen")
             self.localize_action.triggered.connect(self.localize_dialog)
@@ -16736,18 +18111,186 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 "Das direkte Starten eines Programms wird spaeter ergaenzt"
             )
             self.dism_program_action.setEnabled(False)
+
+            # Kompakte Datei->Neu-Struktur.  Die ursprünglichen QAction-Objekte
+            # bleiben bestehen (Kompatibilität mit Toolbar/anderen Aufrufern),
+            # erscheinen aber nicht mehr direkt in der ersten Neu-Ebene.
+            self._create_compact_new_actions()
             self._update_zoom_action_state()
 
+        def _make_compact_new_action(
+            self,
+            text: str,
+            callback,
+            status_tip: str,
+        ) -> QAction:
+            action = QAction(text, self)
+            action.setStatusTip(status_tip)
+            action.triggered.connect(
+                lambda _checked=False, fn=callback: fn()
+            )
+            return action
+
+        def _create_compact_new_actions(self) -> None:
+            """Erzeugt die Aktionen für die acht kompakten Neu-Untermenüs."""
+            profiles = {
+                "windows_pe32": {
+                    "project_kind": "windows_pe32",
+                    "language": "c",
+                    "target": "pe32",
+                    "title": "Windows PE32",
+                },
+                "windows_pe64": {
+                    "project_kind": "windows_pe64",
+                    "language": "c",
+                    "target": "pe64",
+                    "title": "Windows PE32+",
+                },
+                "amiga500": {
+                    "project_kind": "amiga500",
+                    "language": "c",
+                    "target": "amiga",
+                    "title": "Amiga 500 ADF",
+                },
+                "c64": {
+                    "project_kind": "c64",
+                    "language": "basic",
+                    "target": "c64",
+                    "title": "C= 64 mk68x",
+                },
+                "prolog": {
+                    "project_kind": "prolog",
+                    "language": "prolog",
+                    "target": "pe32",
+                    "title": "PROLOG",
+                },
+                "logo": {
+                    "project_kind": "logo",
+                    "language": "logo",
+                    "target": "pe32",
+                    "title": "LOGO",
+                },
+                "dbase": {
+                    "project_kind": "dbase",
+                    "language": "dbase",
+                    "target": "pe32",
+                    "title": "dBase",
+                },
+                "assembler": {
+                    "project_kind": "assembler",
+                    "language": "assembler",
+                    "target": "c64",
+                    "title": "Assembler",
+                },
+            }
+            self.compact_new_profiles = profiles
+            self.compact_new_actions = {}
+            for profile_key, spec in profiles.items():
+                title = spec["title"]
+                self.compact_new_actions[profile_key] = {
+                    "project": self._make_compact_new_action(
+                        "Projekt",
+                        lambda key=profile_key: self.new_project(
+                            profiles[key]["project_kind"]
+                        ),
+                        f"Bestehendes Projekt speichern und neues {title}-Projekt anlegen",
+                    ),
+                    "application": self._make_compact_new_action(
+                        "Anwendung",
+                        lambda key=profile_key: self.new_profile_source_document(
+                            key, use_template=True
+                        ),
+                        f"Neue {title}-Anwendung mit Template im Projekt anlegen",
+                    ),
+                    "program": self._make_compact_new_action(
+                        "Programm",
+                        lambda key=profile_key: self.new_profile_source_document(
+                            key, use_template=False
+                        ),
+                        f"Neue leere {title}-Programmdatei im Projekt anlegen",
+                    ),
+                }
+
+            # Die bisherigen Sprachaktionen werden nicht gelöscht.  Sie werden
+            # als zielgebundene Proxy-Aktionen in die passenden neuen Untermenüs
+            # verschoben.  Damit bleibt die alte Programmlogik erhalten, ohne
+            # die erste Neu-Ebene wieder zu verbreitern.
+            def language_action(label: str, language: str, target: str) -> QAction:
+                return self._make_compact_new_action(
+                    label,
+                    lambda lang=language, tgt=target: self.new_source_document(
+                        lang, target=tgt, use_template=True
+                    ),
+                    f"{label} mit der bisherigen Vorlage anlegen",
+                )
+
+            self.compact_new_legacy_actions = {
+                "windows_pe32": (
+                    language_action("Pascal-Programm", "pascal", "pe32"),
+                    language_action("C-Programm", "c", "pe32"),
+                    language_action("LISP-Programm", "lisp", "pe32"),
+                ),
+                "windows_pe64": (
+                    language_action("Pascal-Programm", "pascal", "pe64"),
+                    language_action("C-Programm", "c", "pe64"),
+                    language_action("LISP-Programm", "lisp", "pe64"),
+                ),
+                "amiga500": (
+                    language_action("Pascal-Programm", "pascal", "amiga"),
+                    language_action("C-Programm", "c", "amiga"),
+                    language_action("Assembler-Programm", "assembler", "amiga"),
+                ),
+                "c64": (
+                    language_action("BASIC-Programm", "basic", "c64"),
+                    language_action("Pascal-Programm", "pascal", "c64"),
+                    language_action("C-Programm", "c", "c64"),
+                    language_action("Assembler-Programm", "assembler", "c64"),
+                ),
+                "prolog": (),
+                "logo": (),
+                "dbase": (),
+                "assembler": (),
+            }
+
         def _populate_new_document_menu(self, menu: QMenu) -> QMenu:
-            """Baut das identische Neu-Untermenü für Haupt- und Tabmenü."""
-            menu.addAction(self.new_windows_project_action)
-            menu.addAction(self.new_amiga_project_action)
-            menu.addAction(self.new_c64_project_action)
-            menu.addSeparator()
-            menu.addAction(self.new_basic_action)
-            menu.addAction(self.new_assembler_action)
-            menu.addAction(self.new_pascal_action)
-            menu.addAction(self.new_c_action)
+            """Baut das kompakte Datei->Neu-Menü.
+
+            Die frühere flache Liste aus Projekt- und Sprachaktionen bleibt
+            funktional erhalten, wird aber nach Plattform/Sprache gruppiert.
+            Jeder Hauptpunkt besitzt die drei einheitlichen Aktionen
+            ``Projekt``, ``Anwendung`` und ``Programm``.  ``Anwendung`` erzeugt
+            eine neue Quelldatei mit dem vorhandenen Template; ``Programm``
+            erzeugt dieselbe Dateikategorie leer.
+            """
+            profile_specs = (
+                ("windows_pe32", "Windows PE32"),
+                ("windows_pe64", "Windows PE32+"),
+                ("amiga500", "Amiga 500 ADF"),
+                ("c64", "C= 64 mk68x"),
+                ("prolog", "PROLOG"),
+                ("logo", "LOGO"),
+                ("dbase", "dBase"),
+                ("assembler", "Assembler"),
+            )
+            self.compact_new_menus = {}
+            for profile_key, title in profile_specs:
+                submenu = menu.addMenu(title)
+                submenu.setObjectName(f"new_{profile_key}_menu")
+                actions = self.compact_new_actions[profile_key]
+                submenu.addAction(actions["project"])
+                submenu.addAction(actions["application"])
+                submenu.addAction(actions["program"])
+
+                legacy_actions = self.compact_new_legacy_actions.get(
+                    profile_key, ()
+                )
+                if legacy_actions:
+                    submenu.addSeparator()
+                    for action in legacy_actions:
+                        submenu.addAction(action)
+                self.compact_new_menus[profile_key] = submenu
+
+            # Alle übrigen bisherigen Einträge bleiben auf derselben Ebene.
             menu.addSeparator()
             menu.addAction(self.new_character_map_action)
             menu.addAction(self.new_text_screen_action)
@@ -16756,6 +18299,11 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             menu.addAction(self.new_text_file_action)
             return menu
 
+        def resource_dialog(self) -> None:
+            res_window = ResourceBuilderToolWindow(self)
+            res_window.exec_()
+            return
+            
         def localize_dialog(self) -> None:
             tool_window = LocalizeToolWindow(self)
             tool_window.exec_()
@@ -17011,6 +18559,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             tools_menu.addAction(self.windows_graphics_header_action)
             tools_menu.addAction(self.windows_graphics_build_action)
             tools_menu.addSeparator()
+            tools_menu.addAction(self.resource_action)
             tools_menu.addAction(self.localize_action)
             
             help_menu = self.menuBar().addMenu("&Hilfe")
@@ -17994,28 +19543,71 @@ border: 2px solid #2a69aa;
             return Path(self.current_project_path)
 
         def _new_project_item_for_category(
-            self, category_key: str
+            self,
+            category_key: str,
+            *,
+            use_template: bool = True,
         ) -> Optional[QTreeWidgetItem]:
             self._ensure_project_for_new_document()
             root = self.project_root_items.get(category_key)
             if root is None:
                 return None
-            return self.create_new_project_item(root)
+            return self.create_new_project_item(
+                root,
+                use_template=use_template,
+            )
 
-        def new_source_document(self, language: str) -> Optional[DocumentEditor]:
+        def new_source_document(
+            self,
+            language: str,
+            *,
+            target: Optional[str] = None,
+            use_template: bool = True,
+        ) -> Optional[DocumentEditor]:
+            """Legt eine Quelldatei im aktuellen Projekt an.
+
+            ``use_template=True`` entspricht der bisherigen Neu-Programmlogik.
+            ``False`` ist die neue Menüfunktion "Programm" und erzeugt eine
+            wirklich leere Quellcodedatei derselben Kategorie.
+            """
             key = str(language).casefold()
             category_map = {
                 "basic": "basic",
                 "assembler": "assembler",
                 "pascal": "pascal",
                 "c": "c",
+                "lisp": "lisp",
+                "prolog": "prolog",
+                "logo": "logo",
+                "dbase": "dbase",
                 "text": "text_files",
             }
             category_key = category_map.get(key, "text_files")
-            child = self._new_project_item_for_category(category_key)
+            child = self._new_project_item_for_category(
+                category_key,
+                use_template=use_template,
+            )
             if child is None:
                 return None
-            return self.current_document()
+            document = self.current_document()
+            if isinstance(document, DocumentEditor) and target:
+                document.set_build_target(target)
+            return document
+
+        def new_profile_source_document(
+            self,
+            profile_key: str,
+            *,
+            use_template: bool,
+        ) -> Optional[DocumentEditor]:
+            spec = self.compact_new_profiles.get(str(profile_key))
+            if spec is None:
+                return None
+            return self.new_source_document(
+                spec["language"],
+                target=spec["target"],
+                use_template=use_template,
+            )
 
         def new_character_map(self, _checked: bool = False) -> None:
             self._new_project_item_for_category("character_maps")
@@ -18035,12 +19627,15 @@ border: 2px solid #2a69aa;
                 (
                     "Unterstützte Dateien "
                     "(*.txt *.text *.log *.md *.asm *.s *.a65 *.m68k *.inc "
-                    "*.pas *.pp *.c *.bas *.basic *.pro *.prg *.amiga *.adf *.ram *.bin "
+                    "*.pas *.pp *.c *.lisp *.lsp *.pl *.prolog *.logo *.lgo *.dbase *.dbp *.bas *.basic *.pro *.prg *.amiga *.adf *.ram *.bin "
                     "*.chr *.charset *.pal *.palette *.scr *.screen "
                     "*.px16 *.pixel *.pix);;"
                     "Projektdateien (*.pro);;"
                     "BASIC-Dateien (*.bas *.basic);;"
                     "C-Dateien (*.c *.h);;"
+                    "LISP-Dateien (*.lisp *.lsp);;"
+                    "PROLOG-Dateien (*.pl *.prolog);;LOGO-Dateien (*.logo *.lgo);;"
+                    "dBase-Dateien (*.dbase *.dbp);;"
                     "Pascaldateien (*.pas *.pp);;"
                     "Assemblerdateien (*.asm *.s *.a65 *.m68k *.inc);;"
                     "C64-Zeichensätze (*.chr *.charset);;"
@@ -18407,6 +20002,9 @@ border: 2px solid #2a69aa;
                 (
                     "BASIC-Dateien (*.bas *.basic);;"
                     "C-Dateien (*.c *.h);;"
+                    "LISP-Dateien (*.lisp *.lsp);;"
+                    "PROLOG-Dateien (*.pl *.prolog);;LOGO-Dateien (*.logo *.lgo);;"
+                    "dBase-Dateien (*.dbase *.dbp);;"
                     "Pascaldateien (*.pas *.pp);;"
                     "Assemblerdateien (*.asm *.s *.a65 *.m68k *.inc);;"
                     "Textdateien (*.txt);;"
@@ -18646,6 +20244,13 @@ border: 2px solid #2a69aa;
             document.generated_pe32_modules = tuple(
                 getattr(generated, "linked_pe32_modules", ()) or ()
             )
+            document.generated_link_object_files = tuple(
+                getattr(generated, "linked_object_files", ()) or ()
+            )
+            if document.is_dbase_document:
+                document.set_dbase_debug_visible(
+                    bool(getattr(generated, "uses_debug_output", False))
+                )
             if is_unit:
                 document.assemble_generated_button.setEnabled(False)
                 document.generated_assembly_status_label.setText(
@@ -18701,6 +20306,41 @@ border: 2px solid #2a69aa;
             if assembly_path.parent == self.current_directory:
                 self.populate_file_list()
             return True
+
+        @staticmethod
+        def _logo_assembly_output_path(document: DocumentEditor) -> Path:
+            if document.path is None:
+                raise AssemblerError("Der LOGO-Quelltext muss zuerst gespeichert werden.")
+            if document.build_target != "pe32":
+                raise AssemblerError("LOGO unterstützt im ersten Stand ausschließlich Windows PE32.")
+            return document.path.with_name(document.path.stem + ".generated.pe32.asm")
+
+        @staticmethod
+        def _dbase_assembly_output_path(document: DocumentEditor) -> Path:
+            if document.path is None:
+                raise AssemblerError("Der dBase-Quelltext muss zuerst gespeichert werden.")
+            if document.build_target not in {"pe32", "pe64"}:
+                raise AssemblerError("dBase unterstützt nur Windows PE32 und Windows PE32+/PE64.")
+            suffix = ".generated.pe64.asm" if document.build_target == "pe64" else ".generated.pe32.asm"
+            return document.path.with_name(document.path.stem + suffix)
+
+        @staticmethod
+        def _prolog_assembly_output_path(document: DocumentEditor) -> Path:
+            if document.path is None:
+                raise AssemblerError("Der PROLOG-Quelltext muss zuerst gespeichert werden.")
+            if document.build_target not in {"pe32", "pe64"}:
+                raise AssemblerError("PROLOG unterstützt nur Windows PE32 und Windows PE64/PE32+.")
+            suffix = ".generated.pe64.asm" if document.build_target == "pe64" else ".generated.pe32.asm"
+            return document.path.with_name(document.path.stem + suffix)
+
+        @staticmethod
+        def _lisp_assembly_output_path(document: DocumentEditor) -> Path:
+            if document.path is None:
+                raise AssemblerError("Der LISP-Quelltext muss zuerst gespeichert werden.")
+            if document.build_target not in {"pe32", "pe64"}:
+                raise AssemblerError("LISP unterstützt derzeit nur Windows PE32 und Windows PE64/PE32+.")
+            suffix = ".generated.pe64.asm" if document.build_target == "pe64" else ".generated.pe32.asm"
+            return document.path.with_name(document.path.stem + suffix)
 
         def _compile_basic_document(self, document: DocumentEditor) -> bool:
             """C64 BASIC -> editierbarer MOS-6510-Assemblercode."""
@@ -18945,6 +20585,118 @@ border: 2px solid #2a69aa;
                 "C",
             )
 
+        def _compile_lisp_document(self, document: DocumentEditor) -> bool:
+            """LISP -> IA-32/AMD64-Assembler; Binärstufen bleiben intern in d64_dism."""
+            if document.build_target not in {"pe32", "pe64"}:
+                document.set_build_target("pe32")
+            source = document.raw_editor.toPlainText()
+            try:
+                from d64lisp import LispCompilerError, compile_lisp_to_assembly
+                assembly_path = self._lisp_assembly_output_path(document)
+                generated = compile_lisp_to_assembly(
+                    source,
+                    filename=str(document.path),
+                    target=document.build_target,
+                    windows_application_mode=document.windows_application_mode,
+                )
+            except (ImportError, LispCompilerError, AssemblerError) as exc:
+                message = str(exc)
+                error_line = getattr(exc, "line", 0) or 0
+                document.show_assembly_error(message, error_line, "Compilerfehler")
+                self.show_error("LISP-Compilerfehler", message)
+                self.statusBar().showMessage("LISP-Kompilierung fehlgeschlagen")
+                return False
+            is_module = getattr(generated, "source_kind", "program") == "unit"
+            ok = self._finish_compile_stage(
+                document, generated, assembly_path, "LISP", is_unit=is_module,
+            )
+            if ok and is_module:
+                document.generated_assembly_status_label.setText(
+                    "LISP-Modul-ASM erzeugt – F2 erzeugt COFF32/COFF64"
+                )
+                document.hints_editor.appendPlainText(
+                    "\nLISP-Modul    : kein _start; beim Hauptprogramm als .o linken"
+                )
+            return ok
+
+        def _compile_prolog_document(self, document: DocumentEditor) -> bool:
+            """PROLOG -> IA-32/AMD64-Assembler; Assemblieren/Linken bleibt intern."""
+            if document.build_target not in {"pe32", "pe64"}:
+                document.set_build_target("pe32")
+            source = document.raw_editor.toPlainText()
+            try:
+                from d64prolog import PrologCompilerError, compile_prolog_to_assembly
+                assembly_path = self._prolog_assembly_output_path(document)
+                generated = compile_prolog_to_assembly(
+                    source,
+                    filename=str(document.path),
+                    target=document.build_target,
+                    windows_application_mode=document.windows_application_mode,
+                    verbose=document.prolog_verbose,
+                )
+            except (ImportError, PrologCompilerError, AssemblerError) as exc:
+                message = str(exc)
+                error_line = getattr(exc, "line", 0) or 0
+                document.show_assembly_error(message, error_line, "Compilerfehler")
+                self.show_error("PROLOG-Compilerfehler", message)
+                self.statusBar().showMessage("PROLOG-Kompilierung fehlgeschlagen")
+                return False
+            return self._finish_compile_stage(
+                document, generated, assembly_path, "PROLOG"
+            )
+
+        def _compile_dbase_document(self, document: DocumentEditor) -> bool:
+            """dBase -> IA-32/AMD64-Assembler mit eigener Qt5-GUI-Runtime."""
+            if document.build_target not in {"pe32", "pe64"}:
+                document.set_build_target("pe32")
+            # dBase besitzt ab dieser Stufe immer eine eigene Qt5-GUI.
+            document.set_windows_application_mode("GUI")
+            source = document.raw_editor.toPlainText()
+            try:
+                from d64dbase import DBaseCompilerError, compile_dbase_to_assembly
+                assembly_path = self._dbase_assembly_output_path(document)
+                generated = compile_dbase_to_assembly(
+                    source,
+                    filename=str(document.path),
+                    target=document.build_target,
+                    windows_application_mode=document.windows_application_mode,
+                )
+            except (ImportError, DBaseCompilerError, AssemblerError) as exc:
+                message = str(exc)
+                error_line = getattr(exc, "line", 0) or 0
+                document.show_assembly_error(message, error_line, "Compilerfehler")
+                self.show_error("dBase-Compilerfehler", message)
+                self.statusBar().showMessage("dBase-Kompilierung fehlgeschlagen")
+                return False
+            return self._finish_compile_stage(
+                document, generated, assembly_path, "dBase"
+            )
+
+        def _compile_logo_document(self, document: DocumentEditor) -> bool:
+            """LOGO -> nativer IA-32-Assembler fuer Console oder 320x200-GUI."""
+            if document.build_target != "pe32":
+                document.set_build_target("pe32")
+            source = document.raw_editor.toPlainText()
+            try:
+                from d64logo import LogoCompilerError, compile_logo_to_assembly
+                assembly_path = self._logo_assembly_output_path(document)
+                generated = compile_logo_to_assembly(
+                    source,
+                    filename=str(document.path),
+                    target="pe32",
+                    windows_application_mode=document.windows_application_mode,
+                )
+            except (ImportError, LogoCompilerError, AssemblerError) as exc:
+                message = str(exc)
+                error_line = getattr(exc, "line", 0) or 0
+                document.show_assembly_error(message, error_line, "Compilerfehler")
+                self.show_error("LOGO-Compilerfehler", message)
+                self.statusBar().showMessage("LOGO-Kompilierung fehlgeschlagen")
+                return False
+            return self._finish_compile_stage(
+                document, generated, assembly_path, "LOGO"
+            )
+
         def create_coff32_object_document(
             self,
             document: DocumentEditor,
@@ -18965,7 +20717,7 @@ border: 2px solid #2a69aa;
             if not source.strip():
                 self.show_error(
                     f"Keine {'PE64' if is64 else 'PE32'}-Assemblerdaten",
-                    "Kompiliere zuerst die Pascal- oder C-Quelle.",
+                    "Kompiliere zuerst die Pascal-, C-, LISP-, PROLOG-, LOGO- oder dBase-Quelle.",
                 )
                 return False
             if document.path is None and not self._save_document(document, save_as=True):
@@ -19038,6 +20790,10 @@ border: 2px solid #2a69aa;
                 document.is_basic_document
                 or document.is_pascal_document
                 or document.is_c_document
+                or document.is_lisp_document
+                or document.is_prolog_document
+                or document.is_logo_document
+                or document.is_dbase_document
             ):
                 return False
 
@@ -19047,7 +20803,7 @@ border: 2px solid #2a69aa;
             if not assembly_source.strip():
                 message = (
                     "Es sind noch keine ASM-Daten vorhanden. Kompiliere "
-                    "zuerst den BASIC-, C- oder Pascal-Quelltext."
+                    "zuerst den BASIC-, C-, Pascal-, LISP-, PROLOG-, LOGO- oder dBase-Quelltext."
                 )
                 document.show_generated_assembly_error(
                     message,
@@ -19071,12 +20827,29 @@ border: 2px solid #2a69aa;
                     document,
                     assembly_source,
                 )
+                # dBase-EXE liegt nach dem Linken bewusst im aktuellen
+                # Arbeitsverzeichnis der IDE. Der Start-Button sucht genau
+                # dieses bereits erzeugte Artefakt und startet niemals einen Build.
+                if (
+                    document.is_dbase_document
+                    and document.build_target in {"pe32", "pe64"}
+                    and getattr(document, "generated_source_kind", "program") != "library"
+                ):
+                    output_path = (self.current_directory / output_path.name).resolve()
                 assembly_path = document.generated_assembly_path
                 if assembly_path is None:
                     if document.is_basic_document:
                         assembly_path = self._basic_assembly_output_path(document)
                     elif document.is_pascal_document:
                         assembly_path = self._pascal_assembly_output_path(document)
+                    elif document.is_lisp_document:
+                        assembly_path = self._lisp_assembly_output_path(document)
+                    elif document.is_prolog_document:
+                        assembly_path = self._prolog_assembly_output_path(document)
+                    elif document.is_logo_document:
+                        assembly_path = self._logo_assembly_output_path(document)
+                    elif document.is_dbase_document:
+                        assembly_path = self._dbase_assembly_output_path(document)
                     else:
                         assembly_path = self._c_assembly_output_path(document)
                 if document.build_target == "amiga":
@@ -19118,6 +20891,30 @@ border: 2px solid #2a69aa;
                         str(Path(path).expanduser().resolve()).casefold()
                         for path in object_paths
                     }
+                    # dBase #pragma link: vorhandene .o/.obj/.a/.lib-Dateien
+                    # werden als echte Linkereingaben uebernommen, nicht als ASM.
+                    pragma_inputs = tuple(
+                        getattr(document, "generated_link_object_files", ()) or ()
+                    )
+                    for pragma_name in pragma_inputs:
+                        pragma_path = Path(pragma_name).expanduser().resolve()
+                        key = str(pragma_path).casefold()
+                        if key in known_inputs:
+                            continue
+                        if not pragma_path.is_file():
+                            raise PE64AssemblerError(
+                                f"#pragma link Datei nicht gefunden: {pragma_path}"
+                            ) if is64 else PE32AssemblerError(
+                                f"#pragma link Datei nicht gefunden: {pragma_path}"
+                            )
+                        if pragma_path.suffix.casefold() not in {".o", ".obj", ".a", ".lib"}:
+                            raise PE64AssemblerError(
+                                f"#pragma link erwartet .o/.obj/.a/.lib: {pragma_path}"
+                            ) if is64 else PE32AssemblerError(
+                                f"#pragma link erwartet .o/.obj/.a/.lib: {pragma_path}"
+                            )
+                        object_paths.append(pragma_path)
+                        known_inputs.add(key)
                     for extra_path in extra_link_inputs or ():
                         resolved_extra = Path(extra_path).expanduser().resolve()
                         key = str(resolved_extra).casefold()
@@ -19346,7 +21143,9 @@ border: 2px solid #2a69aa;
                 return self._c_source_has_main_definition(
                     document.raw_editor.toPlainText()
                 )
-            if document.is_pascal_document:
+            if document.is_prolog_document or document.is_logo_document or document.is_dbase_document:
+                return True
+            if document.is_pascal_document or document.is_lisp_document:
                 return (
                     str(getattr(document, "generated_source_kind", "program"))
                     .strip().casefold() == "program"
@@ -19369,6 +21168,10 @@ border: 2px solid #2a69aa;
             category_key = (
                 "c" if document.is_c_document
                 else "pascal" if document.is_pascal_document
+                else "lisp" if document.is_lisp_document
+                else "prolog" if document.is_prolog_document
+                else "logo" if document.is_logo_document
+                else "dbase" if document.is_dbase_document
                 else ""
             )
             if not category_key:
@@ -19422,6 +21225,12 @@ border: 2px solid #2a69aa;
                     ) or (
                         document.is_pascal_document
                         and suffix in DocumentEditor.PASCAL_EXTENSIONS
+                    ) or (
+                        document.is_lisp_document
+                        and suffix in DocumentEditor.LISP_EXTENSIONS
+                    ) or (
+                        document.is_prolog_document
+                        and suffix in DocumentEditor.PROLOG_EXTENSIONS
                     ):
                         add(source_path.with_suffix(".o"))
 
@@ -19453,7 +21262,7 @@ border: 2px solid #2a69aa;
             Hauptprogramme werden bis zum lauffaehigen Ziel gebaut und direkt
             gestartet. C-Dateien ohne ``main`` und Pascal-Units werden unter
             Windows lediglich als COFF32/COFF64-Objekt erzeugt. Dadurch bleibt
-            genau ein F2-Arbeitsablauf fuer BASIC, C und Pascal bestehen.
+            genau ein F2-Arbeitsablauf fuer BASIC, C, Pascal, LISP, PROLOG, LOGO und dBase bestehen.
             """
             if not isinstance(document, DocumentEditor):
                 return False
@@ -19461,9 +21270,13 @@ border: 2px solid #2a69aa;
                 document.is_basic_document
                 or document.is_c_document
                 or document.is_pascal_document
+                or document.is_lisp_document
+                or document.is_prolog_document
+                or document.is_logo_document
+                or document.is_dbase_document
             ):
                 self.statusBar().showMessage(
-                    "F2-Build gilt für BASIC-, C- und Pascal-Quelltexte",
+                    "F2-Build gilt für BASIC-, C-, Pascal-, LISP-, PROLOG-, LOGO- und dBase-Quelltexte",
                     5000,
                 )
                 return False
@@ -19512,10 +21325,13 @@ border: 2px solid #2a69aa;
                     "F2 LINK INPUTS: "
                     + ", ".join(path.name for path in extra_inputs)
                 )
+            # Nach erfolgreichem Compile -> Assemble -> Link wird die erzeugte
+            # EXE unmittelbar gestartet. dBase besitzt keine IDE-Konsole mehr;
+            # seine Ausgabe-Tabs leben ausschliesslich in der Qt5-Anwendung.
             return self._launch_assembled_document(document)
 
         def assemble_document(self, document: DocumentEditor) -> bool:
-            """Compile für BASIC/C/Pascal oder Assemble für ASM-Quelltext."""
+            """Compile für BASIC/C/Pascal/LISP/PROLOG/LOGO/dBase oder Assemble für ASM."""
             if not isinstance(document, DocumentEditor):
                 return False
             self.document_tabs.setCurrentWidget(document)
@@ -19530,11 +21346,19 @@ border: 2px solid #2a69aa;
                 return self._compile_pascal_document(document)
             if document.is_c_document:
                 return self._compile_c_document(document)
+            if document.is_lisp_document:
+                return self._compile_lisp_document(document)
+            if document.is_prolog_document:
+                return self._compile_prolog_document(document)
+            if document.is_logo_document:
+                return self._compile_logo_document(document)
+            if document.is_dbase_document:
+                return self._compile_dbase_document(document)
             if not document.is_assembler_document:
                 self.show_error(
                     "Kein übersetzbares Dokument",
-                    "Compile/Assemble steht für .bas, .basic, .c, .pas, "
-                    ".pp, .asm, .s, .a65 und .inc zur Verfügung.",
+                    "Compile/Assemble steht für .bas, .basic, .c, .pas, .pp, "
+                    ".lisp, .lsp, .pl, .prolog, .logo, .lgo, .dbase, .dbp, .asm, .s, .a65 und .inc zur Verfügung.",
                 )
                 return False
 
@@ -19748,11 +21572,47 @@ border: 2px solid #2a69aa;
             self.statusBar().showMessage("WinUAE-Start abgebrochen")
             return None
 
+        def _start_existing_dbase_executable(
+            self,
+            document: DocumentEditor,
+        ) -> bool:
+            """Startet ausschliesslich die bereits gelinkte dBase-EXE.
+
+            Der Start-Button ist absichtlich kein Build-Button: Weder Compiler
+            noch Assembler noch Linker werden von hier aus aufgerufen.
+            """
+            if not isinstance(document, DocumentEditor) or not document.is_dbase_document:
+                return False
+            if document.path is None:
+                self.show_error(
+                    "dBase-Start",
+                    "Die dBase-Quelldatei muss gespeichert sein, damit der Name der EXE bekannt ist.",
+                )
+                return False
+            if document.build_target not in {"pe32", "pe64"}:
+                self.show_error("dBase-Start", "dBase unterstuetzt nur Windows PE32/PE32+.")
+                return False
+            executable = (self.current_directory / document.path.with_suffix(".exe").name).resolve()
+            if not executable.is_file():
+                self.show_error(
+                    "dBase-EXE nicht gefunden",
+                    "Der Start-Button baut nicht automatisch.\n\n"
+                    "Kompiliere/assembliere/linke zuerst mit F2 oder Assemble.\n"
+                    f"Erwartete EXE im Arbeitsverzeichnis:\n{executable}",
+                )
+                self.statusBar().showMessage("dBase-Start: vorhandene EXE fehlt", 6000)
+                return False
+            document.assembled_program_path = executable
+            document.assembled_target = document.build_target
+            return self._launch_assembled_document(document)
+
         def start_assembled_document(self, document: DocumentEditor) -> bool:
-            """Lädt den letzten Build per VICE-Autostart und führt ihn aus."""
+            """Startet das zuletzt erzeugte Programm; dBase baut hier niemals neu."""
             if not isinstance(document, DocumentEditor):
                 return False
             self.document_tabs.setCurrentWidget(document)
+            if document.is_dbase_document:
+                return self._start_existing_dbase_executable(document)
 
             current_digest = hashlib.sha256(
                 document.raw_editor.toPlainText().encode("utf-8")
@@ -19773,10 +21633,12 @@ border: 2px solid #2a69aa;
             self,
             document: DocumentEditor,
         ) -> bool:
-            """Startet den aktuellen Build des editierbaren ASM-Tabs."""
+            """Startet vorhandene Ausgabe; der dBase-Start fuehrt keinen Build aus."""
             if not isinstance(document, DocumentEditor):
                 return False
             self.document_tabs.setCurrentWidget(document)
+            if document.is_dbase_document:
+                return self._start_existing_dbase_executable(document)
             current_digest = document.generated_assembly_digest()
             output_path = document.assembled_program_path
             if (
@@ -19789,6 +21651,82 @@ border: 2px solid #2a69aa;
                     return False
             return self._launch_assembled_document(document)
 
+        @staticmethod
+        def _decode_dbase_process_output(data) -> str:
+            raw = bytes(data)
+            if not raw:
+                return ""
+            # Der dBase-Compiler legt Stringliterale als Windows-1252 ab.
+            return raw.decode("cp1252", errors="replace")
+
+        def _launch_dbase_qt5_gui(
+            self,
+            document: DocumentEditor,
+            output_path: Path,
+        ) -> bool:
+            """Startet die generierte dBase-Qt5-GUI ohne Textkonsole."""
+            if os.name != "nt":
+                self.show_error(
+                    "Windows-PE-Start",
+                    "PE32/PE32+-dBase-Qt5-Programme koennen aus d64_dism nur "
+                    "unter Windows direkt gestartet werden. Die erzeugte EXE "
+                    "bleibt erhalten:\n" + str(output_path),
+                )
+                return False
+            options = {
+                "cwd": str(output_path.parent),
+                "stdin": subprocess.DEVNULL,
+                "stdout": subprocess.DEVNULL,
+                "stderr": subprocess.DEVNULL,
+            }
+            flags = 0
+            if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
+                flags |= subprocess.CREATE_NEW_PROCESS_GROUP
+            if hasattr(subprocess, "CREATE_NO_WINDOW"):
+                flags |= subprocess.CREATE_NO_WINDOW
+            if flags:
+                options["creationflags"] = flags
+            try:
+                process = subprocess.Popen([str(output_path)], **options)
+            except OSError as exc:
+                self.show_error(
+                    "dBase Qt5-Programm konnte nicht gestartet werden",
+                    f"Programm: {output_path}\n\n{exc}\n\n"
+                    "Der Start-Button startet ausschliesslich die bereits vom "
+                    "internen Linker erzeugte EXE. Stelle sicher, dass die bereits "
+                    "manuell erzeugte d64qt5.dll sowie ihre Qt5-Abhaengigkeiten "
+                    "ueber das EXE-Verzeichnis oder den Windows-DLL-Suchpfad "
+                    "verfuegbar sind.",
+                )
+                return False
+            processes = [
+                running for running in getattr(self, "_dbase_qt5_processes", [])
+                if running.poll() is None
+            ]
+            processes.append(process)
+            self._dbase_qt5_processes = processes
+            document.assembly_status_label.setText(
+                f"dBase Qt5-GUI gestartet: {output_path.name}"
+            )
+            if document.generated_assembly_path is not None:
+                document.generated_assembly_status_label.setText(
+                    f"dBase Qt5-GUI gestartet: {output_path.name}"
+                )
+            self.log(f"DBASE QT5 START: {output_path}")
+            self.statusBar().showMessage(
+                f"dBase Qt5-GUI gestartet: {output_path.name}"
+            )
+            return True
+
+        # Kompatibler Alias fuer aeltere Aufrufer; es wird keine eingebettete
+        # Textkonsole mehr verwendet.
+        def _launch_dbase_embedded_console(
+            self,
+            document: DocumentEditor,
+            output_path: Path,
+        ) -> bool:
+            return self._launch_dbase_qt5_gui(document, output_path)
+
         def _launch_assembled_document(
             self,
             document: DocumentEditor,
@@ -19799,6 +21737,8 @@ border: 2px solid #2a69aa;
             if document.build_target == "amiga":
                 return self._launch_amiga_document(document, output_path)
             if document.build_target in {"pe32", "pe64"}:
+                if document.is_dbase_document:
+                    return self._launch_dbase_qt5_gui(document, output_path)
                 target_label = "PE64" if document.build_target == "pe64" else "PE32"
                 if os.name != "nt":
                     self.show_error(
@@ -19819,6 +21759,20 @@ border: 2px solid #2a69aa;
                         document.windows_application_mode
                     ) == "Console"
                 )
+                if document.is_logo_document and not console_mode:
+                    runtime_dll = output_path.parent / "d64graphics.dll"
+                    if not runtime_dll.is_file():
+                        try:
+                            build_windows_graphics_runtime_dll(
+                                runtime_dll, document.windows_graphics_backend
+                            )
+                        except (OSError, PE32AssemblerError) as exc:
+                            self.show_error(
+                                "LOGO-Grafik-Runtime fehlt",
+                                "Für LOGO-GUI wird d64graphics.dll benötigt. "
+                                "Der automatische Build ist fehlgeschlagen:\n\n" + str(exc),
+                            )
+                            return False
                 options = {"cwd": str(output_path.parent)}
                 if not console_mode:
                     options.update({
@@ -20097,6 +22051,13 @@ border: 2px solid #2a69aa;
                 return False
 
             name = document.display_name
+            if document.is_dbase_document and getattr(document, "dbase_process", None) is not None:
+                try:
+                    if document.dbase_process.state() != QProcess.NotRunning:
+                        document.dbase_process.kill()
+                        document.dbase_process.waitForFinished(500)
+                except RuntimeError:
+                    pass
             self.document_tabs.removeTab(index)
             document.deleteLater()
             self._refresh_favorites_menu()
@@ -20214,6 +22175,11 @@ border: 2px solid #2a69aa;
                 add_filter_action(source_menu, "BASIC", "BASIC")
                 add_filter_action(source_menu, "Pascal", "PAS")
                 add_filter_action(source_menu, "C", "C")
+                if platform_name == "Windows":
+                    add_filter_action(source_menu, "LISP", "LISP")
+                    add_filter_action(source_menu, "PROLOG", "PROLOG")
+                    add_filter_action(source_menu, "LOGO", "LOGO")
+                    add_filter_action(source_menu, "dBase", "DBASE")
                 add_filter_action(source_menu, "Assembler", "ASM")
 
                 tools_menu = menu.addMenu("Tools")
@@ -20692,20 +22658,33 @@ border: 2px solid #2a69aa;
             self.set_project_modified(False)
             kind = str(project_kind or "generic").strip().casefold()
             project_names = {
-                "windows": "Windows Anwendung",
+                "windows": "Windows PE32",
+                "windows_pe32": "Windows PE32",
+                "windows_pe64": "Windows PE32+",
                 "amiga500": "Amiga 500 ADF",
-                "c64": "C= 64 Programm",
+                "c64": "C= 64 mk68x",
+                "prolog": "PROLOG",
+                "logo": "LOGO",
+                "dbase": "dBase",
+                "assembler": "Assembler",
             }
             self.current_project_kind = kind
+            # Ein Klick auf "Projekt" legt nicht nur einen leeren Baum an,
+            # sondern sofort auch eine neue speicherbare *.pro-Datei.
+            # _save_project_before_new() hat das vorherige Projekt bereits
+            # gesichert.
+            new_project_path = self._ensure_project_for_new_document()
             self.right_panel_tabs.setCurrentWidget(self.project_tab)
             self.right_dock.show()
             self.right_dock.raise_()
             self.project_tree.setFocus(Qt.OtherFocusReason)
             description = project_names.get(kind, "leeres Projekt")
-            self.statusBar().showMessage(f"Neues Projekt angelegt: {description}")
+            self.statusBar().showMessage(
+                f"Neues Projekt angelegt: {description} - {new_project_path.name}"
+            )
             self.log(
                 "Neues Projekt: Projektbaum auf Hauptknoten zurückgesetzt "
-                f"[{description}]"
+                f"[{description}] -> {new_project_path}"
             )
 
         def load_project_file(
@@ -20808,8 +22787,19 @@ border: 2px solid #2a69aa;
                     iterator += 1
             return names
 
-        def _write_new_project_file(self, category_key: str, path: Path) -> None:
-            """Erzeugt eine gueltige leere Datei fuer die Projektkategorie."""
+        def _write_new_project_file(
+            self,
+            category_key: str,
+            path: Path,
+            *,
+            use_template: bool = True,
+        ) -> None:
+            """Erzeugt eine neue Projektdatei.
+
+            Binäre Spezialeditor-Dateien behalten immer ihre bisherige gültige
+            Initialstruktur. Bei Quelltextkategorien steuert ``use_template``,
+            ob die vorhandene Vorlage oder eine komplett leere Datei entsteht.
+            """
             path.parent.mkdir(parents=True, exist_ok=True)
             if category_key == "character_maps":
                 path.write_bytes(bytes(C64_CHARACTER_FILE_SIZE))
@@ -20857,6 +22847,14 @@ border: 2px solid #2a69aa;
                 payload.extend(b"\x00\x10\x60")
                 path.write_bytes(payload)
                 return
+            source_categories = {
+                "basic", "assembler", "pascal", "c", "lisp",
+                "prolog", "logo", "dbase", "text_files",
+            }
+            if category_key in source_categories and not use_template:
+                path.write_text("", encoding="utf-8", newline="\n")
+                return
+
             source_templates = {
                 "basic": (
                     "10 REM NEUES C64 BASIC-PROGRAMM\n"
@@ -20881,6 +22879,46 @@ border: 2px solid #2a69aa;
                     "    return 0;\n"
                     "}\n"
                 ),
+                "lisp": (
+                    "; Neues LISP-Programm fuer Windows PE32/PE32+\n"
+                    "(defun main ()\n"
+                    "  (println \"Hallo LISP\"))\n"
+                    "(start main)\n"
+                ),
+                "prolog": (
+                    "% Neues PROLOG-Programm fuer Windows PE32/PE32+\n"
+                    "message('Hallo PROLOG').\n\n"
+                    "main :-\n"
+                    "    message(Text),\n"
+                    "    writeln(Text).\n"
+                ),
+                "dbase": (
+                    "// Neues dBase-Programm fuer Windows PE32/PE32+\n"
+                    "** Variablen sind dynamisch typisiert; ? mit, ?? ohne NewLine\n"
+                    "X = 2 + 3 * 4\n"
+                    "Text = \"Hallo \" + 'dBase'\n"
+                    "? \"Wert von X = \" + X\n"
+                    "?? Text\n"
+                    "? \"!\"\n"
+                    "\n"
+                    "** Eingebetteter DEBUG-Tab fuer folgende Ausgabe:\n"
+                    "SET FORMAT TO CONSOLE\n"
+                    "SET DEBUG ON\n"
+                    "? \"Debug: X = \" + X\n"
+                    "SET DEBUG OFF\n"
+                ),
+                "logo": (
+                    "; Neues LOGO-Programm fuer Windows PE32\n"
+                    "; Startpunkt: X=160, Y=100\n"
+                    "east\n"
+                    "steps 50\n"
+                    "south\n"
+                    "steps 30\n"
+                    "west\n"
+                    "steps 50\n"
+                    "north\n"
+                    "steps 30\n"
+                ),
                 "text_files": "",
             }
             path.write_text(
@@ -20904,7 +22942,10 @@ border: 2px solid #2a69aa;
                 self.open_document(path)
 
         def create_new_project_item(
-            self, item: QTreeWidgetItem
+            self,
+            item: QTreeWidgetItem,
+            *,
+            use_template: bool = True,
         ) -> Optional[QTreeWidgetItem]:
             root = item if item.parent() is None else item.parent()
             category_key = str(root.data(0, Qt.UserRole + 301) or "other")
@@ -20916,7 +22957,11 @@ border: 2px solid #2a69aa;
             )
             path = directory / filename
             try:
-                self._write_new_project_file(category_key, path)
+                self._write_new_project_file(
+                    category_key,
+                    path,
+                    use_template=use_template,
+                )
             except (OSError, ValueError) as exc:
                 self.show_error(
                     "Neue Projektdatei konnte nicht angelegt werden",
@@ -21929,6 +23974,8 @@ border: 2px solid #2a69aa;
                 "assembler": "assembler",
                 "pascal": "pascal",
                 "c": "c",
+                "lisp": "lisp",
+                "prolog": "prolog",
             }.get(str(language).casefold(), "allgemein")
 
         def _context_help_link(
@@ -24249,7 +26296,7 @@ def assemble_mos6510_source(
 
 def parse_arguments(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="D64-DISM GUI und BASIC-/C-/Pascal-Kommandozeilencompiler"
+        description="D64-DISM GUI und BASIC-/C-/Pascal-/LISP-/PROLOG-/LOGO-/dBase-Kommandozeilencompiler"
     )
     parser.add_argument(
         "directory",
@@ -24274,25 +26321,25 @@ def parse_arguments(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--write-pe32",
         metavar="QUELLE",
         type=Path,
-        help="C-/Pascal-Quelle intern zu COFF32 und anschließend als PE32-EXE bzw. Pascal-LIBRARY als DLL linken",
+        help="C-/Pascal-/LISP-/PROLOG-/LOGO-/dBase-Quelle intern zu COFF32 und anschließend als PE32-EXE bzw. Pascal-LIBRARY als DLL linken",
     )
     target.add_argument(
         "--write-pe64",
         metavar="QUELLE",
         type=Path,
-        help="C-/Pascal-Quelle intern zu AMD64-COFF64 und anschließend als PE64-EXE bzw. Pascal-LIBRARY als DLL linken",
+        help="C-/Pascal-/LISP-/PROLOG-/dBase-Quelle intern zu AMD64-COFF64 und anschließend als PE32+-EXE bzw. Pascal-LIBRARY als DLL linken",
     )
     target.add_argument(
         "--write-coff32",
         metavar="QUELLE",
         type=Path,
-        help="C-/Pascal-Quelle als relocierbares internes COFF32-.o erzeugen",
+        help="C-/Pascal-/LISP-/PROLOG-/LOGO-/dBase-Quelle als relocierbares internes COFF32-.o erzeugen",
     )
     target.add_argument(
         "--write-coff64",
         metavar="QUELLE",
         type=Path,
-        help="C-/Pascal-Quelle als relocierbares internes AMD64-COFF64-.o erzeugen",
+        help="C-/Pascal-/LISP-/PROLOG-/dBase-Quelle als relocierbares internes AMD64-COFF64-.o erzeugen",
     )
     target.add_argument(
         "--archive-coff32",
@@ -24364,6 +26411,25 @@ def parse_arguments(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         choices=WINDOWS_GRAPHICS_BACKENDS,
         default="Direct2D",
         help="Grafikbackend für Windows PE32/PE64",
+    )
+    parser.add_argument(
+        "--windows-mode",
+        choices=("console", "gui"),
+        default="console",
+        help=(
+            "Windows-Anwendungsmodus für LOGO/dBase: 'console' erzeugt ein "
+            "Windows-CUI-Programm, 'gui' ein Windows-GUI-Programm. "
+            "LOGO verwendet im GUI-Modus zusätzlich seine 320x200-Grafikfläche."
+        ),
+    )
+    parser.add_argument(
+        "--verbose", "--prolog-verbose",
+        dest="prolog_verbose",
+        action="store_true",
+        help=(
+            "PROLOG: automatische Top-Level-Lösungsanzeige unterdrücken; "
+            "write/writeln bleiben sichtbar"
+        ),
     )
     parser.add_argument(
         "--object",
@@ -24569,9 +26635,44 @@ def _compile_cli(args: argparse.Namespace) -> int:
         if target in {"pe32", "pe64"} and "graphics_backend" in params:
             kwargs["graphics_backend"] = args.windows_graphics
         generated = compile_c_to_assembly(source, **kwargs)
+    elif suffix in {".lisp", ".lsp"}:
+        if target not in {"pe32", "pe64"}:
+            raise ValueError("LISP kann derzeit nur für Windows PE32 oder Windows PE64/PE32+ kompiliert werden.")
+        from d64lisp import compile_lisp_to_assembly
+        generated = compile_lisp_to_assembly(
+            source, filename=str(source_path), target=target
+        )
+    elif suffix in {".pl", ".prolog"}:
+        if target not in {"pe32", "pe64"}:
+            raise ValueError("PROLOG kann nur für Windows PE32 oder Windows PE64/PE32+ kompiliert werden.")
+        from d64prolog import compile_prolog_to_assembly
+        generated = compile_prolog_to_assembly(
+            source, filename=str(source_path), target=target,
+            verbose=bool(getattr(args, "prolog_verbose", False)),
+        )
+    elif suffix in {".logo", ".lgo"}:
+        if target != "pe32":
+            raise ValueError("LOGO unterstützt derzeit ausschließlich Windows PE32.")
+        from d64logo import compile_logo_to_assembly
+        generated = compile_logo_to_assembly(
+            source,
+            filename=str(source_path),
+            target="pe32",
+            windows_application_mode=getattr(args, "windows_mode", "console"),
+        )
+    elif suffix in {".dbase", ".dbp"}:
+        if target not in {"pe32", "pe64"}:
+            raise ValueError("dBase unterstützt ausschließlich Windows PE32 und Windows PE32+/PE64.")
+        from d64dbase import compile_dbase_to_assembly
+        generated = compile_dbase_to_assembly(
+            source,
+            filename=str(source_path),
+            target=target,
+            windows_application_mode=getattr(args, "windows_mode", "console"),
+        )
     else:
         raise ValueError(
-            "CLI-Compiler erwartet eine .bas-, .basic-, .pas-, .pp- oder .c-Datei."
+            "CLI-Compiler erwartet eine .bas-, .basic-, .pas-, .pp-, .c-, .lisp-, .lsp-, .pl-, .prolog-, .logo-, .lgo-, .dbase- oder .dbp-Datei."
         )
 
     assembly_suffix = (
@@ -24613,6 +26714,12 @@ def _compile_cli(args: argparse.Namespace) -> int:
             source_path=source_path,
             assembly_path=assembly_path,
         )
+        for linked_name in getattr(generated, "linked_object_files", ()):
+            linked_path = Path(linked_name).expanduser().resolve()
+            if not linked_path.is_file():
+                raise ValueError(f"#pragma link Datei nicht gefunden: {linked_path}")
+            if linked_path not in object_paths:
+                object_paths.append(linked_path)
         for item in getattr(args, "object", ()):
             path = item.expanduser().resolve()
             if path not in object_paths:
@@ -24632,7 +26739,12 @@ def _compile_cli(args: argparse.Namespace) -> int:
             linked = link_coff32_inputs(
                 object_paths,
                 entry_symbol="_start",
-                gui=True,
+                gui=(
+                    True if suffix in {".dbase", ".dbp"}
+                    else (str(getattr(args, "windows_mode", "console")).casefold() == "gui"
+                          if suffix in {".logo", ".lgo"}
+                          else suffix not in {".lisp", ".lsp", ".pl", ".prolog"})
+                ),
                 dll=False,
             )
             image = linked.executable
@@ -24665,6 +26777,12 @@ def _compile_cli(args: argparse.Namespace) -> int:
             source_path=source_path,
             assembly_path=assembly_path,
         )
+        for linked_name in getattr(generated, "linked_object_files", ()):
+            linked_path = Path(linked_name).expanduser().resolve()
+            if not linked_path.is_file():
+                raise ValueError(f"#pragma link Datei nicht gefunden: {linked_path}")
+            if linked_path not in object_paths:
+                object_paths.append(linked_path)
         for item in getattr(args, "object", ()):
             path = item.expanduser().resolve()
             if path not in object_paths:
@@ -24684,7 +26802,10 @@ def _compile_cli(args: argparse.Namespace) -> int:
             linked = link_coff64_inputs(
                 object_paths,
                 entry_symbol="_start",
-                gui=True,
+                gui=(
+                    True if suffix in {".dbase", ".dbp"}
+                    else suffix not in {".lisp", ".lsp", ".pl", ".prolog"}
+                ),
                 dll=False,
             )
             image = linked.executable
@@ -24720,6 +26841,18 @@ def _compile_cli(args: argparse.Namespace) -> int:
         else default_output.resolve()
     )
     _write_cli_file(output_path, image)
+    if (
+        os.name == "nt"
+        and target == "pe32"
+        and suffix in {".logo", ".lgo"}
+        and str(getattr(args, "windows_mode", "console")).casefold() == "gui"
+    ):
+        runtime_dll = output_path.parent / "d64graphics.dll"
+        if not runtime_dll.is_file():
+            build_windows_graphics_runtime_dll(
+                runtime_dll,
+                getattr(args, "windows_graphics", "Direct2D"),
+            )
     for note in getattr(generated, "notes", ()):
         print(note, file=sys.stderr)
     for warning in getattr(generated, "warnings", ()):

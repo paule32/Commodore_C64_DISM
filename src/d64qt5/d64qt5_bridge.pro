@@ -8,3 +8,5 @@ SOURCES += d64qt5_bridge.cpp
 HEADERS += d64qt5_bridge.h
 win32:DEF_FILE = d64qt5_bridge.def
 DESTDIR = .
+
+win32:LIBS += -luser32

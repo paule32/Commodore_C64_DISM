@@ -1,0 +1,69 @@
+_app.MFENSTER = new MENU(_app)
+with (_app.MFENSTER)
+    text = "&Fenster"
+endwith
+
+_app.MFENSTER.MCASCADE = new MENU(_app.MFENSTER)
+with (_app.MFENSTER.MCASCADE)
+    onClick = class::MCASCADE_ONCLICK
+    text = "Ü&berlappend"
+endwith
+
+_app.MFENSTER.MHORIZONTAL = new MENU(_app.MFENSTER)
+with (_app.MFENSTER.MHORIZONTAL)
+    onClick = class::MHORIZONTAL_ONCLICK
+    text = "&Horizontal anordnen"
+endwith
+
+_app.MFENSTER.MVERTIKAL = new MENU(_app.MFENSTER)
+with (_app.MFENSTER.MVERTIKAL)
+    onClick = class::MVERTIKAL_ONCLICK
+    text = "&Vertikal anordnen"
+endwith
+
+_app.MFENSTER.MSYMBOLE = new MENU(_app.MFENSTER)
+with (_app.MFENSTER.MSYMBOLE)
+    onClick = class::MSYMBOLE_ONCLICK
+    text = "&Symbole anordnen"
+endwith
+
+_app.MFENSTER.MENUSEP = new MENU(_app.MFENSTER)
+with (_app.MFENSTER.MENUSEP)
+    text = ""
+    separator = true
+endwith
+
+_app.MFENSTER.MCLOSE = new MENU(this.MFENSTER)
+with (_app.MFENSTER.MCLOSE)
+    onClick = class::MCLOSE_ONCLICK
+    text = "Sch&ließen"
+    shortCut = "Ctrl+F4"
+endwith
+
+this.MFENSTER.MALLESCHLIESSEN = new MENU(this.MFENSTER)
+with (_app.MFENSTER.MALLESCHLIESSEN)
+    onClick = {;close forms}
+    text = "&Alle schließen"
+endwith
+
+procedure MCASCADE_ONCLICK()
+    ? "Cascade"
+    return
+
+procedure MHORIZONTAL_ONCLICK()
+    ? "Horizontal"
+    return
+
+procedure MVERTIKAL_ONCLICK()
+    ? "Vertikal"
+    return
+
+procedure MSYMBOLE_ONCLICK()
+    ? "Symbole"
+    return
+
+procedure MCLOSE_ONCLICK()
+    ? "Close"
+    return
+
+? "Menü bereit"

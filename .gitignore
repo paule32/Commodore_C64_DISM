@@ -41,3 +41,8 @@ src/d64qt5/release/d64qt5.dll
 src/d64qt5/Makefile.Debug
 src/d64qt5/Makefile.Release
 src/d64qt5/Makefile
+src/examples/dbase/color_rgb_stage15.o
+src/examples/dbase/qt5_bridge_stage12.o
+src/examples/dbase/menu_file_stage13.o
+src/examples/dbase/menu_class_stage13.o
+src/examples/dbase/conditions_stage10.o

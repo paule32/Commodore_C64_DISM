@@ -1,0 +1,5 @@
+_app.menuFile = <window_menu.mnu>
+procedure MCLOSE_ONCLICK()
+    ? "close"
+    return
+? "ready"

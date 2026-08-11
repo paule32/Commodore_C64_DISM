@@ -16,12 +16,10 @@ procedure show(a, b)
 show(2, 3)
 ```
 
-Erlaubt sind:
+Eine Procedure endet mit:
 
 ```dbase
 return
-endproc
-endprocedure
 ```
 
 `return` darf bei einer Procedure **keinen Ausdruck** besitzen. Diese Formen
@@ -33,8 +31,7 @@ return "foo"
 return foo()
 ```
 
-Eine Procedure kann auch ohne `return` mit `ENDPROC`/`ENDPROCEDURE` beendet
-werden.
+`ENDPROC` und `ENDPROCEDURE` sind seit Stage 10 nicht mehr Bestandteil der Syntax.
 
 ## FUNCTION
 
@@ -142,8 +139,8 @@ function foo(a,b)
 ? foo(2,3)
 ```
 
-Ein zusaetzliches `ENDFUNC` nach `RETURN` wird ebenfalls akzeptiert. Entsprechend
-gilt dies fuer `RETURN` + `ENDPROC`.
+Seit Stage 10 gibt es keine zusaetzlichen Member-Endmarker mehr. Eine FUNCTION
+endet mit `RETURN <expr>`, eine PROCEDURE mit nacktem `RETURN`.
 
 ## Native Ziele
 

@@ -75,8 +75,8 @@ show(4, 5)
 
     def test_function_missing_return_is_rejected(self):
         with self.assertRaises(DBaseCompilerError) as ctx:
-            parse_dbase_statements("function f(a)\n ? a\nendfunc\n", filename="func.dbp")
-        self.assertIn("benoetigt RETURN <expr>", str(ctx.exception))
+            parse_dbase_statements("function f(a)\n ? a\n", filename="func.dbp")
+        self.assertIn("RETURN <expr>", str(ctx.exception))
 
     def test_function_can_return_number_string_char_and_other_function(self):
         source = """
@@ -178,19 +178,15 @@ function f(a,b)
             compile_dbase_to_assembly(source)
         self.assertIn("erwartet 2 Parameter", str(ctx.exception))
 
-    def test_optional_end_markers_are_accepted(self):
-        source = """
-function f(a)
-    return a + 1
-endfunc
-procedure p(a)
-    ? a
-endproc
-? f(4)
-p(7)
-"""
-        statements = parse_dbase_statements(source)
-        self.assertEqual(evaluate_dbase_statements(statements), "5\r\n7\r\n")
+    def test_old_end_markers_are_rejected(self):
+        for marker in ("endfunc", "endfunction", "endproc", "endprocedure", "endunction"):
+            if "proc" in marker:
+                source = f"procedure p()\n return\n{marker}\n"
+            else:
+                source = f"function f()\n return 1\n{marker}\n"
+            with self.assertRaises(DBaseCompilerError) as ctx:
+                parse_dbase_statements(source)
+            self.assertIn("wird nicht mehr unterstuetzt", str(ctx.exception))
 
     def test_pe32_and_pe64_link_member_code(self):
         d64 = load_d64()

@@ -1,0 +1,26 @@
+// ---------------------------------------------------------------------------
+// dBase Stage 16: CLEAR SCREEN + SET BORDERCOLOR TO
+// ---------------------------------------------------------------------------
+#define FRAME_COLOR "ActiveBorder"
+
+function getGreenBorder()
+    return RGB(00,FF,00)
+
+_app.colorNormal = "Window"
+
+SET COLOR TO "W/N"
+SET BORDERCOLOR TO "WindowFrame"
+? "Dieser Text wird gleich geloescht"
+
+CLEAR SCREEN
+? "CLEAR SCREEN: schwarz auf hellgrauem Hintergrund"
+
+SET BORDERCOLOR TO RGB(FF,00,00)
+? "Rahmen jetzt rot"
+
+SET BORDERCOLOR TO FRAME_COLOR
+? "Rahmen jetzt ActiveBorder"
+
+B = getGreenBorder()
+SET BORDERCOLOR TO B
+? "Rahmen jetzt RGB(00,FF,00)"

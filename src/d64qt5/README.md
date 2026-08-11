@@ -1,40 +1,31 @@
-# d64qt5.dll – dBase Qt5 bridge
+# d64qt5.dll Qt5 C++ Bridge
 
-Die generierten dBase-Programme importieren eine kleine stabile C-ABI aus
-`d64qt5.dll`. Die Bridge verwendet intern Qt5Core, Qt5Gui und Qt5Widgets.
-Dadurch muss der Assembler keine C++-Namensmangling-Symbole aus
-`Qt5Widgets.dll` direkt kennen.
+Die dBase-EXE importiert nur die stabile C-ABI aus `d64qt5.dll`. Die Bridge
+kapselt Qt5 Widgets und kann getrennt als PE32- oder PE32+-DLL gebaut werden.
 
-## Build unter Windows mit Qt 5 / MinGW
+Wichtig: `d64_dism.py` baut diese DLL beim Start **nicht** automatisch.
 
-In einer Qt-5-MinGW-Eingabeaufforderung:
+GUI-Struktur Stage 12:
+- Kopfzeile mit Lupe + / Lupe - und `QTabBar`
+- `Konsole` immer sichtbar
+- `DEBUG` nur bei `SET DEBUG ON`
+- `QStackedWidget` fuer die beiden Ausgabeseiten
+- DEBUG-Seite mit `QPlainTextEdit` und `QLineEdit`
 
-```bat
-qmake d64qt5_bridge.pro
-mingw32-make release
-```
+PE32: passende 32-Bit-Qt5-Toolchain verwenden.
+PE32+: passende 64-Bit-Qt5-Toolchain verwenden.
 
-Die erzeugte `d64qt5.dll` muss neben der dBase-EXE liegen. Ebenfalls benoetigt
-werden die zur verwendeten Qt-Installation gehoerenden `Qt5Core.dll`,
-`Qt5Gui.dll`, `Qt5Widgets.dll` und ggf. die Qt-Platform-Plugins, insbesondere
-`platforms/qwindows.dll`.
+## Stage 15
 
-PE32 muss mit einer 32-Bit-Qt5-Toolchain gebaut werden, PE32+ mit einer
-64-Bit-Qt5-Toolchain.
+`DBaseQtSetColorNormal()` akzeptiert Windows-Systemfarbnamen sowie `#RRGGBB`.
+`DBaseQtSetOutputColor()` setzt die Farben fuer nachfolgende dBase-`?`/`??`-Ausgaben.
+Die SET-COLOR-Syntax verwendet `<Hintergrund>/<Vordergrund>`; `W/N` bedeutet
+hellgrauer Hintergrund und schwarze Schrift.
 
-## Stage 6: Dark output style and zoom
+## Stage 19: 80x25-Raster
 
-Die dBase-Ausgabe verwendet einen schwarzen GUI-Hintergrund und grauen Text.
-Die Schrift wird in dieser Reihenfolge gewaehlt: `Consolas`, `Courier New`,
-`Courier`, danach der Qt-System-Fixed-Font.
-
-Links in der oberen Tab-Leiste befinden sich zwei selbst gezeichnete
-Lupen-Schaltflaechen: `+` vergroessert die Schrift, `-` verkleinert sie.
-Die Groesse wird fuer Konsole, DEBUG und DEBUG-Eingabe synchron zwischen
-9 pt und 75 pt gehalten.
-
-## Startverhalten ab dBase Start-Fix
-
-`d64_dism` baut diese DLL beim Start einer dBase-EXE nicht mehr automatisch.
-Eine manuell erzeugte `d64qt5.dll` wird lediglich vom Windows-Loader benutzt
-und sollte neben der erzeugten EXE oder in einem Windows-DLL-Suchpfad liegen.
+Die Standardgroesse der dBase-Konsole wird aus den realen Fontmetriken fuer
+80 Spalten und 25 Zeilen berechnet. Die Zoom-Lupen aendern die logische
+Schriftgroesse um genau 1 pt. Falls Qt/Windows nach dem Layout durch
+DPI-/Pixelrundung noch abweicht, darf die Textschrift separat um maximal
+-1 bzw. +1 Pixel feinjustiert werden.

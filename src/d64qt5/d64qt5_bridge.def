@@ -6,6 +6,15 @@ EXPORTS
     DBaseQtSetDebugVisible
     DBaseQtAppendConsole
     DBaseQtAppendDebug
+    DBaseQtSetColorNormal
+    DBaseQtSetOutputColor
+    DBaseQtClearScreen
+    DBaseQtSetBorderColor
+    DBaseQtMenuCreate
+    DBaseQtMenuSetText
+    DBaseQtMenuSetSeparator
+    DBaseQtMenuSetShortcut
+    DBaseQtMenuSetOnClick
     DBaseQtMarkProgramFinished
     DBaseQtExec
     DBaseQtShutdown

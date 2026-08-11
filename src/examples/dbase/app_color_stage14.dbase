@@ -1,0 +1,5 @@
+// Stage 14: Windows-Systemfarbe fuer den Konsolen-Editor.
+_app.colorNormal = ActiveBorder
+
+? "Konsolenhintergrund = ActiveBorder"
+? "Die Farbe wird zur Laufzeit ueber GetSysColor(COLOR_ACTIVEBORDER) gelesen."
