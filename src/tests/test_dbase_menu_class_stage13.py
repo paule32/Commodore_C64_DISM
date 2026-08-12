@@ -129,7 +129,7 @@ endwith
                 encoding="utf-8",
             )
             main = root / "main.dbase"
-            main.write_text('_app.menuFile = <window.mnu>\n? "ready"\n', encoding="utf-8")
+            main.write_text('_app.menuFile = "window.mnu"\n? "ready"\n', encoding="utf-8")
             statements = parse_dbase_statements(main.read_text(), filename=str(main))
             self.assertIsInstance(statements[0], DBaseMenuFileStatement)
             self.assertTrue(any(isinstance(x, DBaseNewObjectStatement) for x in statements))

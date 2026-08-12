@@ -1,0 +1,6 @@
+// Stage 24: menuFile als normaler String-Ausdruck.
+function getMenu(prefix)
+    return prefix + "_menu.mnu"
+
+_app.menuFile = getMenu("stage24")
+? "Menue aus stage24_menu.mnu"

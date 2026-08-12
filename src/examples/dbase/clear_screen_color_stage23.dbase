@@ -1,0 +1,6 @@
+// ---------------------------------------------------------------------------
+// Stage 23: CLEAR SCREEN mit direkter RGB-Hintergrundfarbe.
+// Beide Schreibweisen sind gleichwertig.
+// ---------------------------------------------------------------------------
+CLEAR SCREEN RGB(255,0,0)
+CLEAR SCREEN "#000080"

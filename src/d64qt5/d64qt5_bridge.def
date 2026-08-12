@@ -9,7 +9,13 @@ EXPORTS
     DBaseQtSetColorNormal
     DBaseQtSetOutputColor
     DBaseQtClearScreen
+    DBaseQtClearScreenChar
+    DBaseQtClearScreenColor
     DBaseQtSetBorderColor
+    DBaseQtSessionCreate
+    DBaseQtGetLoginSession
+    DBaseQtSessionLogin
+    DBaseQtEnsureDefaultMenu
     DBaseQtMenuCreate
     DBaseQtMenuSetText
     DBaseQtMenuSetSeparator
@@ -17,4 +23,5 @@ EXPORTS
     DBaseQtMenuSetOnClick
     DBaseQtMarkProgramFinished
     DBaseQtExec
+    DBaseQtShutdownRequested
     DBaseQtShutdown

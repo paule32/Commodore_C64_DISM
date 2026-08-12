@@ -1,8 +1,8 @@
 lexer grammar DBaseLexer;
 
 // ---------------------------------------------------------------------------
-// dBase lexical layer, stage 16: comments, expressions, members, IF blocks,
-// _app/this object paths, NEW MENU and WITH/ENDWITH.
+// dBase lexical layer, stage 24: comments, expressions, members, IF blocks,
+// object paths, NEW MENU/SESSION, SESSION.Login and WITH/ENDWITH.
 // ---------------------------------------------------------------------------
 
 STRING_DOUBLE
@@ -40,6 +40,8 @@ WITH      : [Ww][Ii][Tt][Hh];
 ENDWITH   : [Ee][Nn][Dd][Ww][Ii][Tt][Hh];
 NEW       : [Nn][Ee][Ww];
 MENU      : [Mm][Ee][Nn][Uu];
+SESSION   : [Ss][Ee][Ss][Ss][Ii][Oo][Nn];
+LOGIN     : [Ll][Oo][Gg][Ii][Nn];
 TRUE      : [Tt][Rr][Uu][Ee];
 FALSE     : [Ff][Aa][Ll][Ss][Ee];
 CLASS     : [Cc][Ll][Aa][Ss][Ss];

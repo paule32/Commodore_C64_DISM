@@ -42,7 +42,7 @@ Ein `{...}`-Codeblock wird syntaktisch bereits als onClick-Wert akzeptiert. Ein 
 ## `_app.menuFile`
 
 ```dbase
-_app.menuFile = <menus/window.mnu>
+_app.menuFile = "menus/window.mnu"
 ```
 
 Die Datei wird beim Kompilieren relativ zur dBase-Quelldatei gelesen und an genau dieser Stelle als Menuequelle eingebunden. Makros des normalen dBase-Praeprozessors koennen auch in `.mnu`-Dateien verwendet werden.

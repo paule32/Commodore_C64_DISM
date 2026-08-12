@@ -1,15 +1,11 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-added_files = [
-    ("C64Pro.ttf", "."),
-    ("help.chm", "."),
-]
 
 a = Analysis(
     ['d64_dism.py'],
     pathex=[],
     binaries=[],
-    datas=added_files,
+    datas=[('c64c/include', 'c64c/include')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

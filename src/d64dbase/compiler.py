@@ -194,6 +194,7 @@ class DBaseSetColorStatement:
 
 @dataclass(frozen=True)
 class DBaseClearScreenStatement:
+    expression: Optional[DBaseExpression]
     line: int
     column: int
 
@@ -1599,8 +1600,12 @@ class _DBaseExpressionParser:
                     filename=self.filename,
                 )
             self.index += 1
+            expression = None
+            if self.current.kind != "EOF":
+                expression = self.parse_expression()
             self._expect_eof()
             return DBaseClearScreenStatement(
+                expression=expression,
                 line=first.line,
                 column=first.column,
             )
@@ -2699,6 +2704,11 @@ class _DBaseProgramAnalyzer:
         instance: Optional[_DBaseRoutineInstance],
         global_symbols: Optional[Dict[str, _DBaseSymbolState]] = None,
     ) -> None:
+        if statement.name.casefold() == "loginsession":
+            raise DBaseCompilerError(
+                "LOGINSESSION ist ein schreibgeschuetzter globaler Laufzeitwert.",
+                line=statement.line, column=statement.column, filename=self.filename,
+            )
         globals_view = self.global_symbols if global_symbols is None else global_symbols
         symbols = self._merged_symbols(globals_view, local_symbols)
         info = self.analyze_expression(
@@ -2927,11 +2937,48 @@ class _DBaseProgramAnalyzer:
                             line=expression.line, column=expression.column, filename=self.filename,
                         )
                 continue
-            if isinstance(statement, (DBaseSetFormatStatement, DBaseSetDebugStatement, DBaseSetColorStatement, DBaseClearScreenStatement)):
+            if isinstance(statement, DBaseClearScreenStatement):
+                if statement.expression is not None:
+                    expression = statement.expression
+                    symbols = self._merged_symbols(self.global_symbols, local_symbols)
+                    info = self.analyze_expression(
+                        expression, symbols=symbols,
+                        expression_info=instance.expression_info,
+                        call_bindings=instance.call_bindings,
+                    )
+                    self._validate_clear_screen_expression(expression, info)
+                continue
+            if isinstance(statement, (DBaseSetFormatStatement, DBaseSetDebugStatement, DBaseSetColorStatement)):
                 continue
             if isinstance(statement, DBaseRoutineDefinition):
                 continue
             raise AssertionError(type(statement))
+
+    def _validate_clear_screen_expression(
+        self, expression: DBaseExpression, info: _DBaseExpressionInfo
+    ) -> None:
+        if info.kind == "number":
+            if info.constant_value is not None:
+                value = Decimal(info.constant_value.value)
+                if value != value.to_integral_value() or value < 0 or value > 255:
+                    raise DBaseCompilerError(
+                        "CLEAR SCREEN als Zeichenmuster erwartet einen ganzzahligen Terminal-Code von 0x00 bis 0xFF.",
+                        line=expression.line, column=expression.column, filename=self.filename,
+                    )
+            return
+        if info.kind in _STRING_KINDS:
+            if info.constant_value is not None:
+                value = str(info.constant_value.value)
+                if not re.fullmatch(r"#[0-9A-Fa-f]{6}", value):
+                    raise DBaseCompilerError(
+                        "CLEAR SCREEN als Farbwert erwartet '#RRGGBB' oder RGB(rr,gg,bb).",
+                        line=expression.line, column=expression.column, filename=self.filename,
+                    )
+            return
+        raise DBaseCompilerError(
+            "CLEAR SCREEN <Ausdruck> erwartet einen numerischen Terminal-Code oder einen Farbwert '#RRGGBB'/RGB(...).",
+            line=expression.line, column=expression.column, filename=self.filename,
+        )
 
     def instantiate_routine(
         self,
@@ -3100,7 +3147,17 @@ class _DBaseProgramAnalyzer:
                             line=expression.line, column=expression.column, filename=self.filename,
                         )
                 continue
-            if isinstance(statement, (DBaseSetFormatStatement, DBaseSetDebugStatement, DBaseSetColorStatement, DBaseClearScreenStatement)):
+            if isinstance(statement, DBaseClearScreenStatement):
+                if statement.expression is not None:
+                    expression = statement.expression
+                    info = self.analyze_expression(
+                        expression, symbols=globals_work,
+                        expression_info=self.expression_info,
+                        call_bindings=self.call_bindings,
+                    )
+                    self._validate_clear_screen_expression(expression, info)
+                continue
+            if isinstance(statement, (DBaseSetFormatStatement, DBaseSetDebugStatement, DBaseSetColorStatement)):
                 continue
             raise AssertionError(type(statement))
 
@@ -3557,6 +3614,9 @@ class _DBaseCodeGenerator:
         self.current_call_bindings: Mapping[DBaseCallExpression, _DBaseCallBinding] = analysis.call_bindings
         self.current_instance: Optional[_DBaseRoutineInstance] = None
         self.extra_storage_slots: list[str] = []
+        # Stage 29: Top-Level-Abbruchziel, wenn die Qt-Runtime durch das
+        # Schliessen des Hauptfensters einen Shutdown anfordert.
+        self.program_cleanup_label = ""
         self.global_variable_labels = {
             variable.name.casefold(): variable.label
             for variable in analysis.variables
@@ -3737,6 +3797,19 @@ class _DBaseCodeGenerator:
             self.emit(f"    call {function}")
             self.emit("    add esp, 4")
 
+    def emit_shutdown_guard(self, routine_end_label: str = "") -> None:
+        # Ein Shutdown des Hauptfensters soll die Top-Level-Ausfuehrung
+        # unverzueglich in den gemeinsamen Cleanup-Pfad schicken. Innerhalb
+        # spezialisierter Routinen wird nicht direkt dorthin gesprungen, weil
+        # sonst deren Return-Adresse den Stack fuer externe ABI-Aufrufe
+        # verschieben wuerde. Der aufrufende Top-Level-Statement-Guard
+        # uebernimmt die Weiterleitung nach der Rueckkehr.
+        if routine_end_label or not self.program_cleanup_label:
+            return
+        self.emit_qt_call0("DBaseQtShutdownRequested")
+        self.emit("    test eax, eax")
+        self.emit(f"    jne {self.program_cleanup_label}")
+
     def emit_write_static(self, label: str, length: int, target: str) -> None:
         if length <= 0:
             return
@@ -3773,12 +3846,12 @@ class _DBaseCodeGenerator:
         if self.is64:
             self.emit("    movsd xmm0, qword ptr [__dbase_temp_number]")
             self.emit("    mov edx, 15")
-            self.emit("    mov r8, __dbase_format_buffer")
+            self.emit("    mov r8, qword ptr [__dbase_format_buffer]")
             self.emit("    sub rsp, 40")
             self.emit("    call __dbase_gcvt")
             self.emit("    add rsp, 40")
         else:
-            self.emit("    push __dbase_format_buffer")
+            self.emit("    push dword ptr [__dbase_format_buffer]")
             self.emit("    push 15")
             self.emit("    push dword ptr [__dbase_temp_number_hi]")
             self.emit("    push dword ptr [__dbase_temp_number]")
@@ -3788,9 +3861,9 @@ class _DBaseCodeGenerator:
         length_loop = self.new_label("strlen_loop")
         length_done = self.new_label("strlen_done")
         if self.is64:
-            self.emit("    mov rcx, __dbase_format_buffer")
+            self.emit("    mov rcx, qword ptr [__dbase_format_buffer]")
         else:
-            self.emit("    mov ecx, __dbase_format_buffer")
+            self.emit("    mov ecx, dword ptr [__dbase_format_buffer]")
         self.emit("    xor edx, edx")
         self.emit(f"{length_loop}:")
         self.emit("    movzx eax, byte ptr [rcx]" if self.is64 else "    movzx eax, byte ptr [ecx]")
@@ -3805,13 +3878,13 @@ class _DBaseCodeGenerator:
         self.emit_format_number_from_st0()
         function = self._qt_writer_name(target)
         if self.is64:
-            self.emit("    mov rcx, __dbase_format_buffer")
+            self.emit("    mov rcx, qword ptr [__dbase_format_buffer]")
             self.emit("    sub rsp, 40")
             self.emit(f"    call {function}")
             self.emit("    add rsp, 40")
         else:
             self.emit("    push edx")
-            self.emit("    push __dbase_format_buffer")
+            self.emit("    push dword ptr [__dbase_format_buffer]")
             self.emit(f"    call {function}")
             self.emit("    add esp, 8")
 
@@ -3827,7 +3900,7 @@ class _DBaseCodeGenerator:
             self.emit("    add rsp, 40")
             self.emit(f"    mov qword ptr [{destination}_ptr], rax")
             self.emit("    mov rcx, rax")
-            self.emit(f"    mov rdx, {buffer_label}")
+            self.emit(f"    mov rdx, qword ptr [{buffer_label}]")
             self.emit(f"    mov r8d, dword ptr [{destination}_len]")
             self.emit("    sub rsp, 40")
             self.emit("    call __dbase_memcpy")
@@ -3842,7 +3915,7 @@ class _DBaseCodeGenerator:
             self.emit("    add esp, 4")
             self.emit(f"    mov dword ptr [{destination}_ptr], eax")
             self.emit(f"    push dword ptr [{destination}_len]")
-            self.emit(f"    push {buffer_label}")
+            self.emit(f"    push dword ptr [{buffer_label}]")
             self.emit(f"    push dword ptr [{destination}_ptr]")
             self.emit("    call __dbase_memcpy")
             self.emit("    add esp, 12")
@@ -4114,6 +4187,62 @@ class _DBaseCodeGenerator:
                 self.emit(f"{next_label}:")
         self.emit(f"{end_label}:")
 
+    def emit_clear_screen(self, statement: DBaseClearScreenStatement) -> None:
+        expression = statement.expression
+        if expression is None:
+            self.emit_qt_call0("DBaseQtClearScreen")
+            return
+
+        info = self.current_expression_info[expression]
+        if info.kind == "number":
+            self.emit_numeric_expression(expression)
+            self.emit("    fstp qword ptr [__dbase_temp_number]")
+            if self.is64:
+                self.emit("    movsd xmm0, qword ptr [__dbase_temp_number]")
+                self.emit("    sub rsp, 40")
+                self.emit("    call DBaseQtClearScreenChar")
+                self.emit("    add rsp, 40")
+            else:
+                self.emit("    push dword ptr [__dbase_temp_number_hi]")
+                self.emit("    push dword ptr [__dbase_temp_number]")
+                self.emit("    call DBaseQtClearScreenChar")
+                self.emit("    add esp, 8")
+            return
+
+        if info.kind in _STRING_KINDS:
+            if info.constant_value is not None:
+                value = str(info.constant_value.value)
+                label, length = self.text_literal(value)
+                if self.is64:
+                    self.emit(f"    mov rcx, {label}")
+                    self.emit(f"    mov edx, {length}")
+                    self.emit("    sub rsp, 40")
+                    self.emit("    call DBaseQtClearScreenColor")
+                    self.emit("    add rsp, 40")
+                else:
+                    self.emit(f"    push {length}")
+                    self.emit(f"    push {label}")
+                    self.emit("    call DBaseQtClearScreenColor")
+                    self.emit("    add esp, 8")
+                return
+
+            slot = self.new_storage_slot("clear_screen_color")
+            self.emit_store_expression_to_slot(expression, slot)
+            if self.is64:
+                self.emit(f"    mov rcx, qword ptr [{slot}_ptr]")
+                self.emit(f"    mov edx, dword ptr [{slot}_len]")
+                self.emit("    sub rsp, 40")
+                self.emit("    call DBaseQtClearScreenColor")
+                self.emit("    add rsp, 40")
+            else:
+                self.emit(f"    push dword ptr [{slot}_len]")
+                self.emit(f"    push dword ptr [{slot}_ptr]")
+                self.emit("    call DBaseQtClearScreenColor")
+                self.emit("    add esp, 8")
+            return
+
+        raise AssertionError(info.kind)
+
     def emit_border_color(self, statement: DBaseSetBorderColorStatement) -> None:
         expression = statement.expression
         info = self.current_expression_info[expression]
@@ -4182,7 +4311,7 @@ class _DBaseCodeGenerator:
                     self.emit("    call DBaseQtSetOutputColor")
                     self.emit("    add esp, 8")
             elif isinstance(statement, DBaseClearScreenStatement):
-                self.emit_qt_call0("DBaseQtClearScreen")
+                self.emit_clear_screen(statement)
             elif isinstance(statement, DBaseSetBorderColorStatement):
                 self.emit_border_color(statement)
             elif isinstance(statement, DBaseCallStatement):
@@ -4216,6 +4345,9 @@ class _DBaseCodeGenerator:
                 self.emit(f"    jmp {routine_end_label}")
             else:
                 raise AssertionError(type(statement))
+
+            if not isinstance(statement, DBaseReturnStatement):
+                self.emit_shutdown_guard(routine_end_label)
         return format_target, debug_override, debug_visible
 
     def emit_routine_instance(self, instance: _DBaseRoutineInstance) -> None:
@@ -4265,9 +4397,12 @@ class _DBaseCodeGenerator:
             "DBaseQtAppendDebug",
             "DBaseQtSetOutputColor",
             "DBaseQtClearScreen",
+            "DBaseQtClearScreenChar",
+            "DBaseQtClearScreenColor",
             "DBaseQtSetBorderColor",
             "DBaseQtMarkProgramFinished",
             "DBaseQtExec",
+            "DBaseQtShutdownRequested",
             "DBaseQtShutdown",
         ):
             self.emit(f'import {symbol}, "d64qt5.dll", "{symbol}"')
@@ -4280,6 +4415,8 @@ class _DBaseCodeGenerator:
         self.emit('import __dbase_memcpy, "msvcrt.dll", "memcpy"')
         self.emit('import __dbase_memcmp, "msvcrt.dll", "memcmp"')
         self.emit('import ExitProcess, "kernel32.dll", "ExitProcess"')
+        self.emit('import VirtualAlloc, "kernel32.dll", "VirtualAlloc"')
+        self.emit('import VirtualFree, "kernel32.dll", "VirtualFree"')
         for function in self.analysis.external_functions:
             self.emit(f"extern {function}")
         self.emit("global _start")
@@ -4289,6 +4426,7 @@ class _DBaseCodeGenerator:
         self.emit()
         self.emit("_start:")
 
+        self.program_cleanup_label = self.new_label("program_cleanup")
         title_label, _ = self.text_literal("dBase Qt5 Console / DEBUG")
         if self.is64:
             self.emit(f"    mov rcx, {title_label}")
@@ -4310,19 +4448,92 @@ class _DBaseCodeGenerator:
             self.emit("    push 1")
             self.emit("    call ExitProcess")
         self.emit(f"{init_ok}:")
+
+        # Der Zahlformat-Puffer wird nicht mehr als langer Nullblock in .data
+        # abgelegt. Stattdessen enthaelt __dbase_format_buffer nur einen
+        # Pointer-Slot; die 96 Nutzbytes kommen zur Laufzeit von VirtualAlloc.
+        format_alloc_ok = self.new_label("format_buffer_alloc_ok")
+        if self.is64:
+            self.emit("    xor ecx, ecx")
+            self.emit("    mov edx, 96")
+            self.emit("    mov r8d, 12288")      # MEM_COMMIT | MEM_RESERVE
+            self.emit("    mov r9d, 4")          # PAGE_READWRITE
+            self.emit("    sub rsp, 40")
+            self.emit("    call VirtualAlloc")
+            self.emit("    add rsp, 40")
+            self.emit("    test rax, rax")
+            self.emit(f"    jne {format_alloc_ok}")
+        else:
+            self.emit("    push 4")               # PAGE_READWRITE
+            self.emit("    push 12288")           # MEM_COMMIT | MEM_RESERVE
+            self.emit("    push 96")
+            self.emit("    push 0")
+            self.emit("    call VirtualAlloc")
+            self.emit("    test eax, eax")
+            self.emit(f"    jne {format_alloc_ok}")
+
+        # Qt wurde bereits initialisiert; bei einem Allokationsfehler sauber
+        # herunterfahren und mit Fehlercode 1 beenden.
+        self.emit_qt_call0("DBaseQtShutdown")
+        if self.is64:
+            self.emit("    mov ecx, 1")
+            self.emit("    sub rsp, 40")
+            self.emit("    call ExitProcess")
+        else:
+            self.emit("    push 1")
+            self.emit("    call ExitProcess")
+
+        self.emit(f"{format_alloc_ok}:")
+        if self.is64:
+            self.emit("    mov qword ptr [__dbase_format_buffer], rax")
+        else:
+            self.emit("    mov dword ptr [__dbase_format_buffer], eax")
+
         # Vor dem ersten Show/Paint wird der definierte Startzustand hergestellt:
         # Konsole sichtbar, DEBUG aus. Die Bridge garantiert dabei, dass DEBUG OFF
         # niemals den Konsolen-Tab entfernt.
         self.emit_qt_call1_int("DBaseQtSetDebugVisible", 0)
         self.emit_qt_call0("DBaseQtShowWindow")
         self.emit_qt_call0("DBaseQtProcessEvents")
+        self.emit_shutdown_guard()
 
         self._emit_statement_sequence(self.statements)
 
         self.emit_qt_call0("DBaseQtMarkProgramFinished")
         self.emit_qt_call0("DBaseQtExec")
         self.emit("    mov dword ptr [__dbase_exit_code], eax")
+
+        # Sowohl der normale Eventloop-Rueckweg als auch ein Close waehrend
+        # eines Dialogs/ProcessEvents landen hier. Dadurch werden Qt-Runtime
+        # und der VirtualAlloc-Puffer garantiert ueber denselben Pfad abgebaut.
+        self.emit(f"{self.program_cleanup_label}:")
         self.emit_qt_call0("DBaseQtShutdown")
+
+        # Den per VirtualAlloc reservierten Formatpuffer wieder freigeben.
+        if self.is64:
+            self.emit("    mov rcx, qword ptr [__dbase_format_buffer]")
+            self.emit("    test rcx, rcx")
+            format_free_done = self.new_label("format_buffer_free_done")
+            self.emit(f"    je {format_free_done}")
+            self.emit("    xor edx, edx")          # dwSize = 0 bei MEM_RELEASE
+            self.emit("    mov r8d, 32768")        # MEM_RELEASE
+            self.emit("    sub rsp, 40")
+            self.emit("    call VirtualFree")
+            self.emit("    add rsp, 40")
+            self.emit(f"{format_free_done}:")
+            self.emit("    mov qword ptr [__dbase_format_buffer], 0")
+        else:
+            self.emit("    mov eax, dword ptr [__dbase_format_buffer]")
+            self.emit("    test eax, eax")
+            format_free_done = self.new_label("format_buffer_free_done")
+            self.emit(f"    je {format_free_done}")
+            self.emit("    push 32768")             # MEM_RELEASE
+            self.emit("    push 0")
+            self.emit("    push eax")
+            self.emit("    call VirtualFree")
+            self.emit(f"{format_free_done}:")
+            self.emit("    mov dword ptr [__dbase_format_buffer], 0")
+
         if self.is64:
             self.emit("    mov ecx, dword ptr [__dbase_exit_code]")
             self.emit("    sub rsp, 40")
@@ -4352,7 +4563,7 @@ class _DBaseCodeGenerator:
             "__dbase_call_number:",
             "    dd 0, 0",
             "__dbase_format_buffer:",
-            "    db " + ", ".join("0" for _ in range(96)),
+            "    dd 0, 0" if self.is64 else "    dd 0",
             "__dbase_exit_code:",
             "    dd 0",
         ])
@@ -4631,10 +4842,31 @@ class DBaseNewObjectStatement:
 
 
 @dataclass(frozen=True)
-class DBaseMenuFileStatement:
-    path: str
+class DBaseSessionLoginStatement:
+    result_name: str
+    target: DBaseObjectPath
+    username: DBaseExpression
+    password: DBaseExpression
+    group: DBaseExpression
     line: int
     column: int
+
+
+@dataclass(frozen=True)
+class DBaseMenuFileStatement:
+    expression: DBaseExpression
+    resolved_path: str
+    line: int
+    column: int
+
+    @property
+    def path(self) -> str:
+        # Rueckwaertskompatible Lesehilfe fuer bestehende Tests/Tools.
+        return self.resolved_path
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.resolved_path.strip())
 
 
 @dataclass(frozen=True)
@@ -4697,12 +4929,17 @@ class DBaseWithStatement:
     column: int
 
 
-_DBASE_OBJECT_PATH_RE = re.compile(
-    r"(?i)^(?:_app|this)(?:\.[A-Za-z_][A-Za-z0-9_]*)*$"
-)
+_DBASE_OBJECT_PATH_TEXT = r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*"
+_DBASE_OBJECT_PATH_RE = re.compile(rf"(?i)^{_DBASE_OBJECT_PATH_TEXT}$")
 _DBASE_NEW_MENU_RE = re.compile(
-    r"(?i)^\s*((?:_app|this)(?:\.[A-Za-z_][A-Za-z0-9_]*)+)\s*=\s*"
-    r"new\s+MENU\s*\(\s*((?:_app|this)(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\s*\)\s*$"
+    rf"(?i)^\s*({_DBASE_OBJECT_PATH_TEXT})\s*=\s*"
+    rf"new\s+MENU\s*\(\s*({_DBASE_OBJECT_PATH_TEXT})\s*\)\s*$"
+)
+_DBASE_NEW_SESSION_RE = re.compile(
+    rf"(?i)^\s*({_DBASE_OBJECT_PATH_TEXT})\s*=\s*new\s+SESSION\s*\(\s*\)\s*$"
+)
+_DBASE_SESSION_LOGIN_RE = re.compile(
+    rf"(?i)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*({_DBASE_OBJECT_PATH_TEXT})\.LOGIN\s*\((.*)\)\s*$"
 )
 _DBASE_MENUFILE_RE = re.compile(
     r"(?i)^\s*((?:_app|this)\.menuFile)\s*=\s*(.*?)\s*$"
@@ -4711,7 +4948,7 @@ _DBASE_COLOR_NORMAL_RE = re.compile(
     r"(?i)^\s*((?:_app|this)\.colorNormal)\s*=\s*(.*?)\s*$"
 )
 _DBASE_WITH_RE = re.compile(
-    r"(?i)^\s*with\s*\(\s*((?:_app|this)(?:\.[A-Za-z_][A-Za-z0-9_]*)+)\s*\)\s*$"
+    rf"(?i)^\s*with\s*\(\s*({_DBASE_OBJECT_PATH_TEXT})\s*\)\s*$"
 )
 _DBASE_ENDWITH_RE = re.compile(r"(?i)^\s*endwith\s*$")
 
@@ -4723,6 +4960,49 @@ def _dbase_object_path(text: str, line: int, column: int = 1) -> DBaseObjectPath
             f"Ungueltiger Objektpfad: {value}", line=line, column=column
         )
     return DBaseObjectPath(tuple(value.split(".")), line, column)
+
+
+def _dbase_parent_path(target: DBaseObjectPath) -> DBaseObjectPath:
+    parts = target.canonical_parts
+    if len(parts) <= 1:
+        return DBaseObjectPath(("_app",), target.line, target.column)
+    return DBaseObjectPath(tuple(parts[:-1]), target.line, target.column)
+
+
+def _dbase_parse_session_login_arguments(
+    raw_arguments: str,
+    *,
+    raw_line: str,
+    parse_source: str,
+    line_start_offset: int,
+    filename: str,
+) -> Tuple[DBaseExpression, DBaseExpression, DBaseExpression]:
+    login_pos = raw_line.casefold().find("login")
+    synthetic = "Login(" + raw_arguments + ")"
+    tokens = _tokenize_dbase_statement(
+        synthetic,
+        filename=filename,
+        base_offset=line_start_offset + max(0, login_pos),
+        source=parse_source,
+    )
+    parser = _DBaseExpressionParser(tokens, filename=filename)
+    expression = parser.parse_expression()
+    parser._expect_eof()
+    if not isinstance(expression, DBaseCallExpression) or expression.name.casefold() != "login":
+        raise DBaseCompilerError(
+            "SESSION.Login konnte nicht geparst werden.",
+            line=1,
+            column=1,
+            filename=filename,
+        )
+    if len(expression.arguments) != 3:
+        raise DBaseCompilerError(
+            "SESSION.Login(username, password, group) erwartet genau drei Parameter.",
+            line=expression.line,
+            column=expression.column,
+            filename=filename,
+        )
+    return expression.arguments[0], expression.arguments[1], expression.arguments[2]
 
 
 def _dbase_decode_property_string(text: str, *, filename: str, line: int, column: int) -> str:
@@ -4781,18 +5061,277 @@ def _dbase_parse_menu_property(text: str, *, filename: str, line: int) -> DBaseM
     )
 
 
-def _dbase_menu_file_value(rhs: str, *, filename: str, line: int) -> str:
-    value = rhs.strip()
-    if value.startswith("<") and value.endswith(">"):
-        result = value[1:-1].strip()
-        if not result:
-            raise DBaseCompilerError(
-                "_app.menuFile enthaelt einen leeren Pfad.",
-                line=line, column=1, filename=filename,
-            )
-        return result
-    return _dbase_decode_property_string(value, filename=filename, line=line, column=1)
+def _dbase_parse_property_expression(
+    rhs: str,
+    *,
+    raw_line: str,
+    parse_source: str,
+    line_start_offset: int,
+    line: int,
+    filename: str,
+) -> DBaseExpression:
+    value = str(rhs).strip()
+    if value.startswith("<"):
+        raise DBaseCompilerError(
+            "Die alte _app.menuFile = <menu.mnu>-Schreibweise wird nicht mehr unterstuetzt. "
+            "Verwende _app.menuFile = \"menu.mnu\" oder einen String-Ausdruck.",
+            line=line,
+            column=max(1, raw_line.find(value) + 1),
+            filename=filename,
+        )
+    rhs_column = raw_line.find(rhs) + 1
+    rhs_offset = line_start_offset + max(0, rhs_column - 1)
+    tokens = _tokenize_dbase_statement(
+        rhs, filename=filename, base_offset=rhs_offset, source=parse_source
+    )
+    parser = _DBaseExpressionParser(tokens, filename=filename)
+    expression = parser.parse_expression()
+    parser._expect_eof()
+    return expression
 
+
+def _dbase_constant_condition_value(
+    condition: DBaseCondition,
+    *,
+    env: Mapping[str, DBaseValue],
+    routines: Mapping[str, DBaseRoutineDefinition],
+    filename: str,
+    call_stack: Tuple[str, ...],
+) -> bool:
+    left = _dbase_constant_expression_value(
+        condition.left, env=env, routines=routines, filename=filename, call_stack=call_stack
+    )
+    right = _dbase_constant_expression_value(
+        condition.right, env=env, routines=routines, filename=filename, call_stack=call_stack
+    )
+    return _compare_dbase_values(
+        left, right, condition.operator,
+        line=condition.line, column=condition.column, filename=filename,
+    )
+
+
+def _dbase_constant_function_value(
+    definition: DBaseRoutineDefinition,
+    arguments: Tuple[DBaseValue, ...],
+    *,
+    env: Mapping[str, DBaseValue],
+    routines: Mapping[str, DBaseRoutineDefinition],
+    filename: str,
+    call_stack: Tuple[str, ...],
+) -> DBaseValue:
+    key = definition.name.casefold()
+    if key in call_stack:
+        raise DBaseCompilerError(
+            f"Rekursiver Aufruf von '{definition.name}' kann fuer _app.menuFile nicht zur Compile-Zeit ausgewertet werden.",
+            line=definition.line, column=definition.column, filename=filename,
+        )
+    if not definition.is_function:
+        raise DBaseCompilerError(
+            f"_app.menuFile erwartet einen Stringwert; PROCEDURE '{definition.name}' liefert keinen Wert.",
+            line=definition.line, column=definition.column, filename=filename,
+        )
+    if len(arguments) != len(definition.parameters):
+        raise DBaseCompilerError(
+            f"FUNCTION '{definition.name}' erwartet {len(definition.parameters)} Parameter.",
+            line=definition.line, column=definition.column, filename=filename,
+        )
+
+    local_env = {str(k).casefold(): v for k, v in env.items()}
+    for parameter, value in zip(definition.parameters, arguments):
+        local_env[parameter.casefold()] = value
+
+    def run_sequence(sequence: Tuple[object, ...]) -> Optional[DBaseValue]:
+        for statement in sequence:
+            if isinstance(statement, DBaseAssignmentStatement):
+                local_env[statement.name.casefold()] = _dbase_constant_expression_value(
+                    statement.expression,
+                    env=local_env,
+                    routines=routines,
+                    filename=filename,
+                    call_stack=call_stack + (key,),
+                )
+                continue
+            if isinstance(statement, DBaseReturnStatement):
+                if statement.expression is None:
+                    raise DBaseCompilerError(
+                        f"FUNCTION '{definition.name}' muss fuer _app.menuFile einen Wert liefern.",
+                        line=statement.line, column=statement.column, filename=filename,
+                    )
+                return _dbase_constant_expression_value(
+                    statement.expression,
+                    env=local_env,
+                    routines=routines,
+                    filename=filename,
+                    call_stack=call_stack + (key,),
+                )
+            if isinstance(statement, DBaseIfStatement):
+                branch_taken = False
+                for branch in statement.branches:
+                    if branch.condition is None or _dbase_constant_condition_value(
+                        branch.condition,
+                        env=local_env,
+                        routines=routines,
+                        filename=filename,
+                        call_stack=call_stack + (key,),
+                    ):
+                        branch_taken = True
+                        result = run_sequence(branch.body)
+                        if result is not None:
+                            return result
+                        break
+                if not branch_taken:
+                    continue
+                continue
+            # Ausgaben, SET-Anweisungen und reine Aufrufe sind keine sichere
+            # Compile-Time-Grundlage fuer einen Dateipfad.
+            if isinstance(statement, (DBasePrintStatement, DBaseSetFormatStatement,
+                                      DBaseSetDebugStatement, DBaseSetColorStatement,
+                                      DBaseClearScreenStatement, DBaseSetBorderColorStatement,
+                                      DBaseCallStatement)):
+                raise DBaseCompilerError(
+                    f"FUNCTION '{definition.name}' enthaelt Laufzeitlogik und kann fuer _app.menuFile "
+                    "nicht zur Compile-Zeit ausgewertet werden.",
+                    line=getattr(statement, 'line', definition.line),
+                    column=getattr(statement, 'column', definition.column),
+                    filename=filename,
+                )
+        return None
+
+    result = run_sequence(definition.body)
+    if result is None:
+        raise DBaseCompilerError(
+            f"FUNCTION '{definition.name}' liefert keinen zur Compile-Zeit bestimmbaren Wert fuer _app.menuFile.",
+            line=definition.line, column=definition.column, filename=filename,
+        )
+    return result
+
+
+def _dbase_constant_expression_value(
+    expression: DBaseExpression,
+    *,
+    env: Mapping[str, DBaseValue],
+    routines: Mapping[str, DBaseRoutineDefinition],
+    filename: str,
+    call_stack: Tuple[str, ...] = (),
+) -> DBaseValue:
+    if isinstance(expression, DBaseLiteralExpression):
+        return DBaseValue(expression.value_type, expression.value)
+    if isinstance(expression, DBaseIdentifierExpression):
+        value = env.get(expression.name.casefold())
+        if value is None:
+            raise DBaseCompilerError(
+                f"_app.menuFile: Variable '{expression.name}' ist an dieser Stelle nicht als Konstante bekannt.",
+                line=expression.line, column=expression.column, filename=filename,
+            )
+        return value
+    if isinstance(expression, DBaseCallExpression):
+        definition = routines.get(expression.name.casefold())
+        if definition is None:
+            raise DBaseCompilerError(
+                f"_app.menuFile: Funktion '{expression.name}' ist nicht als dBase FUNCTION definiert.",
+                line=expression.line, column=expression.column, filename=filename,
+            )
+        args = tuple(
+            _dbase_constant_expression_value(
+                argument, env=env, routines=routines, filename=filename, call_stack=call_stack
+            )
+            for argument in expression.arguments
+        )
+        return _dbase_constant_function_value(
+            definition, args, env=env, routines=routines, filename=filename, call_stack=call_stack
+        )
+    if isinstance(expression, DBaseUnaryExpression):
+        operand = _dbase_constant_expression_value(
+            expression.operand, env=env, routines=routines, filename=filename, call_stack=call_stack
+        )
+        if operand.kind != "number":
+            raise DBaseCompilerError(
+                f"_app.menuFile: unaerer Operator '{expression.operator}' erwartet eine Zahl.",
+                line=expression.line, column=expression.column, filename=filename,
+            )
+        value = Decimal(operand.value)
+        return DBaseValue("number", value if expression.operator == "+" else -value)
+    if isinstance(expression, DBaseBinaryExpression):
+        left = _dbase_constant_expression_value(
+            expression.left, env=env, routines=routines, filename=filename, call_stack=call_stack
+        )
+        right = _dbase_constant_expression_value(
+            expression.right, env=env, routines=routines, filename=filename, call_stack=call_stack
+        )
+        if expression.operator == "+" and (left.kind in _STRING_KINDS or right.kind in _STRING_KINDS):
+            return DBaseValue(
+                "string", _constant_concat_text(left) + _constant_concat_text(right)
+            )
+        if left.kind != "number" or right.kind != "number":
+            raise DBaseCompilerError(
+                f"_app.menuFile: Operator '{expression.operator}' ist fuer diesen String-Ausdruck ungueltig.",
+                line=expression.line, column=expression.column, filename=filename,
+            )
+        a = Decimal(left.value)
+        b = Decimal(right.value)
+        if expression.operator == "+":
+            result = a + b
+        elif expression.operator == "-":
+            result = a - b
+        elif expression.operator == "*":
+            result = a * b
+        elif expression.operator == "/":
+            if b == 0:
+                raise DBaseCompilerError(
+                    "Division durch 0 in _app.menuFile-Ausdruck.",
+                    line=expression.line, column=expression.column, filename=filename,
+                )
+            with localcontext() as context:
+                context.prec = 32
+                result = a / b
+        else:
+            raise AssertionError(expression.operator)
+        return DBaseValue("number", result)
+    raise DBaseCompilerError(
+        "_app.menuFile enthaelt keinen zur Compile-Zeit auswertbaren String-Ausdruck.",
+        line=expression.line, column=expression.column, filename=filename,
+    )
+
+
+def _dbase_resolve_menu_file_expression(
+    expression: DBaseExpression,
+    *,
+    before_line: int,
+    base_statements: Tuple[object, ...],
+    filename: str,
+) -> str:
+    routines = {
+        statement.name.casefold(): statement
+        for statement in base_statements
+        if isinstance(statement, DBaseRoutineDefinition)
+    }
+    env: Dict[str, DBaseValue] = {}
+    for statement in sorted(base_statements, key=lambda item: getattr(item, "line", 10**9)):
+        if getattr(statement, "line", 10**9) >= before_line:
+            continue
+        if not isinstance(statement, DBaseAssignmentStatement):
+            continue
+        try:
+            env[statement.name.casefold()] = _dbase_constant_expression_value(
+                statement.expression,
+                env=env,
+                routines=routines,
+                filename=filename,
+            )
+        except DBaseCompilerError:
+            # Eine dynamische Zwischenvariable darf existieren; sie ist nur dann
+            # unzulaessig, wenn menuFile tatsaechlich von ihr abhaengt.
+            env.pop(statement.name.casefold(), None)
+
+    value = _dbase_constant_expression_value(
+        expression, env=env, routines=routines, filename=filename
+    )
+    if value.kind not in _STRING_KINDS:
+        raise DBaseCompilerError(
+            "_app.menuFile erwartet einen String-Ausdruck.",
+            line=expression.line, column=expression.column, filename=filename,
+        )
+    return str(value.value).strip()
 
 def _dbase_validate_direct_color_literal(
     expression: DBaseExpression, *, filename: str
@@ -4874,35 +5413,72 @@ def parse_dbase_statements(
             i += 1
             continue
 
+        new_session = _DBASE_NEW_SESSION_RE.fullmatch(raw)
+        if new_session:
+            target_path = _dbase_object_path(
+                new_session.group(1), line_no, max(1, raw.find(new_session.group(1)) + 1)
+            )
+            owner_path = _dbase_parent_path(target_path)
+            statement = DBaseNewObjectStatement(
+                target=target_path, class_name="SESSION", owner=owner_path,
+                line=line_no, column=max(1, raw.find(new_session.group(1)) + 1),
+            )
+            masked[i] = _dbase_mask_line(raw) + raw_with_nl[len(raw):]
+            events.append((line_no, event_serial, statement, ()))
+            event_serial += 1
+            i += 1
+            continue
+
+        session_login = _DBASE_SESSION_LOGIN_RE.fullmatch(raw)
+        if session_login:
+            result_name = session_login.group(1)
+            target_text = session_login.group(2)
+            target_path = _dbase_object_path(
+                target_text, line_no, max(1, raw.find(target_text) + 1)
+            )
+            line_start_offset = sum(len(item) for item in lines[:i])
+            username, password, group = _dbase_parse_session_login_arguments(
+                session_login.group(3),
+                raw_line=raw,
+                parse_source=parse_source,
+                line_start_offset=line_start_offset,
+                filename=filename,
+            )
+            statement = DBaseSessionLoginStatement(
+                result_name=result_name,
+                target=target_path,
+                username=username,
+                password=password,
+                group=group,
+                line=line_no,
+                column=max(1, raw.find(result_name) + 1),
+            )
+            masked[i] = _dbase_mask_line(raw) + raw_with_nl[len(raw):]
+            events.append((line_no, event_serial, statement, ()))
+            event_serial += 1
+            i += 1
+            continue
+
         menu_file = _DBASE_MENUFILE_RE.fullmatch(raw)
         if menu_file:
-            path_value = _dbase_menu_file_value(
-                menu_file.group(2), filename=filename, line=line_no
+            rhs = menu_file.group(2)
+            line_start_offset = sum(len(item) for item in lines[:i])
+            expression = _dbase_parse_property_expression(
+                rhs,
+                raw_line=raw,
+                parse_source=parse_source,
+                line_start_offset=line_start_offset,
+                line=line_no,
+                filename=filename,
             )
-            statement = DBaseMenuFileStatement(path_value, line_no, max(1, raw.find(menu_file.group(1)) + 1))
+            statement = DBaseMenuFileStatement(
+                expression=expression,
+                resolved_path="",
+                line=line_no,
+                column=max(1, raw.find(menu_file.group(1)) + 1),
+            )
             masked[i] = _dbase_mask_line(raw) + raw_with_nl[len(raw):]
-
-            base = Path(filename).resolve().parent if filename and not str(filename).startswith("<") else Path.cwd()
-            menu_path = Path(path_value)
-            if not menu_path.is_absolute():
-                menu_path = (base / menu_path).resolve()
-            key = str(menu_path).casefold()
-            if key in {item.casefold() for item in _menu_include_stack}:
-                raise DBaseCompilerError(
-                    f"Zyklische _app.menuFile-Einbindung: {menu_path}",
-                    line=line_no, column=1, filename=filename,
-                )
-            if not menu_path.is_file():
-                raise DBaseCompilerError(
-                    f"Menuedatei nicht gefunden: {menu_path}",
-                    line=line_no, column=1, filename=filename,
-                )
-            included = parse_dbase_statements(
-                menu_path.read_text(encoding="utf-8"),
-                filename=str(menu_path), target=target,
-                _menu_include_stack=_menu_include_stack + (str(menu_path),),
-            )
-            events.append((line_no, event_serial, statement, included))
+            events.append((line_no, event_serial, statement, ()))
             event_serial += 1
             i += 1
             continue
@@ -4966,6 +5542,55 @@ def parse_dbase_statements(
         base_source, filename=filename, target=target
     )
 
+    # Stage 24: menuFile ist ein normaler String-Ausdruck. Da die .mnu-Datei
+    # Quellcode enthaelt, muss der Ausdruck beim Kompilieren bestimmbar sein.
+    # Makros sind bereits expandiert; konstante Variablen und dBase-FUNCTIONs
+    # werden hier ebenfalls ausgewertet. Ein leerer String bedeutet: Standardmenue.
+    resolved_events: list[tuple[int, int, object, Tuple[object, ...]]] = []
+    for event_line, event_serial_value, event, included in events:
+        if not isinstance(event, DBaseMenuFileStatement):
+            resolved_events.append((event_line, event_serial_value, event, included))
+            continue
+
+        path_value = _dbase_resolve_menu_file_expression(
+            event.expression,
+            before_line=event.line,
+            base_statements=tuple(base_statements),
+            filename=filename,
+        )
+        event = DBaseMenuFileStatement(
+            expression=event.expression,
+            resolved_path=path_value,
+            line=event.line,
+            column=event.column,
+        )
+        if not path_value:
+            resolved_events.append((event_line, event_serial_value, event, ()))
+            continue
+
+        base = Path(filename).resolve().parent if filename and not str(filename).startswith("<") else Path.cwd()
+        menu_path = Path(path_value)
+        if not menu_path.is_absolute():
+            menu_path = (base / menu_path).resolve()
+        key = str(menu_path).casefold()
+        if key in {item.casefold() for item in _menu_include_stack}:
+            raise DBaseCompilerError(
+                f"Zyklische _app.menuFile-Einbindung: {menu_path}",
+                line=event.line, column=event.column, filename=filename,
+            )
+        if not menu_path.is_file():
+            raise DBaseCompilerError(
+                f"Menuedatei nicht gefunden: {menu_path}",
+                line=event.line, column=event.column, filename=filename,
+            )
+        included_statements = parse_dbase_statements(
+            menu_path.read_text(encoding="utf-8"),
+            filename=str(menu_path), target=target,
+            _menu_include_stack=_menu_include_stack + (str(menu_path),),
+        )
+        resolved_events.append((event_line, event_serial_value, event, included_statements))
+    events = resolved_events
+
     # Hauptquelldatei nach physischer Zeile mergen. Eingebundene .mnu-Dateien
     # bleiben geschlossen an der menuFile-Zuweisung und behalten intern ihre
     # eigene Reihenfolge.
@@ -4992,6 +5617,73 @@ def parse_dbase_statements(
 
 
 class _DBaseProgramAnalyzer(_Stage12ProgramAnalyzer):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.object_classes: Dict[Tuple[str, ...], str] = {}
+        # Stage 25: globaler, read-only Loginstatus. Der Wert wird bei jeder
+        # Verwendung zur Laufzeit aus der Qt5-Bridge gelesen und besitzt
+        # deshalb absichtlich keinen statischen Datenslot.
+        self.global_symbols["loginsession"] = _DBaseSymbolState(
+            name="LOGINSESSION",
+            label="__dbase_builtin_loginsession",
+            value_type="number",
+            constant_value=None,
+            dynamic=True,
+            last_line=0,
+            last_column=0,
+        )
+
+    @staticmethod
+    def _object_key(path: DBaseObjectPath) -> Tuple[str, ...]:
+        return tuple(part.casefold() for part in path.canonical_parts)
+
+    def _analyze_session_login(
+        self,
+        statement: DBaseSessionLoginStatement,
+        globals_work: Dict[str, _DBaseSymbolState],
+    ) -> None:
+        object_key = self._object_key(statement.target)
+        class_name = self.object_classes.get(object_key)
+        if class_name != "SESSION":
+            raise DBaseCompilerError(
+                f"Objekt '{statement.target.dotted}' ist vor Login() nicht als SESSION erzeugt worden.",
+                line=statement.line, column=statement.column, filename=self.filename,
+            )
+
+        for label, expression in (
+            ("Benutzername", statement.username),
+            ("Passwort", statement.password),
+            ("Gruppe", statement.group),
+        ):
+            info = self.analyze_expression(
+                expression,
+                symbols=globals_work,
+                expression_info=self.expression_info,
+                call_bindings=self.call_bindings,
+            )
+            if info.kind not in _STRING_KINDS:
+                raise DBaseCompilerError(
+                    f"SESSION.Login: {label} muss String/Char sein.",
+                    line=expression.line, column=expression.column, filename=self.filename,
+                )
+
+        key = statement.result_name.casefold()
+        old = globals_work.get(key)
+        label = old.label if old is not None else self.global_labels.setdefault(
+            key, _symbol_label(statement.result_name)
+        )
+        state = _DBaseSymbolState(
+            name=statement.result_name,
+            label=label,
+            value_type="number",
+            constant_value=None,
+            dynamic=True,
+            last_line=statement.line,
+            last_column=statement.column,
+        )
+        globals_work[key] = state
+        self.all_global_states[key] = state
+
     def analyze_expression(
         self,
         expression: DBaseExpression,
@@ -5115,7 +5807,7 @@ class _DBaseProgramAnalyzer(_Stage12ProgramAnalyzer):
     def _without_menu(sequence: Tuple[object, ...]) -> Tuple[object, ...]:
         return tuple(
             statement for statement in sequence
-            if not isinstance(statement, (DBaseNewObjectStatement, DBaseWithStatement, DBaseMenuFileStatement, DBaseAppColorStatement))
+            if not isinstance(statement, (DBaseNewObjectStatement, DBaseSessionLoginStatement, DBaseWithStatement, DBaseMenuFileStatement, DBaseAppColorStatement))
         )
 
     def _analyze_top_sequence(self, sequence, globals_work):
@@ -5125,7 +5817,13 @@ class _DBaseProgramAnalyzer(_Stage12ProgramAnalyzer):
             if isinstance(statement, DBaseAppColorStatement):
                 self._analyze_app_color(statement, globals_work)
                 continue
-            if isinstance(statement, (DBaseNewObjectStatement, DBaseWithStatement, DBaseMenuFileStatement)):
+            if isinstance(statement, DBaseNewObjectStatement):
+                self.object_classes[self._object_key(statement.target)] = statement.class_name.upper()
+                continue
+            if isinstance(statement, DBaseSessionLoginStatement):
+                self._analyze_session_login(statement, globals_work)
+                continue
+            if isinstance(statement, (DBaseWithStatement, DBaseMenuFileStatement)):
                 continue
             # Jeweils genau ein Basestatement analysieren. Bei IF ruft die
             # Stage-12-Logik rekursiv wieder self._analyze_top_sequence auf.
@@ -5147,7 +5845,13 @@ class _DBaseCodeGenerator(_Stage12CodeGenerator):
         "DBaseQtMenuSetSeparator",
         "DBaseQtMenuSetShortcut",
         "DBaseQtMenuSetOnClick",
+        "DBaseQtEnsureDefaultMenu",
         "DBaseQtSetColorNormal",
+    )
+    SESSION_IMPORTS = (
+        "DBaseQtSessionCreate",
+        "DBaseQtGetLoginSession",
+        "DBaseQtSessionLogin",
     )
 
     def __init__(self, *args, **kwargs):
@@ -5182,6 +5886,21 @@ class _DBaseCodeGenerator(_Stage12CodeGenerator):
             if instance.definition is definition and not instance.signature:
                 return instance.label
         raise AssertionError(f"Callback-Instanz fehlt: {callback_name}")
+
+    def emit_numeric_expression(self, expression: DBaseExpression) -> None:
+        if isinstance(expression, DBaseIdentifierExpression):
+            info = self.current_expression_info[expression]
+            if info.variable_label == "__dbase_builtin_loginsession":
+                if self.is64:
+                    self.emit("    sub rsp, 40")
+                    self.emit("    call DBaseQtGetLoginSession")
+                    self.emit("    add rsp, 40")
+                else:
+                    self.emit("    call DBaseQtGetLoginSession")
+                self.emit("    mov dword ptr [__dbase_temp_number], eax")
+                self.emit("    fild dword ptr [__dbase_temp_number]")
+                return
+        return super().emit_numeric_expression(expression)
 
     def emit_store_expression_to_slot(self, expression: DBaseExpression, destination: str) -> None:
         if isinstance(expression, DBaseCallExpression) and expression.name.casefold() == "rgb":
@@ -5244,17 +5963,69 @@ class _DBaseCodeGenerator(_Stage12CodeGenerator):
     def emit_new_object(self, statement: DBaseNewObjectStatement) -> None:
         target_slot = self._object_slot(statement.target)
         self._load_object_handle(statement.owner)
+        class_name = statement.class_name.upper()
+        if class_name == "MENU":
+            create_symbol = "DBaseQtMenuCreate"
+        elif class_name == "SESSION":
+            create_symbol = "DBaseQtSessionCreate"
+        else:
+            raise DBaseCompilerError(
+                f"Unbekannte eingebaute Klasse '{statement.class_name}'.",
+                line=statement.line, column=statement.column, filename=self.filename,
+            )
         if self.is64:
             self.emit("    mov rcx, rax")
             self.emit("    sub rsp, 40")
-            self.emit("    call DBaseQtMenuCreate")
+            self.emit(f"    call {create_symbol}")
             self.emit("    add rsp, 40")
             self.emit(f"    mov qword ptr [{target_slot}], rax")
         else:
             self.emit("    push eax")
-            self.emit("    call DBaseQtMenuCreate")
+            self.emit(f"    call {create_symbol}")
             self.emit("    add esp, 4")
             self.emit(f"    mov dword ptr [{target_slot}], eax")
+
+    def emit_session_login(self, statement: DBaseSessionLoginStatement) -> None:
+        session_slot = self._object_slot(statement.target)
+        user_slot = self.new_storage_slot("session_user")
+        pass_slot = self.new_storage_slot("session_pass")
+        group_slot = self.new_storage_slot("session_group")
+        self.emit_store_expression_to_slot(statement.username, user_slot)
+        self.emit_store_expression_to_slot(statement.password, pass_slot)
+        self.emit_store_expression_to_slot(statement.group, group_slot)
+
+        if self.is64:
+            self.emit(f"    mov rcx, qword ptr [{session_slot}]")
+            self.emit(f"    mov rdx, qword ptr [{user_slot}_ptr]")
+            self.emit(f"    mov r8d, dword ptr [{user_slot}_len]")
+            self.emit(f"    mov r9, qword ptr [{pass_slot}_ptr]")
+            self.emit("    sub rsp, 56")
+            self.emit(f"    mov eax, dword ptr [{pass_slot}_len]")
+            self.emit("    mov qword ptr [rsp+32], rax")
+            self.emit(f"    mov rax, qword ptr [{group_slot}_ptr]")
+            self.emit("    mov qword ptr [rsp+40], rax")
+            self.emit(f"    mov eax, dword ptr [{group_slot}_len]")
+            self.emit("    mov qword ptr [rsp+48], rax")
+            self.emit("    call DBaseQtSessionLogin")
+            self.emit("    add rsp, 56")
+        else:
+            self.emit(f"    push dword ptr [{group_slot}_len]")
+            self.emit(f"    push dword ptr [{group_slot}_ptr]")
+            self.emit(f"    push dword ptr [{pass_slot}_len]")
+            self.emit(f"    push dword ptr [{pass_slot}_ptr]")
+            self.emit(f"    push dword ptr [{user_slot}_len]")
+            self.emit(f"    push dword ptr [{user_slot}_ptr]")
+            self.emit(f"    push dword ptr [{session_slot}]")
+            self.emit("    call DBaseQtSessionLogin")
+            self.emit("    add esp, 28")
+
+        result_label = self.global_variable_labels.get(statement.result_name.casefold())
+        if result_label is None:
+            raise AssertionError(f"Kein Speicher fuer SESSION.Login-Ergebnis {statement.result_name}")
+        self.emit(f"    mov dword ptr [{result_label}_num], eax")
+        self.emit(f"    fild dword ptr [{result_label}_num]")
+        self.emit(f"    fstp qword ptr [{result_label}_num]")
+        self.emit(f"    mov dword ptr [{result_label}_type], {_TYPE_NUMBER}")
 
     def _emit_menu_string(self, function: str, slot: str, value: str) -> None:
         label, length = self.text_literal(value)
@@ -5340,14 +6111,22 @@ class _DBaseCodeGenerator(_Stage12CodeGenerator):
             if isinstance(statement, DBaseAppColorStatement):
                 flush()
                 self.emit_app_color(statement)
+                self.emit_shutdown_guard(routine_end_label)
             elif isinstance(statement, DBaseNewObjectStatement):
                 flush()
                 self.emit_new_object(statement)
+                self.emit_shutdown_guard(routine_end_label)
+            elif isinstance(statement, DBaseSessionLoginStatement):
+                flush()
+                self.emit_session_login(statement)
+                self.emit_shutdown_guard(routine_end_label)
             elif isinstance(statement, DBaseWithStatement):
                 flush()
                 self.emit_with_statement(statement)
+                self.emit_shutdown_guard(routine_end_label)
             elif isinstance(statement, DBaseMenuFileStatement):
                 flush()
+                self.emit_shutdown_guard(routine_end_label)
             else:
                 chunk.append(statement)
         flush()
@@ -5358,10 +6137,22 @@ class _DBaseCodeGenerator(_Stage12CodeGenerator):
         marker = 'import DBaseQtShutdown, "d64qt5.dll", "DBaseQtShutdown"\n'
         extra = "".join(
             f'import {symbol}, "d64qt5.dll", "{symbol}"\n'
-            for symbol in self.MENU_IMPORTS
+            for symbol in self.MENU_IMPORTS + self.SESSION_IMPORTS
         )
         if marker in assembly and extra not in assembly:
             assembly = assembly.replace(marker, marker + extra, 1)
+
+        menu_file_statements = [
+            statement for statement in self.statements
+            if isinstance(statement, DBaseMenuFileStatement)
+        ]
+        has_menu_file = bool(menu_file_statements and menu_file_statements[-1].configured)
+        if not has_menu_file:
+            show_marker = "    call DBaseQtShowWindow\n"
+            default_call = "    call DBaseQtEnsureDefaultMenu\n"
+            if show_marker in assembly and default_call not in assembly:
+                assembly = assembly.replace(show_marker, default_call + show_marker, 1)
+
         if self.object_slots:
             object_data = []
             for label in dict.fromkeys(self.object_slots.values()):
@@ -5373,7 +6164,7 @@ class _DBaseCodeGenerator(_Stage12CodeGenerator):
 
 # Öffentliche Exportliste der additiven Stage-13-Klassen.
 for _name in (
-    "DBaseObjectPath", "DBaseNewObjectStatement", "DBaseMenuFileStatement",
+    "DBaseObjectPath", "DBaseNewObjectStatement", "DBaseSessionLoginStatement", "DBaseMenuFileStatement",
     "DBaseAppColorStatement", "DBASE_SYSTEM_COLOR_NAMES",
     "DBaseSetColorStatement", "DBaseClearScreenStatement", "DBaseSetBorderColorStatement",
     "DBASE_FOREGROUND_COLOR_CODES", "DBASE_BACKGROUND_COLOR_CODES",
@@ -5392,7 +6183,7 @@ def evaluate_dbase_statements(
 ) -> str:
     filtered = tuple(
         statement for statement in statements
-        if not isinstance(statement, (DBaseNewObjectStatement, DBaseWithStatement, DBaseMenuFileStatement, DBaseAppColorStatement))
+        if not isinstance(statement, (DBaseNewObjectStatement, DBaseSessionLoginStatement, DBaseWithStatement, DBaseMenuFileStatement, DBaseAppColorStatement))
     )
     return _stage12_evaluate_dbase_statements(filtered, filename=filename)
 
@@ -5416,11 +6207,17 @@ def compile_dbase_to_assembly(
         "this ist auf Top-Level ein Alias fuer _app; Memberpfade werden als native Objekt-Handles gespeichert.",
         "WITH/ENDWITH setzt MENU-Properties text, onClick, shortCut und separator.",
         "class::MEMBER bindet eine parameterlose PROCEDURE als nativen Qt-onClick-Callback.",
-        "_app.menuFile = <pfad/menu.mnu> bindet eine externe Menuequelldatei relativ zur dBase-Quelldatei ein.",
+        '_app.menuFile = "menu.mnu" bindet eine externe Menuequelldatei relativ zur dBase-Quelldatei ein; Makros sowie zur Compile-Zeit bestimmbare Variablen/Funktionen sind erlaubt.',
         "Das Qt-Hauptmenue liegt als QMenuBar in der ersten Zeile des Konsolen-Tabs.",
         "_app.colorNormal akzeptiert direkte Windows-Systemfarben nur als Stringliteral; Variablen/Funktionen und RGB(rr,gg,bb) sind ebenfalls moeglich.",
         "dBase-Ausbaustufe 16: CLEAR SCREEN leert die Konsole mit der aktuellen SET-COLOR-Hintergrundfarbe, ohne den Editorrahmen zu entfernen.",
         "SET BORDERCOLOR TO <expr> setzt die Rahmenfarbe der Konsolen-Textkomponente per Windows-Systemfarbe oder RGB(rr,gg,bb).",
+        "dBase-Ausbaustufe 21: SESSION ist ein nativer Benutzer-/Sicherheitskontext; SESSION.Login(user,password,group) authentifiziert gegen Windows und liefert 0/1.",
+        "dBase-Ausbaustufe 22: __dbase_format_buffer ist nur noch ein Pointer-Slot; 96 Bytes werden per VirtualAlloc reserviert und per VirtualFree freigegeben.",
+        "dBase-Ausbaustufe 23: CLEAR SCREEN <expr> fuellt bei 0..255 die 80x25-Konsole mit einem CP437-Terminalzeichen; '#RRGGBB'/RGB(...) setzt beim Loeschen die Hintergrundfarbe.",
+        "dBase-Ausbaustufe 24: Konsolen-Scrollbars und reservierte Leerzeile entfallen; menuFile verwendet String-Ausdruecke und bei leerem menuFile wird ein Standard-Dateimenue erzeugt.",
+        "dBase-Ausbaustufe 25: new SESSION() oeffnet den rastergebundenen Windows-Login-Dialog; LOGINSESSION liefert den globalen 0/1-Status und bis zum Login bleiben nur Login/Beenden aktiv.",
+        "dBase-Ausbaustufe 29: Schliessen des Hauptfensters beendet alle Dialog-Eventloops und fuehrt den generierten Code ueber einen gemeinsamen Shutdown-/VirtualFree-Cleanup-Pfad.",
     )
     return DBaseCompileResult(
         assembly=result.assembly,

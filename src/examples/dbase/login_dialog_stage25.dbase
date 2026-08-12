@@ -1,0 +1,10 @@
+// ---------------------------------------------------------------------------
+// Stage 25: SESSION-Login-Dialog und globaler LOGINSESSION-Status.
+// ---------------------------------------------------------------------------
+_app.security = new Session()
+
+IF LOGINSESSION == 1
+    ? "LOGINSESSION = 1"
+ELSE
+    ? "LOGINSESSION = 0"
+ENDIF

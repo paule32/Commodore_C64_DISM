@@ -29,7 +29,18 @@ D64QT5_API void DBaseQtAppendDebug(const char *text, int length);
 D64QT5_API int  DBaseQtSetColorNormal(const char *name, int length);
 D64QT5_API int  DBaseQtSetOutputColor(const char *spec, int length);
 D64QT5_API void DBaseQtClearScreen(void);
+D64QT5_API int  DBaseQtClearScreenChar(double code);
+D64QT5_API int  DBaseQtClearScreenColor(const char *name, int length);
 D64QT5_API int  DBaseQtSetBorderColor(const char *name, int length);
+D64QT5_API void *DBaseQtSessionCreate(void *parent);
+D64QT5_API int  DBaseQtGetLoginSession(void);
+D64QT5_API int  DBaseQtSessionLogin(
+    void *handle,
+    const char *username, int usernameLength,
+    const char *password, int passwordLength,
+    const char *group, int groupLength
+);
+D64QT5_API void  DBaseQtEnsureDefaultMenu(void);
 D64QT5_API void *DBaseQtMenuCreate(void *owner);
 D64QT5_API void DBaseQtMenuSetText(void *handle, const char *text, int length);
 D64QT5_API void DBaseQtMenuSetSeparator(void *handle, int separator);
@@ -37,6 +48,7 @@ D64QT5_API void DBaseQtMenuSetShortcut(void *handle, const char *text, int lengt
 D64QT5_API void DBaseQtMenuSetOnClick(void *handle, void (*callback)(void));
 D64QT5_API void DBaseQtMarkProgramFinished(void);
 D64QT5_API int  DBaseQtExec(void);
+D64QT5_API int  DBaseQtShutdownRequested(void);
 D64QT5_API void DBaseQtShutdown(void);
 
 #ifdef __cplusplus

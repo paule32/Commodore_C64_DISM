@@ -1,0 +1,17 @@
+// ---------------------------------------------------------------------------
+// Stage 21: erster SESSION-Benutzerkontext mit Windows-Login.
+//
+// Ein einfacher Benutzername wird gegen die lokale Windows-Kontodatenbank
+// geprueft. Fuer Domains sind DOMAIN\\user oder user@domain vorgesehen.
+// Die Gruppe muss von Windows als Gruppe/Alias aufloesbar sein.
+// ---------------------------------------------------------------------------
+
+_app.security = new Session()
+
+userName = "testuser"
+password = "testpass"
+groupName = "Users"
+
+result = _app.security.Login(userName, password, groupName)
+
+? "Login result = " + result

@@ -10,6 +10,8 @@ topLevelItem
     : statement
     | ifStatement
     | menuObjectStatement
+    | sessionObjectStatement
+    | sessionLoginStatement
     | appPropertyStatement
     | withStatement
     ;
@@ -71,7 +73,7 @@ statement
     | IDENTIFIER EQUAL expression
     | callExpression
     | setStatement
-    | CLEAR SCREEN
+    | CLEAR SCREEN expression?
     ;
 
 setStatement
@@ -81,9 +83,20 @@ setStatement
     | SET BORDERCOLOR TO expression
     ;
 
+// APPLICATION-Properties verwenden normale Ausdruecke. Fuer _app.menuFile
+// ist Stage 24 die kanonische Form: _app.menuFile = "menu.mnu"; die alte
+// Winkelklammer-Schreibweise ist nicht mehr Teil der Sprache.
 // Erste native Klassenstufe: _app und this sind APPLICATION-Objekte.
 menuObjectStatement
     : objectPath EQUAL NEW MENU LPAREN objectPath RPAREN
+    ;
+
+sessionObjectStatement
+    : objectPath EQUAL NEW SESSION LPAREN RPAREN
+    ;
+
+sessionLoginStatement
+    : IDENTIFIER EQUAL objectPath DOT LOGIN LPAREN expression COMMA expression COMMA expression RPAREN
     ;
 
 appPropertyStatement

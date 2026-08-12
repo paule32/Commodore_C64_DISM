@@ -1,0 +1,6 @@
+// Stage 24: kein menuFile -> Standardmenue "=" und "Datei".
+// Datei enthaelt Neu, Speichern, Speichern unter..., Alle Schließen,
+// Separator und Beenden.
+CLEAR SCREEN "#001C46"
+SET COLOR TO "B/RG+"
+? "Standardmenue aktiv"

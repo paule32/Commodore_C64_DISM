@@ -1,0 +1,9 @@
+// ---------------------------------------------------------------------------
+// Stage 23: CLEAR SCREEN mit CP437-/Terminal-Zeichenmuster.
+// 0xB0 entspricht CP437 U+2591 (░).
+// B/RG+ = dunkelblauer Hintergrund / gelbe Vordergrundfarbe.
+// ---------------------------------------------------------------------------
+#define SHADE 0xB0
+
+SET COLOR TO "B/RG+"
+CLEAR SCREEN SHADE

@@ -8,21 +8,30 @@ import DBaseQtAppendConsole, "d64qt5.dll", "DBaseQtAppendConsole"
 import DBaseQtAppendDebug, "d64qt5.dll", "DBaseQtAppendDebug"
 import DBaseQtSetOutputColor, "d64qt5.dll", "DBaseQtSetOutputColor"
 import DBaseQtClearScreen, "d64qt5.dll", "DBaseQtClearScreen"
+import DBaseQtClearScreenChar, "d64qt5.dll", "DBaseQtClearScreenChar"
+import DBaseQtClearScreenColor, "d64qt5.dll", "DBaseQtClearScreenColor"
 import DBaseQtSetBorderColor, "d64qt5.dll", "DBaseQtSetBorderColor"
 import DBaseQtMarkProgramFinished, "d64qt5.dll", "DBaseQtMarkProgramFinished"
 import DBaseQtExec, "d64qt5.dll", "DBaseQtExec"
+import DBaseQtShutdownRequested, "d64qt5.dll", "DBaseQtShutdownRequested"
 import DBaseQtShutdown, "d64qt5.dll", "DBaseQtShutdown"
 import DBaseQtMenuCreate, "d64qt5.dll", "DBaseQtMenuCreate"
 import DBaseQtMenuSetText, "d64qt5.dll", "DBaseQtMenuSetText"
 import DBaseQtMenuSetSeparator, "d64qt5.dll", "DBaseQtMenuSetSeparator"
 import DBaseQtMenuSetShortcut, "d64qt5.dll", "DBaseQtMenuSetShortcut"
 import DBaseQtMenuSetOnClick, "d64qt5.dll", "DBaseQtMenuSetOnClick"
+import DBaseQtEnsureDefaultMenu, "d64qt5.dll", "DBaseQtEnsureDefaultMenu"
 import DBaseQtSetColorNormal, "d64qt5.dll", "DBaseQtSetColorNormal"
+import DBaseQtSessionCreate, "d64qt5.dll", "DBaseQtSessionCreate"
+import DBaseQtGetLoginSession, "d64qt5.dll", "DBaseQtGetLoginSession"
+import DBaseQtSessionLogin, "d64qt5.dll", "DBaseQtSessionLogin"
 import __dbase_gcvt, "msvcrt.dll", "_gcvt"
 import __dbase_malloc, "msvcrt.dll", "malloc"
 import __dbase_memcpy, "msvcrt.dll", "memcpy"
 import __dbase_memcmp, "msvcrt.dll", "memcmp"
 import ExitProcess, "kernel32.dll", "ExitProcess"
+import VirtualAlloc, "kernel32.dll", "VirtualAlloc"
+import VirtualFree, "kernel32.dll", "VirtualFree"
 global _start
 entry _start
 
@@ -33,30 +42,55 @@ _start:
     call DBaseQtInitialize
     add esp, 4
     test eax, eax
-    jne __dbase_qt_init_ok_1
+    jne __dbase_qt_init_ok_2
     push 1
     call ExitProcess
-__dbase_qt_init_ok_1:
+__dbase_qt_init_ok_2:
+    push 4
+    push 12288
+    push 96
+    push 0
+    call VirtualAlloc
+    test eax, eax
+    jne __dbase_format_buffer_alloc_ok_3
+    call DBaseQtShutdown
+    push 1
+    call ExitProcess
+__dbase_format_buffer_alloc_ok_3:
+    mov dword ptr [__dbase_format_buffer], eax
     push 0
     call DBaseQtSetDebugVisible
     add esp, 4
+    call DBaseQtEnsureDefaultMenu
     call DBaseQtShowWindow
     call DBaseQtProcessEvents
+    call DBaseQtShutdownRequested
+    test eax, eax
+    jne __dbase_program_cleanup_1
     xor eax, eax
     push eax
     call DBaseQtMenuCreate
     add esp, 4
     mov dword ptr [__dbase_object_app_mfenster], eax
+    call DBaseQtShutdownRequested
+    test eax, eax
+    jne __dbase_program_cleanup_1
     push 8
     push __dbase_text_1
     push dword ptr [__dbase_object_app_mfenster]
     call DBaseQtMenuSetText
     add esp, 12
+    call DBaseQtShutdownRequested
+    test eax, eax
+    jne __dbase_program_cleanup_1
     mov eax, dword ptr [__dbase_object_app_mfenster]
     push eax
     call DBaseQtMenuCreate
     add esp, 4
     mov dword ptr [__dbase_object_app_mfenster_mcascade], eax
+    call DBaseQtShutdownRequested
+    test eax, eax
+    jne __dbase_program_cleanup_1
     push __dbase_procedure_mcascade_onclick__void
     push dword ptr [__dbase_object_app_mfenster_mcascade]
     call DBaseQtMenuSetOnClick
@@ -66,11 +100,17 @@ __dbase_qt_init_ok_1:
     push dword ptr [__dbase_object_app_mfenster_mcascade]
     call DBaseQtMenuSetText
     add esp, 12
+    call DBaseQtShutdownRequested
+    test eax, eax
+    jne __dbase_program_cleanup_1
     mov eax, dword ptr [__dbase_object_app_mfenster]
     push eax
     call DBaseQtMenuCreate
     add esp, 4
     mov dword ptr [__dbase_object_app_mfenster_mhorizontal], eax
+    call DBaseQtShutdownRequested
+    test eax, eax
+    jne __dbase_program_cleanup_1
     push __dbase_procedure_mhorizontal_onclick__void
     push dword ptr [__dbase_object_app_mfenster_mhorizontal]
     call DBaseQtMenuSetOnClick
@@ -80,11 +120,17 @@ __dbase_qt_init_ok_1:
     push dword ptr [__dbase_object_app_mfenster_mhorizontal]
     call DBaseQtMenuSetText
     add esp, 12
+    call DBaseQtShutdownRequested
+    test eax, eax
+    jne __dbase_program_cleanup_1
     mov eax, dword ptr [__dbase_object_app_mfenster]
     push eax
     call DBaseQtMenuCreate
     add esp, 4
     mov dword ptr [__dbase_object_app_mfenster_mvertikal], eax
+    call DBaseQtShutdownRequested
+    test eax, eax
+    jne __dbase_program_cleanup_1
     push __dbase_procedure_mvertikal_onclick__void
     push dword ptr [__dbase_object_app_mfenster_mvertikal]
     call DBaseQtMenuSetOnClick
@@ -94,11 +140,17 @@ __dbase_qt_init_ok_1:
     push dword ptr [__dbase_object_app_mfenster_mvertikal]
     call DBaseQtMenuSetText
     add esp, 12
+    call DBaseQtShutdownRequested
+    test eax, eax
+    jne __dbase_program_cleanup_1
     mov eax, dword ptr [__dbase_object_app_mfenster]
     push eax
     call DBaseQtMenuCreate
     add esp, 4
     mov dword ptr [__dbase_object_app_mfenster_msymbole], eax
+    call DBaseQtShutdownRequested
+    test eax, eax
+    jne __dbase_program_cleanup_1
     push __dbase_procedure_msymbole_onclick__void
     push dword ptr [__dbase_object_app_mfenster_msymbole]
     call DBaseQtMenuSetOnClick
@@ -108,11 +160,17 @@ __dbase_qt_init_ok_1:
     push dword ptr [__dbase_object_app_mfenster_msymbole]
     call DBaseQtMenuSetText
     add esp, 12
+    call DBaseQtShutdownRequested
+    test eax, eax
+    jne __dbase_program_cleanup_1
     mov eax, dword ptr [__dbase_object_app_mfenster]
     push eax
     call DBaseQtMenuCreate
     add esp, 4
     mov dword ptr [__dbase_object_app_mfenster_menusep], eax
+    call DBaseQtShutdownRequested
+    test eax, eax
+    jne __dbase_program_cleanup_1
     push 0
     push __dbase_text_6
     push dword ptr [__dbase_object_app_mfenster_menusep]
@@ -122,11 +180,17 @@ __dbase_qt_init_ok_1:
     push dword ptr [__dbase_object_app_mfenster_menusep]
     call DBaseQtMenuSetSeparator
     add esp, 8
+    call DBaseQtShutdownRequested
+    test eax, eax
+    jne __dbase_program_cleanup_1
     mov eax, dword ptr [__dbase_object_app_mfenster]
     push eax
     call DBaseQtMenuCreate
     add esp, 4
     mov dword ptr [__dbase_object_app_mfenster_mclose], eax
+    call DBaseQtShutdownRequested
+    test eax, eax
+    jne __dbase_program_cleanup_1
     push __dbase_procedure_mclose_onclick__void
     push dword ptr [__dbase_object_app_mfenster_mclose]
     call DBaseQtMenuSetOnClick
@@ -141,11 +205,17 @@ __dbase_qt_init_ok_1:
     push dword ptr [__dbase_object_app_mfenster_mclose]
     call DBaseQtMenuSetShortcut
     add esp, 12
+    call DBaseQtShutdownRequested
+    test eax, eax
+    jne __dbase_program_cleanup_1
     mov eax, dword ptr [__dbase_object_app_mfenster]
     push eax
     call DBaseQtMenuCreate
     add esp, 4
     mov dword ptr [__dbase_object_app_mfenster_malleschliessen], eax
+    call DBaseQtShutdownRequested
+    test eax, eax
+    jne __dbase_program_cleanup_1
     push 0
     push dword ptr [__dbase_object_app_mfenster_malleschliessen]
     call DBaseQtMenuSetOnClick
@@ -155,6 +225,9 @@ __dbase_qt_init_ok_1:
     push dword ptr [__dbase_object_app_mfenster_malleschliessen]
     call DBaseQtMenuSetText
     add esp, 12
+    call DBaseQtShutdownRequested
+    test eax, eax
+    jne __dbase_program_cleanup_1
     push 11
     push __dbase_text_10
     call DBaseQtAppendConsole
@@ -164,10 +237,23 @@ __dbase_qt_init_ok_1:
     call DBaseQtAppendConsole
     add esp, 8
     call DBaseQtProcessEvents
+    call DBaseQtShutdownRequested
+    test eax, eax
+    jne __dbase_program_cleanup_1
     call DBaseQtMarkProgramFinished
     call DBaseQtExec
     mov dword ptr [__dbase_exit_code], eax
+__dbase_program_cleanup_1:
     call DBaseQtShutdown
+    mov eax, dword ptr [__dbase_format_buffer]
+    test eax, eax
+    je __dbase_format_buffer_free_done_4
+    push 32768
+    push 0
+    push eax
+    call VirtualFree
+__dbase_format_buffer_free_done_4:
+    mov dword ptr [__dbase_format_buffer], 0
     push dword ptr [__dbase_exit_code]
     call ExitProcess
 
@@ -285,7 +371,7 @@ __dbase_temp_number_hi:
 __dbase_call_number:
     dd 0, 0
 __dbase_format_buffer:
-    db 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    dd 0
 __dbase_exit_code:
     dd 0
 __dbase_object_app_mfenster:

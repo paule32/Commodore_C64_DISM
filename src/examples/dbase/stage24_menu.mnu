@@ -1,0 +1,8 @@
+_app.CUSTOM = new MENU(_app)
+with (_app.CUSTOM)
+    text = "Benutzer-Menue"
+endwith
+_app.CUSTOM.TEST = new MENU(_app.CUSTOM)
+with (_app.CUSTOM.TEST)
+    text = "Test"
+endwith

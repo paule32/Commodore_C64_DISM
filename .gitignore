@@ -46,3 +46,7 @@ src/examples/dbase/qt5_bridge_stage12.o
 src/examples/dbase/menu_file_stage13.o
 src/examples/dbase/menu_class_stage13.o
 src/examples/dbase/conditions_stage10.o
+src/examples/dbase/login_dialog_stage25.o
+src/examples/dbase/menu_default_stage24.o
+src/examples/dbase/session_windows_stage21.o
+src/examples/dbase/shutdown_cleanup_stage29.o

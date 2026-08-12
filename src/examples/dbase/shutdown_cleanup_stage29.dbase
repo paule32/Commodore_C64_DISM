@@ -1,0 +1,6 @@
+// Stage 29: Hauptfenster waehrend des Login-Dialogs schliessen.
+// Der fokussierte Dialog wird automatisch beendet und der gemeinsame
+// Runtime-/VirtualAlloc-Cleanup ausgefuehrt.
+_app.security = new Session()
+? LOGINSESSION
+? "Programm laeuft nur weiter, wenn die Anwendung nicht geschlossen wurde."

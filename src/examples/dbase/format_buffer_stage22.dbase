@@ -1,0 +1,6 @@
+// Stage 22: Zahlformatierung verwendet einen per VirtualAlloc reservierten Puffer.
+x = 12.5
+? x
+
+s = "Wert = " + x
+? s

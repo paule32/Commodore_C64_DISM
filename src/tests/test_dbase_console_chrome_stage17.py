@@ -58,10 +58,9 @@ class DBaseConsoleChromeStage17Tests(unittest.TestCase):
         self.assertIn('new QPlainTextEdit(g_console_frame)', self.cpp)
         self.assertIn('console_layout->addWidget(g_console, 1)', self.cpp)
 
-    def test_enter_helper_preserves_trailing_blank_line(self):
-        self.assertIn('void ensure_trailing_blank_line(QPlainTextEdit *editor)', self.cpp)
-        self.assertIn("endsWith(QLatin1Char('\\n'))", self.cpp)
-        self.assertIn('ensure_trailing_blank_line(g_debug);', self.cpp)
+    def test_no_reserved_trailing_blank_line(self):
+        self.assertNotIn('void ensure_trailing_blank_line(QPlainTextEdit *editor)', self.cpp)
+        self.assertNotIn('ensure_trailing_blank_line(g_debug);', self.cpp)
 
     def test_border_color_still_applies_without_recreating_editor(self):
         self.assertIn('g_console_border_color = color;', self.cpp)
