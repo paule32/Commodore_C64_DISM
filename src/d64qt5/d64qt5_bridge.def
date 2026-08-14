@@ -15,6 +15,17 @@ EXPORTS
     DBaseQtSessionCreate
     DBaseQtGetLoginSession
     DBaseQtSessionLogin
+    DBaseQtDatabaseCreate
+    DBaseQtDatabaseSetPath
+    DBaseQtDatabaseSetDatabaseName
+    DBaseQtDatabaseSetUserName
+    DBaseQtDatabaseSetPassword
+    DBaseQtDatabaseSetAlias
+    DBaseQtDatabaseSetSession
+    DBaseQtDatabaseSetActive
+    DBaseQtDatabaseOpen
+    DBaseQtDatabaseClose
+    DBaseQtDatabaseCommit
     DBaseQtEnsureDefaultMenu
     DBaseQtMenuCreate
     DBaseQtMenuSetText

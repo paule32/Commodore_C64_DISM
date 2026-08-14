@@ -1,0 +1,28 @@
+Stage 39 - d64qt5 Workstation Singleton
+========================================
+
+Enthalten ist der komplette Stage-38A-Projektstand plus Stage-39-Erweiterung.
+Die d64qt5.dll wird aus folgenden Dateien gebaut:
+
+  d64qt5/d64qt5_bridge.cpp
+  d64qt5/d64qt5_bridge.h
+  d64qt5/d64_workstation.cpp
+  d64qt5/d64_workstation.h
+  d64qt5/d64qt5_bridge.def
+  d64qt5/d64qt5_bridge.pro
+
+Windows / MSYS2 MinGW32:
+
+  cd d64qt5
+  qmake d64qt5_bridge.pro CONFIG+=release
+  mingw32-make release
+
+Alternativ:
+
+  d64qt5\\build_d64qt5_mingw32.bat
+
+Hinweis:
+In der Erstellungsumgebung dieses ZIPs ist keine Windows-Qt5/MinGW-Toolchain
+installiert. Deshalb wird kein ungetestetes/fremd kompiliertes d64qt5.dll-Binary
+beigelegt. Der vollstaendige DLL-Quellcode und das vorhandene Build-Projekt sind
+enthalten.

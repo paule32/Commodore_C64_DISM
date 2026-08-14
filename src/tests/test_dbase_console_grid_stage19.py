@@ -13,7 +13,8 @@ class DBaseConsoleGridStage19Tests(unittest.TestCase):
         self.assertIn("DBASE_TEXT_ROWS * lineHeight", CPP)
 
     def test_grid_uses_real_font_metrics(self):
-        self.assertIn("QFontMetrics fm(font);", CPP)
+        self.assertIn("QFontMetrics console_font_metrics", CPP)
+        self.assertIn("const QFontMetrics fm = console_font_metrics(font);", CPP)
         self.assertIn("fm.horizontalAdvance(QLatin1Char('M'))", CPP)
         self.assertIn("fm.lineSpacing()", CPP)
         self.assertIn("console_grid_pixel_size", CPP)
@@ -24,12 +25,13 @@ class DBaseConsoleGridStage19Tests(unittest.TestCase):
         self.assertIn("g_font_point_size = next;", CPP)
         self.assertIn("enforce_console_80x25_grid();", CPP)
 
-    def test_pixel_fine_tuning_is_separate_from_point_size(self):
-        self.assertIn("int g_font_pixel_adjust = 0;", CPP)
-        self.assertIn("const int adjustments[2] = { -1, +1 };", CPP)
-        self.assertIn("QFontInfo(font).pixelSize()", CPP)
-        self.assertIn("font.setPixelSize", CPP)
-        self.assertIn("g_font_pixel_adjust = bestAdjust;", CPP)
+    def test_stage37_uses_one_dpi_resolved_font_without_pixel_fine_tuning(self):
+        self.assertNotIn("g_font_pixel_adjust", CPP)
+        self.assertNotIn("fine_tune_console_font_for_grid", CPP)
+        self.assertNotIn("const int adjustments[2] = { -1, +1 };", CPP)
+        self.assertIn("QFontMetrics console_font_metrics", CPP)
+        self.assertIn("static_cast<const QPaintDevice *>(g_console->viewport())", CPP)
+        self.assertIn("current_console_grid_font()", CPP)
 
     def test_window_is_resized_from_viewport_difference(self):
         self.assertIn("g_console->viewport()->size()", CPP)

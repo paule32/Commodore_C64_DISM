@@ -2,7 +2,7 @@ lexer grammar DBaseLexer;
 
 // ---------------------------------------------------------------------------
 // dBase lexical layer, stage 24: comments, expressions, members, IF blocks,
-// object paths, NEW MENU/SESSION, SESSION.Login and WITH/ENDWITH.
+// object paths, NEW MENU/SESSION/DATABASE, SESSION.Login und DATABASE-Lifecycle and WITH/ENDWITH.
 // ---------------------------------------------------------------------------
 
 STRING_DOUBLE
@@ -41,6 +41,18 @@ ENDWITH   : [Ee][Nn][Dd][Ww][Ii][Tt][Hh];
 NEW       : [Nn][Ee][Ww];
 MENU      : [Mm][Ee][Nn][Uu];
 SESSION   : [Ss][Ee][Ss][Ss][Ii][Oo][Nn];
+DATABASE  : [Dd][Aa][Tt][Aa][Bb][Aa][Ss][Ee];
+LOCAL     : [Ll][Oo][Cc][Aa][Ll];
+AS        : [Aa][Ss];
+PATH      : [Pp][Aa][Tt][Hh];
+DATABASENAME : [Dd][Aa][Tt][Aa][Bb][Aa][Ss][Ee][Nn][Aa][Mm][Ee];
+USERNAME  : [Uu][Ss][Ee][Rr][Nn][Aa][Mm][Ee];
+PASSWORD  : [Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd];
+ACTIVE    : [Aa][Cc][Tt][Ii][Vv][Ee];
+ALIAS     : [Aa][Ll][Ii][Aa][Ss];
+OPEN      : [Oo][Pp][Ee][Nn];
+CLOSE     : [Cc][Ll][Oo][Ss][Ee];
+COMMIT    : [Cc][Oo][Mm][Mm][Ii][Tt];
 LOGIN     : [Ll][Oo][Gg][Ii][Nn];
 TRUE      : [Tt][Rr][Uu][Ee];
 FALSE     : [Ff][Aa][Ll][Ss][Ee];

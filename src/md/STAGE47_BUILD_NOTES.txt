@@ -1,0 +1,15 @@
+Stage 47 build notes
+====================
+
+Windows / MSYS2 MinGW32 / Qt5:
+
+  cd d64qt5
+  qmake d64qt5_bridge.pro CONFIG+=release
+  mingw32-make release
+
+Stage 47 changes the remote protocol to version 5 and adds D64TERM/1.
+Server and client must therefore use matching Stage-47 d64qt5.dll sources.
+
+This Linux execution environment does not contain the user's Windows Qt5 /
+MinGW32 toolchain, so no native d64qt5.dll binary is claimed as built here.
+The static/regression suite was executed against the complete source tree.

@@ -4853,6 +4853,32 @@ class DBaseSessionLoginStatement:
 
 
 @dataclass(frozen=True)
+class DBaseLocalObjectDeclaration:
+    name: str
+    class_name: str
+    line: int
+    column: int
+
+
+@dataclass(frozen=True)
+class DBaseObjectPropertyStatement:
+    target: DBaseObjectPath
+    property_name: str
+    expression: Optional[DBaseExpression]
+    object_value: Optional[DBaseObjectPath]
+    line: int
+    column: int
+
+
+@dataclass(frozen=True)
+class DBaseObjectMethodStatement:
+    target: DBaseObjectPath
+    method_name: str
+    line: int
+    column: int
+
+
+@dataclass(frozen=True)
 class DBaseMenuFileStatement:
     expression: DBaseExpression
     resolved_path: str
@@ -4940,6 +4966,18 @@ _DBASE_NEW_SESSION_RE = re.compile(
 )
 _DBASE_SESSION_LOGIN_RE = re.compile(
     rf"(?i)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*({_DBASE_OBJECT_PATH_TEXT})\.LOGIN\s*\((.*)\)\s*$"
+)
+_DBASE_LOCAL_DATABASE_RE = re.compile(
+    r"(?i)^\s*local\s+([A-Za-z_][A-Za-z0-9_]*)\s+as\s+DATABASE\s*$"
+)
+_DBASE_NEW_DATABASE_RE = re.compile(
+    rf"(?i)^\s*({_DBASE_OBJECT_PATH_TEXT})\s*=\s*new\s+DATABASE\s*\(\s*\)\s*$"
+)
+_DBASE_DATABASE_PROPERTY_RE = re.compile(
+    rf"(?i)^\s*({_DBASE_OBJECT_PATH_TEXT})\.(path|databaseName|userName|password|active|alias|session)\s*=\s*(.*?)\s*$"
+)
+_DBASE_DATABASE_METHOD_RE = re.compile(
+    rf"(?i)^\s*({_DBASE_OBJECT_PATH_TEXT})\.(open|close|commit)\s*\(\s*\)\s*$"
 )
 _DBASE_MENUFILE_RE = re.compile(
     r"(?i)^\s*((?:_app|this)\.menuFile)\s*=\s*(.*?)\s*$"
@@ -5413,6 +5451,90 @@ def parse_dbase_statements(
             i += 1
             continue
 
+        local_database = _DBASE_LOCAL_DATABASE_RE.fullmatch(raw)
+        if local_database:
+            statement = DBaseLocalObjectDeclaration(
+                name=local_database.group(1),
+                class_name="DATABASE",
+                line=line_no,
+                column=max(1, raw.lower().find("local") + 1),
+            )
+            masked[i] = _dbase_mask_line(raw) + raw_with_nl[len(raw):]
+            events.append((line_no, event_serial, statement, ()))
+            event_serial += 1
+            i += 1
+            continue
+
+        new_database = _DBASE_NEW_DATABASE_RE.fullmatch(raw)
+        if new_database:
+            target_path = _dbase_object_path(
+                new_database.group(1), line_no, max(1, raw.find(new_database.group(1)) + 1)
+            )
+            owner_path = _dbase_parent_path(target_path)
+            statement = DBaseNewObjectStatement(
+                target=target_path, class_name="DATABASE", owner=owner_path,
+                line=line_no, column=max(1, raw.find(new_database.group(1)) + 1),
+            )
+            masked[i] = _dbase_mask_line(raw) + raw_with_nl[len(raw):]
+            events.append((line_no, event_serial, statement, ()))
+            event_serial += 1
+            i += 1
+            continue
+
+        database_property = _DBASE_DATABASE_PROPERTY_RE.fullmatch(raw)
+        if database_property:
+            target_text = database_property.group(1)
+            property_name = database_property.group(2)
+            rhs = database_property.group(3)
+            target_path = _dbase_object_path(
+                target_text, line_no, max(1, raw.find(target_text) + 1)
+            )
+            object_value = None
+            expression = None
+            if property_name.casefold() == "session":
+                object_value = _dbase_object_path(
+                    rhs, line_no, max(1, raw.find(rhs) + 1)
+                )
+            elif property_name.casefold() == "active" and rhs.strip().casefold() in {"true", "false"}:
+                flag = Decimal(1 if rhs.strip().casefold() == "true" else 0)
+                expression = DBaseLiteralExpression(
+                    line=line_no, column=max(1, raw.find(rhs) + 1),
+                    value_type="number", value=flag, text=rhs.strip(),
+                )
+            else:
+                line_start_offset = sum(len(item) for item in lines[:i])
+                expression = _dbase_parse_property_expression(
+                    rhs, raw_line=raw, parse_source=parse_source,
+                    line_start_offset=line_start_offset, line=line_no, filename=filename,
+                )
+            statement = DBaseObjectPropertyStatement(
+                target=target_path, property_name=property_name,
+                expression=expression, object_value=object_value,
+                line=line_no, column=max(1, raw.find(property_name) + 1),
+            )
+            masked[i] = _dbase_mask_line(raw) + raw_with_nl[len(raw):]
+            events.append((line_no, event_serial, statement, ()))
+            event_serial += 1
+            i += 1
+            continue
+
+        database_method = _DBASE_DATABASE_METHOD_RE.fullmatch(raw)
+        if database_method:
+            target_text = database_method.group(1)
+            statement = DBaseObjectMethodStatement(
+                target=_dbase_object_path(
+                    target_text, line_no, max(1, raw.find(target_text) + 1)
+                ),
+                method_name=database_method.group(2),
+                line=line_no,
+                column=max(1, raw.find(database_method.group(2)) + 1),
+            )
+            masked[i] = _dbase_mask_line(raw) + raw_with_nl[len(raw):]
+            events.append((line_no, event_serial, statement, ()))
+            event_serial += 1
+            i += 1
+            continue
+
         new_session = _DBASE_NEW_SESSION_RE.fullmatch(raw)
         if new_session:
             target_path = _dbase_object_path(
@@ -5620,6 +5742,7 @@ class _DBaseProgramAnalyzer(_Stage12ProgramAnalyzer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.object_classes: Dict[Tuple[str, ...], str] = {}
+        self.declared_object_classes: Dict[str, str] = {}
         # Stage 25: globaler, read-only Loginstatus. Der Wert wird bei jeder
         # Verwendung zur Laufzeit aus der Qt5-Bridge gelesen und besitzt
         # deshalb absichtlich keinen statischen Datenslot.
@@ -5636,6 +5759,74 @@ class _DBaseProgramAnalyzer(_Stage12ProgramAnalyzer):
     @staticmethod
     def _object_key(path: DBaseObjectPath) -> Tuple[str, ...]:
         return tuple(part.casefold() for part in path.canonical_parts)
+
+    def _require_object_class(self, path: DBaseObjectPath, expected: str, *, line: int, column: int) -> None:
+        class_name = self.object_classes.get(self._object_key(path))
+        if class_name != expected.upper():
+            raise DBaseCompilerError(
+                f"Objekt '{path.dotted}' ist nicht als {expected.upper()} erzeugt worden.",
+                line=line, column=column, filename=self.filename,
+            )
+
+    def _analyze_database_property(
+        self, statement: DBaseObjectPropertyStatement, globals_work: Dict[str, _DBaseSymbolState]
+    ) -> None:
+        self._require_object_class(
+            statement.target, "DATABASE", line=statement.line, column=statement.column
+        )
+        key = statement.property_name.casefold()
+        if key == "session":
+            if statement.object_value is None:
+                raise DBaseCompilerError(
+                    "DATABASE.session erwartet eine SESSION-Objektreferenz.",
+                    line=statement.line, column=statement.column, filename=self.filename,
+                )
+            self._require_object_class(
+                statement.object_value, "SESSION", line=statement.line, column=statement.column
+            )
+            return
+
+        if statement.expression is None:
+            raise AssertionError(statement.property_name)
+        info = self.analyze_expression(
+            statement.expression, symbols=globals_work, expression_info=self.expression_info,
+            call_bindings=self.call_bindings,
+        )
+        if key in {"path", "databasename", "username", "password", "alias"}:
+            if info.kind not in _STRING_KINDS:
+                raise DBaseCompilerError(
+                    f"DATABASE.{statement.property_name} erwartet String/Char.",
+                    line=statement.expression.line, column=statement.expression.column, filename=self.filename,
+                )
+            return
+        if key == "active":
+            if info.kind != "number":
+                raise DBaseCompilerError(
+                    "DATABASE.active erwartet TRUE/FALSE oder 0/1.",
+                    line=statement.expression.line, column=statement.expression.column, filename=self.filename,
+                )
+            if info.constant_value is not None:
+                value = Decimal(info.constant_value.value)
+                if value not in {Decimal(0), Decimal(1)}:
+                    raise DBaseCompilerError(
+                        "DATABASE.active erwartet TRUE/FALSE oder 0/1.",
+                        line=statement.expression.line, column=statement.expression.column, filename=self.filename,
+                    )
+            return
+        raise DBaseCompilerError(
+            f"Unbekannte DATABASE-Eigenschaft '{statement.property_name}'.",
+            line=statement.line, column=statement.column, filename=self.filename,
+        )
+
+    def _analyze_database_method(self, statement: DBaseObjectMethodStatement) -> None:
+        self._require_object_class(
+            statement.target, "DATABASE", line=statement.line, column=statement.column
+        )
+        if statement.method_name.casefold() not in {"open", "close", "commit"}:
+            raise DBaseCompilerError(
+                f"Unbekannte DATABASE-Methode '{statement.method_name}'.",
+                line=statement.line, column=statement.column, filename=self.filename,
+            )
 
     def _analyze_session_login(
         self,
@@ -5807,18 +5998,42 @@ class _DBaseProgramAnalyzer(_Stage12ProgramAnalyzer):
     def _without_menu(sequence: Tuple[object, ...]) -> Tuple[object, ...]:
         return tuple(
             statement for statement in sequence
-            if not isinstance(statement, (DBaseNewObjectStatement, DBaseSessionLoginStatement, DBaseWithStatement, DBaseMenuFileStatement, DBaseAppColorStatement))
+            if not isinstance(statement, (DBaseLocalObjectDeclaration, DBaseNewObjectStatement, DBaseSessionLoginStatement, DBaseObjectPropertyStatement, DBaseObjectMethodStatement, DBaseWithStatement, DBaseMenuFileStatement, DBaseAppColorStatement))
         )
 
     def _analyze_top_sequence(self, sequence, globals_work):
         seq = tuple(sequence)
         self._validate_menu_statements(seq)
         for statement in seq:
+            if isinstance(statement, DBaseLocalObjectDeclaration):
+                key = statement.name.casefold()
+                existing = self.declared_object_classes.get(key)
+                if existing is not None and existing != statement.class_name.upper():
+                    raise DBaseCompilerError(
+                        f"Lokaler Objektalias '{statement.name}' wurde bereits als {existing} deklariert.",
+                        line=statement.line, column=statement.column, filename=self.filename,
+                    )
+                self.declared_object_classes[key] = statement.class_name.upper()
+                continue
             if isinstance(statement, DBaseAppColorStatement):
                 self._analyze_app_color(statement, globals_work)
                 continue
             if isinstance(statement, DBaseNewObjectStatement):
-                self.object_classes[self._object_key(statement.target)] = statement.class_name.upper()
+                class_name = statement.class_name.upper()
+                if len(statement.target.canonical_parts) == 1:
+                    declared = self.declared_object_classes.get(statement.target.canonical_parts[0].casefold())
+                    if declared is not None and declared != class_name:
+                        raise DBaseCompilerError(
+                            f"Objekt '{statement.target.dotted}' ist als {declared} deklariert, nicht als {class_name}.",
+                            line=statement.line, column=statement.column, filename=self.filename,
+                        )
+                self.object_classes[self._object_key(statement.target)] = class_name
+                continue
+            if isinstance(statement, DBaseObjectPropertyStatement):
+                self._analyze_database_property(statement, globals_work)
+                continue
+            if isinstance(statement, DBaseObjectMethodStatement):
+                self._analyze_database_method(statement)
                 continue
             if isinstance(statement, DBaseSessionLoginStatement):
                 self._analyze_session_login(statement, globals_work)
@@ -5852,6 +6067,19 @@ class _DBaseCodeGenerator(_Stage12CodeGenerator):
         "DBaseQtSessionCreate",
         "DBaseQtGetLoginSession",
         "DBaseQtSessionLogin",
+    )
+    DATABASE_IMPORTS = (
+        "DBaseQtDatabaseCreate",
+        "DBaseQtDatabaseSetPath",
+        "DBaseQtDatabaseSetDatabaseName",
+        "DBaseQtDatabaseSetUserName",
+        "DBaseQtDatabaseSetPassword",
+        "DBaseQtDatabaseSetAlias",
+        "DBaseQtDatabaseSetSession",
+        "DBaseQtDatabaseSetActive",
+        "DBaseQtDatabaseOpen",
+        "DBaseQtDatabaseClose",
+        "DBaseQtDatabaseCommit",
     )
 
     def __init__(self, *args, **kwargs):
@@ -5968,6 +6196,8 @@ class _DBaseCodeGenerator(_Stage12CodeGenerator):
             create_symbol = "DBaseQtMenuCreate"
         elif class_name == "SESSION":
             create_symbol = "DBaseQtSessionCreate"
+        elif class_name == "DATABASE":
+            create_symbol = "DBaseQtDatabaseCreate"
         else:
             raise DBaseCompilerError(
                 f"Unbekannte eingebaute Klasse '{statement.class_name}'.",
@@ -6026,6 +6256,108 @@ class _DBaseCodeGenerator(_Stage12CodeGenerator):
         self.emit(f"    fild dword ptr [{result_label}_num]")
         self.emit(f"    fstp qword ptr [{result_label}_num]")
         self.emit(f"    mov dword ptr [{result_label}_type], {_TYPE_NUMBER}")
+
+    def _emit_database_string_property(self, statement: DBaseObjectPropertyStatement, function: str) -> None:
+        if statement.expression is None:
+            raise AssertionError(statement.property_name)
+        database_slot = self._object_slot(statement.target)
+        value_slot = self.new_storage_slot("database_property")
+        self.emit_store_expression_to_slot(statement.expression, value_slot)
+        if self.is64:
+            self.emit(f"    mov rcx, qword ptr [{database_slot}]")
+            self.emit(f"    mov rdx, qword ptr [{value_slot}_ptr]")
+            self.emit(f"    mov r8d, dword ptr [{value_slot}_len]")
+            self.emit("    sub rsp, 40")
+            self.emit(f"    call {function}")
+            self.emit("    add rsp, 40")
+        else:
+            self.emit(f"    push dword ptr [{value_slot}_len]")
+            self.emit(f"    push dword ptr [{value_slot}_ptr]")
+            self.emit(f"    push dword ptr [{database_slot}]")
+            self.emit(f"    call {function}")
+            self.emit("    add esp, 12")
+
+    def emit_database_property(self, statement: DBaseObjectPropertyStatement) -> None:
+        key = statement.property_name.casefold()
+        string_calls = {
+            "path": "DBaseQtDatabaseSetPath",
+            "databasename": "DBaseQtDatabaseSetDatabaseName",
+            "username": "DBaseQtDatabaseSetUserName",
+            "password": "DBaseQtDatabaseSetPassword",
+            "alias": "DBaseQtDatabaseSetAlias",
+        }
+        if key in string_calls:
+            self._emit_database_string_property(statement, string_calls[key])
+            return
+
+        database_slot = self._object_slot(statement.target)
+        if key == "session":
+            if statement.object_value is None:
+                raise AssertionError("DATABASE.session ohne Objekt")
+            session_slot = self._object_slot(statement.object_value)
+            if self.is64:
+                self.emit(f"    mov rcx, qword ptr [{database_slot}]")
+                self.emit(f"    mov rdx, qword ptr [{session_slot}]")
+                self.emit("    sub rsp, 40")
+                self.emit("    call DBaseQtDatabaseSetSession")
+                self.emit("    add rsp, 40")
+            else:
+                self.emit(f"    push dword ptr [{session_slot}]")
+                self.emit(f"    push dword ptr [{database_slot}]")
+                self.emit("    call DBaseQtDatabaseSetSession")
+                self.emit("    add esp, 8")
+            return
+
+        if key == "active":
+            if statement.expression is None:
+                raise AssertionError("DATABASE.active ohne Ausdruck")
+            info = self.current_expression_info[statement.expression]
+            if info.constant_value is not None:
+                value = 1 if Decimal(info.constant_value.value) != 0 else 0
+                if self.is64:
+                    self.emit(f"    mov rcx, qword ptr [{database_slot}]")
+                    self.emit(f"    mov edx, {value}")
+                    self.emit("    sub rsp, 40")
+                    self.emit("    call DBaseQtDatabaseSetActive")
+                    self.emit("    add rsp, 40")
+                else:
+                    self.emit(f"    push {value}")
+                    self.emit(f"    push dword ptr [{database_slot}]")
+                    self.emit("    call DBaseQtDatabaseSetActive")
+                    self.emit("    add esp, 8")
+            else:
+                self.emit_numeric_expression(statement.expression)
+                self.emit("    fistp dword ptr [__dbase_temp_number]")
+                if self.is64:
+                    self.emit(f"    mov rcx, qword ptr [{database_slot}]")
+                    self.emit("    mov edx, dword ptr [__dbase_temp_number]")
+                    self.emit("    sub rsp, 40")
+                    self.emit("    call DBaseQtDatabaseSetActive")
+                    self.emit("    add rsp, 40")
+                else:
+                    self.emit("    push dword ptr [__dbase_temp_number]")
+                    self.emit(f"    push dword ptr [{database_slot}]")
+                    self.emit("    call DBaseQtDatabaseSetActive")
+                    self.emit("    add esp, 8")
+            return
+        raise AssertionError(statement.property_name)
+
+    def emit_database_method(self, statement: DBaseObjectMethodStatement) -> None:
+        database_slot = self._object_slot(statement.target)
+        function = {
+            "open": "DBaseQtDatabaseOpen",
+            "close": "DBaseQtDatabaseClose",
+            "commit": "DBaseQtDatabaseCommit",
+        }[statement.method_name.casefold()]
+        if self.is64:
+            self.emit(f"    mov rcx, qword ptr [{database_slot}]")
+            self.emit("    sub rsp, 40")
+            self.emit(f"    call {function}")
+            self.emit("    add rsp, 40")
+        else:
+            self.emit(f"    push dword ptr [{database_slot}]")
+            self.emit(f"    call {function}")
+            self.emit("    add esp, 4")
 
     def _emit_menu_string(self, function: str, slot: str, value: str) -> None:
         label, length = self.text_literal(value)
@@ -6108,7 +6440,18 @@ class _DBaseCodeGenerator(_Stage12CodeGenerator):
             chunk = []
 
         for statement in sequence:
-            if isinstance(statement, DBaseAppColorStatement):
+            if isinstance(statement, DBaseLocalObjectDeclaration):
+                flush()
+                self.emit_shutdown_guard(routine_end_label)
+            elif isinstance(statement, DBaseObjectPropertyStatement):
+                flush()
+                self.emit_database_property(statement)
+                self.emit_shutdown_guard(routine_end_label)
+            elif isinstance(statement, DBaseObjectMethodStatement):
+                flush()
+                self.emit_database_method(statement)
+                self.emit_shutdown_guard(routine_end_label)
+            elif isinstance(statement, DBaseAppColorStatement):
                 flush()
                 self.emit_app_color(statement)
                 self.emit_shutdown_guard(routine_end_label)
@@ -6137,7 +6480,7 @@ class _DBaseCodeGenerator(_Stage12CodeGenerator):
         marker = 'import DBaseQtShutdown, "d64qt5.dll", "DBaseQtShutdown"\n'
         extra = "".join(
             f'import {symbol}, "d64qt5.dll", "{symbol}"\n'
-            for symbol in self.MENU_IMPORTS + self.SESSION_IMPORTS
+            for symbol in self.MENU_IMPORTS + self.SESSION_IMPORTS + self.DATABASE_IMPORTS
         )
         if marker in assembly and extra not in assembly:
             assembly = assembly.replace(marker, marker + extra, 1)
@@ -6164,7 +6507,8 @@ class _DBaseCodeGenerator(_Stage12CodeGenerator):
 
 # Öffentliche Exportliste der additiven Stage-13-Klassen.
 for _name in (
-    "DBaseObjectPath", "DBaseNewObjectStatement", "DBaseSessionLoginStatement", "DBaseMenuFileStatement",
+    "DBaseObjectPath", "DBaseNewObjectStatement", "DBaseSessionLoginStatement",
+    "DBaseLocalObjectDeclaration", "DBaseObjectPropertyStatement", "DBaseObjectMethodStatement", "DBaseMenuFileStatement",
     "DBaseAppColorStatement", "DBASE_SYSTEM_COLOR_NAMES",
     "DBaseSetColorStatement", "DBaseClearScreenStatement", "DBaseSetBorderColorStatement",
     "DBASE_FOREGROUND_COLOR_CODES", "DBASE_BACKGROUND_COLOR_CODES",
@@ -6183,7 +6527,7 @@ def evaluate_dbase_statements(
 ) -> str:
     filtered = tuple(
         statement for statement in statements
-        if not isinstance(statement, (DBaseNewObjectStatement, DBaseSessionLoginStatement, DBaseWithStatement, DBaseMenuFileStatement, DBaseAppColorStatement))
+        if not isinstance(statement, (DBaseLocalObjectDeclaration, DBaseNewObjectStatement, DBaseSessionLoginStatement, DBaseObjectPropertyStatement, DBaseObjectMethodStatement, DBaseWithStatement, DBaseMenuFileStatement, DBaseAppColorStatement))
     )
     return _stage12_evaluate_dbase_statements(filtered, filename=filename)
 
@@ -6217,6 +6561,7 @@ def compile_dbase_to_assembly(
         "dBase-Ausbaustufe 23: CLEAR SCREEN <expr> fuellt bei 0..255 die 80x25-Konsole mit einem CP437-Terminalzeichen; '#RRGGBB'/RGB(...) setzt beim Loeschen die Hintergrundfarbe.",
         "dBase-Ausbaustufe 24: Konsolen-Scrollbars und reservierte Leerzeile entfallen; menuFile verwendet String-Ausdruecke und bei leerem menuFile wird ein Standard-Dateimenue erzeugt.",
         "dBase-Ausbaustufe 25: new SESSION() oeffnet den rastergebundenen Windows-Login-Dialog; LOGINSESSION liefert den globalen 0/1-Status und bis zum Login bleiben nur Login/Beenden aktiv.",
+        "dBase-Ausbaustufe 30: DATABASE-Objekte mit LOCAL ... AS DATABASE, Session-Bindung, Pfad/Name/Anmeldedaten/Alias sowie OPEN/CLOSE/COMMIT und ACTIVE-Lifecycle.",
         "dBase-Ausbaustufe 29: Schliessen des Hauptfensters beendet alle Dialog-Eventloops und fuehrt den generierten Code ueber einen gemeinsamen Shutdown-/VirtualFree-Cleanup-Pfad.",
     )
     return DBaseCompileResult(

@@ -40,6 +40,17 @@ D64QT5_API int  DBaseQtSessionLogin(
     const char *password, int passwordLength,
     const char *group, int groupLength
 );
+D64QT5_API void *DBaseQtDatabaseCreate(void *parent);
+D64QT5_API void DBaseQtDatabaseSetPath(void *handle, const char *text, int length);
+D64QT5_API void DBaseQtDatabaseSetDatabaseName(void *handle, const char *text, int length);
+D64QT5_API void DBaseQtDatabaseSetUserName(void *handle, const char *text, int length);
+D64QT5_API void DBaseQtDatabaseSetPassword(void *handle, const char *text, int length);
+D64QT5_API void DBaseQtDatabaseSetAlias(void *handle, const char *text, int length);
+D64QT5_API void DBaseQtDatabaseSetSession(void *handle, void *sessionHandle);
+D64QT5_API int  DBaseQtDatabaseSetActive(void *handle, int active);
+D64QT5_API int  DBaseQtDatabaseOpen(void *handle);
+D64QT5_API void DBaseQtDatabaseClose(void *handle);
+D64QT5_API int  DBaseQtDatabaseCommit(void *handle);
 D64QT5_API void  DBaseQtEnsureDefaultMenu(void);
 D64QT5_API void *DBaseQtMenuCreate(void *owner);
 D64QT5_API void DBaseQtMenuSetText(void *handle, const char *text, int length);

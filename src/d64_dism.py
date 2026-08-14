@@ -7516,6 +7516,7 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             QDir,
             QEvent,
             QFileInfo,
+            QModelIndex,
             QObject,
             QPoint,
             QPointF,
@@ -7523,6 +7524,7 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             QRectF,
             QSettings,
             QProcess,
+            QSortFilterProxyModel,
             QSize,
             QTemporaryDir,
             QThread,
@@ -17559,6 +17561,590 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 return
             super().mouseDoubleClickEvent(event)
 
+
+    class OpenFileFilterProxyModel(QSortFilterProxyModel):
+        """Filtert die mittlere Datei-/Verzeichnisansicht des Öffnen-Dialogs."""
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self._search_text = ""
+            self._extensions: Optional[set] = None
+            self.setDynamicSortFilter(True)
+            self.setFilterCaseSensitivity(Qt.CaseInsensitive)
+
+        def set_search_text(self, text: str) -> None:
+            self._search_text = str(text or "").strip().casefold()
+            self.invalidateFilter()
+
+        def set_extensions(self, extensions: Optional[Iterable[str]]) -> None:
+            if extensions is None:
+                self._extensions = None
+            else:
+                self._extensions = {
+                    str(extension).casefold()
+                    if str(extension).startswith(".")
+                    else "." + str(extension).casefold()
+                    for extension in extensions
+                    if str(extension).strip()
+                }
+            self.invalidateFilter()
+
+        def filterAcceptsRow(self, source_row, source_parent) -> bool:
+            model = self.sourceModel()
+            if model is None:
+                return True
+            index = model.index(source_row, 0, source_parent)
+            if not index.isValid():
+                return True
+            info = model.fileInfo(index)
+            name = str(info.fileName() or "")
+            if self._search_text and self._search_text not in name.casefold():
+                return False
+            if info.isDir():
+                return True
+            if self._extensions is None:
+                return True
+            return Path(name).suffix.casefold() in self._extensions
+
+
+    class ProjectOpenFileDialog(QDialog):
+        """Eigener Datei-Öffnen-Dialog für die Python-Anwendung.
+
+        ``fileName`` wird unmittelbar vor ``accept()`` mit dem vollständigen
+        Pfad belegt. Die Navigation ist unabhängig vom nativen QFileDialog,
+        damit Filter- und Projektlogik später erweitert werden können.
+        """
+
+        def __init__(
+            self,
+            parent,
+            *,
+            initial_directory: Path,
+            supported_extensions: Iterable[str],
+        ):
+            super().__init__(parent)
+            self.setObjectName("project_open_file_dialog")
+            self.setWindowTitle("Datei öffnen")
+            self.setModal(True)
+            self.resize(1180, 720)
+
+            self.fileName = ""
+            self._back_history: List[Path] = []
+            self._forward_history: List[Path] = []
+            self._filter_guard = False
+            self._path_history: List[str] = []
+            self._supported_extensions = sorted({
+                str(extension).casefold()
+                if str(extension).startswith(".")
+                else "." + str(extension).casefold()
+                for extension in supported_extensions
+                if str(extension).strip()
+            })
+
+            initial = Path(initial_directory).expanduser()
+            try:
+                initial = initial.resolve()
+            except OSError:
+                pass
+            if not initial.is_dir():
+                initial = Path.cwd().resolve()
+            self.current_directory = initial
+
+            outer = QVBoxLayout(self)
+            outer.setContentsMargins(8, 8, 8, 8)
+            outer.setSpacing(7)
+
+            top_row = QHBoxLayout()
+            top_row.setContentsMargins(0, 0, 0, 0)
+            top_row.setSpacing(5)
+
+            self.back_button = QToolButton(self)
+            self.back_button.setObjectName("open_back_button")
+            self.back_button.setIcon(self.style().standardIcon(QStyle.SP_ArrowBack))
+            self.back_button.setToolTip("Zurück")
+            self.forward_button = QToolButton(self)
+            self.forward_button.setObjectName("open_forward_button")
+            self.forward_button.setIcon(self.style().standardIcon(QStyle.SP_ArrowForward))
+            self.forward_button.setToolTip("Vor")
+            self.up_button = QToolButton(self)
+            self.up_button.setObjectName("open_up_button")
+            self.up_button.setIcon(self.style().standardIcon(QStyle.SP_ArrowUp))
+            self.up_button.setToolTip("Eine Verzeichnisebene höher")
+            for button in (self.back_button, self.forward_button, self.up_button):
+                button.setAutoRaise(True)
+                button.setFixedSize(30, 28)
+                top_row.addWidget(button)
+
+            self.path_stack = QStackedWidget(self)
+            self.path_stack.setObjectName("open_path_stack")
+            self.path_stack.setMinimumHeight(30)
+
+            self.breadcrumb_widget = QWidget(self.path_stack)
+            self.breadcrumb_layout = QHBoxLayout(self.breadcrumb_widget)
+            self.breadcrumb_layout.setContentsMargins(0, 0, 0, 0)
+            self.breadcrumb_layout.setSpacing(2)
+            self.breadcrumb_folder_button = QToolButton(self.breadcrumb_widget)
+            self.breadcrumb_folder_button.setObjectName("breadcrumb_folder_button")
+            self.breadcrumb_folder_button.setIcon(
+                self.style().standardIcon(QStyle.SP_DirOpenIcon)
+            )
+            self.breadcrumb_folder_button.setToolTip(
+                "Vollständigen Verzeichnispfad bearbeiten"
+            )
+            self.breadcrumb_folder_button.setAutoRaise(True)
+            self.breadcrumb_layout.addWidget(self.breadcrumb_folder_button)
+            self.breadcrumb_buttons_widget = QWidget(self.breadcrumb_widget)
+            self.breadcrumb_buttons_layout = QHBoxLayout(self.breadcrumb_buttons_widget)
+            self.breadcrumb_buttons_layout.setContentsMargins(0, 0, 0, 0)
+            self.breadcrumb_buttons_layout.setSpacing(1)
+            self.breadcrumb_layout.addWidget(self.breadcrumb_buttons_widget, 1)
+            self.subdir_button = QToolButton(self.breadcrumb_widget)
+            self.subdir_button.setObjectName("breadcrumb_subdir_button")
+            self.subdir_button.setArrowType(Qt.DownArrow)
+            self.subdir_button.setToolTip("Unterverzeichnisse anzeigen")
+            self.subdir_button.setAutoRaise(True)
+            self.breadcrumb_layout.addWidget(self.subdir_button)
+            self.path_stack.addWidget(self.breadcrumb_widget)
+
+            self.path_combo = QComboBox(self.path_stack)
+            self.path_combo.setObjectName("open_path_combo")
+            self.path_combo.setEditable(True)
+            self.path_combo.setInsertPolicy(QComboBox.NoInsert)
+            self.path_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            self.path_stack.addWidget(self.path_combo)
+            self.path_stack.setCurrentWidget(self.breadcrumb_widget)
+            path_edit = self.path_combo.lineEdit()
+            self.path_folder_action = path_edit.addAction(
+                self.style().standardIcon(QStyle.SP_DirOpenIcon),
+                QLineEdit.LeadingPosition,
+            )
+            self.path_folder_action.setToolTip("Verzeichnis-Schaltflächen anzeigen")
+            top_row.addWidget(self.path_stack, 1)
+
+            self.search_edit = QLineEdit(self)
+            self.search_edit.setObjectName("open_search_edit")
+            self.search_edit.setPlaceholderText("Search")
+            self.search_edit.setClearButtonEnabled(True)
+            self.search_edit.setMinimumWidth(220)
+            search_icon = QIcon.fromTheme(
+                "edit-find",
+                self.style().standardIcon(QStyle.SP_FileDialogContentsView),
+            )
+            self.search_action = self.search_edit.addAction(
+                search_icon,
+                QLineEdit.TrailingPosition,
+            )
+            self.search_action.setToolTip("Datei-/Verzeichnisnamen filtern")
+            top_row.addWidget(self.search_edit)
+            outer.addLayout(top_row)
+
+            self.main_splitter = QSplitter(Qt.Horizontal, self)
+            self.main_splitter.setObjectName("open_main_splitter")
+            self.main_splitter.setChildrenCollapsible(False)
+
+            self.directory_model = QFileSystemModel(self)
+            self.directory_model.setFilter(QDir.AllDirs | QDir.NoDotAndDotDot | QDir.Drives)
+            self.directory_model.setRootPath(QDir.rootPath())
+            self.directory_tree = QTreeView(self.main_splitter)
+            self.directory_tree.setObjectName("open_directory_tree")
+            self.directory_tree.setModel(self.directory_model)
+            self.directory_tree.setRootIndex(QModelIndex())
+            self.directory_tree.setHeaderHidden(True)
+            self.directory_tree.setUniformRowHeights(True)
+            for column in range(1, 4):
+                self.directory_tree.hideColumn(column)
+            self.main_splitter.addWidget(self.directory_tree)
+
+            self.file_model = QFileSystemModel(self)
+            self.file_model.setFilter(QDir.AllDirs | QDir.Files | QDir.NoDotAndDotDot)
+            self.file_model.setRootPath(str(self.current_directory))
+            self.file_proxy = OpenFileFilterProxyModel(self)
+            self.file_proxy.setSourceModel(self.file_model)
+            self.file_view = QTreeView(self.main_splitter)
+            self.file_view.setObjectName("open_file_view")
+            self.file_view.setModel(self.file_proxy)
+            self.file_view.setRootIsDecorated(False)
+            self.file_view.setItemsExpandable(False)
+            self.file_view.setAlternatingRowColors(True)
+            self.file_view.setSortingEnabled(True)
+            self.file_view.sortByColumn(0, Qt.AscendingOrder)
+            self.file_view.setSelectionBehavior(QAbstractItemView.SelectRows)
+            self.file_view.setSelectionMode(QAbstractItemView.SingleSelection)
+            self.file_view.header().setStretchLastSection(False)
+            self.file_view.header().setSectionResizeMode(0, QHeaderView.Stretch)
+            self.main_splitter.addWidget(self.file_view)
+
+            filter_panel = QWidget(self.main_splitter)
+            filter_layout = QVBoxLayout(filter_panel)
+            filter_layout.setContentsMargins(5, 5, 5, 5)
+            filter_layout.setSpacing(4)
+            filter_title = QLabel("Dateierweiterungen", filter_panel)
+            filter_layout.addWidget(filter_title)
+            self.extension_list = QListWidget(filter_panel)
+            self.extension_list.setObjectName("open_extension_check_list")
+            filter_layout.addWidget(self.extension_list, 1)
+            self._build_extension_check_list()
+            self.main_splitter.addWidget(filter_panel)
+            self.main_splitter.setStretchFactor(0, 2)
+            self.main_splitter.setStretchFactor(1, 5)
+            self.main_splitter.setStretchFactor(2, 2)
+            self.main_splitter.setSizes([250, 650, 240])
+            outer.addWidget(self.main_splitter, 1)
+
+            self.file_combo = QComboBox(self)
+            self.file_combo.setObjectName("open_full_path_combo")
+            self.file_combo.setEditable(True)
+            self.file_combo.setInsertPolicy(QComboBox.NoInsert)
+            self.file_combo.lineEdit().setPlaceholderText(
+                "Datei mit vollständiger Pfadangabe"
+            )
+            outer.addWidget(self.file_combo)
+
+            button_row = QHBoxLayout()
+            button_row.addStretch(1)
+            self.open_button = QPushButton("Öffnen", self)
+            self.open_button.setObjectName("open_dialog_open_button")
+            self.cancel_button = QPushButton("Abbrechen", self)
+            self.cancel_button.setObjectName("open_dialog_cancel_button")
+            self.open_button.setDefault(True)
+            button_row.addWidget(self.open_button)
+            button_row.addWidget(self.cancel_button)
+            outer.addLayout(button_row)
+
+            self.back_button.clicked.connect(self.go_back)
+            self.forward_button.clicked.connect(self.go_forward)
+            self.up_button.clicked.connect(self.go_up)
+            self.breadcrumb_folder_button.clicked.connect(self.show_editable_path)
+            self.path_folder_action.triggered.connect(self.show_breadcrumb_path)
+            self.subdir_button.clicked.connect(self.show_subdirectory_menu)
+            self.path_combo.lineEdit().returnPressed.connect(self.navigate_from_path_edit)
+            self.path_combo.activated[str].connect(self.navigate_from_combo)
+            self.search_edit.textChanged.connect(self._apply_filters)
+            self.search_action.triggered.connect(self._apply_filters)
+            self.extension_list.itemChanged.connect(self._extension_item_changed)
+            self.directory_tree.clicked.connect(self._directory_tree_clicked)
+            self.file_view.clicked.connect(self._file_view_clicked)
+            self.file_view.doubleClicked.connect(self._file_view_double_clicked)
+            self.file_combo.activated[str].connect(self._file_combo_activated)
+            self.open_button.clicked.connect(self.open_selected)
+            self.cancel_button.clicked.connect(self.reject)
+            self.file_model.directoryLoaded.connect(self._directory_loaded)
+
+            self._remember_path(self.current_directory)
+            self._refresh_directory_views()
+
+        def _build_extension_check_list(self) -> None:
+            self.extension_list.blockSignals(True)
+            self.extension_list.clear()
+            all_item = QListWidgetItem("Alle *.*", self.extension_list)
+            all_item.setData(Qt.UserRole, "*")
+            all_item.setFlags(all_item.flags() | Qt.ItemIsUserCheckable)
+            all_item.setCheckState(Qt.Checked)
+            for extension in self._supported_extensions:
+                item = QListWidgetItem(f"*{extension}", self.extension_list)
+                item.setData(Qt.UserRole, extension)
+                item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                item.setCheckState(Qt.Unchecked)
+            self.extension_list.blockSignals(False)
+
+        def _remember_path(self, path: Path) -> None:
+            text = str(Path(path))
+            folded = text.casefold()
+            if not any(existing.casefold() == folded for existing in self._path_history):
+                self._path_history.insert(0, text)
+            self.path_combo.blockSignals(True)
+            self.path_combo.clear()
+            self.path_combo.addItems(self._path_history)
+            self.path_combo.setEditText(text)
+            self.path_combo.blockSignals(False)
+
+        @staticmethod
+        def _clear_layout(layout) -> None:
+            while layout.count():
+                item = layout.takeAt(0)
+                widget = item.widget()
+                if widget is not None:
+                    widget.deleteLater()
+                nested = item.layout()
+                if nested is not None:
+                    ProjectOpenFileDialog._clear_layout(nested)
+
+        def _rebuild_breadcrumbs(self) -> None:
+            self._clear_layout(self.breadcrumb_buttons_layout)
+            path = self.current_directory
+            parts = path.parts
+            if not parts:
+                return
+            current = Path(parts[0])
+            for index, part in enumerate(parts):
+                if index == 0:
+                    current = Path(part)
+                else:
+                    current = current / part
+                target = Path(current)
+                label = part.rstrip("\\/") or part or str(target)
+                button = QToolButton(self.breadcrumb_buttons_widget)
+                button.setText(label)
+                button.setToolButtonStyle(Qt.ToolButtonTextOnly)
+                button.setAutoRaise(True)
+                button.setToolTip(str(target))
+                button.clicked.connect(
+                    lambda _checked=False, selected=target: self.navigate_to(selected)
+                )
+                self.breadcrumb_buttons_layout.addWidget(button)
+            self.breadcrumb_buttons_layout.addStretch(1)
+
+        def show_editable_path(self) -> None:
+            self._remember_path(self.current_directory)
+            self.path_stack.setCurrentWidget(self.path_combo)
+            edit = self.path_combo.lineEdit()
+            edit.selectAll()
+            edit.setFocus(Qt.OtherFocusReason)
+
+        def show_breadcrumb_path(self) -> None:
+            self._rebuild_breadcrumbs()
+            self.path_stack.setCurrentWidget(self.breadcrumb_widget)
+
+        def show_subdirectory_menu(self) -> None:
+            menu = QMenu(self)
+            try:
+                children = sorted(
+                    (entry for entry in self.current_directory.iterdir() if entry.is_dir()),
+                    key=lambda entry: entry.name.casefold(),
+                )
+            except OSError:
+                children = []
+            if not children:
+                action = menu.addAction("(keine Unterverzeichnisse)")
+                action.setEnabled(False)
+            else:
+                for child in children:
+                    action = menu.addAction(child.name)
+                    action.setIcon(self.style().standardIcon(QStyle.SP_DirClosedIcon))
+                    action.triggered.connect(
+                        lambda _checked=False, selected=child: self.navigate_to(selected)
+                    )
+            menu.exec_(self.subdir_button.mapToGlobal(QPoint(0, self.subdir_button.height())))
+
+        def navigate_from_path_edit(self) -> None:
+            self.navigate_to(Path(self.path_combo.currentText().strip()))
+
+        def navigate_from_combo(self, text: str) -> None:
+            if text:
+                self.navigate_to(Path(text))
+
+        def navigate_to(self, directory: Path, *, record_history: bool = True) -> None:
+            candidate = Path(directory).expanduser()
+            try:
+                candidate = candidate.resolve()
+            except OSError:
+                pass
+            if not candidate.is_dir():
+                QMessageBox.warning(
+                    self,
+                    "Verzeichnis nicht gefunden",
+                    f"Das Verzeichnis ist nicht verfügbar:\n{candidate}",
+                )
+                return
+            if candidate == self.current_directory:
+                self._remember_path(candidate)
+                self.show_breadcrumb_path()
+                return
+            previous = self.current_directory
+            self._remember_path(previous)
+            if record_history:
+                self._back_history.append(previous)
+                self._forward_history.clear()
+            self.current_directory = candidate
+            self._remember_path(candidate)
+            self._refresh_directory_views()
+
+        def go_back(self) -> None:
+            if not self._back_history:
+                return
+            target = self._back_history.pop()
+            self._forward_history.append(self.current_directory)
+            self.navigate_to(target, record_history=False)
+
+        def go_forward(self) -> None:
+            if not self._forward_history:
+                return
+            target = self._forward_history.pop()
+            self._back_history.append(self.current_directory)
+            self.navigate_to(target, record_history=False)
+
+        def go_up(self) -> None:
+            parent = self.current_directory.parent
+            if parent != self.current_directory:
+                self.navigate_to(parent)
+
+        def _refresh_directory_views(self) -> None:
+            self._rebuild_breadcrumbs()
+            self.show_breadcrumb_path()
+            self.back_button.setEnabled(bool(self._back_history))
+            self.forward_button.setEnabled(bool(self._forward_history))
+            self.up_button.setEnabled(self.current_directory.parent != self.current_directory)
+
+            source_root = self.file_model.setRootPath(str(self.current_directory))
+            proxy_root = self.file_proxy.mapFromSource(source_root)
+            self.file_view.setRootIndex(proxy_root)
+            self.file_view.scrollToTop()
+
+            directory_index = self.directory_model.index(str(self.current_directory))
+            if directory_index.isValid():
+                self.directory_tree.setCurrentIndex(directory_index)
+                self.directory_tree.scrollTo(directory_index, QAbstractItemView.PositionAtCenter)
+
+            self.file_combo.clear()
+            self.file_combo.setEditText("")
+            QTimer.singleShot(0, self._rebuild_file_combo)
+
+        def _selected_extensions(self) -> Optional[set]:
+            if self.extension_list.count() <= 0:
+                return None
+            all_item = self.extension_list.item(0)
+            if all_item.checkState() == Qt.Checked:
+                return None
+            selected = set()
+            for row in range(1, self.extension_list.count()):
+                item = self.extension_list.item(row)
+                if item.checkState() == Qt.Checked:
+                    selected.add(str(item.data(Qt.UserRole)))
+            return selected or None
+
+        def _extension_item_changed(self, item: QListWidgetItem) -> None:
+            if self._filter_guard:
+                return
+            self._filter_guard = True
+            try:
+                row = self.extension_list.row(item)
+                all_item = self.extension_list.item(0)
+                if row == 0 and item.checkState() == Qt.Checked:
+                    for index in range(1, self.extension_list.count()):
+                        self.extension_list.item(index).setCheckState(Qt.Unchecked)
+                elif row == 0:
+                    any_checked = any(
+                        self.extension_list.item(index).checkState() == Qt.Checked
+                        for index in range(1, self.extension_list.count())
+                    )
+                    if not any_checked:
+                        all_item.setCheckState(Qt.Checked)
+                elif row > 0 and item.checkState() == Qt.Checked:
+                    all_item.setCheckState(Qt.Unchecked)
+                elif row > 0:
+                    any_checked = any(
+                        self.extension_list.item(index).checkState() == Qt.Checked
+                        for index in range(1, self.extension_list.count())
+                    )
+                    if not any_checked:
+                        all_item.setCheckState(Qt.Checked)
+            finally:
+                self._filter_guard = False
+            self._apply_filters()
+
+        def _apply_filters(self, *_args) -> None:
+            self.file_proxy.set_search_text(self.search_edit.text())
+            self.file_proxy.set_extensions(self._selected_extensions())
+            QTimer.singleShot(0, self._rebuild_file_combo)
+
+        def _directory_tree_clicked(self, index) -> None:
+            path = self.directory_model.filePath(index)
+            if path:
+                self.navigate_to(Path(path))
+
+        def _file_view_source_info(self, proxy_index):
+            if not proxy_index.isValid():
+                return None
+            source_index = self.file_proxy.mapToSource(proxy_index)
+            return self.file_model.fileInfo(source_index)
+
+        def _file_view_clicked(self, index) -> None:
+            info = self._file_view_source_info(index)
+            if info is None or info.isDir():
+                return
+            self.file_combo.setEditText(str(Path(info.absoluteFilePath())))
+
+        def _file_view_double_clicked(self, index) -> None:
+            info = self._file_view_source_info(index)
+            if info is None:
+                return
+            path = Path(info.absoluteFilePath())
+            if info.isDir():
+                self.navigate_to(path)
+            else:
+                self.file_combo.setEditText(str(path))
+                self.open_selected()
+
+        def _file_combo_activated(self, text: str) -> None:
+            if text:
+                self.file_combo.setEditText(text)
+
+        def _directory_loaded(self, path: str) -> None:
+            try:
+                loaded = Path(path).resolve()
+            except OSError:
+                loaded = Path(path)
+            if loaded == self.current_directory:
+                self._rebuild_file_combo()
+
+        def _rebuild_file_combo(self) -> None:
+            current_text = self.file_combo.currentText().strip()
+            source_root = self.file_model.index(str(self.current_directory))
+            proxy_root = self.file_proxy.mapFromSource(source_root)
+            files = []
+            for row in range(self.file_proxy.rowCount(proxy_root)):
+                proxy_index = self.file_proxy.index(row, 0, proxy_root)
+                info = self._file_view_source_info(proxy_index)
+                if info is None or info.isDir():
+                    continue
+                files.append(str(Path(info.absoluteFilePath())))
+            files.sort(key=str.casefold)
+            self.file_combo.blockSignals(True)
+            self.file_combo.clear()
+            self.file_combo.addItems(files)
+            if current_text and current_text in files:
+                self.file_combo.setEditText(current_text)
+            elif files:
+                self.file_combo.setCurrentIndex(0)
+            else:
+                self.file_combo.setEditText("")
+            self.file_combo.blockSignals(False)
+
+        def _candidate_file(self) -> Optional[Path]:
+            index = self.file_view.currentIndex()
+            info = self._file_view_source_info(index)
+            if info is not None and not info.isDir():
+                return Path(info.absoluteFilePath())
+            text = self.file_combo.currentText().strip()
+            if not text:
+                return None
+            candidate = Path(text).expanduser()
+            if not candidate.is_absolute():
+                candidate = self.current_directory / candidate
+            return candidate
+
+        def open_selected(self) -> None:
+            candidate = self._candidate_file()
+            if candidate is None:
+                QMessageBox.warning(self, "Datei öffnen", "Bitte eine Datei auswählen.")
+                return
+            try:
+                candidate = candidate.resolve()
+            except OSError:
+                pass
+            if candidate.is_dir():
+                self.navigate_to(candidate)
+                return
+            if not candidate.is_file():
+                QMessageBox.warning(
+                    self,
+                    "Datei öffnen",
+                    f"Die Datei wurde nicht gefunden:\n{candidate}",
+                )
+                return
+            self.fileName = str(candidate)
+            self.accept()
+
     class ExplorerWindow(QMainWindow):
         ORGANIZATION = "paule32"
         APPLICATION = "Qt5D64Explorer"
@@ -19619,35 +20205,66 @@ border: 2px solid #2a69aa;
             self._new_project_item_for_category("pixel_screens")
             self._update_editor_status_panels()
 
-        def open_document_dialog(self) -> None:
-            filename, _selected_filter = QFileDialog.getOpenFileName(
-                self,
-                "Datei öffnen",
-                str(self.current_directory),
-                (
-                    "Unterstützte Dateien "
-                    "(*.txt *.text *.log *.md *.asm *.s *.a65 *.m68k *.inc "
-                    "*.pas *.pp *.c *.lisp *.lsp *.pl *.prolog *.logo *.lgo *.dbase *.dbp *.bas *.basic *.pro *.prg *.amiga *.adf *.ram *.bin "
-                    "*.chr *.charset *.pal *.palette *.scr *.screen "
-                    "*.px16 *.pixel *.pix);;"
-                    "Projektdateien (*.pro);;"
-                    "BASIC-Dateien (*.bas *.basic);;"
-                    "C-Dateien (*.c *.h);;"
-                    "LISP-Dateien (*.lisp *.lsp);;"
-                    "PROLOG-Dateien (*.pl *.prolog);;LOGO-Dateien (*.logo *.lgo);;"
-                    "dBase-Dateien (*.dbase *.dbp);;"
-                    "Pascaldateien (*.pas *.pp);;"
-                    "Assemblerdateien (*.asm *.s *.a65 *.m68k *.inc);;"
-                    "C64-Zeichensätze (*.chr *.charset);;"
-                    "C64-Paletten (*.pal *.palette);;"
-                    "C64-Textbildschirme (*.scr *.screen);;"
-                    "C64-Pixelbildschirme (*.px16 *.pixel *.pix);;"
-                    "Binärdateien (*.prg *.amiga *.adf *.ram *.bin);;"
-                    "Alle Dateien (*)"
-                ),
+        def _open_dialog_supported_extensions(self) -> List[str]:
+            extensions = set(self.EDITOR_EXTENSIONS)
+            for values in self.FILTERS.values():
+                if values:
+                    extensions.update(values)
+            extensions.update({".exe", ".o", ".obj", ".a", ".lib", ".sid", ".d64"})
+            return sorted(extensions)
+
+        def _register_opened_file_in_project(self, path: Path) -> None:
+            path = Path(path)
+            if path.suffix.casefold() == ".pro":
+                return
+            self._ensure_project_for_new_document()
+            category_key = project_category_for_path(path)
+            child = self._add_project_entry(
+                category_key,
+                path,
+                title=path.name,
             )
-            if filename:
-                self.open_document(Path(filename))
+            if child is None:
+                return
+            self.project_tree.setCurrentItem(child)
+            root = child.parent()
+            if root is not None:
+                root.setExpanded(True)
+            if self.current_project_path is not None:
+                self.save_project()
+
+        def open_document_dialog(self) -> None:
+            dialog = ProjectOpenFileDialog(
+                self,
+                initial_directory=self.current_directory,
+                supported_extensions=self._open_dialog_supported_extensions(),
+            )
+
+            # Der zuletzt im eigenen Datei-Öffnen-Dialog angezeigte Ordner ist
+            # zugleich das Arbeits-/Ausgabeverzeichnis der IDE. Das gilt auch
+            # bei Abbrechen bzw. Schliessen ueber die Titlebar: dBase-Build und
+            # Start suchen/erzeugen die EXE danach genau in diesem Ordner.
+            result = dialog.exec_()
+            dialog_directory = Path(dialog.current_directory)
+            if dialog_directory.is_dir():
+                self.set_current_directory(dialog_directory)
+
+            if result != QDialog.Accepted or not dialog.fileName:
+                self.statusBar().showMessage(
+                    f"Öffnen abgebrochen - Arbeitsverzeichnis: {self.current_directory}"
+                )
+                return
+
+            path = Path(dialog.fileName)
+            if self.open_document(path):
+                # Eine manuell in der unteren ComboBox eingegebene absolute
+                # Datei kann ausserhalb des gerade angezeigten Ordners liegen.
+                # In diesem Sonderfall folgt das Arbeitsverzeichnis der
+                # tatsaechlich geoeffneten Datei.
+                if path.parent.resolve() != self.current_directory:
+                    self.set_current_directory(path.parent)
+                self._register_opened_file_in_project(path)
+                self.statusBar().showMessage(f"Geöffnet: {path.name}")
 
         def open_document(self, path: Path) -> bool:
             try:

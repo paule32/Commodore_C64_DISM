@@ -12,6 +12,10 @@ topLevelItem
     | menuObjectStatement
     | sessionObjectStatement
     | sessionLoginStatement
+    | databaseLocalDeclaration
+    | databaseObjectStatement
+    | databasePropertyStatement
+    | databaseMethodStatement
     | appPropertyStatement
     | withStatement
     ;
@@ -97,6 +101,22 @@ sessionObjectStatement
 
 sessionLoginStatement
     : IDENTIFIER EQUAL objectPath DOT LOGIN LPAREN expression COMMA expression COMMA expression RPAREN
+    ;
+
+databaseLocalDeclaration
+    : LOCAL IDENTIFIER AS DATABASE
+    ;
+
+databaseObjectStatement
+    : objectPath EQUAL NEW DATABASE LPAREN RPAREN
+    ;
+
+databasePropertyStatement
+    : objectPath DOT (PATH | DATABASENAME | USERNAME | PASSWORD | ACTIVE | ALIAS | SESSION) EQUAL (expression | objectPath)
+    ;
+
+databaseMethodStatement
+    : objectPath DOT (OPEN | CLOSE | COMMIT) LPAREN RPAREN
     ;
 
 appPropertyStatement
