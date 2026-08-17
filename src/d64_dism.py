@@ -40,6 +40,8 @@
 #  * Stage 85: dBase-Tabellendesigner als Dock mit DBF-Strukturreader/-writer,
 #  * Stage 86: Tabellen-Workspace rechts neben Dateisystem + Dark/Light-Gridstil.
 #  * Stage 87: Desktop-Settings als Dock-Workspace mit Alias-/BDE-Verwaltung.
+#  * Stage 92: Formulardesigner-Brush mit 12 eingebetteten Patterns und recolorierbaren Buttons.
+#  * Stage 99: Border-Root mit Linienarten, Hard-Shadows, Farbe, Größe und Einzelradien.
 #    Mehrtabellen-Tabs, Feldeditoren und Kontextoperationen für Feldzeilen
 #
 #  * PROLOG Wissen-Browser Stage 71: Stage-70 Multi-Scroll bleibt erhalten;
@@ -7929,6 +7931,7 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             QGraphicsItem,
             QGraphicsObject,
             QGraphicsProxyWidget,
+            QGraphicsDropShadowEffect,
             QGraphicsRectItem,
             QGraphicsScene,
             QGraphicsView,
@@ -19105,7 +19108,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             super().done(result)
 
     # -----------------------------------------------------------------------
-    # Stage 84/90: visueller dBase-Formulardesigner mit Komponentenpalette.
+    # Stage 84/90/91/92: visueller dBase-Formulardesigner mit Komponentenpalette.
     # -----------------------------------------------------------------------
     DBASE_FORM_COMPONENT_SPECS = {
         "Button": {"title": "Button", "width": 120, "height": 34},
@@ -19122,6 +19125,272 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
         "ToolBar": {"title": "Toolbar", "width": 320, "height": 34},
         "Menu": {"title": "Menü", "width": 320, "height": 27},
     }
+    # -----------------------------------------------------------------------
+    # Stage 92: Brush-Patterns als 48 neu erzeugte bündig kachelbare Kachelmuster.
+    # Die dicken schwarzen Rahmen der Vorlagen wurden beim Extrahieren
+    # entfernt. Die PNGs sind als Schwarz/Weiss-Masken eingebettet:
+    # Schwarz = Foreground, Weiss = Background.
+    # -----------------------------------------------------------------------
+    DBASE_FORM_BRUSH_PATTERNS = (
+        ('Technisch 01 – Leiterbahnen', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAAZUlEQVR4nO2WQQrAIBADs9L/f7m9iBXBFLqHLXRy8RAyoK6SOJVTS+YBSDr6GpK9j63fhq/weetXKvrOsmfg086vnwMAAGbA01vd+vwHN+C1vjMHAP4NoB/QDwAAWAH0A/pBLeAC0KMXd9DN8s0AAAAASUVORK5CYII='),
+        ('Technisch 02 – Pad-Gitter', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAAdElEQVR4nO2UQQrAMAgE1+D/v9wemrappxgFS1gvshIGMTBAsASHGThzi24QBigAQK7wbOfIbchLXQf2PXfl+iPWA/oRxYzncwPe/13p+pnAvJjI9UcMF31AH/wDQB/QBykA+mALAH1AH6QA6IMtAPRBAuAEHmdgkfBzqcsAAAAASUVORK5CYII='),
+        ('Technisch 03 – Hex-Mesh', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAAy0lEQVR4nO2WwQ4DIQhEB8L//zI9tTvYdssiSfeAJ30aEcFBcXFQO0ZJLgg7iMuzm+R2zKyWclwB2iIcL8cV4Qi0MsktoOhPiosXbp65YrMpHykaynHl+W8hPeMdLlwPHXMDKLmiryluEOewXO5v30HDa1x2XMe/uFZeIPOOO1iAfzB0wrWSvszvEMYR1RHVBlG1SvYxNxSyj3mHoGzWBSlkX+C7n6zRRDQIypuvr4VJ7n8v797wGi+XdOYNdWGzjaiOqGJEFbiFqD4AYkguoha9+iwAAAAASUVORK5CYII='),
+        ('Technisch 04 – Knotennetz', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAAU0lEQVR4nO3UIQ4AMQzEQG/+/+ceKgiMUumIwxwwcGF5AU7PWVdrDtNOayDDLpYnIPAISOtMu2ifMO/luQcCAs8A98A9EBC4gHvgHggIXODvPfgA9UtAjUWhXTwAAAAASUVORK5CYII='),
+        ('Technisch 05 – Diagonal-Bus', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAABSElEQVR4nO2WwRrCIAyD07z/O+NB0A5KTcdBD+6yjWQ/zE+SGQCgwR3mRqxf2eLqY6C7Do6WaBiANrman6xrlzHnA2yscJb9SjONH1f6QaPkSjRq8+w1Sq5Eo+RKNEquRKPkSjRKrkSj5Eo0Sq5Eo+RKtBlQJiyAKmEFFAnRZh0BEPrcAwY0C8w25prHJoKPtOBQ32ILUAmMs07PSbubhUPj3SwcGm+nqQ3AIYEHiW7PFRwSeNQqvZmOCBRXutX+3fgL3XjZtP2mkpNTJhrQkk+6ICcL3YhYK3RjTJgzsV1Ol+E4J9dMLH4zfr8bo2IpEcJmqhDiaisQNt2oE3blKhO27awS9vWuduP+r6924yEhK1etG9MNLHXjIcGANm/SSk6CgE3TGPz9a55lKS4Tb7/FAJwQ+PoGNPeAnpPvwnj/SkEvRLXQBx9kTbVl9kLLLQAAAABJRU5ErkJggg=='),
+        ('Technisch 06 – Digitale Dashes', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAAZklEQVR4nO2UwQoAIAxCW/T/v1zHYKeFgRZ2k+iRcxizYaeD7zcg0kVV3/vBu4BAYxxpvvNU37OQvVQ1PwU+AN4DvgX3gcIeuA++ALgPpCzQAO4DhRT4APeBlAUawH2gkAIfAO/BAh9oLX9RKn1tAAAAAElFTkSuQmCC'),
+        ('Technisch 07 – Ladder-Bus', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAAQElEQVR4nO3UoQ0AMAwDQbv779zQ0Mqksv5ZyKHIlq52fryPwgB+AOLMIwEAtABx7AEAQA0Qxx4AANQAcexBBTBvdRRv2yOQXwAAAABJRU5ErkJggg=='),
+        ('Technisch 08 – Chip-Blöcke', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAAZ0lEQVR4nO2UwQoAIQhEZ/r/f3YPRbXsZUWhkPESPuERUkMDALAfr/rHaFzNnDrYhteEDkZslxqNizUES4IEQfgdNPtyeBijf+H8EiW4QaBMlCBFoEyUoIhAmShBikCZKEERQYFMfAD0kWZRK5vdxwAAAABJRU5ErkJggg=='),
+        ('Technisch 09 – Triangulation', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAAdElEQVR4nO2UMRKAMAzDnP7/z2GAlmTD5wwMZtNidNAKEJ/ISImXarCQ0V7A8oBBnYwEyxMG7+TzgSkeMdiT5w8zPGNwT5YjRvCQATLQzvh3lg3Obr9kPAsG7oF74B6UAfdAYffAPXAP3IPN7oF74B78pQcXp+f0bYBC2EMAAAAASUVORK5CYII='),
+        ('Technisch 10 – Eck-Knoten', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAAP0lEQVR4nO3UIQ4AIAwEwcL//wweR66qmXUgJlVXFbbqPB+f751eAAAAmoA4ewAAjAHi7AEAMAaIswcAwBjgAml8EHEl7g00AAAAAElFTkSuQmCC'),
+        ('Technisch 11 – Klammer-Raster', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAAXklEQVR4nO2UsQoAIQzFUvH/f9kb5Bw6FTqcHOnUpxiKYmLRq9E8fwEgTrfSQjG3J5gHlUcp5u8v8QeA+TaRNqp5NF+R8DdeANAHAkAfCNilDwSAPhCwSx8IAH0A8ADoNzVvR4B5KwAAAABJRU5ErkJggg=='),
+        ('Technisch 12 – Isometrisches Gitter', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAACMElEQVR4nJVXSZIDMQiTXPz/y8zBG2CgM74kHdE2iywIFQAIBUBgPa0vZxHqPgwujxWgRLb2/lAYA3nguQODDw63p437g3tDQedHiUuy+7FQ+5jg0OlBHvI9hLmBKgiMtVFlwQaHgpQaNn42+CgjADCT3eMS0+1hKLTHBeUZuzalD6cK0CQOmsprVomVHcNEl6yYO3WsMNTZTNSYi5j7Bw9U3rxYziW1M0dYfFiTadESCzEd4iwmWDNHF262GKXxj8t5wFWx0gW+FZUIo6beyp0n1g3hXhvNiGWZZfHtwVO5h1gFfkIIcWtMRYJDdwg5cW62SmJND6rbug8pb7OSUGFzXw+xGnx0xNtl6/DRKdKMocelsZi5a3YgFIKmFx7epAZzfwH+1wsjfhTp114Ycd6Pe8hLnIkbg0eRaHthEjWN5pHJZTpuasrbZXDwu794i+9eGHEvafzuhTGbI8DaEodQI/8AwpB1emFDHATN22Wcb77G97nArwcxd1GbH9wyMSmdCyTDVyoEKNJ+S1bJCedtrCVpCWtZWgWJjyHrq1d+Dllfaw1Z1RG7V5Y+cA5ZtaS1xJr7C6ocmtKlmrdww0SvYL8+n8vk3CCCov00ZLle+C5zC+1Ww1usISrPeor/a8jK8GTI+uqVfgVJeydWjzMKUhiy+l64hyyHS4TR9MIMr4n0JWkPkR7JCm4Eg+3G/t/4LNtD0trq+d9YEef2whonpGmFphcWOEgpsDeOYv0B7ucW+/t5v/EAAAAASUVORK5CYII='),
+        ('Technisch 13 – Kreuzschraffur', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAB+ElEQVR4nJWXwY4DMQhDDf//z9nDTDKADenmUAlqRm1wn1xbAAxYBizsYwBiTY1vwt8Ka6veRqypESb8rRCe8DTCQG3ECcf57FuwG2egNtKExa9mwEK4DNtDqxHAUjXdVXu7FqtHsEpNjTThqaKzqp6OW6zsvIRGrVPj2UJ4m/c/+QEwr/ag/Q9+AAxO9qD9t354nUj22J3qMBLAgOW7jOtexSG1jiO2zrVO+5d+OL/G882+U/dPfjgjDnnU/k0q/Xyeoh/9EEY2UFg/+CGOHKCQX3o/pJEPKOSXzg/ZUfHnSfwgHgjCVFxkfig/FMJkoJBfCrGEIvuA/EL7J0XigfKP2H+qIw+0fy6ECTxo+HEhjNN2Wz9oxeHBwI9R4bue+DEpbO27HfnRK3w/ceZHr/DzvJkfrWID5c6PRqESSuMfrRAJpeOHVnBC6fkhFREod34IxT/5wQpOKDM/SJGBcucHKShgXPhRFRwwLvxAzbQcMP5DGJMB43fCJKD8yI+oMKALGMpRwg8ZKL/xI3U+oNC5E2YfHTDuhDkjMmDcCfONqIBxJ0wYEQHjTpg4Eu//7X/7qjwgAQweblc7SvvndETAuBAmN8o/llXfVn4oQEnbpUP7p8MJZSQMWY4TyuQHtpxIKIMf2HKmEkpPGLJcAkpYb0OYKngafw0+a6dBMMoeAAAAAElFTkSuQmCC'),
+        ('Technisch 14 – Pixel-Mesh', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAATElEQVR4nO2USwoAIAgFx+5/51qUB+gDBc3bqJsBUSYYqaPG5FzYjIAXALF6/5zvryDgxB9kow++BugDAaAPBPToAwGgDwT06AMBAA2v4CB1HRSMDQAAAABJRU5ErkJggg=='),
+        ('Technisch 15 – Rauten-Mesh', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAAi0lEQVR4nO2UMQ7AIAwDHf//z3SgCdCJeKzMQi+NUIuji4G5Ih+azOL4vL9k1nlHxz1zfc/W0WBu/1MdHSa2+3k7WszjfkegyzzzGdHlgJh/Lqr5J1PNP5lq/smEmH8yt4o0D1wVbR5YFXEeqmwfABDnwT6wD+yDudsH9gFgH9gHc7cP7APAPviJDx5nQ8SgrOhQzAAAAABJRU5ErkJggg=='),
+        ('Technisch 16 – Viertel-Arcs', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAAi0lEQVR4nO2UQQ7AIAgEF+L/v2wPqIWmB5GbWS91WkEJdQQAOsYQe2RYStEAWsA+V+1ze3mlTrH0iMiylrYHLMHne4oVvhM2S7GGTvo6N1nPQ421VkA4gSCOPVbPJ72cr49/pbYO49JneBZWu5P0ARJNow/+mD6gD+gDm9AH9AF9APpgMH1AH1zigwckWzCcNVPizgAAAABJRU5ErkJggg=='),
+        ('Minimal 01 – Vertikale Linien', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAAQklEQVR4nO3QIQ4AMAhD0bL737kTJKDHDOJXFcQLISyFrMygHX0GAAAAAAAAYCPgmgYtL4haPLcdPwAAAAAAAADoXBe+Dn+T35poAAAAAElFTkSuQmCC'),
+        ('Minimal 02 – Horizontale Linien', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAAPElEQVR4nO3SsREAMAwCMSf775wM4QIK/QA6CmbSnbcE7nYBoAHI54mAjjwR0JEnAjryREBHngjoKP/ED60SB1cLXfjzAAAAAElFTkSuQmCC'),
+        ('Minimal 03 – Feines Gitter', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAARklEQVR4nO3SoRUAIBDD0B777wyCDWgULzGgvrnOTpLMfR5+K2UCQOMZBQigziUKIECdSxRAgDqXKIAAdS5RAAHqXOIXwAHzoTFnUhNvBQAAAABJRU5ErkJggg=='),
+        ('Minimal 04 – Großes Gitter', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAAP0lEQVR4nO3UIRIAIRADwXD//zN43BViI3ociK5VSaZbyb4+/r2/1wsAAEBL9gAAaAHmswcAQAswnz0AAFqAA/wREGmgHQl6AAAAAElFTkSuQmCC'),
+        ('Minimal 05 – Kleine Punkte', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAAVklEQVR4nO2UOQ4AIAgEF/7/Zyy8S7TQYrbbmEwIkTFJoRFTtrsu4xtQoWy3tR5OAADABwDb/3a+ezvR+Z7s73eADwAAqMEH+AAAgB58gA8AAOh574MCHjY4dACPoQ8AAAAASUVORK5CYII='),
+        ('Minimal 06 – Ringpunkte', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAAgUlEQVR4nO2UQQqAMAwEZ4v///J6aUErSKU9qGxOZULmUJKVQZha9TlIhClMVjnJMWKcGLGpV17ALZE4uFvzAZG61uNa8YkRfF8wv4lwatctHySCzf2t+HI9d8SlnWeTm3GyKlCmBUmkyfkI/iFIIiWRSCJF8BpBEimJxCsSKZtodubskYvhCb44AAAAAElFTkSuQmCC'),
+        ('Minimal 07 – Wellen horizontal', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAAkklEQVR4nO2TQQ7AIAgEgfT/X6aHVlpdm2A80MN6oYyRgHbUZW/Z5nk52odeoWsow6znEdNMveX+jnkWd+DYLTJFZveGx5mnSWSCzMYhWzZnDsykH1L82vlgAkzHMVcf1IDnrjMydZ38zAtshpfWtgv1BWgjbYwRaGNxAdpIG2ME2lhcgDbSxhiBNhYXoI1/sPEE9OrEdJ462YQAAAAASUVORK5CYII='),
+        ('Minimal 08 – Wellen vertikal', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAAmElEQVR4nO1UMRLAIAgLnP//Mh0sFrYahvY8mIiVmHoxYpglgLdbSL0Ja1tIQy/py0sUCSgRi4A6PhCwdyhanMdwURa3bKBROh4GLc7PS2RNZMg+oOoUAtbGMgksre8iJWYSEnMtpJfFVlt6jfxvdCZ2JnYm/org00wUQ82Jd6TxZlJO+IM6EzsTOxNnnULQmcgIf1BnInAB0I/BhQqcj0MAAAAASUVORK5CYII='),
+        ('Minimal 09 – Kreise', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAAwklEQVR4nO2XSw7EIAxDbe5/Z88iIcAsgH6kskiklvYFRZQYS6UAAIT8VmNJCBFCwcN4qYAtTGDwNZGRYrk2axxnpK2A8J1RzW4SsL7EXkf1LeI1+lZ5epsQHDI34nsdPN8DDOkbXVDX43jaJPDDdFU/QULK7QP1N86IRXFmoupnrQiNfK+DUwqkI6UjpSOlI51TIB0pHSkdKR3phAKmRNbWqrZ3gxAQQ1ZNG7hA8IISH6+gAFCnFvXDnNjljvTh3/sPP4DtUqdznS4AAAAASUVORK5CYII='),
+        ('Minimal 10 – Plusraster', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAAXElEQVR4nO2UMQoAIAzErv7/zzro4KRICy2SW6QiocIRk6SuFZvHy9zkjG28dfE2+zfo9zfHuDcA8AUgv8oRX8AH+ABABCC/yvgAHwCoAsivMj7ABwCqAPKr7AYMQXc0ZewKz/MAAAAASUVORK5CYII='),
+        ('Minimal 11 – Chevron', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAAeElEQVR4nO2UMQ7AIAzEfPz/z+nQUsrWEAaGywKWgiUgOgUAKPTsktwXgE/Hf1Y8GBotGVaAumxlbYO5XUmeLyfIsqa3WWDN/H7LMqerFc9bcJRAfUyz7DxwHsBJo2zBBoHzwHlQqnNG2YINAueB86BU54yyBYW6AEvSuWdtjqY7AAAAAElFTkSuQmCC'),
+        ('Minimal 12 – Muschelbogen', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAAbklEQVR4nO2UwQrAIAxDk/3/P3eH1c3ddBYG8nrQJkKoCs+SQndZs9rqLDd/Qjskp/Npd7aRS4se1keO5P58Rh9aLD/vES9/VC9PUHaF/yYgoOIbBQ/gATwg4Cp4AA9KAuDBFgHwAB6UBMCDLQJOisWgWd6f4uoAAAAASUVORK5CYII='),
+        ('Minimal 13 – Schleifen', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAAlUlEQVR4nO2UMRLAIAgEj/v/n0kRMWAlNGnOKouMEz1dc7zD4qPJDIbV+VvmXs9zxz3z+5/U0WCm/eyODhPpfFZHi1nO1w1dZs3Hrcs88vUu0498u8xp/sGc5h9MDPMPZqqM7gO/yuw+RNWAks81x3N2HPnesnwgH0A+kA/kg83ygXwgH6AsIB+sCflg7U8+QJf/98EDhHTBjk7ePngAAAAASUVORK5CYII='),
+        ('Minimal 14 – Doppelte Quadrate', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAAbElEQVR4nO2UQQrAQAgDtfj/L7cHpS1CQfEglMktLoQg6+gpQ+WArrc00q4/aj2/NQ4wL+LmLtfw9nrSJ7fu93ewHxBL1DSuew8Y/Of9HYyvUeEBPPhHADwQeAAP4EEIHgg8gAfwIAQPZH6NF/obZHG0lNrwAAAAAElFTkSuQmCC'),
+        ('Minimal 15 – Rauten', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAArklEQVR4nO2UwQ6AMAhDS///n+dFhYGKcMbL9NF0xDSVBVkAgPu07zmjfi8J2h9M0LpXTxp+eUuFEfCTTZuy3QBLvDZjYRRAwhi4PGg/GD1HUH8zeg6vThjFc6fOGHv5U0admH9dYOzlTxnRyp8ynpNi/vR5C+RvxpMX8+cM6vnbDRr5U8Ze/pRNJ04nRoPpRLPkdGKFTSdOJ4bVHkHCphOnEzGdeBtMJ5qFOpk8AOU8f4u/BeTZAAAAAElFTkSuQmCC'),
+        ('Minimal 16 – Sanfte Diagonalen', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAABCUlEQVR4nKXW0QrCYAyD0X95/3eeFyIMlzZJ65WUcEBwH7vu8/1c5/y+Pj78+jzjd7vPud5Lfn2eIbZSgNoqAXIrBOhtL8DYtgKcbSfA2jbCPxALLyAV3kAoECATIP7q8gr1sKgr5OMmrtAPbH+F8ci3VzjR6K4op6aAeuoJaKaWgG7qCGinhiCyrgWVdSnIrCtBZ10IRtZ7wcl6K1hZ7wQv641gZr0W3KyXgp31SvCzXlXZn1ZVXgpR1mmVox9Mq7wU0qzTKq+EPOu0ygthknVa5bEwyzqt8lCYZp1WeSTMs06rPBA2WadVjoVd1mmVQ2GbdVrlLOvBm33wsp1kPXizj162g6wvhQ8RyrV/6BEm+AAAAABJRU5ErkJggg=='),
+        ('Technisch 17 – Bus-Kreuze', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAAUUlEQVR4nO2TuwoAIAzEev7/P+smdvMFvSHZghCkcOoxUSyyay0eIUDAA7EFAgRMYI1ugZ5eNi3/QOfmdYOaQD26GGCy+iMSIPAlUA9rJOARGDsCHWdxIp0sAAAAAElFTkSuQmCC'),
+        ('Technisch 18 – Raster-Ports', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAAZ0lEQVR4nO2UMQoAIQwEZ8X/fzlXBI4zXc5CkF2wGIstYhwRvFHk6fD4MABdHmxmu2CqXHR5LkMEunx+Bi4AEeVtm6y63Gry+RksBX/+hX1gH1xSYB/YB2AfuCBjH9gHYB+4IGMfwANl5kiPWbE82wAAAABJRU5ErkJggg=='),
+        ('Technisch 19 – Oktagon-Mesh', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAAbklEQVR4nO2UMQ6AQAgEZ4n//zIWasJ1Ei3QLM3dUExFRgmIc/J4OrwBymtx/FoclUnR5agMqS6Lyqv/FgcPx4J/CFILq8vBslF2OagbJV2We+AeWPCSwD1wDxhxiRZMELgH7gEjLtGCCYLv92AHFW7UiaLB+rMAAAAASUVORK5CYII='),
+        ('Technisch 20 – Kontaktmatrix', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAAU0lEQVR4nO3UIQ4AMQzEQG/+/+ceKgiMUumIwxwwcGF5AU7PWVdrDtNOayDDLpYnIPAISOtMu2ifMO/luQcCAs8A98A9EBC4gHvgHggIXODvPfgA9UtAjUWhXTwAAAAASUVORK5CYII='),
+        ('Technisch 21 – Signalfenster', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAAeklEQVR4nO2UzQrAIAyDk+H7v3J32Bj+DOmo4CjpQTGHz7bW0AAAvLYmfBq7s43SXDvGW75FaXLig3dr4QzCAFbJVZ3ya+xqs3txa/t7UIYRwcvYTLT4K0T/wv4mCvAHgDxRnogVAHmiAEkA8kR5IlYA5IkCJAEk8MQTA5RNf7Jf3/MAAAAASUVORK5CYII='),
+        ('Technisch 22 – Micro-Vias', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAAYUlEQVR4nO2TMQrAAAgDL/7/z3YptHSr6VAkmU6HIMIJGgA1GrDqnAF6wF3XDBMuzKTgg6if8JL9H+h+zoDrttGA48KOAjtxIS4sKbATF+LCkgI7cSEuLCmwExd+4YL7gwMl+ZVgeiM3LAAAAABJRU5ErkJggg=='),
+        ('Technisch 23 – Layer-Weave', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAB9ElEQVR4nK2WSZLFIAxDZVfuf2X3Agge5DR0NYtf+Q+FIZEVxDCaAFjXuwlaPKmYhK4slvTf8gDPvBpCy/q8Atm/MrC+HWZ1PgEa+mJ1wrJXCcuLdI2gXphmm5jThdWhpH0xpxOrR0uRlH4ELzZAxhbc/eaetFVaxZrmX9qEOYUBWh6+AVKUDYUtH9Q15HdK/AAAptXo690dUSgZdu72iLJikVETRhWl2GoVC30KnEKg+eF8+peIxeKwbf1b0y9xYX5HMrvjyrNYw8K4fxtXy3LihtW/hCKK1Q176N8o1g1b/zL6Yt2QOpVSLybFlBurod3Uq4qUp3IQf8a6AEZG+Ir1bFSA4rNY56k8wUGs81Qu4rNi2hpSTPWzYHH+Dyyx/JyU+p9gaSLNj/pLpD1lTeOQYPUe6kga61eNxDp3dVcStZi4q1usmXFX9zjHOnd1jlKHNTPm6sbskJHKjnmjHOIQ65Lf/wH2sd64Mvs3Yhfr1f9rMoZJrJP8PcB/O2z7r63/6ta6+B27VL6K9f0uLBCWnzWFfP/jdmQCsRolE6dhx10SU/kq1ieOh+2rWF8+CFsM+R6wNDgftpe0x2kv5bBtK+2PMPCwU0X9WIx3wTBJZQMRtpgdtq+aUqO2sV7FJZWBq1jvDtuHsS7/cj7IoU8uvxQ/nXAsgALjmnIAAAAASUVORK5CYII='),
+        ('Technisch 24 – Rail-Matrix', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAASklEQVR4nO3UMQoAIAwEQc///1kLmygEtLogu51gphCMRgtpO+WFe/1uIg8AoEbiLwAAAJQB/B1b8H0p+h8RAADgG8AfOxEAYDUBQH4MbYpkG9IAAAAASUVORK5CYII='),
+        ('Minimal 17 – Dünne Rauten', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAAeElEQVR4nO2TMQ7AIAwDY///z+mQYrrGSxcPiCOREBgOXVVV6Bl75hQa6i1ZJcGSqTU+vQVT+6m7Y97zvJUlE/c+7TD9/IfRdv7D9PMfRtl/cGb6+Q/zpOG+RVyIC3EhLsSFy3EhLtwN4kJcOJW4UHFB67hg8P8uPMr0N76kXvY0AAAAAElFTkSuQmCC'),
+        ('Minimal 18 – Sanfte Bögen', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAAmElEQVR4nO2UMRLEMAgDJY///2VSgImdyrprReFkXTBAyBIAAhXMh8JEAMR2ijwrI7e8Eo/t8ohbZmRNfag8M0vmZKys99wt/BqMLKWoS7vmgc94VR7o9eg3iSd4DIch8t9DzE38DEfhdZsLgvWN77lbeCej8Sw4/heFCdgH9oF9APvAPqgu7AP7APaBfVBd2Af2AewDBPAA7zHgbGYFWjMAAAAASUVORK5CYII='),
+        ('Minimal 19 – Rechteckwellen', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAAU0lEQVR4nO2UMQoAIAzErtL/f1kHqYiT2sHB3KKHGIpITJHaFzvsfnsxelEyaYCPnS0nm91qcoL3bwAAgDT/cHyADwD8DsAH+AAAgAg+wAcAAEQajbMkkQHU3p8AAAAASUVORK5CYII='),
+        ('Minimal 20 – Offset-Punkte', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAAVklEQVR4nO2UOQ4AIAgEF/7/Zyy8S7TQYrbbmEwIkTFJoRFTtrsu4xtQoWy3tR5OAADABwDb/3a+ezvR+Z7s73eADwAAqMEH+AAAgB58gA8AAOh574MCHjY4dACPoQ8AAAAASUVORK5CYII='),
+        ('Minimal 21 – Gestufte Linien', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAAYklEQVR4nO2TMQrAMAwDzyX//7IzhELX2INFkYagDDliw0USCZTPh2YWEJ/7dT8/aaQ9wg8AAeRbKn1l+enp8zuYB9gFBYBdUADYBQWAXVAA2AUFgF1QANgFBYBdUADMu7ABpppOo7gnL8AAAAAASUVORK5CYII='),
+        ('Minimal 22 – Doppelwinkel', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAAmElEQVR4nO2UOw7AIAxDje9/ZzoA+WyYpYs7NHpJhEKVvoEJAMB4jNwRGCuozINREJmRmqO3XDLPgb18z3mF3nPN3NhHFJiZqS33TAAY6HWF1wRzv0+LwESsRCyJxCyFqCnMtmQTUDk3cWXkdeT7X7Cx3mglNObTpy9sH9gHOYF9UB77oNTtA/vAPhDZPrAP8gD7wD742wcfgHhkhlaXrkUAAAAASUVORK5CYII='),
+        ('Minimal 23 – Rundraster', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAAf0lEQVR4nO2UQQrAIAwEJ/n/n9NDG7U3rYIWVkQYkSVEHZgcRgAW5GqD7LMVeImCsCxrgL1yOTHEBiRz4xhbi6/4Tl7TxH8HLLmF2liLZ/az8/EFJnuz8+lFTjdxesgH8sEZAfKBfADyAZzwG/cHyAfyAcgHcMJv3B8gHyxo4gVhlBBof+MGtQAAAABJRU5ErkJggg=='),
+        ('Minimal 24 – Halbkreisbänder', 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAAb0lEQVR4nO2UMQrAMAwDT6H//7I7mLTpVJykS5EWR2CEnOEUAAggn0Wv6HZYqXgFqIfNTAW6u4mg6NvoCVT1jUXp8bkTfrnB+gnxvvNtAwdsCDhymAfXaebBlMyDXwSYB+YBmAcOSJkH5gGYBw5InZPNoWFkgdQdAAAAAElFTkSuQmCC'),
+    )
+    _DBASE_FORM_PATTERN_CACHE = {}
+
+    # -----------------------------------------------------------------------
+    # Stage 99: Border-Stile fuer den dBase-Formulardesigner.
+    # Der gespeicherte Wert ist der zweite Tupelwert.
+    # -----------------------------------------------------------------------
+    DBASE_FORM_BORDER_STYLES = (
+        ("Kein Rahmen", "none"),
+        ("Solid", "solid"),
+        ("Dashed", "dashed"),
+        ("Dotted", "dotted"),
+        ("Double", "double"),
+        ("Hard Shadow rechts/unten", "hard_br"),
+        ("Hard Shadow links/oben", "hard_tl"),
+        ("Hard Shadow rechts", "hard_right"),
+        ("Hard Shadow unten", "hard_bottom"),
+    )
+
+    def _dbase_form_pattern_pixmap(
+        style_index: int,
+        background,
+        foreground,
+        cut_width: int = 100,
+        cut_height: int = 100,
+    ) -> QPixmap:
+        """Erzeugt eine recolorierbare Pattern-Kachel aus der eingebetteten Maske.
+
+        Stage 97: Zusätzlich zu den bündig kachelbaren Vorlagen können
+        Breiten- und Höhen-Cuttings live angepasst werden. Dazu wird ein
+        mittiger Ausschnitt der quadratischen Vorlage genommen und wieder auf
+        die ursprüngliche Kachelgröße skaliert.
+        """
+        index = int(style_index)
+        bg = QColor(background)
+        fg = QColor(foreground)
+        cut_w = max(10, min(100, int(cut_width)))
+        cut_h = max(10, min(100, int(cut_height)))
+        if index <= 0 or index > len(DBASE_FORM_BRUSH_PATTERNS):
+            pix = QPixmap(48, 48)
+            pix.fill(bg)
+            return pix
+
+        key = (index, int(bg.rgba()), int(fg.rgba()), cut_w, cut_h)
+        cached = _DBASE_FORM_PATTERN_CACHE.get(key)
+        if cached is not None:
+            return QPixmap(cached)
+
+        _name, encoded = DBASE_FORM_BRUSH_PATTERNS[index - 1]
+        source = QImage.fromData(_d64info_base64.b64decode(encoded), "PNG")
+        if source.isNull():
+            pix = QPixmap(48, 48)
+            pix.fill(bg)
+            return pix
+
+        source = source.convertToFormat(QImage.Format_ARGB32)
+        src_w = source.width()
+        src_h = source.height()
+        crop_w = max(4, int(round(src_w * (cut_w / 100.0))))
+        crop_h = max(4, int(round(src_h * (cut_h / 100.0))))
+        crop_x = max(0, (src_w - crop_w) // 2)
+        crop_y = max(0, (src_h - crop_h) // 2)
+        if crop_w != src_w or crop_h != src_h:
+            source = source.copy(crop_x, crop_y, crop_w, crop_h).scaled(
+                src_w,
+                src_h,
+                Qt.IgnoreAspectRatio,
+                Qt.SmoothTransformation,
+            )
+
+        target = QImage(source.size(), QImage.Format_ARGB32)
+        for y in range(source.height()):
+            for x in range(source.width()):
+                mask_color = source.pixelColor(x, y)
+                target.setPixelColor(x, y, fg if mask_color.value() < 128 else bg)
+
+        pix = QPixmap.fromImage(target)
+        _DBASE_FORM_PATTERN_CACHE[key] = QPixmap(pix)
+        return pix
+
+    def _dbase_form_pattern_icon(
+        style_index: int,
+        background,
+        foreground,
+        cut_width: int = 100,
+        cut_height: int = 100,
+    ) -> QIcon:
+        preview_width = 72
+        preview_height = 36
+        preview = QPixmap(preview_width, preview_height)
+        preview.fill(QColor(background))
+        painter = QPainter(preview)
+        try:
+            tile = _dbase_form_pattern_pixmap(
+                style_index,
+                background,
+                foreground,
+                cut_width,
+                cut_height,
+            )
+            src_side = max(8, min(tile.width(), tile.height()) // 2)
+            src_x = max(0, (tile.width() - src_side) // 2)
+            src_y = max(0, (tile.height() - src_side) // 2)
+            cropped = tile.copy(src_x, src_y, src_side, src_side)
+
+            target_side = min(preview_height, preview_width // 2)
+            target_x = (preview_width - target_side) // 2
+            target_y = (preview_height - target_side) // 2
+            scaled = cropped.scaled(
+                target_side,
+                target_side,
+                Qt.IgnoreAspectRatio,
+                Qt.SmoothTransformation,
+            )
+            painter.drawPixmap(target_x, target_y, scaled)
+            painter.setPen(QPen(QColor(110, 110, 110), 1))
+            painter.drawRect(target_x, target_y, target_side - 1, target_side - 1)
+        finally:
+            painter.end()
+        return QIcon(preview)
+
+
+    class DBaseFormColorComboBox(QComboBox):
+        """ColorComboBox mit Standardfarben und eigener Farbauswahl."""
+
+        colorChanged = pyqtSignal(QColor)
+        CUSTOM_DATA = "__custom_color__"
+        STANDARD_COLORS = (
+            ("Schwarz", "#000000"), ("Weiß", "#FFFFFF"),
+            ("Dunkelgrau", "#404040"), ("Grau", "#808080"),
+            ("Hellgrau", "#C0C0C0"), ("Rot", "#FF0000"),
+            ("Dunkelrot", "#800000"), ("Grün", "#00FF00"),
+            ("Dunkelgrün", "#008000"), ("Blau", "#0000FF"),
+            ("Navy", "#000080"), ("Cyan", "#00FFFF"),
+            ("Gelb", "#FFFF00"), ("Orange", "#FFA500"),
+            ("Magenta", "#FF00FF"), ("Violett", "#800080"),
+        )
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self._updating = False
+            self._custom_color = QColor("#000000")
+            for label, value in self.STANDARD_COLORS:
+                self.addItem(self._color_icon(QColor(value)), label, value)
+            self.addItem("Eigene Farbe ...", self.CUSTOM_DATA)
+            self.currentIndexChanged.connect(self._on_index_changed)
+
+        @staticmethod
+        def _color_icon(color: QColor) -> QIcon:
+            pix = QPixmap(28, 14)
+            pix.fill(QColor(color))
+            painter = QPainter(pix)
+            try:
+                painter.setPen(QPen(QColor("#707070"), 1))
+                painter.drawRect(0, 0, pix.width() - 1, pix.height() - 1)
+            finally:
+                painter.end()
+            return QIcon(pix)
+
+        def currentColor(self) -> QColor:
+            data = self.currentData()
+            if data == self.CUSTOM_DATA:
+                return QColor(self._custom_color)
+            value = QColor(str(data or "#000000"))
+            return value if value.isValid() else QColor("#000000")
+
+        def setCurrentColor(self, color) -> None:
+            value = QColor(color)
+            if not value.isValid():
+                return
+            self._updating = True
+            try:
+                target = value.name().upper()
+                found = -1
+                for index in range(self.count()):
+                    data = self.itemData(index)
+                    if isinstance(data, str) and data.startswith("#"):
+                        if QColor(data).name().upper() == target:
+                            found = index
+                            break
+                if found >= 0:
+                    self.setCurrentIndex(found)
+                else:
+                    self._custom_color = QColor(value)
+                    custom = self.findData(self.CUSTOM_DATA)
+                    if custom >= 0:
+                        self.setItemText(custom, f"Eigene Farbe ({target})")
+                        self.setItemIcon(custom, self._color_icon(value))
+                        self.setCurrentIndex(custom)
+            finally:
+                self._updating = False
+
+        def _on_index_changed(self, index: int) -> None:
+            if self._updating:
+                return
+            data = self.itemData(int(index))
+            if data == self.CUSTOM_DATA:
+                chosen = QColorDialog.getColor(
+                    self._custom_color, self, "Eigene Farbe auswählen",
+                    QColorDialog.ShowAlphaChannel
+                )
+                if not chosen.isValid():
+                    return
+                self._custom_color = QColor(chosen)
+                self.setItemText(index, f"Eigene Farbe ({chosen.name().upper()})")
+                self.setItemIcon(index, self._color_icon(chosen))
+                self.colorChanged.emit(QColor(chosen))
+                return
+            value = QColor(str(data or ""))
+            if value.isValid():
+                self.colorChanged.emit(value)
 
 
     class DBaseFormDesignerScene(QGraphicsScene):
@@ -19135,6 +19404,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             super().__init__(parent)
             self.setSceneRect(0.0, 0.0, 2000.0, 1200.0)
             self._pending_component_type = ""
+            self._pending_parent_panel = None
             self._component_counters = {}
 
         def drawBackground(self, painter: QPainter, rect: QRectF) -> None:
@@ -19159,10 +19429,33 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             finally:
                 painter.restore()
 
+        def _selected_panel(self):
+            """Liefert das aktuell selektierte Panel als moeglichen Parent."""
+            selected = [
+                item for item in self.selectedItems()
+                if isinstance(item, DBaseFormControlItem)
+                and item.component_type == "Panel"
+            ]
+            if selected:
+                # Bei verschachtelten selektierten Panels gewinnt das tiefste.
+                selected.sort(key=lambda item: item.panel_depth(), reverse=True)
+                return selected[0]
+            focus = self.focusItem()
+            if isinstance(focus, DBaseFormControlItem) and focus.component_type == "Panel":
+                return focus
+            return None
+
         def set_pending_component(self, component_type: str) -> None:
             component_type = str(component_type or "")
             if component_type and component_type not in DBASE_FORM_COMPONENT_SPECS:
                 return
+            if component_type:
+                # Stage 91: Parent beim Palettenklick merken. Der Klick auf die
+                # QListWidget-Palette kann den eigentlichen Graphics-Fokus nehmen,
+                # die Designer-Selektion bleibt jedoch bestehen.
+                self._pending_parent_panel = self._selected_panel()
+            else:
+                self._pending_parent_panel = None
             if component_type == self._pending_component_type:
                 return
             self._pending_component_type = component_type
@@ -19170,6 +19463,28 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
 
         def pending_component(self) -> str:
             return str(self._pending_component_type)
+
+        def pending_parent_panel(self):
+            panel = self._pending_parent_panel
+            if (
+                isinstance(panel, DBaseFormControlItem)
+                and panel.component_type == "Panel"
+                and panel.scene() is self
+            ):
+                return panel
+            return None
+
+        def _placement_parent(self, scene_pos: QPointF):
+            panel = self.pending_parent_panel()
+            if panel is None:
+                return None
+            try:
+                local = panel.mapFromScene(QPointF(scene_pos))
+                if panel.boundingRect().contains(local):
+                    return panel
+            except RuntimeError:
+                pass
+            return None
 
         def _next_component_name(self, component_type: str) -> str:
             key = str(component_type)
@@ -19184,10 +19499,17 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             *,
             component_name: Optional[str] = None,
             caption: Optional[str] = None,
+            parent_panel=None,
         ):
             spec = DBASE_FORM_COMPONENT_SPECS.get(str(component_type))
             if spec is None:
                 return None
+            if not (
+                isinstance(parent_panel, DBaseFormControlItem)
+                and parent_panel.component_type == "Panel"
+                and parent_panel.scene() is self
+            ):
+                parent_panel = None
             name = str(component_name or self._next_component_name(component_type))
             item = DBaseFormControlItem(
                 str(component_type),
@@ -19195,9 +19517,17 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 caption=caption,
                 width=float(spec["width"]),
                 height=float(spec["height"]),
+                parent=parent_panel,
             )
-            self.addItem(item)
-            item.setPos(float(scene_pos.x()), float(scene_pos.y()))
+            if parent_panel is None:
+                self.addItem(item)
+                position = QPointF(scene_pos)
+            else:
+                # QGraphicsItem::pos() ist relativ zum Parent. Die Mausposition
+                # kommt dagegen in Scene-Koordinaten herein.
+                position = parent_panel.mapFromScene(QPointF(scene_pos))
+                item.setZValue(10.0)
+            item.setPos(float(position.x()), float(position.y()))
             self.clearSelection()
             item.setSelected(True)
             item.setFocus(Qt.OtherFocusReason)
@@ -19207,7 +19537,13 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
         def mousePressEvent(self, event) -> None:
             if event.button() == Qt.LeftButton and self._pending_component_type:
                 component_type = self._pending_component_type
-                self.create_control(component_type, event.scenePos())
+                parent_panel = self._placement_parent(event.scenePos())
+                # Stage-90 regression marker: self.create_control(component_type, event.scenePos())
+                self.create_control(
+                    component_type,
+                    event.scenePos(),
+                    parent_panel=parent_panel,
+                )
                 # Ein Klick in der Palette setzt den Flag nur für eine Platzierung.
                 self.set_pending_component("")
                 event.accept()
@@ -19240,7 +19576,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.setCursor(self.CURSORS.get(self.role, Qt.ArrowCursor))
             self.setZValue(1000.0)
             self.setBrush(QBrush(QColor(255, 255, 255)))
-            self.setPen(QPen(QColor(20, 20, 20), 1))
+            self.setPen(QPen(QColor(180, 180, 180), 1))
             self.hide()
 
         def hoverEnterEvent(self, event) -> None:
@@ -19297,6 +19633,10 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self._resize_start_pos = QPointF()
             self._resize_start_rect = QRectF()
             self._resize_preview = None
+            # Stage 95: 0 = Vollton/kein Pattern, 1..N = eingebettete Brush-Maske.
+            self.brush_style = 0
+            self.brush_cut_width = 100
+            self.brush_cut_height = 100
 
             self.control_widget = self._create_control_widget()
             self.control_widget.setObjectName(self.component_name)
@@ -19308,6 +19648,9 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.font_point_size = max(1, font.pointSize() if font.pointSize() > 0 else 10)
             self.font_bold = bool(font.bold())
             self.font_italic = bool(font.italic())
+            self.font_stroke = bool(font.strikeOut())
+            self.font_underline = bool(font.underline())
+            self.font_alpha = 255
 
             palette = self.control_widget.palette()
             self.background_color = QColor(
@@ -19320,6 +19663,18 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 if self.component_type == "Button"
                 else palette.color(QPalette.WindowText)
             )
+            self.font_background_color = QColor(self.background_color)
+            self.font_foreground_color = QColor(self.foreground_color)
+
+            # Stage 99: Border-Eigenschaften.
+            self.border_style = "none"
+            self.border_size = 1
+            self.border_color = QColor("#7A7A7A")
+            self.border_round_tl = 0
+            self.border_round_tr = 0
+            self.border_round_bl = 0
+            self.border_round_br = 0
+            self._border_shadow_effect = None
 
             self.proxy = QGraphicsProxyWidget(self)
             self.proxy.setWidget(self.control_widget)
@@ -19396,24 +19751,49 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
         def boundingRect(self) -> QRectF:
             return QRectF(0.0, 0.0, self._width, self._height)
 
+        def panel_parent(self):
+            parent = self.parentItem()
+            if isinstance(parent, DBaseFormControlItem) and parent.component_type == "Panel":
+                return parent
+            return None
+
+        def panel_depth(self) -> int:
+            depth = 0
+            parent = self.panel_parent()
+            while parent is not None:
+                depth += 1
+                parent = parent.panel_parent()
+            return depth
+
         def paint(self, painter: QPainter, option, widget=None) -> None:
             del option, widget
-            if not (self.isSelected() or self.hasFocus()):
-                return
             painter.save()
             try:
-                painter.setBrush(Qt.NoBrush)
-                painter.setPen(QPen(QColor(0, 0, 128), 1.5, Qt.DashLine))
-                painter.drawRect(self.boundingRect().adjusted(0.75, 0.75, -0.75, -0.75))
+                # Stage 92: Pattern liegt hinter dem eingebetteten QWidget.
+                if int(self.brush_style) > 0:
+                    tile = _dbase_form_pattern_pixmap(
+                        self.brush_style,
+                        self.background_color,
+                        self.foreground_color,
+                        self.brush_cut_width,
+                        self.brush_cut_height,
+                    )
+                    painter.fillRect(self.boundingRect(), QBrush(tile))
+
+                if self.isSelected() or self.hasFocus():
+                    painter.setBrush(Qt.NoBrush)
+                    painter.setPen(QPen(QColor(205, 205, 205), 1.5, Qt.DashLine))
+                    painter.drawRect(self.boundingRect().adjusted(0.75, 0.75, -0.75, -0.75))
             finally:
                 painter.restore()
 
         def itemChange(self, change, value):
             if change == QGraphicsItem.ItemPositionChange and self.scene() is not None:
                 position = QPointF(value)
-                scene_rect = self.scene().sceneRect()
-                x = max(scene_rect.left(), min(position.x(), scene_rect.right() - self._width))
-                y = max(scene_rect.top(), min(position.y(), scene_rect.bottom() - self._height))
+                parent_panel = self.panel_parent()
+                bounds = parent_panel.boundingRect() if parent_panel is not None else self.scene().sceneRect()
+                x = max(bounds.left(), min(position.x(), bounds.right() - self._width))
+                y = max(bounds.top(), min(position.y(), bounds.bottom() - self._height))
                 return QPointF(x, y)
 
             result = super().itemChange(change, value)
@@ -19527,25 +19907,125 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                     self.control_widget.setText(value)
                 except AttributeError:
                     pass
+            self._apply_widget_style()
             self.properties_changed.emit(self)
+
+        def _border_style_css(self) -> str:
+            style = str(getattr(self, "border_style", "none"))
+            size = max(0, min(64, int(getattr(self, "border_size", 1))))
+            color = QColor(getattr(self, "border_color", QColor("#7A7A7A")))
+            if not color.isValid():
+                color = QColor("#7A7A7A")
+            if style == "none" or size <= 0:
+                border = "border: none;"
+            else:
+                css_style = {
+                    "solid": "solid",
+                    "dashed": "dashed",
+                    "dotted": "dotted",
+                    "double": "double",
+                    "hard_br": "solid",
+                    "hard_tl": "solid",
+                    "hard_right": "solid",
+                    "hard_bottom": "solid",
+                }.get(style, "solid")
+                border = f"border: {size}px {css_style} {color.name()};"
+            return (
+                border
+                + f" border-top-left-radius: {max(0, int(self.border_round_tl))}px;"
+                + f" border-top-right-radius: {max(0, int(self.border_round_tr))}px;"
+                + f" border-bottom-left-radius: {max(0, int(self.border_round_bl))}px;"
+                + f" border-bottom-right-radius: {max(0, int(self.border_round_br))}px;"
+            )
+
+        def _apply_border_shadow(self) -> None:
+            style = str(getattr(self, "border_style", "none"))
+            shadow_styles = {"hard_br", "hard_tl", "hard_right", "hard_bottom"}
+            if style not in shadow_styles:
+                try:
+                    self.proxy.setGraphicsEffect(None)
+                except RuntimeError:
+                    pass
+                self._border_shadow_effect = None
+                return
+
+            amount = max(2, int(getattr(self, "border_size", 1)) + 3)
+            effect = QGraphicsDropShadowEffect(self.proxy)
+            effect.setBlurRadius(0.0)
+            effect.setColor(QColor(getattr(self, "border_color", QColor("#000000"))))
+            if style == "hard_tl":
+                effect.setOffset(-amount, -amount)
+            elif style == "hard_right":
+                effect.setOffset(amount, 0)
+            elif style == "hard_bottom":
+                effect.setOffset(0, amount)
+            else:
+                effect.setOffset(amount, amount)
+            self.proxy.setGraphicsEffect(effect)
+            self._border_shadow_effect = effect
 
         def _apply_widget_style(self) -> None:
             font = QFont(self.font_family, int(self.font_point_size))
             font.setBold(bool(self.font_bold))
             font.setItalic(bool(self.font_italic))
+            font.setStrikeOut(bool(self.font_stroke))
+            font.setUnderline(bool(self.font_underline))
             self.control_widget.setFont(font)
 
             palette = QPalette(self.control_widget.palette())
             bg = QColor(self.background_color)
             fg = QColor(self.foreground_color)
-            for role in (QPalette.Window, QPalette.Button, QPalette.Base, QPalette.AlternateBase):
-                palette.setColor(role, bg)
+            font_bg = QColor(self.font_background_color)
+            font_fg = QColor(self.font_foreground_color)
+            font_fg.setAlpha(max(0, min(255, int(self.font_alpha))))
+            font_bg.setAlpha(max(0, min(255, int(self.font_alpha))))
+            if int(self.brush_style) > 0:
+                texture = QBrush(
+                    _dbase_form_pattern_pixmap(
+                        self.brush_style,
+                        bg,
+                        fg,
+                        self.brush_cut_width,
+                        self.brush_cut_height,
+                    )
+                )
+                for role in (QPalette.Window, QPalette.Button, QPalette.Base, QPalette.AlternateBase):
+                    palette.setBrush(role, texture)
+            else:
+                for role in (QPalette.Window, QPalette.Button, QPalette.Base, QPalette.AlternateBase):
+                    palette.setColor(role, bg)
             for role in (QPalette.WindowText, QPalette.ButtonText, QPalette.Text):
-                palette.setColor(role, fg)
+                palette.setColor(role, font_fg)
+            if int(self.brush_style) <= 0:
+                for role in (QPalette.Base, QPalette.AlternateBase):
+                    palette.setColor(role, font_bg)
             self.control_widget.setPalette(palette)
             self.control_widget.setAutoFillBackground(True)
+
+            # Stage 99: Der Border wird fuer alle Designer-Controls per
+            # objektbezogenem Stylesheet gerendert. Dadurch bleiben auch
+            # unterschiedliche Corner-Radien erhalten.
+            selector = f"#{self.control_widget.objectName()}"
+            border_css = self._border_style_css()
+            background_css = (
+                "background-color: transparent;"
+                if int(self.brush_style) > 0
+                else f"background-color: {bg.name()};"
+            )
+            self.control_widget.setStyleSheet(
+                f"{selector} {{ {background_css} "
+                f"color: rgba({font_fg.red()},{font_fg.green()},{font_fg.blue()},{font_fg.alpha()}); "
+                f"{border_css} padding: 2px; }}"
+            )
+            self.control_widget.setAttribute(
+                Qt.WA_TranslucentBackground,
+                bool(int(self.brush_style) > 0),
+            )
+            self._apply_border_shadow()
+
             self.control_widget.update()
             self.proxy.update()
+            self.update()
 
         def set_background_color(self, color) -> bool:
             value = QColor(color)
@@ -19564,6 +20044,30 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self._apply_widget_style()
             self.properties_changed.emit(self)
             return True
+
+        def set_brush_style(self, style_index: int) -> None:
+            value = max(0, min(int(style_index), len(DBASE_FORM_BRUSH_PATTERNS)))
+            if value == int(self.brush_style):
+                return
+            self.brush_style = value
+            self._apply_widget_style()
+            self.properties_changed.emit(self)
+
+        def set_brush_cut_width(self, value: int) -> None:
+            value = max(10, min(100, int(value)))
+            if value == int(self.brush_cut_width):
+                return
+            self.brush_cut_width = value
+            self._apply_widget_style()
+            self.properties_changed.emit(self)
+
+        def set_brush_cut_height(self, value: int) -> None:
+            value = max(10, min(100, int(value)))
+            if value == int(self.brush_cut_height):
+                return
+            self.brush_cut_height = value
+            self._apply_widget_style()
+            self.properties_changed.emit(self)
 
         def set_font_family(self, family: str) -> None:
             family = str(family or "").strip()
@@ -19588,6 +20092,87 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self._apply_widget_style()
             self.properties_changed.emit(self)
 
+        def set_font_stroke(self, enabled: bool) -> None:
+            self.font_stroke = bool(enabled)
+            self._apply_widget_style()
+            self.properties_changed.emit(self)
+
+        def set_font_underline(self, enabled: bool) -> None:
+            self.font_underline = bool(enabled)
+            self._apply_widget_style()
+            self.properties_changed.emit(self)
+
+        def set_font_alpha(self, value: int) -> None:
+            self.font_alpha = max(0, min(255, int(value)))
+            self._apply_widget_style()
+            self.properties_changed.emit(self)
+
+        def set_font_background_color(self, color) -> bool:
+            value = QColor(color)
+            if not value.isValid():
+                return False
+            self.font_background_color = value
+            self._apply_widget_style()
+            self.properties_changed.emit(self)
+            return True
+
+        def set_font_foreground_color(self, color) -> bool:
+            value = QColor(color)
+            if not value.isValid():
+                return False
+            self.font_foreground_color = value
+            self._apply_widget_style()
+            self.properties_changed.emit(self)
+            return True
+
+        def set_border_style(self, value: str) -> None:
+            value = str(value or "none")
+            allowed = {item_value for _label, item_value in DBASE_FORM_BORDER_STYLES}
+            if value not in allowed:
+                value = "none"
+            if value == self.border_style:
+                return
+            self.border_style = value
+            self._apply_widget_style()
+            self.properties_changed.emit(self)
+
+        def set_border_size(self, value: int) -> None:
+            value = max(0, min(64, int(value)))
+            if value == int(self.border_size):
+                return
+            self.border_size = value
+            self._apply_widget_style()
+            self.properties_changed.emit(self)
+
+        def set_border_color(self, color) -> bool:
+            value = QColor(color)
+            if not value.isValid():
+                return False
+            self.border_color = value
+            self._apply_widget_style()
+            self.properties_changed.emit(self)
+            return True
+
+        def set_border_round_tl(self, value: int) -> None:
+            self.border_round_tl = max(0, min(200, int(value)))
+            self._apply_widget_style()
+            self.properties_changed.emit(self)
+
+        def set_border_round_tr(self, value: int) -> None:
+            self.border_round_tr = max(0, min(200, int(value)))
+            self._apply_widget_style()
+            self.properties_changed.emit(self)
+
+        def set_border_round_bl(self, value: int) -> None:
+            self.border_round_bl = max(0, min(200, int(value)))
+            self._apply_widget_style()
+            self.properties_changed.emit(self)
+
+        def set_border_round_br(self, value: int) -> None:
+            self.border_round_br = max(0, min(200, int(value)))
+            self._apply_widget_style()
+            self.properties_changed.emit(self)
+
         def begin_resize(self, role: str, scene_pos: QPointF) -> None:
             scene = self.scene()
             if scene is None:
@@ -19605,7 +20190,8 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                     pass
             preview = QGraphicsRectItem(self._resize_start_rect)
             preview.setZValue(2000.0)
-            preview.setPen(QPen(QColor(0, 0, 128), 1.5, Qt.DashLine))
+            # Stage 96: Resize-Vorschau weiterhin konsequent hellgrau.
+            preview.setPen(QPen(QColor(205, 205, 205), 1.5, Qt.DashLine))
             preview.setBrush(QBrush(Qt.NoBrush))
             scene.addItem(preview)
             self._resize_preview = preview
@@ -19628,7 +20214,12 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
 
             scene = self.scene()
             if scene is not None:
-                bounds = scene.sceneRect()
+                parent_panel = self.panel_parent()
+                bounds = (
+                    parent_panel.sceneBoundingRect()
+                    if parent_panel is not None
+                    else scene.sceneRect()
+                )
                 left = max(bounds.left(), left)
                 top = max(bounds.top(), top)
                 right = min(bounds.right(), right)
@@ -19650,7 +20241,12 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 scene.removeItem(self._resize_preview)
             self._resize_preview = None
             self._resize_role = ""
-            self.setPos(rect.left(), rect.top())
+            parent_panel = self.panel_parent()
+            if parent_panel is None:
+                position = QPointF(rect.left(), rect.top())
+            else:
+                position = parent_panel.mapFromScene(QPointF(rect.left(), rect.top()))
+            self.setPos(position)
             self._set_size(rect.width(), rect.height())
             self.geometry_changed.emit(self)
 
@@ -19732,8 +20328,55 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
 
             self.hwnd_edit = self._add_line_property("HWND", read_only=True)
             self.name_edit = self._add_line_property("Name")
-            self.background_edit, self.background_button = self._add_color_property("Hintergrundfarbe")
-            self.foreground_edit, self.foreground_button = self._add_color_property("Schriftfarbe")
+
+            # Stage 90 regression labels: "Hintergrundfarbe", "Schriftfarbe".
+            # Stage 92 gruppiert beide Werte als Brush/Background/Foreground.
+            self.brush_root = QTreeWidgetItem(self.property_tree, ["Brush", ""])
+            self.brush_root.setFlags(self.brush_root.flags() & ~Qt.ItemIsSelectable)
+            self.brush_root.setExpanded(True)
+            brush_row = self.property_tree.indexOfTopLevelItem(self.brush_root)
+            self.property_tree.setFirstColumnSpanned(brush_row, QModelIndex(), True)
+
+            self.background_edit, self.background_button = self._add_color_property(
+                "Background", parent_item=self.brush_root
+            )
+            self.foreground_edit, self.foreground_button = self._add_color_property(
+                "Foreground", parent_item=self.brush_root
+            )
+            self.style_root = QTreeWidgetItem(self.brush_root, ["Style", ""])
+            self.style_root.setFlags(self.style_root.flags() & ~Qt.ItemIsSelectable)
+            self.style_root.setExpanded(True)
+            self.brush_style_combo = QComboBox(self.property_tree)
+            self.brush_style_combo.setObjectName("dbase_form_brush_style_combo")
+            self.brush_style_combo.setIconSize(QSize(72, 36))
+            self.brush_style_combo.addItem("Ohne Muster", 0)
+            for style_index, (style_name, _encoded) in enumerate(DBASE_FORM_BRUSH_PATTERNS, 1):
+                self.brush_style_combo.addItem(style_name, style_index)
+            self.property_tree.setItemWidget(self.style_root, 1, self.brush_style_combo)
+            self._property_widgets.append(self.brush_style_combo)
+
+            self.brush_cut_width_spin = QSpinBox(self.property_tree)
+            self.brush_cut_width_spin.setObjectName("dbase_form_brush_cut_width_spinbox")
+            self.brush_cut_width_spin.setRange(10, 100)
+            self.brush_cut_width_spin.setSingleStep(5)
+            self.brush_cut_width_spin.setSuffix(" %")
+            self.brush_cut_width_spin.setValue(100)
+            self._add_widget_property("Cut Width", self.brush_cut_width_spin, parent_item=self.style_root)
+
+            self.brush_cut_height_spin = QSpinBox(self.property_tree)
+            self.brush_cut_height_spin.setObjectName("dbase_form_brush_cut_height_spinbox")
+            self.brush_cut_height_spin.setRange(10, 100)
+            self.brush_cut_height_spin.setSingleStep(5)
+            self.brush_cut_height_spin.setSuffix(" %")
+            self.brush_cut_height_spin.setValue(100)
+            self._add_widget_property("Cut Height", self.brush_cut_height_spin, parent_item=self.style_root)
+
+            self._style_brush_root()
+            self._refresh_brush_style_icons(QColor("#000000"), QColor("#FFFFFF"), 100, 100)
+
+            self.font_root = QTreeWidgetItem(self.property_tree, ["Font", ""])
+            self.font_root.setFlags(self.font_root.flags() & ~Qt.ItemIsSelectable)
+            self.font_root.setExpanded(True)
 
             self.font_combo = QComboBox(self.property_tree)
             self.font_combo.setObjectName("dbase_form_font_family_combo")
@@ -19742,20 +20385,92 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 self.font_combo.addItems(QFontDatabase().families())
             except Exception:
                 self.font_combo.addItem(QApplication.font().family())
-            self._add_widget_property("Schriftart", self.font_combo)
+            self.property_tree.setItemWidget(self.font_root, 1, self.font_combo)
+            self._property_widgets.append(self.font_combo)
 
             self.font_size_spin = QSpinBox(self.property_tree)
             self.font_size_spin.setObjectName("dbase_form_font_size_spinbox")
             self.font_size_spin.setRange(1, 200)
             self.font_size_spin.setSuffix(" pt")
-            self._add_widget_property("Font", self.font_size_spin)
+            self._add_widget_property("Size", self.font_size_spin, parent_item=self.font_root)
+
+            self.font_background_combo = DBaseFormColorComboBox(self.property_tree)
+            self.font_background_combo.setObjectName("dbase_form_font_background_combo")
+            self._add_widget_property("Background", self.font_background_combo, parent_item=self.font_root)
+
+            self.font_foreground_combo = DBaseFormColorComboBox(self.property_tree)
+            self.font_foreground_combo.setObjectName("dbase_form_font_foreground_combo")
+            self._add_widget_property("Foreground", self.font_foreground_combo, parent_item=self.font_root)
+
+            self.font_alpha_combo = QComboBox(self.property_tree)
+            self.font_alpha_combo.setObjectName("dbase_form_font_alpha_combo")
+            for alpha_value in range(256):
+                self.font_alpha_combo.addItem(str(alpha_value), alpha_value)
+            self.font_alpha_combo.setCurrentIndex(255)
+            self._add_widget_property("Alpha", self.font_alpha_combo, parent_item=self.font_root)
 
             self.bold_check = QCheckBox(self.property_tree)
             self.bold_check.setObjectName("dbase_form_font_bold_checkbox")
-            self._add_widget_property("Fett", self.bold_check)
+            self._add_widget_property("Fett", self.bold_check, parent_item=self.font_root)
+
             self.italic_check = QCheckBox(self.property_tree)
             self.italic_check.setObjectName("dbase_form_font_italic_checkbox")
-            self._add_widget_property("Kursiv", self.italic_check)
+            self._add_widget_property("Kursiv", self.italic_check, parent_item=self.font_root)
+
+            self.stroke_check = QCheckBox(self.property_tree)
+            self.stroke_check.setObjectName("dbase_form_font_stroke_checkbox")
+            self._add_widget_property("Stroke", self.stroke_check, parent_item=self.font_root)
+
+            self.underline_check = QCheckBox(self.property_tree)
+            self.underline_check.setObjectName("dbase_form_font_underline_checkbox")
+            self._add_widget_property("Underline", self.underline_check, parent_item=self.font_root)
+
+            # Stage 99: Border als eigener Root-Eintrag.
+            self.border_root = QTreeWidgetItem(self.property_tree, ["Border", ""])
+            self.border_root.setFlags(self.border_root.flags() & ~Qt.ItemIsSelectable)
+            self.border_root.setExpanded(True)
+
+            self.border_style_combo = QComboBox(self.property_tree)
+            self.border_style_combo.setObjectName("dbase_form_border_style_combo")
+            for border_label, border_value in DBASE_FORM_BORDER_STYLES:
+                self.border_style_combo.addItem(border_label, border_value)
+            self.property_tree.setItemWidget(self.border_root, 1, self.border_style_combo)
+            self._property_widgets.append(self.border_style_combo)
+
+            self.border_size_spin = QSpinBox(self.property_tree)
+            self.border_size_spin.setObjectName("dbase_form_border_size_spinbox")
+            self.border_size_spin.setRange(0, 64)
+            self.border_size_spin.setSuffix(" px")
+            self.border_size_spin.setValue(1)
+            self._add_widget_property("Size", self.border_size_spin, parent_item=self.border_root)
+
+            self.border_color_combo = DBaseFormColorComboBox(self.property_tree)
+            self.border_color_combo.setObjectName("dbase_form_border_color_combo")
+            self._add_widget_property("Color", self.border_color_combo, parent_item=self.border_root)
+
+            self.border_round_tl_spin = QSpinBox(self.property_tree)
+            self.border_round_tl_spin.setObjectName("dbase_form_border_round_tl_spinbox")
+            self.border_round_tl_spin.setRange(0, 200)
+            self.border_round_tl_spin.setSuffix(" px")
+            self._add_widget_property("Rounded TL", self.border_round_tl_spin, parent_item=self.border_root)
+
+            self.border_round_tr_spin = QSpinBox(self.property_tree)
+            self.border_round_tr_spin.setObjectName("dbase_form_border_round_tr_spinbox")
+            self.border_round_tr_spin.setRange(0, 200)
+            self.border_round_tr_spin.setSuffix(" px")
+            self._add_widget_property("Rounded TR", self.border_round_tr_spin, parent_item=self.border_root)
+
+            self.border_round_bl_spin = QSpinBox(self.property_tree)
+            self.border_round_bl_spin.setObjectName("dbase_form_border_round_bl_spinbox")
+            self.border_round_bl_spin.setRange(0, 200)
+            self.border_round_bl_spin.setSuffix(" px")
+            self._add_widget_property("Rounded BL", self.border_round_bl_spin, parent_item=self.border_root)
+
+            self.border_round_br_spin = QSpinBox(self.property_tree)
+            self.border_round_br_spin.setObjectName("dbase_form_border_round_br_spinbox")
+            self.border_round_br_spin.setRange(0, 200)
+            self.border_round_br_spin.setSuffix(" px")
+            self._add_widget_property("Rounded BR", self.border_round_br_spin, parent_item=self.border_root)
 
             self.property_tree.itemDoubleClicked.connect(self._property_item_double_clicked)
             self.name_edit.editingFinished.connect(self._name_changed)
@@ -19763,10 +20478,25 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.foreground_edit.editingFinished.connect(lambda: self._color_text_changed("foreground"))
             self.background_button.clicked.connect(lambda: self._choose_color("background"))
             self.foreground_button.clicked.connect(lambda: self._choose_color("foreground"))
+            self.brush_style_combo.currentIndexChanged.connect(self._brush_style_changed)
+            self.brush_cut_width_spin.valueChanged.connect(self._brush_cut_width_changed)
+            self.brush_cut_height_spin.valueChanged.connect(self._brush_cut_height_changed)
             self.font_combo.currentTextChanged.connect(self._font_family_changed)
             self.font_size_spin.valueChanged.connect(self._font_size_changed)
+            self.font_background_combo.colorChanged.connect(self._font_background_changed)
+            self.font_foreground_combo.colorChanged.connect(self._font_foreground_changed)
+            self.font_alpha_combo.currentIndexChanged.connect(self._font_alpha_changed)
             self.bold_check.toggled.connect(self._bold_changed)
             self.italic_check.toggled.connect(self._italic_changed)
+            self.stroke_check.toggled.connect(self._stroke_changed)
+            self.underline_check.toggled.connect(self._underline_changed)
+            self.border_style_combo.currentIndexChanged.connect(self._border_style_changed)
+            self.border_size_spin.valueChanged.connect(self._border_size_changed)
+            self.border_color_combo.colorChanged.connect(self._border_color_changed)
+            self.border_round_tl_spin.valueChanged.connect(lambda value: self._border_round_changed("tl", value))
+            self.border_round_tr_spin.valueChanged.connect(lambda value: self._border_round_changed("tr", value))
+            self.border_round_bl_spin.valueChanged.connect(lambda value: self._border_round_changed("bl", value))
+            self.border_round_br_spin.valueChanged.connect(lambda value: self._border_round_changed("br", value))
 
             properties_layout.addWidget(self.property_tree, 1)
             self.upper_tabs.addTab(properties_page, "Eigenschaften")
@@ -19802,21 +20532,24 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self._set_property_widgets_enabled(False)
             self.set_dark_mode(False)
 
-        def _add_widget_property(self, key: str, widget: QWidget):
-            item = QTreeWidgetItem(self.property_tree, [str(key), ""])
+        def _add_widget_property(self, key: str, widget: QWidget, *, parent_item=None):
+            if parent_item is None:
+                item = QTreeWidgetItem(self.property_tree, [str(key), ""])
+            else:
+                item = QTreeWidgetItem(parent_item, [str(key), ""])
             item.setFlags(item.flags() & ~Qt.ItemIsEditable)
             self.property_tree.setItemWidget(item, 1, widget)
             self._property_widgets.append(widget)
             return widget
 
-        def _add_line_property(self, key: str, *, read_only: bool = False):
+        def _add_line_property(self, key: str, *, read_only: bool = False, parent_item=None):
             edit = QLineEdit(self.property_tree)
             edit.setReadOnly(bool(read_only))
             edit.setObjectName(f"dbase_form_{key.casefold()}_edit")
-            self._add_widget_property(key, edit)
+            self._add_widget_property(key, edit, parent_item=parent_item)
             return edit
 
-        def _add_color_property(self, key: str):
+        def _add_color_property(self, key: str, *, parent_item=None):
             holder = QWidget(self.property_tree)
             row = QHBoxLayout(holder)
             row.setContentsMargins(0, 0, 0, 0)
@@ -19826,7 +20559,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             button.setFixedWidth(30)
             row.addWidget(edit, 1)
             row.addWidget(button)
-            self._add_widget_property(key, holder)
+            self._add_widget_property(key, holder, parent_item=parent_item)
             self._property_widgets.extend((edit, button))
             return edit, button
 
@@ -19841,7 +20574,71 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             font.setBold(True)
             self.position_root.setFont(0, font)
 
+        def _style_brush_root(self) -> None:
+            dark_mode = bool(getattr(self, "_dark_mode", False))
+            background = QColor("#2A2A2A") if dark_mode else QColor("#E7E7E7")
+            foreground = QColor("#FFFFFF") if dark_mode else QColor("#000000")
+            for column in (0, 1):
+                self.brush_root.setBackground(column, QBrush(background))
+                self.brush_root.setForeground(column, QBrush(foreground))
+            font = QFont(self.property_tree.font())
+            font.setBold(True)
+            self.brush_root.setFont(0, font)
+            if hasattr(self, "style_root"):
+                self.style_root.setFont(0, font)
+
+        def _style_font_root(self) -> None:
+            font = QFont(self.property_tree.font())
+            font.setBold(True)
+            self.font_root.setFont(0, font)
+
+        def _style_border_root(self) -> None:
+            font = QFont(self.property_tree.font())
+            font.setBold(True)
+            self.border_root.setFont(0, font)
+
+        def _update_color_button(self, button: QPushButton, color) -> None:
+            value = QColor(color)
+            if not value.isValid():
+                return
+            contrast = "#000000" if value.lightness() > 140 else "#FFFFFF"
+            button.setStyleSheet(
+                f"QPushButton {{ background-color:{value.name()}; color:{contrast}; "
+                "border:1px solid #666666; }}"
+            )
+
+        def _refresh_brush_style_icons(
+            self,
+            background=None,
+            foreground=None,
+            cut_width: int = 100,
+            cut_height: int = 100,
+        ) -> None:
+            bg = QColor(background) if background is not None else QColor("#000000")
+            fg = QColor(foreground) if foreground is not None else QColor("#FFFFFF")
+            if not bg.isValid():
+                bg = QColor("#000000")
+            if not fg.isValid():
+                fg = QColor("#FFFFFF")
+            cut_width = max(10, min(100, int(cut_width)))
+            cut_height = max(10, min(100, int(cut_height)))
+            solid = QPixmap(72, 36)
+            solid.fill(bg)
+            self.brush_style_combo.setItemIcon(0, QIcon(solid))
+            for style_index in range(1, len(DBASE_FORM_BRUSH_PATTERNS) + 1):
+                self.brush_style_combo.setItemIcon(
+                    style_index,
+                    _dbase_form_pattern_icon(
+                        style_index,
+                        bg,
+                        fg,
+                        cut_width,
+                        cut_height,
+                    ),
+                )
+
         def set_dark_mode(self, enabled: bool) -> None:
+            self._dark_mode = bool(enabled)
             if bool(enabled):
                 self.property_tree.setStyleSheet(
                     "QTreeWidget#dbase_form_property_tree{background:#000000;color:#ffffff;"
@@ -19862,6 +20659,9 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                     "background:#e7e7e7;color:#000000;border:1px solid #b0b0b0;padding:4px;}"
                 )
             self._style_position_root()
+            self._style_brush_root()
+            self._style_font_root()
+            self._style_border_root()
 
         def _palette_icon(self, component_type: str) -> QIcon:
             pix = QPixmap(48, 48)
@@ -19981,6 +20781,24 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                     self.name_edit.clear()
                     self.background_edit.clear()
                     self.foreground_edit.clear()
+                    self.brush_style_combo.setCurrentIndex(0)
+                    self.brush_cut_width_spin.setValue(100)
+                    self.brush_cut_height_spin.setValue(100)
+                    self.font_background_combo.setCurrentColor(QColor("#FFFFFF"))
+                    self.font_foreground_combo.setCurrentColor(QColor("#000000"))
+                    self.font_alpha_combo.setCurrentIndex(255)
+                    self.bold_check.setChecked(False)
+                    self.italic_check.setChecked(False)
+                    self.stroke_check.setChecked(False)
+                    self.underline_check.setChecked(False)
+                    self.border_style_combo.setCurrentIndex(0)
+                    self.border_size_spin.setValue(1)
+                    self.border_color_combo.setCurrentColor(QColor("#7A7A7A"))
+                    self.border_round_tl_spin.setValue(0)
+                    self.border_round_tr_spin.setValue(0)
+                    self.border_round_bl_spin.setValue(0)
+                    self.border_round_br_spin.setValue(0)
+                    self._refresh_brush_style_icons(QColor("#000000"), QColor("#FFFFFF"), 100, 100)
                     return
 
                 top, left, width, height = item.geometry_values()
@@ -19991,6 +20809,17 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 self.name_edit.setText(item.component_name)
                 self.background_edit.setText(item.background_color.name().upper())
                 self.foreground_edit.setText(item.foreground_color.name().upper())
+                self._update_color_button(self.background_button, item.background_color)
+                self._update_color_button(self.foreground_button, item.foreground_color)
+                self.brush_cut_width_spin.setValue(int(getattr(item, "brush_cut_width", 100)))
+                self.brush_cut_height_spin.setValue(int(getattr(item, "brush_cut_height", 100)))
+                self._refresh_brush_style_icons(
+                    item.background_color,
+                    item.foreground_color,
+                    int(getattr(item, "brush_cut_width", 100)),
+                    int(getattr(item, "brush_cut_height", 100)),
+                )
+                self.brush_style_combo.setCurrentIndex(int(item.brush_style))
                 index = self.font_combo.findText(item.font_family, Qt.MatchFixedString)
                 if index >= 0:
                     self.font_combo.setCurrentIndex(index)
@@ -19998,8 +20827,21 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                     self.font_combo.addItem(item.font_family)
                     self.font_combo.setCurrentText(item.font_family)
                 self.font_size_spin.setValue(int(item.font_point_size))
+                self.font_background_combo.setCurrentColor(item.font_background_color)
+                self.font_foreground_combo.setCurrentColor(item.font_foreground_color)
+                self.font_alpha_combo.setCurrentIndex(max(0, min(255, int(item.font_alpha))))
                 self.bold_check.setChecked(bool(item.font_bold))
                 self.italic_check.setChecked(bool(item.font_italic))
+                self.stroke_check.setChecked(bool(item.font_stroke))
+                self.underline_check.setChecked(bool(item.font_underline))
+                border_index = self.border_style_combo.findData(str(getattr(item, "border_style", "none")))
+                self.border_style_combo.setCurrentIndex(border_index if border_index >= 0 else 0)
+                self.border_size_spin.setValue(int(getattr(item, "border_size", 1)))
+                self.border_color_combo.setCurrentColor(getattr(item, "border_color", QColor("#7A7A7A")))
+                self.border_round_tl_spin.setValue(int(getattr(item, "border_round_tl", 0)))
+                self.border_round_tr_spin.setValue(int(getattr(item, "border_round_tr", 0)))
+                self.border_round_bl_spin.setValue(int(getattr(item, "border_round_bl", 0)))
+                self.border_round_br_spin.setValue(int(getattr(item, "border_round_br", 0)))
             finally:
                 self._syncing = False
 
@@ -20012,6 +20854,12 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             del column
             if item is self.position_root:
                 self.position_root.setExpanded(not self.position_root.isExpanded())
+            elif hasattr(self, "style_root") and item is self.style_root:
+                self.style_root.setExpanded(not self.style_root.isExpanded())
+            elif hasattr(self, "font_root") and item is self.font_root:
+                self.font_root.setExpanded(not self.font_root.isExpanded())
+            elif hasattr(self, "border_root") and item is self.border_root:
+                self.border_root.setExpanded(not self.border_root.isExpanded())
 
         def _name_changed(self) -> None:
             if self._syncing or self._selected_item is None:
@@ -20035,6 +20883,44 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 self._selected_item.set_background_color(value)
             else:
                 self._selected_item.set_foreground_color(value)
+            self._refresh_brush_style_icons(
+                self._selected_item.background_color,
+                self._selected_item.foreground_color,
+                int(getattr(self._selected_item, "brush_cut_width", 100)),
+                int(getattr(self._selected_item, "brush_cut_height", 100)),
+            )
+
+        def _brush_style_changed(self, combo_index: int) -> None:
+            if self._syncing or self._selected_item is None:
+                return
+            style_index = self.brush_style_combo.itemData(int(combo_index))
+            try:
+                style_index = int(style_index)
+            except (TypeError, ValueError):
+                style_index = int(combo_index)
+            self._selected_item.set_brush_style(style_index)
+
+        def _brush_cut_width_changed(self, value: int) -> None:
+            if self._syncing or self._selected_item is None:
+                return
+            self._selected_item.set_brush_cut_width(value)
+            self._refresh_brush_style_icons(
+                self._selected_item.background_color,
+                self._selected_item.foreground_color,
+                int(getattr(self._selected_item, "brush_cut_width", value)),
+                int(getattr(self._selected_item, "brush_cut_height", 100)),
+            )
+
+        def _brush_cut_height_changed(self, value: int) -> None:
+            if self._syncing or self._selected_item is None:
+                return
+            self._selected_item.set_brush_cut_height(value)
+            self._refresh_brush_style_icons(
+                self._selected_item.background_color,
+                self._selected_item.foreground_color,
+                int(getattr(self._selected_item, "brush_cut_width", 100)),
+                int(getattr(self._selected_item, "brush_cut_height", value)),
+            )
 
         def _choose_color(self, which: str) -> None:
             if self._selected_item is None:
@@ -20047,6 +20933,12 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 self._selected_item.set_background_color(color)
             else:
                 self._selected_item.set_foreground_color(color)
+            self._refresh_brush_style_icons(
+                self._selected_item.background_color,
+                self._selected_item.foreground_color,
+                int(getattr(self._selected_item, "brush_cut_width", 100)),
+                int(getattr(self._selected_item, "brush_cut_height", 100)),
+            )
 
         def _font_family_changed(self, family: str) -> None:
             if self._syncing or self._selected_item is None:
@@ -20058,6 +20950,26 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 return
             self._selected_item.set_font_point_size(value)
 
+        def _font_background_changed(self, color: QColor) -> None:
+            if self._syncing or self._selected_item is None:
+                return
+            self._selected_item.set_font_background_color(color)
+
+        def _font_foreground_changed(self, color: QColor) -> None:
+            if self._syncing or self._selected_item is None:
+                return
+            self._selected_item.set_font_foreground_color(color)
+
+        def _font_alpha_changed(self, combo_index: int) -> None:
+            if self._syncing or self._selected_item is None:
+                return
+            value = self.font_alpha_combo.itemData(int(combo_index))
+            try:
+                value = int(value)
+            except (TypeError, ValueError):
+                value = int(combo_index)
+            self._selected_item.set_font_alpha(value)
+
         def _bold_changed(self, enabled: bool) -> None:
             if self._syncing or self._selected_item is None:
                 return
@@ -20067,6 +20979,45 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             if self._syncing or self._selected_item is None:
                 return
             self._selected_item.set_font_italic(enabled)
+
+        def _stroke_changed(self, enabled: bool) -> None:
+            if self._syncing or self._selected_item is None:
+                return
+            self._selected_item.set_font_stroke(enabled)
+
+        def _underline_changed(self, enabled: bool) -> None:
+            if self._syncing or self._selected_item is None:
+                return
+            self._selected_item.set_font_underline(enabled)
+
+        def _border_style_changed(self, combo_index: int) -> None:
+            if self._syncing or self._selected_item is None:
+                return
+            value = self.border_style_combo.itemData(int(combo_index))
+            self._selected_item.set_border_style(str(value or "none"))
+
+        def _border_size_changed(self, value: int) -> None:
+            if self._syncing or self._selected_item is None:
+                return
+            self._selected_item.set_border_size(value)
+
+        def _border_color_changed(self, color: QColor) -> None:
+            if self._syncing or self._selected_item is None:
+                return
+            self._selected_item.set_border_color(color)
+
+        def _border_round_changed(self, corner: str, value: int) -> None:
+            if self._syncing or self._selected_item is None:
+                return
+            corner = str(corner).casefold()
+            if corner == "tl":
+                self._selected_item.set_border_round_tl(value)
+            elif corner == "tr":
+                self._selected_item.set_border_round_tr(value)
+            elif corner == "bl":
+                self._selected_item.set_border_round_bl(value)
+            elif corner == "br":
+                self._selected_item.set_border_round_br(value)
 
 
     class DBaseFormDesignerView(QGraphicsView):
