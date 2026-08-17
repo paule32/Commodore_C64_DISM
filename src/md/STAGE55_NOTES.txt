@@ -1,0 +1,20 @@
+Stage 55 – PROLOG Wissen-Datenbank-Browser
+
+- PROLOG-Programme -> Wissen-Datenbanken im Projekt-Tree
+- Rechtsklick/File-Open-Dialog für *.pl/*.prolog
+- getrennte Projektpersistenz: Category.prolog.knowledge
+- Wissensdatenbank-Verzeichnis + ComboBox + rechter Öffnen-Button
+- eindeutige Fakten-/Regel-Prädikate links in QTreeWidget
+- schrittweise wahr/falsch-Prüfung mit vorhandenem PROLOG-Resolver
+- FlowLayout in QScrollArea mit automatischem Zeilenumbruch
+- Level-Buttons mit grünem Aktivrahmen
+- Kontextmenü: Level + alle Sub-Level löschen
+- Alternativen per ▼-Button
+- Suchfeld ab >10 Alternativen
+- Dark-/Light-Mode
+- Beispiel obst_wissen_stage55.pl
+
+Regression: siehe STAGE55_TEST_RESULTS.txt
+PyQt5 kann in der Containerumgebung nicht nativ angezeigt werden; die GUI-
+Integration wurde deshalb statisch/syntaktisch und die Resolverlogik direkt
+getestet.

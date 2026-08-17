@@ -109,7 +109,7 @@ ancestor(X, Y) :- parent(X, Z), ancestor(Z, Y).
         ):
             self.assertIn(marker, asm)
 
-    def test_gui_keeps_runtime_but_has_no_console_repl_io(self):
+    def test_gui_keeps_runtime_and_database_file_io_but_has_no_console_repl(self):
         result = compile_prolog_to_assembly(
             "p(a).\n?- p(X).\n",
             filename="gui.pl",
@@ -119,7 +119,11 @@ ancestor(X, Y) :- parent(X, Z), ancestor(Z, Y).
         asm = result.assembly
         self.assertIn("__rt_unify:", asm)
         self.assertIn('import MessageBoxA, "user32.dll", "MessageBoxA"', asm)
-        self.assertNotIn('import ReadFile, "kernel32.dll", "ReadFile"', asm)
+        # External knowledge databases are available in GUI programs as well,
+        # so the database subsystem intentionally keeps file I/O imports.
+        self.assertIn('import ReadFile, "kernel32.dll", "ReadFile"', asm)
+        self.assertIn('import CreateFileA, "kernel32.dll", "CreateFileA"', asm)
+        self.assertIn("__rt_database_open:", asm)
         self.assertNotIn("__rt_repl:", asm)
 
     def test_pe32_and_pe32plus_console_and_gui_link(self):

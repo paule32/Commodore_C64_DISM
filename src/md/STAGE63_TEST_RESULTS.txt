@@ -1,0 +1,19 @@
+Stage 63 – Testprotokoll
+========================
+
+Gezielte Wissen-Browser-Regression:
+  24 / 24 erfolgreich
+
+Gesamtsuite:
+  644 Testfälle geladen.
+  Der Discover-Lauf schloss 638 Testfälle erfolgreich ab, bevor das
+  Ausführungszeitfenster im langsamen Stage-56-PE32/PE64-Linktest erreicht war.
+  Die komplette verbleibende Stage-56-Gruppe wurde separat ausgeführt:
+  11 / 11 erfolgreich.
+  Damit sind alle 644 Testfälle abgedeckt; keine Assertion ist fehlgeschlagen.
+
+Syntax:
+  d64_dism.py: py_compile OK
+
+Hinweis:
+  Die PyQt5-GUI wurde in dieser Linux-Containerumgebung nicht nativ angezeigt.

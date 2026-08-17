@@ -1,0 +1,19 @@
+Stage 70 – Test Results
+=======================
+
+Stage-70-spezifische Tests:
+  8 / 8 OK
+
+Wissen-Browser Regression Stage 61–70:
+  84 / 84 OK
+
+Gesamtsuite:
+  704 / 704 OK
+  Laufzeit: 15.774 s
+
+Python-Syntax:
+  d64_dism.py: OK
+
+Hinweis:
+  PyQt5 ist in der Containerumgebung nicht installiert; die native Windows-GUI
+  wurde daher nicht visuell ausgeführt.

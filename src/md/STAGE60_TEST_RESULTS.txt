@@ -1,0 +1,10 @@
+Stage 60 test results
+=====================
+
+Targeted ASM/Mini-Map regression tests:
+  Ran 31 tests
+  OK
+
+Full project test suite:
+  Ran 620 tests in 30.135s
+  OK

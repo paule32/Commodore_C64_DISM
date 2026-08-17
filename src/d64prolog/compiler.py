@@ -80,6 +80,25 @@ class PrologCompileResult:
 _SYMBOLIC_ATOMS = {"!", "+", "-", "*", "/", "<", ">", "=<", ">="}
 
 
+def _is_named_knowledge_identifier(word: str) -> bool:
+    """Unicode-aware Stage-58 named-knowledge identifier test."""
+    if len(word) < 2 or word[0] != "_":
+        return False
+    first = word[1]
+    if not first.isalpha() or not first.islower():
+        return False
+    return all(ch == "_" or ch.isalnum() for ch in word[1:])
+
+
+def _is_plain_atom_identifier(word: str) -> bool:
+    if not word:
+        return False
+    first = word[0]
+    if not first.isalpha() or not first.islower():
+        return False
+    return all(ch == "_" or ch.isalnum() for ch in word[1:])
+
+
 def _tokenize(source: str, filename: str) -> List[PrologToken]:
     text = str(source or "")
     result: List[PrologToken] = []
@@ -231,7 +250,13 @@ def _tokenize(source: str, filename: str) -> List[PrologToken]:
             while i < n and (text[i].isalnum() or text[i] == "_"):
                 advance(text[i]); i += 1
             word = text[start:i]
-            kind = "VAR" if word[0].isupper() or word[0] == "_" else "ATOM"
+            # dBase2Many-PROLOG Stage 58: Unicode-aware named knowledge.
+            # ``_äpfel`` is a knowledge value just like ``_apfel``. Bare '_'
+            # stays anonymous; '_Name' / '_Äpfel' remain PROLOG variables.
+            if _is_named_knowledge_identifier(word):
+                kind = "KNOWLEDGE"
+            else:
+                kind = "VAR" if word[0].isupper() or word[0] == "_" else "ATOM"
             result.append(PrologToken(kind, word, start_line, start_col))
             continue
 
@@ -271,6 +296,33 @@ class _Parser:
                 goals = self.parse_goal_list()
                 self.take("DOT")
                 queries.append(PrologQuery(tuple(goals), token.line))
+                continue
+            # dBase2Many-PROLOG Stage 56 syntax:
+            #     _apfel = "Ein Apfel ist gesund".
+            # Intern wird daraus eine normale Klausel
+            #     d64_knowledge_value(apfel, "...").
+            # Dynamic geladene Varianten koennen dadurch weiterhin eine
+            # Database-ID als Owner besitzen.
+            if (
+                self.current.kind == "KNOWLEDGE"
+                and self.index + 1 < len(self.tokens)
+                and self.tokens[self.index + 1].kind == "EQ"
+            ):
+                name_token = self.take("KNOWLEDGE")
+                self.take("EQ")
+                value = self.parse_arith_add()
+                self.take("DOT")
+                name_atom = PrologTerm(
+                    "atom", name_token.text[1:], line=name_token.line, column=name_token.column
+                )
+                head = PrologTerm(
+                    "compound",
+                    "d64_knowledge_value",
+                    (name_atom, value),
+                    name_token.line,
+                    name_token.column,
+                )
+                clauses.append(PrologClause(head, (), name_token.line))
                 continue
             head = self.parse_callable_term()
             body: Tuple[PrologTerm, ...] = ()
@@ -421,6 +473,11 @@ class _Parser:
 
     def parse_term(self) -> PrologTerm:
         token = self.current
+        if token.kind == "KNOWLEDGE":
+            self.index += 1
+            return PrologTerm(
+                "knowledge", token.text[1:], line=token.line, column=token.column
+            )
         if token.kind == "VAR":
             self.index += 1
             name = token.text
@@ -488,8 +545,264 @@ class _Parser:
         return tail
 
 
+def _resolve_named_knowledge_assignments(
+    clauses: Sequence[PrologClause],
+    *,
+    filename: str,
+) -> Tuple[PrologClause, ...]:
+    """Resolve Stage-58 ``_name = expression.`` definitions.
+
+    ``+`` concatenates two strings and continues to add two numbers. Named
+    knowledge references are resolved recursively, including forward
+    references. Cycles and unknown names are rejected at compile time.
+    """
+    definitions: Dict[str, PrologClause] = {}
+    spelling: Dict[str, str] = {}
+    for clause in clauses:
+        head = clause.head
+        if (
+            head.kind == "compound"
+            and str(head.value) == "d64_knowledge_value"
+            and len(head.args) == 2
+            and head.args[0].kind == "atom"
+            and not clause.body
+        ):
+            name = str(head.args[0].value)
+            key = name.casefold()
+            if key in definitions:
+                raise PrologCompilerError(
+                    f"Benannter Wissenswert _{name} wurde mehrfach definiert.",
+                    clause.line, head.column, filename,
+                )
+            definitions[key] = clause
+            spelling[key] = name
+
+    cache: Dict[str, PrologTerm] = {}
+    visiting: List[str] = []
+
+    def resolve_name(name: str, source: PrologTerm) -> PrologTerm:
+        key = name.casefold()
+        if key in cache:
+            return cache[key]
+        clause = definitions.get(key)
+        if clause is None:
+            raise PrologCompilerError(
+                f"Unbekannter benannter Wissenswert _{name} in Wissensausdruck.",
+                source.line, source.column, filename,
+            )
+        if key in visiting:
+            cycle = " -> ".join("_" + spelling.get(item, item) for item in visiting + [key])
+            raise PrologCompilerError(
+                f"Zyklische Wissenswert-Abhängigkeit: {cycle}.",
+                source.line, source.column, filename,
+            )
+        visiting.append(key)
+        try:
+            value = resolve_expr(clause.head.args[1], owner=spelling[key])
+            cache[key] = value
+            return value
+        finally:
+            visiting.pop()
+
+    def numeric_result(op: str, left: PrologTerm, right: PrologTerm, source: PrologTerm) -> PrologTerm:
+        both_int = left.kind == right.kind == "number"
+        lv = int(left.value) if left.kind == "number" else float(left.value)
+        rv = int(right.value) if right.kind == "number" else float(right.value)
+        if op == "+":
+            value = lv + rv
+        elif op == "-":
+            value = lv - rv
+        elif op == "*":
+            value = lv * rv
+        elif op == "/":
+            if float(rv) == 0.0:
+                raise PrologCompilerError("Division durch 0 im Wissensausdruck.", source.line, source.column, filename)
+            return PrologTerm("float", float(lv) / float(rv), line=source.line, column=source.column)
+        elif op == "mod":
+            if not both_int or int(rv) == 0:
+                raise PrologCompilerError("mod erwartet zwei Integer und einen Nenner ungleich 0.", source.line, source.column, filename)
+            return PrologTerm("number", int(lv) % int(rv), line=source.line, column=source.column)
+        else:
+            raise AssertionError(op)
+        if both_int:
+            return PrologTerm("number", int(value), line=source.line, column=source.column)
+        return PrologTerm("float", float(value), line=source.line, column=source.column)
+
+    def resolve_expr(term: PrologTerm, *, owner: str) -> PrologTerm:
+        if term.kind == "knowledge":
+            return resolve_name(str(term.value), term)
+        if term.kind != "compound":
+            return term
+        args = tuple(resolve_expr(arg, owner=owner) for arg in term.args)
+        op = str(term.value).casefold()
+        if len(args) == 2 and op == "+" and args[0].kind == args[1].kind == "string":
+            return PrologTerm(
+                "string", str(args[0].value) + str(args[1].value),
+                line=term.line, column=term.column,
+            )
+        if len(args) == 2 and op in {"+", "-", "*", "/", "mod"} and all(
+            arg.kind in {"number", "float"} for arg in args
+        ):
+            return numeric_result(op, args[0], args[1], term)
+        if len(args) == 2 and op == "+" and (args[0].kind == "string" or args[1].kind == "string"):
+            raise PrologCompilerError(
+                f"String-Verkettung in _{owner} erwartet auf beiden Seiten Strings.",
+                term.line, term.column, filename,
+            )
+        return PrologTerm(term.kind, term.value, args, term.line, term.column)
+
+    for key, clause in definitions.items():
+        resolve_name(spelling[key], clause.head)
+
+    result: List[PrologClause] = []
+    for clause in clauses:
+        head = clause.head
+        if (
+            head.kind == "compound"
+            and str(head.value) == "d64_knowledge_value"
+            and len(head.args) == 2
+            and head.args[0].kind == "atom"
+            and not clause.body
+        ):
+            key = str(head.args[0].value).casefold()
+            head = PrologTerm(
+                "compound", "d64_knowledge_value",
+                (head.args[0], cache[key]), head.line, head.column,
+            )
+            result.append(PrologClause(head, (), clause.line))
+        else:
+            result.append(clause)
+    return tuple(result)
+
+
+def _knowledge_lookup_goal(name: str, variable: PrologTerm, source_term: PrologTerm) -> PrologTerm:
+    return PrologTerm(
+        "compound",
+        "d64_knowledge_value",
+        (
+            PrologTerm("atom", str(name), line=source_term.line, column=source_term.column),
+            variable,
+        ),
+        source_term.line,
+        source_term.column,
+    )
+
+
+def _rewrite_knowledge_term(
+    term: PrologTerm,
+    *,
+    mapping: Dict[str, PrologTerm],
+    lookups: List[PrologTerm],
+    counter: List[int],
+) -> PrologTerm:
+    """Replace _name references by ordinary variables plus lookup goals.
+
+    Lookups stay immediately before the goal that uses the value. That is
+    required for code such as database_open(...), writeln(_name), close(...).
+    """
+    if term.kind == "knowledge":
+        name = str(term.value)
+        variable = mapping.get(name)
+        if variable is None:
+            counter[0] += 1
+            safe = re.sub(r"[^A-Za-z0-9_]", "_", name)
+            variable = PrologTerm(
+                "var",
+                f"__knowledge_{counter[0]}_{safe}",
+                line=term.line,
+                column=term.column,
+            )
+            mapping[name] = variable
+            lookups.append(_knowledge_lookup_goal(name, variable, term))
+        return variable
+    if term.kind == "compound":
+        return PrologTerm(
+            "compound",
+            term.value,
+            tuple(
+                _rewrite_knowledge_term(
+                    arg, mapping=mapping, lookups=lookups, counter=counter
+                )
+                for arg in term.args
+            ),
+            term.line,
+            term.column,
+        )
+    return term
+
+
+def _rewrite_knowledge_syntax(
+    clauses: Sequence[PrologClause],
+    queries: Sequence[PrologQuery],
+    *,
+    filename: str,
+) -> Tuple[Tuple[PrologClause, ...], Tuple[PrologQuery, ...]]:
+    counter = [0]
+    rewritten_clauses: List[PrologClause] = []
+    rewritten_queries: List[PrologQuery] = []
+
+    # One compiled source may define a named value only once. Separate external
+    # databases can still contain the same name because their dynamic clauses
+    # keep their own Database-ID owner and disappear independently on close.
+    seen_assignments: Dict[str, PrologClause] = {}
+    for clause in clauses:
+        head = clause.head
+        if (
+            head.kind == "compound"
+            and str(head.value) == "d64_knowledge_value"
+            and len(head.args) == 2
+            and head.args[0].kind == "atom"
+            and not clause.body
+        ):
+            key = str(head.args[0].value).casefold()
+            if key in seen_assignments:
+                raise PrologCompilerError(
+                    f"Benannter Wissenswert _{head.args[0].value} wurde mehrfach definiert.",
+                    clause.line,
+                    head.column,
+                    filename,
+                )
+            seen_assignments[key] = clause
+
+    for clause in clauses:
+        # A _name in the head is legal too: it becomes a variable whose lookup
+        # is the first body goal. Normal body references are resolved at their
+        # exact position so database_open/database_close ordering is preserved.
+        head_mapping: Dict[str, PrologTerm] = {}
+        head_lookups: List[PrologTerm] = []
+        new_head = _rewrite_knowledge_term(
+            clause.head, mapping=head_mapping, lookups=head_lookups, counter=counter
+        )
+        new_body: List[PrologTerm] = list(head_lookups)
+        for goal in clause.body:
+            mapping: Dict[str, PrologTerm] = {}
+            lookups: List[PrologTerm] = []
+            new_goal = _rewrite_knowledge_term(
+                goal, mapping=mapping, lookups=lookups, counter=counter
+            )
+            new_body.extend(lookups)
+            new_body.append(new_goal)
+        rewritten_clauses.append(PrologClause(new_head, tuple(new_body), clause.line))
+
+    for query in queries:
+        goals: List[PrologTerm] = []
+        for goal in query.goals:
+            mapping: Dict[str, PrologTerm] = {}
+            lookups: List[PrologTerm] = []
+            new_goal = _rewrite_knowledge_term(
+                goal, mapping=mapping, lookups=lookups, counter=counter
+            )
+            goals.extend(lookups)
+            goals.append(new_goal)
+        rewritten_queries.append(PrologQuery(tuple(goals), query.line))
+
+    return tuple(rewritten_clauses), tuple(rewritten_queries)
+
+
 def parse_prolog(source: str, *, filename: str = "<PROLOG>") -> Tuple[Tuple[PrologClause, ...], Tuple[PrologQuery, ...]]:
-    return _Parser(source, filename).parse()
+    clauses, queries = _Parser(source, filename).parse()
+    clauses = _resolve_named_knowledge_assignments(clauses, filename=filename)
+    return _rewrite_knowledge_syntax(clauses, queries, filename=filename)
 
 
 # ---------------------------------------------------------------------------
@@ -504,6 +817,9 @@ def parse_prolog(source: str, *, filename: str = "<PROLOG>") -> Tuple[Tuple[Prol
 _PROLOG_STANDARD_LIBRARY_SOURCE = r"""
 member(X, [X|_]).
 member(X, [_|T]) :- member(X, T).
+
+% Stage 56: explicit public access to named knowledge values.
+knowledge(Name, Value) :- d64_knowledge_value(Name, Value).
 """
 
 _PROLOG_STANDARD_LIBRARY_CLAUSES, _PROLOG_STANDARD_LIBRARY_QUERIES = parse_prolog(
@@ -600,6 +916,8 @@ def _unify(left: PrologTerm, right: PrologTerm, env: Env) -> Optional[Env]:
 def _term_text(term: PrologTerm, env: Optional[Env] = None) -> str:
     if env is not None:
         term = _subst(term, env)
+    if term.kind == "knowledge":
+        return "_" + str(term.value)
     if term.kind == "var":
         name = str(term.value)
         return "_" if name.startswith("__anon_") or name.startswith("__fresh_anon_") else name
@@ -611,7 +929,7 @@ def _term_text(term: PrologTerm, env: Optional[Env] = None) -> str:
         return str(term.value)
     if term.kind == "atom":
         value = str(term.value)
-        if re.fullmatch(r"[a-z][A-Za-z0-9_]*", value):
+        if _is_plain_atom_identifier(value):
             return value
         return "'" + value.replace("'", "''") + "'"
     if term.kind == "compound":
@@ -904,7 +1222,7 @@ class PrologCompiler:
         def walk(term: PrologTerm) -> None:
             if term.kind == "var":
                 name = str(term.value)
-                if not name.startswith("__anon_"):
+                if not name.startswith("__anon_") and not name.startswith("__knowledge_"):
                     found.setdefault(name, term)
             elif term.kind == "compound":
                 for arg in term.args:
@@ -1057,6 +1375,28 @@ class PrologCompiler:
         self.notes.append(
             "PROLOG-Standardbibliothek: member/2 ist automatisch verfuegbar und "
             "arbeitet zur Laufzeit mit normalen Choice-Points und Backtracking."
+        )
+        self.notes.append(
+            "Externe Wissensdatenbanken: database_open/2..4 laedt Fakten und Regeln mit "
+            "einer stabilen Database-ID; database_close/1 entlaedt nur Klauseln dieser ID."
+        )
+        self.notes.append(
+            "Benannte Wissenswerte (Stage 56): _name = Wert. definiert einen Database-ID-faehigen "
+            "Wissenswert; Verwendungen wie writeln(_name) oder X = _name werden an der jeweiligen "
+            "Programmstelle in d64_knowledge_value/2-Lookups umgesetzt. Bare '_' bleibt anonym."
+        )
+        self.notes.append(
+            "Datenbankkontexte: read_only/read_write sowie knowledge/record/system; "
+            "database_select/1 und with_database/2 steuern den Zielkontext fuer assert/retract, "
+            "waehrend normale Abfragen alle aktuell geladenen Wissensbestaende kombinieren koennen."
+        )
+        self.notes.append(
+            "Persistenz: database_save/1 und database_save_as/2 schreiben nur die Klauseln der "
+            "gewaehlten Database-ID zuerst in eine .tmp-Datei und ersetzen danach atomar die Zieldatei."
+        )
+        self.notes.append(
+            "Aktuelle Runtime-Grenzen fuer externe PROLOG-Dateien: maximal 32 gleichzeitig geoeffnete "
+            "Datenbanken, knapp 1 MiB Quelldatei und derzeit etwa 4 KiB pro einzelner Klausel."
         )
         if not self.is_gui:
             self.notes.append(

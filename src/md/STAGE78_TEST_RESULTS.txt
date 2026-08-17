@@ -1,0 +1,20 @@
+Stage 78 test results
+=====================
+
+Targeted Stage-78 tests: 7 / 7 OK
+Full regression suite: 756 / 756 OK
+
+Covered:
+- beige 2 px outer frame with 2 px top-left/top-right radius
+- actual Windows top-corner QRegion mask
+- existing 7 px native WM_NCHITTEST resize edges/corners preserved
+- .prg load-address disassembly
+- .bin default $0801 disassembly
+- BASIC SYS stub preservation
+- JSR $5344 -> ; Bildschirm löschen
+- calculated 8-character minimum comment gap / common comment column
+- raw disassembly opens in Rohdaten tab while binary stays in Hex editor
+- modified disassembly cannot silently overwrite original PRG/BIN
+- FillRange / FillLine / FillScreen example assembles successfully
+
+Native Windows/PyQt5 visual execution was not available in this environment.

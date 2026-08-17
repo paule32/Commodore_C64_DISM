@@ -17,9 +17,9 @@ NODE_STRUCT = 7
 NODE_LINK = 8
 NODE_FLOAT = 9
 
-# One 1-MiB VirtualAlloc arena. All transient/dynamic term handles are 32-bit
+# One VirtualAlloc arena (currently 0x240000 bytes). All transient/dynamic term handles are 32-bit
 # node indexes, so the logic representation is identical for PE32 and PE32+.
-ARENA_SIZE = 0x140000
+ARENA_SIZE = 0x240000
 HEAP_OFF = 0x00000
 HEAP_SIZE = 0x40000
 DYN_HEAP_OFF = 0x40000
@@ -42,13 +42,48 @@ OUTPUT_OFF = 0xC0000
 OUTPUT_SIZE = 0x10000
 DYN_ALT_OFF = 0x100000
 DYN_ALT_SIZE = DYN_HEAP_SIZE
+FILE_BUFFER_OFF = 0x140000
+FILE_BUFFER_SIZE = 0x100000
+
+DATABASE_MAX = 32
+DATABASE_FILENAME_SIZE = 260
+DATABASE_KIND_KNOWLEDGE = 1
+DATABASE_KIND_RECORD = 2
+DATABASE_KIND_SYSTEM = 3
+DATABASE_MODE_READ_ONLY = 0
+DATABASE_MODE_READ_WRITE = 1
 
 BUILD_VAR_OFF = SCRATCH_OFF + 0x0000        # 256 dwords
 QUERY_NODE_OFF = SCRATCH_OFF + 0x0400       # 64 dwords
 QUERY_NAME_OFF = SCRATCH_OFF + 0x0500       # 64 pointers
 DYN_ATOM_TABLE_OFF = SCRATCH_OFF + 0x0800   # 512 pointers max
 DYN_DB_OFF = SCRATCH_OFF + 0x1800           # 512 x 16-byte entries
+DYN_DB_OWNER_OFF = SCRATCH_OFF + 0x5800     # 512 x dword Database-ID owners
+DB_PARSER_NAME_POOL_OFF = SCRATCH_OFF + 0x6000
+DB_PARSER_NAME_POOL_SIZE = 0x1000
+DB_SAVE_VAR_OFF = SCRATCH_OFF + 0x7000       # canonical variable handles while saving
+
+# Stage 51: external-database metadata lives in the unused 0xBC000..0xC0000
+# arena gap instead of being emitted as ~9.5 KiB of zero bytes into PE32.
+DB_META_OFF = SCRATCH_OFF + SCRATCH_SIZE            # 0xBC000
+DB_ACTIVE_OFF = DB_META_OFF + 0x0000                # 32 dwords
+DB_IDS_OFF = DB_META_OFF + 0x0080                   # 32 dwords
+DB_MODES_OFF = DB_META_OFF + 0x0100                 # 32 dwords
+DB_KINDS_OFF = DB_META_OFF + 0x0180                 # 32 dwords
+DB_MODIFIED_OFF = DB_META_OFF + 0x0200              # 32 dwords
+DB_FILENAMES_OFF = DB_META_OFF + 0x0280             # 32 * 260 bytes
+DB_TEMP_PATH_OFF = DB_FILENAMES_OFF + DATABASE_MAX * DATABASE_FILENAME_SIZE
+DB_OLD_PATH_OFF = DB_TEMP_PATH_OFF + DATABASE_FILENAME_SIZE
+DB_META_END = DB_OLD_PATH_OFF + DATABASE_FILENAME_SIZE
+# Stage 58: temporary materialization buffer for external ``_name = A + B``
+# string expressions. It uses the still-free tail of the DB metadata gap and
+# therefore does not add a zero-filled block to the PE image.
+KNOWLEDGE_CONCAT_OFF = (DB_META_END + 0xFF) & ~0xFF
+KNOWLEDGE_CONCAT_SIZE = 0x1800
 DYN_COPY_SRC_OFF = SCRATCH_OFF + 0x3800     # reserved
+
+assert DB_META_END <= KNOWLEDGE_CONCAT_OFF
+assert KNOWLEDGE_CONCAT_OFF + KNOWLEDGE_CONCAT_SIZE <= OUTPUT_OFF, "PROLOG knowledge concat buffer overlaps output arena"
 DYN_COPY_DST_OFF = SCRATCH_OFF + 0x3C00
 DYN_CLONE_SRC_OFF = SCRATCH_OFF + 0x4400
 DYN_CLONE_DST_OFF = SCRATCH_OFF + 0x4800
@@ -71,6 +106,10 @@ BUILTIN_NAMES = (
     "write", "writeln", "nl", "var", "nonvar", "atom", "integer", "float", "number", "string",
     "assert", "asserta", "assertz", "retract", "repl", "halt", "quit",
     "gc", "garbage_collect", "verbose",
+    "database_open", "database_close", "database_save", "database_save_as",
+    "database_select", "current_database", "database_assert", "database_asserta",
+    "database_assertz", "database_retract", "database_modified", "with_database",
+    "read_only", "read_write", "knowledge", "record", "system",
 )
 
 
@@ -195,7 +234,7 @@ class PrologRuntimeEmitter:
             yield from self._walk(arg)
 
     def _collect_atoms(self) -> None:
-        values: List[str] = list(BUILTIN_NAMES)
+        values: List[str] = list(BUILTIN_NAMES) + ["d64_knowledge_value"]
         for clause in self.clauses:
             for term in self._walk(clause.head):
                 if term.kind in {"atom", "string"}:
@@ -236,7 +275,11 @@ class PrologRuntimeEmitter:
                     if len(mapping) >= BUILD_VAR_MAX:
                         raise ValueError("too many Prolog variables")
                     mapping[name] = len(mapping)
-                    if not name.startswith("__anon_") and not name.startswith("__fresh_"):
+                    if (
+                        not name.startswith("__anon_")
+                        and not name.startswith("__fresh_")
+                        and not name.startswith("__knowledge_")
+                    ):
                         public.append(name)
             for arg in getattr(term, "args", ()):
                 visit(arg)
@@ -1234,7 +1277,8 @@ class PrologRuntimeEmitter:
         self._prologue(a, save=(ar.bx, ar.si, ar.di))
         a.e(f"    mov ebx, {ar.arg(0)}")
         a.e(f"    mov esi, {ar.arg(1)}")
-        a.e(f"    mov edx, {ar.arg(2)}")
+        # The lexical barrier remains available in the function argument.
+        # Do not cache it in volatile EDX across recursive calls.
         a.e("    mov eax, ebx")
         a.e("    call __rt_deref")
         a.e("    mov ebx, eax")
@@ -1250,7 +1294,7 @@ class PrologRuntimeEmitter:
         a.e(f"    {ar.push_reg32('ebx')}")
         a.e("    call __rt_struct_arg")
         a.e(f"    {ar.cleanup(2)}")
-        a.e(f"    {ar.push_reg32('edx')}")
+        a.e(f"    push {ar.arg(2)}")
         a.e(f"    {ar.push_reg32('esi')}")
         a.e(f"    {ar.push_reg32('eax')}")
         a.e("    call __rt_goal_expr_to_chain")
@@ -1261,14 +1305,14 @@ class PrologRuntimeEmitter:
         a.e(f"    {ar.push_reg32('ebx')}")
         a.e("    call __rt_struct_arg")
         a.e(f"    {ar.cleanup(2)}")
-        a.e(f"    {ar.push_reg32('edx')}")
+        a.e(f"    push {ar.arg(2)}")
         a.e(f"    {ar.push_reg32('esi')}")
         a.e(f"    {ar.push_reg32('eax')}")
         a.e("    call __rt_goal_expr_to_chain")
         a.e(f"    {ar.cleanup(3)}")
         a.e("    jmp __rt_goal_expr_done")
         a.l("__rt_goal_expr_single")
-        a.e(f"    {ar.push_reg32('edx')}")
+        a.e(f"    push {ar.arg(2)}")
         a.e(f"    {ar.push_reg32('esi')}")
         a.e(f"    {ar.push_reg32('ebx')}")
         a.e("    call __rt_make_goal_link")
@@ -1863,6 +1907,19 @@ class PrologRuntimeEmitter:
         self._prologue(a, save=(ar.bx, ar.si, ar.di))
         a.e(f"    mov ebx, {ar.arg(0)}")  # complete clause root
         a.e(f"    mov esi, {ar.arg(1)}")  # 0=z, 1=a
+        # Normal assert/1 under database_select/1 must respect read-only DBs.
+        # database_open sets __prolog_db_loading while it imports source facts.
+        a.e("    mov eax, dword ptr [__prolog_current_db]")
+        a.e("    test eax, eax")
+        a.e("    je __rt_assert_modify_ok")
+        a.e("    cmp dword ptr [__prolog_db_loading], 0")
+        a.e("    jne __rt_assert_modify_ok")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_db_can_modify_id")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    test eax, eax")
+        a.e("    je __rt_assert_common_fail")
+        a.l("__rt_assert_modify_ok")
         # Reclaim inactive DB slots and compact persistent heap before pressure.
         a.e(f"    cmp dword ptr [__prolog_dyn_count], {DYN_DB_COUNT_MAX}")
         a.e("    jb __rt_assert_count_ok")
@@ -1954,6 +2011,12 @@ class PrologRuntimeEmitter:
         a.e(f"    mov dword ptr [{ar.di}+8], edx")
         a.e(f"    mov dword ptr [{ar.di}+12], ebx")
         a.e(f"    pop {ar.bx}")
+        # Keep the parallel Database-ID owner table in the same order.
+        self._arena_to(a, ar.di, DYN_DB_OWNER_OFF)
+        a.e("    mov eax, esi")
+        a.e("    dec eax")
+        a.e(f"    mov ecx, dword ptr [{ar.di}+{ar.ax}*4]")
+        a.e(f"    mov dword ptr [{ar.di}+{ar.si}*4], ecx")
         a.e("    dec esi")
         a.e("    jmp __rt_asserta_shift_loop")
         a.l("__rt_asserta_shift_done")
@@ -1961,6 +2024,7 @@ class PrologRuntimeEmitter:
         a.l("__rt_assert_store")
         a.e(f"    pop {ar.dx}")   # restore functor
         a.e(f"    pop {ar.cx}")   # restore arity
+        a.e(f"    {ar.push_reg32('eax')}")  # preserve DB slot index
         self._arena_to(a, ar.di, DYN_DB_OFF)
         a.e("    shl eax, 4")
         a.e(f"    add {ar.di}, {ar.ax}")
@@ -1968,7 +2032,17 @@ class PrologRuntimeEmitter:
         a.e(f"    mov dword ptr [{ar.di}+4], edx")
         a.e(f"    mov dword ptr [{ar.di}+8], ecx")
         a.e(f"    mov dword ptr [{ar.di}+12], ebx")
+        a.e(f"    pop {ar.ax}")
+        self._arena_to(a, ar.di, DYN_DB_OWNER_OFF)
+        a.e("    mov edx, dword ptr [__prolog_current_db]")
+        a.e(f"    mov dword ptr [{ar.di}+{ar.ax}*4], edx")
         a.e("    inc dword ptr [__prolog_dyn_count]")
+        a.e("    test edx, edx")
+        a.e("    je __rt_assert_store_no_dirty")
+        a.e(f"    {ar.push_reg32('edx')}")
+        a.e("    call __rt_db_mark_modified_id")
+        a.e(f"    {ar.cleanup(1)}")
+        a.l("__rt_assert_store_no_dirty")
         a.e("    mov eax, 1")
         a.e("    jmp __rt_assert_common_done")
         a.l("__rt_assert_common_fail")
@@ -1981,6 +2055,15 @@ class PrologRuntimeEmitter:
         a.l("__rt_retract")
         self._prologue(a, save=(ar.bx, ar.si, ar.di))
         a.e(f"    mov ebx, {ar.arg(0)}")
+        a.e("    mov eax, dword ptr [__prolog_current_db]")
+        a.e("    test eax, eax")
+        a.e("    je __rt_retract_modify_ok")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_db_can_modify_id")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    test eax, eax")
+        a.e("    je __rt_retract_fail")
+        a.l("__rt_retract_modify_ok")
         a.e("    xor esi, esi")
         a.l("__rt_retract_loop")
         a.e("    cmp esi, dword ptr [__prolog_dyn_count]")
@@ -1991,6 +2074,18 @@ class PrologRuntimeEmitter:
         a.e(f"    add {ar.di}, {ar.ax}")
         a.e(f"    cmp dword ptr [{ar.di}], 0")
         a.e("    je __rt_retract_next")
+        # Destructive retract/1 is always scoped to the current owner.
+        # current_db=0 means the ordinary process-local dynamic database;
+        # loaded external knowledge is changed only after database_select/1,
+        # with_database/2 or database_retract/2.
+        a.e("    mov edx, dword ptr [__prolog_current_db]")
+        self._arena_to(a, ar.di, DYN_DB_OWNER_OFF)
+        a.e(f"    cmp dword ptr [{ar.di}+{ar.si}*4], edx")
+        a.e("    jne __rt_retract_next")
+        self._arena_to(a, ar.di, DYN_DB_OFF)
+        a.e("    mov eax, esi")
+        a.e("    shl eax, 4")
+        a.e(f"    add {ar.di}, {ar.ax}")
         a.e(f"    mov eax, dword ptr [{ar.di}+12]")
         a.e(f"    {ar.push_reg32('eax')}")
         a.e("    call __rt_choice_push")
@@ -2011,6 +2106,14 @@ class PrologRuntimeEmitter:
         a.e("    shl eax, 4")
         a.e(f"    add {ar.di}, {ar.ax}")
         a.e(f"    mov dword ptr [{ar.di}], 0")
+        self._arena_to(a, ar.di, DYN_DB_OWNER_OFF)
+        a.e(f"    mov edx, dword ptr [{ar.di}+{ar.si}*4]")
+        a.e("    test edx, edx")
+        a.e("    je __rt_retract_no_dirty")
+        a.e(f"    {ar.push_reg32('edx')}")
+        a.e("    call __rt_db_mark_modified_id")
+        a.e(f"    {ar.cleanup(1)}")
+        a.l("__rt_retract_no_dirty")
         a.e("    call __rt_choice_commit_pop")
         a.e("    mov eax, 1")
         a.e("    jmp __rt_retract_done")
@@ -2060,6 +2163,10 @@ class PrologRuntimeEmitter:
         a.e(f"    mov dword ptr [{ar.di}+4], ecx")
         a.e(f"    mov dword ptr [{ar.di}+8], edx")
         a.e(f"    mov dword ptr [{ar.di}+12], eax")
+        # Move the parallel Database-ID owner alongside the compacted record.
+        self._arena_to(a, ar.di, DYN_DB_OWNER_OFF)
+        a.e(f"    mov eax, dword ptr [{ar.di}+{ar.si}*4]")
+        a.e(f"    mov dword ptr [{ar.di}+{ar.bx}*4], eax")
         a.l("__rt_dyn_compact_kept")
         a.e("    inc ebx")
         a.l("__rt_dyn_compact_next")
@@ -2132,6 +2239,10 @@ class PrologRuntimeEmitter:
         a.l("__rt_dyn_clone")
         self._prologue(a, save=(ar.bx, ar.si, ar.di))
         a.e(f"    mov eax, {ar.arg(0)}")
+        a.e(f"    cmp eax, {INVALID}")
+        a.e("    je __rt_dyn_clone_fail")
+        a.e(f"    cmp eax, {DYN_NODE_COUNT}")
+        a.e("    jae __rt_dyn_clone_fail")
         a.e("    mov ebx, eax")
         a.e("    call __rt_dyn_ptr")
         a.e(f"    mov esi, dword ptr [{ar.di}]")
@@ -2276,6 +2387,1200 @@ class PrologRuntimeEmitter:
         a.e()
 
     # ------------------------------------------------------------------
+    # External knowledge databases
+    # ------------------------------------------------------------------
+    def _emit_database_runtime(self, a: _A) -> None:
+        ar = self.arch
+
+        def ptr_arg(index: int) -> str:
+            return ar.arg(index, "qword") if ar.is64 else ar.arg(index)
+
+        # term_int(term) -> EAX value, EDX=1 on success.
+        a.l("__rt_term_int")
+        self._prologue(a, save=(ar.di,))
+        a.e(f"    mov eax, {ar.arg(0)}")
+        a.e("    call __rt_deref")
+        a.e("    call __rt_node_ptr")
+        a.e(f"    cmp dword ptr [{ar.di}], {NODE_INT}")
+        a.e("    jne __rt_term_int_fail")
+        a.e(f"    mov eax, dword ptr [{ar.di}+4]")
+        a.e("    mov edx, 1")
+        a.e("    jmp __rt_term_int_done")
+        a.l("__rt_term_int_fail")
+        a.e("    xor eax, eax")
+        a.e("    xor edx, edx")
+        a.l("__rt_term_int_done")
+        self._epilogue(a, save=(ar.di,))
+        a.e()
+
+        # term_atom_id(term) -> EAX atom-id, EDX=1 on success.
+        a.l("__rt_term_atom_id")
+        self._prologue(a, save=(ar.di,))
+        a.e(f"    mov eax, {ar.arg(0)}")
+        a.e("    call __rt_deref")
+        a.e("    call __rt_node_ptr")
+        a.e(f"    cmp dword ptr [{ar.di}], {NODE_ATOM}")
+        a.e("    jne __rt_term_atom_id_fail")
+        a.e(f"    mov eax, dword ptr [{ar.di}+4]")
+        a.e("    mov edx, 1")
+        a.e("    jmp __rt_term_atom_id_done")
+        a.l("__rt_term_atom_id_fail")
+        a.e("    xor eax, eax")
+        a.e("    xor edx, edx")
+        a.l("__rt_term_atom_id_done")
+        self._epilogue(a, save=(ar.di,))
+        a.e()
+
+        # term_cstr(term) -> pointer in AX, EDX=1 for atom/string.
+        a.l("__rt_term_cstr")
+        self._prologue(a, save=(ar.di,))
+        a.e(f"    mov eax, {ar.arg(0)}")
+        a.e("    call __rt_deref")
+        a.e("    call __rt_node_ptr")
+        a.e(f"    cmp dword ptr [{ar.di}], {NODE_ATOM}")
+        a.e("    je __rt_term_cstr_have_id")
+        a.e(f"    cmp dword ptr [{ar.di}], {NODE_STRING}")
+        a.e("    jne __rt_term_cstr_fail")
+        a.l("__rt_term_cstr_have_id")
+        a.e(f"    push dword ptr [{ar.di}+4]")
+        a.e("    call __rt_atom_ptr")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e(f"    test {ar.ax}, {ar.ax}")
+        a.e("    je __rt_term_cstr_fail")
+        a.e("    mov edx, 1")
+        a.e("    jmp __rt_term_cstr_done")
+        a.l("__rt_term_cstr_fail")
+        a.e(f"    xor {ar.ax}, {ar.ax}")
+        a.e("    xor edx, edx")
+        a.l("__rt_term_cstr_done")
+        self._epilogue(a, save=(ar.di,))
+        a.e()
+
+        # cstr_copy_limit(src,dst,max_bytes) -> 1 if fully copied, 0 if truncated.
+        a.l("__rt_cstr_copy_limit")
+        self._prologue(a, save=(ar.bx, ar.si, ar.di))
+        if ar.is64:
+            a.e(f"    mov rsi, {ptr_arg(0)}")
+            a.e(f"    mov rdi, {ptr_arg(1)}")
+        else:
+            a.e(f"    mov esi, {ptr_arg(0)}")
+            a.e(f"    mov edi, {ptr_arg(1)}")
+        a.e(f"    mov ebx, {ar.arg(2)}")
+        a.e("    test ebx, ebx")
+        a.e("    je __rt_cstr_copy_fail")
+        a.e("    xor ecx, ecx")
+        a.l("__rt_cstr_copy_loop")
+        a.e("    mov eax, ebx")
+        a.e("    dec eax")
+        a.e("    cmp ecx, eax")
+        a.e("    jae __rt_cstr_copy_last")
+        a.e(f"    movzx eax, byte ptr [{ar.si}+{ar.cx}]")
+        a.e(f"    mov byte ptr [{ar.di}+{ar.cx}], al")
+        a.e("    test eax, eax")
+        a.e("    je __rt_cstr_copy_ok")
+        a.e("    inc ecx")
+        a.e("    jmp __rt_cstr_copy_loop")
+        a.l("__rt_cstr_copy_last")
+        a.e("    xor eax, eax")
+        a.e(f"    mov byte ptr [{ar.di}+{ar.cx}], al")
+        a.e(f"    movzx eax, byte ptr [{ar.si}+{ar.cx}]")
+        a.e("    test eax, eax")
+        a.e("    je __rt_cstr_copy_ok")
+        a.l("__rt_cstr_copy_fail")
+        a.e("    xor eax, eax")
+        a.e("    jmp __rt_cstr_copy_done")
+        a.l("__rt_cstr_copy_ok")
+        a.e("    mov eax, 1")
+        a.l("__rt_cstr_copy_done")
+        self._epilogue(a, save=(ar.bx, ar.si, ar.di))
+        a.e()
+
+        # Stage 58: append one zero-terminated string to the temporary
+        # knowledge-value materialization buffer.  Returns EAX=new length and
+        # EDX=1 on success.
+        a.l("__rt_knowledge_concat_append")
+        self._prologue(a, save=(ar.bx, ar.si, ar.di))
+        if ar.is64:
+            a.e(f"    mov rsi, {ptr_arg(0)}")
+        else:
+            a.e(f"    mov esi, {ptr_arg(0)}")
+        a.e(f"    mov ebx, {ar.arg(1)}")
+        a.e(f"    cmp ebx, {KNOWLEDGE_CONCAT_SIZE-1}")
+        a.e("    jae __rt_knowledge_concat_append_fail")
+        self._arena_to(a, ar.di, KNOWLEDGE_CONCAT_OFF)
+        a.e(f"    add {ar.di}, {ar.bx}")
+        a.e("    xor ecx, ecx")
+        a.l("__rt_knowledge_concat_append_loop")
+        a.e(f"    movzx eax, byte ptr [{ar.si}+{ar.cx}]")
+        a.e("    test eax, eax")
+        a.e("    je __rt_knowledge_concat_append_ok")
+        a.e(f"    cmp ebx, {KNOWLEDGE_CONCAT_SIZE-1}")
+        a.e("    jae __rt_knowledge_concat_append_fail")
+        a.e(f"    mov byte ptr [{ar.di}], al")
+        a.e(f"    inc {ar.di}")
+        a.e("    inc ebx")
+        a.e("    inc ecx")
+        a.e("    jmp __rt_knowledge_concat_append_loop")
+        a.l("__rt_knowledge_concat_append_ok")
+        a.e("    xor eax, eax")
+        a.e(f"    mov byte ptr [{ar.di}], al")
+        a.e("    mov eax, ebx")
+        a.e("    mov edx, 1")
+        a.e("    jmp __rt_knowledge_concat_append_done")
+        a.l("__rt_knowledge_concat_append_fail")
+        a.e("    xor eax, eax")
+        a.e("    xor edx, edx")
+        a.l("__rt_knowledge_concat_append_done")
+        self._epilogue(a, save=(ar.bx, ar.si, ar.di))
+        a.e()
+
+        # Stage 58: find the most recently loaded dynamic named knowledge
+        # value and return its string pointer.  Reverse scanning makes values
+        # from the database currently being loaded win over older databases.
+        a.l("__rt_db_lookup_knowledge_string")
+        self._prologue(a, save=(ar.bx, ar.si, ar.di))
+        a.e(f"    mov ebx, {ar.arg(0)}")  # name atom id
+        a.e("    mov esi, dword ptr [__prolog_dyn_count]")
+        a.l("__rt_db_lookup_knowledge_string_loop")
+        a.e("    test esi, esi")
+        a.e("    je __rt_db_lookup_knowledge_string_fail")
+        a.e("    dec esi")
+        self._arena_to(a, ar.di, DYN_DB_OFF)
+        a.e("    mov eax, esi")
+        a.e("    shl eax, 4")
+        a.e(f"    add {ar.di}, {ar.ax}")
+        a.e(f"    cmp dword ptr [{ar.di}], 0")
+        a.e("    je __rt_db_lookup_knowledge_string_loop")
+        a.e(f"    cmp dword ptr [{ar.di}+4], {self.atom_id('d64_knowledge_value')}")
+        a.e("    jne __rt_db_lookup_knowledge_string_loop")
+        a.e(f"    cmp dword ptr [{ar.di}+8], 2")
+        a.e("    jne __rt_db_lookup_knowledge_string_loop")
+        a.e(f"    mov eax, dword ptr [{ar.di}+12]")
+        a.e("    call __rt_dyn_ptr")
+        a.e(f"    cmp dword ptr [{ar.di}], {NODE_STRUCT}")
+        a.e("    jne __rt_db_lookup_knowledge_string_loop")
+        a.e(f"    mov eax, dword ptr [{ar.di}+12]")
+        a.e("    call __rt_dyn_ptr")
+        a.e(f"    cmp dword ptr [{ar.di}], {NODE_LINK}")
+        a.e("    jne __rt_db_lookup_knowledge_string_loop")
+        a.e(f"    mov ecx, dword ptr [{ar.di}+8]")
+        a.e(f"    mov edx, dword ptr [{ar.di}+12]")
+        a.e(f"    {ar.push_reg32('edx')}")
+        a.e("    mov eax, ecx")
+        a.e("    call __rt_dyn_ptr")
+        a.e(f"    cmp dword ptr [{ar.di}], {NODE_ATOM}")
+        a.e("    jne __rt_db_lookup_knowledge_string_pop_next")
+        a.e(f"    cmp dword ptr [{ar.di}+4], ebx")
+        a.e("    jne __rt_db_lookup_knowledge_string_pop_next")
+        a.e(f"    pop {ar.ax}")
+        a.e("    call __rt_dyn_ptr")
+        a.e(f"    cmp dword ptr [{ar.di}], {NODE_LINK}")
+        a.e("    jne __rt_db_lookup_knowledge_string_loop")
+        a.e(f"    mov eax, dword ptr [{ar.di}+8]")
+        a.e("    call __rt_dyn_ptr")
+        a.e(f"    cmp dword ptr [{ar.di}], {NODE_STRING}")
+        a.e("    jne __rt_db_lookup_knowledge_string_loop")
+        a.e(f"    push dword ptr [{ar.di}+4]")
+        a.e("    call __rt_atom_ptr")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e(f"    test {ar.ax}, {ar.ax}")
+        a.e("    je __rt_db_lookup_knowledge_string_loop")
+        a.e("    mov edx, 1")
+        a.e("    jmp __rt_db_lookup_knowledge_string_done")
+        a.l("__rt_db_lookup_knowledge_string_pop_next")
+        a.e(f"    pop {ar.ax}")
+        a.e("    jmp __rt_db_lookup_knowledge_string_loop")
+        a.l("__rt_db_lookup_knowledge_string_fail")
+        a.e(f"    xor {ar.ax}, {ar.ax}")
+        a.e("    xor edx, edx")
+        a.l("__rt_db_lookup_knowledge_string_done")
+        self._epilogue(a, save=(ar.bx, ar.si, ar.di))
+        a.e()
+
+        # db_filename_ptr(slot) -> pointer in AX.
+        a.l("__rt_db_filename_ptr")
+        self._prologue(a, save=(ar.bx, ar.di))
+        a.e(f"    mov ebx, {ar.arg(0)}")
+        a.e("    mov eax, ebx")
+        a.e("    shl eax, 8")          # slot * 256
+        a.e("    mov ecx, ebx")
+        a.e("    shl ecx, 2")          # slot * 4
+        a.e("    add eax, ecx")        # slot * 260
+        self._arena_to(a, ar.di, DB_FILENAMES_OFF)
+        a.e(f"    add {ar.di}, {ar.ax}")
+        a.e(f"    mov {ar.ax}, {ar.di}")
+        self._epilogue(a, save=(ar.bx, ar.di))
+        a.e()
+
+        # Find a live database slot by stable Database-ID.
+        a.l("__rt_db_find_slot")
+        self._prologue(a, save=(ar.bx, ar.di))
+        a.e(f"    mov ebx, {ar.arg(0)}")
+        a.e("    xor ecx, ecx")
+        a.l("__rt_db_find_slot_loop")
+        a.e(f"    cmp ecx, {DATABASE_MAX}")
+        a.e("    jae __rt_db_find_slot_fail")
+        self._arena_to(a, ar.di, DB_ACTIVE_OFF)
+        a.e(f"    cmp dword ptr [{ar.di}+{ar.cx}*4], 0")
+        a.e("    je __rt_db_find_slot_next")
+        self._arena_to(a, ar.di, DB_IDS_OFF)
+        a.e(f"    cmp dword ptr [{ar.di}+{ar.cx}*4], ebx")
+        a.e("    je __rt_db_find_slot_found")
+        a.l("__rt_db_find_slot_next")
+        a.e("    inc ecx")
+        a.e("    jmp __rt_db_find_slot_loop")
+        a.l("__rt_db_find_slot_found")
+        a.e("    mov eax, ecx")
+        a.e("    jmp __rt_db_find_slot_done")
+        a.l("__rt_db_find_slot_fail")
+        a.e(f"    mov eax, {INVALID}")
+        a.l("__rt_db_find_slot_done")
+        self._epilogue(a, save=(ar.bx, ar.di))
+        a.e()
+
+        a.l("__rt_db_find_free_slot")
+        self._prologue(a, save=(ar.di,))
+        a.e("    xor ecx, ecx")
+        a.l("__rt_db_find_free_loop")
+        a.e(f"    cmp ecx, {DATABASE_MAX}")
+        a.e("    jae __rt_db_find_free_fail")
+        self._arena_to(a, ar.di, DB_ACTIVE_OFF)
+        a.e(f"    cmp dword ptr [{ar.di}+{ar.cx}*4], 0")
+        a.e("    je __rt_db_find_free_found")
+        a.e("    inc ecx")
+        a.e("    jmp __rt_db_find_free_loop")
+        a.l("__rt_db_find_free_found")
+        a.e("    mov eax, ecx")
+        a.e("    jmp __rt_db_find_free_done")
+        a.l("__rt_db_find_free_fail")
+        a.e(f"    mov eax, {INVALID}")
+        a.l("__rt_db_find_free_done")
+        self._epilogue(a, save=(ar.di,))
+        a.e()
+
+        # Is the database writable and not SYSTEM?
+        a.l("__rt_db_can_modify_id")
+        self._prologue(a, save=(ar.bx, ar.di))
+        a.e(f"    push {ar.arg(0)}")
+        a.e("    call __rt_db_find_slot")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e(f"    cmp eax, {INVALID}")
+        a.e("    je __rt_db_can_modify_no")
+        a.e("    mov ebx, eax")
+        self._arena_to(a, ar.di, DB_MODES_OFF)
+        a.e(f"    cmp dword ptr [{ar.di}+{ar.bx}*4], {DATABASE_MODE_READ_WRITE}")
+        a.e("    jne __rt_db_can_modify_no")
+        self._arena_to(a, ar.di, DB_KINDS_OFF)
+        a.e(f"    cmp dword ptr [{ar.di}+{ar.bx}*4], {DATABASE_KIND_SYSTEM}")
+        a.e("    je __rt_db_can_modify_no")
+        a.e("    mov eax, 1")
+        a.e("    jmp __rt_db_can_modify_done")
+        a.l("__rt_db_can_modify_no")
+        a.e("    xor eax, eax")
+        a.l("__rt_db_can_modify_done")
+        self._epilogue(a, save=(ar.bx, ar.di))
+        a.e()
+
+        a.l("__rt_db_mark_modified_id")
+        self._prologue(a, save=(ar.bx, ar.di))
+        a.e("    cmp dword ptr [__prolog_db_loading], 0")
+        a.e("    jne __rt_db_mark_modified_done")
+        a.e(f"    push {ar.arg(0)}")
+        a.e("    call __rt_db_find_slot")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e(f"    cmp eax, {INVALID}")
+        a.e("    je __rt_db_mark_modified_done")
+        a.e("    mov ebx, eax")
+        self._arena_to(a, ar.di, DB_MODIFIED_OFF)
+        a.e(f"    mov dword ptr [{ar.di}+{ar.bx}*4], 1")
+        a.l("__rt_db_mark_modified_done")
+        a.e("    mov eax, 1")
+        self._epilogue(a, save=(ar.bx, ar.di))
+        a.e()
+
+        # Convert read_only/read_write and knowledge/record/system atoms.
+        a.l("__rt_db_mode_from_term")
+        self._prologue(a)
+        a.e(f"    push {ar.arg(0)}")
+        a.e("    call __rt_term_atom_id")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    test edx, edx")
+        a.e("    je __rt_db_mode_fail")
+        a.e(f"    cmp eax, {self.atom_id('read_only')}")
+        a.e("    je __rt_db_mode_ro")
+        a.e(f"    cmp eax, {self.atom_id('read_write')}")
+        a.e("    je __rt_db_mode_rw")
+        a.e("    jmp __rt_db_mode_fail")
+        a.l("__rt_db_mode_ro")
+        a.e(f"    mov eax, {DATABASE_MODE_READ_ONLY}")
+        a.e("    jmp __rt_db_mode_done")
+        a.l("__rt_db_mode_rw")
+        a.e(f"    mov eax, {DATABASE_MODE_READ_WRITE}")
+        a.e("    jmp __rt_db_mode_done")
+        a.l("__rt_db_mode_fail")
+        a.e(f"    mov eax, {INVALID}")
+        a.l("__rt_db_mode_done")
+        self._epilogue(a)
+        a.e()
+
+        a.l("__rt_db_kind_from_term")
+        self._prologue(a)
+        a.e(f"    push {ar.arg(0)}")
+        a.e("    call __rt_term_atom_id")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    test edx, edx")
+        a.e("    je __rt_db_kind_fail")
+        for name, value, label in (
+            ("knowledge", DATABASE_KIND_KNOWLEDGE, "knowledge"),
+            ("record", DATABASE_KIND_RECORD, "record"),
+            ("system", DATABASE_KIND_SYSTEM, "system"),
+        ):
+            a.e(f"    cmp eax, {self.atom_id(name)}")
+            a.e(f"    je __rt_db_kind_{label}")
+        a.e("    jmp __rt_db_kind_fail")
+        for _name, value, label in (
+            ("knowledge", DATABASE_KIND_KNOWLEDGE, "knowledge"),
+            ("record", DATABASE_KIND_RECORD, "record"),
+            ("system", DATABASE_KIND_SYSTEM, "system"),
+        ):
+            a.l(f"__rt_db_kind_{label}")
+            a.e(f"    mov eax, {value}")
+            a.e("    jmp __rt_db_kind_done")
+        a.l("__rt_db_kind_fail")
+        a.e(f"    mov eax, {INVALID}")
+        a.l("__rt_db_kind_done")
+        self._epilogue(a)
+        a.e()
+
+        # Make <filename>.tmp in a fixed private buffer.
+        a.l("__rt_db_make_temp_path")
+        self._prologue(a, save=(ar.bx, ar.si, ar.di))
+        a.e(f"    push {ar.arg(0)}")
+        a.e("    call __rt_db_filename_ptr")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e(f"    mov {ar.si}, {ar.ax}")
+        self._arena_to(a, ar.di, DB_TEMP_PATH_OFF)
+        a.e("    xor ebx, ebx")
+        a.l("__rt_db_temp_copy")
+        a.e(f"    cmp ebx, {DATABASE_FILENAME_SIZE-5}")
+        a.e("    jae __rt_db_temp_fail")
+        a.e(f"    movzx eax, byte ptr [{ar.si}+{ar.bx}]")
+        a.e("    test eax, eax")
+        a.e("    je __rt_db_temp_suffix")
+        a.e(f"    mov byte ptr [{ar.di}+{ar.bx}], al")
+        a.e("    inc ebx")
+        a.e("    jmp __rt_db_temp_copy")
+        a.l("__rt_db_temp_suffix")
+        for byte in (46, 116, 109, 112, 0):  # .tmp\0
+            a.e(f"    mov byte ptr [{ar.di}+{ar.bx}], {byte}")
+            if byte:
+                a.e("    inc ebx")
+        a.e(f"    mov {ar.ax}, {ar.di}")
+        a.e("    jmp __rt_db_temp_done")
+        a.l("__rt_db_temp_fail")
+        a.e(f"    xor {ar.ax}, {ar.ax}")
+        a.l("__rt_db_temp_done")
+        self._epilogue(a, save=(ar.bx, ar.si, ar.di))
+        a.e()
+
+        # Canonical variables are emitted as _V0, _V1, ... while saving.
+        a.l("__rt_emit_saved_var")
+        self._prologue(a, save=(ar.bx, ar.di))
+        a.e(f"    mov ebx, {ar.arg(0)}")
+        a.e("    xor ecx, ecx")
+        a.l("__rt_emit_saved_var_scan")
+        a.e("    cmp ecx, dword ptr [__prolog_save_var_count]")
+        a.e("    jae __rt_emit_saved_var_new")
+        self._arena_to(a, ar.di, DB_SAVE_VAR_OFF)
+        a.e(f"    cmp dword ptr [{ar.di}+{ar.cx}*4], ebx")
+        a.e("    je __rt_emit_saved_var_have")
+        a.e("    inc ecx")
+        a.e("    jmp __rt_emit_saved_var_scan")
+        a.l("__rt_emit_saved_var_new")
+        a.e(f"    cmp ecx, {BUILD_VAR_MAX}")
+        a.e("    jae __rt_emit_saved_var_have")
+        self._arena_to(a, ar.di, DB_SAVE_VAR_OFF)
+        a.e(f"    mov dword ptr [{ar.di}+{ar.cx}*4], ebx")
+        a.e("    inc dword ptr [__prolog_save_var_count]")
+        a.l("__rt_emit_saved_var_have")
+        a.e(f"    {ar.push_reg32('ecx')}")
+        a.e("    push __prolog_fmt_saved_var")
+        a.e("    push __prolog_format_buffer")
+        a.e("    call wsprintfA")
+        a.e(f"    {ar.cleanup(3)}")
+        a.e("    push __prolog_format_buffer")
+        a.e("    call __rt_emit_text")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    mov eax, 1")
+        self._epilogue(a, save=(ar.bx, ar.di))
+        a.e()
+
+        # Source renderer for operator expressions used in rule bodies.
+        a.l("__rt_emit_source_expr")
+        self._prologue(a, save=(ar.bx, ar.si, ar.di))
+        a.e(f"    mov eax, {ar.arg(0)}")
+        a.e("    call __rt_deref")
+        a.e("    mov esi, eax")
+        a.e("    call __rt_node_ptr")
+        a.e(f"    cmp dword ptr [{ar.di}], {NODE_STRUCT}")
+        a.e("    jne __rt_emit_source_expr_generic")
+        a.e(f"    cmp dword ptr [{ar.di}+8], 2")
+        a.e("    jne __rt_emit_source_expr_generic")
+        a.e(f"    mov edx, dword ptr [{ar.di}+4]")
+        operator_labels = [
+            (",", "__prolog_text_op_comma"),
+            (";", "__prolog_text_op_semi"),
+            ("=", "__prolog_text_op_eq"),
+            ("\\=", "__prolog_text_op_ne"),
+            ("==", "__prolog_text_op_strict_eq"),
+            ("is", "__prolog_text_op_is"),
+            ("<", "__prolog_text_op_lt"),
+            ("=<", "__prolog_text_op_le"),
+            (">", "__prolog_text_op_gt"),
+            (">=", "__prolog_text_op_ge"),
+            ("+", "__prolog_text_op_plus"),
+            ("-", "__prolog_text_op_minus"),
+            ("*", "__prolog_text_op_mul"),
+            ("/", "__prolog_text_op_div"),
+            ("mod", "__prolog_text_op_mod"),
+        ]
+        for i, (name, text_label) in enumerate(operator_labels):
+            a.e(f"    cmp edx, {self.atom_id(name)}")
+            a.e(f"    je __rt_emit_source_expr_op_{i}")
+        a.e("    jmp __rt_emit_source_expr_generic")
+        for i, (_name, text_label) in enumerate(operator_labels):
+            a.l(f"__rt_emit_source_expr_op_{i}")
+            a.e(f"    mov {ar.bx}, {text_label}")
+            a.e("    jmp __rt_emit_source_expr_binary")
+        a.l("__rt_emit_source_expr_binary")
+        a.e("    push __prolog_text_lparen")
+        a.e("    call __rt_emit_text")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    push 0")
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e("    call __rt_struct_arg")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_emit_source_expr")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e(f"    {'push rbx' if ar.is64 else 'push ebx'}")
+        a.e("    call __rt_emit_text")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    push 1")
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e("    call __rt_struct_arg")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_emit_source_expr")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    push __prolog_text_rparen")
+        a.e("    call __rt_emit_text")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    jmp __rt_emit_source_expr_done")
+        a.l("__rt_emit_source_expr_generic")
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e("    call __rt_emit_term")
+        a.e(f"    {ar.cleanup(1)}")
+        a.l("__rt_emit_source_expr_done")
+        a.e("    mov eax, 1")
+        self._epilogue(a, save=(ar.bx, ar.si, ar.di))
+        a.e()
+
+        a.l("__rt_emit_clause_source")
+        self._prologue(a, save=(ar.bx, ar.si, ar.di))
+        a.e(f"    mov eax, {ar.arg(0)}")
+        a.e("    call __rt_deref")
+        a.e("    mov esi, eax")
+        a.e("    call __rt_node_ptr")
+        a.e(f"    cmp dword ptr [{ar.di}], {NODE_STRUCT}")
+        a.e("    jne __rt_emit_clause_fact")
+        # Preserve the friendly Stage-56 syntax when a loaded database is
+        # saved again: d64_knowledge_value(apfel,V) -> _apfel = V
+        a.e(f"    cmp dword ptr [{ar.di}+4], {self.atom_id('d64_knowledge_value')}")
+        a.e("    jne __rt_emit_clause_check_rule")
+        a.e(f"    cmp dword ptr [{ar.di}+8], 2")
+        a.e("    je __rt_emit_clause_knowledge")
+        a.l("__rt_emit_clause_check_rule")
+        a.e(f"    cmp dword ptr [{ar.di}+4], {self.atom_id(':-')}")
+        a.e("    jne __rt_emit_clause_fact")
+        a.e(f"    cmp dword ptr [{ar.di}+8], 2")
+        a.e("    jne __rt_emit_clause_fact")
+        a.e("    push 0")
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e("    call __rt_struct_arg")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_emit_term")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    push __prolog_text_rule_sep")
+        a.e("    call __rt_emit_text")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    push 1")
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e("    call __rt_struct_arg")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_emit_source_expr")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    jmp __rt_emit_clause_done")
+        a.l("__rt_emit_clause_knowledge")
+        a.e("    push __prolog_text_underscore")
+        a.e("    call __rt_emit_text")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    push 0")
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e("    call __rt_struct_arg")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_emit_term")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    push __prolog_text_knowledge_sep")
+        a.e("    call __rt_emit_text")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    push 1")
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e("    call __rt_struct_arg")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_emit_source_expr")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    jmp __rt_emit_clause_done")
+        a.l("__rt_emit_clause_fact")
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e("    call __rt_emit_term")
+        a.e(f"    {ar.cleanup(1)}")
+        a.l("__rt_emit_clause_done")
+        a.e("    mov eax, 1")
+        self._epilogue(a, save=(ar.bx, ar.si, ar.di))
+        a.e()
+
+        # Load and parse all clauses from one database file.
+        a.l("__rt_db_load_slot")
+        self._prologue(a, save=(ar.bx, ar.si, ar.di))
+        a.e(f"    mov ebx, {ar.arg(0)}")  # slot
+        a.e(f"    {ar.push_reg32('ebx')}")
+        a.e("    call __rt_db_filename_ptr")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e(f"    mov {ar.si}, {ar.ax}")
+        # CreateFileA(filename, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, NORMAL, 0)
+        a.e("    push 0")
+        a.e("    push 128")
+        a.e("    push 3")
+        a.e("    push 0")
+        a.e("    push 1")
+        a.e("    push -2147483648")
+        a.e(f"    {'push rsi' if ar.is64 else 'push esi'}")
+        a.e("    call CreateFileA")
+        a.e("    cmp eax, -1")
+        a.e("    jne __rt_db_load_have_file")
+        # Missing read-write RECORD/KNOWLEDGE file starts empty; read-only fails.
+        self._arena_to(a, ar.di, DB_MODES_OFF)
+        a.e(f"    cmp dword ptr [{ar.di}+{ar.bx}*4], {DATABASE_MODE_READ_WRITE}")
+        a.e("    jne __rt_db_load_fail")
+        a.e("    push 0")
+        a.e("    push 128")
+        a.e("    push 2")
+        a.e("    push 0")
+        a.e("    push 0")
+        a.e("    push 1073741824")
+        a.e(f"    {'push rsi' if ar.is64 else 'push esi'}")
+        a.e("    call CreateFileA")
+        a.e("    cmp eax, -1")
+        a.e("    je __rt_db_load_fail")
+        if ar.is64:
+            a.e("    push rax")
+        else:
+            a.e("    push eax")
+        a.e("    call CloseHandle")
+        a.e("    mov eax, 1")
+        a.e("    jmp __rt_db_load_done")
+        a.l("__rt_db_load_have_file")
+        a.e(f"    mov {ar.mem_ptr('__prolog_db_file_handle')}, {ar.ax}")
+        self._arena_to(a, ar.di, FILE_BUFFER_OFF)
+        a.e("    mov dword ptr [__prolog_db_file_read], 0")
+        a.e("    push 0")
+        a.e("    push __prolog_db_file_read")
+        a.e(f"    push {FILE_BUFFER_SIZE-1}")
+        a.e(f"    {'push rdi' if ar.is64 else 'push edi'}")
+        a.e(f"    push {ar.mem_ptr('__prolog_db_file_handle')}")
+        a.e("    call ReadFile")
+        a.e("    test eax, eax")
+        a.e("    je __rt_db_load_close_fail")
+        a.e(f"    push {ar.mem_ptr('__prolog_db_file_handle')}")
+        a.e("    call CloseHandle")
+        a.e(f"    mov {ar.mem_ptr('__prolog_db_file_handle')}, 0")
+        a.e("    mov ecx, dword ptr [__prolog_db_file_read]")
+        a.e(f"    cmp ecx, {FILE_BUFFER_SIZE-1}")
+        a.e("    jae __rt_db_load_fail")
+        self._arena_to(a, ar.di, FILE_BUFFER_OFF)
+        a.e("    xor eax, eax")
+        a.e(f"    mov byte ptr [{ar.di}+{ar.cx}], al")
+        a.e("    mov dword ptr [__prolog_db_file_pos], 0")
+        a.e("    mov dword ptr [__prolog_parser_db_mode], 1")
+        a.l("__rt_db_load_clause_loop")
+        # Copy a parse window from FILE_BUFFER+file_pos to INPUT.
+        self._arena_to(a, ar.si, FILE_BUFFER_OFF)
+        a.e("    mov eax, dword ptr [__prolog_db_file_pos]")
+        a.e(f"    add {ar.si}, {ar.ax}")
+        self._arena_to(a, ar.di, INPUT_OFF)
+        a.e("    xor ecx, ecx")
+        a.l("__rt_db_load_window_copy")
+        a.e(f"    cmp ecx, {INPUT_SIZE-1}")
+        a.e("    jae __rt_db_load_window_full")
+        a.e(f"    movzx eax, byte ptr [{ar.si}+{ar.cx}]")
+        a.e(f"    mov byte ptr [{ar.di}+{ar.cx}], al")
+        a.e("    test eax, eax")
+        a.e("    je __rt_db_load_window_ready")
+        a.e("    inc ecx")
+        a.e("    jmp __rt_db_load_window_copy")
+        a.l("__rt_db_load_window_full")
+        a.e("    xor eax, eax")
+        a.e(f"    mov byte ptr [{ar.di}+{ar.cx}], al")
+        a.l("__rt_db_load_window_ready")
+        a.e("    mov dword ptr [__prolog_parse_pos], 0")
+        a.e("    call __rt_parse_skip_ws")
+        a.e("    test eax, eax")
+        a.e("    je __rt_db_load_success")
+        a.e("    mov eax, dword ptr [__prolog_heap_top]")
+        a.e("    mov dword ptr [__prolog_db_heap_mark], eax")
+        a.e("    mov dword ptr [__prolog_db_parser_var_count], 0")
+        a.e("    mov dword ptr [__prolog_db_parser_name_top], 0")
+        # Stage 56: external files may start a clause with _name = Term.
+        # The helper resets parse_pos when this is not such an assignment.
+        a.e("    call __rt_parse_knowledge_assignment")
+        a.e(f"    cmp eax, {INVALID}")
+        a.e("    jne __rt_db_load_clause_parsed")
+        a.e("    call __rt_parse_rule_expr")
+        a.e(f"    cmp eax, {INVALID}")
+        a.e("    je __rt_db_load_parse_fail")
+        a.l("__rt_db_load_clause_parsed")
+        a.e("    mov ebx, eax")  # clause term
+        a.e("    call __rt_parse_skip_ws")
+        a.e("    cmp eax, 46")  # .
+        a.e("    jne __rt_db_load_parse_fail")
+        a.e("    inc dword ptr [__prolog_parse_pos]")
+        a.e("    call __rt_parse_skip_ws")
+        a.e(f"    {ar.push_reg32('ebx')}")
+        a.e("    call __rt_assertz")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    mov edx, eax")
+        a.e("    mov eax, dword ptr [__prolog_db_heap_mark]")
+        a.e("    mov dword ptr [__prolog_heap_top], eax")
+        a.e("    test edx, edx")
+        a.e("    je __rt_db_load_fail")
+        a.e("    mov eax, dword ptr [__prolog_parse_pos]")
+        a.e("    test eax, eax")
+        a.e("    je __rt_db_load_fail")
+        a.e("    add dword ptr [__prolog_db_file_pos], eax")
+        a.e("    jmp __rt_db_load_clause_loop")
+        a.l("__rt_db_load_parse_fail")
+        a.e("    mov eax, dword ptr [__prolog_db_heap_mark]")
+        a.e("    mov dword ptr [__prolog_heap_top], eax")
+        a.e("    jmp __rt_db_load_fail")
+        a.l("__rt_db_load_close_fail")
+        a.e(f"    push {ar.mem_ptr('__prolog_db_file_handle')}")
+        a.e("    call CloseHandle")
+        a.e(f"    mov {ar.mem_ptr('__prolog_db_file_handle')}, 0")
+        a.e("    jmp __rt_db_load_fail")
+        a.l("__rt_db_load_success")
+        a.e("    mov dword ptr [__prolog_parser_db_mode], 0")
+        a.e("    mov eax, 1")
+        a.e("    jmp __rt_db_load_done")
+        a.l("__rt_db_load_fail")
+        a.e("    mov dword ptr [__prolog_parser_db_mode], 0")
+        a.e("    xor eax, eax")
+        a.l("__rt_db_load_done")
+        self._epilogue(a, save=(ar.bx, ar.si, ar.di))
+        a.e()
+
+        # Create a database record and load its clauses. Returns stable DB-ID.
+        a.l("__rt_database_open")
+        self._prologue(a, save=(ar.bx, ar.si, ar.di))
+        a.e(f"    mov ebx, {ar.arg(1)}")  # mode enum
+        a.e(f"    mov esi, {ar.arg(2)}")  # kind enum
+        # SYSTEM databases are deliberately immutable and therefore must be
+        # opened read_only. Reject a contradictory read_write SYSTEM request.
+        a.e(f"    cmp esi, {DATABASE_KIND_SYSTEM}")
+        a.e("    jne __rt_database_open_mode_ok")
+        a.e(f"    cmp ebx, {DATABASE_MODE_READ_ONLY}")
+        a.e("    jne __rt_database_open_fail")
+        a.l("__rt_database_open_mode_ok")
+        a.e(f"    push {ar.arg(0)}")
+        a.e("    call __rt_term_cstr")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    test edx, edx")
+        a.e("    je __rt_database_open_fail")
+        if ar.is64:
+            a.e("    push rax")  # filename ptr
+        else:
+            a.e("    push eax")
+        a.e("    call __rt_db_find_free_slot")
+        a.e(f"    cmp eax, {INVALID}")
+        a.e("    je __rt_database_open_fail_pop")
+        a.e("    mov ecx, eax")  # slot
+        # filename
+        a.e(f"    {ar.push_reg32('ecx')}")
+        a.e("    call __rt_db_filename_ptr")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e(f"    mov {ar.di}, {ar.ax}")
+        a.e(f"    pop {ar.ax}")  # filename ptr
+        a.e(f"    push {DATABASE_FILENAME_SIZE}")
+        if ar.is64:
+            a.e("    push rdi")
+            a.e("    push rax")
+        else:
+            a.e("    push edi")
+            a.e("    push eax")
+        a.e("    call __rt_cstr_copy_limit")
+        a.e(f"    {ar.cleanup(3)}")
+        a.e("    test eax, eax")
+        a.e("    je __rt_database_open_fail")
+        # Allocate monotonically increasing ID, never 0.
+        a.e("    mov eax, dword ptr [__prolog_db_next_id]")
+        a.e("    test eax, eax")
+        a.e("    jne __rt_database_open_id_ok")
+        a.e("    mov eax, 1")
+        a.l("__rt_database_open_id_ok")
+        a.e("    mov edx, eax")
+        a.e("    inc eax")
+        a.e("    mov dword ptr [__prolog_db_next_id], eax")
+        # We lost slot in ECX across cstr call? cstr preserves caller ECX? no.
+        # Recover free slot by scanning again; still free until active is set.
+        a.e("    call __rt_db_find_free_slot")
+        a.e(f"    cmp eax, {INVALID}")
+        a.e("    je __rt_database_open_fail")
+        a.e("    mov ecx, eax")
+        self._arena_to(a, ar.di, DB_ACTIVE_OFF)
+        a.e(f"    mov dword ptr [{ar.di}+{ar.cx}*4], 1")
+        self._arena_to(a, ar.di, DB_IDS_OFF)
+        a.e(f"    mov dword ptr [{ar.di}+{ar.cx}*4], edx")
+        self._arena_to(a, ar.di, DB_MODES_OFF)
+        a.e(f"    mov dword ptr [{ar.di}+{ar.cx}*4], ebx")
+        self._arena_to(a, ar.di, DB_KINDS_OFF)
+        a.e(f"    mov dword ptr [{ar.di}+{ar.cx}*4], esi")
+        self._arena_to(a, ar.di, DB_MODIFIED_OFF)
+        a.e(f"    mov dword ptr [{ar.di}+{ar.cx}*4], 0")
+        # Save caller's selected DB and import clauses under the new owner ID.
+        a.e(f"    {ar.push_reg32('edx')}")  # keep new stable DB-ID across file parser
+        a.e("    mov eax, dword ptr [__prolog_current_db]")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    mov dword ptr [__prolog_current_db], edx")
+        a.e("    mov dword ptr [__prolog_db_loading], 1")
+        a.e(f"    {ar.push_reg32('ecx')}")
+        a.e("    call __rt_db_load_slot")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    mov esi, eax")  # load result
+        a.e("    mov dword ptr [__prolog_db_loading], 0")
+        a.e(f"    pop {ar.cx}")  # previous current DB
+        a.e(f"    pop {ar.dx}")  # new DB-ID
+        a.e("    mov dword ptr [__prolog_current_db], ecx")
+        a.e("    test esi, esi")
+        a.e("    je __rt_database_open_cleanup")
+        # Find slot again from ID and clear dirty flag after import.
+        a.e(f"    {ar.push_reg32('edx')}")
+        a.e("    call __rt_db_find_slot")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e(f"    cmp eax, {INVALID}")
+        a.e("    je __rt_database_open_fail")
+        a.e("    mov ecx, eax")
+        self._arena_to(a, ar.di, DB_MODIFIED_OFF)
+        a.e(f"    mov dword ptr [{ar.di}+{ar.cx}*4], 0")
+        a.e("    mov eax, edx")
+        a.e("    jmp __rt_database_open_done")
+        a.l("__rt_database_open_cleanup")
+        a.e(f"    {ar.push_reg32('edx')}")
+        a.e("    call __rt_db_unload_id")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    xor eax, eax")
+        a.e("    jmp __rt_database_open_done")
+        a.l("__rt_database_open_fail_pop")
+        if ar.is64:
+            a.e("    pop rax")
+        else:
+            a.e("    pop eax")
+        a.l("__rt_database_open_fail")
+        a.e("    xor eax, eax")
+        a.l("__rt_database_open_done")
+        self._epilogue(a, save=(ar.bx, ar.si, ar.di))
+        a.e()
+
+        # Remove every dynamic clause owned by one database, then compact/GC.
+        a.l("__rt_db_unload_id")
+        self._prologue(a, save=(ar.bx, ar.si, ar.di))
+        a.e(f"    mov ebx, {ar.arg(0)}")
+        a.e("    xor esi, esi")
+        a.l("__rt_db_unload_clause_loop")
+        a.e("    cmp esi, dword ptr [__prolog_dyn_count]")
+        a.e("    jae __rt_db_unload_clause_done")
+        self._arena_to(a, ar.di, DYN_DB_OWNER_OFF)
+        a.e(f"    cmp dword ptr [{ar.di}+{ar.si}*4], ebx")
+        a.e("    jne __rt_db_unload_clause_next")
+        self._arena_to(a, ar.di, DYN_DB_OFF)
+        a.e("    mov eax, esi")
+        a.e("    shl eax, 4")
+        a.e(f"    add {ar.di}, {ar.ax}")
+        a.e(f"    mov dword ptr [{ar.di}], 0")
+        a.l("__rt_db_unload_clause_next")
+        a.e("    inc esi")
+        a.e("    jmp __rt_db_unload_clause_loop")
+        a.l("__rt_db_unload_clause_done")
+        a.e("    call __rt_dyn_db_compact")
+        a.e("    call __rt_gc_dynamic")
+        a.e(f"    {ar.push_reg32('ebx')}")
+        a.e("    call __rt_db_find_slot")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e(f"    cmp eax, {INVALID}")
+        a.e("    je __rt_db_unload_after_slot")
+        a.e("    mov ecx, eax")
+        for array_off in (DB_ACTIVE_OFF, DB_IDS_OFF, DB_MODES_OFF, DB_KINDS_OFF, DB_MODIFIED_OFF):
+            self._arena_to(a, ar.di, array_off)
+            a.e(f"    mov dword ptr [{ar.di}+{ar.cx}*4], 0")
+        a.l("__rt_db_unload_after_slot")
+        a.e("    cmp dword ptr [__prolog_current_db], ebx")
+        a.e("    jne __rt_db_unload_current_ok")
+        a.e("    mov dword ptr [__prolog_current_db], 0")
+        a.l("__rt_db_unload_current_ok")
+        a.e("    mov eax, 1")
+        self._epilogue(a, save=(ar.bx, ar.si, ar.di))
+        a.e()
+
+        # Save exactly the clauses owned by DB-ID through the normal term
+        # renderer redirected to a temporary file.
+        a.l("__rt_database_save_id")
+        self._prologue(a, save=(ar.bx, ar.si, ar.di))
+        a.e(f"    mov ebx, {ar.arg(0)}")
+        a.e(f"    {ar.push_reg32('ebx')}")
+        a.e("    call __rt_db_can_modify_id")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    test eax, eax")
+        a.e("    je __rt_database_save_fail")
+        a.e(f"    {ar.push_reg32('ebx')}")
+        a.e("    call __rt_db_find_slot")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e(f"    cmp eax, {INVALID}")
+        a.e("    je __rt_database_save_fail")
+        a.e("    mov esi, eax")  # slot
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e("    call __rt_db_make_temp_path")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e(f"    test {ar.ax}, {ar.ax}")
+        a.e("    je __rt_database_save_fail")
+        a.e(f"    mov {ar.di}, {ar.ax}")  # temp ptr
+        # Create temp file.
+        a.e("    push 0")
+        a.e("    push 128")
+        a.e("    push 2")
+        a.e("    push 0")
+        a.e("    push 0")
+        a.e("    push 1073741824")
+        a.e(f"    {'push rdi' if ar.is64 else 'push edi'}")
+        a.e("    call CreateFileA")
+        a.e("    cmp eax, -1")
+        a.e("    je __rt_database_save_fail")
+        a.e(f"    mov {ar.mem_ptr('__prolog_emit_file_handle')}, {ar.ax}")
+        a.e("    mov dword ptr [__prolog_emit_to_file], 1")
+        a.e("    mov dword ptr [__prolog_emit_file_error], 0")
+        a.e("    mov eax, dword ptr [__prolog_heap_top]")
+        a.e("    mov dword ptr [__prolog_db_heap_mark], eax")
+        a.e("    xor esi, esi")  # clause index
+        a.l("__rt_database_save_loop")
+        a.e("    cmp esi, dword ptr [__prolog_dyn_count]")
+        a.e("    jae __rt_database_save_written")
+        self._arena_to(a, ar.di, DYN_DB_OFF)
+        a.e("    mov eax, esi")
+        a.e("    shl eax, 4")
+        a.e(f"    add {ar.di}, {ar.ax}")
+        a.e(f"    cmp dword ptr [{ar.di}], 0")
+        a.e("    je __rt_database_save_next")
+        self._arena_to(a, ar.di, DYN_DB_OWNER_OFF)
+        a.e(f"    cmp dword ptr [{ar.di}+{ar.si}*4], ebx")
+        a.e("    jne __rt_database_save_next")
+        self._arena_to(a, ar.di, DYN_DB_OFF)
+        a.e("    mov eax, esi")
+        a.e("    shl eax, 4")
+        a.e(f"    add {ar.di}, {ar.ax}")
+        a.e(f"    mov eax, dword ptr [{ar.di}+12]")
+        a.e("    mov dword ptr [__prolog_dyn_clone_var_count], 0")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_dyn_clone")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e(f"    cmp eax, {INVALID}")
+        a.e("    je __rt_database_save_io_fail")
+        a.e("    mov dword ptr [__prolog_save_var_count], 0")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_emit_clause_source")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    push __prolog_text_clause_end")
+        a.e("    call __rt_emit_text")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    mov eax, dword ptr [__prolog_db_heap_mark]")
+        a.e("    mov dword ptr [__prolog_heap_top], eax")
+        a.e("    cmp dword ptr [__prolog_emit_file_error], 0")
+        a.e("    jne __rt_database_save_io_fail")
+        a.l("__rt_database_save_next")
+        a.e("    inc esi")
+        a.e("    jmp __rt_database_save_loop")
+        a.l("__rt_database_save_written")
+        a.e(f"    push {ar.mem_ptr('__prolog_emit_file_handle')}")
+        a.e("    call FlushFileBuffers")
+        a.e("    test eax, eax")
+        a.e("    je __rt_database_save_io_fail")
+        a.e(f"    push {ar.mem_ptr('__prolog_emit_file_handle')}")
+        a.e("    call CloseHandle")
+        a.e(f"    mov {ar.mem_ptr('__prolog_emit_file_handle')}, 0")
+        a.e("    mov dword ptr [__prolog_emit_to_file], 0")
+        # MoveFileExA(temp, original, REPLACE_EXISTING|WRITE_THROUGH)
+        a.e(f"    {ar.push_reg32('ebx')}")
+        a.e("    call __rt_db_find_slot")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e(f"    cmp eax, {INVALID}")
+        a.e("    je __rt_database_save_fail")
+        a.e("    mov esi, eax")
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e("    call __rt_db_filename_ptr")
+        a.e(f"    {ar.cleanup(1)}")
+        if ar.is64:
+            a.e("    push rax")  # original
+        else:
+            a.e("    push eax")
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e("    call __rt_db_make_temp_path")
+        a.e(f"    {ar.cleanup(1)}")
+        if ar.is64:
+            a.e("    pop rdx")   # original
+            a.e("    push 9")
+            a.e("    push rdx")
+            a.e("    push rax")  # temp
+        else:
+            a.e("    pop edx")
+            a.e("    push 9")
+            a.e("    push edx")
+            a.e("    push eax")
+        a.e("    call MoveFileExA")
+        a.e("    test eax, eax")
+        a.e("    je __rt_database_save_move_fail")
+        self._arena_to(a, ar.di, DB_MODIFIED_OFF)
+        a.e(f"    mov dword ptr [{ar.di}+{ar.si}*4], 0")
+        a.e("    mov eax, 1")
+        a.e("    jmp __rt_database_save_done")
+        a.l("__rt_database_save_io_fail")
+        a.e("    mov eax, dword ptr [__prolog_db_heap_mark]")
+        a.e("    mov dword ptr [__prolog_heap_top], eax")
+        a.e("    mov dword ptr [__prolog_emit_to_file], 0")
+        a.e(f"    cmp {ar.mem_ptr('__prolog_emit_file_handle')}, 0")
+        a.e("    je __rt_database_save_delete_temp")
+        a.e(f"    push {ar.mem_ptr('__prolog_emit_file_handle')}")
+        a.e("    call CloseHandle")
+        a.e(f"    mov {ar.mem_ptr('__prolog_emit_file_handle')}, 0")
+        a.l("__rt_database_save_delete_temp")
+        a.e(f"    {ar.push_reg32('ebx')}")
+        a.e("    call __rt_db_find_slot")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e(f"    cmp eax, {INVALID}")
+        a.e("    je __rt_database_save_fail")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_db_make_temp_path")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e(f"    test {ar.ax}, {ar.ax}")
+        a.e("    je __rt_database_save_fail")
+        if ar.is64:
+            a.e("    push rax")
+        else:
+            a.e("    push eax")
+        a.e("    call DeleteFileA")
+        a.e("    jmp __rt_database_save_fail")
+        a.l("__rt_database_save_move_fail")
+        # Best-effort cleanup of the temp file.
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e("    call __rt_db_make_temp_path")
+        a.e(f"    {ar.cleanup(1)}")
+        if ar.is64:
+            a.e("    push rax")
+        else:
+            a.e("    push eax")
+        a.e("    call DeleteFileA")
+        a.l("__rt_database_save_fail")
+        a.e("    xor eax, eax")
+        a.l("__rt_database_save_done")
+        self._epilogue(a, save=(ar.bx, ar.si, ar.di))
+        a.e()
+
+        a.l("__rt_database_close_id")
+        self._prologue(a, save=(ar.bx, ar.di))
+        a.e(f"    mov ebx, {ar.arg(0)}")
+        a.e(f"    {ar.push_reg32('ebx')}")
+        a.e("    call __rt_db_find_slot")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e(f"    cmp eax, {INVALID}")
+        a.e("    je __rt_database_close_fail")
+        a.e("    mov ecx, eax")
+        self._arena_to(a, ar.di, DB_KINDS_OFF)
+        a.e(f"    cmp dword ptr [{ar.di}+{ar.cx}*4], {DATABASE_KIND_SYSTEM}")
+        a.e("    je __rt_database_close_fail")
+        a.e(f"    {ar.push_reg32('ebx')}")
+        a.e("    call __rt_db_unload_id")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    mov eax, 1")
+        a.e("    jmp __rt_database_close_done")
+        a.l("__rt_database_close_fail")
+        a.e("    xor eax, eax")
+        a.l("__rt_database_close_done")
+        self._epilogue(a, save=(ar.bx, ar.di))
+        a.e()
+
+        # Save under a new file name.  On failure restore the old path.
+        a.l("__rt_database_save_as")
+        self._prologue(a, save=(ar.bx, ar.si, ar.di))
+        a.e(f"    mov ebx, {ar.arg(0)}")  # DB-ID
+        a.e(f"    push {ar.arg(1)}")
+        a.e("    call __rt_term_cstr")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    test edx, edx")
+        a.e("    je __rt_database_save_as_fail")
+        a.e(f"    mov {ar.si}, {ar.ax}")  # new path
+        a.e(f"    {ar.push_reg32('ebx')}")
+        a.e("    call __rt_db_find_slot")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e(f"    cmp eax, {INVALID}")
+        a.e("    je __rt_database_save_as_fail")
+        a.e("    mov ecx, eax")
+        a.e(f"    {ar.push_reg32('ecx')}")
+        a.e("    call __rt_db_filename_ptr")
+        a.e(f"    {ar.cleanup(1)}")
+        # old -> backup
+        a.e(f"    push {DATABASE_FILENAME_SIZE}")
+        self._arena_to(a, ar.di, DB_OLD_PATH_OFF)
+        if ar.is64:
+            a.e("    push rdi")
+            a.e("    push rax")
+        else:
+            a.e("    push edi")
+            a.e("    push eax")
+        a.e("    call __rt_cstr_copy_limit")
+        a.e(f"    {ar.cleanup(3)}")
+        a.e("    test eax, eax")
+        a.e("    je __rt_database_save_as_fail")
+        # __rt_cstr_copy_limit uses ECX as its copy counter. Recover the slot
+        # from the stable Database-ID before addressing the filename again.
+        a.e(f"    {ar.push_reg32('ebx')}")
+        a.e("    call __rt_db_find_slot")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e(f"    cmp eax, {INVALID}")
+        a.e("    je __rt_database_save_as_fail")
+        a.e("    mov ecx, eax")
+        # new -> slot
+        a.e(f"    {ar.push_reg32('ecx')}")
+        a.e("    call __rt_db_filename_ptr")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e(f"    mov {ar.di}, {ar.ax}")
+        a.e(f"    push {DATABASE_FILENAME_SIZE}")
+        if ar.is64:
+            a.e("    push rdi")
+            a.e("    push rsi")
+        else:
+            a.e("    push edi")
+            a.e("    push esi")
+        a.e("    call __rt_cstr_copy_limit")
+        a.e(f"    {ar.cleanup(3)}")
+        a.e("    test eax, eax")
+        a.e("    je __rt_database_save_as_restore")
+        a.e(f"    {ar.push_reg32('ebx')}")
+        a.e("    call __rt_database_save_id")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    test eax, eax")
+        a.e("    je __rt_database_save_as_restore")
+        a.e("    mov eax, 1")
+        a.e("    jmp __rt_database_save_as_done")
+        a.l("__rt_database_save_as_restore")
+        a.e(f"    {ar.push_reg32('ebx')}")
+        a.e("    call __rt_db_find_slot")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e(f"    cmp eax, {INVALID}")
+        a.e("    je __rt_database_save_as_fail")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_db_filename_ptr")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e(f"    mov {ar.di}, {ar.ax}")
+        a.e(f"    push {DATABASE_FILENAME_SIZE}")
+        if ar.is64:
+            a.e("    push rdi")
+        else:
+            a.e("    push edi")
+        self._arena_to(a, ar.si, DB_OLD_PATH_OFF)
+        if ar.is64:
+            a.e("    push rsi")
+        else:
+            a.e("    push esi")
+        a.e("    call __rt_cstr_copy_limit")
+        a.e(f"    {ar.cleanup(3)}")
+        a.l("__rt_database_save_as_fail")
+        a.e("    xor eax, eax")
+        a.l("__rt_database_save_as_done")
+        self._epilogue(a, save=(ar.bx, ar.si, ar.di))
+        a.e()
+
+        # Explicit database_assert* keeps the selected database unchanged.
+        a.l("__rt_database_assert_scoped")
+        self._prologue(a, save=(ar.bx, ar.si))
+        a.e(f"    mov ebx, {ar.arg(0)}")  # DB-ID
+        a.e(f"    mov esi, {ar.arg(1)}")  # clause
+        a.e(f"    {ar.push_reg32('ebx')}")
+        a.e("    call __rt_db_can_modify_id")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    test eax, eax")
+        a.e("    je __rt_database_assert_scoped_fail")
+        a.e("    mov eax, dword ptr [__prolog_current_db]")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    mov dword ptr [__prolog_current_db], ebx")
+        a.e(f"    cmp {ar.arg(2)}, 0")
+        a.e("    jne __rt_database_assert_scoped_front")
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e("    call __rt_assertz")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    jmp __rt_database_assert_scoped_restore")
+        a.l("__rt_database_assert_scoped_front")
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e("    call __rt_asserta")
+        a.e(f"    {ar.cleanup(1)}")
+        a.l("__rt_database_assert_scoped_restore")
+        a.e("    mov edx, eax")
+        a.e(f"    pop {ar.ax}")
+        a.e("    mov dword ptr [__prolog_current_db], eax")
+        a.e("    mov eax, edx")
+        a.e("    jmp __rt_database_assert_scoped_done")
+        a.l("__rt_database_assert_scoped_fail")
+        a.e("    xor eax, eax")
+        a.l("__rt_database_assert_scoped_done")
+        self._epilogue(a, save=(ar.bx, ar.si))
+        a.e()
+
+        a.l("__rt_database_retract_scoped")
+        self._prologue(a, save=(ar.bx, ar.si))
+        a.e(f"    mov ebx, {ar.arg(0)}")
+        a.e(f"    mov esi, {ar.arg(1)}")
+        a.e(f"    {ar.push_reg32('ebx')}")
+        a.e("    call __rt_db_can_modify_id")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    test eax, eax")
+        a.e("    je __rt_database_retract_scoped_fail")
+        a.e("    mov eax, dword ptr [__prolog_current_db]")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    mov dword ptr [__prolog_current_db], ebx")
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e("    call __rt_retract")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    mov edx, eax")
+        a.e(f"    pop {ar.ax}")
+        a.e("    mov dword ptr [__prolog_current_db], eax")
+        a.e("    mov eax, edx")
+        a.e("    jmp __rt_database_retract_scoped_done")
+        a.l("__rt_database_retract_scoped_fail")
+        a.e("    xor eax, eax")
+        a.l("__rt_database_retract_scoped_done")
+        self._epilogue(a, save=(ar.bx, ar.si))
+        a.e()
+
+    # ------------------------------------------------------------------
     # Output / term rendering / atom lookup
     # ------------------------------------------------------------------
     def _emit_io(self, a: _A) -> None:
@@ -2299,12 +3604,32 @@ class PrologRuntimeEmitter:
         a.e()
 
         # emit_text(cstr). Console writes immediately; GUI appends to buffer.
+        # database_save/1 can temporarily redirect the same renderer to a file.
         a.l("__rt_emit_text")
         self._prologue(a, save=(ar.bx, ar.si, ar.di))
         if ar.is64:
             a.e(f"    mov rsi, {ar.arg(0, 'qword')}")
         else:
             a.e(f"    mov esi, {ar.arg(0)}")
+
+        a.e("    cmp dword ptr [__prolog_emit_to_file], 0")
+        a.e("    je __rt_emit_text_normal")
+        a.e(f"    {'push rsi' if ar.is64 else 'push esi'}")
+        a.e("    call __rt_strlen")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    mov ebx, eax")
+        a.e("    push 0")
+        a.e("    push __prolog_written")
+        a.e(f"    {ar.push_reg32('ebx')}")
+        a.e(f"    {'push rsi' if ar.is64 else 'push esi'}")
+        a.e(f"    push {ar.mem_ptr('__prolog_emit_file_handle')}")
+        a.e("    call WriteFile")
+        a.e("    test eax, eax")
+        a.e("    jne __rt_emit_text_done")
+        a.e("    mov dword ptr [__prolog_emit_file_error], 1")
+        a.e("    jmp __rt_emit_text_done")
+
+        a.l("__rt_emit_text_normal")
         if self.is_gui:
             a.e("    mov ebx, dword ptr [__prolog_output_top]")
             self._arena_to(a, ar.di, OUTPUT_OFF)
@@ -2323,8 +3648,7 @@ class PrologRuntimeEmitter:
             a.e("    xor eax, eax")
             a.e(f"    mov byte ptr [{ar.di}+{ar.bx}], al")
         else:
-            # compute length
-            a.e(f"    {ar.push_reg32('esi') if not ar.is64 else 'push rsi'}")
+            a.e(f"    {'push rsi' if ar.is64 else 'push esi'}")
             a.e("    call __rt_strlen")
             a.e(f"    {ar.cleanup(1)}")
             a.e("    mov ebx, eax")
@@ -2334,6 +3658,7 @@ class PrologRuntimeEmitter:
             a.e(f"    {'push rsi' if ar.is64 else 'push esi'}")
             a.e(f"    push {ar.mem_ptr('__prolog_stdout')}")
             a.e("    call WriteFile")
+        a.l("__rt_emit_text_done")
         self._epilogue(a, save=(ar.bx, ar.si, ar.di))
         a.e()
 
@@ -2460,6 +3785,13 @@ class PrologRuntimeEmitter:
         a.e("    je __rt_emit_term_struct")
         a.e("    jmp __rt_emit_term_done")
         a.l("__rt_emit_term_var")
+        a.e("    cmp dword ptr [__prolog_emit_to_file], 0")
+        a.e("    je __rt_emit_term_var_plain")
+        a.e(f"    {ar.push_reg32('ebx')}")
+        a.e("    call __rt_emit_saved_var")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    jmp __rt_emit_term_done")
+        a.l("__rt_emit_term_var_plain")
         a.e("    push __prolog_text_underscore")
         a.e("    call __rt_emit_text")
         a.e(f"    {ar.cleanup(1)}")
@@ -2555,9 +3887,15 @@ class PrologRuntimeEmitter:
         a.e("    jae __rt_emit_term_struct_close")
         a.e("    test esi, esi")
         a.e("    je __rt_emit_term_struct_no_comma")
+        # ECX is the next argument-link handle. __rt_emit_text/strlen is
+        # caller-clobbering and uses ECX internally, so keep the link alive
+        # across the separator write.  Without this, database_save/1 crashes
+        # while serializing the second argument of a structure.
+        a.e(f"    {ar.push_reg32('ecx')}")
         a.e("    push __prolog_text_comma_space")
         a.e("    call __rt_emit_text")
         a.e(f"    {ar.cleanup(1)}")
+        a.e(f"    pop {ar.cx}")
         a.l("__rt_emit_term_struct_no_comma")
         a.e("    mov eax, ecx")
         a.e("    call __rt_node_ptr")
@@ -2732,6 +4070,20 @@ class PrologRuntimeEmitter:
             ("integer",1,"__rt_bi_integer"),("float",1,"__rt_bi_float"),("number",1,"__rt_bi_number"),("string",1,"__rt_bi_string"),
             ("assert",1,"__rt_bi_assertz"),("asserta",1,"__rt_bi_asserta"),("assertz",1,"__rt_bi_assertz"),
             ("retract",1,"__rt_bi_retract"),
+            ("database_open",2,"__rt_bi_database_open2"),
+            ("database_open",3,"__rt_bi_database_open3"),
+            ("database_open",4,"__rt_bi_database_open4"),
+            ("database_close",1,"__rt_bi_database_close"),
+            ("database_save",1,"__rt_bi_database_save"),
+            ("database_save_as",2,"__rt_bi_database_save_as"),
+            ("database_select",1,"__rt_bi_database_select"),
+            ("current_database",1,"__rt_bi_current_database"),
+            ("database_modified",1,"__rt_bi_database_modified"),
+            ("database_assert",2,"__rt_bi_database_assertz"),
+            ("database_asserta",2,"__rt_bi_database_asserta"),
+            ("database_assertz",2,"__rt_bi_database_assertz"),
+            ("database_retract",2,"__rt_bi_database_retract"),
+            ("with_database",2,"__rt_bi_with_database"),
             (",",2,"__rt_bi_conjunction"),(";",2,"__rt_bi_disjunction"),
             ("=",2,"__rt_bi_unify"),("\\=",2,"__rt_bi_notunify"),("==",2,"__rt_bi_equal"),("is",2,"__rt_bi_is"),
             ("<",2,"__rt_bi_lt"),("=<",2,"__rt_bi_le"),(">",2,"__rt_bi_gt"),(">=",2,"__rt_bi_ge"),
@@ -2883,6 +4235,347 @@ class PrologRuntimeEmitter:
         a.e("    test eax, eax")
         a.e("    je __rt_solve_done")
         solve_rest()
+
+        # --------------------------------------------------------------
+        # External knowledge database builtins
+        # --------------------------------------------------------------
+        def emit_db_open_finish(fail_label: str):
+            a.e("    test eax, eax")
+            a.e(f"    je {fail_label}")
+            a.e(f"    {ar.push_reg32('eax')}")
+            a.e("    call __rt_make_int")
+            a.e(f"    {ar.cleanup(1)}")
+            a.e(f"    pop {ar.dx}")  # output DB term
+            a.e(f"    {ar.push_reg32('eax')}")
+            a.e(f"    {ar.push_reg32('edx')}")
+            a.e("    call __rt_unify")
+            a.e(f"    {ar.cleanup(2)}")
+            a.e("    test eax, eax")
+            a.e("    je __rt_solve_done")
+            solve_rest()
+            a.l(fail_label)
+            a.e(f"    pop {ar.dx}")
+            a.e("    jmp __rt_solve_done")
+
+        # database_open(File, DB) -> read_write RECORD
+        a.l("__rt_bi_database_open2")
+        a.e("    push 1")
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e("    call __rt_struct_arg")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e(f"    {ar.push_reg32('eax')}")  # output term
+        a.e("    push 0")
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e("    call __rt_struct_arg")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e(f"    push {DATABASE_KIND_RECORD}")
+        a.e(f"    push {DATABASE_MODE_READ_WRITE}")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_database_open")
+        a.e(f"    {ar.cleanup(3)}")
+        emit_db_open_finish("__rt_bi_database_open2_fail")
+
+        # database_open(File, Mode, DB)
+        a.l("__rt_bi_database_open3")
+        a.e("    push 2")
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e("    call __rt_struct_arg")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e(f"    {ar.push_reg32('eax')}")  # output
+        a.e("    push 1")
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e("    call __rt_struct_arg")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_db_mode_from_term")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e(f"    cmp eax, {INVALID}")
+        a.e("    je __rt_bi_database_open3_fail")
+        a.e(f"    {ar.push_reg32('eax')}")  # mode
+        a.e("    push 0")
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e("    call __rt_struct_arg")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e(f"    pop {ar.cx}")  # mode
+        a.e(f"    push {DATABASE_KIND_RECORD}")
+        a.e(f"    {ar.push_reg32('ecx')}")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_database_open")
+        a.e(f"    {ar.cleanup(3)}")
+        emit_db_open_finish("__rt_bi_database_open3_fail")
+
+        # database_open(File, Mode, Kind, DB)
+        a.l("__rt_bi_database_open4")
+        a.e("    push 3")
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e("    call __rt_struct_arg")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e(f"    {ar.push_reg32('eax')}")  # output
+        a.e("    push 1")
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e("    call __rt_struct_arg")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_db_mode_from_term")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e(f"    cmp eax, {INVALID}")
+        a.e("    je __rt_bi_database_open4_fail")
+        a.e(f"    {ar.push_reg32('eax')}")  # mode
+        a.e("    push 2")
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e("    call __rt_struct_arg")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_db_kind_from_term")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e(f"    cmp eax, {INVALID}")
+        a.e("    je __rt_bi_database_open4_fail_mode")
+        a.e(f"    {ar.push_reg32('eax')}")  # kind
+        a.e("    push 0")
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e("    call __rt_struct_arg")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e(f"    pop {ar.dx}")  # kind
+        a.e(f"    pop {ar.cx}")  # mode
+        a.e(f"    {ar.push_reg32('edx')}")
+        a.e(f"    {ar.push_reg32('ecx')}")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_database_open")
+        a.e(f"    {ar.cleanup(3)}")
+        emit_db_open_finish("__rt_bi_database_open4_fail")
+        a.l("__rt_bi_database_open4_fail_mode")
+        a.e(f"    pop {ar.cx}")  # discard mode
+        a.e("    jmp __rt_bi_database_open4_fail")
+
+        a.l("__rt_bi_database_close")
+        a.e("    push 0")
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e("    call __rt_struct_arg")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_term_int")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    test edx, edx")
+        a.e("    je __rt_solve_done")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_database_close_id")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    test eax, eax")
+        a.e("    je __rt_solve_done")
+        solve_rest()
+
+        a.l("__rt_bi_database_save")
+        a.e("    push 0")
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e("    call __rt_struct_arg")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_term_int")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    test edx, edx")
+        a.e("    je __rt_solve_done")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_database_save_id")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    test eax, eax")
+        a.e("    je __rt_solve_done")
+        solve_rest()
+
+        a.l("__rt_bi_database_save_as")
+        # DB
+        a.e("    push 0")
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e("    call __rt_struct_arg")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_term_int")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    test edx, edx")
+        a.e("    je __rt_solve_done")
+        a.e(f"    {ar.push_reg32('eax')}")  # dbid
+        # file
+        a.e("    push 1")
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e("    call __rt_struct_arg")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e("    mov edx, eax")
+        a.e(f"    pop {ar.ax}")
+        a.e(f"    {ar.push_reg32('edx')}")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_database_save_as")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e("    test eax, eax")
+        a.e("    je __rt_solve_done")
+        solve_rest()
+
+        a.l("__rt_bi_database_select")
+        a.e("    push 0")
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e("    call __rt_struct_arg")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_term_int")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    test edx, edx")
+        a.e("    je __rt_solve_done")
+        a.e("    test eax, eax")
+        a.e("    je __rt_bi_database_select_set")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_db_find_slot")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e(f"    cmp eax, {INVALID}")
+        a.e("    je __rt_solve_done")
+        # recover requested DB from goal
+        a.e("    push 0")
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e("    call __rt_struct_arg")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_term_int")
+        a.e(f"    {ar.cleanup(1)}")
+        a.l("__rt_bi_database_select_set")
+        a.e("    mov dword ptr [__prolog_current_db], eax")
+        solve_rest()
+
+        a.l("__rt_bi_current_database")
+        a.e("    push 0")
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e("    call __rt_struct_arg")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e(f"    {ar.push_reg32('eax')}")  # output
+        a.e("    push dword ptr [__prolog_current_db]")
+        a.e("    call __rt_make_int")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e(f"    pop {ar.dx}")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e(f"    {ar.push_reg32('edx')}")
+        a.e("    call __rt_unify")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e("    test eax, eax")
+        a.e("    je __rt_solve_done")
+        solve_rest()
+
+        a.l("__rt_bi_database_modified")
+        a.e("    push 0")
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e("    call __rt_struct_arg")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_term_int")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    test edx, edx")
+        a.e("    je __rt_solve_done")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_db_find_slot")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e(f"    cmp eax, {INVALID}")
+        a.e("    je __rt_solve_done")
+        self._arena_to(a, ar.di, DB_MODIFIED_OFF)
+        a.e(f"    cmp dword ptr [{ar.di}+{ar.ax}*4], 0")
+        a.e("    je __rt_solve_done")
+        solve_rest()
+
+        # database_assert*/2
+        for label, front in (
+            ("__rt_bi_database_assertz", 0),
+            ("__rt_bi_database_asserta", 1),
+        ):
+            a.l(label)
+            a.e("    push 0")
+            a.e(f"    {ar.push_reg32('esi')}")
+            a.e("    call __rt_struct_arg")
+            a.e(f"    {ar.cleanup(2)}")
+            a.e(f"    {ar.push_reg32('eax')}")
+            a.e("    call __rt_term_int")
+            a.e(f"    {ar.cleanup(1)}")
+            a.e("    test edx, edx")
+            a.e("    je __rt_solve_done")
+            a.e(f"    {ar.push_reg32('eax')}")  # DB-ID
+            a.e("    push 1")
+            a.e(f"    {ar.push_reg32('esi')}")
+            a.e("    call __rt_struct_arg")
+            a.e(f"    {ar.cleanup(2)}")
+            a.e("    mov edx, eax")
+            a.e(f"    pop {ar.ax}")
+            a.e(f"    push {front}")
+            a.e(f"    {ar.push_reg32('edx')}")
+            a.e(f"    {ar.push_reg32('eax')}")
+            a.e("    call __rt_database_assert_scoped")
+            a.e(f"    {ar.cleanup(3)}")
+            a.e("    test eax, eax")
+            a.e("    je __rt_solve_done")
+            solve_rest()
+
+        a.l("__rt_bi_database_retract")
+        a.e("    push 0")
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e("    call __rt_struct_arg")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_term_int")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    test edx, edx")
+        a.e("    je __rt_solve_done")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    push 1")
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e("    call __rt_struct_arg")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e("    mov edx, eax")
+        a.e(f"    pop {ar.ax}")
+        a.e(f"    {ar.push_reg32('edx')}")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_database_retract_scoped")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e("    test eax, eax")
+        a.e("    je __rt_solve_done")
+        solve_rest()
+
+        # with_database(DB, Goal): scoped current DB across the complete
+        # Goal+continuation search, including backtracking.
+        a.l("__rt_bi_with_database")
+        a.e("    push 0")
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e("    call __rt_struct_arg")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_term_int")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    test edx, edx")
+        a.e("    je __rt_solve_done")
+        a.e(f"    {ar.push_reg32('eax')}")  # requested DB
+        a.e("    test eax, eax")
+        a.e("    je __rt_bi_with_database_have_db")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_db_find_slot")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e(f"    cmp eax, {INVALID}")
+        a.e("    je __rt_bi_with_database_fail_pop")
+        a.l("__rt_bi_with_database_have_db")
+        a.e("    push 1")
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e("    call __rt_struct_arg")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e("    mov edx, dword ptr [__prolog_current_cut_barrier]")
+        a.e(f"    {ar.push_reg32('edx')}")
+        a.e(f"    {ar.push_reg32('ebx')}")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_goal_expr_to_chain")
+        a.e(f"    {ar.cleanup(3)}")
+        a.e("    mov edx, eax")  # scoped chain
+        a.e(f"    pop {ar.cx}")  # requested DB
+        a.e("    mov eax, dword ptr [__prolog_current_db]")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    mov dword ptr [__prolog_current_db], ecx")
+        a.e(f"    {ar.push_reg32('edx')}")
+        a.e("    call __rt_solve_goals")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e(f"    pop {ar.ax}")
+        a.e("    mov dword ptr [__prolog_current_db], eax")
+        a.e("    jmp __rt_solve_done")
+        a.l("__rt_bi_with_database_fail_pop")
+        a.e(f"    pop {ar.cx}")
+        a.e("    jmp __rt_solve_done")
 
         # Conjunction/disjunction are runtime control constructs.  The helper
         # converts a conjunction expression to ordinary goal links while
@@ -3040,7 +4733,13 @@ class PrologRuntimeEmitter:
             a.e(f"    {ar.cleanup(1)}")
             a.e("    test edx, edx")
             a.e("    je __rt_cmp_fail_pop")
-            a.e("    mov ebx, eax")
+            # EBX is the continuation goal-chain owned by __rt_solve_goals.
+            # Never reuse it as arithmetic scratch: solve_rest() must receive
+            # the original continuation, not the evaluated numeric term.
+            # ESI no longer needs the current comparison goal after get2(),
+            # and __rt_eval_arith preserves ESI, so keep the left numeric term
+            # there instead.
+            a.e("    mov esi, eax")
             a.e(f"    pop {ar.ax}")
             a.e(f"    {ar.push_reg32('eax')}")
             a.e("    call __rt_eval_arith")
@@ -3049,7 +4748,7 @@ class PrologRuntimeEmitter:
             a.e("    je __rt_solve_done")
             a.e("    mov ecx, eax")
             a.e(f"    {ar.push_reg32('ecx')}")  # right
-            a.e(f"    {ar.push_reg32('ebx')}")  # left
+            a.e(f"    {ar.push_reg32('esi')}")  # left; EBX remains rest chain
             a.e("    call __rt_numeric_compare")
             a.e(f"    {ar.cleanup(2)}")
             a.e("    test edx, edx")
@@ -3191,6 +4890,9 @@ class PrologRuntimeEmitter:
         a.e(f"    cmp dword ptr [{ar.di}+8], eax")
         a.e("    jne __rt_try_dynamic_next")
         a.e(f"    mov eax, dword ptr [{ar.di}+12]")
+        # Stage 51: __rt_choice_push returns its choice-slot in EAX.  Preserve
+        # the persistent clause root in DI, which choice_push itself preserves.
+        a.e(f"    mov {ar.di}, {ar.ax}")
         # preserve scan index and exact choice mark
         a.e(f"    {ar.push_reg32('ecx')}")
         a.e("    mov edx, dword ptr [__prolog_choice_top]")
@@ -3198,9 +4900,11 @@ class PrologRuntimeEmitter:
         a.e(f"    {ar.push_reg32('edx')}")
         a.e("    call __rt_choice_push")
         a.e("    mov dword ptr [__prolog_dyn_clone_var_count], 0")
-        a.e(f"    {ar.push_reg32('eax')}")
+        a.e(f"    {'push rdi' if ar.is64 else 'push edi'}")
         a.e("    call __rt_dyn_clone")
         a.e(f"    {ar.cleanup(1)}")
+        a.e(f"    cmp eax, {INVALID}")
+        a.e("    je __rt_try_dynamic_after_solve")
         a.e("    mov edx, eax")  # cloned complete clause
         # Decode dynamic rule (Head :- Body), otherwise fact Head.
         a.e("    call __rt_node_ptr")
@@ -3340,9 +5044,6 @@ class PrologRuntimeEmitter:
         self._epilogue(a, save=(ar.si, ar.di))
         a.e()
 
-        # Parser helpers use input buffer + parse_pos.
-        self._emit_parser(a)
-
         a.l("__rt_repl")
         self._prologue(a)
         a.l("__rt_repl_loop")
@@ -3391,7 +5092,42 @@ class PrologRuntimeEmitter:
         for code in (32,9,13,10):
             a.e(f"    cmp eax, {code}")
             a.e("    je __rt_parse_skip_ws_one")
-        a.e("    jmp __rt_parse_skip_ws_done")
+        # File-backed databases may contain normal PROLOG comments.
+        a.e("    cmp eax, 37")  # %
+        a.e("    je __rt_parse_skip_ws_line_comment")
+        a.e("    cmp eax, 47")  # /
+        a.e("    jne __rt_parse_skip_ws_done")
+        a.e("    mov ecx, dword ptr [__prolog_parse_pos]")
+        a.e(f"    movzx eax, byte ptr [{ar.si}+{ar.cx}+1]")
+        a.e("    cmp eax, 42")  # *
+        a.e("    jne __rt_parse_skip_ws_done")
+        a.e("    add dword ptr [__prolog_parse_pos], 2")
+        a.l("__rt_parse_skip_ws_block_comment")
+        a.e("    mov ecx, dword ptr [__prolog_parse_pos]")
+        a.e(f"    movzx eax, byte ptr [{ar.si}+{ar.cx}]")
+        a.e("    test eax, eax")
+        a.e("    je __rt_parse_skip_ws_done")
+        a.e("    cmp eax, 42")
+        a.e("    jne __rt_parse_skip_ws_block_next")
+        a.e(f"    movzx eax, byte ptr [{ar.si}+{ar.cx}+1]")
+        a.e("    cmp eax, 47")
+        a.e("    jne __rt_parse_skip_ws_block_next")
+        a.e("    add dword ptr [__prolog_parse_pos], 2")
+        a.e("    jmp __rt_parse_skip_ws_loop")
+        a.l("__rt_parse_skip_ws_block_next")
+        a.e("    inc dword ptr [__prolog_parse_pos]")
+        a.e("    jmp __rt_parse_skip_ws_block_comment")
+        a.l("__rt_parse_skip_ws_line_comment")
+        a.e("    inc dword ptr [__prolog_parse_pos]")
+        a.e("    mov ecx, dword ptr [__prolog_parse_pos]")
+        a.e(f"    movzx eax, byte ptr [{ar.si}+{ar.cx}]")
+        a.e("    test eax, eax")
+        a.e("    je __rt_parse_skip_ws_done")
+        a.e("    cmp eax, 10")
+        a.e("    je __rt_parse_skip_ws_loop")
+        a.e("    cmp eax, 13")
+        a.e("    je __rt_parse_skip_ws_loop")
+        a.e("    jmp __rt_parse_skip_ws_line_comment")
         a.l("__rt_parse_skip_ws_one")
         a.e("    inc dword ptr [__prolog_parse_pos]")
         a.e("    jmp __rt_parse_skip_ws_loop")
@@ -3441,7 +5177,24 @@ class PrologRuntimeEmitter:
         a.e("    jbe __rt_parse_token_store")
         a.l("__rt_parse_token_check_us")
         a.e("    cmp eax, 95")
-        a.e("    jne __rt_parse_token_done")
+        a.e("    je __rt_parse_token_store")
+        # Stage 58: German umlauts may arrive as Latin-1 bytes or UTF-8.
+        # Normalize the common UTF-8 C3 xx sequences to the same Latin-1 byte
+        # representation used by the static atom table.
+        a.e("    cmp eax, 128")
+        a.e("    jb __rt_parse_token_done")
+        a.e("    cmp eax, 195")
+        a.e("    jne __rt_parse_token_store")
+        a.e(f"    movzx edx, byte ptr [{ar.si}+{ar.bx}+1]")
+        for utf8_tail, latin1 in ((164,228),(182,246),(188,252),(132,196),(150,214),(156,220),(159,223)):
+            a.e(f"    cmp edx, {utf8_tail}")
+            a.e(f"    je __rt_parse_token_utf8_{latin1}")
+        a.e("    jmp __rt_parse_token_store")
+        for utf8_tail, latin1 in ((164,228),(182,246),(188,252),(132,196),(150,214),(156,220),(159,223)):
+            a.l(f"__rt_parse_token_utf8_{latin1}")
+            a.e(f"    mov eax, {latin1}")
+            a.e("    inc ebx")  # store path consumes the second byte too
+            a.e("    jmp __rt_parse_token_store")
         a.l("__rt_parse_token_store")
         a.e(f"    cmp ecx, {TOKEN_SIZE-1}")
         a.e("    jae __rt_parse_token_done")
@@ -3492,9 +5245,11 @@ class PrologRuntimeEmitter:
         # intern atom token(ptr,len) -> id
         self._emit_atom_intern(a)
         self._emit_query_var_parser(a)
+        self._emit_db_parser_var(a)
         self._emit_parse_term(a)
         self._emit_parse_goal(a)
         self._emit_parse_goal_list(a)
+        self._emit_parse_knowledge_assignment(a)
 
         # parse_query: optional ?- then goal list, handles halt./quit. by ExitProcess.
         a.l("__rt_parse_query")
@@ -3513,6 +5268,218 @@ class PrologRuntimeEmitter:
         a.e(f"    mov eax, {INVALID}")
         a.l("__rt_parse_query_done")
         self._epilogue(a, save=(ar.si,))
+        a.e()
+
+    def _emit_parse_knowledge_assignment(self, a: _A) -> None:
+        """Parse dBase2Many named knowledge assignments in external DBs.
+
+        Stage 58 adds Unicode-aware German identifiers and load-time string
+        materialization for expressions such as ``_b = _a + "text"``.  The
+        dynamic database still stores an ordinary ground
+        ``d64_knowledge_value(Name, Value)`` fact, so Database-ID ownership,
+        save/close and GC continue to use the existing code paths.
+        """
+        ar = self.arch
+
+        # current parse_pos starts at '_' -> EAX=1 for _lower / _ä/_ö/_ü/_ß.
+        a.l("__rt_is_knowledge_start")
+        self._prologue(a, save=(ar.si,))
+        self._arena_to(a, ar.si, INPUT_OFF)
+        a.e("    mov ecx, dword ptr [__prolog_parse_pos]")
+        a.e(f"    movzx eax, byte ptr [{ar.si}+{ar.cx}]")
+        a.e("    cmp eax, 95")
+        a.e("    jne __rt_is_knowledge_start_no")
+        a.e(f"    movzx eax, byte ptr [{ar.si}+{ar.cx}+1]")
+        a.e("    cmp eax, 97")
+        a.e("    jb __rt_is_knowledge_start_latin1")
+        a.e("    cmp eax, 122")
+        a.e("    jbe __rt_is_knowledge_start_yes")
+        a.l("__rt_is_knowledge_start_latin1")
+        for value in (223, 228, 246, 252):  # ß ä ö ü in Latin-1
+            a.e(f"    cmp eax, {value}")
+            a.e("    je __rt_is_knowledge_start_yes")
+        a.e("    cmp eax, 195")  # UTF-8 C3
+        a.e("    jne __rt_is_knowledge_start_no")
+        a.e(f"    movzx eax, byte ptr [{ar.si}+{ar.cx}+2]")
+        for value in (159, 164, 182, 188):  # ß ä ö ü UTF-8 tails
+            a.e(f"    cmp eax, {value}")
+            a.e("    je __rt_is_knowledge_start_yes")
+        a.e("    jmp __rt_is_knowledge_start_no")
+        a.l("__rt_is_knowledge_start_yes")
+        a.e("    mov eax, 1")
+        a.e("    jmp __rt_is_knowledge_start_done")
+        a.l("__rt_is_knowledge_start_no")
+        a.e("    xor eax, eax")
+        a.l("__rt_is_knowledge_start_done")
+        self._epilogue(a, save=(ar.si,))
+        a.e()
+
+        # Parse a string expression made from string literals and/or previously
+        # loaded named string values, joined with '+'.  Result is a transient
+        # NODE_STRING handle. On failure parse_pos is restored.
+        a.l("__rt_parse_knowledge_string_expr")
+        self._prologue(a, save=(ar.bx, ar.si, ar.di))
+        a.e("    mov esi, dword ptr [__prolog_parse_pos]")
+        a.e("    xor ebx, ebx")  # concatenated byte length
+        self._arena_to(a, ar.di, KNOWLEDGE_CONCAT_OFF)
+        a.e("    xor eax, eax")
+        a.e(f"    mov byte ptr [{ar.di}], al")
+        a.l("__rt_parse_knowledge_string_operand")
+        a.e("    call __rt_parse_skip_ws")
+        a.e("    cmp eax, 34")
+        a.e("    je __rt_parse_knowledge_string_literal")
+        a.e("    cmp eax, 95")
+        a.e("    jne __rt_parse_knowledge_string_fail")
+        a.e("    call __rt_is_knowledge_start")
+        a.e("    test eax, eax")
+        a.e("    je __rt_parse_knowledge_string_fail")
+        # Parse and normalize _name token, then intern the name without '_'.
+        a.e("    call __rt_parse_token")
+        a.e("    cmp ecx, 2")
+        a.e("    jb __rt_parse_knowledge_string_fail")
+        a.e("    dec ecx")
+        if ar.is64:
+            a.e("    inc rax")
+            a.e("    push rcx")
+            a.e("    push rax")
+        else:
+            a.e("    inc eax")
+            a.e("    push ecx")
+            a.e("    push eax")
+        a.e("    call __rt_intern_atom")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e("    push eax")
+        a.e("    call __rt_db_lookup_knowledge_string")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    test edx, edx")
+        a.e("    je __rt_parse_knowledge_string_fail")
+        a.e("    jmp __rt_parse_knowledge_string_append")
+
+        a.l("__rt_parse_knowledge_string_literal")
+        a.e("    call __rt_parse_term")
+        a.e(f"    cmp eax, {INVALID}")
+        a.e("    je __rt_parse_knowledge_string_fail")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_term_cstr")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    test edx, edx")
+        a.e("    je __rt_parse_knowledge_string_fail")
+
+        a.l("__rt_parse_knowledge_string_append")
+        a.e(f"    {ar.push_reg32('ebx')}")
+        if ar.is64:
+            a.e("    push rax")
+        else:
+            a.e("    push eax")
+        a.e("    call __rt_knowledge_concat_append")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e("    test edx, edx")
+        a.e("    je __rt_parse_knowledge_string_fail")
+        a.e("    mov ebx, eax")
+        a.e("    call __rt_parse_skip_ws")
+        a.e("    cmp eax, 43")  # '+'
+        a.e("    jne __rt_parse_knowledge_string_finish")
+        a.e("    inc dword ptr [__prolog_parse_pos]")
+        a.e("    jmp __rt_parse_knowledge_string_operand")
+
+        a.l("__rt_parse_knowledge_string_finish")
+        self._arena_to(a, ar.di, KNOWLEDGE_CONCAT_OFF)
+        if ar.is64:
+            a.e("    push rbx")
+            a.e("    push rdi")
+        else:
+            a.e("    push ebx")
+            a.e("    push edi")
+        a.e("    call __rt_intern_atom")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e("    push eax")
+        a.e("    call __rt_make_string")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    jmp __rt_parse_knowledge_string_done")
+        a.l("__rt_parse_knowledge_string_fail")
+        a.e("    mov dword ptr [__prolog_parse_pos], esi")
+        a.e(f"    mov eax, {INVALID}")
+        a.l("__rt_parse_knowledge_string_done")
+        self._epilogue(a, save=(ar.bx, ar.si, ar.di))
+        a.e()
+
+        a.l("__rt_parse_knowledge_assignment")
+        self._prologue(a, save=(ar.bx, ar.si, ar.di))
+        a.e("    mov ebx, dword ptr [__prolog_parse_pos]")  # restore point
+        a.e("    call __rt_parse_skip_ws")
+        a.e("    call __rt_is_knowledge_start")
+        a.e("    test eax, eax")
+        a.e("    je __rt_parse_knowledge_fail")
+        a.e("    call __rt_parse_token")
+        # AX points at normalized TOKEN and ECX is token length. Intern without '_'.
+        a.e("    cmp ecx, 2")
+        a.e("    jb __rt_parse_knowledge_fail")
+        a.e("    dec ecx")
+        if ar.is64:
+            a.e("    inc rax")
+            a.e("    push rcx")
+            a.e("    push rax")
+        else:
+            a.e("    inc eax")
+            a.e("    push ecx")
+            a.e("    push eax")
+        a.e("    call __rt_intern_atom")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e("    mov edi, eax")  # name atom id
+        a.e("    call __rt_parse_skip_ws")
+        a.e("    cmp eax, 61")  # '='
+        a.e("    jne __rt_parse_knowledge_fail")
+        # Exclude == and =< from assignment syntax.
+        self._arena_to(a, ar.si, INPUT_OFF)
+        a.e("    mov ecx, dword ptr [__prolog_parse_pos]")
+        a.e(f"    movzx eax, byte ptr [{ar.si}+{ar.cx}+1]")
+        a.e("    cmp eax, 61")
+        a.e("    je __rt_parse_knowledge_fail")
+        a.e("    cmp eax, 60")
+        a.e("    je __rt_parse_knowledge_fail")
+        a.e("    inc dword ptr [__prolog_parse_pos]")
+
+        # A string literal or named string reference uses the Stage-58
+        # materializer. Other RHS terms keep the Stage-56 generic parser.
+        a.e("    call __rt_parse_skip_ws")
+        a.e("    cmp eax, 34")
+        a.e("    je __rt_parse_knowledge_string_required")
+        a.e("    cmp eax, 95")
+        a.e("    jne __rt_parse_knowledge_generic_rhs")
+        a.e("    call __rt_is_knowledge_start")
+        a.e("    test eax, eax")
+        a.e("    je __rt_parse_knowledge_generic_rhs")
+        a.l("__rt_parse_knowledge_string_required")
+        a.e("    call __rt_parse_knowledge_string_expr")
+        a.e(f"    cmp eax, {INVALID}")
+        a.e("    je __rt_parse_knowledge_fail")
+        a.e("    mov esi, eax")
+        a.e("    jmp __rt_parse_knowledge_build")
+
+        a.l("__rt_parse_knowledge_generic_rhs")
+        a.e(f"    {ar.push_reg32('edi')}")  # preserve name atom id
+        a.e("    call __rt_parse_disjunction")
+        a.e(f"    pop {ar.di}")
+        a.e(f"    cmp eax, {INVALID}")
+        a.e("    je __rt_parse_knowledge_fail")
+        a.e("    mov esi, eax")  # RHS handle
+
+        a.l("__rt_parse_knowledge_build")
+        # Build the name atom node then d64_knowledge_value(Name,RHS).
+        a.e("    push edi")
+        a.e("    call __rt_make_atom")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e(f"    push {self.atom_id('d64_knowledge_value')}")
+        a.e("    call __rt_make_binary_term")
+        a.e(f"    {ar.cleanup(3)}")
+        a.e("    jmp __rt_parse_knowledge_done")
+        a.l("__rt_parse_knowledge_fail")
+        a.e("    mov dword ptr [__prolog_parse_pos], ebx")
+        a.e(f"    mov eax, {INVALID}")
+        a.l("__rt_parse_knowledge_done")
+        self._epilogue(a, save=(ar.bx, ar.si, ar.di))
         a.e()
 
     def _emit_atom_intern(self, a: _A) -> None:
@@ -3635,10 +5602,12 @@ class PrologRuntimeEmitter:
         else:
             a.e(f"    mov esi, {ar.arg(0)}")
         a.e(f"    mov ebx, {ar.arg(1)}")
-        a.e("    mov ecx, dword ptr [__prolog_query_var_count]")
         a.e("    xor edx, edx")
         a.l("__rt_query_var_scan")
-        a.e("    cmp edx, ecx")
+        # __rt_token_eq uses ECX as its character index. Compare against the
+        # live table count in memory so a failed name comparison cannot corrupt
+        # the variable-table scan bound.
+        a.e("    cmp edx, dword ptr [__prolog_query_var_count]")
         a.e("    jae __rt_query_var_new")
         a.e(f"    {ar.push_reg32('edx')}")  # preserve variable-table index
         self._arena_to(a, ar.di, QUERY_NAME_OFF)
@@ -3662,6 +5631,7 @@ class PrologRuntimeEmitter:
         a.e(f"    mov eax, dword ptr [{ar.di}+{ar.dx}*4]")
         a.e("    jmp __rt_query_var_done")
         a.l("__rt_query_var_new")
+        a.e("    mov ecx, dword ptr [__prolog_query_var_count]")
         a.e(f"    cmp ecx, {QUERY_VAR_MAX}")
         a.e("    jae __rt_query_var_fail")
         # allocate unbound var directly; preserve query variable index.
@@ -3710,6 +5680,100 @@ class PrologRuntimeEmitter:
         self._epilogue(a, save=(ar.bx, ar.si, ar.di))
         a.e()
 
+    def _emit_db_parser_var(self, a: _A) -> None:
+        ar = self.arch
+        # Separate variable table for clauses loaded from external databases.
+        # This avoids clobbering the active REPL/query variable table while
+        # database_open/.. parses facts and rules during a running query.
+        a.l("__rt_db_parser_var")
+        self._prologue(a, save=(ar.bx, ar.si, ar.di))
+        if ar.is64:
+            a.e(f"    mov rsi, {ar.arg(0,'qword')}")
+        else:
+            a.e(f"    mov esi, {ar.arg(0)}")
+        a.e(f"    mov ebx, {ar.arg(1)}")
+        a.e("    xor edx, edx")
+        a.l("__rt_db_parser_var_scan")
+        # The token comparator clobbers ECX. Reload/compare the authoritative
+        # count from memory on every scan iteration so repeated variables in
+        # externally loaded rules retain identity.
+        a.e("    cmp edx, dword ptr [__prolog_db_parser_var_count]")
+        a.e("    jae __rt_db_parser_var_new")
+        a.e(f"    {ar.push_reg32('edx')}")
+        self._arena_to(a, ar.di, PARSER_VAR_NAME_OFF)
+        if ar.is64:
+            a.e("    mov rax, qword ptr [rdi+rdx*8]")
+            a.e("    push rax")
+        else:
+            a.e("    mov eax, dword ptr [edi+edx*4]")
+            a.e("    push eax")
+        a.e(f"    {ar.push_reg32('ebx')}")
+        a.e(f"    {'push rsi' if ar.is64 else 'push esi'}")
+        a.e("    call __rt_token_eq")
+        a.e(f"    {ar.cleanup(3)}")
+        a.e(f"    pop {ar.dx}")
+        a.e("    test eax, eax")
+        a.e("    jne __rt_db_parser_var_found")
+        a.e("    inc edx")
+        a.e("    jmp __rt_db_parser_var_scan")
+        a.l("__rt_db_parser_var_found")
+        self._arena_to(a, ar.di, PARSER_VAR_NODE_OFF)
+        a.e(f"    mov eax, dword ptr [{ar.di}+{ar.dx}*4]")
+        a.e("    jmp __rt_db_parser_var_done")
+        a.l("__rt_db_parser_var_new")
+        a.e("    mov ecx, dword ptr [__prolog_db_parser_var_count]")
+        a.e(f"    cmp ecx, {QUERY_VAR_MAX}")
+        a.e("    jae __rt_db_parser_var_fail")
+        a.e(f"    {ar.push_reg32('ecx')}")
+        a.e("    call __rt_new_node")
+        a.e(f"    pop {ar.cx}")
+        a.e("    mov edx, eax")
+        a.e(f"    mov dword ptr [{ar.di}], {NODE_VAR}")
+        a.e(f"    mov dword ptr [{ar.di}+4], edx")
+        self._arena_to(a, ar.di, PARSER_VAR_NODE_OFF)
+        a.e(f"    mov dword ptr [{ar.di}+{ar.cx}*4], edx")
+        # Copy the name to the database parser's private name pool.
+        self._arena_to(a, ar.di, DB_PARSER_NAME_POOL_OFF)
+        a.e("    mov eax, dword ptr [__prolog_db_parser_name_top]")
+        a.e("    mov edx, eax")
+        a.e("    add eax, ebx")
+        a.e("    inc eax")
+        a.e(f"    cmp eax, {DB_PARSER_NAME_POOL_SIZE}")
+        a.e("    jae __rt_db_parser_var_fail")
+        a.e(f"    add {ar.di}, {ar.dx}")
+        if ar.is64:
+            a.e("    push rdi")
+        else:
+            a.e("    push edi")
+        a.e("    xor eax, eax")
+        a.l("__rt_db_parser_var_copy")
+        a.e("    cmp eax, ebx")
+        a.e("    jae __rt_db_parser_var_copy_done")
+        a.e(f"    movzx edx, byte ptr [{ar.si}+{ar.ax}]")
+        a.e(f"    mov byte ptr [{ar.di}+{ar.ax}], dl")
+        a.e("    inc eax")
+        a.e("    jmp __rt_db_parser_var_copy")
+        a.l("__rt_db_parser_var_copy_done")
+        a.e("    xor edx, edx")
+        a.e(f"    mov byte ptr [{ar.di}+{ar.ax}], dl")
+        a.e("    inc eax")
+        a.e("    add dword ptr [__prolog_db_parser_name_top], eax")
+        a.e(f"    pop {ar.si}")
+        self._arena_to(a, ar.di, PARSER_VAR_NAME_OFF)
+        if ar.is64:
+            a.e("    mov qword ptr [rdi+rcx*8], rsi")
+        else:
+            a.e("    mov dword ptr [edi+ecx*4], esi")
+        a.e("    inc dword ptr [__prolog_db_parser_var_count]")
+        self._arena_to(a, ar.di, PARSER_VAR_NODE_OFF)
+        a.e(f"    mov eax, dword ptr [{ar.di}+{ar.cx}*4]")
+        a.e("    jmp __rt_db_parser_var_done")
+        a.l("__rt_db_parser_var_fail")
+        a.e(f"    mov eax, {INVALID}")
+        a.l("__rt_db_parser_var_done")
+        self._epilogue(a, save=(ar.bx, ar.si, ar.di))
+        a.e()
+
     def _emit_parse_term(self, a: _A) -> None:
         ar = self.arch
         # parse_term -> EAX node or INVALID
@@ -3746,8 +5810,10 @@ class PrologRuntimeEmitter:
         a.e("    cmp eax, 97")
         a.e("    jb __rt_parse_term_fail")
         a.e("    cmp eax, 122")
-        a.e("    ja __rt_parse_term_fail")
-        a.e("    jmp __rt_parse_term_atom")
+        a.e("    jbe __rt_parse_term_atom")
+        a.e("    cmp eax, 128")
+        a.e("    jae __rt_parse_term_atom")
+        a.e("    jmp __rt_parse_term_fail")
 
         a.l("__rt_parse_term_paren")
         a.e("    inc dword ptr [__prolog_parse_pos]")
@@ -3778,7 +5844,13 @@ class PrologRuntimeEmitter:
         else:
             a.e("    push ecx")
             a.e("    push eax")
+        a.e("    cmp dword ptr [__prolog_parser_db_mode], 0")
+        a.e("    jne __rt_parse_term_variable_db")
         a.e("    call __rt_query_var")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e("    jmp __rt_parse_term_done")
+        a.l("__rt_parse_term_variable_db")
+        a.e("    call __rt_db_parser_var")
         a.e(f"    {ar.cleanup(2)}")
         a.e("    jmp __rt_parse_term_done")
 
@@ -4577,6 +6649,12 @@ class PrologRuntimeEmitter:
         a.e("    mov dword ptr [__prolog_stop_search], 0")
         a.e("    mov dword ptr [__prolog_requested_more], 0")
         a.e(f"    mov dword ptr [__prolog_verbose], {1 if self.verbose else 0}")
+        a.e("    mov dword ptr [__prolog_db_next_id], 1")
+        a.e("    mov dword ptr [__prolog_current_db], 0")
+        a.e("    mov dword ptr [__prolog_db_loading], 0")
+        a.e("    mov dword ptr [__prolog_parser_db_mode], 0")
+        a.e("    mov dword ptr [__prolog_emit_to_file], 0")
+        a.e("    mov dword ptr [__prolog_emit_file_error], 0")
 
         if query_specs:
             for name,_q in query_specs:
@@ -4651,6 +6729,25 @@ class PrologRuntimeEmitter:
             "__prolog_text_more_prompt":"; = weitere Lösung, ENTER = fertig: ",
             "__prolog_text_parse_error":"syntax_error.\r\n",
             "__prolog_text_repl_gui":"repl/0 ist nur im Console-Modus verfügbar.\r\n",
+            "__prolog_fmt_saved_var":"_V%d",
+            "__prolog_text_rule_sep":" :- ",
+            "__prolog_text_knowledge_sep":" = ",
+            "__prolog_text_clause_end":".\r\n",
+            "__prolog_text_op_comma":" , ",
+            "__prolog_text_op_semi":" ; ",
+            "__prolog_text_op_eq":" = ",
+            "__prolog_text_op_ne":" \\= ",
+            "__prolog_text_op_strict_eq":" == ",
+            "__prolog_text_op_is":" is ",
+            "__prolog_text_op_lt":" < ",
+            "__prolog_text_op_le":" =< ",
+            "__prolog_text_op_gt":" > ",
+            "__prolog_text_op_ge":" >= ",
+            "__prolog_text_op_plus":" + ",
+            "__prolog_text_op_minus":" - ",
+            "__prolog_text_op_mul":" * ",
+            "__prolog_text_op_div":" / ",
+            "__prolog_text_op_mod":" mod ",
         }
         for label,text in constants.items():
             for line in self._db_bytes(label,text):
@@ -4661,7 +6758,7 @@ class PrologRuntimeEmitter:
             a.e()
             a.e("section .bss")
             for name,size in (
-                ("__prolog_arena",8),("__prolog_stdout",8),("__prolog_stdin",8),("__prolog_dyn_base",8),("__prolog_dyn_alt_base",8),
+                ("__prolog_arena",8),("__prolog_stdout",8),("__prolog_stdin",8),("__prolog_dyn_base",8),("__prolog_dyn_alt_base",8),("__prolog_db_file_handle",8),("__prolog_emit_file_handle",8),
             ):
                 a.e(name+":")
                 a.e("    resq 1")
@@ -4672,13 +6769,16 @@ class PrologRuntimeEmitter:
                 "__prolog_qname_top","__prolog_written","__prolog_dyn_copy_var_count","__prolog_dyn_clone_var_count",
                 "__prolog_current_cut_barrier","__prolog_cut_active_barrier","__prolog_build_barrier",
                 "__prolog_interactive_mode","__prolog_stop_search","__prolog_requested_more","__prolog_verbose","__prolog_gc_heap_mark",
+                "__prolog_db_next_id","__prolog_current_db","__prolog_db_loading","__prolog_db_file_read","__prolog_db_file_pos","__prolog_db_heap_mark",
+                "__prolog_parser_db_mode","__prolog_db_parser_var_count","__prolog_db_parser_name_top","__prolog_save_var_count",
+                "__prolog_emit_to_file","__prolog_emit_file_error",
             ):
                 a.e(name+":")
                 a.e("    resd 1")
             a.e("__prolog_format_buffer:")
             a.e("    resb 64")
         else:
-            for name in ("__prolog_arena","__prolog_stdout","__prolog_stdin","__prolog_dyn_base","__prolog_dyn_alt_base"):
+            for name in ("__prolog_arena","__prolog_stdout","__prolog_stdin","__prolog_dyn_base","__prolog_dyn_alt_base","__prolog_db_file_handle","__prolog_emit_file_handle"):
                 a.e(name+":")
                 a.e("    dd 0")
             for name in (
@@ -4688,6 +6788,9 @@ class PrologRuntimeEmitter:
                 "__prolog_qname_top","__prolog_written","__prolog_dyn_copy_var_count","__prolog_dyn_clone_var_count",
                 "__prolog_current_cut_barrier","__prolog_cut_active_barrier","__prolog_build_barrier",
                 "__prolog_interactive_mode","__prolog_stop_search","__prolog_requested_more","__prolog_verbose","__prolog_gc_heap_mark",
+                "__prolog_db_next_id","__prolog_current_db","__prolog_db_loading","__prolog_db_file_read","__prolog_db_file_pos","__prolog_db_heap_mark",
+                "__prolog_parser_db_mode","__prolog_db_parser_var_count","__prolog_db_parser_name_top","__prolog_save_var_count",
+                "__prolog_emit_to_file","__prolog_emit_file_error",
             ):
                 a.e(name+":")
                 a.e("    dd 0")
@@ -4704,8 +6807,14 @@ class PrologRuntimeEmitter:
         else:
             a.e('import AllocConsole, "kernel32.dll", "AllocConsole"')
             a.e('import GetStdHandle, "kernel32.dll", "GetStdHandle"')
-            a.e('import WriteFile, "kernel32.dll", "WriteFile"')
-            a.e('import ReadFile, "kernel32.dll", "ReadFile"')
+        # File I/O is also used by the external PROLOG database runtime.
+        a.e('import WriteFile, "kernel32.dll", "WriteFile"')
+        a.e('import ReadFile, "kernel32.dll", "ReadFile"')
+        a.e('import CreateFileA, "kernel32.dll", "CreateFileA"')
+        a.e('import CloseHandle, "kernel32.dll", "CloseHandle"')
+        a.e('import FlushFileBuffers, "kernel32.dll", "FlushFileBuffers"')
+        a.e('import MoveFileExA, "kernel32.dll", "MoveFileExA"')
+        a.e('import DeleteFileA, "kernel32.dll", "DeleteFileA"')
         a.e('import VirtualAlloc, "kernel32.dll", "VirtualAlloc"')
         a.e('import ExitProcess, "kernel32.dll", "ExitProcess"')
         a.e('import wsprintfA, "user32.dll", "wsprintfA"')
@@ -4723,6 +6832,8 @@ class PrologRuntimeEmitter:
         self._emit_runtime_core(a)
         self._emit_dynamic_db(a)
         self._emit_io(a)
+        self._emit_parser(a)
+        self._emit_database_runtime(a)
         self._emit_solver(a)
         self._emit_repl(a)
         self._emit_clause_builders(a)

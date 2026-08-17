@@ -26,8 +26,10 @@ SLASH     : '/' ;
 FLOAT       : '-'? [0-9]+ '.' [0-9]+ ([eE] [+-]? [0-9]+)?
             | '-'? [0-9]+ [eE] [+-]? [0-9]+ ;
 NUMBER      : '-'? [0-9]+ ;
-VARIABLE    : [A-Z_] [A-Za-z0-9_]* ;
-ATOM        : [a-z] [A-Za-z0-9_]* ;
+// Stage-56 compatibility marker: KNOWLEDGE   : '_' [a-z] [A-Za-z0-9_]* ;
+KNOWLEDGE   : '_' [a-zäöüß] [A-Za-z0-9_ÄÖÜäöüß]* ;
+VARIABLE    : [A-Z_ÄÖÜ] [A-Za-z0-9_ÄÖÜäöüß]* ;
+ATOM        : [a-zäöüß] [A-Za-z0-9_ÄÖÜäöüß]* ;
 QUOTED_ATOM : '\'' ( '\'\'' | ~['\r\n] )* '\'' ;
 STRING      : '"' ( '\\' . | ~["\\\r\n] )* '"' ;
 

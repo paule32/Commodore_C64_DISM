@@ -1,0 +1,17 @@
+Stage 73 - PROLOG Knowledge Overlay Layout Alias
+================================================
+
+python -m py_compile d64_dism.py
+OK
+
+Targeted Stage 70-73 regression:
+24 tests
+24 passed
+0 failed
+
+Full regression:
+720 tests
+720 passed
+0 failed
+
+Native Windows/PyQt5 visual execution was not available in the container.

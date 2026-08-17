@@ -1,0 +1,12 @@
+Stage 61 – PROLOG Knowledge Parent Arrow
+
+Targeted knowledge GUI/model tests: 30 / 30 OK
+Full regression suite:             628 / 628 OK
+Failures:                          0
+
+Parent progression checked:
+  obst -> apfel,birne
+  obst/apfel -> essbar,gesund
+  obst/apfel/gesund -> gruen,rot
+
+Archive bytecode policy: no __pycache__ / *.pyc included.

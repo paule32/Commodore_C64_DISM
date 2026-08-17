@@ -6,6 +6,7 @@ program : statement* EOF ;
 
 statement
     : QUERY goalList DOT
+    | KNOWLEDGE EQ term DOT
     | callableTerm (RULE goalList)? DOT
     ;
 
@@ -21,7 +22,8 @@ callableTerm
     ;
 
 term
-    : VARIABLE
+    : KNOWLEDGE
+    | VARIABLE
     | NUMBER
     | FLOAT
     | STRING

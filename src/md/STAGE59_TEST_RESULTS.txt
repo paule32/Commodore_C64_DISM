@@ -1,0 +1,20 @@
+Stage 59 test results
+=====================
+
+Stage-59-specific tests:
+  Ran 6 tests
+  OK
+
+Full regression suite:
+  Ran 615 tests in 31.244s
+  OK
+
+Validated:
+- raw assembler editor uses SourceEditorWithMiniMap
+- generated ASM editor uses SourceEditorWithMiniMap
+- F2 in raw ASM routes to internal assembler/linker
+- F2 in generated ASM tab routes to visible ASM text
+- only .exe output is automatically launched by the new F2 ASM paths
+- no qmake/mingw32-make in these paths
+- internal PE32 assembler/linker emits MZ image
+- internal PE64 assembler/linker emits MZ image

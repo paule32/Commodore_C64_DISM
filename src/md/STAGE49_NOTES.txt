@@ -1,0 +1,7 @@
+Stage 49
+========
+
+Editor Mini-Map scrolls once its logical document representation exceeds
+120 pixels/lines. The mini-map scroll window and its narrow scroll indicator
+are derived from the SourceTextEdit vertical QScrollBar; no second independent
+scroll state is introduced.

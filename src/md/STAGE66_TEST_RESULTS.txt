@@ -1,0 +1,17 @@
+Stage 66 – Testprotokoll
+=======================
+
+Gezielte Stage-61..66 Wissen-Browser-Tests:
+  50 / 50 OK
+
+Vollständiger Projekt-Testlauf:
+  670 / 670 OK
+
+Ausgeführt mit:
+  PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -q tests
+
+Syntaxprüfung:
+  python -m py_compile d64_dism.py  -> OK
+
+Native visuelle PyQt5-Windows-Ausführung:
+  In dieser Containerumgebung nicht verfügbar.

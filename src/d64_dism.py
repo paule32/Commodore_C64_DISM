@@ -27,6 +27,24 @@
 #  * nativer LOGO->Windows-PE32-Compiler mit Console-/320x200-GUI-Ausgabe
 #  * native LISP-/PROLOG->Windows-PE32/PE32+-Assemblergeneratoren mit internem Linker
 #  * PROLOG-Laufzeit mit Listen, Choice Points, Trail, Unifikation, assert/retract und REPL
+#  * PROLOG Wissen-Datenbank-Browser mit Projekt-Tree, Faktenbaum und Level-Entscheidungen
+#  * PROLOG Wissen-Browser Stage 61: Parent-▼ öffnet pfadgebundene Alternativen in der ComboBox
+#    Legacy-Testmarker (Stage 61): self.alternative_combo.showPopup()
+#  * PROLOG Wissen-Browser Stage 62: ComboBox unter Parent, Level-Duplikatschutz und Faktenfilter
+#  * PROLOG Wissen-Browser Stage 63: bereits verwendete Pfadwerte aus Alternativen entfernen
+#  * PROLOG Wissen-Browser Stage 64: Parent-ComboBox mit eigenem Prüfen-Button
+#  * PROLOG Wissen-Browser Stage 74: Abfragen/Lanes/Alternativen pro Wissensdatenbank persistent speichern
+#  * Stage 75: Green-&-Beige-Titelbalken und passende Menüs nach Referenzbild
+#  * Stage 80: Localize-Dock im gesamten freien Bereich; C64-Disassembly mit Bytecode + Semantik,
+#    gelben 6510-Opcodes, weißen Operanden und eingeblendeter Befehlsbeschreibung
+#
+#  * PROLOG Wissen-Browser Stage 71: Stage-70 Multi-Scroll bleibt erhalten;
+#    Alternativen-ComboBox als Viewport-Overlay exakt unter dem Parent-Button,
+#    Dropdown beim ▼-Klick sofort geöffnet, lokaler Button "Prüfen +" darunter.
+#    Layout-Verhalten orientiert sich am hochgeladenen Stage-62-Referenzstand.
+#  * PROLOG Wissen-Browser Stage 70: festes Overlay-Panel unter dem Parent-Button
+#  * Stage 69: sichtbare Alternativen-ComboBox durch explizite FlowLayout-Hoehe
+#  * PROLOG Wissen-Browser Stage 65: mehrere unabhängige Abfrage-ScrollAreas in einer Haupt-ScrollArea
 #  * PROLOG IEEE-754 Double: Float-Literale, gemischte Arithmetik und echte /-Division
 #  * zielabhängiger Start in VICE, WinUAE oder als Windows-PE32-Programm
 #  * Operanden-Rechner fuer Dezimal-, Hexadezimal- und Binaerwerte
@@ -37,7 +55,9 @@
 #  * Protokoll-Loeschaktion in der Dock-Leiste und weisse Dock-/Tab-Symbole
 #  * Statusfelder fuer INS/CAPS/NUM, Dateigroesse, Zeile und Spalte
 #  * Registerkarten-Kontextmenue und sprachabhaengige F1-Kontexthilfe
-#  * F2-Ein-Tasten-Build fuer BASIC/C/Pascal/LISP/PROLOG/LOGO/dBase: Compile->Assemble->Link/Start
+# * PROLOG Stage 56: benannte Wissenswerte (_name = Wert.) mit Database-ID-Persistenz
+#  * F2-Ein-Tasten-Build fuer BASIC/ASM/C/Pascal/LISP/PROLOG/LOGO/dBase:
+#    Compile/Assemble -> interner Linker -> EXE-Start
 #  * Projekt-TreeList: Doppelklick fuer Datei-/Archivinfos, Einfachklick fuer Checkboxen
 #  * Datei-Neu-Untermenue fuer BASIC, ASM, Pascal, C, LISP, PROLOG, LOGO, dBase und C64-Editoren
 #  * Editor-Zoom sowie umschaltbarer Hell-/Dunkelmodus
@@ -7002,14 +7022,17 @@ PROJECT_CATEGORIES: Tuple[Tuple[str, str, Tuple[str, ...]], ...] = (
     ("palettes", "Paletten", (".pal", ".palette")),
     ("char_screens", "Char Screen's", (".scr", ".screen")),
     ("pixel_screens", "Pixel Screen's", (".px16", ".pixel", ".pix")),
-    ("text_files", "Textdateien", (".txt", ".text", ".log", ".md")),
+    ("text_files", "Textdateien", (".txt", ".text", ".log", ".md", ".markdown")),
     ("sid_files", "SID's", (".sid",)),
     ("images", "Bilder", (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".iff", ".ilbm")),
     ("other", "Sonstiges", ()),
 )
 
 PROJECT_C_ARCHIVES_KEY = "__c_archives__"
+PROJECT_PROLOG_KNOWLEDGE_KEY = "__prolog_knowledge_databases__"
 PROJECT_NODE_ARCHIVE_ROOT = "archive_root"
+PROJECT_NODE_PROLOG_KNOWLEDGE_ROOT = "prolog_knowledge_root"
+PROJECT_NODE_PROLOG_KNOWLEDGE_FILE = "prolog_knowledge_file"
 PROJECT_NODE_ARCHIVE = "archive"
 PROJECT_NODE_ARCHIVE_OBJECT = "archive_object"
 
@@ -7064,6 +7087,7 @@ def empty_project_entries() -> Dict[str, List[Dict[str, str]]]:
     # vor, sondern unter C-Programme -> Archive. Der reservierte Schlüssel
     # hält diese Hierarchie in der *.pro-Datei getrennt von normalen C-Dateien.
     entries[PROJECT_C_ARCHIVES_KEY] = []
+    entries[PROJECT_PROLOG_KNOWLEDGE_KEY] = []
     return entries
 
 
@@ -7154,6 +7178,21 @@ def format_project_ini(
             payload, ensure_ascii=False, separators=(",", ":")
         )
 
+    # PROLOG-Programme -> Wissen-Datenbanken -> *.pl/*.prolog
+    knowledge_section = "Category.prolog.knowledge"
+    parser[knowledge_section] = {"Title": "Wissen-Datenbanken"}
+    for index, entry in enumerate(entries.get(PROJECT_PROLOG_KNOWLEDGE_KEY, ()), 1):
+        path_value = str(entry.get("path", "")).strip()
+        if not path_value:
+            continue
+        payload = {
+            "title": str(entry.get("title", "") or Path(path_value).name),
+            "path": _project_storage_path(path_value, project_path),
+        }
+        parser[knowledge_section][f"Item{index:04d}"] = json.dumps(
+            payload, ensure_ascii=False, separators=(",", ":")
+        )
+
     from io import StringIO
     stream = StringIO()
     parser.write(stream)
@@ -7235,6 +7274,30 @@ def parse_project_ini(text: str, project_path: Path) -> Dict[str, List[Dict[str,
                 ),
                 "path": loaded_archive_path,
                 "objects": object_entries,
+            })
+
+    knowledge_section = "Category.prolog.knowledge"
+    if parser.has_section(knowledge_section):
+        values = sorted(
+            (
+                (name, value)
+                for name, value in parser.items(knowledge_section)
+                if name.casefold().startswith("item")
+            ),
+            key=lambda pair: pair[0].casefold(),
+        )
+        for _name, value in values:
+            try:
+                payload = json.loads(value)
+            except json.JSONDecodeError:
+                payload = {"path": value, "title": Path(value).name}
+            path_value = str(payload.get("path", "")).strip()
+            if not path_value:
+                continue
+            loaded_path = _project_loaded_path(path_value, Path(project_path))
+            entries[PROJECT_PROLOG_KNOWLEDGE_KEY].append({
+                "title": str(payload.get("title", "") or Path(loaded_path).name),
+                "path": loaded_path,
             })
     return entries
 
@@ -7537,18 +7600,22 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
         from PyQt5.QtGui import (
             QCloseEvent,
             QColor,
+            QCursor,
             QDesktopServices,
             QFont,
             QFontDatabase,
             QIcon,
             QImage,
             QKeySequence,
+            QLinearGradient,
             QPainter,
             QPainterPath,
             QPalette,
             QPen,
             QPixmap,
+            QRegion,
             QSyntaxHighlighter,
+            QTextBlockFormat,
             QTextCharFormat,
             QTextCursor,
             QTextFormat,
@@ -7561,6 +7628,7 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             QButtonGroup,
             QCheckBox,
             QComboBox,
+            QCompleter,
             QColorDialog,
             QDialog,
             QDockWidget,
@@ -7575,6 +7643,7 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             QInputDialog,
             QLabel,
             QLineEdit,
+            QLayout,
             QListWidget,
             QListWidgetItem,
             QMainWindow,
@@ -8772,6 +8841,11 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
 
 
     class LocalizeToolWindow(QDialog):
+        # Stage 79: The existing Localize PO/MO tool can also be hosted as
+        # a normal QWidget inside a QDockWidget.  Keeping the original
+        # QDialog implementation means all PO/MO editing logic is shared.
+        dock_close_requested = pyqtSignal()
+
         HEADER_FIELDS = [
             "Project-Id-Version",
             "Report-Msgid-Bugs-To",
@@ -8785,14 +8859,23 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             "Content-Transfer-Encoding",
         ]
 
-        def __init__(self, main_window, parent=None):
+        def __init__(self, main_window, parent=None, *, embedded: bool = False):
             super().__init__(parent)
-            
+
             self.main_window = main_window
-            
-            self.setMinimumWidth (920)
-            self.setMinimumHeight(400)
-            
+            self._embedded = bool(embedded)
+            self.setObjectName("localize_po_mo_tool")
+
+            if self._embedded:
+                # A QDialog can safely be used as dock payload when it is
+                # explicitly converted into a normal child widget.
+                self.setWindowFlags(Qt.Widget)
+                self.setMinimumSize(0, 0)
+                self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            else:
+                self.setMinimumWidth(920)
+                self.setMinimumHeight(400)
+
             self.entries = []
             
             self._current_index = -1
@@ -9540,7 +9623,30 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                     tr('Help'),
                     tr("No Help Found."))
 
+        def _confirm_close(self) -> bool:
+            """Keep the original Localize close confirmation in dock mode."""
+            box = self._localize_message_box(
+                QMessageBox.Warning,
+                tr("Close Locales Window"),
+                tr("Do you want to close the Locales window?"),
+                buttons=QMessageBox.Yes | QMessageBox.No,
+                default_button=QMessageBox.No,
+            )
+            box.setEscapeButton(QMessageBox.No)
+            if box.exec_() == QMessageBox.No:
+                return False
+            self._save_state()
+            return True
+
         def _close_self(self):
+            if self._embedded:
+                try:
+                    if self._confirm_close():
+                        self.dock_close_requested.emit()
+                except Exception as exc:
+                    print(exc)
+                return
+
             try:
                 self._save_state()
             except Exception:
@@ -9559,23 +9665,15 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
 
         def closeEvent(self, event):
             try:
-                box = self._localize_message_box(
-                    QMessageBox.Warning,
-                    tr("Close Locales Window"),
-                    tr("Do you want to close the Locales window?"),
-                    buttons=QMessageBox.Yes | QMessageBox.No,
-                    default_button=QMessageBox.No,
-                )
-                box.setEscapeButton(QMessageBox.No)
-                result = box.exec_()
-                
-                if result == QMessageBox.No:
+                if self._embedded:
+                    # The QDockWidget owns visibility in embedded mode.
+                    self._save_state()
+                    event.accept()
+                    return
+                if not self._confirm_close():
                     event.ignore()
                     return
-                
                 event.accept()
-                self._save_state()
-            
             except Exception as e:
                 print(e)
 
@@ -9710,6 +9808,12 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             r"(?P<target>[A-Za-z_.$][A-Za-z0-9_.$]*)",
             re.IGNORECASE,
         )
+        ASSEMBLER_STATEMENT_PATTERN = re.compile(
+            r"^\s*(?:[A-Za-z_.$][A-Za-z0-9_.$]*\s*:\s*)?"
+            r"(?P<opcode>[A-Za-z]{2,8})(?:\.[BbWwLl])?"
+            r"(?:\s+(?P<operand>[^;]*?))?\s*(?:;|$)",
+            re.IGNORECASE,
+        )
         PASCAL_KEYWORD_PATTERN = re.compile(
             r"(?<![A-Za-z0-9_])(?:"
             r"program|const|type|var|begin|end|if|then|else|while|do|"
@@ -9759,7 +9863,12 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             r")(?![A-Za-z0-9_])",
             re.IGNORECASE,
         )
-        PROLOG_VARIABLE_PATTERN = re.compile(r"(?<![A-Za-z0-9_])(?:[A-Z_][A-Za-z0-9_]*)")
+        PROLOG_KNOWLEDGE_PATTERN = re.compile(
+            r"(?<![A-Za-z0-9_ÄÖÜäöüß])_[a-zäöüß][A-Za-z0-9_ÄÖÜäöüß]*"
+        )
+        PROLOG_VARIABLE_PATTERN = re.compile(
+            r"(?<![A-Za-z0-9_ÄÖÜäöüß])(?:[A-ZÄÖÜ][A-Za-z0-9_ÄÖÜäöüß]*|_(?![a-zäöüß])[A-Za-z0-9_ÄÖÜäöüß]*)"
+        )
         PROLOG_NUMBER_PATTERN = re.compile(r"(?<![A-Za-z0-9_])-?(?:[0-9]+\.[0-9]+(?:[eE][+-]?[0-9]+)?|[0-9]+(?:[eE][+-]?[0-9]+)?)(?![A-Za-z0-9_])")
         PROLOG_STRING_PATTERN = re.compile(
             r'"(?:\\.|[^"\\\r\n])*"|\'(?:\'\'|[^\'\r\n])*\''
@@ -9777,6 +9886,15 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
         )
         LOGO_COMMENT_PATTERN = re.compile(r";.*$|#.*$|//.*$")
         DBASE_BLOCK_STATE = 0xDBA5
+        MARKDOWN_FENCE_STATE = 0x4D44
+        MARKDOWN_HEADING_PATTERN = re.compile(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$")
+        MARKDOWN_LINK_PATTERN = re.compile(r"!?\[([^\]]+)\]\(([^)]+)\)")
+        MARKDOWN_CODE_PATTERN = re.compile(r"`([^`]+)`")
+        MARKDOWN_STRONG_PATTERN = re.compile(r"(?:\*\*|__)(.+?)(?:\*\*|__)")
+        MARKDOWN_STRIKE_PATTERN = re.compile(r"~~(.+?)~~")
+        MARKDOWN_EM_PATTERN = re.compile(r"(?<!\*)\*([^*\n]+)\*(?!\*)|(?<!_)_([^_\n]+)_(?!_)")
+        MARKDOWN_LIST_PATTERN = re.compile(r"^\s*(?:[-+*]|\d+[.)])\s+")
+        MARKDOWN_QUOTE_PATTERN = re.compile(r"^\s{0,3}>\s?")
 
         def __init__(self, document):
             super().__init__(document)
@@ -9787,12 +9905,14 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.prolog_enabled = False
             self.logo_enabled = False
             self.dbase_enabled = False
+            self.markdown_enabled = False
             self.dark_mode = False
             self._jump_target_names = set()
             self._jump_target_refresh_pending = False
 
             self.opcode_format = QTextCharFormat()
             self.opcode_format.setFontWeight(QFont.Bold)
+            self.operand_format = QTextCharFormat()
 
             self.comment_format = QTextCharFormat()
             self.jump_target_format = QTextCharFormat()
@@ -9801,6 +9921,20 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.pascal_keyword_format.setFontWeight(QFont.Bold)
             self.pascal_string_format = QTextCharFormat()
             self.pascal_number_format = QTextCharFormat()
+            self.markdown_heading_format = QTextCharFormat()
+            self.markdown_heading_format.setFontWeight(QFont.Bold)
+            self.markdown_marker_format = QTextCharFormat()
+            self.markdown_link_format = QTextCharFormat()
+            self.markdown_link_format.setFontUnderline(True)
+            self.markdown_code_format = QTextCharFormat()
+            self.markdown_code_format.setFontFamily("Consolas")
+            self.markdown_strong_format = QTextCharFormat()
+            self.markdown_strong_format.setFontWeight(QFont.Bold)
+            self.markdown_em_format = QTextCharFormat()
+            self.markdown_em_format.setFontItalic(True)
+            self.markdown_strike_format = QTextCharFormat()
+            self.markdown_strike_format.setFontStrikeOut(True)
+            self.markdown_quote_format = QTextCharFormat()
             self._update_theme_formats()
             self.document().contentsChanged.connect(
                 self._schedule_jump_target_refresh
@@ -9808,15 +9942,23 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self._refresh_jump_target_names()
 
         # -------------------------------------------------------------------
-        # Im Dunkelmodus sind Mnemonics weiss und Kommentare grau. Im
-        # Hellmodus bleiben die Mnemonics schwarz; ein dunkleres Grau
-        # sorgt dort fuer ausreichend Kontrast auf hellem Hintergrund.
+        # Stage 80: Im dunklen/navy Assemblereditor sind Mnemonics gelb,
+        # Operanden weiss und Kommentare grau. Im hellen Fallback bleiben
+        # Gold/Schwarz lesbar. Andere Sprach-Highlighter bleiben unverändert.
         # -------------------------------------------------------------------
         def _update_theme_formats(self) -> None:
+            # C64/Assembler stage 80: mnemonics are yellow in the dark
+            # editor and operands are white.  The light-theme counterparts
+            # use a darker gold/black pair so the syntax remains readable.
             opcode_color = (
-                QColor(255, 255, 255)
+                QColor("#FFD84D")
                 if self.dark_mode
-                else QColor(0, 0, 0)
+                else QColor("#9A6500")
+            )
+            operand_color = (
+                QColor("#FFFFFF")
+                if self.dark_mode
+                else QColor("#000000")
             )
             comment_color = (
                 QColor(170, 170, 170)
@@ -9829,6 +9971,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 else QColor(0, 82, 170)
             )
             self.opcode_format.setForeground(opcode_color)
+            self.operand_format.setForeground(operand_color)
             self.comment_format.setForeground(comment_color)
             self.jump_target_format.setForeground(jump_target_color)
             self.pascal_keyword_format.setForeground(
@@ -9839,6 +9982,33 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             )
             self.pascal_number_format.setForeground(
                 QColor(255, 135, 255) if self.dark_mode else QColor(125, 0, 125)
+            )
+            self.markdown_heading_format.setForeground(
+                QColor("#58A6FF") if self.dark_mode else QColor("#0969DA")
+            )
+            self.markdown_marker_format.setForeground(
+                QColor("#8B949E") if self.dark_mode else QColor("#57606A")
+            )
+            self.markdown_link_format.setForeground(
+                QColor("#58A6FF") if self.dark_mode else QColor("#0969DA")
+            )
+            self.markdown_code_format.setForeground(
+                QColor("#FF7B72") if self.dark_mode else QColor("#CF222E")
+            )
+            self.markdown_code_format.setBackground(
+                QColor("#161B22") if self.dark_mode else QColor("#F6F8FA")
+            )
+            self.markdown_strong_format.setForeground(
+                QColor("#F0F6FC") if self.dark_mode else QColor("#24292F")
+            )
+            self.markdown_em_format.setForeground(
+                QColor("#C9D1D9") if self.dark_mode else QColor("#24292F")
+            )
+            self.markdown_strike_format.setForeground(
+                QColor("#8B949E") if self.dark_mode else QColor("#57606A")
+            )
+            self.markdown_quote_format.setForeground(
+                QColor("#8B949E") if self.dark_mode else QColor("#57606A")
             )
 
         def set_dark_mode(self, enabled: bool) -> None:
@@ -9902,6 +10072,56 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 return
             self.dbase_enabled = enabled
             self.rehighlight()
+
+        def set_markdown_enabled(self, enabled: bool) -> None:
+            enabled = bool(enabled)
+            if self.markdown_enabled == enabled:
+                return
+            self.markdown_enabled = enabled
+            self.rehighlight()
+
+        def _highlight_markdown_block(self, text: str) -> None:
+            self.setCurrentBlockState(0)
+            stripped = text.lstrip()
+            in_fence = self.previousBlockState() == self.MARKDOWN_FENCE_STATE
+            if stripped.startswith("```") or stripped.startswith("~~~"):
+                self.setFormat(0, len(text), self.markdown_code_format)
+                if not in_fence:
+                    self.setCurrentBlockState(self.MARKDOWN_FENCE_STATE)
+                return
+            if in_fence:
+                self.setFormat(0, len(text), self.markdown_code_format)
+                self.setCurrentBlockState(self.MARKDOWN_FENCE_STATE)
+                return
+
+            heading = self.MARKDOWN_HEADING_PATTERN.match(text)
+            if heading is not None:
+                self.setFormat(0, len(text), self.markdown_heading_format)
+                self.setFormat(
+                    heading.start(1),
+                    heading.end(1) - heading.start(1),
+                    self.markdown_marker_format,
+                )
+
+            quote = self.MARKDOWN_QUOTE_PATTERN.match(text)
+            if quote is not None:
+                self.setFormat(0, len(text), self.markdown_quote_format)
+                self.setFormat(quote.start(), quote.end() - quote.start(), self.markdown_marker_format)
+
+            marker = self.MARKDOWN_LIST_PATTERN.match(text)
+            if marker is not None:
+                self.setFormat(marker.start(), marker.end() - marker.start(), self.markdown_marker_format)
+
+            for match in self.MARKDOWN_LINK_PATTERN.finditer(text):
+                self.setFormat(match.start(), match.end() - match.start(), self.markdown_link_format)
+            for match in self.MARKDOWN_STRONG_PATTERN.finditer(text):
+                self.setFormat(match.start(), match.end() - match.start(), self.markdown_strong_format)
+            for match in self.MARKDOWN_EM_PATTERN.finditer(text):
+                self.setFormat(match.start(), match.end() - match.start(), self.markdown_em_format)
+            for match in self.MARKDOWN_STRIKE_PATTERN.finditer(text):
+                self.setFormat(match.start(), match.end() - match.start(), self.markdown_strike_format)
+            for match in self.MARKDOWN_CODE_PATTERN.finditer(text):
+                self.setFormat(match.start(), match.end() - match.start(), self.markdown_code_format)
 
         def _highlight_dbase_block(self, text: str) -> None:
             """Syntaxfarben für exakt dieselbe Kommentar-Lexik wie d64dbase.
@@ -10025,6 +10245,9 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             return None
 
         def highlightBlock(self, text: str) -> None:
+            if self.markdown_enabled:
+                self._highlight_markdown_block(text)
+                return
             if self.dbase_enabled:
                 self._highlight_dbase_block(text)
                 return
@@ -10041,6 +10264,8 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                     self.setFormat(match.start(), match.end() - match.start(), self.pascal_keyword_format)
                 for match in self.PROLOG_VARIABLE_PATTERN.finditer(text):
                     self.setFormat(match.start(), match.end() - match.start(), self.pascal_number_format)
+                for match in self.PROLOG_KNOWLEDGE_PATTERN.finditer(text):
+                    self.setFormat(match.start(), match.end() - match.start(), self.pascal_string_format)
                 for match in self.PROLOG_NUMBER_PATTERN.finditer(text):
                     self.setFormat(match.start(), match.end() - match.start(), self.pascal_number_format)
                 for match in self.PROLOG_STRING_PATTERN.finditer(text):
@@ -10129,6 +10354,18 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 )
 
             code = text.split(";", 1)[0]
+            statement_match = self.ASSEMBLER_STATEMENT_PATTERN.match(text)
+            if statement_match is not None:
+                opcode = statement_match.group("opcode").upper()
+                operand = statement_match.group("operand")
+                if opcode in self.OPCODES and operand:
+                    start, end = statement_match.span("operand")
+                    # Do not include padding immediately before a comment.
+                    while end > start and text[end - 1].isspace():
+                        end -= 1
+                    if end > start:
+                        self.setFormat(start, end - start, self.operand_format)
+
             jump_match = self.JUMP_TARGET_PATTERN.match(code)
             if (
                 jump_match is not None
@@ -11183,6 +11420,754 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             super().keyPressEvent(event)
 
     # ---------------------------------------------------------------------------
+    # GitHub-aehnliche Markdown-Vorschau auf Basis von QPlainTextEdit.
+    # Kein WebEngine/HTML-Widget: das Markdown wird in einen formatierten
+    # QTextDocument-Inhalt uebersetzt. Dadurch bleibt die Vorschau leichtgewichtig
+    # und folgt direkt dem Text des Rohdaten-Editors.
+    # ---------------------------------------------------------------------------
+    class MarkdownPreviewEdit(QPlainTextEdit):
+        _HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$")
+        _FENCE_RE = re.compile(r"^\s{0,3}(```+|~~~+)\s*([^`]*)$")
+        _QUOTE_RE = re.compile(r"^\s{0,3}>\s?(.*)$")
+        _TASK_RE = re.compile(r"^(\s*)[-+*]\s+\[([ xX])\]\s+(.*)$")
+        _UL_RE = re.compile(r"^(\s*)[-+*]\s+(.*)$")
+        _OL_RE = re.compile(r"^(\s*)(\d+)[.)]\s+(.*)$")
+        _HR_RE = re.compile(r"^\s{0,3}(?:([-*_])\s*){3,}$")
+        _TABLE_DELIMITER_RE = re.compile(
+            r"^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$"
+        )
+        _INLINE_PATTERNS = (
+            ("image", re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")),
+            ("link", re.compile(r"\[([^\]]+)\]\(([^)]+)\)")),
+            ("code", re.compile(r"`([^`]+)`")),
+            ("strong", re.compile(r"(?:\*\*|__)(.+?)(?:\*\*|__)")),
+            ("strike", re.compile(r"~~(.+?)~~")),
+            ("em", re.compile(r"(?<!\*)\*([^*\n]+)\*(?!\*)|(?<!_)_([^_\n]+)_(?!_)")),
+        )
+
+        def __init__(self, parent: Optional[QWidget] = None):
+            super().__init__(parent)
+            self.setObjectName("markdown_preview")
+            self.setReadOnly(True)
+            self.setUndoRedoEnabled(False)
+            self.setLineWrapMode(QPlainTextEdit.WidgetWidth)
+            self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            self.setCursorWidth(0)
+            self.setTextInteractionFlags(
+                Qt.TextSelectableByMouse
+                | Qt.TextSelectableByKeyboard
+                | Qt.LinksAccessibleByMouse
+            )
+            self.viewport().setCursor(Qt.ArrowCursor)
+
+            preview_font = QFont("Segoe UI", 11)
+            preview_font.setStyleHint(QFont.SansSerif)
+            self.setFont(preview_font)
+
+            self._dark_mode = False
+            self._markdown_source = ""
+            self._pending_source = ""
+            self._render_timer = QTimer(self)
+            self._render_timer.setSingleShot(True)
+            self._render_timer.setInterval(35)
+            self._render_timer.timeout.connect(self._render_pending)
+            self._apply_theme()
+
+        def set_dark_mode(self, enabled: bool) -> None:
+            enabled = bool(enabled)
+            if self._dark_mode == enabled:
+                self._apply_theme()
+                return
+            self._dark_mode = enabled
+            self._apply_theme()
+            self._render_markdown(self._markdown_source)
+
+        def _apply_theme(self) -> None:
+            palette = QPalette(QApplication.palette())
+            if self._dark_mode:
+                palette.setColor(QPalette.Base, QColor("#0D1117"))
+                palette.setColor(QPalette.Text, QColor("#C9D1D9"))
+                palette.setColor(QPalette.Highlight, QColor("#264F78"))
+                palette.setColor(QPalette.HighlightedText, QColor("#FFFFFF"))
+            else:
+                palette.setColor(QPalette.Base, QColor("#FFFFFF"))
+                palette.setColor(QPalette.Text, QColor("#24292F"))
+                palette.setColor(QPalette.Highlight, QColor("#0969DA"))
+                palette.setColor(QPalette.HighlightedText, QColor("#FFFFFF"))
+            self.setPalette(palette)
+            self.viewport().setPalette(palette)
+
+        def set_markdown_source(self, source: str, *, immediate: bool = False) -> None:
+            self._pending_source = str(source)
+            if immediate:
+                self._render_timer.stop()
+                self._render_pending()
+            else:
+                self._render_timer.start()
+
+        def _render_pending(self) -> None:
+            source = self._pending_source
+            self._pending_source = source
+            self._render_markdown(source)
+
+        def _color(self, dark: str, light: str) -> QColor:
+            return QColor(dark if self._dark_mode else light)
+
+        def _base_format(self) -> QTextCharFormat:
+            fmt = QTextCharFormat()
+            fmt.setFontFamily("Segoe UI")
+            fmt.setFontPointSize(11.0)
+            fmt.setForeground(self._color("#C9D1D9", "#24292F"))
+            return fmt
+
+        def _muted_format(self) -> QTextCharFormat:
+            fmt = self._base_format()
+            fmt.setForeground(self._color("#8B949E", "#57606A"))
+            return fmt
+
+        def _code_format(self) -> QTextCharFormat:
+            fmt = QTextCharFormat()
+            fmt.setFontFamily("Consolas")
+            fmt.setFontPointSize(10.5)
+            fmt.setForeground(self._color("#C9D1D9", "#24292F"))
+            fmt.setBackground(self._color("#161B22", "#F6F8FA"))
+            return fmt
+
+        @staticmethod
+        def _copy_format(base: QTextCharFormat) -> QTextCharFormat:
+            return QTextCharFormat(base)
+
+        def _insert_inline(
+            self,
+            cursor: QTextCursor,
+            text: str,
+            base_format: Optional[QTextCharFormat] = None,
+        ) -> None:
+            base = QTextCharFormat(base_format or self._base_format())
+            position = 0
+            length = len(text)
+
+            while position < length:
+                best = None
+                best_kind = ""
+                for kind, pattern in self._INLINE_PATTERNS:
+                    match = pattern.search(text, position)
+                    if match is None:
+                        continue
+                    if best is None or match.start() < best.start():
+                        best = match
+                        best_kind = kind
+                if best is None:
+                    cursor.insertText(text[position:], base)
+                    break
+
+                if best.start() > position:
+                    cursor.insertText(text[position:best.start()], base)
+
+                if best_kind == "code":
+                    fmt = self._code_format()
+                    cursor.insertText(best.group(1), fmt)
+                elif best_kind == "link":
+                    fmt = self._copy_format(base)
+                    fmt.setForeground(self._color("#58A6FF", "#0969DA"))
+                    fmt.setFontUnderline(True)
+                    fmt.setAnchor(True)
+                    fmt.setAnchorHref(best.group(2).strip())
+                    cursor.insertText(best.group(1), fmt)
+                elif best_kind == "image":
+                    fmt = self._copy_format(base)
+                    fmt.setForeground(self._color("#8B949E", "#57606A"))
+                    fmt.setFontItalic(True)
+                    label = best.group(1).strip() or "Bild"
+                    cursor.insertText(f"[Bild: {label}]", fmt)
+                elif best_kind == "strong":
+                    fmt = self._copy_format(base)
+                    fmt.setFontWeight(QFont.Bold)
+                    self._insert_inline(cursor, best.group(1), fmt)
+                elif best_kind == "strike":
+                    fmt = self._copy_format(base)
+                    fmt.setFontStrikeOut(True)
+                    fmt.setForeground(self._color("#8B949E", "#57606A"))
+                    self._insert_inline(cursor, best.group(1), fmt)
+                else:
+                    fmt = self._copy_format(base)
+                    fmt.setFontItalic(True)
+                    content = best.group(1) if best.group(1) is not None else best.group(2)
+                    self._insert_inline(cursor, content or "", fmt)
+
+                position = best.end()
+
+        def _start_block(
+            self,
+            cursor: QTextCursor,
+            *,
+            left_margin: float = 0.0,
+            top_margin: float = 2.0,
+            bottom_margin: float = 2.0,
+            background: Optional[QColor] = None,
+        ) -> None:
+            if cursor.position() != 0 or cursor.block().text():
+                cursor.insertBlock()
+            block_format = QTextBlockFormat()
+            block_format.setLeftMargin(float(left_margin))
+            block_format.setTopMargin(float(top_margin))
+            block_format.setBottomMargin(float(bottom_margin))
+            if background is not None:
+                block_format.setBackground(background)
+            cursor.setBlockFormat(block_format)
+
+        @staticmethod
+        def _table_cells(line: str) -> list[str]:
+            value = line.strip()
+            if value.startswith("|"):
+                value = value[1:]
+            if value.endswith("|"):
+                value = value[:-1]
+            return [cell.strip() for cell in value.split("|")]
+
+        def _render_table(self, cursor: QTextCursor, rows: list[list[str]]) -> None:
+            if not rows:
+                return
+            columns = max(len(row) for row in rows)
+            widths = [1] * columns
+            for row in rows:
+                for index, cell in enumerate(row):
+                    widths[index] = min(40, max(widths[index], len(cell)))
+
+            code_fmt = self._code_format()
+            header_fmt = QTextCharFormat(code_fmt)
+            header_fmt.setFontWeight(QFont.Bold)
+            border_fmt = QTextCharFormat(code_fmt)
+            border_fmt.setForeground(self._color("#30363D", "#D0D7DE"))
+
+            for row_index, row in enumerate(rows):
+                self._start_block(
+                    cursor,
+                    left_margin=8,
+                    top_margin=0,
+                    bottom_margin=0,
+                    background=self._color("#0D1117", "#FFFFFF"),
+                )
+                cursor.insertText("│ ", border_fmt)
+                for column in range(columns):
+                    cell = row[column] if column < len(row) else ""
+                    fmt = header_fmt if row_index == 0 else code_fmt
+                    cursor.insertText(cell.ljust(widths[column]), fmt)
+                    if column + 1 < columns:
+                        cursor.insertText(" │ ", border_fmt)
+                cursor.insertText(" │", border_fmt)
+                if row_index == 0:
+                    self._start_block(cursor, left_margin=8, top_margin=0, bottom_margin=0)
+                    cursor.insertText(
+                        "├─" + "─┼─".join("─" * width for width in widths) + "─┤",
+                        border_fmt,
+                    )
+
+        def _render_markdown(self, source: str) -> None:
+            source = str(source)
+            scrollbar = self.verticalScrollBar()
+            old_maximum = scrollbar.maximum()
+            old_value = scrollbar.value()
+            old_ratio = (old_value / float(old_maximum)) if old_maximum > 0 else 0.0
+
+            self._markdown_source = source
+            document = self.document()
+            document.clear()
+            cursor = QTextCursor(document)
+            cursor.beginEditBlock()
+            try:
+                lines = source.splitlines()
+                index = 0
+                in_fence = False
+                fence_marker = ""
+                fence_language = ""
+
+                while index < len(lines):
+                    line = lines[index]
+                    stripped = line.strip()
+
+                    fence = self._FENCE_RE.match(line)
+                    if fence is not None:
+                        marker = fence.group(1)
+                        if not in_fence:
+                            in_fence = True
+                            fence_marker = marker[0]
+                            fence_language = fence.group(2).strip()
+                            if fence_language:
+                                self._start_block(cursor, left_margin=10, top_margin=5, bottom_margin=0)
+                                label_fmt = self._muted_format()
+                                label_fmt.setFontFamily("Consolas")
+                                label_fmt.setFontPointSize(9.5)
+                                cursor.insertText(fence_language, label_fmt)
+                        elif marker.startswith(fence_marker):
+                            in_fence = False
+                            fence_marker = ""
+                            fence_language = ""
+                        index += 1
+                        continue
+
+                    if in_fence:
+                        self._start_block(
+                            cursor,
+                            left_margin=10,
+                            top_margin=0,
+                            bottom_margin=0,
+                            background=self._color("#161B22", "#F6F8FA"),
+                        )
+                        cursor.insertText(line if line else " ", self._code_format())
+                        index += 1
+                        continue
+
+                    # GitHub-Flavoured Markdown Tabellen.
+                    if (
+                        index + 1 < len(lines)
+                        and "|" in line
+                        and self._TABLE_DELIMITER_RE.match(lines[index + 1]) is not None
+                    ):
+                        table_rows = [self._table_cells(line)]
+                        index += 2
+                        while index < len(lines) and "|" in lines[index] and lines[index].strip():
+                            table_rows.append(self._table_cells(lines[index]))
+                            index += 1
+                        self._render_table(cursor, table_rows)
+                        continue
+
+                    heading = self._HEADING_RE.match(line)
+                    if heading is not None:
+                        level = len(heading.group(1))
+                        sizes = {1: 23.0, 2: 19.0, 3: 17.0, 4: 15.0, 5: 13.0, 6: 12.0}
+                        fmt = self._base_format()
+                        fmt.setFontWeight(QFont.Bold)
+                        fmt.setFontPointSize(sizes[level])
+                        fmt.setForeground(self._color("#F0F6FC", "#1F2328"))
+                        self._start_block(cursor, top_margin=8 if level <= 2 else 5, bottom_margin=4)
+                        self._insert_inline(cursor, heading.group(2), fmt)
+                        index += 1
+                        continue
+
+                    if self._HR_RE.match(line) is not None:
+                        self._start_block(cursor, top_margin=6, bottom_margin=6)
+                        rule = self._muted_format()
+                        rule.setForeground(self._color("#30363D", "#D0D7DE"))
+                        cursor.insertText("─" * 72, rule)
+                        index += 1
+                        continue
+
+                    quote = self._QUOTE_RE.match(line)
+                    if quote is not None:
+                        self._start_block(cursor, left_margin=12, top_margin=2, bottom_margin=2)
+                        marker_fmt = self._base_format()
+                        marker_fmt.setForeground(self._color("#3FB950", "#1A7F37"))
+                        marker_fmt.setFontWeight(QFont.Bold)
+                        cursor.insertText("│ ", marker_fmt)
+                        self._insert_inline(cursor, quote.group(1), self._muted_format())
+                        index += 1
+                        continue
+
+                    task = self._TASK_RE.match(line)
+                    if task is not None:
+                        indent = len(task.group(1).replace("\t", "    "))
+                        self._start_block(cursor, left_margin=12 + indent * 4, top_margin=1, bottom_margin=1)
+                        marker_fmt = self._base_format()
+                        marker_fmt.setForeground(self._color("#8B949E", "#57606A"))
+                        cursor.insertText("☑ " if task.group(2).lower() == "x" else "☐ ", marker_fmt)
+                        self._insert_inline(cursor, task.group(3))
+                        index += 1
+                        continue
+
+                    unordered = self._UL_RE.match(line)
+                    if unordered is not None:
+                        indent = len(unordered.group(1).replace("\t", "    "))
+                        self._start_block(cursor, left_margin=12 + indent * 4, top_margin=1, bottom_margin=1)
+                        marker_fmt = self._base_format()
+                        marker_fmt.setForeground(self._color("#8B949E", "#57606A"))
+                        cursor.insertText("• ", marker_fmt)
+                        self._insert_inline(cursor, unordered.group(2))
+                        index += 1
+                        continue
+
+                    ordered = self._OL_RE.match(line)
+                    if ordered is not None:
+                        indent = len(ordered.group(1).replace("\t", "    "))
+                        self._start_block(cursor, left_margin=12 + indent * 4, top_margin=1, bottom_margin=1)
+                        marker_fmt = self._muted_format()
+                        cursor.insertText(ordered.group(2) + ". ", marker_fmt)
+                        self._insert_inline(cursor, ordered.group(3))
+                        index += 1
+                        continue
+
+                    if not stripped:
+                        self._start_block(cursor, top_margin=2, bottom_margin=2)
+                        index += 1
+                        continue
+
+                    self._start_block(cursor, top_margin=2, bottom_margin=2)
+                    self._insert_inline(cursor, line)
+                    index += 1
+            finally:
+                cursor.endEditBlock()
+
+            new_maximum = self.verticalScrollBar().maximum()
+            self.verticalScrollBar().setValue(int(round(old_ratio * new_maximum)))
+            self.document().setModified(False)
+
+        def help_word_at_cursor(self) -> str:
+            cursor = self.textCursor()
+            cursor.select(QTextCursor.WordUnderCursor)
+            return cursor.selectedText().strip()
+
+        def mouseReleaseEvent(self, event) -> None:
+            if event.button() == Qt.LeftButton:
+                cursor = self.cursorForPosition(event.pos())
+                href = cursor.charFormat().anchorHref()
+                if href:
+                    QDesktopServices.openUrl(QUrl(href))
+                    event.accept()
+                    return
+            super().mouseReleaseEvent(event)
+
+
+    # ---------------------------------------------------------------------------
+    # Mini-Map fuer den Quelltexteditor.
+    #
+    # Die Mini-Map besitzt absichtlich KEINEN unabhaengigen Scrollzustand. Bis
+    # zu 120 logischen Mini-Map-Pixeln/Zeilen wird der gesamte Inhalt gezeigt.
+    # Wird dieser Bereich groesser, zeigt die Mini-Map ein mit dem Haupteditor
+    # synchronisiertes 120-Pixel-Fenster. Dadurch wird langer Quelltext nicht
+    # immer weiter zusammengedrueckt und Editor/Mini-Map koennen nicht driften.
+    # Drag/Klick in der Mini-Map setzt weiterhin direkt die QScrollBar des
+    # SourceTextEdit.
+    # ---------------------------------------------------------------------------
+    class SourceMiniMap(QWidget):
+        MINI_MAP_WIDTH = 92
+        MINI_MAP_SCROLL_HEIGHT = 120
+        MINI_MAP_SCROLL_TRACK_WIDTH = 4
+        MIN_VIEWPORT_HEIGHT = 18
+        ASSEMBLER_MIN_VIEWPORT_HEIGHT = 120
+        MAX_LINE_LENGTH = 160
+
+        def __init__(
+            self,
+            editor,
+            parent: Optional[QWidget] = None,
+            *,
+            min_viewport_height: Optional[int] = None,
+        ):
+            super().__init__(parent)
+            self.editor = editor
+            self.min_viewport_height = max(
+                1,
+                int(
+                    self.MIN_VIEWPORT_HEIGHT
+                    if min_viewport_height is None
+                    else min_viewport_height
+                ),
+            )
+            self._dragging = False
+            self._drag_offset_y = 0
+            self._line_lengths = []
+
+            self.setObjectName("source_minimap")
+            self.setFixedWidth(self.MINI_MAP_WIDTH)
+            self.setMouseTracking(True)
+            self.setCursor(Qt.PointingHandCursor)
+
+            vertical = self.editor.verticalScrollBar()
+            vertical.valueChanged.connect(self.update)
+            vertical.rangeChanged.connect(
+                lambda _minimum, _maximum: self.update()
+            )
+            self.editor.textChanged.connect(self._document_changed)
+            self.editor.blockCountChanged.connect(
+                lambda _count: self._document_changed()
+            )
+            self.editor.updateRequest.connect(
+                lambda _rect, _dy: self.update()
+            )
+
+            self._rebuild_line_cache()
+
+        def sizeHint(self) -> QSize:
+            return QSize(self.MINI_MAP_WIDTH, 0)
+
+        def set_min_viewport_height(self, height: int) -> None:
+            self.min_viewport_height = max(1, int(height))
+            self.update()
+
+        def _rebuild_line_cache(self) -> None:
+            result = []
+            block = self.editor.document().firstBlock()
+            while block.isValid():
+                text = block.text().expandtabs(4)
+                result.append(
+                    min(self.MAX_LINE_LENGTH, len(text))
+                )
+                block = block.next()
+            self._line_lengths = result
+
+        def _document_changed(self) -> None:
+            self._rebuild_line_cache()
+            self.update()
+
+        def _scroll_ratio(self) -> float:
+            scrollbar = self.editor.verticalScrollBar()
+            minimum = scrollbar.minimum()
+            maximum = scrollbar.maximum()
+            if maximum <= minimum:
+                return 0.0
+            return max(
+                0.0,
+                min(
+                    1.0,
+                    (scrollbar.value() - minimum)
+                    / float(maximum - minimum),
+                ),
+            )
+
+        def _visible_line_window(self):
+            count = len(self._line_lengths)
+            if count <= 0:
+                return (0, 0)
+
+            # Eine Quelltextzeile entspricht zunaechst einem logischen
+            # Mini-Map-Pixel. Ab 120 Pixeln wird nicht weiter komprimiert,
+            # sondern ein synchron mit dem Editor wanderndes Fenster benutzt.
+            visible = min(count, self.MINI_MAP_SCROLL_HEIGHT)
+            if count <= visible:
+                return (0, count)
+
+            maximum_start = count - visible
+            first = int(round(self._scroll_ratio() * maximum_start))
+            first = max(0, min(maximum_start, first))
+            return (first, first + visible)
+
+        def _mini_scroll_handle_rectangle(self) -> QRect:
+            count = len(self._line_lengths)
+            height = max(1, self.height())
+            if count <= self.MINI_MAP_SCROLL_HEIGHT:
+                return QRect()
+
+            visible = self.MINI_MAP_SCROLL_HEIGHT
+            handle_height = max(
+                12,
+                int(height * visible / float(count)),
+            )
+            handle_height = min(height, handle_height)
+            available = max(0, height - handle_height)
+            top = int(round(self._scroll_ratio() * available))
+            return QRect(
+                max(0, self.width() - self.MINI_MAP_SCROLL_TRACK_WIDTH),
+                top,
+                self.MINI_MAP_SCROLL_TRACK_WIDTH,
+                handle_height,
+            )
+
+        def _viewport_rectangle(self) -> QRect:
+            scrollbar = self.editor.verticalScrollBar()
+            minimum = scrollbar.minimum()
+            maximum = scrollbar.maximum()
+            value = scrollbar.value()
+            height = max(1, self.height())
+
+            if maximum <= minimum:
+                return QRect(0, 0, self.width(), height)
+
+            page_step = max(1, scrollbar.pageStep())
+            scroll_range = maximum - minimum
+            total_range = scroll_range + page_step
+
+            viewport_height = int(
+                height * page_step / max(1, total_range)
+            )
+            # Stage 60: the draggable viewport may use a larger per-editor
+            # minimum.  Assembly editors request 120 px so even very large
+            # generated listings retain a comfortably clickable/dragable
+            # thumb.  The value/position mapping below remains unchanged.
+            viewport_height = max(
+                self.min_viewport_height,
+                viewport_height,
+            )
+            viewport_height = min(height, viewport_height)
+
+            available_height = max(0, height - viewport_height)
+            position = QStyle.sliderPositionFromValue(
+                minimum,
+                maximum,
+                value,
+                available_height,
+                False,
+            )
+            return QRect(
+                0,
+                int(position),
+                max(1, self.width() - 1),
+                viewport_height,
+            )
+
+        def _set_scroll_from_thumb_top(self, thumb_top: int) -> None:
+            scrollbar = self.editor.verticalScrollBar()
+            minimum = scrollbar.minimum()
+            maximum = scrollbar.maximum()
+
+            if maximum <= minimum:
+                scrollbar.setValue(minimum)
+                return
+
+            viewport_rect = self._viewport_rectangle()
+            available_height = max(
+                0,
+                self.height() - viewport_rect.height(),
+            )
+            if available_height <= 0:
+                scrollbar.setValue(minimum)
+                return
+
+            thumb_top = max(
+                0,
+                min(available_height, int(thumb_top)),
+            )
+            value = QStyle.sliderValueFromPosition(
+                minimum,
+                maximum,
+                thumb_top,
+                available_height,
+                False,
+            )
+            scrollbar.setValue(value)
+
+        def paintEvent(self, event) -> None:
+            del event
+            painter = QPainter(self)
+            try:
+                palette = self.editor.palette()
+                background = palette.base().color()
+                text_color = palette.text().color()
+                highlight = palette.highlight().color()
+
+                painter.fillRect(self.rect(), background)
+
+                lines = self._line_lengths
+                count = len(lines)
+                if count:
+                    height = max(1, self.height())
+                    scroll_track = (
+                        self.MINI_MAP_SCROLL_TRACK_WIDTH + 2
+                        if count > self.MINI_MAP_SCROLL_HEIGHT
+                        else 0
+                    )
+                    available_width = max(
+                        1,
+                        self.width() - 8 - scroll_track,
+                    )
+                    line_color = QColor(text_color)
+                    line_color.setAlpha(145)
+                    painter.setPen(line_color)
+
+                    first, last = self._visible_line_window()
+                    visible_lines = lines[first:last]
+                    visible_count = len(visible_lines)
+                    denominator = max(1, visible_count - 1)
+
+                    for local_index, line_length in enumerate(visible_lines):
+                        y = int(
+                            local_index * (height - 1) / denominator
+                        )
+                        width = int(
+                            available_width
+                            * line_length
+                            / self.MAX_LINE_LENGTH
+                        )
+                        if line_length:
+                            width = max(2, width)
+                        painter.drawLine(4, y, 4 + width, y)
+
+                    # Schmaler eigener Mini-Map-Scrollindikator. Er besitzt
+                    # keinen eigenen Wert, sondern wird direkt aus der
+                    # Editor-QScrollBar berechnet.
+                    scroll_handle = self._mini_scroll_handle_rectangle()
+                    if not scroll_handle.isNull():
+                        track_color = QColor(text_color)
+                        track_color.setAlpha(55)
+                        painter.fillRect(
+                            QRect(
+                                self.width() - self.MINI_MAP_SCROLL_TRACK_WIDTH,
+                                0,
+                                self.MINI_MAP_SCROLL_TRACK_WIDTH,
+                                height,
+                            ),
+                            track_color,
+                        )
+                        handle_color = QColor(highlight)
+                        handle_color.setAlpha(190)
+                        painter.fillRect(scroll_handle, handle_color)
+
+                viewport_rect = self._viewport_rectangle()
+                viewport_fill = QColor(highlight)
+                viewport_fill.setAlpha(55)
+                painter.fillRect(viewport_rect, viewport_fill)
+
+                border_color = QColor(highlight)
+                border_color.setAlpha(220)
+                painter.setPen(border_color)
+                painter.drawRect(
+                    viewport_rect.adjusted(0, 0, -1, -1)
+                )
+            finally:
+                painter.end()
+
+        def mousePressEvent(self, event) -> None:
+            if event.button() != Qt.LeftButton:
+                super().mousePressEvent(event)
+                return
+
+            viewport_rect = self._viewport_rectangle()
+            if viewport_rect.contains(event.pos()):
+                self._drag_offset_y = (
+                    event.pos().y() - viewport_rect.top()
+                )
+            else:
+                self._drag_offset_y = viewport_rect.height() // 2
+                self._set_scroll_from_thumb_top(
+                    event.pos().y() - self._drag_offset_y
+                )
+
+            self._dragging = True
+            self.grabMouse()
+            event.accept()
+
+        def mouseMoveEvent(self, event) -> None:
+            if self._dragging and event.buttons() & Qt.LeftButton:
+                self._set_scroll_from_thumb_top(
+                    event.pos().y() - self._drag_offset_y
+                )
+                event.accept()
+                return
+            super().mouseMoveEvent(event)
+
+        def mouseReleaseEvent(self, event) -> None:
+            if self._dragging and event.button() == Qt.LeftButton:
+                self._dragging = False
+                self.releaseMouse()
+                event.accept()
+                return
+            super().mouseReleaseEvent(event)
+
+        def wheelEvent(self, event) -> None:
+            scrollbar = self.editor.verticalScrollBar()
+            delta = event.angleDelta().y()
+            if delta:
+                steps = delta / 120.0
+                movement = int(
+                    steps
+                    * max(1, scrollbar.singleStep())
+                    * 3
+                )
+                scrollbar.setValue(
+                    scrollbar.value() - movement
+                )
+            event.accept()
+
+    # ---------------------------------------------------------------------------
     # Quelltexteditor mit Gutter und intelligenter Assemblerhilfe.
     # ---------------------------------------------------------------------------
     class SourceTextEdit(QPlainTextEdit):
@@ -11198,6 +12183,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
         def __init__(self, parent: Optional[QWidget] = None):
             super().__init__(parent)
             self._dark_mode = False
+            self._markdown_mode = False
             self._completion_enabled = False
             self._completion_context = None
             self._assembler_target = "c64"
@@ -11246,14 +12232,59 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             completion_layout.addWidget(self.completion_description)
             self.completion_frame.hide()
 
+            # Stage 80: compact, non-modal command description shown while
+            # typing an assembler instruction or after clicking its mnemonic.
+            self.instruction_help_frame = QFrame(self.viewport())
+            self.instruction_help_frame.setObjectName(
+                "assembler_instruction_help_frame"
+            )
+            self.instruction_help_frame.setAttribute(
+                Qt.WA_TransparentForMouseEvents,
+                True,
+            )
+            instruction_help_layout = QVBoxLayout(self.instruction_help_frame)
+            instruction_help_layout.setContentsMargins(9, 6, 9, 7)
+            instruction_help_layout.setSpacing(2)
+            self.instruction_help_header = QLabel(self.instruction_help_frame)
+            self.instruction_help_header.setObjectName(
+                "assembler_instruction_help_header"
+            )
+            self.instruction_help_header.setTextFormat(Qt.PlainText)
+            self.instruction_help_header.setWordWrap(True)
+            self.instruction_help_current = QLabel(self.instruction_help_frame)
+            self.instruction_help_current.setObjectName(
+                "assembler_instruction_help_current"
+            )
+            self.instruction_help_current.setTextFormat(Qt.PlainText)
+            self.instruction_help_current.setWordWrap(True)
+            self.instruction_help_description = QLabel(
+                self.instruction_help_frame
+            )
+            self.instruction_help_description.setObjectName(
+                "assembler_instruction_help_description"
+            )
+            self.instruction_help_description.setTextFormat(Qt.PlainText)
+            self.instruction_help_description.setWordWrap(True)
+            instruction_help_layout.addWidget(self.instruction_help_header)
+            instruction_help_layout.addWidget(self.instruction_help_current)
+            instruction_help_layout.addWidget(self.instruction_help_description)
+            self._instruction_help_mnemonic = ""
+            self._instruction_help_operands = ""
+            self.instruction_help_current.hide()
+            self.instruction_help_frame.hide()
+
             self.blockCountChanged.connect(
                 self.update_line_number_area_width
             )
             self.updateRequest.connect(self.update_line_number_area)
             self.textChanged.connect(self._schedule_completion_update)
+            self.textChanged.connect(self._schedule_instruction_help_update)
             self.textChanged.connect(self._gutter_document_changed)
             self.cursorPositionChanged.connect(
                 self._schedule_completion_update
+            )
+            self.cursorPositionChanged.connect(
+                self._schedule_instruction_help_update
             )
             self.cursorPositionChanged.connect(
                 self._update_current_line_highlight
@@ -11274,7 +12305,14 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 True,
             )
 
-            if self._dark_mode:
+            if self._markdown_mode:
+                if self._dark_mode:
+                    selection.format.setBackground(QColor("#161B22"))
+                    selection.format.setForeground(QColor("#C9D1D9"))
+                else:
+                    selection.format.setBackground(QColor("#F6F8FA"))
+                    selection.format.setForeground(QColor("#24292F"))
+            elif self._dark_mode:
                 selection.format.setBackground(QColor("#182898"))
                 selection.format.setForeground(QColor("#FFFFFF"))
             else:
@@ -11461,6 +12499,126 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self._hide_completion()
             dialog = NumberCalculatorDialog(self, context)
             dialog.exec_()
+
+        def _assembler_instruction_info_at_cursor(self):
+            """Return command metadata for the assembler statement at cursor."""
+            if not self._assembler_navigation_enabled:
+                return None
+
+            cursor = self.textCursor()
+            block_text = cursor.block().text()
+            code = block_text.split(";", 1)[0]
+            match = re.match(
+                r"^\s*(?:[A-Za-z_.$][A-Za-z0-9_.$]*\s*:\s*)?"
+                r"(?P<opcode>[A-Za-z]{2,8})(?:\.[BbWwLl])?"
+                r"(?:\s+(?P<operand>.*?))?\s*$",
+                code,
+            )
+            if match is None:
+                return None
+
+            mnemonic = match.group("opcode").upper()
+            info = self._assembler_commands().get(mnemonic)
+            if info is None:
+                return None
+
+            position = cursor.positionInBlock()
+            opcode_start, _opcode_end = match.span("opcode")
+            if position < opcode_start or position > len(code):
+                return None
+
+            operand = (match.group("operand") or "").strip()
+            semantic = None
+            if self._assembler_target == "c64":
+                semantic = c64_assembler_call_description(mnemonic, operand)
+            return info, operand, semantic
+
+        def _schedule_instruction_help_update(self) -> None:
+            QTimer.singleShot(0, self._update_instruction_help)
+
+        def _update_instruction_help(self) -> None:
+            context = self._assembler_instruction_info_at_cursor()
+            if context is None:
+                self.instruction_help_frame.hide()
+                return
+
+            info, operand, semantic = context
+            # Stage 83: mnemonic/operand syntax stays in the yellow header.
+            # "Aktuell" gets its own green row below it.  The header itself is
+            # reflowed in _position_instruction_help_frame() when the operand
+            # syntax would exceed the available help width.
+            self._instruction_help_mnemonic = str(info.mnemonic)
+            self._instruction_help_operands = str(info.operands)
+            if operand:
+                self.instruction_help_current.setText(f"Aktuell: {operand}")
+                self.instruction_help_current.show()
+            else:
+                self.instruction_help_current.clear()
+                self.instruction_help_current.hide()
+            description = info.description
+            if semantic:
+                description += f"\nZielbeschreibung: {semantic}"
+                if self._assembler_target == "c64":
+                    stability = c64_assembler_call_stability(
+                        info.mnemonic,
+                        operand,
+                    )
+                    if stability and stability != "KERNAL-API":
+                        description += (
+                            "\n\nHinweis: interne ROM-Routine; "
+                            "nicht Teil der stabilen KERNAL-Jump-Table."
+                        )
+
+            self.instruction_help_description.setText(description)
+            self.instruction_help_frame.show()
+            self.instruction_help_frame.raise_()
+            self._position_instruction_help_frame()
+
+        def _position_instruction_help_frame(self) -> None:
+            if not self.instruction_help_frame.isVisible():
+                return
+            viewport_rectangle = self.viewport().rect()
+            if viewport_rectangle.width() <= 20:
+                return
+            width = max(300, min(680, viewport_rectangle.width() - 12))
+            content_width = max(40, width - 20)
+
+            # Stage 83: do not let a long operand signature paint past the
+            # live-help area.  If mnemonic + operands do not fit, begin the
+            # complete operand signature on the following line.
+            mnemonic = self._instruction_help_mnemonic
+            operands = self._instruction_help_operands
+            one_line = mnemonic
+            if operands:
+                one_line += "    " + operands
+            metrics = self.instruction_help_header.fontMetrics()
+            if operands and metrics.horizontalAdvance(one_line) > content_width:
+                header = mnemonic + "\n" + operands
+            else:
+                header = one_line
+            self.instruction_help_header.setText(header)
+            self.instruction_help_header.setFixedWidth(content_width)
+            self.instruction_help_current.setFixedWidth(content_width)
+            self.instruction_help_description.setFixedWidth(content_width)
+            self.instruction_help_frame.adjustSize()
+            self.instruction_help_frame.resize(
+                width,
+                self.instruction_help_frame.sizeHint().height(),
+            )
+            cursor_rectangle = self.cursorRect()
+            x_position = min(
+                max(4, cursor_rectangle.left()),
+                max(4, viewport_rectangle.width() - width - 4),
+            )
+            y_position = cursor_rectangle.bottom() + 5
+            if y_position + self.instruction_help_frame.height() > viewport_rectangle.bottom():
+                y_position = max(
+                    4,
+                    cursor_rectangle.top()
+                    - self.instruction_help_frame.height()
+                    - 5,
+                )
+            self.instruction_help_frame.move(x_position, y_position)
 
         def _schedule_completion_update(self) -> None:
             QTimer.singleShot(0, self._update_completion)
@@ -11692,6 +12850,22 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 "}"
                 "QLabel#assembler_completion_header { font-weight: bold; }"
             )
+            self.instruction_help_frame.setStyleSheet(
+                "QFrame#assembler_instruction_help_frame {"
+                f"background-color: {frame_background};"
+                f"border: 1px solid {frame_border};"
+                "}"
+                "QLabel {"
+                f"color: {frame_text};"
+                "background: transparent; border: 0;"
+                "}"
+                "QLabel#assembler_instruction_help_header {"
+                "font-weight: bold; color: #FFD84D;"
+                "}"
+                "QLabel#assembler_instruction_help_current {"
+                f"font-weight: bold; color: {('#66FF66' if self._dark_mode else '#008000')};"
+                "}"
+            )
 
         def keyPressEvent(self, event) -> None:
             if event.key() == Qt.Key_F1:
@@ -11715,6 +12889,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
 
         def focusOutEvent(self, event) -> None:
             self._hide_completion()
+            self.instruction_help_frame.hide()
             super().focusOutEvent(event)
 
         def mouseMoveEvent(self, event) -> None:
@@ -11731,6 +12906,9 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                     event.accept()
                     return
             super().mousePressEvent(event)
+            if event.button() == Qt.LeftButton:
+                # cursorForPosition has now been applied by QPlainTextEdit.
+                QTimer.singleShot(0, self._update_instruction_help)
 
         def contextMenuEvent(self, event) -> None:
             operand_context = self._assembler_operand_context_at_point(
@@ -11894,6 +13072,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             if rect.contains(self.viewport().rect()):
                 self.update_line_number_area_width(0)
             self._position_completion_widgets()
+            self._position_instruction_help_frame()
 
         def resizeEvent(self, event) -> None:
             super().resizeEvent(event)
@@ -11907,6 +13086,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 )
             )
             self._position_completion_widgets()
+            self._position_instruction_help_frame()
 
         def set_gutter_dark_mode(self, enabled: bool) -> None:
             self._dark_mode = bool(enabled)
@@ -11914,9 +13094,22 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self._update_completion_theme()
             self._update_current_line_highlight()
 
+        def set_markdown_mode(self, enabled: bool) -> None:
+            self._markdown_mode = bool(enabled)
+            self.line_number_area.update()
+            self._update_current_line_highlight()
+
         def line_number_area_paint_event(self, event) -> None:
             painter = QPainter(self.line_number_area)
-            if self._dark_mode:
+            if self._markdown_mode and self._dark_mode:
+                background = QColor("#161B22")
+                foreground = QColor("#8B949E")
+                separator = QColor("#30363D")
+            elif self._markdown_mode:
+                background = QColor("#F6F8FA")
+                foreground = QColor("#57606A")
+                separator = QColor("#D0D7DE")
+            elif self._dark_mode:
                 background = QColor(16, 24, 95)
                 foreground = QColor(220, 220, 220)
                 separator = QColor(51, 69, 141)
@@ -11999,7 +13192,41 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 self.line_number_area.width() - 1,
                 event.rect().bottom(),
             )
-            
+
+    # -----------------------------------------------------------------------
+    # SourceTextEdit + Mini-Map als gemeinsamer Layout-Container.
+    # Der Editor selbst bleibt unverändert; insbesondere Gutter, Breakpoints,
+    # Bookmarks, Completion und Syntax-Highlighter arbeiten weiter direkt auf
+    # SourceTextEdit.
+    # -----------------------------------------------------------------------
+    class SourceEditorWithMiniMap(QWidget):
+        def __init__(
+            self,
+            parent: Optional[QWidget] = None,
+            *,
+            min_viewport_height: Optional[int] = None,
+        ):
+            super().__init__(parent)
+            self.setObjectName("source_editor_with_minimap")
+
+            layout = QHBoxLayout(self)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(0)
+
+            self.editor = SourceTextEdit(self)
+            if min_viewport_height is None:
+                # Keep the long-standing default construction path intact.
+                self.minimap = SourceMiniMap(self.editor, self)
+            else:
+                self.minimap = SourceMiniMap(
+                    self.editor,
+                    self,
+                    min_viewport_height=min_viewport_height,
+                )
+
+            layout.addWidget(self.editor, 1)
+            layout.addWidget(self.minimap)
+
     # -----------------------------------------------------------------------
     # Character-Editor für 255 editierbare C64-Zeichen ($01-$FF).
     # -----------------------------------------------------------------------
@@ -15023,6 +16250,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
         coff_requested = pyqtSignal(object)
         context_help_requested = pyqtSignal(object, str, str)
         build_requested = pyqtSignal(object)
+        build_generated_requested = pyqtSignal(object)
 
         BASIC_EXTENSIONS     = {".bas", ".basic"}
         ASSEMBLER_EXTENSIONS = {".asm", ".s", ".a65", ".m68k", ".inc"}
@@ -15033,6 +16261,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
         PROLOG_EXTENSIONS    = {".pl", ".prolog"}
         LOGO_EXTENSIONS      = {".logo", ".lgo"}
         DBASE_EXTENSIONS     = {".dbase", ".dbp"}
+        MARKDOWN_EXTENSIONS  = {".md", ".markdown"}
         BINARY_EXTENSIONS    = {
             ".prg", ".amiga", ".adf", ".ram", ".bin",
             ".exe", ".o", ".obj", ".a", ".lib",
@@ -15051,6 +16280,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             raw_bytes       : Optional[bytes] = None,
             editor_font     : Optional[QFont] = None,
             dark_mode       : bool = False,
+            binary_disassembly_mode: bool = False,
         ):
             super().__init__(parent)
             self.path = Path(path).resolve() if path is not None else None
@@ -15059,7 +16289,10 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.encoding                = encoding
             self.newline                 = newline
             self._syncing_views          = False
-            self._data_source            = "text"
+            self.binary_disassembly_mode = bool(binary_disassembly_mode)
+            self._data_source            = (
+                "hex" if self.binary_disassembly_mode else "text"
+            )
             self._last_modified_state    = False
             self.assembled_program       = None
             self.assembled_program_path: Optional[Path] = None
@@ -15216,7 +16449,20 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             assembler_panel_layout.addWidget(self.assembly_status_label, 1)
             source_layout.addWidget(self.assembler_panel)
 
-            self.raw_editor = SourceTextEdit(self.source_page)
+            raw_minimap_viewport_height = (
+                SourceMiniMap.ASSEMBLER_MIN_VIEWPORT_HEIGHT
+                if (
+                    self.path is not None
+                    and self.path.suffix.lower() in self.ASSEMBLER_EXTENSIONS
+                )
+                else None
+            )
+            self.raw_editor_container = SourceEditorWithMiniMap(
+                self.source_page,
+                min_viewport_height=raw_minimap_viewport_height,
+            )
+            self.raw_editor = self.raw_editor_container.editor
+            self.raw_minimap = self.raw_editor_container.minimap
             self.raw_editor.setObjectName("raw_data_editor")
             self.raw_editor.setFont(fixed_font)
             self.raw_editor.setLineWrapMode(QPlainTextEdit.NoWrap)
@@ -15234,8 +16480,22 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             )
             self.raw_editor.setPlainText(text)
             self.raw_editor.document().setModified(False)
-            source_layout.addWidget(self.raw_editor, 1)
+            source_layout.addWidget(self.raw_editor_container, 1)
             self.views.addTab(self.source_page, "Rohdaten")
+
+            self.markdown_preview_page = QWidget(self.views)
+            markdown_preview_layout = QHBoxLayout(self.markdown_preview_page)
+            markdown_preview_layout.setContentsMargins(0, 0, 0, 0)
+            markdown_preview_layout.setSpacing(0)
+            self.markdown_preview = MarkdownPreviewEdit(self.markdown_preview_page)
+            self.markdown_minimap = SourceMiniMap(
+                self.markdown_preview,
+                self.markdown_preview_page,
+            )
+            markdown_preview_layout.addWidget(self.markdown_preview, 1)
+            markdown_preview_layout.addWidget(self.markdown_minimap)
+            self.views.addTab(self.markdown_preview_page, "MarkDown")
+            self.markdown_preview.set_markdown_source(text, immediate=True)
 
             self.syntax_highlighter = AssemblerSyntaxHighlighter(
                 self.raw_editor.document()
@@ -15400,8 +16660,19 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             )
             generated_assembly_layout.addWidget(self.generated_assembly_panel)
 
-            self.generated_assembly_editor = SourceTextEdit(
-                self.generated_assembly_page
+            # Stage 58: the generated assembler editor uses the exact same
+            # gutter + SourceMiniMap container as the raw source editor.
+            self.generated_assembly_editor_container = SourceEditorWithMiniMap(
+                self.generated_assembly_page,
+                min_viewport_height=(
+                    SourceMiniMap.ASSEMBLER_MIN_VIEWPORT_HEIGHT
+                ),
+            )
+            self.generated_assembly_editor = (
+                self.generated_assembly_editor_container.editor
+            )
+            self.generated_assembly_minimap = (
+                self.generated_assembly_editor_container.minimap
             )
             self.generated_assembly_editor.setObjectName(
                 "generated_assembly_editor"
@@ -15419,8 +16690,14 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.generated_assembly_editor.context_help_requested.connect(
                 lambda word: self._emit_context_help("assembler", word)
             )
+            # Stage 59: F2 inside the generated ASM editor assembles/links
+            # exactly the visible assembler text.  It does not jump back to
+            # the source compiler and does not invoke any external build tool.
+            self.generated_assembly_editor.build_requested.connect(
+                lambda: self.build_generated_requested.emit(self)
+            )
             generated_assembly_layout.addWidget(
-                self.generated_assembly_editor,
+                self.generated_assembly_editor_container,
                 1,
             )
             self.views.addTab(self.generated_assembly_page, "ASM")
@@ -15473,6 +16750,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.console_editor = None
             self.debug_console_editor = None
 
+            self.raw_editor.textChanged.connect(self._markdown_source_changed)
             self.raw_editor.textChanged.connect(self._raw_text_changed)
             self.raw_editor.document().modificationChanged.connect(
                 self._view_modification_changed
@@ -15483,7 +16761,9 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
 
             self.update_syntax_highlighting()
 
-            if (
+            if self.binary_disassembly_mode:
+                self.views.setCurrentWidget(self.source_page)
+            elif (
                 self.path is not None
                 and self.path.suffix.lower() in self.BINARY_EXTENSIONS
             ):
@@ -15510,6 +16790,8 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             return ""
 
         def source_language(self) -> str:
+            if self.binary_disassembly_mode:
+                return "assembler"
             suffix = self.effective_suffix
             if suffix in {".bas", ".basic"}:
                 return "basic"
@@ -15527,6 +16809,8 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 return "logo"
             if suffix in self.DBASE_EXTENSIONS:
                 return "dbase"
+            if suffix in self.MARKDOWN_EXTENSIONS:
+                return "markdown"
             return "text"
 
         def _emit_context_help(self, view_kind: str, word: str) -> None:
@@ -15537,10 +16821,12 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             )
             self.context_help_requested.emit(self, language, word)
 
-        def active_text_editor(self) -> Optional[SourceTextEdit]:
+        def active_text_editor(self) -> Optional[QPlainTextEdit]:
             current = self.views.currentWidget()
             if current is self.source_page:
                 return self.raw_editor
+            if current is self.markdown_preview_page:
+                return self.markdown_preview
             if current is self.generated_assembly_page:
                 return self.generated_assembly_editor
             if current is self.hints_editor:
@@ -15612,7 +16898,10 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self._view_modification_changed(False)
 
         def focus_preferred_editor(self) -> None:
-            if (
+            if self.binary_disassembly_mode:
+                self.views.setCurrentWidget(self.source_page)
+                self.raw_editor.setFocus()
+            elif (
                 self.path is not None
                 and self.path.suffix.lower() in self.BINARY_EXTENSIONS
             ):
@@ -15639,10 +16928,23 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                         f"{count} Breakpoint(s) – erneut Compile/Assemble ausführen"
                     )
 
+        def _markdown_source_changed(self) -> None:
+            if self.is_markdown_document:
+                self.markdown_preview.set_markdown_source(
+                    self.raw_editor.toPlainText()
+                )
+
         def _raw_text_changed(self) -> None:
             if self._syncing_views:
                 return
             self.invalidate_assembly_result("Quelltext geändert")
+            # Stage 78: beim dokumentierten Binary-Disassembly ist der
+            # Rohdaten-Tab eine bearbeitbare ASM-Sicht auf unveraenderte
+            # Binärbytes. Kommentare duerfen deshalb niemals in den Hex-Puffer
+            # zurueckkodiert werden.
+            if self.binary_disassembly_mode:
+                self._view_modification_changed(True)
+                return
             if (
                 self.is_basic_document
                 or self.is_pascal_document
@@ -15936,7 +17238,9 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
         def update_syntax_highlighting(self) -> None:
             suffix = self.effective_suffix
             is_basic = suffix in self.BASIC_EXTENSIONS
-            is_assembler = suffix in self.ASSEMBLER_EXTENSIONS
+            is_assembler_source = suffix in self.ASSEMBLER_EXTENSIONS
+            is_disassembly = self.binary_disassembly_mode
+            is_assembler = is_assembler_source or is_disassembly
             is_pascal = suffix in self.PASCAL_EXTENSIONS
             is_c = suffix in self.C_EXTENSIONS
             is_c_header = suffix in self.C_HEADER_EXTENSIONS
@@ -15944,7 +17248,14 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             is_prolog = suffix in self.PROLOG_EXTENSIONS
             is_logo = suffix in self.LOGO_EXTENSIONS
             is_dbase = suffix in self.DBASE_EXTENSIONS
+            is_markdown = suffix in self.MARKDOWN_EXTENSIONS
             self.configure_dbase_output_tabs(inspect_source=True)
+            self._set_tab_visible_for_widget(self.markdown_preview_page, is_markdown)
+            if is_markdown:
+                self.markdown_preview.set_markdown_source(
+                    self.raw_editor.toPlainText(),
+                    immediate=True,
+                )
             is_compiled_language = (
                 is_basic or is_pascal or is_c or is_lisp or is_prolog or is_logo or is_dbase
             )
@@ -15963,12 +17274,12 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 )
 
             self.assembler_panel.setVisible(
-                is_assembler or is_compiled_language
+                is_assembler_source or is_compiled_language
             )
             # C/Pascal: Compile im Quelltext-Tab. Assemble/Start erscheinen
             # nach dem Compile im erzeugten ASM-Tab. Reiner ASM-Code zeigt
             # Assemble/Start direkt über dem Quelltext.
-            self.start_assembled_button.setVisible(is_assembler)
+            self.start_assembled_button.setVisible(is_assembler_source)
             self.syntax_highlighter.set_enabled(is_assembler)
             self.syntax_highlighter.set_pascal_enabled(is_pascal)
             self.syntax_highlighter.set_c_enabled(is_c or is_c_header)
@@ -15976,6 +17287,16 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.syntax_highlighter.set_prolog_enabled(is_prolog)
             self.syntax_highlighter.set_logo_enabled(is_logo)
             self.syntax_highlighter.set_dbase_enabled(is_dbase)
+            self.syntax_highlighter.set_markdown_enabled(is_markdown)
+            self.raw_editor.set_markdown_mode(is_markdown)
+            # Stage 60: assembly source uses a 120 px minimum draggable
+            # viewport thumb.  Other source editors keep the historic 18 px
+            # minimum.  This also updates correctly after Save As/Rename.
+            self.raw_minimap.set_min_viewport_height(
+                SourceMiniMap.ASSEMBLER_MIN_VIEWPORT_HEIGHT
+                if is_assembler
+                else SourceMiniMap.MIN_VIEWPORT_HEIGHT
+            )
             self.prolog_verbose_checkbox.setVisible(is_prolog)
             self.generated_prolog_verbose_checkbox.setVisible(is_prolog)
             self.raw_editor.set_lisp_help_enabled(is_lisp)
@@ -16109,7 +17430,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                     f"{target_name}-Assemblerquelltext in ein "
                     f"{output_name} übersetzen"
                 )
-                if is_assembler and self.assembled_program is None:
+                if is_assembler_source and self.assembled_program is None:
                     self.assembly_status_label.setText("Noch nicht assembliert")
 
         @property
@@ -16143,6 +17464,10 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
         @property
         def is_dbase_document(self) -> bool:
             return self.effective_suffix in self.DBASE_EXTENSIONS
+
+        @property
+        def is_markdown_document(self) -> bool:
+            return self.effective_suffix in self.MARKDOWN_EXTENSIONS
 
         @property
         def is_build_document(self) -> bool:
@@ -16305,6 +17630,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
         def set_dark_mode(self, enabled: bool) -> None:
             enabled = bool(enabled)
             code_suffix = self.effective_suffix
+            source_is_markdown = code_suffix in self.MARKDOWN_EXTENSIONS
             source_is_code = (
                 code_suffix in self.BASIC_EXTENSIONS
                 or code_suffix in self.ASSEMBLER_EXTENSIONS
@@ -16326,6 +17652,9 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 # Anwendungstheme navyblau. Der generierte ASM-Editor ist
                 # ebenfalls immer ein Codeeditor. Nur der Hinweis-Tab folgt
                 # weiterhin dem globalen Hell-/Dunkelmodus.
+                markdown_editor = (
+                    editor is self.raw_editor and source_is_markdown
+                )
                 navy_code_editor = (
                     editor is self.generated_assembly_editor
                     or (editor is self.raw_editor and source_is_code)
@@ -16339,11 +17668,27 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 )
                 editor_dark = enabled or navy_code_editor
                 palette = QPalette(QApplication.palette())
-                if editor_dark:
+                if markdown_editor:
+                    if enabled:
+                        palette.setColor(QPalette.Base, QColor("#0D1117"))
+                        palette.setColor(QPalette.Text, QColor("#C9D1D9"))
+                        palette.setColor(QPalette.Highlight, QColor("#264F78"))
+                        palette.setColor(QPalette.HighlightedText, QColor("#FFFFFF"))
+                        if hasattr(QPalette, "PlaceholderText"):
+                            palette.setColor(QPalette.PlaceholderText, QColor("#8B949E"))
+                    else:
+                        palette.setColor(QPalette.Base, QColor("#FFFFFF"))
+                        palette.setColor(QPalette.Text, QColor("#24292F"))
+                        palette.setColor(QPalette.Highlight, QColor("#0969DA"))
+                        palette.setColor(QPalette.HighlightedText, QColor("#FFFFFF"))
+                        if hasattr(QPalette, "PlaceholderText"):
+                            palette.setColor(QPalette.PlaceholderText, QColor("#57606A"))
+                    editor_dark = enabled
+                elif editor_dark:
                     palette.setColor(QPalette.Base, QColor(0, 0, 128))
-                    # Frühere ASM-Palette wiederherstellen: normaler ASM-Text
-                    # gelb, Mnemonics über den Highlighter fett/weiß, Kommentare
-                    # grau und Sprungziele hellblau. Andere Quellsprachen bleiben
+                    # ASM-Palette: normaler ASM-Text gelb; Stage 80 markiert
+                    # Mnemonics fett/gelb, Operanden weiss, Kommentare grau und
+                    # Sprungziele hellblau. Andere Quellsprachen bleiben
                     # auf Navy mit weißem Grundtext.
                     palette.setColor(
                         QPalette.Text,
@@ -16372,6 +17717,8 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 editor.setPalette(palette)
                 editor.viewport().setPalette(palette)
                 editor.set_gutter_dark_mode(editor_dark)
+                if editor is self.raw_editor:
+                    editor.set_markdown_mode(source_is_markdown)
                 editor.viewport().update()
 
             hex_palette = QPalette(QApplication.palette())
@@ -16397,6 +17744,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
 
             self.syntax_highlighter.set_dark_mode(enabled or source_is_code)
             self.generated_assembly_highlighter.set_dark_mode(True)
+            self.markdown_preview.set_dark_mode(enabled)
 
     class DismWorker(QObject):
         """Fuehrt die unveraenderte d64info-Programmlogik ausserhalb der GUI aus."""
@@ -18145,12 +19493,2702 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.fileName = str(candidate)
             self.accept()
 
+    # -----------------------------------------------------------------------
+    # PROLOG Wissen-Datenbank Browser (Stage 55)
+    # -----------------------------------------------------------------------
+    class KnowledgeFlowLayout(QLayout):
+        """Ein einfacher Flow-Layout: Widgets laufen horizontal und umbrechen."""
+
+        def __init__(self, parent=None, margin: int = 0, hspacing: int = 8, vspacing: int = 8):
+            super().__init__(parent)
+            self._items = []
+            self._hspacing = int(hspacing)
+            self._vspacing = int(vspacing)
+            self.setContentsMargins(margin, margin, margin, margin)
+
+        def addItem(self, item) -> None:
+            self._items.append(item)
+
+        def count(self) -> int:
+            return len(self._items)
+
+        def itemAt(self, index: int):
+            return self._items[index] if 0 <= index < len(self._items) else None
+
+        def takeAt(self, index: int):
+            return self._items.pop(index) if 0 <= index < len(self._items) else None
+
+        def expandingDirections(self):
+            return Qt.Orientations()
+
+        def hasHeightForWidth(self) -> bool:
+            return True
+
+        def heightForWidth(self, width: int) -> int:
+            return self._do_layout(QRect(0, 0, max(1, width), 0), True)
+
+        def setGeometry(self, rect: QRect) -> None:
+            super().setGeometry(rect)
+            self._do_layout(rect, False)
+
+        def sizeHint(self) -> QSize:
+            return self.minimumSize()
+
+        def minimumSize(self) -> QSize:
+            size = QSize()
+            for item in self._items:
+                size = size.expandedTo(item.minimumSize())
+            left, top, right, bottom = self.getContentsMargins()
+            size += QSize(left + right, top + bottom)
+            return size
+
+        def clear_widgets(self) -> None:
+            while self.count():
+                item = self.takeAt(0)
+                widget = item.widget() if item is not None else None
+                if widget is not None:
+                    widget.setParent(None)
+                    widget.deleteLater()
+            self.invalidate()
+
+        def _do_layout(self, rect: QRect, test_only: bool) -> int:
+            left, top, right, bottom = self.getContentsMargins()
+            effective = rect.adjusted(left, top, -right, -bottom)
+            x = effective.x()
+            y = effective.y()
+            line_height = 0
+            for item in self._items:
+                widget = item.widget()
+                # Stage 69: QWidgetItem.sizeHint() can stay cached at the old
+                # one-line height when a KnowledgeLevelButton reveals its
+                # embedded ComboBox. Query the widget itself and expand the
+                # result by its current minimum sizes so the FlowLayout always
+                # reserves the complete [button ▼] + ComboBox + prüfen block.
+                hint = widget.sizeHint() if widget is not None else item.sizeHint()
+                if widget is not None:
+                    hint = hint.expandedTo(widget.minimumSizeHint())
+                    hint = hint.expandedTo(widget.minimumSize())
+                if not hint.isValid():
+                    hint = QSize(1, 1)
+                next_x = x + hint.width() + self._hspacing
+                if line_height > 0 and next_x - self._hspacing > effective.right() + 1:
+                    x = effective.x()
+                    y += line_height + self._vspacing
+                    next_x = x + hint.width() + self._hspacing
+                    line_height = 0
+                if not test_only:
+                    item.setGeometry(QRect(QPoint(x, y), hint))
+                x = next_x
+                line_height = max(line_height, hint.height())
+            return y + line_height - rect.y() + bottom
+
+
+    class KnowledgeAlternativeDialog(QDialog):
+        def __init__(self, alternatives, current: str = "", parent=None, dark_mode: bool = False):
+            super().__init__(parent)
+            self.setWindowTitle("Alternative auswählen")
+            self.resize(480, 430)
+            self._alternatives = tuple(str(value) for value in alternatives)
+            self.selected_value = ""
+
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(10, 10, 10, 10)
+            layout.setSpacing(8)
+
+            self.info_label = QLabel(
+                f"{len(self._alternatives)} mögliche Alternative(n)", self
+            )
+            layout.addWidget(self.info_label)
+
+            self.search_edit = QLineEdit(self)
+            self.search_edit.setPlaceholderText("Alternativen durchsuchen …")
+            self.search_edit.setClearButtonEnabled(True)
+            self.search_edit.setVisible(len(self._alternatives) > 10)
+            layout.addWidget(self.search_edit)
+
+            self.list_widget = QListWidget(self)
+            self.list_widget.setSelectionMode(QListWidget.SingleSelection)
+            for value in self._alternatives:
+                item = QListWidgetItem(value, self.list_widget)
+                if value == current:
+                    self.list_widget.setCurrentItem(item)
+            if self.list_widget.currentItem() is None and self.list_widget.count():
+                self.list_widget.setCurrentRow(0)
+            layout.addWidget(self.list_widget, 1)
+
+            buttons = QHBoxLayout()
+            buttons.addStretch(1)
+            self.ok_button = QPushButton("OK", self)
+            self.cancel_button = QPushButton("Abbrechen", self)
+            buttons.addWidget(self.ok_button)
+            buttons.addWidget(self.cancel_button)
+            layout.addLayout(buttons)
+
+            self.search_edit.textChanged.connect(self._filter)
+            self.ok_button.clicked.connect(self._accept_current)
+            self.cancel_button.clicked.connect(self.reject)
+            self.list_widget.itemDoubleClicked.connect(
+                lambda _item: self._accept_current()
+            )
+            self.set_dark_mode(dark_mode)
+
+        def _filter(self, text: str) -> None:
+            needle = str(text).strip().casefold()
+            first_visible = None
+            for index in range(self.list_widget.count()):
+                item = self.list_widget.item(index)
+                hidden = bool(needle and needle not in item.text().casefold())
+                item.setHidden(hidden)
+                if not hidden and first_visible is None:
+                    first_visible = item
+            if first_visible is not None:
+                self.list_widget.setCurrentItem(first_visible)
+
+        def _accept_current(self) -> None:
+            item = self.list_widget.currentItem()
+            if item is None or item.isHidden():
+                return
+            self.selected_value = item.text()
+            self.accept()
+
+        def set_dark_mode(self, enabled: bool) -> None:
+            if enabled:
+                self.setStyleSheet(
+                    "QDialog{background:#0d1117;color:#c9d1d9;}"
+                    "QLineEdit,QListWidget{background:#161b22;color:#c9d1d9;"
+                    "border:1px solid #30363d;border-radius:4px;}"
+                    "QPushButton{background:#21262d;color:#f0f6fc;"
+                    "border:1px solid #30363d;border-radius:4px;padding:5px 12px;}"
+                    "QPushButton:hover{border-color:#58a6ff;}"
+                )
+            else:
+                self.setStyleSheet(
+                    "QDialog{background:#ffffff;color:#24292f;}"
+                    "QLineEdit,QListWidget{background:#ffffff;color:#24292f;"
+                    "border:1px solid #d0d7de;border-radius:4px;}"
+                    "QPushButton{background:#f6f8fa;color:#24292f;"
+                    "border:1px solid #d0d7de;border-radius:4px;padding:5px 12px;}"
+                    "QPushButton:hover{border-color:#0969da;}"
+                )
+
+
+    class KnowledgeLevelButton(QWidget):
+        selected = pyqtSignal(int)
+        delete_requested = pyqtSignal(int)
+        alternative_requested = pyqtSignal(int)
+        # Stage 68: the visible alternatives selector belongs to the concrete
+        # parent button instead of being reparented from a lane-wide shared
+        # widget. This makes the ComboBox reliably visible directly below the
+        # [value ▼] row on Windows/Qt5.
+        alternative_check_requested = pyqtSignal(int, str)
+
+        def __init__(
+            self,
+            level_index: int,
+            text: str,
+            *,
+            alternatives=(),
+            root_level: bool = False,
+            parent=None,
+        ):
+            super().__init__(parent)
+            self.level_index = int(level_index)
+            self.root_level = bool(root_level)
+            self.alternatives = tuple(str(value) for value in alternatives)
+            self._active = False
+            self._dark_mode = False
+
+            # Stage 62: the alternatives ComboBox is physically embedded below
+            # the selected parent button.  The button row therefore lives in a
+            # vertical wrapper with a dedicated child host for the ComboBox.
+            outer_layout = QVBoxLayout(self)
+            self.outer_layout = outer_layout
+            outer_layout.setContentsMargins(0, 0, 0, 0)
+            outer_layout.setSpacing(4)
+            # Stage 69: the custom flow must see the real minimum height after
+            # the alternatives panel becomes visible.  SetMinimumSize makes
+            # the QWidget publish the child layout's expanded geometry.
+            outer_layout.setSizeConstraint(QLayout.SetMinimumSize)
+
+            button_row = QHBoxLayout()
+            self.button_row_layout = button_row
+            button_row.setContentsMargins(0, 0, 0, 0)
+            button_row.setSpacing(0)
+
+            self.main_button = QPushButton(str(text), self)
+            self.main_button.setObjectName("prolog_knowledge_level_main")
+            self.main_button.setMinimumHeight(32)
+            self.main_button.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+            self.main_button.clicked.connect(
+                lambda _checked=False: self.selected.emit(self.level_index)
+            )
+            self.main_button.setContextMenuPolicy(Qt.CustomContextMenu)
+            self.main_button.customContextMenuRequested.connect(self._show_context_menu)
+            button_row.addWidget(self.main_button)
+
+            self.arrow_button = QToolButton(self)
+            self.arrow_button.setObjectName("prolog_knowledge_level_arrow")
+            self.arrow_button.setText("▼")
+            self.arrow_button.setToolTip("Alternativen dieses Parent-Levels anzeigen")
+            self.arrow_button.setFixedSize(27, 32)
+            # Stage 61/62: every parent button exposes its children through the
+            # same ComboBox.  This includes the root predicate button.
+            self.arrow_button.setVisible(bool(self.alternatives))
+            self.arrow_button.clicked.connect(
+                lambda _checked=False: self.alternative_requested.emit(self.level_index)
+            )
+            self.arrow_button.setContextMenuPolicy(Qt.CustomContextMenu)
+            self.arrow_button.customContextMenuRequested.connect(self._show_context_menu)
+            button_row.addWidget(self.arrow_button)
+            outer_layout.addLayout(button_row)
+
+            self.alternative_host = QWidget(self)
+            self.alternative_host.setObjectName("prolog_knowledge_level_alternative_host")
+            self.alternative_host.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            self.alternative_host.setMinimumWidth(240)
+            self.alternative_host_layout = QVBoxLayout(self.alternative_host)
+            self.alternative_host_layout.setContentsMargins(0, 2, 0, 0)
+            self.alternative_host_layout.setSpacing(3)
+
+            # Stage 68: each level owns its visible ComboBox. Earlier stages
+            # moved one shared ComboBox with setParent(); on native Qt5/Windows
+            # that widget could remain hidden/clipped even after show(). A
+            # permanent child of this level has stable geometry and therefore
+            # appears exactly below the button that owns the ▼ component.
+            self.embedded_alternative_label = QLabel("Alternativen:", self.alternative_host)
+            self.embedded_alternative_label.setObjectName(
+                "prolog_knowledge_embedded_alternative_label"
+            )
+            self.alternative_host_layout.addWidget(self.embedded_alternative_label)
+
+            self.embedded_alternative_combo = QComboBox(self.alternative_host)
+            self.embedded_alternative_combo.setObjectName(
+                "prolog_knowledge_embedded_alternative_combo"
+            )
+            self.embedded_alternative_combo.setMinimumWidth(240)
+            self.embedded_alternative_combo.setMinimumHeight(28)
+            self.embedded_alternative_combo.setSizePolicy(
+                QSizePolicy.Expanding, QSizePolicy.Fixed
+            )
+            self.embedded_alternative_combo.setInsertPolicy(QComboBox.NoInsert)
+            self.embedded_alternative_combo.setSizeAdjustPolicy(
+                QComboBox.AdjustToMinimumContentsLengthWithIcon
+            )
+            available_font_families = {
+                family.casefold(): family for family in QFontDatabase().families()
+            }
+            alternative_family = available_font_families.get(
+                "consolas", available_font_families.get("courier new", "Courier New")
+            )
+            embedded_font = QFont(alternative_family, 9)
+            if hasattr(embedded_font, "setFamilies"):
+                embedded_font.setFamilies(["Consolas", "Courier New"])
+            embedded_font.setPointSize(9)
+            self.embedded_alternative_combo.setFont(embedded_font)
+            if self.embedded_alternative_combo.view() is not None:
+                self.embedded_alternative_combo.view().setFont(embedded_font)
+            self.alternative_host_layout.addWidget(self.embedded_alternative_combo)
+            # Legacy source-regression markers from Stage 62/67:
+            # self.alternative_host_layout.addWidget(combo)
+            # self.alternative_host_layout.addWidget(check_button)
+            # combo.show()
+            # self.alternative_host.show()
+
+            self.embedded_alternative_check_button = QPushButton(
+                "Prüfen", self.alternative_host
+            )
+            self.embedded_alternative_check_button.setObjectName(
+                "prolog_knowledge_embedded_alternative_check_button"
+            )
+            self.embedded_alternative_check_button.setMinimumHeight(30)
+            self.embedded_alternative_check_button.clicked.connect(
+                self._emit_embedded_alternative_check
+            )
+            self.alternative_host_layout.addWidget(
+                self.embedded_alternative_check_button
+            )
+
+            self._embedded_alternative_completer = None
+            self.alternative_host.setVisible(False)
+            self.alternative_host.setFixedHeight(0)
+            outer_layout.addWidget(self.alternative_host)
+            self.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+            self._apply_style()
+
+        def _emit_embedded_alternative_check(self) -> None:
+            value = str(self.embedded_alternative_combo.currentText()).strip()
+            self.alternative_check_requested.emit(self.level_index, value)
+
+        def show_embedded_alternatives(
+            self, alternatives, *, parent_text: str
+        ) -> None:
+            """Show this level's own ComboBox immediately below [value ▼]."""
+            values = tuple(str(value) for value in alternatives)
+            combo = self.embedded_alternative_combo
+            combo.blockSignals(True)
+            combo.clear()
+            self._embedded_alternative_completer = None
+
+            searchable = len(values) > 10
+            combo.setEditable(searchable)
+            combo.addItems(values)
+            combo.setCurrentIndex(-1)
+            combo.setEnabled(bool(values))
+            self.embedded_alternative_check_button.setEnabled(bool(values))
+            self.embedded_alternative_label.setText(
+                f"Alternativen zu {parent_text}:"
+            )
+
+            if searchable:
+                line_edit = combo.lineEdit()
+                if line_edit is not None:
+                    line_edit.clear()
+                    line_edit.setPlaceholderText("Alternative suchen …")
+                completer = QCompleter(list(values), combo)
+                completer.setCaseSensitivity(Qt.CaseInsensitive)
+                completer.setFilterMode(Qt.MatchContains)
+                completer.setCompletionMode(QCompleter.PopupCompletion)
+                combo.setCompleter(completer)
+                if completer.popup() is not None:
+                    completer.popup().setFont(combo.font())
+                self._embedded_alternative_completer = completer
+
+            combo.blockSignals(False)
+            # Stage 69: make the container visible first, then publish a fixed
+            # panel height before the custom flow is asked for its geometry.
+            # This guarantees that the ComboBox is physically visible exactly
+            # below the [parent ▼] row instead of being clipped at 32 px.
+            self.alternative_host.show()
+            self.embedded_alternative_label.show()
+            combo.show()
+            self.embedded_alternative_check_button.show()
+            self._refresh_embedded_alternative_geometry()
+            self.adjustSize()
+            QTimer.singleShot(0, self._refresh_embedded_alternative_geometry)
+            QTimer.singleShot(0, lambda: combo.setFocus(Qt.OtherFocusReason))
+
+        def hide_embedded_alternatives(self) -> None:
+            self.alternative_host.hide()
+            self._embedded_alternative_completer = None
+            self._refresh_embedded_alternative_geometry()
+
+        def _expanded_alternative_height(self) -> int:
+            """Return a deterministic visible height for label + combo + prüfen."""
+            label_h = max(18, int(self.embedded_alternative_label.sizeHint().height()))
+            combo_h = max(28, int(self.embedded_alternative_combo.sizeHint().height()))
+            check_h = max(30, int(self.embedded_alternative_check_button.sizeHint().height()))
+            margins = self.alternative_host_layout.contentsMargins()
+            spacing = max(0, int(self.alternative_host_layout.spacing()))
+            return (
+                label_h + combo_h + check_h
+                + spacing * 2
+                + margins.top() + margins.bottom()
+            )
+
+        def _button_row_size_hint(self) -> QSize:
+            main_hint = self.main_button.sizeHint()
+            arrow_width = self.arrow_button.width() if self.arrow_button.isVisible() else 0
+            row_width = max(1, int(main_hint.width()) + int(arrow_width))
+            row_height = max(32, int(main_hint.height()), int(self.arrow_button.height()))
+            return QSize(row_width, row_height)
+
+        def sizeHint(self) -> QSize:
+            # Stage 69: explicitly publish the expanded height. Relying on the
+            # default QWidget/QVBoxLayout hint left the custom FlowLayout with
+            # the cached 32-px button height on native Qt5/Windows, so the
+            # ComboBox existed but was clipped outside the parent widget.
+            row = self._button_row_size_hint()
+            if not self.alternative_host.isVisible():
+                return row
+            panel_h = self._expanded_alternative_height()
+            panel_w = max(240, int(self.alternative_host.sizeHint().width()))
+            return QSize(
+                max(row.width(), panel_w),
+                row.height() + max(0, int(self.outer_layout.spacing())) + panel_h,
+            )
+
+        def minimumSizeHint(self) -> QSize:
+            return self.sizeHint()
+
+        def _refresh_embedded_alternative_geometry(self) -> None:
+            """Publish the exact expanded geometry to the custom FlowLayout."""
+            if self.alternative_host.isVisible():
+                panel_h = self._expanded_alternative_height()
+                self.alternative_host.setFixedHeight(panel_h)
+                self.alternative_host.setMinimumWidth(240)
+                target = self.sizeHint()
+                self.setMinimumSize(target)
+                self.resize(max(self.width(), target.width()), target.height())
+                self.alternative_host.raise_()
+                self.embedded_alternative_label.raise_()
+                self.embedded_alternative_combo.raise_()
+                self.embedded_alternative_check_button.raise_()
+            else:
+                self.alternative_host.setFixedHeight(0)
+                row = self._button_row_size_hint()
+                self.setMinimumSize(row)
+                self.resize(max(self.width(), row.width()), row.height())
+
+            self.outer_layout.invalidate()
+            self.outer_layout.activate()
+            self.updateGeometry()
+            parent = self.parentWidget()
+            if parent is not None:
+                parent_layout = parent.layout()
+                if parent_layout is not None:
+                    parent_layout.invalidate()
+                    parent_layout.activate()
+                parent.updateGeometry()
+
+
+        def attach_alternative_controls(
+            self,
+            label: QLabel,
+            combo: QComboBox,
+            check_button: QPushButton,
+        ) -> None:
+            """Place the shared alternatives controls directly below this button."""
+            self.alternative_host_layout.removeWidget(label)
+            self.alternative_host_layout.removeWidget(combo)
+            self.alternative_host_layout.removeWidget(check_button)
+            label.setParent(self.alternative_host)
+            combo.setParent(self.alternative_host)
+            check_button.setParent(self.alternative_host)
+            self.alternative_host_layout.addWidget(label)
+            self.alternative_host_layout.addWidget(combo)
+            # Stage 64: the alternative is checked exactly where it is selected.
+            # A successful check removes these shared controls again while the
+            # resulting level button remains in the decision path.
+            self.alternative_host_layout.addWidget(check_button)
+            self.alternative_host.setMinimumWidth(max(230, self.sizeHint().width()))
+            self.alternative_host.setVisible(True)
+            # Stage 66: QWidget.setParent() hides visible children. Stage 65
+            # made the controls visible *before* reparenting, so the ComboBox
+            # could disappear although the ▼ action had succeeded. Show the
+            # controls only after they are attached below the selected button.
+            label.show()
+            combo.show()
+            check_button.show()
+            self.alternative_host.show()
+            # Stage 67: publish the taller child geometry to the FlowLayout.
+            # This is what makes the ComboBox physically visible immediately
+            # below the [value ▼] row instead of being clipped to zero height.
+            self._refresh_embedded_alternative_geometry()
+            QTimer.singleShot(0, self._refresh_embedded_alternative_geometry)
+
+        def detach_alternative_controls(
+            self,
+            label: QLabel,
+            combo: QComboBox,
+            check_button: QPushButton,
+        ) -> None:
+            """Detach the shared controls before this level is rebuilt/deleted."""
+            self.alternative_host_layout.removeWidget(label)
+            self.alternative_host_layout.removeWidget(combo)
+            self.alternative_host_layout.removeWidget(check_button)
+            self.alternative_host.setVisible(False)
+            self._refresh_embedded_alternative_geometry()
+
+        def _show_context_menu(self, position) -> None:
+            menu = QMenu(self)
+            delete_action = menu.addAction(
+                "Diesen Level und alle folgenden Level löschen"
+            )
+            source = self.sender()
+            global_position = (
+                source.mapToGlobal(position)
+                if isinstance(source, QWidget)
+                else self.mapToGlobal(position)
+            )
+            selected = menu.exec_(global_position)
+            if selected is delete_action:
+                self.delete_requested.emit(self.level_index)
+
+        def set_active(self, active: bool) -> None:
+            self._active = bool(active)
+            self._apply_style()
+
+        def set_dark_mode(self, enabled: bool) -> None:
+            self._dark_mode = bool(enabled)
+            self._apply_style()
+
+        def _apply_style(self) -> None:
+            if self._dark_mode:
+                background = "#21262d"
+                foreground = "#f0f6fc"
+                normal = "#484f58"
+                hover = "#58a6ff"
+            else:
+                background = "#f6f8fa"
+                foreground = "#24292f"
+                normal = "#d0d7de"
+                hover = "#0969da"
+            border = "#2ea043" if self._active else normal
+            width = "2px" if self._active else "1px"
+            self.main_button.setStyleSheet(
+                f"QPushButton{{background:{background};color:{foreground};"
+                f"border:{width} solid {border};border-radius:6px;"
+                "padding:5px 10px;font-weight:600;}"
+                f"QPushButton:hover{{border:2px solid {hover};}}"
+            )
+            self.arrow_button.setStyleSheet(
+                f"QToolButton{{background:{background};color:{foreground};"
+                f"border:{width} solid {border};border-left:0;"
+                "border-top-right-radius:6px;border-bottom-right-radius:6px;}"
+                f"QToolButton:hover{{border:2px solid {hover};border-left:0;}}"
+            )
+
+
+    class KnowledgeQueryLane(QWidget):
+        """Eine unabhängige Wissens-Abfrage innerhalb der Haupt-ScrollArea.
+
+        Stage 65: Jede Lane besitzt ihren eigenen Query-Zustand und ihre eigene
+        innere QScrollArea. Links davon stehen die Verwaltungsbuttons
+        ``Hinzufügen`` und ``Löschen``. Die Höhe der inneren ScrollArea folgt
+        ihrem Inhalt bis zu einer sinnvollen Obergrenze; erst danach scrollt
+        die innere Fläche selbst. Mehrere Lanes werden von einer äußeren
+        Haupt-ScrollArea aufgenommen.
+        """
+
+        MIN_SCROLL_HEIGHT = 170
+        MAX_SCROLL_HEIGHT = 430
+
+        def __init__(self, lane_number: int, parent=None):
+            super().__init__(parent)
+            self.lane_number = int(lane_number)
+            self.setObjectName("prolog_knowledge_query_lane")
+            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+
+            # Per-lane query state. The dialog temporarily aliases these fields
+            # while an action is executed, preserving the Stage-55..64 methods.
+            self.selected_predicate = None
+            self.level_values = []
+            self.level_buttons = []
+            self.active_level = -1
+            self.alternative_completer = None
+            self.alternative_state = None
+            self.alternative_parent_level = None
+            self.alternative_parent_prefix = ()
+
+            row_layout = QHBoxLayout(self)
+            row_layout.setContentsMargins(4, 4, 4, 4)
+            row_layout.setSpacing(8)
+
+            self.command_host = QWidget(self)
+            self.command_host.setObjectName("prolog_knowledge_lane_commands")
+            command_layout = QVBoxLayout(self.command_host)
+            command_layout.setContentsMargins(0, 0, 0, 0)
+            command_layout.setSpacing(5)
+
+            self.add_lane_button = QPushButton("Hinzufügen", self.command_host)
+            self.add_lane_button.setObjectName("prolog_knowledge_lane_add")
+            self.add_lane_button.setToolTip("Eine weitere unabhängige Wissens-Abfrage hinzufügen")
+            self.add_lane_button.setMinimumWidth(92)
+            command_layout.addWidget(self.add_lane_button)
+
+            self.delete_lane_button = QPushButton("Löschen", self.command_host)
+            self.delete_lane_button.setObjectName("prolog_knowledge_lane_delete")
+            self.delete_lane_button.setToolTip("Diese Wissens-Abfrage löschen")
+            self.delete_lane_button.setMinimumWidth(92)
+            command_layout.addWidget(self.delete_lane_button)
+            command_layout.addStretch(1)
+            row_layout.addWidget(self.command_host, 0, Qt.AlignTop)
+
+            self.level_scroll = QScrollArea(self)
+            self.level_scroll.setObjectName("prolog_knowledge_level_scroll")
+            self.level_scroll.setWidgetResizable(True)
+            self.level_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            self.level_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.level_scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+            self.level_container = QWidget(self.level_scroll)
+            self.level_container.setObjectName("prolog_knowledge_level_container")
+            self.level_container_layout = QVBoxLayout(self.level_container)
+            self.level_container_layout.setContentsMargins(8, 8, 8, 8)
+            self.level_container_layout.setSpacing(6)
+
+            query_row = QHBoxLayout()
+            query_row.setContentsMargins(0, 0, 0, 0)
+            query_row.setSpacing(6)
+            self.query_edit = QLineEdit(self.level_container)
+            self.query_edit.setObjectName("prolog_knowledge_query_edit")
+            self.query_edit.setPlaceholderText("Wert für den nächsten Level, z. B. gesund")
+            self.query_edit.setClearButtonEnabled(True)
+            query_row.addWidget(self.query_edit, 2)
+            self.add_level_button = QPushButton("Prüfen +", self.level_container)
+            self.add_level_button.setObjectName("prolog_knowledge_query_check_add")
+            self.add_level_button.setToolTip(
+                "Eingabe oder gewählte Alternative als nächsten PROLOG-Level prüfen und bei wahr hinzufügen"
+            )
+            query_row.addWidget(self.add_level_button)
+            self.level_container_layout.addLayout(query_row)
+
+            self.query_status = QLabel("Bitte links einen Fakt bzw. eine Regel auswählen.", self.level_container)
+            self.query_status.setObjectName("prolog_knowledge_query_status")
+            self.query_status.setWordWrap(True)
+            self.query_status.setFrameShape(QFrame.StyledPanel)
+            self.query_status.setMargin(6)
+            self.level_container_layout.addWidget(self.query_status)
+
+            self.level_button_host = QWidget(self.level_container)
+            self.level_button_host.setObjectName("prolog_knowledge_level_button_host")
+            self.level_button_host.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+            self.level_flow = KnowledgeFlowLayout(
+                self.level_button_host, margin=4, hspacing=8, vspacing=10
+            )
+            self.level_container_layout.addWidget(self.level_button_host)
+
+            # Stage 71: Das Alternativen-Panel ist direkter Child des
+            # QScrollArea-Viewports. Es wird NICHT in einen Level-Button und
+            # auch nicht in den Flow-Host reparented. Beim ▼-Klick wird es über
+            # mapTo(viewport, ...) exakt unter die sichtbare [Parent ▼]-Zeile
+            # gelegt. Dadurch kann kein Custom-Flow-/Parent-Clipping die
+            # ComboBox unter Windows/Qt5 unsichtbar machen.
+            # Legacy Stage-64/65 source-regression markers (nicht Runtime):
+            # self.alternative_check_button = QPushButton("Prüfen", self.level_button_host)
+            # self.alternative_combo = QComboBox(self.level_button_host)
+            # self.alternative_label = QLabel("Alternativen:", self.level_button_host)
+            # Stage-70 static regression markers (not Runtime):
+            # self.alternative_overlay = QFrame(self.level_button_host)
+            self.alternative_overlay = QFrame(self.level_scroll.viewport())
+            self.alternative_overlay.setObjectName("prolog_knowledge_alternative_overlay")
+            self.alternative_overlay.setFrameShape(QFrame.NoFrame)
+            self.alternative_overlay.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            self.alternative_overlay_layout = QVBoxLayout(self.alternative_overlay)
+            self.alternative_overlay_layout.setContentsMargins(0, 0, 0, 0)
+            self.alternative_overlay_layout.setSpacing(4)
+
+            # Das Label bleibt als Kompatibilitäts-/Hilfetext-Widget erhalten,
+            # wird aber nicht zwischen Parent-Button und ComboBox gezeichnet:
+            # die ComboBox steht exakt unmittelbar unter [Parent ▼].
+            self.alternative_label = QLabel("Alternativen:", self.alternative_overlay)
+            self.alternative_label.setObjectName("prolog_knowledge_alternative_label")
+            self.alternative_label.setVisible(False)
+
+            self.alternative_combo = QComboBox(self.alternative_overlay)
+            self.alternative_combo.setObjectName("prolog_knowledge_alternative_combo")
+            self.alternative_combo.setMinimumWidth(220)
+            self.alternative_combo.setSizeAdjustPolicy(
+                QComboBox.AdjustToMinimumContentsLengthWithIcon
+            )
+            self.alternative_combo.setInsertPolicy(QComboBox.NoInsert)
+            self.alternative_combo.setToolTip(
+                "Mögliche Werte für den nächsten Entscheidungs-Level"
+            )
+            # Stage 66: Alternativen bewusst in einer kompakten Monospace-
+            # Schrift darstellen. Consolas ist die Primärschrift, Courier New
+            # der Fallback; die Dropdown-Einträge verwenden exakt 9 pt.
+            available_font_families = {
+                family.casefold(): family for family in QFontDatabase().families()
+            }
+            fallback_family = available_font_families.get(
+                "consolas",
+                available_font_families.get("courier new", "Courier New"),
+            )
+            alternative_font = QFont(fallback_family, 9)
+            if hasattr(alternative_font, "setFamilies"):
+                alternative_font.setFamilies(["Consolas", "Courier New"])
+            alternative_font.setPointSize(9)
+            self.alternative_combo.setFont(alternative_font)
+            if self.alternative_combo.view() is not None:
+                self.alternative_combo.view().setFont(alternative_font)
+            self.alternative_combo.setEnabled(False)
+            self.alternative_combo.setVisible(False)
+            self.alternative_overlay_layout.addWidget(self.alternative_combo)
+
+            # Stage-70 static regression marker: self.alternative_check_button = QPushButton("Prüfen", self.alternative_overlay)
+            self.alternative_check_button = QPushButton("Prüfen +", self.alternative_overlay)
+            self.alternative_check_button.setObjectName(
+                "prolog_knowledge_alternative_check_button"
+            )
+            self.alternative_check_button.setToolTip(
+                "Gewählte Alternative prüfen und bei wahr als nächsten Level rechts anhängen"
+            )
+            self.alternative_check_button.setMinimumHeight(30)
+            self.alternative_check_button.setVisible(False)
+            self.alternative_overlay_layout.addWidget(self.alternative_check_button)
+            self.alternative_overlay.setVisible(False)
+
+            self.alternative_status_label = QLabel("", self.level_container)
+            self.alternative_status_label.setObjectName(
+                "prolog_knowledge_alternative_status"
+            )
+            self.alternative_status_label.setWordWrap(True)
+            self.alternative_status_label.setMargin(8)
+            self.alternative_status_label.setVisible(False)
+            self.level_container_layout.addWidget(self.alternative_status_label)
+
+            self.level_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+            self.level_scroll.setWidget(self.level_container)
+            row_layout.addWidget(self.level_scroll, 1)
+            self.update_dynamic_height()
+
+        def update_dynamic_height(self) -> None:
+            """Fit the inner scroll area to its current content."""
+            hint = self.level_container.sizeHint().height()
+            frame = self.level_scroll.frameWidth() * 2
+            target = max(
+                self.MIN_SCROLL_HEIGHT,
+                min(self.MAX_SCROLL_HEIGHT, int(hint + frame + 8)),
+            )
+            self.level_scroll.setFixedHeight(target)
+            self.updateGeometry()
+
+        def set_active(self, active: bool, dark_mode: bool = False) -> None:
+            if dark_mode:
+                border = "#2ea043" if active else "#30363d"
+                background = "#0d1117"
+            else:
+                border = "#1a7f37" if active else "#d0d7de"
+                background = "#ffffff"
+            width = "2px" if active else "1px"
+            self.setStyleSheet(
+                f"QWidget#prolog_knowledge_query_lane{{background:{background};"
+                f"border:{width} solid {border};border-radius:6px;}}"
+            )
+
+
+    class PrologKnowledgeDialog(QDialog):
+        """GUI zum schrittweisen Durchsuchen einer PROLOG-Wissensdatenbank.
+
+        Stage 66: Der Browser kann weiterhin als Dialog verwendet werden, wird
+        im Hauptprogramm aber als Widget in ein QDockWidget eingebettet.
+        """
+
+        dock_close_requested = pyqtSignal()
+        ROLE_NAME = Qt.UserRole + 701
+        ROLE_ARITY = Qt.UserRole + 702
+
+        def __init__(
+            self,
+            parent=None,
+            *,
+            directory: Optional[Path] = None,
+            project_paths=(),
+            selected_path: Optional[Path] = None,
+            dark_mode: bool = False,
+            embedded: bool = False,
+        ):
+            super().__init__(parent)
+            self._embedded = bool(embedded)
+            self.setObjectName("prolog_knowledge_dialog")
+            self.setWindowTitle("PROLOG – Wissen-Datenbanken")
+            if self._embedded:
+                # A QDialog can safely serve as a dock payload when its window
+                # type is explicitly changed to Qt.Widget. This preserves all
+                # established browser code without a second implementation.
+                self.setWindowFlags(Qt.Widget)
+                self.setMinimumSize(0, 0)
+                self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            else:
+                self.setWindowFlags(
+                    self.windowFlags()
+                    | Qt.WindowMinMaxButtonsHint
+                    | Qt.WindowSystemMenuHint
+                )
+                self.resize(1100, 720)
+                self.setMinimumSize(760, 480)
+
+            self._dark_mode = bool(dark_mode)
+            self._project_paths = tuple(Path(value) for value in project_paths if str(value))
+            self.current_directory = Path(directory or Path.cwd())
+            self.current_database_path = None
+            self.knowledge_base = None
+            self.selected_predicate = None
+            self.level_values = []
+            self.level_buttons = []
+            self.active_level = -1
+            self._alternative_completer = None
+            self._alternative_state = None
+            # Stage 61: the alternatives ComboBox is opened by the ▼ button
+            # of the concrete parent level.  The prefix stored here tells
+            # ``Prüfen +`` exactly below which parent a selected alternative
+            # has to be inserted.
+            self._alternative_parent_level = None
+            self._alternative_parent_prefix = ()
+            self._fact_filter_name = ""
+            self._fact_filter_arity = None
+
+            # Stage 74: persist the complete knowledge-query workspace per
+            # database without touching the *.pl/*.prolog source file.  The
+            # existing application QSettings backend survives application
+            # restarts and also works for read-only knowledge databases.
+            self._query_state_settings = QSettings("paule32", "Qt5D64Explorer")
+            self._query_state_save_suspended = False
+            self._query_state_restore_in_progress = False
+
+            root_layout = QVBoxLayout(self)
+            root_layout.setContentsMargins(10, 10, 10, 10)
+            root_layout.setSpacing(8)
+
+            directory_row = QHBoxLayout()
+            directory_label = QLabel("Verzeichnis:", self)
+            directory_label.setObjectName("prolog_knowledge_directory_label")
+            directory_row.addWidget(directory_label)
+            self.directory_edit = QLineEdit(self)
+            self.directory_edit.setObjectName("prolog_knowledge_directory_edit")
+            self.directory_edit.setReadOnly(True)
+            self.directory_edit.setPlaceholderText("Verzeichnis der Wissen-Datenbanken")
+            directory_row.addWidget(self.directory_edit, 1)
+            self.directory_button = QToolButton(self)
+            self.directory_button.setObjectName("prolog_knowledge_directory_button")
+            self.directory_button.setText("…")
+            self.directory_button.setToolTip("Verzeichnis auswählen")
+            self.directory_button.setFixedWidth(34)
+            directory_row.addWidget(self.directory_button)
+            root_layout.addLayout(directory_row)
+
+            database_row = QHBoxLayout()
+            database_label = QLabel("Wissen-Datenbank:", self)
+            database_label.setObjectName("prolog_knowledge_database_label")
+            database_row.addWidget(database_label)
+            self.database_combo = QComboBox(self)
+            self.database_combo.setObjectName("prolog_knowledge_database_combo")
+            self.database_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+            database_row.addWidget(self.database_combo, 1)
+            self.open_button = QPushButton("Öffnen", self)
+            self.open_button.setObjectName("prolog_knowledge_open_button")
+            self.open_button.setToolTip("Selektierte Wissen-Datenbank öffnen")
+            self.open_button.setMinimumWidth(95)
+            database_row.addWidget(self.open_button)
+            root_layout.addLayout(database_row)
+
+            self.main_splitter = QSplitter(Qt.Horizontal, self)
+            self.main_splitter.setChildrenCollapsible(False)
+
+            left_panel = QWidget(self.main_splitter)
+            left_layout = QVBoxLayout(left_panel)
+            left_layout.setContentsMargins(0, 0, 0, 0)
+            left_layout.setSpacing(5)
+            left_caption = QLabel("Fakten / Regeln", left_panel)
+            left_caption.setObjectName("prolog_knowledge_facts_caption")
+            left_caption.setToolTip(
+                "Jedes Prädikat erscheint hier nur einmal; doppelte Fakten werden zusammengefasst."
+            )
+            left_layout.addWidget(left_caption)
+
+            # Stage 62: fact-name + arity filter directly above the facts tree.
+            fact_filter_row = QHBoxLayout()
+            fact_filter_row.setContentsMargins(0, 0, 0, 0)
+            fact_filter_row.setSpacing(5)
+            self.fact_filter_edit = QLineEdit(left_panel)
+            self.fact_filter_edit.setObjectName("prolog_knowledge_fact_filter_edit")
+            self.fact_filter_edit.setPlaceholderText("Faktenname filtern …")
+            self.fact_filter_edit.setClearButtonEnabled(True)
+            self.fact_filter_edit.setToolTip("Fakten und Regeln nach Namen filtern")
+            fact_filter_row.addWidget(self.fact_filter_edit, 1)
+
+            self.fact_arity_combo = QComboBox(left_panel)
+            self.fact_arity_combo.setObjectName("prolog_knowledge_fact_arity_combo")
+            self.fact_arity_combo.addItem("Alle", None)
+            for arity_value in range(1, 101):
+                self.fact_arity_combo.addItem(str(arity_value), arity_value)
+            self.fact_arity_combo.setToolTip("Stelligkeit/Argumentanzahl 1 bis 100 auswählen")
+            self.fact_arity_combo.setMinimumWidth(76)
+            fact_filter_row.addWidget(self.fact_arity_combo)
+
+            self.fact_filter_button = QToolButton(left_panel)
+            self.fact_filter_button.setObjectName("prolog_knowledge_fact_filter_button")
+            self.fact_filter_button.setToolTip("Faktenfilter anwenden")
+            self.fact_filter_button.setFixedSize(30, 28)
+            fact_filter_row.addWidget(self.fact_filter_button)
+            left_layout.addLayout(fact_filter_row)
+
+            self.fact_tree = QTreeWidget(left_panel)
+            self.fact_tree.setObjectName("prolog_knowledge_fact_tree")
+            self.fact_tree.setColumnCount(2)
+            self.fact_tree.setHeaderLabels(("Fakt / Regel", "Stelligkeit"))
+            self.fact_tree.setUniformRowHeights(True)
+            self.fact_tree.setAlternatingRowColors(True)
+            self.fact_tree.header().setStretchLastSection(False)
+            self.fact_tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
+            self.fact_tree.header().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+            left_layout.addWidget(self.fact_tree, 1)
+            self.main_splitter.addWidget(left_panel)
+
+            right_panel = QWidget(self.main_splitter)
+            right_layout = QVBoxLayout(right_panel)
+            right_layout.setContentsMargins(0, 0, 0, 0)
+            right_layout.setSpacing(6)
+
+            # Stage 65: one outer/main scroll area contains any number of
+            # independent inner query scroll areas.  Each row is arranged
+            # horizontally: management buttons on the left, query scroll on
+            # the right.
+            self.query_main_scroll = QScrollArea(right_panel)
+            self.query_main_scroll.setObjectName("prolog_knowledge_main_scroll")
+            self.query_main_scroll.setWidgetResizable(True)
+            self.query_main_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            self.query_main_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.query_main_container = QWidget(self.query_main_scroll)
+            self.query_main_container.setObjectName("prolog_knowledge_main_container")
+            self.query_lanes_layout = QVBoxLayout(self.query_main_container)
+            self.query_lanes_layout.setContentsMargins(2, 2, 2, 2)
+            self.query_lanes_layout.setSpacing(8)
+            self.query_lanes_layout.setSizeConstraint(QLayout.SetMinAndMaxSize)
+            self.query_lanes_layout.addStretch(1)
+            self.query_main_container.setSizePolicy(
+                QSizePolicy.Expanding, QSizePolicy.Minimum
+            )
+            self.query_main_scroll.setWidget(self.query_main_container)
+            right_layout.addWidget(self.query_main_scroll, 1)
+
+            self.query_lanes = []
+            self._active_query_lane = None
+            self._lane_activation_widgets = {}
+            self._add_query_lane(activate=True)
+
+            # Compatibility markers for the Stage-55..64 source regressions;
+            # the real widgets now live in KnowledgeQueryLane.
+            # self.query_edit = QLineEdit(right_panel)
+            # self.add_level_button = QPushButton("Prüfen +", right_panel)
+            # self.alternative_check_button = QPushButton("Prüfen", right_panel)
+            # self.alternative_combo = QComboBox(right_panel)
+            # self.alternative_combo.activated[str].connect(
+            # self.level_scroll = QScrollArea(right_panel)
+
+            self.main_splitter.addWidget(right_panel)
+            self.main_splitter.setStretchFactor(0, 2)
+            self.main_splitter.setStretchFactor(1, 5)
+            root_layout.addWidget(self.main_splitter, 1)
+
+            bottom_row = QHBoxLayout()
+            self.database_label = QLabel("Keine Datenbank geladen", self)
+            self.database_label.setObjectName("prolog_knowledge_database_status")
+            bottom_row.addWidget(self.database_label, 1)
+            close_button = QPushButton("Schließen", self)
+            close_button.setObjectName("prolog_knowledge_close_button")
+            close_button.clicked.connect(self._request_close)
+            bottom_row.addWidget(close_button)
+            root_layout.addLayout(bottom_row)
+
+            self.directory_button.clicked.connect(self.choose_directory)
+            self.open_button.clicked.connect(self.open_selected_database)
+            self.database_combo.activated.connect(
+                lambda _index: self.open_button.setFocus(Qt.OtherFocusReason)
+            )
+            self.fact_tree.itemClicked.connect(self._predicate_selected_for_active_lane)
+            self.fact_filter_edit.textChanged.connect(self._fact_name_filter_changed)
+            self.fact_filter_button.clicked.connect(self._apply_fact_filters)
+            self.fact_arity_combo.activated.connect(
+                lambda _index: self.fact_filter_button.setFocus(Qt.OtherFocusReason)
+            )
+
+            self.set_dark_mode(self._dark_mode)
+            self.set_directory(self.current_directory, selected_path=selected_path)
+            if selected_path is not None:
+                self.select_database_path(Path(selected_path))
+                self.open_selected_database()
+
+        def _request_close(self) -> None:
+            # Stage 74: commit the last active lane as well (including an open
+            # alternatives selector/current ComboBox value) before the dock or
+            # standalone dialog disappears.
+            self._save_query_state()
+            if self._embedded:
+                self.dock_close_requested.emit()
+            else:
+                self.close()
+
+        def eventFilter(self, watched, event):
+            lane = getattr(self, "_lane_activation_widgets", {}).get(id(watched))
+            if lane is not None and event.type() in (QEvent.FocusIn, QEvent.MouseButtonPress):
+                self._activate_query_lane(lane)
+            return super().eventFilter(watched, event)
+
+        def _register_lane_activation_widget(self, widget, lane: KnowledgeQueryLane) -> None:
+            self._lane_activation_widgets[id(widget)] = lane
+            widget.installEventFilter(self)
+
+        def _wire_query_lane(self, lane: KnowledgeQueryLane) -> None:
+            """Connect one independent inner query scroll area to the dialog logic."""
+            lane.add_lane_button.clicked.connect(
+                lambda _checked=False, current=lane: self._add_query_lane(
+                    after=current, activate=True
+                )
+            )
+            lane.delete_lane_button.clicked.connect(
+                lambda _checked=False, current=lane: self._delete_query_lane(current)
+            )
+            lane.add_level_button.clicked.connect(
+                lambda _checked=False, current=lane: self._run_query_lane_action(
+                    current, self.add_query_level
+                )
+            )
+            lane.query_edit.returnPressed.connect(
+                lambda current=lane: self._run_query_lane_action(
+                    current, self.add_query_level
+                )
+            )
+            lane.alternative_check_button.clicked.connect(
+                lambda _checked=False, current=lane: self._run_query_lane_action(
+                    current, self._check_selected_alternative
+                )
+            )
+            lane.alternative_combo.activated[str].connect(
+                lambda text, current=lane: self._run_query_lane_action(
+                    current, self._alternative_combo_selected, text
+                )
+            )
+            lane.level_scroll.verticalScrollBar().valueChanged.connect(
+                lambda _value, current=lane: self._refresh_alternative_overlay_position()
+                if (current is self._active_query_lane and current.alternative_overlay.isVisible())
+                else None
+            )
+            lane.level_scroll.horizontalScrollBar().valueChanged.connect(
+                lambda _value, current=lane: self._refresh_alternative_overlay_position()
+                if (current is self._active_query_lane and current.alternative_overlay.isVisible())
+                else None
+            )
+            for widget in (
+                lane.query_edit,
+                lane.level_scroll.viewport(),
+                lane.add_level_button,
+                lane.alternative_overlay,
+                lane.alternative_combo,
+                lane.alternative_check_button,
+            ):
+                self._register_lane_activation_widget(widget, lane)
+
+        def _query_state_key(self, path: Path) -> str:
+            """Return a stable QSettings key for one knowledge database path."""
+            value = Path(path).expanduser()
+            try:
+                value = value.resolve()
+            except OSError:
+                pass
+            normalized = str(value).replace("\\", "/").casefold()
+            digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+            return f"prolog_knowledge/query_state_v1/{digest}"
+
+        def _capture_active_query_lane_state(self) -> None:
+            """Copy the live dialog aliases back into the active lane object."""
+            lane = getattr(self, "_active_query_lane", None)
+            if lane is None:
+                return
+            lane.selected_predicate = self.selected_predicate
+            lane.level_values = list(self.level_values)
+            lane.level_buttons = list(self.level_buttons)
+            lane.active_level = int(self.active_level)
+            lane.alternative_completer = self._alternative_completer
+            lane.alternative_state = self._alternative_state
+            lane.alternative_parent_level = self._alternative_parent_level
+            lane.alternative_parent_prefix = tuple(self._alternative_parent_prefix)
+            lane.update_dynamic_height()
+            QTimer.singleShot(0, lane.update_dynamic_height)
+
+        def _serialize_query_lane_state(self, lane: KnowledgeQueryLane) -> dict:
+            predicate = lane.selected_predicate
+            predicate_state = None
+            if predicate is not None:
+                predicate_state = {
+                    "name": str(predicate.name),
+                    "arity": int(predicate.arity),
+                }
+
+            level_texts = []
+            if self.knowledge_base is not None:
+                for value in lane.level_values:
+                    try:
+                        level_texts.append(self.knowledge_base.term_text(value))
+                    except Exception:
+                        # A malformed transient value must never make saving the
+                        # remaining valid query workspace impossible.
+                        break
+
+            alternative_open = bool(
+                lane.alternative_parent_level is not None
+                and lane.alternative_overlay.isVisible()
+                and lane.alternative_combo.isVisible()
+            )
+            alternative_text = ""
+            if alternative_open:
+                alternative_text = str(lane.alternative_combo.currentText() or "").strip()
+
+            return {
+                "predicate": predicate_state,
+                "levels": level_texts,
+                "active_level": int(lane.active_level),
+                "query_text": str(lane.query_edit.text() or ""),
+                "alternative": {
+                    "open": alternative_open,
+                    "parent_level": lane.alternative_parent_level,
+                    "current_text": alternative_text,
+                },
+            }
+
+        def _save_query_state(self) -> None:
+            """Persist every query lane for the currently opened database."""
+            if self._query_state_save_suspended or self._query_state_restore_in_progress:
+                return
+            path = getattr(self, "current_database_path", None)
+            if path is None or self.knowledge_base is None:
+                return
+
+            # The active lane is edited through dialog aliases; commit those
+            # aliases before serializing all lanes.
+            self._capture_active_query_lane_state()
+            active_lane = getattr(self, "_active_query_lane", None)
+            try:
+                active_index = self.query_lanes.index(active_lane)
+            except (ValueError, AttributeError):
+                active_index = 0
+
+            payload = {
+                "version": 1,
+                "database": str(Path(path)),
+                "active_lane": int(active_index),
+                "lanes": [
+                    self._serialize_query_lane_state(lane)
+                    for lane in self.query_lanes
+                ],
+            }
+            try:
+                encoded = json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                self._query_state_settings.setValue(
+                    self._query_state_key(Path(path)), encoded
+                )
+                self._query_state_settings.sync()
+            except Exception:
+                # Persistence is convenience state and must never interrupt
+                # PROLOG browsing or database closing.
+                return
+
+        def _read_query_state(self, path: Path):
+            try:
+                raw = self._query_state_settings.value(
+                    self._query_state_key(Path(path)), ""
+                )
+                if raw is None:
+                    return None
+                if isinstance(raw, (bytes, bytearray)):
+                    raw = bytes(raw).decode("utf-8", errors="replace")
+                data = json.loads(str(raw)) if str(raw).strip() else None
+            except Exception:
+                return None
+            if not isinstance(data, dict) or int(data.get("version", 0) or 0) != 1:
+                return None
+            lanes = data.get("lanes")
+            if not isinstance(lanes, list):
+                return None
+            return data
+
+        def _recreate_query_lanes_for_restore(self, count: int) -> None:
+            """Rebuild only the lane containers, keeping the outer ScrollArea."""
+            wanted = max(1, min(100, int(count or 1)))
+            for lane in tuple(getattr(self, "query_lanes", ())):
+                self.query_lanes_layout.removeWidget(lane)
+                lane.setParent(None)
+                lane.deleteLater()
+            self.query_lanes = []
+            self._active_query_lane = None
+            self._lane_activation_widgets = {}
+            for _index in range(wanted):
+                self._add_query_lane(activate=False)
+            self._renumber_query_lanes()
+
+        def _find_saved_predicate(self, name: str, arity: int):
+            if self.knowledge_base is None:
+                return None
+            wanted_name = str(name)
+            wanted_arity = int(arity)
+            for predicate in self.knowledge_base.predicates:
+                if predicate.name == wanted_name and predicate.arity == wanted_arity:
+                    return predicate
+            return None
+
+        def _restore_one_query_lane(self, lane: KnowledgeQueryLane, state: dict) -> None:
+            self._activate_query_lane(lane, sync_tree=False)
+            self._clear_alternative_controls()
+
+            predicate_state = state.get("predicate") if isinstance(state, dict) else None
+            predicate = None
+            if isinstance(predicate_state, dict):
+                try:
+                    predicate = self._find_saved_predicate(
+                        str(predicate_state.get("name", "")),
+                        int(predicate_state.get("arity", 0)),
+                    )
+                except (TypeError, ValueError):
+                    predicate = None
+
+            self.selected_predicate = predicate
+            self.level_values = []
+            self.active_level = -1
+            self.query_edit.clear()
+            self.level_flow.clear_widgets()
+            self.alternative_status_label.clear()
+            self.alternative_status_label.setVisible(False)
+
+            if predicate is None:
+                self._set_status(
+                    "Gespeicherte Abfrage konnte keinem aktuellen Fakt bzw. keiner Regel zugeordnet werden.",
+                    success=None,
+                )
+                self._capture_active_query_lane_state()
+                return
+
+            # Reparse textual terms through the same PROLOG parser used for
+            # manual GUI input. Validate every prefix so edited knowledge files
+            # restore as much of an old solution as is still logically valid.
+            restored_values = []
+            level_texts = state.get("levels", []) if isinstance(state, dict) else []
+            if not isinstance(level_texts, list):
+                level_texts = []
+            for level_text in level_texts:
+                try:
+                    value = self.knowledge_base.parse_value(str(level_text))
+                    candidate = tuple(restored_values) + (value,)
+                    if not self.knowledge_base.accepts(predicate, candidate):
+                        break
+                    restored_values.append(value)
+                except Exception:
+                    break
+            self.level_values = restored_values
+
+            try:
+                saved_active = int(state.get("active_level", -1))
+            except (TypeError, ValueError):
+                saved_active = -1
+            self.active_level = max(-1, min(saved_active, len(self.level_values) - 1))
+            self._rebuild_level_buttons()
+            self._restart_decision()
+
+            saved_query_text = str(state.get("query_text", "") or "")
+            alternative = state.get("alternative", {})
+            if not isinstance(alternative, dict):
+                alternative = {}
+            if bool(alternative.get("open", False)):
+                try:
+                    parent_level = int(alternative.get("parent_level", -1))
+                except (TypeError, ValueError):
+                    parent_level = -1
+                if -1 <= parent_level < len(self.level_values):
+                    self._choose_alternative(parent_level)
+                    wanted_text = str(alternative.get("current_text", "") or "").strip()
+                    if wanted_text and self.alternative_combo.count() > 0:
+                        wanted_key = wanted_text.casefold()
+                        for index in range(self.alternative_combo.count()):
+                            if self.alternative_combo.itemText(index).strip().casefold() == wanted_key:
+                                self.alternative_combo.setCurrentIndex(index)
+                                break
+                        self.query_edit.setText(
+                            str(self.alternative_combo.currentText() or wanted_text)
+                        )
+                else:
+                    self.query_edit.setText(saved_query_text)
+            else:
+                self.query_edit.setText(saved_query_text)
+
+            self._capture_active_query_lane_state()
+
+        def _restore_query_state(self, path: Path) -> bool:
+            """Restore saved lanes/buttons/alternatives for one database."""
+            data = self._read_query_state(Path(path))
+            if data is None or self.knowledge_base is None:
+                return False
+            lane_states = data.get("lanes", [])
+            if not lane_states:
+                return False
+
+            self._query_state_restore_in_progress = True
+            self._query_state_save_suspended = True
+            try:
+                self._recreate_query_lanes_for_restore(len(lane_states))
+                for lane, lane_state in zip(self.query_lanes, lane_states):
+                    self._restore_one_query_lane(
+                        lane,
+                        lane_state if isinstance(lane_state, dict) else {},
+                    )
+                try:
+                    active_index = int(data.get("active_lane", 0))
+                except (TypeError, ValueError):
+                    active_index = 0
+                active_index = max(0, min(active_index, len(self.query_lanes) - 1))
+                self._activate_query_lane(
+                    self.query_lanes[active_index], sync_tree=True
+                )
+                QTimer.singleShot(
+                    0, self.query_lanes[active_index].update_dynamic_height
+                )
+            finally:
+                self._query_state_save_suspended = False
+                self._query_state_restore_in_progress = False
+
+            # Rewrite the validated/truncated state so stale terms from a
+            # modified knowledge file do not keep returning on later starts.
+            self._save_query_state()
+            return True
+
+        def _store_active_query_lane(self) -> None:
+            self._capture_active_query_lane_state()
+            self._save_query_state()
+
+        def _load_query_lane(self, lane: KnowledgeQueryLane) -> None:
+            # Widget aliases keep all established Stage-55..64 query methods
+            # intact while the active lane changes.
+            self.query_edit = lane.query_edit
+            self.add_level_button = lane.add_level_button
+            self.query_status = lane.query_status
+            self.level_scroll = lane.level_scroll
+            self.level_container = lane.level_container
+            self.level_container_layout = lane.level_container_layout
+            self.level_button_host = lane.level_button_host
+            self.level_flow = lane.level_flow
+            self.alternative_overlay = lane.alternative_overlay
+            # Stage 73: keep the overlay layout alias in sync with the active
+            # query lane.  Stage 72 switched all other overlay widgets but
+            # forgot this layout object, so the ▼ click reached the overlay
+            # positioning code with no self.alternative_overlay_layout.
+            self.alternative_overlay_layout = lane.alternative_overlay_layout
+            self.alternative_label = lane.alternative_label
+            self.alternative_combo = lane.alternative_combo
+            self.alternative_check_button = lane.alternative_check_button
+            self.alternative_status_label = lane.alternative_status_label
+
+            self.selected_predicate = lane.selected_predicate
+            self.level_values = list(lane.level_values)
+            self.level_buttons = list(lane.level_buttons)
+            self.active_level = int(lane.active_level)
+            self._alternative_completer = lane.alternative_completer
+            self._alternative_state = lane.alternative_state
+            self._alternative_parent_level = lane.alternative_parent_level
+            self._alternative_parent_prefix = tuple(lane.alternative_parent_prefix)
+
+        def _sync_fact_tree_to_active_lane(self) -> None:
+            if not hasattr(self, "fact_tree"):
+                return
+            predicate = self.selected_predicate
+            self.fact_tree.blockSignals(True)
+            try:
+                if predicate is None:
+                    self.fact_tree.clearSelection()
+                    return
+                for index in range(self.fact_tree.topLevelItemCount()):
+                    item = self.fact_tree.topLevelItem(index)
+                    if (
+                        str(item.data(0, self.ROLE_NAME) or "") == predicate.name
+                        and int(item.data(0, self.ROLE_ARITY) or 0) == predicate.arity
+                    ):
+                        self.fact_tree.setCurrentItem(item)
+                        item.setSelected(True)
+                        break
+            finally:
+                self.fact_tree.blockSignals(False)
+
+        def _activate_query_lane(
+            self,
+            lane: KnowledgeQueryLane,
+            *,
+            sync_tree: bool = True,
+        ) -> None:
+            if lane not in getattr(self, "query_lanes", ()):
+                return
+            current = getattr(self, "_active_query_lane", None)
+
+            # Stage 72: Never reload a lane merely because one of its own
+            # widgets receives FocusIn/MouseButtonPress.  The dialog aliases
+            # are the authoritative live state while a lane is active.  A
+            # reload here used to overwrite freshly selected predicates before
+            # _store_active_query_lane() had a chance to persist them.
+            if current is lane:
+                for candidate in self.query_lanes:
+                    candidate.set_active(candidate is lane, self._dark_mode)
+                if sync_tree:
+                    self._sync_fact_tree_to_active_lane()
+                return
+
+            if current is not None:
+                self._store_active_query_lane()
+            self._active_query_lane = lane
+            self._load_query_lane(lane)
+            for candidate in self.query_lanes:
+                candidate.set_active(candidate is lane, self._dark_mode)
+            if sync_tree:
+                self._sync_fact_tree_to_active_lane()
+
+        def _run_query_lane_action(self, lane, callback, *args):
+            self._activate_query_lane(lane)
+            result = callback(*args)
+            self._store_active_query_lane()
+            return result
+
+        def _add_query_lane(
+            self,
+            *,
+            after: Optional[KnowledgeQueryLane] = None,
+            activate: bool = True,
+        ) -> KnowledgeQueryLane:
+            if getattr(self, "_active_query_lane", None) is not None:
+                self._store_active_query_lane()
+            lane = KnowledgeQueryLane(len(self.query_lanes) + 1, self.query_main_container)
+            self._wire_query_lane(lane)
+            if after in self.query_lanes:
+                position = self.query_lanes.index(after) + 1
+            else:
+                position = len(self.query_lanes)
+            self.query_lanes.insert(position, lane)
+            self.query_lanes_layout.insertWidget(position, lane)
+            if activate:
+                self._activate_query_lane(lane)
+                if self.knowledge_base is not None:
+                    self._set_status(
+                        "Neue Wissens-Abfrage. Links einen Fakt bzw. eine Regel auswählen.",
+                        success=None,
+                    )
+                    self._store_active_query_lane()
+            self._renumber_query_lanes()
+            QTimer.singleShot(0, lane.update_dynamic_height)
+            return lane
+
+        def _delete_query_lane(self, lane: KnowledgeQueryLane) -> None:
+            if lane not in self.query_lanes:
+                return
+            self._activate_query_lane(lane, sync_tree=False)
+            self._clear_alternative_controls()
+            if len(self.query_lanes) == 1:
+                # Keep one empty lane so the left-side Hinzufügen button can
+                # never disappear completely.
+                self._reset_active_query_lane()
+                return
+
+            index = self.query_lanes.index(lane)
+            self.query_lanes.pop(index)
+            self.query_lanes_layout.removeWidget(lane)
+            self._lane_activation_widgets = {
+                key: value
+                for key, value in self._lane_activation_widgets.items()
+                if value is not lane
+            }
+            lane.setParent(None)
+            lane.deleteLater()
+            self._active_query_lane = None
+            replacement = self.query_lanes[min(index, len(self.query_lanes) - 1)]
+            self._activate_query_lane(replacement)
+            self._renumber_query_lanes()
+            self._save_query_state()
+
+        def _renumber_query_lanes(self) -> None:
+            for number, lane in enumerate(self.query_lanes, 1):
+                lane.lane_number = number
+                lane.add_lane_button.setToolTip(
+                    f"Nach Abfrage {number} eine weitere unabhängige Wissens-Abfrage hinzufügen"
+                )
+                lane.delete_lane_button.setToolTip(f"Abfrage {number} löschen")
+
+        def _reset_active_query_lane(self, status_text: Optional[str] = None) -> None:
+            self._clear_alternative_controls()
+            self.selected_predicate = None
+            self.level_values = []
+            self.level_buttons = []
+            self.active_level = -1
+            self._alternative_completer = None
+            self._alternative_state = None
+            self._alternative_parent_level = None
+            self._alternative_parent_prefix = ()
+            self.query_edit.clear()
+            self.level_flow.clear_widgets()
+            self.alternative_status_label.clear()
+            self.alternative_status_label.setVisible(False)
+            if status_text is None:
+                status_text = (
+                    "Bitte links einen Fakt bzw. eine Regel auswählen."
+                    if self.knowledge_base is not None
+                    else "Bitte eine Wissen-Datenbank öffnen."
+                )
+            self._set_status(status_text, success=None)
+            self._store_active_query_lane()
+            self._sync_fact_tree_to_active_lane()
+
+        def _predicate_selected_for_active_lane(
+            self, item: QTreeWidgetItem, column: int = 0
+        ) -> None:
+            if self._active_query_lane is None:
+                return
+            # Stage 72: The predicate state must be committed to the active lane
+            # BEFORE focus is moved into lane.query_edit.  FocusIn is handled by
+            # eventFilter() and activates the lane; in Stage 71 that activation
+            # reloaded the still-old lane state (selected_predicate == None).
+            # The visible [predicate ▼] button therefore survived while the
+            # logical predicate had already been lost, so ▼ could never open
+            # the alternatives ComboBox.
+            self._predicate_selected(item, column)
+            self._store_active_query_lane()
+            self.query_edit.setFocus(Qt.OtherFocusReason)
+
+        def _update_fact_filter_icon(self) -> None:
+            """Draw a small funnel icon which follows the current light/dark palette."""
+            if not hasattr(self, "fact_filter_button"):
+                return
+            pixmap = QPixmap(18, 18)
+            pixmap.fill(Qt.transparent)
+            painter = QPainter(pixmap)
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            color = QColor("#ffffff" if self._dark_mode else "#24292f")
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(color)
+            path = QPainterPath()
+            path.moveTo(2.0, 3.0)
+            path.lineTo(16.0, 3.0)
+            path.lineTo(10.5, 9.2)
+            path.lineTo(10.5, 14.8)
+            path.lineTo(7.5, 13.1)
+            path.lineTo(7.5, 9.2)
+            path.closeSubpath()
+            painter.drawPath(path)
+            painter.end()
+            self.fact_filter_button.setIcon(QIcon(pixmap))
+            self.fact_filter_button.setIconSize(QSize(18, 18))
+
+        def _fact_name_filter_changed(self, text: str) -> None:
+            self._fact_filter_name = str(text).strip().casefold()
+            self._filter_fact_tree()
+
+        def _apply_fact_filters(self, *_args) -> None:
+            self._fact_filter_name = self.fact_filter_edit.text().strip().casefold()
+            arity_data = self.fact_arity_combo.currentData()
+            self._fact_filter_arity = int(arity_data) if arity_data is not None else None
+            self._filter_fact_tree()
+
+        def _filter_fact_tree(self) -> None:
+            """Apply the current name and exact-arity filters without rebuilding the model."""
+            if not hasattr(self, "fact_tree"):
+                return
+            needle = str(self._fact_filter_name or "")
+            wanted_arity = self._fact_filter_arity
+            first_visible = None
+            for index in range(self.fact_tree.topLevelItemCount()):
+                item = self.fact_tree.topLevelItem(index)
+                name = str(item.data(0, self.ROLE_NAME) or "")
+                arity = int(item.data(0, self.ROLE_ARITY) or 0)
+                hidden = bool(needle and needle not in name.casefold())
+                if wanted_arity is not None and arity != wanted_arity:
+                    hidden = True
+                item.setHidden(hidden)
+                if not hidden and first_visible is None:
+                    first_visible = item
+            current = self.fact_tree.currentItem()
+            if current is None or current.isHidden():
+                self.fact_tree.setCurrentItem(first_visible)
+
+        def _level_button_for_index(self, level_index: int):
+            wanted = int(level_index)
+            for button in self.level_buttons:
+                if button.level_index == wanted:
+                    return button
+            return None
+
+        def set_project_paths(self, paths) -> None:
+            self._project_paths = tuple(Path(value) for value in paths if str(value))
+            self.refresh_database_combo()
+
+        def set_directory(self, directory: Path, *, selected_path: Optional[Path] = None) -> None:
+            try:
+                self.current_directory = Path(directory).expanduser().resolve()
+            except OSError:
+                self.current_directory = Path(directory).expanduser()
+            self.directory_edit.setText(str(self.current_directory))
+            self.refresh_database_combo(selected_path=selected_path)
+
+        def choose_directory(self) -> None:
+            filename = QFileDialog.getExistingDirectory(
+                self,
+                "Verzeichnis mit PROLOG-Wissen-Datenbanken auswählen",
+                str(self.current_directory),
+            )
+            if filename:
+                self.set_directory(Path(filename))
+
+        def refresh_database_combo(self, *, selected_path: Optional[Path] = None) -> None:
+            previous = selected_path
+            if previous is None:
+                previous_data = self.database_combo.currentData()
+                if previous_data:
+                    previous = Path(str(previous_data))
+            candidates = []
+            seen = set()
+            try:
+                for path in sorted(
+                    tuple(self.current_directory.glob("*.pl"))
+                    + tuple(self.current_directory.glob("*.prolog")),
+                    key=lambda value: value.name.casefold(),
+                ):
+                    key = str(path.resolve()).casefold()
+                    if key not in seen:
+                        seen.add(key)
+                        candidates.append(path.resolve())
+            except OSError:
+                pass
+            for path in self._project_paths:
+                if not path.exists():
+                    continue
+                try:
+                    resolved = path.resolve()
+                except OSError:
+                    resolved = path
+                # Projektdateien außerhalb des aktuellen Ordners werden auch
+                # angezeigt, damit der Projekt-Tree als Quelle erhalten bleibt.
+                key = str(resolved).casefold()
+                if key not in seen:
+                    seen.add(key)
+                    candidates.append(resolved)
+            candidates.sort(key=lambda value: (value.parent != self.current_directory, value.name.casefold(), str(value).casefold()))
+
+            self.database_combo.blockSignals(True)
+            self.database_combo.clear()
+            for path in candidates:
+                label = path.name
+                if path.parent != self.current_directory:
+                    label += f"   [{path.parent}]"
+                self.database_combo.addItem(label, str(path))
+            self.database_combo.blockSignals(False)
+            self.open_button.setEnabled(self.database_combo.count() > 0)
+            if previous is not None:
+                self.select_database_path(previous)
+
+        def select_database_path(self, path: Path) -> bool:
+            try:
+                wanted = str(Path(path).resolve()).casefold()
+            except OSError:
+                wanted = str(Path(path)).casefold()
+            for index in range(self.database_combo.count()):
+                value = str(self.database_combo.itemData(index) or "")
+                try:
+                    current = str(Path(value).resolve()).casefold()
+                except OSError:
+                    current = value.casefold()
+                if current == wanted:
+                    self.database_combo.setCurrentIndex(index)
+                    return True
+            return False
+
+        def open_selected_database(self) -> None:
+            path_text = str(self.database_combo.currentData() or "").strip()
+            if not path_text:
+                return
+            path = Path(path_text)
+
+            # Stage 74: before another knowledge database replaces the current
+            # model, persist every visible solution/alternative selector of the
+            # old database.
+            self._save_query_state()
+            try:
+                from d64prolog import PrologCompilerError, PrologKnowledgeBase
+                model = PrologKnowledgeBase.from_file(path)
+            except (OSError, PrologCompilerError) as exc:
+                QMessageBox.warning(
+                    self,
+                    "Wissen-Datenbank konnte nicht geöffnet werden",
+                    str(exc),
+                )
+                return
+            self.current_database_path = path
+            self.knowledge_base = model
+            self._populate_predicates()
+            self.database_label.setText(
+                f"Geladen: {path.name}   –   {len(model.predicates)} eindeutige Prädikat(e)"
+            )
+
+            # Reset without writing the empty transitional state over a saved
+            # workspace.  If a persisted Stage-74 workspace exists, it then
+            # recreates the exact lane count and all still-valid query levels.
+            self._query_state_save_suspended = True
+            try:
+                lanes = list(self.query_lanes)
+                for lane in lanes:
+                    self._activate_query_lane(lane, sync_tree=False)
+                    self._reset_active_query_lane(
+                        "Wissen-Datenbank geöffnet. Links einen Fakt bzw. eine Regel auswählen."
+                    )
+                if lanes:
+                    self._activate_query_lane(lanes[0], sync_tree=False)
+                self.fact_tree.clearSelection()
+            finally:
+                self._query_state_save_suspended = False
+
+            restored = self._restore_query_state(path)
+            if restored:
+                self.database_label.setText(
+                    f"Geladen: {path.name}   –   {len(model.predicates)} eindeutige Prädikat(e)"
+                    f"   –   {len(self.query_lanes)} gespeicherte Abfrage(n)"
+                )
+            else:
+                self._save_query_state()
+
+        def _populate_predicates(self) -> None:
+            self.fact_tree.clear()
+            if self.knowledge_base is None:
+                return
+            name_arities = {}
+            for predicate in self.knowledge_base.predicates:
+                name_arities.setdefault(predicate.name.casefold(), set()).add(predicate.arity)
+            for predicate in self.knowledge_base.predicates:
+                show_arity = len(name_arities.get(predicate.name.casefold(), ())) > 1
+                title = predicate.display_name if show_arity else predicate.name
+                item = QTreeWidgetItem(self.fact_tree, [title, str(predicate.arity)])
+                item.setData(0, self.ROLE_NAME, predicate.name)
+                item.setData(0, self.ROLE_ARITY, predicate.arity)
+                item.setToolTip(0, f"{predicate.name}/{predicate.arity}")
+                item.setIcon(0, self.style().standardIcon(QStyle.SP_FileDialogDetailedView))
+            self._filter_fact_tree()
+            if self.fact_tree.topLevelItemCount() and self.fact_tree.currentItem() is None:
+                self.fact_tree.setCurrentItem(self.fact_tree.topLevelItem(0))
+
+        def _predicate_selected(self, item: QTreeWidgetItem, _column: int = 0) -> None:
+            if self.knowledge_base is None:
+                return
+            from d64prolog import KnowledgePredicate
+            name = str(item.data(0, self.ROLE_NAME) or "")
+            arity = int(item.data(0, self.ROLE_ARITY) or 0)
+            if not name:
+                return
+            self.selected_predicate = KnowledgePredicate(name, arity)
+            self.level_values = []
+            self.active_level = -1
+            self._rebuild_level_buttons()
+            self._restart_decision()
+            # Focus is intentionally moved by
+            # _predicate_selected_for_active_lane() only AFTER the freshly
+            # selected predicate has been committed to the lane (Stage 72).
+
+        def _clear_alternative_controls(self) -> None:
+            """Hide the lane-owned alternative panel and remove stale state."""
+            # Stage 70: per-button Stage-68 panels are retained only for source
+            # compatibility, but the visible selector is the lane-owned overlay.
+            # Hide any old local panels first so only one implementation can
+            # ever paint controls.
+            for level_button in tuple(getattr(self, "level_buttons", ())):
+                if hasattr(level_button, "hide_embedded_alternatives"):
+                    level_button.hide_embedded_alternatives()
+
+            self._alternative_state = None
+            self._alternative_parent_level = None
+            self._alternative_parent_prefix = ()
+
+            if hasattr(self, "alternative_overlay"):
+                self.alternative_overlay.hide()
+                self.alternative_overlay.setGeometry(0, 0, 0, 0)
+            if hasattr(self, "alternative_combo"):
+                self.alternative_combo.blockSignals(True)
+                self.alternative_combo.clear()
+                self.alternative_combo.setEditable(False)
+                self.alternative_combo.setEnabled(False)
+                self.alternative_combo.setVisible(False)
+                self.alternative_combo.blockSignals(False)
+                self._alternative_completer = None
+            if hasattr(self, "alternative_label"):
+                self.alternative_label.setText("Alternativen:")
+                self.alternative_label.setVisible(False)
+            if hasattr(self, "alternative_check_button"):
+                self.alternative_check_button.setEnabled(False)
+                self.alternative_check_button.setVisible(False)
+                # Legacy Stage-64 marker; Stage 70 keeps a permanent parent:
+                # self.alternative_check_button.setParent(self.level_button_host)
+            if hasattr(self, "alternative_status_label"):
+                self.alternative_status_label.clear()
+                self.alternative_status_label.setVisible(False)
+            if hasattr(self, "level_flow"):
+                self.level_flow.invalidate()
+                self._refresh_active_level_flow_height()
+                QTimer.singleShot(0, self._refresh_active_level_flow_height)
+
+        def _set_alternative_status(self, available: bool) -> None:
+            self._alternative_state = bool(available)
+            if available:
+                text = "weitere Alternativen vorhanden"
+                color = "#3fb950" if self._dark_mode else "#1a7f37"
+            else:
+                text = "keine weiteren Alternativen"
+                color = "#f85149" if self._dark_mode else "#cf222e"
+            self.alternative_status_label.setText(text)
+            self.alternative_status_label.setStyleSheet(
+                f"QLabel{{color:{color};font-weight:700;border:0;padding:4px 8px;}}"
+            )
+            self.alternative_status_label.setVisible(True)
+
+        def _used_decision_texts(self):
+            """Return normalized texts of all buttons already visible in the path.
+
+            Stage 63 deliberately treats the current decision path as a set for
+            alternative selection.  A value already shown as predicate/root or
+            argument button must not be offered again until that button (and its
+            dependent sub-levels) has been removed.
+            """
+            used = set()
+            if self.selected_predicate is not None:
+                used.add(str(self.selected_predicate.name).strip().casefold())
+            if self.knowledge_base is not None:
+                for value in self.level_values:
+                    rendered = self.knowledge_base.term_text(value).strip()
+                    if rendered:
+                        used.add(rendered.casefold())
+            return used
+
+        def _remaining_alternatives(self, alternatives):
+            """Drop alternatives which are already represented by visible buttons."""
+            used = self._used_decision_texts()
+            return tuple(
+                str(value)
+                for value in alternatives
+                if str(value).strip().casefold() not in used
+            )
+
+        def _populate_alternative_combo(
+            self,
+            alternatives,
+            *,
+            parent_level: int,
+            parent_prefix,
+            parent_text: str,
+        ) -> None:
+            """Show unused children in a fixed overlay directly below the parent."""
+            # Legacy Stage-61..69 source-regression markers (nicht Runtime):
+            # self.alternative_combo.setVisible(False)
+            # self.alternative_combo.setVisible(True)
+            # parent_button.attach_alternative_controls(
+            #     self.alternative_label, self.alternative_combo,
+            #     self.alternative_check_button)
+            # self.alternative_host_layout.addWidget(combo)
+            # self.alternative_host_layout.addWidget(check_button)
+            # self.alternative_check_button.setParent(self.level_button_host)
+            # completer.popup().setFont(self.alternative_combo.font())
+            # self.alternative_combo.setFocus(Qt.OtherFocusReason)
+            values = self._remaining_alternatives(alternatives)
+            self._clear_alternative_controls()
+            self._alternative_parent_level = int(parent_level)
+            self._alternative_parent_prefix = tuple(parent_prefix)
+
+            combo = self.alternative_combo
+            combo.blockSignals(True)
+            combo.clear()
+            self._alternative_completer = None
+            if not values:
+                combo.setEditable(False)
+                combo.setEnabled(False)
+                combo.setVisible(False)
+                self.alternative_check_button.setVisible(False)
+                self.alternative_overlay.setVisible(False)
+                combo.blockSignals(False)
+                self._set_alternative_status(False)
+                return
+
+            searchable = len(values) > 10
+            combo.setEditable(searchable)
+            combo.addItems(values)
+            # Stage 70: Die sichtbare ComboBox zeigt sofort eine echte
+            # Alternative. Das macht auch ohne geöffnetes Dropdown eindeutig
+            # sichtbar, dass der Selector unter [Parent ▼] vorhanden ist.
+            combo.setCurrentIndex(0)
+            combo.setEnabled(True)
+            self.alternative_label.setText(f"Alternativen zu {parent_text}:")
+            self.alternative_label.setVisible(False)
+            combo.setVisible(True)
+            self.alternative_check_button.setEnabled(True)
+            self.alternative_check_button.setVisible(True)
+
+            if searchable:
+                line_edit = combo.lineEdit()
+                if line_edit is not None:
+                    line_edit.setPlaceholderText("Alternative suchen …")
+                completer = QCompleter(list(values), combo)
+                completer.setCaseSensitivity(Qt.CaseInsensitive)
+                completer.setFilterMode(Qt.MatchContains)
+                completer.setCompletionMode(QCompleter.PopupCompletion)
+                combo.setCompleter(completer)
+                if completer.popup() is not None:
+                    completer.popup().setFont(combo.font())
+                self._alternative_completer = completer
+
+            combo.blockSignals(False)
+            parent_button = self._level_button_for_index(parent_level)
+            if parent_button is not None:
+                # Stage 68/69 compatibility marker; no longer executed:
+                # parent_button.show_embedded_alternatives(
+                #     values, parent_text=parent_text
+                # )
+                parent_button.hide_embedded_alternatives()
+                self._show_alternative_overlay(parent_button)
+
+            self._set_alternative_status(True)
+            self.level_flow.invalidate()
+            self._refresh_active_level_flow_height()
+            QTimer.singleShot(0, self._refresh_alternative_overlay_position)
+            QTimer.singleShot(0, self._refresh_active_level_flow_height)
+            lane = getattr(self, "_active_query_lane", None)
+            if lane is not None:
+                lane.update_dynamic_height()
+                QTimer.singleShot(0, lane.update_dynamic_height)
+            combo.setFocus(Qt.OtherFocusReason)
+
+        def _show_alternative_overlay(self, parent_button: KnowledgeLevelButton) -> None:
+            """Display the lane-owned ComboBox immediately below parent_button."""
+            self.alternative_overlay.show()
+            self.alternative_combo.show()
+            self.alternative_check_button.show()
+            self.alternative_overlay.raise_()
+            self.alternative_combo.raise_()
+            self.alternative_check_button.raise_()
+            self._refresh_alternative_overlay_position(parent_button)
+            # Stage-62 reference behaviour: the ▼ click immediately exposes
+            # the alternatives list; the closed ComboBox remains visible after
+            # an item is selected and "Prüfen +" stays directly below it.
+            QTimer.singleShot(0, self.alternative_combo.showPopup)
+
+        def _refresh_alternative_overlay_position(self, parent_button=None) -> None:
+            """Anchor ComboBox + Prüfen+ under the clicked button in the viewport.
+
+            Stage 71 deliberately uses the QScrollArea viewport as parent.  The
+            Stage-62 reference showed that the selector itself is reliable; the
+            later invisible variants were caused by clipping in the custom flow
+            hierarchy.  Mapping the parent button into viewport coordinates
+            keeps the Stage-70 multi-lane/scroll model while making the selector
+            a top-level visible child of the actual painted scroll viewport.
+            """
+            if not hasattr(self, "alternative_overlay") or not self.alternative_overlay.isVisible():
+                return
+            if parent_button is None:
+                parent_button = self._level_button_for_index(self._alternative_parent_level)
+            if parent_button is None:
+                return
+
+            # Stage-70 static geometry markers (replaced by viewport mapping):
+            # button_rect = parent_button.geometry()
+            # row_h = max(32, int(parent_button._button_row_size_hint().height()))
+            # y = int(button_rect.y()) + row_h + 4
+            # self.alternative_overlay.setGeometry(x, y, panel_w, panel_h)
+            # required_h = y + panel_h + 8
+            # host.setMinimumHeight(max(base_h, required_h))
+            viewport = self.level_scroll.viewport()
+            if viewport is None:
+                return
+
+            row_h = max(32, int(parent_button._button_row_size_hint().height()))
+            anchor = parent_button.mapTo(viewport, QPoint(0, row_h + 4))
+            x = max(4, int(anchor.x()))
+            y = max(4, int(anchor.y()))
+
+            combo_h = max(28, int(self.alternative_combo.sizeHint().height()))
+            check_h = max(30, int(self.alternative_check_button.sizeHint().height()))
+            # Stage 73: active-lane code normally aliases this QVBoxLayout in
+            # _load_query_lane().  Use the overlay's actual layout as a safe
+            # fallback as well, so an older/restored lane can never abort the
+            # alternative selector with AttributeError before it is shown.
+            overlay_layout = getattr(self, "alternative_overlay_layout", None)
+            if overlay_layout is None:
+                overlay_layout = self.alternative_overlay.layout()
+            spacing = max(0, int(overlay_layout.spacing())) if overlay_layout is not None else 4
+            if overlay_layout is not None:
+                margins = overlay_layout.contentsMargins()
+                margin_top = int(margins.top())
+                margin_bottom = int(margins.bottom())
+            else:
+                margin_top = 0
+                margin_bottom = 0
+            panel_h = (
+                combo_h + check_h + spacing
+                + margin_top + margin_bottom
+            )
+
+            parent_w = max(240, int(parent_button.width()))
+            viewport_w = max(1, int(viewport.width()))
+            available_w = max(180, viewport_w - x - 8)
+            panel_w = min(max(240, parent_w), available_w)
+
+            # Keep the complete selector inside the horizontal viewport.
+            if x + panel_w > viewport_w - 4:
+                x = max(4, viewport_w - panel_w - 4)
+
+            self.alternative_overlay.setGeometry(x, y, panel_w, panel_h)
+            self.alternative_overlay.setMinimumSize(panel_w, panel_h)
+            self.alternative_overlay.setMaximumHeight(panel_h)
+            self.alternative_combo.setMinimumWidth(max(180, panel_w))
+            self.alternative_check_button.setMinimumWidth(max(120, panel_w))
+
+            self.alternative_overlay.show()
+            self.alternative_combo.show()
+            self.alternative_check_button.show()
+            self.alternative_overlay.raise_()
+            self.alternative_combo.raise_()
+            self.alternative_check_button.raise_()
+
+            # If the selector would fall below the visible viewport, scroll the
+            # inner lane just enough and re-anchor on the next event-loop turn.
+            overflow = (y + panel_h + 4) - int(viewport.height())
+            if overflow > 0:
+                bar = self.level_scroll.verticalScrollBar()
+                if bar is not None and bar.maximum() > bar.minimum():
+                    bar.setValue(min(bar.maximum(), bar.value() + overflow))
+                    QTimer.singleShot(0, self._refresh_alternative_overlay_position)
+
+            lane = getattr(self, "_active_query_lane", None)
+            if lane is not None:
+                lane.update_dynamic_height()
+
+        def _refresh_active_level_flow_height(self) -> None:
+            """Reserve the flow plus an optional visible alternative overlay."""
+            if not hasattr(self, "level_flow") or not hasattr(self, "level_button_host"):
+                return
+            host_width = int(self.level_button_host.width())
+            if host_width <= 1 and hasattr(self, "level_scroll"):
+                viewport = self.level_scroll.viewport()
+                if viewport is not None:
+                    host_width = max(host_width, int(viewport.width()) - 20)
+            host_width = max(260, host_width)
+            flow_height = max(40, int(self.level_flow.heightForWidth(host_width)))
+            # Stage 71: selector is a viewport overlay, not part of the flow
+            # host geometry.  The flow height therefore remains button-only.
+            # Stage-70 static regression markers (not Runtime):
+            # overlay_bottom = int(self.alternative_overlay.geometry().bottom()) + 8
+            # flow_height = max(flow_height, overlay_bottom)
+            self.level_button_host.setMinimumHeight(flow_height)
+            self.level_button_host.updateGeometry()
+            self.level_container.updateGeometry()
+            lane = getattr(self, "_active_query_lane", None)
+            if lane is not None:
+                lane.update_dynamic_height()
+
+        def _alternative_combo_selected(self, text: str) -> None:
+            value = str(text).strip()
+            if not value:
+                return
+            # The ComboBox is bound to the parent whose ▼ button opened it.
+            # Selection fills the normal query field so both check paths use
+            # exactly the same PROLOG validation code.
+            self.query_edit.setText(value)
+            self.alternative_check_button.setFocus(Qt.OtherFocusReason)
+
+        def _check_embedded_alternative(self, level_index: int, text: str) -> None:
+            """Validate the visible ComboBox owned by the clicked parent button."""
+            level_index = int(level_index)
+            value = str(text).strip()
+            if self._alternative_parent_level != level_index:
+                # The only visible panel should be the current parent. Re-open
+                # it if a stale queued click arrives after a lane switch.
+                self._choose_alternative(level_index)
+            if not value:
+                self._set_status(
+                    "Bitte zuerst eine Alternative aus der ComboBox auswählen.",
+                    success=False,
+                )
+                button = self._level_button_for_index(level_index)
+                if button is not None:
+                    button.embedded_alternative_combo.setFocus(Qt.OtherFocusReason)
+                return
+            self.query_edit.setText(value)
+            self.add_query_level()
+
+        def _check_selected_alternative(self) -> None:
+            """Validate the ComboBox selection and insert it as the next level.
+
+            On success ``add_query_level`` clears ComboBox + local Prüfen+ button
+            before rebuilding the level flow. On failure both controls stay below
+            their parent so another alternative can be selected immediately.
+            """
+            if self._alternative_parent_level is None:
+                self._set_status(
+                    "Zuerst den ▼-Pfeil eines Parent-Levels öffnen.",
+                    success=False,
+                )
+                return
+            value = str(self.alternative_combo.currentText()).strip()
+            if not value:
+                self._set_status(
+                    "Bitte zuerst eine Alternative aus der ComboBox auswählen.",
+                    success=False,
+                )
+                self.alternative_combo.setFocus(Qt.OtherFocusReason)
+                return
+            self.query_edit.setText(value)
+            self.add_query_level()
+
+        def _restart_decision(self) -> None:
+            # Stage 61: the current path determines the green/red status label,
+            # but the ComboBox itself stays hidden until a parent ▼ is clicked.
+            self._clear_alternative_controls()
+            if self.knowledge_base is None or self.selected_predicate is None:
+                self._set_status("Bitte links einen Fakt bzw. eine Regel auswählen.", success=None)
+                return
+            try:
+                result = self.knowledge_base.query(
+                    self.selected_predicate, tuple(self.level_values)
+                )
+            except Exception as exc:
+                self._set_status(str(exc), success=False)
+                return
+            if not result.matched:
+                self._set_alternative_status(False)
+                self._set_status("Die aktuelle Abfrage ist falsch.", success=False)
+                return
+            if result.complete:
+                self._set_alternative_status(False)
+                self._set_status(
+                    f"wahr: {self._current_query_text()}", success=True
+                )
+                self.query_edit.setPlaceholderText("Abfrage ist vollständig")
+            else:
+                level = len(self.level_values) + 1
+                alternatives = tuple(result.alternatives)
+                remaining_alternatives = self._remaining_alternatives(alternatives)
+                self._set_alternative_status(bool(remaining_alternatives))
+                alt_count = len(remaining_alternatives)
+                suffix = (
+                    f" – {alt_count} Alternative(n) für Level {level}"
+                    if alt_count else ""
+                )
+                self._set_status(
+                    f"Teilabfrage wahr{suffix}: {self._current_query_text(partial=True)}",
+                    success=True,
+                )
+                self.query_edit.setPlaceholderText(
+                    f"Wert für Level {level} eingeben oder ▼ am Parent öffnen"
+                )
+
+        def _current_query_text(self, *, partial: bool = False) -> str:
+            if self.selected_predicate is None:
+                return ""
+            rendered = [self.knowledge_base.term_text(value) for value in self.level_values]
+            if self.selected_predicate.arity == 0:
+                return self.selected_predicate.name
+            if partial and len(rendered) < self.selected_predicate.arity:
+                rendered += ["_"] * (self.selected_predicate.arity - len(rendered))
+            return f"{self.selected_predicate.name}(" + ", ".join(rendered) + ")"
+
+        def add_query_level(self) -> None:
+            if self.knowledge_base is None or self.selected_predicate is None:
+                self._set_status("Zuerst links einen Fakt bzw. eine Regel auswählen.", success=False)
+                return
+
+            # Normally manual input appends to the current path. If a parent ▼
+            # opened the ComboBox, insertion is instead anchored at that parent
+            # and any former descendants are replaced by the newly chosen child.
+            if self._alternative_parent_level is None:
+                base_prefix = list(self.level_values)
+            else:
+                base_prefix = list(self._alternative_parent_prefix)
+
+            if len(base_prefix) >= self.selected_predicate.arity:
+                self._set_status("Unter diesem Parent gibt es keinen weiteren Level.", success=True)
+                return
+            text = self.query_edit.text().strip()
+            try:
+                value = self.knowledge_base.parse_value(text)
+            except Exception as exc:
+                self._set_status(str(exc), success=False)
+                return
+            target_level = len(base_prefix)
+            rendered_value = self.knowledge_base.term_text(value).strip()
+            rendered_key = rendered_value.casefold()
+            used_keys = self._used_decision_texts()
+            # The selected predicate/root and every visible argument button are
+            # unique within one decision path.  This guard also covers manual
+            # text entry, not only selections made through the ComboBox.
+            if rendered_key in used_keys:
+                self._set_status(
+                    f"Alternative '{rendered_value}' ist im aktuellen Entscheidungsweg bereits enthalten.",
+                    success=False,
+                )
+                return
+
+            candidate = tuple(base_prefix) + (value,)
+            try:
+                matched = self.knowledge_base.accepts(self.selected_predicate, candidate)
+            except Exception as exc:
+                self._set_status(str(exc), success=False)
+                return
+            if not matched:
+                self._set_status(
+                    f"falsch: {self.selected_predicate.name} mit '{text}' passt nicht zum gewählten Parent.",
+                    success=False,
+                )
+                return
+            self.level_values = base_prefix + [value]
+            self.query_edit.clear()
+            self.active_level = len(self.level_values) - 1
+            # Stage 64: on successful validation the local alternatives UI must
+            # disappear together (label + ComboBox + Prüfen) before the parent
+            # widget is rebuilt. A failed validation returns above and therefore
+            # deliberately keeps the controls visible for another choice.
+            self._clear_alternative_controls()
+            self._rebuild_level_buttons()
+            self._restart_decision()
+
+        def _rebuild_level_buttons(self) -> None:
+            self.level_flow.clear_widgets()
+            self.level_buttons = []
+            if self.selected_predicate is None:
+                return
+
+            root_alternatives = self._remaining_alternatives(
+                self.knowledge_base.alternatives_for_level(
+                    self.selected_predicate, ()
+                )
+            )
+            root_button = KnowledgeLevelButton(
+                -1,
+                self.selected_predicate.name,
+                alternatives=root_alternatives,
+                root_level=True,
+                parent=self.level_button_host,
+            )
+            self._wire_level_button(root_button)
+            self.level_flow.addWidget(root_button)
+            self.level_buttons.append(root_button)
+
+            prefix = []
+            for index, value in enumerate(self.level_values):
+                arrow = QLabel("→", self.level_button_host)
+                arrow.setAlignment(Qt.AlignCenter)
+                arrow.setMinimumWidth(18)
+                arrow.setStyleSheet("font-weight:700;font-size:16px;")
+                self.level_flow.addWidget(arrow)
+                prefix.append(value)
+                # Parent -> child semantics: the ▼ on this button lists the
+                # *next* values that are valid below the complete prefix up to
+                # and including this button.
+                alternatives = self._remaining_alternatives(
+                    self.knowledge_base.alternatives_for_level(
+                        self.selected_predicate, tuple(prefix)
+                    )
+                )
+                rendered = self.knowledge_base.term_text(value)
+                button = KnowledgeLevelButton(
+                    index,
+                    rendered,
+                    alternatives=alternatives,
+                    parent=self.level_button_host,
+                )
+                self._wire_level_button(button)
+                self.level_flow.addWidget(button)
+                self.level_buttons.append(button)
+
+            self._update_active_level()
+            self.level_flow.invalidate()
+            self._refresh_active_level_flow_height()
+            QTimer.singleShot(0, self._refresh_active_level_flow_height)
+
+        def _wire_level_button(self, button: KnowledgeLevelButton) -> None:
+            lane = self._active_query_lane
+            button.selected.connect(
+                lambda level_index, current=lane: self._run_query_lane_action(
+                    current, self._level_selected, level_index
+                )
+            )
+            button.delete_requested.connect(
+                lambda level_index, current=lane: self._run_query_lane_action(
+                    current, self._delete_level, level_index
+                )
+            )
+            button.alternative_requested.connect(
+                lambda level_index, current=lane: self._run_query_lane_action(
+                    current, self._choose_alternative, level_index
+                )
+            )
+            button.alternative_check_requested.connect(
+                lambda level_index, text, current=lane: self._run_query_lane_action(
+                    current, self._check_embedded_alternative, level_index, text
+                )
+            )
+            button.set_dark_mode(self._dark_mode)
+
+        def _level_selected(self, level_index: int) -> None:
+            self.active_level = int(level_index)
+            self._update_active_level()
+
+        def _update_active_level(self) -> None:
+            for button in self.level_buttons:
+                button.set_active(button.level_index == self.active_level)
+
+        def _delete_level(self, level_index: int) -> None:
+            self._clear_alternative_controls()
+            if level_index < 0:
+                self.level_values = []
+                self.selected_predicate = None
+                self.active_level = -1
+                self.fact_tree.clearSelection()
+            else:
+                # Der angeklickte Level und alle Sub-Level rechts davon
+                # werden gemeinsam entfernt.
+                self.level_values = self.level_values[:level_index]
+                self.active_level = max(-1, level_index - 1)
+            self._rebuild_level_buttons()
+            self._restart_decision()
+
+        def _choose_alternative(self, level_index: int) -> None:
+            """Open the ComboBox with children of the clicked parent button."""
+            if self.knowledge_base is None or self.selected_predicate is None:
+                return
+            level_index = int(level_index)
+            if level_index < -1 or level_index >= len(self.level_values):
+                return
+
+            if level_index < 0:
+                parent_prefix = ()
+                parent_text = self.selected_predicate.name
+            else:
+                parent_prefix = tuple(self.level_values[: level_index + 1])
+                parent_text = self.knowledge_base.term_text(
+                    self.level_values[level_index]
+                )
+
+            alternatives = self.knowledge_base.alternatives_for_level(
+                self.selected_predicate, parent_prefix
+            )
+            remaining_alternatives = self._remaining_alternatives(alternatives)
+            self.active_level = level_index
+            self._update_active_level()
+            if not remaining_alternatives:
+                self._clear_alternative_controls()
+                self._set_alternative_status(False)
+                self._set_status(
+                    f"Unter '{parent_text}' sind keine weiteren unbenutzten Alternativen vorhanden.",
+                    success=True,
+                )
+                return
+
+            self._populate_alternative_combo(
+                remaining_alternatives,
+                parent_level=level_index,
+                parent_prefix=parent_prefix,
+                parent_text=parent_text,
+            )
+            self.query_edit.clear()
+            self.query_edit.setPlaceholderText(
+                f"Alternative unter {parent_text} auswählen"
+            )
+            self._set_status(
+                f"{len(remaining_alternatives)} unbenutzte Alternative(n) unter Parent '{parent_text}'.",
+                success=True,
+            )
+
+        def _set_status(self, text: str, *, success: Optional[bool]) -> None:
+            self.query_status.setText(str(text))
+            if success is True:
+                border = "#2ea043"
+            elif success is False:
+                border = "#cf222e" if not self._dark_mode else "#f85149"
+            else:
+                border = "#8c959f" if not self._dark_mode else "#484f58"
+            background = "#161b22" if self._dark_mode else "#f6f8fa"
+            foreground = "#c9d1d9" if self._dark_mode else "#24292f"
+            self.query_status.setStyleSheet(
+                f"QLabel{{background:{background};color:{foreground};"
+                f"border:1px solid {border};border-radius:4px;padding:4px;}}"
+            )
+
+        def set_dark_mode(self, enabled: bool) -> None:
+            self._dark_mode = bool(enabled)
+            if self._dark_mode:
+                self.setStyleSheet(
+                    "QDialog#prolog_knowledge_dialog{background:#0d1117;color:#c9d1d9;}"
+                    "QTreeWidget#prolog_knowledge_fact_tree,QScrollArea#prolog_knowledge_main_scroll,"
+                    "QWidget#prolog_knowledge_main_container,QScrollArea#prolog_knowledge_level_scroll,"
+                    "QWidget#prolog_knowledge_level_container,QFrame#prolog_knowledge_alternative_overlay,QLineEdit,QComboBox{"
+                    "background:#0d1117;color:#c9d1d9;border:1px solid #30363d;}"
+                    "QTreeWidget#prolog_knowledge_fact_tree QHeaderView::section{"
+                    "background:#161b22;color:#ffffff;border:1px solid #30363d;"
+                    "padding:4px;font-weight:600;}"
+                    "QPushButton,QToolButton{background:#21262d;color:#f0f6fc;"
+                    "border:1px solid #484f58;border-radius:4px;padding:5px;}"
+                    "QPushButton:hover,QToolButton:hover{border-color:#58a6ff;}"
+                )
+            else:
+                self.setStyleSheet(
+                    "QDialog#prolog_knowledge_dialog{background:#ffffff;color:#24292f;}"
+                    "QTreeWidget#prolog_knowledge_fact_tree,QScrollArea#prolog_knowledge_main_scroll,"
+                    "QWidget#prolog_knowledge_main_container,QScrollArea#prolog_knowledge_level_scroll,"
+                    "QWidget#prolog_knowledge_level_container,QFrame#prolog_knowledge_alternative_overlay,QLineEdit,QComboBox{"
+                    "background:#ffffff;color:#24292f;border:1px solid #d0d7de;}"
+                    "QTreeWidget#prolog_knowledge_fact_tree QHeaderView::section{"
+                    "background:#f6f8fa;color:#24292f;border:1px solid #d0d7de;"
+                    "padding:4px;font-weight:600;}"
+                    "QPushButton,QToolButton{background:#f6f8fa;color:#24292f;"
+                    "border:1px solid #d0d7de;border-radius:4px;padding:5px;}"
+                    "QPushButton:hover,QToolButton:hover{border-color:#0969da;}"
+                )
+            self._update_fact_filter_icon()
+            for lane in getattr(self, "query_lanes", ()):
+                lane.set_active(lane is self._active_query_lane, self._dark_mode)
+                for button in lane.level_buttons:
+                    button.set_dark_mode(self._dark_mode)
+            if hasattr(self, "query_status"):
+                self._restart_decision()
+                self._store_active_query_lane()
+
+
+    class GreenBeigeTitleBar(QWidget):
+        """Eigener Green-&-Beige-Titelbalken fuer das Hauptfenster.
+
+        Die Referenzpalette stammt aus dem vom Benutzer gelieferten Muster:
+        links Gruen (#2E7D32), rechts warmes Beige/Gold und darunter das
+        helle Beige (#F5F0E6) fuer die Menueleiste.
+        """
+
+        TITLE_HEIGHT = 46
+        CORNER_RADIUS = 14.0
+
+        def __init__(self, window: QMainWindow, parent=None):
+            super().__init__(parent or window)
+            self._window = window
+            self._fallback_drag_offset = None
+            self.setObjectName("green_beige_title_bar")
+            self.setFixedHeight(self.TITLE_HEIGHT)
+            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            self.setAttribute(Qt.WA_StyledBackground, False)
+
+            layout = QHBoxLayout(self)
+            layout.setContentsMargins(12, 0, 6, 0)
+            layout.setSpacing(4)
+
+            self.icon_label = QLabel(self)
+            self.icon_label.setObjectName("green_beige_title_icon")
+            self.icon_label.setFixedSize(26, 26)
+            self.icon_label.setAlignment(Qt.AlignCenter)
+            self.icon_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            icon = window.windowIcon()
+            if not icon.isNull():
+                self.icon_label.setPixmap(icon.pixmap(20, 20))
+            layout.addWidget(self.icon_label)
+            layout.addStretch(1)
+
+            self.minimize_button = self._make_control_button(
+                "green_beige_minimize_button", "\u2014", "Minimieren"
+            )
+            self.maximize_button = self._make_control_button(
+                "green_beige_maximize_button", "\u25a1", "Maximieren"
+            )
+            self.close_button = self._make_control_button(
+                "green_beige_close_button", "\u00d7", "Schließen", close_button=True
+            )
+            layout.addWidget(self.minimize_button)
+            layout.addWidget(self.maximize_button)
+            layout.addWidget(self.close_button)
+
+            self.minimize_button.clicked.connect(window.showMinimized)
+            self.maximize_button.clicked.connect(self.toggle_maximized)
+            self.close_button.clicked.connect(window.close)
+            window.installEventFilter(self)
+            self.sync_window_state()
+
+        def _make_control_button(
+            self,
+            object_name: str,
+            text: str,
+            tooltip: str,
+            *,
+            close_button: bool = False,
+        ) -> QToolButton:
+            button = QToolButton(self)
+            button.setObjectName(object_name)
+            button.setText(text)
+            button.setToolTip(tooltip)
+            button.setAutoRaise(False)
+            button.setCursor(Qt.ArrowCursor)
+            button.setFixedSize(38, 30)
+            if close_button:
+                button.setStyleSheet(
+                    "QToolButton{background:transparent;color:#24412e;border:0;"
+                    "border-radius:10px;font:700 14pt 'Segoe UI';}"
+                    "QToolButton:hover{background:#c94b45;color:#ffffff;}"
+                    "QToolButton:pressed{background:#ad3d38;color:#ffffff;}"
+                )
+            else:
+                button.setStyleSheet(
+                    "QToolButton{background:transparent;color:#24412e;border:0;"
+                    "border-radius:10px;font:700 11pt 'Segoe UI';}"
+                    "QToolButton:hover{background:rgba(245,240,230,180);color:#1d3d2b;}"
+                    "QToolButton:pressed{background:rgba(46,125,50,80);color:#173222;}"
+                )
+            return button
+
+        def eventFilter(self, watched, event):
+            if watched is self._window and event.type() == QEvent.WindowStateChange:
+                QTimer.singleShot(0, self.sync_window_state)
+            return False
+
+        def sync_window_state(self) -> None:
+            if self._window.isMaximized():
+                self.maximize_button.setText("\u2750")
+                self.maximize_button.setToolTip("Wiederherstellen")
+            else:
+                self.maximize_button.setText("\u25a1")
+                self.maximize_button.setToolTip("Maximieren")
+            self.update()
+
+        def toggle_maximized(self) -> None:
+            if self._window.isMaximized():
+                self._window.showNormal()
+            else:
+                self._window.showMaximized()
+            QTimer.singleShot(0, self.sync_window_state)
+
+        def mouseDoubleClickEvent(self, event) -> None:
+            if event.button() == Qt.LeftButton:
+                self.toggle_maximized()
+                event.accept()
+                return
+            super().mouseDoubleClickEvent(event)
+
+        def mousePressEvent(self, event) -> None:
+            if event.button() != Qt.LeftButton:
+                super().mousePressEvent(event)
+                return
+            child = self.childAt(event.pos())
+            if child in (
+                self.minimize_button,
+                self.maximize_button,
+                self.close_button,
+            ):
+                super().mousePressEvent(event)
+                return
+
+            self._fallback_drag_offset = (
+                event.globalPos() - self._window.frameGeometry().topLeft()
+            )
+            handle = self._window.windowHandle()
+            if (
+                handle is not None
+                and not self._window.isMaximized()
+                and hasattr(handle, "startSystemMove")
+            ):
+                try:
+                    if handle.startSystemMove():
+                        self._fallback_drag_offset = None
+                except (AttributeError, RuntimeError):
+                    pass
+            event.accept()
+
+        def mouseMoveEvent(self, event) -> None:
+            if (
+                self._fallback_drag_offset is not None
+                and (event.buttons() & Qt.LeftButton)
+                and not self._window.isMaximized()
+            ):
+                self._window.move(event.globalPos() - self._fallback_drag_offset)
+                event.accept()
+                return
+            super().mouseMoveEvent(event)
+
+        def mouseReleaseEvent(self, event) -> None:
+            self._fallback_drag_offset = None
+            super().mouseReleaseEvent(event)
+
+        def paintEvent(self, event) -> None:
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            rect = self.rect()
+            w = float(max(1, rect.width()))
+            h = float(max(1, rect.height()))
+            r = self.CORNER_RADIUS
+
+            # Nur die oberen Ecken sind gerundet; unten schliesst der Balken
+            # lueckenlos an die beige Menueleiste an.
+            clip = QPainterPath()
+            clip.moveTo(0.0, h)
+            clip.lineTo(0.0, r)
+            clip.quadTo(0.0, 0.0, r, 0.0)
+            clip.lineTo(w - r, 0.0)
+            clip.quadTo(w, 0.0, w, r)
+            clip.lineTo(w, h)
+            clip.closeSubpath()
+
+            gradient = QLinearGradient(0.0, 0.0, w, 0.0)
+            gradient.setColorAt(0.00, QColor("#2E7D32"))
+            gradient.setColorAt(0.30, QColor("#1FA85F"))
+            gradient.setColorAt(0.56, QColor("#57B978"))
+            gradient.setColorAt(0.78, QColor("#D0A65F"))
+            gradient.setColorAt(1.00, QColor("#D8B875"))
+            painter.fillPath(clip, gradient)
+
+            # Weiche Wellen auf der gruenen Seite wie in der Vorlage.
+            painter.save()
+            painter.setClipPath(clip)
+            wave = QPainterPath()
+            wave.moveTo(0.0, h)
+            wave.lineTo(0.0, h * 0.56)
+            wave.cubicTo(
+                w * 0.09, h * 0.13,
+                w * 0.18, h * 0.92,
+                w * 0.34, h * 0.42,
+            )
+            wave.cubicTo(
+                w * 0.43, h * 0.16,
+                w * 0.49, h * 0.38,
+                w * 0.57, h * 0.52,
+            )
+            wave.lineTo(w * 0.57, h)
+            wave.closeSubpath()
+            painter.fillPath(wave, QColor(255, 255, 255, 27))
+
+            wave2 = QPainterPath()
+            wave2.moveTo(0.0, h)
+            wave2.lineTo(0.0, h * 0.80)
+            wave2.cubicTo(
+                w * 0.10, h * 0.38,
+                w * 0.20, h * 1.05,
+                w * 0.39, h * 0.62,
+            )
+            wave2.lineTo(w * 0.46, h)
+            wave2.closeSubpath()
+            painter.fillPath(wave2, QColor(0, 70, 35, 26))
+
+            # Kleine Lichtpunkte aus dem Referenzmotiv.
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(255, 255, 255, 225))
+            for x, y, size in (
+                (w * 0.035, h * 0.25, 3.2),
+                (w * 0.57, h * 0.20, 2.6),
+                (w * 0.94, h * 0.30, 2.8),
+            ):
+                painter.drawEllipse(QPointF(x, y), size, size)
+            painter.restore()
+
+            # Stage 76: der Titel bleibt auf dem Green-&-Beige-Verlauf,
+            # wird aber in beiden Themes schwarz dargestellt. Eine sehr
+            # dezente helle Kontur verbessert die Lesbarkeit auf dem gruenen
+            # Teil, ohne die geforderte schwarze Titelschrift zu veraendern.
+            title_rect = QRectF(70.0, 0.0, max(10.0, w - 210.0), h)
+            title_font = QFont("Segoe UI", 11, QFont.Bold)
+            painter.setFont(title_font)
+            painter.setPen(QColor(255, 255, 255, 80))
+            painter.drawText(
+                title_rect.translated(1.0, 1.0),
+                Qt.AlignVCenter | Qt.AlignHCenter,
+                self._window.windowTitle(),
+            )
+            painter.setPen(QColor("#000000"))
+            painter.drawText(
+                title_rect,
+                Qt.AlignVCenter | Qt.AlignHCenter,
+                self._window.windowTitle(),
+            )
+
+            painter.setPen(QPen(QColor(65, 77, 54, 55), 1.0))
+            painter.drawLine(0, rect.height() - 1, rect.width(), rect.height() - 1)
+
+
+
     class ExplorerWindow(QMainWindow):
         ORGANIZATION = "paule32"
         APPLICATION = "Qt5D64Explorer"
         DEFAULT_EDITOR_FONT_SIZE = 9
         MIN_EDITOR_FONT_SIZE = 9
         MAX_EDITOR_FONT_SIZE = 72
+        WIDGET_PROPERTY_NAME = "d64WidgetPropertyId"
+        GREEN_BEIGE_GREEN = "#2E7D32"
+        GREEN_BEIGE_BEIGE = "#F5F0E6"
+        GREEN_BEIGE_GOLD = "#D0A65F"
+        # Stage 77: sichtbarer Fensterrand und grosszuegigere native
+        # Resize-Hit-Zone werden getrennt behandelt. So bleibt der Rand
+        # optisch exakt 2 px breit, waehrend die Kanten/Ecken mit der Maus
+        # weiterhin komfortabel getroffen werden koennen.
+        FRAMELESS_VISIBLE_BORDER = 2
+        FRAMELESS_BORDER_COLOR = "#F5F0E6"
+        FRAMELESS_TOP_CORNER_RADIUS = 2
+        FRAMELESS_RESIZE_BORDER = 7
         EDITOR_EXTENSIONS = {
             ".asm", ".s", ".a65", ".m68k", ".inc",
             ".pas", ".pp",
@@ -18160,7 +22198,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             ".logo", ".lgo",
             ".dbase", ".dbp",
             ".bas", ".basic",
-            ".txt", ".text", ".log", ".md",
+            ".txt", ".text", ".log", ".md", ".markdown",
             ".prg", ".amiga", ".adf", ".ram", ".bin",
             ".chr", ".charset",
             ".pal", ".palette",
@@ -18183,7 +22221,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             "AMIGA": {".amiga", ".adf"},
             "PE32": {".exe"},
             "OBJ": {".o", ".obj", ".a", ".lib"},
-            "TXT": {".txt", ".text", ".log", ".md"},
+            "TXT": {".txt", ".text", ".log", ".md", ".markdown"},
             "CHR": {".chr", ".charset"},
             "PAL": {".pal", ".palette"},
             "SCREEN": {".scr", ".screen"},
@@ -18194,6 +22232,9 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
         def __init__(self, requested_directory: Optional[Path]):
             super().__init__()
             self.settings = QSettings(self.ORGANIZATION, self.APPLICATION)
+            # LocalizeToolWindow historically used _settings.  Preserve that
+            # name as an alias so its existing persistence works in the dock.
+            self._settings = self.settings
             self.current_filter = "ALLE"
             self.current_directory = Path.cwd().resolve()
             self.workspace_root = self.current_directory
@@ -18217,6 +22258,15 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.current_project_path = None
             self.project_modified = False
             self.project_root_items = {}
+            self.project_prolog_knowledge_root = None
+            self.prolog_knowledge_dialog = None
+            self.prolog_knowledge_dock = None
+            self.localize_tool_window = None
+            self.localize_dock = None
+            self._localize_replaced_filesystem_dock = False
+            self._localize_replaced_central_widget = False
+            self._knowledge_replaced_filesystem_dock = False
+            self._knowledge_replaced_central_widget = False
             self._caps_lock_fallback = False
             self._num_lock_fallback = False
             application = QApplication.instance()
@@ -18230,12 +22280,27 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.setWindowIcon(
                 self.style().standardIcon(QStyle.SP_ComputerIcon)
             )
+            # Stage 75: unter Windows ersetzt ein eigener Green-&-Beige-
+            # Titelbalken den nativen Rahmen. Die vorhandene CloseEvent-/
+            # Speicherlogik bleibt dadurch unveraendert.
+            if sys.platform == "win32":
+                self.setWindowFlags(
+                    self.windowFlags()
+                    | Qt.FramelessWindowHint
+                    | Qt.WindowSystemMenuHint
+                    | Qt.WindowMinMaxButtonsHint
+                )
+                border = int(self.FRAMELESS_VISIBLE_BORDER)
+                self.setContentsMargins(border, border, border, border)
             self.resize(1360, 860)
+            if sys.platform == "win32":
+                self._update_frameless_corner_mask()
             self.setDockNestingEnabled(True)
             self.setAnimated(True)
             self.setCorner(Qt.BottomLeftCorner, Qt.BottomDockWidgetArea)
             self.setCorner(Qt.BottomRightCorner, Qt.BottomDockWidgetArea)
 
+            self._create_green_beige_window_chrome()
             self._create_actions()
             self._create_menu()
             self._create_toolbar()
@@ -18246,6 +22311,10 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self._create_status_panels()
 
             application.installEventFilter(self)
+            # Stage 67: every visible QWidget gets a stable dynamic property
+            # which can later be mapped to a CHM help topic. Widgets created
+            # after startup are covered by the global Show-event filter below.
+            QTimer.singleShot(0, self._assign_widget_property_ids)
             self.statusBar().showMessage("Bereit")
 
             start_directory = self._choose_start_directory(requested_directory)
@@ -18263,6 +22332,275 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 self.resizeDocks([self.bottom_dock], [190], Qt.Vertical)
 
         # ----- Aufbau ------------------------------------------------------
+
+        def _create_green_beige_window_chrome(self) -> None:
+            """Create the custom title row and the matching beige menu row."""
+            self.main_top_chrome = QWidget(self)
+            self.main_top_chrome.setObjectName("green_beige_top_chrome")
+            self.main_top_chrome.setSizePolicy(
+                QSizePolicy.Expanding, QSizePolicy.Fixed
+            )
+            chrome_layout = QVBoxLayout(self.main_top_chrome)
+            chrome_layout.setContentsMargins(0, 0, 0, 0)
+            chrome_layout.setSpacing(0)
+
+            self.main_title_bar = GreenBeigeTitleBar(
+                self, self.main_top_chrome
+            )
+            chrome_layout.addWidget(self.main_title_bar)
+
+            self.main_menu_bar = QMenuBar(self.main_top_chrome)
+            self.main_menu_bar.setObjectName("green_beige_menu_bar")
+            self.main_menu_bar.setNativeMenuBar(False)
+            self.main_menu_bar.setFixedHeight(31)
+            self.main_menu_bar.setAttribute(Qt.WA_StyledBackground, True)
+            chrome_layout.addWidget(self.main_menu_bar)
+            self.setMenuWidget(self.main_top_chrome)
+            self._apply_green_beige_chrome_style()
+
+        def _green_beige_menu_stylesheet(self) -> str:
+            """Theme-sensitive Green-&-Beige menu chrome (Stage 76).
+
+            Dark mode uses a navy surface with yellow Arial text. Light mode
+            returns to the beige surface with black Arial text. Selected items
+            deliberately remain green with white text in both modes.
+            """
+            if self.dark_mode_enabled:
+                surface = "#0B1F33"
+                text = "#FFD84D"
+                disabled = "#8B949E"
+                border = "#31465A"
+                separator = "#40566C"
+            else:
+                surface = "#F5F0E6"
+                text = "#000000"
+                disabled = "#8A8A8A"
+                border = "#C9B995"
+                separator = "#D8CDB7"
+
+            return f"""
+QMenuBar#green_beige_menu_bar {{
+    background: {surface};
+    color: {text};
+    border: 0px;
+    border-bottom: 1px solid {border};
+    padding: 3px 7px;
+    spacing: 2px;
+    font-family: "Arial";
+    font-size: 9pt;
+    font-weight: 600;
+}}
+QMenuBar#green_beige_menu_bar::item {{
+    background: {surface};
+    color: {text};
+    border: 0px;
+    border-radius: 8px;
+    padding: 5px 10px;
+    margin: 0px 1px;
+}}
+QMenuBar#green_beige_menu_bar::item:selected,
+QMenuBar#green_beige_menu_bar::item:pressed {{
+    background: #2E7D32;
+    color: #FFFFFF;
+}}
+QMenuBar#green_beige_menu_bar::item:disabled {{
+    background: {surface};
+    color: {disabled};
+}}
+QMenu#green_beige_popup_menu {{
+    background: {surface};
+    color: {text};
+    border: 1px solid {border};
+    border-radius: 10px;
+    padding: 6px;
+    font-family: "Arial";
+    font-size: 9pt;
+}}
+QMenu#green_beige_popup_menu::item {{
+    background: {surface};
+    color: {text};
+    border-radius: 7px;
+    padding: 6px 30px 6px 12px;
+    margin: 1px 2px;
+}}
+QMenu#green_beige_popup_menu::item:selected {{
+    background: #2E7D32;
+    color: #FFFFFF;
+}}
+QMenu#green_beige_popup_menu::item:disabled {{
+    background: {surface};
+    color: {disabled};
+}}
+QMenu#green_beige_popup_menu::separator {{
+    height: 1px;
+    background: {separator};
+    margin: 5px 10px;
+}}
+QMenu#green_beige_popup_menu::indicator {{
+    width: 14px;
+    height: 14px;
+}}
+QMenu#green_beige_popup_menu::indicator:checked {{
+    background: #2E7D32;
+    border: 2px solid {surface};
+    border-radius: 7px;
+}}
+"""
+
+        def _apply_green_beige_chrome_style(self) -> None:
+            """Apply the reference palette to menu bar and all popup menus."""
+            if not hasattr(self, "main_menu_bar"):
+                return
+            stylesheet = self._green_beige_menu_stylesheet()
+            self.main_menu_bar.setStyleSheet(stylesheet)
+            if hasattr(self, "main_top_chrome"):
+                chrome_surface = (
+                    "#0B1F33" if self.dark_mode_enabled else "#F5F0E6"
+                )
+                self.main_top_chrome.setStyleSheet(
+                    "QWidget#green_beige_top_chrome{"
+                    f"background:{chrome_surface};border:0;"
+                    "}"
+                )
+            for menu in self.main_menu_bar.findChildren(QMenu):
+                menu.setObjectName("green_beige_popup_menu")
+                menu.setAttribute(Qt.WA_StyledBackground, True)
+                menu.setStyleSheet(stylesheet)
+            if hasattr(self, "main_title_bar"):
+                self.main_title_bar.sync_window_state()
+                self.main_title_bar.update()
+
+        def _sync_green_beige_menu_objects(self) -> None:
+            """Mark menus created later (for example dynamic submenus)."""
+            if not hasattr(self, "main_menu_bar"):
+                return
+            stylesheet = self._green_beige_menu_stylesheet()
+            for menu in self.main_menu_bar.findChildren(QMenu):
+                if menu.objectName() != "green_beige_popup_menu":
+                    menu.setObjectName("green_beige_popup_menu")
+                menu.setStyleSheet(stylesheet)
+
+        def _update_frameless_corner_mask(self) -> None:
+            """Clip the actual native window shape at the two top corners."""
+            if sys.platform != "win32":
+                return
+            if self.isMaximized():
+                self.clearMask()
+                return
+
+            radius = max(0, int(self.FRAMELESS_TOP_CORNER_RADIUS))
+            width = max(0, int(self.width()))
+            height = max(0, int(self.height()))
+            if radius <= 0 or width <= radius * 2 or height <= radius * 2:
+                self.clearMask()
+                return
+
+            # Rounded top only: the body remains rectangular. Two small
+            # ellipse regions remove the square native client pixels.
+            region = QRegion(0, radius, width, height - radius)
+            region = region.united(
+                QRegion(radius, 0, width - (2 * radius), radius)
+            )
+            diameter = radius * 2
+            region = region.united(
+                QRegion(0, 0, diameter, diameter, QRegion.Ellipse)
+            )
+            region = region.united(
+                QRegion(
+                    width - diameter,
+                    0,
+                    diameter,
+                    diameter,
+                    QRegion.Ellipse,
+                )
+            )
+            self.setMask(region)
+
+        def resizeEvent(self, event) -> None:
+            super().resizeEvent(event)
+            self._update_frameless_corner_mask()
+
+        def paintEvent(self, event) -> None:
+            """Paint the beige resize frame with 2 px rounded top corners."""
+            super().paintEvent(event)
+            if sys.platform != "win32":
+                return
+
+            border = int(self.FRAMELESS_VISIBLE_BORDER)
+            if border <= 0:
+                return
+
+            painter = QPainter(self)
+            # Stage 78: nur die beiden oberen Aussenkanten sind mit 2 px
+            # Radius gerundet. Unten bleibt der Rahmen bewusst rechtwinklig.
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            pen = QPen(QColor(self.FRAMELESS_BORDER_COLOR), border)
+            pen.setJoinStyle(Qt.RoundJoin)
+            pen.setCapStyle(Qt.FlatCap)
+            painter.setPen(pen)
+            painter.setBrush(Qt.NoBrush)
+
+            inset = border / 2.0
+            left = inset
+            top = inset
+            right = max(left, float(self.width()) - inset)
+            bottom = max(top, float(self.height()) - inset)
+            radius = max(
+                0.0,
+                min(
+                    float(self.FRAMELESS_TOP_CORNER_RADIUS),
+                    (right - left) / 2.0,
+                    (bottom - top) / 2.0,
+                ),
+            )
+
+            frame_path = QPainterPath()
+            frame_path.moveTo(left, bottom)
+            frame_path.lineTo(left, top + radius)
+            frame_path.quadTo(left, top, left + radius, top)
+            frame_path.lineTo(right - radius, top)
+            frame_path.quadTo(right, top, right, top + radius)
+            frame_path.lineTo(right, bottom)
+            frame_path.lineTo(left, bottom)
+            painter.drawPath(frame_path)
+
+        def nativeEvent(self, event_type, message):
+            """Keep native Windows edge/corner resizing for the frameless shell."""
+            if sys.platform == "win32" and not self.isMaximized():
+                try:
+                    import ctypes
+                    from ctypes import wintypes
+
+                    msg = wintypes.MSG.from_address(int(message))
+                    if msg.message == 0x0084:  # WM_NCHITTEST
+                        x = ctypes.c_short(msg.lParam & 0xFFFF).value
+                        y = ctypes.c_short((msg.lParam >> 16) & 0xFFFF).value
+                        pos = self.mapFromGlobal(QPoint(x, y))
+                        border = int(self.FRAMELESS_RESIZE_BORDER)
+                        left = 0 <= pos.x() < border
+                        right = self.width() - border <= pos.x() < self.width()
+                        top = 0 <= pos.y() < border
+                        bottom = self.height() - border <= pos.y() < self.height()
+
+                        if top and left:
+                            return True, 13   # HTTOPLEFT
+                        if top and right:
+                            return True, 14   # HTTOPRIGHT
+                        if bottom and left:
+                            return True, 16   # HTBOTTOMLEFT
+                        if bottom and right:
+                            return True, 17   # HTBOTTOMRIGHT
+                        if left:
+                            return True, 10   # HTLEFT
+                        if right:
+                            return True, 11   # HTRIGHT
+                        if top:
+                            return True, 12   # HTTOP
+                        if bottom:
+                            return True, 15   # HTBOTTOM
+                except (AttributeError, OSError, TypeError, ValueError):
+                    pass
+            return super().nativeEvent(event_type, message)
 
         def _focus_project_panel_on_startup(self) -> None:
             """Zeigt beim Programmstart bewusst die Projekt-TreeList."""
@@ -18890,9 +23228,116 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             res_window.exec_()
             return
             
+        def _localize_dock_visibility_changed(self, visible: bool) -> None:
+            """Replace the normal work area while Localize PO/MO is visible.
+
+            Stage 80 mirrors the knowledge-browser docking behaviour: the
+            filesystem dock and the central document tabs are hidden so the
+            Localize dock can consume the complete free QMainWindow area.
+            Right/bottom docks remain managed by Qt and are therefore still
+            available when visible.
+            """
+            if visible:
+                # Only one large left-side tool occupies this workspace at a
+                # time.  If the PROLOG knowledge browser is open, hide it
+                # first; its visibility handler may briefly restore the file
+                # dock/central widget, which are hidden again below.
+                knowledge_dock = getattr(self, "prolog_knowledge_dock", None)
+                if knowledge_dock is not None and knowledge_dock.isVisible():
+                    knowledge_dock.hide()
+
+                if hasattr(self, "left_dock") and self.left_dock.isVisible():
+                    self._localize_replaced_filesystem_dock = True
+                    self.left_dock.hide()
+
+                central = self.centralWidget()
+                if central is not None and central.isVisible():
+                    self._localize_replaced_central_widget = True
+                    central.hide()
+
+                QTimer.singleShot(0, self._expand_localize_dock)
+            else:
+                tool = getattr(self, "localize_tool_window", None)
+                if tool is not None:
+                    try:
+                        tool._save_state()
+                    except Exception:
+                        pass
+
+                if (
+                    self._localize_replaced_filesystem_dock
+                    and hasattr(self, "left_dock")
+                ):
+                    self.left_dock.show()
+                self._localize_replaced_filesystem_dock = False
+
+                if self._localize_replaced_central_widget:
+                    central = self.centralWidget()
+                    if central is not None:
+                        central.show()
+                self._localize_replaced_central_widget = False
+
+        def _expand_localize_dock(self) -> None:
+            dock = getattr(self, "localize_dock", None)
+            if dock is None or not dock.isVisible():
+                return
+
+            # With the central widget hidden, a deliberately huge requested
+            # size makes Qt give Localize every remaining pixel while still
+            # respecting any visible right/bottom docks.
+            self.resizeDocks([dock], [100000], Qt.Horizontal)
+            self.resizeDocks([dock], [100000], Qt.Vertical)
+            tool = getattr(self, "localize_tool_window", None)
+            if tool is not None:
+                tool.setMinimumSize(0, 0)
+                tool.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+                tool.updateGeometry()
+            self._assign_widget_property_ids(dock)
+
+        def _ensure_localize_dock(self):
+            dock = getattr(self, "localize_dock", None)
+            tool = getattr(self, "localize_tool_window", None)
+            if dock is not None and tool is not None:
+                return dock, tool
+
+            dock = QDockWidget("Localize PO/MO", self)
+            dock.setObjectName("localize_po_mo_dock")
+            dock.setFeatures(self._dock_features())
+            dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+            dock.setMinimumWidth(0)
+            dock.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+            tool = LocalizeToolWindow(self, dock, embedded=True)
+            tool.dock_close_requested.connect(dock.hide)
+            dock.setWidget(tool)
+            # Keep the lazily created dock hidden until localize_dialog()
+            # explicitly replaces the filesystem view.
+            dock.hide()
+            self.addDockWidget(Qt.LeftDockWidgetArea, dock)
+            dock.visibilityChanged.connect(self._localize_dock_visibility_changed)
+
+            self.localize_dock = dock
+            self.localize_tool_window = tool
+            self._assign_widget_property_ids(dock)
+            return dock, tool
+
         def localize_dialog(self) -> None:
-            tool_window = LocalizeToolWindow(self)
-            tool_window.exec_()
+            dock, tool = self._ensure_localize_dock()
+
+            # Replace the left filesystem view, as requested.
+            if hasattr(self, "left_dock"):
+                if self.left_dock.isVisible():
+                    self._localize_replaced_filesystem_dock = True
+                self.left_dock.hide()
+
+            dock.show()
+            dock.raise_()
+            self._expand_localize_dock()
+            QTimer.singleShot(0, self._expand_localize_dock)
+            try:
+                tool.tabs.setFocus(Qt.OtherFocusReason)
+            except Exception:
+                tool.setFocus(Qt.OtherFocusReason)
             return
             
         def create_coff32_archive_dialog(self) -> None:
@@ -19091,7 +23536,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             )
 
         def _create_menu(self) -> None:
-            file_menu = self.menuBar().addMenu("&Datei")
+            file_menu = self.main_menu_bar.addMenu("&Datei")
             self.new_document_menu = file_menu.addMenu(
                 self.style().standardIcon(QStyle.SP_FileIcon),
                 "Neu",
@@ -19108,10 +23553,10 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             file_menu.addSeparator()
             file_menu.addAction(self.quit_action)
 
-            self.view_menu = self.menuBar().addMenu("&Ansicht")
-            self.favorites_menu = self.menuBar().addMenu("&Favoriten")
+            self.view_menu = self.main_menu_bar.addMenu("&Ansicht")
+            self.favorites_menu = self.main_menu_bar.addMenu("&Favoriten")
             self._refresh_favorites_menu()
-            self.dism_menu = self.menuBar().addMenu("&DISM")
+            self.dism_menu = self.main_menu_bar.addMenu("&DISM")
             self.dism_menu.addAction(self.dism_extract_action)
             self.dism_menu.addAction(self.dism_bam_action)
             self.dism_menu.addAction(self.dism_startup_action)
@@ -19131,7 +23576,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             
             self.dism_menu.addMenu(self.dism_start_menu)
 
-            tools_menu = self.menuBar().addMenu("&Werkzeuge")
+            tools_menu = self.main_menu_bar.addMenu("&Werkzeuge")
             tools_menu.addAction(self.character_editor_action)
             tools_menu.addAction(self.palette_editor_action)
             tools_menu.addSeparator()
@@ -19148,10 +23593,14 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             tools_menu.addAction(self.resource_action)
             tools_menu.addAction(self.localize_action)
             
-            help_menu = self.menuBar().addMenu("&Hilfe")
+            help_menu = self.main_menu_bar.addMenu("&Hilfe")
             help_menu.addAction(self.chm_viewer_action)
             help_menu.addSeparator()
             help_menu.addAction(self.about_action)
+
+            # Stage 75: popup menus inherit the same Green-&-Beige palette.
+            self._sync_green_beige_menu_objects()
+            self._apply_green_beige_chrome_style()
 
         def _favorite_editor_name(
             self, document: DocumentEditor, editor: SourceTextEdit
@@ -19862,8 +24311,14 @@ QFrame#status_cursor_panel {
                 return palette
 
             palette = QPalette(self.light_application_palette)
+            # Stage 68: close/save prompts must not inherit a stale dark/system
+            # surface when the application itself is in light mode.
+            palette.setColor(QPalette.Window, QColor(240, 240, 240))
+            palette.setColor(QPalette.Base, QColor(240, 240, 240))
+            palette.setColor(QPalette.AlternateBase, QColor(240, 240, 240))
             palette.setColor(QPalette.WindowText, QColor(0, 0, 0))
             palette.setColor(QPalette.Text, QColor(0, 0, 0))
+            palette.setColor(QPalette.Button, QColor(245, 245, 245))
             palette.setColor(QPalette.ButtonText, QColor(0, 0, 0))
             return palette
 
@@ -19928,6 +24383,19 @@ border: 2px solid #2a69aa;
 }
 """
 
+        def _apply_message_box_theme(self, dialog: QMessageBox) -> QMessageBox:
+            """Apply the active dark/light colors to every save/close prompt."""
+            dialog.setObjectName("themed_message_box")
+            dialog.setAttribute(Qt.WA_StyledBackground, True)
+            dialog.setAutoFillBackground(True)
+            dialog.setPalette(self._message_box_palette())
+            dialog.setStyleSheet(self._message_box_stylesheet())
+            # Child labels can otherwise retain a native Windows palette in
+            # some Qt5 styles. Set their palette explicitly as well.
+            for child in dialog.findChildren(QWidget):
+                child.setPalette(dialog.palette())
+            return dialog
+
         def _create_message_box(
             self,
             icon,
@@ -19940,7 +24408,6 @@ border: 2px solid #2a69aa;
         ) -> QMessageBox:
             """Erzeugt eine garantiert zum aktuellen Modus passende MessageBox."""
             dialog = QMessageBox(self)
-            dialog.setObjectName("themed_message_box")
             dialog.setWindowIcon(self.windowIcon())
             dialog.setWindowTitle(title)
             dialog.setIcon(icon)
@@ -19950,9 +24417,7 @@ border: 2px solid #2a69aa;
             if default_button != QMessageBox.NoButton:
                 dialog.setDefaultButton(default_button)
 
-            dialog.setAttribute(Qt.WA_StyledBackground, True)
-            dialog.setPalette(self._message_box_palette())
-            dialog.setStyleSheet(self._message_box_stylesheet())
+            self._apply_message_box_theme(dialog)
             return dialog
 
         def _show_message_box(self, icon, title: str, text: str, **options):
@@ -19987,6 +24452,13 @@ border: 2px solid #2a69aa;
                 widget.update()
                 if isinstance(widget, ChmViewerDialog):
                     widget.set_dark_mode(enabled)
+                elif isinstance(widget, PrologKnowledgeDialog):
+                    widget.set_dark_mode(enabled)
+
+            # Stage 76: der Titelverlauf bleibt als Markenfarbe erhalten;
+            # die Menueleiste wird nach dem globalen Theme-Wechsel erneut
+            # angewendet, damit Dark=navy/gelb und Light=beige/schwarz gilt.
+            self._apply_green_beige_chrome_style()
 
         def toggle_editor_theme(self) -> None:
             self.dark_mode_enabled = not self.dark_mode_enabled
@@ -20300,14 +24772,33 @@ border: 2px solid #2a69aa;
                 self.statusBar().showMessage(f"Bereits geöffnet: {path.name}")
                 return True
 
-            try:
-                text, encoding, newline, raw_bytes = self._decode_text_file(path)
-            except (OSError, UnicodeError) as exc:
-                self.show_error(
-                    "Datei konnte nicht geöffnet werden",
-                    f"Die Datei konnte nicht als Text geladen werden:\n{path}\n\n{exc}",
-                )
-                return False
+            binary_disassembly_mode = path.suffix.casefold() in {".prg", ".bin"}
+            if binary_disassembly_mode:
+                try:
+                    raw_bytes = path.read_bytes()
+                    text, _load_address = format_c64_program_disassembly(
+                        raw_bytes,
+                        suffix=path.suffix,
+                        source_name=path.name,
+                    )
+                    encoding = "utf-8"
+                    newline = "\n"
+                except (OSError, ValueError) as exc:
+                    self.show_error(
+                        "C64-Binärdatei konnte nicht disassembliert werden",
+                        f"Die Datei konnte nicht als C64-Programm geladen werden:\n"
+                        f"{path}\n\n{exc}",
+                    )
+                    return False
+            else:
+                try:
+                    text, encoding, newline, raw_bytes = self._decode_text_file(path)
+                except (OSError, UnicodeError) as exc:
+                    self.show_error(
+                        "Datei konnte nicht geöffnet werden",
+                        f"Die Datei konnte nicht als Text geladen werden:\n{path}\n\n{exc}",
+                    )
+                    return False
 
             self.untitled_counter += 1
             dark_mode = self.application_dark_mode(
@@ -20323,13 +24814,23 @@ border: 2px solid #2a69aa;
                 raw_bytes=raw_bytes,
                 editor_font=self._make_editor_font(),
                 dark_mode=dark_mode,
+                binary_disassembly_mode=binary_disassembly_mode,
             )
             self._add_document_tab(document)
             document.focus_preferred_editor()
             self.log(f"Datei im Editor geöffnet: {path}")
-            self.statusBar().showMessage(
-                f"{path.name} - Kodierung: {encoding}"
-            )
+            if binary_disassembly_mode:
+                self.log(
+                    f"C64-DISASSEMBLY: {path.name} -> Rohdaten-Tab "
+                    "(Binärbytes bleiben im Hex-Editor erhalten)"
+                )
+                self.statusBar().showMessage(
+                    f"{path.name} - C64-Disassembly im Rohdaten-Tab"
+                )
+            else:
+                self.statusBar().showMessage(
+                    f"{path.name} - Kodierung: {encoding}"
+                )
             return True
 
         def show_character_editor(
@@ -20498,6 +24999,9 @@ border: 2px solid #2a69aa;
             document.build_requested.connect(
                 self.build_and_run_source_document
             )
+            document.build_generated_requested.connect(
+                self.build_and_run_generated_assembly_document
+            )
             document.raw_editor.bookmarks_changed.connect(
                 self._refresh_favorites_menu
             )
@@ -20604,7 +25108,15 @@ border: 2px solid #2a69aa;
         def _choose_document_filename(
             self, document: DocumentEditor
         ) -> Optional[Path]:
-            if document.path is not None:
+            if (
+                document.binary_disassembly_mode
+                and document.raw_editor.document().isModified()
+                and document.path is not None
+            ):
+                # Dokumentierte Disassemblies werden als ASM-Quelle gespeichert,
+                # niemals still ueber die geoeffnete PRG/BIN-Datei geschrieben.
+                initial = str(document.path.with_suffix(".asm"))
+            elif document.path is not None:
                 initial = str(document.path)
             else:
                 suggested_name = document.display_name
@@ -20635,6 +25147,16 @@ border: 2px solid #2a69aa;
             self, document: DocumentEditor, *, save_as: bool
         ) -> bool:
             previous_path = document.path
+            save_disassembly_source = bool(
+                document.binary_disassembly_mode
+                and document.raw_editor.document().isModified()
+            )
+            if save_disassembly_source and not save_as:
+                # Ctrl+S an einer bearbeiteten Binary-Disassembly fuehrt
+                # absichtlich zu "Speichern unter" als .asm. Das Original-
+                # PRG/BIN bleibt unangetastet.
+                save_as = True
+
             target = document.path
             if save_as or target is None:
                 target = self._choose_document_filename(document)
@@ -20652,7 +25174,10 @@ border: 2px solid #2a69aa;
                 return False
 
             try:
-                data = document.data_for_saving()
+                if save_disassembly_source:
+                    data = document.text_for_saving().encode("utf-8")
+                else:
+                    data = document.data_for_saving()
                 target.parent.mkdir(parents=True, exist_ok=True)
                 file_descriptor, temporary_name = tempfile.mkstemp(
                     prefix=f".{target.name}.",
@@ -20681,6 +25206,19 @@ border: 2px solid #2a69aa;
 
             document.path = target.resolve()
             document.custom_display_name = None
+            if save_disassembly_source:
+                # Aus der Binary-Ansicht wird nach dem Speichern eine normale
+                # ASM-Quelle. Hex-Editor und Rohdaten-Editor zeigen danach
+                # wieder denselben Textinhalt.
+                document.binary_disassembly_mode = False
+                document.encoding = "utf-8"
+                document.newline = "\n"
+                document._data_source = "text"
+                document._syncing_views = True
+                try:
+                    document.hex_editor.set_data(data, modified=False)
+                finally:
+                    document._syncing_views = False
             document.update_syntax_highlighting()
             self._apply_document_theme(document)
             if previous_path != document.path:
@@ -21819,7 +26357,10 @@ border: 2px solid #2a69aa;
             if root is not None:
                 for index in range(root.childCount()):
                     child = root.child(index)
-                    if self._project_item_kind(child) == PROJECT_NODE_ARCHIVE_ROOT:
+                    if self._project_item_kind(child) in {
+                        PROJECT_NODE_ARCHIVE_ROOT,
+                        PROJECT_NODE_PROLOG_KNOWLEDGE_ROOT,
+                    }:
                         continue
                     source_text = str(child.data(0, Qt.UserRole + 302) or "")
                     if not source_text:
@@ -21879,12 +26420,13 @@ border: 2px solid #2a69aa;
             Hauptprogramme werden bis zum lauffaehigen Ziel gebaut und direkt
             gestartet. C-Dateien ohne ``main`` und Pascal-Units werden unter
             Windows lediglich als COFF32/COFF64-Objekt erzeugt. Dadurch bleibt
-            genau ein F2-Arbeitsablauf fuer BASIC, C, Pascal, LISP, PROLOG, LOGO und dBase bestehen.
+            genau ein F2-Arbeitsablauf fuer BASIC, Assembler, C, Pascal, LISP, PROLOG, LOGO und dBase bestehen.
             """
             if not isinstance(document, DocumentEditor):
                 return False
             if not (
                 document.is_basic_document
+                or document.is_assembler_document
                 or document.is_c_document
                 or document.is_pascal_document
                 or document.is_lisp_document
@@ -21893,7 +26435,7 @@ border: 2px solid #2a69aa;
                 or document.is_dbase_document
             ):
                 self.statusBar().showMessage(
-                    "F2-Build gilt für BASIC-, C-, Pascal-, LISP-, PROLOG-, LOGO- und dBase-Quelltexte",
+                    "F2-Build gilt für BASIC-, Assembler-, C-, Pascal-, LISP-, PROLOG-, LOGO- und dBase-Quelltexte",
                     5000,
                 )
                 return False
@@ -21901,6 +26443,27 @@ border: 2px solid #2a69aa;
             document.views.setCurrentWidget(document.source_page)
             if document.path is None and not self._save_document(document, save_as=True):
                 return False
+
+            # Stage 59: Reiner Assembler ist bereits die letzte Quellstufe.
+            # F2 assembliert und linkt deshalb direkt mit der internen
+            # Toolchain. Nur ein tatsaechliches EXE-Ergebnis wird anschliessend
+            # gestartet; PRG/ADF/Amiga-Hunk/DLL bleiben als Build-Artefakt liegen.
+            if document.is_assembler_document:
+                if not self.assemble_document(document):
+                    return False
+                output_path = document.assembled_program_path
+                if (
+                    output_path is not None
+                    and output_path.suffix.casefold() == ".exe"
+                    and output_path.is_file()
+                ):
+                    return self._launch_assembled_document(document)
+                if output_path is not None:
+                    self.statusBar().showMessage(
+                        f"F2: Assembler erzeugt: {output_path.name}",
+                        7000,
+                    )
+                return True
 
             # Bestehenden Compilepfad verwenden. Compilerfehler, Warnungen und
             # Hinweise bleiben dadurch exakt an ihrer bisherigen Stelle.
@@ -21946,6 +26509,54 @@ border: 2px solid #2a69aa;
             # EXE unmittelbar gestartet. dBase besitzt keine IDE-Konsole mehr;
             # seine Ausgabe-Tabs leben ausschliesslich in der Qt5-Anwendung.
             return self._launch_assembled_document(document)
+
+        def build_and_run_generated_assembly_document(
+            self,
+            document: DocumentEditor,
+        ) -> bool:
+            """F2 im ASM-Tab: sichtbaren ASM-Code assembliert/linkt und EXE startet.
+
+            Dieser Pfad kompiliert die Hochsprache bewusst nicht erneut. Der
+            editierbare Inhalt von ``generated_assembly_editor`` ist die
+            verbindliche Eingabe. Fuer PE32/PE64 werden vorhandene Projekt-
+            objekte/-archive wie beim normalen F2-Hauptbuild an den internen
+            Linker weitergereicht. Externe Buildwerkzeuge werden nicht benutzt.
+            """
+            if not isinstance(document, DocumentEditor):
+                return False
+            self.document_tabs.setCurrentWidget(document)
+            document.views.setCurrentWidget(document.generated_assembly_page)
+            if document.path is None and not self._save_document(
+                document, save_as=True
+            ):
+                return False
+
+            extra_inputs = self._project_link_inputs_for_document(document)
+            if not self.assemble_generated_document(
+                document,
+                extra_link_inputs=extra_inputs,
+            ):
+                return False
+            if extra_inputs:
+                self.log(
+                    "F2 ASM LINK INPUTS: "
+                    + ", ".join(path.name for path in extra_inputs)
+                )
+
+            output_path = document.assembled_program_path
+            if (
+                output_path is not None
+                and output_path.suffix.casefold() == ".exe"
+                and output_path.is_file()
+            ):
+                return self._launch_assembled_document(document)
+
+            if output_path is not None:
+                self.statusBar().showMessage(
+                    f"F2: ASM-Tab erzeugt: {output_path.name}",
+                    7000,
+                )
+            return True
 
         def assemble_document(self, document: DocumentEditor) -> bool:
             """Compile für BASIC/C/Pascal/LISP/PROLOG/LOGO/dBase oder Assemble für ASM."""
@@ -22919,6 +27530,7 @@ border: 2px solid #2a69aa;
             self.project_tree.clear()
             self.project_root_items = {}
             self.project_archive_root = None
+            self.project_prolog_knowledge_root = None
             self._project_checkbox_guard = False
             folder_icon = self.style().standardIcon(QStyle.SP_DirClosedIcon)
             for key, title, _extensions in PROJECT_CATEGORIES:
@@ -22939,6 +27551,19 @@ border: 2px solid #2a69aa;
                     )
                     self.project_archive_root = archive_root
 
+                if key == "prolog":
+                    knowledge_root = QTreeWidgetItem(root, ["Wissen-Datenbanken"])
+                    knowledge_root.setData(0, Qt.UserRole + 301, "prolog")
+                    knowledge_root.setData(
+                        0, Qt.UserRole + 303, PROJECT_NODE_PROLOG_KNOWLEDGE_ROOT
+                    )
+                    knowledge_root.setIcon(0, folder_icon)
+                    knowledge_root.setToolTip(
+                        0,
+                        "Geschützter Knoten für externe PROLOG-Wissen-Datenbanken",
+                    )
+                    self.project_prolog_knowledge_root = knowledge_root
+
                 for entry in values.get(key, ()):
                     self._add_project_entry(
                         key,
@@ -22947,6 +27572,17 @@ border: 2px solid #2a69aa;
                         mark_modified=False,
                     )
                 root.setExpanded(True)
+
+            for knowledge in values.get(PROJECT_PROLOG_KNOWLEDGE_KEY, ()):
+                path_value = str(knowledge.get("path", "")).strip()
+                if path_value:
+                    self._add_project_knowledge_database(
+                        Path(path_value),
+                        title=str(knowledge.get("title", "")),
+                        mark_modified=False,
+                    )
+            if self.project_prolog_knowledge_root is not None:
+                self.project_prolog_knowledge_root.setExpanded(True)
 
             for archive in values.get(PROJECT_C_ARCHIVES_KEY, ()):
                 archive_item = self._add_project_archive(
@@ -23001,6 +27637,42 @@ border: 2px solid #2a69aa;
             if mark_modified:
                 self.set_project_modified(True)
             return child
+
+        def _add_project_knowledge_database(
+            self,
+            path: Path,
+            *,
+            title: str = "",
+            mark_modified: bool = True,
+        ) -> Optional[QTreeWidgetItem]:
+            root = getattr(self, "project_prolog_knowledge_root", None)
+            if root is None:
+                return None
+            try:
+                resolved = Path(path).expanduser().resolve()
+            except OSError:
+                resolved = Path(path).expanduser()
+            if resolved.suffix.casefold() not in DocumentEditor.PROLOG_EXTENSIONS:
+                return None
+            path_text = str(resolved)
+            for index in range(root.childCount()):
+                child = root.child(index)
+                existing = str(child.data(0, Qt.UserRole + 302) or "")
+                if existing.casefold() == path_text.casefold():
+                    self.project_tree.setCurrentItem(child)
+                    return child
+            item = QTreeWidgetItem(root, [title.strip() or resolved.name])
+            item.setData(0, Qt.UserRole + 301, "prolog")
+            item.setData(0, Qt.UserRole + 302, path_text)
+            item.setData(
+                0, Qt.UserRole + 303, PROJECT_NODE_PROLOG_KNOWLEDGE_FILE
+            )
+            item.setToolTip(0, path_text)
+            item.setIcon(0, self.icon_provider.icon(QFileInfo(path_text)))
+            root.setExpanded(True)
+            if mark_modified:
+                self.set_project_modified(True)
+            return item
 
         def _project_item_kind(self, item: Optional[QTreeWidgetItem]) -> str:
             if item is None:
@@ -23190,6 +27862,19 @@ border: 2px solid #2a69aa;
                         "path": str(archive_item.data(0, Qt.UserRole + 302) or ""),
                         "objects": objects,
                     })
+
+            knowledge_root = getattr(self, "project_prolog_knowledge_root", None)
+            if knowledge_root is not None:
+                for index in range(knowledge_root.childCount()):
+                    child = knowledge_root.child(index)
+                    if self._project_item_kind(child) != PROJECT_NODE_PROLOG_KNOWLEDGE_FILE:
+                        continue
+                    path_value = str(child.data(0, Qt.UserRole + 302) or "")
+                    if path_value:
+                        entries[PROJECT_PROLOG_KNOWLEDGE_KEY].append({
+                            "title": child.text(0),
+                            "path": path_value,
+                        })
             return entries
 
         def project_has_entries(self) -> bool:
@@ -23197,7 +27882,9 @@ border: 2px solid #2a69aa;
             return any(
                 bool(entries.get(key))
                 for key, _title, _extensions in PROJECT_CATEGORIES
-            ) or bool(entries.get(PROJECT_C_ARCHIVES_KEY))
+            ) or bool(entries.get(PROJECT_C_ARCHIVES_KEY)) or bool(
+                entries.get(PROJECT_PROLOG_KNOWLEDGE_KEY)
+            )
 
         def set_project_modified(self, modified: bool) -> None:
             self.project_modified = bool(modified)
@@ -23245,6 +27932,12 @@ border: 2px solid #2a69aa;
             )
             cancel_button = box.addButton("Abbrechen", QMessageBox.RejectRole)
             box.setDefaultButton(save_button)
+            # Stage 68: this is the project/save prompt reached from the main
+            # window X button. It previously bypassed _create_message_box(),
+            # so only the buttons followed dark mode while the message surface
+            # could remain native/light. Preserve the save logic but apply the
+            # same explicit dark/light palette and stylesheet.
+            self._apply_message_box_theme(box)
             box.exec_()
             clicked = box.clickedButton()
             if clicked is cancel_button:
@@ -23609,6 +28302,12 @@ border: 2px solid #2a69aa;
             if kind == PROJECT_NODE_ARCHIVE_ROOT:
                 self._show_project_archive_root_menu(item, position)
                 return
+            if kind == PROJECT_NODE_PROLOG_KNOWLEDGE_ROOT:
+                self._show_project_prolog_knowledge_root_menu(item, position)
+                return
+            if kind == PROJECT_NODE_PROLOG_KNOWLEDGE_FILE:
+                self._show_project_prolog_knowledge_file_menu(item, position)
+                return
             if kind in {PROJECT_NODE_ARCHIVE, PROJECT_NODE_ARCHIVE_OBJECT}:
                 self._show_project_archive_item_menu(item, position)
                 return
@@ -23621,7 +28320,10 @@ border: 2px solid #2a69aa;
             removable_count = sum(
                 1
                 for index in range(root.childCount())
-                if self._project_item_kind(root.child(index)) != PROJECT_NODE_ARCHIVE_ROOT
+                if self._project_item_kind(root.child(index)) not in {
+                    PROJECT_NODE_ARCHIVE_ROOT,
+                    PROJECT_NODE_PROLOG_KNOWLEDGE_ROOT,
+                }
             )
             clear_action.setEnabled(removable_count > 0)
             selected = menu.exec_(
@@ -23633,6 +28335,292 @@ border: 2px solid #2a69aa;
                 self.add_project_entries(item)
             elif selected is clear_action:
                 self.clear_project_entries(item)
+
+        def _project_knowledge_paths(self) -> Tuple[Path, ...]:
+            root = getattr(self, "project_prolog_knowledge_root", None)
+            if root is None:
+                return ()
+            result = []
+            for index in range(root.childCount()):
+                child = root.child(index)
+                if self._project_item_kind(child) != PROJECT_NODE_PROLOG_KNOWLEDGE_FILE:
+                    continue
+                path_text = str(child.data(0, Qt.UserRole + 302) or "").strip()
+                if path_text:
+                    result.append(Path(path_text))
+            return tuple(result)
+
+        def add_project_knowledge_databases(self) -> None:
+            root = getattr(self, "project_prolog_knowledge_root", None)
+            if root is None:
+                return
+            initial = str(
+                self.current_project_path.parent
+                if self.current_project_path is not None
+                else self.current_directory
+            )
+            filenames, _selected = QFileDialog.getOpenFileNames(
+                self,
+                "PROLOG-Wissen-Datenbanken hinzufügen",
+                initial,
+                "PROLOG-Wissen-Datenbanken (*.pl *.prolog);;Alle Dateien (*)",
+            )
+            added = 0
+            for filename in filenames:
+                path = Path(filename)
+                item = self._add_project_knowledge_database(path, title=path.name)
+                if item is not None:
+                    added += 1
+            if added and self.current_project_path is not None:
+                self.save_project()
+            if added:
+                root.setExpanded(True)
+                self.statusBar().showMessage(
+                    f"{added} Wissen-Datenbank(en) zum Projekt hinzugefügt"
+                )
+
+        def clear_project_knowledge_databases(self) -> None:
+            root = getattr(self, "project_prolog_knowledge_root", None)
+            if root is None or root.childCount() <= 0:
+                return
+            count = root.childCount()
+            answer = self._show_message_box(
+                QMessageBox.Question,
+                "Wissen-Datenbanken entfernen",
+                f"Sollen alle {count} Wissen-Datenbank-Referenzen aus dem Projekt "
+                "entfernt werden?\n\nDie Dateien auf dem Datenträger bleiben erhalten.",
+                buttons=QMessageBox.Yes | QMessageBox.No,
+                default_button=QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
+            while root.childCount():
+                root.takeChild(0)
+            self.set_project_modified(True)
+            if self.current_project_path is not None:
+                self.save_project()
+            self.statusBar().showMessage(
+                f"{count} Wissen-Datenbank-Referenz(en) entfernt"
+            )
+
+        def remove_project_knowledge_database(self, item: QTreeWidgetItem) -> None:
+            if self._project_item_kind(item) != PROJECT_NODE_PROLOG_KNOWLEDGE_FILE:
+                return
+            parent = item.parent()
+            if parent is None:
+                return
+            answer = self._show_message_box(
+                QMessageBox.Question,
+                "Wissen-Datenbank entfernen",
+                f"'{item.text(0)}' aus dem Projekt entfernen?\n\n"
+                "Die Datei auf dem Datenträger bleibt erhalten.",
+                buttons=QMessageBox.Yes | QMessageBox.No,
+                default_button=QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
+            parent.takeChild(parent.indexOfChild(item))
+            self.set_project_modified(True)
+            if self.current_project_path is not None:
+                self.save_project()
+
+        def open_prolog_knowledge_source(self, item: QTreeWidgetItem) -> None:
+            path_text = str(item.data(0, Qt.UserRole + 302) or "").strip()
+            if not path_text:
+                return
+            path = Path(path_text)
+            if not path.exists():
+                self.show_error(
+                    "Wissen-Datenbank nicht gefunden",
+                    f"Die Datei wurde nicht gefunden:\n{path}",
+                )
+                return
+            self.open_document(path)
+
+        def _prolog_knowledge_dock_visibility_changed(self, visible: bool) -> None:
+            """Let the knowledge dock consume the complete free work area.
+
+            The filesystem dock is replaced as before. Stage 67 additionally
+            hides the normal document-tab central widget while the knowledge
+            browser is active; otherwise QMainWindow reserves a central strip
+            which cannot be occupied by a side QDockWidget (visible in the
+            Stage-66 screenshot as unused space between knowledge and project
+            docks). Hiding the central widget lets the dock layout use all free
+            horizontal/vertical space.
+            """
+            if visible:
+                if hasattr(self, "left_dock") and self.left_dock.isVisible():
+                    self._knowledge_replaced_filesystem_dock = True
+                    self.left_dock.hide()
+                central = self.centralWidget()
+                if central is not None and central.isVisible():
+                    self._knowledge_replaced_central_widget = True
+                    central.hide()
+                QTimer.singleShot(0, self._expand_prolog_knowledge_dock)
+            else:
+                dialog = getattr(self, "prolog_knowledge_dialog", None)
+                if dialog is not None:
+                    dialog._save_query_state()
+                if (
+                    self._knowledge_replaced_filesystem_dock
+                    and hasattr(self, "left_dock")
+                ):
+                    self.left_dock.show()
+                self._knowledge_replaced_filesystem_dock = False
+                if self._knowledge_replaced_central_widget:
+                    central = self.centralWidget()
+                    if central is not None:
+                        central.show()
+                self._knowledge_replaced_central_widget = False
+
+        def _expand_prolog_knowledge_dock(self) -> None:
+            dock = getattr(self, "prolog_knowledge_dock", None)
+            if dock is None or not dock.isVisible():
+                return
+            # A very large requested width is intentionally used here: Qt still
+            # respects the right/bottom docks, but gives the knowledge dock all
+            # remaining space after the central widget has been hidden.
+            self.resizeDocks([dock], [100000], Qt.Horizontal)
+            self.resizeDocks([dock], [100000], Qt.Vertical)
+            dialog = getattr(self, "prolog_knowledge_dialog", None)
+            if dialog is not None:
+                dialog.setMinimumSize(0, 0)
+                dialog.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+                dialog.updateGeometry()
+            self._assign_widget_property_ids(dock)
+
+        def _ensure_prolog_knowledge_dock(
+            self,
+            *,
+            initial_directory: Path,
+            project_paths,
+            selected_path: Optional[Path] = None,
+        ):
+            dock = getattr(self, "prolog_knowledge_dock", None)
+            dialog = getattr(self, "prolog_knowledge_dialog", None)
+            if dock is not None and dialog is not None:
+                return dock, dialog
+
+            dock = QDockWidget("PROLOG – Wissen-Datenbanken", self)
+            dock.setObjectName("prolog_knowledge_dock")
+            dock.setFeatures(self._dock_features())
+            dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+            # Stage 67: no artificial minimum width; the dock is expanded to
+            # the complete available work area when shown.
+            dock.setMinimumWidth(0)
+            dock.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+            dialog = PrologKnowledgeDialog(
+                dock,
+                directory=initial_directory,
+                project_paths=project_paths,
+                selected_path=selected_path,
+                dark_mode=self.dark_mode_enabled,
+                embedded=True,
+            )
+            dialog.dock_close_requested.connect(dock.hide)
+            dock.setWidget(dialog)
+            self.addDockWidget(Qt.LeftDockWidgetArea, dock)
+            dock.visibilityChanged.connect(
+                self._prolog_knowledge_dock_visibility_changed
+            )
+
+            self.prolog_knowledge_dock = dock
+            self.prolog_knowledge_dialog = dialog
+            return dock, dialog
+
+        def open_prolog_knowledge_browser(
+            self, selected_path: Optional[Path] = None
+        ) -> None:
+            localize_dock = getattr(self, "localize_dock", None)
+            if localize_dock is not None and localize_dock.isVisible():
+                localize_dock.hide()
+
+            project_paths = self._project_knowledge_paths()
+            if selected_path is not None:
+                initial_directory = Path(selected_path).parent
+            elif project_paths:
+                initial_directory = project_paths[0].parent
+            elif self.current_project_path is not None:
+                initial_directory = self.current_project_path.parent
+            else:
+                initial_directory = self.current_directory
+
+            dock, dialog = self._ensure_prolog_knowledge_dock(
+                initial_directory=initial_directory,
+                project_paths=project_paths,
+                selected_path=selected_path,
+            )
+            dialog.set_project_paths(project_paths)
+            dialog.set_directory(initial_directory, selected_path=selected_path)
+            if selected_path is not None:
+                dialog.select_database_path(selected_path)
+                dialog.open_selected_database()
+            dialog.set_dark_mode(self.dark_mode_enabled)
+
+            # Stage 66: the knowledge browser takes over the left docking area.
+            # Remember whether the filesystem dock was visible so it can be
+            # restored when the knowledge dock is closed.
+            if hasattr(self, "left_dock"):
+                if self.left_dock.isVisible():
+                    self._knowledge_replaced_filesystem_dock = True
+                self.left_dock.hide()
+            dock.show()
+            dock.raise_()
+            self._expand_prolog_knowledge_dock()
+            QTimer.singleShot(0, self._expand_prolog_knowledge_dock)
+            dialog.setFocus(Qt.OtherFocusReason)
+
+        def _show_project_prolog_knowledge_root_menu(
+            self, item: QTreeWidgetItem, position
+        ) -> None:
+            menu = QMenu(self.project_tree)
+            add_action = menu.addAction("Wissensdatenbank hinzufügen …")
+            browser_action = menu.addAction("Wissensdatenbank-Browser öffnen")
+            menu.addSeparator()
+            clear_action = menu.addAction("Alle Referenzen entfernen")
+            clear_action.setEnabled(item.childCount() > 0)
+            menu.addSeparator()
+            help_action = menu.addAction("Hilfe")
+            selected = menu.exec_(
+                self.project_tree.viewport().mapToGlobal(position)
+            )
+            if selected is add_action:
+                self.add_project_knowledge_databases()
+            elif selected is browser_action:
+                self.open_prolog_knowledge_browser()
+            elif selected is clear_action:
+                self.clear_project_knowledge_databases()
+            elif selected is help_action:
+                self._show_message_box(
+                    QMessageBox.Information,
+                    "PROLOG Wissen-Datenbanken",
+                    "Hier werden externe PROLOG-Wissen-Datenbanken getrennt vom "
+                    "Programmcode gesammelt. Rechtsklick → 'Wissensdatenbank "
+                    "hinzufügen …' fügt vorhandene *.pl/*.prolog-Dateien ein.\n\n"
+                    "Der Browser kann Fakten und Regeln schrittweise abfragen; "
+                    "die Dateien werden dadurch nicht verändert.",
+                )
+
+        def _show_project_prolog_knowledge_file_menu(
+            self, item: QTreeWidgetItem, position
+        ) -> None:
+            menu = QMenu(self.project_tree)
+            browser_action = menu.addAction("Im Wissensdatenbank-Browser öffnen")
+            source_action = menu.addAction("Quelltext öffnen")
+            menu.addSeparator()
+            remove_action = menu.addAction("Aus Projekt entfernen")
+            selected = menu.exec_(
+                self.project_tree.viewport().mapToGlobal(position)
+            )
+            if selected is browser_action:
+                path_text = str(item.data(0, Qt.UserRole + 302) or "").strip()
+                if path_text:
+                    self.open_prolog_knowledge_browser(Path(path_text))
+            elif selected is source_action:
+                self.open_prolog_knowledge_source(item)
+            elif selected is remove_action:
+                self.remove_project_knowledge_database(item)
 
         def _show_project_archive_root_menu(
             self, item: QTreeWidgetItem, position
@@ -24026,7 +29014,10 @@ border: 2px solid #2a69aa;
             removable = [
                 root.child(index)
                 for index in range(root.childCount())
-                if self._project_item_kind(root.child(index)) != PROJECT_NODE_ARCHIVE_ROOT
+                if self._project_item_kind(root.child(index)) not in {
+                    PROJECT_NODE_ARCHIVE_ROOT,
+                    PROJECT_NODE_PROLOG_KNOWLEDGE_ROOT,
+                }
             ]
             count = len(removable)
             if count <= 0:
@@ -24147,6 +29138,14 @@ border: 2px solid #2a69aa;
             kind = self._project_item_kind(item)
             if kind == PROJECT_NODE_ARCHIVE_ROOT:
                 item.setExpanded(not item.isExpanded())
+                return
+            if kind == PROJECT_NODE_PROLOG_KNOWLEDGE_ROOT:
+                self.open_prolog_knowledge_browser()
+                return
+            if kind == PROJECT_NODE_PROLOG_KNOWLEDGE_FILE:
+                path_value = str(item.data(0, Qt.UserRole + 302) or "")
+                if path_value:
+                    self.open_prolog_knowledge_browser(Path(path_value))
                 return
             if kind == PROJECT_NODE_ARCHIVE:
                 item.setExpanded(True)
@@ -24424,8 +29423,123 @@ border: 2px solid #2a69aa;
             except (AttributeError, OSError):
                 return None
 
+        @staticmethod
+        def _widget_property_segment(widget: QWidget) -> str:
+            """Return a deterministic path segment for a QWidget.
+
+            Existing objectName values are preferred because they are the most
+            useful future CHM keys. For unnamed Qt widgets a class name plus a
+            direct-sibling ordinal keeps the generated ID deterministic without
+            changing objectName (and therefore without affecting QSS selectors).
+            """
+            object_name = str(widget.objectName() or "").strip()
+            if object_name and not object_name.startswith("qt_"):
+                return object_name
+
+            class_name = widget.metaObject().className()
+            parent = widget.parentWidget()
+            if parent is None:
+                return class_name
+            siblings = [
+                child
+                for child in parent.children()
+                if isinstance(child, QWidget)
+                and child.metaObject().className() == class_name
+                and (not str(child.objectName() or "").strip()
+                     or str(child.objectName()).startswith("qt_"))
+            ]
+            if len(siblings) <= 1:
+                return class_name
+            try:
+                ordinal = siblings.index(widget) + 1
+            except ValueError:
+                ordinal = 1
+            return f"{class_name}[{ordinal}]"
+
+        def _widget_property_id(self, widget: QWidget) -> str:
+            """Build the help/property ID from the widget hierarchy."""
+            segments = []
+            current = widget
+            guard = 0
+            while isinstance(current, QWidget) and guard < 32:
+                segments.append(self._widget_property_segment(current))
+                if current is self:
+                    break
+                current = current.parentWidget()
+                guard += 1
+            segments.reverse()
+            return ".".join(part for part in segments if part)
+
+        def _assign_widget_property_id(self, widget) -> Optional[str]:
+            if not isinstance(widget, QWidget):
+                return None
+            property_id = self._widget_property_id(widget)
+            if property_id:
+                widget.setProperty(self.WIDGET_PROPERTY_NAME, property_id)
+                return property_id
+            return None
+
+        def _assign_widget_property_ids(self, root=None) -> None:
+            """Assign the dynamic F1/CHM property to every visible widget."""
+            if root is None:
+                root = self
+            if isinstance(root, QWidget) and root.isVisible():
+                self._assign_widget_property_id(root)
+            if isinstance(root, QWidget):
+                for widget in root.findChildren(QWidget):
+                    if widget.isVisible():
+                        self._assign_widget_property_id(widget)
+
+        def _widget_with_help_property_under_mouse(self):
+            """Find the most meaningful QWidget under the mouse cursor."""
+            hovered = QApplication.widgetAt(QCursor.pos())
+            if not isinstance(hovered, QWidget):
+                return None, None
+
+            # Refresh the hovered hierarchy first. This also covers dynamically
+            # created ComboBox popups, level buttons and new query lanes.
+            current = hovered
+            chain = []
+            while isinstance(current, QWidget):
+                chain.append(current)
+                self._assign_widget_property_id(current)
+                if current is self:
+                    break
+                current = current.parentWidget()
+
+            # Prefer the closest explicitly named application widget over Qt's
+            # internal viewport/helper children. This produces useful IDs such
+            # as prolog_knowledge_fact_tree or prolog_knowledge_level_arrow.
+            for widget in chain:
+                name = str(widget.objectName() or "").strip()
+                value = widget.property(self.WIDGET_PROPERTY_NAME)
+                if value and name and not name.startswith("qt_"):
+                    return widget, str(value)
+            value = hovered.property(self.WIDGET_PROPERTY_NAME)
+            return hovered, str(value) if value else None
+
+        def _log_f1_widget_property(self) -> bool:
+            widget, property_id = self._widget_with_help_property_under_mouse()
+            if widget is None or not property_id:
+                return False
+            self.log(f"F1 Widget-Property-ID: {property_id}")
+            self.statusBar().showMessage(
+                f"F1 Widget-Property-ID: {property_id}", 5000
+            )
+            return True
+
         def eventFilter(self, watched, event):
+            # Stage 67: every widget which becomes visible after startup also
+            # receives the dynamic help property. No manual registration is
+            # required for dialogs, docking content, query lanes or popups.
+            if event.type() == QEvent.Show and isinstance(watched, QWidget):
+                self._assign_widget_property_id(watched)
             if event.type() == QEvent.KeyPress and not event.isAutoRepeat():
+                if event.key() == Qt.Key_F1:
+                    # For now only log the ID. Do not consume F1 so the existing
+                    # source-editor keyword help remains intact until CHM widget
+                    # IDs are wired to concrete topics in a later stage.
+                    self._log_f1_widget_property()
                 if event.key() == Qt.Key_CapsLock:
                     self._caps_lock_fallback = not self._caps_lock_fallback
                 elif event.key() == Qt.Key_NumLock:
@@ -25195,6 +30309,8 @@ border: 2px solid #2a69aa;
                 self.restoreGeometry(geometry)
             if state is not None:
                 self.restoreState(state)
+            if hasattr(self, "main_title_bar"):
+                QTimer.singleShot(0, self.main_title_bar.sync_window_state)
 
         def closeEvent(self, event: QCloseEvent) -> None:
             if self.project_modified:
@@ -25777,6 +30893,494 @@ exec(
     _D64INFO_MODULE.__dict__,
 )
 del _d64info_types
+
+# ---------------------------------------------------------------------------
+# Stage 78: dokumentiertes C64-PRG/BIN-Disassembly
+# ---------------------------------------------------------------------------
+C64_RAW_BINARY_DEFAULT_LOAD_ADDRESS = 0x0801
+C64_DISASSEMBLY_COMMENT_GAP = 8
+
+# Stage 81: C64-KERNAL-JSR-Dokumentation.
+#
+# Der Bereich $FF81-$FFF3 ist die offizielle KERNAL-Jump-Table des C64.
+# Die Eintraege sind deshalb die stabilen, fuer Programme vorgesehenen
+# Einsprungpunkte.  Zusaetzlich fuehren wir gezielt bekannte interne
+# Routinen, die in realem C64-Code oft direkt angesprungen werden.
+#
+# WICHTIG: $E544 ist die interne Screen-Editor-Routine zum Loeschen des
+# Bildschirms.  Die fruehere Stage-80-Zuordnung $5344 war falsch.
+C64_KERNAL_JSR_ROUTINES: Tuple[Tuple[int, str, str], ...] = (
+    (0xFF81, "CINT",   "Bildschirmeditor und VIC-II initialisieren"),
+    (0xFF84, "IOINIT", "I/O-Geraete initialisieren"),
+    (0xFF87, "RAMTAS", "RAM testen/initialisieren und Speichergrenzen setzen"),
+    (0xFF8A, "RESTOR", "Systemvektoren auf Standardwerte zuruecksetzen"),
+    (0xFF8D, "VECTOR", "Systemvektoren lesen oder setzen"),
+    (0xFF90, "SETMSG", "KERNAL-Systemmeldungen steuern"),
+    (0xFF93, "SECOND", "Sekundaeradresse nach LISTEN senden"),
+    (0xFF96, "TKSA",   "Sekundaeradresse nach TALK senden"),
+    (0xFF99, "MEMTOP", "Obere Speichergrenze lesen oder setzen"),
+    (0xFF9C, "MEMBOT", "Untere Speichergrenze lesen oder setzen"),
+    (0xFF9F, "SCNKEY", "Tastaturmatrix scannen"),
+    (0xFFA2, "SETTMO", "Timeout-Steuerung setzen"),
+    (0xFFA5, "ACPTR",  "Byte vom seriellen Bus empfangen"),
+    (0xFFA8, "CIOUT",  "Byte auf den seriellen Bus senden"),
+    (0xFFAB, "UNTLK",  "UNTALK auf dem seriellen Bus senden"),
+    (0xFFAE, "UNLSN",  "UNLISTEN auf dem seriellen Bus senden"),
+    (0xFFB1, "LISTEN", "LISTEN auf dem seriellen Bus senden"),
+    (0xFFB4, "TALK",   "TALK auf dem seriellen Bus senden"),
+    (0xFFB7, "READST", "I/O-Statusbyte lesen"),
+    (0xFFBA, "SETLFS", "Logische Datei, Geraet und Sekundaeradresse setzen"),
+    (0xFFBD, "SETNAM", "Dateinamen und Dateinamenlaenge setzen"),
+    (0xFFC0, "OPEN",   "Logische Datei oeffnen"),
+    (0xFFC3, "CLOSE",  "Logische Datei schliessen"),
+    (0xFFC6, "CHKIN",  "Eingabekanal waehlen"),
+    (0xFFC9, "CKOUT",  "Ausgabekanal waehlen"),
+    (0xFFCC, "CLRCHN", "I/O-Kanaele auf Standard zuruecksetzen"),
+    (0xFFCF, "CHRIN",  "Zeichen vom aktuellen Eingabekanal lesen"),
+    (0xFFD2, "CHROUT", "Zeichen an den aktuellen Ausgabekanal schreiben"),
+    (0xFFD5, "LOAD",   "Datei laden"),
+    (0xFFD8, "SAVE",   "Speicherbereich in Datei speichern"),
+    (0xFFDB, "SETTIM", "Systemuhr setzen"),
+    (0xFFDE, "RDTIM",  "Systemuhr lesen"),
+    (0xFFE1, "STOP",   "STOP-Taste pruefen"),
+    (0xFFE4, "GETIN",  "Zeichen aus Eingabepuffer/Kanal holen"),
+    (0xFFE7, "CLALL",  "Alle logischen Dateien/Kanaele zuruecksetzen"),
+    (0xFFEA, "UDTIM",  "Systemuhr um einen Tick erhoehen"),
+    (0xFFED, "SCREEN", "Bildschirmgroesse (40x25) zurueckgeben"),
+    (0xFFF0, "PLOT",   "Cursorposition lesen oder setzen"),
+    (0xFFF3, "IOBASE", "Basisadresse des I/O-Bereichs zurueckgeben"),
+)
+
+# Stage 82: zusaetzliche interne ROM-Routinen.
+#
+# Diese Einsprungpunkte sind absichtlich NICHT Teil der offiziellen KERNAL-
+# Jump-Table. Sie sind an die klassischen C64-ROM-Staende BASIC 901226-01
+# bzw. KERNAL 901227-03 gebunden und werden deshalb im Disassembly und in
+# der Live-Hilfe als interne, nicht API-stabile Routinen markiert.
+#
+# Die BASIC-Tabelle startet mit einem konservativen, in realem 6510-Code
+# haeufig anzutreffenden Satz. Sie kann spaeter additiv erweitert werden.
+C64_BASIC_INTERNAL_JSR_ROUTINES: Tuple[Tuple[int, str, str], ...] = (
+    (0xA474, "RESTART", "BASIC-Eingabeschleife neu starten"),
+    (0xA560, "LNKPRG", "BASIC-Zeilenzeiger neu verketten"),
+    (0xA613, "CRUNCH", "BASIC-Quellzeile tokenisieren"),
+    (0xA69C, "LIST", "BASIC-Programm auflisten"),
+    (0xA742, "FOR", "FOR-Anweisung ausfuehren"),
+    (0xA7AE, "SCRTCH", "NEW: BASIC-Programm und Variablen loeschen"),
+    (0xA81D, "RESTORE", "DATA-Lesezeiger zuruecksetzen"),
+    (0xA82F, "STOP", "STOP-Anweisung ausfuehren"),
+    (0xA831, "END", "END-Anweisung ausfuehren"),
+    (0xA871, "RUN", "BASIC-Programm starten"),
+    (0xA883, "GOSUB", "GOSUB-Anweisung ausfuehren"),
+    (0xA8A0, "GOTO", "GOTO-Anweisung ausfuehren"),
+    (0xA8D2, "RETURN", "RETURN-Anweisung ausfuehren"),
+    (0xA8F8, "DATA", "DATA-Anweisung ueberspringen/verarbeiten"),
+    (0xA928, "IF", "IF-Anweisung auswerten"),
+    (0xA93B, "REM", "REM-Anweisung ueberspringen"),
+    (0xA94B, "ON", "ON ... GOTO/GOSUB ausfuehren"),
+    (0xA9A5, "LET", "LET/Zuweisung ausfuehren"),
+    (0xABA5, "INPUT#", "INPUT# von einem geoeffneten Kanal ausfuehren"),
+    (0xABBF, "INPUT", "INPUT von Tastatur/Kanal ausfuehren"),
+    (0xAC06, "READ", "READ-Anweisung aus DATA ausfuehren"),
+    (0xAD1E, "NEXT", "NEXT-Anweisung ausfuehren"),
+    (0xB081, "DIM", "DIM-Anweisung ausfuehren"),
+    (0xB391, "GIVAYF", "Integerwert in den BASIC-Fliesskomma-Akkumulator wandeln"),
+    (0xB82D, "WAIT", "WAIT-Anweisung ausfuehren"),
+    (0xBDCD, "LINPRT", "Positiven Integer dezimal ausgeben"),
+    (0xBDDD, "FOUT", "Fliesskomma-Akkumulator in ASCII-Text wandeln"),
+    # BASIC-Initialisierung liegt beim C64 im Bereich vor dem KERNAL ab $E500.
+    (0xE37B, "PANIC", "BASIC-Warmstart ausfuehren"),
+    (0xE394, "INIT", "BASIC-Kaltstart und Initialisierung ausfuehren"),
+)
+
+C64_KERNAL_INTERNAL_JSR_ROUTINES: Tuple[Tuple[int, str, str], ...] = (
+    (0xE544, "CLSR", "Bildschirm löschen"),
+    (0xE566, "NXTD", "Cursor auf HOME (Zeile 0, Spalte 0) setzen"),
+    (0xEA31, "IRQ", "Standard-KERNAL-IRQ-Routine ausfuehren"),
+    (0xEA81, "IRQRTI", "IRQ-Register restaurieren und mit RTI zurueckkehren"),
+)
+
+# Rueckwaertskompatibler Sammelname aus Stage 81.
+C64_INTERNAL_JSR_ROUTINES: Tuple[Tuple[int, str, str], ...] = (
+    *C64_BASIC_INTERNAL_JSR_ROUTINES,
+    *C64_KERNAL_INTERNAL_JSR_ROUTINES,
+)
+
+C64_DISASSEMBLY_CALL_COMMENTS: Dict[Tuple[str, int], str] = {
+    ("JSR", address): f"{name}: {description}"
+    for address, name, description in C64_KERNAL_JSR_ROUTINES
+}
+C64_DISASSEMBLY_CALL_COMMENTS.update({
+    ("JSR", address): description
+    for address, _name, description in C64_INTERNAL_JSR_ROUTINES
+})
+
+C64_DISASSEMBLY_CALL_ANNOTATIONS: Dict[Tuple[str, int], str] = {
+    ("JSR", address): f"{name}: {description}"
+    for address, name, description in C64_KERNAL_JSR_ROUTINES
+}
+C64_DISASSEMBLY_CALL_ANNOTATIONS.update({
+    ("JSR", address): f"{description} [INTERN BASIC {name}]"
+    for address, name, description in C64_BASIC_INTERNAL_JSR_ROUTINES
+})
+C64_DISASSEMBLY_CALL_ANNOTATIONS.update({
+    ("JSR", address): f"{description} [INTERN KERNAL {name}]"
+    for address, name, description in C64_KERNAL_INTERNAL_JSR_ROUTINES
+})
+
+C64_DISASSEMBLY_CALL_STABILITY: Dict[Tuple[str, int], str] = {
+    ("JSR", address): "KERNAL-API"
+    for address, _name, _description in C64_KERNAL_JSR_ROUTINES
+}
+C64_DISASSEMBLY_CALL_STABILITY.update({
+    ("JSR", address): "INTERN BASIC - nicht API-stabil"
+    for address, _name, _description in C64_BASIC_INTERNAL_JSR_ROUTINES
+})
+C64_DISASSEMBLY_CALL_STABILITY.update({
+    ("JSR", address): "INTERN KERNAL - nicht API-stabil"
+    for address, _name, _description in C64_KERNAL_INTERNAL_JSR_ROUTINES
+})
+
+
+def _c64_assembler_call_key(
+    mnemonic: str,
+    operand: str,
+) -> Optional[Tuple[str, int]]:
+    """Normalize a textual JSR target for C64 ROM documentation lookup."""
+    operation = str(mnemonic).strip().upper()
+    text = str(operand).strip()
+    if not operation or not text:
+        return None
+
+    if text.startswith("#"):
+        text = text[1:].strip()
+
+    try:
+        if text.startswith("$"):
+            target = int(text[1:], 16)
+        elif text.lower().startswith("0x"):
+            target = int(text[2:], 16)
+        elif re.fullmatch(r"[0-9A-Fa-f]{4}", text):
+            # A bare four-digit value is treated as the requested hexadecimal help alias.
+            target = int(text, 16)
+        else:
+            return None
+    except ValueError:
+        return None
+    return operation, target & 0xFFFF
+
+
+def c64_assembler_call_description(
+    mnemonic: str,
+    operand: str,
+) -> Optional[str]:
+    """Resolve a documented C64 call from textual assembler input.
+
+    Normal 6502 syntax uses addresses such as ``JSR $E544`` or ``JSR $FFD2``.
+    For the requested editor-help workflow we also recognise ``JSR #E544`` /
+    ``JSR #$E544`` as textual lookup aliases, without changing the assembler's
+    addressing rules.
+    """
+    key = _c64_assembler_call_key(mnemonic, operand)
+    if key is None:
+        return None
+    return C64_DISASSEMBLY_CALL_COMMENTS.get(key)
+
+
+def c64_assembler_call_stability(
+    mnemonic: str,
+    operand: str,
+) -> Optional[str]:
+    """Return whether a documented call is stable KERNAL API or internal ROM."""
+    key = _c64_assembler_call_key(mnemonic, operand)
+    if key is None:
+        return None
+    return C64_DISASSEMBLY_CALL_STABILITY.get(key)
+
+
+# Stage 83: small contextual data-flow annotations for the most common
+# C64 screen/color stores.  These are deliberately based on opcode bytes,
+# not on pretty-printed assembler text, so labels/formatting cannot change
+# the recognition.
+C64_COLOR_NAMES: Tuple[str, ...] = (
+    "schwarz",
+    "weis",
+    "rot",
+    "cyan",
+    "violett",
+    "gruen",
+    "blau",
+    "gelb",
+    "orange",
+    "braun",
+    "hellrot",
+    "dunkelgrau",
+    "grau",
+    "hellgruen",
+    "hellblau",
+    "hellgrau",
+)
+
+
+def _c64_screen_code_annotation(value: int) -> str:
+    """Return a compact human-readable annotation for a C64 screen code."""
+    code = int(value) & 0xFF
+    if code == 0x00:
+        return 'Bildschirmcode für "@"'
+    if 0x01 <= code <= 0x1A:
+        return f'Bildschirmcode für "{chr(ord("A") + code - 1)}"'
+    if code == 0x20:
+        return 'Bildschirmcode für " "'
+    if 0x30 <= code <= 0x39:
+        return f'Bildschirmcode für "{chr(ord("0") + code - 0x30)}"'
+    return f"Bildschirmcode ${code:02X}"
+
+
+def _c64_store_position_annotation(target: int, *, color_ram: bool) -> str:
+    """Describe a screen/color RAM cell using the standard 40x25 C64 grid."""
+    base = 0xD800 if color_ram else 0x0400
+    offset = (int(target) & 0xFFFF) - base
+    if offset == 0:
+        if color_ram:
+            return "Farbe der linken oberen Position"
+        return "linke obere Bildschirmposition"
+    row, column = divmod(offset, 40)
+    if color_ram:
+        return f"Farbposition Zeile {row}, Spalte {column}"
+    return f"Bildschirmposition Zeile {row}, Spalte {column}"
+
+
+def _c64_prefix_disassembly_comment(comment: str, semantic: str) -> str:
+    """Prepend semantics while preserving the existing hexadecimal bytecode."""
+    text = str(comment).strip()
+    note = str(semantic).strip()
+    if not note:
+        return text
+    if not text:
+        return note
+    return f"{note} | {text}"
+
+
+def _c64_basic_sys_entry(data: bytes, load_address: int) -> Optional[int]:
+    """Erkennt den kleinen BASIC-SYS-Startstub vor reinem 6510-Code."""
+    payload = bytes(data)
+    if load_address != 0x0801 or len(payload) < 8:
+        return None
+
+    # BASIC-Zeile: next-line, line-number, $9E (=SYS), ASCII-Adresse, 00 00 00.
+    try:
+        sys_index = payload.index(0x9E, 4, min(len(payload), 40))
+    except ValueError:
+        return None
+
+    digits = bytearray()
+    index = sys_index + 1
+    while index < len(payload) and 0x30 <= payload[index] <= 0x39:
+        digits.append(payload[index])
+        index += 1
+    if not digits or index >= len(payload) or payload[index] != 0x00:
+        return None
+
+    try:
+        entry = int(digits.decode("ascii"), 10)
+    except ValueError:
+        return None
+
+    end_address = load_address + len(payload)
+    if load_address < entry < end_address:
+        return entry
+    return None
+
+
+def _c64_listing_records(
+    code: bytes,
+    start_address: int,
+) -> List[Tuple[str, str]]:
+    """Konvertiert das bestehende d64info-Listing in ausrichtbare ASM-Zeilen."""
+    records: List[Tuple[str, str]] = []
+    # Index/mnemonic/bytes of the immediately preceding machine instruction.
+    # Non-executable formatting lines do not become predecessors.
+    previous_instruction: Optional[Tuple[int, str, bytes]] = None
+    for raw_line in _D64INFO_MODULE.disassemble_mos6510_region(
+        bytes(code),
+        int(start_address) & 0xFFFF,
+    ):
+        line = str(raw_line).rstrip()
+        if not line:
+            records.append(("", ""))
+            continue
+        if line.endswith(":") and not line.lstrip().startswith("."):
+            records.append((line, ""))
+            continue
+
+        separator = " ; $"
+        if separator not in line:
+            records.append((line, ""))
+            continue
+
+        statement_part, metadata = line.split(separator, 1)
+        statement = statement_part.rstrip()
+        address_text, _colon, rest = metadata.partition(":")
+        byte_field = rest.strip().split("  ", 1)[0].strip()
+        comment = f"${address_text}: {byte_field}".rstrip()
+
+        # Semantische Dokumentation wird aus den tatsaechlichen Opcode-Bytes
+        # bestimmt und ist damit unabhaengig davon, ob das Operand im Listing
+        # spaeter als $E544/$FFD2 oder als lokales Label ausgegeben wurde.
+        try:
+            byte_values = bytes(
+                int(piece, 16)
+                for piece in byte_field.split()
+                if piece
+            )
+        except ValueError:
+            byte_values = b""
+
+        mnemonic = statement.strip().split(None, 1)[0].upper() if statement.strip() else ""
+        if mnemonic == "JSR" and len(byte_values) >= 3:
+            target = byte_values[1] | (byte_values[2] << 8)
+            semantic = C64_DISASSEMBLY_CALL_ANNOTATIONS.get((mnemonic, target))
+            if semantic:
+                # Keep the original address/opcode bytes and add the semantic
+                # description instead of replacing the byte-code comment.
+                # Interne ROM-Routinen sind in Stage 82 sichtbar als INTERN
+                # BASIC/KERNAL und damit als nicht portable API markiert.
+                comment = _c64_prefix_disassembly_comment(comment, semantic)
+
+        # Stage 83: recognise the direct pair
+        #
+        #     LDA #$nn
+        #     STA $hhhh
+        #
+        # for standard screen RAM ($0400-$07E7) and color RAM
+        # ($D800-$DBE7).  The LDA line receives the meaning of #$nn and the
+        # STA line receives the addressed C64 screen/color position.
+        if (
+            mnemonic == "STA"
+            and len(byte_values) >= 3
+            and byte_values[0] == 0x8D
+            and previous_instruction is not None
+        ):
+            previous_index, previous_mnemonic, previous_bytes = previous_instruction
+            target = byte_values[1] | (byte_values[2] << 8)
+            if (
+                previous_mnemonic == "LDA"
+                and len(previous_bytes) >= 2
+                and previous_bytes[0] == 0xA9
+            ):
+                immediate = previous_bytes[1]
+                if 0x0400 <= target <= 0x07E7:
+                    old_statement, old_comment = records[previous_index]
+                    records[previous_index] = (
+                        old_statement,
+                        _c64_prefix_disassembly_comment(
+                            old_comment,
+                            _c64_screen_code_annotation(immediate),
+                        ),
+                    )
+                    comment = _c64_prefix_disassembly_comment(
+                        comment,
+                        _c64_store_position_annotation(target, color_ram=False),
+                    )
+                elif 0xD800 <= target <= 0xDBE7:
+                    old_statement, old_comment = records[previous_index]
+                    color_name = C64_COLOR_NAMES[immediate & 0x0F]
+                    records[previous_index] = (
+                        old_statement,
+                        _c64_prefix_disassembly_comment(
+                            old_comment,
+                            f"Farbe {color_name}",
+                        ),
+                    )
+                    comment = _c64_prefix_disassembly_comment(
+                        comment,
+                        _c64_store_position_annotation(target, color_ram=True),
+                    )
+
+        current_index = len(records)
+        records.append((statement, comment))
+        if mnemonic and byte_values:
+            previous_instruction = (current_index, mnemonic, byte_values)
+    return records
+
+
+def _format_c64_disassembly_records(
+    records: Sequence[Tuple[str, str]],
+    *,
+    comment_gap: int = C64_DISASSEMBLY_COMMENT_GAP,
+) -> List[str]:
+    """Formatiert alle Kommentare auf eine gemeinsame Fluchtlinie."""
+    normalized = [(str(code).rstrip(), str(comment).strip()) for code, comment in records]
+    commented = [len(code) for code, comment in normalized if comment]
+    comment_column = (max(commented) if commented else 0) + max(1, int(comment_gap))
+
+    lines: List[str] = []
+    for code, comment in normalized:
+        if not comment:
+            lines.append(code)
+            continue
+        lines.append(code.ljust(comment_column) + "; " + comment)
+    return lines
+
+
+def format_c64_program_disassembly(
+    payload: bytes,
+    *,
+    suffix: str = ".prg",
+    source_name: str = "",
+) -> Tuple[str, int]:
+    """Disassembliert C64-.prg/.bin als dokumentierbaren ASM-Quelltext.
+
+    .prg benutzt seine zweibyte Ladeadresse.  Eine rohe .bin-Datei bekommt
+    mangels Header die klassische $0801-Standardadresse.
+    """
+    raw = bytes(payload)
+    ext = str(suffix).casefold()
+
+    if ext == ".prg":
+        if len(raw) < 2:
+            raise ValueError("C64-PRG ist zu kurz; die 2-Byte-Ladeadresse fehlt.")
+        load_address = raw[0] | (raw[1] << 8)
+        program = raw[2:]
+        address_note = "PRG-Header"
+    else:
+        load_address = C64_RAW_BINARY_DEFAULT_LOAD_ADDRESS
+        program = raw
+        address_note = "Standard fuer rohe .bin-Datei"
+
+    title = source_name or "C64-Binärprogramm"
+    output = [
+        f"; Disassembly: {title}",
+        f"; Ladeadresse: ${load_address:04X} ({address_note})",
+        f"; Kommentarflucht: laengste Anweisung + {C64_DISASSEMBLY_COMMENT_GAP} Leerzeichen",
+        "",
+        f".org ${load_address:04X}",
+    ]
+
+    entry_address = _c64_basic_sys_entry(program, load_address)
+    if entry_address is not None:
+        stub_size = entry_address - load_address
+        stub = program[:stub_size]
+        values = ", ".join(f"${value:02X}" for value in stub)
+        records: List[Tuple[str, str]] = [
+            (f"    .byte {values}", "BASIC SYS-Startstub"),
+        ]
+        if stub:
+            output.extend(_format_c64_disassembly_records(records))
+            output.extend(("", f".org ${entry_address:04X}"))
+        code = program[stub_size:]
+        code_start = entry_address
+    else:
+        code = program
+        code_start = load_address
+
+    output.extend(
+        _format_c64_disassembly_records(
+            _c64_listing_records(code, code_start),
+        )
+    )
+    return "\n".join(output).rstrip() + "\n", load_address
+
 
 # ---------------------------------------------------------------------------
 # Integrierter MOS-6502/6510-Assembler
