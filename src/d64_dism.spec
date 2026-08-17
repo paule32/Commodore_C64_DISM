@@ -5,7 +5,11 @@ a = Analysis(
     ['d64_dism.py'],
     pathex=[],
     binaries=[],
-    datas=[('c64c/include', 'c64c/include')],
+    datas=[
+         ( "c64c/include", "c64c/include" ),
+         ( "examples", "examples" ),
+         ( "C64Pro.ttf", "." )
+    ],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

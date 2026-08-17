@@ -1,0 +1,27 @@
+Stage 86 - Test Results
+=======================
+
+Stage-86-spezifische Tests:
+  6 / 6 OK
+
+Stage 85 + Stage 86 gezielt:
+  12 / 12 OK
+
+Full regression suite:
+  804 / 804 OK
+
+Command:
+  PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -p 'test_*.py' -v
+
+Zusätzliche Prüfungen:
+  - Tabellendesigner wird horizontal rechts neben filesystem_dock gesplittet
+  - Projekt/Informationen liegen nicht mehr unter/über dem Designer
+  - Dateisystem bleibt im Tabellen-Workspace sichtbar
+  - normaler Workspace wird beim Schließen wiederhergestellt
+  - Grid selektiert genau eine Zelle
+  - Dark-Header #2a2a2a / weiß
+  - Dark-Grid-Ecke schwarz
+  - Editor schwarz / gelb
+  - beide SpinBoxen 84 px breit
+  - Dock-Symbole Dark=weiß, Light=schwarz
+  - Python compile() Syntaxprüfung: OK

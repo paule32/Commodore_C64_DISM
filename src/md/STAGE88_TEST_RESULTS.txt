@@ -1,0 +1,19 @@
+Stage 88 - Test Results
+=======================
+
+Focused Stage 86/87/88 tests:
+  14/14 OK
+
+Full regression suite:
+  812/812 OK
+
+Command:
+  PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -p 'test_*.py' -q
+
+Stage-88 checks:
+  - table designer remains split right of filesystem dock
+  - project/information dock is not hidden by table workspace
+  - log dock is not hidden by table workspace
+  - central editor area is still freed for the table workspace
+  - Localize/knowledge special workspaces remain mutually exclusive
+  - Stage 87 settings dock regression remains green

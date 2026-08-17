@@ -1,0 +1,15 @@
+Stage 90 - dBase Formulardesigner Komponentenpalette / Property-Tree
+
+Focused regression:
+  25 / 25 OK
+
+Full regression:
+  823 / 823 OK
+
+Command:
+  PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -p 'test_*.py'
+
+Syntax:
+  compile(source, 'd64_dism.py', 'exec') -> OK
+
+No __pycache__ or *.pyc files are included in the archive.

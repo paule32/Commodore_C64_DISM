@@ -37,6 +37,10 @@
 #  * Stage 75: Green-&-Beige-Titelbalken und passende Menüs nach Referenzbild
 #  * Stage 80: Localize-Dock im gesamten freien Bereich; C64-Disassembly mit Bytecode + Semantik,
 #    gelben 6510-Opcodes, weißen Operanden und eingeblendeter Befehlsbeschreibung
+#  * Stage 85: dBase-Tabellendesigner als Dock mit DBF-Strukturreader/-writer,
+#  * Stage 86: Tabellen-Workspace rechts neben Dateisystem + Dark/Light-Gridstil.
+#  * Stage 87: Desktop-Settings als Dock-Workspace mit Alias-/BDE-Verwaltung.
+#    Mehrtabellen-Tabs, Feldeditoren und Kontextoperationen für Feldzeilen
 #
 #  * PROLOG Wissen-Browser Stage 71: Stage-70 Multi-Scroll bleibt erhalten;
 #    Alternativen-ComboBox als Viewport-Overlay exakt unter dem Parent-Button,
@@ -93,6 +97,7 @@ import locale
 import gettext
 
 import time
+import datetime as dt
 import zlib      as _d64info_zlib
 import base64    as _d64info_base64
 
@@ -106,6 +111,290 @@ from flags_rc    import *
 
 # dBase: Start fuehrt ausschliesslich eine vorhandene EXE aus.
 DBASE_START_HARD_NO_BUILD = True
+
+
+# ---------------------------------------------------------------------------
+# Stage 85: lokaler dBase-DBF-Strukturreader/-writer fuer den Tabellendesigner.
+# ---------------------------------------------------------------------------
+DBASE_DBF_FIELD_TYPES: Tuple[Tuple[str, str, int, int], ...] = (
+    ("Zeichen", "C", 20, 0),
+    ("Dezimal", "N", 10, 0),
+    ("Fließkomma", "F", 12, 2),
+    ("Datum", "D", 8, 0),
+    ("Logisch", "L", 1, 0),
+    ("Memo", "M", 10, 0),
+)
+DBASE_DBF_TYPE_LABELS: Dict[str, str] = {
+    code: label for label, code, _length, _decimals in DBASE_DBF_FIELD_TYPES
+}
+DBASE_DBF_LABEL_TYPES: Dict[str, str] = {
+    label: code for label, code, _length, _decimals in DBASE_DBF_FIELD_TYPES
+}
+DBASE_DBF_DEFAULTS: Dict[str, Tuple[int, int]] = {
+    code: (length, decimals)
+    for _label, code, length, decimals in DBASE_DBF_FIELD_TYPES
+}
+
+
+@dataclass
+class DBaseDBFField:
+    name: str
+    field_type: str = "C"
+    length: int = 20
+    decimals: int = 0
+    indexed: bool = False
+    source_name: str = ""
+
+    def normalized(self) -> "DBaseDBFField":
+        name = str(self.name or "").strip()
+        field_type = str(self.field_type or "C").strip().upper()[:1]
+        if field_type not in DBASE_DBF_TYPE_LABELS:
+            raise ValueError(f"Unbekannter DBF-Feldtyp: {self.field_type!r}")
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,9}", name):
+            raise ValueError(
+                f"Ungültiger DBF-Feldname {name!r}. Erlaubt sind 1 bis 10 "
+                "Zeichen: Buchstaben, Ziffern und Unterstrich; das erste "
+                "Zeichen muss ein Buchstabe oder Unterstrich sein."
+            )
+
+        length = int(self.length)
+        decimals = int(self.decimals)
+        if field_type == "C":
+            length = max(1, min(length, 254))
+            decimals = 0
+        elif field_type in {"N", "F"}:
+            length = max(1, min(length, 20))
+            decimals = max(0, min(decimals, max(0, length - 2)))
+        elif field_type == "D":
+            length, decimals = 8, 0
+        elif field_type == "L":
+            length, decimals = 1, 0
+        elif field_type == "M":
+            length, decimals = 10, 0
+
+        return DBaseDBFField(
+            name=name,
+            field_type=field_type,
+            length=length,
+            decimals=decimals,
+            indexed=bool(self.indexed),
+            source_name=str(self.source_name or name).strip(),
+        )
+
+
+@dataclass
+class DBaseDBFTable:
+    fields: List[DBaseDBFField]
+    records: List[Tuple[bool, Dict[str, str]]] = field(default_factory=list)
+    code_page_mark: int = 0x03
+    source_path: Optional[Path] = None
+
+
+def _dbase_dbf_field_bytes(value: str, field_type: str, length: int) -> bytes:
+    text = "" if value is None else str(value)
+    code = str(field_type).upper()[:1]
+    if code == "C":
+        raw = text.encode("cp1252", errors="replace")[:length]
+        return raw.ljust(length, b" ")
+    if code in {"N", "F", "M"}:
+        raw = text.encode("ascii", errors="replace")[:length]
+        return raw.rjust(length, b" ")
+    if code == "D":
+        raw = re.sub(r"[^0-9]", "", text).encode("ascii")[:8]
+        return raw.ljust(length, b" ")
+    if code == "L":
+        first = text.strip().upper()[:1]
+        if first in {"1", "Y", "J", "T"}:
+            first = "T"
+        elif first in {"0", "N", "F"}:
+            first = "F"
+        else:
+            first = "?"
+        return first.encode("ascii").ljust(length, b" ")
+    return text.encode("cp1252", errors="replace")[:length].ljust(length, b" ")
+
+
+def read_dbase_dbf(path: Path) -> DBaseDBFTable:
+    """Liest DBF-Struktur und Datensaetze fuer den lokalen Tabellendesigner."""
+    path = Path(path)
+    blob = path.read_bytes()
+    if len(blob) < 33:
+        raise ValueError("Die DBF-Datei ist zu kurz oder beschädigt.")
+
+    version = blob[0]
+    record_count = struct.unpack_from("<I", blob, 4)[0]
+    header_length = struct.unpack_from("<H", blob, 8)[0]
+    record_length = struct.unpack_from("<H", blob, 10)[0]
+    code_page_mark = blob[29] if len(blob) > 29 else 0x03
+    if header_length < 33 or header_length > len(blob):
+        raise ValueError("Ungültige DBF-Headerlänge.")
+    if record_length < 1:
+        raise ValueError("Ungültige DBF-Datensatzlänge.")
+
+    fields: List[DBaseDBFField] = []
+    offset = 32
+    while offset + 32 <= header_length and blob[offset] != 0x0D:
+        descriptor = blob[offset:offset + 32]
+        raw_name = descriptor[0:11].split(b"\0", 1)[0].rstrip(b" ")
+        name = raw_name.decode("ascii", errors="replace")
+        field_type = chr(descriptor[11]).upper()
+        length = int(descriptor[16])
+        decimals = int(descriptor[17])
+        if name and field_type:
+            fields.append(
+                DBaseDBFField(
+                    name=name,
+                    field_type=field_type,
+                    length=length,
+                    decimals=decimals,
+                    source_name=name,
+                )
+            )
+        offset += 32
+
+    records: List[Tuple[bool, Dict[str, str]]] = []
+    data_offset = header_length
+    for record_index in range(record_count):
+        start = data_offset + record_index * record_length
+        end = start + record_length
+        if end > len(blob):
+            break
+        record = blob[start:end]
+        deleted = bool(record[:1] == b"*")
+        values: Dict[str, str] = {}
+        pos = 1
+        for dbf_field in fields:
+            raw = record[pos:pos + dbf_field.length]
+            pos += dbf_field.length
+            if dbf_field.field_type == "C":
+                value = raw.decode("cp1252", errors="replace").rstrip(" \0")
+            else:
+                value = raw.decode("ascii", errors="replace").strip(" \0")
+            values[dbf_field.name] = value
+        records.append((deleted, values))
+
+    table = DBaseDBFTable(
+        fields=fields,
+        records=records,
+        code_page_mark=code_page_mark,
+        source_path=path,
+    )
+
+    # Stage-85-Seitenmetadaten bewahren die im normalen DBF nicht enthaltene
+    # Designer-Markierung "Index". Physische NDX/MDX-Dateien werden dadurch
+    # nicht vorgetäuscht oder verändert.
+    metadata_path = path.with_suffix(path.suffix + ".d64meta.json")
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        indexed_names = {
+            str(name).casefold()
+            for name in metadata.get("indexed_fields", [])
+        }
+        for dbf_field in table.fields:
+            dbf_field.indexed = dbf_field.name.casefold() in indexed_names
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+
+    return table
+
+
+def write_dbase_dbf(
+    path: Path,
+    fields: Sequence[DBaseDBFField],
+    records: Optional[Sequence[Tuple[bool, Dict[str, str]]]] = None,
+    *,
+    code_page_mark: int = 0x03,
+    source_path: Optional[Path] = None,
+) -> Path:
+    """Schreibt eine lokale dBase-III/IV-kompatible DBF-Datei."""
+    path = Path(path)
+    normalized = [field_spec.normalized() for field_spec in fields]
+    if not normalized:
+        raise ValueError("Eine DBF-Tabelle benötigt mindestens ein Feld.")
+
+    seen = set()
+    for field_spec in normalized:
+        key = field_spec.name.casefold()
+        if key in seen:
+            raise ValueError(f"Der DBF-Feldname {field_spec.name!r} ist doppelt vorhanden.")
+        seen.add(key)
+
+    record_rows = list(records or [])
+    header_length = 32 + len(normalized) * 32 + 1
+    record_length = 1 + sum(field_spec.length for field_spec in normalized)
+    if record_length > 0xFFFF:
+        raise ValueError("Die DBF-Datensatzlänge überschreitet 65535 Bytes.")
+
+    has_memo = any(field_spec.field_type == "M" for field_spec in normalized)
+    header = bytearray(32)
+    header[0] = 0x83 if has_memo else 0x03
+    now = time.localtime()
+    header[1] = max(0, min(255, now.tm_year - 1900))
+    header[2] = now.tm_mon
+    header[3] = now.tm_mday
+    struct.pack_into("<I", header, 4, len(record_rows))
+    struct.pack_into("<H", header, 8, header_length)
+    struct.pack_into("<H", header, 10, record_length)
+    header[29] = int(code_page_mark) & 0xFF
+
+    output = bytearray(header)
+    for field_spec in normalized:
+        descriptor = bytearray(32)
+        encoded_name = field_spec.name.encode("ascii", errors="strict")[:10]
+        descriptor[0:len(encoded_name)] = encoded_name
+        descriptor[11] = ord(field_spec.field_type)
+        descriptor[16] = field_spec.length & 0xFF
+        descriptor[17] = field_spec.decimals & 0xFF
+        output.extend(descriptor)
+    output.append(0x0D)
+
+    for deleted, values in record_rows:
+        output.extend(b"*" if deleted else b" ")
+        for field_spec in normalized:
+            lookup_name = field_spec.source_name or field_spec.name
+            value = values.get(lookup_name, values.get(field_spec.name, ""))
+            output.extend(
+                _dbase_dbf_field_bytes(
+                    value,
+                    field_spec.field_type,
+                    field_spec.length,
+                )
+            )
+    output.append(0x1A)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_bytes(output)
+    os.replace(str(temporary), str(path))
+
+    # Die Index-Checkbox ist Strukturmetadaten des Designers. Klassische DBF-
+    # Dateien speichern die Feld-zu-Index-Zuordnung nicht selbst; echte NDX/MDX-
+    # Erzeugung ist ein separater Index-Writer. Deshalb bleibt die Markierung in
+    # einer kleinen Sidecar-Datei erhalten, ohne fremde Indexdateien anzutasten.
+    metadata_path = path.with_suffix(path.suffix + ".d64meta.json")
+    metadata = {
+        "format": "dBase2Many-table-designer-v1",
+        "indexed_fields": [
+            field_spec.name for field_spec in normalized if field_spec.indexed
+        ],
+    }
+    metadata_path.write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    if has_memo:
+        destination_dbt = path.with_suffix(".dbt")
+        source = Path(source_path) if source_path else None
+        source_dbt = source.with_suffix(".dbt") if source else None
+        if source_dbt is not None and source_dbt.is_file() and source_dbt != destination_dbt:
+            shutil.copy2(source_dbt, destination_dbt)
+        elif not destination_dbt.exists():
+            dbt_header = bytearray(512)
+            struct.pack_into(">I", dbt_header, 0, 1)
+            destination_dbt.write_bytes(dbt_header)
+
+    return path
 
 # ---------------------------------------------------------------------------
 # C64 Pro Mono: direkte PETSCII-Zuordnung fuer die Zeichenansicht des
@@ -7598,6 +7887,7 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             pyqtSignal,
         )
         from PyQt5.QtGui import (
+            QBrush,
             QCloseEvent,
             QColor,
             QCursor,
@@ -7636,6 +7926,12 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             QFileIconProvider,
             QFileSystemModel,
             QFrame,
+            QGraphicsItem,
+            QGraphicsObject,
+            QGraphicsProxyWidget,
+            QGraphicsRectItem,
+            QGraphicsScene,
+            QGraphicsView,
             QGridLayout,
             QGroupBox,
             QHeaderView,
@@ -7644,6 +7940,7 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             QLabel,
             QLineEdit,
             QLayout,
+            QListView,
             QListWidget,
             QListWidgetItem,
             QMainWindow,
@@ -7654,13 +7951,17 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             QPushButton,
             QRadioButton,
             QScrollArea,
+            QScrollBar,
             QSizePolicy,
+            QSpinBox,
             QSplitter,
             QStackedWidget,
             QStatusBar,
             QStyle,
             QTabBar,
             QTabWidget,
+            QTableWidget,
+            QTableWidgetItem,
             QTextBrowser,
             QTextEdit,
             QToolBar,
@@ -15136,7 +15437,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                     if self._tool == "FillCircle":
                         fill = QColor(preview_color)
                         fill.setAlpha(90)
-                        painter.setBrush(fill)
+                        painter.setBrush(QBrush(fill))
                     painter.drawEllipse(circle_rect)
 
         def mousePressEvent(self, event) -> None:
@@ -17238,9 +17539,14 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
         def update_syntax_highlighting(self) -> None:
             suffix = self.effective_suffix
             is_basic = suffix in self.BASIC_EXTENSIONS
-            is_assembler_source = suffix in self.ASSEMBLER_EXTENSIONS
+            # Stage 84: auch der im Rohdaten-Tab erzeugte C64-Disassembly-
+            # Quelltext ist ein vollwertiger Assembler-Quelltext. Dadurch
+            # erscheinen Assemble/Start direkt ueber dem Editor.
             is_disassembly = self.binary_disassembly_mode
-            is_assembler = is_assembler_source or is_disassembly
+            is_assembler_source = (
+                suffix in self.ASSEMBLER_EXTENSIONS or is_disassembly
+            )
+            is_assembler = is_assembler_source
             is_pascal = suffix in self.PASCAL_EXTENSIONS
             is_c = suffix in self.C_EXTENSIONS
             is_c_header = suffix in self.C_HEADER_EXTENSIONS
@@ -17439,7 +17745,13 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
 
         @property
         def is_assembler_document(self) -> bool:
-            return self.effective_suffix in self.ASSEMBLER_EXTENSIONS
+            # Ein geoeffnetes C64-.prg/.bin wird im Rohdaten-Tab als
+            # editierbarer Assemblerquelltext dargestellt und darf deshalb
+            # ueber denselben internen Assembler-/Startpfad laufen.
+            return (
+                self.binary_disassembly_mode
+                or self.effective_suffix in self.ASSEMBLER_EXTENSIONS
+            )
 
         @property
         def is_pascal_document(self) -> bool:
@@ -18792,6 +19104,2839 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 self.temporary = None
             super().done(result)
 
+    # -----------------------------------------------------------------------
+    # Stage 84/90: visueller dBase-Formulardesigner mit Komponentenpalette.
+    # -----------------------------------------------------------------------
+    DBASE_FORM_COMPONENT_SPECS = {
+        "Button": {"title": "Button", "width": 120, "height": 34},
+        "CheckBox": {"title": "Checkbox", "width": 145, "height": 26},
+        "RadioButton": {"title": "Radiobutton", "width": 150, "height": 26},
+        "ComboBox": {"title": "ComboBox", "width": 150, "height": 30},
+        "Label": {"title": "Label", "width": 110, "height": 26},
+        "Image": {"title": "Image", "width": 150, "height": 105},
+        "Panel": {"title": "Panel", "width": 220, "height": 150},
+        "TableGrid": {"title": "Tabellen-Grid", "width": 300, "height": 170},
+        "VScrollBar": {"title": "Scrollbar vertikal", "width": 22, "height": 150},
+        "HScrollBar": {"title": "Scrollbar horizontal", "width": 150, "height": 22},
+        "StatusBar": {"title": "Statusbar", "width": 320, "height": 26},
+        "ToolBar": {"title": "Toolbar", "width": 320, "height": 34},
+        "Menu": {"title": "Menü", "width": 320, "height": 27},
+    }
+
+
+    class DBaseFormDesignerScene(QGraphicsScene):
+        """QGraphicsScene mit 10-Pixel-Raster und Einfügemodus."""
+
+        GRID_SPACING = 10
+        control_created = pyqtSignal(object)
+        placement_mode_changed = pyqtSignal(str)
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.setSceneRect(0.0, 0.0, 2000.0, 1200.0)
+            self._pending_component_type = ""
+            self._component_counters = {}
+
+        def drawBackground(self, painter: QPainter, rect: QRectF) -> None:
+            super().drawBackground(painter, rect)
+            spacing = int(self.GRID_SPACING)
+            if spacing <= 0:
+                return
+
+            palette = QApplication.palette()
+            grid_color = QColor(palette.mid().color())
+            grid_color.setAlpha(115)
+            painter.save()
+            try:
+                painter.setPen(QPen(grid_color, 0))
+                left = int(rect.left()) - (int(rect.left()) % spacing)
+                top = int(rect.top()) - (int(rect.top()) % spacing)
+                right = int(rect.right()) + spacing
+                bottom = int(rect.bottom()) + spacing
+                for x in range(left, right, spacing):
+                    for y in range(top, bottom, spacing):
+                        painter.drawPoint(QPointF(float(x), float(y)))
+            finally:
+                painter.restore()
+
+        def set_pending_component(self, component_type: str) -> None:
+            component_type = str(component_type or "")
+            if component_type and component_type not in DBASE_FORM_COMPONENT_SPECS:
+                return
+            if component_type == self._pending_component_type:
+                return
+            self._pending_component_type = component_type
+            self.placement_mode_changed.emit(component_type)
+
+        def pending_component(self) -> str:
+            return str(self._pending_component_type)
+
+        def _next_component_name(self, component_type: str) -> str:
+            key = str(component_type)
+            value = int(self._component_counters.get(key, 0)) + 1
+            self._component_counters[key] = value
+            return f"{key}{value}"
+
+        def create_control(
+            self,
+            component_type: str,
+            scene_pos: QPointF,
+            *,
+            component_name: Optional[str] = None,
+            caption: Optional[str] = None,
+        ):
+            spec = DBASE_FORM_COMPONENT_SPECS.get(str(component_type))
+            if spec is None:
+                return None
+            name = str(component_name or self._next_component_name(component_type))
+            item = DBaseFormControlItem(
+                str(component_type),
+                name,
+                caption=caption,
+                width=float(spec["width"]),
+                height=float(spec["height"]),
+            )
+            self.addItem(item)
+            item.setPos(float(scene_pos.x()), float(scene_pos.y()))
+            self.clearSelection()
+            item.setSelected(True)
+            item.setFocus(Qt.OtherFocusReason)
+            self.control_created.emit(item)
+            return item
+
+        def mousePressEvent(self, event) -> None:
+            if event.button() == Qt.LeftButton and self._pending_component_type:
+                component_type = self._pending_component_type
+                self.create_control(component_type, event.scenePos())
+                # Ein Klick in der Palette setzt den Flag nur für eine Platzierung.
+                self.set_pending_component("")
+                event.accept()
+                return
+            super().mousePressEvent(event)
+
+
+    class DBaseFormResizeHandle(QGraphicsRectItem):
+        """Einer der acht Resize-Griffe einer Designer-Komponente."""
+
+        SIZE = 8.0
+        CURSORS = {
+            "nw": Qt.SizeFDiagCursor,
+            "n": Qt.SizeVerCursor,
+            "ne": Qt.SizeBDiagCursor,
+            "e": Qt.SizeHorCursor,
+            "se": Qt.SizeFDiagCursor,
+            "s": Qt.SizeVerCursor,
+            "sw": Qt.SizeBDiagCursor,
+            "w": Qt.SizeHorCursor,
+        }
+
+        def __init__(self, role: str, owner):
+            half = self.SIZE / 2.0
+            super().__init__(-half, -half, self.SIZE, self.SIZE, owner)
+            self.role = str(role)
+            self.owner = owner
+            self.setAcceptHoverEvents(True)
+            self.setAcceptedMouseButtons(Qt.LeftButton)
+            self.setCursor(self.CURSORS.get(self.role, Qt.ArrowCursor))
+            self.setZValue(1000.0)
+            self.setBrush(QBrush(QColor(255, 255, 255)))
+            self.setPen(QPen(QColor(20, 20, 20), 1))
+            self.hide()
+
+        def hoverEnterEvent(self, event) -> None:
+            self.setCursor(self.CURSORS.get(self.role, Qt.ArrowCursor))
+            super().hoverEnterEvent(event)
+
+        def mousePressEvent(self, event) -> None:
+            if event.button() == Qt.LeftButton:
+                self.owner.begin_resize(self.role, event.scenePos())
+                event.accept()
+                return
+            super().mousePressEvent(event)
+
+        def mouseMoveEvent(self, event) -> None:
+            if event.buttons() & Qt.LeftButton:
+                self.owner.update_resize(event.scenePos())
+                event.accept()
+                return
+            super().mouseMoveEvent(event)
+
+        def mouseReleaseEvent(self, event) -> None:
+            if event.button() == Qt.LeftButton:
+                self.owner.finish_resize(event.scenePos())
+                event.accept()
+                return
+            super().mouseReleaseEvent(event)
+
+
+    class DBaseFormControlItem(QGraphicsObject):
+        """Designer-Wrapper um ein echtes QWidget inkl. Proxy und Resize-Griffen."""
+
+        geometry_changed = pyqtSignal(object)
+        properties_changed = pyqtSignal(object)
+        MIN_WIDTH = 20.0
+        MIN_HEIGHT = 18.0
+
+        def __init__(
+            self,
+            component_type: str,
+            component_name: str,
+            *,
+            caption: Optional[str] = None,
+            width: float = 120.0,
+            height: float = 34.0,
+            parent=None,
+        ):
+            super().__init__(parent)
+            self.component_type = str(component_type)
+            self.component_name = str(component_name)
+            self.caption = str(caption if caption is not None else self.component_name)
+            self._width = max(self.MIN_WIDTH, float(width))
+            self._height = max(self.MIN_HEIGHT, float(height))
+            self._resize_role = ""
+            self._resize_start_pos = QPointF()
+            self._resize_start_rect = QRectF()
+            self._resize_preview = None
+
+            self.control_widget = self._create_control_widget()
+            self.control_widget.setObjectName(self.component_name)
+            self.control_widget.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            self.control_widget.setFocusPolicy(Qt.NoFocus)
+
+            font = QFont(self.control_widget.font())
+            self.font_family = font.family() or QApplication.font().family()
+            self.font_point_size = max(1, font.pointSize() if font.pointSize() > 0 else 10)
+            self.font_bold = bool(font.bold())
+            self.font_italic = bool(font.italic())
+
+            palette = self.control_widget.palette()
+            self.background_color = QColor(
+                palette.color(QPalette.Button)
+                if self.component_type in {"Button", "ToolBar", "StatusBar", "Menu"}
+                else palette.color(QPalette.Window)
+            )
+            self.foreground_color = QColor(
+                palette.color(QPalette.ButtonText)
+                if self.component_type == "Button"
+                else palette.color(QPalette.WindowText)
+            )
+
+            self.proxy = QGraphicsProxyWidget(self)
+            self.proxy.setWidget(self.control_widget)
+            self.proxy.setAcceptedMouseButtons(Qt.NoButton)
+            self.proxy.setPos(0.0, 0.0)
+            self.proxy.setZValue(0.0)
+
+            self._handles = {
+                role: DBaseFormResizeHandle(role, self)
+                for role in ("nw", "n", "ne", "e", "se", "s", "sw", "w")
+            }
+            self.setFlags(
+                QGraphicsItem.ItemIsMovable
+                | QGraphicsItem.ItemIsSelectable
+                | QGraphicsItem.ItemIsFocusable
+                | QGraphicsItem.ItemSendsGeometryChanges
+            )
+            self.setAcceptHoverEvents(True)
+            self._apply_widget_style()
+            self._sync_proxy_size()
+            self._position_handles()
+
+        def _create_control_widget(self) -> QWidget:
+            t = self.component_type
+            if t == "Button":
+                return QPushButton(self.caption)
+            if t == "CheckBox":
+                return QCheckBox(self.caption)
+            if t == "RadioButton":
+                return QRadioButton(self.caption)
+            if t == "ComboBox":
+                widget = QComboBox()
+                widget.addItems(("Eintrag 1", "Eintrag 2", "Eintrag 3"))
+                return widget
+            if t == "Label":
+                widget = QLabel(self.caption)
+                widget.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                return widget
+            if t == "Image":
+                widget = QLabel("Image")
+                widget.setAlignment(Qt.AlignCenter)
+                widget.setFrameShape(QFrame.Box)
+                return widget
+            if t == "Panel":
+                widget = QFrame()
+                widget.setFrameShape(QFrame.StyledPanel)
+                widget.setFrameShadow(QFrame.Sunken)
+                return widget
+            if t == "TableGrid":
+                widget = QTableWidget(3, 3)
+                widget.setHorizontalHeaderLabels(("A", "B", "C"))
+                widget.setVerticalHeaderLabels(("1", "2", "3"))
+                return widget
+            if t == "VScrollBar":
+                return QScrollBar(Qt.Vertical)
+            if t == "HScrollBar":
+                return QScrollBar(Qt.Horizontal)
+            if t == "StatusBar":
+                widget = QStatusBar()
+                widget.showMessage("Bereit")
+                return widget
+            if t == "ToolBar":
+                widget = QToolBar()
+                widget.addAction("Neu")
+                widget.addAction("Öffnen")
+                return widget
+            if t == "Menu":
+                widget = QMenuBar()
+                widget.addMenu("Datei")
+                widget.addMenu("Bearbeiten")
+                return widget
+            return QLabel(self.caption)
+
+        def boundingRect(self) -> QRectF:
+            return QRectF(0.0, 0.0, self._width, self._height)
+
+        def paint(self, painter: QPainter, option, widget=None) -> None:
+            del option, widget
+            if not (self.isSelected() or self.hasFocus()):
+                return
+            painter.save()
+            try:
+                painter.setBrush(Qt.NoBrush)
+                painter.setPen(QPen(QColor(0, 0, 128), 1.5, Qt.DashLine))
+                painter.drawRect(self.boundingRect().adjusted(0.75, 0.75, -0.75, -0.75))
+            finally:
+                painter.restore()
+
+        def itemChange(self, change, value):
+            if change == QGraphicsItem.ItemPositionChange and self.scene() is not None:
+                position = QPointF(value)
+                scene_rect = self.scene().sceneRect()
+                x = max(scene_rect.left(), min(position.x(), scene_rect.right() - self._width))
+                y = max(scene_rect.top(), min(position.y(), scene_rect.bottom() - self._height))
+                return QPointF(x, y)
+
+            result = super().itemChange(change, value)
+            if change in (
+                QGraphicsItem.ItemPositionHasChanged,
+                QGraphicsItem.ItemSelectedHasChanged,
+            ):
+                if change == QGraphicsItem.ItemSelectedHasChanged:
+                    self._update_handle_visibility()
+                    self.update()
+                QTimer.singleShot(0, lambda: self.geometry_changed.emit(self))
+            return result
+
+        def focusInEvent(self, event) -> None:
+            super().focusInEvent(event)
+            self._update_handle_visibility()
+            self.update()
+
+        def focusOutEvent(self, event) -> None:
+            super().focusOutEvent(event)
+            self._update_handle_visibility()
+            self.update()
+
+        def mousePressEvent(self, event) -> None:
+            if event.button() == Qt.LeftButton:
+                self.setSelected(True)
+                self.setFocus(Qt.MouseFocusReason)
+            super().mousePressEvent(event)
+
+        def _update_handle_visibility(self) -> None:
+            visible = bool(self.isSelected() or self.hasFocus())
+            for handle in self._handles.values():
+                handle.setVisible(visible)
+
+        def _position_handles(self) -> None:
+            w = self._width
+            h = self._height
+            positions = {
+                "nw": QPointF(0.0, 0.0),
+                "n": QPointF(w / 2.0, 0.0),
+                "ne": QPointF(w, 0.0),
+                "e": QPointF(w, h / 2.0),
+                "se": QPointF(w, h),
+                "s": QPointF(w / 2.0, h),
+                "sw": QPointF(0.0, h),
+                "w": QPointF(0.0, h / 2.0),
+            }
+            for role, position in positions.items():
+                self._handles[role].setPos(position)
+
+        def _sync_proxy_size(self) -> None:
+            self.proxy.resize(self._width, self._height)
+            self.control_widget.resize(int(round(self._width)), int(round(self._height)))
+
+        def _set_size(self, width: float, height: float) -> None:
+            width = max(self.MIN_WIDTH, float(width))
+            height = max(self.MIN_HEIGHT, float(height))
+            if width == self._width and height == self._height:
+                return
+            self.prepareGeometryChange()
+            self._width = width
+            self._height = height
+            self._sync_proxy_size()
+            self._position_handles()
+            self.update()
+
+        def geometry_values(self) -> Tuple[int, int, int, int]:
+            position = self.pos()
+            return (
+                int(round(position.y())),
+                int(round(position.x())),
+                int(round(self._width)),
+                int(round(self._height)),
+            )
+
+        def set_geometry_values(
+            self,
+            *,
+            top: Optional[int] = None,
+            left: Optional[int] = None,
+            width: Optional[int] = None,
+            height: Optional[int] = None,
+        ) -> None:
+            current_top, current_left, current_width, current_height = self.geometry_values()
+            new_top = current_top if top is None else int(top)
+            new_left = current_left if left is None else int(left)
+            new_width = current_width if width is None else int(width)
+            new_height = current_height if height is None else int(height)
+            self.setPos(float(new_left), float(new_top))
+            self._set_size(float(new_width), float(new_height))
+            self.geometry_changed.emit(self)
+
+        def native_handle_text(self) -> str:
+            try:
+                handle = int(self.control_widget.winId())
+            except (RuntimeError, TypeError, ValueError):
+                handle = 0
+            if handle <= 0:
+                return "0x00000000"
+            width = 16 if handle > 0xFFFFFFFF else 8
+            return f"0x{handle:0{width}X}"
+
+        def set_component_name(self, value: str) -> None:
+            value = str(value or "").strip()
+            if not value or value == self.component_name:
+                return
+            self.component_name = value
+            self.control_widget.setObjectName(value)
+            if self.component_type in {"Button", "CheckBox", "RadioButton", "Label"}:
+                try:
+                    self.control_widget.setText(value)
+                except AttributeError:
+                    pass
+            self.properties_changed.emit(self)
+
+        def _apply_widget_style(self) -> None:
+            font = QFont(self.font_family, int(self.font_point_size))
+            font.setBold(bool(self.font_bold))
+            font.setItalic(bool(self.font_italic))
+            self.control_widget.setFont(font)
+
+            palette = QPalette(self.control_widget.palette())
+            bg = QColor(self.background_color)
+            fg = QColor(self.foreground_color)
+            for role in (QPalette.Window, QPalette.Button, QPalette.Base, QPalette.AlternateBase):
+                palette.setColor(role, bg)
+            for role in (QPalette.WindowText, QPalette.ButtonText, QPalette.Text):
+                palette.setColor(role, fg)
+            self.control_widget.setPalette(palette)
+            self.control_widget.setAutoFillBackground(True)
+            self.control_widget.update()
+            self.proxy.update()
+
+        def set_background_color(self, color) -> bool:
+            value = QColor(color)
+            if not value.isValid():
+                return False
+            self.background_color = value
+            self._apply_widget_style()
+            self.properties_changed.emit(self)
+            return True
+
+        def set_foreground_color(self, color) -> bool:
+            value = QColor(color)
+            if not value.isValid():
+                return False
+            self.foreground_color = value
+            self._apply_widget_style()
+            self.properties_changed.emit(self)
+            return True
+
+        def set_font_family(self, family: str) -> None:
+            family = str(family or "").strip()
+            if not family:
+                return
+            self.font_family = family
+            self._apply_widget_style()
+            self.properties_changed.emit(self)
+
+        def set_font_point_size(self, value: int) -> None:
+            self.font_point_size = max(1, int(value))
+            self._apply_widget_style()
+            self.properties_changed.emit(self)
+
+        def set_font_bold(self, enabled: bool) -> None:
+            self.font_bold = bool(enabled)
+            self._apply_widget_style()
+            self.properties_changed.emit(self)
+
+        def set_font_italic(self, enabled: bool) -> None:
+            self.font_italic = bool(enabled)
+            self._apply_widget_style()
+            self.properties_changed.emit(self)
+
+        def begin_resize(self, role: str, scene_pos: QPointF) -> None:
+            scene = self.scene()
+            if scene is None:
+                return
+            self.setSelected(True)
+            self.setFocus(Qt.MouseFocusReason)
+            self._resize_role = str(role)
+            self._resize_start_pos = QPointF(scene_pos)
+            position = self.scenePos()
+            self._resize_start_rect = QRectF(position.x(), position.y(), self._width, self._height)
+            if self._resize_preview is not None:
+                try:
+                    scene.removeItem(self._resize_preview)
+                except RuntimeError:
+                    pass
+            preview = QGraphicsRectItem(self._resize_start_rect)
+            preview.setZValue(2000.0)
+            preview.setPen(QPen(QColor(0, 0, 128), 1.5, Qt.DashLine))
+            preview.setBrush(QBrush(Qt.NoBrush))
+            scene.addItem(preview)
+            self._resize_preview = preview
+
+        def _resize_rect_for_position(self, scene_pos: QPointF) -> QRectF:
+            start = QRectF(self._resize_start_rect)
+            delta = QPointF(scene_pos) - self._resize_start_pos
+            left, right = start.left(), start.right()
+            top, bottom = start.top(), start.bottom()
+            role = self._resize_role
+
+            if "w" in role:
+                left = min(start.left() + delta.x(), right - self.MIN_WIDTH)
+            if "e" in role:
+                right = max(start.right() + delta.x(), left + self.MIN_WIDTH)
+            if "n" in role:
+                top = min(start.top() + delta.y(), bottom - self.MIN_HEIGHT)
+            if "s" in role:
+                bottom = max(start.bottom() + delta.y(), top + self.MIN_HEIGHT)
+
+            scene = self.scene()
+            if scene is not None:
+                bounds = scene.sceneRect()
+                left = max(bounds.left(), left)
+                top = max(bounds.top(), top)
+                right = min(bounds.right(), right)
+                bottom = min(bounds.bottom(), bottom)
+
+            return QRectF(QPointF(left, top), QPointF(right, bottom)).normalized()
+
+        def update_resize(self, scene_pos: QPointF) -> None:
+            if self._resize_preview is not None:
+                self._resize_preview.setRect(self._resize_rect_for_position(scene_pos))
+
+        def finish_resize(self, scene_pos: QPointF) -> None:
+            if self._resize_preview is None:
+                return
+            self.update_resize(scene_pos)
+            rect = QRectF(self._resize_preview.rect())
+            scene = self.scene()
+            if scene is not None:
+                scene.removeItem(self._resize_preview)
+            self._resize_preview = None
+            self._resize_role = ""
+            self.setPos(rect.left(), rect.top())
+            self._set_size(rect.width(), rect.height())
+            self.geometry_changed.emit(self)
+
+
+    class DBaseFormButtonItem(DBaseFormControlItem):
+        """Kompatibilitätsklasse für die zwei Stage-84-Startbuttons."""
+
+        def __init__(self, text: str, *, width: float = 120.0, height: float = 40.0, parent=None):
+            component_name = str(text).replace(" ", "") or "Button"
+            super().__init__(
+                "Button",
+                component_name,
+                caption=str(text),
+                width=width,
+                height=height,
+                parent=parent,
+            )
+
+
+    class DBaseFormPropertyPanel(QWidget):
+        """Eigenschaften-/Ereignisse-/Methodenbereich und Komponentenpalette."""
+
+        POSITION_ROWS = ("Top", "Left", "Width", "Height")
+
+        def __init__(self, scene: DBaseFormDesignerScene, parent=None):
+            super().__init__(parent)
+            self.scene = scene
+            self._selected_item = None
+            self._syncing = False
+            self._spin_boxes = {}
+            self._property_widgets = []
+
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(0)
+
+            self.vertical_splitter = QSplitter(Qt.Vertical, self)
+            self.vertical_splitter.setObjectName("dbase_form_property_splitter")
+            layout.addWidget(self.vertical_splitter, 1)
+
+            self.upper_tabs = QTabWidget(self.vertical_splitter)
+            self.upper_tabs.setObjectName("dbase_form_upper_tabs")
+
+            properties_page = QWidget(self.upper_tabs)
+            properties_layout = QVBoxLayout(properties_page)
+            properties_layout.setContentsMargins(0, 0, 0, 0)
+
+            self.property_tree = QTreeWidget(properties_page)
+            self.property_tree.setObjectName("dbase_form_property_tree")
+            self.property_tree.setColumnCount(2)
+            self.property_tree.setHeaderLabels(("Key", "Value"))
+            # Stage-84 regression marker: setHorizontalHeaderLabels(("Key", "Value"))
+            self.property_tree.setRootIsDecorated(True)
+            self.property_tree.setExpandsOnDoubleClick(False)
+            self.property_tree.setAlternatingRowColors(False)
+            self.property_tree.setSelectionMode(QAbstractItemView.NoSelection)
+            self.property_tree.setEditTriggers(QAbstractItemView.NoEditTriggers)
+            self.property_tree.header().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+            self.property_tree.header().setSectionResizeMode(1, QHeaderView.Stretch)
+
+            self.position_root = QTreeWidgetItem(self.property_tree, ["Position", ""])
+            self.position_root.setFlags(self.position_root.flags() & ~Qt.ItemIsSelectable)
+            self.position_root.setExpanded(True)
+            self._style_position_root()
+            self.property_tree.setFirstColumnSpanned(0, QModelIndex(), True)
+
+            for key in self.POSITION_ROWS:
+                child = QTreeWidgetItem(self.position_root, [key, ""])
+                child.setFlags(child.flags() & ~Qt.ItemIsEditable)
+                spin = QSpinBox(self.property_tree)
+                spin.setObjectName(f"dbase_form_{key.casefold()}_spinbox")
+                spin.setRange(-32768 if key in {"Top", "Left"} else 10, 32767)
+                spin.setSingleStep(10)
+                spin.setEnabled(False)
+                spin.valueChanged.connect(lambda value, name=key: self._position_changed(name, value))
+                self.property_tree.setItemWidget(child, 1, spin)
+                self._spin_boxes[key] = spin
+                self._property_widgets.append(spin)
+
+            self.hwnd_edit = self._add_line_property("HWND", read_only=True)
+            self.name_edit = self._add_line_property("Name")
+            self.background_edit, self.background_button = self._add_color_property("Hintergrundfarbe")
+            self.foreground_edit, self.foreground_button = self._add_color_property("Schriftfarbe")
+
+            self.font_combo = QComboBox(self.property_tree)
+            self.font_combo.setObjectName("dbase_form_font_family_combo")
+            self.font_combo.setEditable(False)
+            try:
+                self.font_combo.addItems(QFontDatabase().families())
+            except Exception:
+                self.font_combo.addItem(QApplication.font().family())
+            self._add_widget_property("Schriftart", self.font_combo)
+
+            self.font_size_spin = QSpinBox(self.property_tree)
+            self.font_size_spin.setObjectName("dbase_form_font_size_spinbox")
+            self.font_size_spin.setRange(1, 200)
+            self.font_size_spin.setSuffix(" pt")
+            self._add_widget_property("Font", self.font_size_spin)
+
+            self.bold_check = QCheckBox(self.property_tree)
+            self.bold_check.setObjectName("dbase_form_font_bold_checkbox")
+            self._add_widget_property("Fett", self.bold_check)
+            self.italic_check = QCheckBox(self.property_tree)
+            self.italic_check.setObjectName("dbase_form_font_italic_checkbox")
+            self._add_widget_property("Kursiv", self.italic_check)
+
+            self.property_tree.itemDoubleClicked.connect(self._property_item_double_clicked)
+            self.name_edit.editingFinished.connect(self._name_changed)
+            self.background_edit.editingFinished.connect(lambda: self._color_text_changed("background"))
+            self.foreground_edit.editingFinished.connect(lambda: self._color_text_changed("foreground"))
+            self.background_button.clicked.connect(lambda: self._choose_color("background"))
+            self.foreground_button.clicked.connect(lambda: self._choose_color("foreground"))
+            self.font_combo.currentTextChanged.connect(self._font_family_changed)
+            self.font_size_spin.valueChanged.connect(self._font_size_changed)
+            self.bold_check.toggled.connect(self._bold_changed)
+            self.italic_check.toggled.connect(self._italic_changed)
+
+            properties_layout.addWidget(self.property_tree, 1)
+            self.upper_tabs.addTab(properties_page, "Eigenschaften")
+            self.upper_tabs.addTab(QWidget(self.upper_tabs), "Ereignisse")
+            self.upper_tabs.addTab(QWidget(self.upper_tabs), "Methoden")
+
+            self.lower_tabs = QTabWidget(self.vertical_splitter)
+            self.lower_tabs.setObjectName("dbase_form_component_tabs")
+            standard_page = QWidget(self.lower_tabs)
+            standard_layout = QVBoxLayout(standard_page)
+            standard_layout.setContentsMargins(0, 0, 0, 0)
+            self.standard_icon_view = QListWidget(standard_page)
+            self.standard_icon_view.setObjectName("dbase_form_standard_icon_view")
+            self.standard_icon_view.setViewMode(QListView.IconMode)
+            self.standard_icon_view.setMovement(QListView.Static)
+            self.standard_icon_view.setResizeMode(QListView.Adjust)
+            self.standard_icon_view.setWrapping(True)
+            self.standard_icon_view.setIconSize(QSize(48, 48))
+            self.standard_icon_view.setGridSize(QSize(92, 82))
+            self.standard_icon_view.setSpacing(6)
+            self.standard_icon_view.setSelectionMode(QAbstractItemView.SingleSelection)
+            standard_layout.addWidget(self.standard_icon_view, 1)
+            self.lower_tabs.addTab(standard_page, "Standard")
+            self.lower_tabs.addTab(QWidget(self.lower_tabs), "Erweitert")
+
+            self._populate_standard_palette()
+            self.standard_icon_view.itemClicked.connect(self._component_palette_clicked)
+            self.scene.placement_mode_changed.connect(self._placement_mode_changed)
+            self.scene.control_created.connect(self.bind_item)
+            self.scene.selectionChanged.connect(self._selection_changed)
+
+            self.vertical_splitter.setSizes((470, 280))
+            self._set_property_widgets_enabled(False)
+            self.set_dark_mode(False)
+
+        def _add_widget_property(self, key: str, widget: QWidget):
+            item = QTreeWidgetItem(self.property_tree, [str(key), ""])
+            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+            self.property_tree.setItemWidget(item, 1, widget)
+            self._property_widgets.append(widget)
+            return widget
+
+        def _add_line_property(self, key: str, *, read_only: bool = False):
+            edit = QLineEdit(self.property_tree)
+            edit.setReadOnly(bool(read_only))
+            edit.setObjectName(f"dbase_form_{key.casefold()}_edit")
+            self._add_widget_property(key, edit)
+            return edit
+
+        def _add_color_property(self, key: str):
+            holder = QWidget(self.property_tree)
+            row = QHBoxLayout(holder)
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(4)
+            edit = QLineEdit(holder)
+            button = QPushButton("...", holder)
+            button.setFixedWidth(30)
+            row.addWidget(edit, 1)
+            row.addWidget(button)
+            self._add_widget_property(key, holder)
+            self._property_widgets.extend((edit, button))
+            return edit, button
+
+        def _style_position_root(self) -> None:
+            navy = QBrush(QColor(0, 0, 128))
+            yellow = QBrush(QColor(255, 255, 0))
+            self.position_root.setBackground(0, navy)
+            self.position_root.setForeground(0, yellow)
+            self.position_root.setBackground(1, navy)
+            self.position_root.setForeground(1, yellow)
+            font = QFont(self.property_tree.font())
+            font.setBold(True)
+            self.position_root.setFont(0, font)
+
+        def set_dark_mode(self, enabled: bool) -> None:
+            if bool(enabled):
+                self.property_tree.setStyleSheet(
+                    "QTreeWidget#dbase_form_property_tree{background:#000000;color:#ffffff;"
+                    "border:1px solid #505050;}"
+                    "QTreeWidget#dbase_form_property_tree QHeaderView::section{"
+                    "background:#2a2a2a;color:#ffffff;border:1px solid #505050;padding:4px;}"
+                    "QTreeWidget#dbase_form_property_tree::item{background:#000000;color:#ffffff;}"
+                    "QTreeWidget#dbase_form_property_tree QLineEdit,"
+                    "QTreeWidget#dbase_form_property_tree QComboBox,"
+                    "QTreeWidget#dbase_form_property_tree QSpinBox{"
+                    "background:#000000;color:#ffff00;border:1px solid #555555;}"
+                    "QTreeWidget#dbase_form_property_tree QCheckBox{background:#000000;color:#ffffff;}"
+                )
+            else:
+                self.property_tree.setStyleSheet(
+                    "QTreeWidget#dbase_form_property_tree{background:#ffffff;color:#000000;}"
+                    "QTreeWidget#dbase_form_property_tree QHeaderView::section{"
+                    "background:#e7e7e7;color:#000000;border:1px solid #b0b0b0;padding:4px;}"
+                )
+            self._style_position_root()
+
+        def _palette_icon(self, component_type: str) -> QIcon:
+            pix = QPixmap(48, 48)
+            pix.fill(Qt.transparent)
+            painter = QPainter(pix)
+            try:
+                painter.setRenderHint(QPainter.Antialiasing, True)
+                painter.setPen(QPen(QColor(220, 220, 220), 2))
+                painter.setBrush(QBrush(QColor(35, 40, 52)))
+                t = str(component_type)
+                if t == "Button":
+                    painter.drawRoundedRect(5, 13, 38, 22, 4, 4); painter.drawText(QRect(5, 13, 38, 22), Qt.AlignCenter, "OK")
+                elif t in {"CheckBox", "RadioButton"}:
+                    if t == "CheckBox": painter.drawRect(6, 16, 12, 12)
+                    else: painter.drawEllipse(6, 16, 12, 12)
+                    painter.drawLine(23, 22, 42, 22)
+                elif t == "ComboBox":
+                    painter.drawRect(5, 13, 38, 22); painter.drawLine(33, 13, 33, 35); painter.drawText(QRect(33, 13, 10, 22), Qt.AlignCenter, "v")
+                elif t == "Label":
+                    painter.drawText(QRect(4, 8, 40, 32), Qt.AlignCenter, "Aa")
+                elif t == "Image":
+                    painter.drawRect(6, 7, 36, 34); painter.drawLine(9, 36, 20, 24); painter.drawLine(20, 24, 28, 31); painter.drawLine(28, 31, 39, 19); painter.drawEllipse(29, 11, 5, 5)
+                elif t == "Panel":
+                    painter.drawRect(5, 6, 38, 36); painter.drawRect(9, 10, 30, 28)
+                elif t == "TableGrid":
+                    painter.drawRect(5, 7, 38, 34)
+                    for x in (18, 31): painter.drawLine(x, 7, x, 41)
+                    for y in (18, 29): painter.drawLine(5, y, 43, y)
+                elif t == "VScrollBar":
+                    painter.drawRect(18, 5, 12, 38); painter.drawRect(19, 16, 10, 13)
+                elif t == "HScrollBar":
+                    painter.drawRect(5, 18, 38, 12); painter.drawRect(16, 19, 13, 10)
+                elif t == "StatusBar":
+                    painter.drawRect(5, 28, 38, 10); painter.drawText(QRect(7, 28, 34, 10), Qt.AlignCenter, "Ready")
+                elif t == "ToolBar":
+                    painter.drawRect(5, 10, 38, 15); painter.drawRect(9, 13, 8, 8); painter.drawRect(21, 13, 8, 8)
+                elif t == "Menu":
+                    painter.drawRect(5, 9, 38, 14); painter.drawText(QRect(6, 9, 36, 14), Qt.AlignCenter, "File Edit")
+                else:
+                    painter.drawRect(7, 7, 34, 34)
+            finally:
+                painter.end()
+            return QIcon(pix)
+
+        def _populate_standard_palette(self) -> None:
+            self.standard_icon_view.clear()
+            for component_type, spec in DBASE_FORM_COMPONENT_SPECS.items():
+                item = QListWidgetItem(self._palette_icon(component_type), str(spec["title"]))
+                item.setData(Qt.UserRole, component_type)
+                item.setToolTip(f"{spec['title']} auswählen und anschließend im Formular platzieren")
+                item.setTextAlignment(Qt.AlignHCenter)
+                self.standard_icon_view.addItem(item)
+
+        def _component_palette_clicked(self, item: QListWidgetItem) -> None:
+            component_type = str(item.data(Qt.UserRole) or "")
+            self.scene.set_pending_component(component_type)
+
+        def _placement_mode_changed(self, component_type: str) -> None:
+            if component_type:
+                return
+            self.standard_icon_view.clearSelection()
+            self.standard_icon_view.setCurrentRow(-1)
+
+        def bind_item(self, item) -> None:
+            if not isinstance(item, DBaseFormControlItem):
+                return
+            try:
+                item.geometry_changed.disconnect(self._geometry_changed)
+            except (TypeError, RuntimeError):
+                pass
+            try:
+                item.properties_changed.disconnect(self._properties_changed)
+            except (TypeError, RuntimeError):
+                pass
+            item.geometry_changed.connect(self._geometry_changed)
+            item.properties_changed.connect(self._properties_changed)
+            if item.isSelected():
+                self._selected_item = item
+                self._update_property_values()
+
+        def _selected_control(self):
+            selected = [
+                item for item in self.scene.selectedItems()
+                if isinstance(item, DBaseFormControlItem)
+            ]
+            return selected[0] if selected else None
+
+        def _selection_changed(self) -> None:
+            self._selected_item = self._selected_control()
+            self._update_property_values()
+
+        def _geometry_changed(self, item) -> None:
+            if item is self._selected_item:
+                self._update_property_values()
+
+        def _properties_changed(self, item) -> None:
+            if item is self._selected_item:
+                self._update_property_values()
+
+        def _set_property_widgets_enabled(self, enabled: bool) -> None:
+            for widget in self._property_widgets:
+                if widget is self.hwnd_edit:
+                    widget.setEnabled(bool(enabled))
+                else:
+                    widget.setEnabled(bool(enabled))
+            for spin in self._spin_boxes.values():
+                spin.setEnabled(bool(enabled))
+
+        def _update_property_values(self) -> None:
+            item = self._selected_item
+            self._syncing = True
+            try:
+                enabled = item is not None
+                self._set_property_widgets_enabled(enabled)
+                if item is None:
+                    self.hwnd_edit.clear()
+                    self.name_edit.clear()
+                    self.background_edit.clear()
+                    self.foreground_edit.clear()
+                    return
+
+                top, left, width, height = item.geometry_values()
+                for key, value in {"Top": top, "Left": left, "Width": width, "Height": height}.items():
+                    self._spin_boxes[key].setValue(int(value))
+
+                self.hwnd_edit.setText(item.native_handle_text())
+                self.name_edit.setText(item.component_name)
+                self.background_edit.setText(item.background_color.name().upper())
+                self.foreground_edit.setText(item.foreground_color.name().upper())
+                index = self.font_combo.findText(item.font_family, Qt.MatchFixedString)
+                if index >= 0:
+                    self.font_combo.setCurrentIndex(index)
+                else:
+                    self.font_combo.addItem(item.font_family)
+                    self.font_combo.setCurrentText(item.font_family)
+                self.font_size_spin.setValue(int(item.font_point_size))
+                self.bold_check.setChecked(bool(item.font_bold))
+                self.italic_check.setChecked(bool(item.font_italic))
+            finally:
+                self._syncing = False
+
+        def _position_changed(self, key: str, value: int) -> None:
+            if self._syncing or self._selected_item is None:
+                return
+            self._selected_item.set_geometry_values(**{str(key).casefold(): int(value)})
+
+        def _property_item_double_clicked(self, item: QTreeWidgetItem, column: int) -> None:
+            del column
+            if item is self.position_root:
+                self.position_root.setExpanded(not self.position_root.isExpanded())
+
+        def _name_changed(self) -> None:
+            if self._syncing or self._selected_item is None:
+                return
+            value = self.name_edit.text().strip()
+            if not value:
+                self._update_property_values()
+                return
+            self._selected_item.set_component_name(value)
+
+        def _color_text_changed(self, which: str) -> None:
+            if self._syncing or self._selected_item is None:
+                return
+            edit = self.background_edit if which == "background" else self.foreground_edit
+            value = QColor(edit.text().strip())
+            if not value.isValid():
+                QApplication.beep()
+                self._update_property_values()
+                return
+            if which == "background":
+                self._selected_item.set_background_color(value)
+            else:
+                self._selected_item.set_foreground_color(value)
+
+        def _choose_color(self, which: str) -> None:
+            if self._selected_item is None:
+                return
+            initial = self._selected_item.background_color if which == "background" else self._selected_item.foreground_color
+            color = QColorDialog.getColor(initial, self, "Farbe auswählen")
+            if not color.isValid():
+                return
+            if which == "background":
+                self._selected_item.set_background_color(color)
+            else:
+                self._selected_item.set_foreground_color(color)
+
+        def _font_family_changed(self, family: str) -> None:
+            if self._syncing or self._selected_item is None:
+                return
+            self._selected_item.set_font_family(family)
+
+        def _font_size_changed(self, value: int) -> None:
+            if self._syncing or self._selected_item is None:
+                return
+            self._selected_item.set_font_point_size(value)
+
+        def _bold_changed(self, enabled: bool) -> None:
+            if self._syncing or self._selected_item is None:
+                return
+            self._selected_item.set_font_bold(enabled)
+
+        def _italic_changed(self, enabled: bool) -> None:
+            if self._syncing or self._selected_item is None:
+                return
+            self._selected_item.set_font_italic(enabled)
+
+
+    class DBaseFormDesignerView(QGraphicsView):
+        def __init__(self, scene: DBaseFormDesignerScene, parent=None):
+            super().__init__(scene, parent)
+            self.setObjectName("dbase_form_graphics_view")
+            self.setRenderHint(QPainter.Antialiasing, True)
+            self.setDragMode(QGraphicsView.RubberBandDrag)
+            self.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+            self.setMinimumSize(320, 240)
+            scene.placement_mode_changed.connect(self._placement_mode_changed)
+
+        def _placement_mode_changed(self, component_type: str) -> None:
+            if component_type:
+                self.setCursor(Qt.CrossCursor)
+                self.setDragMode(QGraphicsView.NoDrag)
+            else:
+                self.unsetCursor()
+                self.setDragMode(QGraphicsView.RubberBandDrag)
+
+
+    # -----------------------------------------------------------------------
+    # Stage 85: dBase-Tabellendesigner (DBF-Struktur).
+    # -----------------------------------------------------------------------
+    class DBaseTableFieldGrid(QTableWidget):
+        """Felddefinitionen einer DBF-Tabelle mit dBase-typischen Editoren."""
+
+        HEADERS = (
+            "Feldname",
+            "Feldtyp",
+            "Länge",
+            "Anzahl nach Komma",
+            "Index",
+        )
+
+        def __init__(self, parent=None):
+            super().__init__(0, len(self.HEADERS), parent)
+            self.setObjectName("dbase_table_field_grid")
+            self.setHorizontalHeaderLabels(self.HEADERS)
+            # Stage 86: eine einzelne fokussierte Zelle statt kompletter Zeile.
+            self.setSelectionBehavior(QAbstractItemView.SelectItems)
+            self.setSelectionMode(QAbstractItemView.SingleSelection)
+            self.setAlternatingRowColors(True)
+            self.setContextMenuPolicy(Qt.CustomContextMenu)
+            self.customContextMenuRequested.connect(self._show_context_menu)
+            self.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+            self.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+            self.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+            self.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+            self.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
+            self.verticalHeader().setVisible(True)
+            self.verticalHeader().setDefaultAlignment(Qt.AlignCenter)
+            self._row_clipboard = None
+            self.append_empty_row()
+
+        def set_dark_mode(self, enabled: bool) -> None:
+            """Stage 86: feste Tabellenfarben für Dark- und Light-Mode."""
+            if bool(enabled):
+                self.setStyleSheet(
+                    "QTableWidget#dbase_table_field_grid {"
+                    "background-color:#000000; color:#ffffff;"
+                    "gridline-color:#4a4a4a; alternate-background-color:#101010; }"
+                    "QTableWidget#dbase_table_field_grid::item {"
+                    "background-color:#000000; color:#ffffff; }"
+                    "QTableWidget#dbase_table_field_grid::item:selected {"
+                    "background-color:#000080; color:#ffffff; }"
+                    "QTableWidget#dbase_table_field_grid QHeaderView::section {"
+                    "background-color:#2a2a2a; color:#ffffff;"
+                    "border:1px solid #505050; padding:4px; }"
+                    "QTableWidget#dbase_table_field_grid QTableCornerButton::section {"
+                    "background-color:#000000; border:1px solid #505050; }"
+                    "QTableWidget#dbase_table_field_grid QLineEdit,"
+                    "QTableWidget#dbase_table_field_grid QComboBox,"
+                    "QTableWidget#dbase_table_field_grid QSpinBox {"
+                    "background-color:#000000; color:#ffff00;"
+                    "selection-background-color:#000080;"
+                    "selection-color:#ffff00; border:1px solid #555555; }"
+                    "QTableWidget#dbase_table_field_grid QComboBox QAbstractItemView {"
+                    "background-color:#000000; color:#ffff00;"
+                    "selection-background-color:#000080;"
+                    "selection-color:#ffff00; }"
+                    "QTableWidget#dbase_table_field_grid QCheckBox {"
+                    "background-color:#000000; color:#ffffff; }"
+                )
+            else:
+                self.setStyleSheet(
+                    "QTableWidget#dbase_table_field_grid {"
+                    "background-color:#ffffff; color:#000000;"
+                    "gridline-color:#b8b8b8; alternate-background-color:#f4f4f4; }"
+                    "QTableWidget#dbase_table_field_grid::item:selected {"
+                    "background-color:#000080; color:#ffffff; }"
+                    "QTableWidget#dbase_table_field_grid QHeaderView::section {"
+                    "background-color:#e7e7e7; color:#000000;"
+                    "border:1px solid #b0b0b0; padding:4px; }"
+                    "QTableWidget#dbase_table_field_grid QTableCornerButton::section {"
+                    "background-color:#e7e7e7; border:1px solid #b0b0b0; }"
+                    "QTableWidget#dbase_table_field_grid QLineEdit,"
+                    "QTableWidget#dbase_table_field_grid QComboBox,"
+                    "QTableWidget#dbase_table_field_grid QSpinBox {"
+                    "background-color:#ffffff; color:#000000;"
+                    "selection-background-color:#000080;"
+                    "selection-color:#ffffff; }"
+                )
+
+        @staticmethod
+        def _type_label(code: str) -> str:
+            label = DBASE_DBF_TYPE_LABELS.get(str(code).upper()[:1], "Zeichen")
+            return f"{label} ({str(code).upper()[:1]})"
+
+        def _new_field_name_item(self, text: str = "", source_name: str = ""):
+            item = QTableWidgetItem(str(text))
+            item.setData(Qt.UserRole, str(source_name or text))
+            return item
+
+        def _make_type_combo(self, row: int) -> QComboBox:
+            combo = QComboBox(self)
+            combo.setObjectName("dbase_table_field_type_combo")
+            for label, code, _length, _decimals in DBASE_DBF_FIELD_TYPES:
+                combo.addItem(f"{label} ({code})", code)
+            combo.currentIndexChanged.connect(
+                lambda _index, widget=combo: self._type_combo_changed(widget)
+            )
+            return combo
+
+        def _make_length_spin(self) -> QSpinBox:
+            spin = QSpinBox(self)
+            spin.setObjectName("dbase_table_field_length_spin")
+            spin.setRange(1, 254)
+            spin.setValue(20)
+            spin.setFixedWidth(84)
+            return spin
+
+        def _make_decimals_spin(self) -> QSpinBox:
+            spin = QSpinBox(self)
+            spin.setObjectName("dbase_table_field_decimals_spin")
+            spin.setRange(0, 18)
+            spin.setValue(0)
+            spin.setFixedWidth(84)
+            return spin
+
+        def _make_index_check(self) -> QCheckBox:
+            check = QCheckBox(self)
+            check.setObjectName("dbase_table_field_index_checkbox")
+            check.setToolTip("Feld als Index-Kandidat markieren")
+            return check
+
+        def _type_combo_changed(self, combo: QComboBox) -> None:
+            row = -1
+            for candidate in range(self.rowCount()):
+                if self.cellWidget(candidate, 1) is combo:
+                    row = candidate
+                    break
+            if row >= 0:
+                self._configure_type_controls(row, apply_defaults=True)
+
+        def _configure_type_controls(self, row: int, *, apply_defaults: bool) -> None:
+            combo = self.cellWidget(row, 1)
+            length_spin = self.cellWidget(row, 2)
+            decimals_spin = self.cellWidget(row, 3)
+            if not isinstance(combo, QComboBox):
+                return
+            if not isinstance(length_spin, QSpinBox):
+                return
+            if not isinstance(decimals_spin, QSpinBox):
+                return
+
+            code = str(combo.currentData() or "C").upper()[:1]
+            default_length, default_decimals = DBASE_DBF_DEFAULTS.get(code, (20, 0))
+            if code == "C":
+                length_spin.setEnabled(True)
+                length_spin.setRange(1, 254)
+                decimals_spin.setEnabled(False)
+                decimals_spin.setRange(0, 0)
+            elif code in {"N", "F"}:
+                length_spin.setEnabled(True)
+                length_spin.setRange(1, 20)
+                decimals_spin.setEnabled(True)
+                decimals_spin.setRange(0, max(0, length_spin.value() - 2))
+                length_spin.valueChanged.connect(
+                    lambda value, spin=decimals_spin: spin.setMaximum(max(0, int(value) - 2))
+                )
+            elif code == "D":
+                length_spin.setEnabled(False)
+                decimals_spin.setEnabled(False)
+                length_spin.setRange(8, 8)
+                decimals_spin.setRange(0, 0)
+            elif code == "L":
+                length_spin.setEnabled(False)
+                decimals_spin.setEnabled(False)
+                length_spin.setRange(1, 1)
+                decimals_spin.setRange(0, 0)
+            elif code == "M":
+                length_spin.setEnabled(False)
+                decimals_spin.setEnabled(False)
+                length_spin.setRange(10, 10)
+                decimals_spin.setRange(0, 0)
+
+            if apply_defaults:
+                length_spin.setValue(default_length)
+                decimals_spin.setValue(default_decimals)
+
+        def insert_field_row(self, row: int, payload=None) -> int:
+            row = max(0, min(int(row), self.rowCount()))
+            self.insertRow(row)
+            payload = dict(payload or {})
+            name = str(payload.get("name", ""))
+            source_name = str(payload.get("source_name", name))
+            self.setItem(row, 0, self._new_field_name_item(name, source_name))
+
+            combo = self._make_type_combo(row)
+            length_spin = self._make_length_spin()
+            decimals_spin = self._make_decimals_spin()
+            index_check = self._make_index_check()
+            self.setCellWidget(row, 1, combo)
+            self.setCellWidget(row, 2, length_spin)
+            self.setCellWidget(row, 3, decimals_spin)
+            self.setCellWidget(row, 4, index_check)
+
+            field_type = str(payload.get("field_type", "C")).upper()[:1]
+            combo.blockSignals(True)
+            try:
+                index = combo.findData(field_type)
+                combo.setCurrentIndex(index if index >= 0 else 0)
+            finally:
+                combo.blockSignals(False)
+            self._configure_type_controls(row, apply_defaults=False)
+
+            default_length, default_decimals = DBASE_DBF_DEFAULTS.get(field_type, (20, 0))
+            length_spin.setValue(int(payload.get("length", default_length)))
+            if field_type in {"N", "F"}:
+                decimals_spin.setMaximum(max(0, length_spin.value() - 2))
+            decimals_spin.setValue(int(payload.get("decimals", default_decimals)))
+            index_check.setChecked(bool(payload.get("indexed", False)))
+            self._recalculate_vertical_headers()
+            return row
+
+        def append_empty_row(self) -> int:
+            return self.insert_field_row(self.rowCount())
+
+        def clear_fields(self) -> None:
+            self.setRowCount(0)
+            self._recalculate_vertical_headers()
+
+        def load_fields(self, fields: Sequence[DBaseDBFField]) -> None:
+            self.clear_fields()
+            for field_spec in fields:
+                self.insert_field_row(
+                    self.rowCount(),
+                    {
+                        "name": field_spec.name,
+                        "field_type": field_spec.field_type,
+                        "length": field_spec.length,
+                        "decimals": field_spec.decimals,
+                        "indexed": field_spec.indexed,
+                        "source_name": field_spec.source_name or field_spec.name,
+                    },
+                )
+            if self.rowCount() == 0:
+                self.append_empty_row()
+            self.setCurrentCell(0, 0)
+
+        def _row_payload(self, row: int):
+            if row < 0 or row >= self.rowCount():
+                return None
+            item = self.item(row, 0)
+            combo = self.cellWidget(row, 1)
+            length_spin = self.cellWidget(row, 2)
+            decimals_spin = self.cellWidget(row, 3)
+            index_check = self.cellWidget(row, 4)
+            if item is None or not isinstance(combo, QComboBox):
+                return None
+            return {
+                "name": item.text(),
+                "source_name": str(item.data(Qt.UserRole) or item.text()),
+                "field_type": str(combo.currentData() or "C"),
+                "length": int(length_spin.value()) if isinstance(length_spin, QSpinBox) else 20,
+                "decimals": int(decimals_spin.value()) if isinstance(decimals_spin, QSpinBox) else 0,
+                "indexed": bool(index_check.isChecked()) if isinstance(index_check, QCheckBox) else False,
+            }
+
+        def field_definitions(self) -> List[DBaseDBFField]:
+            fields = []
+            for row in range(self.rowCount()):
+                payload = self._row_payload(row)
+                if payload is None:
+                    continue
+                if not str(payload.get("name", "")).strip():
+                    continue
+                fields.append(
+                    DBaseDBFField(
+                        name=str(payload["name"]),
+                        field_type=str(payload["field_type"]),
+                        length=int(payload["length"]),
+                        decimals=int(payload["decimals"]),
+                        indexed=bool(payload["indexed"]),
+                        source_name=str(payload.get("source_name", "")),
+                    ).normalized()
+                )
+            if not fields:
+                raise ValueError("Bitte mindestens einen Feldnamen eintragen.")
+            return fields
+
+        def _recalculate_vertical_headers(self) -> None:
+            for row in range(self.rowCount()):
+                header = self.verticalHeaderItem(row)
+                if header is None:
+                    header = QTableWidgetItem()
+                    self.setVerticalHeaderItem(row, header)
+                header.setText(str(row + 1))
+                header.setTextAlignment(Qt.AlignCenter)
+
+        def add_row(self) -> None:
+            current = self.currentRow()
+            row = self.rowCount() if current < 0 else current + 1
+            row = self.insert_field_row(row)
+            self.setCurrentCell(row, 0)
+            self.editItem(self.item(row, 0))
+
+        def copy_row(self) -> None:
+            payload = self._row_payload(self.currentRow())
+            if payload is not None:
+                self._row_clipboard = dict(payload)
+
+        def cut_row(self) -> None:
+            row = self.currentRow()
+            payload = self._row_payload(row)
+            if payload is None:
+                return
+            self._row_clipboard = dict(payload)
+            self.removeRow(row)
+            self._recalculate_vertical_headers()
+            if self.rowCount() > 0:
+                self.setCurrentCell(min(row, self.rowCount() - 1), 0)
+
+        def paste_row(self) -> None:
+            if not self._row_clipboard:
+                return
+            row = self.currentRow()
+            if row < 0:
+                row = self.rowCount()
+            row = self.insert_field_row(row, dict(self._row_clipboard))
+            self.setCurrentCell(row, 0)
+
+        def delete_row(self) -> None:
+            row = self.currentRow()
+            if row < 0 or row >= self.rowCount():
+                return
+            self.removeRow(row)
+            self._recalculate_vertical_headers()
+            if self.rowCount() > 0:
+                self.setCurrentCell(min(row, self.rowCount() - 1), 0)
+
+        def _show_context_menu(self, pos: QPoint) -> None:
+            index = self.indexAt(pos)
+            if index.isValid():
+                self.setCurrentCell(index.row(), index.column())
+
+            menu = QMenu(self)
+            add_action = menu.addAction("Hinzufügen")
+            copy_action = menu.addAction("Kopieren")
+            cut_action = menu.addAction("Ausschneiden")
+            paste_action = menu.addAction("Einfügen")
+            delete_action = menu.addAction("Löschen")
+            paste_action.setEnabled(bool(self._row_clipboard))
+            has_row = self.currentRow() >= 0 and self.rowCount() > 0
+            copy_action.setEnabled(has_row)
+            cut_action.setEnabled(has_row)
+            delete_action.setEnabled(has_row)
+
+            chosen = menu.exec_(self.viewport().mapToGlobal(pos))
+            if chosen is add_action:
+                self.add_row()
+            elif chosen is copy_action:
+                self.copy_row()
+            elif chosen is cut_action:
+                self.cut_row()
+            elif chosen is paste_action:
+                self.paste_row()
+            elif chosen is delete_action:
+                self.delete_row()
+
+
+    class DBaseTablePage(QWidget):
+        """Ein Tabellen-Tab mit Buttonleiste und innerem Felddefinitions-Tab."""
+
+        title_changed = pyqtSignal(str)
+
+        def __init__(self, table_number: int, parent=None):
+            super().__init__(parent)
+            self.table_number = int(table_number)
+            self.dbf_path = None
+            self.loaded_records = []
+            self.code_page_mark = 0x03
+
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(4, 4, 4, 4)
+            layout.setSpacing(4)
+
+            button_row = QHBoxLayout()
+            self.save_button = QPushButton("Speichern", self)
+            self.save_as_button = QPushButton("Speichern unter ...", self)
+            self.load_button = QPushButton("Laden", self)
+            self.save_button.setObjectName("dbase_table_save_button")
+            self.save_as_button.setObjectName("dbase_table_save_as_button")
+            self.load_button.setObjectName("dbase_table_load_button")
+            button_row.addWidget(self.save_button)
+            button_row.addWidget(self.save_as_button)
+            button_row.addWidget(self.load_button)
+            button_row.addStretch(1)
+            layout.addLayout(button_row)
+
+            self.inner_tabs = QTabWidget(self)
+            self.inner_tabs.setObjectName("dbase_table_inner_tabs")
+            fields_page = QWidget(self.inner_tabs)
+            fields_layout = QVBoxLayout(fields_page)
+            fields_layout.setContentsMargins(0, 0, 0, 0)
+            self.field_grid = DBaseTableFieldGrid(fields_page)
+            fields_layout.addWidget(self.field_grid, 1)
+            self.inner_tabs.addTab(fields_page, "Felder")
+            layout.addWidget(self.inner_tabs, 1)
+
+            self.save_button.clicked.connect(self.save_table)
+            self.save_as_button.clicked.connect(self.save_table_as)
+            self.load_button.clicked.connect(self.load_table_dialog)
+
+        def set_dark_mode(self, enabled: bool) -> None:
+            self.field_grid.set_dark_mode(enabled)
+
+        def display_name(self) -> str:
+            if self.dbf_path is not None:
+                return Path(self.dbf_path).name
+            return f"Tabelle {self.table_number}"
+
+        def _dialog_directory(self) -> str:
+            if self.dbf_path is not None:
+                return str(Path(self.dbf_path).parent)
+            main_window = self.window()
+            current_directory = getattr(main_window, "current_directory", None)
+            if current_directory is not None:
+                return str(current_directory)
+            return str(Path.cwd())
+
+        def _show_error(self, title: str, error) -> None:
+            QMessageBox.critical(self, title, str(error))
+
+        def save_table(self) -> None:
+            if self.dbf_path is None:
+                self.save_table_as()
+                return
+            try:
+                fields = self.field_grid.field_definitions()
+                write_dbase_dbf(
+                    Path(self.dbf_path),
+                    fields,
+                    self.loaded_records,
+                    code_page_mark=self.code_page_mark,
+                    source_path=Path(self.dbf_path),
+                )
+            except (OSError, ValueError) as exc:
+                self._show_error("DBF speichern", exc)
+                return
+            self.title_changed.emit(self.display_name())
+            window = self.window()
+            if hasattr(window, "statusBar"):
+                window.statusBar().showMessage(f"DBF gespeichert: {self.dbf_path}", 5000)
+
+        def save_table_as(self) -> None:
+            start = self._dialog_directory()
+            suggested = self.display_name()
+            if not suggested.casefold().endswith(".dbf"):
+                suggested += ".dbf"
+            filename, _selected_filter = QFileDialog.getSaveFileName(
+                self,
+                "dBase-Tabelle speichern unter ...",
+                str(Path(start) / suggested),
+                "dBase DBF (*.dbf);;Alle Dateien (*)",
+            )
+            if not filename:
+                return
+            path = Path(filename)
+            if not path.suffix:
+                path = path.with_suffix(".dbf")
+            try:
+                fields = self.field_grid.field_definitions()
+                old_path = Path(self.dbf_path) if self.dbf_path is not None else None
+                write_dbase_dbf(
+                    path,
+                    fields,
+                    self.loaded_records,
+                    code_page_mark=self.code_page_mark,
+                    source_path=old_path,
+                )
+            except (OSError, ValueError) as exc:
+                self._show_error("DBF speichern unter", exc)
+                return
+            self.dbf_path = path
+            self.title_changed.emit(self.display_name())
+            window = self.window()
+            if hasattr(window, "statusBar"):
+                window.statusBar().showMessage(f"DBF gespeichert: {path}", 5000)
+
+        def load_table_dialog(self) -> None:
+            filename, _selected_filter = QFileDialog.getOpenFileName(
+                self,
+                "dBase-Tabelle laden",
+                self._dialog_directory(),
+                "dBase DBF (*.dbf);;Alle Dateien (*)",
+            )
+            if not filename:
+                return
+            try:
+                self.load_table(Path(filename))
+            except (OSError, ValueError) as exc:
+                self._show_error("DBF laden", exc)
+
+        def load_table(self, path: Path) -> None:
+            table = read_dbase_dbf(Path(path))
+            self.field_grid.load_fields(table.fields)
+            self.dbf_path = Path(path)
+            self.loaded_records = list(table.records)
+            self.code_page_mark = int(table.code_page_mark)
+            self.title_changed.emit(self.display_name())
+            window = self.window()
+            if hasattr(window, "statusBar"):
+                window.statusBar().showMessage(f"DBF geladen: {path}", 5000)
+
+
+    class DBaseTableDesignerWidget(QWidget):
+        """Parent-TabWidget: jeder äußere Tab entspricht genau einer Tabelle."""
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self._table_counter = 0
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(0, 0, 0, 0)
+            self.table_tabs = QTabWidget(self)
+            self.table_tabs.setObjectName("dbase_table_parent_tabs")
+            self.table_tabs.setTabsClosable(True)
+            self.table_tabs.setMovable(True)
+            self.table_tabs.tabCloseRequested.connect(self.close_table_tab)
+            layout.addWidget(self.table_tabs, 1)
+
+        def set_dark_mode(self, enabled: bool) -> None:
+            self._dark_mode = bool(enabled)
+            for index in range(self.table_tabs.count()):
+                page = self.table_tabs.widget(index)
+                if isinstance(page, DBaseTablePage):
+                    page.set_dark_mode(self._dark_mode)
+
+        def add_new_table(self) -> DBaseTablePage:
+            self._table_counter += 1
+            page = DBaseTablePage(self._table_counter, self.table_tabs)
+            page.set_dark_mode(bool(getattr(self, "_dark_mode", False)))
+            index = self.table_tabs.addTab(page, page.display_name())
+            page.title_changed.connect(
+                lambda title, widget=page: self._update_page_title(widget, title)
+            )
+            self.table_tabs.setCurrentIndex(index)
+            return page
+
+        def _update_page_title(self, page: DBaseTablePage, title: str) -> None:
+            index = self.table_tabs.indexOf(page)
+            if index >= 0:
+                self.table_tabs.setTabText(index, str(title))
+
+        def close_table_tab(self, index: int) -> None:
+            widget = self.table_tabs.widget(index)
+            if widget is None:
+                return
+            self.table_tabs.removeTab(index)
+            widget.deleteLater()
+
+    # -----------------------------------------------------------------------
+    # Stage 87: Settings-Dock, basierend auf dem vorgegebenen
+    # DesktopProperties-/Alias-Code.  In d64_dism wird share.locales.tr durch
+    # den bereits vorhandenen tr()-Hook ersetzt und der Dialog als Dock-Inhalt
+    # betrieben.
+    # -----------------------------------------------------------------------
+    class UserBdeAliasesTab(QWidget):
+        def __init__(self, parent=None, initial=None):
+            super().__init__(parent)
+            self._model = dict(initial or {})
+            self._updating_ui = False
+
+            root = QVBoxLayout(self)
+            root.setContentsMargins(12, 12, 12, 12)
+            root.setSpacing(12)
+
+            gb_list = QGroupBox(tr("Definiert ein BDE Anschluss aller"), self)
+            v_list = QVBoxLayout(gb_list)
+            self.lst = QListWidget()
+            self.lst.setMinimumHeight(220)
+            v_list.addWidget(self.lst)
+
+            gb_edit = QGroupBox(tr("Benutzer BDE Alias bearbeiten"), self)
+            e = QGridLayout(gb_edit)
+            e.setHorizontalSpacing(10)
+            e.setVerticalSpacing(8)
+
+            e.addWidget(QLabel("Alias:"), 0, 0)
+            self.ed_alias = QLineEdit()
+            self.ed_alias.setMinimumWidth(230)
+            e.addWidget(self.ed_alias, 0, 1)
+
+            self.btn_add = QPushButton(tr("Hinzufügen"))
+            self.btn_remove = QPushButton(tr("Entfernen"))
+            self.btn_add.setFixedWidth(95)
+            self.btn_remove.setFixedWidth(95)
+            e.addWidget(self.btn_add, 0, 2)
+            e.addWidget(self.btn_remove, 0, 3)
+
+            e.addWidget(QLabel(tr("Driver:")), 1, 0)
+            self.cb_driver = QComboBox()
+            self.cb_driver.setMinimumWidth(260)
+            self.cb_driver.addItems([
+                "dBASE", "PARADOX", "DB2", "ORACLE", "ODBC", "SQL", "FIREBIRD"
+            ])
+            e.addWidget(self.cb_driver, 1, 1, 1, 3)
+
+            e.addWidget(QLabel(tr("Options:")), 2, 0)
+            self.ed_options = QLineEdit()
+            e.addWidget(self.ed_options, 2, 1, 1, 2)
+            self.btn_options = QPushButton("...")
+            self.btn_options.setFixedWidth(30)
+            e.addWidget(self.btn_options, 2, 3, alignment=Qt.AlignLeft)
+
+            root.addWidget(gb_list)
+            root.addWidget(gb_edit)
+            root.addStretch(1)
+
+            if not self._model:
+                self._model.update({
+                    "dBASEContax": {
+                        "driver": "dBASE",
+                        "options": r"PATH:C:\Users\Jens Kallup\Documents\Programme\dBASE\dBA...",
+                    },
+                    "dBASESamples": {"driver": "dBASE", "options": r"PATH:C:\dBASE\Samples"},
+                    "dBASESignup": {"driver": "dBASE", "options": r"PATH:C:\dBASE\Signup"},
+                    "dBASETemp": {"driver": "dBASE", "options": r"PATH:C:\Temp"},
+                    "DmdDesnTemp": {"driver": "dBASE", "options": r"PATH:C:\Temp\Dmd"},
+                })
+
+            self._reload_list(select_first=True)
+            self.lst.currentItemChanged.connect(self._on_list_changed)
+            self.btn_add.clicked.connect(self._on_add)
+            self.btn_remove.clicked.connect(self._on_remove)
+            self.btn_options.clicked.connect(self._on_options_browse)
+            self.ed_alias.editingFinished.connect(self._on_edit_finished)
+            self.ed_options.editingFinished.connect(self._on_edit_finished)
+            self.cb_driver.currentIndexChanged.connect(lambda *_: self._on_edit_finished())
+
+        def model(self) -> dict:
+            self._on_edit_finished()
+            return {k: dict(v) for k, v in self._model.items()}
+
+        def set_model(self, model: dict) -> None:
+            self._model = {str(k): dict(v) for k, v in dict(model or {}).items()}
+            self._reload_list(select_first=True)
+
+        def _reload_list(self, select_first=False, select_alias=None):
+            self._updating_ui = True
+            try:
+                self.lst.clear()
+                for alias in sorted(self._model.keys(), key=lambda s: s.lower()):
+                    self.lst.addItem(QListWidgetItem(alias))
+                if select_alias:
+                    items = self.lst.findItems(select_alias, Qt.MatchFixedString)
+                    if items:
+                        self.lst.setCurrentItem(items[0])
+                elif select_first and self.lst.count() > 0:
+                    self.lst.setCurrentRow(0)
+            finally:
+                self._updating_ui = False
+            self._sync_editor_enabled()
+            cur = self.lst.currentItem()
+            if cur is not None:
+                self._on_list_changed(cur, None)
+            else:
+                self._clear_editor()
+
+        def _sync_editor_enabled(self):
+            has = self.lst.currentItem() is not None
+            self.btn_remove.setEnabled(has)
+
+        def _clear_editor(self):
+            self._updating_ui = True
+            try:
+                self.ed_alias.setText("")
+                self.cb_driver.setCurrentIndex(0)
+                self.ed_options.setText("")
+            finally:
+                self._updating_ui = False
+
+        def _on_list_changed(self, cur, prev):
+            if self._updating_ui:
+                return
+            self._sync_editor_enabled()
+            if not cur:
+                self._clear_editor()
+                return
+            alias = cur.text()
+            rec = self._model.get(alias, {"driver": "dBASE", "options": ""})
+            self._updating_ui = True
+            try:
+                self.ed_alias.setText(alias)
+                i = self.cb_driver.findText(rec.get("driver", "dBASE"), Qt.MatchFixedString)
+                self.cb_driver.setCurrentIndex(i if i >= 0 else 0)
+                self.ed_options.setText(rec.get("options", ""))
+            finally:
+                self._updating_ui = False
+
+        @staticmethod
+        def _norm(s: str) -> str:
+            return (s or "").strip()
+
+        def _on_add(self):
+            alias = self._norm(self.ed_alias.text())
+            driver = self.cb_driver.currentText()
+            options = self._norm(self.ed_options.text())
+            if not alias:
+                QMessageBox.warning(self, "Fehler", "Bitte einen Alias-Namen eingeben.")
+                self.ed_alias.setFocus()
+                return
+            if alias in self._model:
+                r = QMessageBox.question(
+                    self, "Alias existiert bereits",
+                    f"Der Alias '{alias}' existiert schon.\nSoll er überschrieben werden?",
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+                )
+                if r != QMessageBox.Yes:
+                    return
+            self._model[alias] = {"driver": driver, "options": options}
+            self._reload_list(select_alias=alias)
+
+        def _on_remove(self):
+            cur = self.lst.currentItem()
+            if not cur:
+                return
+            alias = cur.text()
+            r = QMessageBox.question(
+                self, "Entfernen", f"Alias '{alias}' wirklich entfernen?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            )
+            if r != QMessageBox.Yes:
+                return
+            self._model.pop(alias, None)
+            self._reload_list(select_first=True)
+
+        def _on_options_browse(self):
+            current = self._norm(self.ed_options.text())
+            start_dir = current[5:].strip() if current.upper().startswith("PATH:") else ""
+            dlg = QFileDialog(self, tr("Verzeichnis auswählen"), start_dir)
+            dlg.setFileMode(QFileDialog.Directory)
+            dlg.setOption(QFileDialog.ShowDirsOnly, True)
+            dlg.setOption(QFileDialog.DontUseNativeDialog, True)
+            if dlg.exec_():
+                dirs = dlg.selectedFiles()
+                if dirs:
+                    self.ed_options.setText(f"PATH:{dirs[0]}")
+                    self._on_edit_finished()
+
+        def _on_edit_finished(self):
+            if self._updating_ui:
+                return
+            cur = self.lst.currentItem()
+            if not cur:
+                return
+            old_alias = cur.text()
+            new_alias = self._norm(self.ed_alias.text())
+            driver = self.cb_driver.currentText()
+            options = self._norm(self.ed_options.text())
+            if new_alias == old_alias:
+                self._model[old_alias] = {"driver": driver, "options": options}
+                return
+            if not new_alias:
+                self._updating_ui = True
+                try:
+                    self.ed_alias.setText(old_alias)
+                finally:
+                    self._updating_ui = False
+                return
+            if new_alias in self._model:
+                QMessageBox.warning(self, "Fehler", f"Alias '{new_alias}' existiert bereits.")
+                self._updating_ui = True
+                try:
+                    self.ed_alias.setText(old_alias)
+                finally:
+                    self._updating_ui = False
+                return
+            self._model.pop(old_alias, None)
+            self._model[new_alias] = {"driver": driver, "options": options}
+            self._reload_list(select_alias=new_alias)
+
+
+    class SourceAliasesTab(QWidget):
+        def __init__(self, parent=None, initial=None):
+            super().__init__(parent)
+            self._model = dict(initial or {})
+            self._updating_ui = False
+
+            root = QVBoxLayout(self)
+            root.setContentsMargins(12, 12, 12, 12)
+            root.setSpacing(12)
+
+            gb_list = QGroupBox(tr("Definierte Quell-Aliases"), self)
+            v_list = QVBoxLayout(gb_list)
+            self.lst = QListWidget()
+            self.lst.setMinimumHeight(210)
+            v_list.addWidget(self.lst)
+
+            gb_edit = QGroupBox(tr("Quell-Alias bearbeiten"), self)
+            e = QGridLayout(gb_edit)
+            e.setHorizontalSpacing(10)
+            e.setVerticalSpacing(8)
+            e.addWidget(QLabel("Alias:"), 0, 0)
+            self.ed_alias = QLineEdit()
+            self.ed_alias.setMinimumWidth(220)
+            e.addWidget(self.ed_alias, 0, 1)
+            self.btn_add = QPushButton(tr("Hinzufügen"))
+            self.btn_remove = QPushButton(tr("Entfernen"))
+            self.btn_add.setFixedWidth(95)
+            self.btn_remove.setFixedWidth(95)
+            e.addWidget(self.btn_add, 0, 2)
+            e.addWidget(self.btn_remove, 0, 3)
+            e.addWidget(QLabel(tr("Pfad:")), 1, 0)
+            self.ed_path = QLineEdit()
+            e.addWidget(self.ed_path, 1, 1, 1, 2)
+            self.btn_browse = QPushButton("...")
+            self.btn_browse.setFixedWidth(30)
+            e.addWidget(self.btn_browse, 1, 3, alignment=Qt.AlignLeft)
+
+            root.addWidget(gb_list)
+            root.addWidget(gb_edit)
+            root.addStretch(1)
+
+            if not self._model:
+                self._model.update({
+                    "CoreShared": r"T:\Programme\dBASE\dBASE2019\Bin\dBLCore\Shared",
+                    "dBStartup": r"T:\Programme\dBASE\dBASE2019\Bin\dBStartup",
+                    "Examples": r"T:\Programme\dBASE\dBASE2019\Examples",
+                    "Forms": r"T:\Programme\dBASE\dBASE2019\Forms",
+                    "Images": r"T:\Programme\dBASE\dBASE2019\Images",
+                })
+
+            self._reload_list(select_first=True)
+            self.lst.currentItemChanged.connect(self._on_list_changed)
+            self.btn_add.clicked.connect(self._on_add)
+            self.btn_remove.clicked.connect(self._on_remove)
+            self.btn_browse.clicked.connect(self._on_browse)
+            self.ed_alias.editingFinished.connect(self._on_edit_finished)
+            self.ed_path.editingFinished.connect(self._on_edit_finished)
+
+        def model(self) -> dict:
+            self._on_edit_finished()
+            return dict(self._model)
+
+        def set_model(self, model: dict) -> None:
+            self._model = {str(k): str(v) for k, v in dict(model or {}).items()}
+            self._reload_list(select_first=True)
+
+        def _reload_list(self, select_first=False, select_alias=None):
+            self._updating_ui = True
+            try:
+                self.lst.clear()
+                for alias in sorted(self._model.keys(), key=lambda s: s.lower()):
+                    self.lst.addItem(QListWidgetItem(alias))
+                if select_alias:
+                    items = self.lst.findItems(select_alias, Qt.MatchFixedString)
+                    if items:
+                        self.lst.setCurrentItem(items[0])
+                elif select_first and self.lst.count() > 0:
+                    self.lst.setCurrentRow(0)
+            finally:
+                self._updating_ui = False
+            self._sync_editor_enabled()
+            cur = self.lst.currentItem()
+            if cur is not None:
+                self._on_list_changed(cur, None)
+            else:
+                self._updating_ui = True
+                try:
+                    self.ed_alias.setText("")
+                    self.ed_path.setText("")
+                finally:
+                    self._updating_ui = False
+
+        def _sync_editor_enabled(self):
+            self.btn_remove.setEnabled(self.lst.currentItem() is not None)
+
+        def _on_list_changed(self, cur, prev):
+            if self._updating_ui:
+                return
+            self._sync_editor_enabled()
+            if not cur:
+                self._updating_ui = True
+                try:
+                    self.ed_alias.setText("")
+                    self.ed_path.setText("")
+                finally:
+                    self._updating_ui = False
+                return
+            alias = cur.text()
+            path = self._model.get(alias, "")
+            self._updating_ui = True
+            try:
+                self.ed_alias.setText(alias)
+                self.ed_path.setText(path)
+            finally:
+                self._updating_ui = False
+
+        @staticmethod
+        def _normalized_alias(s: str) -> str:
+            return (s or "").strip()
+
+        def _on_add(self):
+            alias = self._normalized_alias(self.ed_alias.text())
+            path = (self.ed_path.text() or "").strip()
+            if not alias:
+                QMessageBox.warning(self, "Fehler", "Bitte einen Alias-Namen eingeben.")
+                self.ed_alias.setFocus()
+                return
+            if not path:
+                QMessageBox.warning(self, "Fehler", "Bitte einen Pfad eingeben oder auswählen.")
+                self.ed_path.setFocus()
+                return
+            if alias in self._model:
+                r = QMessageBox.question(
+                    self, "Alias existiert bereits",
+                    f"Der Alias '{alias}' existiert schon.\nSoll der Pfad überschrieben werden?",
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+                )
+                if r != QMessageBox.Yes:
+                    return
+            self._model[alias] = path
+            self._reload_list(select_alias=alias)
+
+        def _on_remove(self):
+            cur = self.lst.currentItem()
+            if not cur:
+                return
+            alias = cur.text()
+            r = QMessageBox.question(
+                self, "Entfernen", f"Alias '{alias}' wirklich entfernen?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            )
+            if r != QMessageBox.Yes:
+                return
+            self._model.pop(alias, None)
+            self._reload_list(select_first=True)
+
+        def _on_browse(self):
+            start_dir = (self.ed_path.text() or "").strip() or ""
+            dlg = QFileDialog(self, "Pfad auswählen", start_dir)
+            dlg.setFileMode(QFileDialog.Directory)
+            dlg.setOption(QFileDialog.ShowDirsOnly, True)
+            dlg.setOption(QFileDialog.DontUseNativeDialog, True)
+            if dlg.exec_():
+                dirs = dlg.selectedFiles()
+                if dirs:
+                    self.ed_path.setText(dirs[0])
+                    self._on_edit_finished()
+
+        def _on_edit_finished(self):
+            if self._updating_ui:
+                return
+            cur = self.lst.currentItem()
+            if not cur:
+                return
+            old_alias = cur.text()
+            new_alias = self._normalized_alias(self.ed_alias.text())
+            new_path = (self.ed_path.text() or "").strip()
+            if new_alias == old_alias:
+                if new_path and self._model.get(old_alias) != new_path:
+                    self._model[old_alias] = new_path
+                return
+            if not new_alias:
+                self._updating_ui = True
+                try:
+                    self.ed_alias.setText(old_alias)
+                finally:
+                    self._updating_ui = False
+                return
+            if new_alias in self._model:
+                QMessageBox.warning(self, "Fehler", f"Alias '{new_alias}' existiert bereits.")
+                self._updating_ui = True
+                try:
+                    self.ed_alias.setText(old_alias)
+                finally:
+                    self._updating_ui = False
+                return
+            old_path = self._model.pop(old_alias, "")
+            self._model[new_alias] = new_path or old_path
+            self._reload_list(select_alias=new_alias)
+
+
+    class DesktopPropertiesDialog(QWidget):
+        """Desktop-Properties aus dem gelieferten Code als dockfähiger Inhalt."""
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self._host_window = parent
+            self.setObjectName("desktop_properties_panel")
+            self.setFont(QFont("Arial", 10))
+
+            root = QVBoxLayout(self)
+            root.setContentsMargins(6, 6, 6, 6)
+            root.setSpacing(6)
+
+            self.scroll_area = QScrollArea(self)
+            self.scroll_area.setWidgetResizable(True)
+            self.scroll_area.setObjectName("desktop_properties_scroll_area")
+            root.addWidget(self.scroll_area, 1)
+
+            self.scroll_widget = QWidget(self.scroll_area)
+            self.scroll_widget.setObjectName("desktop_properties_scroll_widget")
+            self.scroll_layout = QVBoxLayout(self.scroll_widget)
+            self.scroll_layout.setContentsMargins(0, 0, 0, 0)
+
+            self.tabs = QTabWidget(self.scroll_widget)
+            self.tabs.setObjectName("desktop_properties_tabs")
+            self.scroll_layout.addWidget(self.tabs, 1)
+            self.scroll_area.setWidget(self.scroll_widget)
+
+            self.tabs.addTab(self._build_tab_country(), tr("Country"))
+            self.tabs.addTab(self._build_tab_table(), tr("Table"))
+            self.tabs.addTab(self._build_tab_data(), tr("Data Entry"))
+            self.tabs.addTab(self._build_tab_files(), tr("Files"))
+            self.tabs.addTab(self._build_tab_app(), tr("Application"))
+            self.tabs.addTab(self._build_tab_prog(), tr("Programming"))
+            self.tabs.addTab(self._build_tab_aliase(), tr("Source Aliases"))
+            self.tabs.addTab(self._build_tab_usrbde(), tr("User-BDE-Aliases"))
+
+            btn_row = QHBoxLayout()
+            btn_row.addStretch(1)
+            self.btn_ok = QPushButton(tr("OK"))
+            self.btn_cancel = QPushButton(tr("Cancel"))
+            self.btn_help = QPushButton(tr("Help"))
+            self.btn_apply = QPushButton(tr("Apply"))
+            for b in (self.btn_ok, self.btn_cancel, self.btn_help, self.btn_apply):
+                b.setFixedWidth(95)
+            self.btn_ok.clicked.connect(self.onbtn_accept)
+            self.btn_cancel.clicked.connect(self.onbtn_cancel)
+            self.btn_help.clicked.connect(self._help)
+            self.btn_apply.clicked.connect(self._apply_desktop_properties)
+            btn_row.addWidget(self.btn_ok)
+            btn_row.addWidget(self.btn_cancel)
+            btn_row.addWidget(self.btn_help)
+            btn_row.addWidget(self.btn_apply)
+            root.addLayout(btn_row)
+
+            self._country_syncing = False
+            self._load_desktop_properties()
+            self.setMinimumSize(720, 500)
+
+        def _close_host_dock(self):
+            host = self._host_window
+            dock = getattr(host, "settings_dock", None) if host is not None else None
+            if dock is not None:
+                dock.hide()
+
+        def onbtn_accept(self):
+            self._apply_desktop_properties()
+            self._close_host_dock()
+
+        def onbtn_cancel(self):
+            self._load_desktop_properties()
+            self._close_host_dock()
+
+        def _desktop_settings(self):
+            try:
+                if self._host_window is not None and hasattr(self._host_window, "_settings"):
+                    return self._host_window._settings
+            except Exception:
+                pass
+            return None
+
+        def _country_defaults(self) -> dict:
+            return {
+                "thousand_sep": ".", "decimal_sep": ",",
+                "currency_position": "right", "currency_display": "EUR  €",
+                "currency_symbol": "€", "currency_code": "EUR",
+                "currency_format_short": False, "date_format": "DMY",
+                "date_sep": ".", "century": True, "ui_lang": "DE - Deutsch",
+                "warn_mismatch": False,
+            }
+
+        @staticmethod
+        def _allowed_country_separators():
+            return {".", ",", "'"}
+
+        @staticmethod
+        def _allowed_date_separators():
+            return {".", "/", "-", ":"}
+
+        @staticmethod
+        def _currency_choices():
+            return [
+                ("EUR", "€"), ("USD", "$"), ("GBP", "£"), ("JPY", "¥"), ("CHF", "CHF"),
+                ("SEK", "kr"), ("NOK", "kr"), ("DKK", "kr"), ("PLN", "zł"), ("CZK", "Kč"),
+                ("HUF", "Ft"), ("TRY", "₺"), ("RUB", "₽"), ("INR", "₹"), ("CNY", "¥"),
+                ("KRW", "₩"), ("UAH", "₴"),
+            ]
+
+        def _extract_currency_symbol(self, text: str) -> str:
+            txt = (text or "").strip()
+            if not txt:
+                return self._country_defaults()["currency_symbol"]
+            parts = txt.split()
+            return parts[-1] if len(parts) >= 2 else txt
+
+        def _extract_currency_code(self, text: str) -> str:
+            txt = (text or "").strip()
+            if not txt:
+                return self._country_defaults()["currency_code"]
+            parts = txt.split()
+            return parts[0] if len(parts) >= 2 else txt
+
+        def _update_country_currency_format_checkbox(self):
+            self.chk_currency_format.setText("kurz" if self.chk_currency_format.isChecked() else "lang")
+
+        def _set_currency_combo_text(self, text: str):
+            txt = (text or "").strip() or self._country_defaults()["currency_display"]
+            idx = self.cb_currency.findText(txt, Qt.MatchExactly)
+            if idx >= 0:
+                self.cb_currency.setCurrentIndex(idx)
+            else:
+                self.cb_currency.setEditText(txt)
+
+        def _set_currency_combo_from_symbol(self, symbol: str):
+            sym = (symbol or "").strip() or self._country_defaults()["currency_symbol"]
+            for code, item_symbol in self._currency_choices():
+                if item_symbol == sym:
+                    self._set_currency_combo_text(f"{code}  {item_symbol}")
+                    return
+            self.cb_currency.setEditText(sym)
+
+        def _update_country_number_preview(self):
+            thousand = (self.ed_thousand.text() or "").strip() or self._country_defaults()["thousand_sep"]
+            decimal = (self.ed_decimal.text() or "").strip() or self._country_defaults()["decimal_sep"]
+            self.lbl_num_pattern.setText(f"1{thousand}000{thousand}000{decimal}00")
+            self._update_country_currency_preview()
+
+        def _update_country_date_preview(self):
+            today = dt.date.today()
+            yyyy, yy = f"{today.year:04d}", f"{today.year % 100:02d}"
+            mm, dd = f"{today.month:02d}", f"{today.day:02d}"
+            sep = (self.ed_datesep.text() or "").strip() or self._country_defaults()["date_sep"]
+            fmt = (self.cb_datefmt.currentText() or self._country_defaults()["date_format"]).strip().upper()
+            year_text = yyyy if self.chk_century.isChecked() else yy
+            if fmt == "MDY":
+                pattern = f"{mm}{sep}{dd}{sep}{year_text}"
+            elif fmt in ("YMD", "ISO"):
+                pattern = f"{year_text}{sep}{mm}{sep}{dd}"
+            else:
+                pattern = f"{dd}{sep}{mm}{sep}{year_text}"
+            self.lbl_date_pattern.setText(pattern)
+
+        def _update_country_currency_preview(self):
+            self._update_country_currency_format_checkbox()
+            symbol = self._extract_currency_symbol(self.cb_currency.currentText())
+            code = self._extract_currency_code(self.cb_currency.currentText())
+            marker = symbol if self.chk_currency_format.isChecked() else code
+            number = self.lbl_num_pattern.text().strip() or "129,99"
+            for old, new in (
+                ("1.000.000,00", "129,99"), ("1,000,000.00", "129.99"),
+                ("1'000'000,00", "129,99"), ("1'000'000.00", "129.99"),
+            ):
+                number = number.replace(old, new)
+            self.lbl_currency_pattern.setText(
+                f"{marker} {number}" if self.rb_left.isChecked() else f"{number} {marker}"
+            )
+
+        def _normalize_separator_edit(self, which: str):
+            if self._country_syncing:
+                return
+            defaults = self._country_defaults()
+            edit = self.ed_thousand if which == "thousand" else self.ed_decimal
+            default_value = defaults["thousand_sep"] if which == "thousand" else defaults["decimal_sep"]
+            value = (edit.text() or "").strip()
+            if value == "" or value not in self._allowed_country_separators():
+                if value:
+                    QApplication.beep()
+                self._country_syncing = True
+                try:
+                    edit.setText(default_value)
+                finally:
+                    self._country_syncing = False
+            self._update_country_number_preview()
+
+        def _normalize_date_separator_edit(self):
+            if self._country_syncing:
+                return
+            default_value = self._country_defaults()["date_sep"]
+            value = (self.ed_datesep.text() or "").strip()
+            if value == "" or value not in self._allowed_date_separators():
+                if value:
+                    QApplication.beep()
+                self._country_syncing = True
+                try:
+                    self.ed_datesep.setText(default_value)
+                finally:
+                    self._country_syncing = False
+            self._update_country_date_preview()
+
+        def _sync_country_currency_from_combo(self):
+            if not self._country_syncing:
+                self._update_country_currency_preview()
+
+        @staticmethod
+        def _table_defaults() -> dict:
+            return {
+                "lock": True, "exclusive": False, "refresh": 0, "retry": 0,
+                "default_type": "dbase", "indexblock": 1, "memoblock": 8,
+                "autosave": False, "deleted": True, "encrypt": True,
+                "ident": False, "approx": False, "autonull": True,
+                "system_show": False,
+            }
+
+        @staticmethod
+        def _data_entry_defaults() -> dict:
+            return {
+                "confirm": True, "cua": True, "escape": True,
+                "keyboard_buffer": 49, "epoch": 1950, "beep_enabled": True,
+                "frequency": 512, "duration": 50,
+            }
+
+        def _files_defaults(self) -> dict:
+            workdir = ""
+            settings = self._desktop_settings()
+            if settings is not None:
+                workdir = (settings.value("regiecenter/workdir", "", type=str) or "").strip()
+            if not workdir:
+                workdir = os.getcwd()
+            return {
+                "current_dir": workdir, "search_path": "", "log_enabled": False,
+                "logfile": "", "log_mode": "overwrite", "external_editor": "",
+                "backup": False, "sessions": False,
+            }
+
+        @staticmethod
+        def _app_defaults() -> dict:
+            return {
+                "show_form": True, "show_report": True, "show_labels": True,
+                "show_datamodule": True, "show_table": True,
+                "file_menu_files": 5, "file_menu_projects": 5,
+                "db_save_logins": True, "db_sql_trace": False,
+                "win_fit_to_content": True, "win_loop_animations": True,
+                "win_save_as_ole2": True, "show_splash": True,
+            }
+
+        @staticmethod
+        def _programming_defaults() -> dict:
+            return {
+                "decimals": 2, "precision": 10, "margin": 0, "blank": True,
+                "trace": False, "fieldnames": True, "fulltest": False,
+                "buildtime": True, "design": True, "high_precision": False,
+                "protect": True, "fullpath": False,
+                "error_action": "4 - Show Error Dialog", "error_log_file": "PLUSerr.log",
+                "max_size_kb": 100, "html_template": "error.htm",
+            }
+
+        @staticmethod
+        def _json_value(settings, key: str, default):
+            raw = settings.value(key, "", type=str) if settings is not None else ""
+            if not raw:
+                return default
+            try:
+                value = json.loads(raw)
+                return value if isinstance(value, type(default)) else default
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return default
+
+        def _load_alias_properties(self):
+            settings = self._desktop_settings()
+            if settings is None:
+                return
+            source = self._json_value(settings, "desktop/aliases/source", {})
+            bde = self._json_value(settings, "desktop/aliases/user_bde", {})
+            if source:
+                self.source_aliases_tab.set_model(source)
+            if bde:
+                self.user_bde_aliases_tab.set_model(bde)
+
+        def _save_alias_properties(self):
+            settings = self._desktop_settings()
+            if settings is None:
+                return
+            settings.setValue(
+                "desktop/aliases/source",
+                json.dumps(self.source_aliases_tab.model(), ensure_ascii=False, sort_keys=True),
+            )
+            settings.setValue(
+                "desktop/aliases/user_bde",
+                json.dumps(self.user_bde_aliases_tab.model(), ensure_ascii=False, sort_keys=True),
+            )
+
+        def _load_desktop_properties(self):
+            settings = self._desktop_settings()
+            defaults = self._country_defaults()
+            if settings is not None:
+                self._country_syncing = True
+                try:
+                    thousand = (settings.value("desktop/country/thousand_sep", defaults["thousand_sep"], type=str) or defaults["thousand_sep"]).strip()
+                    decimal = (settings.value("desktop/country/decimal_sep", defaults["decimal_sep"], type=str) or defaults["decimal_sep"]).strip()
+                    if thousand not in self._allowed_country_separators():
+                        thousand = defaults["thousand_sep"]
+                    if decimal not in self._allowed_country_separators():
+                        decimal = defaults["decimal_sep"]
+                    self.ed_thousand.setText(thousand)
+                    self.ed_decimal.setText(decimal)
+                    pos = (settings.value("desktop/country/currency_position", defaults["currency_position"], type=str) or defaults["currency_position"]).strip().lower()
+                    self.rb_left.setChecked(pos == "left")
+                    self.rb_right.setChecked(pos != "left")
+                    currency_display = (settings.value("desktop/country/currency_display", defaults["currency_display"], type=str) or defaults["currency_display"]).strip()
+                    self.chk_currency_format.setChecked(bool(settings.value("desktop/country/currency_format_short", defaults["currency_format_short"], type=bool)))
+                    self._set_currency_combo_text(currency_display)
+                    date_format = (settings.value("desktop/country/date_format", defaults["date_format"], type=str) or defaults["date_format"]).strip().upper()
+                    if date_format not in ("DMY", "MDY", "YMD", "ISO"):
+                        date_format = defaults["date_format"]
+                    self.cb_datefmt.setCurrentText(date_format)
+                    date_sep = (settings.value("desktop/country/date_sep", defaults["date_sep"], type=str) or defaults["date_sep"]).strip()[:1] or defaults["date_sep"]
+                    if date_sep not in self._allowed_date_separators():
+                        date_sep = defaults["date_sep"]
+                    self.ed_datesep.setText(date_sep)
+                    self.chk_century.setChecked(bool(settings.value("desktop/country/century", defaults["century"], type=bool)))
+                    ui_lang = (settings.value("desktop/country/ui_lang", defaults["ui_lang"], type=str) or defaults["ui_lang"]).strip()
+                    idx = self.cb_lang.findText(ui_lang, Qt.MatchExactly)
+                    if idx >= 0:
+                        self.cb_lang.setCurrentIndex(idx)
+                    self.chk_mismatch.setChecked(bool(settings.value("desktop/country/warn_mismatch", defaults["warn_mismatch"], type=bool)))
+                finally:
+                    self._country_syncing = False
+            self._update_country_number_preview()
+            self._update_country_date_preview()
+            self._update_country_currency_preview()
+            self._load_table_properties()
+            self._load_data_entry_properties()
+            self._load_files_properties()
+            self._load_app_properties()
+            self._load_programming_properties()
+            self._load_alias_properties()
+
+        def _save_desktop_properties(self):
+            settings = self._desktop_settings()
+            if settings is None:
+                return
+            self._normalize_separator_edit("thousand")
+            self._normalize_separator_edit("decimal")
+            currency_display = (self.cb_currency.currentText() or "").strip()
+            settings.setValue("desktop/country/thousand_sep", (self.ed_thousand.text() or "").strip() or self._country_defaults()["thousand_sep"])
+            settings.setValue("desktop/country/decimal_sep", (self.ed_decimal.text() or "").strip() or self._country_defaults()["decimal_sep"])
+            settings.setValue("desktop/country/currency_position", "left" if self.rb_left.isChecked() else "right")
+            settings.setValue("desktop/country/currency_display", currency_display)
+            settings.setValue("desktop/country/currency_symbol", self._extract_currency_symbol(currency_display))
+            settings.setValue("desktop/country/currency_code", self._extract_currency_code(currency_display))
+            settings.setValue("desktop/country/currency_format_short", bool(self.chk_currency_format.isChecked()))
+            self._normalize_date_separator_edit()
+            settings.setValue("desktop/country/date_format", self.cb_datefmt.currentText().strip())
+            settings.setValue("desktop/country/date_sep", (self.ed_datesep.text() or "").strip()[:1] or self._country_defaults()["date_sep"])
+            settings.setValue("desktop/country/century", bool(self.chk_century.isChecked()))
+            settings.setValue("desktop/country/ui_lang", self.cb_lang.currentText().strip())
+            settings.setValue("desktop/country/warn_mismatch", bool(self.chk_mismatch.isChecked()))
+            self._save_table_properties()
+            self._save_data_entry_properties()
+            self._save_files_properties()
+            self._save_app_properties()
+            self._save_programming_properties()
+            self._save_alias_properties()
+            settings.sync()
+
+        def _load_table_properties(self):
+            defaults = self._table_defaults()
+            settings = self._desktop_settings()
+            if settings is None:
+                return
+            self.chk_lock.setChecked(bool(settings.value("desktop/table/lock", defaults["lock"], type=bool)))
+            self.chk_exclusive.setChecked(bool(settings.value("desktop/table/exclusive", defaults["exclusive"], type=bool)))
+            self.spin_refresh.setValue(int(settings.value("desktop/table/refresh", defaults["refresh"], type=int)))
+            self.spin_retry.setValue(int(settings.value("desktop/table/retry", defaults["retry"], type=int)))
+            default_type = (settings.value("desktop/table/default_type", defaults["default_type"], type=str) or defaults["default_type"]).strip().lower()
+            self.rb_dbase.setChecked(default_type == "dbase")
+            self.rb_paradox.setChecked(default_type == "paradox")
+            self.rb_sqlite3.setChecked(default_type == "sqlite3")
+            self.rb_mysql.setChecked(default_type == "mysql")
+            if not any((self.rb_dbase.isChecked(), self.rb_paradox.isChecked(), self.rb_sqlite3.isChecked(), self.rb_mysql.isChecked())):
+                self.rb_dbase.setChecked(True)
+            self.spin_indexblock.setValue(int(settings.value("desktop/table/indexblock", defaults["indexblock"], type=int)))
+            self.spin_memoblock.setValue(int(settings.value("desktop/table/memoblock", defaults["memoblock"], type=int)))
+            self.chk_autosave.setChecked(bool(settings.value("desktop/table/autosave", defaults["autosave"], type=bool)))
+            self.chk_deleted.setChecked(bool(settings.value("desktop/table/deleted", defaults["deleted"], type=bool)))
+            self.chk_encrypt.setChecked(bool(settings.value("desktop/table/encrypt", defaults["encrypt"], type=bool)))
+            self.chk_ident.setChecked(bool(settings.value("desktop/table/ident", defaults["ident"], type=bool)))
+            self.chk_approx.setChecked(bool(settings.value("desktop/table/approx", defaults["approx"], type=bool)))
+            self.chk_autonull.setChecked(bool(settings.value("desktop/table/autonull", defaults["autonull"], type=bool)))
+            self.chk_system_show.setChecked(bool(settings.value("desktop/table/system_show", defaults["system_show"], type=bool)))
+
+        def _save_table_properties(self):
+            settings = self._desktop_settings()
+            if settings is None:
+                return
+            default_type = "dbase"
+            if self.rb_paradox.isChecked():
+                default_type = "paradox"
+            elif self.rb_sqlite3.isChecked():
+                default_type = "sqlite3"
+            elif self.rb_mysql.isChecked():
+                default_type = "mysql"
+            settings.setValue("desktop/table/lock", bool(self.chk_lock.isChecked()))
+            settings.setValue("desktop/table/exclusive", bool(self.chk_exclusive.isChecked()))
+            settings.setValue("desktop/table/refresh", int(self.spin_refresh.value()))
+            settings.setValue("desktop/table/retry", int(self.spin_retry.value()))
+            settings.setValue("desktop/table/default_type", default_type)
+            settings.setValue("desktop/table/indexblock", int(self.spin_indexblock.value()))
+            settings.setValue("desktop/table/memoblock", int(self.spin_memoblock.value()))
+            settings.setValue("desktop/table/autosave", bool(self.chk_autosave.isChecked()))
+            settings.setValue("desktop/table/deleted", bool(self.chk_deleted.isChecked()))
+            settings.setValue("desktop/table/encrypt", bool(self.chk_encrypt.isChecked()))
+            settings.setValue("desktop/table/ident", bool(self.chk_ident.isChecked()))
+            settings.setValue("desktop/table/approx", bool(self.chk_approx.isChecked()))
+            settings.setValue("desktop/table/autonull", bool(self.chk_autonull.isChecked()))
+            settings.setValue("desktop/table/system_show", bool(self.chk_system_show.isChecked()))
+
+        def _toggle_data_entry_beep_controls(self, on: bool):
+            self.sp_freq.setEnabled(bool(on))
+            self.sp_dur.setEnabled(bool(on))
+            self.btn_test_beep.setEnabled(bool(on))
+
+        def _load_data_entry_properties(self):
+            defaults = self._data_entry_defaults()
+            settings = self._desktop_settings()
+            if settings is not None:
+                self.chk_confirm.setChecked(bool(settings.value("desktop/data_entry/confirm", defaults["confirm"], type=bool)))
+                self.chk_cua.setChecked(bool(settings.value("desktop/data_entry/cua", defaults["cua"], type=bool)))
+                self.chk_esc.setChecked(bool(settings.value("desktop/data_entry/escape", defaults["escape"], type=bool)))
+                self.sp_buf.setValue(int(settings.value("desktop/data_entry/keyboard_buffer", defaults["keyboard_buffer"], type=int)))
+                self.sp_epoch.setValue(int(settings.value("desktop/data_entry/epoch", defaults["epoch"], type=int)))
+                self.chk_beep.setChecked(bool(settings.value("desktop/data_entry/beep_enabled", defaults["beep_enabled"], type=bool)))
+                self.sp_freq.setValue(int(settings.value("desktop/data_entry/frequency", defaults["frequency"], type=int)))
+                self.sp_dur.setValue(int(settings.value("desktop/data_entry/duration", defaults["duration"], type=int)))
+            self._toggle_data_entry_beep_controls(self.chk_beep.isChecked())
+
+        def _save_data_entry_properties(self):
+            settings = self._desktop_settings()
+            if settings is None:
+                return
+            settings.setValue("desktop/data_entry/confirm", bool(self.chk_confirm.isChecked()))
+            settings.setValue("desktop/data_entry/cua", bool(self.chk_cua.isChecked()))
+            settings.setValue("desktop/data_entry/escape", bool(self.chk_esc.isChecked()))
+            settings.setValue("desktop/data_entry/keyboard_buffer", int(self.sp_buf.value()))
+            settings.setValue("desktop/data_entry/epoch", int(self.sp_epoch.value()))
+            settings.setValue("desktop/data_entry/beep_enabled", bool(self.chk_beep.isChecked()))
+            settings.setValue("desktop/data_entry/frequency", int(self.sp_freq.value()))
+            settings.setValue("desktop/data_entry/duration", int(self.sp_dur.value()))
+
+        @staticmethod
+        def _quote_path_if_needed(value: str) -> str:
+            txt = (value or "").strip()
+            if not txt:
+                return ""
+            if len(txt) >= 2 and txt.startswith('"') and txt.endswith('"'):
+                return txt
+            return f'"{txt}"' if any(ch.isspace() for ch in txt) else txt
+
+        def _toggle_files_log_controls(self, on: bool):
+            enabled = bool(on)
+            self.ed_logfile.setEnabled(enabled)
+            self.btn_logfile.setEnabled(enabled)
+            self.rb_log_overwrite.setEnabled(enabled)
+            self.rb_log_append.setEnabled(enabled)
+
+        def _browse_files_current_dir(self):
+            start_dir = (self.ed_files_current_dir.text() or "").strip() or os.getcwd()
+            dlg = QFileDialog(self, tr("Verzeichnis auswählen"), start_dir)
+            dlg.setFileMode(QFileDialog.Directory)
+            dlg.setOption(QFileDialog.ShowDirsOnly, True)
+            dlg.setOption(QFileDialog.DontUseNativeDialog, True)
+            if dlg.exec_():
+                selected = dlg.selectedFiles()
+                if selected:
+                    self.ed_files_current_dir.setText(os.path.normpath(selected[0]))
+
+        def _append_search_path_entry(self, entry: str):
+            value = self._quote_path_if_needed(os.path.normpath(entry or ""))
+            if not value:
+                return
+            current = (self.ed_files_search_path.text() or "").strip()
+            if not current:
+                self.ed_files_search_path.setText(value)
+                return
+            parts = [p.strip() for p in current.split(";") if p.strip()]
+            if value not in parts:
+                self.ed_files_search_path.setText(current + ";" + value)
+
+        def _browse_files_search_path(self):
+            current = (self.ed_files_search_path.text() or "").strip()
+            start_dir = (self.ed_files_current_dir.text() or "").strip() or os.getcwd()
+            if current:
+                last = current.split(";")[-1].strip().strip('"')
+                if last:
+                    start_dir = last
+            dlg = QFileDialog(self, tr("Verzeichnis auswählen"), start_dir)
+            dlg.setFileMode(QFileDialog.Directory)
+            dlg.setOption(QFileDialog.ShowDirsOnly, True)
+            dlg.setOption(QFileDialog.DontUseNativeDialog, True)
+            if dlg.exec_():
+                selected = dlg.selectedFiles()
+                if selected:
+                    self._append_search_path_entry(selected[0])
+
+        def _browse_external_editor(self):
+            start_file = (self.ed_external_editor.text() or "").strip().strip('"')
+            dlg = QFileDialog(self, tr("Editor auswählen"), start_file or os.getcwd())
+            dlg.setAcceptMode(QFileDialog.AcceptOpen)
+            dlg.setFileMode(QFileDialog.ExistingFile)
+            dlg.setNameFilters(["Programme (*.exe *.bat *.cmd *.com)", "Alle Dateien (*.*)"])
+            dlg.setOption(QFileDialog.DontUseNativeDialog, True)
+            if dlg.exec_():
+                selected = dlg.selectedFiles()
+                if selected:
+                    self.ed_external_editor.setText(self._quote_path_if_needed(os.path.normpath(selected[0])))
+
+        def _browse_log_file(self):
+            start_file = (self.ed_logfile.text() or "").strip()
+            dlg = QFileDialog(self, tr("Protokolldatei auswählen"), start_file or os.getcwd())
+            dlg.setAcceptMode(QFileDialog.AcceptSave)
+            dlg.setFileMode(QFileDialog.AnyFile)
+            dlg.setDefaultSuffix("log")
+            dlg.setNameFilters(["Log-Dateien (*.log *.txt)", "Alle Dateien (*.*)"])
+            dlg.setOption(QFileDialog.DontUseNativeDialog, True)
+            if dlg.exec_():
+                selected = dlg.selectedFiles()
+                if selected:
+                    self.ed_logfile.setText(os.path.normpath(selected[0]))
+
+        def _load_files_properties(self):
+            defaults = self._files_defaults()
+            settings = self._desktop_settings()
+            if settings is not None:
+                self.ed_files_current_dir.setText((settings.value("desktop/files/current_dir", defaults["current_dir"], type=str) or defaults["current_dir"]).strip())
+                self.ed_files_search_path.setText((settings.value("desktop/files/search_path", defaults["search_path"], type=str) or defaults["search_path"]).strip())
+                self.chk_enable_log.setChecked(bool(settings.value("desktop/files/log_enabled", defaults["log_enabled"], type=bool)))
+                self.ed_logfile.setText((settings.value("desktop/files/logfile", defaults["logfile"], type=str) or defaults["logfile"]).strip())
+                log_mode = (settings.value("desktop/files/log_mode", defaults["log_mode"], type=str) or defaults["log_mode"]).strip().lower()
+                self.rb_log_append.setChecked(log_mode == "append")
+                self.rb_log_overwrite.setChecked(log_mode != "append")
+                self.ed_external_editor.setText((settings.value("desktop/files/external_editor", defaults["external_editor"], type=str) or defaults["external_editor"]).strip())
+                self.chk_backup.setChecked(bool(settings.value("desktop/files/backup", defaults["backup"], type=bool)))
+                self.chk_sessions.setChecked(bool(settings.value("desktop/files/sessions", defaults["sessions"], type=bool)))
+            self._toggle_files_log_controls(self.chk_enable_log.isChecked())
+
+        def _save_files_properties(self):
+            settings = self._desktop_settings()
+            if settings is None:
+                return
+            current_dir = (self.ed_files_current_dir.text() or "").strip()
+            settings.setValue("desktop/files/current_dir", current_dir)
+            settings.setValue("desktop/files/search_path", (self.ed_files_search_path.text() or "").strip())
+            settings.setValue("desktop/files/log_enabled", bool(self.chk_enable_log.isChecked()))
+            settings.setValue("desktop/files/logfile", (self.ed_logfile.text() or "").strip())
+            settings.setValue("desktop/files/log_mode", "append" if self.rb_log_append.isChecked() else "overwrite")
+            settings.setValue("desktop/files/external_editor", (self.ed_external_editor.text() or "").strip())
+            settings.setValue("desktop/files/backup", bool(self.chk_backup.isChecked()))
+            settings.setValue("desktop/files/sessions", bool(self.chk_sessions.isChecked()))
+            if current_dir:
+                settings.setValue("regiecenter/workdir", current_dir)
+
+        def _load_app_properties(self):
+            defaults = self._app_defaults()
+            settings = self._desktop_settings()
+            if settings is None:
+                return
+            self.chk_app_form.setChecked(bool(settings.value("desktop/application/show_form", defaults["show_form"], type=bool)))
+            self.chk_app_report.setChecked(bool(settings.value("desktop/application/show_report", defaults["show_report"], type=bool)))
+            self.chk_app_labels.setChecked(bool(settings.value("desktop/application/show_labels", defaults["show_labels"], type=bool)))
+            self.chk_app_datamodule.setChecked(bool(settings.value("desktop/application/show_datamodule", defaults["show_datamodule"], type=bool)))
+            self.chk_app_table.setChecked(bool(settings.value("desktop/application/show_table", defaults["show_table"], type=bool)))
+            self.sp_app_files.setValue(int(settings.value("desktop/application/file_menu_files", defaults["file_menu_files"], type=int)))
+            self.sp_app_projects.setValue(int(settings.value("desktop/application/file_menu_projects", defaults["file_menu_projects"], type=int)))
+            self.chk_app_save_logins.setChecked(bool(settings.value("desktop/application/db_save_logins", defaults["db_save_logins"], type=bool)))
+            self.chk_app_sql_trace.setChecked(bool(settings.value("desktop/application/db_sql_trace", defaults["db_sql_trace"], type=bool)))
+            self.chk_app_fit.setChecked(bool(settings.value("desktop/application/win_fit_to_content", defaults["win_fit_to_content"], type=bool)))
+            self.chk_app_anim.setChecked(bool(settings.value("desktop/application/win_loop_animations", defaults["win_loop_animations"], type=bool)))
+            self.chk_app_ole.setChecked(bool(settings.value("desktop/application/win_save_as_ole2", defaults["win_save_as_ole2"], type=bool)))
+            self.chk_app_splash.setChecked(bool(settings.value("desktop/application/show_splash", defaults["show_splash"], type=bool)))
+
+        def _save_app_properties(self):
+            settings = self._desktop_settings()
+            if settings is None:
+                return
+            settings.setValue("desktop/application/show_form", bool(self.chk_app_form.isChecked()))
+            settings.setValue("desktop/application/show_report", bool(self.chk_app_report.isChecked()))
+            settings.setValue("desktop/application/show_labels", bool(self.chk_app_labels.isChecked()))
+            settings.setValue("desktop/application/show_datamodule", bool(self.chk_app_datamodule.isChecked()))
+            settings.setValue("desktop/application/show_table", bool(self.chk_app_table.isChecked()))
+            settings.setValue("desktop/application/file_menu_files", int(self.sp_app_files.value()))
+            settings.setValue("desktop/application/file_menu_projects", int(self.sp_app_projects.value()))
+            settings.setValue("desktop/application/db_save_logins", bool(self.chk_app_save_logins.isChecked()))
+            settings.setValue("desktop/application/db_sql_trace", bool(self.chk_app_sql_trace.isChecked()))
+            settings.setValue("desktop/application/win_fit_to_content", bool(self.chk_app_fit.isChecked()))
+            settings.setValue("desktop/application/win_loop_animations", bool(self.chk_app_anim.isChecked()))
+            settings.setValue("desktop/application/win_save_as_ole2", bool(self.chk_app_ole.isChecked()))
+            settings.setValue("desktop/application/show_splash", bool(self.chk_app_splash.isChecked()))
+
+        def _browse_programming_error_log(self):
+            start_file = (self.ed_prog_error_log.text() or "").strip()
+            dlg = QFileDialog(self, tr("Error Log File auswählen"), start_file or os.getcwd())
+            dlg.setAcceptMode(QFileDialog.AcceptSave)
+            dlg.setFileMode(QFileDialog.AnyFile)
+            dlg.setDefaultSuffix("log")
+            dlg.setNameFilters(["Log-Dateien (*.log *.txt)", "Alle Dateien (*.*)"])
+            dlg.setOption(QFileDialog.DontUseNativeDialog, True)
+            if dlg.exec_():
+                selected = dlg.selectedFiles()
+                if selected:
+                    self.ed_prog_error_log.setText(os.path.normpath(selected[0]))
+
+        def _browse_programming_html_template(self):
+            start_file = (self.ed_prog_html_template.text() or "").strip()
+            dlg = QFileDialog(self, tr("HTML Error Template auswählen"), start_file or os.getcwd())
+            dlg.setAcceptMode(QFileDialog.AcceptOpen)
+            dlg.setFileMode(QFileDialog.ExistingFile)
+            dlg.setNameFilters(["HTML-Dateien (*.htm *.html)", "Alle Dateien (*.*)"])
+            dlg.setOption(QFileDialog.DontUseNativeDialog, True)
+            if dlg.exec_():
+                selected = dlg.selectedFiles()
+                if selected:
+                    self.ed_prog_html_template.setText(os.path.normpath(selected[0]))
+
+        def _load_programming_properties(self):
+            defaults = self._programming_defaults()
+            settings = self._desktop_settings()
+            if settings is None:
+                return
+            self.sp_prog_decimals.setValue(int(settings.value("desktop/programming/decimals", defaults["decimals"], type=int)))
+            self.sp_prog_precision.setValue(int(settings.value("desktop/programming/precision", defaults["precision"], type=int)))
+            self.sp_prog_margin.setValue(int(settings.value("desktop/programming/margin", defaults["margin"], type=int)))
+            self.chk_prog_blank.setChecked(bool(settings.value("desktop/programming/blank", defaults["blank"], type=bool)))
+            self.chk_prog_trace.setChecked(bool(settings.value("desktop/programming/trace", defaults["trace"], type=bool)))
+            self.chk_prog_fieldnames.setChecked(bool(settings.value("desktop/programming/fieldnames", defaults["fieldnames"], type=bool)))
+            self.chk_prog_fulltest.setChecked(bool(settings.value("desktop/programming/fulltest", defaults["fulltest"], type=bool)))
+            self.chk_prog_buildtime.setChecked(bool(settings.value("desktop/programming/buildtime", defaults["buildtime"], type=bool)))
+            self.chk_prog_design.setChecked(bool(settings.value("desktop/programming/design", defaults["design"], type=bool)))
+            self.chk_prog_high_precision.setChecked(bool(settings.value("desktop/programming/high_precision", defaults["high_precision"], type=bool)))
+            self.chk_prog_protect.setChecked(bool(settings.value("desktop/programming/protect", defaults["protect"], type=bool)))
+            self.chk_prog_fullpath.setChecked(bool(settings.value("desktop/programming/fullpath", defaults["fullpath"], type=bool)))
+            action = (settings.value("desktop/programming/error_action", defaults["error_action"], type=str) or defaults["error_action"]).strip()
+            idx = self.cb_prog_error_action.findText(action, Qt.MatchExactly)
+            self.cb_prog_error_action.setCurrentIndex(idx if idx >= 0 else self.cb_prog_error_action.findText(defaults["error_action"], Qt.MatchExactly))
+            self.ed_prog_error_log.setText((settings.value("desktop/programming/error_log_file", defaults["error_log_file"], type=str) or defaults["error_log_file"]).strip())
+            self.sp_prog_max_size.setValue(int(settings.value("desktop/programming/max_size_kb", defaults["max_size_kb"], type=int)))
+            self.ed_prog_html_template.setText((settings.value("desktop/programming/html_template", defaults["html_template"], type=str) or defaults["html_template"]).strip())
+
+        def _save_programming_properties(self):
+            settings = self._desktop_settings()
+            if settings is None:
+                return
+            settings.setValue("desktop/programming/decimals", int(self.sp_prog_decimals.value()))
+            settings.setValue("desktop/programming/precision", int(self.sp_prog_precision.value()))
+            settings.setValue("desktop/programming/margin", int(self.sp_prog_margin.value()))
+            settings.setValue("desktop/programming/blank", bool(self.chk_prog_blank.isChecked()))
+            settings.setValue("desktop/programming/trace", bool(self.chk_prog_trace.isChecked()))
+            settings.setValue("desktop/programming/fieldnames", bool(self.chk_prog_fieldnames.isChecked()))
+            settings.setValue("desktop/programming/fulltest", bool(self.chk_prog_fulltest.isChecked()))
+            settings.setValue("desktop/programming/buildtime", bool(self.chk_prog_buildtime.isChecked()))
+            settings.setValue("desktop/programming/design", bool(self.chk_prog_design.isChecked()))
+            settings.setValue("desktop/programming/high_precision", bool(self.chk_prog_high_precision.isChecked()))
+            settings.setValue("desktop/programming/protect", bool(self.chk_prog_protect.isChecked()))
+            settings.setValue("desktop/programming/fullpath", bool(self.chk_prog_fullpath.isChecked()))
+            settings.setValue("desktop/programming/error_action", self.cb_prog_error_action.currentText().strip())
+            settings.setValue("desktop/programming/error_log_file", (self.ed_prog_error_log.text() or "").strip())
+            settings.setValue("desktop/programming/max_size_kb", int(self.sp_prog_max_size.value()))
+            settings.setValue("desktop/programming/html_template", (self.ed_prog_html_template.text() or "").strip())
+
+        def _apply_desktop_properties(self):
+            self._save_desktop_properties()
+            self._update_country_number_preview()
+            self._update_country_date_preview()
+            self._update_country_currency_preview()
+            self._toggle_data_entry_beep_controls(self.chk_beep.isChecked())
+            self._toggle_files_log_controls(self.chk_enable_log.isChecked())
+            host = self._host_window
+            if host is not None:
+                host.statusBar().showMessage("Desktop-Einstellungen übernommen")
+
+        def _build_tab_aliase(self) -> QWidget:
+            tab = QWidget()
+            lay = QVBoxLayout(tab)
+            lay.setContentsMargins(0, 0, 0, 0)
+            self.source_aliases_tab = SourceAliasesTab(tab)
+            lay.addWidget(self.source_aliases_tab)
+            return tab
+
+        def _build_tab_usrbde(self) -> QWidget:
+            tab = QWidget()
+            lay = QVBoxLayout(tab)
+            lay.setContentsMargins(0, 0, 0, 0)
+            self.user_bde_aliases_tab = UserBdeAliasesTab(tab)
+            lay.addWidget(self.user_bde_aliases_tab)
+            return tab
+
+        def _build_tab_country(self) -> QWidget:
+            tab = QWidget()
+            g = QGridLayout(tab)
+            g.setContentsMargins(12, 12, 12, 12)
+            g.setHorizontalSpacing(18)
+            g.setVerticalSpacing(12)
+
+            gb_num = QGroupBox(tr("Zahlenwerte"), tab)
+            num = QGridLayout(gb_num)
+            num.setHorizontalSpacing(10); num.setVerticalSpacing(8)
+            num.addWidget(QLabel(tr("Trennzeichen:")), 0, 0)
+            self.ed_thousand = QLineEdit("."); self.ed_thousand.setFixedWidth(34); self.ed_thousand.setMaxLength(1)
+            num.addWidget(self.ed_thousand, 0, 1, alignment=Qt.AlignLeft)
+            num.addWidget(QLabel(tr("Dezimalzeichen:")), 1, 0)
+            self.ed_decimal = QLineEdit(","); self.ed_decimal.setFixedWidth(34); self.ed_decimal.setMaxLength(1)
+            num.addWidget(self.ed_decimal, 1, 1, alignment=Qt.AlignLeft)
+            num.addWidget(QLabel(tr("Muster:")), 2, 0)
+            self.lbl_num_pattern = QLabel("1.000.000,00")
+            num.addWidget(self.lbl_num_pattern, 2, 1, 1, 2)
+
+            gb_cur = QGroupBox(tr("Währungssymbol"), tab)
+            cur = QGridLayout(gb_cur); cur.setHorizontalSpacing(10); cur.setVerticalSpacing(8)
+            cur.addWidget(QLabel(tr("Position:")), 0, 0)
+            self.rb_left = QRadioButton(tr("Links")); self.rb_right = QRadioButton(tr("Rechts")); self.rb_right.setChecked(True)
+            cur.addWidget(self.rb_left, 0, 1); cur.addWidget(self.rb_right, 1, 1)
+            cur.addWidget(QLabel(tr("Format:")), 2, 0)
+            self.chk_currency_format = QCheckBox("lang"); self.chk_currency_format.setChecked(False)
+            cur.addWidget(self.chk_currency_format, 2, 1, alignment=Qt.AlignLeft)
+            cur.addWidget(QLabel(tr("Symbol:")), 3, 0)
+            self.cb_currency = QComboBox(); self.cb_currency.setEditable(True); self.cb_currency.setInsertPolicy(QComboBox.NoInsert); self.cb_currency.setMinimumWidth(170)
+            self.cb_currency.setFont(QFont("Consolas", 10))
+            if self.cb_currency.lineEdit() is not None:
+                self.cb_currency.lineEdit().setFont(QFont("Consolas", 10))
+            for code, symbol in self._currency_choices():
+                self.cb_currency.addItem(f"{code}  {symbol}")
+                self.cb_currency.setItemData(self.cb_currency.count() - 1, QFont("Consolas", 10), Qt.FontRole)
+            self._set_currency_combo_from_symbol("€")
+            cur.addWidget(self.cb_currency, 3, 1, alignment=Qt.AlignLeft)
+            cur.addWidget(QLabel(tr("Muster:")), 4, 0)
+            self.lbl_currency_pattern = QLabel("129,99 EUR")
+            cur.addWidget(self.lbl_currency_pattern, 4, 1, 1, 2)
+
+            gb_date = QGroupBox(tr("Datum"), tab)
+            date = QGridLayout(gb_date); date.setHorizontalSpacing(10); date.setVerticalSpacing(8)
+            date.addWidget(QLabel(tr("Datumsformat:")), 0, 0)
+            self.cb_datefmt = QComboBox(); self.cb_datefmt.addItems(["DMY", "MDY", "YMD", "ISO"]); self.cb_datefmt.setCurrentText("DMY"); self.cb_datefmt.setFixedWidth(120)
+            date.addWidget(self.cb_datefmt, 0, 1, alignment=Qt.AlignLeft)
+            date.addWidget(QLabel(tr("Datumszeichen:")), 1, 0)
+            self.ed_datesep = QLineEdit("."); self.ed_datesep.setFixedWidth(34); self.ed_datesep.setMaxLength(1)
+            date.addWidget(self.ed_datesep, 1, 1, alignment=Qt.AlignLeft)
+            self.chk_century = QCheckBox(tr("Jahrhundert")); self.chk_century.setChecked(True)
+            date.addWidget(self.chk_century, 2, 0, 1, 2)
+            date.addWidget(QLabel(tr("Muster:")), 3, 0)
+            self.lbl_date_pattern = QLabel("12.04.2026")
+            date.addWidget(self.lbl_date_pattern, 3, 1, 1, 2)
+
+            gb_ui = QGroupBox(tr("Umgebungssprache"), tab)
+            ui = QGridLayout(gb_ui)
+            self.cb_lang = QComboBox(); self.cb_lang.addItems(["DE - Deutsch", "EN - English", "FR - Français"]); self.cb_lang.setCurrentText("DE - Deutsch"); self.cb_lang.setFixedWidth(160)
+            ui.addWidget(self.cb_lang, 0, 0)
+            gb_drv = QGroupBox(tr("Sprachtreiber"), tab)
+            drv = QGridLayout(gb_drv)
+            self.chk_mismatch = QCheckBox(tr("Warnung bei Konflikten")); drv.addWidget(self.chk_mismatch, 0, 0)
+
+            self.ed_thousand.textChanged.connect(lambda _=None: self._normalize_separator_edit("thousand"))
+            self.ed_decimal.textChanged.connect(lambda _=None: self._normalize_separator_edit("decimal"))
+            self.ed_thousand.editingFinished.connect(lambda: self._normalize_separator_edit("thousand"))
+            self.ed_decimal.editingFinished.connect(lambda: self._normalize_separator_edit("decimal"))
+            self.cb_currency.currentTextChanged.connect(lambda _=None: self._sync_country_currency_from_combo())
+            self.chk_currency_format.toggled.connect(lambda _=None: self._update_country_currency_preview())
+            self.rb_left.toggled.connect(lambda _=None: self._update_country_currency_preview())
+            self.rb_right.toggled.connect(lambda _=None: self._update_country_currency_preview())
+            self.cb_datefmt.currentTextChanged.connect(lambda _=None: self._update_country_date_preview())
+            self.ed_datesep.textChanged.connect(lambda _=None: self._normalize_date_separator_edit())
+            self.ed_datesep.editingFinished.connect(self._normalize_date_separator_edit)
+            self.chk_century.toggled.connect(lambda _=None: self._update_country_date_preview())
+
+            g.addWidget(gb_num, 0, 0); g.addWidget(gb_date, 0, 1); g.addWidget(gb_cur, 1, 0); g.addWidget(gb_ui, 1, 1); g.addWidget(gb_drv, 2, 1)
+            g.setRowStretch(3, 1)
+            return tab
+
+        def _build_tab_table(self) -> QWidget:
+            tab = QWidget(); g = QGridLayout(tab)
+            g.setContentsMargins(12, 12, 12, 12); g.setHorizontalSpacing(18); g.setVerticalSpacing(12)
+            gb_multi = QGroupBox(tr("Mehrplatz"), tab); l_multi = QGridLayout(gb_multi); l_multi.setHorizontalSpacing(10); l_multi.setVerticalSpacing(8)
+            self.chk_lock = QCheckBox(tr("Lock")); self.chk_exclusive = QCheckBox(tr("Exklusiv")); self.chk_lock.setChecked(True)
+            l_multi.addWidget(self.chk_lock, 0, 0, 1, 2); l_multi.addWidget(self.chk_exclusive, 1, 0, 1, 2)
+            l_multi.addWidget(QLabel(tr("Refresh:")), 2, 0); self.spin_refresh = QSpinBox(); self.spin_refresh.setRange(0, 9999); self.spin_refresh.setFixedWidth(70); l_multi.addWidget(self.spin_refresh, 2, 1, alignment=Qt.AlignLeft)
+            l_multi.addWidget(QLabel(tr("Replay:")), 3, 0); self.spin_retry = QSpinBox(); self.spin_retry.setRange(0, 9999); self.spin_retry.setFixedWidth(70); l_multi.addWidget(self.spin_retry, 3, 1, alignment=Qt.AlignLeft)
+
+            gb_default = QGroupBox(tr("Standardtabellentyp"), tab); l_def = QVBoxLayout(gb_default)
+            self.rb_dbase = QRadioButton("dBASE"); self.rb_paradox = QRadioButton("Paradox"); self.rb_sqlite3 = QRadioButton("SQLite 3"); self.rb_mysql = QRadioButton("MySQL"); self.rb_dbase.setChecked(True)
+            for w in (self.rb_dbase, self.rb_paradox, self.rb_sqlite3, self.rb_mysql): l_def.addWidget(w)
+            gb_system = QGroupBox(tr("Systemtabellen"), tab); l_sys = QVBoxLayout(gb_system); self.chk_system_show = QCheckBox(tr("Anzeigen")); l_sys.addWidget(self.chk_system_show)
+            gb_blocks = QGroupBox(tr("Blockgrößen"), tab); l_blocks = QGridLayout(gb_blocks); l_blocks.setHorizontalSpacing(10); l_blocks.setVerticalSpacing(8)
+            l_blocks.addWidget(QLabel(tr("Indexblock:")), 0, 0); self.spin_indexblock = QSpinBox(); self.spin_indexblock.setRange(1, 9999); self.spin_indexblock.setFixedWidth(80); self.spin_indexblock.setValue(1); l_blocks.addWidget(self.spin_indexblock, 0, 1, alignment=Qt.AlignLeft)
+            l_blocks.addWidget(QLabel(tr("Memoblock:")), 1, 0); self.spin_memoblock = QSpinBox(); self.spin_memoblock.setRange(1, 9999); self.spin_memoblock.setFixedWidth(80); self.spin_memoblock.setValue(8); l_blocks.addWidget(self.spin_memoblock, 1, 1, alignment=Qt.AlignLeft)
+
+            gb_other = QGroupBox(tr("Andere"), tab); l_other = QGridLayout(gb_other); l_other.setHorizontalSpacing(10); l_other.setVerticalSpacing(6)
+            self.chk_autosave = QCheckBox(tr("Automatische Speicherung")); self.chk_deleted = QCheckBox(tr("Löschmarken")); self.chk_encrypt = QCheckBox(tr("Verschlüsselung")); self.chk_ident = QCheckBox(tr("Identisch")); self.chk_approx = QCheckBox(tr("Annähernd")); self.chk_autonull = QCheckBox(tr("AutoNullFields"))
+            self.chk_deleted.setChecked(True); self.chk_encrypt.setChecked(True); self.chk_autonull.setChecked(True)
+            l_other.addWidget(self.chk_autosave, 0, 0, 1, 2); l_other.addWidget(self.chk_deleted, 1, 0, 1, 2); l_other.addWidget(self.chk_encrypt, 2, 0, 1, 2); l_other.addWidget(self.chk_ident, 3, 0); l_other.addWidget(self.chk_approx, 4, 0); l_other.addWidget(self.chk_autonull, 3, 1)
+            self.btn_components = QPushButton(tr("Komponententypen zuordnen...")); self.btn_components.setFixedWidth(220); l_other.addWidget(self.btn_components, 5, 0, 1, 2, alignment=Qt.AlignLeft)
+            g.addWidget(gb_multi, 0, 0); g.addWidget(gb_blocks, 0, 1); g.addWidget(gb_default, 1, 0); g.addWidget(gb_other, 1, 1); g.addWidget(gb_system, 2, 0); g.setRowStretch(3, 1); g.setColumnStretch(2, 1)
+            return tab
+
+        def _build_tab_data(self) -> QWidget:
+            tab = QWidget(); g = QGridLayout(tab); g.setContentsMargins(12, 12, 12, 12); g.setHorizontalSpacing(18); g.setVerticalSpacing(12)
+            gb_kbd = QGroupBox(tr("Tastatur"), tab); kbd = QGridLayout(gb_kbd); kbd.setHorizontalSpacing(10); kbd.setVerticalSpacing(8)
+            self.chk_confirm = QCheckBox(tr("Bestätigung")); self.chk_cua = QCheckBox(tr("CUA-Eingabe")); self.chk_esc = QCheckBox(tr("Escape"))
+            for w in (self.chk_confirm, self.chk_cua, self.chk_esc): w.setChecked(True)
+            kbd.addWidget(self.chk_confirm, 0, 0, 1, 2); kbd.addWidget(self.chk_cua, 1, 0, 1, 2); kbd.addWidget(self.chk_esc, 2, 0, 1, 2)
+            kbd.addWidget(QLabel(tr("Tastaturpuffer:")), 3, 0); self.sp_buf = QSpinBox(); self.sp_buf.setRange(0, 9999); self.sp_buf.setValue(49); self.sp_buf.setFixedWidth(90); kbd.addWidget(self.sp_buf, 3, 1, alignment=Qt.AlignLeft)
+            gb_other = QGroupBox(tr("Andere"), tab); other = QGridLayout(gb_other); other.addWidget(QLabel(tr("Epoche:")), 0, 0); self.sp_epoch = QSpinBox(); self.sp_epoch.setRange(0, 9999); self.sp_epoch.setValue(1950); self.sp_epoch.setFixedWidth(90); other.addWidget(self.sp_epoch, 0, 1, alignment=Qt.AlignLeft)
+            gb_beep = QGroupBox(tr("Signalton"), tab); beep = QGridLayout(gb_beep); beep.setHorizontalSpacing(10); beep.setVerticalSpacing(8)
+            self.chk_beep = QCheckBox(tr("Einschalten")); self.chk_beep.setChecked(True); beep.addWidget(self.chk_beep, 0, 0, 1, 2)
+            beep.addWidget(QLabel(tr("Frequenz:")), 1, 0); self.sp_freq = QSpinBox(); self.sp_freq.setRange(0, 20000); self.sp_freq.setValue(512); self.sp_freq.setFixedWidth(90); beep.addWidget(self.sp_freq, 1, 1, alignment=Qt.AlignLeft)
+            beep.addWidget(QLabel(tr("Dauer:")), 2, 0); self.sp_dur = QSpinBox(); self.sp_dur.setRange(0, 10000); self.sp_dur.setValue(50); self.sp_dur.setFixedWidth(90); beep.addWidget(self.sp_dur, 2, 1, alignment=Qt.AlignLeft)
+            self.btn_test_beep = QPushButton(tr("Prüfen")); self.btn_test_beep.setFixedWidth(95); beep.addWidget(self.btn_test_beep, 3, 0, 1, 2, alignment=Qt.AlignLeft)
+            self.chk_beep.toggled.connect(self._toggle_data_entry_beep_controls); self.btn_test_beep.clicked.connect(lambda: QApplication.beep()); self._toggle_data_entry_beep_controls(True)
+            g.addWidget(gb_kbd, 0, 0); g.addWidget(gb_beep, 0, 1, 2, 1); g.addWidget(gb_other, 1, 0); g.setRowStretch(2, 1)
+            return tab
+
+        def _build_tab_files(self) -> QWidget:
+            tab = QWidget(); g = QGridLayout(tab); g.setContentsMargins(12, 12, 12, 12); g.setHorizontalSpacing(18); g.setVerticalSpacing(12)
+            gb_path = QGroupBox("Pfad", tab); path = QGridLayout(gb_path); path.setHorizontalSpacing(10); path.setVerticalSpacing(8)
+            path.addWidget(QLabel(tr("Aktuelles Verzeichnis:")), 0, 0, 1, 2); self.ed_files_current_dir = QLineEdit(""); self.ed_files_current_dir.setMinimumWidth(240); self.btn_files_current_dir = QPushButton("..."); self.btn_files_current_dir.setFixedWidth(30); path.addWidget(self.ed_files_current_dir, 1, 0); path.addWidget(self.btn_files_current_dir, 1, 1, alignment=Qt.AlignLeft)
+            path.addWidget(QLabel(tr("Suchpfad:")), 2, 0, 1, 2); self.ed_files_search_path = QLineEdit(""); self.btn_files_search_path = QPushButton("..."); self.btn_files_search_path.setFixedWidth(30); path.addWidget(self.ed_files_search_path, 3, 0); path.addWidget(self.btn_files_search_path, 3, 1, alignment=Qt.AlignLeft)
+            gb_log = QGroupBox(tr("Ausgabeprotokoll"), tab); log = QGridLayout(gb_log); log.setHorizontalSpacing(10); log.setVerticalSpacing(8)
+            self.chk_enable_log = QCheckBox(tr("Protokoll anlegen")); log.addWidget(self.chk_enable_log, 0, 0, 1, 2); log.addWidget(QLabel(tr("Name der Protokolldatei:")), 1, 0, 1, 2); self.ed_logfile = QLineEdit(""); self.btn_logfile = QPushButton("..."); self.btn_logfile.setFixedWidth(30); log.addWidget(self.ed_logfile, 2, 0); log.addWidget(self.btn_logfile, 2, 1, alignment=Qt.AlignLeft)
+            self.rb_log_overwrite = QRadioButton(tr("Überschreiben")); self.rb_log_append = QRadioButton(tr("Anhängen")); self.rb_log_overwrite.setChecked(True); log.addWidget(self.rb_log_overwrite, 3, 0, 1, 2); log.addWidget(self.rb_log_append, 4, 0, 1, 2)
+            gb_editor = QGroupBox(tr("Editor"), tab); ed = QGridLayout(gb_editor); ed.addWidget(QLabel(tr("Externer Quelltext-Editor:")), 0, 0, 1, 2); self.ed_external_editor = QLineEdit(""); self.btn_external_editor = QPushButton("..."); self.btn_external_editor.setFixedWidth(30); ed.addWidget(self.ed_external_editor, 1, 0); ed.addWidget(self.btn_external_editor, 1, 1, alignment=Qt.AlignLeft)
+            gb_other = QGroupBox(tr("Andere"), tab); other = QVBoxLayout(gb_other); self.chk_backup = QCheckBox(tr("Sicherungsdateien")); self.chk_sessions = QCheckBox(tr("Arbeitssitzungen")); other.addWidget(self.chk_backup); other.addWidget(self.chk_sessions)
+            self.chk_enable_log.toggled.connect(self._toggle_files_log_controls); self.btn_logfile.clicked.connect(self._browse_log_file); self.btn_files_current_dir.clicked.connect(self._browse_files_current_dir); self.btn_files_search_path.clicked.connect(self._browse_files_search_path); self.btn_external_editor.clicked.connect(self._browse_external_editor); self._toggle_files_log_controls(False)
+            g.addWidget(gb_path, 0, 0); g.addWidget(gb_editor, 0, 1); g.addWidget(gb_log, 1, 0); g.addWidget(gb_other, 1, 1); g.setRowStretch(2, 1)
+            return tab
+
+        def _build_tab_app(self) -> QWidget:
+            tab = QWidget(); g = QGridLayout(tab); g.setContentsMargins(12, 12, 12, 12); g.setHorizontalSpacing(18); g.setVerticalSpacing(12)
+            gb_exp = QGroupBox(tr("Experten anzeigen"), tab); exp = QVBoxLayout(gb_exp)
+            self.chk_app_form = QCheckBox(tr("Formular")); self.chk_app_report = QCheckBox(tr("Report")); self.chk_app_labels = QCheckBox(tr("Etiketten")); self.chk_app_datamodule = QCheckBox(tr("Datenmodul")); self.chk_app_table = QCheckBox(tr("Tabelle"))
+            for c in (self.chk_app_form, self.chk_app_report, self.chk_app_labels, self.chk_app_datamodule, self.chk_app_table): c.setChecked(True); exp.addWidget(c)
+            gb_file = QGroupBox(tr("Dateimenü"), tab); fm = QGridLayout(gb_file); fm.addWidget(QLabel(tr("Anzahl Dateien:")), 0, 0); self.sp_app_files = QSpinBox(); self.sp_app_files.setRange(0, 99); self.sp_app_files.setValue(5); self.sp_app_files.setFixedWidth(80); fm.addWidget(self.sp_app_files, 0, 1, alignment=Qt.AlignLeft); fm.addWidget(QLabel(tr("Anzahl Projekte:")), 1, 0); self.sp_app_projects = QSpinBox(); self.sp_app_projects.setRange(0, 99); self.sp_app_projects.setValue(5); self.sp_app_projects.setFixedWidth(80); fm.addWidget(self.sp_app_projects, 1, 1, alignment=Qt.AlignLeft)
+            gb_db = QGroupBox(tr("Datenbank"), tab); db = QVBoxLayout(gb_db); self.chk_app_save_logins = QCheckBox(tr("Anmeldungen sichern")); self.chk_app_sql_trace = QCheckBox(tr("SQL-Ablaufverfolgung")); self.chk_app_save_logins.setChecked(True); db.addWidget(self.chk_app_save_logins); db.addWidget(self.chk_app_sql_trace)
+            gb_win = QGroupBox(tr("Fenster"), tab); win = QVBoxLayout(gb_win); self.chk_app_fit = QCheckBox(tr("Fenstergröße an Inhalt anpassen")); self.chk_app_anim = QCheckBox(tr("Animationen endlos abspielen")); self.chk_app_ole = QCheckBox(tr("Objekte als OLE 2.0 speichern")); self.chk_app_fit.setChecked(True); self.chk_app_anim.setChecked(True); self.chk_app_ole.setChecked(True); win.addWidget(self.chk_app_fit); win.addWidget(self.chk_app_anim); win.addWidget(self.chk_app_ole)
+            gb_other = QGroupBox(tr("Andere"), tab); other = QVBoxLayout(gb_other); self.chk_app_splash = QCheckBox(tr("Startbildschirm")); self.chk_app_splash.setChecked(True); other.addWidget(self.chk_app_splash)
+            g.addWidget(gb_exp, 0, 0); g.addWidget(gb_db, 0, 1); g.addWidget(gb_file, 1, 0); g.addWidget(gb_win, 1, 1); g.addWidget(gb_other, 2, 1); g.setRowStretch(3, 1)
+            return tab
+
+        def _build_tab_prog(self) -> QWidget:
+            tab = QWidget(); g = QGridLayout(tab); g.setContentsMargins(12, 12, 12, 12); g.setHorizontalSpacing(18); g.setVerticalSpacing(12)
+            gb_out = QGroupBox(tr("Befehlsausgabe"), tab); out = QGridLayout(gb_out)
+            out.addWidget(QLabel(tr("Dezimalstellen:")), 0, 0); self.sp_prog_decimals = QSpinBox(); self.sp_prog_decimals.setRange(0, 20); self.sp_prog_decimals.setValue(2); self.sp_prog_decimals.setFixedWidth(80); out.addWidget(self.sp_prog_decimals, 0, 1, alignment=Qt.AlignLeft)
+            out.addWidget(QLabel(tr("Genauigkeit:")), 1, 0); self.sp_prog_precision = QSpinBox(); self.sp_prog_precision.setRange(0, 20); self.sp_prog_precision.setValue(10); self.sp_prog_precision.setFixedWidth(80); out.addWidget(self.sp_prog_precision, 1, 1, alignment=Qt.AlignLeft)
+            out.addWidget(QLabel(tr("Rand:")), 2, 0); self.sp_prog_margin = QSpinBox(); self.sp_prog_margin.setRange(0, 999); self.sp_prog_margin.setValue(0); self.sp_prog_margin.setFixedWidth(80); out.addWidget(self.sp_prog_margin, 2, 1, alignment=Qt.AlignLeft)
+            self.chk_prog_blank = QCheckBox(tr("Leerzeichen")); self.chk_prog_trace = QCheckBox(tr("Ablaufverfolgung")); self.chk_prog_fieldnames = QCheckBox(tr("Feldnamen")); self.chk_prog_blank.setChecked(True); self.chk_prog_fieldnames.setChecked(True); out.addWidget(self.chk_prog_blank, 3, 0, 1, 2); out.addWidget(self.chk_prog_trace, 4, 0, 1, 2); out.addWidget(self.chk_prog_fieldnames, 5, 0, 1, 2)
+            gb_dev = QGroupBox(tr("Programmentwicklung"), tab); dev = QGridLayout(gb_dev); self.chk_prog_fulltest = QCheckBox(tr("Volltest")); self.chk_prog_buildtime = QCheckBox(tr("Erstellungszeit")); self.chk_prog_buildtime.setChecked(True); dev.addWidget(self.chk_prog_fulltest, 0, 0, 1, 2); dev.addWidget(self.chk_prog_buildtime, 1, 0, 1, 2)
+            gb_other = QGroupBox(tr("Andere"), tab); other = QGridLayout(gb_other); self.chk_prog_design = QCheckBox(tr("Design")); self.chk_prog_high_precision = QCheckBox(tr("High Precision")); self.chk_prog_protect = QCheckBox(tr("Änderungsschutz")); self.chk_prog_fullpath = QCheckBox(tr("Vollständige Pfadangabe")); self.chk_prog_design.setChecked(True); self.chk_prog_protect.setChecked(True); other.addWidget(self.chk_prog_design, 0, 0); other.addWidget(self.chk_prog_high_precision, 0, 1); other.addWidget(self.chk_prog_protect, 1, 0, 1, 2); other.addWidget(self.chk_prog_fullpath, 2, 0, 1, 2)
+            gb_err = QGroupBox(tr("Error Handling"), tab); err = QGridLayout(gb_err); err.addWidget(QLabel(tr("Error Action:")), 0, 0); self.cb_prog_error_action = QComboBox(); self.cb_prog_error_action.addItems(["0 - Ignore", "1 - Message", "2 - Log", "3 - Abort", "4 - Show Error Dialog"]); self.cb_prog_error_action.setCurrentText("4 - Show Error Dialog"); self.cb_prog_error_action.setMinimumWidth(260); err.addWidget(self.cb_prog_error_action, 0, 1, 1, 2)
+            err.addWidget(QLabel(tr("Error Log File:")), 1, 0); self.ed_prog_error_log = QLineEdit("PLUSerr.log"); err.addWidget(self.ed_prog_error_log, 1, 1); self.btn_prog_error_log = QPushButton("..."); self.btn_prog_error_log.setFixedWidth(28); err.addWidget(self.btn_prog_error_log, 1, 2, alignment=Qt.AlignLeft)
+            err.addWidget(QLabel(tr("Maximum Size:")), 2, 0); self.sp_prog_max_size = QSpinBox(); self.sp_prog_max_size.setRange(0, 999999); self.sp_prog_max_size.setValue(100); self.sp_prog_max_size.setFixedWidth(90); err.addWidget(self.sp_prog_max_size, 2, 1, alignment=Qt.AlignLeft); err.addWidget(QLabel(tr("Kilobytes")), 2, 2, alignment=Qt.AlignLeft)
+            err.addWidget(QLabel(tr("HTML Error Template:")), 3, 0); self.ed_prog_html_template = QLineEdit("error.htm"); err.addWidget(self.ed_prog_html_template, 3, 1); self.btn_prog_html_template = QPushButton("..."); self.btn_prog_html_template.setFixedWidth(28); err.addWidget(self.btn_prog_html_template, 3, 2, alignment=Qt.AlignLeft)
+            self.btn_prog_error_log.clicked.connect(self._browse_programming_error_log); self.btn_prog_html_template.clicked.connect(self._browse_programming_html_template)
+            g.addWidget(gb_out, 0, 0); g.addWidget(gb_dev, 0, 1); g.addWidget(gb_other, 1, 1); g.addWidget(gb_err, 2, 0, 1, 2); g.setRowStretch(3, 1)
+            return tab
+
+        def _help(self):
+            QMessageBox.information(self, tr("Help"), "Hier könnte deine Hilfe stehen :)")
+
+
     class DockTitleBar(QWidget):
         """Dunkle Dock-Leiste mit weißen Mini-Symbolen und Zusatzaktion."""
 
@@ -18805,6 +21950,9 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             super().__init__(dock)
             self.dock = dock
             self._drag_offset = None
+            self._dark_mode = bool(
+                getattr(dock.window(), "dark_mode_enabled", False)
+            )
             self.setObjectName("custom_dock_title_bar")
 
             layout = QHBoxLayout(self)
@@ -18847,27 +21995,43 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             layout.addWidget(self.close_button)
 
             dock.windowTitleChanged.connect(self.title_label.setText)
+            self.set_dark_mode(self._dark_mode)
+
+        def set_dark_mode(self, enabled: bool) -> None:
+            """Dock-Symbole Weiß im Dark-, Schwarz im Light-Mode."""
+            self._dark_mode = bool(enabled)
+            foreground = "#ffffff" if self._dark_mode else "#000000"
+            background = "#343e4d" if self._dark_mode else "#e8e8e8"
+            hover = "#4b586a" if self._dark_mode else "#d5d5d5"
+            pressed = "#202630" if self._dark_mode else "#c4c4c4"
+            border = "#718198" if self._dark_mode else "#8a8a8a"
             self.setStyleSheet(
                 "QWidget#custom_dock_title_bar {"
-                "background-color:#343e4d; border:0; }"
+                f"background-color:{background}; border:0; }}"
                 "QLabel#custom_dock_title_label {"
-                "color:#ffffff; background:transparent; font-weight:bold; }"
-                "QToolButton { color:#ffffff; background:transparent;"
+                f"color:{foreground}; background:transparent; font-weight:bold; }}"
+                "QToolButton {"
+                f"color:{foreground}; background:transparent;"
                 "border:1px solid transparent; border-radius:2px; padding:2px; }"
-                "QToolButton:hover { background-color:#4b586a;"
-                "border-color:#718198; }"
-                "QToolButton:pressed { background-color:#202630; }"
+                "QToolButton:hover {"
+                f"background-color:{hover}; border-color:{border}; }}"
+                "QToolButton:pressed {"
+                f"background-color:{pressed}; }}"
                 "QToolButton#dock_title_extra_button {"
                 "padding-left:7px; padding-right:7px; }"
             )
+            if hasattr(self, "float_button"):
+                self.float_button.setIcon(self._symbol_icon("float"))
+            if hasattr(self, "close_button"):
+                self.close_button.setIcon(self._symbol_icon("close"))
 
-        @staticmethod
-        def _symbol_icon(symbol: str) -> QIcon:
+        def _symbol_icon(self, symbol: str) -> QIcon:
             pixmap = QPixmap(16, 16)
             pixmap.fill(Qt.transparent)
             painter = QPainter(pixmap)
             painter.setRenderHint(QPainter.Antialiasing, True)
-            pen = QPen(QColor("#ffffff"), 1.8, Qt.SolidLine, Qt.RoundCap)
+            icon_color = "#ffffff" if self._dark_mode else "#000000"
+            pen = QPen(QColor(icon_color), 1.8, Qt.SolidLine, Qt.RoundCap)
             painter.setPen(pen)
             painter.setBrush(Qt.NoBrush)
             if symbol == "close":
@@ -22206,6 +25370,18 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             ".px16", ".pixel", ".pix",
             ".pro",
         }
+        # Stage 84: MRU-Liste bewusst auf Quell-/Programmdateien begrenzen.
+        # Projekt-, Dokumentations- und reine Ressourcendateien landen nicht
+        # im Datei-Menue "Zuletzt verwendete Programme".
+        RECENT_PROGRAM_EXTENSIONS = {
+            ".asm", ".s", ".a65", ".m68k", ".inc",
+            ".pas", ".pp", ".c", ".h",
+            ".lisp", ".lsp", ".pl", ".prolog",
+            ".logo", ".lgo", ".dbase", ".dbp",
+            ".bas", ".basic", ".prg", ".bin",
+            ".amiga", ".adf", ".ram",
+        }
+        RECENT_PROGRAM_LIMIT = 10
         FILTERS = {
             "D64": {".d64"},
             "RAM": {".ram"},
@@ -22235,6 +25411,23 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             # LocalizeToolWindow historically used _settings.  Preserve that
             # name as an alias so its existing persistence works in the dock.
             self._settings = self.settings
+            self.recent_program_files = self._load_recent_program_files()
+            self.recent_program_menu = None
+            self.dbase_form_property_dock = None
+            self.dbase_form_designer_dock = None
+            self.dbase_form_scene = None
+            self.dbase_form_property_panel = None
+            self.dbase_form_view = None
+            self._dbase_form_workspace_active = False
+            self._dbase_form_workspace_state = {}
+            self.dbase_table_designer_dock = None
+            self.dbase_table_designer_widget = None
+            self._dbase_table_workspace_active = False
+            self._dbase_table_workspace_state = {}
+            self.settings_dock = None
+            self.settings_panel = None
+            self._settings_workspace_active = False
+            self._settings_workspace_state = {}
             self.current_filter = "ALLE"
             self.current_directory = Path.cwd().resolve()
             self.workspace_root = self.current_directory
@@ -22806,6 +25999,12 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             self.about_action = QAction("Über ...", self)
             self.about_action.triggered.connect(self.show_about_dialog)
 
+            self.settings_action = QAction("Desktop-Einstellungen ...", self)
+            self.settings_action.setObjectName("desktop_settings_action")
+            self.settings_action.setShortcut(QKeySequence("Ctrl+Alt+S"))
+            self.settings_action.setStatusTip("Desktop-, Tabellen-, Datei- und Alias-Einstellungen öffnen")
+            self.settings_action.triggered.connect(self.show_settings_dock)
+
             self.chm_viewer_action = QAction(
                 self._toolbar_symbol_icon("help"),
                 "CHM-Viewer ...",
@@ -23135,6 +26334,23 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     ),
                 }
 
+            # Stage 84: dBase bekommt unterhalb von "Programm" einen eigenen
+            # visuellen Formulardesigner.
+            self.compact_new_actions["dbase"]["form"] = (
+                self._make_compact_new_action(
+                    "Formular",
+                    self.show_dbase_form_designer,
+                    "dBase-Formulardesigner mit Eigenschaften und Komponentenpalette öffnen",
+                )
+            )
+            self.compact_new_actions["dbase"]["table"] = (
+                self._make_compact_new_action(
+                    "Tabelle",
+                    self.show_dbase_table_designer,
+                    "dBase-Tabellendesigner für lokale DBF-Dateien öffnen",
+                )
+            )
+
             # Die bisherigen Sprachaktionen werden nicht gelöscht.  Sie werden
             # als zielgebundene Proxy-Aktionen in die passenden neuen Untermenüs
             # verschoben.  Damit bleibt die alte Programmlogik erhalten, ohne
@@ -23204,6 +26420,10 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 submenu.addAction(actions["project"])
                 submenu.addAction(actions["application"])
                 submenu.addAction(actions["program"])
+                if profile_key == "dbase":
+                    submenu.addSeparator()
+                    submenu.addAction(actions["form"])
+                    submenu.addAction(actions["table"])
 
                 legacy_actions = self.compact_new_legacy_actions.get(
                     profile_key, ()
@@ -23535,6 +26755,592 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 f"Windows-Grafik-Runtime gebaut: {dll_path.name} ({backend})"
             )
 
+        # -------------------------------------------------------------------
+        # Stage 84: zehn zuletzt verwendete Programmdateien (MRU).
+        # -------------------------------------------------------------------
+        def _load_recent_program_files(self) -> List[str]:
+            raw = self.settings.value("files/recent_programs", [])
+            if raw is None:
+                values = []
+            elif isinstance(raw, str):
+                values = [raw]
+            else:
+                try:
+                    values = list(raw)
+                except TypeError:
+                    values = []
+
+            result = []
+            seen = set()
+            for value in values:
+                text = str(value or "").strip()
+                if not text:
+                    continue
+                try:
+                    normalized = str(Path(text).expanduser().resolve())
+                except OSError:
+                    normalized = str(Path(text).expanduser())
+                key = os.path.normcase(normalized)
+                if key in seen:
+                    continue
+                seen.add(key)
+                result.append(normalized)
+                if len(result) >= self.RECENT_PROGRAM_LIMIT:
+                    break
+            return result
+
+        def _is_recent_program_path(self, path: Path) -> bool:
+            try:
+                suffix = Path(path).suffix.casefold()
+            except (TypeError, ValueError):
+                return False
+            return suffix in self.RECENT_PROGRAM_EXTENSIONS
+
+        def _remember_recent_program_file(self, path: Path) -> None:
+            if not self._is_recent_program_path(path):
+                return
+            try:
+                normalized = str(Path(path).expanduser().resolve())
+            except OSError:
+                normalized = str(Path(path).expanduser())
+
+            wanted = os.path.normcase(normalized)
+            updated = [normalized]
+            for existing in self.recent_program_files:
+                if os.path.normcase(str(existing)) == wanted:
+                    continue
+                updated.append(str(existing))
+                if len(updated) >= self.RECENT_PROGRAM_LIMIT:
+                    break
+            self.recent_program_files = updated[: self.RECENT_PROGRAM_LIMIT]
+            self.settings.setValue("files/recent_programs", self.recent_program_files)
+            self._refresh_recent_program_menu()
+
+        def _remove_recent_program_file(self, path: Path) -> None:
+            wanted = os.path.normcase(str(Path(path).expanduser()))
+            self.recent_program_files = [
+                value
+                for value in self.recent_program_files
+                if os.path.normcase(str(Path(value).expanduser())) != wanted
+            ][: self.RECENT_PROGRAM_LIMIT]
+            self.settings.setValue("files/recent_programs", self.recent_program_files)
+            self._refresh_recent_program_menu()
+
+        def _refresh_recent_program_menu(self) -> None:
+            menu = getattr(self, "recent_program_menu", None)
+            if menu is None:
+                return
+            menu.clear()
+            if not self.recent_program_files:
+                empty = menu.addAction("(noch keine Programmdateien)")
+                empty.setEnabled(False)
+                return
+
+            for index, value in enumerate(
+                self.recent_program_files[: self.RECENT_PROGRAM_LIMIT],
+                start=1,
+            ):
+                path = Path(value)
+                accelerator = f"&{index}" if index < 10 else "1&0"
+                action = QAction(
+                    f"{accelerator}  {path.name} — {path.parent}",
+                    menu,
+                )
+                action.setToolTip(str(path))
+                action.setStatusTip(f"Programmdatei erneut öffnen: {path}")
+                action.triggered.connect(
+                    lambda _checked=False, filename=str(path): self._open_recent_program(
+                        Path(filename)
+                    )
+                )
+                menu.addAction(action)
+
+        def _open_recent_program(self, path: Path) -> None:
+            path = Path(path).expanduser()
+            if not path.is_file():
+                self._remove_recent_program_file(path)
+                self.show_error(
+                    "Zuletzt verwendete Datei nicht gefunden",
+                    f"Die Datei existiert nicht mehr:\n{path}",
+                )
+                return
+            if self.open_document(path):
+                self.set_current_directory(path.parent)
+                self._register_opened_file_in_project(path)
+                self.statusBar().showMessage(f"Zuletzt verwendet geöffnet: {path.name}")
+
+        # -------------------------------------------------------------------
+        # Stage 84: dBase-Formulardesigner als zwei QDockWidget-Bereiche.
+        # -------------------------------------------------------------------
+        def _ensure_dbase_form_designer(self) -> None:
+            if (
+                self.dbase_form_property_dock is not None
+                and self.dbase_form_designer_dock is not None
+            ):
+                return
+
+            scene = DBaseFormDesignerScene(self)
+            property_panel = DBaseFormPropertyPanel(scene, self)
+            property_panel.set_dark_mode(self.dark_mode_enabled)
+            view = DBaseFormDesignerView(scene, self)
+
+            # Stage-84 regression markers: DBaseFormButtonItem("Button 1") / DBaseFormButtonItem("Button 2")
+            # Die beiden Stage-84-Startbuttons bleiben erhalten, laufen aber
+            # ab Stage 90 über denselben echten QWidget/Proxy-Pfad wie alle
+            # Komponenten aus der Palette.
+            button1 = scene.create_control(
+                "Button", QPointF(80.0, 80.0), component_name="Button1", caption="Button 1"
+            )
+            button2 = scene.create_control(
+                "Button", QPointF(260.0, 160.0), component_name="Button2", caption="Button 2"
+            )
+            scene.clearSelection()
+            if button1 is not None:
+                button1.setSelected(True)
+                button1.setFocus(Qt.OtherFocusReason)
+
+            property_dock = QDockWidget("dBase Formular - Eigenschaften", self)
+            property_dock.setObjectName("dbase_form_property_dock")
+            property_dock.setFeatures(self._dock_features())
+            property_dock.setAllowedAreas(
+                Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea
+            )
+            property_dock.setMinimumWidth(280)
+            property_dock.setWidget(property_panel)
+
+            designer_dock = QDockWidget("dBase Formular - Designer", self)
+            designer_dock.setObjectName("dbase_form_designer_dock")
+            designer_dock.setFeatures(self._dock_features())
+            designer_dock.setAllowedAreas(
+                Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea
+            )
+            designer_dock.setMinimumWidth(400)
+            designer_dock.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            designer_dock.setWidget(view)
+
+            self.addDockWidget(Qt.LeftDockWidgetArea, property_dock)
+            self.addDockWidget(Qt.LeftDockWidgetArea, designer_dock)
+            self.splitDockWidget(property_dock, designer_dock, Qt.Horizontal)
+
+            property_dock.visibilityChanged.connect(
+                self._dbase_form_dock_visibility_changed
+            )
+            designer_dock.visibilityChanged.connect(
+                self._dbase_form_dock_visibility_changed
+            )
+
+            self.dbase_form_scene = scene
+            self.dbase_form_property_panel = property_panel
+            self.dbase_form_view = view
+            self.dbase_form_property_dock = property_dock
+            self.dbase_form_designer_dock = designer_dock
+            property_dock.hide()
+            designer_dock.hide()
+            self._assign_widget_property_ids(property_dock)
+            self._assign_widget_property_ids(designer_dock)
+
+        def _enter_dbase_form_workspace(self) -> None:
+            if self._dbase_form_workspace_active:
+                return
+            central = self.centralWidget()
+            normal_docks = {
+                "left": getattr(self, "left_dock", None),
+                "right": getattr(self, "right_dock", None),
+                "bottom": getattr(self, "bottom_dock", None),
+                "localize": getattr(self, "localize_dock", None),
+                "knowledge": getattr(self, "prolog_knowledge_dock", None),
+            }
+            state = {
+                "central": bool(central is not None and central.isVisible()),
+                "docks": {
+                    name: bool(dock is not None and dock.isVisible())
+                    for name, dock in normal_docks.items()
+                },
+            }
+            self._dbase_form_workspace_state = state
+            self._dbase_form_workspace_active = True
+
+            if central is not None:
+                central.hide()
+            for dock in normal_docks.values():
+                if dock is not None and dock.isVisible():
+                    dock.hide()
+            # Localize/Wissen besitzen eigene visibilityChanged-Handler, die
+            # beim Verbergen kurzzeitig den normalen Arbeitsbereich
+            # wiederherstellen können. Nach deren Ausführung wird der
+            # Formular-Arbeitsbereich daher nochmals verbindlich freigeräumt.
+            if central is not None:
+                central.hide()
+            for dock in normal_docks.values():
+                if dock is not None and dock.isVisible():
+                    dock.hide()
+
+        def _restore_dbase_form_workspace(self) -> None:
+            if not self._dbase_form_workspace_active:
+                return
+            state = dict(self._dbase_form_workspace_state or {})
+            self._dbase_form_workspace_active = False
+            self._dbase_form_workspace_state = {}
+
+            central = self.centralWidget()
+            if central is not None and bool(state.get("central", True)):
+                central.show()
+
+            dock_state = state.get("docks", {}) or {}
+            for name, attr in (
+                ("left", "left_dock"),
+                ("right", "right_dock"),
+                ("bottom", "bottom_dock"),
+                ("localize", "localize_dock"),
+                ("knowledge", "prolog_knowledge_dock"),
+            ):
+                dock = getattr(self, attr, None)
+                if dock is not None and bool(dock_state.get(name, False)):
+                    dock.show()
+
+        def _dbase_form_dock_visibility_changed(self, _visible: bool) -> None:
+            if not self._dbase_form_workspace_active:
+                return
+            property_dock = self.dbase_form_property_dock
+            designer_dock = self.dbase_form_designer_dock
+            if property_dock is None or designer_dock is None:
+                return
+            if not property_dock.isVisible() and not designer_dock.isVisible():
+                QTimer.singleShot(0, self._restore_dbase_form_workspace)
+
+        def show_dbase_form_designer(self) -> None:
+            self._ensure_dbase_form_designer()
+            self._enter_dbase_form_workspace()
+            self.dbase_form_property_dock.show()
+            self.dbase_form_designer_dock.show()
+            self.dbase_form_property_dock.raise_()
+            self.dbase_form_designer_dock.raise_()
+            self.resizeDocks(
+                [self.dbase_form_property_dock, self.dbase_form_designer_dock],
+                [330, 100000],
+                Qt.Horizontal,
+            )
+            self.resizeDocks(
+                [self.dbase_form_property_dock, self.dbase_form_designer_dock],
+                [100000, 100000],
+                Qt.Vertical,
+            )
+            self.statusBar().showMessage("dBase-Formulardesigner geöffnet")
+
+
+        # -------------------------------------------------------------------
+        # Stage 85/86: dBase-Tabellendesigner als eigener Tabellen-Workspace.
+        # -------------------------------------------------------------------
+        def _ensure_dbase_table_designer(self) -> None:
+            if self.dbase_table_designer_dock is not None:
+                return
+
+            designer = DBaseTableDesignerWidget(self)
+            designer.set_dark_mode(self.dark_mode_enabled)
+            dock = QDockWidget("dBase Tabelle - Designer", self)
+            dock.setObjectName("dbase_table_designer_dock")
+            dock.setFeatures(self._dock_features())
+            dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+            dock.setMinimumWidth(640)
+            dock.setMinimumHeight(320)
+            dock.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            dock.setWidget(designer)
+            dock.setTitleBarWidget(DockTitleBar(dock))
+
+            # Stage 86: der Designer gehört rechts neben das Dateisystem und
+            # ausdrücklich nicht in die Dock-Area von Projekt/Informationen.
+            self.addDockWidget(Qt.LeftDockWidgetArea, dock)
+            if getattr(self, "left_dock", None) is not None:
+                self.splitDockWidget(self.left_dock, dock, Qt.Horizontal)
+
+            self.dbase_table_designer_widget = designer
+            self.dbase_table_designer_dock = dock
+            self._assign_widget_property_ids(dock)
+            dock.visibilityChanged.connect(
+                self._dbase_table_dock_visibility_changed
+            )
+            dock.hide()
+
+        def _enter_dbase_table_workspace(self) -> None:
+            if self._dbase_table_workspace_active:
+                return
+
+            if self._dbase_form_workspace_active:
+                if self.dbase_form_property_dock is not None:
+                    self.dbase_form_property_dock.hide()
+                if self.dbase_form_designer_dock is not None:
+                    self.dbase_form_designer_dock.hide()
+                self._restore_dbase_form_workspace()
+
+            central = self.centralWidget()
+            managed_docks = {
+                "left": getattr(self, "left_dock", None),
+                "right": getattr(self, "right_dock", None),
+                "bottom": getattr(self, "bottom_dock", None),
+                "localize": getattr(self, "localize_dock", None),
+                "knowledge": getattr(self, "prolog_knowledge_dock", None),
+            }
+            self._dbase_table_workspace_state = {
+                "central": bool(central is not None and central.isVisible()),
+                "docks": {
+                    name: bool(dock is not None and dock.isVisible())
+                    for name, dock in managed_docks.items()
+                },
+            }
+            self._dbase_table_workspace_active = True
+
+            if central is not None:
+                central.hide()
+
+            # Stage 88: Projekt/Informationen (right_dock) und das Log-Dock
+            # (bottom_dock) bleiben beim Tabellen-Designer sichtbar. Nur
+            # konkurrierende Spezial-Workspaces werden temporär ausgeblendet.
+            for name in ("localize", "knowledge"):
+                dock = managed_docks.get(name)
+                if dock is not None and dock.isVisible():
+                    dock.hide()
+            left = managed_docks.get("left")
+            if left is not None:
+                left.show()
+                left.raise_()
+
+            # Localize/Wissen können beim Ausblenden ihren alten Workspace
+            # restaurieren; anschließend nochmals verbindlich freiräumen.
+            # Projekt/Informationen und Log bleiben ausdrücklich unberührt.
+            if central is not None:
+                central.hide()
+            for name in ("localize", "knowledge"):
+                dock = managed_docks.get(name)
+                if dock is not None and dock.isVisible():
+                    dock.hide()
+
+        def _restore_dbase_table_workspace(self) -> None:
+            if not self._dbase_table_workspace_active:
+                return
+            state = dict(self._dbase_table_workspace_state or {})
+            self._dbase_table_workspace_active = False
+            self._dbase_table_workspace_state = {}
+
+            central = self.centralWidget()
+            if central is not None and bool(state.get("central", True)):
+                central.show()
+
+            dock_state = state.get("docks", {}) or {}
+            for name, attr in (
+                ("left", "left_dock"),
+                ("right", "right_dock"),
+                ("bottom", "bottom_dock"),
+                ("localize", "localize_dock"),
+                ("knowledge", "prolog_knowledge_dock"),
+            ):
+                dock = getattr(self, attr, None)
+                if dock is None:
+                    continue
+                if bool(dock_state.get(name, False)):
+                    dock.show()
+                elif name == "left":
+                    dock.hide()
+
+        def _dbase_table_dock_visibility_changed(self, visible: bool) -> None:
+            if not self._dbase_table_workspace_active:
+                return
+            if not bool(visible):
+                QTimer.singleShot(0, self._restore_dbase_table_workspace)
+
+        def show_dbase_table_designer(self) -> None:
+            self._ensure_dbase_table_designer()
+            self._enter_dbase_table_workspace()
+
+            page = self.dbase_table_designer_widget.add_new_table()
+            self.dbase_table_designer_widget.set_dark_mode(
+                self.dark_mode_enabled
+            )
+            self.dbase_table_designer_dock.show()
+            self.dbase_table_designer_dock.raise_()
+
+            left = getattr(self, "left_dock", None)
+            if left is not None:
+                left.show()
+                self.resizeDocks(
+                    [left, self.dbase_table_designer_dock],
+                    [320, 100000],
+                    Qt.Horizontal,
+                )
+            self.resizeDocks(
+                [self.dbase_table_designer_dock],
+                [100000],
+                Qt.Vertical,
+            )
+            page.field_grid.setFocus(Qt.OtherFocusReason)
+            page.field_grid.setCurrentCell(0, 0)
+            self.statusBar().showMessage("dBase-Tabellendesigner geöffnet")
+
+        # -------------------------------------------------------------------
+        # Stage 87: Desktop-Settings als eigener Dock-Workspace.
+        # -------------------------------------------------------------------
+        def _ensure_settings_dock(self) -> None:
+            if self.settings_dock is not None:
+                return
+
+            panel = DesktopPropertiesDialog(self)
+            dock = QDockWidget("Desktop Properties", self)
+            dock.setObjectName("desktop_settings_dock")
+            dock.setFeatures(self._dock_features())
+            dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+            dock.setMinimumWidth(720)
+            dock.setMinimumHeight(500)
+            dock.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            dock.setWidget(panel)
+            dock.setTitleBarWidget(DockTitleBar(dock))
+
+            self.addDockWidget(Qt.LeftDockWidgetArea, dock)
+            if getattr(self, "left_dock", None) is not None:
+                self.splitDockWidget(self.left_dock, dock, Qt.Horizontal)
+
+            self.settings_panel = panel
+            self.settings_dock = dock
+            self._assign_widget_property_ids(dock)
+            dock.visibilityChanged.connect(self._settings_dock_visibility_changed)
+            dock.hide()
+
+        def _enter_settings_workspace(self) -> None:
+            if self._settings_workspace_active:
+                return
+
+            # Andere Vollflächen-Designer sauber verlassen, bevor die
+            # Settings den freien Bereich übernehmen.
+            if self._dbase_table_workspace_active:
+                if self.dbase_table_designer_dock is not None:
+                    self.dbase_table_designer_dock.hide()
+                self._restore_dbase_table_workspace()
+            if self._dbase_form_workspace_active:
+                if self.dbase_form_property_dock is not None:
+                    self.dbase_form_property_dock.hide()
+                if self.dbase_form_designer_dock is not None:
+                    self.dbase_form_designer_dock.hide()
+                self._restore_dbase_form_workspace()
+
+            central = self.centralWidget()
+            managed_docks = {
+                "left": getattr(self, "left_dock", None),
+                "right": getattr(self, "right_dock", None),
+                "bottom": getattr(self, "bottom_dock", None),
+                "localize": getattr(self, "localize_dock", None),
+                "knowledge": getattr(self, "prolog_knowledge_dock", None),
+                "table": getattr(self, "dbase_table_designer_dock", None),
+                "form_props": getattr(self, "dbase_form_property_dock", None),
+                "form_designer": getattr(self, "dbase_form_designer_dock", None),
+            }
+            self._settings_workspace_state = {
+                "central": bool(central is not None and central.isVisible()),
+                "docks": {
+                    name: bool(dock is not None and dock.isVisible())
+                    for name, dock in managed_docks.items()
+                },
+            }
+            self._settings_workspace_active = True
+
+            if central is not None:
+                central.hide()
+
+            # Stage 89: Projekt/Informationen und das Log-Dock bleiben bei
+            # geöffneten Desktop Properties sichtbar. Nur konkurrierende
+            # Spezial-Workspaces werden temporär ausgeblendet.
+            for name in ("localize", "knowledge", "table", "form_props", "form_designer"):
+                dock = managed_docks.get(name)
+                if dock is not None and dock.isVisible():
+                    dock.hide()
+
+            left = managed_docks.get("left")
+            if left is not None:
+                left.show()
+                left.raise_()
+
+            right = managed_docks.get("right")
+            if right is not None:
+                right.show()
+                right.raise_()
+
+            bottom = managed_docks.get("bottom")
+            if bottom is not None:
+                bottom.show()
+
+            # Sichtbarkeits-Callbacks anderer Docks können den alten Zustand
+            # restaurieren; deshalb nur die konkurrierenden Spezialbereiche
+            # noch einmal verbindlich ausblenden. Projekt/Informationen und
+            # Log bleiben ausdrücklich sichtbar.
+            if central is not None:
+                central.hide()
+            for name in ("localize", "knowledge", "table", "form_props", "form_designer"):
+                dock = managed_docks.get(name)
+                if dock is not None and dock.isVisible():
+                    dock.hide()
+
+        def _restore_settings_workspace(self) -> None:
+            if not self._settings_workspace_active:
+                return
+            state = dict(self._settings_workspace_state or {})
+            self._settings_workspace_active = False
+            self._settings_workspace_state = {}
+
+            central = self.centralWidget()
+            if central is not None and bool(state.get("central", True)):
+                central.show()
+
+            dock_state = state.get("docks", {}) or {}
+            for name, attr in (
+                ("left", "left_dock"),
+                ("right", "right_dock"),
+                ("bottom", "bottom_dock"),
+                ("localize", "localize_dock"),
+                ("knowledge", "prolog_knowledge_dock"),
+                ("table", "dbase_table_designer_dock"),
+                ("form_props", "dbase_form_property_dock"),
+                ("form_designer", "dbase_form_designer_dock"),
+            ):
+                dock = getattr(self, attr, None)
+                if dock is None:
+                    continue
+                if bool(dock_state.get(name, False)):
+                    dock.show()
+                elif name == "left":
+                    dock.hide()
+
+        def _settings_dock_visibility_changed(self, visible: bool) -> None:
+            if self._settings_workspace_active and not bool(visible):
+                QTimer.singleShot(0, self._restore_settings_workspace)
+
+        def show_settings_dock(self, _checked: bool = False) -> None:
+            self._ensure_settings_dock()
+            self._enter_settings_workspace()
+            self.settings_panel._load_desktop_properties()
+            self.settings_dock.show()
+            self.settings_dock.raise_()
+
+            left = getattr(self, "left_dock", None)
+            if left is not None:
+                left.show()
+                self.resizeDocks(
+                    [left, self.settings_dock],
+                    [320, 100000],
+                    Qt.Horizontal,
+                )
+
+            # Stage 89: Desktop Properties darf die beiden normalen
+            # Informations-Docks nicht verdrängen. Sie werden beim Öffnen
+            # explizit eingeblendet und behalten ihren Dock-Bereich.
+            right = getattr(self, "right_dock", None)
+            if right is not None:
+                right.show()
+                right.raise_()
+            bottom = getattr(self, "bottom_dock", None)
+            if bottom is not None:
+                bottom.show()
+
+            self.resizeDocks([self.settings_dock], [100000], Qt.Vertical)
+            self.settings_panel.tabs.setFocus(Qt.OtherFocusReason)
+            self.statusBar().showMessage("Desktop-Einstellungen geöffnet")
+
         def _create_menu(self) -> None:
             file_menu = self.main_menu_bar.addMenu("&Datei")
             self.new_document_menu = file_menu.addMenu(
@@ -23543,6 +27349,11 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             )
             self._populate_new_document_menu(self.new_document_menu)
             file_menu.addAction(self.open_file_action)
+            self.recent_program_menu = file_menu.addMenu(
+                "Zuletzt verwendete Programme"
+            )
+            self.recent_program_menu.setObjectName("recent_program_files_menu")
+            self._refresh_recent_program_menu()
             file_menu.addAction(self.save_file_action)
             file_menu.addAction(self.save_as_action)
             file_menu.addAction(self.close_document_action)
@@ -23592,6 +27403,8 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             tools_menu.addSeparator()
             tools_menu.addAction(self.resource_action)
             tools_menu.addAction(self.localize_action)
+            tools_menu.addSeparator()
+            tools_menu.addAction(self.settings_action)
             
             help_menu = self.main_menu_bar.addMenu("&Hilfe")
             help_menu.addAction(self.chm_viewer_action)
@@ -24454,6 +28267,12 @@ border: 2px solid #2a69aa;
                     widget.set_dark_mode(enabled)
                 elif isinstance(widget, PrologKnowledgeDialog):
                     widget.set_dark_mode(enabled)
+                elif isinstance(widget, DBaseTableDesignerWidget):
+                    widget.set_dark_mode(enabled)
+                elif isinstance(widget, DBaseFormPropertyPanel):
+                    widget.set_dark_mode(enabled)
+                elif isinstance(widget, DockTitleBar):
+                    widget.set_dark_mode(enabled)
 
             # Stage 76: der Titelverlauf bleibt als Markenfarbe erhalten;
             # die Menueleiste wird nach dem globalen Theme-Wechsel erneut
@@ -24769,6 +28588,7 @@ border: 2px solid #2a69aa;
                 self.document_tabs.setCurrentWidget(existing)
                 self._apply_document_theme(existing)
                 existing.focus_preferred_editor()
+                self._remember_recent_program_file(path)
                 self.statusBar().showMessage(f"Bereits geöffnet: {path.name}")
                 return True
 
@@ -24831,6 +28651,7 @@ border: 2px solid #2a69aa;
                 self.statusBar().showMessage(
                     f"{path.name} - Kodierung: {encoding}"
                 )
+            self._remember_recent_program_file(path)
             return True
 
         def show_character_editor(
@@ -25231,6 +29052,7 @@ border: 2px solid #2a69aa;
             self._refresh_favorites_menu()
             if document.path.parent == self.current_directory:
                 self.populate_file_list()
+            self._remember_recent_program_file(document.path)
             return True
 
         @staticmethod
@@ -25243,6 +29065,14 @@ border: 2px solid #2a69aa;
                     "Der Quelltext muss vor dem Erzeugen eines Programms "
                     "gespeichert werden."
                 )
+            # Ein aus einer binaeren C64-Datei erzeugtes Disassembly darf
+            # die Originaldatei niemals ueberschreiben. Das Build-Ergebnis
+            # liegt deshalb separat neben der Quelle.
+            if document.binary_disassembly_mode and document.build_target == "c64":
+                return document.path.with_name(
+                    document.path.stem + ".reassembled.prg"
+                )
+
             suffix = ".prg"
             if document.build_target in {"pe32", "pe64"}:
                 suffix = (
