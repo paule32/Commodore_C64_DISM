@@ -1,0 +1,12 @@
+<RCC>
+    <qresource prefix="/icons">
+        <file>add.ico</file>
+        <file>add_hov.ico</file>
+        <file>doc_hov.ico</file>
+        <file>frs.ico</file>
+        <file>sub.ico</file>
+        <file>sub_hov.ico</file>
+        <file>doc.ico</file>
+        <file>frs_hov.ico</file>
+    </qresource>
+</RCC>

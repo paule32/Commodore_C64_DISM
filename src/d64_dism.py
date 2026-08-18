@@ -114,7 +114,10 @@ from fractions   import Fraction
 from pathlib     import Path
 from typing      import Dict, Iterable, List, Optional, Sequence, Tuple
 
-from flags_rc    import *
+# -----------------------------------------------------------------------
+# resources for documenting source codes ...
+# -----------------------------------------------------------------------
+from flags_rc       import *
 
 # dBase: Start fuehrt ausschliesslich eine vorhandene EXE aus.
 DBASE_START_HARD_NO_BUILD = True
@@ -28378,10 +28381,16 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.prolog_knowledge_dock = None
             self.localize_tool_window = None
             self.localize_dock = None
+            self.doxygen_tool_window = None
+            self.doxygen_dock = None
             self._localize_replaced_filesystem_dock = False
             self._localize_replaced_central_widget = False
             self._knowledge_replaced_filesystem_dock = False
             self._knowledge_replaced_central_widget = False
+            # Stage 115: Doxygen ersetzt beim Öffnen die normale linke/zentralen
+            # Arbeitsfläche, hält das Projekt-Dock rechts aber sichtbar.
+            self._doxygen_replaced_filesystem_dock = False
+            self._doxygen_replaced_central_widget = False
             self._caps_lock_fallback = False
             self._num_lock_fallback = False
             application = QApplication.instance()
@@ -29000,6 +29009,15 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             self.localize_action.setStatusTip("Übersetzungen für internationale Anwendungen")
             self.localize_action.triggered.connect(self.localize_dialog)
 
+            # Stage 113: Die umfangreiche Doxygen-Oberfläche aus doxygen.py
+            # wird nicht mehr als separates Dialogfenster verwendet, sondern
+            # bei Bedarf als QDockWidget in das Hauptfenster eingebettet.
+            self.doxygen_action = QAction("Doxygen Dokumentation ...", self)
+            self.doxygen_action.setStatusTip(
+                "Doxygen-Projekte, Dokumentation und Ausgabe im Docking-Fenster verwalten"
+            )
+            self.doxygen_action.triggered.connect(self.show_doxygen_dock)
+
             self.coff32_archive_action = QAction(
                 "COFF32-Archiv (.a) erstellen ...", self
             )
@@ -29482,6 +29500,229 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 tool.setFocus(Qt.OtherFocusReason)
             return
             
+        def _doxygen_dock_visibility_changed(self, visible: bool) -> None:
+            """Stage 115: Doxygen belegt den freien Platz links vom Projekt-Dock.
+
+            Das Dateisystem wird zuerst ausgeblendet. Danach wird die zentrale
+            Dokumentfläche verborgen, damit QMainWindow den kompletten freien
+            Bereich dem Doxygen-Dock geben kann. Projekt/Informationen und das
+            untere Protokoll-Dock bleiben von dieser Umschaltung unberührt.
+            """
+            if visible:
+                # Nur ein großflächiges Werkzeug soll die Arbeitsfläche belegen.
+                # Deren Hide-Handler können Dateisystem/Zentralfläche kurz
+                # wiederherstellen; deshalb werden diese anschließend nochmals
+                # verbindlich ausgeblendet.
+                for other_name in ("localize_dock", "prolog_knowledge_dock"):
+                    other = getattr(self, other_name, None)
+                    if other is not None and other is not self.doxygen_dock and other.isVisible():
+                        other.hide()
+
+                # Vorgabe: Dateisystem-Dock ZUERST ausblenden.
+                left = getattr(self, "left_dock", None)
+                if left is not None and left.isVisible():
+                    self._doxygen_replaced_filesystem_dock = True
+                    left.hide()
+
+                central = self.centralWidget()
+                if central is not None and central.isVisible():
+                    self._doxygen_replaced_central_widget = True
+                    central.hide()
+
+                # Das Projekt-/Informations-Dock soll rechts bestehen bleiben.
+                right = getattr(self, "right_dock", None)
+                if right is not None and not right.isVisible():
+                    right.show()
+
+                QTimer.singleShot(0, self._expand_doxygen_dock)
+            else:
+                if (
+                    self._doxygen_replaced_filesystem_dock
+                    and hasattr(self, "left_dock")
+                ):
+                    self.left_dock.show()
+                self._doxygen_replaced_filesystem_dock = False
+
+                if self._doxygen_replaced_central_widget:
+                    central = self.centralWidget()
+                    if central is not None:
+                        central.show()
+                self._doxygen_replaced_central_widget = False
+
+        def _expand_doxygen_dock(self) -> None:
+            """Gibt Doxygen jeden freien Pixel links vom rechten Projekt-Dock."""
+            dock = getattr(self, "doxygen_dock", None)
+            if dock is None or not dock.isVisible():
+                return
+
+            # Doxygen gehört in die linke Dock-Area. Bei verborgener zentraler
+            # Fläche reicht diese Area bis direkt an das rechte Projekt-Dock.
+            self.addDockWidget(Qt.LeftDockWidgetArea, dock)
+            self.resizeDocks([dock], [100000], Qt.Horizontal)
+            self.resizeDocks([dock], [100000], Qt.Vertical)
+
+            tool = getattr(self, "doxygen_tool_window", None)
+            if tool is not None:
+                try:
+                    tool.setMinimumSize(0, 0)
+                    tool.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+                    tool.updateGeometry()
+                except Exception:
+                    pass
+            self._assign_widget_property_ids(dock)
+
+        def _ensure_doxygen_dock(self):
+            """Erzeugt das Doxygen-Werkzeug einmalig als echtes QDockWidget.
+
+            Die eigentliche Oberfläche bleibt in doxygen.py. Der Import erfolgt
+            absichtlich erst beim Öffnen des Werkzeugs, damit optionale
+            Doxygen-/ANTLR-/QtWebEngine-Abhängigkeiten den Programmstart nicht
+            beeinträchtigen.
+            """
+            dock = getattr(self, "doxygen_dock", None)
+            tool = getattr(self, "doxygen_tool_window", None)
+            if dock is not None and tool is not None:
+                return dock, tool
+
+            try:
+                import importlib.util
+
+                source_path = Path(__file__).resolve().with_name("doxygen.py")
+                if not source_path.is_file():
+                    raise FileNotFoundError(
+                        f"Doxygen-Modul nicht gefunden: {source_path}"
+                    )
+
+                module_name = "_d64_doxygen_tool"
+                module = sys.modules.get(module_name)
+                if module is None:
+                    spec = importlib.util.spec_from_file_location(
+                        module_name,
+                        str(source_path),
+                    )
+                    if spec is None or spec.loader is None:
+                        raise ImportError(
+                            f"Doxygen-Modul kann nicht geladen werden: {source_path}"
+                        )
+                    module = importlib.util.module_from_spec(spec)
+                    # Stage 116 additive preload: import-time Doxygen MessageBoxes
+                    # already know the host theme before module execution starts.
+                    module._DOXYGEN_PRELOAD_THEME_HOST = self
+                    sys.modules[module_name] = module
+                    try:
+                        spec.loader.exec_module(module)
+                    except Exception:
+                        sys.modules.pop(module_name, None)
+                        raise
+
+                # Stage 116 additive extension supplied by doxygen.py.
+                install_theme = getattr(module, "install_doxygen_messagebox_theme", None)
+                if callable(install_theme):
+                    install_theme(self)
+
+                tool_class = getattr(module, "DoxyGenToolWindow", None)
+                if tool_class is None:
+                    raise ImportError(
+                        "doxygen.py enthält keine Klasse DoxyGenToolWindow."
+                    )
+
+                dock = QDockWidget("Doxygen Dokumentation", self)
+                dock.setObjectName("doxygen_documentation_dock")
+                dock.setFeatures(self._dock_features())
+                dock.setAllowedAreas(Qt.AllDockWidgetAreas)
+                dock.setMinimumSize(0, 0)
+                dock.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+                # DoxyGenToolWindow ist in der gelieferten Datei bereits ein
+                # QWidget. Dadurch kann die komplette bestehende Oberfläche
+                # ohne Kopie oder Dialog-Wrapper direkt in das Dock wandern.
+                tool = tool_class(dock)
+                try:
+                    tool.setObjectName("doxygen_documentation_tool")
+                    tool.setMinimumSize(0, 0)
+                    tool.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+                except Exception:
+                    pass
+
+                dock.setWidget(tool)
+                # Stage 115: Doxygen gehört links vom Projekt-Dock. Die genaue
+                # Großflächen-Anordnung erfolgt beim Sichtbarwerden, nachdem das
+                # Dateisystem zuerst ausgeblendet wurde.
+                self.addDockWidget(Qt.LeftDockWidgetArea, dock)
+                dock.hide()
+
+                self.doxygen_dock = dock
+                self.doxygen_tool_window = tool
+                dock.visibilityChanged.connect(
+                    self._doxygen_dock_visibility_changed
+                )
+                self._assign_widget_property_ids(dock)
+                return dock, tool
+
+            except Exception as exc:
+                self.doxygen_dock = None
+                self.doxygen_tool_window = None
+                # Stage 114: Auch der Doxygen-Importfehler benutzt die zentrale
+                # thematisierte MessageBox. Direkte QMessageBox.critical()-Aufrufe
+                # koennen unter dem nativen Windows/Qt5-Style im Dark-Mode einen
+                # hellen bzw. unlesbaren Text-/Hintergrund-Mix erzeugen.
+                self._show_message_box(
+                    QMessageBox.Critical,
+                    "Doxygen",
+                    "Das Doxygen-Docking-Fenster konnte nicht geöffnet werden.\n\n"
+                    + str(exc),
+                )
+                return None, None
+
+        def show_doxygen_dock(self, _checked: bool = False) -> None:
+            """Öffnet Doxygen links vom Projekt-Dock auf maximaler Fläche."""
+            dock, tool = self._ensure_doxygen_dock()
+            if dock is None or tool is None:
+                return
+
+            # Vorgabe: Das Dateisystem muss bereits verschwunden sein, bevor
+            # Doxygen eingeblendet und in seinen Platz eingesetzt wird.
+            left = getattr(self, "left_dock", None)
+            if left is not None and left.isVisible():
+                self._doxygen_replaced_filesystem_dock = True
+                left.hide()
+
+            # Falls ein anderes Großflächen-Dock aktiv ist, zuerst schließen.
+            # Dessen Visibility-Handler darf danach die normale Arbeitsfläche
+            # restaurieren; wir blenden sie direkt vor Doxygen wieder aus.
+            for other_name in ("localize_dock", "prolog_knowledge_dock"):
+                other = getattr(self, other_name, None)
+                if other is not None and other is not dock and other.isVisible():
+                    other.hide()
+
+            left = getattr(self, "left_dock", None)
+            if left is not None and left.isVisible():
+                self._doxygen_replaced_filesystem_dock = True
+                left.hide()
+
+            central = self.centralWidget()
+            if central is not None and central.isVisible():
+                self._doxygen_replaced_central_widget = True
+                central.hide()
+
+            right = getattr(self, "right_dock", None)
+            if right is not None and not right.isVisible():
+                right.show()
+
+            self.addDockWidget(Qt.LeftDockWidgetArea, dock)
+            dock.show()
+            dock.raise_()
+            self._expand_doxygen_dock()
+            QTimer.singleShot(0, self._expand_doxygen_dock)
+
+            try:
+                tool.setFocus(Qt.OtherFocusReason)
+            except Exception:
+                pass
+            self.statusBar().showMessage(
+                "Doxygen-Docking-Fenster links neben Projekt geöffnet"
+            )
+
         def create_coff32_archive_dialog(self) -> None:
             filenames, _selected = QFileDialog.getOpenFileNames(
                 self,
@@ -30827,6 +31068,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             tools_menu.addSeparator()
             tools_menu.addAction(self.resource_action)
             tools_menu.addAction(self.localize_action)
+            tools_menu.addAction(self.doxygen_action)
             tools_menu.addSeparator()
             tools_menu.addAction(self.settings_action)
             

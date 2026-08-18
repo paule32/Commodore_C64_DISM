@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Pascal Documentation PDF</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="search_index.js"></script>
+<style>@page {
+    size: A4;
+    margin: 0;
+    background: #000000;
+}
+@media print {
+    .doc-header-sticky {
+        position: static !important;
+        height: auto !important;
+        overflow: visible !important;
+    }
+
+    .content-pane,
+    .page {
+        padding-top: 20px !important;
+        background: #000000;
+    }
+}
+html, body {
+    overflow: visible !important;
+    height: auto !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    background: #000000 !important;
+}
+.splitter {
+    display: none !important;
+}
+.content-pane {
+    width: auto !important;
+    max-width: none !important;
+    overflow: visible !important;
+    height: auto !important;
+    margin: 0 !important;
+    box-sizing: border-box;
+    min-height: 100vh;
+padding-top: 1cm !important;
+    background: #000000 !important;
+}
+.page {
+    box-sizing: border-box;
+    min-height: 100vh;
+    padding: 1cm !important;
+    background: #000000 !important;
+}
+section {
+    page-break-inside: auto !important;
+    background: #000000 !important;
+}
+pre {
+    white-space: pre-wrap;
+    background: #000000 !important;
+}
+main.page {
+    box-sizing: border-box !important;
+    width: 100% !important;
+    padding: 1cm !important;
+    margin: 0 !important;
+    background: #000000 !important;
+}
+
+main.page > section,
+main.page > h1,
+main.page > h2,
+main.page > h3 {
+    box-sizing: border-box !important;
+    margin-left: 0 !important;
+    margin-right: 0 !important;
+}
+</style></head>
+<body>
+<main class="page">
+<h1>Pascal Documentation</h1>
+<section>
+<h2>Units</h2>
+<h3>Forms</h3>
+<h4>Interface Uses</h4>
+<ul class="unit-dependency-list">
+<li><a class="type-link" href="unit_SysUtils.html">SysUtils</a></li>
+</ul>
+<h3>SysUtils</h3>
+<h4>Interface Uses</h4>
+<ul class="unit-dependency-list">
+<li><a class="type-link" href="unit_SysUtils.html">SysUtils</a></li>
+</ul>
+<h4>Used By</h4>
+<ul class="unit-dependency-list">
+<li>Forms</li>
+<li>SysUtils</li>
+</ul>
+</section>
+<section>
+<h2>Classes</h2>
+<h3>TCustomForm</h3>
+<p class="inherits">Inherits: TObject</p>
+<h3>TFile</h3>
+<p class="inherits">Inherits: TObject</p>
+</section>
+</main>
+</body>
+</html>

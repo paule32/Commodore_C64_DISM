@@ -1,0 +1,6 @@
+<RCC>
+    <qresource prefix="/locales/de">
+        <file alias="dbase.mo">dbase.mo</file>
+        <file alias="doxygen.mo">doxygen.mo</file>
+    </qresource>
+</RCC>
