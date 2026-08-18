@@ -1,0 +1,12 @@
+py_compile_returncode=0
+gradients=1
+gradient_combo=1
+gradient_icons=1
+gradient_live=1
+gradient_paint=1
+shadow_attr=1
+shadow_combo=1
+shadow_effect=1
+copy_gradient=1
+copy_shadow=1
+visual_qt_test=not_run_pyqt5_unavailable_in_container

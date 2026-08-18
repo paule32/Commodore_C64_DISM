@@ -41,7 +41,12 @@
 #  * Stage 86: Tabellen-Workspace rechts neben Dateisystem + Dark/Light-Gridstil.
 #  * Stage 87: Desktop-Settings als Dock-Workspace mit Alias-/BDE-Verwaltung.
 #  * Stage 92: Formulardesigner-Brush mit 12 eingebetteten Patterns und recolorierbaren Buttons.
-#  * Stage 99: Border-Root mit Linienarten, Hard-Shadows, Farbe, Größe und Einzelradien.
+#  * Stage 103: Pattern-Rueckkehr stabilisiert; Font-Farbbuttons und Dark-Mode-Farbbuttons.
+#  * Stage 100: Kontextmenü für Designer-Controls mit Hilfe/Kopieren/Einfügen/Ausschneiden/Entfernen.
+#  * Stage 101: Border-Root mit einzeln schaltbaren Seiten Left/Top/Right/Bottom.
+#  * Stage 102: Border-Seiten mit eigenen Style/Size/Color-Untereinträgen.
+#  * Stage 108: WFM/OOP-Formulare, gefuellter Hard-Shadow und Border-Farbdialoge.
+#  * Stage 110: Form-Fenster-Scene mit Titelbar, Designer-only Resize und Client-Limits.
 #    Mehrtabellen-Tabs, Feldeditoren und Kontextoperationen für Feldzeilen
 #
 #  * PROLOG Wissen-Browser Stage 71: Stage-70 Multi-Scroll bleibt erhalten;
@@ -7880,6 +7885,7 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             QProcess,
             QSortFilterProxyModel,
             QSize,
+            QSizeF,
             QTemporaryDir,
             QThread,
             QTimer,
@@ -7899,7 +7905,10 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             QIcon,
             QImage,
             QKeySequence,
+            QGradient,
             QLinearGradient,
+            QRadialGradient,
+            QConicalGradient,
             QPainter,
             QPainterPath,
             QPalette,
@@ -19199,6 +19208,63 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
         ("Hard Shadow unten", "hard_bottom"),
     )
 
+    # Stage 107: Brush-Gradienten. Background und Foreground bilden
+    # die beiden Endfarben des Gradienten.
+    DBASE_FORM_BRUSH_GRADIENTS = (
+        ("Ohne Gradient", "none"),
+        ("Linear horizontal", "linear_horizontal"),
+        ("Linear vertikal", "linear_vertical"),
+        ("Linear diagonal links oben -> rechts unten", "linear_diag_down"),
+        ("Linear diagonal links unten -> rechts oben", "linear_diag_up"),
+        ("Radial Mitte", "radial_center"),
+        ("Radial links oben", "radial_top_left"),
+        ("Radial rechts unten", "radial_bottom_right"),
+        ("Konisch", "conical"),
+    )
+
+    def _dbase_form_gradient_brush(gradient_name: str, background, foreground, rect) -> QBrush:
+        name = str(gradient_name or "none")
+        bg = QColor(background); fg = QColor(foreground)
+        if not bg.isValid(): bg = QColor("#000000")
+        if not fg.isValid(): fg = QColor("#FFFFFF")
+        bounds = QRectF(rect)
+        if bounds.width() <= 0.0: bounds.setWidth(1.0)
+        if bounds.height() <= 0.0: bounds.setHeight(1.0)
+        l,t,r,b = bounds.left(), bounds.top(), bounds.right(), bounds.bottom()
+        cx,cy = bounds.center().x(), bounds.center().y()
+        if name == "linear_vertical":
+            gradient = QLinearGradient(cx,t,cx,b)
+        elif name == "linear_diag_down":
+            gradient = QLinearGradient(l,t,r,b)
+        elif name == "linear_diag_up":
+            gradient = QLinearGradient(l,b,r,t)
+        elif name == "radial_center":
+            gradient = QRadialGradient(QPointF(cx,cy), max(1.0,max(bounds.width(),bounds.height())*0.72))
+        elif name == "radial_top_left":
+            gradient = QRadialGradient(QPointF(l,t), max(1.0,max(bounds.width(),bounds.height())))
+        elif name == "radial_bottom_right":
+            gradient = QRadialGradient(QPointF(r,b), max(1.0,max(bounds.width(),bounds.height())))
+        elif name == "conical":
+            gradient = QConicalGradient(QPointF(cx,cy), 0.0)
+            gradient.setColorAt(0.0,bg); gradient.setColorAt(0.5,fg); gradient.setColorAt(1.0,bg)
+            return QBrush(gradient)
+        else:
+            gradient = QLinearGradient(l,cy,r,cy)
+        gradient.setColorAt(0.0,bg); gradient.setColorAt(1.0,fg)
+        return QBrush(gradient)
+
+    def _dbase_form_gradient_icon(gradient_name: str, background, foreground) -> QIcon:
+        pix=QPixmap(72,24); pix.fill(Qt.transparent); painter=QPainter(pix)
+        try:
+            if str(gradient_name or "none") == "none":
+                painter.fillRect(pix.rect(), QColor(background))
+            else:
+                painter.fillRect(pix.rect(), _dbase_form_gradient_brush(gradient_name,background,foreground,QRectF(0,0,pix.width(),pix.height())))
+            painter.setPen(QPen(QColor("#707070"),1)); painter.drawRect(0,0,pix.width()-1,pix.height()-1)
+        finally:
+            painter.end()
+        return QIcon(pix)
+
     def _dbase_form_pattern_pixmap(
         style_index: int,
         background,
@@ -19372,6 +19438,29 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             finally:
                 self._updating = False
 
+        def setCustomColor(self, color, *, emit_change: bool = True) -> bool:
+            """Legt eine frei gewaehlte Farbe im Eintrag 'Eigene Farbe' ab."""
+            value = QColor(color)
+            if not value.isValid():
+                return False
+            custom = self.findData(self.CUSTOM_DATA)
+            if custom < 0:
+                return False
+            self._updating = True
+            try:
+                self._custom_color = QColor(value)
+                # Font-Alpha wird separat verwaltet; der sichtbare Wert bleibt
+                # daher bewusst RRGGBB.
+                target = value.name().upper()
+                self.setItemText(custom, f"Eigene Farbe ({target})")
+                self.setItemIcon(custom, self._color_icon(value))
+                self.setCurrentIndex(custom)
+            finally:
+                self._updating = False
+            if emit_change:
+                self.colorChanged.emit(QColor(value))
+            return True
+
         def _on_index_changed(self, index: int) -> None:
             if self._updating:
                 return
@@ -19393,8 +19482,775 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 self.colorChanged.emit(value)
 
 
+    class DBaseFormWindowItem(QGraphicsObject):
+        """Stage 111: selektierbare visuelle WFM-Hauptform.
+
+        Der lokale Ursprung (0, 0) bleibt die linke obere Ecke der Client-
+        Flaeche. Titlebar und Border liegen ausserhalb dieses Ursprungs, so
+        dass gespeicherte WFM-Controlkoordinaten unveraendert bleiben.
+        Min/Max/Close sind im Designer rein dekorativ.
+        """
+
+        TITLE_HEIGHT = 30.0
+        SCENE_MARGIN = 5.0
+        RESIZE_HIT = 8.0
+        MIN_WIDTH = 160.0
+        MIN_HEIGHT = 120.0
+        DEFAULT_CLIENT_COLOR = QColor("#1B1B1B")
+        DEFAULT_TITLE_COLOR = QColor("#292929")
+        DEFAULT_BORDER_COLOR = QColor("#808080")
+        DEFAULT_TITLE_TEXT_COLOR = QColor("#F0F0F0")
+        ICON_COLOR = QColor("#E6E6E6")
+
+        form_size_changed = pyqtSignal(int, int)
+        geometry_changed = pyqtSignal(object)
+        properties_changed = pyqtSignal(object)
+
+        def __init__(self, designer_scene):
+            super().__init__(None)
+            self.designer_scene = designer_scene
+            self.component_type = "Form"
+            self.component_name = str(getattr(designer_scene, "wfm_class_name", "ParentForm") or "ParentForm")
+            self.caption = self.component_name
+            self.wfm_class_name = self.component_name
+            self.wfm_events = {}
+            self.wfm_extra_properties = {}
+
+            self._width = max(1.0, float(getattr(designer_scene, "wfm_form_width", 400)))
+            self._height = max(1.0, float(getattr(designer_scene, "wfm_form_height", 400)))
+            self._resize_role = ""
+            self._resize_active = False
+            self._resize_start_scene = QPointF()
+            self._resize_start_size = QSizeF(self._width, self._height)
+
+            # Dieselben editierbaren Visual-Properties wie bei Controls.
+            self.brush_style = 0
+            self.brush_gradient = "none"
+            self.brush_cut_width = 100
+            self.brush_cut_height = 100
+            self.background_color = QColor(self.DEFAULT_CLIENT_COLOR)
+            self.foreground_color = QColor("#303030")
+
+            app_font = QFont(QApplication.font())
+            self.font_family = app_font.family() or "Arial"
+            self.font_point_size = max(1, app_font.pointSize() if app_font.pointSize() > 0 else 10)
+            self.font_bold = True
+            self.font_italic = False
+            self.font_stroke = False
+            self.font_underline = False
+            self.font_alpha = 255
+            self.font_background_color = QColor(self.DEFAULT_TITLE_COLOR)
+            self.font_foreground_color = QColor(self.DEFAULT_TITLE_TEXT_COLOR)
+
+            # Stage-110-Rahmen bleibt der Default: grau, 2 Pixel.
+            self.border_style = "solid"
+            self.border_size = 2
+            self.border_color = QColor(self.DEFAULT_BORDER_COLOR)
+            self.border_shadow_color = QColor("#000000")
+            self.border_round_tl = 0
+            self.border_round_tr = 0
+            self.border_round_bl = 0
+            self.border_round_br = 0
+            self.border_left = True
+            self.border_top = True
+            self.border_right = True
+            self.border_bottom = True
+            for side in ("left", "top", "right", "bottom"):
+                setattr(self, f"border_{side}_style", self.border_style)
+                setattr(self, f"border_{side}_size", self.border_size)
+                setattr(self, f"border_{side}_color", QColor(self.border_color))
+
+            # Gefuellter Hard-Shadow wie bei normalen Designer-Controls.
+            self._border_shadow_rect = QGraphicsRectItem(self)
+            self._border_shadow_rect.setPen(QPen(Qt.NoPen))
+            self._border_shadow_rect.setBrush(QBrush(QColor(self.border_shadow_color)))
+            self._border_shadow_rect.setZValue(-20.0)
+            self._border_shadow_rect.setFlag(QGraphicsItem.ItemStacksBehindParent, True)
+            self._border_shadow_rect.setVisible(False)
+
+            self.setZValue(-1000.0)
+            self.setAcceptHoverEvents(True)
+            self.setAcceptedMouseButtons(Qt.LeftButton | Qt.RightButton)
+            self.setFlags(
+                QGraphicsItem.ItemIsSelectable
+                | QGraphicsItem.ItemIsFocusable
+            )
+            self._apply_widget_style()
+            self._sync_scene_geometry()
+
+        # ------------------------------------------------------------------
+        # Geometry / Designer limits
+        # ------------------------------------------------------------------
+        def content_rect(self) -> QRectF:
+            return QRectF(0.0, 0.0, self._width, self._height)
+
+        def designer_content_rect(self) -> QRectF:
+            """Designer-only Grenze fuer Controls auf der Hauptform."""
+            return self.content_rect()
+
+        def title_rect(self) -> QRectF:
+            return QRectF(0.0, -self.TITLE_HEIGHT, self._width, self.TITLE_HEIGHT)
+
+        def _side_enabled(self, side: str) -> bool:
+            return bool(getattr(self, f"border_{side}", True))
+
+        def _effective_side_size(self, side: str) -> float:
+            if not self._side_enabled(side):
+                return 0.0
+            root_style = str(getattr(self, "border_style", "none"))
+            style = str(getattr(self, f"border_{side}_style", root_style))
+            if style == "none":
+                return 0.0
+            return float(max(0, min(64, int(getattr(
+                self, f"border_{side}_size", getattr(self, "border_size", 0)
+            )))))
+
+        def frame_rect(self) -> QRectF:
+            left = self._effective_side_size("left")
+            top = self._effective_side_size("top")
+            right = self._effective_side_size("right")
+            bottom = self._effective_side_size("bottom")
+            return QRectF(
+                -left,
+                -(self.TITLE_HEIGHT + top),
+                self._width + left + right,
+                self._height + self.TITLE_HEIGHT + top + bottom,
+            )
+
+        def _shadow_offset(self) -> Tuple[float, float]:
+            style = str(getattr(self, "border_style", "none"))
+            amount = float(max(2, int(getattr(self, "border_size", 1)) + 3))
+            if style == "hard_tl":
+                return (
+                    -amount if self.border_left else 0.0,
+                    -amount if self.border_top else 0.0,
+                )
+            if style == "hard_right":
+                return (amount if self.border_right else 0.0, 0.0)
+            if style == "hard_bottom":
+                return (0.0, amount if self.border_bottom else 0.0)
+            if style == "hard_br":
+                return (
+                    amount if self.border_right else 0.0,
+                    amount if self.border_bottom else 0.0,
+                )
+            return (0.0, 0.0)
+
+        def boundingRect(self) -> QRectF:
+            frame = QRectF(self.frame_rect())
+            dx, dy = self._shadow_offset()
+            if dx != 0.0 or dy != 0.0:
+                frame = frame.united(frame.translated(dx, dy))
+            # Selektionslinie nicht abschneiden.
+            return frame.adjusted(-1.0, -1.0, 1.0, 1.0)
+
+        def outer_rect(self) -> QRectF:
+            return self.frame_rect()
+
+        def geometry_values(self) -> Tuple[int, int, int, int]:
+            scene = self.designer_scene
+            return (
+                int(getattr(scene, "wfm_form_top", 0)),
+                int(getattr(scene, "wfm_form_left", 0)),
+                int(round(self._width)),
+                int(round(self._height)),
+            )
+
+        def native_handle_text(self) -> str:
+            # Im Designer wird bewusst kein Runtime-HWND erzeugt.
+            return ""
+
+        def set_geometry_values(
+            self, *, top: Optional[int] = None, left: Optional[int] = None,
+            width: Optional[int] = None, height: Optional[int] = None
+        ) -> None:
+            scene = self.designer_scene
+            old_top, old_left, old_width, old_height = self.geometry_values()
+            new_top = old_top if top is None else int(top)
+            new_left = old_left if left is None else int(left)
+            new_width = old_width if width is None else max(1, int(width))
+            new_height = old_height if height is None else max(1, int(height))
+            scene.wfm_form_top = new_top
+            scene.wfm_form_left = new_left
+            self.set_form_size(
+                new_width, new_height,
+                constrain_children=True, enforce_minimum=False,
+                emit_geometry=False,
+            )
+            self.geometry_changed.emit(self)
+
+        def _sync_scene_geometry(self) -> None:
+            scene = self.scene() or self.designer_scene
+            if scene is None:
+                return
+            # Aussenkante des Fensters liegt exakt 5 px von links/oben.
+            left_border = self._effective_side_size("left")
+            top_border = self._effective_side_size("top")
+            self.setPos(
+                float(self.SCENE_MARGIN + left_border),
+                float(self.SCENE_MARGIN + self.TITLE_HEIGHT + top_border),
+            )
+            mapped = self.mapRectToScene(self.boundingRect())
+            # PyQt5 liefert fuer mapRectToScene(QRectF) bereits ein QRectF.
+            # Andere Qt-Bindings/Overloads koennen ein QPolygonF liefern.
+            # Beide Faelle normalisieren, ohne auf QRectF.boundingRect() zuzugreifen.
+            if hasattr(mapped, "boundingRect"):
+                mapped = mapped.boundingRect()
+            else:
+                mapped = QRectF(mapped)
+            scene.setSceneRect(
+                0.0,
+                0.0,
+                max(1.0, mapped.right() + self.SCENE_MARGIN),
+                max(1.0, mapped.bottom() + self.SCENE_MARGIN),
+            )
+            scene.update()
+
+        def _designer_constrain_children(self) -> None:
+            bounds = self.designer_content_rect()
+            if bounds.width() <= 0.0 or bounds.height() <= 0.0:
+                return
+            for child in list(self.childItems()):
+                if not isinstance(child, DBaseFormControlItem):
+                    continue
+                if child._width > bounds.width() and bounds.width() >= child.MIN_WIDTH:
+                    child._set_size(bounds.width(), child._height)
+                if child._height > bounds.height() and bounds.height() >= child.MIN_HEIGHT:
+                    child._set_size(child._width, bounds.height())
+                max_x = max(bounds.left(), bounds.right() - child._width)
+                max_y = max(bounds.top(), bounds.bottom() - child._height)
+                child.setPos(QPointF(
+                    max(bounds.left(), min(child.pos().x(), max_x)),
+                    max(bounds.top(), min(child.pos().y(), max_y)),
+                ))
+
+        def set_form_size(
+            self, width: float, height: float, *,
+            constrain_children: bool = True, enforce_minimum: bool = True,
+            emit_geometry: bool = True,
+        ) -> None:
+            if enforce_minimum:
+                width = max(self.MIN_WIDTH, float(width))
+                height = max(self.MIN_HEIGHT, float(height))
+            else:
+                width = max(1.0, float(width))
+                height = max(1.0, float(height))
+            if width == self._width and height == self._height:
+                scene = self.designer_scene
+                scene.wfm_form_width = int(round(width))
+                scene.wfm_form_height = int(round(height))
+                self._sync_scene_geometry()
+                return
+            self.prepareGeometryChange()
+            self._width = width
+            self._height = height
+            scene = self.designer_scene
+            scene.wfm_form_width = int(round(width))
+            scene.wfm_form_height = int(round(height))
+            self._apply_border_shadow()
+            self._sync_scene_geometry()
+            if constrain_children:
+                self._designer_constrain_children()
+            self.form_size_changed.emit(int(round(width)), int(round(height)))
+            if emit_geometry:
+                self.geometry_changed.emit(self)
+            self.update()
+
+        def _resize_role_at(self, local_pos: QPointF) -> str:
+            hit = float(self.RESIZE_HIT)
+            x = float(local_pos.x())
+            y = float(local_pos.y())
+            near_right = abs(x - self._width) <= hit and -hit <= y <= self._height + hit
+            near_bottom = abs(y - self._height) <= hit and -hit <= x <= self._width + hit
+            if near_right and near_bottom:
+                return "se"
+            if near_right:
+                return "e"
+            if near_bottom:
+                return "s"
+            return ""
+
+        def hoverMoveEvent(self, event) -> None:
+            role = self._resize_role_at(event.pos())
+            if role == "se":
+                self.setCursor(Qt.SizeFDiagCursor)
+            elif role == "e":
+                self.setCursor(Qt.SizeHorCursor)
+            elif role == "s":
+                self.setCursor(Qt.SizeVerCursor)
+            else:
+                self.unsetCursor()
+            super().hoverMoveEvent(event)
+
+        def hoverLeaveEvent(self, event) -> None:
+            if not self._resize_active:
+                self.unsetCursor()
+            super().hoverLeaveEvent(event)
+
+        def mousePressEvent(self, event) -> None:
+            if event.button() == Qt.LeftButton:
+                role = self._resize_role_at(event.pos())
+                if role:
+                    self._resize_role = role
+                    self._resize_active = True
+                    self._resize_start_scene = QPointF(event.scenePos())
+                    self._resize_start_size = QSizeF(self._width, self._height)
+                    self.designer_scene.clearSelection()
+                    self.setSelected(True)
+                    self.setFocus(Qt.MouseFocusReason)
+                    event.accept()
+                    return
+
+                # Freie Formflaeche/Titlebar selektiert die Form selbst.
+                # Titlebar-Icons bleiben reine Darstellung ohne Programmlogik.
+                self.designer_scene.clearSelection()
+                self.setSelected(True)
+                self.setFocus(Qt.MouseFocusReason)
+                event.accept()
+                return
+            super().mousePressEvent(event)
+
+        def mouseMoveEvent(self, event) -> None:
+            if self._resize_active and (event.buttons() & Qt.LeftButton):
+                delta = QPointF(event.scenePos()) - self._resize_start_scene
+                width = self._resize_start_size.width()
+                height = self._resize_start_size.height()
+                if self._resize_role in {"e", "se"}:
+                    width += delta.x()
+                if self._resize_role in {"s", "se"}:
+                    height += delta.y()
+                self.set_form_size(width, height, constrain_children=True)
+                event.accept()
+                return
+            super().mouseMoveEvent(event)
+
+        def mouseReleaseEvent(self, event) -> None:
+            if event.button() == Qt.LeftButton and self._resize_active:
+                self._resize_active = False
+                self._resize_role = ""
+                self.unsetCursor()
+                self.geometry_changed.emit(self)
+                event.accept()
+                return
+            super().mouseReleaseEvent(event)
+
+        # ------------------------------------------------------------------
+        # Shared visual property API (duck-compatible with ControlItem)
+        # ------------------------------------------------------------------
+        def _property_changed(self, *, geometry_changed: bool = False) -> None:
+            self._apply_border_shadow()
+            self._sync_scene_geometry()
+            self.update()
+            if geometry_changed:
+                self._designer_constrain_children()
+            self.properties_changed.emit(self)
+
+        def _apply_widget_style(self) -> None:
+            """Kompatibilitaetsname zum Control-Property-Pfad."""
+            self._apply_border_shadow()
+            self._sync_scene_geometry()
+            self.update()
+
+        def reset_visual_properties(self) -> None:
+            """Setzt nur die visuellen Root-Properties auf Stage-110-Defaults."""
+            self.prepareGeometryChange()
+            self.brush_style = 0
+            self.brush_gradient = "none"
+            self.brush_cut_width = 100
+            self.brush_cut_height = 100
+            self.background_color = QColor(self.DEFAULT_CLIENT_COLOR)
+            self.foreground_color = QColor("#303030")
+            app_font = QFont(QApplication.font())
+            self.font_family = app_font.family() or "Arial"
+            self.font_point_size = max(1, app_font.pointSize() if app_font.pointSize() > 0 else 10)
+            self.font_bold = True
+            self.font_italic = False
+            self.font_stroke = False
+            self.font_underline = False
+            self.font_alpha = 255
+            self.font_background_color = QColor(self.DEFAULT_TITLE_COLOR)
+            self.font_foreground_color = QColor(self.DEFAULT_TITLE_TEXT_COLOR)
+            self.border_style = "solid"
+            self.border_size = 2
+            self.border_color = QColor(self.DEFAULT_BORDER_COLOR)
+            self.border_shadow_color = QColor("#000000")
+            self.border_round_tl = self.border_round_tr = 0
+            self.border_round_bl = self.border_round_br = 0
+            self.border_left = self.border_top = True
+            self.border_right = self.border_bottom = True
+            for side in ("left", "top", "right", "bottom"):
+                setattr(self, f"border_{side}_style", "solid")
+                setattr(self, f"border_{side}_size", 2)
+                setattr(self, f"border_{side}_color", QColor(self.DEFAULT_BORDER_COLOR))
+            self.wfm_events = {}
+            self.wfm_extra_properties = {}
+            self._apply_widget_style()
+            self.properties_changed.emit(self)
+
+        def set_component_name(self, value: str) -> None:
+            value = str(value or "").strip()
+            if not value or value == self.component_name:
+                return
+            self.component_name = value
+            self.caption = value
+            self.wfm_class_name = value
+            self.designer_scene.wfm_class_name = value
+            self.update()
+            self.properties_changed.emit(self)
+
+        def set_background_color(self, color) -> bool:
+            value = QColor(color)
+            if not value.isValid():
+                return False
+            self.background_color = value
+            self._property_changed()
+            return True
+
+        def set_foreground_color(self, color) -> bool:
+            value = QColor(color)
+            if not value.isValid():
+                return False
+            self.foreground_color = value
+            self._property_changed()
+            return True
+
+        def set_brush_gradient(self, value: str) -> None:
+            allowed = {item_value for _label, item_value in DBASE_FORM_BRUSH_GRADIENTS}
+            value = str(value or "none")
+            if value not in allowed:
+                value = "none"
+            self.brush_gradient = value
+            self._property_changed()
+
+        def set_brush_style(self, style_index: int) -> None:
+            self.brush_style = max(0, min(int(style_index), len(DBASE_FORM_BRUSH_PATTERNS)))
+            self._property_changed()
+
+        def set_brush_cut_width(self, value: int) -> None:
+            self.brush_cut_width = max(10, min(100, int(value)))
+            self._property_changed()
+
+        def set_brush_cut_height(self, value: int) -> None:
+            self.brush_cut_height = max(10, min(100, int(value)))
+            self._property_changed()
+
+        def set_font_family(self, family: str) -> None:
+            self.font_family = str(family or QApplication.font().family())
+            self._property_changed()
+
+        def set_font_point_size(self, value: int) -> None:
+            self.font_point_size = max(1, min(200, int(value)))
+            self._property_changed()
+
+        def set_font_bold(self, enabled: bool) -> None:
+            self.font_bold = bool(enabled); self._property_changed()
+
+        def set_font_italic(self, enabled: bool) -> None:
+            self.font_italic = bool(enabled); self._property_changed()
+
+        def set_font_stroke(self, enabled: bool) -> None:
+            self.font_stroke = bool(enabled); self._property_changed()
+
+        def set_font_underline(self, enabled: bool) -> None:
+            self.font_underline = bool(enabled); self._property_changed()
+
+        def set_font_alpha(self, value: int) -> None:
+            self.font_alpha = max(0, min(255, int(value))); self._property_changed()
+
+        def set_font_background_color(self, color) -> bool:
+            value = QColor(color)
+            if not value.isValid():
+                return False
+            self.font_background_color = value; self._property_changed(); return True
+
+        def set_font_foreground_color(self, color) -> bool:
+            value = QColor(color)
+            if not value.isValid():
+                return False
+            self.font_foreground_color = value; self._property_changed(); return True
+
+        def set_border_style(self, value: str) -> None:
+            allowed = {item_value for _label, item_value in DBASE_FORM_BORDER_STYLES}
+            value = str(value or "none")
+            if value not in allowed:
+                value = "none"
+            self.prepareGeometryChange()
+            self.border_style = value
+            for side in ("left", "top", "right", "bottom"):
+                setattr(self, f"border_{side}_style", value)
+            self._property_changed(geometry_changed=True)
+
+        def set_border_size(self, value: int) -> None:
+            self.prepareGeometryChange()
+            self.border_size = max(0, min(64, int(value)))
+            for side in ("left", "top", "right", "bottom"):
+                setattr(self, f"border_{side}_size", self.border_size)
+            self._property_changed(geometry_changed=True)
+
+        def set_border_color(self, color) -> bool:
+            value = QColor(color)
+            if not value.isValid():
+                return False
+            self.border_color = value
+            for side in ("left", "top", "right", "bottom"):
+                setattr(self, f"border_{side}_color", QColor(value))
+            self._property_changed()
+            return True
+
+        def set_border_shadow_color(self, color) -> bool:
+            value = QColor(color)
+            if not value.isValid():
+                return False
+            self.border_shadow_color = value
+            self._property_changed()
+            return True
+
+        def set_border_round_tl(self, value: int) -> None:
+            self.border_round_tl = max(0, min(200, int(value))); self._property_changed()
+
+        def set_border_round_tr(self, value: int) -> None:
+            self.border_round_tr = max(0, min(200, int(value))); self._property_changed()
+
+        def set_border_round_bl(self, value: int) -> None:
+            self.border_round_bl = max(0, min(200, int(value))); self._property_changed()
+
+        def set_border_round_br(self, value: int) -> None:
+            self.border_round_br = max(0, min(200, int(value))); self._property_changed()
+
+        def _set_border_side(self, side: str, enabled: bool) -> None:
+            side = str(side).casefold()
+            if side not in {"left", "top", "right", "bottom"}:
+                return
+            self.prepareGeometryChange()
+            setattr(self, f"border_{side}", bool(enabled))
+            self._property_changed(geometry_changed=True)
+
+        def set_border_left(self, enabled: bool) -> None: self._set_border_side("left", enabled)
+        def set_border_top(self, enabled: bool) -> None: self._set_border_side("top", enabled)
+        def set_border_right(self, enabled: bool) -> None: self._set_border_side("right", enabled)
+        def set_border_bottom(self, enabled: bool) -> None: self._set_border_side("bottom", enabled)
+
+        def set_border_side_style(self, side: str, value: str) -> None:
+            side = str(side).casefold()
+            if side not in {"left", "top", "right", "bottom"}:
+                return
+            allowed = {item_value for _label, item_value in DBASE_FORM_BORDER_STYLES}
+            value = str(value or "none")
+            if value not in allowed:
+                value = "none"
+            self.prepareGeometryChange()
+            setattr(self, f"border_{side}_style", value)
+            self._property_changed(geometry_changed=True)
+
+        def set_border_side_size(self, side: str, value: int) -> None:
+            side = str(side).casefold()
+            if side not in {"left", "top", "right", "bottom"}:
+                return
+            self.prepareGeometryChange()
+            setattr(self, f"border_{side}_size", max(0, min(64, int(value))))
+            self._property_changed(geometry_changed=True)
+
+        def set_border_side_color(self, side: str, color) -> bool:
+            side = str(side).casefold()
+            if side not in {"left", "top", "right", "bottom"}:
+                return False
+            value = QColor(color)
+            if not value.isValid():
+                return False
+            setattr(self, f"border_{side}_color", value)
+            self._property_changed()
+            return True
+
+        # ------------------------------------------------------------------
+        # Painting
+        # ------------------------------------------------------------------
+        def _apply_border_shadow(self) -> None:
+            shadow_rect = getattr(self, "_border_shadow_rect", None)
+            if shadow_rect is None:
+                return
+            style = str(getattr(self, "border_style", "none"))
+            if style not in {"hard_br", "hard_tl", "hard_right", "hard_bottom"}:
+                shadow_rect.setVisible(False)
+                return
+            dx, dy = self._shadow_offset()
+            if dx == 0.0 and dy == 0.0:
+                shadow_rect.setVisible(False)
+                return
+            color = QColor(getattr(self, "border_shadow_color", QColor("#000000")))
+            if not color.isValid():
+                color = QColor("#000000")
+            shadow_rect.setRect(self.frame_rect())
+            shadow_rect.setPos(dx, dy)
+            shadow_rect.setPen(QPen(Qt.NoPen))
+            shadow_rect.setBrush(QBrush(color))
+            shadow_rect.setVisible(True)
+
+        def _window_path(self) -> QPainterPath:
+            # Client + Titlebar bilden den eigentlichen Fensterkoerper.
+            rect = QRectF(0.0, -self.TITLE_HEIGHT, self._width, self._height + self.TITLE_HEIGHT)
+            tl = min(float(max(0, self.border_round_tl)), rect.width() / 2.0, rect.height() / 2.0)
+            tr = min(float(max(0, self.border_round_tr)), rect.width() / 2.0, rect.height() / 2.0)
+            bl = min(float(max(0, self.border_round_bl)), rect.width() / 2.0, rect.height() / 2.0)
+            br = min(float(max(0, self.border_round_br)), rect.width() / 2.0, rect.height() / 2.0)
+            p = QPainterPath()
+            p.moveTo(rect.left() + tl, rect.top())
+            p.lineTo(rect.right() - tr, rect.top())
+            if tr: p.quadTo(rect.right(), rect.top(), rect.right(), rect.top() + tr)
+            else: p.lineTo(rect.right(), rect.top())
+            p.lineTo(rect.right(), rect.bottom() - br)
+            if br: p.quadTo(rect.right(), rect.bottom(), rect.right() - br, rect.bottom())
+            else: p.lineTo(rect.right(), rect.bottom())
+            p.lineTo(rect.left() + bl, rect.bottom())
+            if bl: p.quadTo(rect.left(), rect.bottom(), rect.left(), rect.bottom() - bl)
+            else: p.lineTo(rect.left(), rect.bottom())
+            p.lineTo(rect.left(), rect.top() + tl)
+            if tl: p.quadTo(rect.left(), rect.top(), rect.left() + tl, rect.top())
+            else: p.lineTo(rect.left(), rect.top())
+            p.closeSubpath()
+            return p
+
+        @staticmethod
+        def _qt_pen_style(style: str):
+            return {
+                "dashed": Qt.DashLine,
+                "dotted": Qt.DotLine,
+            }.get(str(style), Qt.SolidLine)
+
+        def _draw_border_side(self, painter: QPainter, side: str) -> None:
+            if not self._side_enabled(side):
+                return
+            root_style = str(getattr(self, "border_style", "none"))
+            style = str(getattr(self, f"border_{side}_style", root_style))
+            size = self._effective_side_size(side)
+            if style == "none" or size <= 0.0:
+                return
+            color = QColor(getattr(self, f"border_{side}_color", self.border_color))
+            if not color.isValid():
+                color = QColor(self.border_color)
+            frame = QRectF(0.0, -self.TITLE_HEIGHT, self._width, self._height + self.TITLE_HEIGHT)
+            offset = size / 2.0
+            if side == "left":
+                a, b = QPointF(-offset, frame.top()), QPointF(-offset, frame.bottom())
+            elif side == "top":
+                a, b = QPointF(frame.left(), frame.top() - offset), QPointF(frame.right(), frame.top() - offset)
+            elif side == "right":
+                a, b = QPointF(frame.right() + offset, frame.top()), QPointF(frame.right() + offset, frame.bottom())
+            else:
+                a, b = QPointF(frame.left(), frame.bottom() + offset), QPointF(frame.right(), frame.bottom() + offset)
+
+            if style == "double" and size >= 2.0:
+                pen = QPen(color, max(1.0, size / 3.0), Qt.SolidLine)
+                painter.setPen(pen)
+                if side in {"left", "right"}:
+                    painter.drawLine(a + QPointF(-size / 4.0, 0), b + QPointF(-size / 4.0, 0))
+                    painter.drawLine(a + QPointF(size / 4.0, 0), b + QPointF(size / 4.0, 0))
+                else:
+                    painter.drawLine(a + QPointF(0, -size / 4.0), b + QPointF(0, -size / 4.0))
+                    painter.drawLine(a + QPointF(0, size / 4.0), b + QPointF(0, size / 4.0))
+                return
+            painter.setPen(QPen(color, size, self._qt_pen_style(style)))
+            painter.drawLine(a, b)
+
+        def _draw_title_icons(self, painter: QPainter) -> None:
+            title = self.title_rect()
+            size = 16.0
+            gap = 9.0
+            right = title.right() - 10.0
+            cy = title.center().y()
+            close_rect = QRectF(right - size, cy - size / 2.0, size, size)
+            max_rect = close_rect.translated(-(size + gap), 0.0)
+            min_rect = max_rect.translated(-(size + gap), 0.0)
+            painter.setBrush(Qt.NoBrush)
+            painter.setPen(QPen(self.ICON_COLOR, 1.5))
+            painter.drawLine(
+                QPointF(min_rect.left() + 2.0, min_rect.bottom() - 3.0),
+                QPointF(min_rect.right() - 2.0, min_rect.bottom() - 3.0),
+            )
+            painter.drawRect(max_rect.adjusted(2.5, 2.5, -2.5, -2.5))
+            painter.drawLine(close_rect.topLeft() + QPointF(3.0, 3.0), close_rect.bottomRight() - QPointF(3.0, 3.0))
+            painter.drawLine(close_rect.topRight() + QPointF(-3.0, 3.0), close_rect.bottomLeft() + QPointF(3.0, -3.0))
+
+        def paint(self, painter: QPainter, option, widget=None) -> None:
+            del option, widget
+            painter.save()
+            try:
+                content = self.content_rect()
+                title = self.title_rect()
+                window_path = self._window_path()
+                painter.setClipPath(window_path)
+
+                # Brush gilt fuer die Client-Flaeche wie bei Controls.
+                bg = QColor(self.background_color)
+                fg = QColor(self.foreground_color)
+                if str(self.brush_gradient) != "none":
+                    client_brush = _dbase_form_gradient_brush(
+                        self.brush_gradient, bg, fg, content
+                    )
+                elif int(self.brush_style) > 0:
+                    client_brush = QBrush(_dbase_form_pattern_pixmap(
+                        self.brush_style, bg, fg,
+                        self.brush_cut_width, self.brush_cut_height,
+                    ))
+                else:
+                    client_brush = QBrush(bg)
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(client_brush)
+                painter.drawRect(content)
+
+                # Font-Background wird fuer die Titlebar verwendet.
+                title_color = QColor(self.font_background_color)
+                title_color.setAlpha(max(0, min(255, int(self.font_alpha))))
+                painter.setBrush(QBrush(title_color))
+                painter.drawRect(title)
+
+                # 10-Pixel-Raster nur in der Client-Flaeche.
+                spacing = max(1, int(getattr(self.designer_scene, "GRID_SPACING", 10)))
+                grid_color = QColor("#4A4A4A")
+                grid_color.setAlpha(135)
+                painter.setPen(QPen(grid_color, 0))
+                for x in range(0, int(self._width) + 1, spacing):
+                    for y in range(0, int(self._height) + 1, spacing):
+                        painter.drawPoint(QPointF(float(x), float(y)))
+
+                # Titeltext nutzt die Font-Eigenschaften der Form.
+                title_text_color = QColor(self.font_foreground_color)
+                title_text_color.setAlpha(max(0, min(255, int(self.font_alpha))))
+                title_font = QFont(self.font_family, int(self.font_point_size))
+                title_font.setBold(bool(self.font_bold))
+                title_font.setItalic(bool(self.font_italic))
+                title_font.setStrikeOut(bool(self.font_stroke))
+                title_font.setUnderline(bool(self.font_underline))
+                painter.setFont(title_font)
+                painter.setPen(QPen(title_text_color, 1.0))
+                painter.drawText(
+                    title.adjusted(10.0, 0.0, -88.0, 0.0),
+                    Qt.AlignVCenter | Qt.AlignLeft,
+                    str(self.component_name),
+                )
+                self._draw_title_icons(painter)
+                painter.setClipping(False)
+
+                # Border-Seiten werden separat gezeichnet; Default = 2 px grau.
+                for side in ("left", "top", "right", "bottom"):
+                    self._draw_border_side(painter, side)
+
+                # Trennlinie Titlebar/Client in der Root-Borderfarbe.
+                separator = QColor(self.border_color)
+                painter.setPen(QPen(separator, 1.0))
+                painter.drawLine(title.bottomLeft(), title.bottomRight())
+
+                if self.isSelected() or self.hasFocus():
+                    painter.setBrush(Qt.NoBrush)
+                    painter.setPen(QPen(QColor("#E6E6E6"), 1.0, Qt.DashLine))
+                    painter.drawRect(self.frame_rect().adjusted(-1.0, -1.0, 1.0, 1.0))
+            finally:
+                painter.restore()
+
     class DBaseFormDesignerScene(QGraphicsScene):
-        """QGraphicsScene mit 10-Pixel-Raster und Einfügemodus."""
+        """QGraphicsScene mit 10-Pixel-Raster und Einfügemodus.
+
+        Stage 106: Scene-Kontextmenü und CTRL-Drag im 10-Pixel-Raster.
+        """
 
         GRID_SPACING = 10
         control_created = pyqtSignal(object)
@@ -19402,32 +20258,43 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
 
         def __init__(self, parent=None):
             super().__init__(parent)
-            self.setSceneRect(0.0, 0.0, 2000.0, 1200.0)
             self._pending_component_type = ""
             self._pending_parent_panel = None
             self._component_counters = {}
+            # Stage 100: lokale Designer-Zwischenablage für komplette Controls.
+            self._control_clipboard = None
+            self._context_scene_pos = QPointF()
+            # Stage 108: WFM-Datei-/Form-Metadaten. Die Scene bleibt der
+            # Designer; diese Werte sind keine Runtime-Limits.
+            self.wfm_class_name = "ParentForm"
+            self.wfm_form_left = 200
+            self.wfm_form_top = 200
+            self.wfm_form_width = 400
+            self.wfm_form_height = 400
+            self.wfm_declared_properties = {}
+            self.wfm_source_header = ""
+            # Stage 110: echte visuelle Form-Hülle. Controls der Hauptform
+            # werden ChildItems dieses Objekts; ihre lokalen Koordinaten sind
+            # damit direkt die WFM-Left/Top-Werte.
+            self.form_window_item = DBaseFormWindowItem(self)
+            self.addItem(self.form_window_item)
+            self.form_window_item.set_form_size(
+                self.wfm_form_width, self.wfm_form_height, constrain_children=False
+            )
 
         def drawBackground(self, painter: QPainter, rect: QRectF) -> None:
-            super().drawBackground(painter, rect)
-            spacing = int(self.GRID_SPACING)
-            if spacing <= 0:
-                return
-
-            palette = QApplication.palette()
-            grid_color = QColor(palette.mid().color())
-            grid_color.setAlpha(115)
+            # Die äußere Arbeitsfläche bleibt bewusst dunkler als die
+            # Client-Fläche des Form-Fensters. Das 10-Pixel-Raster zeichnet
+            # DBaseFormWindowItem nur innerhalb des Fensters.
             painter.save()
             try:
-                painter.setPen(QPen(grid_color, 0))
-                left = int(rect.left()) - (int(rect.left()) % spacing)
-                top = int(rect.top()) - (int(rect.top()) % spacing)
-                right = int(rect.right()) + spacing
-                bottom = int(rect.bottom()) + spacing
-                for x in range(left, right, spacing):
-                    for y in range(top, bottom, spacing):
-                        painter.drawPoint(QPointF(float(x), float(y)))
+                painter.fillRect(rect, QColor("#101010"))
             finally:
                 painter.restore()
+
+        def form_content_contains_scene_pos(self, scene_pos: QPointF) -> bool:
+            local = self.form_window_item.mapFromScene(QPointF(scene_pos))
+            return self.form_window_item.designer_content_rect().contains(local)
 
         def _selected_panel(self):
             """Liefert das aktuell selektierte Panel als moeglichen Parent."""
@@ -19511,17 +20378,19 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             ):
                 parent_panel = None
             name = str(component_name or self._next_component_name(component_type))
+            top_parent = parent_panel if parent_panel is not None else self.form_window_item
             item = DBaseFormControlItem(
                 str(component_type),
                 name,
                 caption=caption,
                 width=float(spec["width"]),
                 height=float(spec["height"]),
-                parent=parent_panel,
+                parent=top_parent,
             )
             if parent_panel is None:
-                self.addItem(item)
-                position = QPointF(scene_pos)
+                # Hauptform: WFM-Koordinaten sind lokale Client-Koordinaten.
+                position = self.form_window_item.mapFromScene(QPointF(scene_pos))
+                item.setZValue(10.0)
             else:
                 # QGraphicsItem::pos() ist relativ zum Parent. Die Mausposition
                 # kommt dagegen in Scene-Koordinaten herein.
@@ -19534,20 +20403,377 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.control_created.emit(item)
             return item
 
+        def _control_at_scene_pos(self, scene_pos: QPointF):
+            """Oberstes Designer-Control bzw. die Root-Form unter der Maus."""
+            for candidate in self.items(QPointF(scene_pos)):
+                current = candidate
+                while current is not None:
+                    if isinstance(current, DBaseFormControlItem):
+                        return current
+                    if isinstance(current, DBaseFormWindowItem):
+                        return current
+                    try:
+                        current = current.parentItem()
+                    except AttributeError:
+                        current = None
+            return None
+
+        @staticmethod
+        def _color_text(value, fallback: str) -> str:
+            color = QColor(value)
+            return color.name(QColor.HexArgb) if color.isValid() else str(fallback)
+
+        def _snapshot_control(self, item):
+            """Serialisiert Control oder Root-Form samt Children."""
+            if not isinstance(item, (DBaseFormControlItem, DBaseFormWindowItem)):
+                return None
+            top, left, width, height = item.geometry_values()
+            payload = {
+                "component_type": str(item.component_type),
+                "component_name": str(getattr(item, "component_name", "")),
+                "caption": str(getattr(item, "caption", item.component_name)),
+                "geometry": {
+                    "top": int(top),
+                    "left": int(left),
+                    "width": int(width),
+                    "height": int(height),
+                },
+                "background": self._color_text(
+                    getattr(item, "background_color", QColor("#FFFFFF")), "#FFFFFFFF"
+                ),
+                "foreground": self._color_text(
+                    getattr(item, "foreground_color", QColor("#000000")), "#FF000000"
+                ),
+                "brush_style": int(getattr(item, "brush_style", 0)),
+                "brush_gradient": str(getattr(item, "brush_gradient", "none")),
+                "brush_cut_width": int(getattr(item, "brush_cut_width", 100)),
+                "brush_cut_height": int(getattr(item, "brush_cut_height", 100)),
+                "font_family": str(getattr(item, "font_family", QApplication.font().family())),
+                "font_point_size": int(getattr(item, "font_point_size", 10)),
+                "font_bold": bool(getattr(item, "font_bold", False)),
+                "font_italic": bool(getattr(item, "font_italic", False)),
+                "font_stroke": bool(getattr(item, "font_stroke", False)),
+                "font_underline": bool(getattr(item, "font_underline", False)),
+                "font_alpha": int(getattr(item, "font_alpha", 255)),
+                "font_background": self._color_text(
+                    getattr(item, "font_background_color", QColor("#FFFFFF")), "#FFFFFFFF"
+                ),
+                "font_foreground": self._color_text(
+                    getattr(item, "font_foreground_color", QColor("#000000")), "#FF000000"
+                ),
+                "border_style": str(getattr(item, "border_style", "none")),
+                "border_size": int(getattr(item, "border_size", 1)),
+                "border_color": self._color_text(
+                    getattr(item, "border_color", QColor("#7A7A7A")), "#FF7A7A7A"
+                ),
+                "border_shadow_color": self._color_text(
+                    getattr(item, "border_shadow_color", QColor("#000000")), "#FF000000"
+                ),
+                "border_round_tl": int(getattr(item, "border_round_tl", 0)),
+                "border_round_tr": int(getattr(item, "border_round_tr", 0)),
+                "border_round_bl": int(getattr(item, "border_round_bl", 0)),
+                "border_round_br": int(getattr(item, "border_round_br", 0)),
+                "border_left": bool(getattr(item, "border_left", True)),
+                "border_top": bool(getattr(item, "border_top", True)),
+                "border_right": bool(getattr(item, "border_right", True)),
+                "border_bottom": bool(getattr(item, "border_bottom", True)),
+                "border_side_details": {
+                    side: {
+                        "style": str(getattr(item, f"border_{side}_style", getattr(item, "border_style", "none"))),
+                        "size": int(getattr(item, f"border_{side}_size", getattr(item, "border_size", 1))),
+                        "color": self._color_text(
+                            getattr(item, f"border_{side}_color", getattr(item, "border_color", QColor("#7A7A7A"))),
+                            "#FF7A7A7A",
+                        ),
+                    }
+                    for side in ("left", "top", "right", "bottom")
+                },
+                "children": [],
+            }
+            if item.component_type in {"Panel", "Form"}:
+                for child in item.childItems():
+                    if isinstance(child, DBaseFormControlItem):
+                        child_payload = self._snapshot_control(child)
+                        if child_payload is not None:
+                            payload["children"].append(child_payload)
+            return payload
+
+        def _apply_snapshot_properties(self, item, payload) -> None:
+            if not isinstance(item, (DBaseFormControlItem, DBaseFormWindowItem)):
+                return
+            geometry = dict(payload.get("geometry") or {})
+            current_top, current_left, current_width, current_height = item.geometry_values()
+            item.set_geometry_values(
+                top=int(geometry.get("top", current_top)),
+                left=int(geometry.get("left", current_left)),
+                width=int(geometry.get("width", current_width)),
+                height=int(geometry.get("height", current_height)),
+            )
+            copied_name = str(payload.get("component_name", "") or "").strip()
+            if copied_name and hasattr(item, "set_component_name"):
+                item.set_component_name(copied_name)
+            item.set_background_color(QColor(payload.get("background", "#FFFFFF")))
+            item.set_foreground_color(QColor(payload.get("foreground", "#000000")))
+            item.set_brush_style(int(payload.get("brush_style", 0)))
+            if hasattr(item, "set_brush_gradient"):
+                item.set_brush_gradient(str(payload.get("brush_gradient", "none")))
+            if hasattr(item, "set_brush_cut_width"):
+                item.set_brush_cut_width(int(payload.get("brush_cut_width", 100)))
+            if hasattr(item, "set_brush_cut_height"):
+                item.set_brush_cut_height(int(payload.get("brush_cut_height", 100)))
+            item.set_font_family(str(payload.get("font_family", QApplication.font().family())))
+            item.set_font_point_size(int(payload.get("font_point_size", 10)))
+            item.set_font_bold(bool(payload.get("font_bold", False)))
+            item.set_font_italic(bool(payload.get("font_italic", False)))
+            if hasattr(item, "set_font_stroke"):
+                item.set_font_stroke(bool(payload.get("font_stroke", False)))
+            if hasattr(item, "set_font_underline"):
+                item.set_font_underline(bool(payload.get("font_underline", False)))
+            if hasattr(item, "set_font_alpha"):
+                item.set_font_alpha(int(payload.get("font_alpha", 255)))
+            if hasattr(item, "set_font_background_color"):
+                item.set_font_background_color(QColor(payload.get("font_background", "#FFFFFF")))
+            if hasattr(item, "set_font_foreground_color"):
+                item.set_font_foreground_color(QColor(payload.get("font_foreground", "#000000")))
+            if hasattr(item, "set_border_style"):
+                item.set_border_style(str(payload.get("border_style", "none")))
+            if hasattr(item, "set_border_size"):
+                item.set_border_size(int(payload.get("border_size", 1)))
+            if hasattr(item, "set_border_color"):
+                item.set_border_color(QColor(payload.get("border_color", "#7A7A7A")))
+            if hasattr(item, "set_border_shadow_color"):
+                item.set_border_shadow_color(QColor(payload.get("border_shadow_color", "#000000")))
+            if hasattr(item, "set_border_round_tl"):
+                item.set_border_round_tl(int(payload.get("border_round_tl", 0)))
+                item.set_border_round_tr(int(payload.get("border_round_tr", 0)))
+                item.set_border_round_bl(int(payload.get("border_round_bl", 0)))
+                item.set_border_round_br(int(payload.get("border_round_br", 0)))
+            if hasattr(item, "set_border_left"):
+                item.set_border_left(bool(payload.get("border_left", True)))
+                item.set_border_top(bool(payload.get("border_top", True)))
+                item.set_border_right(bool(payload.get("border_right", True)))
+                item.set_border_bottom(bool(payload.get("border_bottom", True)))
+            side_details = dict(payload.get("border_side_details") or {})
+            if hasattr(item, "set_border_side_style"):
+                for side in ("left", "top", "right", "bottom"):
+                    detail = dict(side_details.get(side) or {})
+                    item.set_border_side_style(side, str(detail.get("style", getattr(item, "border_style", "none"))))
+                    item.set_border_side_size(side, int(detail.get("size", getattr(item, "border_size", 1))))
+                    item.set_border_side_color(side, QColor(detail.get("color", "#7A7A7A")))
+
+        def _paste_snapshot(self, payload, scene_pos: QPointF, parent_panel=None):
+            if not isinstance(payload, dict):
+                return None
+            component_type = str(payload.get("component_type", ""))
+            if component_type == "Form":
+                form = self.form_window_item
+                self._apply_snapshot_properties(form, payload)
+                # Eine Root-Form kann nicht dupliziert werden. Einfuegen
+                # uebertraegt daher deren Eigenschaften auf die vorhandene
+                # Form und fuegt enthaltene Controls als neue Children ein.
+                for child_payload in list(payload.get("children") or []):
+                    child_geometry = dict(child_payload.get("geometry") or {})
+                    child_local = QPointF(
+                        float(child_geometry.get("left", 0)),
+                        float(child_geometry.get("top", 0)),
+                    )
+                    self._paste_snapshot(
+                        child_payload, form.mapToScene(child_local), parent_panel=None
+                    )
+                self.clearSelection()
+                form.setSelected(True)
+                form.setFocus(Qt.OtherFocusReason)
+                return form
+            if component_type not in DBASE_FORM_COMPONENT_SPECS:
+                return None
+            item = self.create_control(
+                component_type,
+                QPointF(scene_pos),
+                caption=str(payload.get("caption", "")) or None,
+                parent_panel=parent_panel,
+            )
+            if item is None:
+                return None
+            self._apply_snapshot_properties(item, payload)
+
+            # Panel-Children behalten ihre relativen Positionen und Hierarchie.
+            if item.component_type == "Panel":
+                for child_payload in list(payload.get("children") or []):
+                    child_geometry = dict(child_payload.get("geometry") or {})
+                    child_local = QPointF(
+                        float(child_geometry.get("left", 0)),
+                        float(child_geometry.get("top", 0)),
+                    )
+                    child_scene_pos = item.mapToScene(child_local)
+                    self._paste_snapshot(child_payload, child_scene_pos, parent_panel=item)
+                self.clearSelection()
+                item.setSelected(True)
+                item.setFocus(Qt.OtherFocusReason)
+            return item
+
+        def _context_help(self, item) -> None:
+            if isinstance(item, DBaseFormWindowItem):
+                top, left, width, height = item.geometry_values()
+                QMessageBox.information(
+                    None,
+                    "Hilfe",
+                    "dBase FORM - Designer-Root\n\n"
+                    f"Name/Klasse: {item.component_name}\n"
+                    f"Runtime-Position: Left={left}, Top={top}\n"
+                    f"Client-Größe: {width} x {height}\n\n"
+                    "Min/Max/Close sind im Designer nur Symbole.",
+                )
+                return
+            if not isinstance(item, DBaseFormControlItem):
+                return
+            top, left, width, height = item.geometry_values()
+            parent = item.panel_parent()
+            parent_text = parent.component_name if parent is not None else "Formular"
+            QMessageBox.information(
+                None,
+                "Hilfe",
+                "Designer-Komponente\n\n"
+                f"Typ: {item.component_type}\n"
+                f"Name: {item.component_name}\n"
+                f"Parent: {parent_text}\n"
+                f"Position: Left={left}, Top={top}\n"
+                f"Größe: {width} x {height}",
+            )
+
+        def _context_help_scene(self) -> None:
+            QMessageBox.information(
+                None,
+                "Hilfe",
+                "Formular-Designer\n\n"
+                "Rechte Maustaste: Kontextmenü öffnen.\n"
+                "CTRL + linke Maustaste + Ziehen: in 10-Pixel-Schritten verschieben.\n"
+                "Ohne CTRL: in 1-Pixel-Schritten verschieben.\n"
+                "Designer-Limits von Panels und Border-Innenkanten bleiben aktiv.",
+            )
+
+        def _context_copy(self, item) -> None:
+            payload = self._snapshot_control(item)
+            if payload is not None:
+                self._control_clipboard = payload
+
+        def _clear_form_children(self) -> None:
+            form = self.form_window_item
+            for child in list(form.childItems()):
+                if isinstance(child, DBaseFormControlItem):
+                    self.removeItem(child)
+
+        def _context_cut(self, item) -> None:
+            payload = self._snapshot_control(item)
+            if payload is None:
+                return
+            self._control_clipboard = payload
+            if isinstance(item, DBaseFormWindowItem):
+                # Die eine Root-Form selbst bleibt als Designer-Arbeitsobjekt
+                # bestehen; Ausschneiden entfernt ihre enthaltenen Controls.
+                self._clear_form_children()
+                self.clearSelection(); item.setSelected(True)
+                return
+            self.removeItem(item)
+            self.clearSelection()
+
+        def _context_remove(self, item) -> None:
+            if isinstance(item, DBaseFormWindowItem):
+                # Root darf nicht verschwinden, sonst gaebe es keine Flaeche
+                # mehr zum Weiterarbeiten. Entfernen leert daher deren Inhalt.
+                self._clear_form_children()
+                self.clearSelection(); item.setSelected(True)
+                return
+            if not isinstance(item, DBaseFormControlItem):
+                return
+            self.removeItem(item)
+            self.clearSelection()
+
+        def _context_paste(self, target, scene_pos: QPointF) -> None:
+            if not isinstance(self._control_clipboard, dict):
+                return
+            parent_panel = None
+            if isinstance(target, DBaseFormControlItem):
+                if target.component_type == "Panel":
+                    parent_panel = target
+                else:
+                    parent_panel = target.panel_parent()
+            elif isinstance(target, DBaseFormWindowItem):
+                parent_panel = None
+            self._paste_snapshot(
+                dict(self._control_clipboard),
+                QPointF(scene_pos),
+                parent_panel=parent_panel,
+            )
+
+        def contextMenuEvent(self, event) -> None:
+            """Stage 111: identisches Kontextmenue fuer Control und FORM."""
+            target = self._control_at_scene_pos(event.scenePos())
+            selected_target = None
+
+            if isinstance(target, (DBaseFormControlItem, DBaseFormWindowItem)):
+                # Auf freier Fensterflaeche wird bewusst die FORM selbst
+                # selektiert; auf einem Control weiterhin genau das Control.
+                self.clearSelection()
+                target.setSelected(True)
+                target.setFocus(Qt.MouseFocusReason)
+                selected_target = target
+            else:
+                selected = [
+                    item for item in self.selectedItems()
+                    if isinstance(item, (DBaseFormControlItem, DBaseFormWindowItem))
+                ]
+                if selected:
+                    selected_target = selected[0]
+
+            self._context_scene_pos = QPointF(event.scenePos())
+
+            menu = QMenu()
+            action_help = menu.addAction("Hilfe")
+            menu.addSeparator()
+            action_copy = menu.addAction("Kopieren")
+            action_paste = menu.addAction("Einfügen")
+            action_cut = menu.addAction("Ausschneiden")
+            action_remove = menu.addAction("Entfernen")
+
+            has_target = isinstance(
+                selected_target, (DBaseFormControlItem, DBaseFormWindowItem)
+            )
+            action_copy.setEnabled(has_target)
+            action_cut.setEnabled(has_target)
+            action_remove.setEnabled(has_target)
+            action_paste.setEnabled(isinstance(self._control_clipboard, dict))
+
+            chosen = menu.exec_(event.screenPos())
+            if chosen is action_help:
+                if has_target:
+                    self._context_help(selected_target)
+                else:
+                    self._context_help_scene()
+            elif chosen is action_copy and has_target:
+                self._context_copy(selected_target)
+            elif chosen is action_paste:
+                self._context_paste(target, self._context_scene_pos)
+            elif chosen is action_cut and has_target:
+                self._context_cut(selected_target)
+            elif chosen is action_remove and has_target:
+                self._context_remove(selected_target)
+            event.accept()
+
         def mousePressEvent(self, event) -> None:
             if event.button() == Qt.LeftButton and self._pending_component_type:
                 component_type = self._pending_component_type
                 parent_panel = self._placement_parent(event.scenePos())
-                # Stage-90 regression marker: self.create_control(component_type, event.scenePos())
-                self.create_control(
-                    component_type,
-                    event.scenePos(),
-                    parent_panel=parent_panel,
-                )
-                # Ein Klick in der Palette setzt den Flag nur für eine Platzierung.
-                self.set_pending_component("")
-                event.accept()
-                return
+                if parent_panel is not None or self.form_content_contains_scene_pos(event.scenePos()):
+                    # Stage-90 regression marker: self.create_control(component_type, event.scenePos())
+                    self.create_control(
+                        component_type,
+                        event.scenePos(),
+                        parent_panel=parent_panel,
+                    )
+                    # Ein Klick in der Palette setzt den Flag nur für eine Platzierung.
+                    self.set_pending_component("")
+                    event.accept()
+                    return
             super().mousePressEvent(event)
 
 
@@ -19612,6 +20838,10 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
         properties_changed = pyqtSignal(object)
         MIN_WIDTH = 20.0
         MIN_HEIGHT = 18.0
+        # Stage 105: Panel-Border-Limits sind ausschliesslich eine
+        # Schutzfunktion des visuellen Designers. Die generierte Anwendung
+        # erhaelt daraus keine Runtime-Positionsbeschraenkung.
+        DESIGNER_ENFORCE_PANEL_CONTENT_LIMITS = True
 
         def __init__(
             self,
@@ -19627,14 +20857,26 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.component_type = str(component_type)
             self.component_name = str(component_name)
             self.caption = str(caption if caption is not None else self.component_name)
+            # Stage 108: round-trip metadata fuer lesbare *.wfm-OOP-Dateien.
+            self.wfm_class_name = ""
+            self.wfm_events = {}
+            self.wfm_extra_properties = {}
             self._width = max(self.MIN_WIDTH, float(width))
             self._height = max(self.MIN_HEIGHT, float(height))
             self._resize_role = ""
             self._resize_start_pos = QPointF()
             self._resize_start_rect = QRectF()
             self._resize_preview = None
+            # Stage 106: eigener Designer-Drag, damit CTRL live zwischen
+            # 10-Pixel-Grid und 1-Pixel-Modus wechseln kann, ohne zu springen.
+            self._designer_drag_active = False
+            self._designer_drag_anchor_scene = QPointF()
+            self._designer_drag_anchor_item = QPointF()
+            self._designer_drag_last_scene = QPointF()
+            self._designer_drag_ctrl_mode = False
             # Stage 95: 0 = Vollton/kein Pattern, 1..N = eingebettete Brush-Maske.
             self.brush_style = 0
+            self.brush_gradient = "none"
             self.brush_cut_width = 100
             self.brush_cut_height = 100
 
@@ -19670,11 +20912,32 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.border_style = "none"
             self.border_size = 1
             self.border_color = QColor("#7A7A7A")
+            self.border_shadow_color = QColor("#000000")
             self.border_round_tl = 0
             self.border_round_tr = 0
             self.border_round_bl = 0
             self.border_round_br = 0
+            # Stage 101: Border-Seiten standardmaessig alle aktiv.
+            self.border_left = True
+            self.border_top = True
+            self.border_right = True
+            self.border_bottom = True
+            # Stage 102: eigene Style/Size/Color-Werte je Border-Seite.
+            # Stage 104: Panel-Children respektieren diese Border-Staerken als Content-Inset.
+            for _side in ("left", "top", "right", "bottom"):
+                setattr(self, f"border_{_side}_style", self.border_style)
+                setattr(self, f"border_{_side}_size", self.border_size)
+                setattr(self, f"border_{_side}_color", QColor(self.border_color))
             self._border_shadow_effect = None
+            # Stage 108: harter Schatten ist ein gefuelltes Rechteck hinter
+            # der Komponente. Dadurch bleibt die Schattenfarbe unabhaengig
+            # von den vier Border-Seiten und besitzt keine Blur-/Effect-Kante.
+            self._border_shadow_rect = QGraphicsRectItem(self)
+            self._border_shadow_rect.setPen(QPen(Qt.NoPen))
+            self._border_shadow_rect.setBrush(QBrush(QColor(self.border_shadow_color)))
+            self._border_shadow_rect.setZValue(-20.0)
+            self._border_shadow_rect.setFlag(QGraphicsItem.ItemStacksBehindParent, True)
+            self._border_shadow_rect.setVisible(False)
 
             self.proxy = QGraphicsProxyWidget(self)
             self.proxy.setWidget(self.control_widget)
@@ -19757,6 +21020,13 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 return parent
             return None
 
+        def form_parent(self):
+            """Stage 110: visuelle Hauptform als Designer-Parent erkennen."""
+            parent = self.parentItem()
+            if isinstance(parent, DBaseFormWindowItem):
+                return parent
+            return None
+
         def panel_depth(self) -> int:
             depth = 0
             parent = self.panel_parent()
@@ -19765,18 +21035,85 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 parent = parent.panel_parent()
             return depth
 
+        def _designer_effective_border_inset(self, side: str) -> float:
+            """Nur Designer: effektive Innenkante einer einzelnen Border-Seite."""
+            side = str(side).casefold()
+            if side not in {"left", "top", "right", "bottom"}:
+                return 0.0
+            if not bool(getattr(self, f"border_{side}", True)):
+                return 0.0
+            master_style = str(getattr(self, "border_style", "none"))
+            side_style = str(getattr(self, f"border_{side}_style", master_style))
+            if side_style == "none":
+                return 0.0
+            master_size = int(getattr(self, "border_size", 0))
+            side_size = max(0, int(getattr(self, f"border_{side}_size", master_size)))
+            return float(side_size)
+
+        def designer_panel_content_rect(self) -> QRectF:
+            """Nur Designer: sichere Innenflaeche ohne aktive Border-Seiten.
+
+            Diese Grenze ist absichtlich keine Runtime-Regel und wird nicht
+            in den generierten Programmcode als Layout-Limit uebernommen.
+            """
+            rect = QRectF(self.boundingRect())
+            if self.component_type != "Panel":
+                return rect
+            left = self._designer_effective_border_inset("left")
+            top = self._designer_effective_border_inset("top")
+            right = self._designer_effective_border_inset("right")
+            bottom = self._designer_effective_border_inset("bottom")
+            content_width = max(0.0, rect.width() - left - right)
+            content_height = max(0.0, rect.height() - top - bottom)
+            return QRectF(
+                rect.left() + left,
+                rect.top() + top,
+                content_width,
+                content_height,
+            )
+
+        def _designer_constrain_panel_children_to_content(self) -> None:
+            """Nur Designer: haelt Children ausserhalb der Border-Zone.
+
+            Laufzeitcode darf Controls weiterhin frei bis an/ueber diese
+            Grenzen positionieren; diese Methode gehoert nur zum visuellen
+            Formulardesigner.
+            """
+            if not bool(self.DESIGNER_ENFORCE_PANEL_CONTENT_LIMITS):
+                return
+            if self.component_type != "Panel":
+                return
+            bounds = self.designer_panel_content_rect()
+            if bounds.width() <= 0.0 or bounds.height() <= 0.0:
+                return
+            for child in list(self.childItems()):
+                if not isinstance(child, DBaseFormControlItem):
+                    continue
+                max_width = max(child.MIN_WIDTH, bounds.width())
+                max_height = max(child.MIN_HEIGHT, bounds.height())
+                if child._width > bounds.width() and bounds.width() >= child.MIN_WIDTH:
+                    child._set_size(bounds.width(), child._height)
+                if child._height > bounds.height() and bounds.height() >= child.MIN_HEIGHT:
+                    child._set_size(child._width, bounds.height())
+                max_x = max(bounds.left(), bounds.right() - child._width)
+                max_y = max(bounds.top(), bounds.bottom() - child._height)
+                x = max(bounds.left(), min(child.pos().x(), max_x))
+                y = max(bounds.top(), min(child.pos().y(), max_y))
+                child.setPos(QPointF(x, y))
+
         def paint(self, painter: QPainter, option, widget=None) -> None:
             del option, widget
             painter.save()
             try:
-                # Stage 92: Pattern liegt hinter dem eingebetteten QWidget.
-                if int(self.brush_style) > 0:
+                # Stage 107: Gradient hat Vorrang vor Pattern.
+                if str(getattr(self, "brush_gradient", "none")) != "none":
+                    painter.fillRect(self.boundingRect(), _dbase_form_gradient_brush(
+                        self.brush_gradient, self.background_color, self.foreground_color, self.boundingRect()
+                    ))
+                elif int(self.brush_style) > 0:
                     tile = _dbase_form_pattern_pixmap(
-                        self.brush_style,
-                        self.background_color,
-                        self.foreground_color,
-                        self.brush_cut_width,
-                        self.brush_cut_height,
+                        self.brush_style, self.background_color, self.foreground_color,
+                        self.brush_cut_width, self.brush_cut_height,
                     )
                     painter.fillRect(self.boundingRect(), QBrush(tile))
 
@@ -19791,9 +21128,27 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             if change == QGraphicsItem.ItemPositionChange and self.scene() is not None:
                 position = QPointF(value)
                 parent_panel = self.panel_parent()
-                bounds = parent_panel.boundingRect() if parent_panel is not None else self.scene().sceneRect()
-                x = max(bounds.left(), min(position.x(), bounds.right() - self._width))
-                y = max(bounds.top(), min(position.y(), bounds.bottom() - self._height))
+                use_designer_limits = bool(
+                    self.DESIGNER_ENFORCE_PANEL_CONTENT_LIMITS
+                )
+                form_parent = self.form_parent()
+                bounds = (
+                    parent_panel.designer_panel_content_rect()
+                    if parent_panel is not None and use_designer_limits
+                    else (
+                        parent_panel.boundingRect()
+                        if parent_panel is not None
+                        else (
+                            form_parent.designer_content_rect()
+                            if form_parent is not None
+                            else self.scene().sceneRect()
+                        )
+                    )
+                )
+                max_x = max(bounds.left(), bounds.right() - self._width)
+                max_y = max(bounds.top(), bounds.bottom() - self._height)
+                x = max(bounds.left(), min(position.x(), max_x))
+                y = max(bounds.top(), min(position.y(), max_y))
                 return QPointF(x, y)
 
             result = super().itemChange(change, value)
@@ -19817,11 +21172,66 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self._update_handle_visibility()
             self.update()
 
+        @staticmethod
+        def _designer_quantize_drag_delta(value: float, step: int) -> float:
+            step = max(1, int(step))
+            return float(round(float(value) / float(step)) * step)
+
         def mousePressEvent(self, event) -> None:
             if event.button() == Qt.LeftButton:
                 self.setSelected(True)
                 self.setFocus(Qt.MouseFocusReason)
+                scene_pos = QPointF(event.scenePos())
+                self._designer_drag_active = True
+                self._designer_drag_anchor_scene = QPointF(scene_pos)
+                self._designer_drag_anchor_item = QPointF(self.pos())
+                self._designer_drag_last_scene = QPointF(scene_pos)
+                self._designer_drag_ctrl_mode = bool(
+                    event.modifiers() & Qt.ControlModifier
+                )
+            # super() hält die normale QGraphicsItem-Selektion/Fokussemantik
+            # intakt; die eigentliche Bewegung übernehmen wir in mouseMoveEvent.
             super().mousePressEvent(event)
+
+        def mouseMoveEvent(self, event) -> None:
+            if self._designer_drag_active and (event.buttons() & Qt.LeftButton):
+                scene_pos = QPointF(event.scenePos())
+                ctrl_mode = bool(event.modifiers() & Qt.ControlModifier)
+
+                # CTRL kann während eines laufenden Drags gedrückt oder
+                # losgelassen werden. Beim Moduswechsel wird am letzten
+                # Mauspunkt neu verankert, damit das Control nicht springt.
+                if ctrl_mode != bool(self._designer_drag_ctrl_mode):
+                    self._designer_drag_anchor_scene = QPointF(
+                        self._designer_drag_last_scene
+                    )
+                    self._designer_drag_anchor_item = QPointF(self.pos())
+                    self._designer_drag_ctrl_mode = ctrl_mode
+
+                delta = scene_pos - self._designer_drag_anchor_scene
+                step = int(getattr(self.scene(), "GRID_SPACING", 10)) if ctrl_mode else 1
+                dx = self._designer_quantize_drag_delta(delta.x(), step)
+                dy = self._designer_quantize_drag_delta(delta.y(), step)
+                requested = QPointF(
+                    self._designer_drag_anchor_item.x() + dx,
+                    self._designer_drag_anchor_item.y() + dy,
+                )
+
+                # setPos() läuft absichtlich durch itemChange(); dadurch bleiben
+                # Scene-Grenzen sowie die Designer-only Panel/Border-Limits aus
+                # Stage 104/105 auch im 10-Pixel-Modus vollständig erhalten.
+                self.setPos(requested)
+                self._designer_drag_last_scene = QPointF(scene_pos)
+                event.accept()
+                return
+            super().mouseMoveEvent(event)
+
+        def mouseReleaseEvent(self, event) -> None:
+            if event.button() == Qt.LeftButton and self._designer_drag_active:
+                self._designer_drag_active = False
+                self._designer_drag_last_scene = QPointF(event.scenePos())
+                self.geometry_changed.emit(self)
+            super().mouseReleaseEvent(event)
 
         def _update_handle_visibility(self) -> None:
             visible = bool(self.isSelected() or self.hasFocus())
@@ -19858,6 +21268,8 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self._height = height
             self._sync_proxy_size()
             self._position_handles()
+            self._apply_border_shadow()
+            self._designer_constrain_panel_children_to_content()
             self.update()
 
         def geometry_values(self) -> Tuple[int, int, int, int]:
@@ -19916,53 +21328,98 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             color = QColor(getattr(self, "border_color", QColor("#7A7A7A")))
             if not color.isValid():
                 color = QColor("#7A7A7A")
-            if style == "none" or size <= 0:
-                border = "border: none;"
-            else:
-                css_style = {
-                    "solid": "solid",
-                    "dashed": "dashed",
-                    "dotted": "dotted",
-                    "double": "double",
-                    "hard_br": "solid",
-                    "hard_tl": "solid",
-                    "hard_right": "solid",
-                    "hard_bottom": "solid",
-                }.get(style, "solid")
-                border = f"border: {size}px {css_style} {color.name()};"
-            return (
-                border
-                + f" border-top-left-radius: {max(0, int(self.border_round_tl))}px;"
-                + f" border-top-right-radius: {max(0, int(self.border_round_tr))}px;"
-                + f" border-bottom-left-radius: {max(0, int(self.border_round_bl))}px;"
-                + f" border-bottom-right-radius: {max(0, int(self.border_round_br))}px;"
-            )
+
+            css_style = {
+                "solid": "solid",
+                "dashed": "dashed",
+                "dotted": "dotted",
+                "double": "double",
+                "hard_br": "solid",
+                "hard_tl": "solid",
+                "hard_right": "solid",
+                "hard_bottom": "solid",
+            }.get(style, "solid")
+
+            enabled = {
+                "left": bool(getattr(self, "border_left", True)),
+                "top": bool(getattr(self, "border_top", True)),
+                "right": bool(getattr(self, "border_right", True)),
+                "bottom": bool(getattr(self, "border_bottom", True)),
+            }
+            declarations = []
+            for side in ("left", "top", "right", "bottom"):
+                side_style = str(getattr(self, f"border_{side}_style", style))
+                side_size = max(0, min(64, int(getattr(self, f"border_{side}_size", size))))
+                side_color = QColor(getattr(self, f"border_{side}_color", color))
+                if not side_color.isValid():
+                    side_color = QColor(color)
+                side_css_style = {
+                    "solid": "solid", "dashed": "dashed", "dotted": "dotted",
+                    "double": "double", "hard_br": "solid", "hard_tl": "solid",
+                    "hard_right": "solid", "hard_bottom": "solid",
+                }.get(side_style, "solid")
+                if side_style == "none" or side_size <= 0 or not enabled[side]:
+                    declarations.append(f"border-{side}: none;")
+                else:
+                    declarations.append(f"border-{side}: {side_size}px {side_css_style} {side_color.name()};")
+
+            declarations.extend((
+                f"border-top-left-radius: {max(0, int(self.border_round_tl))}px;",
+                f"border-top-right-radius: {max(0, int(self.border_round_tr))}px;",
+                f"border-bottom-left-radius: {max(0, int(self.border_round_bl))}px;",
+                f"border-bottom-right-radius: {max(0, int(self.border_round_br))}px;",
+            ))
+            return " ".join(declarations)
 
         def _apply_border_shadow(self) -> None:
+            """Zeichnet Hard-Shadow als gefuelltes Rechteck hinter dem Control."""
+            # Einen alten QGraphicsEffect aus frueheren Stages sicher entfernen.
+            try:
+                self.proxy.setGraphicsEffect(None)
+            except RuntimeError:
+                pass
+            self._border_shadow_effect = None
+
+            shadow_rect = getattr(self, "_border_shadow_rect", None)
+            if shadow_rect is None:
+                return
             style = str(getattr(self, "border_style", "none"))
             shadow_styles = {"hard_br", "hard_tl", "hard_right", "hard_bottom"}
             if style not in shadow_styles:
-                try:
-                    self.proxy.setGraphicsEffect(None)
-                except RuntimeError:
-                    pass
-                self._border_shadow_effect = None
+                shadow_rect.setVisible(False)
                 return
 
+            left_on = bool(getattr(self, "border_left", True))
+            top_on = bool(getattr(self, "border_top", True))
+            right_on = bool(getattr(self, "border_right", True))
+            bottom_on = bool(getattr(self, "border_bottom", True))
             amount = max(2, int(getattr(self, "border_size", 1)) + 3)
-            effect = QGraphicsDropShadowEffect(self.proxy)
-            effect.setBlurRadius(0.0)
-            effect.setColor(QColor(getattr(self, "border_color", QColor("#000000"))))
+
             if style == "hard_tl":
-                effect.setOffset(-amount, -amount)
+                dx = -amount if left_on else 0
+                dy = -amount if top_on else 0
             elif style == "hard_right":
-                effect.setOffset(amount, 0)
+                dx = amount if right_on else 0
+                dy = 0
             elif style == "hard_bottom":
-                effect.setOffset(0, amount)
-            else:
-                effect.setOffset(amount, amount)
-            self.proxy.setGraphicsEffect(effect)
-            self._border_shadow_effect = effect
+                dx = 0
+                dy = amount if bottom_on else 0
+            else:  # hard_br
+                dx = amount if right_on else 0
+                dy = amount if bottom_on else 0
+
+            if dx == 0 and dy == 0:
+                shadow_rect.setVisible(False)
+                return
+
+            color = QColor(getattr(self, "border_shadow_color", QColor("#000000")))
+            if not color.isValid():
+                color = QColor("#000000")
+            shadow_rect.setRect(QRectF(0.0, 0.0, float(self._width), float(self._height)))
+            shadow_rect.setPos(float(dx), float(dy))
+            shadow_rect.setPen(QPen(Qt.NoPen))
+            shadow_rect.setBrush(QBrush(color))
+            shadow_rect.setVisible(True)
 
         def _apply_widget_style(self) -> None:
             font = QFont(self.font_family, int(self.font_point_size))
@@ -19979,16 +21436,17 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             font_fg = QColor(self.font_foreground_color)
             font_fg.setAlpha(max(0, min(255, int(self.font_alpha))))
             font_bg.setAlpha(max(0, min(255, int(self.font_alpha))))
-            if int(self.brush_style) > 0:
-                texture = QBrush(
-                    _dbase_form_pattern_pixmap(
-                        self.brush_style,
-                        bg,
-                        fg,
-                        self.brush_cut_width,
-                        self.brush_cut_height,
-                    )
+            gradient_active = str(getattr(self, "brush_gradient", "none")) != "none"
+            if gradient_active:
+                gradient_brush = _dbase_form_gradient_brush(
+                    self.brush_gradient, bg, fg, QRectF(0.0,0.0,max(1.0,self._width),max(1.0,self._height))
                 )
+                for role in (QPalette.Window, QPalette.Button, QPalette.Base, QPalette.AlternateBase):
+                    palette.setBrush(role, gradient_brush)
+            elif int(self.brush_style) > 0:
+                texture = QBrush(_dbase_form_pattern_pixmap(
+                    self.brush_style, bg, fg, self.brush_cut_width, self.brush_cut_height
+                ))
                 for role in (QPalette.Window, QPalette.Button, QPalette.Base, QPalette.AlternateBase):
                     palette.setBrush(role, texture)
             else:
@@ -19996,7 +21454,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                     palette.setColor(role, bg)
             for role in (QPalette.WindowText, QPalette.ButtonText, QPalette.Text):
                 palette.setColor(role, font_fg)
-            if int(self.brush_style) <= 0:
+            if int(self.brush_style) <= 0 and not gradient_active:
                 for role in (QPalette.Base, QPalette.AlternateBase):
                     palette.setColor(role, font_bg)
             self.control_widget.setPalette(palette)
@@ -20009,20 +21467,30 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             border_css = self._border_style_css()
             background_css = (
                 "background-color: transparent;"
-                if int(self.brush_style) > 0
+                if gradient_active or int(self.brush_style) > 0
                 else f"background-color: {bg.name()};"
             )
+            # Stage 103: Pattern, Vollton und Border benutzen immer denselben
+            # vollständigen QSS-Pfad. WA_TranslucentBackground wird NICHT mehr
+            # zur Laufzeit umgeschaltet. Dieses Attribut lässt sich unter
+            # Qt/Windows nach dem Anzeigen eines Widgets nicht zuverlässig
+            # reversibel ändern und war die Ursache dafür, dass ein Control
+            # nach "Pattern -> Ohne Muster" nicht mehr sauber stylbar war.
+            self.control_widget.setAttribute(Qt.WA_TranslucentBackground, False)
+            self.control_widget.setAttribute(Qt.WA_StyledBackground, True)
+            self.control_widget.setAutoFillBackground(not gradient_active and int(self.brush_style) <= 0)
+
+            # Ein leeres setStyleSheet erzwingt, dass keine transparente
+            # Pattern-Regel aus dem vorherigen Zustand erhalten bleibt.
+            self.control_widget.setStyleSheet("")
             self.control_widget.setStyleSheet(
                 f"{selector} {{ {background_css} "
                 f"color: rgba({font_fg.red()},{font_fg.green()},{font_fg.blue()},{font_fg.alpha()}); "
                 f"{border_css} padding: 2px; }}"
             )
-            self.control_widget.setAttribute(
-                Qt.WA_TranslucentBackground,
-                bool(int(self.brush_style) > 0),
-            )
             self._apply_border_shadow()
 
+            self.control_widget.updateGeometry()
             self.control_widget.update()
             self.proxy.update()
             self.update()
@@ -20049,7 +21517,28 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             value = max(0, min(int(style_index), len(DBASE_FORM_BRUSH_PATTERNS)))
             if value == int(self.brush_style):
                 return
+            previous = int(self.brush_style)
             self.brush_style = value
+
+            # Stage 103: Beim Verlassen eines Patterns einen eventuell noch
+            # gecachten transparenten Style explizit verwerfen. Border-, Font-
+            # und Brush-Eigenschaften bleiben dabei vollständig erhalten.
+            if previous > 0 and value == 0:
+                self.control_widget.setAttribute(Qt.WA_TranslucentBackground, False)
+                self.control_widget.setAutoFillBackground(True)
+                self.control_widget.setStyleSheet("")
+
+            self._apply_widget_style()
+            self.properties_changed.emit(self)
+
+        def set_brush_gradient(self, gradient_name: str) -> None:
+            allowed = {value for _label, value in DBASE_FORM_BRUSH_GRADIENTS}
+            value = str(gradient_name or "none")
+            if value not in allowed:
+                value = "none"
+            if value == str(getattr(self, "brush_gradient", "none")):
+                return
+            self.brush_gradient = value
             self._apply_widget_style()
             self.properties_changed.emit(self)
 
@@ -20133,7 +21622,10 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             if value == self.border_style:
                 return
             self.border_style = value
+            for side in ("left", "top", "right", "bottom"):
+                setattr(self, f"border_{side}_style", value)
             self._apply_widget_style()
+            self._designer_constrain_panel_children_to_content()
             self.properties_changed.emit(self)
 
         def set_border_size(self, value: int) -> None:
@@ -20141,7 +21633,10 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             if value == int(self.border_size):
                 return
             self.border_size = value
+            for side in ("left", "top", "right", "bottom"):
+                setattr(self, f"border_{side}_size", value)
             self._apply_widget_style()
+            self._designer_constrain_panel_children_to_content()
             self.properties_changed.emit(self)
 
         def set_border_color(self, color) -> bool:
@@ -20149,7 +21644,19 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             if not value.isValid():
                 return False
             self.border_color = value
+            for side in ("left", "top", "right", "bottom"):
+                setattr(self, f"border_{side}_color", QColor(value))
             self._apply_widget_style()
+            self.properties_changed.emit(self)
+            return True
+
+        def set_border_shadow_color(self, color) -> bool:
+            value = QColor(color)
+            if not value.isValid():
+                return False
+            self.border_shadow_color = value
+            self._apply_border_shadow()
+            self.control_widget.update(); self.proxy.update(); self.update()
             self.properties_changed.emit(self)
             return True
 
@@ -20173,32 +21680,129 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self._apply_widget_style()
             self.properties_changed.emit(self)
 
+        def _set_border_side(self, side: str, enabled: bool) -> None:
+            attr = f"border_{str(side).casefold()}"
+            if attr not in {"border_left", "border_top", "border_right", "border_bottom"}:
+                return
+            enabled = bool(enabled)
+            if bool(getattr(self, attr, True)) == enabled:
+                return
+            setattr(self, attr, enabled)
+            self._apply_widget_style()
+            self._designer_constrain_panel_children_to_content()
+            self.properties_changed.emit(self)
+
+        def set_border_left(self, enabled: bool) -> None:
+            self._set_border_side("left", enabled)
+
+        def set_border_top(self, enabled: bool) -> None:
+            self._set_border_side("top", enabled)
+
+        def set_border_right(self, enabled: bool) -> None:
+            self._set_border_side("right", enabled)
+
+        def set_border_bottom(self, enabled: bool) -> None:
+            self._set_border_side("bottom", enabled)
+
+        def set_border_side_style(self, side: str, value: str) -> None:
+            side = str(side).casefold()
+            if side not in {"left", "top", "right", "bottom"}: return
+            allowed = {item_value for _label, item_value in DBASE_FORM_BORDER_STYLES}
+            value = str(value or "none")
+            if value not in allowed: value = "none"
+            setattr(self, f"border_{side}_style", value)
+            self._apply_widget_style()
+            self._designer_constrain_panel_children_to_content()
+            self.properties_changed.emit(self)
+
+        def set_border_side_size(self, side: str, value: int) -> None:
+            side = str(side).casefold()
+            if side not in {"left", "top", "right", "bottom"}: return
+            setattr(self, f"border_{side}_size", max(0, min(64, int(value))))
+            self._apply_widget_style()
+            self._designer_constrain_panel_children_to_content()
+            self.properties_changed.emit(self)
+
+        def set_border_side_color(self, side: str, color) -> bool:
+            side = str(side).casefold()
+            if side not in {"left", "top", "right", "bottom"}: return False
+            value = QColor(color)
+            if not value.isValid(): return False
+            setattr(self, f"border_{side}_color", value)
+            self._apply_widget_style(); self.properties_changed.emit(self)
+            return True
+
+        def _designer_resize_parent_item(self):
+            parent_panel = self.panel_parent()
+            if parent_panel is not None:
+                return parent_panel
+            form_parent = self.form_parent()
+            if form_parent is not None:
+                return form_parent
+            return None
+
+        def _designer_resize_point_from_scene(self, scene_pos: QPointF) -> QPointF:
+            parent = self._designer_resize_parent_item()
+            if parent is not None:
+                return parent.mapFromScene(QPointF(scene_pos))
+            return QPointF(scene_pos)
+
+        def _designer_resize_bounds(self) -> QRectF:
+            parent_panel = self.panel_parent()
+            if parent_panel is not None:
+                if bool(self.DESIGNER_ENFORCE_PANEL_CONTENT_LIMITS):
+                    return QRectF(parent_panel.designer_panel_content_rect())
+                return QRectF(parent_panel.boundingRect())
+            form_parent = self.form_parent()
+            if form_parent is not None:
+                return QRectF(form_parent.designer_content_rect())
+            scene = self.scene()
+            return QRectF(scene.sceneRect()) if scene is not None else QRectF()
+
         def begin_resize(self, role: str, scene_pos: QPointF) -> None:
+            """Stage 111: Resize komplett im Koordinatenraum des Parents.
+
+            Seit Stage 110 sind Top-Level-Controls Children der Form. Eine
+            Scene-koordinierte Preview mischte dadurch zwei Koordinatenraeume
+            und konnte beim Resize eines Controls im Form-Fenster abstuerzen.
+            Preview, Bounds und Ergebnis liegen jetzt konsequent im Parent.
+            """
             scene = self.scene()
             if scene is None:
                 return
             self.setSelected(True)
             self.setFocus(Qt.MouseFocusReason)
             self._resize_role = str(role)
-            self._resize_start_pos = QPointF(scene_pos)
-            position = self.scenePos()
-            self._resize_start_rect = QRectF(position.x(), position.y(), self._width, self._height)
+            self._resize_start_pos = self._designer_resize_point_from_scene(scene_pos)
+            position = QPointF(self.pos())
+            self._resize_start_rect = QRectF(
+                position.x(), position.y(), self._width, self._height
+            )
+
             if self._resize_preview is not None:
                 try:
+                    if self._resize_preview.parentItem() is not None:
+                        self._resize_preview.setParentItem(None)
                     scene.removeItem(self._resize_preview)
                 except RuntimeError:
                     pass
-            preview = QGraphicsRectItem(self._resize_start_rect)
+                self._resize_preview = None
+
+            parent = self._designer_resize_parent_item()
+            if parent is not None:
+                preview = QGraphicsRectItem(self._resize_start_rect, parent)
+            else:
+                preview = QGraphicsRectItem(self._resize_start_rect)
+                scene.addItem(preview)
             preview.setZValue(2000.0)
-            # Stage 96: Resize-Vorschau weiterhin konsequent hellgrau.
             preview.setPen(QPen(QColor(205, 205, 205), 1.5, Qt.DashLine))
             preview.setBrush(QBrush(Qt.NoBrush))
-            scene.addItem(preview)
             self._resize_preview = preview
 
         def _resize_rect_for_position(self, scene_pos: QPointF) -> QRectF:
             start = QRectF(self._resize_start_rect)
-            delta = QPointF(scene_pos) - self._resize_start_pos
+            current = self._designer_resize_point_from_scene(scene_pos)
+            delta = current - self._resize_start_pos
             left, right = start.left(), start.right()
             top, bottom = start.top(), start.bottom()
             role = self._resize_role
@@ -20212,43 +21816,57 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             if "s" in role:
                 bottom = max(start.bottom() + delta.y(), top + self.MIN_HEIGHT)
 
-            scene = self.scene()
-            if scene is not None:
-                parent_panel = self.panel_parent()
-                bounds = (
-                    parent_panel.sceneBoundingRect()
-                    if parent_panel is not None
-                    else scene.sceneRect()
-                )
+            bounds = self._designer_resize_bounds()
+            if bounds.isValid() and bounds.width() > 0.0 and bounds.height() > 0.0:
+                # Die bereits bestehenden Panel-/Border-/Form-Limits bleiben
+                # die letzte Instanz der Resize-Berechnung.
                 left = max(bounds.left(), left)
                 top = max(bounds.top(), top)
                 right = min(bounds.right(), right)
                 bottom = min(bounds.bottom(), bottom)
 
+                # Nach dem Clamping Mindestgroesse in der jeweiligen
+                # Resize-Richtung bewahren, soweit die Parentflaeche reicht.
+                if right - left < self.MIN_WIDTH:
+                    if "w" in role and "e" not in role:
+                        left = max(bounds.left(), right - self.MIN_WIDTH)
+                    else:
+                        right = min(bounds.right(), left + self.MIN_WIDTH)
+                if bottom - top < self.MIN_HEIGHT:
+                    if "n" in role and "s" not in role:
+                        top = max(bounds.top(), bottom - self.MIN_HEIGHT)
+                    else:
+                        bottom = min(bounds.bottom(), top + self.MIN_HEIGHT)
+
             return QRectF(QPointF(left, top), QPointF(right, bottom)).normalized()
 
         def update_resize(self, scene_pos: QPointF) -> None:
-            if self._resize_preview is not None:
-                self._resize_preview.setRect(self._resize_rect_for_position(scene_pos))
+            preview = self._resize_preview
+            if preview is not None:
+                preview.setRect(self._resize_rect_for_position(scene_pos))
 
         def finish_resize(self, scene_pos: QPointF) -> None:
-            if self._resize_preview is None:
+            preview = self._resize_preview
+            if preview is None:
                 return
             self.update_resize(scene_pos)
-            rect = QRectF(self._resize_preview.rect())
+            rect = QRectF(preview.rect())
             scene = self.scene()
-            if scene is not None:
-                scene.removeItem(self._resize_preview)
             self._resize_preview = None
             self._resize_role = ""
-            parent_panel = self.panel_parent()
-            if parent_panel is None:
-                position = QPointF(rect.left(), rect.top())
-            else:
-                position = parent_panel.mapFromScene(QPointF(rect.left(), rect.top()))
-            self.setPos(position)
+            if scene is not None:
+                try:
+                    if preview.parentItem() is not None:
+                        preview.setParentItem(None)
+                    scene.removeItem(preview)
+                except RuntimeError:
+                    pass
+
+            # rect liegt bereits im selben Parent-Koordinatenraum wie self.pos().
+            self.setPos(QPointF(rect.left(), rect.top()))
             self._set_size(rect.width(), rect.height())
             self.geometry_changed.emit(self)
+
 
 
     class DBaseFormButtonItem(DBaseFormControlItem):
@@ -20343,6 +21961,12 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.foreground_edit, self.foreground_button = self._add_color_property(
                 "Foreground", parent_item=self.brush_root
             )
+            self.brush_gradient_combo = QComboBox(self.property_tree)
+            self.brush_gradient_combo.setObjectName("dbase_form_brush_gradient_combo")
+            self.brush_gradient_combo.setIconSize(QSize(72, 24))
+            for gradient_label, gradient_value in DBASE_FORM_BRUSH_GRADIENTS:
+                self.brush_gradient_combo.addItem(gradient_label, gradient_value)
+            self._add_widget_property("Gradient", self.brush_gradient_combo, parent_item=self.brush_root)
             self.style_root = QTreeWidgetItem(self.brush_root, ["Style", ""])
             self.style_root.setFlags(self.style_root.flags() & ~Qt.ItemIsSelectable)
             self.style_root.setExpanded(True)
@@ -20373,6 +21997,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
 
             self._style_brush_root()
             self._refresh_brush_style_icons(QColor("#000000"), QColor("#FFFFFF"), 100, 100)
+            self._refresh_brush_gradient_icons(QColor("#000000"), QColor("#FFFFFF"))
 
             self.font_root = QTreeWidgetItem(self.property_tree, ["Font", ""])
             self.font_root.setFlags(self.font_root.flags() & ~Qt.ItemIsSelectable)
@@ -20394,13 +22019,37 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.font_size_spin.setSuffix(" pt")
             self._add_widget_property("Size", self.font_size_spin, parent_item=self.font_root)
 
-            self.font_background_combo = DBaseFormColorComboBox(self.property_tree)
+            # Stage 103: Font-Farben erhalten neben der ColorComboBox einen
+            # separaten "..."-Button fuer den QColorDialog. Die gewaehlte
+            # Farbe wird anschliessend als "Eigene Farbe" in die ComboBox
+            # uebernommen und sofort auf das selektierte Control angewendet.
+            self.font_background_holder = QWidget(self.property_tree)
+            font_background_layout = QHBoxLayout(self.font_background_holder)
+            font_background_layout.setContentsMargins(0, 0, 0, 0)
+            font_background_layout.setSpacing(4)
+            self.font_background_combo = DBaseFormColorComboBox(self.font_background_holder)
             self.font_background_combo.setObjectName("dbase_form_font_background_combo")
-            self._add_widget_property("Background", self.font_background_combo, parent_item=self.font_root)
+            self.font_background_button = QPushButton("...", self.font_background_holder)
+            self.font_background_button.setObjectName("dbase_form_font_background_button")
+            self.font_background_button.setFixedWidth(30)
+            font_background_layout.addWidget(self.font_background_combo, 1)
+            font_background_layout.addWidget(self.font_background_button)
+            self._add_widget_property("Background", self.font_background_holder, parent_item=self.font_root)
+            self._property_widgets.extend((self.font_background_combo, self.font_background_button))
 
-            self.font_foreground_combo = DBaseFormColorComboBox(self.property_tree)
+            self.font_foreground_holder = QWidget(self.property_tree)
+            font_foreground_layout = QHBoxLayout(self.font_foreground_holder)
+            font_foreground_layout.setContentsMargins(0, 0, 0, 0)
+            font_foreground_layout.setSpacing(4)
+            self.font_foreground_combo = DBaseFormColorComboBox(self.font_foreground_holder)
             self.font_foreground_combo.setObjectName("dbase_form_font_foreground_combo")
-            self._add_widget_property("Foreground", self.font_foreground_combo, parent_item=self.font_root)
+            self.font_foreground_button = QPushButton("...", self.font_foreground_holder)
+            self.font_foreground_button.setObjectName("dbase_form_font_foreground_button")
+            self.font_foreground_button.setFixedWidth(30)
+            font_foreground_layout.addWidget(self.font_foreground_combo, 1)
+            font_foreground_layout.addWidget(self.font_foreground_button)
+            self._add_widget_property("Foreground", self.font_foreground_holder, parent_item=self.font_root)
+            self._property_widgets.extend((self.font_foreground_combo, self.font_foreground_button))
 
             self.font_alpha_combo = QComboBox(self.property_tree)
             self.font_alpha_combo.setObjectName("dbase_form_font_alpha_combo")
@@ -20444,9 +22093,36 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.border_size_spin.setValue(1)
             self._add_widget_property("Size", self.border_size_spin, parent_item=self.border_root)
 
-            self.border_color_combo = DBaseFormColorComboBox(self.property_tree)
+            # Stage 108: auch die beiden Border-Root-Farben besitzen einen
+            # expliziten ...-Button fuer frei waehlbare QColorDialog-Farben.
+            self.border_color_holder = QWidget(self.property_tree)
+            border_color_layout = QHBoxLayout(self.border_color_holder)
+            border_color_layout.setContentsMargins(0, 0, 0, 0)
+            border_color_layout.setSpacing(4)
+            self.border_color_combo = DBaseFormColorComboBox(self.border_color_holder)
             self.border_color_combo.setObjectName("dbase_form_border_color_combo")
-            self._add_widget_property("Color", self.border_color_combo, parent_item=self.border_root)
+            self.border_color_button = QPushButton("...", self.border_color_holder)
+            self.border_color_button.setObjectName("dbase_form_border_color_button")
+            self.border_color_button.setFixedWidth(30)
+            border_color_layout.addWidget(self.border_color_combo, 1)
+            border_color_layout.addWidget(self.border_color_button)
+            self._add_widget_property("Color", self.border_color_holder, parent_item=self.border_root)
+            self._property_widgets.extend((self.border_color_combo, self.border_color_button))
+
+            self.border_shadow_color_holder = QWidget(self.property_tree)
+            shadow_color_layout = QHBoxLayout(self.border_shadow_color_holder)
+            shadow_color_layout.setContentsMargins(0, 0, 0, 0)
+            shadow_color_layout.setSpacing(4)
+            self.border_shadow_color_combo = DBaseFormColorComboBox(self.border_shadow_color_holder)
+            self.border_shadow_color_combo.setObjectName("dbase_form_border_shadow_color_combo")
+            self.border_shadow_color_combo.setCurrentColor(QColor("#000000"))
+            self.border_shadow_color_button = QPushButton("...", self.border_shadow_color_holder)
+            self.border_shadow_color_button.setObjectName("dbase_form_border_shadow_color_button")
+            self.border_shadow_color_button.setFixedWidth(30)
+            shadow_color_layout.addWidget(self.border_shadow_color_combo, 1)
+            shadow_color_layout.addWidget(self.border_shadow_color_button)
+            self._add_widget_property("Shadow Color", self.border_shadow_color_holder, parent_item=self.border_root)
+            self._property_widgets.extend((self.border_shadow_color_combo, self.border_shadow_color_button))
 
             self.border_round_tl_spin = QSpinBox(self.property_tree)
             self.border_round_tl_spin.setObjectName("dbase_form_border_round_tl_spinbox")
@@ -20472,12 +22148,55 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.border_round_br_spin.setSuffix(" px")
             self._add_widget_property("Rounded BR", self.border_round_br_spin, parent_item=self.border_root)
 
+            # Stage 102: Border-Seiten als Untergruppen mit Style/Size/Color.
+            self._border_side_items = {}
+            self._border_side_checks = {}
+            self._border_side_style_combos = {}
+            self._border_side_size_spins = {}
+            self._border_side_color_combos = {}
+            self._border_side_color_buttons = {}
+            for side_label, side_key in (("Left", "left"), ("Top", "top"), ("Right", "right"), ("Bottom", "bottom")):
+                side_item = QTreeWidgetItem(self.border_root, [side_label, ""])
+                side_item.setFlags(side_item.flags() & ~Qt.ItemIsSelectable)
+                side_item.setExpanded(True)
+                side_check = QCheckBox(self.property_tree)
+                side_check.setObjectName(f"dbase_form_border_{side_key}_checkbox")
+                side_check.setChecked(True)
+                self.property_tree.setItemWidget(side_item, 1, side_check)
+                self._property_widgets.append(side_check)
+                style_combo = QComboBox(self.property_tree)
+                style_combo.setObjectName(f"dbase_form_border_{side_key}_style_combo")
+                for border_label, border_value in DBASE_FORM_BORDER_STYLES:
+                    style_combo.addItem(border_label, border_value)
+                self._add_widget_property("Style", style_combo, parent_item=side_item)
+                size_spin = QSpinBox(self.property_tree)
+                size_spin.setObjectName(f"dbase_form_border_{side_key}_size_spinbox")
+                size_spin.setRange(0, 64); size_spin.setSuffix(" px"); size_spin.setValue(1)
+                self._add_widget_property("Size", size_spin, parent_item=side_item)
+                color_holder = QWidget(self.property_tree)
+                color_layout = QHBoxLayout(color_holder); color_layout.setContentsMargins(0,0,0,0); color_layout.setSpacing(4)
+                color_combo = DBaseFormColorComboBox(color_holder)
+                color_combo.setObjectName(f"dbase_form_border_{side_key}_color_combo")
+                color_button = QPushButton("...", color_holder)
+                color_button.setObjectName(f"dbase_form_border_{side_key}_color_button"); color_button.setFixedWidth(30)
+                color_layout.addWidget(color_combo, 1); color_layout.addWidget(color_button)
+                self._add_widget_property("Color", color_holder, parent_item=side_item)
+                self._property_widgets.extend((color_combo, color_button))
+                self._border_side_items[side_key]=side_item; self._border_side_checks[side_key]=side_check
+                self._border_side_style_combos[side_key]=style_combo; self._border_side_size_spins[side_key]=size_spin
+                self._border_side_color_combos[side_key]=color_combo; self._border_side_color_buttons[side_key]=color_button
+            self.border_left_check=self._border_side_checks["left"]
+            self.border_top_check=self._border_side_checks["top"]
+            self.border_right_check=self._border_side_checks["right"]
+            self.border_bottom_check=self._border_side_checks["bottom"]
+
             self.property_tree.itemDoubleClicked.connect(self._property_item_double_clicked)
             self.name_edit.editingFinished.connect(self._name_changed)
             self.background_edit.editingFinished.connect(lambda: self._color_text_changed("background"))
             self.foreground_edit.editingFinished.connect(lambda: self._color_text_changed("foreground"))
             self.background_button.clicked.connect(lambda: self._choose_color("background"))
             self.foreground_button.clicked.connect(lambda: self._choose_color("foreground"))
+            self.brush_gradient_combo.currentIndexChanged.connect(self._brush_gradient_changed)
             self.brush_style_combo.currentIndexChanged.connect(self._brush_style_changed)
             self.brush_cut_width_spin.valueChanged.connect(self._brush_cut_width_changed)
             self.brush_cut_height_spin.valueChanged.connect(self._brush_cut_height_changed)
@@ -20485,6 +22204,12 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.font_size_spin.valueChanged.connect(self._font_size_changed)
             self.font_background_combo.colorChanged.connect(self._font_background_changed)
             self.font_foreground_combo.colorChanged.connect(self._font_foreground_changed)
+            self.font_background_button.clicked.connect(
+                lambda _checked=False: self._choose_font_color("background")
+            )
+            self.font_foreground_button.clicked.connect(
+                lambda _checked=False: self._choose_font_color("foreground")
+            )
             self.font_alpha_combo.currentIndexChanged.connect(self._font_alpha_changed)
             self.bold_check.toggled.connect(self._bold_changed)
             self.italic_check.toggled.connect(self._italic_changed)
@@ -20493,10 +22218,30 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.border_style_combo.currentIndexChanged.connect(self._border_style_changed)
             self.border_size_spin.valueChanged.connect(self._border_size_changed)
             self.border_color_combo.colorChanged.connect(self._border_color_changed)
+            self.border_shadow_color_combo.colorChanged.connect(self._border_shadow_color_changed)
+            self.border_color_button.clicked.connect(
+                lambda _checked=False: self._choose_border_root_color("border")
+            )
+            self.border_shadow_color_button.clicked.connect(
+                lambda _checked=False: self._choose_border_root_color("shadow")
+            )
             self.border_round_tl_spin.valueChanged.connect(lambda value: self._border_round_changed("tl", value))
             self.border_round_tr_spin.valueChanged.connect(lambda value: self._border_round_changed("tr", value))
             self.border_round_bl_spin.valueChanged.connect(lambda value: self._border_round_changed("bl", value))
             self.border_round_br_spin.valueChanged.connect(lambda value: self._border_round_changed("br", value))
+            self.border_left_check.toggled.connect(lambda enabled: self._border_side_changed("left", enabled))
+            self.border_top_check.toggled.connect(lambda enabled: self._border_side_changed("top", enabled))
+            self.border_right_check.toggled.connect(lambda enabled: self._border_side_changed("right", enabled))
+            self.border_bottom_check.toggled.connect(lambda enabled: self._border_side_changed("bottom", enabled))
+            for side in ("left", "top", "right", "bottom"):
+                self._border_side_style_combos[side].currentIndexChanged.connect(
+                    lambda combo_index, side_name=side: self._border_side_style_changed(side_name, combo_index))
+                self._border_side_size_spins[side].valueChanged.connect(
+                    lambda value, side_name=side: self._border_side_size_changed(side_name, value))
+                self._border_side_color_combos[side].colorChanged.connect(
+                    lambda color, side_name=side: self._border_side_color_changed(side_name, color))
+                self._border_side_color_buttons[side].clicked.connect(
+                    lambda _checked=False, side_name=side: self._choose_border_side_color(side_name))
 
             properties_layout.addWidget(self.property_tree, 1)
             self.upper_tabs.addTab(properties_page, "Eigenschaften")
@@ -20527,10 +22272,16 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.scene.placement_mode_changed.connect(self._placement_mode_changed)
             self.scene.control_created.connect(self.bind_item)
             self.scene.selectionChanged.connect(self._selection_changed)
+            # Stage 111: auch die Hauptform besitzt denselben Property-Pfad.
+            self.bind_item(self.scene.form_window_item)
 
             self.vertical_splitter.setSizes((470, 280))
             self._set_property_widgets_enabled(False)
             self.set_dark_mode(False)
+            self._update_color_dialog_button(self.font_background_button, QColor("#FFFFFF"))
+            self._update_color_dialog_button(self.font_foreground_button, QColor("#000000"))
+            self._update_color_dialog_button(self.border_color_button, QColor("#7A7A7A"))
+            self._update_color_dialog_button(self.border_shadow_color_button, QColor("#000000"))
 
         def _add_widget_property(self, key: str, widget: QWidget, *, parent_item=None):
             if parent_item is None:
@@ -20598,13 +22349,31 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.border_root.setFont(0, font)
 
         def _update_color_button(self, button: QPushButton, color) -> None:
+            """Brush-Farbswatch; Stage 103 auch im Dark-Mode klar umrandet."""
             value = QColor(color)
             if not value.isValid():
                 return
+            dark_mode = bool(getattr(self, "_dark_mode", False))
             contrast = "#000000" if value.lightness() > 140 else "#FFFFFF"
+            border = "#D0D0D0" if dark_mode else "#666666"
             button.setStyleSheet(
                 f"QPushButton {{ background-color:{value.name()}; color:{contrast}; "
-                "border:1px solid #666666; }}"
+                f"border:1px solid {border}; border-radius:2px; }} "
+                f"QPushButton:hover {{ border:1px solid {'#FFFF00' if dark_mode else '#000080'}; }}"
+            )
+
+        def _update_color_dialog_button(self, button: QPushButton, color) -> None:
+            """Kompakter ...-Button mit Farbswatch fuer Font/Border-Dialoge."""
+            value = QColor(color)
+            if not value.isValid():
+                value = QColor("#000000")
+            dark_mode = bool(getattr(self, "_dark_mode", False))
+            contrast = "#000000" if value.lightness() > 140 else "#FFFFFF"
+            border = "#D0D0D0" if dark_mode else "#666666"
+            button.setStyleSheet(
+                f"QPushButton {{ background-color:{value.name()}; color:{contrast}; "
+                f"border:1px solid {border}; border-radius:2px; }} "
+                f"QPushButton:hover {{ border:1px solid {'#FFFF00' if dark_mode else '#000080'}; }}"
             )
 
         def _refresh_brush_style_icons(
@@ -20637,6 +22406,14 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                     ),
                 )
 
+        def _refresh_brush_gradient_icons(self, background=None, foreground=None) -> None:
+            bg = QColor(background) if background is not None else QColor("#000000")
+            fg = QColor(foreground) if foreground is not None else QColor("#FFFFFF")
+            if not bg.isValid(): bg = QColor("#000000")
+            if not fg.isValid(): fg = QColor("#FFFFFF")
+            for index, (_label, gradient_value) in enumerate(DBASE_FORM_BRUSH_GRADIENTS):
+                self.brush_gradient_combo.setItemIcon(index, _dbase_form_gradient_icon(gradient_value,bg,fg))
+
         def set_dark_mode(self, enabled: bool) -> None:
             self._dark_mode = bool(enabled)
             if bool(enabled):
@@ -20662,6 +22439,50 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self._style_brush_root()
             self._style_font_root()
             self._style_border_root()
+
+            # Stage 103: Die "..."-Farbschalter werden explizit neu gestylt,
+            # weil ihre Swatch-QSS sonst die globale Dark-Mode-QSS ueberlagert.
+            if hasattr(self, "background_button"):
+                brush_bg = (
+                    self._selected_item.background_color
+                    if self._selected_item is not None else QColor("#000000")
+                )
+                brush_fg = (
+                    self._selected_item.foreground_color
+                    if self._selected_item is not None else QColor("#FFFFFF")
+                )
+                self._update_color_button(self.background_button, brush_bg)
+                self._update_color_button(self.foreground_button, brush_fg)
+            if hasattr(self, "font_background_button"):
+                font_bg = (
+                    self._selected_item.font_background_color
+                    if self._selected_item is not None else QColor("#FFFFFF")
+                )
+                font_fg = (
+                    self._selected_item.font_foreground_color
+                    if self._selected_item is not None else QColor("#000000")
+                )
+                self._update_color_dialog_button(self.font_background_button, font_bg)
+                self._update_color_dialog_button(self.font_foreground_button, font_fg)
+            if hasattr(self, "border_color_button"):
+                border_color = (
+                    self._selected_item.border_color
+                    if self._selected_item is not None else QColor("#7A7A7A")
+                )
+                shadow_color = (
+                    self._selected_item.border_shadow_color
+                    if self._selected_item is not None else QColor("#000000")
+                )
+                self._update_color_dialog_button(self.border_color_button, border_color)
+                self._update_color_dialog_button(self.border_shadow_color_button, shadow_color)
+            if hasattr(self, "_border_side_color_buttons"):
+                for side, button in self._border_side_color_buttons.items():
+                    side_color = (
+                        QColor(getattr(self._selected_item, f"border_{side}_color"))
+                        if self._selected_item is not None
+                        else QColor("#7A7A7A")
+                    )
+                    self._update_color_dialog_button(button, side_color)
 
         def _palette_icon(self, component_type: str) -> QIcon:
             pix = QPixmap(48, 48)
@@ -20726,7 +22547,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.standard_icon_view.setCurrentRow(-1)
 
         def bind_item(self, item) -> None:
-            if not isinstance(item, DBaseFormControlItem):
+            if not isinstance(item, (DBaseFormControlItem, DBaseFormWindowItem)):
                 return
             try:
                 item.geometry_changed.disconnect(self._geometry_changed)
@@ -20745,8 +22566,11 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
         def _selected_control(self):
             selected = [
                 item for item in self.scene.selectedItems()
-                if isinstance(item, DBaseFormControlItem)
+                if isinstance(item, (DBaseFormControlItem, DBaseFormWindowItem))
             ]
+            # Ein echtes Control hat Vorrang, falls Qt waehrend eines
+            # Selektionswechsels kurz Root und Child gleichzeitig meldet.
+            selected.sort(key=lambda item: 0 if isinstance(item, DBaseFormControlItem) else 1)
             return selected[0] if selected else None
 
         def _selection_changed(self) -> None:
@@ -20781,6 +22605,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                     self.name_edit.clear()
                     self.background_edit.clear()
                     self.foreground_edit.clear()
+                    self.brush_gradient_combo.setCurrentIndex(0)
                     self.brush_style_combo.setCurrentIndex(0)
                     self.brush_cut_width_spin.setValue(100)
                     self.brush_cut_height_spin.setValue(100)
@@ -20794,11 +22619,24 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                     self.border_style_combo.setCurrentIndex(0)
                     self.border_size_spin.setValue(1)
                     self.border_color_combo.setCurrentColor(QColor("#7A7A7A"))
+                    self.border_shadow_color_combo.setCurrentColor(QColor("#000000"))
+                    self._update_color_dialog_button(self.border_color_button, QColor("#7A7A7A"))
+                    self._update_color_dialog_button(self.border_shadow_color_button, QColor("#000000"))
                     self.border_round_tl_spin.setValue(0)
                     self.border_round_tr_spin.setValue(0)
                     self.border_round_bl_spin.setValue(0)
                     self.border_round_br_spin.setValue(0)
+                    self.border_left_check.setChecked(True)
+                    self.border_top_check.setChecked(True)
+                    self.border_right_check.setChecked(True)
+                    self.border_bottom_check.setChecked(True)
+                    for side in ("left", "top", "right", "bottom"):
+                        combo=self._border_side_style_combos[side]; idx=combo.findData("none")
+                        combo.setCurrentIndex(idx if idx >= 0 else 0)
+                        self._border_side_size_spins[side].setValue(1)
+                        self._border_side_color_combos[side].setCurrentColor(QColor("#7A7A7A"))
                     self._refresh_brush_style_icons(QColor("#000000"), QColor("#FFFFFF"), 100, 100)
+                    self._refresh_brush_gradient_icons(QColor("#000000"), QColor("#FFFFFF"))
                     return
 
                 top, left, width, height = item.geometry_values()
@@ -20814,11 +22652,12 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 self.brush_cut_width_spin.setValue(int(getattr(item, "brush_cut_width", 100)))
                 self.brush_cut_height_spin.setValue(int(getattr(item, "brush_cut_height", 100)))
                 self._refresh_brush_style_icons(
-                    item.background_color,
-                    item.foreground_color,
-                    int(getattr(item, "brush_cut_width", 100)),
-                    int(getattr(item, "brush_cut_height", 100)),
+                    item.background_color, item.foreground_color,
+                    int(getattr(item, "brush_cut_width", 100)), int(getattr(item, "brush_cut_height", 100)),
                 )
+                self._refresh_brush_gradient_icons(item.background_color, item.foreground_color)
+                gradient_index = self.brush_gradient_combo.findData(str(getattr(item,"brush_gradient","none")))
+                self.brush_gradient_combo.setCurrentIndex(gradient_index if gradient_index >= 0 else 0)
                 self.brush_style_combo.setCurrentIndex(int(item.brush_style))
                 index = self.font_combo.findText(item.font_family, Qt.MatchFixedString)
                 if index >= 0:
@@ -20829,6 +22668,8 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 self.font_size_spin.setValue(int(item.font_point_size))
                 self.font_background_combo.setCurrentColor(item.font_background_color)
                 self.font_foreground_combo.setCurrentColor(item.font_foreground_color)
+                self._update_color_dialog_button(self.font_background_button, item.font_background_color)
+                self._update_color_dialog_button(self.font_foreground_button, item.font_foreground_color)
                 self.font_alpha_combo.setCurrentIndex(max(0, min(255, int(item.font_alpha))))
                 self.bold_check.setChecked(bool(item.font_bold))
                 self.italic_check.setChecked(bool(item.font_italic))
@@ -20838,10 +22679,25 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 self.border_style_combo.setCurrentIndex(border_index if border_index >= 0 else 0)
                 self.border_size_spin.setValue(int(getattr(item, "border_size", 1)))
                 self.border_color_combo.setCurrentColor(getattr(item, "border_color", QColor("#7A7A7A")))
+                self.border_shadow_color_combo.setCurrentColor(getattr(item, "border_shadow_color", QColor("#000000")))
+                self._update_color_dialog_button(self.border_color_button, getattr(item, "border_color", QColor("#7A7A7A")))
+                self._update_color_dialog_button(self.border_shadow_color_button, getattr(item, "border_shadow_color", QColor("#000000")))
                 self.border_round_tl_spin.setValue(int(getattr(item, "border_round_tl", 0)))
                 self.border_round_tr_spin.setValue(int(getattr(item, "border_round_tr", 0)))
                 self.border_round_bl_spin.setValue(int(getattr(item, "border_round_bl", 0)))
                 self.border_round_br_spin.setValue(int(getattr(item, "border_round_br", 0)))
+                self.border_left_check.setChecked(bool(getattr(item, "border_left", True)))
+                self.border_top_check.setChecked(bool(getattr(item, "border_top", True)))
+                self.border_right_check.setChecked(bool(getattr(item, "border_right", True)))
+                self.border_bottom_check.setChecked(bool(getattr(item, "border_bottom", True)))
+                for side in ("left", "top", "right", "bottom"):
+                    combo=self._border_side_style_combos[side]
+                    side_style=str(getattr(item, f"border_{side}_style", getattr(item, "border_style", "none")))
+                    side_index=combo.findData(side_style); combo.setCurrentIndex(side_index if side_index >= 0 else 0)
+                    self._border_side_size_spins[side].setValue(int(getattr(item, f"border_{side}_size", getattr(item, "border_size", 1))))
+                    side_color = QColor(getattr(item, f"border_{side}_color", getattr(item, "border_color", QColor("#7A7A7A"))))
+                    self._border_side_color_combos[side].setCurrentColor(side_color)
+                    self._update_color_dialog_button(self._border_side_color_buttons[side], side_color)
             finally:
                 self._syncing = False
 
@@ -20860,6 +22716,8 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 self.font_root.setExpanded(not self.font_root.isExpanded())
             elif hasattr(self, "border_root") and item is self.border_root:
                 self.border_root.setExpanded(not self.border_root.isExpanded())
+            elif hasattr(self, "_border_side_items") and item in self._border_side_items.values():
+                item.setExpanded(not item.isExpanded())
 
         def _name_changed(self) -> None:
             if self._syncing or self._selected_item is None:
@@ -20889,6 +22747,15 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 int(getattr(self._selected_item, "brush_cut_width", 100)),
                 int(getattr(self._selected_item, "brush_cut_height", 100)),
             )
+            self._refresh_brush_gradient_icons(
+                self._selected_item.background_color, self._selected_item.foreground_color
+            )
+
+        def _brush_gradient_changed(self, combo_index: int) -> None:
+            if self._syncing or self._selected_item is None:
+                return
+            value = self.brush_gradient_combo.itemData(int(combo_index))
+            self._selected_item.set_brush_gradient(str(value or "none"))
 
         def _brush_style_changed(self, combo_index: int) -> None:
             if self._syncing or self._selected_item is None:
@@ -20939,6 +22806,9 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 int(getattr(self._selected_item, "brush_cut_width", 100)),
                 int(getattr(self._selected_item, "brush_cut_height", 100)),
             )
+            self._refresh_brush_gradient_icons(
+                self._selected_item.background_color, self._selected_item.foreground_color
+            )
 
         def _font_family_changed(self, family: str) -> None:
             if self._syncing or self._selected_item is None:
@@ -20954,11 +22824,46 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             if self._syncing or self._selected_item is None:
                 return
             self._selected_item.set_font_background_color(color)
+            self._update_color_dialog_button(self.font_background_button, color)
 
         def _font_foreground_changed(self, color: QColor) -> None:
             if self._syncing or self._selected_item is None:
                 return
             self._selected_item.set_font_foreground_color(color)
+            self._update_color_dialog_button(self.font_foreground_button, color)
+
+        def _choose_font_color(self, which: str) -> None:
+            if self._selected_item is None:
+                return
+            which = str(which).casefold()
+            if which == "background":
+                combo = self.font_background_combo
+                initial = QColor(self._selected_item.font_background_color)
+                title = "Font Background auswählen"
+            else:
+                combo = self.font_foreground_combo
+                initial = QColor(self._selected_item.font_foreground_color)
+                title = "Font Foreground auswählen"
+
+            chosen = QColorDialog.getColor(
+                initial,
+                self,
+                title,
+                QColorDialog.ShowAlphaChannel,
+            )
+            if not chosen.isValid():
+                return
+
+            # Der Dialogwert wird bewusst in den Eintrag 'Eigene Farbe'
+            # geschrieben, auch wenn er zufaellig einer Standardfarbe gleicht.
+            # Dadurch ist unmittelbar sichtbar, welcher Wert aus dem Dialog kam.
+            combo.setCustomColor(chosen, emit_change=False)
+            if which == "background":
+                self._selected_item.set_font_background_color(chosen)
+                self._update_color_dialog_button(self.font_background_button, chosen)
+            else:
+                self._selected_item.set_font_foreground_color(chosen)
+                self._update_color_dialog_button(self.font_foreground_button, chosen)
 
         def _font_alpha_changed(self, combo_index: int) -> None:
             if self._syncing or self._selected_item is None:
@@ -21005,6 +22910,13 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             if self._syncing or self._selected_item is None:
                 return
             self._selected_item.set_border_color(color)
+            self._update_color_dialog_button(self.border_color_button, color)
+
+        def _border_shadow_color_changed(self, color: QColor) -> None:
+            if self._syncing or self._selected_item is None:
+                return
+            self._selected_item.set_border_shadow_color(color)
+            self._update_color_dialog_button(self.border_shadow_color_button, color)
 
         def _border_round_changed(self, corner: str, value: int) -> None:
             if self._syncing or self._selected_item is None:
@@ -21018,6 +22930,63 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 self._selected_item.set_border_round_bl(value)
             elif corner == "br":
                 self._selected_item.set_border_round_br(value)
+
+        def _border_side_changed(self, side: str, enabled: bool) -> None:
+            if self._syncing or self._selected_item is None:
+                return
+            side = str(side).casefold()
+            if side == "left":
+                self._selected_item.set_border_left(enabled)
+            elif side == "top":
+                self._selected_item.set_border_top(enabled)
+            elif side == "right":
+                self._selected_item.set_border_right(enabled)
+            elif side == "bottom":
+                self._selected_item.set_border_bottom(enabled)
+
+        def _border_side_style_changed(self, side: str, combo_index: int) -> None:
+            if self._syncing or self._selected_item is None: return
+            combo=self._border_side_style_combos.get(str(side).casefold())
+            if combo is None: return
+            self._selected_item.set_border_side_style(side, str(combo.itemData(int(combo_index)) or "none"))
+
+        def _border_side_size_changed(self, side: str, value: int) -> None:
+            if self._syncing or self._selected_item is None: return
+            self._selected_item.set_border_side_size(side, value)
+
+        def _border_side_color_changed(self, side: str, color: QColor) -> None:
+            if self._syncing or self._selected_item is None: return
+            self._selected_item.set_border_side_color(side, color)
+
+        def _choose_border_root_color(self, which: str) -> None:
+            if self._selected_item is None:
+                return
+            which = str(which).casefold()
+            if which == "shadow":
+                combo = self.border_shadow_color_combo
+                button = self.border_shadow_color_button
+                initial = QColor(getattr(self._selected_item, "border_shadow_color", QColor("#000000")))
+                title = "Border Shadow Color auswählen"
+            else:
+                combo = self.border_color_combo
+                button = self.border_color_button
+                initial = QColor(getattr(self._selected_item, "border_color", QColor("#7A7A7A")))
+                title = "Border Color auswählen"
+            chosen = QColorDialog.getColor(initial, self, title, QColorDialog.ShowAlphaChannel)
+            if not chosen.isValid():
+                return
+            combo.setCustomColor(chosen, emit_change=True)
+            self._update_color_dialog_button(button, chosen)
+
+        def _choose_border_side_color(self, side: str) -> None:
+            side=str(side).casefold()
+            if self._selected_item is None or side not in {"left","top","right","bottom"}: return
+            current=QColor(getattr(self._selected_item, f"border_{side}_color", getattr(self._selected_item,"border_color",QColor("#7A7A7A"))))
+            chosen=QColorDialog.getColor(current,self,f"Border {side.title()} Farbe auswählen",QColorDialog.ShowAlphaChannel)
+            if not chosen.isValid(): return
+            combo=self._border_side_color_combos.get(side)
+            if combo is not None: combo.setCurrentColor(chosen)
+            self._selected_item.set_border_side_color(side,chosen)
 
 
     class DBaseFormDesignerView(QGraphicsView):
@@ -26311,7 +28280,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             ".lisp", ".lsp",
             ".pl", ".prolog",
             ".logo", ".lgo",
-            ".dbase", ".dbp",
+            ".dbase", ".dbp", ".wfm",
             ".bas", ".basic",
             ".txt", ".text", ".log", ".md", ".markdown",
             ".prg", ".amiga", ".adf", ".ram", ".bin",
@@ -26369,6 +28338,8 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.dbase_form_scene = None
             self.dbase_form_property_panel = None
             self.dbase_form_view = None
+            self.dbase_form_current_path = None
+            self.dbase_form_modified = False
             self._dbase_form_workspace_active = False
             self._dbase_form_workspace_state = {}
             self.dbase_table_designer_dock = None
@@ -27840,10 +29811,12 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             # ab Stage 90 über denselben echten QWidget/Proxy-Pfad wie alle
             # Komponenten aus der Palette.
             button1 = scene.create_control(
-                "Button", QPointF(80.0, 80.0), component_name="Button1", caption="Button 1"
+                "Button", scene.form_window_item.mapToScene(QPointF(80.0, 80.0)),
+                component_name="Button1", caption="Button 1"
             )
             button2 = scene.create_control(
-                "Button", QPointF(260.0, 160.0), component_name="Button2", caption="Button 2"
+                "Button", scene.form_window_item.mapToScene(QPointF(260.0, 160.0)),
+                component_name="Button2", caption="Button 2"
             )
             scene.clearSelection()
             if button1 is not None:
@@ -27932,6 +29905,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             state = dict(self._dbase_form_workspace_state or {})
             self._dbase_form_workspace_active = False
             self._dbase_form_workspace_state = {}
+            self._update_document_actions()
 
             central = self.centralWidget()
             if central is not None and bool(state.get("central", True)):
@@ -27977,7 +29951,506 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 Qt.Vertical,
             )
             self.statusBar().showMessage("dBase-Formulardesigner geöffnet")
+            self._update_document_actions()
 
+
+        # -------------------------------------------------------------------
+        # Stage 108: dBase CLASS ... OF FORM / *.wfm Round-Trip.
+        # -------------------------------------------------------------------
+        @staticmethod
+        def _wfm_component_type(class_name: str) -> str:
+            mapping = {
+                "PUSHBUTTON": "Button", "BUTTON": "Button",
+                "CONTAINER": "Panel", "PANEL": "Panel",
+                "CHECKBOX": "CheckBox", "RADIOBUTTON": "RadioButton",
+                "COMBOBOX": "ComboBox", "LABEL": "Label", "TEXT": "Label",
+                "IMAGE": "Image", "TABLEGRID": "TableGrid",
+                "VSCROLLBAR": "VScrollBar", "HSCROLLBAR": "HScrollBar",
+                "STATUSBAR": "StatusBar", "TOOLBAR": "ToolBar", "MENU": "Menu",
+            }
+            return mapping.get(str(class_name).upper(), "")
+
+        @staticmethod
+        def _wfm_class_for_component(component_type: str) -> str:
+            return {
+                "Button": "PUSHBUTTON", "Panel": "CONTAINER",
+                "CheckBox": "CHECKBOX", "RadioButton": "RADIOBUTTON",
+                "ComboBox": "COMBOBOX", "Label": "LABEL", "Image": "IMAGE",
+                "TableGrid": "TABLEGRID", "VScrollBar": "VSCROLLBAR",
+                "HScrollBar": "HSCROLLBAR", "StatusBar": "STATUSBAR",
+                "ToolBar": "TOOLBAR", "Menu": "MENU",
+            }.get(str(component_type), str(component_type).upper())
+
+        @staticmethod
+        def _wfm_prop_ci(props, name: str, default=None):
+            for key, value in dict(props or {}).items():
+                if str(key).casefold() == str(name).casefold():
+                    return value
+            return default
+
+        def _clear_dbase_form_scene(self) -> None:
+            scene = self.dbase_form_scene
+            if scene is None:
+                return
+            scene.clearSelection()
+            # Nur Top-Level-Control entfernen; Qt entfernt dessen ChildItems mit.
+            for item in list(scene.items()):
+                if isinstance(item, DBaseFormControlItem) and item.panel_parent() is None:
+                    scene.removeItem(item)
+            scene._component_counters.clear()
+            scene._control_clipboard = None
+            # Keine visuellen Root-Werte aus der vorherigen WFM uebernehmen.
+            scene.form_window_item.reset_visual_properties()
+
+        def _apply_wfm_control_properties(self, item, control) -> None:
+            props = dict(getattr(control, "properties", {}) or {})
+            left = int(round(float(self._wfm_prop_ci(props, "Left", 0))))
+            top = int(round(float(self._wfm_prop_ci(props, "Top", 0))))
+            width = int(round(float(self._wfm_prop_ci(props, "Width", item.geometry_values()[2]))))
+            height = int(round(float(self._wfm_prop_ci(props, "Height", item.geometry_values()[3]))))
+            # Stage 111: ein gemeinsamer Geometry-Pfad fuer Controls und FORM.
+            # Bei der FORM sind Left/Top Runtime-Properties und bewegen nicht
+            # die 5-px-Designerposition des Fensters.
+            item.set_geometry_values(
+                left=left, top=top, width=width, height=height
+            )
+
+            text = self._wfm_prop_ci(props, "Text", None)
+            if text is not None:
+                item.caption = str(text)
+                control_widget = getattr(item, "control_widget", None)
+                if isinstance(control_widget, (QPushButton, QLabel, QCheckBox, QRadioButton)):
+                    control_widget.setText(str(text))
+
+            # Brush.
+            back = self._wfm_prop_ci(props, "BackColor", None)
+            fore = self._wfm_prop_ci(props, "ForeColor", None)
+            if back is not None:
+                item.set_background_color(QColor(str(back)))
+            if fore is not None:
+                item.set_foreground_color(QColor(str(fore)))
+            gradient = self._wfm_prop_ci(props, "BrushGradient", None)
+            if gradient is not None and hasattr(item, "set_brush_gradient"):
+                item.set_brush_gradient(str(gradient))
+            pattern = self._wfm_prop_ci(props, "BrushStyle", None)
+            if pattern is not None:
+                try:
+                    item.set_brush_style(int(pattern))
+                except (TypeError, ValueError):
+                    pass
+            cut_width = self._wfm_prop_ci(props, "BrushCutWidth", None)
+            cut_height = self._wfm_prop_ci(props, "BrushCutHeight", None)
+            if cut_width is not None and hasattr(item, "set_brush_cut_width"):
+                item.set_brush_cut_width(int(round(float(cut_width))))
+            if cut_height is not None and hasattr(item, "set_brush_cut_height"):
+                item.set_brush_cut_height(int(round(float(cut_height))))
+
+            # Font.
+            font = getattr(control, "font", None)
+            if font is not None:
+                item.set_font_family(str(font.family))
+                item.set_font_point_size(int(font.size))
+                item.set_font_bold(bool(font.bold))
+                item.set_font_italic(bool(font.italic))
+                item.set_font_underline(bool(font.underline))
+                item.set_font_stroke(bool(font.strikeout))
+            font_background = self._wfm_prop_ci(props, "FontBackground", None)
+            font_foreground = self._wfm_prop_ci(props, "FontForeground", None)
+            font_alpha = self._wfm_prop_ci(props, "FontAlpha", None)
+            if font_background is not None:
+                item.set_font_background_color(QColor(str(font_background)))
+            if font_foreground is not None:
+                item.set_font_foreground_color(QColor(str(font_foreground)))
+            if font_alpha is not None:
+                item.set_font_alpha(int(round(float(font_alpha))))
+
+            # Border master. Apply Width before Style so a saved hard-shadow
+            # style is not accidentally converted to solid by compatibility
+            # handling of BorderWidth.
+            border_color = self._wfm_prop_ci(props, "BorderColor", None)
+            border_width = self._wfm_prop_ci(props, "BorderWidth", self._wfm_prop_ci(props, "BorderSize", None))
+            border_style = self._wfm_prop_ci(props, "BorderStyle", None)
+            shadow = self._wfm_prop_ci(props, "ShadowColor", None)
+            if border_color is not None:
+                item.set_border_color(QColor(str(border_color)))
+            if border_width is not None:
+                size = max(0, int(round(float(border_width))))
+                item.set_border_size(size)
+                if border_style is None:
+                    item.set_border_style("solid" if size > 0 else "none")
+            if border_style is not None:
+                item.set_border_style(str(border_style))
+            if shadow is not None:
+                item.set_border_shadow_color(QColor(str(shadow)))
+
+            # Historical Radius first, then individual values override it.
+            radius = self._wfm_prop_ci(props, "Radius", None)
+            if radius is not None:
+                r = max(0, int(round(float(radius))))
+                item.set_border_round_tl(r)
+                item.set_border_round_tr(r)
+                item.set_border_round_bl(r)
+                item.set_border_round_br(r)
+            for suffix, setter_name in (
+                ("TL", "set_border_round_tl"),
+                ("TR", "set_border_round_tr"),
+                ("BL", "set_border_round_bl"),
+                ("BR", "set_border_round_br"),
+            ):
+                value = self._wfm_prop_ci(props, f"BorderRounded{suffix}", None)
+                if value is not None:
+                    getattr(item, setter_name)(max(0, int(round(float(value)))))
+
+            # Border side flags and independent details.
+            for side_label, side_key in (("Left", "left"), ("Top", "top"), ("Right", "right"), ("Bottom", "bottom")):
+                enabled = self._wfm_prop_ci(props, f"Border{side_label}", None)
+                side_style = self._wfm_prop_ci(props, f"Border{side_label}Style", None)
+                side_size = self._wfm_prop_ci(props, f"Border{side_label}Size", None)
+                side_color = self._wfm_prop_ci(props, f"Border{side_label}Color", None)
+                if enabled is not None:
+                    getattr(item, f"set_border_{side_key}")(bool(enabled))
+                if side_style is not None:
+                    item.set_border_side_style(side_key, str(side_style))
+                if side_size is not None:
+                    item.set_border_side_size(side_key, int(round(float(side_size))))
+                if side_color is not None:
+                    item.set_border_side_color(side_key, QColor(str(side_color)))
+
+            if isinstance(item, DBaseFormControlItem):
+                item.wfm_class_name = str(getattr(control, "class_name", ""))
+            elif isinstance(item, DBaseFormWindowItem):
+                item.wfm_class_name = str(getattr(control, "class_name", item.component_name))
+            item.wfm_events = dict(getattr(control, "events", {}) or {})
+            known = {
+                "left", "top", "width", "height", "text",
+                "backcolor", "forecolor",
+                "brushgradient", "brushstyle", "brushcutwidth", "brushcutheight",
+                "fontbackground", "fontforeground", "fontalpha",
+                "borderstyle", "bordercolor", "borderwidth", "bordersize",
+                "radius", "shadowcolor",
+                "borderroundedtl", "borderroundedtr", "borderroundedbl", "borderroundedbr",
+                "borderleft", "bordertop", "borderright", "borderbottom",
+            }
+            for side in ("left", "top", "right", "bottom"):
+                known.update({f"border{side}style", f"border{side}size", f"border{side}color"})
+            item.wfm_extra_properties = {
+                k: v for k, v in props.items() if str(k).casefold() not in known
+            }
+            item._apply_widget_style()
+
+        def open_dbase_form_file(self, path: Path) -> bool:
+            try:
+                path = Path(path).expanduser().resolve()
+                try:
+                    source = path.read_text(encoding="utf-8")
+                except UnicodeDecodeError:
+                    source = path.read_text(encoding="cp1252")
+                try:
+                    from d64dbase import parse_dbase_wfm
+                except ImportError:
+                    # d64dbase is a package in the C64 frontend.  WFM support
+                    # lives in d64dbase/wfm.py and may not yet be re-exported
+                    # by an older package __init__.py.
+                    from d64dbase.wfm import parse_dbase_wfm
+                model = parse_dbase_wfm(source, filename=str(path))
+            except Exception as exc:
+                self.show_error("WFM konnte nicht geöffnet werden", f"{path}\n\n{exc}")
+                return False
+
+            self._ensure_dbase_form_designer()
+            self._clear_dbase_form_scene()
+            scene = self.dbase_form_scene
+            scene.wfm_class_name = str(model.class_name)
+            scene.wfm_declared_properties = dict(model.declared_properties)
+            scene.wfm_form_left = int(round(float(self._wfm_prop_ci(model.properties, "Left", 200))))
+            scene.wfm_form_top = int(round(float(self._wfm_prop_ci(model.properties, "Top", 200))))
+            scene.wfm_form_width = max(1, int(round(float(self._wfm_prop_ci(model.properties, "Width", 400)))))
+            scene.wfm_form_height = max(1, int(round(float(self._wfm_prop_ci(model.properties, "Height", 400)))))
+            scene.form_window_item.component_name = str(model.class_name)
+            scene.form_window_item.caption = str(model.class_name)
+            scene.form_window_item.wfm_class_name = str(model.class_name)
+            # Root-FORM bekommt denselben Brush/Font/Border-Ladepfad wie Controls.
+            self._apply_wfm_control_properties(scene.form_window_item, model)
+            scene.form_window_item._sync_scene_geometry()
+            scene.form_window_item.update()
+
+            by_path = {"this": None}
+            for control in sorted(model.controls, key=lambda c: int(c.order)):
+                component_type = self._wfm_component_type(control.class_name)
+                if not component_type:
+                    self.log(f"WFM: noch nicht unterstützte Komponente {control.class_name}: {control.path}")
+                    continue
+                parent = by_path.get(str(control.parent_path).casefold())
+                props = dict(control.properties or {})
+                left = float(self._wfm_prop_ci(props, "Left", 0))
+                top = float(self._wfm_prop_ci(props, "Top", 0))
+                if parent is None:
+                    scene_pos = scene.form_window_item.mapToScene(QPointF(left, top))
+                else:
+                    scene_pos = parent.mapToScene(QPointF(left, top))
+                name = str(control.path).split(".")[-1]
+                item = scene.create_control(component_type, scene_pos, component_name=name, parent_panel=parent)
+                if item is None:
+                    continue
+                self._apply_wfm_control_properties(item, control)
+                by_path[str(control.path).casefold()] = item
+
+            scene.clearSelection()
+            top_controls = [i for i in scene.items() if isinstance(i, DBaseFormControlItem)]
+            if top_controls:
+                top_controls[-1].setSelected(True)
+            self.dbase_form_current_path = path
+            self.dbase_form_modified = False
+            self.show_dbase_form_designer()
+            self.statusBar().showMessage(f"WFM-Formular geöffnet: {path.name}")
+            return True
+
+        @staticmethod
+        def _wfm_quote(value) -> str:
+            text = str(value).replace('"', '""')
+            return f'"{text}"'
+
+        @staticmethod
+        def _wfm_bool(value: bool) -> str:
+            return ".T." if bool(value) else ".F."
+
+        @staticmethod
+        def _wfm_color(value, fallback: str = "#000000") -> str:
+            """Return a stable WFM color literal and preserve an alpha channel."""
+            color = QColor(value)
+            if not color.isValid():
+                color = QColor(fallback)
+            if color.alpha() != 255:
+                return color.name(QColor.HexArgb)
+            return color.name()
+
+        def _serialize_dbase_form_wfm(self) -> str:
+            scene = self.dbase_form_scene
+            if scene is None:
+                raise RuntimeError("Kein Formulardesigner geöffnet.")
+            class_name = str(getattr(scene, "wfm_class_name", "ParentForm") or "ParentForm")
+            form_item = scene.form_window_item
+            now = dt.datetime.now().strftime("%d.%m.%Y")
+
+            canonical_properties = {
+                "left", "top", "width", "height", "text",
+                "backcolor", "forecolor",
+                "brushgradient", "brushstyle", "brushcutwidth", "brushcutheight",
+                "fontbackground", "fontforeground", "fontalpha",
+                "borderstyle", "bordercolor", "borderwidth", "bordersize",
+                "shadowcolor", "radius",
+                "borderroundedtl", "borderroundedtr", "borderroundedbl", "borderroundedbr",
+                "borderleft", "bordertop", "borderright", "borderbottom",
+            }
+            for _side in ("left", "top", "right", "bottom"):
+                canonical_properties.update({
+                    f"border{_side}style", f"border{_side}size", f"border{_side}color",
+                })
+
+            lines = [
+                "** END HEADER -- do not remove this line",
+                f"// Generated on {now}", "//", "PARAMETER bmodal", "LOCAL B",
+                f"B = NEW {class_name}(51,4)", "B.Init(121,2)", "B.Open()", "",
+                f"CLASS {class_name} OF FORM",
+            ]
+            for key, value in dict(getattr(scene, "wfm_declared_properties", {}) or {}).items():
+                rendered = self._wfm_quote(value) if isinstance(value, str) else self._wfm_bool(value) if isinstance(value, bool) else str(value)
+                lines.append(f"    PROPERTY {key} = {rendered}")
+
+            # Stage 111: dieselben editierbaren Visual-Properties werden auch
+            # fuer die Root-FORM explizit gespeichert.
+            lines.extend([
+                "", "    WITH (THIS)",
+                f"        Width = {int(scene.wfm_form_width)}",
+                f"        Height = {int(scene.wfm_form_height)}",
+                f"        Top = {int(scene.wfm_form_top)}",
+                f"        Left = {int(scene.wfm_form_left)}",
+                f"        BackColor = {self._wfm_quote(self._wfm_color(form_item.background_color, '#1B1B1B'))}",
+                f"        ForeColor = {self._wfm_quote(self._wfm_color(form_item.foreground_color, '#303030'))}",
+                f"        BrushGradient = {self._wfm_quote(str(getattr(form_item, 'brush_gradient', 'none')))}",
+                f"        BrushStyle = {int(getattr(form_item, 'brush_style', 0))}",
+                f"        BrushCutWidth = {int(getattr(form_item, 'brush_cut_width', 100))}",
+                f"        BrushCutHeight = {int(getattr(form_item, 'brush_cut_height', 100))}",
+                "        Font = NEW FONT(" + self._wfm_quote(form_item.font_family)
+                + f",{int(form_item.font_point_size)}, {self._wfm_bool(form_item.font_bold)}, "
+                + f"{self._wfm_bool(form_item.font_italic)}, {self._wfm_bool(form_item.font_underline)})",
+                f"        Font.stroke = {self._wfm_bool(form_item.font_stroke)}",
+                f"        FontBackground = {self._wfm_quote(self._wfm_color(form_item.font_background_color, '#292929'))}",
+                f"        FontForeground = {self._wfm_quote(self._wfm_color(form_item.font_foreground_color, '#F0F0F0'))}",
+                f"        FontAlpha = {int(form_item.font_alpha)}",
+                f"        BorderStyle = {self._wfm_quote(str(getattr(form_item, 'border_style', 'solid')))}",
+                f"        BorderWidth = {int(getattr(form_item, 'border_size', 2))}",
+                f"        BorderColor = {self._wfm_quote(self._wfm_color(form_item.border_color, '#808080'))}",
+                f"        ShadowColor = {self._wfm_quote(self._wfm_color(form_item.border_shadow_color, '#000000'))}",
+                f"        BorderRoundedTL = {int(getattr(form_item, 'border_round_tl', 0))}",
+                f"        BorderRoundedTR = {int(getattr(form_item, 'border_round_tr', 0))}",
+                f"        BorderRoundedBL = {int(getattr(form_item, 'border_round_bl', 0))}",
+                f"        BorderRoundedBR = {int(getattr(form_item, 'border_round_br', 0))}",
+            ])
+            form_radii = (
+                int(getattr(form_item, "border_round_tl", 0)),
+                int(getattr(form_item, "border_round_tr", 0)),
+                int(getattr(form_item, "border_round_bl", 0)),
+                int(getattr(form_item, "border_round_br", 0)),
+            )
+            lines.append(f"        Radius = {form_radii[0] if len(set(form_radii)) == 1 else max(form_radii)}")
+            for side_label, side_key in (("Left", "left"), ("Top", "top"), ("Right", "right"), ("Bottom", "bottom")):
+                lines.extend([
+                    f"        Border{side_label} = {self._wfm_bool(getattr(form_item, f'border_{side_key}', True))}",
+                    f"        Border{side_label}Style = {self._wfm_quote(str(getattr(form_item, f'border_{side_key}_style', form_item.border_style)))}",
+                    f"        Border{side_label}Size = {int(getattr(form_item, f'border_{side_key}_size', form_item.border_size))}",
+                    f"        Border{side_label}Color = {self._wfm_quote(self._wfm_color(getattr(form_item, f'border_{side_key}_color', form_item.border_color), '#808080'))}",
+                ])
+            for key, value in dict(getattr(form_item, "wfm_extra_properties", {}) or {}).items():
+                if str(key).casefold() in canonical_properties:
+                    continue
+                rendered = (
+                    self._wfm_quote(value) if isinstance(value, str)
+                    else self._wfm_bool(value) if isinstance(value, bool)
+                    else str(value)
+                )
+                lines.append(f"        {key} = {rendered}")
+            for key, value in dict(getattr(form_item, "wfm_events", {}) or {}).items():
+                lines.append(f"        {key} = {value}")
+            lines.extend(["    ENDWITH", ""])
+
+            def children_of(parent):
+                if parent is None:
+                    return sorted(
+                        [i for i in scene.items() if isinstance(i, DBaseFormControlItem) and i.panel_parent() is None],
+                        key=lambda i: (i.pos().y(), i.pos().x()),
+                    )
+                return sorted(
+                    [i for i in parent.childItems() if isinstance(i, DBaseFormControlItem)],
+                    key=lambda i: (i.pos().y(), i.pos().x()),
+                )
+
+            def emit_item(item, parent_path="THIS"):
+                path = f"{parent_path}.{item.component_name}"
+                class_value = str(
+                    getattr(item, "wfm_class_name", "")
+                    or self._wfm_class_for_component(item.component_type)
+                )
+                lines.append(f"    {path} = NEW {class_value}({parent_path})")
+                lines.append(f"    WITH ({path})")
+
+                top, left, width, height = item.geometry_values()
+                lines.extend([
+                    f"        Left = {left}",
+                    f"        Top = {top}",
+                    f"        Width = {width}",
+                    f"        Height = {height}",
+                ])
+
+                if item.component_type in {"Button", "Label", "CheckBox", "RadioButton"}:
+                    lines.append(f"        Text = {self._wfm_quote(item.caption)}")
+
+                # Brush: save every designer property, including defaults.
+                lines.extend([
+                    f"        BackColor = {self._wfm_quote(self._wfm_color(item.background_color, '#FFFFFF'))}",
+                    f"        ForeColor = {self._wfm_quote(self._wfm_color(item.foreground_color, '#000000'))}",
+                    f"        BrushGradient = {self._wfm_quote(str(getattr(item, 'brush_gradient', 'none')))}",
+                    f"        BrushStyle = {int(getattr(item, 'brush_style', 0))}",
+                    f"        BrushCutWidth = {int(getattr(item, 'brush_cut_width', 100))}",
+                    f"        BrushCutHeight = {int(getattr(item, 'brush_cut_height', 100))}",
+                ])
+
+                # Font: NEW FONT keeps the dBase/OOP-facing representation,
+                # the extra values complete the visual Designer state.
+                lines.append(
+                    "        Font = NEW FONT(" + self._wfm_quote(item.font_family)
+                    + f",{int(item.font_point_size)}, {self._wfm_bool(item.font_bold)}, "
+                    + f"{self._wfm_bool(item.font_italic)}, {self._wfm_bool(item.font_underline)})"
+                )
+                lines.extend([
+                    f"        Font.stroke = {self._wfm_bool(item.font_stroke)}",
+                    f"        FontBackground = {self._wfm_quote(self._wfm_color(item.font_background_color, '#FFFFFF'))}",
+                    f"        FontForeground = {self._wfm_quote(self._wfm_color(item.font_foreground_color, '#000000'))}",
+                    f"        FontAlpha = {int(item.font_alpha)}",
+                ])
+
+                # Border root: save master style, size, colors and each radius.
+                border_style = str(getattr(item, "border_style", "none"))
+                border_size = int(getattr(item, "border_size", 1))
+                border_radii = (
+                    int(getattr(item, "border_round_tl", 0)),
+                    int(getattr(item, "border_round_tr", 0)),
+                    int(getattr(item, "border_round_bl", 0)),
+                    int(getattr(item, "border_round_br", 0)),
+                )
+                lines.extend([
+                    f"        BorderStyle = {self._wfm_quote(border_style)}",
+                    f"        BorderWidth = {border_size}",
+                    f"        BorderColor = {self._wfm_quote(self._wfm_color(item.border_color, '#7A7A7A'))}",
+                    f"        ShadowColor = {self._wfm_quote(self._wfm_color(item.border_shadow_color, '#000000'))}",
+                    f"        BorderRoundedTL = {border_radii[0]}",
+                    f"        BorderRoundedTR = {border_radii[1]}",
+                    f"        BorderRoundedBL = {border_radii[2]}",
+                    f"        BorderRoundedBR = {border_radii[3]}",
+                ])
+                # Keep the historical Radius property for runtime/backward
+                # compatibility. Individual BorderRounded* values are the
+                # authoritative Designer representation.
+                if len(set(border_radii)) == 1:
+                    lines.append(f"        Radius = {border_radii[0]}")
+                else:
+                    lines.append(f"        Radius = {max(border_radii)}")
+
+                # Border side groups: enabled + independent style/size/color.
+                for side_label, side_key in (("Left", "left"), ("Top", "top"), ("Right", "right"), ("Bottom", "bottom")):
+                    lines.extend([
+                        f"        Border{side_label} = {self._wfm_bool(getattr(item, f'border_{side_key}', True))}",
+                        f"        Border{side_label}Style = {self._wfm_quote(str(getattr(item, f'border_{side_key}_style', border_style)))}",
+                        f"        Border{side_label}Size = {int(getattr(item, f'border_{side_key}_size', border_size))}",
+                        f"        Border{side_label}Color = {self._wfm_quote(self._wfm_color(getattr(item, f'border_{side_key}_color', item.border_color), '#7A7A7A'))}",
+                    ])
+
+                # Preserve properties unknown to this Designer version without
+                # duplicating canonical properties that are emitted above.
+                for key, value in dict(getattr(item, "wfm_extra_properties", {}) or {}).items():
+                    if str(key).casefold() in canonical_properties:
+                        continue
+                    rendered = (
+                        self._wfm_quote(value) if isinstance(value, str)
+                        else self._wfm_bool(value) if isinstance(value, bool)
+                        else str(value)
+                    )
+                    lines.append(f"        {key} = {rendered}")
+                for key, value in dict(getattr(item, "wfm_events", {}) or {}).items():
+                    lines.append(f"        {key} = {value}")
+
+                lines.extend(["    ENDWITH", ""])
+                if item.component_type == "Panel":
+                    for child in children_of(item):
+                        emit_item(child, path)
+
+            for item in children_of(None):
+                emit_item(item)
+            lines.append("ENDCLASS")
+            return "\n".join(lines) + "\n"
+
+        def save_dbase_form(self, *, save_as: bool = False) -> bool:
+            self._ensure_dbase_form_designer()
+            target = self.dbase_form_current_path
+            if save_as or target is None:
+                initial = str((self.current_directory / "Form1.wfm").resolve())
+                filename, _selected = QFileDialog.getSaveFileName(self, "dBase Formular speichern", initial, "dBase Formulare (*.wfm);;Alle Dateien (*)")
+                if not filename:
+                    return False
+                target = Path(filename).resolve()
+                if target.suffix.casefold() != ".wfm": target = target.with_suffix(".wfm")
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(self._serialize_dbase_form_wfm(), encoding="utf-8", newline="\n")
+            except (OSError, UnicodeError, RuntimeError) as exc:
+                self.show_error("WFM konnte nicht gespeichert werden", str(exc)); return False
+            self.dbase_form_current_path = target
+            self.dbase_form_modified = False
+            self.statusBar().showMessage(f"WFM-Formular gespeichert: {target.name}")
+            return True
+
+        def save_dbase_form_as(self) -> bool:
+            return self.save_dbase_form(save_as=True)
 
         # -------------------------------------------------------------------
         # Stage 85/86: dBase-Tabellendesigner als eigener Tabellen-Workspace.
@@ -29515,6 +31988,9 @@ border: 2px solid #2a69aa;
                 self.show_error("Pfadfehler", str(exc))
                 return False
 
+            if path.suffix.lower() == ".wfm":
+                return self.open_dbase_form_file(path)
+
             if path.suffix.lower() in {".chr", ".charset"}:
                 self.show_character_editor(initial_path=path)
                 return True
@@ -29859,19 +32335,32 @@ border: 2px solid #2a69aa;
             self._update_document_tab(document)
             self._update_editor_status_panels()
 
+        def _dbase_form_is_active(self) -> bool:
+            return bool(
+                self._dbase_form_workspace_active
+                and self.dbase_form_scene is not None
+                and self.dbase_form_designer_dock is not None
+                and self.dbase_form_designer_dock.isVisible()
+            )
+
         def _update_document_actions(self) -> None:
             has_document = self.current_document() is not None
-            self.save_file_action.setEnabled(has_document)
-            self.save_as_action.setEnabled(has_document)
+            has_form = self._dbase_form_is_active()
+            self.save_file_action.setEnabled(has_document or has_form)
+            self.save_as_action.setEnabled(has_document or has_form)
             self.close_document_action.setEnabled(has_document)
 
         def save_current_document(self) -> bool:
+            if self._dbase_form_is_active():
+                return self.save_dbase_form(save_as=False)
             document = self.current_document()
             if document is None:
                 return False
             return self._save_document(document, save_as=False)
 
         def save_current_document_as(self) -> bool:
+            if self._dbase_form_is_active():
+                return self.save_dbase_form(save_as=True)
             document = self.current_document()
             if document is None:
                 return False

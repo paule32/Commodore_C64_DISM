@@ -1,0 +1,19 @@
+Stage 110 test results
+======================
+
+Python syntax / AST: OK
+Structural checks: 33/33 OK
+WFM parser ParentForm.wfm: OK (ParentForm, 4 controls)
+Stage-109 property persistence markers: OK
+Panel designer limits retained: OK
+Main-form client limits: OK
+Resize roles limited to right/bottom/bottom-right: OK
+WFM Width/Height authoritative on load: OK
+Full d64qt5_bridge.cpp retained: OK (275629 bytes)
+WFM runtime exports checked: OK
+
+Packaging rule:
+  d64qt5 sources are under d64qt5/ only.
+
+Native Qt visual execution:
+  NOT RUN – PyQt5 is not installed in the test container.

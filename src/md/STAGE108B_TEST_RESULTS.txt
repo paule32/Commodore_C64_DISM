@@ -1,0 +1,24 @@
+Stage 108b - d64dbase package/WFM import repair
+
+Cause:
+- Python resolves d64dbase to d64dbase/__init__.py (package)
+- Stage 108 incorrectly supplied a parallel d64dbase.py module
+- parse_dbase_wfm therefore was not exported by the package
+
+Repair:
+- Added d64dbase/wfm.py as package-safe standalone WFM parser
+- d64_dism.py first tries "from d64dbase import parse_dbase_wfm"
+- on ImportError it falls back to "from d64dbase.wfm import parse_dbase_wfm"
+- existing d64dbase/__init__.py is NOT overwritten
+
+Tests:
+- py_compile d64_dism.py: OK
+- py_compile d64dbase/wfm.py: OK
+- exact ParentForm template parse: OK
+- class: ParentForm
+- controls parsed: 4
+- constructor args: (51, 4)
+- Init args: (121, 2)
+- nested THIS.Container1.PushButton1 parent: OK
+- PushButton1 final Top=82 after WITH override: OK
+- NEW FONT + Font.bold=.F.: OK

@@ -57,6 +57,20 @@ D64QT5_API void DBaseQtMenuSetText(void *handle, const char *text, int length);
 D64QT5_API void DBaseQtMenuSetSeparator(void *handle, int separator);
 D64QT5_API void DBaseQtMenuSetShortcut(void *handle, const char *text, int length);
 D64QT5_API void DBaseQtMenuSetOnClick(void *handle, void (*callback)(void));
+// Stage 34/WFM FORM-OOP
+D64QT5_API void *DBaseQtFormCreate(const char *className, int classNameLength);
+D64QT5_API void *DBaseQtControlCreate(const char *className, int classNameLength, void *parentHandle);
+D64QT5_API void DBaseQtWidgetSetGeometry(void *handle, int left, int top, int width, int height);
+D64QT5_API void DBaseQtWidgetSetText(void *handle, const char *text, int length);
+D64QT5_API void DBaseQtWidgetSetBackColor(void *handle, const char *text, int length);
+D64QT5_API void DBaseQtWidgetSetBorderColor(void *handle, const char *text, int length);
+D64QT5_API void DBaseQtWidgetSetBorderWidth(void *handle, int width);
+D64QT5_API void DBaseQtWidgetSetRadius(void *handle, int radius);
+D64QT5_API void DBaseQtWidgetSetFont(
+    void *handle, const char *family, int familyLength, int pointSize,
+    int bold, int italic, int underline, int strikeout
+);
+D64QT5_API void DBaseQtFormOpen(void *handle);
 D64QT5_API void DBaseQtMarkProgramFinished(void);
 D64QT5_API int  DBaseQtExec(void);
 D64QT5_API int  DBaseQtShutdownRequested(void);

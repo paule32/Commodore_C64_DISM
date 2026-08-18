@@ -88,6 +88,7 @@
 
 namespace {
 QApplication *g_app = nullptr;
+QList<QWidget *> g_wfm_forms;
 bool g_owns_app = false;
 QMainWindow *g_window = nullptr;
 
@@ -7236,6 +7237,185 @@ extern "C" D64QT5_API void DBaseQtMenuSetOnClick(void *handle, void (*callback)(
         node->callback = callback;
 }
 
+// -------------------------------------------------------------------------
+// Stage 34 / WFM FORM-OOP Runtime
+// -------------------------------------------------------------------------
+static QString wfm_text(const char *text, int length)
+{
+    if (!text || length <= 0)
+        return QString();
+    return QString::fromUtf8(text, length);
+}
+
+static QWidget *wfm_widget(void *handle)
+{
+    return static_cast<QWidget *>(handle);
+}
+
+static void wfm_apply_widget_style(QWidget *widget)
+{
+    if (!widget)
+        return;
+    QStringList css;
+    const QVariant back = widget->property("dbaseBackColor");
+    if (back.isValid() && !back.toString().isEmpty())
+        css << QStringLiteral("background-color:%1;").arg(back.toString());
+    const QVariant borderColor = widget->property("dbaseBorderColor");
+    const int borderWidth = qMax(0, widget->property("dbaseBorderWidth").toInt());
+    if (borderWidth > 0) {
+        const QString color = borderColor.isValid() && !borderColor.toString().isEmpty()
+            ? borderColor.toString() : QStringLiteral("#7A7A7A");
+        css << QStringLiteral("border:%1px solid %2;").arg(borderWidth).arg(color);
+    } else {
+        css << QStringLiteral("border:none;");
+    }
+    const int radius = qMax(0, widget->property("dbaseRadius").toInt());
+    if (radius > 0)
+        css << QStringLiteral("border-radius:%1px;").arg(radius);
+    widget->setStyleSheet(css.join(QLatin1Char(' ')));
+}
+
+extern "C" D64QT5_API void *DBaseQtFormCreate(const char *className, int classNameLength)
+{
+    if (!g_app || g_shutdown_requested)
+        return nullptr;
+    QDialog *form = new QDialog(nullptr);
+    form->setObjectName(wfm_text(className, classNameLength));
+    form->setWindowTitle(form->objectName().isEmpty() ? QStringLiteral("dBase Form") : form->objectName());
+    form->setModal(false);
+    form->setMinimumSize(1, 1);
+    form->setProperty("dbaseBorderWidth", 0);
+    form->setProperty("dbaseRadius", 0);
+    g_wfm_forms.append(form);
+    return form;
+}
+
+extern "C" D64QT5_API void *DBaseQtControlCreate(const char *className, int classNameLength, void *parentHandle)
+{
+    QWidget *parent = wfm_widget(parentHandle);
+    if (!parent || g_shutdown_requested)
+        return nullptr;
+    const QString type = wfm_text(className, classNameLength).trimmed().toUpper();
+    QWidget *widget = nullptr;
+    if (type == QStringLiteral("PUSHBUTTON") || type == QStringLiteral("BUTTON")) {
+        widget = new QPushButton(parent);
+    } else if (type == QStringLiteral("CONTAINER") || type == QStringLiteral("PANEL")) {
+        QFrame *frame = new QFrame(parent);
+        frame->setFrameShape(QFrame::NoFrame);
+        frame->setFrameShadow(QFrame::Plain);
+        widget = frame;
+    } else if (type == QStringLiteral("LABEL") || type == QStringLiteral("TEXT")) {
+        widget = new QLabel(parent);
+    } else if (type == QStringLiteral("LINEEDIT") || type == QStringLiteral("EDIT")) {
+        widget = new QLineEdit(parent);
+    } else {
+        // Erweiterbarer Fallback: unbekannte Designer-Komponenten bleiben als
+        // sichtbarer QWidget-Platzhalter erhalten, statt den Formaufbau abzubrechen.
+        widget = new QWidget(parent);
+    }
+    widget->setProperty("dbaseBorderWidth", 0);
+    widget->setProperty("dbaseRadius", 0);
+    widget->show();
+    return widget;
+}
+
+extern "C" D64QT5_API void DBaseQtWidgetSetGeometry(void *handle, int left, int top, int width, int height)
+{
+    QWidget *widget = wfm_widget(handle);
+    if (!widget)
+        return;
+    widget->setGeometry(left, top, qMax(1, width), qMax(1, height));
+}
+
+extern "C" D64QT5_API void DBaseQtWidgetSetText(void *handle, const char *text, int length)
+{
+    QWidget *widget = wfm_widget(handle);
+    if (!widget)
+        return;
+    const QString value = wfm_text(text, length);
+    if (QPushButton *button = qobject_cast<QPushButton *>(widget))
+        button->setText(value);
+    else if (QLabel *label = qobject_cast<QLabel *>(widget))
+        label->setText(value);
+    else if (QLineEdit *edit = qobject_cast<QLineEdit *>(widget))
+        edit->setText(value);
+    else
+        widget->setWindowTitle(value);
+}
+
+extern "C" D64QT5_API void DBaseQtWidgetSetBackColor(void *handle, const char *text, int length)
+{
+    QWidget *widget = wfm_widget(handle);
+    if (!widget)
+        return;
+    widget->setProperty("dbaseBackColor", wfm_text(text, length));
+    wfm_apply_widget_style(widget);
+}
+
+extern "C" D64QT5_API void DBaseQtWidgetSetBorderColor(void *handle, const char *text, int length)
+{
+    QWidget *widget = wfm_widget(handle);
+    if (!widget)
+        return;
+    widget->setProperty("dbaseBorderColor", wfm_text(text, length));
+    wfm_apply_widget_style(widget);
+}
+
+extern "C" D64QT5_API void DBaseQtWidgetSetBorderWidth(void *handle, int width)
+{
+    QWidget *widget = wfm_widget(handle);
+    if (!widget)
+        return;
+    widget->setProperty("dbaseBorderWidth", qMax(0, width));
+    wfm_apply_widget_style(widget);
+}
+
+extern "C" D64QT5_API void DBaseQtWidgetSetRadius(void *handle, int radius)
+{
+    QWidget *widget = wfm_widget(handle);
+    if (!widget)
+        return;
+    widget->setProperty("dbaseRadius", qMax(0, radius));
+    wfm_apply_widget_style(widget);
+}
+
+extern "C" D64QT5_API void DBaseQtWidgetSetFont(
+    void *handle,
+    const char *family,
+    int familyLength,
+    int pointSize,
+    int bold,
+    int italic,
+    int underline,
+    int strikeout)
+{
+    QWidget *widget = wfm_widget(handle);
+    if (!widget)
+        return;
+    QFont font(widget->font());
+    const QString familyText = wfm_text(family, familyLength);
+    if (!familyText.isEmpty())
+        font.setFamily(familyText);
+    font.setPointSize(qMax(1, pointSize));
+    font.setBold(bold != 0);
+    font.setItalic(italic != 0);
+    font.setUnderline(underline != 0);
+    font.setStrikeOut(strikeout != 0);
+    widget->setFont(font);
+}
+
+extern "C" D64QT5_API void DBaseQtFormOpen(void *handle)
+{
+    QWidget *form = wfm_widget(handle);
+    if (!form)
+        return;
+    form->show();
+    form->raise();
+    form->activateWindow();
+    if (g_app)
+        g_app->processEvents();
+}
+
 extern "C" D64QT5_API void DBaseQtMarkProgramFinished(void)
 {
     g_program_finished = true;
@@ -7277,6 +7457,16 @@ extern "C" D64QT5_API void DBaseQtShutdown(void)
     // Strukturen geschlossen. DATABASE.active wird dabei auf false gesetzt;
     // die kommende TABLE-/DBF-Schicht benutzt denselben zentralen Hook.
     close_runtime_data_files();
+
+    // Stage 34: Top-Level-WFM-Forms besitzen keinen g_window-Parent und
+    // werden deshalb explizit vor QApplication abgebaut.
+    for (QWidget *form : g_wfm_forms) {
+        if (form) {
+            form->close();
+            delete form;
+        }
+    }
+    g_wfm_forms.clear();
 
     delete g_window;
     g_window = nullptr;

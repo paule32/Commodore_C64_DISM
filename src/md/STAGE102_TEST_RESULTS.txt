@@ -1,0 +1,8 @@
+py_compile_returncode=0
+style=OK
+size=OK
+color=OK
+button=OK
+snapshot=OK
+setter=OK
+css=OK

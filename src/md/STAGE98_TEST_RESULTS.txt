@@ -1,0 +1,5 @@
+py_compile_returncode=0
+stdout:
+
+stderr:
+

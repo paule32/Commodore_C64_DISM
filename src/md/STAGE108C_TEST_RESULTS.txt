@@ -1,0 +1,17 @@
+Stage 108c - WFM Save/Save As serializer repair
+
+py_compile d64_dism.py: OK
+py_compile d64dbase/wfm.py: OK
+emit_item closure scope: lines local=False, free=True: OK
+WFM serializer execution with root Button + Container + nested Button: OK
+Serialized WFM parsed again with d64dbase/wfm.py: OK
+Nested path THIS.Container1.PushButton1 retained: OK
+ENDCLASS emitted: OK
+Stage 108b package import fallback retained: OK
+Stage 108a full Qt runtime files retained in package: OK
+
+Root cause:
+Augmented assignment `lines += [...]` inside nested emit_item() made Python classify
+`lines` as a local variable in that function, causing UnboundLocalError before the
+first assignment. Replaced all three nested augmented assignments with
+`lines.extend([...])`.

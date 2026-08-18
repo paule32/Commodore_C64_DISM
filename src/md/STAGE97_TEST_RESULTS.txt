@@ -1,0 +1,6 @@
+py_compile_returncode=0
+stdout:
+
+stderr:
+
+pattern_count=48

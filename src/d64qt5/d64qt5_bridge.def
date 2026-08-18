@@ -32,6 +32,16 @@ EXPORTS
     DBaseQtMenuSetSeparator
     DBaseQtMenuSetShortcut
     DBaseQtMenuSetOnClick
+    DBaseQtFormCreate
+    DBaseQtControlCreate
+    DBaseQtWidgetSetGeometry
+    DBaseQtWidgetSetText
+    DBaseQtWidgetSetBackColor
+    DBaseQtWidgetSetBorderColor
+    DBaseQtWidgetSetBorderWidth
+    DBaseQtWidgetSetRadius
+    DBaseQtWidgetSetFont
+    DBaseQtFormOpen
     DBaseQtMarkProgramFinished
     DBaseQtExec
     DBaseQtShutdownRequested

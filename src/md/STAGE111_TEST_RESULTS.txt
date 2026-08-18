@@ -1,0 +1,29 @@
+Stage 111 test results
+======================
+
+Static/source/parser checks: 102/102 OK
+
+OK  d64_dism.py compiles
+OK  d64dbase/wfm.py compiles
+OK  FORM outer left/top designer margin = 5 px
+OK  FORM is selectable/focusable from free client/titlebar area
+OK  FORM exposes the shared Position/Brush/Font/Border setter API
+OK  FORM uses the same context-menu labels as controls
+OK  Control resize uses parent-local coordinates
+OK  Resize retains Panel content limits
+OK  Resize retains FORM client limits
+OK  Root WFM serialization contains Brush/Gradient/Font/Border/Shadow/radii/side details
+OK  Root WFM parser retains Font and events
+OK  Root WFM parser retains full Brush properties
+OK  Root WFM parser retains full Border/root/side properties
+OK  Existing ParentForm.wfm parser compatibility
+OK  Existing Stage-109 all-properties sample parser compatibility
+OK  All six d64qt5 source files present under d64qt5/
+OK  All six d64qt5 source files SHA-256-identical to Stage 110
+OK  ParentForm_stage111.wfm parser sample
+
+Native visual Qt test: NOT RUN
+Reason: PyQt5 is not installed in this execution environment.
+
+Automated check output:
+checks=102 passed=102 failed=0

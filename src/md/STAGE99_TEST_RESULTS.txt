@@ -1,0 +1,6 @@
+py_compile_returncode=0
+border_root=OK
+hard_shadow=OK
+border_color=OK
+four_radii=OK
+live_handlers=OK
