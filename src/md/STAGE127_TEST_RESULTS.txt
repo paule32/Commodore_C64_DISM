@@ -1,0 +1,28 @@
+Stage 127 - WFM true GUI application/runtime widgets
+
+OK  WFM link entry is __d64_wfm_entry
+OK  WFM linker GUI forced true
+OK  WFM assemble reasserts GUI
+OK  WFM imports GUI initializer
+OK  WFM no longer calls console initializer
+OK  WFM emitter calls ControlCreateEx
+OK  WFM explicit text/data sections
+OK  GUI initializer creates no DBaseMainWindow
+OK  Form is QMainWindow
+OK  PushButton constructor receives caption+parent
+OK  Label constructor receives caption+parent
+OK  Checkbox constructor receives caption+parent
+OK  RadioButton constructor receives caption+parent
+OK  EntryField is real QLineEdit
+OK  behavioral properties applied to QWidget
+OK  GUI initializer exported in header
+OK  ControlCreateEx exported in header
+OK  GUI initializer exported in DEF
+OK  ControlCreateEx exported in DEF
+OK  Stage126 workstation WFM activation retained
+OK  QToolBar include retained
+
+py_compile d64_dism.py: OK
+py_compile d64dbase/wfm.py: OK
+checks=21 passed=21 failed=0
+Native Qt5/MinGW runtime build/test: not available in this container.

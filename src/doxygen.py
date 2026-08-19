@@ -14,7 +14,6 @@ import gettext
 import html
 import hashlib
 import datetime  as dt
-import json
 import re
 import encodings.aliases
 
@@ -27,8 +26,6 @@ from PyQt5.QtCore import QMarginsF
 
 from data.images_rc      import *
 from data.de_locales_rc  import *
-
-from antlr4 import FileStream, CommonTokenStream
 
 # -----------------------------------------------------------------------
 # c++ documenting interpreter lexer + parser ...
@@ -161,15 +158,8 @@ from PyQt5.QtWidgets import (
     QTreeWidgetItem,
     QTreeWidgetItemIterator,
     QVBoxLayout,
-    QWidget
-)
+    QWidget )
 
-from PyQt5.QtWebEngineWidgets import (
-    QWebEnginePage,
-    QWebEngineSettings,
-    QWebEngineView,
-)
-        
 # ---------------------------------------------------------------------------
 # Stage 116 additive extension: module-local themed QMessageBox adapter.
 # Existing Doxygen call sites below remain unchanged.
@@ -7385,8 +7375,8 @@ class DoxyGenToolWindow(QWidget):
         ext       = ext[1:].lower()
         try:
             if ext in ["pas", "pp"]:
-                #self.progress = DoxyProgressDialog(self)
-                #self.progress.show()
+                self.progress = DoxyProgressDialog(self)
+                self.progress.show()
                 if self.progress:
                     self.progress_log(tr("Start documentation generation..."))
                     self.progress_value(1)

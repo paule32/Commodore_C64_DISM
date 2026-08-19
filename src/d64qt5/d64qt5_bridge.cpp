@@ -8,6 +8,7 @@
 
 #include <QApplication>
 #include <QAction>
+#include <QAbstractButton>
 #include <QByteArray>
 #include <QColor>
 #include <QCoreApplication>
@@ -49,6 +50,8 @@
 #include <QPointer>
 #include <QProcess>
 #include <QPushButton>
+#include <QRadioButton>
+#include <QTableWidget>
 #include <QRegularExpression>
 #include <QRegion>
 #include <QCloseEvent>
@@ -61,6 +64,7 @@
 #include <QTextCharFormat>
 #include <QTextDocument>
 #include <QTextCursor>
+#include <QToolBar>
 #include <QToolButton>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -73,6 +77,7 @@
 #include <QUuid>
 
 #include <cmath>
+#include <cstdio>
 #include <string>
 #include <vector>
 #include <algorithm>
@@ -90,6 +95,8 @@ namespace {
 QApplication *g_app = nullptr;
 QList<QWidget *> g_wfm_forms;
 bool g_owns_app = false;
+bool g_wfm_gui_mode = false;
+bool g_wfm_console_allocated = false;
 QMainWindow *g_window = nullptr;
 
 QWidget *g_root = nullptr;
@@ -260,6 +267,63 @@ int database_open_internal(DatabaseNode *database, bool showWarning);
 void database_close_internal(DatabaseNode *database);
 int database_commit_internal(DatabaseNode *database, bool showWarning);
 
+#ifdef _WIN32
+UINT workstation_global_shutdown_message()
+{
+    static const UINT message = RegisterWindowMessageW(
+        L"dBase2Many.D64Workstation.GlobalShutdown"
+    );
+    return message;
+}
+#endif
+
+bool widget_belongs_to_window(QWidget *widget, QWidget *window)
+{
+    if (!widget || !window)
+        return false;
+    return widget == window || window->isAncestorOf(widget);
+}
+
+void suspend_application_window_input(QWidget *window)
+{
+    if (!window)
+        return;
+
+    QWidget *focus = QApplication::focusWidget();
+    if (widget_belongs_to_window(focus, window))
+        focus->clearFocus();
+
+    QWidget *keyboardGrabber = QWidget::keyboardGrabber();
+    if (widget_belongs_to_window(keyboardGrabber, window))
+        keyboardGrabber->releaseKeyboard();
+
+    QWidget *mouseGrabber = QWidget::mouseGrabber();
+    if (widget_belongs_to_window(mouseGrabber, window))
+        mouseGrabber->releaseMouse();
+
+    window->setProperty("dbaseInputSuspended", true);
+
+#ifdef _WIN32
+    if (window->winId()) {
+        HWND hwnd = reinterpret_cast<HWND>(window->winId());
+        HWND focusHwnd = GetFocus();
+        if (focusHwnd && GetAncestor(focusHwnd, GA_ROOTOWNER) == hwnd)
+            SetFocus(nullptr);
+
+        HWND capture = GetCapture();
+        if (capture && GetAncestor(capture, GA_ROOTOWNER) == hwnd)
+            ReleaseCapture();
+    }
+#endif
+}
+
+void resume_application_window_input(QWidget *window)
+{
+    if (!window)
+        return;
+    window->setProperty("dbaseInputSuspended", false);
+}
+
 class DBaseMainWindow final : public QMainWindow
 {
 protected:
@@ -267,6 +331,21 @@ protected:
     bool nativeEvent(const QByteArray &eventType, void *message, long *result) override
     {
         MSG *msg = static_cast<MSG *>(message);
+        if (msg && msg->message == workstation_global_shutdown_message()) {
+            g_exit_authorized = true;
+            request_runtime_shutdown();
+            if (result)
+                *result = 0;
+            return true;
+        }
+        if (msg && msg->message == WM_GETMINMAXINFO && msg->lParam) {
+            D64WorkstationConstrainMaximizeInfo(
+                reinterpret_cast<void *>(msg->lParam)
+            );
+            if (result)
+                *result = 0;
+            return true;
+        }
         if (msg && msg->message == WM_MOVING && msg->lParam) {
             RECT *rect = reinterpret_cast<RECT *>(msg->lParam);
             D64WorkstationConstrainMovingRect(rect);
@@ -303,25 +382,88 @@ protected:
             return;
         }
 
+        // Stage 128:
+        // Das X eines Console-/GUI-Anwendungsfensters beendet niemals die
+        // Runtime und niemals die Workstation. OWNER und JOINED verhalten sich
+        // identisch: Fenster/Dialoge werden verborgen, Keyboard-/Mouse-Grabs
+        // sowie der Fokus werden geloest. Dadurch erzeugt ein verborgenes
+        // Fenster keine versteckten Tastatureingaben.
+        hide_owner_application_windows();
+        suspend_application_window_input(this);
+        hide();
+        event->ignore();
+    }
+};
+
+class DBaseWfmMainWindow final : public QMainWindow
+{
+protected:
 #ifdef _WIN32
-        // Stage 40: Nur der OWNER ist das dauerhaft auf der Workstation
-        // vorhandene DB-Hauptprogramm. Eine JOINED-Anwendung (z. B. BTX.exe)
-        // muss beim Schliessen ihren kompletten Prozess-/Runtime-Kontext
-        // abbauen. Ein blosses hide() wuerde Dialoge, Dateien, Sessions und
-        // reservierten Speicher weiterleben lassen.
-        if (D64WorkstationJoinedExisting()) {
+    bool nativeEvent(
+        const QByteArray &eventType,
+        void *message,
+        long *result
+    ) override
+    {
+        MSG *msg = static_cast<MSG *>(message);
+
+        if (msg && msg->message == workstation_global_shutdown_message()) {
+            g_exit_authorized = true;
+            request_runtime_shutdown();
+            if (result)
+                *result = 0;
+            return true;
+        }
+
+        if (msg && msg->message == WM_GETMINMAXINFO && msg->lParam) {
+            D64WorkstationConstrainMaximizeInfo(
+                reinterpret_cast<void *>(msg->lParam)
+            );
+            if (result)
+                *result = 0;
+            return true;
+        }
+
+        if (msg && msg->message == WM_MOVING && msg->lParam) {
+            RECT *rect = reinterpret_cast<RECT *>(msg->lParam);
+            D64WorkstationConstrainMovingRect(rect);
+            if (result)
+                *result = TRUE;
+            return true;
+        }
+
+        return QMainWindow::nativeEvent(eventType, message, result);
+    }
+#endif
+
+    void changeEvent(QEvent *event) override
+    {
+        QMainWindow::changeEvent(event);
+#ifdef _WIN32
+        if (event && event->type() == QEvent::WindowStateChange && isMinimized()) {
+            QPointer<DBaseWfmMainWindow> self(this);
+            QTimer::singleShot(0, [self]() {
+                if (!self || !self->winId())
+                    return;
+                D64WorkstationPositionMinimizedWindow(
+                    reinterpret_cast<HWND>(self->winId())
+                );
+            });
+        }
+#endif
+    }
+
+    void closeEvent(QCloseEvent *event) override
+    {
+        if (g_exit_authorized || g_shutdown_requested) {
             request_runtime_shutdown();
             QMainWindow::closeEvent(event);
             return;
         }
-#endif
 
-        // OWNER-Verhalten: Fenster-X, Alt+F4 und Datei->Beenden verstecken
-        // die Anwendung, nicht die Workstation. Vor dem Hauptfenster werden
-        // alle momentan sichtbaren top-level Dialoge derselben Anwendung
-        // verborgen. So kann insbesondere eine fokussierte Login-Box nicht
-        // frei auf dem Workstation-Desktop stehenbleiben.
-        hide_owner_application_windows();
+        // Normales WFM-Fenster-X: nur ausblenden. Der Prozess bleibt aktiv,
+        // bis der Benutzer die gesamte Workstation ueber deren EXIT-X beendet.
+        suspend_application_window_input(this);
         hide();
         event->ignore();
     }
@@ -5463,7 +5605,31 @@ void workstation_btx_requested()
 void workstation_db_requested()
 {
     QTimer::singleShot(0, []() {
-        if (!g_window || g_shutdown_requested)
+        if (g_shutdown_requested)
+            return;
+
+        // Stage 126: Bei einer WFM-Anwendung ist das zuletzt erzeugte
+        // Formular das Hauptfenster. Das DB-Icon bringt deshalb die Form
+        // zurueck und nicht das versteckte Console-Fenster.
+        for (int i = g_wfm_forms.size() - 1; i >= 0; --i) {
+            QWidget *form = g_wfm_forms.at(i);
+            if (!form)
+                continue;
+
+            resume_application_window_input(form);
+            form->show();
+#ifdef _WIN32
+            if (form->winId())
+                D64WorkstationActivate(reinterpret_cast<HWND>(form->winId()));
+#endif
+            form->raise();
+            form->activateWindow();
+            if (g_app)
+                g_app->processEvents();
+            return;
+        }
+
+        if (!g_window)
             return;
 
         if (!g_window->isVisible()) {
@@ -5479,6 +5645,7 @@ void workstation_db_requested()
             g_window->show();
         }
 
+        resume_application_window_input(g_window);
         g_owner_restore_activated_window = false;
         restore_owner_application_windows();
         if (!g_owner_restore_activated_window) {
@@ -5864,9 +6031,10 @@ void request_runtime_shutdown()
 
 #ifdef _WIN32
     /*
-     * Nur der OWNER darf die globale Workstation verlassen bzw. den Input-
-     * Desktop zurueckschalten. JOINED baut ausschliesslich seine eigene
-     * Anwendung ab; D64WorkstationBeginLeave() beruecksichtigt diesen Fall.
+     * OWNER: D64WorkstationBeginLeave() beendet zuerst alle Child-Prozesse
+     * und loest den Keyboard-Guard. Panels/Desktop bleiben bis FinalizeLeave
+     * erhalten und werden bewusst als letzte Workstation-Ressourcen abgebaut.
+     * JOINED baut weiterhin ausschliesslich seine eigene Runtime ab.
      */
     D64WorkstationBeginLeave();
 #endif
@@ -6458,10 +6626,74 @@ bool split_windows_login_name(
 
 } // namespace
 
+extern "C" D64QT5_API int DBaseQtInitializeGui(const char *title)
+{
+    Q_UNUSED(title)
+
+    // Stage 127: reiner GUI/WFM-Modus.
+    // Anders als DBaseQtInitialize() wird KEIN DBaseMainWindow mit
+    // Console/DEBUG-Tabs erzeugt. Die erste DBaseQtFormCreate()-Form ist
+    // das echte Anwendungsfenster.
+    if (g_app && !g_shutdown_requested) {
+        g_wfm_gui_mode = true;
+        return 1;
+    }
+
+    QApplication *existing =
+        qobject_cast<QApplication *>(QCoreApplication::instance());
+
+#ifdef _WIN32
+    if (!existing && !D64WorkstationIsActive()) {
+        if (!D64WorkstationPrepare())
+            return 0;
+    }
+#endif
+
+    if (existing) {
+        g_app = existing;
+        g_owns_app = false;
+    } else {
+        static int argc = 1;
+        static char arg0[] = "dBase-WFM";
+        static char *argv[] = { arg0, nullptr };
+        g_app = new QApplication(argc, argv);
+        g_owns_app = true;
+    }
+
+    if (g_app)
+        g_app->setQuitOnLastWindowClosed(false);
+
+    if (!g_app) {
+#ifdef _WIN32
+        D64WorkstationBeginLeave();
+        D64WorkstationFinalizeLeave();
+#endif
+        return 0;
+    }
+
+    g_wfm_gui_mode = true;
+    g_shutdown_requested = false;
+    g_shutdown_in_progress = false;
+    g_exit_authorized = false;
+    g_exit_confirmation_open = false;
+
+#ifdef _WIN32
+    D64WorkstationSetExitCallback(&workstation_exit_requested);
+    D64WorkstationSetBtxCallback(&workstation_btx_requested);
+    D64WorkstationSetDbCallback(&workstation_db_requested);
+    D64WorkstationSetServerCallback(&workstation_server_requested);
+    D64WorkstationSetServerClientCallback(&workstation_server_client_requested);
+#endif
+
+    return 1;
+}
+
 extern "C" D64QT5_API int DBaseQtInitialize(const char *title)
 {
     if (g_window)
         return 1;
+
+    g_wfm_gui_mode = false;
 
     QApplication *existing = qobject_cast<QApplication *>(QCoreApplication::instance());
 
@@ -6486,6 +6718,9 @@ extern "C" D64QT5_API int DBaseQtInitialize(const char *title)
         g_app = new QApplication(argc, argv);
         g_owns_app = true;
     }
+
+    if (g_app)
+        g_app->setQuitOnLastWindowClosed(false);
 
     if (!g_app) {
 #ifdef _WIN32
@@ -7252,37 +7487,550 @@ static QWidget *wfm_widget(void *handle)
     return static_cast<QWidget *>(handle);
 }
 
+static bool wfm_bool_property(QWidget *widget, const char *name, bool defaultValue)
+{
+    if (!widget)
+        return defaultValue;
+    const QVariant value = widget->property(name);
+    if (!value.isValid())
+        return defaultValue;
+    const QString text = value.toString().trimmed().toLower();
+    if (text == QStringLiteral(".t.") || text == QStringLiteral("true") || text == QStringLiteral("1"))
+        return true;
+    if (text == QStringLiteral(".f.") || text == QStringLiteral("false") || text == QStringLiteral("0"))
+        return false;
+    return value.toBool();
+}
+
+static QString wfm_border_style_name(const QString &value)
+{
+    const QString style = value.trimmed().toLower();
+    if (style == QStringLiteral("dashed"))
+        return QStringLiteral("dashed");
+    if (style == QStringLiteral("dotted"))
+        return QStringLiteral("dotted");
+    if (style == QStringLiteral("double"))
+        return QStringLiteral("double");
+    if (style == QStringLiteral("none") || style == QStringLiteral("kein rahmen"))
+        return QStringLiteral("none");
+    return QStringLiteral("solid");
+}
+
+static QString wfm_gradient_css(QWidget *widget)
+{
+    if (!widget)
+        return QString();
+    const QString gradient = widget->property("dbaseBrushGradient").toString().trimmed().toLower();
+    if (gradient.isEmpty() || gradient == QStringLiteral("none"))
+        return QString();
+
+    QString first = widget->property("dbaseBackColor").toString();
+    QString second = widget->property("dbaseForeColor").toString();
+    if (first.isEmpty())
+        first = QStringLiteral("#202020");
+    if (second.isEmpty())
+        second = QStringLiteral("#505050");
+
+    if (gradient == QStringLiteral("linear_horizontal"))
+        return QStringLiteral("qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 %1,stop:1 %2)").arg(first, second);
+    if (gradient == QStringLiteral("linear_vertical"))
+        return QStringLiteral("qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 %1,stop:1 %2)").arg(first, second);
+    if (gradient == QStringLiteral("linear_diag_down"))
+        return QStringLiteral("qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 %1,stop:1 %2)").arg(first, second);
+    if (gradient == QStringLiteral("linear_diag_up"))
+        return QStringLiteral("qlineargradient(x1:0,y1:1,x2:1,y2:0,stop:0 %1,stop:1 %2)").arg(first, second);
+    if (gradient == QStringLiteral("radial_center"))
+        return QStringLiteral("qradialgradient(cx:0.5,cy:0.5,radius:0.7,fx:0.5,fy:0.5,stop:0 %1,stop:1 %2)").arg(first, second);
+    if (gradient == QStringLiteral("radial_top_left"))
+        return QStringLiteral("qradialgradient(cx:0,cy:0,radius:1,fx:0,fy:0,stop:0 %1,stop:1 %2)").arg(first, second);
+    if (gradient == QStringLiteral("radial_bottom_right"))
+        return QStringLiteral("qradialgradient(cx:1,cy:1,radius:1,fx:1,fy:1,stop:0 %1,stop:1 %2)").arg(first, second);
+    if (gradient == QStringLiteral("conical"))
+        return QStringLiteral("qconicalgradient(cx:0.5,cy:0.5,angle:0,stop:0 %1,stop:1 %2)").arg(first, second);
+    return QString();
+}
+
+static QString wfm_css_color(QString text)
+{
+    text = text.trimmed();
+    if (
+        text.startsWith(QStringLiteral("rgb("), Qt::CaseInsensitive) &&
+        text.endsWith(QLatin1Char(')'))
+    ) {
+        const QString inner = text.mid(4, text.size() - 5);
+        const QStringList parts = inner.split(QLatin1Char(','));
+        if (parts.size() == 4) {
+            return QStringLiteral("rgba(%1,%2,%3,%4)")
+                .arg(parts.at(0).trimmed())
+                .arg(parts.at(1).trimmed())
+                .arg(parts.at(2).trimmed())
+                .arg(parts.at(3).trimmed());
+        }
+    }
+    return text;
+}
+
 static void wfm_apply_widget_style(QWidget *widget)
 {
     if (!widget)
         return;
+
     QStringList css;
-    const QVariant back = widget->property("dbaseBackColor");
-    if (back.isValid() && !back.toString().isEmpty())
-        css << QStringLiteral("background-color:%1;").arg(back.toString());
-    const QVariant borderColor = widget->property("dbaseBorderColor");
-    const int borderWidth = qMax(0, widget->property("dbaseBorderWidth").toInt());
-    if (borderWidth > 0) {
-        const QString color = borderColor.isValid() && !borderColor.toString().isEmpty()
-            ? borderColor.toString() : QStringLiteral("#7A7A7A");
-        css << QStringLiteral("border:%1px solid %2;").arg(borderWidth).arg(color);
-    } else {
-        css << QStringLiteral("border:none;");
+
+    const QString gradient = wfm_gradient_css(widget);
+    const QString back = wfm_css_color(widget->property("dbaseBackColor").toString());
+    if (!gradient.isEmpty())
+        css << QStringLiteral("background:%1;").arg(gradient);
+    else if (!back.isEmpty())
+        css << QStringLiteral("background-color:%1;").arg(back);
+
+    QString foreground = widget->property("dbaseFontForeground").toString();
+    if (foreground.isEmpty())
+        foreground = widget->property("dbaseForeColor").toString();
+    foreground = wfm_css_color(foreground);
+    if (!foreground.isEmpty())
+        css << QStringLiteral("color:%1;").arg(foreground);
+
+    const QString rootStyle = wfm_border_style_name(
+        widget->property("dbaseBorderStyle").toString()
+    );
+    const int rootWidth = qMax(0, widget->property("dbaseBorderWidth").toInt());
+    QString rootColor = wfm_css_color(widget->property("dbaseBorderColor").toString());
+    if (rootColor.isEmpty())
+        rootColor = QStringLiteral("#7A7A7A");
+
+    struct WfmBorderSide {
+        const char *suffix;
+        const char *cssName;
+    };
+    const WfmBorderSide sides[] = {
+        {"Left", "left"}, {"Top", "top"}, {"Right", "right"}, {"Bottom", "bottom"}
+    };
+
+    bool anySideProperty = false;
+    for (const WfmBorderSide &side : sides) {
+        const QByteArray enabledName = QByteArray("dbaseBorder") + side.suffix;
+        const QByteArray styleName = enabledName + "Style";
+        const QByteArray sizeName = enabledName + "Size";
+        const QByteArray colorName = enabledName + "Color";
+        if (
+            widget->property(enabledName.constData()).isValid() ||
+            widget->property(styleName.constData()).isValid() ||
+            widget->property(sizeName.constData()).isValid() ||
+            widget->property(colorName.constData()).isValid()
+        ) {
+            anySideProperty = true;
+            const bool enabled = wfm_bool_property(widget, enabledName.constData(), true);
+            const int width = qMax(
+                0,
+                widget->property(sizeName.constData()).isValid()
+                    ? widget->property(sizeName.constData()).toInt()
+                    : rootWidth
+            );
+            QString color = wfm_css_color(widget->property(colorName.constData()).toString());
+            if (color.isEmpty())
+                color = rootColor;
+            QString style = wfm_border_style_name(
+                widget->property(styleName.constData()).isValid()
+                    ? widget->property(styleName.constData()).toString()
+                    : rootStyle
+            );
+            if (!enabled || width <= 0 || style == QStringLiteral("none")) {
+                css << QStringLiteral("border-%1:none;").arg(QString::fromLatin1(side.cssName));
+            } else {
+                css << QStringLiteral("border-%1:%2px %3 %4;")
+                    .arg(QString::fromLatin1(side.cssName))
+                    .arg(width)
+                    .arg(style)
+                    .arg(color);
+            }
+        }
     }
-    const int radius = qMax(0, widget->property("dbaseRadius").toInt());
-    if (radius > 0)
-        css << QStringLiteral("border-radius:%1px;").arg(radius);
+
+    if (!anySideProperty) {
+        if (rootWidth > 0 && rootStyle != QStringLiteral("none"))
+            css << QStringLiteral("border:%1px %2 %3;").arg(rootWidth).arg(rootStyle).arg(rootColor);
+        else
+            css << QStringLiteral("border:none;");
+    }
+
+    const QVariant radiusLegacy = widget->property("dbaseRadius");
+    const int legacyRadius = qMax(0, radiusLegacy.toInt());
+    const struct {
+        const char *propertyName;
+        const char *cssName;
+    } radii[] = {
+        {"dbaseBorderRoundedTL", "border-top-left-radius"},
+        {"dbaseBorderRoundedTR", "border-top-right-radius"},
+        {"dbaseBorderRoundedBL", "border-bottom-left-radius"},
+        {"dbaseBorderRoundedBR", "border-bottom-right-radius"},
+    };
+    bool hasIndividualRadius = false;
+    for (const auto &entry : radii) {
+        const QVariant radius = widget->property(entry.propertyName);
+        if (radius.isValid()) {
+            hasIndividualRadius = true;
+            css << QStringLiteral("%1:%2px;")
+                .arg(QString::fromLatin1(entry.cssName))
+                .arg(qMax(0, radius.toInt()));
+        }
+    }
+    if (!hasIndividualRadius && legacyRadius > 0)
+        css << QStringLiteral("border-radius:%1px;").arg(legacyRadius);
+
     widget->setStyleSheet(css.join(QLatin1Char(' ')));
+}
+
+#if defined(_WIN32) && !defined(_WIN64)
+typedef void (__cdecl *DBaseQtWfmEventCallback)(void *sender);
+#else
+typedef void (*DBaseQtWfmEventCallback)(void *sender);
+#endif
+
+class DBaseQtWfmEventFilter final : public QObject
+{
+public:
+    DBaseQtWfmEventFilter(
+        QObject *target,
+        QString eventName,
+        DBaseQtWfmEventCallback callback
+    )
+        : QObject(target),
+          target_(target),
+          eventName_(eventName),
+          callback_(callback)
+    {
+    }
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if (!callback_ || watched != target_ || !event)
+            return QObject::eventFilter(watched, event);
+
+        bool fire = false;
+        const QString key = eventName_.toCaseFolded();
+
+        if (key == QStringLiteral("onlostfocus"))
+            fire = event->type() == QEvent::FocusOut;
+        else if (key == QStringLiteral("ongetfocus"))
+            fire = event->type() == QEvent::FocusIn;
+        else if (key == QStringLiteral("onhover"))
+            fire = event->type() == QEvent::HoverMove;
+        else if (key == QStringLiteral("onmouseenter"))
+            fire = event->type() == QEvent::Enter;
+        else if (key == QStringLiteral("onmouseleave"))
+            fire = event->type() == QEvent::Leave;
+        else if (key == QStringLiteral("onmousemove"))
+            fire = event->type() == QEvent::MouseMove;
+        else if (
+            key == QStringLiteral("onkeydown")
+        )
+            fire = event->type() == QEvent::KeyPress;
+        else if (
+            key == QStringLiteral("onkeyup") ||
+            key == QStringLiteral("onkeyrelease")
+        )
+            fire = event->type() == QEvent::KeyRelease;
+        else if (
+            key == QStringLiteral("onmouseleftclick") ||
+            key == QStringLiteral("onmouserightclick") ||
+            key == QStringLiteral("onclick")
+        ) {
+            if (
+                event->type() == QEvent::MouseButtonRelease
+                || event->type() == QEvent::MouseButtonPress
+            ) {
+                QMouseEvent *mouse = static_cast<QMouseEvent *>(event);
+                if (key == QStringLiteral("onmouseleftclick"))
+                    fire =
+                        event->type() == QEvent::MouseButtonRelease
+                        && mouse->button() == Qt::LeftButton;
+                else if (key == QStringLiteral("onmouserightclick"))
+                    fire =
+                        event->type() == QEvent::MouseButtonRelease
+                        && mouse->button() == Qt::RightButton;
+                else
+                    fire =
+                        event->type() == QEvent::MouseButtonRelease
+                        && mouse->button() == Qt::LeftButton;
+            }
+        }
+
+        if (fire)
+            callback_(watched);
+        return QObject::eventFilter(watched, event);
+    }
+
+private:
+    QObject *target_ = nullptr;
+    QString eventName_;
+    DBaseQtWfmEventCallback callback_ = nullptr;
+};
+
+extern "C" D64QT5_API int DBaseQtObjectBindEvent(
+    void *handle,
+    const char *eventName,
+    int eventNameLength,
+    void *callbackHandle)
+{
+    QObject *object = static_cast<QObject *>(handle);
+    DBaseQtWfmEventCallback callback =
+        reinterpret_cast<DBaseQtWfmEventCallback>(callbackHandle);
+    if (!object || !callback || g_shutdown_requested)
+        return 0;
+
+    const QString eventNameText =
+        wfm_text(eventName, eventNameLength).trimmed();
+    const QString key = eventNameText.toCaseFolded();
+    if (key.isEmpty())
+        return 0;
+
+    // Die Runtime legt nur die Signalbrücke. Die Callback-Adresse zeigt auf
+    // Code der kompilierten WFM-Anwendung; dort bleibt die Event-Logik.
+    if (key == QStringLiteral("onclick")) {
+        if (QAbstractButton *button = qobject_cast<QAbstractButton *>(object)) {
+            const QMetaObject::Connection connection = QObject::connect(
+                button,
+                &QAbstractButton::clicked,
+                object,
+                [callback, object](bool) {
+                    // Stage 134: Das Qt-Signal ruft direkt den ausfuehrbaren
+                    // __dbase_wfm_proc_<Event>-Code der EXE auf.
+                    callback(object);
+                }
+            );
+            return connection ? 1 : 0;
+        }
+    }
+
+    if (key == QStringLiteral("ontextchange")) {
+        if (QLineEdit *edit = qobject_cast<QLineEdit *>(object)) {
+            QObject::connect(
+                edit,
+                &QLineEdit::textChanged,
+                object,
+                [callback, object](const QString &) { callback(object); }
+            );
+            return 1;
+        }
+        if (QComboBox *combo = qobject_cast<QComboBox *>(object)) {
+            QObject::connect(
+                combo,
+                &QComboBox::currentTextChanged,
+                object,
+                [callback, object](const QString &) { callback(object); }
+            );
+            return 1;
+        }
+    }
+
+    if (key == QStringLiteral("oninterval")) {
+        if (QTimer *timer = qobject_cast<QTimer *>(object)) {
+            QObject::connect(
+                timer,
+                &QTimer::timeout,
+                object,
+                [callback, object]() { callback(object); }
+            );
+            return 1;
+        }
+    }
+
+    if (QWidget *widget = qobject_cast<QWidget *>(object)) {
+        widget->setMouseTracking(true);
+        widget->setAttribute(Qt::WA_Hover, true);
+    }
+
+    DBaseQtWfmEventFilter *filter = new DBaseQtWfmEventFilter(
+        object, eventNameText, callback
+    );
+    object->installEventFilter(filter);
+    return 1;
+}
+
+extern "C" D64QT5_API void *DBaseQtTimerCreate(void *parentHandle)
+{
+    QWidget *parentWidget = wfm_widget(parentHandle);
+    if (!parentWidget || g_shutdown_requested)
+        return nullptr;
+
+    QTimer *timer = new QTimer(parentWidget);
+    timer->setTimerType(Qt::PreciseTimer);
+    // WFM speichert Mikrosekunden. Qt5-QTimer arbeitet in Millisekunden;
+    // 1000 us entsprechen daher dem Default von 1 ms.
+    timer->setInterval(1);
+    return timer;
+}
+
+extern "C" D64QT5_API void DBaseQtTimerSetInterval(
+    void *handle,
+    int microseconds)
+{
+    QTimer *timer = static_cast<QTimer *>(handle);
+    if (!timer)
+        return;
+    const int us = qMax(1, microseconds);
+    const int milliseconds = qMax(1, (us + 999) / 1000);
+    timer->setInterval(milliseconds);
+}
+
+extern "C" D64QT5_API void DBaseQtTimerSetActive(
+    void *handle,
+    int active)
+{
+    QTimer *timer = static_cast<QTimer *>(handle);
+    if (!timer)
+        return;
+    if (active)
+        timer->start();
+    else
+        timer->stop();
+}
+
+#ifdef _WIN32
+static bool ensure_wfm_console_visible()
+{
+    // Stage 134:
+    // Eine WFM-Anwendung ist eine GUI-EXE. Eine geerbte/unsichtbare
+    // Console oder ConPTY darf nicht als sichtbare WFM-Console gelten.
+    if (g_wfm_gui_mode && !g_wfm_console_allocated) {
+        // Loest nur DIESEN WFM-Prozess von einer evtl. geerbten Console.
+        FreeConsole();
+
+        if (!AllocConsole())
+            return false;
+
+        g_wfm_console_allocated = true;
+        SetConsoleTitleW(L"dBase2Many WFM Console");
+        SetConsoleCP(CP_UTF8);
+        SetConsoleOutputCP(CP_UTF8);
+    } else if (!GetConsoleWindow()) {
+        if (!AllocConsole())
+            return false;
+
+        g_wfm_console_allocated = true;
+        SetConsoleTitleW(L"dBase2Many WFM Console");
+        SetConsoleCP(CP_UTF8);
+        SetConsoleOutputCP(CP_UTF8);
+    }
+
+    HWND consoleWindow = GetConsoleWindow();
+    if (!consoleWindow)
+        return false;
+
+    ShowWindow(consoleWindow, SW_RESTORE);
+    ShowWindow(consoleWindow, SW_SHOW);
+
+    RECT rect;
+    if (GetWindowRect(consoleWindow, &rect)) {
+        D64WorkstationConstrainMovingRect(&rect);
+        SetWindowPos(
+            consoleWindow,
+            HWND_TOP,
+            rect.left,
+            rect.top,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW
+        );
+    } else {
+        SetWindowPos(
+            consoleWindow,
+            HWND_TOP,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW
+        );
+    }
+
+    return true;
+}
+#endif
+
+extern "C" D64QT5_API void DBaseQtConsoleWrite(
+    const char *text,
+    int textLength,
+    int newline)
+{
+    const QString value = wfm_text(text, textLength);
+
+#ifdef _WIN32
+    if (!ensure_wfm_console_visible())
+        return;
+
+    // Immer an die aktuell zugeordnete WFM-Console schreiben.
+    HANDLE output = CreateFileW(
+        L"CONOUT$",
+        GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        nullptr,
+        OPEN_EXISTING,
+        0,
+        nullptr
+    );
+
+    bool closeOutput = true;
+    if (!output || output == INVALID_HANDLE_VALUE) {
+        output = GetStdHandle(STD_OUTPUT_HANDLE);
+        closeOutput = false;
+    }
+
+    if (output && output != INVALID_HANDLE_VALUE) {
+        QString rendered = value;
+        if (newline)
+            rendered += QStringLiteral("\r\n");
+
+        DWORD mode = 0;
+        if (GetConsoleMode(output, &mode)) {
+            const std::wstring wide = rendered.toStdWString();
+            DWORD written = 0;
+            WriteConsoleW(
+                output,
+                wide.data(),
+                static_cast<DWORD>(wide.size()),
+                &written,
+                nullptr
+            );
+        } else {
+            const QByteArray utf8 = rendered.toUtf8();
+            DWORD written = 0;
+            WriteFile(
+                output,
+                utf8.constData(),
+                static_cast<DWORD>(utf8.size()),
+                &written,
+                nullptr
+            );
+        }
+
+        if (closeOutput)
+            CloseHandle(output);
+    }
+#else
+    QByteArray utf8 = value.toUtf8();
+    if (newline)
+        utf8.append('\n');
+    fwrite(utf8.constData(), 1, static_cast<size_t>(utf8.size()), stdout);
+    fflush(stdout);
+#endif
 }
 
 extern "C" D64QT5_API void *DBaseQtFormCreate(const char *className, int classNameLength)
 {
     if (!g_app || g_shutdown_requested)
         return nullptr;
-    QDialog *form = new QDialog(nullptr);
+
+    // Stage 127: Eine WFM-Form ist ein echtes GUI-Hauptfenster.
+    DBaseWfmMainWindow *form = new DBaseWfmMainWindow();
     form->setObjectName(wfm_text(className, classNameLength));
-    form->setWindowTitle(form->objectName().isEmpty() ? QStringLiteral("dBase Form") : form->objectName());
-    form->setModal(false);
+    form->setWindowTitle(
+        form->objectName().isEmpty()
+            ? QStringLiteral("dBase Form")
+            : form->objectName()
+    );
     form->setMinimumSize(1, 1);
     form->setProperty("dbaseBorderWidth", 0);
     form->setProperty("dbaseRadius", 0);
@@ -7290,24 +8038,77 @@ extern "C" D64QT5_API void *DBaseQtFormCreate(const char *className, int classNa
     return form;
 }
 
-extern "C" D64QT5_API void *DBaseQtControlCreate(const char *className, int classNameLength, void *parentHandle)
+extern "C" D64QT5_API void *DBaseQtControlCreateEx(
+    const char *className,
+    int classNameLength,
+    void *parentHandle,
+    const char *text,
+    int textLength)
 {
     QWidget *parent = wfm_widget(parentHandle);
     if (!parent || g_shutdown_requested)
         return nullptr;
-    const QString type = wfm_text(className, classNameLength).trimmed().toUpper();
+
+    const QString type =
+        wfm_text(className, classNameLength).trimmed().toUpper();
+    const QString caption = wfm_text(text, textLength);
     QWidget *widget = nullptr;
+
     if (type == QStringLiteral("PUSHBUTTON") || type == QStringLiteral("BUTTON")) {
-        widget = new QPushButton(parent);
+        // NEW PUSHBUTTON(parent, "press me")
+        // -> new QPushButton("press me", parent)
+        widget = new QPushButton(caption, parent);
     } else if (type == QStringLiteral("CONTAINER") || type == QStringLiteral("PANEL")) {
         QFrame *frame = new QFrame(parent);
         frame->setFrameShape(QFrame::NoFrame);
         frame->setFrameShadow(QFrame::Plain);
         widget = frame;
     } else if (type == QStringLiteral("LABEL") || type == QStringLiteral("TEXT")) {
-        widget = new QLabel(parent);
-    } else if (type == QStringLiteral("LINEEDIT") || type == QStringLiteral("EDIT")) {
-        widget = new QLineEdit(parent);
+        widget = new QLabel(caption, parent);
+    } else if (
+        type == QStringLiteral("ENTRYFIELD") ||
+        type == QStringLiteral("LINEEDIT") ||
+        type == QStringLiteral("EDITFIELD") ||
+        type == QStringLiteral("EDIT")
+    ) {
+        QLineEdit *edit = new QLineEdit(parent);
+        edit->setText(caption);
+        widget = edit;
+    } else if (type == QStringLiteral("CHECKBOX")) {
+        widget = new QCheckBox(caption, parent);
+    } else if (type == QStringLiteral("RADIOBUTTON")) {
+        widget = new QRadioButton(caption, parent);
+    } else if (type == QStringLiteral("COMBOBOX")) {
+        QComboBox *combo = new QComboBox(parent);
+        if (!caption.isEmpty())
+            combo->addItem(caption);
+        widget = combo;
+    } else if (type == QStringLiteral("TABLEGRID")) {
+        QTableWidget *table = new QTableWidget(3, 3, parent);
+        widget = table;
+    } else if (type == QStringLiteral("VSCROLLBAR")) {
+        widget = new QScrollBar(Qt::Vertical, parent);
+    } else if (type == QStringLiteral("HSCROLLBAR")) {
+        widget = new QScrollBar(Qt::Horizontal, parent);
+    } else if (type == QStringLiteral("IMAGE")) {
+        QLabel *image = new QLabel(parent);
+        image->setAlignment(Qt::AlignCenter);
+        image->setText(QStringLiteral("Image"));
+        widget = image;
+    } else if (type == QStringLiteral("STATUSBAR")) {
+        QStatusBar *status = new QStatusBar(parent);
+        status->showMessage(QStringLiteral("Bereit"));
+        widget = status;
+    } else if (type == QStringLiteral("TOOLBAR")) {
+        QToolBar *toolBar = new QToolBar(parent);
+        toolBar->addAction(QStringLiteral("Neu"));
+        toolBar->addAction(QStringLiteral("Öffnen"));
+        widget = toolBar;
+    } else if (type == QStringLiteral("MENU")) {
+        QMenuBar *menuBar = new QMenuBar(parent);
+        menuBar->addMenu(QStringLiteral("Datei"));
+        menuBar->addMenu(QStringLiteral("Bearbeiten"));
+        widget = menuBar;
     } else {
         // Erweiterbarer Fallback: unbekannte Designer-Komponenten bleiben als
         // sichtbarer QWidget-Platzhalter erhalten, statt den Formaufbau abzubrechen.
@@ -7317,6 +8118,21 @@ extern "C" D64QT5_API void *DBaseQtControlCreate(const char *className, int clas
     widget->setProperty("dbaseRadius", 0);
     widget->show();
     return widget;
+}
+
+extern "C" D64QT5_API void *DBaseQtControlCreate(
+    const char *className,
+    int classNameLength,
+    void *parentHandle)
+{
+    // ABI-kompatibler Alt-Einstieg.
+    return DBaseQtControlCreateEx(
+        className,
+        classNameLength,
+        parentHandle,
+        nullptr,
+        0
+    );
 }
 
 extern "C" D64QT5_API void DBaseQtWidgetSetGeometry(void *handle, int left, int top, int width, int height)
@@ -7339,8 +8155,139 @@ extern "C" D64QT5_API void DBaseQtWidgetSetText(void *handle, const char *text, 
         label->setText(value);
     else if (QLineEdit *edit = qobject_cast<QLineEdit *>(widget))
         edit->setText(value);
-    else
+    else if (QCheckBox *check = qobject_cast<QCheckBox *>(widget))
+        check->setText(value);
+    else if (QRadioButton *radio = qobject_cast<QRadioButton *>(widget))
+        radio->setText(value);
+    else if (QComboBox *combo = qobject_cast<QComboBox *>(widget)) {
+        if (combo->findText(value) < 0)
+            combo->addItem(value);
+        combo->setCurrentText(value);
+    } else
         widget->setWindowTitle(value);
+}
+
+extern "C" D64QT5_API void DBaseQtWidgetSetProperty(
+    void *handle,
+    const char *name,
+    int nameLength,
+    const char *value,
+    int valueLength)
+{
+    QWidget *widget = wfm_widget(handle);
+    if (!widget)
+        return;
+
+    const QString key = wfm_text(name, nameLength).trimmed();
+    const QString text = wfm_text(value, valueLength);
+    if (key.isEmpty())
+        return;
+
+    if (key.compare(QStringLiteral("Name"), Qt::CaseInsensitive) == 0) {
+        widget->setObjectName(text);
+        return;
+    }
+    if (key.compare(QStringLiteral("Text"), Qt::CaseInsensitive) == 0) {
+        if (widget->isWindow())
+            widget->setWindowTitle(text);
+        else
+            DBaseQtWidgetSetText(handle, value, valueLength);
+        return;
+    }
+    if (key.compare(QStringLiteral("Visible"), Qt::CaseInsensitive) == 0) {
+        const QString v = text.trimmed().toLower();
+        widget->setVisible(
+            !(v == QStringLiteral(".f.") ||
+              v == QStringLiteral("false") ||
+              v == QStringLiteral("0"))
+        );
+        return;
+    }
+    if (key.compare(QStringLiteral("Enabled"), Qt::CaseInsensitive) == 0) {
+        const QString v = text.trimmed().toLower();
+        widget->setEnabled(
+            !(v == QStringLiteral(".f.") ||
+              v == QStringLiteral("false") ||
+              v == QStringLiteral("0"))
+        );
+        return;
+    }
+    if (key.compare(QStringLiteral("ToolTip"), Qt::CaseInsensitive) == 0) {
+        widget->setToolTip(text);
+        return;
+    }
+    if (
+        key.compare(QStringLiteral("Placeholder"), Qt::CaseInsensitive) == 0 ||
+        key.compare(QStringLiteral("PlaceholderText"), Qt::CaseInsensitive) == 0
+    ) {
+        if (QLineEdit *edit = qobject_cast<QLineEdit *>(widget))
+            edit->setPlaceholderText(text);
+        return;
+    }
+    if (key.compare(QStringLiteral("ReadOnly"), Qt::CaseInsensitive) == 0) {
+        if (QLineEdit *edit = qobject_cast<QLineEdit *>(widget)) {
+            const QString v = text.trimmed().toLower();
+            edit->setReadOnly(
+                v == QStringLiteral(".t.") ||
+                v == QStringLiteral("true") ||
+                v == QStringLiteral("1")
+            );
+        }
+        return;
+    }
+    if (key.compare(QStringLiteral("Checked"), Qt::CaseInsensitive) == 0) {
+        const QString v = text.trimmed().toLower();
+        const bool checked =
+            v == QStringLiteral(".t.") ||
+            v == QStringLiteral("true") ||
+            v == QStringLiteral("1");
+        if (QCheckBox *check = qobject_cast<QCheckBox *>(widget))
+            check->setChecked(checked);
+        else if (QRadioButton *radio = qobject_cast<QRadioButton *>(widget))
+            radio->setChecked(checked);
+        return;
+    }
+    if (key.compare(QStringLiteral("CurrentIndex"), Qt::CaseInsensitive) == 0) {
+        if (QComboBox *combo = qobject_cast<QComboBox *>(widget))
+            combo->setCurrentIndex(text.toInt());
+        return;
+    }
+
+    QString propertyName = QStringLiteral("dbase") + key;
+    if (key.compare(QStringLiteral("BackColor"), Qt::CaseInsensitive) == 0)
+        propertyName = QStringLiteral("dbaseBackColor");
+    else if (key.compare(QStringLiteral("ForeColor"), Qt::CaseInsensitive) == 0)
+        propertyName = QStringLiteral("dbaseForeColor");
+    else if (key.compare(QStringLiteral("BrushGradient"), Qt::CaseInsensitive) == 0)
+        propertyName = QStringLiteral("dbaseBrushGradient");
+    else if (key.compare(QStringLiteral("BrushStyle"), Qt::CaseInsensitive) == 0)
+        propertyName = QStringLiteral("dbaseBrushStyle");
+    else if (key.compare(QStringLiteral("BrushCutWidth"), Qt::CaseInsensitive) == 0)
+        propertyName = QStringLiteral("dbaseBrushCutWidth");
+    else if (key.compare(QStringLiteral("BrushCutHeight"), Qt::CaseInsensitive) == 0)
+        propertyName = QStringLiteral("dbaseBrushCutHeight");
+    else if (key.compare(QStringLiteral("FontBackground"), Qt::CaseInsensitive) == 0)
+        propertyName = QStringLiteral("dbaseFontBackground");
+    else if (key.compare(QStringLiteral("FontForeground"), Qt::CaseInsensitive) == 0)
+        propertyName = QStringLiteral("dbaseFontForeground");
+    else if (key.compare(QStringLiteral("FontAlpha"), Qt::CaseInsensitive) == 0)
+        propertyName = QStringLiteral("dbaseFontAlpha");
+    else if (key.compare(QStringLiteral("BorderStyle"), Qt::CaseInsensitive) == 0)
+        propertyName = QStringLiteral("dbaseBorderStyle");
+    else if (key.compare(QStringLiteral("BorderWidth"), Qt::CaseInsensitive) == 0 ||
+             key.compare(QStringLiteral("BorderSize"), Qt::CaseInsensitive) == 0)
+        propertyName = QStringLiteral("dbaseBorderWidth");
+    else if (key.compare(QStringLiteral("BorderColor"), Qt::CaseInsensitive) == 0)
+        propertyName = QStringLiteral("dbaseBorderColor");
+    else if (key.compare(QStringLiteral("ShadowColor"), Qt::CaseInsensitive) == 0)
+        propertyName = QStringLiteral("dbaseShadowColor");
+    else if (key.compare(QStringLiteral("Radius"), Qt::CaseInsensitive) == 0)
+        propertyName = QStringLiteral("dbaseRadius");
+    else if (key.startsWith(QStringLiteral("Border"), Qt::CaseInsensitive))
+        propertyName = QStringLiteral("dbase") + key;
+
+    widget->setProperty(propertyName.toUtf8().constData(), text);
+    wfm_apply_widget_style(widget);
 }
 
 extern "C" D64QT5_API void DBaseQtWidgetSetBackColor(void *handle, const char *text, int length)
@@ -7407,13 +8354,45 @@ extern "C" D64QT5_API void DBaseQtWidgetSetFont(
 extern "C" D64QT5_API void DBaseQtFormOpen(void *handle)
 {
     QWidget *form = wfm_widget(handle);
-    if (!form)
+    if (!form || g_shutdown_requested)
         return;
+
+    // Stage 126:
+    // Bei einer WFM-Anwendung ist das Formular selbst das sichtbare
+    // Hauptfenster auf der Workstation. Das Console-Hauptfenster g_window
+    // bleibt Runtime-Infrastruktur, wird fuer WFM aber nicht angezeigt.
+    if (g_window && g_window != form)
+        g_window->hide();
+
+#ifdef _WIN32
+    // Zuerst ein echtes HWND erzeugen. D64WorkstationActivate() erwartet ein
+    // bereits sichtbares natives Hauptfenster auf dem Workstation-Desktop.
     form->show();
+    if (g_app)
+        g_app->processEvents(QEventLoop::ExcludeUserInputEvents);
+
+    HWND formHwnd = reinterpret_cast<HWND>(form->winId());
+    if (D64WorkstationIsActive()) {
+        if (!D64WorkstationActivate(formHwnd)) {
+            form->hide();
+            return;
+        }
+    }
+#else
+    form->show();
+#endif
+
+    resume_application_window_input(form);
     form->raise();
     form->activateWindow();
+
     if (g_app)
         g_app->processEvents();
+
+#ifdef _WIN32
+    if (D64WorkstationIsVisible())
+        D64WorkstationInstallKeyboardGuard(formHwnd);
+#endif
 }
 
 extern "C" D64QT5_API void DBaseQtMarkProgramFinished(void)
@@ -7444,6 +8423,15 @@ extern "C" D64QT5_API int DBaseQtShutdownRequested(void)
 
 extern "C" D64QT5_API void DBaseQtShutdown(void)
 {
+#ifdef _WIN32
+    // Stage 129:
+    // Nur der globale Workstation-EXIT setzt g_exit_authorized. Ein normales
+    // X eines Console-/WFM-Fensters tut das nicht und bleibt deshalb weiterhin
+    // ein reines Hide. Den Zustand VOR dem Cleanup sichern, weil die globalen
+    // Flags am Ende der Runtime zurueckgesetzt werden.
+    const bool terminateProcessAfterWorkstationExit = g_exit_authorized;
+#endif
+
     // Auch ein expliziter Runtime-Shutdown benutzt denselben zentralen
     // Abbaupfad wie das Schliessen des Hauptfensters.
     request_runtime_shutdown();
@@ -7542,9 +8530,35 @@ extern "C" D64QT5_API void DBaseQtShutdown(void)
 
     g_exit_authorized = false;
     g_exit_confirmation_open = false;
+    g_wfm_gui_mode = false;
+
+#ifdef _WIN32
+    // Eine durch ?/?? in einer WFM-GUI dynamisch erzeugte Konsole gehört
+    // ebenfalls zur Session und wird beim Runtime-Abbau gelöst.
+    if (g_wfm_console_allocated && GetConsoleWindow())
+        FreeConsole();
+    g_wfm_console_allocated = false;
+#endif
 
     // Nach vollstaendigem Abbau darf ein Host die Bridge spaeter erneut
     // initialisieren. Bis hierhin bleibt g_shutdown_requested bewusst wahr,
     // damit kein nachlaufender Runtime-Aufruf neue UI erzeugt.
     g_shutdown_in_progress = false;
+
+#ifdef _WIN32
+    // Stage 129:
+    // Der globale Workstation-EXIT bedeutet "gesamte Session beenden".
+    // D64WorkstationFinalizeLeave() hat zu diesem Zeitpunkt bereits Panels,
+    // Desktop-Handles, Mutexe und alle Runtime-Ressourcen freigegeben.
+    //
+    // ExitProcess ist absichtlich die ALLERLETZTE Operation:
+    // - beendet den Owner-Prozess selbst,
+    // - beendet saemtliche noch lebenden Threads dieses Prozesses,
+    // - verhindert unsichtbare Restprozesse, die EXE/OBJ/DLL-Dateien sperren.
+    //
+    // Normales Fenster-X erreicht diesen Pfad nicht mit
+    // terminateProcessAfterWorkstationExit=true.
+    if (terminateProcessAfterWorkstationExit)
+        ExitProcess(0);
+#endif
 }

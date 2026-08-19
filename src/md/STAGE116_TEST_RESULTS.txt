@@ -1,0 +1,26 @@
+Stage 116 - Doxygen Dock + Dark MessageBoxes
+============================================
+py_compile d64_dism.py: OK
+py_compile doxygen.py: OK
+
+Basis:
+- doxygen.py: exact uploaded doxygen(2).py; existing lines preserved
+- d64_dism.py: Stage 115 package; existing lines preserved
+
+Checks:
+- Uploaded Doxygen source preserved as ordered unchanged lines: OK
+- Stage 115 d64_dism source preserved as ordered unchanged lines: OK
+- Direct QMessageBox calls in uploaded source covered: 24
+- critical/warning/information/question covered: OK
+- Theme proxy installed before first original MessageBox call: OK
+- Pre-import host theme available during TranslationManager initialization: OK
+- Host _apply_message_box_theme reused when available: OK
+- Dark/light fallback stylesheet present: OK
+- Yes/No question semantics preserved: OK
+- Existing Doxygen QDockWidget embedding preserved: OK
+- Existing filesystem-hide/full-space docking behavior preserved: OK
+- d64qt5/ source directory preserved: OK
+- Deleted original Doxygen lines in diff: 0
+- Deleted Stage-115 d64_dism lines in diff: 0
+
+Native PyQt5 GUI test: not run (PyQt5 unavailable in container)

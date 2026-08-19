@@ -1,0 +1,25 @@
+Stage 120 - structured WFM/OOP properties
+
+OK  root geometry
+OK  root brush flatten
+OK  root border flatten
+OK  root side flatten
+OK  root font six attrs
+OK  root font visuals
+OK  named font object
+OK  constructor parent/text
+OK  shared font resolved
+OK  nested control brush
+OK  nested control border
+OK  lifecycle methods
+OK  legacy flat syntax
+
+py_compile d64_dism.py: OK
+py_compile d64dbase/wfm.py: OK
+checks=13/13
+
+Runtime structural checks:
+OK  Form Text maps to setWindowTitle
+OK  Name maps to setObjectName
+OK  rgb(r,g,b,a) normalizes to rgba(...) for QSS
+OK  Stage119 QToolBar include preserved

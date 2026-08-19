@@ -1,0 +1,21 @@
+Stage 115 tests
+================
+py_compile d64_dism.py: OK
+py_compile doxygen.py: OK
+py_compile d64dbase/wfm.py: OK
+
+Structural checks: 12/12 OK
+- Doxygen state flags initialized
+- visibility handler present
+- filesystem hidden before Doxygen show
+- central widget hidden for full free area
+- Doxygen uses LeftDockWidgetArea
+- right project dock kept/shown
+- horizontal full-space resize
+- vertical full-space resize
+- filesystem restored on close when replaced
+- central widget restored on close when replaced
+- visibilityChanged connected
+- show path hides filesystem before dock.show()
+
+Native Qt visual test: not run (PyQt5 unavailable in container).

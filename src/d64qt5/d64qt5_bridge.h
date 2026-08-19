@@ -21,6 +21,7 @@ extern "C" {
  * PE32+: Windows-x64-ABI (RCX/RDX/R8/R9 + Shadow Space).
  */
 D64QT5_API int  DBaseQtInitialize(const char *title);
+D64QT5_API int  DBaseQtInitializeGui(const char *title);
 D64QT5_API void DBaseQtShowWindow(void);
 D64QT5_API void DBaseQtProcessEvents(void);
 D64QT5_API void DBaseQtSetDebugVisible(int visible);
@@ -60,8 +61,23 @@ D64QT5_API void DBaseQtMenuSetOnClick(void *handle, void (*callback)(void));
 // Stage 34/WFM FORM-OOP
 D64QT5_API void *DBaseQtFormCreate(const char *className, int classNameLength);
 D64QT5_API void *DBaseQtControlCreate(const char *className, int classNameLength, void *parentHandle);
+D64QT5_API void *DBaseQtControlCreateEx(
+    const char *className, int classNameLength, void *parentHandle,
+    const char *text, int textLength
+);
+D64QT5_API int DBaseQtObjectBindEvent(
+    void *handle, const char *eventName, int eventNameLength,
+    void *callbackHandle
+);
+D64QT5_API void *DBaseQtTimerCreate(void *parentHandle);
+D64QT5_API void DBaseQtTimerSetInterval(void *handle, int microseconds);
+D64QT5_API void DBaseQtTimerSetActive(void *handle, int active);
+D64QT5_API void DBaseQtConsoleWrite(
+    const char *text, int textLength, int newline
+);
 D64QT5_API void DBaseQtWidgetSetGeometry(void *handle, int left, int top, int width, int height);
 D64QT5_API void DBaseQtWidgetSetText(void *handle, const char *text, int length);
+D64QT5_API void DBaseQtWidgetSetProperty(void *handle, const char *name, int nameLength, const char *value, int valueLength);
 D64QT5_API void DBaseQtWidgetSetBackColor(void *handle, const char *text, int length);
 D64QT5_API void DBaseQtWidgetSetBorderColor(void *handle, const char *text, int length);
 D64QT5_API void DBaseQtWidgetSetBorderWidth(void *handle, int width);

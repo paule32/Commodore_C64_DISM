@@ -108,16 +108,13 @@ import datetime as dt
 import zlib      as _d64info_zlib
 import base64    as _d64info_base64
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal     import Decimal, localcontext
 from fractions   import Fraction
 from pathlib     import Path
 from typing      import Dict, Iterable, List, Optional, Sequence, Tuple
 
-# -----------------------------------------------------------------------
-# resources for documenting source codes ...
-# -----------------------------------------------------------------------
-from flags_rc       import *
+from flags_rc    import *
 
 # dBase: Start fuehrt ausschliesslich eine vorhandene EXE aus.
 DBASE_START_HARD_NO_BUILD = True
@@ -1825,6 +1822,9 @@ PE32_DEFAULT_IMPORTS: Dict[str, Tuple[str, str]] = {
     "virtualalloc": ("kernel32.dll", "VirtualAlloc"),
     "virtualfree": ("kernel32.dll", "VirtualFree"),
     "sleep": ("kernel32.dll", "Sleep"),
+    # Stage 135: WFM-Event-Code kann Beep(freq,duration) direkt als
+    # kernel32-Aufruf emittieren.
+    "beep": ("kernel32.dll", "Beep"),
     "registerclassexa": ("user32.dll", "RegisterClassExA"),
     "createwindowexa": ("user32.dll", "CreateWindowExA"),
     "defwindowproca": ("user32.dll", "DefWindowProcA"),
@@ -16576,7 +16576,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
         LISP_EXTENSIONS      = {".lisp", ".lsp"}
         PROLOG_EXTENSIONS    = {".pl", ".prolog"}
         LOGO_EXTENSIONS      = {".logo", ".lgo"}
-        DBASE_EXTENSIONS     = {".dbase", ".dbp"}
+        DBASE_EXTENSIONS     = {".dbase", ".dbp", ".wfm"}
         MARKDOWN_EXTENSIONS  = {".md", ".markdown"}
         BINARY_EXTENSIONS    = {
             ".prg", ".amiga", ".adf", ".ram", ".bin",
@@ -19122,8 +19122,27 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
     # -----------------------------------------------------------------------
     # Stage 84/90/91/92: visueller dBase-Formulardesigner mit Komponentenpalette.
     # -----------------------------------------------------------------------
+    # Stage 130: Standardereignisse visueller WFM-Komponenten.
+    DBASE_FORM_STANDARD_EVENTS = (
+        "OnClick",
+        "OnLostFocus",
+        "OnGetFocus",
+        "OnHover",
+        "OnMouseEnter",
+        "OnMouseLeave",
+        "OnMouseMove",
+        "OnMouseLeftClick",
+        "OnMouseRightClick",
+        "OnKeyDown",
+        "OnKeyUp",
+        "OnKeyRelease",
+        "OnTextChange",
+    )
+    DBASE_FORM_TIMER_EVENTS = ("OnInterval",)
+
     DBASE_FORM_COMPONENT_SPECS = {
         "Button": {"title": "Button", "width": 120, "height": 34},
+        "EntryField": {"title": "EntryField", "width": 180, "height": 30},
         "CheckBox": {"title": "Checkbox", "width": 145, "height": 26},
         "RadioButton": {"title": "Radiobutton", "width": 150, "height": 26},
         "ComboBox": {"title": "ComboBox", "width": 150, "height": 30},
@@ -19136,6 +19155,9 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
         "StatusBar": {"title": "Statusbar", "width": 320, "height": 26},
         "ToolBar": {"title": "Toolbar", "width": 320, "height": 34},
         "Menu": {"title": "Menü", "width": 320, "height": 27},
+        # Timer ist im Designer ein nicht-visuelles Objekt mit kleinem
+        # Platzhalter; zur Laufzeit entsteht daraus ein echtes QTimer-Objekt.
+        "Timer": {"title": "Timer", "width": 96, "height": 30},
     }
     # -----------------------------------------------------------------------
     # Stage 92: Brush-Patterns als 48 neu erzeugte bündig kachelbare Kachelmuster.
@@ -20275,6 +20297,9 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.wfm_form_width = 400
             self.wfm_form_height = 400
             self.wfm_declared_properties = {}
+            # Stage 120: structured OOP metadata retained across source/designer tabs.
+            self.wfm_font_objects = {}
+            self.wfm_methods = []
             self.wfm_source_header = ""
             # Stage 110: echte visuelle Form-Hülle. Controls der Hauptform
             # werden ChildItems dieses Objekts; ihre lokalen Koordinaten sind
@@ -20864,6 +20889,11 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.wfm_class_name = ""
             self.wfm_events = {}
             self.wfm_extra_properties = {}
+            # Stage 130: nicht-visuelle Timer-Properties. Interval wird in
+            # Mikrosekunden gespeichert; Qt5 nutzt zur Laufzeit die
+            # bestmögliche PreciseTimer-Millisekundenauflösung.
+            self.timer_interval = 1000
+            self.timer_active = False
             self._width = max(self.MIN_WIDTH, float(width))
             self._height = max(self.MIN_HEIGHT, float(height))
             self._resize_role = ""
@@ -20967,6 +20997,10 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             t = self.component_type
             if t == "Button":
                 return QPushButton(self.caption)
+            if t == "EntryField":
+                widget = QLineEdit()
+                widget.setPlaceholderText(self.caption)
+                return widget
             if t == "CheckBox":
                 return QCheckBox(self.caption)
             if t == "RadioButton":
@@ -21011,6 +21045,12 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 widget = QMenuBar()
                 widget.addMenu("Datei")
                 widget.addMenu("Bearbeiten")
+                return widget
+            if t == "Timer":
+                widget = QLabel("Timer")
+                widget.setAlignment(Qt.AlignCenter)
+                widget.setFrameShape(QFrame.Box)
+                widget.setToolTip("Nicht-visuelles QTimer-Objekt")
                 return widget
             return QLabel(self.caption)
 
@@ -21887,6 +21927,17 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             )
 
 
+    class DBaseFormEventLineEdit(QLineEdit):
+        """Event-Prozedurname; Doppelklick erzeugt/navigiert den Handler."""
+
+        doubleClicked = pyqtSignal()
+
+        def mouseDoubleClickEvent(self, event) -> None:
+            super().mouseDoubleClickEvent(event)
+            if self.text().strip():
+                self.doubleClicked.emit()
+
+
     class DBaseFormPropertyPanel(QWidget):
         """Eigenschaften-/Ereignisse-/Methodenbereich und Komponentenpalette."""
 
@@ -21949,6 +22000,26 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
 
             self.hwnd_edit = self._add_line_property("HWND", read_only=True)
             self.name_edit = self._add_line_property("Name")
+
+            # Stage 130: Timer besitzt Name (oben), Interval und Active.
+            self.timer_root = QTreeWidgetItem(self.property_tree, ["Timer", ""])
+            self.timer_root.setFlags(self.timer_root.flags() & ~Qt.ItemIsSelectable)
+            self.timer_root.setExpanded(True)
+            self.timer_interval_spin = QSpinBox(self.property_tree)
+            self.timer_interval_spin.setObjectName("dbase_form_timer_interval_spinbox")
+            self.timer_interval_spin.setRange(1, 2147483647)
+            self.timer_interval_spin.setValue(1000)
+            self.timer_interval_spin.setSuffix(" µs")
+            self.timer_interval_spin.setSingleStep(100)
+            self._add_widget_property(
+                "Interval", self.timer_interval_spin, parent_item=self.timer_root
+            )
+            self.timer_active_check = QCheckBox(self.property_tree)
+            self.timer_active_check.setObjectName("dbase_form_timer_active_checkbox")
+            self._add_widget_property(
+                "Active", self.timer_active_check, parent_item=self.timer_root
+            )
+            self.timer_root.setHidden(True)
 
             # Stage 90 regression labels: "Hintergrundfarbe", "Schriftfarbe".
             # Stage 92 gruppiert beide Werte als Brush/Background/Foreground.
@@ -22248,7 +22319,30 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
 
             properties_layout.addWidget(self.property_tree, 1)
             self.upper_tabs.addTab(properties_page, "Eigenschaften")
-            self.upper_tabs.addTab(QWidget(self.upper_tabs), "Ereignisse")
+
+            events_page = QWidget(self.upper_tabs)
+            events_layout = QVBoxLayout(events_page)
+            events_layout.setContentsMargins(0, 0, 0, 0)
+            events_layout.setSpacing(0)
+            self.event_grid = QTableWidget(0, 3, events_page)
+            self.event_grid.setObjectName("dbase_form_event_grid")
+            self.event_grid.setHorizontalHeaderLabels(
+                ("Ereignis", "Prozedur", "Quelle")
+            )
+            self.event_grid.setSelectionMode(QAbstractItemView.NoSelection)
+            self.event_grid.setEditTriggers(QAbstractItemView.NoEditTriggers)
+            self.event_grid.verticalHeader().setVisible(False)
+            self.event_grid.horizontalHeader().setSectionResizeMode(
+                0, QHeaderView.ResizeToContents
+            )
+            self.event_grid.horizontalHeader().setSectionResizeMode(
+                1, QHeaderView.Stretch
+            )
+            self.event_grid.horizontalHeader().setSectionResizeMode(
+                2, QHeaderView.ResizeToContents
+            )
+            events_layout.addWidget(self.event_grid, 1)
+            self.upper_tabs.addTab(events_page, "Ereignisse")
             self.upper_tabs.addTab(QWidget(self.upper_tabs), "Methoden")
 
             self.lower_tabs = QTabWidget(self.vertical_splitter)
@@ -22275,6 +22369,12 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.scene.placement_mode_changed.connect(self._placement_mode_changed)
             self.scene.control_created.connect(self.bind_item)
             self.scene.selectionChanged.connect(self._selection_changed)
+            self.timer_interval_spin.valueChanged.connect(
+                self._timer_interval_changed
+            )
+            self.timer_active_check.toggled.connect(
+                self._timer_active_changed
+            )
             # Stage 111: auch die Hauptform besitzt denselben Property-Pfad.
             self.bind_item(self.scene.form_window_item)
 
@@ -22438,6 +22538,25 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                     "QTreeWidget#dbase_form_property_tree QHeaderView::section{"
                     "background:#e7e7e7;color:#000000;border:1px solid #b0b0b0;padding:4px;}"
                 )
+            if hasattr(self, "event_grid"):
+                if bool(enabled):
+                    self.event_grid.setStyleSheet(
+                        "QTableWidget#dbase_form_event_grid{"
+                        "background:#000000;color:#ffffff;gridline-color:#4a4a4a;}"
+                        "QTableWidget#dbase_form_event_grid QHeaderView::section{"
+                        "background:#242424;color:#ffffff;border:1px solid #505050;padding:4px;}"
+                        "QTableWidget#dbase_form_event_grid QLineEdit{"
+                        "background:#000000;color:#ffff00;border:1px solid #555555;}"
+                        "QTableWidget#dbase_form_event_grid QPushButton{"
+                        "background:#303030;color:#ffffff;border:1px solid #707070;}"
+                    )
+                else:
+                    self.event_grid.setStyleSheet(
+                        "QTableWidget#dbase_form_event_grid{"
+                        "background:#ffffff;color:#000000;gridline-color:#b8b8b8;}"
+                        "QTableWidget#dbase_form_event_grid QHeaderView::section{"
+                        "background:#e7e7e7;color:#000000;border:1px solid #b0b0b0;padding:4px;}"
+                    )
             self._style_position_root()
             self._style_brush_root()
             self._style_font_root()
@@ -22498,6 +22617,10 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 t = str(component_type)
                 if t == "Button":
                     painter.drawRoundedRect(5, 13, 38, 22, 4, 4); painter.drawText(QRect(5, 13, 38, 22), Qt.AlignCenter, "OK")
+                elif t == "EntryField":
+                    painter.drawRect(5, 13, 38, 22)
+                    painter.drawLine(10, 18, 10, 30)
+                    painter.drawLine(10, 30, 27, 30)
                 elif t in {"CheckBox", "RadioButton"}:
                     if t == "CheckBox": painter.drawRect(6, 16, 12, 12)
                     else: painter.drawEllipse(6, 16, 12, 12)
@@ -22524,6 +22647,10 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                     painter.drawRect(5, 10, 38, 15); painter.drawRect(9, 13, 8, 8); painter.drawRect(21, 13, 8, 8)
                 elif t == "Menu":
                     painter.drawRect(5, 9, 38, 14); painter.drawText(QRect(6, 9, 36, 14), Qt.AlignCenter, "File Edit")
+                elif t == "Timer":
+                    painter.drawEllipse(9, 9, 30, 30)
+                    painter.drawLine(24, 13, 24, 25)
+                    painter.drawLine(24, 25, 32, 29)
                 else:
                     painter.drawRect(7, 7, 34, 34)
             finally:
@@ -22549,6 +22676,137 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.standard_icon_view.clearSelection()
             self.standard_icon_view.setCurrentRow(-1)
 
+        @staticmethod
+        def _event_procedure_name(value) -> str:
+            text = str(value or "").strip()
+            if "::" in text:
+                text = text.rsplit("::", 1)[-1].strip()
+            return text
+
+        def _event_names_for_item(self, item):
+            if (
+                isinstance(item, DBaseFormControlItem)
+                and item.component_type == "Timer"
+            ):
+                return DBASE_FORM_TIMER_EVENTS
+            return DBASE_FORM_STANDARD_EVENTS
+
+        def _event_host(self):
+            host = self.window()
+            return host if host is not None else self.parent()
+
+        def _event_value_changed(
+            self,
+            event_name: str,
+            edit: QLineEdit,
+            button: QPushButton,
+        ) -> None:
+            if self._syncing or self._selected_item is None:
+                return
+            procedure = edit.text().strip()
+            events = self._selected_item.wfm_events
+            if procedure:
+                events[str(event_name)] = "CLASS::" + procedure
+            else:
+                events.pop(str(event_name), None)
+            button.setEnabled(bool(procedure))
+            self._selected_item.properties_changed.emit(self._selected_item)
+            host = self._event_host()
+            if host is not None:
+                host.dbase_form_modified = True
+
+        def _event_create_or_navigate(
+            self,
+            event_name: str,
+            edit: QLineEdit,
+            *,
+            create: bool,
+        ) -> None:
+            procedure = edit.text().strip()
+            if not procedure or self._selected_item is None:
+                return
+            host = self._event_host()
+            if host is None or not hasattr(
+                host, "_open_dbase_form_event_procedure"
+            ):
+                return
+            host._open_dbase_form_event_procedure(
+                self._selected_item,
+                str(event_name),
+                procedure,
+                create=create,
+            )
+
+        def _refresh_event_grid(self) -> None:
+            grid = self.event_grid
+            item = self._selected_item
+            self._syncing = True
+            try:
+                grid.setRowCount(0)
+                if item is None:
+                    return
+                events = dict(getattr(item, "wfm_events", {}) or {})
+                event_names = self._event_names_for_item(item)
+                grid.setRowCount(len(event_names))
+                for row, event_name in enumerate(event_names):
+                    label = QTableWidgetItem(str(event_name))
+                    label.setFlags(Qt.ItemIsEnabled)
+                    grid.setItem(row, 0, label)
+
+                    edit = DBaseFormEventLineEdit(grid)
+                    existing = ""
+                    for key, value in events.items():
+                        if str(key).casefold() == str(event_name).casefold():
+                            existing = self._event_procedure_name(value)
+                            break
+                    edit.setText(existing)
+                    edit.setPlaceholderText(
+                        f"{getattr(item, 'component_name', 'Control')}_{event_name}"
+                    )
+
+                    nav = QPushButton("→", grid)
+                    nav.setObjectName("dbase_form_event_source_button")
+                    nav.setToolTip("Zur Event-Prozedur im Quellcode springen")
+                    nav.setFixedWidth(34)
+                    nav.setEnabled(bool(existing))
+
+                    edit.editingFinished.connect(
+                        lambda e=event_name, w=edit, b=nav:
+                            self._event_value_changed(e, w, b)
+                    )
+                    edit.doubleClicked.connect(
+                        lambda e=event_name, w=edit:
+                            self._event_create_or_navigate(e, w, create=True)
+                    )
+                    nav.clicked.connect(
+                        lambda _checked=False, e=event_name, w=edit:
+                            self._event_create_or_navigate(e, w, create=False)
+                    )
+                    grid.setCellWidget(row, 1, edit)
+                    grid.setCellWidget(row, 2, nav)
+            finally:
+                self._syncing = False
+
+        def _timer_interval_changed(self, value: int) -> None:
+            if self._syncing or not isinstance(
+                self._selected_item, DBaseFormControlItem
+            ):
+                return
+            if self._selected_item.component_type != "Timer":
+                return
+            self._selected_item.timer_interval = max(1, int(value))
+            self._selected_item.properties_changed.emit(self._selected_item)
+
+        def _timer_active_changed(self, enabled: bool) -> None:
+            if self._syncing or not isinstance(
+                self._selected_item, DBaseFormControlItem
+            ):
+                return
+            if self._selected_item.component_type != "Timer":
+                return
+            self._selected_item.timer_active = bool(enabled)
+            self._selected_item.properties_changed.emit(self._selected_item)
+
         def bind_item(self, item) -> None:
             if not isinstance(item, (DBaseFormControlItem, DBaseFormWindowItem)):
                 return
@@ -22565,6 +22823,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             if item.isSelected():
                 self._selected_item = item
                 self._update_property_values()
+                self._refresh_event_grid()
 
         def _selected_control(self):
             selected = [
@@ -22579,6 +22838,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
         def _selection_changed(self) -> None:
             self._selected_item = self._selected_control()
             self._update_property_values()
+            self._refresh_event_grid()
 
         def _geometry_changed(self, item) -> None:
             if item is self._selected_item:
@@ -22603,6 +22863,18 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             try:
                 enabled = item is not None
                 self._set_property_widgets_enabled(enabled)
+                is_timer = (
+                    isinstance(item, DBaseFormControlItem)
+                    and item.component_type == "Timer"
+                )
+                self.timer_root.setHidden(not is_timer)
+                if is_timer:
+                    self.timer_interval_spin.setValue(
+                        max(1, int(getattr(item, "timer_interval", 1000)))
+                    )
+                    self.timer_active_check.setChecked(
+                        bool(getattr(item, "timer_active", False))
+                    )
                 if item is None:
                     self.hwnd_edit.clear()
                     self.name_edit.clear()
@@ -28343,6 +28615,15 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.dbase_form_view = None
             self.dbase_form_current_path = None
             self.dbase_form_modified = False
+            # Stage 118: Build-/Quellcode-Ansicht des Formular-Designers.
+            self.dbase_form_tabs = None
+            self.dbase_form_source_page = None
+            self.dbase_form_build_document = None
+            self.dbase_form_compile_button = None
+            self.dbase_form_assemble_button = None
+            self.dbase_form_start_button = None
+            self.dbase_form_target_combo = None
+            self.dbase_form_build_status = None
             self._dbase_form_workspace_active = False
             self._dbase_form_workspace_state = {}
             self.dbase_table_designer_dock = None
@@ -28359,7 +28640,9 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.icon_provider = QFileIconProvider()
             self.untitled_counter = 0
             self.editor_font_size = self.DEFAULT_EDITOR_FONT_SIZE
-            self.dark_mode_enabled = False
+            # Stage 130: Anwendung startet standardmäßig im Dark-Mode.
+            # Die Toolbar zeigt deshalb sofort das Sonnen-/Light-Symbol.
+            self.dark_mode_enabled = True
             self.dism_vice_path = str(
                 self.settings.value("dism/vice_path", "") or ""
             )
@@ -28433,6 +28716,10 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self._create_right_dock()
             self._create_bottom_dock()
             self._create_status_panels()
+
+            # Stage 130: kein Light-Mode-Start/Flicker. Die gespeicherte
+            # Light-Palette bleibt als Rückschaltziel erhalten.
+            self._apply_application_theme(self.dark_mode_enabled)
 
             application.installEventFilter(self)
             # Stage 67: every visible QWidget gets a stable dynamic property
@@ -29095,14 +29382,26 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             self.zoom_out_action.triggered.connect(self.decrease_editor_font)
 
             self.theme_action = QAction(
-                self._toolbar_symbol_icon("moon"),
-                "Dunkelmodus einschalten",
+                self._toolbar_symbol_icon(
+                    "sun" if self.dark_mode_enabled else "moon"
+                ),
+                (
+                    "Hellmodus einschalten"
+                    if self.dark_mode_enabled
+                    else "Dunkelmodus einschalten"
+                ),
                 self,
             )
             self.theme_action.setObjectName("theme_action")
-            self.theme_action.setToolTip("Dunkelmodus einschalten")
+            self.theme_action.setToolTip(
+                "Hellmodus einschalten"
+                if self.dark_mode_enabled
+                else "Dunkelmodus einschalten"
+            )
             self.theme_action.setStatusTip(
-                "Gesamte Anwendung auf Dunkelmodus umschalten"
+                "Gesamte Anwendung auf Hellmodus umschalten"
+                if self.dark_mode_enabled
+                else "Gesamte Anwendung auf Dunkelmodus umschalten"
             )
             self.theme_action.triggered.connect(self.toggle_editor_theme)
 
@@ -30081,7 +30380,114 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             )
             designer_dock.setMinimumWidth(400)
             designer_dock.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-            designer_dock.setWidget(view)
+
+            # Stage 118: Build-Leiste oberhalb eines zweitseitigen Form-Tabs.
+            # Der unsichtbare DocumentEditor stellt exakt denselben dBase-
+            # Compiler-/Assembler-/Start-Zustand wie ein normales Dokument bereit.
+            build_document = DocumentEditor(
+                self,
+                untitled_number=0,
+                text="",
+                dark_mode=self.dark_mode_enabled,
+            )
+            build_document.custom_display_name = "Form1.wfm"
+            build_document.set_build_target("pe32")
+            build_document.set_windows_application_mode("GUI")
+            build_document.assembler_panel.hide()
+            # Stage 130: Event-/Methodencode wird direkt im Quellcode-Tab
+            # bearbeitet. Das normale DocumentEditor-Buildpanel bleibt dort
+            # immer verborgen; die WFM-Buildleiste liegt bereits oberhalb.
+            build_document.raw_editor.setReadOnly(False)
+
+            source_page = build_document.source_page
+            source_index = build_document.views.indexOf(source_page)
+            if source_index >= 0:
+                build_document.views.removeTab(source_index)
+            source_page.setParent(None)
+
+            designer_host = QWidget(designer_dock)
+            designer_layout = QVBoxLayout(designer_host)
+            designer_layout.setContentsMargins(0, 0, 0, 0)
+            designer_layout.setSpacing(0)
+
+            build_bar = QFrame(designer_host)
+            build_bar.setObjectName("dbase_form_build_bar")
+            build_bar.setFrameShape(QFrame.StyledPanel)
+            build_layout = QHBoxLayout(build_bar)
+            build_layout.setContentsMargins(6, 5, 6, 5)
+            build_layout.setSpacing(6)
+
+            compile_button = QPushButton("Compile", build_bar)
+            compile_button.setObjectName("dbase_form_compile_button")
+            compile_button.setToolTip(
+                "Aktuellen Formular-Code in Windows-Assembler kompilieren"
+            )
+            compile_button.clicked.connect(
+                lambda _checked=False: self.compile_dbase_form()
+            )
+
+            target_combo = QComboBox(build_bar)
+            target_combo.setObjectName("dbase_form_target_combo")
+            target_combo.addItem("Windows PE32", "pe32")
+            target_combo.addItem("Windows PE32+", "pe64")
+            target_combo.setCurrentIndex(0)
+            target_combo.setFixedWidth(150)
+            target_combo.setToolTip("Zielplattform des Formularprogramms")
+            target_combo.currentIndexChanged.connect(
+                self._dbase_form_target_changed
+            )
+
+            assemble_button = QPushButton("Assemble", build_bar)
+            assemble_button.setObjectName("dbase_form_assemble_button")
+            assemble_button.setToolTip(
+                "Erzeugten Assemblercode intern assemblieren und zur EXE linken"
+            )
+            assemble_button.setVisible(False)
+            assemble_button.clicked.connect(
+                lambda _checked=False: self.assemble_dbase_form()
+            )
+
+            start_button = QPushButton("Start", build_bar)
+            start_button.setObjectName("dbase_form_start_button")
+            start_button.setToolTip("Bereits erzeugte Formular-EXE starten")
+            start_button.setVisible(False)
+            start_button.setEnabled(False)
+            start_button.clicked.connect(
+                lambda _checked=False: self.start_dbase_form()
+            )
+
+            build_status = QLabel("Noch nicht kompiliert", build_bar)
+            build_status.setObjectName("dbase_form_build_status")
+            build_status.setTextFormat(Qt.PlainText)
+
+            build_layout.addWidget(compile_button)
+            build_layout.addWidget(target_combo)
+            build_layout.addWidget(assemble_button)
+            build_layout.addWidget(start_button)
+            build_layout.addSpacing(8)
+            build_layout.addWidget(build_status, 1)
+
+            form_tabs = QTabWidget(designer_host)
+            form_tabs.setObjectName("dbase_form_tabs")
+            form_tabs.setDocumentMode(True)
+            form_tabs.addTab(view, "Formular-Designer")
+            form_tabs.addTab(source_page, "Quellcode")
+            form_tabs.currentChanged.connect(
+                self._dbase_form_tab_changed
+            )
+
+            designer_layout.addWidget(build_bar)
+            designer_layout.addWidget(form_tabs, 1)
+            designer_dock.setWidget(designer_host)
+
+            self.dbase_form_tabs = form_tabs
+            self.dbase_form_source_page = source_page
+            self.dbase_form_build_document = build_document
+            self.dbase_form_compile_button = compile_button
+            self.dbase_form_assemble_button = assemble_button
+            self.dbase_form_start_button = start_button
+            self.dbase_form_target_combo = target_combo
+            self.dbase_form_build_status = build_status
 
             self.addDockWidget(Qt.LeftDockWidgetArea, property_dock)
             self.addDockWidget(Qt.LeftDockWidgetArea, designer_dock)
@@ -30103,6 +30509,1216 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             designer_dock.hide()
             self._assign_widget_property_ids(property_dock)
             self._assign_widget_property_ids(designer_dock)
+
+        def _sync_dbase_form_source(self) -> str:
+            """Stage 118: sichtbaren WFM/OOP-Quelltext aus dem Designer erzeugen."""
+            self._ensure_dbase_form_designer()
+            source = self._serialize_dbase_form_wfm()
+            document = self.dbase_form_build_document
+            if document is None:
+                return source
+
+            path = self.dbase_form_current_path
+            document.path = Path(path).resolve() if path is not None else None
+            document.custom_display_name = (
+                Path(path).name if path is not None else "Form1.wfm"
+            )
+            document.raw_editor.setPlainText(source)
+            document.raw_editor.document().setModified(False)
+            document.update_syntax_highlighting()
+            return source
+
+        def _dbase_form_tab_changed(self, index: int) -> None:
+            tabs = self.dbase_form_tabs
+            if tabs is None:
+                return
+            if index == tabs.indexOf(self.dbase_form_source_page):
+                if self.dbase_form_build_document is not None:
+                    self.dbase_form_build_document.assembler_panel.hide()
+                self._sync_dbase_form_source()
+
+        def _merge_dbase_form_source_methods_events(
+            self,
+            *,
+            strict: bool = False,
+        ) -> bool:
+            """Nur Methoden/Events aus dem editierbaren WFM-Quelltext übernehmen.
+
+            Designer-Geometrie/Properties bleiben führend; dadurch gehen
+            handgeschriebene Event-Prozeduren beim erneuten Serialisieren nicht
+            verloren.
+            """
+            document = self.dbase_form_build_document
+            scene = self.dbase_form_scene
+            if document is None or scene is None:
+                return True
+            if not document.raw_editor.document().isModified():
+                return True
+
+            source = document.raw_editor.toPlainText()
+            try:
+                try:
+                    from d64dbase import parse_dbase_wfm
+                except ImportError:
+                    from d64dbase.wfm import parse_dbase_wfm
+                parsed = parse_dbase_wfm(
+                    source,
+                    filename=str(self.dbase_form_current_path or "<WFM>"),
+                )
+            except Exception as exc:
+                if strict:
+                    raise RuntimeError(
+                        "WFM-Quellcode enthält einen Fehler:\n" + str(exc)
+                    ) from exc
+                self.log("WFM-Quellcode noch nicht synchronisiert: " + str(exc))
+                return False
+
+            scene.wfm_methods = list(getattr(parsed, "methods", []) or [])
+            scene.form_window_item.wfm_events = dict(
+                getattr(parsed, "events", {}) or {}
+            )
+
+            by_path = {}
+
+            def collect(parent, parent_path="THIS"):
+                if parent is None:
+                    candidates = [
+                        i for i in scene.items()
+                        if isinstance(i, DBaseFormControlItem)
+                        and i.panel_parent() is None
+                    ]
+                else:
+                    candidates = [
+                        i for i in parent.childItems()
+                        if isinstance(i, DBaseFormControlItem)
+                    ]
+                for item in candidates:
+                    path = f"{parent_path}.{item.component_name}"
+                    by_path[path.casefold()] = item
+                    if item.component_type == "Panel":
+                        collect(item, path)
+
+            collect(None)
+            for control in getattr(parsed, "controls", []) or []:
+                item = by_path.get(str(control.path).casefold())
+                if item is not None:
+                    item.wfm_events = dict(
+                        getattr(control, "events", {}) or {}
+                    )
+
+            if self.dbase_form_property_panel is not None:
+                self.dbase_form_property_panel._refresh_event_grid()
+            return True
+
+        @staticmethod
+        def _dbase_form_method_name_from_event(value) -> str:
+            text = str(value or "").strip()
+            return text.rsplit("::", 1)[-1].strip() if "::" in text else text
+
+        def _find_dbase_form_method(self, procedure_name: str):
+            wanted = str(procedure_name or "").casefold()
+            if not wanted or self.dbase_form_scene is None:
+                return None
+            for method in list(
+                getattr(self.dbase_form_scene, "wfm_methods", []) or []
+            ):
+                if str(getattr(method, "name", "")).casefold() == wanted:
+                    return method
+            return None
+
+        def _open_dbase_form_event_procedure(
+            self,
+            item,
+            event_name: str,
+            procedure_name: str,
+            *,
+            create: bool,
+        ) -> None:
+            self._ensure_dbase_form_designer()
+            procedure_name = str(procedure_name or "").strip()
+            if not procedure_name:
+                return
+
+            # Bereits im Editor geschriebene Methoden zuerst übernehmen.
+            self._merge_dbase_form_source_methods_events(strict=False)
+            method = self._find_dbase_form_method(procedure_name)
+
+            if method is None and create:
+                try:
+                    from d64dbase.wfm import DBaseWfmMethod
+                except ImportError:
+                    from d64dbase import DBaseWfmMethod
+                methods = self.dbase_form_scene.wfm_methods
+                order = max(
+                    [int(getattr(m, "order", 0)) for m in methods] + [0]
+                ) + 1
+                method = DBaseWfmMethod(
+                    name=procedure_name,
+                    kind="procedure",
+                    parameters=("Sender",),
+                    body=["/* Event Code */", "return"],
+                    order=order,
+                    source_lines=[
+                        f"procedure {procedure_name}(Sender)",
+                        "    /* Event Code */",
+                        "    return",
+                    ],
+                )
+                methods.append(method)
+                item.wfm_events[str(event_name)] = (
+                    "CLASS::" + procedure_name
+                )
+                self.dbase_form_modified = True
+
+            if method is None:
+                self.show_error(
+                    "Event-Prozedur nicht gefunden",
+                    f"Die Prozedur '{procedure_name}' ist im WFM-Quellcode "
+                    "noch nicht vorhanden.\n\n"
+                    "Doppelklicke den Prozedurnamen im Ereignisse-Tab, "
+                    "um sie anzulegen.",
+                )
+                return
+
+            source = self._sync_dbase_form_source()
+            if self.dbase_form_tabs is not None:
+                self.dbase_form_tabs.setCurrentWidget(
+                    self.dbase_form_source_page
+                )
+
+            document = self.dbase_form_build_document
+            if document is None:
+                return
+            document.assembler_panel.hide()
+            editor = document.raw_editor
+            match = re.search(
+                rf"(?im)^\s*(?:procedure|function)\s+"
+                rf"{re.escape(procedure_name)}\b",
+                source,
+            )
+            if match:
+                cursor = QTextCursor(editor.document())
+                cursor.setPosition(match.start())
+                cursor.movePosition(
+                    QTextCursor.EndOfLine,
+                    QTextCursor.KeepAnchor,
+                )
+                editor.setTextCursor(cursor)
+                editor.centerCursor()
+            editor.setFocus(Qt.OtherFocusReason)
+
+        def _dbase_form_target_changed(self, _index: int) -> None:
+            document = self.dbase_form_build_document
+            combo = self.dbase_form_target_combo
+            if document is None or combo is None:
+                return
+            target = str(combo.currentData() or "pe32")
+            document.set_build_target(target)
+            document.set_windows_application_mode("GUI")
+            document.invalidate_assembly_result("Ziel geändert")
+            if self.dbase_form_assemble_button is not None:
+                self.dbase_form_assemble_button.setVisible(False)
+            if self.dbase_form_start_button is not None:
+                self.dbase_form_start_button.setVisible(False)
+                self.dbase_form_start_button.setEnabled(False)
+            if self.dbase_form_build_status is not None:
+                self.dbase_form_build_status.setText("Ziel geändert – neu kompilieren")
+
+        @staticmethod
+        def _dbase_wfm_asm_bytes(value: object) -> str:
+            data = str(value).encode("utf-8") + b"\\0"
+            return ", ".join(str(byte) for byte in data)
+
+        @staticmethod
+        def _dbase_wfm_int(props, name: str, default: int) -> int:
+            for key, value in dict(props or {}).items():
+                if str(key).casefold() == str(name).casefold():
+                    try:
+                        return int(round(float(value)))
+                    except (TypeError, ValueError):
+                        return int(default)
+            return int(default)
+
+        @staticmethod
+        def _dbase_wfm_prop(props, name: str, default=None):
+            for key, value in dict(props or {}).items():
+                if str(key).casefold() == str(name).casefold():
+                    return value
+            return default
+
+        def _compile_dbase_wfm_fallback(
+            self,
+            source: str,
+            *,
+            filename: str,
+            target: str,
+        ):
+            """Kompiliert WFM/OOP additiv auf Basis der vorhandenen dBase-Runtime.
+
+            Der normale d64dbase-Compiler liefert den Runtime-Shell. Die FORM-
+            Objekte werden danach ausschließlich über d64qt5.dll aufgebaut.
+            """
+            try:
+                from d64dbase import compile_dbase_to_assembly
+                try:
+                    from d64dbase import parse_dbase_wfm
+                except ImportError:
+                    from d64dbase.wfm import parse_dbase_wfm
+            except ImportError as exc:
+                raise AssemblerError(str(exc)) from exc
+
+            try:
+                model = parse_dbase_wfm(source, filename=filename)
+            except Exception as exc:
+                raise AssemblerError(str(exc)) from exc
+            # Stage 121: Ein neutraler GUI-Ausdruck erzwingt auch bei älteren
+            # d64dbase-Versionen den vollständigen Qt-Runtime-Shell.
+            # Der Ausdruck erzeugt keine sichtbare Ausgabe.
+            base = compile_dbase_to_assembly(
+                '?? ""',
+                filename=filename,
+                target=target,
+                windows_application_mode="GUI",
+            )
+            is64 = str(target).casefold() in {"pe64", "win64", "pe32+", "x64"}
+            ptr = "qword" if is64 else "dword"
+            imports = (
+                "DBaseQtInitializeGui",
+                "DBaseQtExec",
+                "DBaseQtShutdown",
+                "DBaseQtFormCreate",
+                "DBaseQtControlCreateEx",
+                "DBaseQtWidgetSetGeometry",
+                "DBaseQtWidgetSetText",
+                "DBaseQtWidgetSetProperty",
+                "DBaseQtWidgetSetFont",
+                "DBaseQtObjectBindEvent",
+                "DBaseQtTimerCreate",
+                "DBaseQtTimerSetInterval",
+                "DBaseQtTimerSetActive",
+                "DBaseQtConsoleWrite",
+                "DBaseQtFormOpen",
+            )
+
+            # Stage 135: Native API-Imports nur dann ergänzen, wenn sie in
+            # einem WFM-PROCEDURE/FUNCTION-Block wirklich vorkommen.
+            uses_beep = any(
+                re.match(r"(?i)^\s*Beep\s*\(", str(line or ""))
+                for method in list(getattr(model, "methods", []) or [])
+                for line in list(getattr(method, "body", []) or [])
+            )
+
+            assembly = str(base.assembly)
+
+            # Stage 121: Runtime-Imports nicht mehr an einen bestimmten
+            # DBaseQtShutdown-Marker koppeln. Verschiedene d64dbase-Stände
+            # erzeugen unterschiedliche Importmengen für leere Programme.
+            # Fehlende Symbole werden deshalb in den vorhandenen Importblock
+            # eingefügt; wenn keiner existiert, direkt hinter die bits-Zeile.
+            missing_imports = []
+            for name in imports:
+                declaration = f'import {name}, "d64qt5.dll", "{name}"'
+                if declaration not in assembly:
+                    missing_imports.append(declaration + "\n")
+
+            if uses_beep:
+                declaration = 'import Beep, "kernel32.dll", "Beep"'
+                if declaration not in assembly:
+                    missing_imports.append(declaration + "\n")
+
+            if missing_imports:
+                asm_lines = assembly.splitlines(keepends=True)
+                insert_at = 0
+
+                for index, line in enumerate(asm_lines):
+                    if line.lstrip().startswith("import "):
+                        insert_at = index + 1
+
+                if insert_at == 0:
+                    for index, line in enumerate(asm_lines):
+                        if line.strip().casefold().startswith("bits "):
+                            insert_at = index + 1
+                            break
+
+                asm_lines[insert_at:insert_at] = missing_imports
+                assembly = "".join(asm_lines)
+
+            labels = []
+            label_count = 0
+
+            def text_label(value):
+                nonlocal label_count
+                value_text = str(value)
+                label = f"__dbase_wfm_text_{label_count}"
+                label_count += 1
+                labels.append((label, value_text))
+                return label, len(value_text.encode("utf-8"))
+
+            def slot_for(path):
+                safe = re.sub(
+                    r"[^A-Za-z0-9_]",
+                    "_",
+                    str(path).strip().replace(" ", ""),
+                )
+                return "__dbase_wfm_obj_" + safe
+
+            def event_procedure_name(value):
+                text = str(value or "").strip()
+                return text.rsplit("::", 1)[-1].strip() if "::" in text else text
+
+            def procedure_label(name):
+                safe = re.sub(r"[^A-Za-z0-9_]", "_", str(name or ""))
+                return "__dbase_wfm_proc_" + safe
+
+            method_map = {
+                str(getattr(method, "name", "")).casefold(): method
+                for method in list(getattr(model, "methods", []) or [])
+                if str(getattr(method, "name", "")).strip()
+            }
+            # Stage 133:
+            # WFM-PROCEDURE/FUNCTION-Code wird ausschliesslich als
+            # ausfuehrbarer Code in .text emittiert. Es wird KEINE Kopie des
+            # WFM-Quelltexts in .data oder eine andere PE-Sektion geschrieben.
+            #
+            # Alle im WFM definierten Methoden erhalten ein echtes Code-Label.
+            # Damit existieren auch aufgerufene Hilfsprozeduren garantiert.
+            required_procedures = {
+                str(getattr(method, "name", "") or "").strip()
+                for method in list(getattr(model, "methods", []) or [])
+                if str(getattr(method, "name", "") or "").strip()
+            }
+
+            for owner in [model] + list(model.controls):
+                for value in dict(getattr(owner, "events", {}) or {}).values():
+                    name = event_procedure_name(value)
+                    if name:
+                        required_procedures.add(name)
+            for lifecycle_name in ("__init__", "__main__", "__del__"):
+                if lifecycle_name.casefold() in method_map:
+                    required_procedures.add(lifecycle_name)
+
+            lines = []
+            form_slot = "__dbase_wfm_form"
+            class_label, class_len = text_label(model.class_name)
+
+            if is64:
+                lines.extend([
+                    f"    mov rcx, {class_label}",
+                    f"    mov edx, {class_len}",
+                    "    sub rsp, 40",
+                    "    call DBaseQtFormCreate",
+                    "    add rsp, 40",
+                    f"    mov qword ptr [{form_slot}], rax",
+                ])
+            else:
+                lines.extend([
+                    f"    push {class_len}",
+                    f"    push {class_label}",
+                    "    call DBaseQtFormCreate",
+                    "    add esp, 8",
+                    f"    mov dword ptr [{form_slot}], eax",
+                ])
+
+            def emit_geometry(slot, left, top, width, height):
+                if is64:
+                    lines.extend([
+                        f"    mov rcx, {ptr} ptr [{slot}]",
+                        f"    mov edx, {int(left)}",
+                        f"    mov r8d, {int(top)}",
+                        f"    mov r9d, {int(width)}",
+                        "    sub rsp, 48",
+                        f"    mov dword ptr [rsp+32], {int(height)}",
+                        "    call DBaseQtWidgetSetGeometry",
+                        "    add rsp, 48",
+                    ])
+                else:
+                    lines.extend([
+                        f"    push {int(height)}",
+                        f"    push {int(width)}",
+                        f"    push {int(top)}",
+                        f"    push {int(left)}",
+                        f"    push dword ptr [{slot}]",
+                        "    call DBaseQtWidgetSetGeometry",
+                        "    add esp, 20",
+                    ])
+
+            def emit_text(slot, value):
+                label, length = text_label(value)
+                if is64:
+                    lines.extend([
+                        f"    mov rcx, {ptr} ptr [{slot}]",
+                        f"    mov rdx, {label}",
+                        f"    mov r8d, {length}",
+                        "    sub rsp, 40",
+                        "    call DBaseQtWidgetSetText",
+                        "    add rsp, 40",
+                    ])
+                else:
+                    lines.extend([
+                        f"    push {length}",
+                        f"    push {label}",
+                        f"    push dword ptr [{slot}]",
+                        "    call DBaseQtWidgetSetText",
+                        "    add esp, 12",
+                    ])
+
+            def emit_property(slot, name, value):
+                name_label, name_len = text_label(name)
+                if isinstance(value, bool):
+                    rendered = ".T." if value else ".F."
+                else:
+                    rendered = str(value)
+                value_label, value_len = text_label(rendered)
+                if is64:
+                    lines.extend([
+                        f"    mov rcx, {ptr} ptr [{slot}]",
+                        f"    mov rdx, {name_label}",
+                        f"    mov r8d, {name_len}",
+                        f"    mov r9, {value_label}",
+                        "    sub rsp, 48",
+                        f"    mov dword ptr [rsp+32], {value_len}",
+                        "    call DBaseQtWidgetSetProperty",
+                        "    add rsp, 48",
+                    ])
+                else:
+                    lines.extend([
+                        f"    push {value_len}",
+                        f"    push {value_label}",
+                        f"    push {name_len}",
+                        f"    push {name_label}",
+                        f"    push dword ptr [{slot}]",
+                        "    call DBaseQtWidgetSetProperty",
+                        "    add esp, 20",
+                    ])
+
+            def emit_font(slot, font):
+                if font is None:
+                    return
+                family_label, family_len = text_label(font.family)
+                if is64:
+                    lines.extend([
+                        f"    mov rcx, {ptr} ptr [{slot}]",
+                        f"    mov rdx, {family_label}",
+                        f"    mov r8d, {family_len}",
+                        f"    mov r9d, {int(font.size)}",
+                        "    sub rsp, 72",
+                        f"    mov dword ptr [rsp+32], {1 if font.bold else 0}",
+                        f"    mov dword ptr [rsp+40], {1 if font.italic else 0}",
+                        f"    mov dword ptr [rsp+48], {1 if font.underline else 0}",
+                        f"    mov dword ptr [rsp+56], {1 if font.strikeout else 0}",
+                        "    call DBaseQtWidgetSetFont",
+                        "    add rsp, 72",
+                    ])
+                else:
+                    lines.extend([
+                        f"    push {1 if font.strikeout else 0}",
+                        f"    push {1 if font.underline else 0}",
+                        f"    push {1 if font.italic else 0}",
+                        f"    push {1 if font.bold else 0}",
+                        f"    push {int(font.size)}",
+                        f"    push {family_len}",
+                        f"    push {family_label}",
+                        f"    push dword ptr [{slot}]",
+                        "    call DBaseQtWidgetSetFont",
+                        "    add esp, 32",
+                    ])
+
+            def emit_event_binding(slot, event_name, procedure):
+                procedure = event_procedure_name(procedure)
+                if not procedure:
+                    return
+                required_procedures.add(procedure)
+                event_label, event_len = text_label(event_name)
+                callback_label = procedure_label(procedure)
+                if is64:
+                    lines.extend([
+                        f"    mov rcx, {ptr} ptr [{slot}]",
+                        f"    mov rdx, {event_label}",
+                        f"    mov r8d, {event_len}",
+                        f"    mov r9, {callback_label}",
+                        "    sub rsp, 40",
+                        "    call DBaseQtObjectBindEvent",
+                        "    add rsp, 40",
+                    ])
+                else:
+                    lines.extend([
+                        f"    push {callback_label}",
+                        f"    push {event_len}",
+                        f"    push {event_label}",
+                        f"    push dword ptr [{slot}]",
+                        "    call DBaseQtObjectBindEvent",
+                        "    add esp, 16",
+                    ])
+
+            def emit_timer_create(slot, parent_slot, props):
+                if is64:
+                    lines.extend([
+                        f"    mov rcx, {ptr} ptr [{parent_slot}]",
+                        "    sub rsp, 40",
+                        "    call DBaseQtTimerCreate",
+                        "    add rsp, 40",
+                        f"    mov qword ptr [{slot}], rax",
+                    ])
+                else:
+                    lines.extend([
+                        f"    push dword ptr [{parent_slot}]",
+                        "    call DBaseQtTimerCreate",
+                        "    add esp, 4",
+                        f"    mov dword ptr [{slot}], eax",
+                    ])
+
+                interval = self._dbase_wfm_int(props, "Interval", 1000)
+                active = bool(self._dbase_wfm_prop(props, "Active", False))
+                if is64:
+                    lines.extend([
+                        f"    mov rcx, {ptr} ptr [{slot}]",
+                        f"    mov edx, {max(1, int(interval))}",
+                        "    sub rsp, 40",
+                        "    call DBaseQtTimerSetInterval",
+                        "    add rsp, 40",
+                        f"    mov rcx, {ptr} ptr [{slot}]",
+                        f"    mov edx, {1 if active else 0}",
+                        "    sub rsp, 40",
+                        "    call DBaseQtTimerSetActive",
+                        "    add rsp, 40",
+                    ])
+                else:
+                    lines.extend([
+                        f"    push {max(1, int(interval))}",
+                        f"    push dword ptr [{slot}]",
+                        "    call DBaseQtTimerSetInterval",
+                        "    add esp, 8",
+                        f"    push {1 if active else 0}",
+                        f"    push dword ptr [{slot}]",
+                        "    call DBaseQtTimerSetActive",
+                        "    add esp, 8",
+                    ])
+
+            form_props = dict(getattr(model, "properties", {}) or {})
+            emit_geometry(
+                form_slot,
+                self._dbase_wfm_int(form_props, "Left", 200),
+                self._dbase_wfm_int(form_props, "Top", 200),
+                self._dbase_wfm_int(form_props, "Width", 400),
+                self._dbase_wfm_int(form_props, "Height", 400),
+            )
+            emit_font(form_slot, getattr(model, "font", None))
+            for key, value in form_props.items():
+                if str(key).casefold() not in {"left", "top", "width", "height"}:
+                    emit_property(form_slot, key, value)
+            for event_name, procedure in dict(
+                getattr(model, "events", {}) or {}
+            ).items():
+                emit_event_binding(form_slot, event_name, procedure)
+
+            for control in sorted(model.controls, key=lambda item: int(item.order)):
+                slot = slot_for(control.path)
+                parent_slot = (
+                    form_slot
+                    if str(control.parent_path).casefold() == "this"
+                    else slot_for(control.parent_path)
+                )
+                props = dict(control.properties or {})
+                if str(control.class_name).casefold() == "timer":
+                    emit_timer_create(slot, parent_slot, props)
+                    for event_name, procedure in dict(
+                        getattr(control, "events", {}) or {}
+                    ).items():
+                        emit_event_binding(slot, event_name, procedure)
+                    continue
+
+                type_label, type_len = text_label(control.class_name)
+
+                # Stage 127: Konstruktor-Text direkt beim Erzeugen uebergeben.
+                # NEW PUSHBUTTON(parent, "press me") entspricht damit in der
+                # Runtime einem echten QPushButton("press me", parent).
+                ctor_text = self._dbase_wfm_prop(props, "Text", "")
+                text_ctor_label, text_ctor_len = text_label(ctor_text)
+
+                if is64:
+                    lines.extend([
+                        f"    mov rcx, {type_label}",
+                        f"    mov edx, {type_len}",
+                        f"    mov r8, {ptr} ptr [{parent_slot}]",
+                        f"    mov r9, {text_ctor_label}",
+                        "    sub rsp, 48",
+                        f"    mov dword ptr [rsp+32], {text_ctor_len}",
+                        "    call DBaseQtControlCreateEx",
+                        "    add rsp, 48",
+                        f"    mov qword ptr [{slot}], rax",
+                    ])
+                else:
+                    lines.extend([
+                        f"    push {text_ctor_len}",
+                        f"    push {text_ctor_label}",
+                        f"    push dword ptr [{parent_slot}]",
+                        f"    push {type_len}",
+                        f"    push {type_label}",
+                        "    call DBaseQtControlCreateEx",
+                        "    add esp, 20",
+                        f"    mov dword ptr [{slot}], eax",
+                    ])
+
+                emit_geometry(
+                    slot,
+                    self._dbase_wfm_int(props, "Left", 0),
+                    self._dbase_wfm_int(props, "Top", 0),
+                    self._dbase_wfm_int(props, "Width", 120),
+                    self._dbase_wfm_int(props, "Height", 30),
+                )
+                value = self._dbase_wfm_prop(props, "Text", None)
+                if value is not None and str(value) != str(ctor_text):
+                    emit_text(slot, value)
+                emit_font(slot, getattr(control, "font", None))
+                for key, value in props.items():
+                    if str(key).casefold() not in {
+                        "left", "top", "width", "height", "text"
+                    }:
+                        emit_property(slot, key, value)
+                for event_name, procedure in dict(
+                    getattr(control, "events", {}) or {}
+                ).items():
+                    emit_event_binding(slot, event_name, procedure)
+
+            if is64:
+                lines.extend([
+                    f"    mov rcx, qword ptr [{form_slot}]",
+                    "    sub rsp, 40",
+                    "    call DBaseQtFormOpen",
+                    "    add rsp, 40",
+                ])
+            else:
+                lines.extend([
+                    f"    push dword ptr [{form_slot}]",
+                    "    call DBaseQtFormOpen",
+                    "    add esp, 4",
+                ])
+
+            def render_program_literal(expression):
+                text = str(expression or "").strip()
+                if (
+                    len(text) >= 2
+                    and text[0] == text[-1]
+                    and text[0] in {'"', "'"}
+                ):
+                    quote = text[0]
+                    return text[1:-1].replace(quote + quote, quote)
+                if re.match(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$", text):
+                    return text
+                if text.casefold() in {".t.", ".f.", "true", "false"}:
+                    return text
+                return None
+
+            callback_lines = []
+            for procedure in sorted(
+                required_procedures,
+                key=lambda value: value.casefold(),
+            ):
+                method = method_map.get(procedure.casefold())
+                if method is None:
+                    raise AssemblerError(
+                        "WFM-Event-Prozedur nicht gefunden: "
+                        + str(procedure)
+                    )
+
+                label = procedure_label(procedure)
+                callback_lines.extend([
+                    "",
+                    "; ------------------------------------------------------------",
+                    f"; WFM PROCEDURE/FUNCTION MASCHINENCODE: {procedure}",
+                    "; ------------------------------------------------------------",
+                    label + ":",
+                ])
+
+                if is64:
+                    callback_lines.extend([
+                        "    sub rsp, 40",
+                        "    mov qword ptr [rsp+32], rcx",
+                    ])
+
+                body_lines = list(getattr(method, "body", []) or [])
+                in_block_comment = False
+
+                for body_index, raw_line in enumerate(body_lines):
+                    statement = str(raw_line).strip()
+                    if not statement:
+                        continue
+
+                    if in_block_comment:
+                        if "*/" in statement:
+                            in_block_comment = False
+                        continue
+                    if statement.startswith("/*"):
+                        if "*/" not in statement:
+                            in_block_comment = True
+                        continue
+                    if statement.startswith("//") or statement.startswith("**"):
+                        continue
+
+                    return_match = re.match(
+                        r"(?i)^return(?:\s+(.+))?$",
+                        statement,
+                    )
+                    if return_match:
+                        return_expr = str(
+                            return_match.group(1) or ""
+                        ).strip()
+                        if return_expr:
+                            value = None
+                            if re.match(r"^[+-]?\d+$", return_expr):
+                                value = int(return_expr, 10)
+                            elif return_expr.casefold() in {".t.", "true"}:
+                                value = 1
+                            elif return_expr.casefold() in {".f.", "false"}:
+                                value = 0
+
+                            if value is None:
+                                raise AssemblerError(
+                                    f"{filename}: WFM-Prozedur {procedure}: "
+                                    "RETURN-Ausdruck noch nicht als "
+                                    "Event-Assembler implementiert: "
+                                    + return_expr
+                                )
+                            callback_lines.append(f"    mov eax, {value}")
+                        break
+
+                    if re.match(r"(?i)^exit\s*$", statement):
+                        break
+
+                    print_match = re.match(
+                        r"^(\?\?|\?)\s+(.+)$",
+                        statement,
+                    )
+                    if print_match:
+                        literal = render_program_literal(print_match.group(2))
+                        if literal is None:
+                            raise AssemblerError(
+                                f"{filename}: WFM-Prozedur {procedure}: "
+                                f"Ausdruck für {print_match.group(1)} "
+                                "wird im Event-Code noch nicht unterstützt: "
+                                + print_match.group(2)
+                            )
+                        out_label, out_len = text_label(literal)
+                        newline_flag = 0 if print_match.group(1) == "??" else 1
+                        callback_lines.append(f"    ; {statement}")
+                        if is64:
+                            callback_lines.extend([
+                                f"    mov rcx, {out_label}",
+                                f"    mov edx, {out_len}",
+                                f"    mov r8d, {newline_flag}",
+                                "    call DBaseQtConsoleWrite",
+                            ])
+                        else:
+                            callback_lines.extend([
+                                f"    push {newline_flag}",
+                                f"    push {out_len}",
+                                f"    push {out_label}",
+                                "    call DBaseQtConsoleWrite",
+                                "    add esp, 12",
+                            ])
+                        continue
+
+                    # Stage 135: Win32 Beep(freq,duration).
+                    beep_match = re.match(
+                        r"(?i)^Beep\s*\(\s*([+-]?\d+)\s*,\s*"
+                        r"([+-]?\d+)\s*\)\s*$",
+                        statement,
+                    )
+                    if beep_match:
+                        frequency = int(beep_match.group(1), 10)
+                        duration = int(beep_match.group(2), 10)
+
+                        if not (37 <= frequency <= 32767):
+                            raise AssemblerError(
+                                f"{filename}: WFM-Prozedur {procedure}: "
+                                "Beep-Frequenz muss zwischen 37 und "
+                                f"32767 Hz liegen: {frequency}"
+                            )
+                        if not (0 <= duration <= 0xFFFFFFFF):
+                            raise AssemblerError(
+                                f"{filename}: WFM-Prozedur {procedure}: "
+                                "Beep-Dauer muss ein DWORD-Wert >= 0 sein: "
+                                f"{duration}"
+                            )
+
+                        callback_lines.append(
+                            f"    ; Beep({frequency},{duration})"
+                        )
+                        if is64:
+                            # Microsoft x64 ABI:
+                            # RCX = dwFreq, RDX = dwDuration.
+                            callback_lines.extend([
+                                f"    mov ecx, {frequency}",
+                                f"    mov edx, {duration}",
+                                "    sub rsp, 40",
+                                "    call Beep",
+                                "    add rsp, 40",
+                            ])
+                        else:
+                            # Win32 WINAPI/__stdcall:
+                            # rechts nach links pushen; Beep bereinigt den
+                            # Parameterstack selbst.
+                            callback_lines.extend([
+                                f"    push {duration}",
+                                f"    push {frequency}",
+                                "    call Beep",
+                            ])
+                        continue
+
+                    call_match = re.match(
+                        r"^([A-Za-z_]\w*)\s*"
+                        r"(?:\(\s*(Sender)?\s*\))?\s*$",
+                        statement,
+                        re.IGNORECASE,
+                    )
+                    if call_match:
+                        called_name = call_match.group(1)
+                        called = method_map.get(called_name.casefold())
+                        if called is not None:
+                            callback_lines.append(f"    ; {statement}")
+                            target = procedure_label(called_name)
+                            pass_sender = bool(call_match.group(2))
+                            if is64:
+                                if pass_sender:
+                                    callback_lines.append(
+                                        "    mov rcx, qword ptr [rsp+32]"
+                                    )
+                                callback_lines.append(f"    call {target}")
+                            else:
+                                if pass_sender:
+                                    callback_lines.extend([
+                                        "    mov eax, dword ptr [esp+4]",
+                                        "    push eax",
+                                        f"    call {target}",
+                                        "    add esp, 4",
+                                    ])
+                                else:
+                                    callback_lines.append(f"    call {target}")
+                            continue
+
+                    line_hint = int(
+                        getattr(method, "source_start_line", 0) or 0
+                    )
+                    if line_hint:
+                        line_hint += body_index + 1
+                    location = f"{filename}:{line_hint}" if line_hint else filename
+                    raise AssemblerError(
+                        f"{location}: WFM-Prozedur {procedure}: "
+                        "Statement noch nicht als Event-Assembler "
+                        "implementiert: " + statement
+                    )
+
+                if is64:
+                    callback_lines.extend([
+                        "    add rsp, 40",
+                        "    ret",
+                    ])
+                else:
+                    callback_lines.append("    ret")
+                callback_lines.extend([
+                    f"; END WFM PROCEDURE/FUNCTION: {procedure}",
+                    "",
+                ])
+
+            body = "\n".join(lines) + "\n"
+            callback_body = "\n".join(callback_lines)
+
+            # Stage 124:
+            # Der WFM-Fallback besitzt einen eigenen, expliziten PE-Einstieg.
+            # Der vorhandene dBase-ASM-Shell wird NICHT mehr nach .entry,
+            # _start, start oder main durchsucht.
+            #
+            # Der interne PE-Assembler akzeptiert `.entry <symbol>` direkt.
+            # Eine spaetere .entry-Direktive gewinnt beim Parsen und macht
+            # damit __d64_wfm_entry zum verbindlichen Programmeinstieg.
+            title_label, unused_title_len = text_label(model.class_name)
+            del unused_title_len
+
+            entry_label = "__d64_wfm_entry"
+
+            if is64:
+                lifecycle = "\n".join([
+                    "",
+                    "; Stage 127: eigener WFM-GUI-Programmeinstieg",
+                    ".section .text",
+                    f".entry {entry_label}",
+                    f"{entry_label}:",
+                    f"    mov rcx, {title_label}",
+                    "    sub rsp, 40",
+                    "    call DBaseQtInitializeGui",
+                    "    add rsp, 40",
+                    body.rstrip("\n"),
+                    (
+                        "    sub rsp, 40\n    call "
+                        + procedure_label("__init__")
+                        + "\n    add rsp, 40"
+                        if "__init__".casefold() in method_map else ""
+                    ),
+                    (
+                        "    sub rsp, 40\n    call "
+                        + procedure_label("__main__")
+                        + "\n    add rsp, 40"
+                        if "__main__".casefold() in method_map else ""
+                    ),
+                    "    sub rsp, 40",
+                    "    call DBaseQtExec",
+                    "    add rsp, 40",
+                    (
+                        "    sub rsp, 40\n    call "
+                        + procedure_label("__del__")
+                        + "\n    add rsp, 40"
+                        if "__del__".casefold() in method_map else ""
+                    ),
+                    "    sub rsp, 40",
+                    "    call DBaseQtShutdown",
+                    "    add rsp, 40",
+                    "    xor eax, eax",
+                    "    ret",
+                    "",
+                ]) + "\n"
+            else:
+                lifecycle = "\n".join([
+                    "",
+                    "; Stage 127: eigener WFM-GUI-Programmeinstieg",
+                    ".section .text",
+                    f".entry {entry_label}",
+                    f"{entry_label}:",
+                    f"    push {title_label}",
+                    "    call DBaseQtInitializeGui",
+                    "    add esp, 4",
+                    body.rstrip("\n"),
+                    (
+                        "    call " + procedure_label("__init__")
+                        if "__init__".casefold() in method_map else ""
+                    ),
+                    (
+                        "    call " + procedure_label("__main__")
+                        if "__main__".casefold() in method_map else ""
+                    ),
+                    "    call DBaseQtExec",
+                    (
+                        "    call " + procedure_label("__del__")
+                        if "__del__".casefold() in method_map else ""
+                    ),
+                    "    call DBaseQtShutdown",
+                    "    xor eax, eax",
+                    "    ret",
+                    "",
+                ]) + "\n"
+
+            # Bewusst ans Ende des vorhandenen Code-Shells anhaengen.
+            # Die `.entry`-Direktive setzt den PE-Einstieg auf unseren
+            # WFM-Entry, sodass der alte Shell-Einstieg nicht ausgefuehrt wird.
+            assembly = assembly.rstrip() + "\n" + lifecycle
+            if callback_body:
+                assembly = (
+                    assembly.rstrip()
+                    + "\n\n; Stage 133: WFM Event-/Methoden-Code\n"
+                    + ".section .text\n"
+                    + callback_body
+                    + "\n"
+                )
+
+            data_lines = [
+                "",
+                "; Stage 127 WFM object handles / data",
+                ".section .data",
+                f"{form_slot}:",
+                "    dq 0" if is64 else "    dd 0",
+            ]
+            for control in model.controls:
+                data_lines.extend([
+                    f"{slot_for(control.path)}:",
+                    "    dq 0" if is64 else "    dd 0",
+                ])
+            for label, value in labels:
+                data_lines.extend([
+                    f"{label}:",
+                    f"    db {self._dbase_wfm_asm_bytes(value)}",
+                ])
+
+            assembly = assembly.rstrip() + "\n" + "\n".join(data_lines) + "\n"
+
+            notes = tuple(getattr(base, "notes", ()) or ()) + (
+                "FORM/WFM: eigenstaendige GUI-Anwendung mit __d64_wfm_entry.",
+                "WFM verwendet DBaseQtInitializeGui; kein Console-Hauptfenster wird erzeugt.",
+                "Designer-Komponenten werden als echte Qt5-Widgets mit Parent/Geometrie/Properties erzeugt.",
+                "Stage 130: Events binden Qt-Signale an Callback-Code der WFM-Anwendung.",
+                "Stage 130: TIMER wird als QTimer mit OnInterval erzeugt.",
+                "Stage 132: WFM-PROCEDURE/FUNCTION-Blöcke werden als Event-Assembler kompiliert.",
+                "Stage 133: Event-/Methodenlogik liegt ausschliesslich als ausfuehrbarer Code in .text.",
+                "Stage 133: WFM-Quelltext wird nicht in .data und nicht in die EXE eingebettet.",
+                "Stage 133: alle WFM-Methoden erhalten Code-Labels fuer direkte Event-/Hilfsaufrufe.",
+                "Stage 135: Beep(freq,duration) wird als kernel32-Aufruf in .text kompiliert.",
+                "Stage 132/133/135: nicht unterstuetzte Event-Statements erzeugen einen Compilerfehler statt stiller ASM-Kommentare.",
+            )
+            return replace(
+                base,
+                assembly=assembly,
+                source_kind="form",
+                notes=notes,
+                statements=tuple(model.controls),
+                uses_debug_output=False,
+            )
+
+        def compile_dbase_form(self) -> bool:
+            self._ensure_dbase_form_designer()
+            if self.dbase_form_current_path is None:
+                if not self.save_dbase_form(save_as=True):
+                    return False
+
+            source = self._sync_dbase_form_source()
+            document = self.dbase_form_build_document
+            if document is None:
+                return False
+            document.path = Path(self.dbase_form_current_path).resolve()
+            document.custom_display_name = document.path.name
+            target = str(self.dbase_form_target_combo.currentData() or "pe32")
+            document.set_build_target(target)
+            document.set_windows_application_mode("GUI")
+
+            try:
+                from d64dbase import DBaseCompilerError
+                assembly_path = self._dbase_assembly_output_path(document)
+
+                # Stage 121: Designer-WFM ist bereits eindeutig CLASS ... OF FORM.
+                # Es wird daher nicht zuerst durch den allgemeinen dBase-WITH/
+                # MENU-Parser geschickt. Dieser kennt nur MENU-Properties wie
+                # text/onClick/shortCut/separator und würde Form-Properties wie
+                # Left/Top fälschlich als MENU-Properties auslegen.
+                generated = self._compile_dbase_wfm_fallback(
+                    source,
+                    filename=str(document.path),
+                    target=target,
+                )
+            except (ImportError, DBaseCompilerError, AssemblerError, ValueError) as exc:
+                message = str(exc)
+                document.show_assembly_error(
+                    message,
+                    getattr(exc, "line", 0) or 0,
+                    "Compilerfehler",
+                )
+                self.show_error("Formular-Compilerfehler", message)
+                if self.dbase_form_build_status is not None:
+                    self.dbase_form_build_status.setText("Compile fehlgeschlagen")
+                return False
+
+            ok = self._finish_compile_stage(
+                document,
+                generated,
+                assembly_path,
+                "dBase FORM",
+            )
+            if not ok:
+                return False
+            if self.dbase_form_assemble_button is not None:
+                self.dbase_form_assemble_button.setVisible(True)
+                self.dbase_form_assemble_button.setEnabled(True)
+            if self.dbase_form_start_button is not None:
+                self.dbase_form_start_button.setVisible(True)
+                self.dbase_form_start_button.setEnabled(False)
+            if self.dbase_form_build_status is not None:
+                self.dbase_form_build_status.setText(
+                    f"Kompiliert: {assembly_path.name}"
+                )
+            return True
+
+        def assemble_dbase_form(self) -> bool:
+            document = self.dbase_form_build_document
+            if document is None:
+                return False
+
+            # Stage 127: Ein WFM ist definitionsgemaess immer GUI.
+            # Dadurch kann auch ein spaeter geaenderter Dokumentzustand den
+            # PE-Subsystem-Typ nicht versehentlich wieder auf Console setzen.
+            document.set_windows_application_mode("GUI")
+            document.generated_source_kind = "form"
+
+            ok = self.assemble_generated_document(document)
+            if not ok:
+                if self.dbase_form_build_status is not None:
+                    self.dbase_form_build_status.setText("Assemble fehlgeschlagen")
+                return False
+            output = document.assembled_program_path
+            if self.dbase_form_start_button is not None:
+                self.dbase_form_start_button.setVisible(True)
+                self.dbase_form_start_button.setEnabled(
+                    bool(output is not None and Path(output).is_file())
+                )
+            if self.dbase_form_build_status is not None:
+                self.dbase_form_build_status.setText(
+                    f"EXE erzeugt: {Path(output).name}" if output else "Assembliert"
+                )
+            return True
+
+        def _prepare_dbase_form_runtime(self, output_path: Path) -> bool:
+            """Stage 118: vorhandene d64qt5.dll neben die Formular-EXE legen."""
+            output_path = Path(output_path).resolve()
+            destination = output_path.parent / "d64qt5.dll"
+            if destination.is_file():
+                return True
+
+            base_dir = Path(__file__).resolve().parent
+            candidates = (
+                base_dir / "d64qt5.dll",
+                base_dir / "d64qt5" / "d64qt5.dll",
+                base_dir / "d64qt5" / "release" / "d64qt5.dll",
+                base_dir / "d64qt5" / "debug" / "d64qt5.dll",
+                self.current_directory / "d64qt5.dll",
+            )
+            for candidate in candidates:
+                try:
+                    candidate = Path(candidate).resolve()
+                except OSError:
+                    continue
+                if not candidate.is_file():
+                    continue
+                try:
+                    if candidate != destination.resolve():
+                        shutil.copy2(candidate, destination)
+                    self.log(
+                        f"DBASE FORM RUNTIME: {candidate} -> {destination}"
+                    )
+                    return True
+                except OSError as exc:
+                    self.show_error(
+                        "d64qt5.dll konnte nicht bereitgestellt werden",
+                        f"Quelle: {candidate}\nZiel: {destination}\n\n{exc}",
+                    )
+                    return False
+
+            self.show_error(
+                "d64qt5.dll fehlt",
+                "Das Formular wurde erfolgreich erzeugt, aber die Qt5-Runtime "
+                "d64qt5.dll wurde nicht gefunden.\n\n"
+                "Lege eine gebaute d64qt5.dll in eines dieser Verzeichnisse:\n"
+                f"  {base_dir}\n"
+                f"  {base_dir / 'd64qt5'}\n"
+                f"  {base_dir / 'd64qt5' / 'release'}\n"
+                f"  {self.current_directory}\n\n"
+                "Die vollständigen Runtime-Quelldateien liegen im Paket unter d64qt5/.",
+            )
+            return False
+
+        def start_dbase_form(self) -> bool:
+            document = self.dbase_form_build_document
+            if document is None:
+                return False
+            output = document.assembled_program_path
+            if output is None or not Path(output).is_file():
+                self.show_error(
+                    "Formular noch nicht assembliert",
+                    "Klicke zuerst auf Compile und danach auf Assemble.",
+                )
+                return False
+            if not self._prepare_dbase_form_runtime(Path(output)):
+                return False
+            ok = self._launch_assembled_document(document)
+            if ok and self.dbase_form_build_status is not None:
+                self.dbase_form_build_status.setText(
+                    f"Gestartet: {Path(output).name}"
+                )
+            return ok
 
         def _enter_dbase_form_workspace(self) -> None:
             if self._dbase_form_workspace_active:
@@ -30191,6 +31807,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 [100000, 100000],
                 Qt.Vertical,
             )
+            self._sync_dbase_form_source()
             self.statusBar().showMessage("dBase-Formulardesigner geöffnet")
             self._update_document_actions()
 
@@ -30202,24 +31819,28 @@ QMenu#green_beige_popup_menu::indicator:checked {{
         def _wfm_component_type(class_name: str) -> str:
             mapping = {
                 "PUSHBUTTON": "Button", "BUTTON": "Button",
+                "ENTRYFIELD": "EntryField", "LINEEDIT": "EntryField",
+                "EDITFIELD": "EntryField", "EDIT": "EntryField",
                 "CONTAINER": "Panel", "PANEL": "Panel",
                 "CHECKBOX": "CheckBox", "RADIOBUTTON": "RadioButton",
                 "COMBOBOX": "ComboBox", "LABEL": "Label", "TEXT": "Label",
                 "IMAGE": "Image", "TABLEGRID": "TableGrid",
                 "VSCROLLBAR": "VScrollBar", "HSCROLLBAR": "HScrollBar",
                 "STATUSBAR": "StatusBar", "TOOLBAR": "ToolBar", "MENU": "Menu",
+                "TIMER": "Timer",
             }
             return mapping.get(str(class_name).upper(), "")
 
         @staticmethod
         def _wfm_class_for_component(component_type: str) -> str:
             return {
-                "Button": "PUSHBUTTON", "Panel": "CONTAINER",
+                "Button": "PUSHBUTTON", "EntryField": "ENTRYFIELD",
+                "Panel": "CONTAINER",
                 "CheckBox": "CHECKBOX", "RadioButton": "RADIOBUTTON",
                 "ComboBox": "COMBOBOX", "Label": "LABEL", "Image": "IMAGE",
                 "TableGrid": "TABLEGRID", "VScrollBar": "VSCROLLBAR",
                 "HScrollBar": "HSCROLLBAR", "StatusBar": "STATUSBAR",
-                "ToolBar": "TOOLBAR", "Menu": "MENU",
+                "ToolBar": "TOOLBAR", "Menu": "MENU", "Timer": "TIMER",
             }.get(str(component_type), str(component_type).upper())
 
         @staticmethod
@@ -30263,13 +31884,31 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 if isinstance(control_widget, (QPushButton, QLabel, QCheckBox, QRadioButton)):
                     control_widget.setText(str(text))
 
+            name = self._wfm_prop_ci(props, "Name", None)
+            if name is not None and hasattr(item, "set_component_name"):
+                item.set_component_name(str(name))
+
+            if (
+                isinstance(item, DBaseFormControlItem)
+                and item.component_type == "Timer"
+            ):
+                item.timer_interval = max(
+                    1,
+                    int(round(float(
+                        self._wfm_prop_ci(props, "Interval", 1000)
+                    ))),
+                )
+                item.timer_active = bool(
+                    self._wfm_prop_ci(props, "Active", False)
+                )
+
             # Brush.
             back = self._wfm_prop_ci(props, "BackColor", None)
             fore = self._wfm_prop_ci(props, "ForeColor", None)
             if back is not None:
-                item.set_background_color(QColor(str(back)))
+                item.set_background_color(self._wfm_qcolor(back, "#FFFFFF"))
             if fore is not None:
-                item.set_foreground_color(QColor(str(fore)))
+                item.set_foreground_color(self._wfm_qcolor(fore, "#000000"))
             gradient = self._wfm_prop_ci(props, "BrushGradient", None)
             if gradient is not None and hasattr(item, "set_brush_gradient"):
                 item.set_brush_gradient(str(gradient))
@@ -30299,9 +31938,9 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             font_foreground = self._wfm_prop_ci(props, "FontForeground", None)
             font_alpha = self._wfm_prop_ci(props, "FontAlpha", None)
             if font_background is not None:
-                item.set_font_background_color(QColor(str(font_background)))
+                item.set_font_background_color(self._wfm_qcolor(font_background, "#FFFFFF"))
             if font_foreground is not None:
-                item.set_font_foreground_color(QColor(str(font_foreground)))
+                item.set_font_foreground_color(self._wfm_qcolor(font_foreground, "#000000"))
             if font_alpha is not None:
                 item.set_font_alpha(int(round(float(font_alpha))))
 
@@ -30313,7 +31952,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             border_style = self._wfm_prop_ci(props, "BorderStyle", None)
             shadow = self._wfm_prop_ci(props, "ShadowColor", None)
             if border_color is not None:
-                item.set_border_color(QColor(str(border_color)))
+                item.set_border_color(self._wfm_qcolor(border_color, "#7A7A7A"))
             if border_width is not None:
                 size = max(0, int(round(float(border_width))))
                 item.set_border_size(size)
@@ -30322,7 +31961,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             if border_style is not None:
                 item.set_border_style(str(border_style))
             if shadow is not None:
-                item.set_border_shadow_color(QColor(str(shadow)))
+                item.set_border_shadow_color(self._wfm_qcolor(shadow, "#000000"))
 
             # Historical Radius first, then individual values override it.
             radius = self._wfm_prop_ci(props, "Radius", None)
@@ -30355,15 +31994,16 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 if side_size is not None:
                     item.set_border_side_size(side_key, int(round(float(side_size))))
                 if side_color is not None:
-                    item.set_border_side_color(side_key, QColor(str(side_color)))
+                    item.set_border_side_color(side_key, self._wfm_qcolor(side_color, "#7A7A7A"))
 
             if isinstance(item, DBaseFormControlItem):
                 item.wfm_class_name = str(getattr(control, "class_name", ""))
             elif isinstance(item, DBaseFormWindowItem):
                 item.wfm_class_name = str(getattr(control, "class_name", item.component_name))
             item.wfm_events = dict(getattr(control, "events", {}) or {})
+            item.wfm_font_ref = str(getattr(control, "font_ref", "") or "")
             known = {
-                "left", "top", "width", "height", "text",
+                "name", "left", "top", "width", "height", "text",
                 "backcolor", "forecolor",
                 "brushgradient", "brushstyle", "brushcutwidth", "brushcutheight",
                 "fontbackground", "fontforeground", "fontalpha",
@@ -30371,6 +32011,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 "radius", "shadowcolor",
                 "borderroundedtl", "borderroundedtr", "borderroundedbl", "borderroundedbr",
                 "borderleft", "bordertop", "borderright", "borderbottom",
+                "interval", "active",
             }
             for side in ("left", "top", "right", "bottom"):
                 known.update({f"border{side}style", f"border{side}size", f"border{side}color"})
@@ -30403,6 +32044,8 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             scene = self.dbase_form_scene
             scene.wfm_class_name = str(model.class_name)
             scene.wfm_declared_properties = dict(model.declared_properties)
+            scene.wfm_font_objects = dict(getattr(model, "font_objects", {}) or {})
+            scene.wfm_methods = list(getattr(model, "methods", []) or [])
             scene.wfm_form_left = int(round(float(self._wfm_prop_ci(model.properties, "Left", 200))))
             scene.wfm_form_top = int(round(float(self._wfm_prop_ci(model.properties, "Top", 200))))
             scene.wfm_form_width = max(1, int(round(float(self._wfm_prop_ci(model.properties, "Width", 400)))))
@@ -30442,6 +32085,9 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 top_controls[-1].setSelected(True)
             self.dbase_form_current_path = path
             self.dbase_form_modified = False
+            if self.dbase_form_build_document is not None:
+                self.dbase_form_build_document.assembler_panel.hide()
+            self._sync_dbase_form_source()
             self.show_dbase_form_designer()
             self.statusBar().showMessage(f"WFM-Formular geöffnet: {path.name}")
             return True
@@ -30456,6 +32102,23 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             return ".T." if bool(value) else ".F."
 
         @staticmethod
+        def _wfm_qcolor(value, fallback: str = "#000000"):
+            """Accept #RRGGBB/#AARRGGBB and rgb(r,g,b[,a]) WFM colors."""
+            text = str(value or "").strip()
+            match = re.fullmatch(
+                r"(?i)rgba?\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*(\d+))?\s*\)",
+                text,
+            )
+            if match:
+                red, green, blue = [max(0, min(255, int(match.group(i)))) for i in (1, 2, 3)]
+                alpha = max(0, min(255, int(match.group(4) or 255)))
+                return QColor(red, green, blue, alpha)
+            color = QColor(text)
+            if not color.isValid():
+                color = QColor(fallback)
+            return color
+
+        @staticmethod
         def _wfm_color(value, fallback: str = "#000000") -> str:
             """Return a stable WFM color literal and preserve an alpha channel."""
             color = QColor(value)
@@ -30466,27 +32129,102 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             return color.name()
 
         def _serialize_dbase_form_wfm(self) -> str:
+            """Stage 120: structured WFM/OOP serializer.
+
+            New files use nested Font/Brush/Border objects. The parser still
+            accepts the pre-Stage-120 flat property format.
+            """
             scene = self.dbase_form_scene
             if scene is None:
                 raise RuntimeError("Kein Formulardesigner geöffnet.")
+            self._merge_dbase_form_source_methods_events(strict=True)
             class_name = str(getattr(scene, "wfm_class_name", "ParentForm") or "ParentForm")
             form_item = scene.form_window_item
             now = dt.datetime.now().strftime("%d.%m.%Y")
 
             canonical_properties = {
-                "left", "top", "width", "height", "text",
-                "backcolor", "forecolor",
-                "brushgradient", "brushstyle", "brushcutwidth", "brushcutheight",
-                "fontbackground", "fontforeground", "fontalpha",
-                "borderstyle", "bordercolor", "borderwidth", "bordersize",
-                "shadowcolor", "radius",
-                "borderroundedtl", "borderroundedtr", "borderroundedbl", "borderroundedbr",
-                "borderleft", "bordertop", "borderright", "borderbottom",
+                "name", "left", "top", "width", "height", "text",
+                "backcolor", "forecolor", "brushgradient", "brushstyle",
+                "brushcutwidth", "brushcutheight", "fontbackground",
+                "fontforeground", "fontalpha", "borderstyle", "bordercolor",
+                "borderwidth", "bordersize", "shadowcolor", "radius",
+                "borderroundedtl", "borderroundedtr", "borderroundedbl",
+                "borderroundedbr", "borderleft", "bordertop", "borderright",
+                "borderbottom",
             }
             for _side in ("left", "top", "right", "bottom"):
                 canonical_properties.update({
                     f"border{_side}style", f"border{_side}size", f"border{_side}color",
                 })
+
+            def render_value(value):
+                if isinstance(value, str):
+                    return self._wfm_quote(value)
+                if isinstance(value, bool):
+                    return self._wfm_bool(value)
+                return str(value)
+
+            def emit_font(lines, item, indent):
+                lines.extend([
+                    indent + "WITH (THIS.Font)",
+                    indent + "    Name = " + self._wfm_quote(item.font_family),
+                    indent + f"    Size = {int(item.font_point_size)}",
+                    indent + f"    Bold = {self._wfm_bool(item.font_bold)}",
+                    indent + f"    Cursive = {self._wfm_bool(item.font_italic)}",
+                    indent + f"    Stroke = {self._wfm_bool(item.font_stroke)}",
+                    indent + f"    Underline = {self._wfm_bool(item.font_underline)}",
+                    indent + f"    Alpha = {max(0, min(255, int(item.font_alpha)))}",
+                    indent + "    Background = " + self._wfm_quote(self._wfm_color(item.font_background_color, '#FFFFFF')),
+                    indent + "    Foreground = " + self._wfm_quote(self._wfm_color(item.font_foreground_color, '#000000')),
+                    indent + "ENDWITH",
+                ])
+
+            def emit_brush(lines, item, indent):
+                lines.extend([
+                    indent + "WITH (THIS.Brush)",
+                    indent + "    Background = " + self._wfm_quote(self._wfm_color(item.background_color, '#FFFFFF')),
+                    indent + "    Foreground = " + self._wfm_quote(self._wfm_color(item.foreground_color, '#000000')),
+                    indent + "    Gradient = " + self._wfm_quote(str(getattr(item, 'brush_gradient', 'none'))),
+                    "",
+                    indent + "    WITH (THIS.Style)",
+                    indent + f"        Pattern = {int(getattr(item, 'brush_style', 0))}",
+                    indent + f"        CutWidth = {int(getattr(item, 'brush_cut_width', 100))}",
+                    indent + f"        CutHeight = {int(getattr(item, 'brush_cut_height', 100))}",
+                    indent + "    ENDWITH",
+                    indent + "ENDWITH",
+                ])
+
+            def emit_border(lines, item, indent):
+                border_style = str(getattr(item, "border_style", "none"))
+                border_size = int(getattr(item, "border_size", 1))
+                lines.extend([
+                    indent + "WITH (THIS.Border)",
+                    indent + "    Style = " + self._wfm_quote(border_style),
+                    indent + f"    Size = {border_size}",
+                    indent + "    Color = " + self._wfm_quote(self._wfm_color(item.border_color, '#7A7A7A')),
+                    "",
+                    indent + "    WITH (THIS.Shadow)",
+                    indent + "        Color = " + self._wfm_quote(self._wfm_color(item.border_shadow_color, '#000000')),
+                    indent + "    ENDWITH",
+                    "",
+                    indent + "    WITH (THIS.Rounded)",
+                    indent + f"        TopLeft = {int(getattr(item, 'border_round_tl', 0))}",
+                    indent + f"        TopRight = {int(getattr(item, 'border_round_tr', 0))}",
+                    indent + f"        BottomLeft = {int(getattr(item, 'border_round_bl', 0))}",
+                    indent + f"        BottomRight = {int(getattr(item, 'border_round_br', 0))}",
+                    indent + "    ENDWITH",
+                ])
+                for side_label, side_key in (("Left", "left"), ("Top", "top"), ("Right", "right"), ("Bottom", "bottom")):
+                    lines.extend([
+                        "",
+                        indent + f"    WITH (THIS.{side_label})",
+                        indent + f"        Enabled = {self._wfm_bool(getattr(item, f'border_{side_key}', True))}",
+                        indent + "        Style = " + self._wfm_quote(str(getattr(item, f'border_{side_key}_style', border_style))),
+                        indent + f"        Size = {int(getattr(item, f'border_{side_key}_size', border_size))}",
+                        indent + "        Color = " + self._wfm_quote(self._wfm_color(getattr(item, f'border_{side_key}_color', item.border_color), '#7A7A7A')),
+                        indent + "    ENDWITH",
+                    ])
+                lines.append(indent + "ENDWITH")
 
             lines = [
                 "** END HEADER -- do not remove this line",
@@ -30495,65 +32233,71 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 f"CLASS {class_name} OF FORM",
             ]
             for key, value in dict(getattr(scene, "wfm_declared_properties", {}) or {}).items():
-                rendered = self._wfm_quote(value) if isinstance(value, str) else self._wfm_bool(value) if isinstance(value, bool) else str(value)
-                lines.append(f"    PROPERTY {key} = {rendered}")
+                lines.append(f"    PROPERTY {key} = {render_value(value)}")
 
-            # Stage 111: dieselben editierbaren Visual-Properties werden auch
-            # fuer die Root-FORM explizit gespeichert.
             lines.extend([
                 "", "    WITH (THIS)",
+                f"        Left = {int(scene.wfm_form_left)}",
+                f"        Top = {int(scene.wfm_form_top)}",
                 f"        Width = {int(scene.wfm_form_width)}",
                 f"        Height = {int(scene.wfm_form_height)}",
-                f"        Top = {int(scene.wfm_form_top)}",
-                f"        Left = {int(scene.wfm_form_left)}",
-                f"        BackColor = {self._wfm_quote(self._wfm_color(form_item.background_color, '#1B1B1B'))}",
-                f"        ForeColor = {self._wfm_quote(self._wfm_color(form_item.foreground_color, '#303030'))}",
-                f"        BrushGradient = {self._wfm_quote(str(getattr(form_item, 'brush_gradient', 'none')))}",
-                f"        BrushStyle = {int(getattr(form_item, 'brush_style', 0))}",
-                f"        BrushCutWidth = {int(getattr(form_item, 'brush_cut_width', 100))}",
-                f"        BrushCutHeight = {int(getattr(form_item, 'brush_cut_height', 100))}",
-                "        Font = NEW FONT(" + self._wfm_quote(form_item.font_family)
-                + f",{int(form_item.font_point_size)}, {self._wfm_bool(form_item.font_bold)}, "
-                + f"{self._wfm_bool(form_item.font_italic)}, {self._wfm_bool(form_item.font_underline)})",
-                f"        Font.stroke = {self._wfm_bool(form_item.font_stroke)}",
-                f"        FontBackground = {self._wfm_quote(self._wfm_color(form_item.font_background_color, '#292929'))}",
-                f"        FontForeground = {self._wfm_quote(self._wfm_color(form_item.font_foreground_color, '#F0F0F0'))}",
-                f"        FontAlpha = {int(form_item.font_alpha)}",
-                f"        BorderStyle = {self._wfm_quote(str(getattr(form_item, 'border_style', 'solid')))}",
-                f"        BorderWidth = {int(getattr(form_item, 'border_size', 2))}",
-                f"        BorderColor = {self._wfm_quote(self._wfm_color(form_item.border_color, '#808080'))}",
-                f"        ShadowColor = {self._wfm_quote(self._wfm_color(form_item.border_shadow_color, '#000000'))}",
-                f"        BorderRoundedTL = {int(getattr(form_item, 'border_round_tl', 0))}",
-                f"        BorderRoundedTR = {int(getattr(form_item, 'border_round_tr', 0))}",
-                f"        BorderRoundedBL = {int(getattr(form_item, 'border_round_bl', 0))}",
-                f"        BorderRoundedBR = {int(getattr(form_item, 'border_round_br', 0))}",
+                "        Text = " + self._wfm_quote(str(getattr(form_item, 'caption', class_name) or class_name)),
+                "        Name = " + self._wfm_quote(str(getattr(form_item, 'component_name', class_name) or class_name)),
+                "",
             ])
-            form_radii = (
-                int(getattr(form_item, "border_round_tl", 0)),
-                int(getattr(form_item, "border_round_tr", 0)),
-                int(getattr(form_item, "border_round_bl", 0)),
-                int(getattr(form_item, "border_round_br", 0)),
-            )
-            lines.append(f"        Radius = {form_radii[0] if len(set(form_radii)) == 1 else max(form_radii)}")
-            for side_label, side_key in (("Left", "left"), ("Top", "top"), ("Right", "right"), ("Bottom", "bottom")):
-                lines.extend([
-                    f"        Border{side_label} = {self._wfm_bool(getattr(form_item, f'border_{side_key}', True))}",
-                    f"        Border{side_label}Style = {self._wfm_quote(str(getattr(form_item, f'border_{side_key}_style', form_item.border_style)))}",
-                    f"        Border{side_label}Size = {int(getattr(form_item, f'border_{side_key}_size', form_item.border_size))}",
-                    f"        Border{side_label}Color = {self._wfm_quote(self._wfm_color(getattr(form_item, f'border_{side_key}_color', form_item.border_color), '#808080'))}",
-                ])
+            emit_brush(lines, form_item, "        ")
+            lines.append("")
+            emit_border(lines, form_item, "        ")
+            lines.append("")
+            root_font_ref = str(getattr(form_item, "wfm_font_ref", "") or "")
+            if root_font_ref:
+                lines.append(f"        THIS.Font = {root_font_ref}")
+            else:
+                emit_font(lines, form_item, "        ")
+
             for key, value in dict(getattr(form_item, "wfm_extra_properties", {}) or {}).items():
-                if str(key).casefold() in canonical_properties:
-                    continue
-                rendered = (
-                    self._wfm_quote(value) if isinstance(value, str)
-                    else self._wfm_bool(value) if isinstance(value, bool)
-                    else str(value)
-                )
-                lines.append(f"        {key} = {rendered}")
+                if str(key).casefold() not in canonical_properties:
+                    lines.append(f"        {key} = {render_value(value)}")
             for key, value in dict(getattr(form_item, "wfm_events", {}) or {}).items():
-                lines.append(f"        {key} = {value}")
+                lines.append(
+                    f"        {key} = {canonical_event_reference(value)}"
+                )
             lines.extend(["    ENDWITH", ""])
+
+            # Preserve named FONT resources loaded from source. They can be
+            # referenced by hand-written WFM using THIS.Font = THIS.FONT1.
+            font_objects = dict(getattr(scene, "wfm_font_objects", {}) or {})
+            for _key, obj in sorted(font_objects.items(), key=lambda kv: int(getattr(kv[1], 'order', 0))):
+                font = getattr(obj, "font", None)
+                if font is None:
+                    continue
+                path = str(getattr(obj, "path", "") or "")
+                if not path:
+                    continue
+                lines.extend([
+                    "    " + path + " = NEW FONT(" + self._wfm_quote(font.family) + ")",
+                    "    WITH (" + path + ")",
+                    "        Name = " + self._wfm_quote(font.family),
+                    f"        Size = {int(font.size)}",
+                    f"        Bold = {self._wfm_bool(font.bold)}",
+                    f"        Cursive = {self._wfm_bool(font.italic)}",
+                    f"        Stroke = {self._wfm_bool(font.strikeout)}",
+                    f"        Underline = {self._wfm_bool(font.underline)}",
+                    f"        Alpha = {max(0, min(255, int(getattr(font, 'alpha', 255))))}",
+                    "        Background = " + self._wfm_quote(str(getattr(font, 'background', '#FFFFFF'))),
+                    "        Foreground = " + self._wfm_quote(str(getattr(font, 'foreground', '#000000'))),
+                    "    ENDWITH", "",
+                ])
+
+            def canonical_event_reference(value) -> str:
+                text = str(value or "").strip()
+                match = re.match(
+                    r"(?i)^CLASS\*?::\s*([A-Za-z_]\w*)$",
+                    text,
+                )
+                if match:
+                    return "CLASS::" + match.group(1)
+                return text
 
             def children_of(parent):
                 if parent is None:
@@ -30568,98 +32312,60 @@ QMenu#green_beige_popup_menu::indicator:checked {{
 
             def emit_item(item, parent_path="THIS"):
                 path = f"{parent_path}.{item.component_name}"
-                class_value = str(
-                    getattr(item, "wfm_class_name", "")
-                    or self._wfm_class_for_component(item.component_type)
-                )
-                lines.append(f"    {path} = NEW {class_value}({parent_path})")
-                lines.append(f"    WITH ({path})")
+                class_value = str(getattr(item, "wfm_class_name", "") or self._wfm_class_for_component(item.component_type))
 
+                if item.component_type == "Timer":
+                    lines.extend([
+                        f"    {path} = NEW TIMER({parent_path})",
+                        f"    WITH ({path})",
+                        "        Name = " + self._wfm_quote(item.component_name),
+                        f"        Interval = {max(1, int(getattr(item, 'timer_interval', 1000)))}",
+                        f"        Active = {self._wfm_bool(getattr(item, 'timer_active', False))}",
+                    ])
+                    for key, value in dict(
+                        getattr(item, "wfm_events", {}) or {}
+                    ).items():
+                        lines.append(
+                            f"        {key} = {canonical_event_reference(value)}"
+                        )
+                    lines.extend(["    ENDWITH", ""])
+                    return
+
+                text_arg = ""
+                if item.component_type in {"Button", "Label", "CheckBox", "RadioButton"}:
+                    text_arg = ", " + self._wfm_quote(item.caption)
+                lines.append(f"    {path} = NEW {class_value}({parent_path}{text_arg})")
+                lines.extend([
+                    f"    WITH ({path})",
+                    "        Name = " + self._wfm_quote(item.component_name),
+                ])
                 top, left, width, height = item.geometry_values()
                 lines.extend([
                     f"        Left = {left}",
                     f"        Top = {top}",
                     f"        Width = {width}",
                     f"        Height = {height}",
+                    "",
                 ])
-
-                if item.component_type in {"Button", "Label", "CheckBox", "RadioButton"}:
-                    lines.append(f"        Text = {self._wfm_quote(item.caption)}")
-
-                # Brush: save every designer property, including defaults.
-                lines.extend([
-                    f"        BackColor = {self._wfm_quote(self._wfm_color(item.background_color, '#FFFFFF'))}",
-                    f"        ForeColor = {self._wfm_quote(self._wfm_color(item.foreground_color, '#000000'))}",
-                    f"        BrushGradient = {self._wfm_quote(str(getattr(item, 'brush_gradient', 'none')))}",
-                    f"        BrushStyle = {int(getattr(item, 'brush_style', 0))}",
-                    f"        BrushCutWidth = {int(getattr(item, 'brush_cut_width', 100))}",
-                    f"        BrushCutHeight = {int(getattr(item, 'brush_cut_height', 100))}",
-                ])
-
-                # Font: NEW FONT keeps the dBase/OOP-facing representation,
-                # the extra values complete the visual Designer state.
-                lines.append(
-                    "        Font = NEW FONT(" + self._wfm_quote(item.font_family)
-                    + f",{int(item.font_point_size)}, {self._wfm_bool(item.font_bold)}, "
-                    + f"{self._wfm_bool(item.font_italic)}, {self._wfm_bool(item.font_underline)})"
-                )
-                lines.extend([
-                    f"        Font.stroke = {self._wfm_bool(item.font_stroke)}",
-                    f"        FontBackground = {self._wfm_quote(self._wfm_color(item.font_background_color, '#FFFFFF'))}",
-                    f"        FontForeground = {self._wfm_quote(self._wfm_color(item.font_foreground_color, '#000000'))}",
-                    f"        FontAlpha = {int(item.font_alpha)}",
-                ])
-
-                # Border root: save master style, size, colors and each radius.
-                border_style = str(getattr(item, "border_style", "none"))
-                border_size = int(getattr(item, "border_size", 1))
-                border_radii = (
-                    int(getattr(item, "border_round_tl", 0)),
-                    int(getattr(item, "border_round_tr", 0)),
-                    int(getattr(item, "border_round_bl", 0)),
-                    int(getattr(item, "border_round_br", 0)),
-                )
-                lines.extend([
-                    f"        BorderStyle = {self._wfm_quote(border_style)}",
-                    f"        BorderWidth = {border_size}",
-                    f"        BorderColor = {self._wfm_quote(self._wfm_color(item.border_color, '#7A7A7A'))}",
-                    f"        ShadowColor = {self._wfm_quote(self._wfm_color(item.border_shadow_color, '#000000'))}",
-                    f"        BorderRoundedTL = {border_radii[0]}",
-                    f"        BorderRoundedTR = {border_radii[1]}",
-                    f"        BorderRoundedBL = {border_radii[2]}",
-                    f"        BorderRoundedBR = {border_radii[3]}",
-                ])
-                # Keep the historical Radius property for runtime/backward
-                # compatibility. Individual BorderRounded* values are the
-                # authoritative Designer representation.
-                if len(set(border_radii)) == 1:
-                    lines.append(f"        Radius = {border_radii[0]}")
+                # If a hand-written file used a shared FONT object, preserve
+                # that reference. Otherwise serialize the current inline font.
+                font_ref = str(getattr(item, "wfm_font_ref", "") or "")
+                if font_ref:
+                    lines.append(f"        THIS.Font = {font_ref}")
                 else:
-                    lines.append(f"        Radius = {max(border_radii)}")
+                    emit_font(lines, item, "        ")
+                lines.append("")
+                emit_brush(lines, item, "        ")
+                lines.append("")
+                emit_border(lines, item, "        ")
 
-                # Border side groups: enabled + independent style/size/color.
-                for side_label, side_key in (("Left", "left"), ("Top", "top"), ("Right", "right"), ("Bottom", "bottom")):
-                    lines.extend([
-                        f"        Border{side_label} = {self._wfm_bool(getattr(item, f'border_{side_key}', True))}",
-                        f"        Border{side_label}Style = {self._wfm_quote(str(getattr(item, f'border_{side_key}_style', border_style)))}",
-                        f"        Border{side_label}Size = {int(getattr(item, f'border_{side_key}_size', border_size))}",
-                        f"        Border{side_label}Color = {self._wfm_quote(self._wfm_color(getattr(item, f'border_{side_key}_color', item.border_color), '#7A7A7A'))}",
-                    ])
-
-                # Preserve properties unknown to this Designer version without
-                # duplicating canonical properties that are emitted above.
                 for key, value in dict(getattr(item, "wfm_extra_properties", {}) or {}).items():
-                    if str(key).casefold() in canonical_properties:
-                        continue
-                    rendered = (
-                        self._wfm_quote(value) if isinstance(value, str)
-                        else self._wfm_bool(value) if isinstance(value, bool)
-                        else str(value)
-                    )
-                    lines.append(f"        {key} = {rendered}")
+                    if str(key).casefold() not in canonical_properties:
+                        lines.append(f"        {key} = {render_value(value)}")
                 for key, value in dict(getattr(item, "wfm_events", {}) or {}).items():
-                    lines.append(f"        {key} = {value}")
-
+                    lines.append(
+                        f"        {key} = {canonical_event_reference(value)}"
+                    )
                 lines.extend(["    ENDWITH", ""])
                 if item.component_type == "Panel":
                     for child in children_of(item):
@@ -30667,6 +32373,46 @@ QMenu#green_beige_popup_menu::indicator:checked {{
 
             for item in children_of(None):
                 emit_item(item)
+
+            # Stage 120 class lifecycle / entry-point stubs. Existing loaded
+            # method bodies are preserved when available.
+            methods = list(getattr(scene, "wfm_methods", []) or [])
+            emitted = set()
+            for method in methods:
+                name = str(getattr(method, "name", "") or "")
+                if not name:
+                    continue
+                kind = str(getattr(method, "kind", "procedure") or "procedure").lower()
+                parameters = tuple(
+                    str(p) for p in getattr(method, "parameters", ()) or ()
+                    if str(p).strip()
+                )
+                parameter_text = (
+                    "(" + ", ".join(parameters) + ")" if parameters else ""
+                )
+                lines.append(f"    {kind} {name}{parameter_text}")
+                body = list(getattr(method, "body", []) or [])
+                if body:
+                    for body_line in body:
+                        lines.append("        " + str(body_line).strip())
+                elif str(getattr(method, "return_expr", "") or ""):
+                    lines.append("        return " + str(method.return_expr))
+                else:
+                    lines.append("        return")
+                lines.append("")
+                emitted.add(name.casefold())
+
+            for kind, name, ret in (
+                ("procedure", "__init__", ""),
+                ("procedure", "__del__", ""),
+                ("function", "__main__", "0"),
+            ):
+                if name.casefold() in emitted:
+                    continue
+                lines.append(f"    {kind} {name}")
+                lines.append("        return" + ((" " + ret) if ret else ""))
+                lines.append("")
+
             lines.append("ENDCLASS")
             return "\n".join(lines) + "\n"
 
@@ -30687,6 +32433,11 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 self.show_error("WFM konnte nicht gespeichert werden", str(exc)); return False
             self.dbase_form_current_path = target
             self.dbase_form_modified = False
+            if self.dbase_form_build_document is not None:
+                self.dbase_form_build_document.path = target
+                self.dbase_form_build_document.custom_display_name = target.name
+                self.dbase_form_build_document.update_syntax_highlighting()
+            self._sync_dbase_form_source()
             self.statusBar().showMessage(f"WFM-Formular gespeichert: {target.name}")
             return True
 
@@ -33595,17 +35346,36 @@ border: 2px solid #2a69aa;
                             continue
                         object_paths.append(resolved_extra)
                         known_inputs.add(key)
-                    is_library = (
+                    source_kind = str(
                         getattr(document, "generated_source_kind", "program")
-                        == "library"
-                    )
+                        or "program"
+                    ).casefold()
+                    is_library = source_kind == "library"
+                    is_form = source_kind == "form"
                     linker = link_coff64_inputs if is64 else link_coff32_inputs
+
+                    # Stage 127:
+                    # FORM/WFM ist immer eine GUI-Anwendung und besitzt einen
+                    # eigenen Programmeinstieg. Der bisher hart verwendete
+                    # `_start` ist der normale dBase-Console-Einstieg und darf
+                    # fuer WFM niemals als PE-Entry verwendet werden.
+                    if is_library:
+                        entry_symbol = "__d64_dll_entry"
+                    elif is_form:
+                        entry_symbol = "__d64_wfm_entry"
+                    else:
+                        entry_symbol = "_start"
+
                     program = linker(
                         object_paths,
-                        entry_symbol=(
-                            "__d64_dll_entry" if is_library else "_start"
+                        entry_symbol=entry_symbol,
+                        gui=(
+                            True
+                            if is_form
+                            else normalize_windows_application_mode(
+                                document.windows_application_mode
+                            ) != "Console"
                         ),
-                        gui=(normalize_windows_application_mode(document.windows_application_mode) != "Console"),
                         dll=is_library,
                         dll_name=(
                             document.path.with_suffix(".dll").name

@@ -1,0 +1,19 @@
+Stage 124 - explicit WFM entry
+
+OK  old WFM entry search removed
+OK  no .entry/_start/start/main heuristic remains in WFM block
+OK  explicit WFM entry directive emitted
+OK  explicit WFM entry label emitted
+OK  WFM entry calls DBaseQtInitialize
+OK  WFM entry calls DBaseQtExec
+OK  WFM entry calls DBaseQtShutdown
+OK  WFM entry returns zero
+OK  runtime export DBaseQtInitialize exists
+OK  runtime export DBaseQtExec exists
+OK  runtime export DBaseQtShutdown exists
+OK  Stage119 QToolBar include retained
+OK  structured WFM parser retained
+
+py_compile d64_dism.py: OK
+py_compile d64dbase/wfm.py: OK
+checks=13 passed=13 failed=0

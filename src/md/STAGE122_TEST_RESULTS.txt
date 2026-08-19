@@ -1,0 +1,15 @@
+Stage 122 - WFM runtime anchor fix
+
+OK  ShowWindow hard requirement removed
+OK  WFM insertion prefers DBaseQtInit
+OK  WFM insertion falls back to DBaseQtExec
+OK  WFM insertion falls back to DBaseQtShutdown
+OK  DBaseQtFormOpen retained
+OK  Stage121 generic import insertion retained
+OK  Stage120 structured WFM parser retained
+OK  Stage119 QToolBar include retained
+OK  DBaseQtFormOpen really shows form
+
+py_compile d64_dism.py: OK
+py_compile d64dbase/wfm.py: OK
+checks=9 passed=9 failed=0

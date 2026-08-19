@@ -1,6 +1,7 @@
 LIBRARY d64qt5
 EXPORTS
     DBaseQtInitialize
+    DBaseQtInitializeGui
     DBaseQtShowWindow
     DBaseQtProcessEvents
     DBaseQtSetDebugVisible
@@ -34,8 +35,15 @@ EXPORTS
     DBaseQtMenuSetOnClick
     DBaseQtFormCreate
     DBaseQtControlCreate
+    DBaseQtControlCreateEx
+    DBaseQtObjectBindEvent
+    DBaseQtTimerCreate
+    DBaseQtTimerSetInterval
+    DBaseQtTimerSetActive
+    DBaseQtConsoleWrite
     DBaseQtWidgetSetGeometry
     DBaseQtWidgetSetText
+    DBaseQtWidgetSetProperty
     DBaseQtWidgetSetBackColor
     DBaseQtWidgetSetBorderColor
     DBaseQtWidgetSetBorderWidth

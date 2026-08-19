@@ -1,0 +1,27 @@
+Stage 128 - Workstation shutdown / hide / maximize
+
+OK  console application X no longer kills JOINED runtime
+OK  console X suspends input and hides
+OK  WFM has dedicated closeEvent hide
+OK  hidden windows release keyboard grab
+OK  hidden windows clear focus
+OK  Qt does not quit when last app window is hidden
+OK  global shutdown uses registered message
+OK  workstation owner sends graceful global shutdown
+OK  workstation waits for child processes
+OK  workstation force terminates remaining child processes
+OK  BeginLeave no longer destroys panels early
+OK  FinalizeLeave still destroys panels
+OK  maximize free area helper exported internally
+OK  maximize excludes left panel
+OK  maximize excludes bottom panel
+OK  console main handles WM_GETMINMAXINFO
+OK  WFM main handles WM_GETMINMAXINFO
+OK  Stage127 GUI form runtime retained
+OK  Stage127 WFM entry retained
+OK  QToolBar fix retained
+
+py_compile d64_dism.py: OK
+py_compile d64dbase/wfm.py: OK
+checks=20 passed=20 failed=0
+Native Qt5/MinGW runtime build/test: not available in this container.

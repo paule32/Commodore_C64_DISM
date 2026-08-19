@@ -62,6 +62,7 @@ bool D64WorkstationPanelVisible();
 int D64WorkstationLeftPanelWidth();
 int D64WorkstationBottomPanelHeight();
 void D64WorkstationConstrainMovingRect(RECT *rect);
+void D64WorkstationConstrainMaximizeInfo(void *minMaxInfo);
 void D64WorkstationPositionMinimizedWindow(HWND mainWindow);
 void D64WorkstationCloseApplicationWindows(HWND mainWindow);
 bool D64WorkstationLaunchProgram(

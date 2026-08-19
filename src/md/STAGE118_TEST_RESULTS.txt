@@ -1,0 +1,20 @@
+Stage 118 tests
+
+py_compile d64_dism.py: OK
+py_compile d64dbase/wfm.py: OK
+py_compile doxygen.py: OK
+Static structure/runtime checks: 22/22 OK
+
+Verified:
+- two form tabs
+- build bar above tabs
+- PE32/PE32+ target selector
+- Compile/Assemble/Start handlers
+- WFM recognized as dBase build source
+- source synchronization
+- d64qt5.dll deployment helper
+- DBaseQtWidgetSetProperty C++/header/DEF export
+- runtime controls Button/CheckBox/RadioButton/ComboBox/TableGrid/Image/ToolBar/Menu
+- gradient and individual border CSS generation
+
+Native Qt GUI/DLL build test: not available in container.

@@ -1,0 +1,25 @@
+Stage 134 - WFM OnClick / visible console
+
+OK  Win32 callback ABI explicitly cdecl
+OK  OnClick lambda explicitly receives bool
+OK  OnClick checks QObject::connect result
+OK  WFM creates dedicated console
+OK  inherited console detached first
+OK  AllocConsole present
+OK  console explicitly shown
+OK  console constrained to Workstation area
+OK  CONOUT$ opened directly
+OK  Unicode console output retained
+OK  Stage133 event code remains in .text
+OK  no WFM source blob
+OK  CLASS:: syntax retained
+OK  owner ExitProcess retained
+OK  PE32 callback pointer relocates correctly
+OK  PE32+ callback pointer relocates correctly
+
+py_compile d64_dism.py: OK
+py_compile d64dbase/wfm.py: OK
+PE32 callback relocation/link test: OK
+PE32+ callback relocation/link test: OK
+checks=16 passed=16 failed=0
+Native Windows/Qt5 mouse-click test: not available in this container.

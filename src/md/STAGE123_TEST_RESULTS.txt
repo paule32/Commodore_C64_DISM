@@ -1,0 +1,20 @@
+Stage 123
+
+OK  DBaseQtInitialize import guaranteed
+OK  DBaseQtExec import guaranteed
+OK  obsolete DBaseQtInit marker removed
+OK  real initialize marker used
+OK  32-bit lifecycle generated
+OK  64-bit lifecycle generated
+OK  entry directive detection
+OK  entry fallbacks present
+OK  old lifecycle error removed
+OK  runtime export Initialize
+OK  runtime export Exec
+OK  runtime export Shutdown
+OK  FormOpen shows form
+OK  QToolBar fix retained
+
+py_compile d64_dism.py: OK
+py_compile d64dbase/wfm.py: OK
+checks=14 passed=14 failed=0

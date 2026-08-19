@@ -1,0 +1,25 @@
+Stage 133 - WFM event code only in .text
+
+OK  no __dbase_wfm_proc_source labels
+OK  no procedure_source_blobs
+OK  no method_source_text embed helper
+OK  no WFM source db emission
+OK  callback append explicitly contains .section .text
+OK  all WFM methods selected for executable emission
+OK  procedure labels are executable code labels
+OK  ? output still compiles to runtime call
+OK  method-to-method call code retained
+OK  Win32 Sender forwarding retained
+OK  Win64 Sender forwarding retained
+OK  RETURN literal emits mov eax
+OK  unsupported RETURN expressions fail
+OK  unsupported event statements fail
+OK  .data remains for real runtime data only
+OK  old UTF-8-in-EXE note removed
+OK  canonical CLASS:: retained
+OK  runtime event binding retained
+
+py_compile d64_dism.py: OK
+py_compile d64dbase/wfm.py: OK
+checks=18 passed=18 failed=0
+Native PE32/PE32+ Assemble+Link runtime test: not available in this container.

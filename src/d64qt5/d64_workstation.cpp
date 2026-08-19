@@ -74,6 +74,30 @@ ACCESS_MASK workstation_desktop_access()
 
 void debug_last_error(const wchar_t *where);
 
+UINT workstation_global_shutdown_message()
+{
+    static const UINT message = RegisterWindowMessageW(
+        L"dBase2Many.D64Workstation.GlobalShutdown"
+    );
+    return message;
+}
+
+bool pid_in_list(const std::vector<DWORD> &pids, DWORD pid)
+{
+    for (DWORD value : pids) {
+        if (value == pid)
+            return true;
+    }
+    return false;
+}
+
+void append_unique_pid(std::vector<DWORD> &pids, DWORD pid)
+{
+    if (!pid || pid == GetCurrentProcessId() || pid_in_list(pids, pid))
+        return;
+    pids.push_back(pid);
+}
+
 std::wstring normalize_application_path(const wchar_t *path)
 {
     if (!path || !*path)
@@ -1085,8 +1109,8 @@ LRESULT CALLBACK workstation_keyboard_proc(
 
     /*
      * Ctrl+Alt+Shift+F12 sendet nur WM_CLOSE an das Hauptfenster. Seit Stage
-     * 38 versteckt ein normales WM_CLOSE das Hauptfenster lediglich; einen
-     * echten Runtime-Shutdown darf nur EXIT + JA autorisieren.
+     * 128 versteckt ein normales WM_CLOSE das Hauptfenster lediglich; einen
+     * echten Runtime-Shutdown darf nur der globale Workstation-EXIT ausloesen.
      */
     if (ctrl && alt && shift && vk == VK_F12) {
         if (g_main_window) {
@@ -1174,28 +1198,142 @@ HMODULE module_from_hook_address()
     return reinterpret_cast<HMODULE>(mbi.AllocationBase);
 }
 
-BOOL CALLBACK close_workstation_child_window(HWND hwnd, LPARAM)
+struct WorkstationShutdownCollectContext {
+    std::vector<DWORD> *pids = nullptr;
+};
+
+BOOL CALLBACK collect_workstation_application_pid(HWND hwnd, LPARAM param)
 {
+    WorkstationShutdownCollectContext *context =
+        reinterpret_cast<WorkstationShutdownCollectContext *>(param);
+    if (!context || !context->pids || !hwnd || !IsWindow(hwnd))
+        return TRUE;
+
+    if (hwnd == g_exit_window || hwnd == g_bottom_panel_window)
+        return TRUE;
+
+    if (GetPropW(hwnd, WORKSTATION_TOOL_WINDOW_PROPERTY) != nullptr)
+        return TRUE;
+
+    const LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+    if ((style & WS_CHILD) != 0)
+        return TRUE;
+
     DWORD processId = 0;
     GetWindowThreadProcessId(hwnd, &processId);
-    for (DWORD childPid : g_workstation_child_pids) {
-        if (processId == childPid) {
-            PostMessageW(hwnd, WM_CLOSE, 0, 0);
-            break;
-        }
-    }
+    append_unique_pid(*context->pids, processId);
     return TRUE;
 }
 
-void request_workstation_children_close()
+struct WorkstationShutdownSignalContext {
+    const std::vector<DWORD> *pids = nullptr;
+    UINT message = 0;
+};
+
+BOOL CALLBACK signal_workstation_application_shutdown(HWND hwnd, LPARAM param)
 {
-    if (!g_work_desktop || g_workstation_child_pids.empty())
+    WorkstationShutdownSignalContext *context =
+        reinterpret_cast<WorkstationShutdownSignalContext *>(param);
+    if (!context || !context->pids || !hwnd || !IsWindow(hwnd))
+        return TRUE;
+
+    DWORD processId = 0;
+    GetWindowThreadProcessId(hwnd, &processId);
+    if (!pid_in_list(*context->pids, processId))
+        return TRUE;
+
+    PostMessageW(hwnd, context->message, 0, 0);
+    return TRUE;
+}
+
+void shutdown_workstation_child_processes()
+{
+    if (!g_workstation_owner)
         return;
-    EnumDesktopWindows(
-        g_work_desktop,
-        &close_workstation_child_window,
-        0
-    );
+
+    // Stage 128:
+    // Neben den explizit via D64WorkstationLaunchProgram() gestarteten
+    // Prozessen werden auch bereits gejointe Anwendungen auf dem dedizierten
+    // Workstation-Desktop erfasst.
+    std::vector<DWORD> childPids;
+    for (DWORD pid : g_workstation_child_pids)
+        append_unique_pid(childPids, pid);
+
+    if (g_work_desktop) {
+        WorkstationShutdownCollectContext collect;
+        collect.pids = &childPids;
+        EnumDesktopWindows(
+            g_work_desktop,
+            &collect_workstation_application_pid,
+            reinterpret_cast<LPARAM>(&collect)
+        );
+    }
+
+    if (childPids.empty()) {
+        g_workstation_child_pids.clear();
+        return;
+    }
+
+    // Erst geordneten Runtime-Cleanup anfordern. Ein normales WM_CLOSE wird
+    // absichtlich NICHT benutzt, weil Fenster-X seit Stage 128 nur versteckt.
+    if (g_work_desktop) {
+        WorkstationShutdownSignalContext signal;
+        signal.pids = &childPids;
+        signal.message = workstation_global_shutdown_message();
+        EnumDesktopWindows(
+            g_work_desktop,
+            &signal_workstation_application_shutdown,
+            reinterpret_cast<LPARAM>(&signal)
+        );
+    }
+
+    struct ProcessWait {
+        DWORD pid = 0;
+        HANDLE handle = nullptr;
+    };
+    std::vector<ProcessWait> waits;
+    waits.reserve(childPids.size());
+
+    for (DWORD pid : childPids) {
+        HANDLE process = OpenProcess(
+            SYNCHRONIZE | PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
+            FALSE,
+            pid
+        );
+        if (process) {
+            ProcessWait item;
+            item.pid = pid;
+            item.handle = process;
+            waits.push_back(item);
+        }
+    }
+
+    // Maximal ca. 3 Sekunden fuer sauberen Qt/DB/Session-Cleanup aller
+    // Child-Prozesse zusammen. Danach werden verbliebene Prozesse beendet;
+    // TerminateProcess beendet dabei saemtliche Threads des Prozesses.
+    const DWORD started = GetTickCount();
+    constexpr DWORD gracefulTimeoutMs = 3000;
+
+    for (ProcessWait &item : waits) {
+        const DWORD elapsed = GetTickCount() - started;
+        const DWORD remaining =
+            elapsed < gracefulTimeoutMs
+                ? gracefulTimeoutMs - elapsed
+                : 0;
+
+        if (WaitForSingleObject(item.handle, remaining) == WAIT_OBJECT_0)
+            continue;
+
+        TerminateProcess(item.handle, 0);
+        WaitForSingleObject(item.handle, 1000);
+    }
+
+    for (ProcessWait &item : waits) {
+        if (item.handle)
+            CloseHandle(item.handle);
+    }
+
+    g_workstation_child_pids.clear();
 }
 
 void close_desktop_handle(HDESK &desktop)
@@ -1598,15 +1736,12 @@ void D64WorkstationBeginLeave()
         g_keyboard_hook = nullptr;
     }
 
-    request_workstation_children_close();
-    destroy_bottom_panel_window();
-    destroy_exit_window();
+    // Stage 128:
+    // Zuerst alle Console-/GUI-Child-Prozesse beenden. Panel, Desktop und
+    // Workstation-Mutex bleiben bis D64WorkstationFinalizeLeave() erhalten,
+    // damit die Workstation wirklich als letzte Ressource verschwindet.
+    shutdown_workstation_child_processes();
     g_main_window = nullptr;
-
-    if (g_workstation_visible) {
-        switch_to_original_input_desktop();
-        g_workstation_visible = false;
-    }
 }
 
 void D64WorkstationFinalizeLeave()
@@ -1784,6 +1919,41 @@ void D64WorkstationConstrainMovingRect(RECT *rect)
     rect->bottom = y + height;
 }
 
+void D64WorkstationConstrainMaximizeInfo(void *minMaxInfo)
+{
+    if (!minMaxInfo)
+        return;
+
+    MINMAXINFO *info = reinterpret_cast<MINMAXINFO *>(minMaxInfo);
+
+    const int screenWidth = GetSystemMetrics(SM_CXSCREEN);
+    const int screenHeight = GetSystemMetrics(SM_CYSCREEN);
+
+    const int left = WORKSTATION_PANEL_WIDTH + WORKSTATION_PANEL_GAP;
+    const int top = WORKSTATION_PANEL_GAP;
+    const int right = screenWidth - WORKSTATION_PANEL_GAP;
+    const int bottom =
+        screenHeight -
+        WORKSTATION_BOTTOM_PANEL_HEIGHT -
+        WORKSTATION_PANEL_GAP;
+
+    const int width = right > left ? right - left : 1;
+    const int height = bottom > top ? bottom - top : 1;
+
+    // WM_GETMINMAXINFO steuert die aeussere maximierte Fenstergeometrie.
+    // Dadurch bleiben linkes Panel, Bottom-Panel und der 4px-Rand frei.
+    info->ptMaxPosition.x = left;
+    info->ptMaxPosition.y = top;
+    info->ptMaxSize.x = width;
+    info->ptMaxSize.y = height;
+
+    // Auch das Track-Limit darf den freien Workstation-Bereich nicht
+    // ueberschreiten; zusammen mit D64WorkstationConstrainMovingRect()
+    // kann ein Child-Fenster dadurch nicht ueber die Panels wachsen.
+    info->ptMaxTrackSize.x = width;
+    info->ptMaxTrackSize.y = height;
+}
+
 void D64WorkstationPositionMinimizedWindow(HWND mainWindow)
 {
     if (!mainWindow || !IsWindow(mainWindow))
@@ -1954,6 +2124,7 @@ bool D64WorkstationPanelVisible() { return false; }
 int D64WorkstationLeftPanelWidth() { return 0; }
 int D64WorkstationBottomPanelHeight() { return 0; }
 void D64WorkstationConstrainMovingRect(RECT *) {}
+void D64WorkstationConstrainMaximizeInfo(void *) {}
 void D64WorkstationPositionMinimizedWindow(HWND) {}
 void D64WorkstationCloseApplicationWindows(HWND) {}
 bool D64WorkstationLaunchProgram(const wchar_t *, const wchar_t *) { return false; }

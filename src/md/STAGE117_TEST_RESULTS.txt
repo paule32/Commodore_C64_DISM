@@ -1,0 +1,12 @@
+Stage 117 - Doxygen QStackedWidget / progress fix
+
+OK  invalid QVBoxLayout(self.expert_pages) removed
+OK  progress_bar created
+OK  progress_bar added to run tab
+OK  progress_value uses progress_bar
+OK  no self.progress.progress_log in DoxyGenToolWindow
+OK  show configuration uses self.progress_log
+OK  show html uses self.progress_log
+
+py_compile: OK
+checks: 7/7 OK
