@@ -50,6 +50,7 @@
 #  * Stage 136: Lernen->Mathematik mit Zahlenmauer-Dock und 2x5 QGraphicsScene-Aufgaben.
 #  * Stage 139: Sudoku mit Leicht/Mittel/Schwer/Experte im Mathematik-Lernbereich.
 #  * Stage 140: ISO-Metrik Mathe-Stadt mit Mausweg, Bauen, Budget und Lern-Banken.
+#  * Stage 141: Gorilla-Parabelspiel mit Wolkenkratzern, Wind, Gebäudeschäden und Mathe-Würfen.
 #  * Stage 137: farbcodierte Zahlenmauern sowie Addition/Subtraktion/Einmaleins/Fehlende-Zahl-Spiele.
 #    Mehrtabellen-Tabs, Feldeditoren und Kontextoperationen für Feldzeilen
 #
@@ -30626,6 +30627,851 @@ QPushButton {{ padding: 6px 8px; }}
             )
 
 
+
+    class GorillaParabolaMathGameWidget(QWidget):
+        """Eigenständiges Retro-Parabelspiel mit zwei Gorillas und Wolkenkratzern.
+
+        Die Grafik ist neu gezeichnet und verwendet keine Original-Gorillas-
+        Assets. Das Spielprinzip verbindet Rechenaufgaben mit einer
+        parabelförmigen Wurfbewegung, Wind und persistenten Gebäudeschäden.
+        """
+
+        SCENE_WIDTH = 1080.0
+        SCENE_HEIGHT = 640.0
+        STREET_Y = 585.0
+        BUILDING_COUNT = 12
+        BUILDING_WIDTH = 78.0
+        BUILDING_GAP = 9.0
+        BUILDING_START_X = 14.0
+
+        LEFT_BUILDING_INDEX = 2
+        RIGHT_BUILDING_INDEX = 9
+
+        GRAVITY = 112.0
+        HORIZONTAL_SPEED = 172.0
+        WIND_ACCEL_SCALE = 0.72
+        SHOT_INTERVAL_MS = 28
+        SHOT_DT = 0.042
+        BANANA_ROTATION_STEP = 27.0
+        GORILLA_HIT_RADIUS = 25.0
+        CRATER_RADIUS = 24.0
+
+        BUILDING_COLORS = (
+            "#3F51B5",
+            "#6A4C93",
+            "#2F6690",
+            "#4F6D7A",
+            "#8D5A97",
+            "#3C6E71",
+            "#7B2D26",
+            "#5C4D7D",
+        )
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self._dark_mode = False
+            self._rng = random.Random()
+            self._buildings = []
+            self._gorilla_positions = {}
+            self._gorilla_items = {1: [], 2: []}
+            self._banana_item = None
+            self._shot_time = 0.0
+            self._shot = None
+            self._game_over = False
+            self.current_player = 1
+            self.wind = 0
+            self.expected_power = {1: 0, 2: 0}
+            self.task_text = {1: "", 2: ""}
+
+            root = QVBoxLayout(self)
+            root.setContentsMargins(8, 8, 8, 8)
+            root.setSpacing(7)
+
+            header = QHBoxLayout()
+            self.title_label = QLabel("Gorilla-Parabeln – Wolkenkratzer", self)
+            title_font = self.title_label.font()
+            title_font.setBold(True)
+            title_font.setPointSize(max(11, title_font.pointSize()))
+            self.title_label.setFont(title_font)
+            header.addWidget(self.title_label)
+            header.addStretch(1)
+
+            self.turn_label = QLabel(self)
+            self.wind_label = QLabel(self)
+            header.addWidget(self.turn_label)
+            header.addSpacing(16)
+            header.addWidget(self.wind_label)
+            root.addLayout(header)
+
+            self.scene = QGraphicsScene(self)
+            self.scene.setSceneRect(
+                0.0,
+                0.0,
+                self.SCENE_WIDTH,
+                self.SCENE_HEIGHT,
+            )
+            self.view = QGraphicsView(self)
+            self.view.setObjectName("gorilla_parabola_math_view")
+            self.view.setScene(self.scene)
+            self.view.setRenderHints(
+                QPainter.Antialiasing
+                | QPainter.TextAntialiasing
+                | QPainter.SmoothPixmapTransform
+            )
+            self.view.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.view.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.view.setMinimumHeight(390)
+            root.addWidget(self.view, 1)
+
+            controls = QHBoxLayout()
+            controls.setSpacing(10)
+
+            self.player_groups = {}
+            self.task_labels = {}
+            self.answer_edits = {}
+            self.throw_buttons = {}
+
+            for player in (1, 2):
+                group = QGroupBox(f"Spieler {player}", self)
+                layout = QVBoxLayout(group)
+                task = QLabel(group)
+                task.setWordWrap(True)
+                layout.addWidget(task)
+
+                answer_row = QHBoxLayout()
+                edit = QLineEdit(group)
+                edit.setObjectName(f"gorilla_player_{player}_answer")
+                edit.setAlignment(Qt.AlignCenter)
+                edit.setPlaceholderText("Ergebnis")
+                edit.setValidator(QIntValidator(0, 999, edit))
+                button = QPushButton("Banane werfen", group)
+                button.clicked.connect(
+                    lambda _checked=False, p=player: self.throw_banana(p)
+                )
+                edit.returnPressed.connect(
+                    lambda p=player: self.throw_banana(p)
+                )
+                answer_row.addWidget(edit, 1)
+                answer_row.addWidget(button)
+                layout.addLayout(answer_row)
+
+                hint = QLabel(
+                    "Der eingegebene Rechenwert bestimmt die Wurfhöhe. "
+                    "Ein absichtlich anderer Wert verändert die Parabel.",
+                    group,
+                )
+                hint.setWordWrap(True)
+                layout.addWidget(hint)
+
+                controls.addWidget(group, 1)
+                self.player_groups[player] = group
+                self.task_labels[player] = task
+                self.answer_edits[player] = edit
+                self.throw_buttons[player] = button
+
+            reset_box = QVBoxLayout()
+            self.new_game_button = QPushButton("Neue Skyline", self)
+            self.new_game_button.clicked.connect(self.new_game)
+            reset_box.addWidget(self.new_game_button)
+            reset_box.addStretch(1)
+            controls.addLayout(reset_box)
+
+            root.addLayout(controls)
+
+            self.status_label = QLabel(self)
+            self.status_label.setWordWrap(True)
+            root.addWidget(self.status_label)
+
+            self.shot_timer = QTimer(self)
+            self.shot_timer.setInterval(self.SHOT_INTERVAL_MS)
+            self.shot_timer.timeout.connect(self._advance_shot)
+
+            self.set_dark_mode(False)
+            self.new_game()
+
+        # ----- Spielaufbau -------------------------------------------------
+
+        def activate_game(self, _game_key: str = "", title: str = "") -> None:
+            if title:
+                self.title_label.setText(title)
+            self.new_game()
+
+        def new_game(self) -> None:
+            self.shot_timer.stop()
+            self.scene.clear()
+            self._buildings = []
+            self._gorilla_positions = {}
+            self._gorilla_items = {1: [], 2: []}
+            self._banana_item = None
+            self._shot = None
+            self._shot_time = 0.0
+            self._game_over = False
+            self.current_player = 1
+            self.wind = self._rng.randint(-28, 28)
+
+            self._draw_sky()
+            self._create_random_skyline()
+            self._draw_street()
+            self._draw_all_gorillas()
+            self._prepare_turn()
+            self.status_label.setText(
+                "Spieler 1 beginnt. Löse die angezeigte Aufgabe. "
+                "Falsche oder absichtlich veränderte Werte können Löcher in "
+                "Wolkenkratzer schlagen; durch diese Öffnungen können spätere "
+                "Bananen hindurchfliegen."
+            )
+
+        def _draw_sky(self) -> None:
+            sky = QColor("#102238") if self._dark_mode else QColor("#69AEE7")
+            self.scene.setBackgroundBrush(QBrush(sky))
+            self._sky_color = sky
+
+            # Eigenständige Retro-Sonne und einfache Wolken.
+            sun = self.scene.addEllipse(
+                930.0,
+                42.0,
+                54.0,
+                54.0,
+                QPen(Qt.NoPen),
+                QBrush(QColor("#FFD45A")),
+            )
+            sun.setZValue(-20.0)
+            for cloud_index in range(4):
+                x = 120.0 + cloud_index * 230.0 + self._rng.randint(-28, 30)
+                y = 50.0 + self._rng.randint(0, 90)
+                for dx, dy, w, h in (
+                    (0, 10, 44, 22),
+                    (24, 0, 54, 28),
+                    (56, 11, 43, 21),
+                ):
+                    cloud = self.scene.addEllipse(
+                        x + dx,
+                        y + dy,
+                        w,
+                        h,
+                        QPen(Qt.NoPen),
+                        QBrush(QColor("#E9F3FA")),
+                    )
+                    cloud.setZValue(-19.0)
+
+        def _create_random_skyline(self) -> None:
+            for index in range(self.BUILDING_COUNT):
+                x = (
+                    self.BUILDING_START_X
+                    + index * (self.BUILDING_WIDTH + self.BUILDING_GAP)
+                )
+                # Gorilla-X bleibt durch den festen Gebäudeindex konstant;
+                # nur die Gebäudehöhe und damit die Gorilla-Höhe ändert sich.
+                if index in (self.LEFT_BUILDING_INDEX, self.RIGHT_BUILDING_INDEX):
+                    height = float(self._rng.randint(215, 345))
+                else:
+                    height = float(self._rng.randint(135, 375))
+                top = self.STREET_Y - height
+                color = QColor(
+                    self.BUILDING_COLORS[
+                        self._rng.randrange(len(self.BUILDING_COLORS))
+                    ]
+                )
+
+                building = {
+                    "index": index,
+                    "x": x,
+                    "width": self.BUILDING_WIDTH,
+                    "top": top,
+                    "height": height,
+                    "bottom": self.STREET_Y,
+                    "color": color,
+                    "craters": [],
+                }
+                self._buildings.append(building)
+                self._draw_building(building)
+
+        def _draw_building(self, building: dict) -> None:
+            x = float(building["x"])
+            top = float(building["top"])
+            width = float(building["width"])
+            height = float(building["height"])
+            body_color = QColor(building["color"])
+            border_color = body_color.darker(145)
+
+            body = self.scene.addRect(
+                x,
+                top,
+                width,
+                height,
+                QPen(border_color, 2.0),
+                QBrush(body_color),
+            )
+            body.setZValue(-10.0)
+
+            # Retro-Fensterreihen, neu gezeichnet. Einige Fenster sind
+            # zufällig beleuchtet, damit die Skyline lebendig wirkt.
+            window_w = 9.0
+            window_h = 11.0
+            x_step = 17.0
+            y_step = 20.0
+            wx = x + 9.0
+            while wx + window_w < x + width - 5.0:
+                wy = top + 14.0
+                while wy + window_h < self.STREET_Y - 8.0:
+                    lit = self._rng.random() < 0.58
+                    if lit:
+                        window_color = QColor("#FFE36E")
+                    else:
+                        window_color = QColor("#15293B")
+                    window = self.scene.addRect(
+                        wx,
+                        wy,
+                        window_w,
+                        window_h,
+                        QPen(window_color.darker(120), 0.6),
+                        QBrush(window_color),
+                    )
+                    window.setZValue(-9.0)
+                    wy += y_step
+                wx += x_step
+
+            roof = self.scene.addRect(
+                x - 2.0,
+                top - 5.0,
+                width + 4.0,
+                6.0,
+                QPen(border_color, 1.0),
+                QBrush(border_color),
+            )
+            roof.setZValue(-8.0)
+
+        def _draw_street(self) -> None:
+            street = self.scene.addRect(
+                0.0,
+                self.STREET_Y,
+                self.SCENE_WIDTH,
+                self.SCENE_HEIGHT - self.STREET_Y,
+                QPen(Qt.NoPen),
+                QBrush(
+                    QColor("#171B20")
+                    if self._dark_mode
+                    else QColor("#4C5157")
+                ),
+            )
+            street.setZValue(-12.0)
+
+            for x in range(10, int(self.SCENE_WIDTH), 42):
+                mark = self.scene.addRect(
+                    float(x),
+                    self.STREET_Y + 28.0,
+                    22.0,
+                    3.0,
+                    QPen(Qt.NoPen),
+                    QBrush(QColor("#E7D66C")),
+                )
+                mark.setZValue(-11.0)
+
+        def _building_for_player(self, player: int) -> dict:
+            index = (
+                self.LEFT_BUILDING_INDEX
+                if player == 1
+                else self.RIGHT_BUILDING_INDEX
+            )
+            return self._buildings[index]
+
+        def _draw_all_gorillas(self) -> None:
+            for player in (1, 2):
+                building = self._building_for_player(player)
+                center_x = float(building["x"]) + float(building["width"]) / 2.0
+                base_y = float(building["top"]) - 2.0
+                self._gorilla_positions[player] = QPointF(
+                    center_x,
+                    base_y - 23.0,
+                )
+                self._draw_gorilla(player, center_x, base_y)
+
+        def _draw_gorilla(self, player: int, center_x: float, base_y: float) -> None:
+            # Eigene geometrische Gorilla-Silhouette; keine Originalgrafik.
+            body_color = (
+                QColor("#6A3E22")
+                if player == 1
+                else QColor("#4A2C6F")
+            )
+            outline = QColor("#24160E") if player == 1 else QColor("#22132E")
+            items = []
+
+            body = self.scene.addEllipse(
+                center_x - 14.0,
+                base_y - 31.0,
+                28.0,
+                27.0,
+                QPen(outline, 1.5),
+                QBrush(body_color),
+            )
+            items.append(body)
+
+            head = self.scene.addEllipse(
+                center_x - 10.0,
+                base_y - 45.0,
+                20.0,
+                18.0,
+                QPen(outline, 1.5),
+                QBrush(body_color.lighter(112)),
+            )
+            items.append(head)
+
+            # Arme und Beine werden bewusst blockig gezeichnet.
+            arm_y = base_y - 26.0
+            for dx in (-22.0, 13.0):
+                arm = self.scene.addRect(
+                    center_x + dx,
+                    arm_y,
+                    9.0,
+                    19.0,
+                    QPen(outline, 1.2),
+                    QBrush(body_color),
+                )
+                items.append(arm)
+            for dx in (-12.0, 3.0):
+                leg = self.scene.addRect(
+                    center_x + dx,
+                    base_y - 11.0,
+                    9.0,
+                    13.0,
+                    QPen(outline, 1.2),
+                    QBrush(body_color.darker(108)),
+                )
+                items.append(leg)
+
+            face = self.scene.addEllipse(
+                center_x - 6.0,
+                base_y - 39.5,
+                12.0,
+                8.0,
+                QPen(Qt.NoPen),
+                QBrush(QColor("#C99364")),
+            )
+            items.append(face)
+
+            for item in items:
+                item.setZValue(30.0)
+            self._gorilla_items[player] = items
+
+        # ----- Matheaufgabe + Ballistik -----------------------------------
+
+        def _wind_acceleration(self) -> float:
+            return float(self.wind) * self.WIND_ACCEL_SCALE
+
+        @staticmethod
+        def _positive_time_for_horizontal_motion(
+            dx: float,
+            vx: float,
+            ax: float,
+        ) -> Optional[float]:
+            if abs(ax) < 1.0e-9:
+                if abs(vx) < 1.0e-9:
+                    return None
+                t = dx / vx
+                return t if t > 0.0 else None
+
+            # 0.5*a*t² + vx*t - dx = 0
+            discriminant = vx * vx + 2.0 * ax * dx
+            if discriminant < 0.0:
+                return None
+            root = discriminant ** 0.5
+            candidates = [
+                (-vx + root) / ax,
+                (-vx - root) / ax,
+            ]
+            positive = [value for value in candidates if value > 0.05]
+            if not positive:
+                return None
+            return min(positive)
+
+        def _shot_start(self, player: int) -> QPointF:
+            pos = self._gorilla_positions[player]
+            direction = 1.0 if player == 1 else -1.0
+            return QPointF(
+                pos.x() + direction * 18.0,
+                pos.y() - 4.0,
+            )
+
+        def _ideal_power_for_player(self, player: int) -> int:
+            target_player = 2 if player == 1 else 1
+            start = self._shot_start(player)
+            target = self._gorilla_positions[target_player]
+            direction = 1.0 if player == 1 else -1.0
+            vx = direction * self.HORIZONTAL_SPEED
+            dx = target.x() - start.x()
+            t = self._positive_time_for_horizontal_motion(
+                dx,
+                vx,
+                self._wind_acceleration(),
+            )
+            if t is None:
+                t = abs(dx) / self.HORIZONTAL_SPEED
+
+            # Bildschirm-Y wächst nach unten:
+            # y(t) = y0 - power*t + 0.5*g*t²
+            power = (
+                start.y()
+                - target.y()
+                + 0.5 * self.GRAVITY * t * t
+            ) / t
+            return max(40, min(480, int(round(power))))
+
+        def _make_math_task(self, answer: int) -> str:
+            mode = self._rng.randrange(3)
+            if mode == 0 and answer >= 20:
+                left = self._rng.randint(8, max(9, answer - 8))
+                right = answer - left
+                return f"{left} + {right}"
+            if mode == 1:
+                subtract = self._rng.randint(7, 45)
+                return f"{answer + subtract} - {subtract}"
+            factor = self._rng.randint(2, 5)
+            base = answer // factor
+            rest = answer - base * factor
+            if rest:
+                return f"{base} × {factor} + {rest}"
+            return f"{base} × {factor}"
+
+        def _prepare_turn(self) -> None:
+            if self._game_over:
+                return
+
+            # Der Wind ändert sich bei jedem Spielerwechsel.
+            self.wind = self._rng.randint(-28, 28)
+            for player in (1, 2):
+                power = self._ideal_power_for_player(player)
+                self.expected_power[player] = power
+                self.task_text[player] = self._make_math_task(power)
+                self.task_labels[player].setText(
+                    "Berechne die Wurfhöhe:\n"
+                    f"{self.task_text[player]} = ?"
+                )
+
+            self.answer_edits[1].clear()
+            self.answer_edits[2].clear()
+            for player in (1, 2):
+                active = player == self.current_player
+                self.answer_edits[player].setEnabled(active)
+                self.throw_buttons[player].setEnabled(active)
+                self.player_groups[player].setTitle(
+                    f"Spieler {player}"
+                    + (" – am Zug" if active else "")
+                )
+
+            self.turn_label.setText(f"Am Zug: Spieler {self.current_player}")
+            if self.wind > 0:
+                self.wind_label.setText(f"Wind: → {abs(self.wind)}")
+            elif self.wind < 0:
+                self.wind_label.setText(f"Wind: ← {abs(self.wind)}")
+            else:
+                self.wind_label.setText("Wind: 0")
+            self.answer_edits[self.current_player].setFocus(Qt.OtherFocusReason)
+
+        def throw_banana(self, player: int) -> None:
+            if self._game_over or self.shot_timer.isActive():
+                return
+            if player != self.current_player:
+                return
+
+            raw = self.answer_edits[player].text().strip()
+            try:
+                power = int(raw, 10)
+            except Exception:
+                self.status_label.setText(
+                    f"Spieler {player}: Bitte zuerst einen ganzzahligen Rechenwert eingeben."
+                )
+                QApplication.beep()
+                return
+
+            if not (0 <= power <= 999):
+                self.status_label.setText("Der Wurfwert muss zwischen 0 und 999 liegen.")
+                QApplication.beep()
+                return
+
+            start = self._shot_start(player)
+            direction = 1.0 if player == 1 else -1.0
+            self._shot = {
+                "player": player,
+                "target_player": 2 if player == 1 else 1,
+                "start": QPointF(start),
+                "vx": direction * self.HORIZONTAL_SPEED,
+                "power": float(power),
+                "wind_acc": self._wind_acceleration(),
+            }
+            self._shot_time = 0.0
+
+            self._remove_banana()
+            banana_path = QPainterPath()
+            banana_path.moveTo(-10.0, 0.0)
+            banana_path.cubicTo(-4.0, -10.0, 8.0, -9.0, 12.0, -1.0)
+            banana_path.cubicTo(5.0, -4.0, -2.0, -2.0, -9.0, 5.0)
+            banana_path.cubicTo(-12.0, 4.0, -13.0, 2.0, -10.0, 0.0)
+            self._banana_item = self.scene.addPath(
+                banana_path,
+                QPen(QColor("#8A6600"), 1.2),
+                QBrush(QColor("#FFE13A")),
+            )
+            self._banana_item.setZValue(60.0)
+            self._banana_item.setPos(start)
+
+            expected = self.expected_power[player]
+            if power == expected:
+                self.status_label.setText(
+                    f"Spieler {player} wirft mit dem korrekt berechneten Wert {power}."
+                )
+            else:
+                difference = power - expected
+                self.status_label.setText(
+                    f"Spieler {player} wirft mit {power}. "
+                    f"Das sind {difference:+d} gegenüber dem Rechenergebnis."
+                )
+
+            for p in (1, 2):
+                self.throw_buttons[p].setEnabled(False)
+                self.answer_edits[p].setEnabled(False)
+            self.shot_timer.start()
+
+        def _advance_shot(self) -> None:
+            if self._shot is None or self._banana_item is None:
+                self.shot_timer.stop()
+                return
+
+            self._shot_time += self.SHOT_DT
+            shot = self._shot
+            t = self._shot_time
+            start = shot["start"]
+
+            x = (
+                start.x()
+                + shot["vx"] * t
+                + 0.5 * shot["wind_acc"] * t * t
+            )
+            y = (
+                start.y()
+                - shot["power"] * t
+                + 0.5 * self.GRAVITY * t * t
+            )
+
+            self._banana_item.setPos(x, y)
+            self._banana_item.setRotation(
+                self._banana_item.rotation() + self.BANANA_ROTATION_STEP
+            )
+
+            target_pos = self._gorilla_positions[shot["target_player"]]
+            dx = x - target_pos.x()
+            dy = y - target_pos.y()
+            if dx * dx + dy * dy <= self.GORILLA_HIT_RADIUS ** 2:
+                self._finish_gorilla_hit(shot["player"], shot["target_player"])
+                return
+
+            building = self._colliding_building(QPointF(x, y))
+            if building is not None:
+                self._finish_building_hit(building, QPointF(x, y))
+                return
+
+            if (
+                x < -40.0
+                or x > self.SCENE_WIDTH + 40.0
+                or y > self.SCENE_HEIGHT + 50.0
+                or t > 10.0
+            ):
+                self._finish_miss()
+
+        def _point_inside_crater(self, building: dict, point: QPointF) -> bool:
+            for crater in building["craters"]:
+                dx = point.x() - crater[0]
+                dy = point.y() - crater[1]
+                if dx * dx + dy * dy <= crater[2] * crater[2]:
+                    return True
+            return False
+
+        def _colliding_building(self, point: QPointF) -> Optional[dict]:
+            for building in self._buildings:
+                if (
+                    building["x"] <= point.x() <= building["x"] + building["width"]
+                    and building["top"] <= point.y() <= building["bottom"]
+                ):
+                    if self._point_inside_crater(building, point):
+                        continue
+                    return building
+            return None
+
+        # ----- Treffer / Gebäudeschäden ------------------------------------
+
+        def _make_crater(self, building: dict, point: QPointF) -> None:
+            radius = self.CRATER_RADIUS
+            cx = max(
+                building["x"] + radius * 0.55,
+                min(point.x(), building["x"] + building["width"] - radius * 0.55),
+            )
+            cy = max(
+                building["top"] + radius * 0.55,
+                min(point.y(), building["bottom"] - radius * 0.55),
+            )
+            building["craters"].append((cx, cy, radius))
+
+            # Dunkler Rand + himmelfarbene Mitte erzeugen den Eindruck eines
+            # echten Lochs. Die Kollisionsroutine lässt dieses Gebiet später
+            # tatsächlich für weitere Bananen frei.
+            rim = self.scene.addEllipse(
+                cx - radius - 3.0,
+                cy - radius - 3.0,
+                2.0 * (radius + 3.0),
+                2.0 * (radius + 3.0),
+                QPen(Qt.NoPen),
+                QBrush(QColor("#1C1714")),
+            )
+            rim.setZValue(12.0)
+            hole = self.scene.addEllipse(
+                cx - radius,
+                cy - radius,
+                2.0 * radius,
+                2.0 * radius,
+                QPen(Qt.NoPen),
+                QBrush(self._sky_color),
+            )
+            hole.setZValue(13.0)
+
+            # Einige schwarze Splitter am Einschlag.
+            for angle_index in range(6):
+                offset_x = self._rng.randint(-30, 30)
+                offset_y = self._rng.randint(-26, 26)
+                chip = self.scene.addEllipse(
+                    cx + offset_x,
+                    cy + offset_y,
+                    3.0,
+                    3.0,
+                    QPen(Qt.NoPen),
+                    QBrush(QColor("#211A16")),
+                )
+                chip.setZValue(14.0)
+
+        def _finish_building_hit(self, building: dict, point: QPointF) -> None:
+            self.shot_timer.stop()
+            shooter = int(self._shot["player"])
+            self._make_crater(building, point)
+            self._remove_banana()
+            self._shot = None
+            self.status_label.setText(
+                f"Spieler {shooter}: Wolkenkratzer getroffen. "
+                "Der Einschlag ist jetzt eine echte Durchflugöffnung."
+            )
+            self._switch_player()
+
+        def _finish_miss(self) -> None:
+            self.shot_timer.stop()
+            shooter = int(self._shot["player"]) if self._shot else self.current_player
+            self._remove_banana()
+            self._shot = None
+            self.status_label.setText(
+                f"Spieler {shooter}: Die Banane hat die Skyline verfehlt."
+            )
+            self._switch_player()
+
+        def _finish_gorilla_hit(self, shooter: int, target: int) -> None:
+            self.shot_timer.stop()
+            self._game_over = True
+            self._remove_banana()
+            self._shot = None
+
+            for item in self._gorilla_items.get(target, []):
+                try:
+                    item.setOpacity(0.22)
+                except Exception:
+                    pass
+
+            pos = self._gorilla_positions[target]
+            for radius, color in (
+                (18.0, QColor("#FFF176")),
+                (29.0, QColor("#FF9800")),
+                (40.0, QColor("#E53935")),
+            ):
+                ring = self.scene.addEllipse(
+                    pos.x() - radius,
+                    pos.y() - radius,
+                    radius * 2.0,
+                    radius * 2.0,
+                    QPen(color, 4.0),
+                    QBrush(Qt.NoBrush),
+                )
+                ring.setZValue(70.0)
+
+            for p in (1, 2):
+                self.answer_edits[p].setEnabled(False)
+                self.throw_buttons[p].setEnabled(False)
+            self.turn_label.setText(f"Spieler {shooter} gewinnt")
+            self.status_label.setText(
+                f"Treffer! Spieler {shooter} hat Gorilla {target} erreicht."
+            )
+            QMessageBox.information(
+                self,
+                "Gorilla-Parabeln",
+                f"Spieler {shooter} gewinnt. Der gegnerische Gorilla wurde getroffen.",
+            )
+
+        def _remove_banana(self) -> None:
+            if self._banana_item is not None:
+                try:
+                    self.scene.removeItem(self._banana_item)
+                except Exception:
+                    pass
+                self._banana_item = None
+
+        def _switch_player(self) -> None:
+            if self._game_over:
+                return
+            self.current_player = 2 if self.current_player == 1 else 1
+            self._prepare_turn()
+
+        # ----- Theme -------------------------------------------------------
+
+        def set_dark_mode(self, enabled: bool) -> None:
+            self._dark_mode = bool(enabled)
+            if self._dark_mode:
+                background = "#10151C"
+                text = "#F0F6FC"
+                panel = "#0B1F33"
+                border = "#40576D"
+            else:
+                background = "#F6F1E6"
+                text = "#1A1A1A"
+                panel = "#FFF9EE"
+                border = "#B8AA90"
+
+            self.setStyleSheet(
+                f"""
+QWidget {{
+    background: {background};
+    color: {text};
+}}
+QGroupBox {{
+    background: {panel};
+    border: 1px solid {border};
+    border-radius: 7px;
+    margin-top: 9px;
+    padding-top: 8px;
+}}
+QGroupBox::title {{
+    subcontrol-origin: margin;
+    left: 8px;
+    padding: 0 4px;
+}}
+QLineEdit {{
+    min-height: 28px;
+    background: {panel};
+    color: {text};
+    border: 1px solid {border};
+    border-radius: 5px;
+}}
+QPushButton {{
+    min-height: 28px;
+    padding: 4px 10px;
+}}
+"""
+            )
+            # Eine laufende Partie bleibt erhalten. Nur der leere Himmel bzw.
+            # die Straßenfarbe wird beim nächsten "Neue Skyline" neu gezeichnet.
+
     class MathematicsLearningDockWidget(QWidget):
         """Lern-Workspace mit linksseitigen Tabs und rechts eingebetteter Szene."""
 
@@ -30696,6 +31542,12 @@ QPushButton {{ padding: 6px 8px; }}
                 'Grundmauern, Etage und Dach freizuschalten. Jede Baustufe kostet Budget. '
                 'Anlage-Banken nehmen fiktive Spielpunkte auf und erzeugen nach gelösten Aufgaben '
                 'Zinsen, deren Abrechnung beim Bankbesuch nachgerechnet wird.</p>'
+                '<h3>Gorilla-Parabeln – Wolkenkratzer</h3>'
+                '<p>Zwei neu gezeichnete Retro-Gorillas sitzen auf zufällig hohen Wolkenkratzern. '
+                'Die X-Positionen bleiben fest, die Höhen ändern sich mit jeder Skyline. '
+                'Jeder Spieler löst eine Rechenaufgabe, deren Ergebnis die vertikale Wurfenergie '
+                'der Banane bestimmt. Wind verändert die Parabel. Die Bahn selbst bleibt unsichtbar. '
+                'Gebäudetreffer erzeugen dauerhafte Löcher, durch die spätere Bananen fliegen können.</p>'
             )
             info_layout.addWidget(self.info_browser, 1)
             self.left_tabs.addTab(info_tab, 'Informationen')
@@ -30718,6 +31570,8 @@ QPushButton {{ padding: 6px 8px; }}
             self.content_stack.addWidget(self.sudoku_widget)
             self.iso_metric_widget = IsoMetricMathGameWidget(self.content_stack)
             self.content_stack.addWidget(self.iso_metric_widget)
+            self.gorilla_parabola_widget = GorillaParabolaMathGameWidget(self.content_stack)
+            self.content_stack.addWidget(self.gorilla_parabola_widget)
             self.content_stack.setCurrentWidget(self.placeholder)
 
             splitter.setStretchFactor(0, 0)
@@ -30750,6 +31604,9 @@ QPushButton {{ padding: 6px 8px; }}
                 ]),
                 ('ISO-Metrik', [
                     ('isometric_math_city', 'Mathe-Stadt – ISO-Metrik'),
+                ]),
+                ('Parabeln', [
+                    ('gorilla_parabola', 'Gorilla-Parabeln – Wolkenkratzer'),
                 ]),
             ]
             first_game = None
@@ -30828,6 +31685,7 @@ QStackedWidget#learning_content_stack {{
             self.arithmetic_widget.set_dark_mode(enabled)
             self.sudoku_widget.set_dark_mode(enabled)
             self.iso_metric_widget.set_dark_mode(enabled)
+            self.gorilla_parabola_widget.set_dark_mode(enabled)
 
         def _handle_game_double_click(self, item: QTreeWidgetItem, _column: int) -> None:
             if item is None:
@@ -30860,6 +31718,10 @@ QStackedWidget#learning_content_stack {{
                 self.content_stack.setCurrentWidget(self.iso_metric_widget)
                 self.iso_metric_widget.activate_game(game_key, title)
                 self.iso_metric_widget.view.setFocus(Qt.OtherFocusReason)
+            elif game_key.startswith('gorilla_'):
+                self.content_stack.setCurrentWidget(self.gorilla_parabola_widget)
+                self.gorilla_parabola_widget.activate_game(game_key, title)
+                self.gorilla_parabola_widget.view.setFocus(Qt.OtherFocusReason)
             else:
                 self.content_stack.setCurrentWidget(self.arithmetic_widget)
                 self.arithmetic_widget.activate_game(game_key, title)
