@@ -47,6 +47,9 @@
 #  * Stage 102: Border-Seiten mit eigenen Style/Size/Color-Untereinträgen.
 #  * Stage 108: WFM/OOP-Formulare, gefuellter Hard-Shadow und Border-Farbdialoge.
 #  * Stage 110: Form-Fenster-Scene mit Titelbar, Designer-only Resize und Client-Limits.
+#  * Stage 136: Lernen->Mathematik mit Zahlenmauer-Dock und 2x5 QGraphicsScene-Aufgaben.
+#  * Stage 139: Sudoku mit Leicht/Mittel/Schwer/Experte im Mathematik-Lernbereich.
+#  * Stage 137: farbcodierte Zahlenmauern sowie Addition/Subtraktion/Einmaleins/Fehlende-Zahl-Spiele.
 #    Mehrtabellen-Tabs, Feldeditoren und Kontextoperationen für Feldzeilen
 #
 #  * PROLOG Wissen-Browser Stage 71: Stage-70 Multi-Scroll bleibt erhalten;
@@ -88,6 +91,7 @@ import configparser
 import hashlib
 import html
 import inspect
+import random
 
 from html.parser import HTMLParser
 
@@ -7907,6 +7911,7 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             QFontDatabase,
             QIcon,
             QImage,
+            QIntValidator,
             QKeySequence,
             QGradient,
             QLinearGradient,
@@ -28530,6 +28535,1342 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
 
 
 
+
+    class NumberPyramidTrainerWidget(QWidget):
+        """Interaktive Zahlenmauer-Übungen auf einer QGraphicsScene."""
+
+        PYRAMID_COLUMNS = 2
+        PYRAMID_ROWS = 5
+        PYRAMID_COUNT = PYRAMID_COLUMNS * PYRAMID_ROWS
+        CELL_WIDTH = 60
+        CELL_HEIGHT = 34
+        CELL_GAP_X = 10
+        CELL_GAP_Y = 10
+        PYRAMID_GAP_X = 42
+        PYRAMID_GAP_Y = 54
+        SCENE_MARGIN = 24
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self._dark_mode = False
+            self.current_game_key = ''
+            self.current_game_title = ''
+            self.base_limit = 100
+            self.input_limit = 300
+            self._line_edits = []
+            self._puzzle_records = []
+
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(8, 8, 8, 8)
+            layout.setSpacing(8)
+
+            self.title_label = QLabel(
+                'Wähle links im Tab „Spiele“ eine Zahlenmauer-Aufgabe aus.',
+                self,
+            )
+            self.title_label.setWordWrap(True)
+            layout.addWidget(self.title_label)
+
+            self.graphics_view = QGraphicsView(self)
+            self.graphics_view.setObjectName('math_numbers_wall_view')
+            self.graphics_view.setRenderHints(
+                QPainter.Antialiasing | QPainter.TextAntialiasing
+            )
+            self.graphics_view.setDragMode(QGraphicsView.NoDrag)
+            self.graphics_view.setTransformationAnchor(
+                QGraphicsView.AnchorUnderMouse
+            )
+            self.graphics_view.setResizeAnchor(QGraphicsView.AnchorViewCenter)
+            self.graphics_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.graphics_view.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.graphics_scene = QGraphicsScene(self.graphics_view)
+            self.graphics_view.setScene(self.graphics_scene)
+            layout.addWidget(self.graphics_view, 1)
+
+            bottom_row = QHBoxLayout()
+            bottom_row.setContentsMargins(0, 0, 0, 0)
+            bottom_row.setSpacing(8)
+
+            self.status_label = QLabel(
+                'Die ersten zwei Pyramiden besitzen nur Vorgaben in der 1. Stufe. '
+                'Die nächsten zwei Pyramiden geben zusätzlich Randwerte der 2. Stufe vor.',
+                self,
+            )
+            self.status_label.setWordWrap(True)
+            bottom_row.addWidget(self.status_label, 1)
+
+            self.check_button = QPushButton('Prüfen', self)
+            self.check_button.setEnabled(False)
+            self.check_button.clicked.connect(self.check_current_solution)
+            bottom_row.addWidget(self.check_button)
+
+            layout.addLayout(bottom_row)
+            self.set_dark_mode(False)
+
+        def _level_colors(self) -> list:
+            if self._dark_mode:
+                return ['#17395c', '#1f4d3a', '#5a4b19', '#5b351d', '#4a285d']
+            return ['#dceeff', '#dcf5e5', '#fff3bf', '#ffe2c2', '#eedcff']
+
+        def set_dark_mode(self, enabled: bool) -> None:
+            self._dark_mode = bool(enabled)
+            if self._dark_mode:
+                background = '#10151c'
+                text = '#f0f6fc'
+                input_background = '#0b1f33'
+                input_border = '#5d728a'
+                given_background = QColor('#152432')
+                given_border = QColor('#6b7f95')
+                scene_background = QColor('#111821')
+            else:
+                background = '#f7f2e8'
+                text = '#1b1b1b'
+                input_background = '#ffffff'
+                input_border = '#7e7e7e'
+                given_background = QColor('#fff9ef')
+                given_border = QColor('#8f8a7d')
+                scene_background = QColor('#f6f0e5')
+
+            self._given_background = given_background
+            self._given_border = given_border
+            self.graphics_view.setBackgroundBrush(scene_background)
+            self.setStyleSheet(
+                f'''QWidget {{
+    background: {background};
+    color: {text};
+}}
+QLabel {{
+    background: transparent;
+    color: {text};
+}}
+QPushButton {{
+    min-width: 120px;
+    padding: 6px 14px;
+}}
+QLineEdit#numbers_wall_input {{
+    background: {input_background};
+    color: {text};
+    border: 1px solid {input_border};
+    border-radius: 6px;
+    padding: 2px 4px;
+}}
+QLineEdit#numbers_wall_input:disabled {{
+    color: #777777;
+}}
+'''
+            )
+            self._apply_input_styles(reset_only=True)
+            self._redraw_given_cells()
+
+        def activate_game(self, game_key: str, title: str) -> None:
+            self.current_game_key = str(game_key or '')
+            self.current_game_title = str(title or '')
+            if self.current_game_key == 'numbers_wall_1000':
+                self.base_limit = 1000
+                self.input_limit = 3000
+            else:
+                self.base_limit = 100
+                self.input_limit = 300
+            self.title_label.setText(
+                f'{self.current_game_title} — Löse die 10 Zahlenmauern in der '
+                'QGraphicsScene. Nicht alle Werte sind vorgegeben.'
+            )
+            self.build_new_round()
+
+        def build_new_round(self) -> None:
+            self.graphics_scene.clear()
+            self._line_edits = []
+            self._puzzle_records = []
+            self.check_button.setEnabled(False)
+            self.status_label.setText(
+                'Fülle alle Eingabefelder aus. Der Prüfen-Button wird erst dann freigeschaltet.'
+            )
+
+            puzzle_width = (
+                self.CELL_WIDTH * 5
+                + self.CELL_GAP_X * 4
+                + self.PYRAMID_GAP_X
+            )
+            puzzle_height = 5 * (self.CELL_HEIGHT + self.CELL_GAP_Y) + self.PYRAMID_GAP_Y
+
+            variants = [
+                'bottom', 'bottom', 'edges', 'edges',
+                'bottom', 'edges', 'bottom', 'edges', 'bottom', 'edges',
+            ]
+
+            for index in range(self.PYRAMID_COUNT):
+                grid_row = index // self.PYRAMID_COLUMNS
+                grid_col = index % self.PYRAMID_COLUMNS
+                origin_x = self.SCENE_MARGIN + grid_col * puzzle_width
+                origin_y = self.SCENE_MARGIN + grid_row * puzzle_height
+                rows = self._generate_complete_pyramid()
+                variant = variants[index % len(variants)]
+                given_mask = self._build_given_mask(variant, rows)
+                self._add_pyramid(
+                    origin_x,
+                    origin_y,
+                    rows,
+                    given_mask,
+                    f'Pyramide {index + 1}',
+                )
+
+            bounds = self.graphics_scene.itemsBoundingRect()
+            self.graphics_scene.setSceneRect(bounds.adjusted(-20, -20, 20, 20))
+            self._apply_input_styles(reset_only=True)
+            self._redraw_given_cells()
+            self._update_check_button_state()
+
+        def _generate_complete_pyramid(self) -> list:
+            if self.base_limit <= 100:
+                max_cell_value = 300
+                base_upper = 18
+            else:
+                max_cell_value = 3000
+                base_upper = 180
+            base_upper = max(4, min(base_upper, self.base_limit))
+
+            for _attempt in range(4000):
+                bottom = [random.randint(0, base_upper) for _ in range(5)]
+                rows = [bottom]
+                while len(rows[-1]) > 1:
+                    previous = rows[-1]
+                    rows.append([
+                        previous[pos] + previous[pos + 1]
+                        for pos in range(len(previous) - 1)
+                    ])
+                if max(max(row) for row in rows) <= max_cell_value:
+                    return rows
+
+            bottom = [2, 4, 6, 8, 10]
+            rows = [bottom]
+            while len(rows[-1]) > 1:
+                previous = rows[-1]
+                rows.append([
+                    previous[pos] + previous[pos + 1]
+                    for pos in range(len(previous) - 1)
+                ])
+            return rows
+
+        @staticmethod
+        def _build_given_mask(variant: str, rows: list) -> list:
+            given = [[False] * len(row) for row in rows]
+            if variant == 'edges':
+                given[0] = [True, True, False, True, True]
+                given[1] = [True, False, False, True]
+            else:
+                given[0] = [True] * len(rows[0])
+            return given
+
+        def _pyramid_geometry(self) -> tuple:
+            width = self.CELL_WIDTH * 5 + self.CELL_GAP_X * 4
+            height = 5 * self.CELL_HEIGHT + 4 * self.CELL_GAP_Y
+            return width, height
+
+        def _add_pyramid(self, origin_x: float, origin_y: float, rows: list, given_mask: list, title: str) -> None:
+            total_width, total_height = self._pyramid_geometry()
+            title_item = self.graphics_scene.addText(title)
+            title_font = QFont('Arial', 10)
+            title_font.setBold(True)
+            title_item.setFont(title_font)
+            title_item.setDefaultTextColor(
+                QColor('#f0f6fc') if self._dark_mode else QColor('#1f1f1f')
+            )
+            title_item.setPos(origin_x, origin_y - 28)
+
+            for level_from_top in range(5):
+                row_index = 4 - level_from_top
+                row = rows[row_index]
+                givens = given_mask[row_index]
+                cell_count = len(row)
+                row_width = (
+                    cell_count * self.CELL_WIDTH
+                    + (cell_count - 1) * self.CELL_GAP_X
+                )
+                start_x = origin_x + (total_width - row_width) / 2.0
+                y = origin_y + level_from_top * (self.CELL_HEIGHT + self.CELL_GAP_Y)
+
+                for cell_index, value in enumerate(row):
+                    x = start_x + cell_index * (self.CELL_WIDTH + self.CELL_GAP_X)
+                    given = bool(givens[cell_index])
+                    if given:
+                        # Stage 138:
+                        # QGraphicsScene besitzt unter PyQt5 keine Methode
+                        # addRoundedRect(). Stattdessen wird der Block als
+                        # QPainterPath aufgebaut und mit addPath() eingefügt.
+                        block_path = QPainterPath()
+                        block_path.addRoundedRect(
+                            QRectF(
+                                x,
+                                y,
+                                self.CELL_WIDTH,
+                                self.CELL_HEIGHT,
+                            ),
+                            8.0,
+                            8.0,
+                        )
+                        rect = self.graphics_scene.addPath(
+                            block_path,
+                            QPen(self._given_border, 1.3),
+                            QBrush(self._given_background),
+                        )
+                        rect.setData(0, 'numbers_wall_given_rect')
+                        rect.setData(1, row_index)
+                        text_item = self.graphics_scene.addText(str(value))
+                        text_item.setDefaultTextColor(
+                            QColor('#f0f6fc') if self._dark_mode else QColor('#1c1c1c')
+                        )
+                        text_item.setPos(x + 8, y + 5)
+                        text_item.setData(0, 'numbers_wall_given_text')
+                        text_item.setData(1, row_index)
+                    else:
+                        edit = QLineEdit()
+                        edit.setObjectName('numbers_wall_input')
+                        edit.setAlignment(Qt.AlignCenter)
+                        edit.setPlaceholderText('0')
+                        edit.setMaxLength(4)
+                        edit.setValidator(QIntValidator(0, self.input_limit, edit))
+                        edit.setFixedSize(self.CELL_WIDTH, self.CELL_HEIGHT)
+                        edit.textChanged.connect(self._update_check_button_state)
+                        edit.returnPressed.connect(self.check_current_solution)
+                        proxy = self.graphics_scene.addWidget(edit)
+                        proxy.setPos(x, y)
+                        self._line_edits.append(
+                            {
+                                'widget': edit,
+                                'expected': int(value),
+                                'proxy': proxy,
+                                'title': title,
+                                'level': row_index,
+                            }
+                        )
+
+            border = self.graphics_scene.addRect(
+                origin_x - 10,
+                origin_y - 14,
+                total_width + 20,
+                total_height + 24,
+                QPen(QColor('#304559') if self._dark_mode else QColor('#c7bca6'), 1.0),
+            )
+            border.setData(0, 'numbers_wall_border')
+            self._puzzle_records.append(border)
+
+        def _redraw_given_cells(self) -> None:
+            for item in self.graphics_scene.items():
+                try:
+                    marker = item.data(0)
+                except Exception:
+                    marker = None
+                if marker == 'numbers_wall_given_rect':
+                    level = int(item.data(1) or 0)
+                    level_colors = self._level_colors()
+                    level = max(0, min(level, len(level_colors) - 1))
+                    item.setPen(QPen(self._given_border, 1.3))
+                    item.setBrush(QBrush(QColor(level_colors[level])))
+                elif marker == 'numbers_wall_given_text':
+                    item.setDefaultTextColor(
+                        QColor('#f0f6fc') if self._dark_mode else QColor('#1c1c1c')
+                    )
+                elif marker == 'numbers_wall_border':
+                    item.setPen(
+                        QPen(
+                            QColor('#304559') if self._dark_mode else QColor('#c7bca6'),
+                            1.0,
+                        )
+                    )
+
+        def _apply_input_styles(self, reset_only: bool = False) -> None:
+            neutral_border = '#5d728a' if self._dark_mode else '#7e7e7e'
+            ok_border = '#3fb950' if self._dark_mode else '#1a7f37'
+            bad_border = '#f85149' if self._dark_mode else '#cf222e'
+            foreground = '#f0f6fc' if self._dark_mode else '#1c1c1c'
+            level_colors = self._level_colors()
+
+            for entry in self._line_edits:
+                edit = entry['widget']
+                border = neutral_border
+                level = int(entry.get('level', 0) or 0)
+                level = max(0, min(level, len(level_colors) - 1))
+                background = level_colors[level]
+                if not reset_only:
+                    value = edit.text().strip()
+                    if value:
+                        try:
+                            number = int(value, 10)
+                        except Exception:
+                            number = None
+                        if number == entry['expected']:
+                            border = ok_border
+                        else:
+                            border = bad_border
+                edit.setStyleSheet(
+                    f'''QLineEdit#numbers_wall_input {{
+    background: {background};
+    color: {foreground};
+    border: 2px solid {border};
+    border-radius: 6px;
+    padding: 2px 4px;
+}}
+'''
+                )
+
+        def _update_check_button_state(self) -> None:
+            all_filled = True
+            for entry in self._line_edits:
+                edit = entry['widget']
+                if not edit.text().strip():
+                    all_filled = False
+                    break
+            self.check_button.setEnabled(bool(self._line_edits) and all_filled)
+            if all_filled:
+                self.status_label.setText(
+                    'Alle Felder sind ausgefüllt. Mit „Prüfen“ werden die Summen kontrolliert.'
+                )
+            else:
+                self.status_label.setText(
+                    'Bitte fülle zuerst alle leeren Zahlenblöcke aus.'
+                )
+            self._apply_input_styles(reset_only=True)
+
+        def check_current_solution(self) -> None:
+            if not self.check_button.isEnabled():
+                return
+            all_correct = True
+            for entry in self._line_edits:
+                edit = entry['widget']
+                try:
+                    number = int(edit.text().strip(), 10)
+                except Exception:
+                    number = None
+                if number != entry['expected']:
+                    all_correct = False
+            self._apply_input_styles(reset_only=False)
+
+            if all_correct:
+                self.status_label.setText(
+                    'Sehr gut! Alle Zahlenmauern stimmen. Es werden neue Zufallszahlen erzeugt.'
+                )
+                QMessageBox.information(
+                    self,
+                    'Zahlenmauer',
+                    'Alle Summen stimmen. Neue Zufallszahlen werden geladen.',
+                )
+                self.build_new_round()
+            else:
+                self.status_label.setText(
+                    'Mindestens eine Zahlenmauer ist noch nicht korrekt. Rot markierte Felder bitte überprüfen.'
+                )
+                QApplication.beep()
+
+
+    class ArithmeticTrainerWidget(QWidget):
+        """Kompakter Zufallsaufgaben-Trainer für weitere Mathematik-Spiele."""
+
+        TASK_COUNT = 12
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self._dark_mode = False
+            self.game_key = ''
+            self.game_title = ''
+            self._task_entries = []
+
+            root = QVBoxLayout(self)
+            root.setContentsMargins(10, 10, 10, 10)
+            root.setSpacing(10)
+
+            self.title_label = QLabel('Mathematik-Spiel', self)
+            title_font = QFont('Arial', 13)
+            title_font.setBold(True)
+            self.title_label.setFont(title_font)
+            root.addWidget(self.title_label)
+
+            self.help_label = QLabel('', self)
+            self.help_label.setWordWrap(True)
+            root.addWidget(self.help_label)
+
+            self.task_widget = QWidget(self)
+            self.task_grid = QGridLayout(self.task_widget)
+            self.task_grid.setContentsMargins(0, 0, 0, 0)
+            self.task_grid.setHorizontalSpacing(12)
+            self.task_grid.setVerticalSpacing(12)
+            root.addWidget(self.task_widget, 1)
+
+            bottom = QHBoxLayout()
+            self.status_label = QLabel('Wähle ein Spiel aus.', self)
+            self.status_label.setWordWrap(True)
+            bottom.addWidget(self.status_label, 1)
+            self.check_button = QPushButton('Prüfen', self)
+            self.check_button.setEnabled(False)
+            self.check_button.clicked.connect(self.check_answers)
+            bottom.addWidget(self.check_button)
+            root.addLayout(bottom)
+
+            self.set_dark_mode(False)
+
+        def set_dark_mode(self, enabled: bool) -> None:
+            self._dark_mode = bool(enabled)
+            self._apply_styles()
+
+        def _operation_colors(self) -> tuple:
+            if self._dark_mode:
+                return ('#17395c', '#1f4d3a', '#5b351d', '#4a285d')
+            return ('#dceeff', '#dcf5e5', '#ffe2c2', '#eedcff')
+
+        def _apply_styles(self) -> None:
+            if self._dark_mode:
+                background = '#10151c'
+                foreground = '#f0f6fc'
+                border = '#465c70'
+            else:
+                background = '#f7f2e8'
+                foreground = '#1c1c1c'
+                border = '#b7ab92'
+            self.setStyleSheet(
+                f'''QWidget {{ background: {background}; color: {foreground}; }}
+QLabel {{ background: transparent; color: {foreground}; }}
+QFrame#math_task_card {{ border: 1px solid {border}; border-radius: 10px; }}
+QPushButton {{ min-width: 120px; padding: 6px 14px; }}'''
+            )
+            for index, entry in enumerate(self._task_entries):
+                self._style_entry(entry, state='neutral', index=index)
+
+        def activate_game(self, game_key: str, title: str) -> None:
+            self.game_key = str(game_key or '')
+            self.game_title = str(title or '')
+            self.title_label.setText(self.game_title)
+            descriptions = {
+                'addition_100': 'Addiere zwei Zahlen. Alle Ergebnisse liegen zwischen 0 und 100.',
+                'subtraction_100': 'Subtrahiere die zweite Zahl von der ersten. Es entstehen keine negativen Ergebnisse.',
+                'multiplication_1x1': 'Trainiere das kleine Einmaleins mit Faktoren von 1 bis 10.',
+                'missing_number_100': 'Ergänze die fehlende Zahl, damit die Gleichung stimmt.',
+            }
+            self.help_label.setText(descriptions.get(self.game_key, 'Löse alle Aufgaben.'))
+            self.build_new_round()
+
+        def _clear_grid(self) -> None:
+            while self.task_grid.count():
+                item = self.task_grid.takeAt(0)
+                widget = item.widget()
+                if widget is not None:
+                    widget.deleteLater()
+            self._task_entries = []
+
+        def _make_task(self) -> tuple:
+            if self.game_key == 'subtraction_100':
+                a = random.randint(0, 100)
+                b = random.randint(0, a)
+                return f'{a} − {b} =', a - b, 100
+            if self.game_key == 'multiplication_1x1':
+                a = random.randint(1, 10)
+                b = random.randint(1, 10)
+                return f'{a} × {b} =', a * b, 100
+            if self.game_key == 'missing_number_100':
+                left = random.randint(0, 70)
+                missing = random.randint(0, 100 - left)
+                total = left + missing
+                if random.choice((False, True)):
+                    return f'? + {left} = {total}', missing, 100
+                return f'{left} + ? = {total}', missing, 100
+
+            a = random.randint(0, 100)
+            b = random.randint(0, 100 - a)
+            return f'{a} + {b} =', a + b, 100
+
+        def build_new_round(self) -> None:
+            self._clear_grid()
+            self.check_button.setEnabled(False)
+            self.status_label.setText('Fülle alle 12 Ergebnisse aus.')
+
+            for index in range(self.TASK_COUNT):
+                expression, expected, maximum = self._make_task()
+                card = QFrame(self.task_widget)
+                card.setObjectName('math_task_card')
+                card_layout = QVBoxLayout(card)
+                card_layout.setContentsMargins(10, 8, 10, 8)
+                card_layout.setSpacing(6)
+
+                expression_label = QLabel(expression, card)
+                expression_font = QFont('Arial', 12)
+                expression_font.setBold(True)
+                expression_label.setFont(expression_font)
+                expression_label.setAlignment(Qt.AlignCenter)
+                card_layout.addWidget(expression_label)
+
+                edit = QLineEdit(card)
+                edit.setAlignment(Qt.AlignCenter)
+                edit.setValidator(QIntValidator(0, maximum, edit))
+                edit.setMaxLength(4)
+                edit.setPlaceholderText('?')
+                edit.textChanged.connect(self._update_check_state)
+                edit.returnPressed.connect(self.check_answers)
+                card_layout.addWidget(edit)
+
+                row = index // 3
+                col = index % 3
+                self.task_grid.addWidget(card, row, col)
+                entry = {
+                    'card': card,
+                    'edit': edit,
+                    'expected': int(expected),
+                    'expression': expression,
+                }
+                self._task_entries.append(entry)
+                self._style_entry(entry, state='neutral', index=index)
+
+            self._update_check_state()
+
+        def _style_entry(self, entry: dict, *, state: str, index: int) -> None:
+            colors = self._operation_colors()
+            base = colors[index % len(colors)]
+            foreground = '#f0f6fc' if self._dark_mode else '#1c1c1c'
+            neutral = '#65788a' if self._dark_mode else '#8a8a8a'
+            correct = '#3fb950' if self._dark_mode else '#1a7f37'
+            wrong = '#f85149' if self._dark_mode else '#cf222e'
+            border = neutral
+            if state == 'correct':
+                border = correct
+            elif state == 'wrong':
+                border = wrong
+            entry['card'].setStyleSheet(
+                f'''QFrame#math_task_card {{
+    background: {base};
+    border: 2px solid {border};
+    border-radius: 10px;
+}}
+QLabel {{ background: transparent; color: {foreground}; }}
+QLineEdit {{
+    background: {'#0b1f33' if self._dark_mode else '#ffffff'};
+    color: {foreground};
+    border: 1px solid {border};
+    border-radius: 6px;
+    padding: 5px;
+}}'''
+            )
+
+        def _update_check_state(self) -> None:
+            complete = bool(self._task_entries) and all(
+                entry['edit'].text().strip()
+                for entry in self._task_entries
+            )
+            self.check_button.setEnabled(complete)
+            self.status_label.setText(
+                'Alle Antworten sind eingetragen. Jetzt kannst du prüfen.'
+                if complete
+                else 'Fülle zuerst alle 12 Ergebnisse aus.'
+            )
+            for index, entry in enumerate(self._task_entries):
+                self._style_entry(entry, state='neutral', index=index)
+
+        def check_answers(self) -> None:
+            if not self.check_button.isEnabled():
+                return
+            correct_count = 0
+            for index, entry in enumerate(self._task_entries):
+                try:
+                    value = int(entry['edit'].text().strip(), 10)
+                except Exception:
+                    value = None
+                correct = value == entry['expected']
+                if correct:
+                    correct_count += 1
+                self._style_entry(
+                    entry,
+                    state='correct' if correct else 'wrong',
+                    index=index,
+                )
+
+            if correct_count == len(self._task_entries):
+                QMessageBox.information(
+                    self,
+                    self.game_title or 'Mathematik',
+                    'Alle Aufgaben sind richtig. Eine neue Runde wird erzeugt.',
+                )
+                self.build_new_round()
+            else:
+                self.status_label.setText(
+                    f'{correct_count} von {len(self._task_entries)} Aufgaben sind richtig. '
+                    'Rot markierte Aufgaben bitte noch einmal prüfen.'
+                )
+                QApplication.beep()
+
+
+
+    class SudokuTrainerWidget(QWidget):
+        """Sudoku-Trainer mit vier Schwierigkeitsstufen und Zufallsvarianten."""
+
+        BASE_SOLUTION = (
+            '123456789',
+            '456789123',
+            '789123456',
+            '234567891',
+            '567891234',
+            '891234567',
+            '345678912',
+            '678912345',
+            '912345678',
+        )
+
+        # Die Vorlagen wurden so erzeugt, dass sie jeweils genau eine Lösung
+        # besitzen. Neue Runden permutieren Ziffern, Bänder, Reihen, Stacks
+        # und Spalten; dadurch bleibt die Eindeutigkeit erhalten.
+        PUZZLES = {
+            'sudoku_easy': (
+                '120400709',
+                '000789103',
+                '009000406',
+                '230067891',
+                '060001030',
+                '090230507',
+                '340600902',
+                '678900000',
+                '912300070',
+            ),
+            'sudoku_medium': (
+                '020050080',
+                '056009100',
+                '009103400',
+                '204007891',
+                '000800000',
+                '091004060',
+                '045070910',
+                '078000045',
+                '910000670',
+            ),
+            'sudoku_hard': (
+                '123000009',
+                '400000023',
+                '080000400',
+                '004500800',
+                '060090200',
+                '001034000',
+                '040008900',
+                '000012345',
+                '002300670',
+            ),
+            'sudoku_expert': (
+                '003000789',
+                '006080003',
+                '080120000',
+                '030500000',
+                '067800000',
+                '000004567',
+                '040000010',
+                '000900045',
+                '002000600',
+            ),
+        }
+
+        DIFFICULTY_INFO = {
+            'sudoku_easy': ('Leicht', 42),
+            'sudoku_medium': ('Mittel', 35),
+            'sudoku_hard': ('Schwer', 30),
+            'sudoku_expert': ('Experte', 26),
+        }
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self._dark_mode = False
+            self._updating = False
+            self.game_key = 'sudoku_easy'
+            self.game_title = 'Sudoku – Leicht'
+            self._solution = [[0] * 9 for _ in range(9)]
+            self._puzzle = [[0] * 9 for _ in range(9)]
+            self._cells = []
+
+            root = QVBoxLayout(self)
+            root.setContentsMargins(12, 12, 12, 12)
+            root.setSpacing(10)
+
+            self.title_label = QLabel(self.game_title, self)
+            title_font = QFont('Arial', 14)
+            title_font.setBold(True)
+            self.title_label.setFont(title_font)
+            root.addWidget(self.title_label)
+
+            self.help_label = QLabel(
+                'Fülle die leeren Felder mit den Ziffern 1 bis 9. In jeder Zeile, '
+                'Spalte und jedem 3×3-Block darf jede Ziffer nur einmal vorkommen.',
+                self,
+            )
+            self.help_label.setWordWrap(True)
+            root.addWidget(self.help_label)
+
+            board_host = QWidget(self)
+            board_row = QHBoxLayout(board_host)
+            board_row.setContentsMargins(0, 0, 0, 0)
+            board_row.addStretch(1)
+
+            self.board_frame = QFrame(board_host)
+            self.board_frame.setObjectName('sudoku_board_frame')
+            board_layout = QGridLayout(self.board_frame)
+            board_layout.setContentsMargins(0, 0, 0, 0)
+            board_layout.setSpacing(0)
+
+            cell_font = QFont('Arial', 16)
+            cell_font.setBold(True)
+            validator = QIntValidator(1, 9, self)
+
+            for row in range(9):
+                cell_row = []
+                for column in range(9):
+                    edit = QLineEdit(self.board_frame)
+                    edit.setObjectName('sudoku_cell')
+                    edit.setAlignment(Qt.AlignCenter)
+                    edit.setMaxLength(1)
+                    edit.setFixedSize(52, 52)
+                    edit.setFont(cell_font)
+                    edit.setValidator(validator)
+                    edit.textChanged.connect(
+                        lambda _text, r=row, c=column: self._cell_changed(r, c)
+                    )
+                    edit.returnPressed.connect(self.check_solution)
+                    board_layout.addWidget(edit, row, column)
+                    cell_row.append(edit)
+                self._cells.append(cell_row)
+
+            board_row.addWidget(self.board_frame, 0, Qt.AlignCenter)
+            board_row.addStretch(1)
+            root.addWidget(board_host, 1)
+
+            controls = QHBoxLayout()
+            controls.setContentsMargins(0, 0, 0, 0)
+            controls.setSpacing(8)
+
+            self.status_label = QLabel('', self)
+            self.status_label.setWordWrap(True)
+            controls.addWidget(self.status_label, 1)
+
+            self.clear_button = QPushButton('Eingaben löschen', self)
+            self.clear_button.clicked.connect(self.clear_user_entries)
+            controls.addWidget(self.clear_button)
+
+            self.new_button = QPushButton('Neues Sudoku', self)
+            self.new_button.clicked.connect(self.build_new_round)
+            controls.addWidget(self.new_button)
+
+            self.check_button = QPushButton('Prüfen', self)
+            self.check_button.setEnabled(False)
+            self.check_button.clicked.connect(self.check_solution)
+            controls.addWidget(self.check_button)
+
+            root.addLayout(controls)
+            self.set_dark_mode(False)
+            self.build_new_round()
+
+        @staticmethod
+        def _grid_from_strings(lines) -> list:
+            return [
+                [int(character) for character in str(line)]
+                for line in lines
+            ]
+
+        @staticmethod
+        def _permuted_index_order() -> list:
+            bands = [0, 1, 2]
+            random.shuffle(bands)
+            order = []
+            for band in bands:
+                inside = [0, 1, 2]
+                random.shuffle(inside)
+                order.extend([band * 3 + value for value in inside])
+            return order
+
+        def _randomized_puzzle(self, game_key: str) -> tuple:
+            puzzle = self._grid_from_strings(
+                self.PUZZLES.get(game_key, self.PUZZLES['sudoku_easy'])
+            )
+            solution = self._grid_from_strings(self.BASE_SOLUTION)
+
+            row_order = self._permuted_index_order()
+            column_order = self._permuted_index_order()
+            digits = list(range(1, 10))
+            random.shuffle(digits)
+            digit_map = {old: digits[old - 1] for old in range(1, 10)}
+
+            def transform(source):
+                result = []
+                for source_row in row_order:
+                    row = []
+                    for source_column in column_order:
+                        value = source[source_row][source_column]
+                        row.append(digit_map[value] if value else 0)
+                    result.append(row)
+                return result
+
+            puzzle = transform(puzzle)
+            solution = transform(solution)
+
+            # Transponieren verändert die Sudoku-Regeln nicht und verdoppelt
+            # die Zahl möglicher Layoutvarianten noch einmal.
+            if random.choice((False, True)):
+                puzzle = [list(row) for row in zip(*puzzle)]
+                solution = [list(row) for row in zip(*solution)]
+
+            return puzzle, solution
+
+        def activate_game(self, game_key: str, title: str = '') -> None:
+            self.game_key = str(game_key or 'sudoku_easy')
+            label, clues = self.DIFFICULTY_INFO.get(
+                self.game_key,
+                self.DIFFICULTY_INFO['sudoku_easy'],
+            )
+            self.game_title = title or f'Sudoku – {label}'
+            self.title_label.setText(self.game_title)
+            self.help_label.setText(
+                f'Schwierigkeitsgrad: {label}. {clues} Felder sind vorgegeben. '
+                'Fülle alle freien Felder mit 1 bis 9; Zeile, Spalte und 3×3-Block '
+                'dürfen keine doppelte Ziffer enthalten.'
+            )
+            self.build_new_round()
+
+        def build_new_round(self) -> None:
+            self._puzzle, self._solution = self._randomized_puzzle(self.game_key)
+            self._updating = True
+            try:
+                for row in range(9):
+                    for column in range(9):
+                        edit = self._cells[row][column]
+                        value = self._puzzle[row][column]
+                        if value:
+                            edit.setText(str(value))
+                            edit.setReadOnly(True)
+                            edit.setFocusPolicy(Qt.NoFocus)
+                            edit.setProperty('sudokuGiven', True)
+                        else:
+                            edit.clear()
+                            edit.setReadOnly(False)
+                            edit.setFocusPolicy(Qt.StrongFocus)
+                            edit.setProperty('sudokuGiven', False)
+            finally:
+                self._updating = False
+
+            self.check_button.setEnabled(False)
+            self.status_label.setText(
+                'Fülle alle freien Felder aus. Konflikte in Zeile, Spalte oder 3×3-Block '
+                'werden rot markiert.'
+            )
+            self._refresh_cell_styles('neutral')
+            self._focus_first_empty_cell()
+
+        def clear_user_entries(self) -> None:
+            self._updating = True
+            try:
+                for row in range(9):
+                    for column in range(9):
+                        if not self._puzzle[row][column]:
+                            self._cells[row][column].clear()
+            finally:
+                self._updating = False
+            self.check_button.setEnabled(False)
+            self.status_label.setText('Die eigenen Eingaben wurden gelöscht.')
+            self._refresh_cell_styles('neutral')
+            self._focus_first_empty_cell()
+
+        def _focus_first_empty_cell(self) -> None:
+            for row in range(9):
+                for column in range(9):
+                    edit = self._cells[row][column]
+                    if not edit.isReadOnly() and not edit.text().strip():
+                        edit.setFocus(Qt.OtherFocusReason)
+                        edit.selectAll()
+                        return
+
+        def _cell_value(self, row: int, column: int) -> int:
+            text = self._cells[row][column].text().strip()
+            if len(text) != 1 or text not in '123456789':
+                return 0
+            return int(text, 10)
+
+        def _cell_has_conflict(self, row: int, column: int) -> bool:
+            value = self._cell_value(row, column)
+            if not value:
+                return False
+
+            for other_column in range(9):
+                if other_column != column and self._cell_value(row, other_column) == value:
+                    return True
+            for other_row in range(9):
+                if other_row != row and self._cell_value(other_row, column) == value:
+                    return True
+
+            start_row = (row // 3) * 3
+            start_column = (column // 3) * 3
+            for other_row in range(start_row, start_row + 3):
+                for other_column in range(start_column, start_column + 3):
+                    if (
+                        (other_row != row or other_column != column)
+                        and self._cell_value(other_row, other_column) == value
+                    ):
+                        return True
+            return False
+
+        def _all_user_cells_filled(self) -> bool:
+            for row in range(9):
+                for column in range(9):
+                    if not self._puzzle[row][column] and not self._cell_value(row, column):
+                        return False
+            return True
+
+        def _cell_changed(self, _row: int, _column: int) -> None:
+            if self._updating:
+                return
+            complete = self._all_user_cells_filled()
+            self.check_button.setEnabled(complete)
+            if complete:
+                self.status_label.setText(
+                    'Alle freien Felder sind belegt. Mit „Prüfen“ wird das Sudoku kontrolliert.'
+                )
+            else:
+                self.status_label.setText(
+                    'Fülle alle freien Felder aus. Rot bedeutet einen direkten Sudoku-Konflikt.'
+                )
+            self._refresh_cell_styles('neutral')
+
+        def _block_colors(self) -> tuple:
+            if self._dark_mode:
+                return '#152432', '#1b3042'
+            return '#fff8ea', '#edf5ff'
+
+        def _style_cell(self, row: int, column: int, state: str = 'neutral') -> None:
+            edit = self._cells[row][column]
+            given = bool(self._puzzle[row][column])
+            block_colors = self._block_colors()
+            block_index = (row // 3) * 3 + (column // 3)
+            background = block_colors[block_index % 2]
+
+            if self._dark_mode:
+                foreground = '#f0f6fc' if given else '#ffd84d'
+                normal_border = '#5b6f82'
+            else:
+                foreground = '#15202b' if given else '#003d7a'
+                normal_border = '#778899'
+
+            border_color = normal_border
+            if state == 'correct' and not given:
+                border_color = '#2fbf71' if self._dark_mode else '#15803d'
+            elif state == 'wrong' and not given:
+                border_color = '#ff5d5d' if self._dark_mode else '#c62828'
+            elif not given and self._cell_has_conflict(row, column):
+                border_color = '#ff5d5d' if self._dark_mode else '#c62828'
+
+            top_width = 3 if row % 3 == 0 else 1
+            left_width = 3 if column % 3 == 0 else 1
+            bottom_width = 3 if row == 8 or row % 3 == 2 else 1
+            right_width = 3 if column == 8 or column % 3 == 2 else 1
+
+            edit.setStyleSheet(
+                f'''QLineEdit#sudoku_cell {{
+    background: {background};
+    color: {foreground};
+    border-top: {top_width}px solid {border_color};
+    border-left: {left_width}px solid {border_color};
+    border-bottom: {bottom_width}px solid {border_color};
+    border-right: {right_width}px solid {border_color};
+    padding: 0px;
+    font-weight: {'700' if given else '600'};
+}}
+QLineEdit#sudoku_cell:focus {{
+    background: {'#244c70' if self._dark_mode else '#d9ecff'};
+}}
+'''
+            )
+
+        def _refresh_cell_styles(self, state: str = 'neutral') -> None:
+            for row in range(9):
+                for column in range(9):
+                    self._style_cell(row, column, state)
+
+        def set_dark_mode(self, enabled: bool) -> None:
+            self._dark_mode = bool(enabled)
+            if self._dark_mode:
+                background = '#10151c'
+                foreground = '#f0f6fc'
+                frame_border = '#6f8497'
+            else:
+                background = '#f7f2e8'
+                foreground = '#1c1c1c'
+                frame_border = '#606060'
+
+            self.setStyleSheet(
+                f'''QWidget {{
+    background: {background};
+    color: {foreground};
+}}
+QLabel {{
+    background: transparent;
+    color: {foreground};
+}}
+QFrame#sudoku_board_frame {{
+    border: 2px solid {frame_border};
+    background: transparent;
+}}
+QPushButton {{
+    min-width: 110px;
+    padding: 6px 12px;
+}}
+'''
+            )
+            self._refresh_cell_styles('neutral')
+
+        def check_solution(self) -> None:
+            if not self.check_button.isEnabled():
+                return
+
+            correct = True
+            for row in range(9):
+                for column in range(9):
+                    if self._puzzle[row][column]:
+                        self._style_cell(row, column, 'neutral')
+                        continue
+                    value = self._cell_value(row, column)
+                    expected = self._solution[row][column]
+                    if value == expected:
+                        self._style_cell(row, column, 'correct')
+                    else:
+                        correct = False
+                        self._style_cell(row, column, 'wrong')
+
+            if correct:
+                label, _clues = self.DIFFICULTY_INFO.get(
+                    self.game_key,
+                    self.DIFFICULTY_INFO['sudoku_easy'],
+                )
+                QMessageBox.information(
+                    self,
+                    f'Sudoku – {label}',
+                    'Das Sudoku ist vollständig richtig. Ein neues Sudoku wird erzeugt.',
+                )
+                self.build_new_round()
+            else:
+                self.status_label.setText(
+                    'Noch nicht vollständig richtig. Rote Felder bitte überprüfen.'
+                )
+                QApplication.beep()
+
+
+    class MathematicsLearningDockWidget(QWidget):
+        """Lern-Workspace mit linksseitigen Tabs und rechts eingebetteter Szene."""
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self._dark_mode = False
+            self._game_items = {}
+
+            root_layout = QHBoxLayout(self)
+            root_layout.setContentsMargins(8, 8, 8, 8)
+            root_layout.setSpacing(8)
+
+            splitter = QSplitter(Qt.Horizontal, self)
+            splitter.setChildrenCollapsible(False)
+            root_layout.addWidget(splitter, 1)
+
+            self.left_tabs = QTabWidget(splitter)
+            self.left_tabs.setObjectName('learning_left_tabs')
+            self.left_tabs.setDocumentMode(True)
+            self.left_tabs.setMovable(False)
+            self.left_tabs.setTabPosition(QTabWidget.North)
+            self.left_tabs.setMinimumWidth(280)
+            self.left_tabs.setMaximumWidth(360)
+
+            games_tab = QWidget(self.left_tabs)
+            games_layout = QVBoxLayout(games_tab)
+            games_layout.setContentsMargins(6, 6, 6, 6)
+            games_layout.setSpacing(6)
+            self.games_hint = QLabel(
+                'Doppelklick auf einen Eintrag startet das Lernspiel rechts in der Arbeitsfläche.',
+                games_tab,
+            )
+            self.games_hint.setWordWrap(True)
+            games_layout.addWidget(self.games_hint)
+            self.games_tree = QTreeWidget(games_tab)
+            self.games_tree.setObjectName('learning_games_tree')
+            self.games_tree.setHeaderHidden(True)
+            self.games_tree.setRootIsDecorated(False)
+            self.games_tree.setAlternatingRowColors(True)
+            self.games_tree.itemDoubleClicked.connect(self._handle_game_double_click)
+            games_layout.addWidget(self.games_tree, 1)
+            self.left_tabs.addTab(games_tab, 'Spiele')
+
+            info_tab = QWidget(self.left_tabs)
+            info_layout = QVBoxLayout(info_tab)
+            info_layout.setContentsMargins(6, 6, 6, 6)
+            info_layout.setSpacing(6)
+            self.info_browser = QTextBrowser(info_tab)
+            self.info_browser.setOpenExternalLinks(False)
+            self.info_browser.setHtml(
+                '<h3>Zahlenmauer</h3>'
+                '<p>Jeder obere Stein ist die Summe seiner beiden Nachbarn darunter.</p>'
+                '<p><b>Beispiel:</b> 12 + 5 = 17, 5 + 22 = 27, 22 + 31 = 43.</p>'
+                '<p>Die rechte Arbeitsfläche enthält 10 Pyramiden in einer 2 x 5 Anordnung. '
+                'Nicht alle Zahlen sind vorgegeben. Die fünf Stufen sind farblich unterschieden. '
+                'Erst wenn alle Eingabefelder ausgefüllt sind, wird der Prüfen-Button freigeschaltet.</p>'
+                '<h3>Weitere Spiele</h3>'
+                '<p>Zusätzlich stehen Addition bis 100, Subtraktion bis 100, das kleine Einmaleins '
+                'und Aufgaben mit einer fehlenden Zahl zur Verfügung. Richtige Lösungen werden '
+                'grün, fehlerhafte rot markiert.</p>'
+                '<h3>Sudoku</h3>'
+                '<p>Sudoku steht in vier Stufen bereit: Leicht, Mittel, Schwer und Experte. '
+                'In jeder Zeile, Spalte und jedem 3×3-Block dürfen die Ziffern 1 bis 9 nur einmal '
+                'vorkommen. Jede neue Runde erhält eine zufällig permutierte Variante.</p>'
+            )
+            info_layout.addWidget(self.info_browser, 1)
+            self.left_tabs.addTab(info_tab, 'Informationen')
+
+            self.content_stack = QStackedWidget(splitter)
+            self.content_stack.setObjectName('learning_content_stack')
+            self.content_stack.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            self.placeholder = QLabel(
+                'Wähle links unter „Spiele“ per Doppelklick eine Mathematik-Aufgabe aus.',
+                self.content_stack,
+            )
+            self.placeholder.setAlignment(Qt.AlignCenter)
+            self.placeholder.setWordWrap(True)
+            self.content_stack.addWidget(self.placeholder)
+            self.numbers_wall_widget = NumberPyramidTrainerWidget(self.content_stack)
+            self.content_stack.addWidget(self.numbers_wall_widget)
+            self.arithmetic_widget = ArithmeticTrainerWidget(self.content_stack)
+            self.content_stack.addWidget(self.arithmetic_widget)
+            self.sudoku_widget = SudokuTrainerWidget(self.content_stack)
+            self.content_stack.addWidget(self.sudoku_widget)
+            self.content_stack.setCurrentWidget(self.placeholder)
+
+            splitter.setStretchFactor(0, 0)
+            splitter.setStretchFactor(1, 1)
+            splitter.setSizes([290, 1000])
+
+            self._populate_games_tree()
+            self.set_dark_mode(False)
+
+        def _populate_games_tree(self) -> None:
+            self.games_tree.clear()
+            self._game_items = {}
+            self.games_tree.setRootIsDecorated(True)
+            groups = [
+                ('Zahlenmauern', [
+                    ('numbers_wall_100', 'Zahlenmauer bis 100'),
+                    ('numbers_wall_1000', 'Zahlenmauer bis 1000'),
+                ]),
+                ('Kopfrechnen', [
+                    ('addition_100', 'Addition bis 100'),
+                    ('subtraction_100', 'Subtraktion bis 100'),
+                    ('multiplication_1x1', 'Kleines Einmaleins'),
+                    ('missing_number_100', 'Fehlende Zahl bis 100'),
+                ]),
+                ('Sudoku', [
+                    ('sudoku_easy', 'Sudoku – Leicht'),
+                    ('sudoku_medium', 'Sudoku – Mittel'),
+                    ('sudoku_hard', 'Sudoku – Schwer'),
+                    ('sudoku_expert', 'Sudoku – Experte'),
+                ]),
+            ]
+            first_game = None
+            for group_title, items in groups:
+                group = QTreeWidgetItem([group_title])
+                group.setFlags(group.flags() & ~Qt.ItemIsSelectable)
+                group_font = group.font(0)
+                group_font.setBold(True)
+                group.setFont(0, group_font)
+                self.games_tree.addTopLevelItem(group)
+                for key, title in items:
+                    item = QTreeWidgetItem([title])
+                    item.setData(0, Qt.UserRole, key)
+                    group.addChild(item)
+                    self._game_items[key] = item
+                    if first_game is None:
+                        first_game = item
+                group.setExpanded(True)
+            if first_game is not None:
+                self.games_tree.setCurrentItem(first_game)
+
+        def set_dark_mode(self, enabled: bool) -> None:
+            self._dark_mode = bool(enabled)
+            if self._dark_mode:
+                background = '#10151c'
+                text = '#f0f6fc'
+                border = '#34495d'
+                hover = '#17324a'
+                tab_background = '#0b1f33'
+                tab_active = '#1d496e'
+            else:
+                background = '#f6f1e6'
+                text = '#1b1b1b'
+                border = '#c7bca6'
+                hover = '#d8ecff'
+                tab_background = '#efe7d6'
+                tab_active = '#cfe8ff'
+            self.setStyleSheet(
+                f'''QWidget {{
+    background: {background};
+    color: {text};
+}}
+QTabWidget::pane {{
+    border: 1px solid {border};
+}}
+QTabBar::tab {{
+    background: {tab_background};
+    color: {text};
+    border: 1px solid {border};
+    padding: 6px 10px;
+    margin-right: 2px;
+}}
+QTabBar::tab:selected {{
+    background: {tab_active};
+    font-weight: bold;
+}}
+QTreeWidget#learning_games_tree {{
+    background: {background};
+    color: {text};
+    border: 1px solid {border};
+}}
+QTreeWidget#learning_games_tree::item:selected {{
+    background: {hover};
+}}
+QTextBrowser {{
+    background: {background};
+    color: {text};
+    border: 1px solid {border};
+}}
+QStackedWidget#learning_content_stack {{
+    border: 1px solid {border};
+}}
+'''
+            )
+            self.numbers_wall_widget.set_dark_mode(enabled)
+            self.arithmetic_widget.set_dark_mode(enabled)
+            self.sudoku_widget.set_dark_mode(enabled)
+
+        def _handle_game_double_click(self, item: QTreeWidgetItem, _column: int) -> None:
+            if item is None:
+                return
+            game_key = str(item.data(0, Qt.UserRole) or '')
+            if not game_key:
+                item.setExpanded(not item.isExpanded())
+                return
+            title = str(item.text(0) or '').strip()
+            self.open_game(game_key, title)
+
+        def open_game(self, game_key: str, title: str = '') -> None:
+            game_key = str(game_key or '').strip()
+            if not title and game_key in self._game_items:
+                title = str(self._game_items[game_key].text(0) or '').strip()
+            item = self._game_items.get(game_key)
+            if item is not None:
+                self.games_tree.setCurrentItem(item)
+                self.games_tree.scrollToItem(item)
+            self.left_tabs.setCurrentIndex(0)
+            if game_key.startswith('numbers_wall_'):
+                self.content_stack.setCurrentWidget(self.numbers_wall_widget)
+                self.numbers_wall_widget.activate_game(game_key, title)
+                self.numbers_wall_widget.graphics_view.setFocus(Qt.OtherFocusReason)
+            elif game_key.startswith('sudoku_'):
+                self.content_stack.setCurrentWidget(self.sudoku_widget)
+                self.sudoku_widget.activate_game(game_key, title)
+                self.sudoku_widget.setFocus(Qt.OtherFocusReason)
+            else:
+                self.content_stack.setCurrentWidget(self.arithmetic_widget)
+                self.arithmetic_widget.activate_game(game_key, title)
+                self.arithmetic_widget.setFocus(Qt.OtherFocusReason)
+
     class ExplorerWindow(QMainWindow):
         ORGANIZATION = "paule32"
         APPLICATION = "Qt5D64Explorer"
@@ -28666,6 +30007,10 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.localize_dock = None
             self.doxygen_tool_window = None
             self.doxygen_dock = None
+            self.math_learning_dock = None
+            self.math_learning_widget = None
+            self._math_learning_replaced_filesystem_dock = False
+            self._math_learning_replaced_central_widget = False
             self._localize_replaced_filesystem_dock = False
             self._localize_replaced_central_widget = False
             self._knowledge_replaced_filesystem_dock = False
@@ -29305,6 +30650,28 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             )
             self.doxygen_action.triggered.connect(self.show_doxygen_dock)
 
+            self.math_learning_action = QAction("Mathematik-Arbeitsfläche …", self)
+            self.math_learning_action.setStatusTip(
+                "Das Mathematik-Dock mit Zahlenmauer-Spielen im freien Arbeitsbereich öffnen"
+            )
+            self.math_learning_action.triggered.connect(self.show_math_learning_dock)
+
+            self.math_numbers_wall_100_action = QAction("Zahlenmauer bis 100", self)
+            self.math_numbers_wall_100_action.setStatusTip(
+                "Die Zahlenmauer-Aufgaben bis 100 direkt öffnen"
+            )
+            self.math_numbers_wall_100_action.triggered.connect(
+                lambda _checked=False: self.show_math_learning_dock(game_key='numbers_wall_100')
+            )
+
+            self.math_numbers_wall_1000_action = QAction("Zahlenmauer bis 1000", self)
+            self.math_numbers_wall_1000_action.setStatusTip(
+                "Die Zahlenmauer-Aufgaben bis 1000 direkt öffnen"
+            )
+            self.math_numbers_wall_1000_action.triggered.connect(
+                lambda _checked=False: self.show_math_learning_dock(game_key='numbers_wall_1000')
+            )
+
             self.coff32_archive_action = QAction(
                 "COFF32-Archiv (.a) erstellen ...", self
             )
@@ -29687,6 +31054,115 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             res_window.exec_()
             return
             
+
+        def _math_learning_dock_visibility_changed(self, visible: bool) -> None:
+            """Blendet Dateisystem + zentrale Dokumentfläche zugunsten des Mathematik-Docks aus."""
+            if visible:
+                for dock_name in (
+                    'prolog_knowledge_dock',
+                    'localize_dock',
+                    'doxygen_dock',
+                ):
+                    candidate = getattr(self, dock_name, None)
+                    if (
+                        candidate is not None
+                        and candidate is not self.math_learning_dock
+                        and candidate.isVisible()
+                    ):
+                        candidate.hide()
+
+                if hasattr(self, 'left_dock') and self.left_dock.isVisible():
+                    self._math_learning_replaced_filesystem_dock = True
+                    self.left_dock.hide()
+
+                central = self.centralWidget()
+                if central is not None and central.isVisible():
+                    self._math_learning_replaced_central_widget = True
+                    central.hide()
+
+                QTimer.singleShot(0, self._expand_math_learning_dock)
+            else:
+                if (
+                    self._math_learning_replaced_filesystem_dock
+                    and hasattr(self, 'left_dock')
+                ):
+                    self.left_dock.show()
+                self._math_learning_replaced_filesystem_dock = False
+
+                if self._math_learning_replaced_central_widget:
+                    central = self.centralWidget()
+                    if central is not None:
+                        central.show()
+                self._math_learning_replaced_central_widget = False
+
+        def _expand_math_learning_dock(self) -> None:
+            dock = getattr(self, 'math_learning_dock', None)
+            if dock is None or not dock.isVisible():
+                return
+            self.resizeDocks([dock], [100000], Qt.Horizontal)
+            self.resizeDocks([dock], [100000], Qt.Vertical)
+            widget = getattr(self, 'math_learning_widget', None)
+            if widget is not None:
+                widget.setMinimumSize(0, 0)
+                widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+                widget.updateGeometry()
+            self._assign_widget_property_ids(dock)
+
+        def _ensure_math_learning_dock(self):
+            dock = getattr(self, 'math_learning_dock', None)
+            widget = getattr(self, 'math_learning_widget', None)
+            if dock is not None and widget is not None:
+                return dock, widget
+
+            dock = QDockWidget('Mathematik', self)
+            dock.setObjectName('math_learning_dock')
+            dock.setFeatures(self._dock_features())
+            dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+            dock.setMinimumWidth(0)
+            dock.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+            widget = MathematicsLearningDockWidget(dock)
+            widget.set_dark_mode(self.dark_mode_enabled)
+            dock.setWidget(widget)
+            dock.hide()
+            self.addDockWidget(Qt.LeftDockWidgetArea, dock)
+            dock.visibilityChanged.connect(self._math_learning_dock_visibility_changed)
+
+            self.math_learning_dock = dock
+            self.math_learning_widget = widget
+            self._assign_widget_property_ids(dock)
+            return dock, widget
+
+        def show_math_learning_dock(
+            self,
+            _checked: bool = False,
+            *,
+            game_key: Optional[str] = None,
+        ) -> None:
+            dock, widget = self._ensure_math_learning_dock()
+
+            if hasattr(self, 'left_dock'):
+                if self.left_dock.isVisible():
+                    self._math_learning_replaced_filesystem_dock = True
+                self.left_dock.hide()
+
+            dock.show()
+            dock.raise_()
+            self._expand_math_learning_dock()
+            QTimer.singleShot(0, self._expand_math_learning_dock)
+
+            if game_key:
+                title = ''
+                if game_key == 'numbers_wall_100':
+                    title = 'Zahlenmauer bis 100'
+                elif game_key == 'numbers_wall_1000':
+                    title = 'Zahlenmauer bis 1000'
+                widget.open_game(game_key, title)
+            else:
+                widget.left_tabs.setFocus(Qt.OtherFocusReason)
+                widget.games_tree.setFocus(Qt.OtherFocusReason)
+            self.statusBar().showMessage('Mathematik-Arbeitsfläche geöffnet')
+
         def _localize_dock_visibility_changed(self, visible: bool) -> None:
             """Replace the normal work area while Localize PO/MO is visible.
 
@@ -32822,6 +34298,13 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             tools_menu.addAction(self.doxygen_action)
             tools_menu.addSeparator()
             tools_menu.addAction(self.settings_action)
+
+            learning_menu = self.main_menu_bar.addMenu("&Lernen")
+            math_menu = learning_menu.addMenu("Mathematik")
+            math_menu.addAction(self.math_learning_action)
+            math_menu.addSeparator()
+            math_menu.addAction(self.math_numbers_wall_100_action)
+            math_menu.addAction(self.math_numbers_wall_1000_action)
             
             help_menu = self.main_menu_bar.addMenu("&Hilfe")
             help_menu.addAction(self.chm_viewer_action)
@@ -33687,6 +35170,8 @@ border: 2px solid #2a69aa;
                 elif isinstance(widget, DBaseTableDesignerWidget):
                     widget.set_dark_mode(enabled)
                 elif isinstance(widget, DBaseFormPropertyPanel):
+                    widget.set_dark_mode(enabled)
+                elif isinstance(widget, MathematicsLearningDockWidget):
                     widget.set_dark_mode(enabled)
                 elif isinstance(widget, DockTitleBar):
                     widget.set_dark_mode(enabled)
