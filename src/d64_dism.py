@@ -49,6 +49,7 @@
 #  * Stage 110: Form-Fenster-Scene mit Titelbar, Designer-only Resize und Client-Limits.
 #  * Stage 136: Lernen->Mathematik mit Zahlenmauer-Dock und 2x5 QGraphicsScene-Aufgaben.
 #  * Stage 139: Sudoku mit Leicht/Mittel/Schwer/Experte im Mathematik-Lernbereich.
+#  * Stage 140: ISO-Metrik Mathe-Stadt mit Mausweg, Bauen, Budget und Lern-Banken.
 #  * Stage 137: farbcodierte Zahlenmauern sowie Addition/Subtraktion/Einmaleins/Fehlende-Zahl-Spiele.
 #    Mehrtabellen-Tabs, Feldeditoren und Kontextoperationen für Feldzeilen
 #
@@ -7922,6 +7923,7 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             QPalette,
             QPen,
             QPixmap,
+            QPolygonF,
             QRegion,
             QSyntaxHighlighter,
             QTextBlockFormat,
@@ -29648,6 +29650,982 @@ QPushButton {{
                 QApplication.beep()
 
 
+    class IsoMetricGameView(QGraphicsView):
+        """QGraphicsView, das Mausklicks an das ISO-Metrik-Spiel weitergibt."""
+
+        def __init__(self, game, parent=None):
+            super().__init__(parent)
+            self._game = game
+            self.setMouseTracking(True)
+            self.setDragMode(QGraphicsView.NoDrag)
+            self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+            self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
+
+        def mousePressEvent(self, event) -> None:
+            if event.button() == Qt.LeftButton:
+                scene_pos = self.mapToScene(event.pos())
+                if self._game.handle_scene_click(scene_pos):
+                    event.accept()
+                    return
+            super().mousePressEvent(event)
+
+
+    class IsoMetricMathGameWidget(QWidget):
+        """Kleine isometrische Mathe-Stadt mit Budget, Häusern und Lern-Banken."""
+
+        ROWS = 8
+        COLS = 8
+        TILE_WIDTH = 76.0
+        TILE_HEIGHT = 38.0
+        TILE_DEPTH = 20.0
+        ORIGIN_X = 390.0
+        ORIGIN_Y = 72.0
+
+        HOUSE_STAGE_NAMES = (
+            "Grundmauern",
+            "Etage",
+            "Dach",
+        )
+        HOUSE_STAGE_COSTS = (35, 50, 70)
+        TASK_REWARDS = (40, 55, 70)
+        BANK_RATE_PERCENT = 5
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self._dark_mode = False
+            self._tile_items = []
+            self._move_path = []
+            self._selected_tile = None
+            self._current_task = None
+            self._bank_reported_interest = None
+
+            self.player_pos = (7, 0)
+            self.budget = 120
+            self.bank_deposit = 0
+            self.bank_pending_interest = 0
+            self.bank_rounds = 0
+
+            self.tree_tiles = {
+                (6, 1), (5, 1), (4, 2), (3, 2),
+                (2, 3), (1, 5), (5, 6), (6, 5),
+                (3, 5), (2, 6),
+            }
+            self.bank_tiles = {(0, 7), (4, 4)}
+            self.lot_tiles = {
+                (6, 3), (5, 4), (3, 1), (2, 5), (1, 2), (4, 7),
+            }
+            self.lot_state = {
+                tile: {
+                    "stage": 0,
+                    "permission": False,
+                    "task": None,
+                    "spent": 0,
+                }
+                for tile in self.lot_tiles
+            }
+
+            root = QVBoxLayout(self)
+            root.setContentsMargins(8, 8, 8, 8)
+            root.setSpacing(8)
+
+            top = QHBoxLayout()
+            top.setSpacing(10)
+            self.title_label = QLabel("Mathe-Stadt – ISO-Metrik", self)
+            title_font = self.title_label.font()
+            title_font.setBold(True)
+            title_font.setPointSize(max(11, title_font.pointSize()))
+            self.title_label.setFont(title_font)
+            top.addWidget(self.title_label)
+            top.addStretch(1)
+            self.budget_label = QLabel(self)
+            self.bank_label = QLabel(self)
+            top.addWidget(self.budget_label)
+            top.addWidget(self.bank_label)
+            root.addLayout(top)
+
+            body = QSplitter(Qt.Horizontal, self)
+            body.setChildrenCollapsible(False)
+            root.addWidget(body, 1)
+
+            self.scene = QGraphicsScene(body)
+            self.view = IsoMetricGameView(self, body)
+            self.view.setObjectName("iso_metric_math_view")
+            self.view.setScene(self.scene)
+            self.view.setRenderHints(
+                QPainter.Antialiasing
+                | QPainter.TextAntialiasing
+                | QPainter.SmoothPixmapTransform
+            )
+            self.view.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.view.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            body.addWidget(self.view)
+
+            side = QWidget(body)
+            side.setMinimumWidth(300)
+            side.setMaximumWidth(390)
+            side_layout = QVBoxLayout(side)
+            side_layout.setContentsMargins(8, 8, 8, 8)
+            side_layout.setSpacing(8)
+
+            self.position_label = QLabel(side)
+            self.position_label.setWordWrap(True)
+            side_layout.addWidget(self.position_label)
+
+            self.task_group = QGroupBox("Aufgabe auf dem Grundstück", side)
+            task_layout = QVBoxLayout(self.task_group)
+            self.task_question_label = QLabel(
+                "Gehe zu einem Grundstück mit ?-Markierung.",
+                self.task_group,
+            )
+            self.task_question_label.setWordWrap(True)
+            task_layout.addWidget(self.task_question_label)
+            self.task_answer_edit = QLineEdit(self.task_group)
+            self.task_answer_edit.setObjectName("iso_math_task_answer")
+            self.task_answer_edit.setAlignment(Qt.AlignCenter)
+            self.task_answer_edit.setValidator(
+                QIntValidator(-99999, 99999, self.task_answer_edit)
+            )
+            self.task_answer_edit.returnPressed.connect(self.solve_current_task)
+            task_layout.addWidget(self.task_answer_edit)
+            self.solve_task_button = QPushButton("Aufgabe prüfen", self.task_group)
+            self.solve_task_button.clicked.connect(self.solve_current_task)
+            task_layout.addWidget(self.solve_task_button)
+            side_layout.addWidget(self.task_group)
+
+            self.build_group = QGroupBox("Bauen / Rückbauen", side)
+            build_layout = QVBoxLayout(self.build_group)
+            self.build_info_label = QLabel(self.build_group)
+            self.build_info_label.setWordWrap(True)
+            build_layout.addWidget(self.build_info_label)
+            self.build_button = QPushButton("Baustufe errichten", self.build_group)
+            self.build_button.clicked.connect(self.build_next_stage)
+            build_layout.addWidget(self.build_button)
+            self.demolish_button = QPushButton("Gebäude zurückbauen", self.build_group)
+            self.demolish_button.clicked.connect(self.demolish_current_house)
+            build_layout.addWidget(self.demolish_button)
+            side_layout.addWidget(self.build_group)
+
+            self.bank_group = QGroupBox("Anlage-Bank", side)
+            bank_layout = QVBoxLayout(self.bank_group)
+            self.bank_info_label = QLabel(
+                "Besuche ein BANK-Gebäude, um Budget anzulegen oder Zinsen zu prüfen.",
+                self.bank_group,
+            )
+            self.bank_info_label.setWordWrap(True)
+            bank_layout.addWidget(self.bank_info_label)
+
+            self.bank_amount_spin = QSpinBox(self.bank_group)
+            self.bank_amount_spin.setRange(20, 10000)
+            self.bank_amount_spin.setSingleStep(20)
+            self.bank_amount_spin.setValue(20)
+            self.bank_amount_spin.setSuffix(" Punkte")
+            bank_layout.addWidget(self.bank_amount_spin)
+
+            bank_buttons = QHBoxLayout()
+            self.deposit_button = QPushButton("Einzahlen", self.bank_group)
+            self.withdraw_button = QPushButton("Abheben", self.bank_group)
+            self.deposit_button.clicked.connect(self.deposit_to_bank)
+            self.withdraw_button.clicked.connect(self.withdraw_from_bank)
+            bank_buttons.addWidget(self.deposit_button)
+            bank_buttons.addWidget(self.withdraw_button)
+            bank_layout.addLayout(bank_buttons)
+
+            self.bank_audit_label = QLabel(self.bank_group)
+            self.bank_audit_label.setWordWrap(True)
+            bank_layout.addWidget(self.bank_audit_label)
+            self.bank_answer_edit = QLineEdit(self.bank_group)
+            self.bank_answer_edit.setObjectName("iso_math_bank_answer")
+            self.bank_answer_edit.setAlignment(Qt.AlignCenter)
+            self.bank_answer_edit.setValidator(
+                QIntValidator(0, 999999, self.bank_answer_edit)
+            )
+            self.bank_answer_edit.returnPressed.connect(self.audit_bank_interest)
+            bank_layout.addWidget(self.bank_answer_edit)
+            self.bank_audit_button = QPushButton("Bankabrechnung prüfen", self.bank_group)
+            self.bank_audit_button.clicked.connect(self.audit_bank_interest)
+            bank_layout.addWidget(self.bank_audit_button)
+            side_layout.addWidget(self.bank_group)
+
+            legend = QLabel(
+                "Maus: Zielquader anklicken.\n"
+                "🌳 Baum = gesperrt · ? = Aufgabe · BANK = Anlage-Bank.\n"
+                "Haus: Grundmauern → Etage → Dach.",
+                side,
+            )
+            legend.setWordWrap(True)
+            side_layout.addWidget(legend)
+
+            self.new_map_button = QPushButton("Neue Mathe-Stadt", side)
+            self.new_map_button.clicked.connect(self.reset_game)
+            side_layout.addWidget(self.new_map_button)
+            side_layout.addStretch(1)
+            body.addWidget(side)
+            body.setStretchFactor(0, 1)
+            body.setStretchFactor(1, 0)
+            body.setSizes([1000, 330])
+
+            self.status_label = QLabel(self)
+            self.status_label.setWordWrap(True)
+            root.addWidget(self.status_label)
+
+            self.move_timer = QTimer(self)
+            self.move_timer.setInterval(110)
+            self.move_timer.timeout.connect(self._advance_player_one_step)
+
+            self.set_dark_mode(False)
+            self.reset_game()
+
+        def activate_game(self, game_key: str, title: str = "") -> None:
+            if title:
+                self.title_label.setText(title)
+            self._refresh_scene()
+            self._update_controls_for_player_tile()
+
+        def set_dark_mode(self, enabled: bool) -> None:
+            self._dark_mode = bool(enabled)
+            if self._dark_mode:
+                background = "#10151c"
+                panel = "#151d27"
+                text = "#f0f6fc"
+                border = "#41566d"
+                edit = "#0b1f33"
+                self.scene_background = QColor("#0b1118")
+            else:
+                background = "#f5f0e6"
+                panel = "#fffaf0"
+                text = "#1c1c1c"
+                border = "#b8ac93"
+                edit = "#ffffff"
+                self.scene_background = QColor("#eef6e8")
+            self.setStyleSheet(
+                f"""
+QWidget {{ background: {background}; color: {text}; }}
+QGroupBox {{
+    background: {panel};
+    color: {text};
+    border: 1px solid {border};
+    border-radius: 7px;
+    margin-top: 8px;
+    padding-top: 7px;
+}}
+QGroupBox::title {{ subcontrol-origin: margin; left: 9px; padding: 0 4px; }}
+QLineEdit, QSpinBox {{
+    background: {edit};
+    color: {text};
+    border: 1px solid {border};
+    border-radius: 5px;
+    padding: 4px;
+}}
+QPushButton {{ padding: 6px 8px; }}
+"""
+            )
+            self.scene.setBackgroundBrush(self.scene_background)
+            self._refresh_scene()
+
+        def reset_game(self) -> None:
+            self.move_timer.stop()
+            self._move_path = []
+            self.player_pos = (7, 0)
+            self.budget = 120
+            self.bank_deposit = 0
+            self.bank_pending_interest = 0
+            self.bank_rounds = 0
+            self._bank_reported_interest = None
+            for tile in self.lot_state:
+                self.lot_state[tile] = {
+                    "stage": 0,
+                    "permission": False,
+                    "task": None,
+                    "spent": 0,
+                }
+            self.task_answer_edit.clear()
+            self.bank_answer_edit.clear()
+            self.status_label.setText(
+                "Start: Klicke auf einen erreichbaren Quader. Bäume werden automatisch umgangen."
+            )
+            self._refresh_scene()
+            self._update_controls_for_player_tile()
+
+        def _iso_center(self, row: int, col: int) -> QPointF:
+            x = self.ORIGIN_X + (col - row) * self.TILE_WIDTH / 2.0
+            y = self.ORIGIN_Y + (col + row) * self.TILE_HEIGHT / 2.0
+            return QPointF(x, y)
+
+        def _tile_polygon(self, center: QPointF) -> QPolygonF:
+            half_w = self.TILE_WIDTH / 2.0
+            half_h = self.TILE_HEIGHT / 2.0
+            return QPolygonF([
+                QPointF(center.x(), center.y() - half_h),
+                QPointF(center.x() + half_w, center.y()),
+                QPointF(center.x(), center.y() + half_h),
+                QPointF(center.x() - half_w, center.y()),
+            ])
+
+        def _mark_item_tile(self, item, row: int, col: int) -> None:
+            item.setData(100, (int(row), int(col)))
+
+        def _tile_colors(self, row: int, col: int):
+            if (row, col) in self.bank_tiles:
+                if self._dark_mode:
+                    return QColor("#24527a"), QColor("#17364f"), QColor("#10283c")
+                return QColor("#a9d5ff"), QColor("#73aeda"), QColor("#5f92ba")
+            if (row, col) in self.lot_tiles:
+                if self._dark_mode:
+                    return QColor("#66551e"), QColor("#493b12"), QColor("#382d0e")
+                return QColor("#ffe69a"), QColor("#d7bd68"), QColor("#baa04e")
+            if self._dark_mode:
+                return QColor("#315a3d"), QColor("#24472f"), QColor("#1a3724")
+            return QColor("#bce0ad"), QColor("#8fbe80"), QColor("#78a66a")
+
+        def _draw_tile(self, row: int, col: int) -> None:
+            center = self._iso_center(row, col)
+            half_w = self.TILE_WIDTH / 2.0
+            half_h = self.TILE_HEIGHT / 2.0
+            depth = self.TILE_DEPTH
+            top_color, left_color, right_color = self._tile_colors(row, col)
+
+            top = QPointF(center.x(), center.y() - half_h)
+            right = QPointF(center.x() + half_w, center.y())
+            bottom = QPointF(center.x(), center.y() + half_h)
+            left = QPointF(center.x() - half_w, center.y())
+            bottom_d = QPointF(bottom.x(), bottom.y() + depth)
+            left_d = QPointF(left.x(), left.y() + depth)
+            right_d = QPointF(right.x(), right.y() + depth)
+
+            outline = QPen(
+                QColor("#9fb0c2") if self._dark_mode else QColor("#6e765f"),
+                1.0,
+            )
+            left_face = self.scene.addPolygon(
+                QPolygonF([left, bottom, bottom_d, left_d]),
+                outline,
+                QBrush(left_color),
+            )
+            right_face = self.scene.addPolygon(
+                QPolygonF([bottom, right, right_d, bottom_d]),
+                outline,
+                QBrush(right_color),
+            )
+            top_item = self.scene.addPolygon(
+                QPolygonF([top, right, bottom, left]),
+                outline,
+                QBrush(top_color),
+            )
+            for item in (left_face, right_face, top_item):
+                self._mark_item_tile(item, row, col)
+
+            if (row, col) == self.player_pos:
+                top_item.setPen(QPen(QColor("#ffd84d"), 3.0))
+
+        def _draw_tree(self, row: int, col: int) -> None:
+            center = self._iso_center(row, col)
+            x = center.x()
+            y = center.y() - 16
+            trunk = self.scene.addRect(
+                x - 4,
+                y - 24,
+                8,
+                28,
+                QPen(QColor("#6d4b2c")),
+                QBrush(QColor("#8a5b32")),
+            )
+            crown_color = QColor("#25734b") if self._dark_mode else QColor("#2f9b5f")
+            crown1 = self.scene.addPolygon(
+                QPolygonF([
+                    QPointF(x, y - 62),
+                    QPointF(x + 24, y - 18),
+                    QPointF(x - 24, y - 18),
+                ]),
+                QPen(QColor("#174b31")),
+                QBrush(crown_color),
+            )
+            crown2 = self.scene.addPolygon(
+                QPolygonF([
+                    QPointF(x, y - 48),
+                    QPointF(x + 29, y - 4),
+                    QPointF(x - 29, y - 4),
+                ]),
+                QPen(QColor("#174b31")),
+                QBrush(crown_color.darker(108)),
+            )
+            for item in (trunk, crown1, crown2):
+                self._mark_item_tile(item, row, col)
+
+        def _draw_task_marker(self, row: int, col: int) -> None:
+            state = self.lot_state[(row, col)]
+            if state["stage"] >= 3:
+                return
+            center = self._iso_center(row, col)
+            marker = self.scene.addEllipse(
+                center.x() - 10,
+                center.y() - 44,
+                20,
+                20,
+                QPen(QColor("#9c6b00"), 1.0),
+                QBrush(QColor("#ffd84d")),
+            )
+            self._mark_item_tile(marker, row, col)
+            text = self.scene.addText("?")
+            font = text.font()
+            font.setBold(True)
+            font.setPointSize(11)
+            text.setFont(font)
+            text.setDefaultTextColor(QColor("#1d1d1d"))
+            text.setPos(center.x() - 5, center.y() - 47)
+            self._mark_item_tile(text, row, col)
+
+        def _draw_house(self, row: int, col: int, stage: int) -> None:
+            if stage <= 0:
+                return
+            center = self._iso_center(row, col)
+            x = center.x()
+            y = center.y() - 17
+            wall_pen = QPen(QColor("#5d4b3a"), 1.0)
+            wall_color = QColor("#e3c18f") if not self._dark_mode else QColor("#8f6e48")
+            wall_brush = QBrush(wall_color)
+
+            # Stufe 1: sichtbare Grundmauern.
+            base = self.scene.addRect(
+                x - 24,
+                y - 22,
+                48,
+                24,
+                wall_pen,
+                wall_brush,
+            )
+            self._mark_item_tile(base, row, col)
+            door = self.scene.addRect(
+                x - 6,
+                y - 10,
+                12,
+                12,
+                QPen(QColor("#4a3727")),
+                QBrush(QColor("#6d4b2c")),
+            )
+            self._mark_item_tile(door, row, col)
+
+            if stage >= 2:
+                floor = self.scene.addRect(
+                    x - 22,
+                    y - 44,
+                    44,
+                    22,
+                    wall_pen,
+                    QBrush(wall_color.lighter(108)),
+                )
+                self._mark_item_tile(floor, row, col)
+                for dx in (-13, 7):
+                    window = self.scene.addRect(
+                        x + dx,
+                        y - 38,
+                        8,
+                        8,
+                        QPen(QColor("#326589")),
+                        QBrush(QColor("#89d5ff")),
+                    )
+                    self._mark_item_tile(window, row, col)
+
+            if stage >= 3:
+                roof = self.scene.addPolygon(
+                    QPolygonF([
+                        QPointF(x - 29, y - 44),
+                        QPointF(x, y - 67),
+                        QPointF(x + 29, y - 44),
+                    ]),
+                    QPen(QColor("#6e2d28"), 1.0),
+                    QBrush(QColor("#c65349")),
+                )
+                self._mark_item_tile(roof, row, col)
+
+        def _draw_bank(self, row: int, col: int) -> None:
+            center = self._iso_center(row, col)
+            x = center.x()
+            y = center.y() - 18
+            base = self.scene.addRect(
+                x - 28,
+                y - 38,
+                56,
+                38,
+                QPen(QColor("#355e7f"), 1.0),
+                QBrush(QColor("#d7ecff") if not self._dark_mode else QColor("#395d78")),
+            )
+            self._mark_item_tile(base, row, col)
+            roof = self.scene.addPolygon(
+                QPolygonF([
+                    QPointF(x - 34, y - 38),
+                    QPointF(x, y - 58),
+                    QPointF(x + 34, y - 38),
+                ]),
+                QPen(QColor("#2b4c68"), 1.0),
+                QBrush(QColor("#77b5e5") if not self._dark_mode else QColor("#244c6b")),
+            )
+            self._mark_item_tile(roof, row, col)
+            for dx in (-18, -6, 6, 18):
+                column = self.scene.addRect(
+                    x + dx - 2,
+                    y - 31,
+                    4,
+                    27,
+                    QPen(QColor("#5c7183")),
+                    QBrush(QColor("#edf7ff") if not self._dark_mode else QColor("#9bb4c8")),
+                )
+                self._mark_item_tile(column, row, col)
+            label = self.scene.addText("BANK")
+            font = label.font()
+            font.setPointSize(7)
+            font.setBold(True)
+            label.setFont(font)
+            label.setDefaultTextColor(QColor("#163a58") if not self._dark_mode else QColor("#ffffff"))
+            label.setPos(x - 18, y - 35)
+            self._mark_item_tile(label, row, col)
+
+        def _draw_player(self) -> None:
+            row, col = self.player_pos
+            center = self._iso_center(row, col)
+            body = self.scene.addEllipse(
+                center.x() - 8,
+                center.y() - 39,
+                16,
+                24,
+                QPen(QColor("#4d2f71"), 1.0),
+                QBrush(QColor("#9d70d6")),
+            )
+            head = self.scene.addEllipse(
+                center.x() - 7,
+                center.y() - 51,
+                14,
+                14,
+                QPen(QColor("#704d32"), 1.0),
+                QBrush(QColor("#f0bd88")),
+            )
+            for item in (body, head):
+                self._mark_item_tile(item, row, col)
+
+        def _refresh_scene(self) -> None:
+            if not hasattr(self, "scene"):
+                return
+            self.scene.clear()
+            self.scene.setBackgroundBrush(self.scene_background)
+            self._tile_items = []
+            for row, col in sorted(
+                ((r, c) for r in range(self.ROWS) for c in range(self.COLS)),
+                key=lambda rc: (rc[0] + rc[1], rc[0]),
+            ):
+                self._draw_tile(row, col)
+                if (row, col) in self.tree_tiles:
+                    self._draw_tree(row, col)
+                elif (row, col) in self.bank_tiles:
+                    self._draw_bank(row, col)
+                elif (row, col) in self.lot_tiles:
+                    stage = int(self.lot_state[(row, col)]["stage"])
+                    self._draw_house(row, col, stage)
+                    self._draw_task_marker(row, col)
+            self._draw_player()
+            bounds = self.scene.itemsBoundingRect()
+            self.scene.setSceneRect(bounds.adjusted(-45, -45, 45, 65))
+            self._refresh_budget_labels()
+
+        def handle_scene_click(self, scene_pos: QPointF) -> bool:
+            target = None
+            for item in self.scene.items(scene_pos):
+                data = item.data(100)
+                if isinstance(data, tuple) and len(data) == 2:
+                    target = (int(data[0]), int(data[1]))
+                    break
+            if target is None:
+                return False
+            if target in self.tree_tiles:
+                self.status_label.setText("Dort steht ein Baum. Dieser Quader ist nicht begehbar.")
+                QApplication.beep()
+                return True
+            path = self._find_path(self.player_pos, target)
+            if not path:
+                self.status_label.setText("Zu diesem Quader gibt es keinen freien Weg.")
+                QApplication.beep()
+                return True
+            self._selected_tile = target
+            self.move_timer.stop()
+            self._move_path = list(path[1:])
+            if not self._move_path:
+                self._update_controls_for_player_tile()
+                return True
+            self.status_label.setText(
+                f"Figur läuft zu Quader {target[0] + 1}/{target[1] + 1}."
+            )
+            self.move_timer.start()
+            return True
+
+        def _find_path(self, start, goal) -> list:
+            if start == goal:
+                return [start]
+            frontier = [start]
+            head = 0
+            came_from = {start: None}
+            while head < len(frontier):
+                current = frontier[head]
+                head += 1
+                row, col = current
+                for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                    nxt = (row + dr, col + dc)
+                    if not (0 <= nxt[0] < self.ROWS and 0 <= nxt[1] < self.COLS):
+                        continue
+                    if nxt in self.tree_tiles or nxt in came_from:
+                        continue
+                    came_from[nxt] = current
+                    if nxt == goal:
+                        frontier = []
+                        head = 0
+                        break
+                    frontier.append(nxt)
+                if goal in came_from:
+                    break
+            if goal not in came_from:
+                return []
+            path = []
+            current = goal
+            while current is not None:
+                path.append(current)
+                current = came_from[current]
+            path.reverse()
+            return path
+
+        def _advance_player_one_step(self) -> None:
+            if not self._move_path:
+                self.move_timer.stop()
+                self._update_controls_for_player_tile()
+                return
+            self.player_pos = self._move_path.pop(0)
+            self._refresh_scene()
+            if not self._move_path:
+                self.move_timer.stop()
+                self._update_controls_for_player_tile()
+
+        def _generate_task_for_stage(self, stage: int) -> dict:
+            if stage <= 0:
+                a = random.randint(12, 48)
+                b = random.randint(8, 38)
+                return {
+                    "question": f"{a} + {b} = ?",
+                    "answer": a + b,
+                    "reward": self.TASK_REWARDS[0],
+                }
+            if stage == 1:
+                a = random.randint(3, 12)
+                b = random.randint(3, 12)
+                return {
+                    "question": f"{a} × {b} = ?",
+                    "answer": a * b,
+                    "reward": self.TASK_REWARDS[1],
+                }
+            a = random.randint(80, 160)
+            b = random.randint(15, min(70, a))
+            return {
+                "question": f"{a} − {b} = ?",
+                "answer": a - b,
+                "reward": self.TASK_REWARDS[2],
+            }
+
+        def _ensure_task_for_lot(self, tile) -> dict:
+            state = self.lot_state[tile]
+            stage = int(state["stage"])
+            if stage >= 3:
+                return None
+            if state["task"] is None:
+                state["task"] = self._generate_task_for_stage(stage)
+            return state["task"]
+
+        def _update_controls_for_player_tile(self) -> None:
+            row, col = self.player_pos
+            self.position_label.setText(
+                f"Spieler auf Quader Zeile {row + 1}, Spalte {col + 1}."
+            )
+            on_lot = self.player_pos in self.lot_tiles
+            on_bank = self.player_pos in self.bank_tiles
+
+            self.task_group.setEnabled(on_lot)
+            self.build_group.setEnabled(on_lot)
+            self.bank_group.setEnabled(on_bank)
+            self._current_task = None
+
+            if on_lot:
+                state = self.lot_state[self.player_pos]
+                stage = int(state["stage"])
+                if stage >= 3:
+                    self.task_question_label.setText(
+                        "Dieses Haus ist vollständig fertiggestellt."
+                    )
+                    self.solve_task_button.setEnabled(False)
+                    self.task_answer_edit.setEnabled(False)
+                elif state["permission"]:
+                    self.task_question_label.setText(
+                        f"Aufgabe gelöst. Baustufe {stage + 1} ist freigeschaltet."
+                    )
+                    self.solve_task_button.setEnabled(False)
+                    self.task_answer_edit.setEnabled(False)
+                else:
+                    task = self._ensure_task_for_lot(self.player_pos)
+                    self._current_task = task
+                    reward = int(task["reward"])
+                    self.task_question_label.setText(
+                        f"Löse die Aufgabe für {reward} Budget-Punkte:\n{task['question']}"
+                    )
+                    self.task_answer_edit.setEnabled(True)
+                    self.solve_task_button.setEnabled(True)
+                    self.task_answer_edit.clear()
+                    self.task_answer_edit.setFocus(Qt.OtherFocusReason)
+
+                if stage < 3:
+                    next_name = self.HOUSE_STAGE_NAMES[stage]
+                    cost = self.HOUSE_STAGE_COSTS[stage]
+                    permission_text = (
+                        "freigeschaltet"
+                        if state["permission"]
+                        else "erst nach der Aufgabe möglich"
+                    )
+                    self.build_info_label.setText(
+                        f"Aktuelle Baustufe: {stage}/3.\n"
+                        f"Nächster Bau: {next_name}, Kosten {cost} Punkte — {permission_text}."
+                    )
+                    self.build_button.setText(f"{next_name} bauen ({cost})")
+                    self.build_button.setEnabled(
+                        bool(state["permission"]) and self.budget >= cost
+                    )
+                else:
+                    self.build_info_label.setText(
+                        "Haus fertig: Grundmauern, Etage und Dach sind vorhanden."
+                    )
+                    self.build_button.setEnabled(False)
+                self.demolish_button.setEnabled(stage > 0)
+            else:
+                self.task_question_label.setText(
+                    "Gehe zu einem Grundstück mit ?-Markierung."
+                )
+                self.task_answer_edit.setEnabled(False)
+                self.solve_task_button.setEnabled(False)
+                self.build_info_label.setText("Kein Grundstück ausgewählt.")
+                self.build_button.setEnabled(False)
+                self.demolish_button.setEnabled(False)
+
+            if on_bank:
+                self._prepare_bank_audit()
+            else:
+                self.bank_info_label.setText(
+                    "Besuche ein BANK-Gebäude, um Budget anzulegen oder Zinsen zu prüfen."
+                )
+                self.bank_audit_label.setText("Keine Bank am aktuellen Quader.")
+                self.bank_answer_edit.clear()
+                self.bank_audit_button.setEnabled(False)
+                self.deposit_button.setEnabled(False)
+                self.withdraw_button.setEnabled(False)
+
+            self._refresh_budget_labels()
+
+        def solve_current_task(self) -> None:
+            if self.player_pos not in self.lot_tiles:
+                return
+            state = self.lot_state[self.player_pos]
+            if state["permission"] or int(state["stage"]) >= 3:
+                return
+            task = self._ensure_task_for_lot(self.player_pos)
+            try:
+                answer = int(self.task_answer_edit.text().strip(), 10)
+            except Exception:
+                self.status_label.setText("Bitte eine ganze Zahl als Lösung eingeben.")
+                QApplication.beep()
+                return
+            if answer != int(task["answer"]):
+                self.status_label.setText("Die Lösung stimmt noch nicht. Versuche es erneut.")
+                QApplication.beep()
+                return
+
+            reward = int(task["reward"])
+            self.budget += reward
+            state["permission"] = True
+            state["task"] = None
+            self._advance_bank_interest_round()
+            self.status_label.setText(
+                f"Richtig! +{reward} Budget-Punkte. Die nächste Baustufe ist freigeschaltet."
+            )
+            self._refresh_scene()
+            self._update_controls_for_player_tile()
+
+        def build_next_stage(self) -> None:
+            if self.player_pos not in self.lot_tiles:
+                return
+            state = self.lot_state[self.player_pos]
+            stage = int(state["stage"])
+            if stage >= 3 or not state["permission"]:
+                return
+            cost = self.HOUSE_STAGE_COSTS[stage]
+            if self.budget < cost:
+                self.status_label.setText(
+                    f"Für {self.HOUSE_STAGE_NAMES[stage]} fehlen Budget-Punkte."
+                )
+                QApplication.beep()
+                return
+            self.budget -= cost
+            state["spent"] = int(state["spent"]) + cost
+            state["stage"] = stage + 1
+            state["permission"] = False
+            state["task"] = None
+            self.status_label.setText(
+                f"{self.HOUSE_STAGE_NAMES[stage]} gebaut. −{cost} Budget-Punkte."
+            )
+            self._refresh_scene()
+            self._update_controls_for_player_tile()
+
+        def demolish_current_house(self) -> None:
+            if self.player_pos not in self.lot_tiles:
+                return
+            state = self.lot_state[self.player_pos]
+            stage = int(state["stage"])
+            if stage <= 0:
+                return
+            spent = int(state["spent"])
+            refund = int(round(spent * 0.80))
+            answer = QMessageBox.question(
+                self,
+                "Haus zurückbauen",
+                f"Das Gebäude wird vollständig abgebaut.\n"
+                f"80 % der eingesetzten {spent} Punkte = {refund} Punkte werden zurückgegeben.\n\n"
+                "Fortfahren?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
+            self.budget += refund
+            state.update({
+                "stage": 0,
+                "permission": False,
+                "task": None,
+                "spent": 0,
+            })
+            self.status_label.setText(
+                f"Gebäude zurückgebaut. +{refund} Budget-Punkte zurückerhalten."
+            )
+            self._refresh_scene()
+            self._update_controls_for_player_tile()
+
+        def _advance_bank_interest_round(self) -> None:
+            if self.bank_deposit <= 0:
+                return
+            interest = (self.bank_deposit * self.BANK_RATE_PERCENT) // 100
+            self.bank_pending_interest += interest
+            self.bank_rounds += 1
+            self._bank_reported_interest = None
+
+        def _prepare_bank_audit(self) -> None:
+            self.deposit_button.setEnabled(self.budget >= 20)
+            self.withdraw_button.setEnabled(self.bank_deposit >= 20)
+            max_value = max(20, self.budget, self.bank_deposit)
+            self.bank_amount_spin.setMaximum(max_value)
+
+            self.bank_info_label.setText(
+                f"Einlage: {self.bank_deposit} Punkte. Zinssatz: "
+                f"{self.BANK_RATE_PERCENT} % je gelöster Bauaufgabe."
+            )
+            if self.bank_pending_interest <= 0:
+                self.bank_audit_label.setText(
+                    "Noch keine offenen Zinsen. Löse weitere Aufgaben oder lege Budget an."
+                )
+                self.bank_answer_edit.clear()
+                self.bank_audit_button.setEnabled(False)
+                return
+
+            if self._bank_reported_interest is None:
+                discrepancy = random.choice([0, 0, 0, 5, -5])
+                self._bank_reported_interest = max(
+                    0,
+                    self.bank_pending_interest + discrepancy,
+                )
+            self.bank_audit_label.setText(
+                f"Seit der letzten Prüfung: {self.bank_rounds} Zinsrunde(n).\n"
+                f"Die Bank meldet {self._bank_reported_interest} Zins-Punkte.\n"
+                "Berechne selbst die insgesamt korrekten Zinsen und trage sie ein."
+            )
+            self.bank_answer_edit.clear()
+            self.bank_audit_button.setEnabled(True)
+
+        def deposit_to_bank(self) -> None:
+            if self.player_pos not in self.bank_tiles:
+                return
+            amount = int(self.bank_amount_spin.value())
+            amount = (amount // 20) * 20
+            if amount < 20 or amount > self.budget:
+                self.status_label.setText("Für diese Einzahlung reicht das freie Budget nicht.")
+                QApplication.beep()
+                return
+            self.budget -= amount
+            self.bank_deposit += amount
+            self.status_label.setText(
+                f"{amount} Budget-Punkte bei der Anlage-Bank eingezahlt."
+            )
+            self._bank_reported_interest = None
+            self._refresh_budget_labels()
+            self._prepare_bank_audit()
+
+        def withdraw_from_bank(self) -> None:
+            if self.player_pos not in self.bank_tiles:
+                return
+            amount = int(self.bank_amount_spin.value())
+            amount = (amount // 20) * 20
+            if amount < 20 or amount > self.bank_deposit:
+                self.status_label.setText("Diese Summe ist nicht als Einlage verfügbar.")
+                QApplication.beep()
+                return
+            self.bank_deposit -= amount
+            self.budget += amount
+            self.status_label.setText(
+                f"{amount} Punkte aus der Bankeinlage zurück in das Bau-Budget geholt."
+            )
+            self._bank_reported_interest = None
+            self._refresh_budget_labels()
+            self._prepare_bank_audit()
+
+        def audit_bank_interest(self) -> None:
+            if self.player_pos not in self.bank_tiles or self.bank_pending_interest <= 0:
+                return
+            try:
+                answer = int(self.bank_answer_edit.text().strip(), 10)
+            except Exception:
+                self.status_label.setText("Bitte die berechneten Zinsen als ganze Zahl eingeben.")
+                QApplication.beep()
+                return
+            expected = int(self.bank_pending_interest)
+            if answer != expected:
+                self.status_label.setText(
+                    "Die Zinsprüfung stimmt noch nicht. Rechne Einlage × 5 % je Zinsrunde."
+                )
+                QApplication.beep()
+                return
+
+            reported = int(self._bank_reported_interest or 0)
+            self.budget += expected
+            self.bank_pending_interest = 0
+            self.bank_rounds = 0
+            self._bank_reported_interest = None
+            if reported == expected:
+                message = (
+                    f"Bankprüfung korrekt. {expected} Zins-Punkte wurden dem Budget gutgeschrieben."
+                )
+            else:
+                message = (
+                    f"Abweichung entdeckt: Bankmeldung {reported}, korrekt {expected}. "
+                    f"Die korrekten {expected} Punkte wurden gutgeschrieben."
+                )
+            self.status_label.setText(message)
+            QMessageBox.information(self, "Bankprüfung", message)
+            self._refresh_budget_labels()
+            self._prepare_bank_audit()
+
+        def _refresh_budget_labels(self) -> None:
+            self.budget_label.setText(f"Bau-Budget: {self.budget}")
+            self.bank_label.setText(
+                f"Bank: {self.bank_deposit} · offene Zinsen: {self.bank_pending_interest}"
+            )
+
+
     class MathematicsLearningDockWidget(QWidget):
         """Lern-Workspace mit linksseitigen Tabs und rechts eingebetteter Szene."""
 
@@ -29712,6 +30690,12 @@ QPushButton {{
                 '<p>Sudoku steht in vier Stufen bereit: Leicht, Mittel, Schwer und Experte. '
                 'In jeder Zeile, Spalte und jedem 3×3-Block dürfen die Ziffern 1 bis 9 nur einmal '
                 'vorkommen. Jede neue Runde erhält eine zufällig permutierte Variante.</p>'
+                '<h3>Mathe-Stadt – ISO-Metrik</h3>'
+                '<p>Die Spielfigur bewegt sich per Mausklick über ein isometrisches Quaderfeld. '
+                'Bäume blockieren Wege. Auf Grundstücken werden Rechenaufgaben gelöst, um '
+                'Grundmauern, Etage und Dach freizuschalten. Jede Baustufe kostet Budget. '
+                'Anlage-Banken nehmen fiktive Spielpunkte auf und erzeugen nach gelösten Aufgaben '
+                'Zinsen, deren Abrechnung beim Bankbesuch nachgerechnet wird.</p>'
             )
             info_layout.addWidget(self.info_browser, 1)
             self.left_tabs.addTab(info_tab, 'Informationen')
@@ -29732,6 +30716,8 @@ QPushButton {{
             self.content_stack.addWidget(self.arithmetic_widget)
             self.sudoku_widget = SudokuTrainerWidget(self.content_stack)
             self.content_stack.addWidget(self.sudoku_widget)
+            self.iso_metric_widget = IsoMetricMathGameWidget(self.content_stack)
+            self.content_stack.addWidget(self.iso_metric_widget)
             self.content_stack.setCurrentWidget(self.placeholder)
 
             splitter.setStretchFactor(0, 0)
@@ -29761,6 +30747,9 @@ QPushButton {{
                     ('sudoku_medium', 'Sudoku – Mittel'),
                     ('sudoku_hard', 'Sudoku – Schwer'),
                     ('sudoku_expert', 'Sudoku – Experte'),
+                ]),
+                ('ISO-Metrik', [
+                    ('isometric_math_city', 'Mathe-Stadt – ISO-Metrik'),
                 ]),
             ]
             first_game = None
@@ -29838,6 +30827,7 @@ QStackedWidget#learning_content_stack {{
             self.numbers_wall_widget.set_dark_mode(enabled)
             self.arithmetic_widget.set_dark_mode(enabled)
             self.sudoku_widget.set_dark_mode(enabled)
+            self.iso_metric_widget.set_dark_mode(enabled)
 
         def _handle_game_double_click(self, item: QTreeWidgetItem, _column: int) -> None:
             if item is None:
@@ -29866,6 +30856,10 @@ QStackedWidget#learning_content_stack {{
                 self.content_stack.setCurrentWidget(self.sudoku_widget)
                 self.sudoku_widget.activate_game(game_key, title)
                 self.sudoku_widget.setFocus(Qt.OtherFocusReason)
+            elif game_key.startswith('isometric_'):
+                self.content_stack.setCurrentWidget(self.iso_metric_widget)
+                self.iso_metric_widget.activate_game(game_key, title)
+                self.iso_metric_widget.view.setFocus(Qt.OtherFocusReason)
             else:
                 self.content_stack.setCurrentWidget(self.arithmetic_widget)
                 self.arithmetic_widget.activate_game(game_key, title)
