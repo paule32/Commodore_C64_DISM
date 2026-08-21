@@ -1,0 +1,4273 @@
+# Stage 159 - component-name gettext catalog
+# Compile this PO to d64_components.mo.
+
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: de\n"
+
+msgid ""
+"mo:AliasRow.alias_edit"
+msgstr ""
+"Alias, e.g. baz.ico"
+
+msgid ""
+"mo:AliasRow.dir_edit"
+msgstr ""
+"dir edit"
+
+msgid ""
+"mo:AliasRow.label"
+msgstr ""
+"label"
+
+msgid ""
+"mo:amiga_cpu_combo"
+msgstr ""
+"680x0-CPU-Profil für den Amiga-Assembler"
+
+msgid ""
+"mo:amiga_fpu_combo"
+msgstr ""
+"amiga fpu combo"
+
+msgid ""
+"mo:archive_information_list"
+msgstr ""
+"archive information list"
+
+msgid ""
+"mo:archive_information_tab"
+msgstr ""
+"archive information tab"
+
+msgid ""
+"mo:ArithmeticTrainerWidget.check_button"
+msgstr ""
+"Prüfen"
+
+msgid ""
+"mo:ArithmeticTrainerWidget.help_label"
+msgstr ""
+"help label"
+
+msgid ""
+"mo:ArithmeticTrainerWidget.status_label"
+msgstr ""
+"Wähle ein Spiel aus."
+
+msgid ""
+"mo:ArithmeticTrainerWidget.task_widget"
+msgstr ""
+"task widget"
+
+msgid ""
+"mo:ArithmeticTrainerWidget.title_label"
+msgstr ""
+"Mathematik-Spiel"
+
+msgid ""
+"mo:assemble_button"
+msgstr ""
+"Assemble"
+
+msgid ""
+"mo:assemble_generated_button"
+msgstr ""
+"Assemble"
+
+msgid ""
+"mo:assembler_action_panel"
+msgstr ""
+"assembler action panel"
+
+msgid ""
+"mo:assembler_completion_description"
+msgstr ""
+"assembler completion description"
+
+msgid ""
+"mo:assembler_completion_frame"
+msgstr ""
+"assembler completion frame"
+
+msgid ""
+"mo:assembler_completion_ghost"
+msgstr ""
+"assembler completion ghost"
+
+msgid ""
+"mo:assembler_completion_header"
+msgstr ""
+"assembler completion header"
+
+msgid ""
+"mo:assembler_instruction_help_current"
+msgstr ""
+"assembler instruction help current"
+
+msgid ""
+"mo:assembler_instruction_help_description"
+msgstr ""
+"assembler instruction help description"
+
+msgid ""
+"mo:assembler_instruction_help_frame"
+msgstr ""
+"assembler instruction help frame"
+
+msgid ""
+"mo:assembler_instruction_help_header"
+msgstr ""
+"assembler instruction help header"
+
+msgid ""
+"mo:assembler_number_calculator"
+msgstr ""
+"Rechner für Assembler-Operand"
+
+msgid ""
+"mo:assembly_status_label"
+msgstr ""
+"Noch nicht assembliert"
+
+msgid ""
+"mo:breadcrumb_folder_button"
+msgstr ""
+"Vollständigen Verzeichnispfad bearbeiten"
+
+msgid ""
+"mo:breadcrumb_subdir_button"
+msgstr ""
+"Unterverzeichnisse anzeigen"
+
+msgid ""
+"mo:build_target_combo"
+msgstr ""
+"Compiler-/Assemblerziel auswählen"
+
+msgid ""
+"mo:c64_character_editor_dialog"
+msgstr ""
+"C64 Character-Editor"
+
+msgid ""
+"mo:c64_palette_editor_dialog"
+msgstr ""
+"C64 Paletten-Editor"
+
+msgid ""
+"mo:c64_pixel_screen_canvas"
+msgstr ""
+"c64 pixel screen canvas"
+
+msgid ""
+"mo:c64_pixel_screen_editor_dialog"
+msgstr ""
+"C64 Pixel-Bildschirm-Editor"
+
+msgid ""
+"mo:c64_text_screen_canvas"
+msgstr ""
+"c64 text screen canvas"
+
+msgid ""
+"mo:c64_text_screen_editor_dialog"
+msgstr ""
+"C64 Text-Bildschirm-Editor"
+
+msgid ""
+"mo:C64CharacterEditorDialog.background_combo"
+msgstr ""
+"background combo"
+
+msgid ""
+"mo:C64CharacterEditorDialog.byte_label"
+msgstr ""
+"byte label"
+
+msgid ""
+"mo:C64CharacterEditorDialog.character_heading"
+msgstr ""
+"character heading"
+
+msgid ""
+"mo:C64CharacterEditorDialog.character_list"
+msgstr ""
+"character list"
+
+msgid ""
+"mo:C64CharacterEditorDialog.clear_button"
+msgstr ""
+"Leeren"
+
+msgid ""
+"mo:C64CharacterEditorDialog.close_button"
+msgstr ""
+"Schließen"
+
+msgid ""
+"mo:C64CharacterEditorDialog.code_input"
+msgstr ""
+"Zeichen anspringen: $01, 0x41 oder 65"
+
+msgid ""
+"mo:C64CharacterEditorDialog.copy_button"
+msgstr ""
+"Zeichen kopieren"
+
+msgid ""
+"mo:C64CharacterEditorDialog.foreground_combo"
+msgstr ""
+"foreground combo"
+
+msgid ""
+"mo:C64CharacterEditorDialog.invert_button"
+msgstr ""
+"Invertieren"
+
+msgid ""
+"mo:C64CharacterEditorDialog.jump_button"
+msgstr ""
+"Gehe zu"
+
+msgid ""
+"mo:C64CharacterEditorDialog.load_button"
+msgstr ""
+"Laden …"
+
+msgid ""
+"mo:C64CharacterEditorDialog.mirror_h_button"
+msgstr ""
+"Horizontal spiegeln"
+
+msgid ""
+"mo:C64CharacterEditorDialog.mirror_v_button"
+msgstr ""
+"Vertikal spiegeln"
+
+msgid ""
+"mo:C64CharacterEditorDialog.new_button"
+msgstr ""
+"Neu"
+
+msgid ""
+"mo:C64CharacterEditorDialog.next_button"
+msgstr ""
+"▶"
+
+msgid ""
+"mo:C64CharacterEditorDialog.output_format_box"
+msgstr ""
+"Ausgabe Format"
+
+msgid ""
+"mo:C64CharacterEditorDialog.output_save_as_button"
+msgstr ""
+"Quellcode speichern unter..."
+
+msgid ""
+"mo:C64CharacterEditorDialog.paste_button"
+msgstr ""
+"Zeichen einfügen"
+
+msgid ""
+"mo:C64CharacterEditorDialog.path_label"
+msgstr ""
+"Neuer Zeichensatz – 2048 Bytes"
+
+msgid ""
+"mo:C64CharacterEditorDialog.pixel_grid"
+msgstr ""
+"pixel grid"
+
+msgid ""
+"mo:C64CharacterEditorDialog.preview"
+msgstr ""
+"preview"
+
+msgid ""
+"mo:C64CharacterEditorDialog.previous_button"
+msgstr ""
+"◀"
+
+msgid ""
+"mo:C64CharacterEditorDialog.save_as_button"
+msgstr ""
+"Speichern unter …"
+
+msgid ""
+"mo:C64CharacterEditorDialog.save_button"
+msgstr ""
+"Speichern"
+
+msgid ""
+"mo:C64CharacterEditorDialog.shift_down_button"
+msgstr ""
+"↓"
+
+msgid ""
+"mo:C64CharacterEditorDialog.shift_left_button"
+msgstr ""
+"←"
+
+msgid ""
+"mo:C64CharacterEditorDialog.shift_right_button"
+msgstr ""
+"→"
+
+msgid ""
+"mo:C64CharacterEditorDialog.shift_up_button"
+msgstr ""
+"↑"
+
+msgid ""
+"mo:C64CharacterEditorDialog.status_label"
+msgstr ""
+"Bereit"
+
+msgid ""
+"mo:C64PaletteEditorDialog.apply_button"
+msgstr ""
+"Übernehmen"
+
+msgid ""
+"mo:C64PaletteEditorDialog.close_button"
+msgstr ""
+"Schließen"
+
+msgid ""
+"mo:C64PaletteEditorDialog.color_heading"
+msgstr ""
+"color heading"
+
+msgid ""
+"mo:C64PaletteEditorDialog.color_swatch"
+msgstr ""
+"Farbe auswählen …"
+
+msgid ""
+"mo:C64PaletteEditorDialog.hex_input"
+msgstr ""
+"#RRGGBB"
+
+msgid ""
+"mo:C64PaletteEditorDialog.load_button"
+msgstr ""
+"Laden …"
+
+msgid ""
+"mo:C64PaletteEditorDialog.name_input"
+msgstr ""
+"name input"
+
+msgid ""
+"mo:C64PaletteEditorDialog.new_button"
+msgstr ""
+"Standardpalette"
+
+msgid ""
+"mo:C64PaletteEditorDialog.output_format_box"
+msgstr ""
+"Ausgabe Format"
+
+msgid ""
+"mo:C64PaletteEditorDialog.output_save_as_button"
+msgstr ""
+"Speichern als..."
+
+msgid ""
+"mo:C64PaletteEditorDialog.palette_list"
+msgstr ""
+"palette list"
+
+msgid ""
+"mo:C64PaletteEditorDialog.path_label"
+msgstr ""
+"Neue Palette – 16 RGB-Farben / 48 Bytes"
+
+msgid ""
+"mo:C64PaletteEditorDialog.reset_all_button"
+msgstr ""
+"Alle zurücksetzen"
+
+msgid ""
+"mo:C64PaletteEditorDialog.reset_color_button"
+msgstr ""
+"Farbe zurücksetzen"
+
+msgid ""
+"mo:C64PaletteEditorDialog.rgb_label"
+msgstr ""
+"rgb label"
+
+msgid ""
+"mo:C64PaletteEditorDialog.save_as_button"
+msgstr ""
+"Palette speichern unter …"
+
+msgid ""
+"mo:C64PaletteEditorDialog.save_button"
+msgstr ""
+"Palette speichern"
+
+msgid ""
+"mo:C64PaletteEditorDialog.status_label"
+msgstr ""
+"Bereit"
+
+msgid ""
+"mo:C64PixelScreenEditorDialog.canvas"
+msgstr ""
+"canvas"
+
+msgid ""
+"mo:C64PixelScreenEditorDialog.clear_button"
+msgstr ""
+"Schwarz löschen"
+
+msgid ""
+"mo:C64PixelScreenEditorDialog.close_button"
+msgstr ""
+"Schließen"
+
+msgid ""
+"mo:C64PixelScreenEditorDialog.fill_screen_button"
+msgstr ""
+"Mit Farbe füllen"
+
+msgid ""
+"mo:C64PixelScreenEditorDialog.load_button"
+msgstr ""
+"Laden …"
+
+msgid ""
+"mo:C64PixelScreenEditorDialog.new_button"
+msgstr ""
+"Neu"
+
+msgid ""
+"mo:C64PixelScreenEditorDialog.output_format_box"
+msgstr ""
+"Ausgabe Format"
+
+msgid ""
+"mo:C64PixelScreenEditorDialog.output_save_button"
+msgstr ""
+"Quellcode speichern unter..."
+
+msgid ""
+"mo:C64PixelScreenEditorDialog.path_label"
+msgstr ""
+"Neuer Pixelbildschirm – 320x200 / 16 Farben"
+
+msgid ""
+"mo:C64PixelScreenEditorDialog.save_as_button"
+msgstr ""
+"Speichern unter …"
+
+msgid ""
+"mo:C64PixelScreenEditorDialog.save_button"
+msgstr ""
+"Speichern"
+
+msgid ""
+"mo:C64PixelScreenEditorDialog.status_label"
+msgstr ""
+"Bereit"
+
+msgid ""
+"mo:C64TextScreenEditorDialog.canvas"
+msgstr ""
+"canvas"
+
+msgid ""
+"mo:C64TextScreenEditorDialog.character_list"
+msgstr ""
+"character list"
+
+msgid ""
+"mo:C64TextScreenEditorDialog.clear_button"
+msgstr ""
+"Leeren"
+
+msgid ""
+"mo:C64TextScreenEditorDialog.close_button"
+msgstr ""
+"Schließen"
+
+msgid ""
+"mo:C64TextScreenEditorDialog.color_combo"
+msgstr ""
+"color combo"
+
+msgid ""
+"mo:C64TextScreenEditorDialog.fill_button"
+msgstr ""
+"Mit Auswahl füllen"
+
+msgid ""
+"mo:C64TextScreenEditorDialog.load_button"
+msgstr ""
+"Laden …"
+
+msgid ""
+"mo:C64TextScreenEditorDialog.new_button"
+msgstr ""
+"Neu"
+
+msgid ""
+"mo:C64TextScreenEditorDialog.output_format_box"
+msgstr ""
+"Ausgabe Format"
+
+msgid ""
+"mo:C64TextScreenEditorDialog.output_save_button"
+msgstr ""
+"Quellcode speichern unter..."
+
+msgid ""
+"mo:C64TextScreenEditorDialog.path_label"
+msgstr ""
+"Neue Bildschirmseite – 1000 Zeichen + 1000 Farben"
+
+msgid ""
+"mo:C64TextScreenEditorDialog.save_as_button"
+msgstr ""
+"Speichern unter …"
+
+msgid ""
+"mo:C64TextScreenEditorDialog.save_button"
+msgstr ""
+"Speichern"
+
+msgid ""
+"mo:C64TextScreenEditorDialog.status_label"
+msgstr ""
+"Bereit"
+
+msgid ""
+"mo:calculator_backspace"
+msgstr ""
+"←"
+
+msgid ""
+"mo:calculator_clear"
+msgstr ""
+"Löschen"
+
+msgid ""
+"mo:calculator_equals"
+msgstr ""
+"="
+
+msgid ""
+"mo:calculator_error"
+msgstr ""
+"calculator error"
+
+msgid ""
+"mo:calculator_expression"
+msgstr ""
+"calculator expression"
+
+msgid ""
+"mo:calculator_memory_label"
+msgstr ""
+"calculator memory label"
+
+msgid ""
+"mo:calculator_priority"
+msgstr ""
+"calculator priority"
+
+msgid ""
+"mo:calculator_result"
+msgstr ""
+"calculator result"
+
+msgid ""
+"mo:cantor_calculate_button"
+msgstr ""
+"Berechnen"
+
+msgid ""
+"mo:cantor_columns_spin"
+msgstr ""
+"Anzahl der Spalten, 1 bis {…}; 0 = leer"
+
+msgid ""
+"mo:cantor_diagonal_value_list"
+msgstr ""
+"Nach 'Berechnen' enthält jede Listenzeile eine Matrix-Reihe."
+
+msgid ""
+"mo:cantor_rows_spin"
+msgstr ""
+"Anzahl der Reihen, 1 bis {…}; 0 = leer"
+
+msgid ""
+"mo:CantorDiagonalFactWidget.calculate_button"
+msgstr ""
+"Berechnen"
+
+msgid ""
+"mo:CantorDiagonalFactWidget.columns_spin"
+msgstr ""
+"Anzahl der Spalten, 1 bis {…}; 0 = leer"
+
+msgid ""
+"mo:CantorDiagonalFactWidget.description_label"
+msgstr ""
+"Die Matrix verwendet die Cantor-Paarungsfunktion zur diagonalen Nummerierung von Paaren natürlicher Zahlen:\nπ(r,c) = ((r+c) · (r+c+1)) / 2 + c"
+
+msgid ""
+"mo:CantorDiagonalFactWidget.rows_spin"
+msgstr ""
+"Anzahl der Reihen, 1 bis {…}; 0 = leer"
+
+msgid ""
+"mo:CantorDiagonalFactWidget.status_label"
+msgstr ""
+"Reihen und Spalten sind noch leer. Bitte beide Werte einstellen."
+
+msgid ""
+"mo:CantorDiagonalFactWidget.title_label"
+msgstr ""
+"Cantor – Diagonal Argument"
+
+msgid ""
+"mo:CantorDiagonalFactWidget.value_list"
+msgstr ""
+"Nach 'Berechnen' enthält jede Listenzeile eine Matrix-Reihe."
+
+msgid ""
+"mo:character_editor_list"
+msgstr ""
+"character editor list"
+
+msgid ""
+"mo:character_pixel_grid"
+msgstr ""
+"character pixel grid"
+
+msgid ""
+"mo:character_preview"
+msgstr ""
+"character preview"
+
+msgid ""
+"mo:chm_content_view"
+msgstr ""
+"chm content view"
+
+msgid ""
+"mo:chm_navigation_toolbar"
+msgstr ""
+"Navigation"
+
+msgid ""
+"mo:chm_search_button"
+msgstr ""
+"Ersten Treffer suchen"
+
+msgid ""
+"mo:chm_viewer_dialog"
+msgstr ""
+"CHM Viewer"
+
+msgid ""
+"mo:ChmSearchTab.search_button"
+msgstr ""
+"Ersten Treffer suchen"
+
+msgid ""
+"mo:ChmSearchTab.search_edit"
+msgstr ""
+"search edit"
+
+msgid ""
+"mo:ChmSearchTab.tree"
+msgstr ""
+"tree"
+
+msgid ""
+"mo:ChmSourceDialog.editor"
+msgstr ""
+"editor"
+
+msgid ""
+"mo:ChmViewerDialog.about_action"
+msgstr ""
+"Über …"
+
+msgid ""
+"mo:ChmViewerDialog.add_favorite_button"
+msgstr ""
+"Aktuelle Seite hinzufügen"
+
+msgid ""
+"mo:ChmViewerDialog.back_action"
+msgstr ""
+"back action"
+
+msgid ""
+"mo:ChmViewerDialog.copy_action"
+msgstr ""
+"Kopieren"
+
+msgid ""
+"mo:ChmViewerDialog.favorites_tab"
+msgstr ""
+"Favorit suchen …"
+
+msgid ""
+"mo:ChmViewerDialog.file_status"
+msgstr ""
+"Keine CHM-Datei geöffnet"
+
+msgid ""
+"mo:ChmViewerDialog.forward_action"
+msgstr ""
+"forward action"
+
+msgid ""
+"mo:ChmViewerDialog.home_action"
+msgstr ""
+"index.html anzeigen"
+
+msgid ""
+"mo:ChmViewerDialog.keywords_tab"
+msgstr ""
+"Schlüsselwort suchen …"
+
+msgid ""
+"mo:ChmViewerDialog.menu_bar"
+msgstr ""
+"menu bar"
+
+msgid ""
+"mo:ChmViewerDialog.navigation_toolbar"
+msgstr ""
+"Navigation"
+
+msgid ""
+"mo:ChmViewerDialog.open_action"
+msgstr ""
+"CHM-Datei öffnen"
+
+msgid ""
+"mo:ChmViewerDialog.quit_action"
+msgstr ""
+"Programm beenden"
+
+msgid ""
+"mo:ChmViewerDialog.remove_favorite_button"
+msgstr ""
+"Entfernen"
+
+msgid ""
+"mo:ChmViewerDialog.source_action"
+msgstr ""
+"Seiten Quelltext"
+
+msgid ""
+"mo:ChmViewerDialog.splitter"
+msgstr ""
+"splitter"
+
+msgid ""
+"mo:ChmViewerDialog.status_bar"
+msgstr ""
+"status bar"
+
+msgid ""
+"mo:ChmViewerDialog.tabs"
+msgstr ""
+"tabs"
+
+msgid ""
+"mo:ChmViewerDialog.topics_tab"
+msgstr ""
+"Thema/Topic suchen …"
+
+msgid ""
+"mo:ChmViewerDialog.web_view"
+msgstr ""
+"web view"
+
+msgid ""
+"mo:coff_object_button"
+msgstr ""
+"COFF32 .o"
+
+msgid ""
+"mo:custom_dock_title_bar"
+msgstr ""
+"custom dock title bar"
+
+msgid ""
+"mo:custom_dock_title_label"
+msgstr ""
+"custom dock title label"
+
+msgid ""
+"mo:d64_content_dock"
+msgstr ""
+"Projekt / Informationen"
+
+msgid ""
+"mo:d64_content_list"
+msgstr ""
+"d64 content list"
+
+msgid ""
+"mo:dbase_form_assemble_button"
+msgstr ""
+"Assemble"
+
+msgid ""
+"mo:dbase_form_border_color_button"
+msgstr ""
+"..."
+
+msgid ""
+"mo:dbase_form_border_color_combo"
+msgstr ""
+"dbase form border color combo"
+
+msgid ""
+"mo:dbase_form_border_round_bl_spinbox"
+msgstr ""
+"dbase form border round bl spinbox"
+
+msgid ""
+"mo:dbase_form_border_round_br_spinbox"
+msgstr ""
+"dbase form border round br spinbox"
+
+msgid ""
+"mo:dbase_form_border_round_tl_spinbox"
+msgstr ""
+"dbase form border round tl spinbox"
+
+msgid ""
+"mo:dbase_form_border_round_tr_spinbox"
+msgstr ""
+"dbase form border round tr spinbox"
+
+msgid ""
+"mo:dbase_form_border_shadow_color_button"
+msgstr ""
+"..."
+
+msgid ""
+"mo:dbase_form_border_shadow_color_combo"
+msgstr ""
+"dbase form border shadow color combo"
+
+msgid ""
+"mo:dbase_form_border_size_spinbox"
+msgstr ""
+"dbase form border size spinbox"
+
+msgid ""
+"mo:dbase_form_border_style_combo"
+msgstr ""
+"dbase form border style combo"
+
+msgid ""
+"mo:dbase_form_brush_cut_height_spinbox"
+msgstr ""
+"dbase form brush cut height spinbox"
+
+msgid ""
+"mo:dbase_form_brush_cut_width_spinbox"
+msgstr ""
+"dbase form brush cut width spinbox"
+
+msgid ""
+"mo:dbase_form_brush_gradient_combo"
+msgstr ""
+"dbase form brush gradient combo"
+
+msgid ""
+"mo:dbase_form_brush_style_combo"
+msgstr ""
+"dbase form brush style combo"
+
+msgid ""
+"mo:dbase_form_build_bar"
+msgstr ""
+"dbase form build bar"
+
+msgid ""
+"mo:dbase_form_build_status"
+msgstr ""
+"Noch nicht kompiliert"
+
+msgid ""
+"mo:dbase_form_compile_button"
+msgstr ""
+"Compile"
+
+msgid ""
+"mo:dbase_form_component_tabs"
+msgstr ""
+"dbase form component tabs"
+
+msgid ""
+"mo:dbase_form_database_icon_view"
+msgstr ""
+"dbase form database icon view"
+
+msgid ""
+"mo:dbase_form_designer_dock"
+msgstr ""
+"dBase Formular - Designer"
+
+msgid ""
+"mo:dbase_form_event_grid"
+msgstr ""
+"dbase form event grid"
+
+msgid ""
+"mo:dbase_form_event_source_button"
+msgstr ""
+"→"
+
+msgid ""
+"mo:dbase_form_font_alpha_combo"
+msgstr ""
+"dbase form font alpha combo"
+
+msgid ""
+"mo:dbase_form_font_background_button"
+msgstr ""
+"..."
+
+msgid ""
+"mo:dbase_form_font_background_combo"
+msgstr ""
+"dbase form font background combo"
+
+msgid ""
+"mo:dbase_form_font_bold_checkbox"
+msgstr ""
+"dbase form font bold checkbox"
+
+msgid ""
+"mo:dbase_form_font_family_combo"
+msgstr ""
+"dbase form font family combo"
+
+msgid ""
+"mo:dbase_form_font_foreground_button"
+msgstr ""
+"..."
+
+msgid ""
+"mo:dbase_form_font_foreground_combo"
+msgstr ""
+"dbase form font foreground combo"
+
+msgid ""
+"mo:dbase_form_font_italic_checkbox"
+msgstr ""
+"dbase form font italic checkbox"
+
+msgid ""
+"mo:dbase_form_font_size_spinbox"
+msgstr ""
+"dbase form font size spinbox"
+
+msgid ""
+"mo:dbase_form_font_stroke_checkbox"
+msgstr ""
+"dbase form font stroke checkbox"
+
+msgid ""
+"mo:dbase_form_font_underline_checkbox"
+msgstr ""
+"dbase form font underline checkbox"
+
+msgid ""
+"mo:dbase_form_graphics_view"
+msgstr ""
+"dbase form graphics view"
+
+msgid ""
+"mo:dbase_form_property_dock"
+msgstr ""
+"dBase Formular - Eigenschaften"
+
+msgid ""
+"mo:dbase_form_property_splitter"
+msgstr ""
+"dbase form property splitter"
+
+msgid ""
+"mo:dbase_form_property_tree"
+msgstr ""
+"dbase form property tree"
+
+msgid ""
+"mo:dbase_form_source_outline"
+msgstr ""
+"dbase form source outline"
+
+msgid ""
+"mo:dbase_form_source_splitter"
+msgstr ""
+"dbase form source splitter"
+
+msgid ""
+"mo:dbase_form_standard_icon_view"
+msgstr ""
+"dbase form standard icon view"
+
+msgid ""
+"mo:dbase_form_start_button"
+msgstr ""
+"Start"
+
+msgid ""
+"mo:dbase_form_tabs"
+msgstr ""
+"dbase form tabs"
+
+msgid ""
+"mo:dbase_form_target_combo"
+msgstr ""
+"Zielplattform des Formularprogramms"
+
+msgid ""
+"mo:dbase_form_timer_active_checkbox"
+msgstr ""
+"dbase form timer active checkbox"
+
+msgid ""
+"mo:dbase_form_timer_interval_spinbox"
+msgstr ""
+"dbase form timer interval spinbox"
+
+msgid ""
+"mo:dbase_form_upper_tabs"
+msgstr ""
+"dbase form upper tabs"
+
+msgid ""
+"mo:dbase_table_designer_dock"
+msgstr ""
+"dBase Tabelle - Designer"
+
+msgid ""
+"mo:dbase_table_field_decimals_spin"
+msgstr ""
+"dbase table field decimals spin"
+
+msgid ""
+"mo:dbase_table_field_grid"
+msgstr ""
+"dbase table field grid"
+
+msgid ""
+"mo:dbase_table_field_index_checkbox"
+msgstr ""
+"Feld als Index-Kandidat markieren"
+
+msgid ""
+"mo:dbase_table_field_length_spin"
+msgstr ""
+"dbase table field length spin"
+
+msgid ""
+"mo:dbase_table_field_type_combo"
+msgstr ""
+"dbase table field type combo"
+
+msgid ""
+"mo:dbase_table_inner_tabs"
+msgstr ""
+"dbase table inner tabs"
+
+msgid ""
+"mo:dbase_table_load_button"
+msgstr ""
+"Laden"
+
+msgid ""
+"mo:dbase_table_parent_tabs"
+msgstr ""
+"dbase table parent tabs"
+
+msgid ""
+"mo:dbase_table_save_as_button"
+msgstr ""
+"Speichern unter ..."
+
+msgid ""
+"mo:dbase_table_save_button"
+msgstr ""
+"Speichern"
+
+msgid ""
+"mo:DBaseFormControlItem.proxy"
+msgstr ""
+"proxy"
+
+msgid ""
+"mo:DBaseFormPropertyPanel.bold_check"
+msgstr ""
+"bold check"
+
+msgid ""
+"mo:DBaseFormPropertyPanel.border_color_button"
+msgstr ""
+"..."
+
+msgid ""
+"mo:DBaseFormPropertyPanel.border_color_combo"
+msgstr ""
+"border color combo"
+
+msgid ""
+"mo:DBaseFormPropertyPanel.border_color_holder"
+msgstr ""
+"border color holder"
+
+msgid ""
+"mo:DBaseFormPropertyPanel.border_round_bl_spin"
+msgstr ""
+"border round bl spin"
+
+msgid ""
+"mo:DBaseFormPropertyPanel.border_round_br_spin"
+msgstr ""
+"border round br spin"
+
+msgid ""
+"mo:DBaseFormPropertyPanel.border_round_tl_spin"
+msgstr ""
+"border round tl spin"
+
+msgid ""
+"mo:DBaseFormPropertyPanel.border_round_tr_spin"
+msgstr ""
+"border round tr spin"
+
+msgid ""
+"mo:DBaseFormPropertyPanel.border_shadow_color_button"
+msgstr ""
+"..."
+
+msgid ""
+"mo:DBaseFormPropertyPanel.border_shadow_color_combo"
+msgstr ""
+"border shadow color combo"
+
+msgid ""
+"mo:DBaseFormPropertyPanel.border_shadow_color_holder"
+msgstr ""
+"border shadow color holder"
+
+msgid ""
+"mo:DBaseFormPropertyPanel.border_size_spin"
+msgstr ""
+"border size spin"
+
+msgid ""
+"mo:DBaseFormPropertyPanel.border_style_combo"
+msgstr ""
+"border style combo"
+
+msgid ""
+"mo:DBaseFormPropertyPanel.brush_cut_height_spin"
+msgstr ""
+"brush cut height spin"
+
+msgid ""
+"mo:DBaseFormPropertyPanel.brush_cut_width_spin"
+msgstr ""
+"brush cut width spin"
+
+msgid ""
+"mo:DBaseFormPropertyPanel.brush_gradient_combo"
+msgstr ""
+"brush gradient combo"
+
+msgid ""
+"mo:DBaseFormPropertyPanel.brush_style_combo"
+msgstr ""
+"brush style combo"
+
+msgid ""
+"mo:DBaseFormPropertyPanel.database_icon_view"
+msgstr ""
+"database icon view"
+
+msgid ""
+"mo:DBaseFormPropertyPanel.event_grid"
+msgstr ""
+"event grid"
+
+msgid ""
+"mo:DBaseFormPropertyPanel.font_alpha_combo"
+msgstr ""
+"font alpha combo"
+
+msgid ""
+"mo:DBaseFormPropertyPanel.font_background_button"
+msgstr ""
+"..."
+
+msgid ""
+"mo:DBaseFormPropertyPanel.font_background_combo"
+msgstr ""
+"font background combo"
+
+msgid ""
+"mo:DBaseFormPropertyPanel.font_background_holder"
+msgstr ""
+"font background holder"
+
+msgid ""
+"mo:DBaseFormPropertyPanel.font_combo"
+msgstr ""
+"font combo"
+
+msgid ""
+"mo:DBaseFormPropertyPanel.font_foreground_button"
+msgstr ""
+"..."
+
+msgid ""
+"mo:DBaseFormPropertyPanel.font_foreground_combo"
+msgstr ""
+"font foreground combo"
+
+msgid ""
+"mo:DBaseFormPropertyPanel.font_foreground_holder"
+msgstr ""
+"font foreground holder"
+
+msgid ""
+"mo:DBaseFormPropertyPanel.font_size_spin"
+msgstr ""
+"font size spin"
+
+msgid ""
+"mo:DBaseFormPropertyPanel.italic_check"
+msgstr ""
+"italic check"
+
+msgid ""
+"mo:DBaseFormPropertyPanel.lower_tabs"
+msgstr ""
+"lower tabs"
+
+msgid ""
+"mo:DBaseFormPropertyPanel.property_tree"
+msgstr ""
+"property tree"
+
+msgid ""
+"mo:DBaseFormPropertyPanel.standard_icon_view"
+msgstr ""
+"standard icon view"
+
+msgid ""
+"mo:DBaseFormPropertyPanel.stroke_check"
+msgstr ""
+"stroke check"
+
+msgid ""
+"mo:DBaseFormPropertyPanel.timer_active_check"
+msgstr ""
+"timer active check"
+
+msgid ""
+"mo:DBaseFormPropertyPanel.timer_interval_spin"
+msgstr ""
+"timer interval spin"
+
+msgid ""
+"mo:DBaseFormPropertyPanel.underline_check"
+msgstr ""
+"underline check"
+
+msgid ""
+"mo:DBaseFormPropertyPanel.upper_tabs"
+msgstr ""
+"upper tabs"
+
+msgid ""
+"mo:DBaseFormPropertyPanel.vertical_splitter"
+msgstr ""
+"vertical splitter"
+
+msgid ""
+"mo:DBaseTableDesignerWidget.table_tabs"
+msgstr ""
+"table tabs"
+
+msgid ""
+"mo:DBaseTablePage.field_grid"
+msgstr ""
+"field grid"
+
+msgid ""
+"mo:DBaseTablePage.inner_tabs"
+msgstr ""
+"inner tabs"
+
+msgid ""
+"mo:DBaseTablePage.load_button"
+msgstr ""
+"Laden"
+
+msgid ""
+"mo:DBaseTablePage.save_as_button"
+msgstr ""
+"Speichern unter ..."
+
+msgid ""
+"mo:DBaseTablePage.save_button"
+msgstr ""
+"Speichern"
+
+msgid ""
+"mo:desktop_properties_panel"
+msgstr ""
+"desktop properties panel"
+
+msgid ""
+"mo:desktop_properties_scroll_area"
+msgstr ""
+"desktop properties scroll area"
+
+msgid ""
+"mo:desktop_properties_scroll_widget"
+msgstr ""
+"desktop properties scroll widget"
+
+msgid ""
+"mo:desktop_properties_tabs"
+msgstr ""
+"desktop properties tabs"
+
+msgid ""
+"mo:desktop_settings_action"
+msgstr ""
+"Desktop-Einstellungen ..."
+
+msgid ""
+"mo:desktop_settings_dock"
+msgstr ""
+"Desktop Properties"
+
+msgid ""
+"mo:DesktopPropertiesDialog.btn_apply"
+msgstr ""
+"btn apply"
+
+msgid ""
+"mo:DesktopPropertiesDialog.btn_cancel"
+msgstr ""
+"btn cancel"
+
+msgid ""
+"mo:DesktopPropertiesDialog.btn_components"
+msgstr ""
+"btn components"
+
+msgid ""
+"mo:DesktopPropertiesDialog.btn_external_editor"
+msgstr ""
+"..."
+
+msgid ""
+"mo:DesktopPropertiesDialog.btn_files_current_dir"
+msgstr ""
+"..."
+
+msgid ""
+"mo:DesktopPropertiesDialog.btn_files_search_path"
+msgstr ""
+"..."
+
+msgid ""
+"mo:DesktopPropertiesDialog.btn_help"
+msgstr ""
+"btn help"
+
+msgid ""
+"mo:DesktopPropertiesDialog.btn_logfile"
+msgstr ""
+"..."
+
+msgid ""
+"mo:DesktopPropertiesDialog.btn_ok"
+msgstr ""
+"btn ok"
+
+msgid ""
+"mo:DesktopPropertiesDialog.btn_prog_error_log"
+msgstr ""
+"..."
+
+msgid ""
+"mo:DesktopPropertiesDialog.btn_prog_html_template"
+msgstr ""
+"..."
+
+msgid ""
+"mo:DesktopPropertiesDialog.btn_test_beep"
+msgstr ""
+"btn test beep"
+
+msgid ""
+"mo:DesktopPropertiesDialog.cb_currency"
+msgstr ""
+"cb currency"
+
+msgid ""
+"mo:DesktopPropertiesDialog.cb_datefmt"
+msgstr ""
+"cb datefmt"
+
+msgid ""
+"mo:DesktopPropertiesDialog.cb_lang"
+msgstr ""
+"cb lang"
+
+msgid ""
+"mo:DesktopPropertiesDialog.cb_prog_error_action"
+msgstr ""
+"cb prog error action"
+
+msgid ""
+"mo:DesktopPropertiesDialog.chk_app_anim"
+msgstr ""
+"chk app anim"
+
+msgid ""
+"mo:DesktopPropertiesDialog.chk_app_datamodule"
+msgstr ""
+"chk app datamodule"
+
+msgid ""
+"mo:DesktopPropertiesDialog.chk_app_fit"
+msgstr ""
+"chk app fit"
+
+msgid ""
+"mo:DesktopPropertiesDialog.chk_app_form"
+msgstr ""
+"chk app form"
+
+msgid ""
+"mo:DesktopPropertiesDialog.chk_app_labels"
+msgstr ""
+"chk app labels"
+
+msgid ""
+"mo:DesktopPropertiesDialog.chk_app_ole"
+msgstr ""
+"chk app ole"
+
+msgid ""
+"mo:DesktopPropertiesDialog.chk_app_report"
+msgstr ""
+"chk app report"
+
+msgid ""
+"mo:DesktopPropertiesDialog.chk_app_save_logins"
+msgstr ""
+"chk app save logins"
+
+msgid ""
+"mo:DesktopPropertiesDialog.chk_app_splash"
+msgstr ""
+"chk app splash"
+
+msgid ""
+"mo:DesktopPropertiesDialog.chk_app_sql_trace"
+msgstr ""
+"chk app sql trace"
+
+msgid ""
+"mo:DesktopPropertiesDialog.chk_app_table"
+msgstr ""
+"chk app table"
+
+msgid ""
+"mo:DesktopPropertiesDialog.chk_approx"
+msgstr ""
+"chk approx"
+
+msgid ""
+"mo:DesktopPropertiesDialog.chk_autonull"
+msgstr ""
+"chk autonull"
+
+msgid ""
+"mo:DesktopPropertiesDialog.chk_autosave"
+msgstr ""
+"chk autosave"
+
+msgid ""
+"mo:DesktopPropertiesDialog.chk_backup"
+msgstr ""
+"chk backup"
+
+msgid ""
+"mo:DesktopPropertiesDialog.chk_beep"
+msgstr ""
+"chk beep"
+
+msgid ""
+"mo:DesktopPropertiesDialog.chk_century"
+msgstr ""
+"chk century"
+
+msgid ""
+"mo:DesktopPropertiesDialog.chk_confirm"
+msgstr ""
+"chk confirm"
+
+msgid ""
+"mo:DesktopPropertiesDialog.chk_cua"
+msgstr ""
+"chk cua"
+
+msgid ""
+"mo:DesktopPropertiesDialog.chk_currency_format"
+msgstr ""
+"lang"
+
+msgid ""
+"mo:DesktopPropertiesDialog.chk_deleted"
+msgstr ""
+"chk deleted"
+
+msgid ""
+"mo:DesktopPropertiesDialog.chk_enable_log"
+msgstr ""
+"chk enable log"
+
+msgid ""
+"mo:DesktopPropertiesDialog.chk_encrypt"
+msgstr ""
+"chk encrypt"
+
+msgid ""
+"mo:DesktopPropertiesDialog.chk_esc"
+msgstr ""
+"chk esc"
+
+msgid ""
+"mo:DesktopPropertiesDialog.chk_exclusive"
+msgstr ""
+"chk exclusive"
+
+msgid ""
+"mo:DesktopPropertiesDialog.chk_ident"
+msgstr ""
+"chk ident"
+
+msgid ""
+"mo:DesktopPropertiesDialog.chk_lock"
+msgstr ""
+"chk lock"
+
+msgid ""
+"mo:DesktopPropertiesDialog.chk_mismatch"
+msgstr ""
+"chk mismatch"
+
+msgid ""
+"mo:DesktopPropertiesDialog.chk_prog_blank"
+msgstr ""
+"chk prog blank"
+
+msgid ""
+"mo:DesktopPropertiesDialog.chk_prog_buildtime"
+msgstr ""
+"chk prog buildtime"
+
+msgid ""
+"mo:DesktopPropertiesDialog.chk_prog_design"
+msgstr ""
+"chk prog design"
+
+msgid ""
+"mo:DesktopPropertiesDialog.chk_prog_fieldnames"
+msgstr ""
+"chk prog fieldnames"
+
+msgid ""
+"mo:DesktopPropertiesDialog.chk_prog_fullpath"
+msgstr ""
+"chk prog fullpath"
+
+msgid ""
+"mo:DesktopPropertiesDialog.chk_prog_fulltest"
+msgstr ""
+"chk prog fulltest"
+
+msgid ""
+"mo:DesktopPropertiesDialog.chk_prog_high_precision"
+msgstr ""
+"chk prog high precision"
+
+msgid ""
+"mo:DesktopPropertiesDialog.chk_prog_protect"
+msgstr ""
+"chk prog protect"
+
+msgid ""
+"mo:DesktopPropertiesDialog.chk_prog_trace"
+msgstr ""
+"chk prog trace"
+
+msgid ""
+"mo:DesktopPropertiesDialog.chk_sessions"
+msgstr ""
+"chk sessions"
+
+msgid ""
+"mo:DesktopPropertiesDialog.chk_system_show"
+msgstr ""
+"chk system show"
+
+msgid ""
+"mo:DesktopPropertiesDialog.ed_datesep"
+msgstr ""
+"."
+
+msgid ""
+"mo:DesktopPropertiesDialog.ed_decimal"
+msgstr ""
+","
+
+msgid ""
+"mo:DesktopPropertiesDialog.ed_external_editor"
+msgstr ""
+"ed external editor"
+
+msgid ""
+"mo:DesktopPropertiesDialog.ed_files_current_dir"
+msgstr ""
+"ed files current dir"
+
+msgid ""
+"mo:DesktopPropertiesDialog.ed_files_search_path"
+msgstr ""
+"ed files search path"
+
+msgid ""
+"mo:DesktopPropertiesDialog.ed_logfile"
+msgstr ""
+"ed logfile"
+
+msgid ""
+"mo:DesktopPropertiesDialog.ed_prog_error_log"
+msgstr ""
+"PLUSerr.log"
+
+msgid ""
+"mo:DesktopPropertiesDialog.ed_prog_html_template"
+msgstr ""
+"error.htm"
+
+msgid ""
+"mo:DesktopPropertiesDialog.ed_thousand"
+msgstr ""
+"."
+
+msgid ""
+"mo:DesktopPropertiesDialog.lbl_currency_pattern"
+msgstr ""
+"129,99 EUR"
+
+msgid ""
+"mo:DesktopPropertiesDialog.lbl_date_pattern"
+msgstr ""
+"12.04.2026"
+
+msgid ""
+"mo:DesktopPropertiesDialog.lbl_num_pattern"
+msgstr ""
+"1.000.000,00"
+
+msgid ""
+"mo:DesktopPropertiesDialog.rb_dbase"
+msgstr ""
+"dBASE"
+
+msgid ""
+"mo:DesktopPropertiesDialog.rb_left"
+msgstr ""
+"rb left"
+
+msgid ""
+"mo:DesktopPropertiesDialog.rb_log_append"
+msgstr ""
+"rb log append"
+
+msgid ""
+"mo:DesktopPropertiesDialog.rb_log_overwrite"
+msgstr ""
+"rb log overwrite"
+
+msgid ""
+"mo:DesktopPropertiesDialog.rb_mysql"
+msgstr ""
+"MySQL"
+
+msgid ""
+"mo:DesktopPropertiesDialog.rb_paradox"
+msgstr ""
+"Paradox"
+
+msgid ""
+"mo:DesktopPropertiesDialog.rb_right"
+msgstr ""
+"rb right"
+
+msgid ""
+"mo:DesktopPropertiesDialog.rb_sqlite3"
+msgstr ""
+"SQLite 3"
+
+msgid ""
+"mo:DesktopPropertiesDialog.scroll_area"
+msgstr ""
+"scroll area"
+
+msgid ""
+"mo:DesktopPropertiesDialog.scroll_widget"
+msgstr ""
+"scroll widget"
+
+msgid ""
+"mo:DesktopPropertiesDialog.source_aliases_tab"
+msgstr ""
+"source aliases tab"
+
+msgid ""
+"mo:DesktopPropertiesDialog.sp_app_files"
+msgstr ""
+"sp app files"
+
+msgid ""
+"mo:DesktopPropertiesDialog.sp_app_projects"
+msgstr ""
+"sp app projects"
+
+msgid ""
+"mo:DesktopPropertiesDialog.sp_buf"
+msgstr ""
+"sp buf"
+
+msgid ""
+"mo:DesktopPropertiesDialog.sp_dur"
+msgstr ""
+"sp dur"
+
+msgid ""
+"mo:DesktopPropertiesDialog.sp_epoch"
+msgstr ""
+"sp epoch"
+
+msgid ""
+"mo:DesktopPropertiesDialog.sp_freq"
+msgstr ""
+"sp freq"
+
+msgid ""
+"mo:DesktopPropertiesDialog.sp_prog_decimals"
+msgstr ""
+"sp prog decimals"
+
+msgid ""
+"mo:DesktopPropertiesDialog.sp_prog_margin"
+msgstr ""
+"sp prog margin"
+
+msgid ""
+"mo:DesktopPropertiesDialog.sp_prog_max_size"
+msgstr ""
+"sp prog max size"
+
+msgid ""
+"mo:DesktopPropertiesDialog.sp_prog_precision"
+msgstr ""
+"sp prog precision"
+
+msgid ""
+"mo:DesktopPropertiesDialog.spin_indexblock"
+msgstr ""
+"spin indexblock"
+
+msgid ""
+"mo:DesktopPropertiesDialog.spin_memoblock"
+msgstr ""
+"spin memoblock"
+
+msgid ""
+"mo:DesktopPropertiesDialog.spin_refresh"
+msgstr ""
+"spin refresh"
+
+msgid ""
+"mo:DesktopPropertiesDialog.spin_retry"
+msgstr ""
+"spin retry"
+
+msgid ""
+"mo:DesktopPropertiesDialog.tabs"
+msgstr ""
+"tabs"
+
+msgid ""
+"mo:DesktopPropertiesDialog.user_bde_aliases_tab"
+msgstr ""
+"user bde aliases tab"
+
+msgid ""
+"mo:directory_tree"
+msgstr ""
+"directory tree"
+
+msgid ""
+"mo:dism_start_content_list"
+msgstr ""
+"dism start content list"
+
+msgid ""
+"mo:dism_start_information_tab"
+msgstr ""
+"dism start information tab"
+
+msgid ""
+"mo:dism_start_menu"
+msgstr ""
+"START"
+
+msgid ""
+"mo:dism_start_summary"
+msgstr ""
+"Noch keine DISM-START-Ausgabe vorhanden"
+
+msgid ""
+"mo:dock_title_close_button"
+msgstr ""
+"Dock-Fenster schließen"
+
+msgid ""
+"mo:dock_title_extra_button"
+msgstr ""
+"dock title extra button"
+
+msgid ""
+"mo:dock_title_float_button"
+msgstr ""
+"Andocken / Abdocken"
+
+msgid ""
+"mo:DockTitleBar.close_button"
+msgstr ""
+"Dock-Fenster schließen"
+
+msgid ""
+"mo:DockTitleBar.extra_button"
+msgstr ""
+"extra button"
+
+msgid ""
+"mo:DockTitleBar.float_button"
+msgstr ""
+"Andocken / Abdocken"
+
+msgid ""
+"mo:DockTitleBar.title_label"
+msgstr ""
+"title label"
+
+msgid ""
+"mo:document_tab_close_button"
+msgstr ""
+"Registerkarte schließen"
+
+msgid ""
+"mo:document_tabs"
+msgstr ""
+"document tabs"
+
+msgid ""
+"mo:DocumentEditor.amiga_cpu_combo"
+msgstr ""
+"680x0-CPU-Profil für den Amiga-Assembler"
+
+msgid ""
+"mo:DocumentEditor.amiga_fpu_combo"
+msgstr ""
+"amiga fpu combo"
+
+msgid ""
+"mo:DocumentEditor.assemble_button"
+msgstr ""
+"Assemble"
+
+msgid ""
+"mo:DocumentEditor.assemble_generated_button"
+msgstr ""
+"Assemble"
+
+msgid ""
+"mo:DocumentEditor.assembler_panel"
+msgstr ""
+"assembler panel"
+
+msgid ""
+"mo:DocumentEditor.assembly_status_label"
+msgstr ""
+"Noch nicht assembliert"
+
+msgid ""
+"mo:DocumentEditor.build_target_combo"
+msgstr ""
+"Compiler-/Assemblerziel auswählen"
+
+msgid ""
+"mo:DocumentEditor.coff_object_button"
+msgstr ""
+"COFF32 .o"
+
+msgid ""
+"mo:DocumentEditor.generated_amiga_cpu_combo"
+msgstr ""
+"generated amiga cpu combo"
+
+msgid ""
+"mo:DocumentEditor.generated_amiga_fpu_combo"
+msgstr ""
+"generated amiga fpu combo"
+
+msgid ""
+"mo:DocumentEditor.generated_assembly_editor_container"
+msgstr ""
+"generated assembly editor container"
+
+msgid ""
+"mo:DocumentEditor.generated_assembly_page"
+msgstr ""
+"generated assembly page"
+
+msgid ""
+"mo:DocumentEditor.generated_assembly_panel"
+msgstr ""
+"generated assembly panel"
+
+msgid ""
+"mo:DocumentEditor.generated_assembly_status_label"
+msgstr ""
+"ASM-Daten werden beim Kompilieren erzeugt"
+
+msgid ""
+"mo:DocumentEditor.generated_build_target_combo"
+msgstr ""
+"Compiler-/Assemblerziel auswählen"
+
+msgid ""
+"mo:DocumentEditor.generated_prolog_verbose_checkbox"
+msgstr ""
+"Verbose"
+
+msgid ""
+"mo:DocumentEditor.generated_windows_graphics_combo"
+msgstr ""
+"generated windows graphics combo"
+
+msgid ""
+"mo:DocumentEditor.hex_editor"
+msgstr ""
+"hex editor"
+
+msgid ""
+"mo:DocumentEditor.hints_editor"
+msgstr ""
+"Hinweise werden später an dieser Stelle angezeigt."
+
+msgid ""
+"mo:DocumentEditor.markdown_minimap"
+msgstr ""
+"markdown minimap"
+
+msgid ""
+"mo:DocumentEditor.markdown_preview"
+msgstr ""
+"markdown preview"
+
+msgid ""
+"mo:DocumentEditor.markdown_preview_page"
+msgstr ""
+"markdown preview page"
+
+msgid ""
+"mo:DocumentEditor.prolog_verbose_checkbox"
+msgstr ""
+"Verbose"
+
+msgid ""
+"mo:DocumentEditor.raw_editor_container"
+msgstr ""
+"raw editor container"
+
+msgid ""
+"mo:DocumentEditor.source_page"
+msgstr ""
+"source page"
+
+msgid ""
+"mo:DocumentEditor.start_assembled_button"
+msgstr ""
+"Start"
+
+msgid ""
+"mo:DocumentEditor.start_generated_button"
+msgstr ""
+"Start"
+
+msgid ""
+"mo:DocumentEditor.views"
+msgstr ""
+"views"
+
+msgid ""
+"mo:DocumentEditor.windows_graphics_combo"
+msgstr ""
+"Windows-Anwendungsart: Konsole, GUI, Direct2D oder Direct3D"
+
+msgid ""
+"mo:doxygen_documentation_dock"
+msgstr ""
+"Doxygen Dokumentation"
+
+msgid ""
+"mo:doxygen_documentation_tool"
+msgstr ""
+"doxygen documentation tool"
+
+msgid ""
+"mo:ErrorMessage.btn_close"
+msgstr ""
+"btn close"
+
+msgid ""
+"mo:ErrorMessage.btn_delete_log"
+msgstr ""
+"btn delete log"
+
+msgid ""
+"mo:ErrorMessage.text_edit"
+msgstr ""
+"text edit"
+
+msgid ""
+"mo:ExplorerWindow.about_action"
+msgstr ""
+"Über ..."
+
+msgid ""
+"mo:ExplorerWindow.archive_info_list"
+msgstr ""
+"archive info list"
+
+msgid ""
+"mo:ExplorerWindow.archive_info_summary"
+msgstr ""
+"Kein Archiv ausgewählt"
+
+msgid ""
+"mo:ExplorerWindow.archive_info_tab"
+msgstr ""
+"archive info tab"
+
+msgid ""
+"mo:ExplorerWindow.bottom_dock"
+msgstr ""
+"Protokoll"
+
+msgid ""
+"mo:ExplorerWindow.browse_button"
+msgstr ""
+"Arbeitsverzeichnis auswählen"
+
+msgid ""
+"mo:ExplorerWindow.caps_status_label"
+msgstr ""
+"CAPS"
+
+msgid ""
+"mo:ExplorerWindow.character_editor_action"
+msgstr ""
+"255 frei editierbare C64-Zeichen im 8x8-Raster bearbeiten"
+
+msgid ""
+"mo:ExplorerWindow.chm_viewer_action"
+msgstr ""
+"Hilfe öffnen"
+
+msgid ""
+"mo:ExplorerWindow.choose_directory_action"
+msgstr ""
+"choose directory action"
+
+msgid ""
+"mo:ExplorerWindow.close_document_action"
+msgstr ""
+"Registerkarte schließen"
+
+msgid ""
+"mo:ExplorerWindow.coff32_archive_action"
+msgstr ""
+"COFF32-Archiv (.a) erstellen ..."
+
+msgid ""
+"mo:ExplorerWindow.coff64_archive_action"
+msgstr ""
+"COFF64-Archiv (.a) erstellen …"
+
+msgid ""
+"mo:ExplorerWindow.content_list"
+msgstr ""
+"content list"
+
+msgid ""
+"mo:ExplorerWindow.cursor_status_label"
+msgstr ""
+"Zeile: –  Spalte: –"
+
+msgid ""
+"mo:ExplorerWindow.cursor_status_panel"
+msgstr ""
+"cursor status panel"
+
+msgid ""
+"mo:ExplorerWindow.d64_summary"
+msgstr ""
+"Keine Datei ausgewählt"
+
+msgid ""
+"mo:ExplorerWindow.directory_tree"
+msgstr ""
+"directory tree"
+
+msgid ""
+"mo:ExplorerWindow.dism_analyze_action"
+msgstr ""
+"Analyze Program"
+
+msgid ""
+"mo:ExplorerWindow.dism_bam_action"
+msgstr ""
+"BAM"
+
+msgid ""
+"mo:ExplorerWindow.dism_content_list"
+msgstr ""
+"dism content list"
+
+msgid ""
+"mo:ExplorerWindow.dism_disassemble_action"
+msgstr ""
+"Disassemble"
+
+msgid ""
+"mo:ExplorerWindow.dism_extract_action"
+msgstr ""
+"Extract Programs"
+
+msgid ""
+"mo:ExplorerWindow.dism_info_tab"
+msgstr ""
+"dism info tab"
+
+msgid ""
+"mo:ExplorerWindow.dism_program_action"
+msgstr ""
+"Programm"
+
+msgid ""
+"mo:ExplorerWindow.dism_ram_image_action"
+msgstr ""
+"RAM Image"
+
+msgid ""
+"mo:ExplorerWindow.dism_start_action"
+msgstr ""
+"Disketten Image"
+
+msgid ""
+"mo:ExplorerWindow.dism_start_menu"
+msgstr ""
+"START"
+
+msgid ""
+"mo:ExplorerWindow.dism_startup_action"
+msgstr ""
+"Start-Up"
+
+msgid ""
+"mo:ExplorerWindow.dism_summary"
+msgstr ""
+"Noch keine DISM-START-Ausgabe vorhanden"
+
+msgid ""
+"mo:ExplorerWindow.dism_verbose_action"
+msgstr ""
+"Verbose"
+
+msgid ""
+"mo:ExplorerWindow.dism_vice_action"
+msgstr ""
+"VICE"
+
+msgid ""
+"mo:ExplorerWindow.document_tabs"
+msgstr ""
+"document tabs"
+
+msgid ""
+"mo:ExplorerWindow.doxygen_action"
+msgstr ""
+"Doxygen Dokumentation ..."
+
+msgid ""
+"mo:ExplorerWindow.file_info_tab"
+msgstr ""
+"file info tab"
+
+msgid ""
+"mo:ExplorerWindow.file_list"
+msgstr ""
+"file list"
+
+msgid ""
+"mo:ExplorerWindow.file_size_status_label"
+msgstr ""
+"Dateigröße: –"
+
+msgid ""
+"mo:ExplorerWindow.file_status_panel"
+msgstr ""
+"file status panel"
+
+msgid ""
+"mo:ExplorerWindow.information_panel_tab"
+msgstr ""
+"information panel tab"
+
+msgid ""
+"mo:ExplorerWindow.insert_status_label"
+msgstr ""
+"INS"
+
+msgid ""
+"mo:ExplorerWindow.keyboard_status_panel"
+msgstr ""
+"keyboard status panel"
+
+msgid ""
+"mo:ExplorerWindow.left_dock"
+msgstr ""
+"Dateisystem und Dateien"
+
+msgid ""
+"mo:ExplorerWindow.localize_action"
+msgstr ""
+"Localize PO->Mo ..."
+
+msgid ""
+"mo:ExplorerWindow.log_edit"
+msgstr ""
+"log edit"
+
+msgid ""
+"mo:ExplorerWindow.main_menu_bar"
+msgstr ""
+"main menu bar"
+
+msgid ""
+"mo:ExplorerWindow.main_title_bar"
+msgstr ""
+"main title bar"
+
+msgid ""
+"mo:ExplorerWindow.main_top_chrome"
+msgstr ""
+"main top chrome"
+
+msgid ""
+"mo:ExplorerWindow.math_learning_action"
+msgstr ""
+"Mathematik-Arbeitsfläche …"
+
+msgid ""
+"mo:ExplorerWindow.math_numbers_wall_1000_action"
+msgstr ""
+"Zahlenmauer bis 1000"
+
+msgid ""
+"mo:ExplorerWindow.math_numbers_wall_100_action"
+msgstr ""
+"Zahlenmauer bis 100"
+
+msgid ""
+"mo:ExplorerWindow.new_amiga_project_action"
+msgstr ""
+"Projekt: Amiga 500 ADF ..."
+
+msgid ""
+"mo:ExplorerWindow.new_assembler_action"
+msgstr ""
+"Assembler-Programm"
+
+msgid ""
+"mo:ExplorerWindow.new_basic_action"
+msgstr ""
+"BASIC-Programm"
+
+msgid ""
+"mo:ExplorerWindow.new_c64_project_action"
+msgstr ""
+"Projekt: C= 64 Programm ..."
+
+msgid ""
+"mo:ExplorerWindow.new_c_action"
+msgstr ""
+"C-Programm"
+
+msgid ""
+"mo:ExplorerWindow.new_character_map_action"
+msgstr ""
+"C-64 Character Map"
+
+msgid ""
+"mo:ExplorerWindow.new_dbase_action"
+msgstr ""
+"dBase-Programm"
+
+msgid ""
+"mo:ExplorerWindow.new_dbase_project_action"
+msgstr ""
+"Projekt: dBase"
+
+msgid ""
+"mo:ExplorerWindow.new_file_action"
+msgstr ""
+"Eine neue Textdatei anlegen"
+
+msgid ""
+"mo:ExplorerWindow.new_lisp_action"
+msgstr ""
+"LISP-Programm"
+
+msgid ""
+"mo:ExplorerWindow.new_logo_action"
+msgstr ""
+"LOGO-Programm"
+
+msgid ""
+"mo:ExplorerWindow.new_logo_project_action"
+msgstr ""
+"Projekt: LOGO"
+
+msgid ""
+"mo:ExplorerWindow.new_pascal_action"
+msgstr ""
+"Pascal-Programm"
+
+msgid ""
+"mo:ExplorerWindow.new_pixel_screen_action"
+msgstr ""
+"C-64 Pixel Screen"
+
+msgid ""
+"mo:ExplorerWindow.new_prolog_action"
+msgstr ""
+"Prolog-Programm"
+
+msgid ""
+"mo:ExplorerWindow.new_prolog_project_action"
+msgstr ""
+"Projekt: PROLOG"
+
+msgid ""
+"mo:ExplorerWindow.new_text_screen_action"
+msgstr ""
+"C-64 Text Screen"
+
+msgid ""
+"mo:ExplorerWindow.new_windows_project_action"
+msgstr ""
+"Projekt: Windows Anwendung ..."
+
+msgid ""
+"mo:ExplorerWindow.num_status_label"
+msgstr ""
+"NUM"
+
+msgid ""
+"mo:ExplorerWindow.object_info_list"
+msgstr ""
+"object info list"
+
+msgid ""
+"mo:ExplorerWindow.object_info_summary"
+msgstr ""
+"Keine Objektdatei ausgewählt"
+
+msgid ""
+"mo:ExplorerWindow.object_info_tab"
+msgstr ""
+"object info tab"
+
+msgid ""
+"mo:ExplorerWindow.open_file_action"
+msgstr ""
+"Eine Text-, Assembler-, Pascal-, C-, LISP-, PROLOG- oder LOGO-Datei öffnen"
+
+msgid ""
+"mo:ExplorerWindow.palette_editor_action"
+msgstr ""
+"Die 16 C64-Farben bearbeiten und als Quellcode exportieren"
+
+msgid ""
+"mo:ExplorerWindow.parent_action"
+msgstr ""
+"parent action"
+
+msgid ""
+"mo:ExplorerWindow.path_edit"
+msgstr ""
+"Ordnerpfad eingeben und Enter drücken"
+
+msgid ""
+"mo:ExplorerWindow.pe32_linker_action"
+msgstr ""
+"Windows PE32 Linker ..."
+
+msgid ""
+"mo:ExplorerWindow.pe64_linker_action"
+msgstr ""
+"Windows PE64 Linker …"
+
+msgid ""
+"mo:ExplorerWindow.pixel_screen_editor_action"
+msgstr ""
+"Einen 320x200-Pixelbildschirm mit 16 Farben und Formwerkzeugen bearbeiten"
+
+msgid ""
+"mo:ExplorerWindow.project_new_button"
+msgstr ""
+"Neu"
+
+msgid ""
+"mo:ExplorerWindow.project_open_button"
+msgstr ""
+"Projektdatei (*.pro) öffnen"
+
+msgid ""
+"mo:ExplorerWindow.project_path_edit"
+msgstr ""
+"Pfad zur Projektdatei (*.pro)"
+
+msgid ""
+"mo:ExplorerWindow.project_save_as_button"
+msgstr ""
+"Speichern unter..."
+
+msgid ""
+"mo:ExplorerWindow.project_save_button"
+msgstr ""
+"Speichern"
+
+msgid ""
+"mo:ExplorerWindow.project_tree"
+msgstr ""
+"Doppelklick öffnet Dateien bzw. zeigt Archiv-/Objektinformationen; Checkboxen werden mit einfachem Klick umgeschaltet"
+
+msgid ""
+"mo:ExplorerWindow.quit_action"
+msgstr ""
+"Beenden"
+
+msgid ""
+"mo:ExplorerWindow.refresh_action"
+msgstr ""
+"refresh action"
+
+msgid ""
+"mo:ExplorerWindow.resource_action"
+msgstr ""
+"Resource Builder"
+
+msgid ""
+"mo:ExplorerWindow.right_dock"
+msgstr ""
+"Projekt / Informationen"
+
+msgid ""
+"mo:ExplorerWindow.right_info_tabs"
+msgstr ""
+"right info tabs"
+
+msgid ""
+"mo:ExplorerWindow.right_panel_tabs"
+msgstr ""
+"right panel tabs"
+
+msgid ""
+"mo:ExplorerWindow.save_as_action"
+msgstr ""
+"save as action"
+
+msgid ""
+"mo:ExplorerWindow.save_file_action"
+msgstr ""
+"save file action"
+
+msgid ""
+"mo:ExplorerWindow.settings_action"
+msgstr ""
+"Desktop-Einstellungen ..."
+
+msgid ""
+"mo:ExplorerWindow.text_screen_editor_action"
+msgstr ""
+"Eine 40x25-C64-Bildschirmseite mit Zeichen und Farben bearbeiten"
+
+msgid ""
+"mo:ExplorerWindow.theme_action"
+msgstr ""
+"theme action"
+
+msgid ""
+"mo:ExplorerWindow.toolbar"
+msgstr ""
+"Datei und Navigation"
+
+msgid ""
+"mo:ExplorerWindow.windows_graphics_build_action"
+msgstr ""
+"Windows Direct2D/Direct3D Runtime DLL bauen …"
+
+msgid ""
+"mo:ExplorerWindow.windows_graphics_header_action"
+msgstr ""
+"Windows Direct2D/Direct3D Runtime schreiben …"
+
+msgid ""
+"mo:ExplorerWindow.winuae_action"
+msgstr ""
+"WinUAE"
+
+msgid ""
+"mo:ExplorerWindow.zoom_in_action"
+msgstr ""
+"Schrift um 1 Punkt vergrößern"
+
+msgid ""
+"mo:ExplorerWindow.zoom_out_action"
+msgstr ""
+"Schrift um 1 Punkt verkleinern"
+
+msgid ""
+"mo:fibonacci_binet_calculate_button"
+msgstr ""
+"Berechnen"
+
+msgid ""
+"mo:fibonacci_binet_index_spin"
+msgstr ""
+"Index n der Fibonacci-Zahl; zulässig sind 1 bis 1000."
+
+msgid ""
+"mo:fibonacci_binet_result"
+msgstr ""
+"Mit „Berechnen“ wird F(n) über die Binetsche Formel bestimmt."
+
+msgid ""
+"mo:fibonacci_graphics_scene"
+msgstr ""
+"fibonacci graphics scene"
+
+msgid ""
+"mo:fibonacci_graphics_view"
+msgstr ""
+"fibonacci graphics view"
+
+msgid ""
+"mo:fibonacci_pascal_qpainter_canvas"
+msgstr ""
+"fibonacci pascal qpainter canvas"
+
+msgid ""
+"mo:FibonacciSpiralFactWidget.calculate_button"
+msgstr ""
+"Berechnen"
+
+msgid ""
+"mo:FibonacciSpiralFactWidget.canvas"
+msgstr ""
+"canvas"
+
+msgid ""
+"mo:FibonacciSpiralFactWidget.description_label"
+msgstr ""
+"Die Fibonacci-Darstellung liegt in einer scrollbaren QGraphicsScene. Oben werden Fibonacci-Flächen mit QPainter gezeichnet; darunter zeigt das weit auseinandergezogene, nochmals um 20 % vergrößerte Pascal-Dreieck die flachen Diagonalsummen."
+
+msgid ""
+"mo:FibonacciSpiralFactWidget.formula_label"
+msgstr ""
+"Binet: Fₙ = (φⁿ − ψⁿ) / √5"
+
+msgid ""
+"mo:FibonacciSpiralFactWidget.graphics_view"
+msgstr ""
+"graphics view"
+
+msgid ""
+"mo:FibonacciSpiralFactWidget.index_spin"
+msgstr ""
+"Index n der Fibonacci-Zahl; zulässig sind 1 bis 1000."
+
+msgid ""
+"mo:FibonacciSpiralFactWidget.result_edit"
+msgstr ""
+"Mit „Berechnen“ wird F(n) über die Binetsche Formel bestimmt."
+
+msgid ""
+"mo:FibonacciSpiralFactWidget.status_label"
+msgstr ""
+"Bereit. Die SpinBox akzeptiert Werte von 1 bis 1000."
+
+msgid ""
+"mo:FibonacciSpiralFactWidget.title_label"
+msgstr ""
+"Fibonacci Spirale"
+
+msgid ""
+"mo:file_icon_list"
+msgstr ""
+"file icon list"
+
+msgid ""
+"mo:file_information_tab"
+msgstr ""
+"file information tab"
+
+msgid ""
+"mo:filesystem_dock"
+msgstr ""
+"Dateisystem und Dateien"
+
+msgid ""
+"mo:generated_amiga_cpu_combo"
+msgstr ""
+"generated amiga cpu combo"
+
+msgid ""
+"mo:generated_amiga_fpu_combo"
+msgstr ""
+"generated amiga fpu combo"
+
+msgid ""
+"mo:generated_assembler_action_panel"
+msgstr ""
+"generated assembler action panel"
+
+msgid ""
+"mo:generated_assembly_editor"
+msgstr ""
+"Nach dem Kompilieren werden hier die ASM-Daten angezeigt."
+
+msgid ""
+"mo:generated_assembly_status_label"
+msgstr ""
+"ASM-Daten werden beim Kompilieren erzeugt"
+
+msgid ""
+"mo:generated_build_target_combo"
+msgstr ""
+"Compiler-/Assemblerziel auswählen"
+
+msgid ""
+"mo:generated_prolog_verbose_checkbox"
+msgstr ""
+"Verbose"
+
+msgid ""
+"mo:generated_windows_graphics_combo"
+msgstr ""
+"generated windows graphics combo"
+
+msgid ""
+"mo:gorilla_parabola_math_view"
+msgstr ""
+"gorilla parabola math view"
+
+msgid ""
+"mo:GorillaParabolaMathGameWidget.new_game_button"
+msgstr ""
+"Neue Skyline"
+
+msgid ""
+"mo:GorillaParabolaMathGameWidget.status_label"
+msgstr ""
+"status label"
+
+msgid ""
+"mo:GorillaParabolaMathGameWidget.title_label"
+msgstr ""
+"Gorilla-Parabeln – Wolkenkratzer"
+
+msgid ""
+"mo:GorillaParabolaMathGameWidget.turn_label"
+msgstr ""
+"turn label"
+
+msgid ""
+"mo:GorillaParabolaMathGameWidget.view"
+msgstr ""
+"view"
+
+msgid ""
+"mo:GorillaParabolaMathGameWidget.wind_label"
+msgstr ""
+"wind label"
+
+msgid ""
+"mo:green_beige_menu_bar"
+msgstr ""
+"green beige menu bar"
+
+msgid ""
+"mo:green_beige_popup_menu"
+msgstr ""
+"green beige popup menu"
+
+msgid ""
+"mo:green_beige_title_bar"
+msgstr ""
+"green beige title bar"
+
+msgid ""
+"mo:green_beige_title_icon"
+msgstr ""
+"green beige title icon"
+
+msgid ""
+"mo:green_beige_top_chrome"
+msgstr ""
+"green beige top chrome"
+
+msgid ""
+"mo:GreenBeigeTitleBar.icon_label"
+msgstr ""
+"icon label"
+
+msgid ""
+"mo:hex_editor"
+msgstr ""
+"hex editor"
+
+msgid ""
+"mo:hints_editor"
+msgstr ""
+"Hinweise werden später an dieser Stelle angezeigt."
+
+msgid ""
+"mo:information_panel_tab"
+msgstr ""
+"information panel tab"
+
+msgid ""
+"mo:iso_math_bank_answer"
+msgstr ""
+"iso math bank answer"
+
+msgid ""
+"mo:iso_math_task_answer"
+msgstr ""
+"iso math task answer"
+
+msgid ""
+"mo:iso_metric_math_view"
+msgstr ""
+"iso metric math view"
+
+msgid ""
+"mo:IsoMetricMathGameWidget.bank_amount_spin"
+msgstr ""
+"bank amount spin"
+
+msgid ""
+"mo:IsoMetricMathGameWidget.bank_answer_edit"
+msgstr ""
+"bank answer edit"
+
+msgid ""
+"mo:IsoMetricMathGameWidget.bank_audit_button"
+msgstr ""
+"Bankabrechnung prüfen"
+
+msgid ""
+"mo:IsoMetricMathGameWidget.bank_audit_label"
+msgstr ""
+"bank audit label"
+
+msgid ""
+"mo:IsoMetricMathGameWidget.bank_group"
+msgstr ""
+"Anlage-Bank"
+
+msgid ""
+"mo:IsoMetricMathGameWidget.bank_info_label"
+msgstr ""
+"Besuche ein BANK-Gebäude, um Budget anzulegen oder Zinsen zu prüfen."
+
+msgid ""
+"mo:IsoMetricMathGameWidget.bank_label"
+msgstr ""
+"bank label"
+
+msgid ""
+"mo:IsoMetricMathGameWidget.budget_label"
+msgstr ""
+"budget label"
+
+msgid ""
+"mo:IsoMetricMathGameWidget.build_button"
+msgstr ""
+"Baustufe errichten"
+
+msgid ""
+"mo:IsoMetricMathGameWidget.build_group"
+msgstr ""
+"Bauen / Rückbauen"
+
+msgid ""
+"mo:IsoMetricMathGameWidget.build_info_label"
+msgstr ""
+"build info label"
+
+msgid ""
+"mo:IsoMetricMathGameWidget.demolish_button"
+msgstr ""
+"Gebäude zurückbauen"
+
+msgid ""
+"mo:IsoMetricMathGameWidget.deposit_button"
+msgstr ""
+"Einzahlen"
+
+msgid ""
+"mo:IsoMetricMathGameWidget.new_map_button"
+msgstr ""
+"Neue Mathe-Stadt"
+
+msgid ""
+"mo:IsoMetricMathGameWidget.position_label"
+msgstr ""
+"position label"
+
+msgid ""
+"mo:IsoMetricMathGameWidget.solve_task_button"
+msgstr ""
+"Aufgabe prüfen"
+
+msgid ""
+"mo:IsoMetricMathGameWidget.status_label"
+msgstr ""
+"status label"
+
+msgid ""
+"mo:IsoMetricMathGameWidget.task_answer_edit"
+msgstr ""
+"task answer edit"
+
+msgid ""
+"mo:IsoMetricMathGameWidget.task_group"
+msgstr ""
+"Aufgabe auf dem Grundstück"
+
+msgid ""
+"mo:IsoMetricMathGameWidget.task_question_label"
+msgstr ""
+"Gehe zu einem Grundstück mit ?-Markierung."
+
+msgid ""
+"mo:IsoMetricMathGameWidget.title_label"
+msgstr ""
+"Mathe-Stadt – ISO-Metrik"
+
+msgid ""
+"mo:IsoMetricMathGameWidget.view"
+msgstr ""
+"view"
+
+msgid ""
+"mo:IsoMetricMathGameWidget.withdraw_button"
+msgstr ""
+"Abheben"
+
+msgid ""
+"mo:KnowledgeAlternativeDialog.cancel_button"
+msgstr ""
+"Abbrechen"
+
+msgid ""
+"mo:KnowledgeAlternativeDialog.info_label"
+msgstr ""
+"{…} mögliche Alternative(n)"
+
+msgid ""
+"mo:KnowledgeAlternativeDialog.list_widget"
+msgstr ""
+"list widget"
+
+msgid ""
+"mo:KnowledgeAlternativeDialog.ok_button"
+msgstr ""
+"OK"
+
+msgid ""
+"mo:KnowledgeAlternativeDialog.search_edit"
+msgstr ""
+"Alternativen durchsuchen …"
+
+msgid ""
+"mo:KnowledgeLevelButton.alternative_host"
+msgstr ""
+"alternative host"
+
+msgid ""
+"mo:KnowledgeLevelButton.arrow_button"
+msgstr ""
+"▼"
+
+msgid ""
+"mo:KnowledgeLevelButton.embedded_alternative_check_button"
+msgstr ""
+"Prüfen"
+
+msgid ""
+"mo:KnowledgeLevelButton.embedded_alternative_combo"
+msgstr ""
+"embedded alternative combo"
+
+msgid ""
+"mo:KnowledgeLevelButton.embedded_alternative_label"
+msgstr ""
+"Alternativen:"
+
+msgid ""
+"mo:KnowledgeLevelButton.main_button"
+msgstr ""
+"main button"
+
+msgid ""
+"mo:KnowledgeQueryLane.add_lane_button"
+msgstr ""
+"Hinzufügen"
+
+msgid ""
+"mo:KnowledgeQueryLane.add_level_button"
+msgstr ""
+"Prüfen +"
+
+msgid ""
+"mo:KnowledgeQueryLane.alternative_check_button"
+msgstr ""
+"Prüfen +"
+
+msgid ""
+"mo:KnowledgeQueryLane.alternative_combo"
+msgstr ""
+"Mögliche Werte für den nächsten Entscheidungs-Level"
+
+msgid ""
+"mo:KnowledgeQueryLane.alternative_label"
+msgstr ""
+"Alternativen:"
+
+msgid ""
+"mo:KnowledgeQueryLane.alternative_overlay"
+msgstr ""
+"alternative overlay"
+
+msgid ""
+"mo:KnowledgeQueryLane.alternative_status_label"
+msgstr ""
+"alternative status label"
+
+msgid ""
+"mo:KnowledgeQueryLane.command_host"
+msgstr ""
+"command host"
+
+msgid ""
+"mo:KnowledgeQueryLane.delete_lane_button"
+msgstr ""
+"Löschen"
+
+msgid ""
+"mo:KnowledgeQueryLane.level_button_host"
+msgstr ""
+"level button host"
+
+msgid ""
+"mo:KnowledgeQueryLane.level_container"
+msgstr ""
+"level container"
+
+msgid ""
+"mo:KnowledgeQueryLane.level_scroll"
+msgstr ""
+"level scroll"
+
+msgid ""
+"mo:KnowledgeQueryLane.query_edit"
+msgstr ""
+"Wert für den nächsten Level, z. B. gesund"
+
+msgid ""
+"mo:KnowledgeQueryLane.query_status"
+msgstr ""
+"Bitte links einen Fakt bzw. eine Regel auswählen."
+
+msgid ""
+"mo:LanguageRadioFlag.flag"
+msgstr ""
+"flag"
+
+msgid ""
+"mo:LanguageRadioFlag.radio"
+msgstr ""
+"radio"
+
+msgid ""
+"mo:learning_content_stack"
+msgstr ""
+"learning content stack"
+
+msgid ""
+"mo:learning_facts_tree"
+msgstr ""
+"learning facts tree"
+
+msgid ""
+"mo:learning_games_tree"
+msgstr ""
+"learning games tree"
+
+msgid ""
+"mo:learning_left_tabs"
+msgstr ""
+"learning left tabs"
+
+msgid ""
+"mo:line_number_area"
+msgstr ""
+"Linke Markerspalte: Breakpoint (hellrot)\nRechte Markerspalte: Favorit/Bookmark (hellblau)\nLinksklick setzt, Rechtsklick löscht den Marker."
+
+msgid ""
+"mo:localize_po_mo_dock"
+msgstr ""
+"Localize PO/MO"
+
+msgid ""
+"mo:localize_po_mo_tool"
+msgstr ""
+"localize po mo tool"
+
+msgid ""
+"mo:localize_themed_message_box"
+msgstr ""
+"localize themed message box"
+
+msgid ""
+"mo:LocalizeCodeEditor._line_number_area"
+msgstr ""
+"line number area"
+
+msgid ""
+"mo:LocalizeToolWindow.btn_apply"
+msgstr ""
+"btn apply"
+
+msgid ""
+"mo:LocalizeToolWindow.btn_cancel"
+msgstr ""
+"btn cancel"
+
+msgid ""
+"mo:LocalizeToolWindow.btn_create"
+msgstr ""
+"btn create"
+
+msgid ""
+"mo:LocalizeToolWindow.btn_cut"
+msgstr ""
+"btn cut"
+
+msgid ""
+"mo:LocalizeToolWindow.btn_delete"
+msgstr ""
+"btn delete"
+
+msgid ""
+"mo:LocalizeToolWindow.btn_delete_text"
+msgstr ""
+"btn delete text"
+
+msgid ""
+"mo:LocalizeToolWindow.btn_insert"
+msgstr ""
+"btn insert"
+
+msgid ""
+"mo:LocalizeToolWindow.btn_load_mo_path"
+msgstr ""
+"btn load mo path"
+
+msgid ""
+"mo:LocalizeToolWindow.btn_load_po_path"
+msgstr ""
+"btn load po path"
+
+msgid ""
+"mo:LocalizeToolWindow.btn_open_po"
+msgstr ""
+"btn open po"
+
+msgid ""
+"mo:LocalizeToolWindow.btn_paste"
+msgstr ""
+"btn paste"
+
+msgid ""
+"mo:LocalizeToolWindow.btn_save_as_po"
+msgstr ""
+"btn save as po"
+
+msgid ""
+"mo:LocalizeToolWindow.btn_save_po"
+msgstr ""
+"btn save po"
+
+msgid ""
+"mo:LocalizeToolWindow.ed_mo_path"
+msgstr ""
+"ed mo path"
+
+msgid ""
+"mo:LocalizeToolWindow.ed_msgid"
+msgstr ""
+"ed msgid"
+
+msgid ""
+"mo:LocalizeToolWindow.ed_po_path"
+msgstr ""
+"ed po path"
+
+msgid ""
+"mo:LocalizeToolWindow.gb_dest"
+msgstr ""
+"gb dest"
+
+msgid ""
+"mo:LocalizeToolWindow.gb_source"
+msgstr ""
+"gb source"
+
+msgid ""
+"mo:LocalizeToolWindow.msgid_list"
+msgstr ""
+"msgid list"
+
+msgid ""
+"mo:LocalizeToolWindow.tabs"
+msgstr ""
+"tabs"
+
+msgid ""
+"mo:LocalizeToolWindow.text_msgstr"
+msgstr ""
+"text msgstr"
+
+msgid ""
+"mo:LocalizeToolWindow.ws1"
+msgstr ""
+"ws1"
+
+msgid ""
+"mo:log_dock"
+msgstr ""
+"Protokoll"
+
+msgid ""
+"mo:main_help_action"
+msgstr ""
+"Hilfe öffnen"
+
+msgid ""
+"mo:main_toolbar"
+msgstr ""
+"Datei und Navigation"
+
+msgid ""
+"mo:markdown_preview"
+msgstr ""
+"markdown preview"
+
+msgid ""
+"mo:math_learning_dock"
+msgstr ""
+"Mathematik"
+
+msgid ""
+"mo:math_numbers_wall_view"
+msgstr ""
+"math numbers wall view"
+
+msgid ""
+"mo:math_task_card"
+msgstr ""
+"math task card"
+
+msgid ""
+"mo:MathematicsLearningDockWidget.arithmetic_widget"
+msgstr ""
+"arithmetic widget"
+
+msgid ""
+"mo:MathematicsLearningDockWidget.cantor_diagonal_widget"
+msgstr ""
+"cantor diagonal widget"
+
+msgid ""
+"mo:MathematicsLearningDockWidget.content_stack"
+msgstr ""
+"content stack"
+
+msgid ""
+"mo:MathematicsLearningDockWidget.facts_hint"
+msgstr ""
+"Doppelklick auf einen Fakt öffnet rechts die zugehörige Darstellung."
+
+msgid ""
+"mo:MathematicsLearningDockWidget.facts_tree"
+msgstr ""
+"facts tree"
+
+msgid ""
+"mo:MathematicsLearningDockWidget.fibonacci_spiral_widget"
+msgstr ""
+"fibonacci spiral widget"
+
+msgid ""
+"mo:MathematicsLearningDockWidget.games_hint"
+msgstr ""
+"Doppelklick auf einen Eintrag startet das Lernspiel rechts in der Arbeitsfläche."
+
+msgid ""
+"mo:MathematicsLearningDockWidget.games_tree"
+msgstr ""
+"games tree"
+
+msgid ""
+"mo:MathematicsLearningDockWidget.gorilla_parabola_widget"
+msgstr ""
+"gorilla parabola widget"
+
+msgid ""
+"mo:MathematicsLearningDockWidget.info_browser"
+msgstr ""
+"info browser"
+
+msgid ""
+"mo:MathematicsLearningDockWidget.iso_metric_widget"
+msgstr ""
+"iso metric widget"
+
+msgid ""
+"mo:MathematicsLearningDockWidget.left_tabs"
+msgstr ""
+"left tabs"
+
+msgid ""
+"mo:MathematicsLearningDockWidget.numbers_wall_widget"
+msgstr ""
+"numbers wall widget"
+
+msgid ""
+"mo:MathematicsLearningDockWidget.pascal_triangle_widget"
+msgstr ""
+"pascal triangle widget"
+
+msgid ""
+"mo:MathematicsLearningDockWidget.placeholder"
+msgstr ""
+"Wähle links unter „Fakten“ oder „Spiele“ per Doppelklick einen Eintrag aus."
+
+msgid ""
+"mo:MathematicsLearningDockWidget.sudoku_widget"
+msgstr ""
+"sudoku widget"
+
+msgid ""
+"mo:NumberCalculatorDialog.backspace_button"
+msgstr ""
+"←"
+
+msgid ""
+"mo:NumberCalculatorDialog.calculate_button"
+msgstr ""
+"Berechnen"
+
+msgid ""
+"mo:NumberCalculatorDialog.change_button"
+msgstr ""
+"Ändern"
+
+msgid ""
+"mo:NumberCalculatorDialog.clear_button"
+msgstr ""
+"Löschen"
+
+msgid ""
+"mo:NumberCalculatorDialog.close_button"
+msgstr ""
+"Schließen"
+
+msgid ""
+"mo:NumberCalculatorDialog.equals_button"
+msgstr ""
+"="
+
+msgid ""
+"mo:NumberCalculatorDialog.error_label"
+msgstr ""
+"error label"
+
+msgid ""
+"mo:NumberCalculatorDialog.expression_display"
+msgstr ""
+"expression display"
+
+msgid ""
+"mo:NumberCalculatorDialog.memory_label"
+msgstr ""
+"memory label"
+
+msgid ""
+"mo:NumberCalculatorDialog.recall_button"
+msgstr ""
+"Abrufen"
+
+msgid ""
+"mo:NumberCalculatorDialog.store_button"
+msgstr ""
+"Speichern"
+
+msgid ""
+"mo:NumberPyramidTrainerWidget.check_button"
+msgstr ""
+"Prüfen"
+
+msgid ""
+"mo:NumberPyramidTrainerWidget.graphics_view"
+msgstr ""
+"graphics view"
+
+msgid ""
+"mo:NumberPyramidTrainerWidget.status_label"
+msgstr ""
+"Die ersten zwei Pyramiden besitzen nur Vorgaben in der 1. Stufe. Die nächsten zwei Pyramiden geben zusätzlich Randwerte der 2. Stufe vor."
+
+msgid ""
+"mo:NumberPyramidTrainerWidget.title_label"
+msgstr ""
+"Wähle links im Tab „Spiele“ eine Zahlenmauer-Aufgabe aus."
+
+msgid ""
+"mo:numbers_wall_input"
+msgstr ""
+"0"
+
+msgid ""
+"mo:object_information_list"
+msgstr ""
+"object information list"
+
+msgid ""
+"mo:object_information_tab"
+msgstr ""
+"object information tab"
+
+msgid ""
+"mo:open_back_button"
+msgstr ""
+"Zurück"
+
+msgid ""
+"mo:open_dialog_cancel_button"
+msgstr ""
+"Abbrechen"
+
+msgid ""
+"mo:open_dialog_open_button"
+msgstr ""
+"Öffnen"
+
+msgid ""
+"mo:open_directory_tree"
+msgstr ""
+"open directory tree"
+
+msgid ""
+"mo:open_extension_check_list"
+msgstr ""
+"open extension check list"
+
+msgid ""
+"mo:open_file_view"
+msgstr ""
+"open file view"
+
+msgid ""
+"mo:open_forward_button"
+msgstr ""
+"Vor"
+
+msgid ""
+"mo:open_full_path_combo"
+msgstr ""
+"open full path combo"
+
+msgid ""
+"mo:open_main_splitter"
+msgstr ""
+"open main splitter"
+
+msgid ""
+"mo:open_path_combo"
+msgstr ""
+"open path combo"
+
+msgid ""
+"mo:open_path_stack"
+msgstr ""
+"open path stack"
+
+msgid ""
+"mo:open_search_edit"
+msgstr ""
+"Search"
+
+msgid ""
+"mo:open_up_button"
+msgstr ""
+"Eine Verzeichnisebene höher"
+
+msgid ""
+"mo:palette_editor_list"
+msgstr ""
+"palette editor list"
+
+msgid ""
+"mo:pascal_triangle_depth_spin"
+msgstr ""
+"Anzahl sichtbarer Reihen ({…} bis {…})"
+
+msgid ""
+"mo:pascal_triangle_view"
+msgstr ""
+"pascal triangle view"
+
+msgid ""
+"mo:PascalTriangleFactWidget.depth_spin"
+msgstr ""
+"Anzahl sichtbarer Reihen ({…} bis {…})"
+
+msgid ""
+"mo:PascalTriangleFactWidget.description_label"
+msgstr ""
+"Jeder innere Wert ist die Summe der beiden Werte links und rechts darüber. Die Randwerte sind immer 1."
+
+msgid ""
+"mo:PascalTriangleFactWidget.level_label"
+msgstr ""
+"level label"
+
+msgid ""
+"mo:PascalTriangleFactWidget.title_label"
+msgstr ""
+"Pascal Dreieck"
+
+msgid ""
+"mo:PascalTriangleFactWidget.view"
+msgstr ""
+"view"
+
+msgid ""
+"mo:petscii_character_dialog"
+msgstr ""
+"PETSCII-Zeichen auswählen"
+
+msgid ""
+"mo:petscii_character_scroll_area"
+msgstr ""
+"petscii character scroll area"
+
+msgid ""
+"mo:petscii_character_table"
+msgstr ""
+"petscii character table"
+
+msgid ""
+"mo:petscii_dialog_close_button"
+msgstr ""
+"Schließen"
+
+msgid ""
+"mo:petscii_dialog_heading"
+msgstr ""
+"PETSCII-Zeichen für Byte an Offset ${…}"
+
+msgid ""
+"mo:project_open_button"
+msgstr ""
+"Projektdatei (*.pro) öffnen"
+
+msgid ""
+"mo:project_open_file_dialog"
+msgstr ""
+"Datei öffnen"
+
+msgid ""
+"mo:project_panel_tab"
+msgstr ""
+"project panel tab"
+
+msgid ""
+"mo:project_path_edit"
+msgstr ""
+"Pfad zur Projektdatei (*.pro)"
+
+msgid ""
+"mo:project_tree"
+msgstr ""
+"Doppelklick öffnet Dateien bzw. zeigt Archiv-/Objektinformationen; Checkboxen werden mit einfachem Klick umgeschaltet"
+
+msgid ""
+"mo:ProjectOpenFileDialog.back_button"
+msgstr ""
+"Zurück"
+
+msgid ""
+"mo:ProjectOpenFileDialog.breadcrumb_buttons_widget"
+msgstr ""
+"breadcrumb buttons widget"
+
+msgid ""
+"mo:ProjectOpenFileDialog.breadcrumb_folder_button"
+msgstr ""
+"Vollständigen Verzeichnispfad bearbeiten"
+
+msgid ""
+"mo:ProjectOpenFileDialog.breadcrumb_widget"
+msgstr ""
+"breadcrumb widget"
+
+msgid ""
+"mo:ProjectOpenFileDialog.cancel_button"
+msgstr ""
+"Abbrechen"
+
+msgid ""
+"mo:ProjectOpenFileDialog.directory_tree"
+msgstr ""
+"directory tree"
+
+msgid ""
+"mo:ProjectOpenFileDialog.extension_list"
+msgstr ""
+"extension list"
+
+msgid ""
+"mo:ProjectOpenFileDialog.file_combo"
+msgstr ""
+"file combo"
+
+msgid ""
+"mo:ProjectOpenFileDialog.file_view"
+msgstr ""
+"file view"
+
+msgid ""
+"mo:ProjectOpenFileDialog.forward_button"
+msgstr ""
+"Vor"
+
+msgid ""
+"mo:ProjectOpenFileDialog.main_splitter"
+msgstr ""
+"main splitter"
+
+msgid ""
+"mo:ProjectOpenFileDialog.open_button"
+msgstr ""
+"Öffnen"
+
+msgid ""
+"mo:ProjectOpenFileDialog.path_combo"
+msgstr ""
+"path combo"
+
+msgid ""
+"mo:ProjectOpenFileDialog.path_stack"
+msgstr ""
+"path stack"
+
+msgid ""
+"mo:ProjectOpenFileDialog.search_edit"
+msgstr ""
+"Search"
+
+msgid ""
+"mo:ProjectOpenFileDialog.subdir_button"
+msgstr ""
+"Unterverzeichnisse anzeigen"
+
+msgid ""
+"mo:ProjectOpenFileDialog.up_button"
+msgstr ""
+"Eine Verzeichnisebene höher"
+
+msgid ""
+"mo:prolog_knowledge_alternative_check_button"
+msgstr ""
+"Prüfen +"
+
+msgid ""
+"mo:prolog_knowledge_alternative_combo"
+msgstr ""
+"Mögliche Werte für den nächsten Entscheidungs-Level"
+
+msgid ""
+"mo:prolog_knowledge_alternative_label"
+msgstr ""
+"Alternativen:"
+
+msgid ""
+"mo:prolog_knowledge_alternative_overlay"
+msgstr ""
+"prolog knowledge alternative overlay"
+
+msgid ""
+"mo:prolog_knowledge_alternative_status"
+msgstr ""
+"prolog knowledge alternative status"
+
+msgid ""
+"mo:prolog_knowledge_close_button"
+msgstr ""
+"Schließen"
+
+msgid ""
+"mo:prolog_knowledge_database_combo"
+msgstr ""
+"prolog knowledge database combo"
+
+msgid ""
+"mo:prolog_knowledge_database_label"
+msgstr ""
+"Wissen-Datenbank:"
+
+msgid ""
+"mo:prolog_knowledge_database_status"
+msgstr ""
+"Keine Datenbank geladen"
+
+msgid ""
+"mo:prolog_knowledge_dialog"
+msgstr ""
+"PROLOG – Wissen-Datenbanken"
+
+msgid ""
+"mo:prolog_knowledge_directory_button"
+msgstr ""
+"…"
+
+msgid ""
+"mo:prolog_knowledge_directory_edit"
+msgstr ""
+"Verzeichnis der Wissen-Datenbanken"
+
+msgid ""
+"mo:prolog_knowledge_directory_label"
+msgstr ""
+"Verzeichnis:"
+
+msgid ""
+"mo:prolog_knowledge_dock"
+msgstr ""
+"PROLOG – Wissen-Datenbanken"
+
+msgid ""
+"mo:prolog_knowledge_embedded_alternative_check_button"
+msgstr ""
+"Prüfen"
+
+msgid ""
+"mo:prolog_knowledge_embedded_alternative_combo"
+msgstr ""
+"prolog knowledge embedded alternative combo"
+
+msgid ""
+"mo:prolog_knowledge_embedded_alternative_label"
+msgstr ""
+"Alternativen:"
+
+msgid ""
+"mo:prolog_knowledge_fact_arity_combo"
+msgstr ""
+"Stelligkeit/Argumentanzahl 1 bis 100 auswählen"
+
+msgid ""
+"mo:prolog_knowledge_fact_filter_button"
+msgstr ""
+"Faktenfilter anwenden"
+
+msgid ""
+"mo:prolog_knowledge_fact_filter_edit"
+msgstr ""
+"Faktenname filtern …"
+
+msgid ""
+"mo:prolog_knowledge_fact_tree"
+msgstr ""
+"prolog knowledge fact tree"
+
+msgid ""
+"mo:prolog_knowledge_facts_caption"
+msgstr ""
+"Fakten / Regeln"
+
+msgid ""
+"mo:prolog_knowledge_lane_add"
+msgstr ""
+"Hinzufügen"
+
+msgid ""
+"mo:prolog_knowledge_lane_commands"
+msgstr ""
+"prolog knowledge lane commands"
+
+msgid ""
+"mo:prolog_knowledge_lane_delete"
+msgstr ""
+"Löschen"
+
+msgid ""
+"mo:prolog_knowledge_level_alternative_host"
+msgstr ""
+"prolog knowledge level alternative host"
+
+msgid ""
+"mo:prolog_knowledge_level_arrow"
+msgstr ""
+"▼"
+
+msgid ""
+"mo:prolog_knowledge_level_button_host"
+msgstr ""
+"prolog knowledge level button host"
+
+msgid ""
+"mo:prolog_knowledge_level_container"
+msgstr ""
+"prolog knowledge level container"
+
+msgid ""
+"mo:prolog_knowledge_level_main"
+msgstr ""
+"prolog knowledge level main"
+
+msgid ""
+"mo:prolog_knowledge_level_scroll"
+msgstr ""
+"prolog knowledge level scroll"
+
+msgid ""
+"mo:prolog_knowledge_main_container"
+msgstr ""
+"prolog knowledge main container"
+
+msgid ""
+"mo:prolog_knowledge_main_scroll"
+msgstr ""
+"prolog knowledge main scroll"
+
+msgid ""
+"mo:prolog_knowledge_open_button"
+msgstr ""
+"Öffnen"
+
+msgid ""
+"mo:prolog_knowledge_query_check_add"
+msgstr ""
+"Prüfen +"
+
+msgid ""
+"mo:prolog_knowledge_query_edit"
+msgstr ""
+"Wert für den nächsten Level, z. B. gesund"
+
+msgid ""
+"mo:prolog_knowledge_query_lane"
+msgstr ""
+"prolog knowledge query lane"
+
+msgid ""
+"mo:prolog_knowledge_query_status"
+msgstr ""
+"Bitte links einen Fakt bzw. eine Regel auswählen."
+
+msgid ""
+"mo:prolog_verbose_checkbox"
+msgstr ""
+"Verbose"
+
+msgid ""
+"mo:PrologKnowledgeDialog.database_combo"
+msgstr ""
+"database combo"
+
+msgid ""
+"mo:PrologKnowledgeDialog.database_label"
+msgstr ""
+"Keine Datenbank geladen"
+
+msgid ""
+"mo:PrologKnowledgeDialog.directory_button"
+msgstr ""
+"…"
+
+msgid ""
+"mo:PrologKnowledgeDialog.directory_edit"
+msgstr ""
+"Verzeichnis der Wissen-Datenbanken"
+
+msgid ""
+"mo:PrologKnowledgeDialog.fact_arity_combo"
+msgstr ""
+"Stelligkeit/Argumentanzahl 1 bis 100 auswählen"
+
+msgid ""
+"mo:PrologKnowledgeDialog.fact_filter_button"
+msgstr ""
+"Faktenfilter anwenden"
+
+msgid ""
+"mo:PrologKnowledgeDialog.fact_filter_edit"
+msgstr ""
+"Faktenname filtern …"
+
+msgid ""
+"mo:PrologKnowledgeDialog.fact_tree"
+msgstr ""
+"fact tree"
+
+msgid ""
+"mo:PrologKnowledgeDialog.main_splitter"
+msgstr ""
+"main splitter"
+
+msgid ""
+"mo:PrologKnowledgeDialog.open_button"
+msgstr ""
+"Öffnen"
+
+msgid ""
+"mo:PrologKnowledgeDialog.query_main_container"
+msgstr ""
+"query main container"
+
+msgid ""
+"mo:PrologKnowledgeDialog.query_main_scroll"
+msgstr ""
+"query main scroll"
+
+msgid ""
+"mo:raw_data_editor"
+msgstr ""
+"raw data editor"
+
+msgid ""
+"mo:recent_program_files_menu"
+msgstr ""
+"recent program files menu"
+
+msgid ""
+"mo:ResourceBuilderToolWindow.alias_host"
+msgstr ""
+"alias host"
+
+msgid ""
+"mo:ResourceBuilderToolWindow.alias_scroll"
+msgstr ""
+"alias scroll"
+
+msgid ""
+"mo:ResourceBuilderToolWindow.btn_apply"
+msgstr ""
+"btn apply"
+
+msgid ""
+"mo:ResourceBuilderToolWindow.btn_clear_all"
+msgstr ""
+"btn clear all"
+
+msgid ""
+"mo:ResourceBuilderToolWindow.btn_delete"
+msgstr ""
+"btn delete"
+
+msgid ""
+"mo:ResourceBuilderToolWindow.btn_py"
+msgstr ""
+"btn py"
+
+msgid ""
+"mo:ResourceBuilderToolWindow.btn_xml"
+msgstr ""
+"btn xml"
+
+msgid ""
+"mo:ResourceBuilderToolWindow.button_view_a"
+msgstr ""
+"button view a"
+
+msgid ""
+"mo:ResourceBuilderToolWindow.button_view_b"
+msgstr ""
+"button view b"
+
+msgid ""
+"mo:ResourceBuilderToolWindow.button_view_c"
+msgstr ""
+"button view c"
+
+msgid ""
+"mo:ResourceBuilderToolWindow.chk_root_only"
+msgstr ""
+"chk root only"
+
+msgid ""
+"mo:ResourceBuilderToolWindow.detail_view"
+msgstr ""
+"detail view"
+
+msgid ""
+"mo:ResourceBuilderToolWindow.dir_edit"
+msgstr ""
+"dir edit"
+
+msgid ""
+"mo:ResourceBuilderToolWindow.icon_view"
+msgstr ""
+"icon view"
+
+msgid ""
+"mo:ResourceBuilderToolWindow.left_tabs"
+msgstr ""
+"left tabs"
+
+msgid ""
+"mo:ResourceBuilderToolWindow.middle_widget"
+msgstr ""
+"middle widget"
+
+msgid ""
+"mo:ResourceBuilderToolWindow.right_tabs"
+msgstr ""
+"right tabs"
+
+msgid ""
+"mo:ResourceBuilderToolWindow.view_stack"
+msgstr ""
+"view stack"
+
+msgid ""
+"mo:ResourceBuilderToolWindow.xml_edit"
+msgstr ""
+"xml edit"
+
+msgid ""
+"mo:right_information_tabs"
+msgstr ""
+"right information tabs"
+
+msgid ""
+"mo:right_panel_tabs"
+msgstr ""
+"right panel tabs"
+
+msgid ""
+"mo:showException.btn"
+msgstr ""
+"Schließen"
+
+msgid ""
+"mo:showException.text"
+msgstr ""
+"text"
+
+msgid ""
+"mo:source_editor_with_minimap"
+msgstr ""
+"source editor with minimap"
+
+msgid ""
+"mo:source_minimap"
+msgstr ""
+"source minimap"
+
+msgid ""
+"mo:SourceAliasesTab.btn_add"
+msgstr ""
+"btn add"
+
+msgid ""
+"mo:SourceAliasesTab.btn_browse"
+msgstr ""
+"..."
+
+msgid ""
+"mo:SourceAliasesTab.btn_remove"
+msgstr ""
+"btn remove"
+
+msgid ""
+"mo:SourceAliasesTab.ed_alias"
+msgstr ""
+"ed alias"
+
+msgid ""
+"mo:SourceAliasesTab.ed_path"
+msgstr ""
+"ed path"
+
+msgid ""
+"mo:SourceAliasesTab.lst"
+msgstr ""
+"lst"
+
+msgid ""
+"mo:SourceEditorWithMiniMap.editor"
+msgstr ""
+"editor"
+
+msgid ""
+"mo:SourceEditorWithMiniMap.minimap"
+msgstr ""
+"minimap"
+
+msgid ""
+"mo:SourceTextEdit.completion_description"
+msgstr ""
+"completion description"
+
+msgid ""
+"mo:SourceTextEdit.completion_frame"
+msgstr ""
+"completion frame"
+
+msgid ""
+"mo:SourceTextEdit.completion_ghost"
+msgstr ""
+"completion ghost"
+
+msgid ""
+"mo:SourceTextEdit.completion_header"
+msgstr ""
+"completion header"
+
+msgid ""
+"mo:SourceTextEdit.instruction_help_current"
+msgstr ""
+"instruction help current"
+
+msgid ""
+"mo:SourceTextEdit.instruction_help_description"
+msgstr ""
+"instruction help description"
+
+msgid ""
+"mo:SourceTextEdit.instruction_help_frame"
+msgstr ""
+"instruction help frame"
+
+msgid ""
+"mo:SourceTextEdit.instruction_help_header"
+msgstr ""
+"instruction help header"
+
+msgid ""
+"mo:SourceTextEdit.line_number_area"
+msgstr ""
+"line number area"
+
+msgid ""
+"mo:start_assembled_button"
+msgstr ""
+"Start"
+
+msgid ""
+"mo:start_generated_button"
+msgstr ""
+"Start"
+
+msgid ""
+"mo:status_cursor_panel"
+msgstr ""
+"status cursor panel"
+
+msgid ""
+"mo:status_file_panel"
+msgstr ""
+"status file panel"
+
+msgid ""
+"mo:status_keyboard_panel"
+msgstr ""
+"status keyboard panel"
+
+msgid ""
+"mo:sudoku_board_frame"
+msgstr ""
+"sudoku board frame"
+
+msgid ""
+"mo:sudoku_cell"
+msgstr ""
+"sudoku cell"
+
+msgid ""
+"mo:SudokuTrainerWidget.board_frame"
+msgstr ""
+"board frame"
+
+msgid ""
+"mo:SudokuTrainerWidget.check_button"
+msgstr ""
+"Prüfen"
+
+msgid ""
+"mo:SudokuTrainerWidget.clear_button"
+msgstr ""
+"Eingaben löschen"
+
+msgid ""
+"mo:SudokuTrainerWidget.help_label"
+msgstr ""
+"Fülle die leeren Felder mit den Ziffern 1 bis 9. In jeder Zeile, Spalte und jedem 3×3-Block darf jede Ziffer nur einmal vorkommen."
+
+msgid ""
+"mo:SudokuTrainerWidget.new_button"
+msgstr ""
+"Neues Sudoku"
+
+msgid ""
+"mo:SudokuTrainerWidget.status_label"
+msgstr ""
+"status label"
+
+msgid ""
+"mo:SudokuTrainerWidget.title_label"
+msgstr ""
+"title label"
+
+msgid ""
+"mo:theme_action"
+msgstr ""
+"theme action"
+
+msgid ""
+"mo:themed_message_box"
+msgstr ""
+"themed message box"
+
+msgid ""
+"mo:toolbar_right_spacer"
+msgstr ""
+"toolbar right spacer"
+
+msgid ""
+"mo:UserBdeAliasesTab.btn_add"
+msgstr ""
+"btn add"
+
+msgid ""
+"mo:UserBdeAliasesTab.btn_options"
+msgstr ""
+"..."
+
+msgid ""
+"mo:UserBdeAliasesTab.btn_remove"
+msgstr ""
+"btn remove"
+
+msgid ""
+"mo:UserBdeAliasesTab.cb_driver"
+msgstr ""
+"cb driver"
+
+msgid ""
+"mo:UserBdeAliasesTab.ed_alias"
+msgstr ""
+"ed alias"
+
+msgid ""
+"mo:UserBdeAliasesTab.ed_options"
+msgstr ""
+"ed options"
+
+msgid ""
+"mo:UserBdeAliasesTab.lst"
+msgstr ""
+"lst"
+
+msgid ""
+"mo:windows_graphics_combo"
+msgstr ""
+"Windows-Anwendungsart: Konsole, GUI, Direct2D oder Direct3D"
+
+msgid ""
+"mo:zoom_in_action"
+msgstr ""
+"Schrift um 1 Punkt vergrößern"
+
+msgid ""
+"mo:zoom_out_action"
+msgstr ""
+"Schrift um 1 Punkt verkleinern"
+

@@ -2,6 +2,18 @@
 A Commodore C-64 Disassembler and Disk-Image Information Viewer and de-packer
 ---
 Preview
+![Preview](img/screen0012.png)
+
+
+Preview
+![Preview](img/screen0011.png)
+
+
+Preview
+![Preview](img/screen0010.png)
+
+
+Preview
 ![Preview](img/screen0009.png)
 
 
