@@ -1,7 +1,8 @@
 # Commodore_C64_DISM
 A Commodore C-64 Disassembler and Disk-Image Information Viewer and de-packer
 
-[Link](https://www.paypal.com/ncp/payment/CUBXY9QPTPHRU) for a Sponsor Donat
+### [Link](https://www.paypal.com/ncp/payment/CUBXY9QPTPHRU) for a Sponsor Donat
+### [Link](https://kallup.net/downloads) to download a ZIP Archive for ready to run Windows 64-Bit Pro execution binary and all needed DLL file's.
 ---
 Preview
 ![Preview](img/screen0012.png)
