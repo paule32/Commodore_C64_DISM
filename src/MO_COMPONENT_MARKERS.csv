@@ -1,0 +1,854 @@
+﻿Marker / msgid;Default msgstr / Beschreibung
+mo:AliasRow.alias_edit;Alias, e.g. baz.ico
+mo:AliasRow.dir_edit;dir edit
+mo:AliasRow.label;label
+mo:amiga_cpu_combo;680x0-CPU-Profil für den Amiga-Assembler
+mo:amiga_fpu_combo;amiga fpu combo
+mo:archive_information_list;archive information list
+mo:archive_information_tab;archive information tab
+mo:ArithmeticTrainerWidget.check_button;Prüfen
+mo:ArithmeticTrainerWidget.help_label;help label
+mo:ArithmeticTrainerWidget.status_label;Wähle ein Spiel aus.
+mo:ArithmeticTrainerWidget.task_widget;task widget
+mo:ArithmeticTrainerWidget.title_label;Mathematik-Spiel
+mo:assemble_button;Assemble
+mo:assemble_generated_button;Assemble
+mo:assembler_action_panel;assembler action panel
+mo:assembler_completion_description;assembler completion description
+mo:assembler_completion_frame;assembler completion frame
+mo:assembler_completion_ghost;assembler completion ghost
+mo:assembler_completion_header;assembler completion header
+mo:assembler_instruction_help_current;assembler instruction help current
+mo:assembler_instruction_help_description;assembler instruction help description
+mo:assembler_instruction_help_frame;assembler instruction help frame
+mo:assembler_instruction_help_header;assembler instruction help header
+mo:assembler_number_calculator;Rechner für Assembler-Operand
+mo:assembly_status_label;Noch nicht assembliert
+mo:breadcrumb_folder_button;Vollständigen Verzeichnispfad bearbeiten
+mo:breadcrumb_subdir_button;Unterverzeichnisse anzeigen
+mo:build_target_combo;Compiler-/Assemblerziel auswählen
+mo:c64_character_editor_dialog;C64 Character-Editor
+mo:c64_palette_editor_dialog;C64 Paletten-Editor
+mo:c64_pixel_screen_canvas;c64 pixel screen canvas
+mo:c64_pixel_screen_editor_dialog;C64 Pixel-Bildschirm-Editor
+mo:c64_text_screen_canvas;c64 text screen canvas
+mo:c64_text_screen_editor_dialog;C64 Text-Bildschirm-Editor
+mo:C64CharacterEditorDialog.background_combo;background combo
+mo:C64CharacterEditorDialog.byte_label;byte label
+mo:C64CharacterEditorDialog.character_heading;character heading
+mo:C64CharacterEditorDialog.character_list;character list
+mo:C64CharacterEditorDialog.clear_button;Leeren
+mo:C64CharacterEditorDialog.close_button;Schließen
+mo:C64CharacterEditorDialog.code_input;Zeichen anspringen: $01, 0x41 oder 65
+mo:C64CharacterEditorDialog.copy_button;Zeichen kopieren
+mo:C64CharacterEditorDialog.foreground_combo;foreground combo
+mo:C64CharacterEditorDialog.invert_button;Invertieren
+mo:C64CharacterEditorDialog.jump_button;Gehe zu
+mo:C64CharacterEditorDialog.load_button;Laden …
+mo:C64CharacterEditorDialog.mirror_h_button;Horizontal spiegeln
+mo:C64CharacterEditorDialog.mirror_v_button;Vertikal spiegeln
+mo:C64CharacterEditorDialog.new_button;Neu
+mo:C64CharacterEditorDialog.next_button;▶
+mo:C64CharacterEditorDialog.output_format_box;Ausgabe Format
+mo:C64CharacterEditorDialog.output_save_as_button;Quellcode speichern unter...
+mo:C64CharacterEditorDialog.paste_button;Zeichen einfügen
+mo:C64CharacterEditorDialog.path_label;Neuer Zeichensatz – 2048 Bytes
+mo:C64CharacterEditorDialog.pixel_grid;pixel grid
+mo:C64CharacterEditorDialog.preview;preview
+mo:C64CharacterEditorDialog.previous_button;◀
+mo:C64CharacterEditorDialog.save_as_button;Speichern unter …
+mo:C64CharacterEditorDialog.save_button;Speichern
+mo:C64CharacterEditorDialog.shift_down_button;↓
+mo:C64CharacterEditorDialog.shift_left_button;←
+mo:C64CharacterEditorDialog.shift_right_button;→
+mo:C64CharacterEditorDialog.shift_up_button;↑
+mo:C64CharacterEditorDialog.status_label;Bereit
+mo:C64PaletteEditorDialog.apply_button;Übernehmen
+mo:C64PaletteEditorDialog.close_button;Schließen
+mo:C64PaletteEditorDialog.color_heading;color heading
+mo:C64PaletteEditorDialog.color_swatch;Farbe auswählen …
+mo:C64PaletteEditorDialog.hex_input;#RRGGBB
+mo:C64PaletteEditorDialog.load_button;Laden …
+mo:C64PaletteEditorDialog.name_input;name input
+mo:C64PaletteEditorDialog.new_button;Standardpalette
+mo:C64PaletteEditorDialog.output_format_box;Ausgabe Format
+mo:C64PaletteEditorDialog.output_save_as_button;Speichern als...
+mo:C64PaletteEditorDialog.palette_list;palette list
+mo:C64PaletteEditorDialog.path_label;Neue Palette – 16 RGB-Farben / 48 Bytes
+mo:C64PaletteEditorDialog.reset_all_button;Alle zurücksetzen
+mo:C64PaletteEditorDialog.reset_color_button;Farbe zurücksetzen
+mo:C64PaletteEditorDialog.rgb_label;rgb label
+mo:C64PaletteEditorDialog.save_as_button;Palette speichern unter …
+mo:C64PaletteEditorDialog.save_button;Palette speichern
+mo:C64PaletteEditorDialog.status_label;Bereit
+mo:C64PixelScreenEditorDialog.canvas;canvas
+mo:C64PixelScreenEditorDialog.clear_button;Schwarz löschen
+mo:C64PixelScreenEditorDialog.close_button;Schließen
+mo:C64PixelScreenEditorDialog.fill_screen_button;Mit Farbe füllen
+mo:C64PixelScreenEditorDialog.load_button;Laden …
+mo:C64PixelScreenEditorDialog.new_button;Neu
+mo:C64PixelScreenEditorDialog.output_format_box;Ausgabe Format
+mo:C64PixelScreenEditorDialog.output_save_button;Quellcode speichern unter...
+mo:C64PixelScreenEditorDialog.path_label;Neuer Pixelbildschirm – 320x200 / 16 Farben
+mo:C64PixelScreenEditorDialog.save_as_button;Speichern unter …
+mo:C64PixelScreenEditorDialog.save_button;Speichern
+mo:C64PixelScreenEditorDialog.status_label;Bereit
+mo:C64TextScreenEditorDialog.canvas;canvas
+mo:C64TextScreenEditorDialog.character_list;character list
+mo:C64TextScreenEditorDialog.clear_button;Leeren
+mo:C64TextScreenEditorDialog.close_button;Schließen
+mo:C64TextScreenEditorDialog.color_combo;color combo
+mo:C64TextScreenEditorDialog.fill_button;Mit Auswahl füllen
+mo:C64TextScreenEditorDialog.load_button;Laden …
+mo:C64TextScreenEditorDialog.new_button;Neu
+mo:C64TextScreenEditorDialog.output_format_box;Ausgabe Format
+mo:C64TextScreenEditorDialog.output_save_button;Quellcode speichern unter...
+mo:C64TextScreenEditorDialog.path_label;Neue Bildschirmseite – 1000 Zeichen + 1000 Farben
+mo:C64TextScreenEditorDialog.save_as_button;Speichern unter …
+mo:C64TextScreenEditorDialog.save_button;Speichern
+mo:C64TextScreenEditorDialog.status_label;Bereit
+mo:calculator_backspace;←
+mo:calculator_clear;Löschen
+mo:calculator_equals;=
+mo:calculator_error;calculator error
+mo:calculator_expression;calculator expression
+mo:calculator_memory_label;calculator memory label
+mo:calculator_priority;calculator priority
+mo:calculator_result;calculator result
+mo:cantor_calculate_button;Berechnen
+mo:cantor_columns_spin;"Anzahl der Spalten, 1 bis {…}; 0 = leer"
+mo:cantor_diagonal_value_list;Nach 'Berechnen' enthält jede Listenzeile eine Matrix-Reihe.
+mo:cantor_rows_spin;"Anzahl der Reihen, 1 bis {…}; 0 = leer"
+mo:CantorDiagonalFactWidget.calculate_button;Berechnen
+mo:CantorDiagonalFactWidget.columns_spin;"Anzahl der Spalten, 1 bis {…}; 0 = leer"
+mo:CantorDiagonalFactWidget.description_label;Die Matrix verwendet die Cantor-Paarungsfunktion zur diagonalen Nummerierung von Paaren natürlicher Zahlen:\nπ(r,c) = ((r+c) · (r+c+1)) / 2 + c
+mo:CantorDiagonalFactWidget.rows_spin;"Anzahl der Reihen, 1 bis {…}; 0 = leer"
+mo:CantorDiagonalFactWidget.status_label;Reihen und Spalten sind noch leer. Bitte beide Werte einstellen.
+mo:CantorDiagonalFactWidget.title_label;Cantor – Diagonal Argument
+mo:CantorDiagonalFactWidget.value_list;Nach 'Berechnen' enthält jede Listenzeile eine Matrix-Reihe.
+mo:character_editor_list;character editor list
+mo:character_pixel_grid;character pixel grid
+mo:character_preview;character preview
+mo:chm_content_view;chm content view
+mo:chm_navigation_toolbar;Navigation
+mo:chm_search_button;Ersten Treffer suchen
+mo:chm_viewer_dialog;CHM Viewer
+mo:ChmSearchTab.search_button;Ersten Treffer suchen
+mo:ChmSearchTab.search_edit;search edit
+mo:ChmSearchTab.tree;tree
+mo:ChmSourceDialog.editor;editor
+mo:ChmViewerDialog.about_action;Über …
+mo:ChmViewerDialog.add_favorite_button;Aktuelle Seite hinzufügen
+mo:ChmViewerDialog.back_action;back action
+mo:ChmViewerDialog.copy_action;Kopieren
+mo:ChmViewerDialog.favorites_tab;Favorit suchen …
+mo:ChmViewerDialog.file_status;Keine CHM-Datei geöffnet
+mo:ChmViewerDialog.forward_action;forward action
+mo:ChmViewerDialog.home_action;index.html anzeigen
+mo:ChmViewerDialog.keywords_tab;Schlüsselwort suchen …
+mo:ChmViewerDialog.menu_bar;menu bar
+mo:ChmViewerDialog.navigation_toolbar;Navigation
+mo:ChmViewerDialog.open_action;CHM-Datei öffnen
+mo:ChmViewerDialog.quit_action;Programm beenden
+mo:ChmViewerDialog.remove_favorite_button;Entfernen
+mo:ChmViewerDialog.source_action;Seiten Quelltext
+mo:ChmViewerDialog.splitter;splitter
+mo:ChmViewerDialog.status_bar;status bar
+mo:ChmViewerDialog.tabs;tabs
+mo:ChmViewerDialog.topics_tab;Thema/Topic suchen …
+mo:ChmViewerDialog.web_view;web view
+mo:coff_object_button;COFF32 .o
+mo:custom_dock_title_bar;custom dock title bar
+mo:custom_dock_title_label;custom dock title label
+mo:d64_content_dock;Projekt / Informationen
+mo:d64_content_list;d64 content list
+mo:dbase_form_assemble_button;Assemble
+mo:dbase_form_border_color_button;...
+mo:dbase_form_border_color_combo;dbase form border color combo
+mo:dbase_form_border_round_bl_spinbox;dbase form border round bl spinbox
+mo:dbase_form_border_round_br_spinbox;dbase form border round br spinbox
+mo:dbase_form_border_round_tl_spinbox;dbase form border round tl spinbox
+mo:dbase_form_border_round_tr_spinbox;dbase form border round tr spinbox
+mo:dbase_form_border_shadow_color_button;...
+mo:dbase_form_border_shadow_color_combo;dbase form border shadow color combo
+mo:dbase_form_border_size_spinbox;dbase form border size spinbox
+mo:dbase_form_border_style_combo;dbase form border style combo
+mo:dbase_form_brush_cut_height_spinbox;dbase form brush cut height spinbox
+mo:dbase_form_brush_cut_width_spinbox;dbase form brush cut width spinbox
+mo:dbase_form_brush_gradient_combo;dbase form brush gradient combo
+mo:dbase_form_brush_style_combo;dbase form brush style combo
+mo:dbase_form_build_bar;dbase form build bar
+mo:dbase_form_build_status;Noch nicht kompiliert
+mo:dbase_form_compile_button;Compile
+mo:dbase_form_component_tabs;dbase form component tabs
+mo:dbase_form_database_icon_view;dbase form database icon view
+mo:dbase_form_designer_dock;dBase Formular - Designer
+mo:dbase_form_event_grid;dbase form event grid
+mo:dbase_form_event_source_button;→
+mo:dbase_form_font_alpha_combo;dbase form font alpha combo
+mo:dbase_form_font_background_button;...
+mo:dbase_form_font_background_combo;dbase form font background combo
+mo:dbase_form_font_bold_checkbox;dbase form font bold checkbox
+mo:dbase_form_font_family_combo;dbase form font family combo
+mo:dbase_form_font_foreground_button;...
+mo:dbase_form_font_foreground_combo;dbase form font foreground combo
+mo:dbase_form_font_italic_checkbox;dbase form font italic checkbox
+mo:dbase_form_font_size_spinbox;dbase form font size spinbox
+mo:dbase_form_font_stroke_checkbox;dbase form font stroke checkbox
+mo:dbase_form_font_underline_checkbox;dbase form font underline checkbox
+mo:dbase_form_graphics_view;dbase form graphics view
+mo:dbase_form_property_dock;dBase Formular - Eigenschaften
+mo:dbase_form_property_splitter;dbase form property splitter
+mo:dbase_form_property_tree;dbase form property tree
+mo:dbase_form_source_outline;dbase form source outline
+mo:dbase_form_source_splitter;dbase form source splitter
+mo:dbase_form_standard_icon_view;dbase form standard icon view
+mo:dbase_form_start_button;Start
+mo:dbase_form_tabs;dbase form tabs
+mo:dbase_form_target_combo;Zielplattform des Formularprogramms
+mo:dbase_form_timer_active_checkbox;dbase form timer active checkbox
+mo:dbase_form_timer_interval_spinbox;dbase form timer interval spinbox
+mo:dbase_form_upper_tabs;dbase form upper tabs
+mo:dbase_table_designer_dock;dBase Tabelle - Designer
+mo:dbase_table_field_decimals_spin;dbase table field decimals spin
+mo:dbase_table_field_grid;dbase table field grid
+mo:dbase_table_field_index_checkbox;Feld als Index-Kandidat markieren
+mo:dbase_table_field_length_spin;dbase table field length spin
+mo:dbase_table_field_type_combo;dbase table field type combo
+mo:dbase_table_inner_tabs;dbase table inner tabs
+mo:dbase_table_load_button;Laden
+mo:dbase_table_parent_tabs;dbase table parent tabs
+mo:dbase_table_save_as_button;Speichern unter ...
+mo:dbase_table_save_button;Speichern
+mo:DBaseFormControlItem.proxy;proxy
+mo:DBaseFormPropertyPanel.bold_check;bold check
+mo:DBaseFormPropertyPanel.border_color_button;...
+mo:DBaseFormPropertyPanel.border_color_combo;border color combo
+mo:DBaseFormPropertyPanel.border_color_holder;border color holder
+mo:DBaseFormPropertyPanel.border_round_bl_spin;border round bl spin
+mo:DBaseFormPropertyPanel.border_round_br_spin;border round br spin
+mo:DBaseFormPropertyPanel.border_round_tl_spin;border round tl spin
+mo:DBaseFormPropertyPanel.border_round_tr_spin;border round tr spin
+mo:DBaseFormPropertyPanel.border_shadow_color_button;...
+mo:DBaseFormPropertyPanel.border_shadow_color_combo;border shadow color combo
+mo:DBaseFormPropertyPanel.border_shadow_color_holder;border shadow color holder
+mo:DBaseFormPropertyPanel.border_size_spin;border size spin
+mo:DBaseFormPropertyPanel.border_style_combo;border style combo
+mo:DBaseFormPropertyPanel.brush_cut_height_spin;brush cut height spin
+mo:DBaseFormPropertyPanel.brush_cut_width_spin;brush cut width spin
+mo:DBaseFormPropertyPanel.brush_gradient_combo;brush gradient combo
+mo:DBaseFormPropertyPanel.brush_style_combo;brush style combo
+mo:DBaseFormPropertyPanel.database_icon_view;database icon view
+mo:DBaseFormPropertyPanel.event_grid;event grid
+mo:DBaseFormPropertyPanel.font_alpha_combo;font alpha combo
+mo:DBaseFormPropertyPanel.font_background_button;...
+mo:DBaseFormPropertyPanel.font_background_combo;font background combo
+mo:DBaseFormPropertyPanel.font_background_holder;font background holder
+mo:DBaseFormPropertyPanel.font_combo;font combo
+mo:DBaseFormPropertyPanel.font_foreground_button;...
+mo:DBaseFormPropertyPanel.font_foreground_combo;font foreground combo
+mo:DBaseFormPropertyPanel.font_foreground_holder;font foreground holder
+mo:DBaseFormPropertyPanel.font_size_spin;font size spin
+mo:DBaseFormPropertyPanel.italic_check;italic check
+mo:DBaseFormPropertyPanel.lower_tabs;lower tabs
+mo:DBaseFormPropertyPanel.property_tree;property tree
+mo:DBaseFormPropertyPanel.standard_icon_view;standard icon view
+mo:DBaseFormPropertyPanel.stroke_check;stroke check
+mo:DBaseFormPropertyPanel.timer_active_check;timer active check
+mo:DBaseFormPropertyPanel.timer_interval_spin;timer interval spin
+mo:DBaseFormPropertyPanel.underline_check;underline check
+mo:DBaseFormPropertyPanel.upper_tabs;upper tabs
+mo:DBaseFormPropertyPanel.vertical_splitter;vertical splitter
+mo:DBaseTableDesignerWidget.table_tabs;table tabs
+mo:DBaseTablePage.field_grid;field grid
+mo:DBaseTablePage.inner_tabs;inner tabs
+mo:DBaseTablePage.load_button;Laden
+mo:DBaseTablePage.save_as_button;Speichern unter ...
+mo:DBaseTablePage.save_button;Speichern
+mo:desktop_properties_panel;desktop properties panel
+mo:desktop_properties_scroll_area;desktop properties scroll area
+mo:desktop_properties_scroll_widget;desktop properties scroll widget
+mo:desktop_properties_tabs;desktop properties tabs
+mo:desktop_settings_action;Desktop-Einstellungen ...
+mo:desktop_settings_dock;Desktop Properties
+mo:DesktopPropertiesDialog.btn_apply;btn apply
+mo:DesktopPropertiesDialog.btn_cancel;btn cancel
+mo:DesktopPropertiesDialog.btn_components;btn components
+mo:DesktopPropertiesDialog.btn_external_editor;...
+mo:DesktopPropertiesDialog.btn_files_current_dir;...
+mo:DesktopPropertiesDialog.btn_files_search_path;...
+mo:DesktopPropertiesDialog.btn_help;btn help
+mo:DesktopPropertiesDialog.btn_logfile;...
+mo:DesktopPropertiesDialog.btn_ok;btn ok
+mo:DesktopPropertiesDialog.btn_prog_error_log;...
+mo:DesktopPropertiesDialog.btn_prog_html_template;...
+mo:DesktopPropertiesDialog.btn_test_beep;btn test beep
+mo:DesktopPropertiesDialog.cb_currency;cb currency
+mo:DesktopPropertiesDialog.cb_datefmt;cb datefmt
+mo:DesktopPropertiesDialog.cb_lang;cb lang
+mo:DesktopPropertiesDialog.cb_prog_error_action;cb prog error action
+mo:DesktopPropertiesDialog.chk_app_anim;chk app anim
+mo:DesktopPropertiesDialog.chk_app_datamodule;chk app datamodule
+mo:DesktopPropertiesDialog.chk_app_fit;chk app fit
+mo:DesktopPropertiesDialog.chk_app_form;chk app form
+mo:DesktopPropertiesDialog.chk_app_labels;chk app labels
+mo:DesktopPropertiesDialog.chk_app_ole;chk app ole
+mo:DesktopPropertiesDialog.chk_app_report;chk app report
+mo:DesktopPropertiesDialog.chk_app_save_logins;chk app save logins
+mo:DesktopPropertiesDialog.chk_app_splash;chk app splash
+mo:DesktopPropertiesDialog.chk_app_sql_trace;chk app sql trace
+mo:DesktopPropertiesDialog.chk_app_table;chk app table
+mo:DesktopPropertiesDialog.chk_approx;chk approx
+mo:DesktopPropertiesDialog.chk_autonull;chk autonull
+mo:DesktopPropertiesDialog.chk_autosave;chk autosave
+mo:DesktopPropertiesDialog.chk_backup;chk backup
+mo:DesktopPropertiesDialog.chk_beep;chk beep
+mo:DesktopPropertiesDialog.chk_century;chk century
+mo:DesktopPropertiesDialog.chk_confirm;chk confirm
+mo:DesktopPropertiesDialog.chk_cua;chk cua
+mo:DesktopPropertiesDialog.chk_currency_format;lang
+mo:DesktopPropertiesDialog.chk_deleted;chk deleted
+mo:DesktopPropertiesDialog.chk_enable_log;chk enable log
+mo:DesktopPropertiesDialog.chk_encrypt;chk encrypt
+mo:DesktopPropertiesDialog.chk_esc;chk esc
+mo:DesktopPropertiesDialog.chk_exclusive;chk exclusive
+mo:DesktopPropertiesDialog.chk_ident;chk ident
+mo:DesktopPropertiesDialog.chk_lock;chk lock
+mo:DesktopPropertiesDialog.chk_mismatch;chk mismatch
+mo:DesktopPropertiesDialog.chk_prog_blank;chk prog blank
+mo:DesktopPropertiesDialog.chk_prog_buildtime;chk prog buildtime
+mo:DesktopPropertiesDialog.chk_prog_design;chk prog design
+mo:DesktopPropertiesDialog.chk_prog_fieldnames;chk prog fieldnames
+mo:DesktopPropertiesDialog.chk_prog_fullpath;chk prog fullpath
+mo:DesktopPropertiesDialog.chk_prog_fulltest;chk prog fulltest
+mo:DesktopPropertiesDialog.chk_prog_high_precision;chk prog high precision
+mo:DesktopPropertiesDialog.chk_prog_protect;chk prog protect
+mo:DesktopPropertiesDialog.chk_prog_trace;chk prog trace
+mo:DesktopPropertiesDialog.chk_sessions;chk sessions
+mo:DesktopPropertiesDialog.chk_system_show;chk system show
+mo:DesktopPropertiesDialog.ed_datesep;.
+mo:DesktopPropertiesDialog.ed_decimal;,
+mo:DesktopPropertiesDialog.ed_external_editor;ed external editor
+mo:DesktopPropertiesDialog.ed_files_current_dir;ed files current dir
+mo:DesktopPropertiesDialog.ed_files_search_path;ed files search path
+mo:DesktopPropertiesDialog.ed_logfile;ed logfile
+mo:DesktopPropertiesDialog.ed_prog_error_log;PLUSerr.log
+mo:DesktopPropertiesDialog.ed_prog_html_template;error.htm
+mo:DesktopPropertiesDialog.ed_thousand;.
+mo:DesktopPropertiesDialog.lbl_currency_pattern;129,99 EUR
+mo:DesktopPropertiesDialog.lbl_date_pattern;12.04.2026
+mo:DesktopPropertiesDialog.lbl_num_pattern;1.000.000,00
+mo:DesktopPropertiesDialog.rb_dbase;dBASE
+mo:DesktopPropertiesDialog.rb_left;rb left
+mo:DesktopPropertiesDialog.rb_log_append;rb log append
+mo:DesktopPropertiesDialog.rb_log_overwrite;rb log overwrite
+mo:DesktopPropertiesDialog.rb_mysql;MySQL
+mo:DesktopPropertiesDialog.rb_paradox;Paradox
+mo:DesktopPropertiesDialog.rb_right;rb right
+mo:DesktopPropertiesDialog.rb_sqlite3;SQLite 3
+mo:DesktopPropertiesDialog.scroll_area;scroll area
+mo:DesktopPropertiesDialog.scroll_widget;scroll widget
+mo:DesktopPropertiesDialog.source_aliases_tab;source aliases tab
+mo:DesktopPropertiesDialog.sp_app_files;sp app files
+mo:DesktopPropertiesDialog.sp_app_projects;sp app projects
+mo:DesktopPropertiesDialog.sp_buf;sp buf
+mo:DesktopPropertiesDialog.sp_dur;sp dur
+mo:DesktopPropertiesDialog.sp_epoch;sp epoch
+mo:DesktopPropertiesDialog.sp_freq;sp freq
+mo:DesktopPropertiesDialog.sp_prog_decimals;sp prog decimals
+mo:DesktopPropertiesDialog.sp_prog_margin;sp prog margin
+mo:DesktopPropertiesDialog.sp_prog_max_size;sp prog max size
+mo:DesktopPropertiesDialog.sp_prog_precision;sp prog precision
+mo:DesktopPropertiesDialog.spin_indexblock;spin indexblock
+mo:DesktopPropertiesDialog.spin_memoblock;spin memoblock
+mo:DesktopPropertiesDialog.spin_refresh;spin refresh
+mo:DesktopPropertiesDialog.spin_retry;spin retry
+mo:DesktopPropertiesDialog.tabs;tabs
+mo:DesktopPropertiesDialog.user_bde_aliases_tab;user bde aliases tab
+mo:directory_tree;directory tree
+mo:dism_start_content_list;dism start content list
+mo:dism_start_information_tab;dism start information tab
+mo:dism_start_menu;START
+mo:dism_start_summary;Noch keine DISM-START-Ausgabe vorhanden
+mo:dock_title_close_button;Dock-Fenster schließen
+mo:dock_title_extra_button;dock title extra button
+mo:dock_title_float_button;Andocken / Abdocken
+mo:DockTitleBar.close_button;Dock-Fenster schließen
+mo:DockTitleBar.extra_button;extra button
+mo:DockTitleBar.float_button;Andocken / Abdocken
+mo:DockTitleBar.title_label;title label
+mo:document_tab_close_button;Registerkarte schließen
+mo:document_tabs;document tabs
+mo:DocumentEditor.amiga_cpu_combo;680x0-CPU-Profil für den Amiga-Assembler
+mo:DocumentEditor.amiga_fpu_combo;amiga fpu combo
+mo:DocumentEditor.assemble_button;Assemble
+mo:DocumentEditor.assemble_generated_button;Assemble
+mo:DocumentEditor.assembler_panel;assembler panel
+mo:DocumentEditor.assembly_status_label;Noch nicht assembliert
+mo:DocumentEditor.build_target_combo;Compiler-/Assemblerziel auswählen
+mo:DocumentEditor.coff_object_button;COFF32 .o
+mo:DocumentEditor.generated_amiga_cpu_combo;generated amiga cpu combo
+mo:DocumentEditor.generated_amiga_fpu_combo;generated amiga fpu combo
+mo:DocumentEditor.generated_assembly_editor_container;generated assembly editor container
+mo:DocumentEditor.generated_assembly_page;generated assembly page
+mo:DocumentEditor.generated_assembly_panel;generated assembly panel
+mo:DocumentEditor.generated_assembly_status_label;ASM-Daten werden beim Kompilieren erzeugt
+mo:DocumentEditor.generated_build_target_combo;Compiler-/Assemblerziel auswählen
+mo:DocumentEditor.generated_prolog_verbose_checkbox;Verbose
+mo:DocumentEditor.generated_windows_graphics_combo;generated windows graphics combo
+mo:DocumentEditor.hex_editor;hex editor
+mo:DocumentEditor.hints_editor;Hinweise werden später an dieser Stelle angezeigt.
+mo:DocumentEditor.markdown_minimap;markdown minimap
+mo:DocumentEditor.markdown_preview;markdown preview
+mo:DocumentEditor.markdown_preview_page;markdown preview page
+mo:DocumentEditor.prolog_verbose_checkbox;Verbose
+mo:DocumentEditor.raw_editor_container;raw editor container
+mo:DocumentEditor.source_page;source page
+mo:DocumentEditor.start_assembled_button;Start
+mo:DocumentEditor.start_generated_button;Start
+mo:DocumentEditor.views;views
+mo:DocumentEditor.windows_graphics_combo;Windows-Anwendungsart: Konsole, GUI, Direct2D oder Direct3D
+mo:doxygen_documentation_dock;Doxygen Dokumentation
+mo:doxygen_documentation_tool;doxygen documentation tool
+mo:ErrorMessage.btn_close;btn close
+mo:ErrorMessage.btn_delete_log;btn delete log
+mo:ErrorMessage.text_edit;text edit
+mo:ExplorerWindow.about_action;Über ...
+mo:ExplorerWindow.archive_info_list;archive info list
+mo:ExplorerWindow.archive_info_summary;Kein Archiv ausgewählt
+mo:ExplorerWindow.archive_info_tab;archive info tab
+mo:ExplorerWindow.bottom_dock;Protokoll
+mo:ExplorerWindow.browse_button;Arbeitsverzeichnis auswählen
+mo:ExplorerWindow.caps_status_label;CAPS
+mo:ExplorerWindow.character_editor_action;255 frei editierbare C64-Zeichen im 8x8-Raster bearbeiten
+mo:ExplorerWindow.chm_viewer_action;Hilfe öffnen
+mo:ExplorerWindow.choose_directory_action;choose directory action
+mo:ExplorerWindow.close_document_action;Registerkarte schließen
+mo:ExplorerWindow.coff32_archive_action;COFF32-Archiv (.a) erstellen ...
+mo:ExplorerWindow.coff64_archive_action;COFF64-Archiv (.a) erstellen …
+mo:ExplorerWindow.content_list;content list
+mo:ExplorerWindow.cursor_status_label;Zeile: –  Spalte: –
+mo:ExplorerWindow.cursor_status_panel;cursor status panel
+mo:ExplorerWindow.d64_summary;Keine Datei ausgewählt
+mo:ExplorerWindow.directory_tree;directory tree
+mo:ExplorerWindow.dism_analyze_action;Analyze Program
+mo:ExplorerWindow.dism_bam_action;BAM
+mo:ExplorerWindow.dism_content_list;dism content list
+mo:ExplorerWindow.dism_disassemble_action;Disassemble
+mo:ExplorerWindow.dism_extract_action;Extract Programs
+mo:ExplorerWindow.dism_info_tab;dism info tab
+mo:ExplorerWindow.dism_program_action;Programm
+mo:ExplorerWindow.dism_ram_image_action;RAM Image
+mo:ExplorerWindow.dism_start_action;Disketten Image
+mo:ExplorerWindow.dism_start_menu;START
+mo:ExplorerWindow.dism_startup_action;Start-Up
+mo:ExplorerWindow.dism_summary;Noch keine DISM-START-Ausgabe vorhanden
+mo:ExplorerWindow.dism_verbose_action;Verbose
+mo:ExplorerWindow.dism_vice_action;VICE
+mo:ExplorerWindow.document_tabs;document tabs
+mo:ExplorerWindow.doxygen_action;Doxygen Dokumentation ...
+mo:ExplorerWindow.file_info_tab;file info tab
+mo:ExplorerWindow.file_list;file list
+mo:ExplorerWindow.file_size_status_label;Dateigröße: –
+mo:ExplorerWindow.file_status_panel;file status panel
+mo:ExplorerWindow.information_panel_tab;information panel tab
+mo:ExplorerWindow.insert_status_label;INS
+mo:ExplorerWindow.keyboard_status_panel;keyboard status panel
+mo:ExplorerWindow.left_dock;Dateisystem und Dateien
+mo:ExplorerWindow.localize_action;Localize PO->Mo ...
+mo:ExplorerWindow.log_edit;log edit
+mo:ExplorerWindow.main_menu_bar;main menu bar
+mo:ExplorerWindow.main_title_bar;main title bar
+mo:ExplorerWindow.main_top_chrome;main top chrome
+mo:ExplorerWindow.math_learning_action;Mathematik-Arbeitsfläche …
+mo:ExplorerWindow.math_numbers_wall_1000_action;Zahlenmauer bis 1000
+mo:ExplorerWindow.math_numbers_wall_100_action;Zahlenmauer bis 100
+mo:ExplorerWindow.new_amiga_project_action;Projekt: Amiga 500 ADF ...
+mo:ExplorerWindow.new_assembler_action;Assembler-Programm
+mo:ExplorerWindow.new_basic_action;BASIC-Programm
+mo:ExplorerWindow.new_c64_project_action;Projekt: C= 64 Programm ...
+mo:ExplorerWindow.new_c_action;C-Programm
+mo:ExplorerWindow.new_character_map_action;C-64 Character Map
+mo:ExplorerWindow.new_dbase_action;dBase-Programm
+mo:ExplorerWindow.new_dbase_project_action;Projekt: dBase
+mo:ExplorerWindow.new_file_action;Eine neue Textdatei anlegen
+mo:ExplorerWindow.new_lisp_action;LISP-Programm
+mo:ExplorerWindow.new_logo_action;LOGO-Programm
+mo:ExplorerWindow.new_logo_project_action;Projekt: LOGO
+mo:ExplorerWindow.new_pascal_action;Pascal-Programm
+mo:ExplorerWindow.new_pixel_screen_action;C-64 Pixel Screen
+mo:ExplorerWindow.new_prolog_action;Prolog-Programm
+mo:ExplorerWindow.new_prolog_project_action;Projekt: PROLOG
+mo:ExplorerWindow.new_text_screen_action;C-64 Text Screen
+mo:ExplorerWindow.new_windows_project_action;Projekt: Windows Anwendung ...
+mo:ExplorerWindow.num_status_label;NUM
+mo:ExplorerWindow.object_info_list;object info list
+mo:ExplorerWindow.object_info_summary;Keine Objektdatei ausgewählt
+mo:ExplorerWindow.object_info_tab;object info tab
+mo:ExplorerWindow.open_file_action;Eine Text-, Assembler-, Pascal-, C-, LISP-, PROLOG- oder LOGO-Datei öffnen
+mo:ExplorerWindow.palette_editor_action;Die 16 C64-Farben bearbeiten und als Quellcode exportieren
+mo:ExplorerWindow.parent_action;parent action
+mo:ExplorerWindow.path_edit;Ordnerpfad eingeben und Enter drücken
+mo:ExplorerWindow.pe32_linker_action;Windows PE32 Linker ...
+mo:ExplorerWindow.pe64_linker_action;Windows PE64 Linker …
+mo:ExplorerWindow.pixel_screen_editor_action;Einen 320x200-Pixelbildschirm mit 16 Farben und Formwerkzeugen bearbeiten
+mo:ExplorerWindow.project_new_button;Neu
+mo:ExplorerWindow.project_open_button;Projektdatei (*.pro) öffnen
+mo:ExplorerWindow.project_path_edit;Pfad zur Projektdatei (*.pro)
+mo:ExplorerWindow.project_save_as_button;Speichern unter...
+mo:ExplorerWindow.project_save_button;Speichern
+mo:ExplorerWindow.project_tree;"Doppelklick öffnet Dateien bzw. zeigt Archiv-/Objektinformationen; Checkboxen werden mit einfachem Klick umgeschaltet"
+mo:ExplorerWindow.quit_action;Beenden
+mo:ExplorerWindow.refresh_action;refresh action
+mo:ExplorerWindow.resource_action;Resource Builder
+mo:ExplorerWindow.right_dock;Projekt / Informationen
+mo:ExplorerWindow.right_info_tabs;right info tabs
+mo:ExplorerWindow.right_panel_tabs;right panel tabs
+mo:ExplorerWindow.save_as_action;save as action
+mo:ExplorerWindow.save_file_action;save file action
+mo:ExplorerWindow.settings_action;Desktop-Einstellungen ...
+mo:ExplorerWindow.text_screen_editor_action;Eine 40x25-C64-Bildschirmseite mit Zeichen und Farben bearbeiten
+mo:ExplorerWindow.theme_action;theme action
+mo:ExplorerWindow.toolbar;Datei und Navigation
+mo:ExplorerWindow.windows_graphics_build_action;Windows Direct2D/Direct3D Runtime DLL bauen …
+mo:ExplorerWindow.windows_graphics_header_action;Windows Direct2D/Direct3D Runtime schreiben …
+mo:ExplorerWindow.winuae_action;WinUAE
+mo:ExplorerWindow.zoom_in_action;Schrift um 1 Punkt vergrößern
+mo:ExplorerWindow.zoom_out_action;Schrift um 1 Punkt verkleinern
+mo:fibonacci_binet_calculate_button;Berechnen
+mo:fibonacci_binet_index_spin;"Index n der Fibonacci-Zahl; zulässig sind 1 bis 1000."
+mo:fibonacci_binet_result;Mit „Berechnen“ wird F(n) über die Binetsche Formel bestimmt.
+mo:fibonacci_graphics_scene;fibonacci graphics scene
+mo:fibonacci_graphics_view;fibonacci graphics view
+mo:fibonacci_pascal_qpainter_canvas;fibonacci pascal qpainter canvas
+mo:FibonacciSpiralFactWidget.calculate_button;Berechnen
+mo:FibonacciSpiralFactWidget.canvas;canvas
+mo:FibonacciSpiralFactWidget.description_label;"Die Fibonacci-Darstellung liegt in einer scrollbaren QGraphicsScene. Oben werden Fibonacci-Flächen mit QPainter gezeichnet; darunter zeigt das weit auseinandergezogene, nochmals um 20 % vergrößerte Pascal-Dreieck die flachen Diagonalsummen."
+mo:FibonacciSpiralFactWidget.formula_label;Binet: Fₙ = (φⁿ − ψⁿ) / √5
+mo:FibonacciSpiralFactWidget.graphics_view;graphics view
+mo:FibonacciSpiralFactWidget.index_spin;"Index n der Fibonacci-Zahl; zulässig sind 1 bis 1000."
+mo:FibonacciSpiralFactWidget.result_edit;Mit „Berechnen“ wird F(n) über die Binetsche Formel bestimmt.
+mo:FibonacciSpiralFactWidget.status_label;Bereit. Die SpinBox akzeptiert Werte von 1 bis 1000.
+mo:FibonacciSpiralFactWidget.title_label;Fibonacci Spirale
+mo:file_icon_list;file icon list
+mo:file_information_tab;file information tab
+mo:filesystem_dock;Dateisystem und Dateien
+mo:generated_amiga_cpu_combo;generated amiga cpu combo
+mo:generated_amiga_fpu_combo;generated amiga fpu combo
+mo:generated_assembler_action_panel;generated assembler action panel
+mo:generated_assembly_editor;Nach dem Kompilieren werden hier die ASM-Daten angezeigt.
+mo:generated_assembly_status_label;ASM-Daten werden beim Kompilieren erzeugt
+mo:generated_build_target_combo;Compiler-/Assemblerziel auswählen
+mo:generated_prolog_verbose_checkbox;Verbose
+mo:generated_windows_graphics_combo;generated windows graphics combo
+mo:gorilla_parabola_math_view;gorilla parabola math view
+mo:GorillaParabolaMathGameWidget.new_game_button;Neue Skyline
+mo:GorillaParabolaMathGameWidget.status_label;status label
+mo:GorillaParabolaMathGameWidget.title_label;Gorilla-Parabeln – Wolkenkratzer
+mo:GorillaParabolaMathGameWidget.turn_label;turn label
+mo:GorillaParabolaMathGameWidget.view;view
+mo:GorillaParabolaMathGameWidget.wind_label;wind label
+mo:green_beige_menu_bar;green beige menu bar
+mo:green_beige_popup_menu;green beige popup menu
+mo:green_beige_title_bar;green beige title bar
+mo:green_beige_title_icon;green beige title icon
+mo:green_beige_top_chrome;green beige top chrome
+mo:GreenBeigeTitleBar.icon_label;icon label
+mo:hex_editor;hex editor
+mo:hints_editor;Hinweise werden später an dieser Stelle angezeigt.
+mo:information_panel_tab;information panel tab
+mo:iso_math_bank_answer;iso math bank answer
+mo:iso_math_task_answer;iso math task answer
+mo:iso_metric_math_view;iso metric math view
+mo:IsoMetricMathGameWidget.bank_amount_spin;bank amount spin
+mo:IsoMetricMathGameWidget.bank_answer_edit;bank answer edit
+mo:IsoMetricMathGameWidget.bank_audit_button;Bankabrechnung prüfen
+mo:IsoMetricMathGameWidget.bank_audit_label;bank audit label
+mo:IsoMetricMathGameWidget.bank_group;Anlage-Bank
+mo:IsoMetricMathGameWidget.bank_info_label;Besuche ein BANK-Gebäude, um Budget anzulegen oder Zinsen zu prüfen.
+mo:IsoMetricMathGameWidget.bank_label;bank label
+mo:IsoMetricMathGameWidget.budget_label;budget label
+mo:IsoMetricMathGameWidget.build_button;Baustufe errichten
+mo:IsoMetricMathGameWidget.build_group;Bauen / Rückbauen
+mo:IsoMetricMathGameWidget.build_info_label;build info label
+mo:IsoMetricMathGameWidget.demolish_button;Gebäude zurückbauen
+mo:IsoMetricMathGameWidget.deposit_button;Einzahlen
+mo:IsoMetricMathGameWidget.new_map_button;Neue Mathe-Stadt
+mo:IsoMetricMathGameWidget.position_label;position label
+mo:IsoMetricMathGameWidget.solve_task_button;Aufgabe prüfen
+mo:IsoMetricMathGameWidget.status_label;status label
+mo:IsoMetricMathGameWidget.task_answer_edit;task answer edit
+mo:IsoMetricMathGameWidget.task_group;Aufgabe auf dem Grundstück
+mo:IsoMetricMathGameWidget.task_question_label;Gehe zu einem Grundstück mit ?-Markierung.
+mo:IsoMetricMathGameWidget.title_label;Mathe-Stadt – ISO-Metrik
+mo:IsoMetricMathGameWidget.view;view
+mo:IsoMetricMathGameWidget.withdraw_button;Abheben
+mo:KnowledgeAlternativeDialog.cancel_button;Abbrechen
+mo:KnowledgeAlternativeDialog.info_label;{…} mögliche Alternative(n)
+mo:KnowledgeAlternativeDialog.list_widget;list widget
+mo:KnowledgeAlternativeDialog.ok_button;OK
+mo:KnowledgeAlternativeDialog.search_edit;Alternativen durchsuchen …
+mo:KnowledgeLevelButton.alternative_host;alternative host
+mo:KnowledgeLevelButton.arrow_button;▼
+mo:KnowledgeLevelButton.embedded_alternative_check_button;Prüfen
+mo:KnowledgeLevelButton.embedded_alternative_combo;embedded alternative combo
+mo:KnowledgeLevelButton.embedded_alternative_label;Alternativen:
+mo:KnowledgeLevelButton.main_button;main button
+mo:KnowledgeQueryLane.add_lane_button;Hinzufügen
+mo:KnowledgeQueryLane.add_level_button;Prüfen +
+mo:KnowledgeQueryLane.alternative_check_button;Prüfen +
+mo:KnowledgeQueryLane.alternative_combo;Mögliche Werte für den nächsten Entscheidungs-Level
+mo:KnowledgeQueryLane.alternative_label;Alternativen:
+mo:KnowledgeQueryLane.alternative_overlay;alternative overlay
+mo:KnowledgeQueryLane.alternative_status_label;alternative status label
+mo:KnowledgeQueryLane.command_host;command host
+mo:KnowledgeQueryLane.delete_lane_button;Löschen
+mo:KnowledgeQueryLane.level_button_host;level button host
+mo:KnowledgeQueryLane.level_container;level container
+mo:KnowledgeQueryLane.level_scroll;level scroll
+mo:KnowledgeQueryLane.query_edit;Wert für den nächsten Level, z. B. gesund
+mo:KnowledgeQueryLane.query_status;Bitte links einen Fakt bzw. eine Regel auswählen.
+mo:LanguageRadioFlag.flag;flag
+mo:LanguageRadioFlag.radio;radio
+mo:learning_content_stack;learning content stack
+mo:learning_facts_tree;learning facts tree
+mo:learning_games_tree;learning games tree
+mo:learning_left_tabs;learning left tabs
+mo:line_number_area;Linke Markerspalte: Breakpoint (hellrot)\nRechte Markerspalte: Favorit/Bookmark (hellblau)\nLinksklick setzt, Rechtsklick löscht den Marker.
+mo:localize_po_mo_dock;Localize PO/MO
+mo:localize_po_mo_tool;localize po mo tool
+mo:localize_themed_message_box;localize themed message box
+mo:LocalizeCodeEditor._line_number_area;line number area
+mo:LocalizeToolWindow.btn_apply;btn apply
+mo:LocalizeToolWindow.btn_cancel;btn cancel
+mo:LocalizeToolWindow.btn_create;btn create
+mo:LocalizeToolWindow.btn_cut;btn cut
+mo:LocalizeToolWindow.btn_delete;btn delete
+mo:LocalizeToolWindow.btn_delete_text;btn delete text
+mo:LocalizeToolWindow.btn_insert;btn insert
+mo:LocalizeToolWindow.btn_load_mo_path;btn load mo path
+mo:LocalizeToolWindow.btn_load_po_path;btn load po path
+mo:LocalizeToolWindow.btn_open_po;btn open po
+mo:LocalizeToolWindow.btn_paste;btn paste
+mo:LocalizeToolWindow.btn_save_as_po;btn save as po
+mo:LocalizeToolWindow.btn_save_po;btn save po
+mo:LocalizeToolWindow.ed_mo_path;ed mo path
+mo:LocalizeToolWindow.ed_msgid;ed msgid
+mo:LocalizeToolWindow.ed_po_path;ed po path
+mo:LocalizeToolWindow.gb_dest;gb dest
+mo:LocalizeToolWindow.gb_source;gb source
+mo:LocalizeToolWindow.msgid_list;msgid list
+mo:LocalizeToolWindow.tabs;tabs
+mo:LocalizeToolWindow.text_msgstr;text msgstr
+mo:LocalizeToolWindow.ws1;ws1
+mo:log_dock;Protokoll
+mo:main_help_action;Hilfe öffnen
+mo:main_toolbar;Datei und Navigation
+mo:markdown_preview;markdown preview
+mo:math_learning_dock;Mathematik
+mo:math_numbers_wall_view;math numbers wall view
+mo:math_task_card;math task card
+mo:MathematicsLearningDockWidget.arithmetic_widget;arithmetic widget
+mo:MathematicsLearningDockWidget.cantor_diagonal_widget;cantor diagonal widget
+mo:MathematicsLearningDockWidget.content_stack;content stack
+mo:MathematicsLearningDockWidget.facts_hint;Doppelklick auf einen Fakt öffnet rechts die zugehörige Darstellung.
+mo:MathematicsLearningDockWidget.facts_tree;facts tree
+mo:MathematicsLearningDockWidget.fibonacci_spiral_widget;fibonacci spiral widget
+mo:MathematicsLearningDockWidget.games_hint;Doppelklick auf einen Eintrag startet das Lernspiel rechts in der Arbeitsfläche.
+mo:MathematicsLearningDockWidget.games_tree;games tree
+mo:MathematicsLearningDockWidget.gorilla_parabola_widget;gorilla parabola widget
+mo:MathematicsLearningDockWidget.info_browser;info browser
+mo:MathematicsLearningDockWidget.iso_metric_widget;iso metric widget
+mo:MathematicsLearningDockWidget.left_tabs;left tabs
+mo:MathematicsLearningDockWidget.numbers_wall_widget;numbers wall widget
+mo:MathematicsLearningDockWidget.pascal_triangle_widget;pascal triangle widget
+mo:MathematicsLearningDockWidget.placeholder;Wähle links unter „Fakten“ oder „Spiele“ per Doppelklick einen Eintrag aus.
+mo:MathematicsLearningDockWidget.sudoku_widget;sudoku widget
+mo:NumberCalculatorDialog.backspace_button;←
+mo:NumberCalculatorDialog.calculate_button;Berechnen
+mo:NumberCalculatorDialog.change_button;Ändern
+mo:NumberCalculatorDialog.clear_button;Löschen
+mo:NumberCalculatorDialog.close_button;Schließen
+mo:NumberCalculatorDialog.equals_button;=
+mo:NumberCalculatorDialog.error_label;error label
+mo:NumberCalculatorDialog.expression_display;expression display
+mo:NumberCalculatorDialog.memory_label;memory label
+mo:NumberCalculatorDialog.recall_button;Abrufen
+mo:NumberCalculatorDialog.store_button;Speichern
+mo:NumberPyramidTrainerWidget.check_button;Prüfen
+mo:NumberPyramidTrainerWidget.graphics_view;graphics view
+mo:NumberPyramidTrainerWidget.status_label;Die ersten zwei Pyramiden besitzen nur Vorgaben in der 1. Stufe. Die nächsten zwei Pyramiden geben zusätzlich Randwerte der 2. Stufe vor.
+mo:NumberPyramidTrainerWidget.title_label;Wähle links im Tab „Spiele“ eine Zahlenmauer-Aufgabe aus.
+mo:numbers_wall_input;0
+mo:object_information_list;object information list
+mo:object_information_tab;object information tab
+mo:open_back_button;Zurück
+mo:open_dialog_cancel_button;Abbrechen
+mo:open_dialog_open_button;Öffnen
+mo:open_directory_tree;open directory tree
+mo:open_extension_check_list;open extension check list
+mo:open_file_view;open file view
+mo:open_forward_button;Vor
+mo:open_full_path_combo;open full path combo
+mo:open_main_splitter;open main splitter
+mo:open_path_combo;open path combo
+mo:open_path_stack;open path stack
+mo:open_search_edit;Search
+mo:open_up_button;Eine Verzeichnisebene höher
+mo:palette_editor_list;palette editor list
+mo:pascal_triangle_depth_spin;Anzahl sichtbarer Reihen ({…} bis {…})
+mo:pascal_triangle_view;pascal triangle view
+mo:PascalTriangleFactWidget.depth_spin;Anzahl sichtbarer Reihen ({…} bis {…})
+mo:PascalTriangleFactWidget.description_label;Jeder innere Wert ist die Summe der beiden Werte links und rechts darüber. Die Randwerte sind immer 1.
+mo:PascalTriangleFactWidget.level_label;level label
+mo:PascalTriangleFactWidget.title_label;Pascal Dreieck
+mo:PascalTriangleFactWidget.view;view
+mo:petscii_character_dialog;PETSCII-Zeichen auswählen
+mo:petscii_character_scroll_area;petscii character scroll area
+mo:petscii_character_table;petscii character table
+mo:petscii_dialog_close_button;Schließen
+mo:petscii_dialog_heading;PETSCII-Zeichen für Byte an Offset ${…}
+mo:project_open_button;Projektdatei (*.pro) öffnen
+mo:project_open_file_dialog;Datei öffnen
+mo:project_panel_tab;project panel tab
+mo:project_path_edit;Pfad zur Projektdatei (*.pro)
+mo:project_tree;"Doppelklick öffnet Dateien bzw. zeigt Archiv-/Objektinformationen; Checkboxen werden mit einfachem Klick umgeschaltet"
+mo:ProjectOpenFileDialog.back_button;Zurück
+mo:ProjectOpenFileDialog.breadcrumb_buttons_widget;breadcrumb buttons widget
+mo:ProjectOpenFileDialog.breadcrumb_folder_button;Vollständigen Verzeichnispfad bearbeiten
+mo:ProjectOpenFileDialog.breadcrumb_widget;breadcrumb widget
+mo:ProjectOpenFileDialog.cancel_button;Abbrechen
+mo:ProjectOpenFileDialog.directory_tree;directory tree
+mo:ProjectOpenFileDialog.extension_list;extension list
+mo:ProjectOpenFileDialog.file_combo;file combo
+mo:ProjectOpenFileDialog.file_view;file view
+mo:ProjectOpenFileDialog.forward_button;Vor
+mo:ProjectOpenFileDialog.main_splitter;main splitter
+mo:ProjectOpenFileDialog.open_button;Öffnen
+mo:ProjectOpenFileDialog.path_combo;path combo
+mo:ProjectOpenFileDialog.path_stack;path stack
+mo:ProjectOpenFileDialog.search_edit;Search
+mo:ProjectOpenFileDialog.subdir_button;Unterverzeichnisse anzeigen
+mo:ProjectOpenFileDialog.up_button;Eine Verzeichnisebene höher
+mo:prolog_knowledge_alternative_check_button;Prüfen +
+mo:prolog_knowledge_alternative_combo;Mögliche Werte für den nächsten Entscheidungs-Level
+mo:prolog_knowledge_alternative_label;Alternativen:
+mo:prolog_knowledge_alternative_overlay;prolog knowledge alternative overlay
+mo:prolog_knowledge_alternative_status;prolog knowledge alternative status
+mo:prolog_knowledge_close_button;Schließen
+mo:prolog_knowledge_database_combo;prolog knowledge database combo
+mo:prolog_knowledge_database_label;Wissen-Datenbank:
+mo:prolog_knowledge_database_status;Keine Datenbank geladen
+mo:prolog_knowledge_dialog;PROLOG – Wissen-Datenbanken
+mo:prolog_knowledge_directory_button;…
+mo:prolog_knowledge_directory_edit;Verzeichnis der Wissen-Datenbanken
+mo:prolog_knowledge_directory_label;Verzeichnis:
+mo:prolog_knowledge_dock;PROLOG – Wissen-Datenbanken
+mo:prolog_knowledge_embedded_alternative_check_button;Prüfen
+mo:prolog_knowledge_embedded_alternative_combo;prolog knowledge embedded alternative combo
+mo:prolog_knowledge_embedded_alternative_label;Alternativen:
+mo:prolog_knowledge_fact_arity_combo;Stelligkeit/Argumentanzahl 1 bis 100 auswählen
+mo:prolog_knowledge_fact_filter_button;Faktenfilter anwenden
+mo:prolog_knowledge_fact_filter_edit;Faktenname filtern …
+mo:prolog_knowledge_fact_tree;prolog knowledge fact tree
+mo:prolog_knowledge_facts_caption;Fakten / Regeln
+mo:prolog_knowledge_lane_add;Hinzufügen
+mo:prolog_knowledge_lane_commands;prolog knowledge lane commands
+mo:prolog_knowledge_lane_delete;Löschen
+mo:prolog_knowledge_level_alternative_host;prolog knowledge level alternative host
+mo:prolog_knowledge_level_arrow;▼
+mo:prolog_knowledge_level_button_host;prolog knowledge level button host
+mo:prolog_knowledge_level_container;prolog knowledge level container
+mo:prolog_knowledge_level_main;prolog knowledge level main
+mo:prolog_knowledge_level_scroll;prolog knowledge level scroll
+mo:prolog_knowledge_main_container;prolog knowledge main container
+mo:prolog_knowledge_main_scroll;prolog knowledge main scroll
+mo:prolog_knowledge_open_button;Öffnen
+mo:prolog_knowledge_query_check_add;Prüfen +
+mo:prolog_knowledge_query_edit;Wert für den nächsten Level, z. B. gesund
+mo:prolog_knowledge_query_lane;prolog knowledge query lane
+mo:prolog_knowledge_query_status;Bitte links einen Fakt bzw. eine Regel auswählen.
+mo:prolog_verbose_checkbox;Verbose
+mo:PrologKnowledgeDialog.database_combo;database combo
+mo:PrologKnowledgeDialog.database_label;Keine Datenbank geladen
+mo:PrologKnowledgeDialog.directory_button;…
+mo:PrologKnowledgeDialog.directory_edit;Verzeichnis der Wissen-Datenbanken
+mo:PrologKnowledgeDialog.fact_arity_combo;Stelligkeit/Argumentanzahl 1 bis 100 auswählen
+mo:PrologKnowledgeDialog.fact_filter_button;Faktenfilter anwenden
+mo:PrologKnowledgeDialog.fact_filter_edit;Faktenname filtern …
+mo:PrologKnowledgeDialog.fact_tree;fact tree
+mo:PrologKnowledgeDialog.main_splitter;main splitter
+mo:PrologKnowledgeDialog.open_button;Öffnen
+mo:PrologKnowledgeDialog.query_main_container;query main container
+mo:PrologKnowledgeDialog.query_main_scroll;query main scroll
+mo:raw_data_editor;raw data editor
+mo:recent_program_files_menu;recent program files menu
+mo:ResourceBuilderToolWindow.alias_host;alias host
+mo:ResourceBuilderToolWindow.alias_scroll;alias scroll
+mo:ResourceBuilderToolWindow.btn_apply;btn apply
+mo:ResourceBuilderToolWindow.btn_clear_all;btn clear all
+mo:ResourceBuilderToolWindow.btn_delete;btn delete
+mo:ResourceBuilderToolWindow.btn_py;btn py
+mo:ResourceBuilderToolWindow.btn_xml;btn xml
+mo:ResourceBuilderToolWindow.button_view_a;button view a
+mo:ResourceBuilderToolWindow.button_view_b;button view b
+mo:ResourceBuilderToolWindow.button_view_c;button view c
+mo:ResourceBuilderToolWindow.chk_root_only;chk root only
+mo:ResourceBuilderToolWindow.detail_view;detail view
+mo:ResourceBuilderToolWindow.dir_edit;dir edit
+mo:ResourceBuilderToolWindow.icon_view;icon view
+mo:ResourceBuilderToolWindow.left_tabs;left tabs
+mo:ResourceBuilderToolWindow.middle_widget;middle widget
+mo:ResourceBuilderToolWindow.right_tabs;right tabs
+mo:ResourceBuilderToolWindow.view_stack;view stack
+mo:ResourceBuilderToolWindow.xml_edit;xml edit
+mo:right_information_tabs;right information tabs
+mo:right_panel_tabs;right panel tabs
+mo:showException.btn;Schließen
+mo:showException.text;text
+mo:source_editor_with_minimap;source editor with minimap
+mo:source_minimap;source minimap
+mo:SourceAliasesTab.btn_add;btn add
+mo:SourceAliasesTab.btn_browse;...
+mo:SourceAliasesTab.btn_remove;btn remove
+mo:SourceAliasesTab.ed_alias;ed alias
+mo:SourceAliasesTab.ed_path;ed path
+mo:SourceAliasesTab.lst;lst
+mo:SourceEditorWithMiniMap.editor;editor
+mo:SourceEditorWithMiniMap.minimap;minimap
+mo:SourceTextEdit.completion_description;completion description
+mo:SourceTextEdit.completion_frame;completion frame
+mo:SourceTextEdit.completion_ghost;completion ghost
+mo:SourceTextEdit.completion_header;completion header
+mo:SourceTextEdit.instruction_help_current;instruction help current
+mo:SourceTextEdit.instruction_help_description;instruction help description
+mo:SourceTextEdit.instruction_help_frame;instruction help frame
+mo:SourceTextEdit.instruction_help_header;instruction help header
+mo:SourceTextEdit.line_number_area;line number area
+mo:start_assembled_button;Start
+mo:start_generated_button;Start
+mo:status_cursor_panel;status cursor panel
+mo:status_file_panel;status file panel
+mo:status_keyboard_panel;status keyboard panel
+mo:sudoku_board_frame;sudoku board frame
+mo:sudoku_cell;sudoku cell
+mo:SudokuTrainerWidget.board_frame;board frame
+mo:SudokuTrainerWidget.check_button;Prüfen
+mo:SudokuTrainerWidget.clear_button;Eingaben löschen
+mo:SudokuTrainerWidget.help_label;Fülle die leeren Felder mit den Ziffern 1 bis 9. In jeder Zeile, Spalte und jedem 3×3-Block darf jede Ziffer nur einmal vorkommen.
+mo:SudokuTrainerWidget.new_button;Neues Sudoku
+mo:SudokuTrainerWidget.status_label;status label
+mo:SudokuTrainerWidget.title_label;title label
+mo:theme_action;theme action
+mo:themed_message_box;themed message box
+mo:toolbar_right_spacer;toolbar right spacer
+mo:UserBdeAliasesTab.btn_add;btn add
+mo:UserBdeAliasesTab.btn_options;...
+mo:UserBdeAliasesTab.btn_remove;btn remove
+mo:UserBdeAliasesTab.cb_driver;cb driver
+mo:UserBdeAliasesTab.ed_alias;ed alias
+mo:UserBdeAliasesTab.ed_options;ed options
+mo:UserBdeAliasesTab.lst;lst
+mo:windows_graphics_combo;Windows-Anwendungsart: Konsole, GUI, Direct2D oder Direct3D
+mo:zoom_in_action;Schrift um 1 Punkt vergrößern
+mo:zoom_out_action;Schrift um 1 Punkt verkleinern

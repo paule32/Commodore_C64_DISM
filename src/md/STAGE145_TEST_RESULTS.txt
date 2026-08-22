@@ -1,0 +1,42 @@
+Stage 145 - Fibonacci QPainter / Pascal diagonals / Binet
+
+OK  QPainter Fibonacci/Pascal canvas exists
+OK  Fibonacci reference surfaces use QPainter.fillRect
+OK  Quarter circles use QPainter.drawArc
+OK  Reference colors include salmon/yellow/green/cyan
+OK  Blue spiral color exists
+OK  Numbers are drawn in Fibonacci areas
+OK  Pascal triangle is drawn below reference
+OK  Diagonal sum lines are drawn
+OK  Diagonal sums are displayed at right
+OK  Fibonacci index spin min/max exactly 1/1000
+OK  Calculate button exists
+OK  Binet formula uses Decimal
+OK  Binet result is shown
+OK  Separate Pascal fact widget retained
+OK  Cantor fact retained
+OK  Python compile succeeds
+OK  Binet Decimal F(1) matches exact integer
+OK  Binet Decimal F(2) matches exact integer
+OK  Binet Decimal F(3) matches exact integer
+OK  Binet Decimal F(5) matches exact integer
+OK  Binet Decimal F(8) matches exact integer
+OK  Binet Decimal F(10) matches exact integer
+OK  Binet Decimal F(50) matches exact integer
+OK  Binet Decimal F(100) matches exact integer
+OK  Binet Decimal F(500) matches exact integer
+OK  Binet Decimal F(1000) matches exact integer
+OK  Pascal shallow diagonal sum gives F(1)
+OK  Pascal shallow diagonal sum gives F(2)
+OK  Pascal shallow diagonal sum gives F(3)
+OK  Pascal shallow diagonal sum gives F(4)
+OK  Pascal shallow diagonal sum gives F(5)
+OK  Pascal shallow diagonal sum gives F(6)
+OK  Pascal shallow diagonal sum gives F(7)
+OK  Pascal shallow diagonal sum gives F(8)
+OK  Pascal shallow diagonal sum gives F(9)
+OK  Pascal shallow diagonal sum gives F(10)
+
+checks=36 passed=36 failed=0
+py_compile d64_dism.py: OK
+Native PyQt5 GUI/runtime test: unavailable in this environment.

@@ -37,6 +37,7 @@ EXPORTS
     DBaseQtControlCreate
     DBaseQtControlCreateEx
     DBaseQtObjectBindEvent
+    DBaseQtNonVisualCreate
     DBaseQtTimerCreate
     DBaseQtTimerSetInterval
     DBaseQtTimerSetActive

@@ -1,0 +1,29 @@
+Stage 161 - Form editor clean embedded tabs / dark source outline
+
+OK  Stage 161 marker present
+OK  Source internal build panel removed from source layout
+OK  Source internal build panel reparented
+OK  Generated ASM internal panel removed
+OK  Generated ASM internal panel reparented
+OK  Helper DocumentEditor explicitly hidden
+OK  Central Form Designer build bar retained
+OK  Central PE32 / PE32+ target combo retained
+OK  Formular-Designer tab retained
+OK  Quellcode tab retained
+OK  Assembler tab still inserted before Quellcode
+OK  Source outline dark background #181818
+OK  Source outline white text
+OK  Source outline dark header #252525
+OK  Source outline selected navy style
+OK  Source outline light style retained
+OK  Outline styled on creation
+OK  Outline styled on application theme change
+OK  Source outline navigation retained
+OK  F2 generated ASM linkage retained
+OK  Timer 42x42 retained
+OK  Session/Database/Query/DataSource 42x42 retained
+OK  Python compile succeeds
+
+checks=23 passed=23 failed=0
+py_compile d64_dism.py: OK
+Native Windows/PyQt5 GUI runtime test: unavailable in this environment.

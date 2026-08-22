@@ -69,8 +69,11 @@ D64QT5_API int DBaseQtObjectBindEvent(
     void *handle, const char *eventName, int eventNameLength,
     void *callbackHandle
 );
+D64QT5_API void *DBaseQtNonVisualCreate(
+    const char *className, int classNameLength, void *parentHandle
+);
 D64QT5_API void *DBaseQtTimerCreate(void *parentHandle);
-D64QT5_API void DBaseQtTimerSetInterval(void *handle, int microseconds);
+D64QT5_API void DBaseQtTimerSetInterval(void *handle, int milliseconds);
 D64QT5_API void DBaseQtTimerSetActive(void *handle, int active);
 D64QT5_API void DBaseQtConsoleWrite(
     const char *text, int textLength, int newline

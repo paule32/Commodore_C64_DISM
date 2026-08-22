@@ -1,0 +1,24 @@
+Stage 148 - startup height 800
+
+OK  Default startup height is exactly 800
+OK  Maximum window height remains 1000
+OK  Initial resize uses default 800 height
+OK  Old 1360x860 startup resize removed
+OK  Restore still restores geometry
+OK  Restore then forces default height
+OK  Post-restore maximum height is reapplied
+OK  Restored maximized state is cleared
+OK  Restored fullscreen state is cleared
+OK  Deferred startup-height clamp exists
+OK  Deferred clamp scheduled after restore
+OK  Math dock 1000px cap retained
+OK  Math widget 1000px cap retained
+OK  No new fixed-height lock in Explorer restore
+OK  User can still resize below/within max via normal resize
+OK  Stage 147 Pascal colors retained
+OK  Fibonacci QPainter remains
+OK  Python compile succeeds
+
+checks=18 passed=18 failed=0
+py_compile d64_dism.py: OK
+Native Windows/PyQt5 GUI runtime test: unavailable in this environment.

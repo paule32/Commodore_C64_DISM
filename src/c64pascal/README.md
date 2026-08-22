@@ -39,7 +39,7 @@ gewählt. Die Python-Schnittstelle verwendet entsprechend
 - `=`, `<>`, `<`, `<=`, `>`, `>=`
 - `if/then/else`, `while/do`, `repeat/until`, `for/to/downto`
 - `break`, `continue`
-- `Write`, `WriteLn`, `ReadLn`, `ClrScr`, `SetTextColor`, `Poke`, `Inc`, `Dec`, `Halt`
+- `Write`, `WriteLn`, `ClrScr`, `SetTextColor`, `Poke`, `Inc`, `Dec`, `Halt`
 - `Peek`, `Chr`, `Ord`, `Lo`, `Hi`
 - Dezimalzahlen sowie C64-typische Hex- (`$`) und Binärliterale (`%`)
 - `uses` mit rekursiven Pascal-Units
@@ -183,19 +183,3 @@ Records oder Arrays ist noch nicht implementiert.
 ```powershell
 py c64pascal\generate_parser.py T:\Tools\antlr-4.13.2-complete.jar
 ```
-
-
-## Windows PE32 ReadLn
-
-Im Anwendungsmodus `Console` stehen folgende Formen zur Verfügung:
-
-```pascal
-ReadLn;
-foo := ReadLn('Text: ');
-ReadLn(foo, 'Text: ');
-```
-
-`ReadLn;` wartet auf Enter/Return. Die beiden anderen Varianten lesen eine
-Zeile über die interne Win32-`ReadFile`-Runtime ein; CR/LF werden entfernt.
-Die Eingabevariable ist derzeit `String`. Im Windows-Modus `GUI`, `Direct2D`
-oder `Direct3D` wird keine Konsole geöffnet und `ReadLn` deshalb abgewiesen.

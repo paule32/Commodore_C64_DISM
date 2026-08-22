@@ -212,27 +212,6 @@ class ContinueStatement(Statement):
 
 
 @dataclass(frozen=True)
-class TryFinallyStatement(Statement):
-    try_statement: Statement
-    finally_statement: Statement
-
-
-@dataclass(frozen=True)
-class ExceptHandler:
-    variable_name: str
-    type_name: str
-    body: Statement
-    position: SourcePosition
-
-
-@dataclass(frozen=True)
-class TryExceptStatement(Statement):
-    try_statement: Statement
-    except_statement: Optional[Statement]
-    handlers: Tuple[ExceptHandler, ...] = ()
-
-
-@dataclass(frozen=True)
 class ConstDeclaration:
     name: str
     expression: Expression
@@ -259,7 +238,6 @@ class FieldDeclaration:
     names: Tuple[str, ...]
     type_name: str
     position: SourcePosition
-    visibility: str = "public"
 
 
 @dataclass(frozen=True)
@@ -271,11 +249,6 @@ class RecordTypeSpecification(TypeSpecification):
 class ArrayTypeSpecification(TypeSpecification):
     lower_bound: Expression
     upper_bound: Expression
-    element_type_name: str
-
-
-@dataclass(frozen=True)
-class SetTypeSpecification(TypeSpecification):
     element_type_name: str
 
 
@@ -294,19 +267,6 @@ class MethodDeclaration:
     parameters: Tuple[ParameterDeclaration, ...]
     result_type_name: Optional[str]
     position: SourcePosition
-    visibility: str = "public"
-    is_virtual: bool = False
-    is_override: bool = False
-
-
-@dataclass(frozen=True)
-class PropertyDeclaration:
-    name: str
-    type_name: str
-    read_name: Optional[str]
-    write_name: Optional[str]
-    position: SourcePosition
-    visibility: str = "public"
 
 
 @dataclass(frozen=True)
@@ -314,7 +274,6 @@ class ClassTypeSpecification(TypeSpecification):
     base_type_name: Optional[str]
     fields: Tuple[FieldDeclaration, ...]
     methods: Tuple[MethodDeclaration, ...]
-    properties: Tuple[PropertyDeclaration, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -471,13 +430,9 @@ class _AstBuilder(C64PascalParserVisitor):
             "enumType",
             "recordType",
             "arrayType",
-            "setType",
             "classType",
         ):
-            getter = getattr(ctx, child_name, None)
-            if getter is None:
-                continue
-            child = getter()
+            child = getattr(ctx, child_name)()
             if child is not None:
                 if child_name == "typeIdentifier":
                     return NamedTypeSpecification(
@@ -506,41 +461,14 @@ class _AstBuilder(C64PascalParserVisitor):
             ctx.typeIdentifier().getText().casefold(),
         )
 
-    def visitSetType(self, ctx):
-        return SetTypeSpecification(
-            _position(ctx),
-            ctx.typeIdentifier().getText().casefold(),
-        )
-
     def visitClassType(self, ctx):
         fields = []
         methods = []
-        properties = []
-        current_visibility = "public"
         for member in ctx.classMember():
-            if member.visibilitySpecifier():
-                current_visibility = member.visibilitySpecifier().getText().casefold()
-            elif member.fieldDeclaration():
-                fields.append(
-                    replace(
-                        self.visit(member.fieldDeclaration()),
-                        visibility=current_visibility,
-                    )
-                )
+            if member.fieldDeclaration():
+                fields.append(self.visit(member.fieldDeclaration()))
             elif member.methodDeclaration():
-                methods.append(
-                    replace(
-                        self.visit(member.methodDeclaration()),
-                        visibility=current_visibility,
-                    )
-                )
-            elif hasattr(member, "propertyDeclaration") and member.propertyDeclaration():
-                properties.append(
-                    replace(
-                        self.visit(member.propertyDeclaration()),
-                        visibility=current_visibility,
-                    )
-                )
+                methods.append(self.visit(member.methodDeclaration()))
         base_type_name = (
             ctx.typeIdentifier().getText().casefold()
             if ctx.typeIdentifier()
@@ -551,7 +479,6 @@ class _AstBuilder(C64PascalParserVisitor):
             base_type_name,
             tuple(fields),
             tuple(methods),
-            tuple(properties),
         )
 
     def visitFieldDeclaration(self, ctx):
@@ -562,34 +489,11 @@ class _AstBuilder(C64PascalParserVisitor):
         )
 
     def visitMethodDeclaration(self, ctx):
-        directives = []
-        if hasattr(ctx, "methodDirective"):
-            directives = [item.getText().casefold() for item in ctx.methodDirective()]
         return MethodDeclaration(
             ctx.routineKind().getText().casefold(),
             ctx.IDENTIFIER().getText(),
             tuple(self.visit(ctx.formalParameters())) if ctx.formalParameters() else (),
             ctx.typeIdentifier().getText().casefold() if ctx.typeIdentifier() else None,
-            _position(ctx),
-            is_virtual=("virtual;" in directives or "override;" in directives),
-            is_override=("override;" in directives),
-        )
-
-    def visitPropertyDeclaration(self, ctx):
-        read_name = None
-        write_name = None
-        for accessor in ctx.propertyAccessor():
-            text = accessor.getText()
-            identifier = accessor.IDENTIFIER().getText()
-            if text.casefold().startswith("read"):
-                read_name = identifier
-            elif text.casefold().startswith("write"):
-                write_name = identifier
-        return PropertyDeclaration(
-            ctx.IDENTIFIER().getText(),
-            ctx.typeIdentifier().getText().casefold(),
-            read_name,
-            write_name,
             _position(ctx),
         )
 
@@ -644,158 +548,12 @@ class _AstBuilder(C64PascalParserVisitor):
             _position(ctx),
         )
 
-    @staticmethod
-    def _try_marker(statement):
-        if not isinstance(statement, CallStatement) or statement.arguments:
-            return None
-        designator = statement.designator
-        if isinstance(designator, DesignatorExpression):
-            if designator.selectors:
-                return None
-            name = designator.name
-        else:
-            name = str(designator)
-        match = re.fullmatch(
-            r"__pas_try_(begin|finally|except|end)_(\d+)",
-            name,
-            re.IGNORECASE,
-        )
-        if match is None:
-            return None
-        return match.group(1).casefold(), int(match.group(2))
-
-    @staticmethod
-    def _except_on_marker(statement):
-        if not isinstance(statement, CallStatement):
-            return None
-        designator = statement.designator
-        if not isinstance(designator, DesignatorExpression):
-            return None
-        if designator.selectors or designator.name.casefold() != "__pas_except_on":
-            return None
-        if len(statement.arguments) != 2:
-            return None
-        var_expr, type_expr = statement.arguments
-        if not isinstance(var_expr, LiteralExpression) or not isinstance(var_expr.value, str):
-            return None
-        if not isinstance(type_expr, LiteralExpression) or not isinstance(type_expr.value, str):
-            return None
-        return var_expr.value, type_expr.value
-
-    def _build_except_statement(self, position, try_body, branch_body):
-        statements = list(branch_body.statements) if isinstance(branch_body, CompoundStatement) else [branch_body]
-        if not statements:
-            return TryExceptStatement(position, try_body, branch_body)
-        if self._except_on_marker(statements[0]) is None:
-            return TryExceptStatement(position, try_body, branch_body)
-
-        handlers = []
-        index = 0
-        while index < len(statements):
-            marker = self._except_on_marker(statements[index])
-            if marker is None:
-                raise C64PascalError(
-                    "Nach typisierten EXCEPT-Handlern wird derzeit nur ein weiterer ON-Handler erwartet.",
-                    statements[index].position.line,
-                    statements[index].position.column - 1,
-                )
-            if index + 1 >= len(statements):
-                raise C64PascalError(
-                    "ON-Handler benoetigt eine Anweisung nach DO.",
-                    statements[index].position.line,
-                    statements[index].position.column - 1,
-                )
-            variable_name, type_name = marker
-            body = statements[index + 1]
-            handlers.append(ExceptHandler(variable_name, type_name, body, statements[index].position))
-            index += 2
-        return TryExceptStatement(position, try_body, None, tuple(handlers))
-
-    def _collapse_compat_try_compound(self, position, statements):
-        if len(statements) < 3:
-            return None
-        start = self._try_marker(statements[0])
-        finish = self._try_marker(statements[-1])
-        if start is None or finish is None:
-            return None
-        if start[0] != "begin" or finish != ("end", start[1]):
-            return None
-        branch_index = None
-        branch_kind = None
-        for index, statement in enumerate(statements[1:-1], 1):
-            marker = self._try_marker(statement)
-            if marker is not None and marker[1] == start[1] and marker[0] in {"finally", "except"}:
-                branch_index = index
-                branch_kind = marker[0]
-                break
-        if branch_index is None:
-            raise C64PascalError(
-                "TRY benötigt FINALLY oder EXCEPT.",
-                position.line,
-                position.column - 1,
-            )
-        try_body = CompoundStatement(
-            statements[0].position,
-            tuple(statements[1:branch_index]),
-        )
-        branch_body = CompoundStatement(
-            statements[branch_index].position,
-            tuple(statements[branch_index + 1:-1]),
-        )
-        if branch_kind == "finally":
-            return TryFinallyStatement(position, try_body, branch_body)
-        return self._build_except_statement(position, try_body, branch_body)
-
     def visitCompoundStatement(self, ctx):
         statements = self.visit(ctx.statementSequence()) if ctx.statementSequence() else []
-        collapsed = self._collapse_compat_try_compound(_position(ctx), statements)
-        if collapsed is not None:
-            return collapsed
         return CompoundStatement(_position(ctx), tuple(statements))
 
     def visitStatementSequence(self, ctx):
         return [self.visit(item) for item in ctx.statement()]
-
-    # Diese beiden Visitor werden verwendet, sobald die .g4-Dateien neu mit
-    # ANTLR 4.13.2 erzeugt wurden. Bis dahin übernimmt die Marker-
-    # Kompatibilitätsschicht dieselbe AST-Struktur.
-    def visitTryStatementNode(self, ctx):
-        return self.visit(ctx.tryStatement())
-
-    def visitTryStatement(self, ctx):
-        try_body = self.visit(ctx.tryBody())
-        if ctx.FINALLY():
-            return TryFinallyStatement(
-                _position(ctx),
-                try_body,
-                self.visit(ctx.finallyBody()),
-            )
-        except_body = self.visit(ctx.exceptBody())
-        if isinstance(except_body, tuple) and all(isinstance(item, ExceptHandler) for item in except_body):
-            return TryExceptStatement(_position(ctx), try_body, None, except_body)
-        return TryExceptStatement(_position(ctx), try_body, except_body)
-
-    def visitTryBody(self, ctx):
-        statements = self.visit(ctx.statementSequence()) if ctx.statementSequence() else []
-        return CompoundStatement(_position(ctx), tuple(statements))
-
-    def visitFinallyBody(self, ctx):
-        statements = self.visit(ctx.statementSequence()) if ctx.statementSequence() else []
-        return CompoundStatement(_position(ctx), tuple(statements))
-
-    def visitExceptBody(self, ctx):
-        if hasattr(ctx, "exceptionHandler") and ctx.exceptionHandler():
-            return tuple(self.visit(item) for item in ctx.exceptionHandler())
-        statements = self.visit(ctx.statementSequence()) if ctx.statementSequence() else []
-        return CompoundStatement(_position(ctx), tuple(statements))
-
-    def visitExceptionHandler(self, ctx):
-        return ExceptHandler(
-            ctx.IDENTIFIER().getText(),
-            ctx.typeIdentifier().getText(),
-            self.visit(ctx.statement()),
-            _position(ctx),
-        )
 
     def visitCompoundStatementNode(self, ctx):
         return self.visit(ctx.compoundStatement())
@@ -823,37 +581,6 @@ class _AstBuilder(C64PascalParserVisitor):
 
     def visitContinueStatementNode(self, ctx):
         return ContinueStatement(_position(ctx))
-
-    # Wird aktiv, sobald die aktualisierten .g4-Dateien neu generiert werden.
-    # Die ausgelieferten aelteren Parser erhalten dieselbe Semantik ueber
-    # _rewrite_raise_syntax_compat().
-    def visitRaiseStatementNode(self, ctx):
-        return self.visit(ctx.raiseStatement())
-
-    def visitRaiseStatement(self, ctx):
-        position = _position(ctx)
-        if ctx.expression() is None:
-            return CallStatement(position, DesignatorExpression(position, "__pas_reraise", ()), ())
-        expression = self.visit(ctx.expression())
-        if (
-            isinstance(expression, CallExpression)
-            and isinstance(expression.designator, DesignatorExpression)
-            and len(expression.designator.selectors) == 1
-            and isinstance(expression.designator.selectors[0], FieldSelector)
-            and expression.designator.selectors[0].name.casefold() == "create"
-            and len(expression.arguments) == 1
-        ):
-            class_name = expression.designator.name
-            return CallStatement(
-                position,
-                DesignatorExpression(position, "__pas_raise_class", ()),
-                (LiteralExpression(position, class_name), expression.arguments[0]),
-            )
-        return CallStatement(
-            position,
-            DesignatorExpression(position, "__pas_raise", ()),
-            (expression,),
-        )
 
     def visitAssignmentStatement(self, ctx):
         return AssignmentStatement(
@@ -947,13 +674,6 @@ class _AstBuilder(C64PascalParserVisitor):
         return self._fold_binary(ctx)
 
     def visitComparisonExpression(self, ctx):
-        if hasattr(ctx, "IN") and ctx.IN():
-            operands = ctx.additiveExpression()
-            return CallExpression(
-                _position(ctx),
-                "SetContains",
-                (self.visit(operands[1]), self.visit(operands[0])),
-            )
         return self._fold_binary(ctx)
 
     def visitAdditiveExpression(self, ctx):
@@ -976,8 +696,6 @@ class _AstBuilder(C64PascalParserVisitor):
         position = _position(ctx)
         if ctx.integerLiteral():
             return self.visit(ctx.integerLiteral())
-        if hasattr(ctx, "setConstructor") and ctx.setConstructor():
-            return self.visit(ctx.setConstructor())
         if ctx.STRING_LITERAL():
             text = ctx.STRING_LITERAL().getText()[1:-1].replace("''", "'")
             return LiteralExpression(position, text)
@@ -985,8 +703,6 @@ class _AstBuilder(C64PascalParserVisitor):
             return LiteralExpression(position, True)
         if ctx.FALSE():
             return LiteralExpression(position, False)
-        if hasattr(ctx, "NIL") and ctx.NIL():
-            return DesignatorExpression(position, "nil", ())
         if ctx.designator():
             designator = self.visit(ctx.designator())
             if ctx.LPAREN():
@@ -994,30 +710,6 @@ class _AstBuilder(C64PascalParserVisitor):
                 return CallExpression(position, designator, tuple(arguments))
             return designator
         return self.visit(ctx.expression())
-
-
-    def visitSetConstructor(self, ctx):
-        position = _position(ctx)
-        if ctx.setElementList() is None:
-            return CallExpression(position, "EmptySet", ())
-        terms = [self.visit(item) for item in ctx.setElementList().setElement()]
-        if len(terms) == 1:
-            return terms[0]
-        return CallExpression(position, "SetUnion", tuple(terms))
-
-    def visitSetElement(self, ctx):
-        expressions = ctx.additiveExpression()
-        if len(expressions) == 1:
-            return CallExpression(
-                _position(ctx),
-                "SetOf",
-                (self.visit(expressions[0]),),
-            )
-        return CallExpression(
-            _position(ctx),
-            "SetRange",
-            (self.visit(expressions[0]), self.visit(expressions[1])),
-        )
 
     def visitIntegerLiteral(self, ctx):
         text = ctx.getText()
@@ -1579,549 +1271,16 @@ def _extract_program_uses(
     return cleaned, names
 
 
-
-def _rewrite_except_on_syntax_compat(source: str) -> str:
-    """Uebersetzt ``on E: EType do`` fuer alte generierte ANTLR-Dateien.
-
-    Der Marker bleibt eine normale Pascal-Anweisung und wird spaeter vom
-    AstBuilder in einen ExceptHandler umgewandelt. Dadurch bleiben Variable,
-    Typ und Handler-Body getrennte semantische Elemente.
-    """
-    if hasattr(C64PascalLexer, "ON"):
-        return source
-    mask = _pascal_code_mask(source)
-    pattern = re.compile(
-        r"\bon\s+(?P<var>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*"
-        r"(?P<type>[A-Za-z_][A-Za-z0-9_]*)\s+do\b",
-        re.IGNORECASE,
-    )
-    replacements = []
-    for match in pattern.finditer(mask):
-        variable_name = source[match.start("var"):match.end("var")]
-        type_name = source[match.start("type"):match.end("type")]
-        replacement = f"__pas_except_on('{variable_name}', '{type_name}');"
-        replacements.append((match.start(), match.end(), replacement))
-    for start, end, replacement in reversed(replacements):
-        source = source[:start] + replacement + source[end:]
-    return source
-
-
-def _rewrite_try_syntax_compat(source: str) -> str:
-    """Schreibt TRY..FINALLY/EXCEPT fuer alte generierte Parser in Marker-Bloecke um.
-
-    Die Transformation behaelt alle Zeilen bei. Der AstBuilder erkennt die
-    Marker wieder und erzeugt echte TryFinallyStatement/TryExceptStatement-
-    Knoten. Strings und Kommentare werden ueber _pascal_code_mask ignoriert.
-    """
-    if hasattr(C64PascalLexer, "TRY"):
-        return source
-
-    mask = _pascal_code_mask(source)
-    token_pattern = re.compile(
-        r"\b(begin|record|class|case|try|finally|except|end)\b",
-        re.IGNORECASE,
-    )
-    stack = []
-    replacements = []
-    try_counter = 0
-
-    for match in token_pattern.finditer(mask):
-        word = match.group(1).casefold()
-        if word in {"begin", "record", "class", "case"}:
-            stack.append((word, None))
-            continue
-        if word == "try":
-            try_counter += 1
-            stack.append(("try", try_counter))
-            replacements.append(
-                (match.start(), match.end(), f"begin __pas_try_begin_{try_counter};")
-            )
-            continue
-        if word in {"finally", "except"}:
-            if not stack or stack[-1][0] != "try":
-                continue
-            try_id = stack[-1][1]
-            replacements.append(
-                (match.start(), match.end(), f"__pas_try_{word}_{try_id};")
-            )
-            continue
-        if word == "end" and stack:
-            kind, try_id = stack.pop()
-            if kind == "try":
-                replacements.append(
-                    (match.start(), match.end(), f"__pas_try_end_{try_id}; end")
-                )
-
-    for start, end, replacement in reversed(replacements):
-        source = source[:start] + replacement + source[end:]
-    return source
-
-
-
-def _rewrite_raise_syntax_compat(source: str) -> str:
-    """Uebersetzt Pascal RAISE fuer die ausgelieferten alten ANTLR-Dateien.
-
-    Unterstuetzt werden zunaechst die fuer die Runtime wichtigen Formen::
-
-        raise Exception.Create('message');
-        raise 'message';
-        raise;                    { re-raise }
-
-    Der echte Lexer/Parser besitzt parallel dazu eine RAISE-Regel. Bis die
-    generierten Dateien aktualisiert sind, werden interne Builtins verwendet.
-    Strings und Kommentare werden mit _pascal_code_mask geschuetzt.
-    """
-    if hasattr(C64PascalLexer, "RAISE"):
-        return source
-    mask = _pascal_code_mask(source)
-    pattern = re.compile(r"\braise\b(?P<body>[^;]*);", re.IGNORECASE)
-    replacements = []
-    for match in pattern.finditer(mask):
-        raw_body = source[match.start("body"):match.end("body")].strip()
-        if not raw_body:
-            replacement = "__pas_reraise;"
-        else:
-            create = re.fullmatch(
-                r"(?P<class>[A-Za-z_][A-Za-z0-9_]*)\s*\.\s*Create\s*\((?P<message>.*)\)\s*",
-                raw_body,
-                re.IGNORECASE | re.DOTALL,
-            )
-            if create is not None:
-                class_name = create.group("class")
-                message = create.group("message").strip()
-                replacement = f"__pas_raise_class('{class_name}', {message});"
-            else:
-                replacement = f"__pas_raise({raw_body});"
-        replacements.append((match.start(), match.end(), replacement))
-    for start, end, replacement in reversed(replacements):
-        source = source[:start] + replacement + source[end:]
-    return source
-
-
-def _normalize_late_global_declarations(source: str) -> str:
-    """Erlaubt globale CONST/TYPE/VAR-Abschnitte nach Methodenimplementierungen.
-
-    Die ausgelieferten generierten Parser erwarten alle globalen Abschnitte vor
-    der ersten ``TClass.Method``-Implementierung. Nur fuer diesen alten Parser
-    werden spaete globale Abschnitte im Parsertext nach vorn verschoben. Lokale
-    VAR-Abschnitte einer Methode bleiben dabei an ihrer Stelle.
-    """
-    mask = _pascal_code_mask(source)
-    word_pattern = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b")
-    opener_words = {"begin", "record", "class", "case", "try"}
-    section_words = {"const", "type", "var"}
-
-    # Alle Woerter, die unmittelbar auf Programmebene liegen. BEGIN-Woerter
-    # von Methoden sind hier ebenfalls enthalten; der letzte Top-Level-BEGIN
-    # ist bei der unterstuetzten PROGRAM-Grammatik der eigentliche Hauptblock.
-    stack = []
-    top_words = []
-    for match in word_pattern.finditer(mask):
-        word = match.group(0).casefold()
-        if word == "end":
-            if stack:
-                stack.pop()
-            continue
-        if not stack:
-            top_words.append((match.start(), match.end(), word))
-        if word in opener_words:
-            stack.append(word)
-
-    body_candidates = [item for item in top_words if item[2] == "begin"]
-    if not body_candidates:
-        return source
-    main_begin = body_candidates[-1][0]
-
-    method_pattern = re.compile(
-        r"\b(?:procedure|function|constructor|destructor)\s+"
-        r"[A-Za-z_][A-Za-z0-9_]*\s*\.\s*"
-        r"[A-Za-z_][A-Za-z0-9_]*\b",
-        re.IGNORECASE,
-    )
-    method_starts = [m.start() for m in method_pattern.finditer(mask[:main_begin])]
-    if not method_starts:
-        return source
-    first_method_start = min(method_starts)
-
-    # Ermittelt komplette Implementierungsbereiche, damit z.B.
-    #   procedure T.Foo; var x: Integer; begin ... end;
-    # keinen scheinbar globalen VAR-Abschnitt erzeugt.
-    method_ranges = []
-    block_token = re.compile(r"\b(begin|end)\b", re.IGNORECASE)
-    for method_start in method_starts:
-        body_match = re.search(r"\bbegin\b", mask[method_start:main_begin], re.IGNORECASE)
-        if body_match is None:
-            continue
-        body_start = method_start + body_match.start()
-        depth = 0
-        method_end = main_begin
-        for token in block_token.finditer(mask, body_start, main_begin):
-            if token.group(1).casefold() == "begin":
-                depth += 1
-            else:
-                depth -= 1
-                if depth == 0:
-                    method_end = token.end()
-                    semi = mask.find(";", method_end, min(main_begin, method_end + 8))
-                    if semi >= 0:
-                        method_end = semi + 1
-                    break
-        method_ranges.append((method_start, method_end))
-
-    def inside_method(offset: int) -> bool:
-        return any(start <= offset < end for start, end in method_ranges)
-
-    # Nur echte Top-Level-Abschnittswoerter nach der ersten Methode sammeln.
-    section_starts = [
-        start
-        for start, unused_end, word in top_words
-        if first_method_start < start < main_begin
-        and word in section_words
-        and not inside_method(start)
-    ]
-    if not section_starts:
-        return source
-
-    # Grenzen: naechster globaler Abschnitt, naechste Methode oder Haupt-BEGIN.
-    boundaries = sorted(
-        set(section_starts + [x for x in method_starts if x > first_method_start] + [main_begin])
-    )
-    spans = []
-    for section_start in section_starts:
-        end = next((value for value in boundaries if value > section_start), main_begin)
-        spans.append((section_start, end))
-
-    # Ueberlappende/duplizierte Spannen zusammenfassen.
-    merged = []
-    for start, end in sorted(spans):
-        if merged and start <= merged[-1][1]:
-            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
-        else:
-            merged.append((start, end))
-
-    moved = "".join(source[start:end] for start, end in merged)
-    characters = list(source)
-    for start, end in merged:
-        characters[start:end] = list(_blank_preserving_lines(source[start:end]))
-    blanked = "".join(characters)
-    return blanked[:first_method_start] + moved + blanked[first_method_start:]
-
-
-@dataclass
-class _PascalSyntaxExtensions:
-    set_types: Dict[str, Tuple[str, SourcePosition]] = field(default_factory=dict)
-    properties: Dict[str, List[PropertyDeclaration]] = field(default_factory=dict)
-    method_flags: Dict[Tuple[str, str], Tuple[bool, bool]] = field(default_factory=dict)
-
-
-def _source_position_from_offset(source: str, offset: int) -> SourcePosition:
-    line = source.count("\n", 0, offset) + 1
-    previous_newline = source.rfind("\n", 0, offset)
-    column = offset + 1 if previous_newline < 0 else offset - previous_newline
-    return SourcePosition(line, column)
-
-
-def _blank_preserving_lines(text: str) -> str:
-    return "".join("\n" if character == "\n" else " " for character in text)
-
-
-def _split_pascal_list(text: str) -> List[str]:
-    result: List[str] = []
-    start = 0
-    depth = 0
-    in_string = False
-    index = 0
-    while index < len(text):
-        character = text[index]
-        if character == "'":
-            if in_string and index + 1 < len(text) and text[index + 1] == "'":
-                index += 2
-                continue
-            in_string = not in_string
-        elif not in_string:
-            if character == "(":
-                depth += 1
-            elif character == ")" and depth:
-                depth -= 1
-            elif character == "," and depth == 0:
-                result.append(text[start:index].strip())
-                start = index + 1
-        index += 1
-    result.append(text[start:].strip())
-    return [item for item in result if item]
-
-
-def _rewrite_set_literals(source: str) -> str:
-    """Schreibt Pascal-Set-Konstruktoren in interne Builtin-Aufrufe um.
-
-    Die vorhandenen generierten ANTLR-Dateien kennen ``[A, B]`` nur als
-    Arrayindex-Syntax. Die Umschreibung erfolgt deshalb ausschließlich an
-    Stellen, an denen die eckige Klammer nicht direkt auf einen Designator
-    folgt. Zeilennummern bleiben unverändert.
-    """
-    mask = _pascal_code_mask(source)
-    replacements: List[Tuple[int, int, str]] = []
-    index = 0
-    while index < len(mask):
-        if mask[index] != "[":
-            index += 1
-            continue
-        previous = index - 1
-        while previous >= 0 and mask[previous].isspace():
-            previous -= 1
-        if previous >= 0 and (mask[previous].isalnum() or mask[previous] in "_)]"):
-            index += 1
-            continue
-        depth = 1
-        end = index + 1
-        while end < len(mask) and depth:
-            if mask[end] == "[":
-                depth += 1
-            elif mask[end] == "]":
-                depth -= 1
-            end += 1
-        if depth:
-            index += 1
-            continue
-        content = source[index + 1:end - 1].strip()
-        if not content:
-            replacement = "EmptySet()"
-        else:
-            terms: List[str] = []
-            for item in _split_pascal_list(content):
-                range_parts = item.split("..", 1)
-                if len(range_parts) == 2:
-                    terms.append(
-                        f"SetRange({range_parts[0].strip()}, {range_parts[1].strip()})"
-                    )
-                else:
-                    terms.append(f"SetOf({item})")
-            replacement = terms[0] if len(terms) == 1 else f"SetUnion({', '.join(terms)})"
-        replacements.append((index, end, replacement))
-        index = end
-    for start, end, replacement in reversed(replacements):
-        source = source[:start] + replacement + source[end:]
-    return source
-
-
-def _rewrite_set_membership(source: str) -> str:
-    """Unterstützt die übliche einfache Pascal-Form ``Value in SetVar``."""
-    pattern = re.compile(
-        r"(?P<left>\b[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)"
-        r"\s+in\s+"
-        r"(?P<right>(?:[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*|\[[^\]\r\n]*\]))",
-        re.IGNORECASE,
-    )
-    # Nur Codebereiche ersetzen. Kommentare/Strings werden über den Maskencheck
-    # ausgeschlossen. Mehrere Membership-Ausdrücke werden von rechts nach links
-    # ersetzt, damit Offsets stabil bleiben.
-    while True:
-        mask = _pascal_code_mask(source)
-        matches = [match for match in pattern.finditer(mask)]
-        if not matches:
-            return source
-        changed = False
-        for match in reversed(matches):
-            original = source[match.start():match.end()]
-            visible = _pascal_code_mask(original)
-            local = pattern.fullmatch(visible)
-            if local is None:
-                continue
-            left = source[match.start("left"):match.end("left")]
-            right = source[match.start("right"):match.end("right")]
-            source = source[:match.start()] + f"SetContains({right}, {left})" + source[match.end():]
-            changed = True
-        if not changed:
-            return source
-
-
-def _normalize_pascal_oop_extensions(
-    source: str,
-) -> Tuple[str, _PascalSyntaxExtensions]:
-    extensions = _PascalSyntaxExtensions()
-    original = source
-    mask = _pascal_code_mask(source)
-    characters = list(source)
-
-    # SET OF wird semantisch als eigener Typ zurückgespeichert. Für den alten
-    # Parser steht währenddessen ein gleichzeiliger Integer-Alias im Text.
-    set_pattern = re.compile(
-        r"\b(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
-        r"set\s+of\s+(?P<element>[A-Za-z_][A-Za-z0-9_]*)\s*;",
-        re.IGNORECASE,
-    )
-    for match in set_pattern.finditer(mask):
-        name = original[match.start("name"):match.end("name")]
-        element = original[match.start("element"):match.end("element")]
-        extensions.set_types[name.casefold()] = (
-            element,
-            _source_position_from_offset(original, match.start()),
-        )
-        start = match.start("element")
-        prefix_start = mask.rfind("set", match.start(), start)
-        if prefix_start < 0:
-            continue
-        replacement = "integer"
-        span_end = match.end("element")
-        span = span_end - prefix_start
-        text = replacement + " " * max(0, span - len(replacement))
-        characters[prefix_start:span_end] = list(text[:span])
-
-    # Klassenblöcke: Property-Zeilen entfernen und Direktiven hinter Methoden
-    # erfassen. PRIVATE/PROTECTED/PUBLIC/PUBLISHED bleiben im Parsertext und
-    # werden vom AstBuilder verarbeitet.
-    class_pattern = re.compile(
-        r"\b(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*class\b"
-        r"(?:\s*\([^)]*\))?(?P<body>.*?)\bend\s*;",
-        re.IGNORECASE | re.DOTALL,
-    )
-    for class_match in class_pattern.finditer(mask):
-        class_name = original[class_match.start("name"):class_match.end("name")]
-        body_start, body_end = class_match.span("body")
-        body_mask = mask[body_start:body_end]
-
-        def visibility_at(local_offset: int) -> str:
-            visibility = "public"
-            for item in re.finditer(
-                r"\b(private|protected|public|published)\b",
-                body_mask[:local_offset],
-                re.IGNORECASE,
-            ):
-                visibility = item.group(1).casefold()
-            return visibility
-
-        property_pattern = re.compile(
-            r"\bproperty\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*"
-            r"(?P<type>[A-Za-z_][A-Za-z0-9_]*)\s*(?P<accessors>[^;]*);",
-            re.IGNORECASE,
-        )
-        for prop_match in property_pattern.finditer(body_mask):
-            absolute_start = body_start + prop_match.start()
-            prop_name = original[
-                body_start + prop_match.start("name"):
-                body_start + prop_match.end("name")
-            ]
-            type_name = original[
-                body_start + prop_match.start("type"):
-                body_start + prop_match.end("type")
-            ]
-            accessor_text = original[
-                body_start + prop_match.start("accessors"):
-                body_start + prop_match.end("accessors")
-            ]
-            read_match = re.search(
-                r"\bread\s+([A-Za-z_][A-Za-z0-9_]*)",
-                accessor_text,
-                re.IGNORECASE,
-            )
-            write_match = re.search(
-                r"\bwrite\s+([A-Za-z_][A-Za-z0-9_]*)",
-                accessor_text,
-                re.IGNORECASE,
-            )
-            if read_match is None and write_match is None:
-                raise C64PascalError(
-                    f"Property {class_name}.{prop_name} benötigt READ und/oder WRITE.",
-                    _source_position_from_offset(original, absolute_start).line,
-                    _source_position_from_offset(original, absolute_start).column - 1,
-                )
-            extensions.properties.setdefault(class_name.casefold(), []).append(
-                PropertyDeclaration(
-                    prop_name,
-                    type_name.casefold(),
-                    read_match.group(1) if read_match else None,
-                    write_match.group(1) if write_match else None,
-                    _source_position_from_offset(original, absolute_start),
-                    visibility_at(prop_match.start()),
-                )
-            )
-            absolute_end = body_start + prop_match.end()
-            blank = _blank_preserving_lines(original[absolute_start:absolute_end])
-            characters[absolute_start:absolute_end] = list(blank)
-
-        method_pattern = re.compile(
-            r"\b(?:procedure|function|constructor|destructor)\s+"
-            r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*"
-            r"(?:\([^)]*\))?\s*(?::\s*[A-Za-z_][A-Za-z0-9_]*)?\s*;"
-            r"(?P<directives>(?:\s*(?:virtual|override)\s*;)+)",
-            re.IGNORECASE,
-        )
-        for method_match in method_pattern.finditer(body_mask):
-            method_name = original[
-                body_start + method_match.start("name"):
-                body_start + method_match.end("name")
-            ]
-            directives_start = body_start + method_match.start("directives")
-            directives_end = body_start + method_match.end("directives")
-            directives = original[directives_start:directives_end].casefold()
-            is_virtual = bool(re.search(r"\bvirtual\b", directives))
-            is_override = bool(re.search(r"\boverride\b", directives))
-            extensions.method_flags[(class_name.casefold(), method_name.casefold())] = (
-                is_virtual,
-                is_override,
-            )
-            blank = _blank_preserving_lines(original[directives_start:directives_end])
-            characters[directives_start:directives_end] = list(blank)
-
-    normalized = "".join(characters)
-    # Membership wird zuerst umgeschrieben, damit auch typische Ausdrücke wie
-    # ``Red in [Red, Blue]`` in einen SetContains-Aufruf überführt werden.
-    # Anschließend wandelt der Literal-Pass die verbliebenen []-Konstruktoren um.
-    normalized = _rewrite_set_membership(normalized)
-    normalized = _rewrite_set_literals(normalized)
-    return normalized, extensions
-
-
-def _apply_pascal_syntax_extensions(
-    program: PascalProgram,
-    extensions: _PascalSyntaxExtensions,
-) -> PascalProgram:
-    declarations: List[TypeDeclaration] = []
-    for declaration in program.types:
-        key = declaration.name.casefold()
-        specification = declaration.specification
-        set_info = extensions.set_types.get(key)
-        if set_info is not None:
-            element_name, position = set_info
-            specification = SetTypeSpecification(position, element_name.casefold())
-        elif isinstance(specification, ClassTypeSpecification):
-            methods = []
-            for method in specification.methods:
-                flags = extensions.method_flags.get(
-                    (key, method.name.casefold()),
-                    (False, False),
-                )
-                methods.append(
-                    replace(
-                        method,
-                        is_virtual=bool(flags[0] or flags[1]),
-                        is_override=bool(flags[1]),
-                    )
-                )
-            specification = replace(
-                specification,
-                methods=tuple(methods),
-                properties=tuple(extensions.properties.get(key, ())),
-            )
-        declarations.append(replace(declaration, specification=specification))
-    return replace(program, types=tuple(declarations))
-
-
 def _parse_pascal_program(source: str) -> PascalProgram:
-    parser_source, extensions = _normalize_pascal_oop_extensions(source)
-    parser_source = _rewrite_except_on_syntax_compat(parser_source)
-    parser_source = _rewrite_try_syntax_compat(parser_source)
-    parser_source = _rewrite_raise_syntax_compat(parser_source)
-    parser_source = _normalize_late_global_declarations(parser_source)
     listener = _RaisingErrorListener()
-    lexer = C64PascalLexer(InputStream(parser_source))
+    lexer = C64PascalLexer(InputStream(source))
     lexer.removeErrorListeners()
     lexer.addErrorListener(listener)
     parser = C64PascalParser(CommonTokenStream(lexer))
     parser.removeErrorListeners()
     parser.addErrorListener(listener)
     tree = parser.compilationUnit()
-    return _apply_pascal_syntax_extensions(_AstBuilder().visit(tree), extensions)
+    return _AstBuilder().visit(tree)
 
 
 def _find_unit_file(unit_name: str, search_paths: Sequence[Path]) -> Optional[Path]:
@@ -2309,26 +1468,7 @@ def _pui_routine_information(
     routines: List[Dict[str, object]] = []
     safe_unit = re.sub(r"[^A-Za-z0-9_]", "_", unit_name)
 
-    # Globale Unit-Routinen muessen fuer den kleinen PROGRAM-Parser weiterhin
-    # ausgeblendet werden. Methoden innerhalb einer CLASS-Deklaration duerfen
-    # dabei aber nicht als globale PUI-Routinen missverstanden werden.
-    code_mask = _pascal_code_mask(interface_source)
-    class_ranges = [
-        match.span()
-        for match in re.finditer(
-            r"\b[A-Za-z_][A-Za-z0-9_]*\s*=\s*class\b"
-            r"(?:\s*\([^)]*\))?.*?\bend\s*;",
-            code_mask,
-            re.IGNORECASE | re.DOTALL,
-        )
-    ]
-
-    def inside_class(offset: int) -> bool:
-        return any(start <= offset < end for start, end in class_ranges)
-
     def replace_routine(match: re.Match[str]) -> str:
-        if inside_class(match.start()):
-            return match.group(0)
         kind = match.group(1).casefold()
         name = match.group(2)
         parameters = _pui_parameter_information(match.group(3) or '')
@@ -2985,14 +2125,11 @@ class _PascalType:
     lower_bound: int = 0
     upper_bound: int = -1
     methods: Dict[str, "_MethodInfo"] = field(default_factory=dict)
-    properties: Dict[str, "_PropertyInfo"] = field(default_factory=dict)
     base_type: Optional["_PascalType"] = None
-    vmt_methods: List["_MethodInfo"] = field(default_factory=list)
-    vmt_label: Optional[str] = None
 
     @property
     def scalar(self) -> bool:
-        return self.kind in {"scalar", "enum", "string", "set"}
+        return self.kind in {"scalar", "enum", "string"}
 
     @property
     def aggregate(self) -> bool:
@@ -3005,8 +2142,6 @@ class _FieldInfo:
     type_info: _PascalType
     offset: int
     position: SourcePosition
-    owner: Optional[_PascalType] = None
-    visibility: str = "public"
 
 
 @dataclass(frozen=True)
@@ -3026,26 +2161,11 @@ class _MethodInfo:
     result_type: Optional[_PascalType]
     position: SourcePosition
     label: str
-    visibility: str = "public"
-    virtual: bool = False
-    override: bool = False
-    vmt_slot: Optional[int] = None
     implementation: Optional[MethodImplementation] = None
     parameter_variables: Tuple["_Variable", ...] = ()
     local_variables: Dict[str, "_Variable"] = field(default_factory=dict)
     local_initializers: List[Tuple["_Variable", Expression]] = field(default_factory=list)
     result_variable: Optional["_Variable"] = None
-
-
-@dataclass(frozen=True)
-class _PropertyInfo:
-    owner: _PascalType
-    name: str
-    type_info: _PascalType
-    read_name: Optional[str]
-    write_name: Optional[str]
-    visibility: str
-    position: SourcePosition
 
 
 @dataclass(frozen=True)
@@ -3064,12 +2184,10 @@ BYTE_TYPE = _PascalType("byte", 1, False)
 CHAR_TYPE = _PascalType("char", 1, False)
 BOOLEAN_TYPE = _PascalType("boolean", 1, False)
 STRING_TYPE = _PascalType("string", 2, False)
-UNTYPED_SET_TYPE = _PascalType("$setliteral", 2, False, "set", lower_bound=0, upper_bound=15)
-NIL_TYPE = _PascalType("$nil", 4, False, "nil")
 
 _TYPES = {
     item.name: item
-    for item in (INTEGER_TYPE, BYTE_TYPE, CHAR_TYPE, BOOLEAN_TYPE, STRING_TYPE)
+    for item in (INTEGER_TYPE, BYTE_TYPE, CHAR_TYPE, BOOLEAN_TYPE)
 }
 
 
@@ -3099,11 +2217,6 @@ class _StorageAccess:
     use_self: bool
     constant_offset: int = 0
     dynamic: Optional[_DynamicAccess] = None
-    # PE32 benutzt Klassenvariablen als echte Referenzen. Sobald ein Feld
-    # ueber eine Klassenreferenz adressiert wird, muss zuerst der in der
-    # Variablen gespeicherte Objektzeiger dereferenziert werden. C64/Amiga
-    # ignorieren dieses Flag weiterhin und behalten ihr bisheriges Modell.
-    class_deref: bool = False
 
 
 @dataclass
@@ -3139,7 +2252,6 @@ class _CodeGenerator:
         self.variable_order: List[_Variable] = []
         self.initializers: List[Tuple[_Variable, Expression]] = []
         self.methods: List[_MethodInfo] = []
-        self.class_types: List[_PascalType] = []
         self.external_routines: Dict[str, _ExternalRoutineInfo] = {}
         self.current_method: Optional[_MethodInfo] = None
         self.scope_variables: Dict[str, _Variable] = {}
@@ -3148,7 +2260,6 @@ class _CodeGenerator:
         self.label_counter = 0
         self.break_targets: List[str] = []
         self.continue_targets: List[str] = []
-        self.finally_stack: List[Statement] = []
 
     @staticmethod
     def _key(name: str) -> str:
@@ -3164,50 +2275,6 @@ class _CodeGenerator:
 
     def _error(self, message: str, position: SourcePosition) -> C64PascalError:
         return C64PascalError(message, position.line, position.column - 1)
-
-    def _class_pointer_size(self) -> int:
-        return 2
-
-    def _aggregate_size_limit(self) -> int:
-        return 256
-
-    def _target_storage_size(self, type_info: "_PascalType") -> int:
-        return int(type_info.size)
-
-    @staticmethod
-    def _is_descendant(candidate: Optional["_PascalType"], owner: Optional["_PascalType"]) -> bool:
-        current = candidate
-        while current is not None:
-            if current is owner:
-                return True
-            current = current.base_type
-        return False
-
-    def _member_accessible(self, owner: Optional["_PascalType"], visibility: str) -> bool:
-        visibility = str(visibility or "public").casefold()
-        if visibility in {"public", "published"}:
-            return True
-        if self.current_method is None:
-            return False
-        current_owner = self.current_method.owner
-        if visibility == "private":
-            return current_owner is owner
-        if visibility == "protected":
-            return self._is_descendant(current_owner, owner)
-        return True
-
-    def _require_member_access(
-        self,
-        owner: Optional["_PascalType"],
-        visibility: str,
-        display_name: str,
-        position: SourcePosition,
-    ) -> None:
-        if not self._member_accessible(owner, visibility):
-            raise self._error(
-                f"{visibility.upper()}-Member ist hier nicht sichtbar: {display_name}.",
-                position,
-            )
 
     def _new_label(self, prefix: str) -> str:
         self.label_counter += 1
@@ -3371,15 +2438,8 @@ class _CodeGenerator:
                 if not specification.names:
                     raise self._error("Ein Aufzählungstyp benötigt mindestens einen Wert.", specification.position)
                 if len(specification.names) > 256:
-                    raise self._error("Ein Aufzählungstyp ist derzeit auf 256 Werte begrenzt.", specification.position)
-                type_info = _PascalType(
-                    declaration.name,
-                    1,
-                    False,
-                    "enum",
-                    lower_bound=0,
-                    upper_bound=len(specification.names) - 1,
-                )
+                    raise self._error("Ein C64-Aufzählungstyp ist auf 256 Werte begrenzt.", specification.position)
+                type_info = _PascalType(declaration.name, 1, False, "enum")
                 self.types[key] = type_info
                 for value, enum_name in enumerate(specification.names):
                     enum_key = self._key(enum_name)
@@ -3410,11 +2470,10 @@ class _CodeGenerator:
                     specification.position,
                 )
                 element_count = upper - lower + 1
-                size = element_count * self._target_storage_size(element_type)
-                if size > self._aggregate_size_limit():
+                size = element_count * element_type.size
+                if size > 256:
                     raise self._error(
-                        f"Statisches Array ist mit {size} Bytes größer als das Ziel-Limit "
-                        f"von {self._aggregate_size_limit()} Bytes.",
+                        f"Statisches C64-Array ist mit {size} Bytes größer als 256 Bytes.",
                         specification.position,
                     )
                 type_info = _PascalType(
@@ -3422,35 +2481,6 @@ class _CodeGenerator:
                     size,
                     False,
                     "array",
-                    element_type=element_type,
-                    lower_bound=lower,
-                    upper_bound=upper,
-                )
-            elif isinstance(specification, SetTypeSpecification):
-                element_type = self._resolve_type(
-                    specification.element_type_name,
-                    specification.position,
-                )
-                if element_type == BOOLEAN_TYPE:
-                    lower, upper = 0, 1
-                elif element_type.kind == "enum":
-                    lower, upper = element_type.lower_bound, element_type.upper_bound
-                else:
-                    raise self._error(
-                        "SET OF unterstützt derzeit Boolean oder Aufzählungstypen.",
-                        specification.position,
-                    )
-                if lower < 0 or upper > 15:
-                    raise self._error(
-                        f"SET OF {element_type.name} benötigt {upper - lower + 1} Bits; "
-                        "der aktuelle plattformübergreifende Set-Typ unterstützt maximal 16 Werte.",
-                        specification.position,
-                    )
-                type_info = _PascalType(
-                    declaration.name,
-                    2,
-                    False,
-                    "set",
                     element_type=element_type,
                     lower_bound=lower,
                     upper_bound=upper,
@@ -3466,22 +2496,19 @@ class _CodeGenerator:
                         raise self._error("Eine Klasse kann nur von einer Klasse erben.", specification.position)
                 type_info = _PascalType(
                     declaration.name,
-                    base_type.size if base_type is not None else self._class_pointer_size(),
+                    base_type.size if base_type is not None else 0,
                     False,
                     "class",
                     base_type=base_type,
-                    vmt_label=f"__pas_vmt_{self._safe_name(declaration.name)}",
                 )
                 if base_type is not None:
                     type_info.fields.update(base_type.fields)
                     type_info.methods.update(base_type.methods)
-                    type_info.properties.update(base_type.properties)
-                    type_info.vmt_methods.extend(base_type.vmt_methods)
                 self.types[key] = type_info
-                self.class_types.append(type_info)
                 self._install_fields(type_info, specification.fields)
+                if type_info.size == 0:
+                    type_info.size = 1
                 self._install_methods(type_info, specification.methods)
-                self._install_properties(type_info, specification.properties)
             else:
                 raise self._error("Nicht unterstützte Typdefinition.", declaration.position)
             self.types[key] = type_info
@@ -3505,32 +2532,13 @@ class _CodeGenerator:
                     field_type,
                     owner.size,
                     declaration.position,
-                    owner,
-                    declaration.visibility,
                 )
-                owner.size += self._target_storage_size(field_type)
-                if owner.size > self._aggregate_size_limit():
+                owner.size += field_type.size
+                if owner.size > 256:
                     raise self._error(
-                        f"{owner.name} ist größer als das Ziel-Limit von "
-                        f"{self._aggregate_size_limit()} Bytes.",
+                        f"{owner.name} ist größer als 256 Bytes.",
                         declaration.position,
                     )
-
-    @staticmethod
-    def _method_signature_matches(
-        inherited: _MethodInfo,
-        kind: str,
-        parameters: Tuple[_ParameterInfo, ...],
-        result_type: Optional[_PascalType],
-    ) -> bool:
-        if inherited.kind != kind or inherited.result_type is not result_type:
-            return False
-        if len(inherited.parameters) != len(parameters):
-            return False
-        return all(
-            left.type_info is right.type_info and left.modifier == right.modifier
-            for left, right in zip(inherited.parameters, parameters)
-        )
 
     def _install_methods(
         self,
@@ -3539,7 +2547,7 @@ class _CodeGenerator:
     ) -> None:
         for declaration in declarations:
             key = self._key(declaration.name)
-            if key in owner.fields and owner.fields[key].owner is owner:
+            if key in owner.fields:
                 raise self._error(
                     f"Klassenmitglied mehrfach deklariert: {declaration.name}.",
                     declaration.position,
@@ -3565,32 +2573,8 @@ class _CodeGenerator:
                     f"{declaration.kind.upper()} darf keinen Rückgabetyp besitzen.",
                     declaration.position,
                 )
-            inherited = owner.methods.get(key)
-            if inherited is not None and inherited.owner is owner:
-                raise self._error(
-                    f"Methode mehrfach deklariert: {declaration.name}.",
-                    declaration.position,
-                )
-
-            vmt_slot: Optional[int] = None
-            is_virtual = bool(declaration.is_virtual or declaration.is_override)
-            if declaration.is_override:
-                if inherited is None or not inherited.virtual or inherited.vmt_slot is None:
-                    raise self._error(
-                        f"OVERRIDE benötigt eine geerbte virtuelle Methode: {owner.name}.{declaration.name}.",
-                        declaration.position,
-                    )
-                if not self._method_signature_matches(
-                    inherited, declaration.kind, parameters, result_type
-                ):
-                    raise self._error(
-                        f"OVERRIDE-Signatur stimmt nicht mit {inherited.owner.name}.{inherited.name} überein.",
-                        declaration.position,
-                    )
-                vmt_slot = inherited.vmt_slot
-            elif declaration.is_virtual:
-                vmt_slot = len(owner.vmt_methods)
-
+            if key in owner.methods and owner.methods[key].owner is owner:
+                raise self._error(f"Methode mehrfach deklariert: {declaration.name}.", declaration.position)
             method = _MethodInfo(
                 owner,
                 declaration.kind,
@@ -3599,96 +2583,9 @@ class _CodeGenerator:
                 result_type,
                 declaration.position,
                 f"__pas_method_{self._safe_name(owner.name)}_{self._safe_name(declaration.name)}",
-                declaration.visibility,
-                is_virtual,
-                declaration.is_override,
-                vmt_slot,
             )
             owner.methods[key] = method
-            if vmt_slot is not None:
-                if declaration.is_override:
-                    owner.vmt_methods[vmt_slot] = method
-                else:
-                    owner.vmt_methods.append(method)
             self.methods.append(method)
-
-    def _install_properties(
-        self,
-        owner: _PascalType,
-        declarations: Sequence[PropertyDeclaration],
-    ) -> None:
-        for declaration in declarations:
-            key = self._key(declaration.name)
-            if key in owner.fields and owner.fields[key].owner is owner:
-                raise self._error(
-                    f"Property kollidiert mit Feld: {owner.name}.{declaration.name}.",
-                    declaration.position,
-                )
-            if key in owner.properties and owner.properties[key].owner is owner:
-                raise self._error(
-                    f"Property mehrfach deklariert: {owner.name}.{declaration.name}.",
-                    declaration.position,
-                )
-            type_info = self._resolve_type(declaration.type_name, declaration.position)
-            prop = _PropertyInfo(
-                owner,
-                declaration.name,
-                type_info,
-                declaration.read_name,
-                declaration.write_name,
-                declaration.visibility,
-                declaration.position,
-            )
-            # Accessoren werden bereits beim Typaufbau validiert. READ darf ein
-            # Feld gleichen Typs oder eine parameterlose Funktion sein. WRITE
-            # darf ein Feld oder eine Prozedur mit genau einem Wertparameter sein.
-            if prop.read_name:
-                read_key = self._key(prop.read_name)
-                field_info = owner.fields.get(read_key)
-                method_info = owner.methods.get(read_key)
-                if field_info is not None:
-                    if field_info.type_info is not type_info:
-                        raise self._error(
-                            f"READ-Feld {prop.read_name} besitzt nicht den Property-Typ {type_info.name}.",
-                            declaration.position,
-                        )
-                elif method_info is not None:
-                    if method_info.result_type is not type_info or method_info.parameters:
-                        raise self._error(
-                            f"READ-Methode {prop.read_name} muss parameterlos {type_info.name} liefern.",
-                            declaration.position,
-                        )
-                else:
-                    raise self._error(
-                        f"READ-Accessor nicht gefunden: {owner.name}.{prop.read_name}.",
-                        declaration.position,
-                    )
-            if prop.write_name:
-                write_key = self._key(prop.write_name)
-                field_info = owner.fields.get(write_key)
-                method_info = owner.methods.get(write_key)
-                if field_info is not None:
-                    if field_info.type_info is not type_info:
-                        raise self._error(
-                            f"WRITE-Feld {prop.write_name} besitzt nicht den Property-Typ {type_info.name}.",
-                            declaration.position,
-                        )
-                elif method_info is not None:
-                    if (
-                        method_info.result_type is not None
-                        or len(method_info.parameters) != 1
-                        or method_info.parameters[0].type_info is not type_info
-                    ):
-                        raise self._error(
-                            f"WRITE-Methode {prop.write_name} muss genau einen {type_info.name}-Parameter besitzen.",
-                            declaration.position,
-                        )
-                else:
-                    raise self._error(
-                        f"WRITE-Accessor nicht gefunden: {owner.name}.{prop.write_name}.",
-                        declaration.position,
-                    )
-            owner.properties[key] = prop
 
     def _constant_declaration_type(
         self,
@@ -3929,12 +2826,6 @@ class _CodeGenerator:
             base_label = self.current_method.result_variable.label
         elif self.current_method is not None and key in self.current_method.owner.fields:
             field_info = self.current_method.owner.fields[key]
-            self._require_member_access(
-                field_info.owner,
-                field_info.visibility,
-                f"{field_info.owner.name if field_info.owner else self.current_method.owner.name}.{field_info.name}",
-                designator.position,
-            )
             type_info = field_info.type_info
             offset = field_info.offset
             use_self = True
@@ -3942,7 +2833,6 @@ class _CodeGenerator:
             raise self._error(f"Variable nicht gefunden: {designator.name}.", designator.position)
 
         dynamic = None
-        class_deref = False
         for selector in designator.selectors:
             if isinstance(selector, FieldSelector):
                 if type_info.kind not in {"record", "class"}:
@@ -3954,14 +2844,6 @@ class _CodeGenerator:
                 if field_info is None:
                     raise self._error(
                         f"Feld nicht gefunden: {type_info.name}.{selector.name}.",
-                        selector.position,
-                    )
-                if type_info.kind == "class":
-                    class_deref = True
-                    self._require_member_access(
-                        field_info.owner,
-                        field_info.visibility,
-                        f"{field_info.owner.name if field_info.owner else type_info.name}.{field_info.name}",
                         selector.position,
                     )
                 offset += field_info.offset
@@ -3988,7 +2870,7 @@ class _CodeGenerator:
                         f"{type_info.lower_bound}..{type_info.upper_bound}.",
                         selector.position,
                     )
-                offset += (index_value - type_info.lower_bound) * self._target_storage_size(type_info.element_type)
+                offset += (index_value - type_info.lower_bound) * type_info.element_type.size
             else:
                 if dynamic is not None:
                     raise self._error(
@@ -3999,7 +2881,7 @@ class _CodeGenerator:
                     selector.expression,
                     type_info.lower_bound,
                     type_info.upper_bound - type_info.lower_bound + 1,
-                    self._target_storage_size(type_info.element_type),
+                    type_info.element_type.size,
                     selector.position,
                 )
             type_info = type_info.element_type
@@ -4011,134 +2893,7 @@ class _CodeGenerator:
             use_self,
             offset,
             dynamic,
-            class_deref,
         )
-
-    def _resolve_property_access(
-        self,
-        designator: DesignatorExpression,
-    ) -> Optional[Tuple[_PropertyInfo, _StorageAccess]]:
-        if designator.selectors and isinstance(designator.selectors[-1], FieldSelector):
-            selector = designator.selectors[-1]
-            receiver_designator = DesignatorExpression(
-                designator.position,
-                designator.name,
-                designator.selectors[:-1],
-            )
-            try:
-                receiver = self._resolve_storage(receiver_designator)
-            except C64PascalError:
-                return None
-            if receiver.type_info.kind != "class":
-                return None
-            prop = receiver.type_info.properties.get(self._key(selector.name))
-            if prop is None:
-                return None
-            self._require_member_access(
-                prop.owner,
-                prop.visibility,
-                f"{prop.owner.name}.{prop.name}",
-                selector.position,
-            )
-            return prop, receiver
-
-        if not designator.selectors and self.current_method is not None:
-            prop = self.current_method.owner.properties.get(self._key(designator.name))
-            if prop is not None:
-                self._require_member_access(
-                    prop.owner,
-                    prop.visibility,
-                    f"{prop.owner.name}.{prop.name}",
-                    designator.position,
-                )
-                return prop, _StorageAccess(
-                    self.current_method.owner,
-                    designator.position,
-                    None,
-                    True,
-                )
-        return None
-
-    @staticmethod
-    def _member_storage_from_receiver(
-        receiver: _StorageAccess,
-        field_info: _FieldInfo,
-    ) -> _StorageAccess:
-        return _StorageAccess(
-            field_info.type_info,
-            receiver.position,
-            receiver.base_label,
-            receiver.use_self,
-            receiver.constant_offset + field_info.offset,
-            receiver.dynamic,
-            receiver.class_deref or (receiver.type_info.kind == "class" and not receiver.use_self),
-        )
-
-    def _compile_property_read(
-        self,
-        designator: DesignatorExpression,
-    ) -> Optional[_PascalType]:
-        resolved = self._resolve_property_access(designator)
-        if resolved is None:
-            return None
-        prop, receiver = resolved
-        if not prop.read_name:
-            raise self._error(
-                f"Property ist nicht lesbar: {prop.owner.name}.{prop.name}.",
-                designator.position,
-            )
-        key = self._key(prop.read_name)
-        field_info = receiver.type_info.fields.get(key)
-        if field_info is not None:
-            self._emit_load_access(
-                self._member_storage_from_receiver(receiver, field_info),
-                designator.position.line,
-            )
-            return prop.type_info
-        method = receiver.type_info.methods.get(key)
-        if method is None:
-            raise self._error(
-                f"READ-Accessor nicht gefunden: {prop.read_name}.",
-                designator.position,
-            )
-        return self._compile_method_call(method, receiver, (), designator.position)
-
-    def _compile_property_write(
-        self,
-        designator: DesignatorExpression,
-        expression: Expression,
-    ) -> bool:
-        resolved = self._resolve_property_access(designator)
-        if resolved is None:
-            return False
-        prop, receiver = resolved
-        if not prop.write_name:
-            raise self._error(
-                f"Property ist schreibgeschützt: {prop.owner.name}.{prop.name}.",
-                designator.position,
-            )
-        key = self._key(prop.write_name)
-        field_info = receiver.type_info.fields.get(key)
-        if field_info is not None:
-            result_type = self._compile_expr(expression)
-            if not self._types_compatible(prop.type_info, result_type):
-                raise self._error(
-                    f"Zuweisung von {result_type.name} an Property {prop.name}:{prop.type_info.name} ist nicht zulässig.",
-                    expression.position,
-                )
-            self._emit_store_access(
-                self._member_storage_from_receiver(receiver, field_info),
-                designator.position.line,
-            )
-            return True
-        method = receiver.type_info.methods.get(key)
-        if method is None:
-            raise self._error(
-                f"WRITE-Accessor nicht gefunden: {prop.write_name}.",
-                designator.position,
-            )
-        self._compile_method_call(method, receiver, (expression,), designator.position)
-        return True
 
     def _resolve_method_call(
         self,
@@ -4163,23 +2918,11 @@ class _CodeGenerator:
                     f"Methode nicht gefunden: {receiver.type_info.name}.{method_selector.name}.",
                     method_selector.position,
                 )
-            self._require_member_access(
-                method.owner,
-                method.visibility,
-                f"{method.owner.name}.{method.name}",
-                method_selector.position,
-            )
             return method, receiver
 
         if self.current_method is not None:
             method = self.current_method.owner.methods.get(self._key(designator.name))
             if method is not None:
-                self._require_member_access(
-                    method.owner,
-                    method.visibility,
-                    f"{method.owner.name}.{method.name}",
-                    designator.position,
-                )
                 return method, _StorageAccess(
                     self.current_method.owner,
                     designator.position,
@@ -4215,15 +2958,9 @@ class _CodeGenerator:
             return self._constant_type(expression.value)
         if isinstance(expression, (NameExpression, DesignatorExpression)):
             key = self._key(expression.name)
-            if key == "nil" and (not isinstance(expression, DesignatorExpression) or not expression.selectors):
-                return NIL_TYPE
             if not isinstance(expression, DesignatorExpression) or not expression.selectors:
                 if key in self.constants:
                     return self.constant_types.get(key, self._constant_type(self.constants[key]))
-            if isinstance(expression, DesignatorExpression):
-                property_access = self._resolve_property_access(expression)
-                if property_access is not None:
-                    return property_access[0].type_info
             try:
                 return self._resolve_storage(expression).type_info
             except C64PascalError:
@@ -4245,16 +2982,6 @@ class _CodeGenerator:
                     return CHAR_TYPE
                 if name in {"ord", "lo", "hi"}:
                     return INTEGER_TYPE
-                if name == "readln":
-                    return STRING_TYPE
-                if name == "exceptionmessage":
-                    return STRING_TYPE
-                if name == "exceptioncode":
-                    return INTEGER_TYPE
-                if name in {"emptyset", "setof", "setrange", "setunion"}:
-                    return UNTYPED_SET_TYPE
-                if name == "setcontains":
-                    return BOOLEAN_TYPE
 
                 # Globale Routinen aus C-Prototypen, #pragma-link-Modulen und
                 # Pascal-PUI-Dateien muessen bereits bei der reinen
@@ -4285,30 +3012,10 @@ class _CodeGenerator:
         if isinstance(expression, UnaryExpression):
             return BOOLEAN_TYPE if expression.operator == "not" else self._expression_type(expression.operand)
         if isinstance(expression, BinaryExpression):
-            left = self._expression_type(expression.left)
-            right = self._expression_type(expression.right)
-            if left.kind == "set" or right.kind == "set":
-                if left.kind != "set" or right.kind != "set":
-                    raise self._error("Set-Operator erwartet auf beiden Seiten einen Set-Wert.", expression.position)
-                if (
-                    left is not UNTYPED_SET_TYPE
-                    and right is not UNTYPED_SET_TYPE
-                    and left.element_type is not right.element_type
-                ):
-                    raise self._error(
-                        f"Inkompatible Set-Typen: {left.name} und {right.name}.",
-                        expression.position,
-                    )
-                if expression.operator in {"=", "<>"}:
-                    return BOOLEAN_TYPE
-                if expression.operator in {"+", "-", "*"}:
-                    return left if left is not UNTYPED_SET_TYPE else right
-                raise self._error(
-                    f"Operator {expression.operator} ist für Sets nicht zulässig.",
-                    expression.position,
-                )
             if expression.operator in {"=", "<>", "<", "<=", ">", ">="}:
                 return BOOLEAN_TYPE
+            left = self._expression_type(expression.left)
+            right = self._expression_type(expression.right)
             if left == STRING_TYPE or right == STRING_TYPE:
                 raise self._error("Zeichenkettenarithmetik wird noch nicht unterstützt.", expression.position)
             if not left.scalar or not right.scalar:
@@ -4388,10 +3095,6 @@ class _CodeGenerator:
                     return STRING_TYPE
                 self._emit_load_literal(int(value), line)
                 return self.constant_types.get(key, self._constant_type(value))
-            if isinstance(expression, DesignatorExpression):
-                property_type = self._compile_property_read(expression)
-                if property_type is not None:
-                    return property_type
             try:
                 access = self._resolve_storage(expression)
             except C64PascalError:
@@ -4466,31 +3169,6 @@ class _CodeGenerator:
             self.emitter.emit("    tax", line)
             self.emitter.emit("    pla", line)
             operator = expression.operator
-            if left_type.kind == "set" and right_type.kind == "set":
-                result_type = left_type if left_type is not UNTYPED_SET_TYPE else right_type
-                if operator == "+":
-                    self._emit_simple_binary("or", line)
-                    return result_type
-                if operator == "*":
-                    self._emit_simple_binary("and", line)
-                    return result_type
-                if operator == "-":
-                    self.emitter.emit(f"    sta {self.ZP_LEFT_LO}", line)
-                    self.emitter.emit(f"    stx {self.ZP_LEFT_HI}", line)
-                    self.emitter.emit(f"    lda {self.ZP_RIGHT_LO}", line)
-                    self.emitter.emit("    eor #$FF", line)
-                    self.emitter.emit(f"    sta {self.ZP_RIGHT_LO}", line)
-                    self.emitter.emit(f"    lda {self.ZP_RIGHT_HI}", line)
-                    self.emitter.emit("    eor #$FF", line)
-                    self.emitter.emit(f"    sta {self.ZP_RIGHT_HI}", line)
-                    self.emitter.emit(f"    lda {self.ZP_LEFT_LO}", line)
-                    self.emitter.emit(f"    ldx {self.ZP_LEFT_HI}", line)
-                    self._emit_simple_binary("and", line)
-                    return result_type
-                if operator in {"=", "<>"}:
-                    self._emit_comparison(operator, False, line)
-                    return BOOLEAN_TYPE
-                raise self._error(f"Operator {operator} ist für Sets nicht zulässig.", expression.position)
             if operator in {"+", "-", "and", "or", "xor"}:
                 self._emit_simple_binary(operator, line)
                 if operator in {"and", "or", "xor"} and left_type == BOOLEAN_TYPE and right_type == BOOLEAN_TYPE:
@@ -4761,97 +3439,10 @@ class _CodeGenerator:
             self.emitter.emit(f"    ldx {self.ZP_VALUE_HI}", line)
         return routine.result_type if routine.result_type is not None else BYTE_TYPE
 
-    def _evaluate_set_mask(self, expression: Expression) -> int:
-        if not isinstance(expression, CallExpression):
-            raise self._error("Set-Konstruktor muss konstant sein.", expression.position)
-        designator = self._as_designator(expression.designator, expression.position)
-        if designator.selectors:
-            raise self._error("Ungültiger Set-Konstruktor.", expression.position)
-        name = self._key(designator.name)
-        if name == "emptyset":
-            self._require_argument_count(designator.name, expression.arguments, 0, expression.position)
-            return 0
-        if name == "setof":
-            mask = 0
-            if not expression.arguments:
-                return 0
-            for argument in expression.arguments:
-                value = self._evaluate_constant(argument)
-                if isinstance(value, (str, bool)):
-                    value = int(value) if isinstance(value, bool) else -1
-                value = int(value)
-                if not 0 <= value <= 15:
-                    raise self._error(
-                        f"Set-Element {value} liegt außerhalb 0..15.",
-                        argument.position,
-                    )
-                mask |= 1 << value
-            return mask
-        if name == "setrange":
-            self._require_argument_count(designator.name, expression.arguments, 2, expression.position)
-            lower = int(self._evaluate_constant(expression.arguments[0]))
-            upper = int(self._evaluate_constant(expression.arguments[1]))
-            if not (0 <= lower <= upper <= 15):
-                raise self._error(
-                    f"Set-Bereich {lower}..{upper} liegt außerhalb 0..15.",
-                    expression.position,
-                )
-            mask = 0
-            for value in range(lower, upper + 1):
-                mask |= 1 << value
-            return mask
-        if name == "setunion":
-            mask = 0
-            for argument in expression.arguments:
-                mask |= self._evaluate_set_mask(argument)
-            return mask
-        raise self._error(f"Unbekannter Set-Konstruktor: {designator.name}.", expression.position)
-
-    def _compile_set_builtin(self, expression: CallExpression) -> Optional[_PascalType]:
-        designator = self._as_designator(expression.designator, expression.position)
-        if designator.selectors:
-            return None
-        name = self._key(designator.name)
-        if name in {"emptyset", "setof", "setrange", "setunion"}:
-            self._emit_load_literal(self._evaluate_set_mask(expression), expression.position.line)
-            return UNTYPED_SET_TYPE
-        if name != "setcontains":
-            return None
-        self._require_argument_count(designator.name, expression.arguments, 2, expression.position)
-        set_type = self._expression_type(expression.arguments[0])
-        if set_type.kind != "set":
-            raise self._error("SetContains erwartet als erstes Argument einen Set-Wert.", expression.arguments[0].position)
-        value = self._evaluate_constant(expression.arguments[1])
-        if isinstance(value, (str, bool)):
-            value = int(value) if isinstance(value, bool) else -1
-        value = int(value)
-        if not 0 <= value <= 15:
-            raise self._error(f"Set-Element {value} liegt außerhalb 0..15.", expression.arguments[1].position)
-        self._compile_expr(expression.arguments[0])
-        mask = 1 << value
-        line = expression.position.line
-        if mask <= 0xFF:
-            self.emitter.emit(f"    and #${mask:02X}", line)
-        else:
-            self.emitter.emit("    txa", line)
-            self.emitter.emit(f"    and #${(mask >> 8) & 0xFF:02X}", line)
-        false_label = self._new_label("set_contains_false")
-        end_label = self._new_label("set_contains_end")
-        self.emitter.emit(f"    beq {false_label}", line)
-        self._emit_load_literal(1, line)
-        self.emitter.emit(f"    jmp {end_label}", line)
-        self.emitter.emit(f"{false_label}:", line)
-        self._emit_load_literal(0, line)
-        self.emitter.emit(f"{end_label}:", line)
-        return BOOLEAN_TYPE
-
     def _compile_function(self, expression: CallExpression) -> _PascalType:
         designator = self._as_designator(expression.designator, expression.position)
         name = self._key(designator.name) if not designator.selectors else ""
         line = expression.position.line
-        set_result = self._compile_set_builtin(expression)
-        if set_result is not None:
-            return set_result
         if name == "peek":
             self._require_argument_count(designator.name, expression.arguments, 1, expression.position)
             self._compile_expr(expression.arguments[0])
@@ -4896,18 +3487,6 @@ class _CodeGenerator:
     def _types_compatible(self, target: _PascalType, source: _PascalType) -> bool:
         if target is source:
             return True
-        # Klassen sind Referenztypen. Eine Referenz auf eine abgeleitete
-        # Instanz darf einer Variablen einer Basisklasse zugewiesen werden.
-        if target.kind == "class" and source.kind == "nil":
-            return True
-        if target.kind == "class" and source.kind == "class":
-            return self._is_descendant(source, target)
-        if target.kind == "set" or source.kind == "set":
-            if target.kind != "set" or source.kind != "set":
-                return False
-            if target is UNTYPED_SET_TYPE or source is UNTYPED_SET_TYPE:
-                return True
-            return target.element_type is source.element_type
         if target == BOOLEAN_TYPE or source == BOOLEAN_TYPE:
             return False
         numeric = {INTEGER_TYPE, BYTE_TYPE, CHAR_TYPE}
@@ -4973,26 +3552,7 @@ class _CodeGenerator:
             self.emitter.emit("    pha", line)
 
         self._emit_set_self_address(receiver, line)
-        if method.virtual:
-            if method.vmt_slot is None:
-                raise self._error("Interner Fehler: virtuelle Methode ohne VMT-Slot.", position)
-            slot_offset = method.vmt_slot * 2
-            self.emitter.emit("    ldy #$00", line)
-            self.emitter.emit(f"    lda ({self.ZP_SELF_LO}),y", line)
-            self.emitter.emit(f"    sta {self.ZP_LEFT_LO}", line)
-            self.emitter.emit("    iny", line)
-            self.emitter.emit(f"    lda ({self.ZP_SELF_LO}),y", line)
-            self.emitter.emit(f"    sta {self.ZP_LEFT_HI}", line)
-            self.emitter.emit(f"    ldy #${slot_offset & 0xFF:02X}", line)
-            self.emitter.emit(f"    lda ({self.ZP_LEFT_LO}),y", line)
-            self.emitter.emit(f"    sta {self.ZP_RIGHT_LO}", line)
-            self.emitter.emit("    iny", line)
-            self.emitter.emit(f"    lda ({self.ZP_LEFT_LO}),y", line)
-            self.emitter.emit(f"    sta {self.ZP_RIGHT_HI}", line)
-            self.runtime.add("virtual_call")
-            self.emitter.emit("    jsr __pas_virtual_call", line)
-        else:
-            self.emitter.emit(f"    jsr {method.label}", line)
+        self.emitter.emit(f"    jsr {method.label}", line)
 
         if method.result_type is not None:
             if not method.result_type.scalar:
@@ -5030,91 +3590,8 @@ class _CodeGenerator:
         if variable.type_info.size == 2:
             self.emitter.emit(f"    stx {variable.label}+1", line)
 
-    def _compile_constructor_assignment(self, statement: AssignmentStatement) -> bool:
-        expression = statement.expression
-        if isinstance(expression, CallExpression):
-            call_designator = self._as_designator(expression.designator, expression.position)
-            arguments = expression.arguments
-        elif isinstance(expression, DesignatorExpression):
-            # Pascal erlaubt parameterlose Konstruktoren ohne Klammern:
-            #     obj := TObject.Create;
-            call_designator = expression
-            arguments = ()
-        else:
-            return False
-        if len(call_designator.selectors) != 1 or not isinstance(call_designator.selectors[0], FieldSelector):
-            return False
-        class_type = self.types.get(self._key(call_designator.name))
-        if class_type is None or class_type.kind != "class":
-            return False
-        method = class_type.methods.get(self._key(call_designator.selectors[0].name))
-        if method is None or method.kind != "constructor":
-            return False
-        self._require_member_access(
-            method.owner,
-            method.visibility,
-            f"{method.owner.name}.{method.name}",
-            expression.position,
-        )
-
-        target = self._resolve_storage(self._as_designator(statement.designator, statement.position))
-        if target.type_info.kind != "class":
-            raise self._error(
-                f"Constructor {class_type.name}.{method.name} kann nur einer Klassenvariable zugewiesen werden.",
-                statement.position,
-            )
-        # Das aktuelle OOP-Modell speichert Objekte statisch. Damit ein
-        # Konstruktor-Ausdruck trotzdem Delphi-artig geschrieben werden kann,
-        # konstruiert die Zuweisung direkt in den Speicher der Zielvariable.
-        # Abgeleitete Instanzen in kleineren Basisklassen-Speichern werden erst
-        # mit dem spaeteren Heap-/Referenzmodell zugelassen.
-        if target.type_info is not class_type:
-            raise self._error(
-                f"Constructor {class_type.name}.{method.name} benötigt derzeit eine Zielvariable exakt vom Typ {class_type.name}.",
-                statement.position,
-            )
-        self._compile_method_call(method, target, arguments, expression.position)
-        return True
-
-    def _compile_implicit_free(self, statement: CallStatement) -> bool:
-        designator = self._as_designator(statement.designator, statement.position)
-        if not designator.selectors or not isinstance(designator.selectors[-1], FieldSelector):
-            return False
-        if self._key(designator.selectors[-1].name) != "free":
-            return False
-        receiver_designator = DesignatorExpression(
-            designator.position,
-            designator.name,
-            designator.selectors[:-1],
-        )
-        receiver = self._resolve_storage(receiver_designator)
-        if receiver.type_info.kind != "class":
-            return False
-        # Eine explizit deklarierte Free-Methode hat Vorrang.
-        explicit = receiver.type_info.methods.get("free")
-        if explicit is not None:
-            return False
-        if statement.arguments:
-            raise self._error("Free erwartet keine Argumente.", statement.position)
-        destructor = receiver.type_info.methods.get("destroy")
-        if destructor is None:
-            # Delphi-kompatibles Free auf einem Objekt ohne expliziten
-            # Destruktor ist im statischen Modell ein No-op.
-            return True
-        if destructor.kind != "destructor":
-            raise self._error(
-                f"{receiver.type_info.name}.Destroy ist kein Destruktor.",
-                statement.position,
-            )
-        self._compile_method_call(destructor, receiver, (), statement.position)
-        return True
-
     def _compile_assignment(self, statement: AssignmentStatement) -> None:
-        if self._compile_constructor_assignment(statement):
-            return
         designator = self._as_designator(statement.designator, statement.position)
-        if self._compile_property_write(designator, statement.expression):
-            return
         access = self._resolve_storage(designator)
         if not access.type_info.scalar:
             raise self._error(
@@ -5202,52 +3679,17 @@ class _CodeGenerator:
         if isinstance(statement, ForStatement):
             self._compile_for(statement)
             return
-        if isinstance(statement, TryFinallyStatement):
-            self.finally_stack.append(statement.finally_statement)
-            try:
-                self._compile_statement(statement.try_statement)
-            finally:
-                self.finally_stack.pop()
-            self._compile_statement(statement.finally_statement)
-            return
-        if isinstance(statement, TryExceptStatement):
-            # Der Handler wird bereits als eigener Codeblock erzeugt. Solange
-            # noch kein RAISE-/Exception-Transport aktiv ist, springt der
-            # normale Ausführungspfad darüber hinweg. Eine spätere Runtime
-            # kann den except_label direkt als Handlerziel verwenden.
-            except_label = self._new_label("try_except_handler")
-            end_label = self._new_label("try_except_end")
-            self._compile_statement(statement.try_statement)
-            self.emitter.emit(f"    jmp {end_label}", line)
-            self.emitter.emit(f"{except_label}:", line)
-            self._compile_statement(statement.except_statement)
-            self.emitter.emit(f"{end_label}:", line)
-            return
         if isinstance(statement, BreakStatement):
             if not self.break_targets:
                 raise self._error("BREAK ist nur innerhalb einer Schleife erlaubt.", statement.position)
-            self._compile_pending_finally()
             self.emitter.emit(f"    jmp {self.break_targets[-1]}", line)
             return
         if isinstance(statement, ContinueStatement):
             if not self.continue_targets:
                 raise self._error("CONTINUE ist nur innerhalb einer Schleife erlaubt.", statement.position)
-            self._compile_pending_finally()
             self.emitter.emit(f"    jmp {self.continue_targets[-1]}", line)
             return
         raise self._error("Anweisung wird nicht unterstützt.", statement.position)
-
-    def _compile_pending_finally(self) -> None:
-        if not self.finally_stack:
-            return
-        pending = list(reversed(self.finally_stack))
-        saved = self.finally_stack
-        self.finally_stack = []
-        try:
-            for finalizer in pending:
-                self._compile_statement(finalizer)
-        finally:
-            self.finally_stack = saved
 
     def _compile_for(self, statement: ForStatement) -> None:
         variable = self._lookup_variable(statement.name)
@@ -5297,49 +3739,10 @@ class _CodeGenerator:
         self.emitter.emit(f"    jmp {condition_label}", line)
         self.emitter.emit(f"{end_label}:", line)
 
-    def _compile_set_mutation(self, statement: CallStatement, include: bool) -> None:
-        self._require_argument_count(
-            "Include" if include else "Exclude",
-            statement.arguments,
-            2,
-            statement.position,
-        )
-        target_expression = statement.arguments[0]
-        if not isinstance(target_expression, (NameExpression, DesignatorExpression)):
-            raise self._error("Include/Exclude erwartet als erstes Argument eine Set-Variable.", target_expression.position)
-        target = self._as_designator(target_expression)
-        access = self._resolve_storage(target)
-        if access.type_info.kind != "set":
-            raise self._error("Include/Exclude erwartet als erstes Argument einen Set-Typ.", target_expression.position)
-        set_element = CallExpression(
-            statement.position,
-            "SetOf",
-            (statement.arguments[1],),
-        )
-        expression = BinaryExpression(
-            statement.position,
-            target_expression,
-            "+" if include else "-",
-            set_element,
-        )
-        self._compile_assignment(
-            AssignmentStatement(statement.position, target, expression)
-        )
-
     def _compile_call_statement(self, statement: CallStatement) -> None:
         designator = self._as_designator(statement.designator, statement.position)
         name = self._key(designator.name) if not designator.selectors else ""
         line = statement.position.line
-        if name in {"__pas_raise", "__pas_raise_class", "__pas_reraise"}:
-            raise self._error(
-                "Exception-Transport mit RAISE ist derzeit nur fuer Windows PE32 implementiert.",
-                statement.position,
-            )
-        if name in {"include", "exclude"}:
-            self._compile_set_mutation(statement, name == "include")
-            return
-        if self._compile_implicit_free(statement):
-            return
 
         # Echte C64-/Sprach-Builtins muessen vor den aus Headern oder PUI-Dateien
         # importierten Routinen behandelt werden. Ein Prototyp wie
@@ -5509,24 +3912,6 @@ class _CodeGenerator:
                             f"    sta {self._label_with_offset(variable.label, offset)}",
                             implementation.position.line,
                         )
-                    if variable.type_info.kind == "class":
-                        assert variable.type_info.vmt_label is not None
-                        self.emitter.emit(
-                            f"    lda #<{variable.type_info.vmt_label}",
-                            implementation.position.line,
-                        )
-                        self.emitter.emit(
-                            f"    sta {variable.label}",
-                            implementation.position.line,
-                        )
-                        self.emitter.emit(
-                            f"    lda #>{variable.type_info.vmt_label}",
-                            implementation.position.line,
-                        )
-                        self.emitter.emit(
-                            f"    sta {variable.label}+1",
-                            implementation.position.line,
-                        )
                 if method.result_variable is not None:
                     self.emitter.emit("    lda #$00", implementation.position.line)
                     for offset in range(method.result_variable.type_info.size):
@@ -5559,11 +3944,6 @@ class _CodeGenerator:
                 self.current_method = previous_method
 
     def _emit_runtime(self) -> None:
-        if "virtual_call" in self.runtime:
-            self.emitter.emit()
-            self.emitter.emit("; Indirekter VMT-Aufruf; Zieladresse liegt in $FD/$FE")
-            self.emitter.emit("__pas_virtual_call:")
-            self.emitter.emit(f"    jmp ({self.ZP_RIGHT_LO})")
         if "range_error" in self.runtime:
             self.runtime.add("print_string")
 
@@ -5740,36 +4120,11 @@ class _CodeGenerator:
         self.emitter.emit("__pas_rt_count:      .byte 0")
         self.emitter.emit("__pas_rt_mode:       .byte 0")
 
-        if self.class_types:
-            self.emitter.emit()
-            self.emitter.emit("; Virtuelle Methodentabellen (VMT)")
-            for class_type in self.class_types:
-                assert class_type.vmt_label is not None
-                self.emitter.emit(f"{class_type.vmt_label}:")
-                if class_type.vmt_methods:
-                    for method in class_type.vmt_methods:
-                        self.emitter.emit(f"    .word {method.label}")
-                else:
-                    self.emitter.emit("    .word 0")
-
         if self.variable_order:
             self.emitter.emit()
             self.emitter.emit("; Pascal-Variablen")
             for variable in self.variable_order:
                 initial_value = getattr(variable, "c_initial_value", None)
-                comment = "intern" if variable.internal else variable.name
-                if variable.type_info.kind == "class":
-                    assert variable.type_info.vmt_label is not None
-                    self.emitter.emit(
-                        f"{variable.label}: .word {variable.type_info.vmt_label} "
-                        f"; {comment}: {variable.type_info.name}, VMT"
-                    )
-                    remaining = variable.type_info.size - self._class_pointer_size()
-                    if remaining > 0:
-                        self.emitter.emit(
-                            "    .byte " + ", ".join("$00" for _ in range(remaining))
-                        )
-                    continue
                 if variable.type_info.size == 2:
                     directive = (
                         f".word ${int(initial_value) & 0xFFFF:04X}"
@@ -5782,6 +4137,7 @@ class _CodeGenerator:
                     directive = ".byte " + ", ".join(
                         "$00" for unused_offset in range(variable.type_info.size)
                     )
+                comment = "intern" if variable.internal else variable.name
                 self.emitter.emit(
                     f"{variable.label}: {directive} ; {comment}: {variable.type_info.name}"
                 )
@@ -5862,58 +4218,6 @@ class _PE32CodeGenerator(_CodeGenerator):
         self.console_mode = bool(console_mode)
         self.library_name = str(library_name) if library_name else None
         self.library_exports = dict(library_exports or {})
-        self._install_builtin_exception_class()
-
-    def _install_builtin_exception_class(self) -> None:
-        position = SourcePosition(1, 1)
-        exception_type = _PascalType(
-            "Exception",
-            8,
-            False,
-            "class",
-            vmt_label=f"{self.symbol_prefix}_vmt_exception",
-        )
-        message_field = _FieldInfo(
-            "FMessage", STRING_TYPE, 4, position, exception_type, "private"
-        )
-        exception_type.fields["fmessage"] = message_field
-        exception_type.properties["message"] = _PropertyInfo(
-            exception_type, "Message", STRING_TYPE, "FMessage", None, "public", position
-        )
-        self.types["exception"] = exception_type
-        self.class_types.append(exception_type)
-        self.exception_base_type = exception_type
-
-    def _class_pointer_size(self) -> int:
-        return 4
-
-    def _aggregate_size_limit(self) -> int:
-        return 16 * 1024 * 1024
-
-    def _target_storage_size(self, type_info: "_PascalType") -> int:
-        return self._pe32_storage_size(type_info)
-
-    def _compile_set_builtin(self, expression: CallExpression) -> Optional[_PascalType]:
-        designator = self._as_designator(expression.designator, expression.position)
-        if designator.selectors:
-            return None
-        name = self._key(designator.name)
-        if name in {"emptyset", "setof", "setrange", "setunion"}:
-            self._emit_load_literal(self._evaluate_set_mask(expression), expression.position.line)
-            return UNTYPED_SET_TYPE
-        if name != "setcontains":
-            return None
-        self._require_argument_count(designator.name, expression.arguments, 2, expression.position)
-        if self._expression_type(expression.arguments[0]).kind != "set":
-            raise self._error("SetContains erwartet als erstes Argument einen Set-Wert.", expression.arguments[0].position)
-        value = int(self._evaluate_constant(expression.arguments[1]))
-        if not 0 <= value <= 15:
-            raise self._error(f"Set-Element {value} liegt außerhalb 0..15.", expression.arguments[1].position)
-        self._compile_expr(expression.arguments[0])
-        self.emitter.emit(f"    test eax, {1 << value}", expression.position.line)
-        self.emitter.emit("    setne al", expression.position.line)
-        self.emitter.emit("    movzx eax, al", expression.position.line)
-        return BOOLEAN_TYPE
 
     def _new_label(self, prefix: str) -> str:
         self.label_counter += 1
@@ -5947,194 +4251,6 @@ class _PE32CodeGenerator(_CodeGenerator):
             self.strings[data] = label
         return label
 
-    @staticmethod
-    def _pe32_storage_size(type_info: _PascalType) -> int:
-        # Strings und Klassen sind unter PE32 Referenztypen. Der Typ selbst
-        # behaelt bei Klassen die Instanzgroesse (VMT + Felder), waehrend eine
-        # Variable nur den 32-Bit-Objektzeiger speichert.
-        if type_info == STRING_TYPE or type_info.kind == "class":
-            return 4
-        return int(type_info.size)
-
-
-    def _compile_constructor_assignment(self, statement: AssignmentStatement) -> bool:
-        expression = statement.expression
-        if isinstance(expression, CallExpression):
-            call_designator = self._as_designator(expression.designator, expression.position)
-            arguments = expression.arguments
-        elif isinstance(expression, DesignatorExpression):
-            call_designator = expression
-            arguments = ()
-        else:
-            return False
-        if len(call_designator.selectors) != 1 or not isinstance(call_designator.selectors[0], FieldSelector):
-            return False
-        class_type = self.types.get(self._key(call_designator.name))
-        if class_type is None or class_type.kind != "class":
-            return False
-        method = class_type.methods.get(self._key(call_designator.selectors[0].name))
-        if method is None or method.kind != "constructor":
-            return False
-        self._require_member_access(
-            method.owner,
-            method.visibility,
-            f"{method.owner.name}.{method.name}",
-            expression.position,
-        )
-        target = self._resolve_storage(self._as_designator(statement.designator, statement.position))
-        if target.type_info.kind != "class":
-            raise self._error(
-                f"Constructor {class_type.name}.{method.name} kann nur einer Klassenreferenz zugewiesen werden.",
-                statement.position,
-            )
-        if not self._types_compatible(target.type_info, class_type):
-            raise self._error(
-                f"{class_type.name} kann nicht an {target.type_info.name} zugewiesen werden.",
-                statement.position,
-            )
-
-        # Echte PE32-Heap-Instanz: EAX=Instanzgroesse, EDX=VMT.
-        self.runtime.update({"heap", "exception"})
-        self.emitter.emit(f"    mov eax, {int(class_type.size)}", statement.position.line)
-        self.emitter.emit(f"    mov edx, {class_type.vmt_label}", statement.position.line)
-        self.emitter.emit(f"    call {self.symbol_prefix}_new_object", statement.position.line)
-        self._emit_store_access(target, statement.position.line)
-
-        # Delphi-artige Constructor-Sicherheit: wir legen um den eigentlichen
-        # Konstruktor einen versteckten Exception-Frame. Schlaegt Create fehl,
-        # wird die teilweise erzeugte Instanz zerstoert/freigegeben, die
-        # Zielreferenz auf NIL gesetzt und danach zur aeusseren Ebene erneut
-        # geworfen.
-        ctor_fail = self._new_label("constructor_unwind")
-        ctor_done = self._new_label("constructor_done")
-        self._emit_exception_frame_push(ctor_fail, statement.position.line)
-        self._compile_method_call(method, target, arguments, expression.position)
-        self._emit_exception_frame_pop(statement.position.line)
-        self.emitter.emit(f"    jmp {ctor_done}", statement.position.line)
-        self.emitter.emit(f"{ctor_fail}:", statement.position.line)
-        destructor = class_type.methods.get("destroy")
-        if destructor is not None and destructor.kind == "destructor":
-            self._compile_method_call(destructor, target, (), expression.position)
-        self._emit_load_access(target, statement.position.line)
-        self.emitter.emit(f"    call {self.symbol_prefix}_free_object", statement.position.line)
-        self.emitter.emit("    xor eax, eax", statement.position.line)
-        self._emit_store_access(target, statement.position.line)
-        self.emitter.emit(f"    jmp {self.symbol_prefix}_reraise", statement.position.line)
-        self.emitter.emit(f"{ctor_done}:", statement.position.line)
-        return True
-
-    def _compile_implicit_free(self, statement: CallStatement) -> bool:
-        designator = self._as_designator(statement.designator, statement.position)
-        if not designator.selectors or not isinstance(designator.selectors[-1], FieldSelector):
-            return False
-        if self._key(designator.selectors[-1].name) != "free":
-            return False
-        receiver_designator = DesignatorExpression(
-            designator.position,
-            designator.name,
-            designator.selectors[:-1],
-        )
-        receiver = self._resolve_storage(receiver_designator)
-        if receiver.type_info.kind != "class":
-            return False
-        explicit = receiver.type_info.methods.get("free")
-        if explicit is not None:
-            return False
-        if statement.arguments:
-            raise self._error("Free erwartet keine Argumente.", statement.position)
-
-        line = statement.position.line
-        # Free(nil) ist ein No-op. Zuerst Referenz laden, dann optional den
-        # (virtuellen) Destruktor aufrufen, anschließend HeapFree und NIL setzen.
-        self._emit_load_access(receiver, line)
-        done = self._new_label("free_done")
-        self.emitter.emit("    test eax, eax", line)
-        self.emitter.emit(f"    jz {done}", line)
-        destructor = receiver.type_info.methods.get("destroy")
-        if destructor is not None:
-            if destructor.kind != "destructor":
-                raise self._error(
-                    f"{receiver.type_info.name}.Destroy ist kein Destruktor.",
-                    statement.position,
-                )
-            self._compile_method_call(destructor, receiver, (), statement.position)
-
-        self._emit_load_access(receiver, line)
-        self.runtime.add("heap")
-        self.emitter.emit(f"    call {self.symbol_prefix}_free_object", line)
-        self.emitter.emit("    xor eax, eax", line)
-        self._emit_store_access(receiver, line)
-        self.emitter.emit(f"{done}:", line)
-        return True
-
-    def _compile_assignment(self, statement: AssignmentStatement) -> None:
-        if self._compile_constructor_assignment(statement):
-            return
-        designator = self._as_designator(statement.designator, statement.position)
-        if self._compile_property_write(designator, statement.expression):
-            return
-        access = self._resolve_storage(designator)
-        if not access.type_info.scalar and access.type_info.kind != "class":
-            raise self._error(
-                "Ganze Arrays und Records können nicht direkt zugewiesen werden.",
-                statement.position,
-            )
-        result_type = self._compile_expr(statement.expression)
-        if not self._types_compatible(access.type_info, result_type):
-            raise self._error(
-                f"Zuweisung von {result_type.name} an {access.type_info.name} ist nicht zulässig.",
-                statement.position,
-            )
-        self._emit_store_access(access, statement.position.line)
-
-    def _readln_variable_access(self, expression: Expression) -> Optional[_StorageAccess]:
-        if not isinstance(expression, (NameExpression, DesignatorExpression)):
-            return None
-        try:
-            access = self._resolve_storage(expression)
-        except C64PascalError:
-            return None
-        if access.type_info != STRING_TYPE:
-            raise self._error(
-                "ReadLn erwartet für die Eingabevariable derzeit den Typ String.",
-                expression.position,
-            )
-        return access
-
-    def _compile_readln_prompt(self, expression: Expression) -> None:
-        prompt_type = self._compile_expr(expression)
-        if prompt_type != STRING_TYPE:
-            raise self._error(
-                "Der ReadLn-Eingabetext muss vom Typ String sein.",
-                expression.position,
-            )
-        self.runtime.add("print_string")
-        self.emitter.emit(
-            f"    call {self.symbol_prefix}_print_string",
-            expression.position.line,
-        )
-
-    def _compile_readln_call(self, position: SourcePosition) -> None:
-        if not self.console_mode:
-            raise self._error(
-                "ReadLn ist im Windows-PE32-Modus nur für 'Console' verfügbar.",
-                position,
-            )
-        self.runtime.add("readln")
-        self.emitter.emit(
-            f"    call {self.symbol_prefix}_readln",
-            position.line,
-        )
-
-    def _emit_nil_reference_check(self, register: str, line: int) -> None:
-        self.runtime.add("exception")
-        ok = self._new_label("class_ref_ok")
-        self.emitter.emit(f"    test {register}, {register}", line)
-        self.emitter.emit(f"    jnz {ok}", line)
-        self.emitter.emit(f"    mov eax, {self.symbol_prefix}_nil_message", line)
-        self.emitter.emit(f"    call {self.symbol_prefix}_raise", line)
-        self.emitter.emit(f"{ok}:", line)
-
     def _emit_address(self, access: _StorageAccess, line: int) -> None:
         dynamic = access.dynamic
         if dynamic is not None:
@@ -6156,11 +4272,7 @@ class _PE32CodeGenerator(_CodeGenerator):
             self.emitter.emit("    mov ecx, esi", line)
         else:
             assert access.base_label is not None
-            if access.class_deref:
-                self.emitter.emit(f"    mov ecx, dword ptr [{access.base_label}]", line)
-                self._emit_nil_reference_check("ecx", line)
-            else:
-                self.emitter.emit(f"    mov ecx, {access.base_label}", line)
+            self.emitter.emit(f"    mov ecx, {access.base_label}", line)
 
         if dynamic is not None:
             self.emitter.emit("    add ecx, edx", line)
@@ -6168,24 +4280,22 @@ class _PE32CodeGenerator(_CodeGenerator):
             self.emitter.emit(f"    add ecx, {int(access.constant_offset)}", line)
 
     def _emit_load_access(self, access: _StorageAccess, line: int) -> None:
-        size = self._pe32_storage_size(access.type_info)
-        if size not in {1, 2, 4}:
+        if access.type_info.size not in {1, 2, 4}:
             raise self._error(
                 "Das PE32-Backend kann derzeit skalare 8-, 16- und 32-Bit-Werte laden.",
                 access.position,
             )
         self._emit_address(access, line)
-        if size == 1:
+        if access.type_info.size == 1:
             self.emitter.emit("    movzx eax, byte ptr [ecx]", line)
-        elif size == 2:
+        elif access.type_info.size == 2:
             instruction = "movsx" if access.type_info.signed else "movzx"
             self.emitter.emit(f"    {instruction} eax, word ptr [ecx]", line)
         else:
             self.emitter.emit("    mov eax, dword ptr [ecx]", line)
 
     def _emit_store_access(self, access: _StorageAccess, line: int) -> None:
-        size = self._pe32_storage_size(access.type_info)
-        if size not in {1, 2, 4}:
+        if access.type_info.size not in {1, 2, 4}:
             raise self._error(
                 "Das PE32-Backend kann derzeit skalare 8-, 16- und 32-Bit-Werte speichern.",
                 access.position,
@@ -6193,9 +4303,9 @@ class _PE32CodeGenerator(_CodeGenerator):
         self.emitter.emit("    push eax", line)
         self._emit_address(access, line)
         self.emitter.emit("    pop eax", line)
-        if size == 1:
+        if access.type_info.size == 1:
             self.emitter.emit("    mov byte ptr [ecx], al", line)
-        elif size == 2:
+        elif access.type_info.size == 2:
             self.emitter.emit("    mov word ptr [ecx], ax", line)
         else:
             self.emitter.emit("    mov dword ptr [ecx], eax", line)
@@ -6228,9 +4338,6 @@ class _PE32CodeGenerator(_CodeGenerator):
         if isinstance(expression, (NameExpression, DesignatorExpression)):
             key = self._key(expression.name)
             has_selectors = isinstance(expression, DesignatorExpression) and bool(expression.selectors)
-            if key == "nil" and not has_selectors:
-                self.emitter.emit("    xor eax, eax", line)
-                return NIL_TYPE
             if key in self.constants and not has_selectors:
                 value = self.constants[key]
                 if isinstance(value, str):
@@ -6239,10 +4346,6 @@ class _PE32CodeGenerator(_CodeGenerator):
                     return STRING_TYPE
                 self._emit_load_literal(int(value), line)
                 return self.constant_types.get(key, self._constant_type(value))
-            if isinstance(expression, DesignatorExpression):
-                property_type = self._compile_property_read(expression)
-                if property_type is not None:
-                    return property_type
             try:
                 access = self._resolve_storage(expression)
             except C64PascalError:
@@ -6252,7 +4355,7 @@ class _PE32CodeGenerator(_CodeGenerator):
                         method, receiver = resolved
                         return self._compile_method_call(method, receiver, (), expression.position)
                 raise
-            if not access.type_info.scalar and access.type_info.kind != "class":
+            if not access.type_info.scalar:
                 raise self._error(
                     f"{access.type_info.name} kann nicht als skalarer Ausdruck geladen werden.",
                     expression.position,
@@ -6290,23 +4393,6 @@ class _PE32CodeGenerator(_CodeGenerator):
             self.emitter.emit("    mov edx, eax", line)
             self.emitter.emit("    pop eax", line)
             operator = expression.operator
-            if left_type.kind == "set" and right_type.kind == "set":
-                result_type = left_type if left_type is not UNTYPED_SET_TYPE else right_type
-                if operator == "+":
-                    self.emitter.emit("    or eax, edx", line)
-                    return result_type
-                if operator == "*":
-                    self.emitter.emit("    and eax, edx", line)
-                    return result_type
-                if operator == "-":
-                    self.emitter.emit("    not edx", line)
-                    self.emitter.emit("    and eax, edx", line)
-                    self.emitter.emit("    and eax, 65535", line)
-                    return result_type
-                if operator in {"=", "<>"}:
-                    self._emit_comparison(operator, False, line)
-                    return BOOLEAN_TYPE
-                raise self._error(f"Operator {operator} ist für Sets nicht zulässig.", expression.position)
             if operator in {"+", "-", "and", "or", "xor"}:
                 instruction = {"+":"add", "-":"sub", "and":"and", "or":"or", "xor":"xor"}[operator]
                 self.emitter.emit(f"    {instruction} eax, edx", line)
@@ -6336,10 +4422,7 @@ class _PE32CodeGenerator(_CodeGenerator):
         self._require_argument_count(routine.name, arguments, len(routine.parameters), position)
         for argument, parameter in zip(arguments, routine.parameters):
             argument_type = self._expression_type(argument)
-            if (
-                (not argument_type.scalar and argument_type.kind != "class")
-                or (not parameter.type_info.scalar and parameter.type_info.kind != "class")
-            ):
+            if not argument_type.scalar or not parameter.type_info.scalar:
                 raise self._error("Aggregatparameter werden fuer externe Routinen noch nicht unterstuetzt.", argument.position)
             if not self._types_compatible(parameter.type_info, argument_type):
                 raise self._error(f"Argumenttyp {argument_type.name} passt nicht zu {parameter.type_info.name}.", argument.position)
@@ -6356,29 +4439,6 @@ class _PE32CodeGenerator(_CodeGenerator):
         designator = self._as_designator(expression.designator, expression.position)
         name = self._key(designator.name) if not designator.selectors else ""
         line = expression.position.line
-        set_result = self._compile_set_builtin(expression)
-        if set_result is not None:
-            return set_result
-        if name == "exceptionmessage":
-            self._require_argument_count(designator.name, expression.arguments, 0, expression.position)
-            self.runtime.add("exception")
-            self.emitter.emit(f"    mov eax, dword ptr [{self.symbol_prefix}_exception_message]", line)
-            return STRING_TYPE
-        if name == "exceptioncode":
-            self._require_argument_count(designator.name, expression.arguments, 0, expression.position)
-            self.runtime.add("exception")
-            self.emitter.emit(f"    mov eax, dword ptr [{self.symbol_prefix}_exception_code]", line)
-            return INTEGER_TYPE
-        if name == "readln":
-            if len(expression.arguments) > 1:
-                raise self._error(
-                    "ReadLn als Funktion erwartet keinen oder einen Eingabetext.",
-                    expression.position,
-                )
-            if expression.arguments:
-                self._compile_readln_prompt(expression.arguments[0])
-            self._compile_readln_call(expression.position)
-            return STRING_TYPE
         if name == "peek":
             raise self._error("PEEK ist fuer Windows PE32 nicht verfuegbar.", expression.position)
         if name in {"chr", "ord", "lo", "hi"}:
@@ -6400,27 +4460,16 @@ class _PE32CodeGenerator(_CodeGenerator):
         return self._compile_method_call(method, receiver, expression.arguments, expression.position)
 
     def _emit_set_self_address(self, receiver: _StorageAccess, line: int) -> None:
-        # SELF ist bereits der Objektzeiger. Bei einer Klassenvariablen liegt
-        # dagegen an der Speicheradresse nur die 32-Bit-Referenz.
-        if receiver.use_self and receiver.constant_offset == 0 and receiver.dynamic is None:
-            self._emit_nil_reference_check("esi", line)
-            return
         self._emit_address(receiver, line)
-        if receiver.type_info.kind == "class":
-            self.emitter.emit("    mov esi, dword ptr [ecx]", line)
-        else:
-            self.emitter.emit("    mov esi, ecx", line)
-        self._emit_nil_reference_check("esi", line)
+        self.emitter.emit("    mov esi, ecx", line)
 
     def _compile_method_call(self, method, receiver, arguments, position):
         self._require_argument_count(method.name, arguments, len(method.parameters), position)
         line = position.line
         for argument, parameter, variable in zip(arguments, method.parameters, method.parameter_variables):
             argument_type = self._compile_expr(argument)
-            if (not argument_type.scalar and argument_type.kind != "class") or (
-                not parameter.type_info.scalar and parameter.type_info.kind != "class"
-            ):
-                raise self._error("Record-/Array-Parameter werden noch nicht unterstuetzt.", argument.position)
+            if not argument_type.scalar or not parameter.type_info.scalar:
+                raise self._error("Aggregatparameter werden noch nicht unterstuetzt.", argument.position)
             if not self._types_compatible(parameter.type_info, argument_type):
                 raise self._error(f"Argumenttyp {argument_type.name} passt nicht zu {parameter.type_info.name}.", argument.position)
             self._store_variable(variable, line)
@@ -6428,171 +4477,10 @@ class _PE32CodeGenerator(_CodeGenerator):
         if restore_self:
             self.emitter.emit("    push esi", line)
         self._emit_set_self_address(receiver, line)
-        if method.virtual:
-            if method.vmt_slot is None:
-                raise self._error("Interner Fehler: virtuelle Methode ohne VMT-Slot.", position)
-            self.emitter.emit("    mov ecx, dword ptr [esi]", line)
-            self.emitter.emit(
-                f"    call dword ptr [ecx+{method.vmt_slot * 4}]",
-                line,
-            )
-        else:
-            self.emitter.emit(f"    call {method.label}", line)
+        self.emitter.emit(f"    call {method.label}", line)
         if restore_self:
             self.emitter.emit("    pop esi", line)
         return method.result_type if method.result_type is not None else BYTE_TYPE
-
-    _EXCEPTION_FRAME_SIZE = 24
-
-    def _emit_exception_frame_push(self, handler_label: str, line: int) -> None:
-        self.runtime.update({"exception", "heap"})
-        self.emitter.emit(f"    sub esp, {self._EXCEPTION_FRAME_SIZE}", line)
-        self.emitter.emit(f"    mov eax, dword ptr [{self.symbol_prefix}_exception_top]", line)
-        self.emitter.emit("    mov dword ptr [esp], eax", line)
-        self.emitter.emit(f"    mov eax, {handler_label}", line)
-        self.emitter.emit("    mov dword ptr [esp+4], eax", line)
-        self.emitter.emit("    mov dword ptr [esp+8], ebp", line)
-        self.emitter.emit("    mov dword ptr [esp+12], esi", line)
-        self.emitter.emit("    mov dword ptr [esp+16], ebx", line)
-        self.emitter.emit("    mov dword ptr [esp+20], edi", line)
-        self.emitter.emit(f"    mov dword ptr [{self.symbol_prefix}_exception_top], esp", line)
-
-    def _emit_exception_frame_pop(self, line: int) -> None:
-        self.emitter.emit("    mov eax, dword ptr [esp]", line)
-        self.emitter.emit(f"    mov dword ptr [{self.symbol_prefix}_exception_top], eax", line)
-        self.emitter.emit(f"    add esp, {self._EXCEPTION_FRAME_SIZE}", line)
-
-    def _compile_try_body_with_control_cleanup(
-        self,
-        statement: Statement,
-    ) -> Tuple[Optional[Tuple[str, str]], Optional[Tuple[str, str]]]:
-        """Compile a protected body without leaking its runtime frame.
-
-        BREAK/CONTINUE may target a loop outside the current TRY.  The base
-        generator knows how to run pending FINALLY blocks, but it cannot know
-        about the PE32 exception frame stored on ESP.  Temporarily replacing
-        only the *currently active* loop target creates a cleanup trampoline.
-        Loops declared inside the TRY push their own targets afterwards and
-        therefore remain inside the protected scope.  Nested TRY blocks chain
-        these trampolines naturally from inner to outer frame.
-        """
-        break_cleanup = None
-        continue_cleanup = None
-        if self.break_targets:
-            original = self.break_targets[-1]
-            cleanup = self._new_label("try_break_cleanup")
-            self.break_targets[-1] = cleanup
-            break_cleanup = (cleanup, original)
-        if self.continue_targets:
-            original = self.continue_targets[-1]
-            cleanup = self._new_label("try_continue_cleanup")
-            self.continue_targets[-1] = cleanup
-            continue_cleanup = (cleanup, original)
-        try:
-            super()._compile_statement(statement)
-        finally:
-            if break_cleanup is not None:
-                self.break_targets[-1] = break_cleanup[1]
-            if continue_cleanup is not None:
-                self.continue_targets[-1] = continue_cleanup[1]
-        return break_cleanup, continue_cleanup
-
-    def _emit_try_control_cleanup(
-        self,
-        cleanup: Optional[Tuple[str, str]],
-        line: int,
-    ) -> None:
-        if cleanup is None:
-            return
-        cleanup_label, target_label = cleanup
-        self.emitter.emit(f"{cleanup_label}:", line)
-        self._emit_exception_frame_pop(line)
-        self.emitter.emit(f"    jmp {target_label}", line)
-
-    def _compile_statement(self, statement: Statement) -> None:
-        line = statement.position.line
-        if isinstance(statement, TryFinallyStatement):
-            handler_label = self._new_label("try_finally_unwind")
-            end_label = self._new_label("try_finally_end")
-            self._emit_exception_frame_push(handler_label, line)
-            self.finally_stack.append(statement.finally_statement)
-            try:
-                break_cleanup, continue_cleanup = self._compile_try_body_with_control_cleanup(
-                    statement.try_statement
-                )
-            finally:
-                self.finally_stack.pop()
-            self._emit_exception_frame_pop(line)
-            super()._compile_statement(statement.finally_statement)
-            self.emitter.emit(f"    jmp {end_label}", line)
-
-            # BREAK/CONTINUE have already executed the pending FINALLY code in
-            # the base generator.  The trampoline only removes this TRY frame.
-            self._emit_try_control_cleanup(break_cleanup, line)
-            self._emit_try_control_cleanup(continue_cleanup, line)
-
-            self.emitter.emit(f"{handler_label}:", line)
-            # Das Runtime-Unwinding hat das aktuelle Frame bereits entfernt.
-            # Der FINALLY-Code laeuft deshalb mit dem aeusseren Handler als Top.
-            super()._compile_statement(statement.finally_statement)
-            self.emitter.emit(f"    jmp {self.symbol_prefix}_reraise", line)
-            self.emitter.emit(f"{end_label}:", line)
-            return
-        if isinstance(statement, TryExceptStatement):
-            handler_label = self._new_label("try_except_handler")
-            end_label = self._new_label("try_except_end")
-            self._emit_exception_frame_push(handler_label, line)
-            break_cleanup, continue_cleanup = self._compile_try_body_with_control_cleanup(
-                statement.try_statement
-            )
-            self._emit_exception_frame_pop(line)
-            self.emitter.emit(f"    jmp {end_label}", line)
-
-            self._emit_try_control_cleanup(break_cleanup, line)
-            self._emit_try_control_cleanup(continue_cleanup, line)
-
-            self.emitter.emit(f"{handler_label}:", line)
-            if statement.handlers:
-                for index, handler in enumerate(statement.handlers):
-                    exception_type = self._resolve_exception_class(handler.type_name, handler.position)
-                    next_label = self._new_label(f"except_next_{index}")
-                    handler_variable = self._allocate_variable(
-                        handler.variable_name,
-                        exception_type,
-                        handler.position,
-                        internal=True,
-                        label_prefix=f"except_{handler.variable_name}",
-                    )
-                    self.emitter.emit(
-                        f"    mov eax, dword ptr [{self.symbol_prefix}_exception_object]", line
-                    )
-                    self.emitter.emit(f"    mov edx, {exception_type.vmt_label}", line)
-                    self.emitter.emit(f"    call {self.symbol_prefix}_exception_is_a", line)
-                    self.emitter.emit("    test eax, eax", line)
-                    self.emitter.emit(f"    jz {next_label}", line)
-                    self.emitter.emit(
-                        f"    mov eax, dword ptr [{self.symbol_prefix}_exception_object]", line
-                    )
-                    self._store_variable(handler_variable, line)
-                    previous_scope = self.scope_variables
-                    self.scope_variables = dict(previous_scope)
-                    self.scope_variables[self._key(handler.variable_name)] = handler_variable
-                    try:
-                        super()._compile_statement(handler.body)
-                    finally:
-                        self.scope_variables = previous_scope
-                    self.emitter.emit(f"    call {self.symbol_prefix}_exception_release", line)
-                    self.emitter.emit(f"    jmp {end_label}", line)
-                    self.emitter.emit(f"{next_label}:", line)
-                # Kein ON-Typ passt: dieselbe Exception an den aeusseren Frame.
-                self.emitter.emit(f"    jmp {self.symbol_prefix}_reraise", line)
-            else:
-                if statement.except_statement is not None:
-                    super()._compile_statement(statement.except_statement)
-                self.emitter.emit(f"    call {self.symbol_prefix}_exception_release", line)
-            self.emitter.emit(f"{end_label}:", line)
-            return
-        super()._compile_statement(statement)
 
     def _compile_condition_jump_false(self, expression: Expression, target: str) -> None:
         result_type = self._compile_expr(expression)
@@ -6632,138 +4520,10 @@ class _PE32CodeGenerator(_CodeGenerator):
         self.emitter.emit(f"    jmp {condition_label}", line)
         self.emitter.emit(f"{end_label}:", line)
 
-    def _resolve_exception_class(self, class_name: str, position: SourcePosition) -> _PascalType:
-        class_type = self._resolve_type(class_name, position)
-        if class_type.kind != "class" or not self._is_descendant(class_type, self.exception_base_type):
-            raise self._error(
-                f"{class_name} ist keine von Exception abgeleitete Exception-Klasse.",
-                position,
-            )
-        return class_type
-
-    def _emit_raise_exception_class(
-        self,
-        class_type: _PascalType,
-        message_expression: Expression,
-        position: SourcePosition,
-    ) -> None:
-        line = position.line
-        message_type = self._compile_expr(message_expression)
-        if message_type != STRING_TYPE:
-            raise self._error("Exception.Create erwartet eine String-Nachricht.", position)
-        self.runtime.update({"heap", "exception"})
-
-        message_temp = self._allocate_variable(
-            f"$exception_message_{self.label_counter}_{len(self.variable_order)}",
-            STRING_TYPE,
-            position,
-            internal=True,
-            label_prefix="raised_exception_message",
-        )
-        self._store_variable(message_temp, line)
-
-        object_temp = self._allocate_variable(
-            f"$exception_object_{self.label_counter}_{len(self.variable_order)}",
-            class_type,
-            position,
-            internal=True,
-            label_prefix="raised_exception",
-        )
-        self.emitter.emit(f"    mov eax, {int(class_type.size)}", line)
-        self.emitter.emit(f"    mov edx, {class_type.vmt_label}", line)
-        self.emitter.emit(f"    call {self.symbol_prefix}_new_object", line)
-        self._store_variable(object_temp, line)
-
-        message_field = class_type.fields.get("fmessage")
-        if message_field is None:
-            raise self._error("Interner Fehler: Exception-Klasse ohne FMessage.", position)
-        self._emit_load_access(
-            _StorageAccess(STRING_TYPE, position, message_temp.label, False), line
-        )
-        self.emitter.emit("    mov edx, eax", line)
-        self._emit_load_access(
-            _StorageAccess(class_type, position, object_temp.label, False), line
-        )
-        self.emitter.emit(f"    mov dword ptr [eax+{message_field.offset}], edx", line)
-
-        # Eine eigene Create(String)-Implementierung der konkreten
-        # Exception-Klasse darf zusaetzliche Felder initialisieren. Die
-        # Message-Basisinitialisierung ist bereits erfolgt und das Argument
-        # wird nicht doppelt ausgewertet.
-        constructor = class_type.methods.get("create")
-        if constructor is not None and constructor.kind == "constructor":
-            if len(constructor.parameters) != 1 or constructor.parameters[0].type_info != STRING_TYPE:
-                raise self._error(
-                    f"{class_type.name}.Create muss fuer RAISE genau einen String-Parameter besitzen.",
-                    position,
-                )
-            self._compile_method_call(
-                constructor,
-                _StorageAccess(class_type, position, object_temp.label, False),
-                (DesignatorExpression(position, message_temp.name),),
-                position,
-            )
-
-        self._emit_load_access(
-            _StorageAccess(class_type, position, object_temp.label, False), line
-        )
-        self.emitter.emit(f"    call {self.symbol_prefix}_raise_object", line)
-
     def _compile_call_statement(self, statement: CallStatement) -> None:
         designator = self._as_designator(statement.designator, statement.position)
         name = self._key(designator.name) if not designator.selectors else ""
         line = statement.position.line
-        if name == "__pas_raise_class":
-            self._require_argument_count("raise", statement.arguments, 2, statement.position)
-            try:
-                class_name = self._evaluate_constant(statement.arguments[0])
-            except C64PascalError:
-                class_name = None
-            if not isinstance(class_name, str):
-                raise self._error("RAISE erwartet einen statischen Exception-Klassennamen.", statement.position)
-            class_type = self._resolve_exception_class(class_name, statement.position)
-            self._emit_raise_exception_class(class_type, statement.arguments[1], statement.position)
-            return
-        if name == "__pas_raise":
-            self._require_argument_count("raise", statement.arguments, 1, statement.position)
-            self._emit_raise_exception_class(self.exception_base_type, statement.arguments[0], statement.position)
-            return
-        if name == "__pas_reraise":
-            self._require_argument_count("raise", statement.arguments, 0, statement.position)
-            self.runtime.add("exception")
-            self.emitter.emit(f"    call {self.symbol_prefix}_reraise", line)
-            return
-        if name in {"include", "exclude"}:
-            self._compile_set_mutation(statement, name == "include")
-            return
-        if self._compile_implicit_free(statement):
-            return
-        if name == "readln":
-            if len(statement.arguments) > 2:
-                raise self._error(
-                    "ReadLn erwartet höchstens eine String-Variable und einen Eingabetext.",
-                    statement.position,
-                )
-            target = None
-            prompt = None
-            if len(statement.arguments) == 1:
-                target = self._readln_variable_access(statement.arguments[0])
-                if target is None:
-                    prompt = statement.arguments[0]
-            elif len(statement.arguments) == 2:
-                target = self._readln_variable_access(statement.arguments[0])
-                if target is None:
-                    raise self._error(
-                        "ReadLn(variable, 'Text') erwartet als erstes Argument eine String-Variable.",
-                        statement.arguments[0].position,
-                    )
-                prompt = statement.arguments[1]
-            if prompt is not None:
-                self._compile_readln_prompt(prompt)
-            self._compile_readln_call(statement.position)
-            if target is not None:
-                self._emit_store_access(target, line)
-            return
         if name in {"write", "writeln"}:
             for argument in statement.arguments:
                 type_info = self._compile_expr(argument)
@@ -6828,17 +4588,8 @@ class _PE32CodeGenerator(_CodeGenerator):
                 self.emitter.emit("    push ebp", implementation.position.line)
                 self.emitter.emit("    mov ebp, esp", implementation.position.line)
                 for variable in method.local_variables.values():
-                    line = implementation.position.line
-                    self.emitter.emit("    xor eax, eax", line)
-                    storage_size = self._pe32_storage_size(variable.type_info)
-                    if variable.type_info.aggregate and variable.type_info.kind != "class":
-                        self.emitter.emit(f"    mov ecx, {variable.label}", line)
-                        for offset in range(storage_size):
-                            operand = "byte ptr [ecx]" if offset == 0 else f"byte ptr [ecx+{offset}]"
-                            self.emitter.emit(f"    mov {operand}, al", line)
-                    else:
-                        # Klassenvariablen sind Referenzen und beginnen mit NIL.
-                        self._store_variable(variable, line)
+                    self.emitter.emit("    xor eax, eax", implementation.position.line)
+                    self._store_variable(variable, implementation.position.line)
                 if method.result_variable is not None:
                     self.emitter.emit("    xor eax, eax", implementation.position.line)
                     self._store_variable(method.result_variable, implementation.position.line)
@@ -6885,12 +4636,11 @@ class _PE32CodeGenerator(_CodeGenerator):
             for index, variable in enumerate(method.parameter_variables):
                 stack_offset = 8 + index * 4
                 self.emitter.emit(f"    mov eax, dword ptr [ebp+{stack_offset}]")
-                storage_size = self._pe32_storage_size(variable.type_info)
-                if storage_size == 1:
+                if variable.type_info.size == 1:
                     self.emitter.emit(f"    mov byte ptr [{variable.label}], al")
-                elif storage_size == 2:
+                elif variable.type_info.size == 2:
                     self.emitter.emit(f"    mov word ptr [{variable.label}], ax")
-                elif storage_size == 4:
+                elif variable.type_info.size == 4:
                     self.emitter.emit(f"    mov dword ptr [{variable.label}], eax")
                 else:
                     raise self._error(
@@ -6906,204 +4656,12 @@ class _PE32CodeGenerator(_CodeGenerator):
             self.emitter.emit("    ret")
 
     def _emit_runtime(self) -> None:
-        if "exception" in self.runtime:
-            self.emitter.emit()
-            self.emitter.emit("; Pascal Exception-Transport / Stack-Unwinding")
-            self.emitter.emit(f"{self.symbol_prefix}_raise_object:")
-            # Wird innerhalb eines EXCEPT-Handlers eine neue Exception
-            # geworfen, gehoert die vorherige Exception nicht mehr zum
-            # aktiven Transport. Nur Heap-Exception-Objekte werden freigegeben;
-            # Runtime-Fallbacks benutzen ein statisches Exception-Objekt.
-            replace_done = f"{self.symbol_prefix}_raise_object_replace_done"
-            self.emitter.emit("    push eax")
-            self.emitter.emit(f"    mov ecx, dword ptr [{self.symbol_prefix}_exception_object]")
-            self.emitter.emit("    test ecx, ecx")
-            self.emitter.emit(f"    jz {replace_done}")
-            self.emitter.emit("    cmp ecx, eax")
-            self.emitter.emit(f"    je {replace_done}")
-            self.emitter.emit(f"    cmp dword ptr [{self.symbol_prefix}_exception_owned], 0")
-            self.emitter.emit(f"    je {replace_done}")
-            self.emitter.emit("    mov eax, ecx")
-            self.emitter.emit(f"    call {self.symbol_prefix}_free_object")
-            self.emitter.emit(f"{replace_done}:")
-            self.emitter.emit("    pop eax")
-            self.emitter.emit(f"    mov dword ptr [{self.symbol_prefix}_exception_object], eax")
-            self.emitter.emit(f"    mov dword ptr [{self.symbol_prefix}_exception_owned], 1")
-            self.emitter.emit("    test eax, eax")
-            no_object_message = f"{self.symbol_prefix}_raise_object_no_message"
-            self.emitter.emit(f"    jz {no_object_message}")
-            self.emitter.emit("    mov edx, dword ptr [eax+4]")
-            self.emitter.emit(f"    mov dword ptr [{self.symbol_prefix}_exception_message], edx")
-            self.emitter.emit(f"{no_object_message}:")
-            self.emitter.emit(f"    mov dword ptr [{self.symbol_prefix}_exception_code], 1")
-            self.emitter.emit(f"    jmp {self.symbol_prefix}_exception_unwind")
-            # Allocation-unabhaengiger Runtime-Fallback: ein statisches
-            # Exception-Objekt mit gueltiger VMT und Message. Das ist auch bei
-            # Out-of-memory sicher und kann von ``on E: Exception`` benutzt werden.
-            self.emitter.emit(f"{self.symbol_prefix}_raise:")
-            self.emitter.emit(f"    mov dword ptr [{self.symbol_prefix}_exception_message], eax")
-            self.emitter.emit(f"    mov dword ptr [{self.symbol_prefix}_raw_exception_object+4], eax")
-            self.emitter.emit(f"    mov eax, {self.symbol_prefix}_raw_exception_object")
-            self.emitter.emit(f"    mov dword ptr [{self.symbol_prefix}_exception_object], eax")
-            self.emitter.emit(f"    mov dword ptr [{self.symbol_prefix}_exception_owned], 0")
-            self.emitter.emit(f"    mov dword ptr [{self.symbol_prefix}_exception_code], 1")
-            self.emitter.emit(f"    jmp {self.symbol_prefix}_exception_unwind")
-            self.emitter.emit(f"{self.symbol_prefix}_reraise:")
-            self.emitter.emit(f"    cmp dword ptr [{self.symbol_prefix}_exception_message], 0")
-            reraised = f"{self.symbol_prefix}_reraise_has_message"
-            self.emitter.emit(f"    jne {reraised}")
-            self.emitter.emit(f"    mov eax, {self.symbol_prefix}_generic_exception_message")
-            self.emitter.emit(f"    mov dword ptr [{self.symbol_prefix}_exception_message], eax")
-            self.emitter.emit(f"    mov dword ptr [{self.symbol_prefix}_exception_code], 1")
-            self.emitter.emit(f"{reraised}:")
-            self.emitter.emit(f"{self.symbol_prefix}_exception_unwind:")
-            self.emitter.emit(f"    mov ecx, dword ptr [{self.symbol_prefix}_exception_top]")
-            self.emitter.emit("    test ecx, ecx")
-            unhandled = f"{self.symbol_prefix}_exception_unhandled"
-            self.emitter.emit(f"    jz {unhandled}")
-            self.emitter.emit("    mov edx, dword ptr [ecx+4]")
-            self.emitter.emit("    mov eax, dword ptr [ecx]")
-            self.emitter.emit(f"    mov dword ptr [{self.symbol_prefix}_exception_top], eax")
-            self.emitter.emit("    mov ebp, dword ptr [ecx+8]")
-            self.emitter.emit("    mov esi, dword ptr [ecx+12]")
-            self.emitter.emit("    mov ebx, dword ptr [ecx+16]")
-            self.emitter.emit("    mov edi, dword ptr [ecx+20]")
-            self.emitter.emit(f"    lea esp, [ecx+{self._EXCEPTION_FRAME_SIZE}]")
-            self.emitter.emit("    jmp edx")
-            self.emitter.emit(f"{unhandled}:")
-            if self.console_mode:
-                self.emitter.emit(f"    mov eax, {self.symbol_prefix}_unhandled_prefix")
-                self.emitter.emit(f"    call {self.symbol_prefix}_write_cstring")
-                no_message = f"{self.symbol_prefix}_exception_no_message"
-                self.emitter.emit(f"    mov eax, dword ptr [{self.symbol_prefix}_exception_message]")
-                self.emitter.emit("    test eax, eax")
-                self.emitter.emit(f"    jz {no_message}")
-                self.emitter.emit(f"    call {self.symbol_prefix}_write_cstring")
-                self.emitter.emit(f"{no_message}:")
-                self.emitter.emit(f"    mov eax, {self.symbol_prefix}_newline")
-                self.emitter.emit(f"    call {self.symbol_prefix}_write_cstring")
-            self.emitter.emit("    push 1")
-            self.emitter.emit("    call ExitProcess")
-            self.emitter.emit("    ret")
-
-            self.emitter.emit(f"{self.symbol_prefix}_exception_is_a:")
-            # EAX=Exception object (or NIL for raw runtime exception), EDX=expected VMT.
-            raw_exception = f"{self.symbol_prefix}_exception_is_a_raw"
-            match_loop = f"{self.symbol_prefix}_exception_is_a_loop"
-            matched = f"{self.symbol_prefix}_exception_is_a_match"
-            no_match = f"{self.symbol_prefix}_exception_is_a_no_match"
-            self.emitter.emit("    test eax, eax")
-            self.emitter.emit(f"    jz {raw_exception}")
-            self.emitter.emit("    mov ecx, dword ptr [eax]")
-            self.emitter.emit(f"{match_loop}:")
-            self.emitter.emit("    test ecx, ecx")
-            self.emitter.emit(f"    jz {no_match}")
-            self.emitter.emit("    cmp ecx, edx")
-            self.emitter.emit(f"    je {matched}")
-            self.emitter.emit("    mov ecx, dword ptr [ecx-4]")
-            self.emitter.emit(f"    jmp {match_loop}")
-            self.emitter.emit(f"{raw_exception}:")
-            self.emitter.emit(f"    mov ecx, {self.exception_base_type.vmt_label}")
-            self.emitter.emit("    cmp edx, ecx")
-            self.emitter.emit(f"    je {matched}")
-            self.emitter.emit(f"{no_match}:")
-            self.emitter.emit("    xor eax, eax")
-            self.emitter.emit("    ret")
-            self.emitter.emit(f"{matched}:")
-            self.emitter.emit("    mov eax, 1")
-            self.emitter.emit("    ret")
-            self.emitter.emit(f"{self.symbol_prefix}_exception_release:")
-            self.emitter.emit(f"    mov eax, dword ptr [{self.symbol_prefix}_exception_object]")
-            release_clear = f"{self.symbol_prefix}_exception_release_clear"
-            self.emitter.emit("    test eax, eax")
-            self.emitter.emit(f"    jz {release_clear}")
-            self.emitter.emit(f"    cmp dword ptr [{self.symbol_prefix}_exception_owned], 0")
-            self.emitter.emit(f"    je {release_clear}")
-            self.emitter.emit(f"    call {self.symbol_prefix}_free_object")
-            self.emitter.emit(f"{release_clear}:")
-            self.emitter.emit("    xor eax, eax")
-            self.emitter.emit(f"    mov dword ptr [{self.symbol_prefix}_exception_object], eax")
-            self.emitter.emit(f"    mov dword ptr [{self.symbol_prefix}_exception_owned], eax")
-            self.emitter.emit(f"    mov dword ptr [{self.symbol_prefix}_exception_message], eax")
-            self.emitter.emit(f"    mov dword ptr [{self.symbol_prefix}_exception_code], eax")
-            self.emitter.emit("    ret")
-
-        if "heap" in self.runtime:
-            self.emitter.emit()
-            self.emitter.emit("; Pascal Class-Reference Heap Runtime")
-            self.emitter.emit(f"{self.symbol_prefix}_new_object:")
-            self.emitter.emit("    push ebx")
-            self.emitter.emit("    push esi")
-            self.emitter.emit("    mov ebx, eax")
-            self.emitter.emit("    mov esi, edx")
-            self.emitter.emit("    call GetProcessHeap")
-            self.emitter.emit("    push ebx")
-            self.emitter.emit("    push 8")
-            self.emitter.emit("    push eax")
-            self.emitter.emit("    call HeapAlloc")
-            alloc_ok = f"{self.symbol_prefix}_heap_alloc_ok"
-            self.emitter.emit("    test eax, eax")
-            self.emitter.emit(f"    jnz {alloc_ok}")
-            self.emitter.emit(f"    mov eax, {self.symbol_prefix}_oom_message")
-            self.emitter.emit(f"    jmp {self.symbol_prefix}_raise")
-            self.emitter.emit(f"{alloc_ok}:")
-            self.emitter.emit("    mov dword ptr [eax], esi")
-            self.emitter.emit("    pop esi")
-            self.emitter.emit("    pop ebx")
-            self.emitter.emit("    ret")
-            self.emitter.emit(f"{self.symbol_prefix}_free_object:")
-            free_done = f"{self.symbol_prefix}_heap_free_done"
-            self.emitter.emit("    test eax, eax")
-            self.emitter.emit(f"    jz {free_done}")
-            self.emitter.emit("    push ebx")
-            self.emitter.emit("    mov ebx, eax")
-            self.emitter.emit("    call GetProcessHeap")
-            self.emitter.emit("    push ebx")
-            self.emitter.emit("    push 0")
-            self.emitter.emit("    push eax")
-            self.emitter.emit("    call HeapFree")
-            self.emitter.emit("    pop ebx")
-            self.emitter.emit(f"{free_done}:")
-            self.emitter.emit("    ret")
-
         if self.console_mode:
             self.emitter.emit()
             self.emitter.emit(f"{self.symbol_prefix}_console_init:")
             self.emitter.emit("    call AllocConsole")
-            # Nicht nur GetStdHandle verwenden: Wird das Programm von einem
-            # GUI-Prozess mit umgeleiteten Standard-Handles gestartet, koennen
-            # diese weiterhin auf NUL zeigen. CONIN$/CONOUT$ adressieren die
-            # eben geoeffnete Windows-Konsole direkt und machen ReadLn/WriteLn
-            # unabhaengig von der Startumgebung.
-            self.emitter.emit("    push 0")
-            self.emitter.emit("    push 0")
-            self.emitter.emit("    push 3")  # OPEN_EXISTING
-            self.emitter.emit("    push 0")
-            self.emitter.emit("    push 3")  # FILE_SHARE_READ | FILE_SHARE_WRITE
-            self.emitter.emit("    push 3221225472")  # GENERIC_READ | GENERIC_WRITE
-            self.emitter.emit(f"    push {self.symbol_prefix}_conin_name")
-            self.emitter.emit("    call CreateFileA")
-            input_ok = f"{self.symbol_prefix}_console_input_ok"
-            self.emitter.emit("    cmp eax, -1")
-            self.emitter.emit(f"    jne {input_ok}")
-            self.emitter.emit("    push -10")
-            self.emitter.emit("    call GetStdHandle")
-            self.emitter.emit(f"{input_ok}:")
-            self.emitter.emit(f"    mov dword ptr [{self.symbol_prefix}_stdin_handle], eax")
-            self.emitter.emit("    push 0")
-            self.emitter.emit("    push 0")
-            self.emitter.emit("    push 3")  # OPEN_EXISTING
-            self.emitter.emit("    push 0")
-            self.emitter.emit("    push 3")  # FILE_SHARE_READ | FILE_SHARE_WRITE
-            self.emitter.emit("    push 3221225472")  # GENERIC_READ | GENERIC_WRITE
-            self.emitter.emit(f"    push {self.symbol_prefix}_conout_name")
-            self.emitter.emit("    call CreateFileA")
-            output_ok = f"{self.symbol_prefix}_console_output_ok"
-            self.emitter.emit("    cmp eax, -1")
-            self.emitter.emit(f"    jne {output_ok}")
             self.emitter.emit("    push -11")
             self.emitter.emit("    call GetStdHandle")
-            self.emitter.emit(f"{output_ok}:")
             self.emitter.emit(f"    mov dword ptr [{self.symbol_prefix}_stdout_handle], eax")
             # Zuerst das sichtbare Fenster verkleinern, danach den Puffer exakt
             # auf 80x25 setzen. Umgekehrt kann SetConsoleScreenBufferSize bei
@@ -7126,47 +4684,7 @@ class _PE32CodeGenerator(_CodeGenerator):
             self.emitter.emit("    call SetConsoleMode")
             self.emitter.emit("    ret")
 
-        if "readln" in self.runtime:
-            self.emitter.emit(); self.emitter.emit(f"{self.symbol_prefix}_readln:")
-            # ReadFile schreibt die Anzahl gelesener Bytes. Vor jedem Aufruf
-            # auf 0 setzen, damit bei einem fehlgeschlagenen/abgebrochenen
-            # ReadFile kein alter Wert aus einem vorherigen ReadLn uebrig bleibt.
-            self.emitter.emit("    xor eax, eax")
-            self.emitter.emit(f"    mov dword ptr [{self.symbol_prefix}_read_count], eax")
-            self.emitter.emit("    push 0")
-            self.emitter.emit(f"    push {self.symbol_prefix}_read_count")
-            self.emitter.emit("    push 1023")
-            self.emitter.emit(f"    push {self.symbol_prefix}_input_buffer")
-            self.emitter.emit(f"    push dword ptr [{self.symbol_prefix}_stdin_handle]")
-            self.emitter.emit("    call ReadFile")
-            self.emitter.emit(f"    mov ecx, dword ptr [{self.symbol_prefix}_read_count]")
-            self.emitter.emit(f"    mov eax, {self.symbol_prefix}_input_buffer")
-            self.emitter.emit("    xor edx, edx")
-            self.emitter.emit("    mov byte ptr [eax+ecx], dl")
-            strip_loop = f"{self.symbol_prefix}_readln_strip"
-            strip_done = f"{self.symbol_prefix}_readln_done"
-            strip_char = f"{self.symbol_prefix}_readln_strip_char"
-            self.emitter.emit(f"{strip_loop}:")
-            self.emitter.emit("    test ecx, ecx")
-            self.emitter.emit(f"    jz {strip_done}")
-            self.emitter.emit("    dec ecx")
-            self.emitter.emit("    movzx edx, byte ptr [eax+ecx]")
-            self.emitter.emit("    cmp edx, 10")
-            self.emitter.emit(f"    je {strip_char}")
-            self.emitter.emit("    cmp edx, 13")
-            self.emitter.emit(f"    jne {strip_done}")
-            self.emitter.emit(f"{strip_char}:")
-            self.emitter.emit("    xor edx, edx")
-            self.emitter.emit("    mov byte ptr [eax+ecx], dl")
-            self.emitter.emit(f"    jmp {strip_loop}")
-            self.emitter.emit(f"{strip_done}:")
-            self.emitter.emit(f"    mov eax, {self.symbol_prefix}_input_buffer")
-            self.emitter.emit("    ret")
-
-        if (
-            self.runtime.intersection({"print_string", "print_int", "print_char", "print_newline", "clear_screen", "range_error"})
-            or (self.console_mode and "exception" in self.runtime)
-        ):
+        if self.runtime.intersection({"print_string", "print_int", "print_char", "print_newline", "clear_screen", "range_error"}):
             self.emitter.emit(); self.emitter.emit(f"{self.symbol_prefix}_write_cstring:")
             self.emitter.emit("    push eax")
             self.emitter.emit("    push eax")
@@ -7214,46 +4732,13 @@ class _PE32CodeGenerator(_CodeGenerator):
 
     def _emit_data(self) -> None:
         self.emitter.emit(); self.emitter.emit("align 4")
-        if self.class_types:
-            self.emitter.emit("; Virtuelle Methodentabellen (VMT)")
-            for class_type in self.class_types:
-                assert class_type.vmt_label is not None
-                base_vmt = class_type.base_type.vmt_label if class_type.base_type is not None else "0"
-                self.emitter.emit(f"{class_type.vmt_label}__parent: dd {base_vmt}")
-                self.emitter.emit(f"{class_type.vmt_label}:")
-                if class_type.vmt_methods:
-                    for method in class_type.vmt_methods:
-                        self.emitter.emit(f"    dd {method.label}")
-                else:
-                    self.emitter.emit("    dd 0")
-            self.emitter.emit("align 4")
-        if "exception" in self.runtime:
-            self.emitter.emit(f"{self.symbol_prefix}_exception_top: dd 0")
-            self.emitter.emit(f"{self.symbol_prefix}_exception_object: dd 0")
-            self.emitter.emit(f"{self.symbol_prefix}_exception_owned: dd 0")
-            self.emitter.emit(f"{self.symbol_prefix}_exception_message: dd 0")
-            self.emitter.emit(f"{self.symbol_prefix}_exception_code: dd 0")
-            self.emitter.emit(f"{self.symbol_prefix}_raw_exception_object: dd {self.exception_base_type.vmt_label}, 0")
-            self.emitter.emit(f"{self.symbol_prefix}_generic_exception_message: db 69, 120, 99, 101, 112, 116, 105, 111, 110, 0")
-            self.emitter.emit(f"{self.symbol_prefix}_unhandled_prefix: db 85, 110, 104, 97, 110, 100, 108, 101, 100, 32, 101, 120, 99, 101, 112, 116, 105, 111, 110, 58, 32, 0")
-            self.emitter.emit(f"{self.symbol_prefix}_nil_message: db 78, 105, 108, 32, 99, 108, 97, 115, 115, 32, 114, 101, 102, 101, 114, 101, 110, 99, 101, 0")
-            self.emitter.emit(f"{self.symbol_prefix}_oom_message: db 79, 117, 116, 32, 111, 102, 32, 109, 101, 109, 111, 114, 121, 0")
         if self.console_mode:
-            self.emitter.emit(f"{self.symbol_prefix}_stdin_handle: dd 0")
             self.emitter.emit(f"{self.symbol_prefix}_stdout_handle: dd 0")
-            self.emitter.emit(f"{self.symbol_prefix}_conin_name: db 67, 79, 78, 73, 78, 36, 0")
-            self.emitter.emit(f"{self.symbol_prefix}_conout_name: db 67, 79, 78, 79, 85, 84, 36, 0")
             self.emitter.emit(f"{self.symbol_prefix}_console_rect: dw 0, 0, 79, 24")
             self.emitter.emit(f"{self.symbol_prefix}_console_mode: dd 0")
             self.emitter.emit(f"{self.symbol_prefix}_written: dd 0")
             self.emitter.emit(f"{self.symbol_prefix}_format_buffer: db " + ", ".join(["0"] * 32))
             self.emitter.emit(f"{self.symbol_prefix}_char_buffer: db 0, 0")
-            if "readln" in self.runtime:
-                self.emitter.emit(f"{self.symbol_prefix}_read_count: dd 0")
-                self.emitter.emit(
-                    f"{self.symbol_prefix}_input_buffer: db "
-                    + ", ".join(["0"] * 1024)
-                )
         self.emitter.emit(f"{self.symbol_prefix}_fmt_s: db 37, 115, 0")
         self.emitter.emit(f"{self.symbol_prefix}_fmt_d: db 37, 100, 0")
         self.emitter.emit(f"{self.symbol_prefix}_fmt_c: db 37, 99, 0")
@@ -7265,22 +4750,16 @@ class _PE32CodeGenerator(_CodeGenerator):
             for variable in self.variable_order:
                 comment = "intern" if variable.internal else variable.name
                 initial_value = getattr(variable, "c_initial_value", None)
-                storage_size = self._pe32_storage_size(variable.type_info)
-                if variable.type_info.kind == "class":
-                    self.emitter.emit(
-                        f"{variable.label}: dd 0 ; {comment}: {variable.type_info.name}, class reference (NIL)"
-                    )
-                    continue
-                if storage_size == 1:
+                if variable.type_info.size == 1:
                     directive = "db"; value = int(initial_value or 0) & 0xFF
-                elif storage_size == 2:
+                elif variable.type_info.size == 2:
                     directive = "dw"; value = int(initial_value or 0) & 0xFFFF
-                elif storage_size == 4:
+                elif variable.type_info.size == 4:
                     directive = "dd"; value = int(initial_value or 0) & 0xFFFFFFFF
                 else:
                     directive = "db"; value = None
                 if value is None:
-                    values = ", ".join("0" for _ in range(storage_size))
+                    values = ", ".join("0" for _ in range(variable.type_info.size))
                     self.emitter.emit(f"{variable.label}: db {values} ; {comment}: {variable.type_info.name}")
                 else:
                     self.emitter.emit(f"{variable.label}: {directive} {value} ; {comment}: {variable.type_info.name}")
@@ -7305,8 +4784,7 @@ class _PE32CodeGenerator(_CodeGenerator):
             for symbol in (
                 "ExitProcess", "AllocConsole", "GetStdHandle",
                 "SetConsoleScreenBufferSize", "SetConsoleWindowInfo",
-                "GetConsoleMode", "SetConsoleMode", "WriteFile", "ReadFile", "CreateFileA", "lstrlenA",
-                "GetProcessHeap", "HeapAlloc", "HeapFree", "VirtualAlloc", "VirtualFree",
+                "GetConsoleMode", "SetConsoleMode", "WriteFile", "lstrlenA",
                 "wsprintfA",
             ):
                 self.emitter.emit(f"extern {symbol}")
@@ -7318,7 +4796,12 @@ class _PE32CodeGenerator(_CodeGenerator):
             self.emitter.emit(f"    jne {attach_done}", source_line)
             for variable, initializer in self.initializers:
                 result_type = self._compile_expr(initializer)
-                if not variable.type_info.scalar and variable.type_info.kind != "class":
+                if result_type == STRING_TYPE:
+                    raise self._error(
+                        "String-Variablen werden im PE32-Backend noch nicht unterstützt.",
+                        initializer.position,
+                    )
+                if not variable.type_info.scalar:
                     raise self._error(
                         "Aggregate können nicht direkt initialisiert werden.",
                         initializer.position,
@@ -7359,8 +4842,7 @@ class _PE32CodeGenerator(_CodeGenerator):
         for symbol in (
             "ExitProcess", "AllocConsole", "GetStdHandle",
             "SetConsoleScreenBufferSize", "SetConsoleWindowInfo",
-            "GetConsoleMode", "SetConsoleMode", "WriteFile", "ReadFile", "CreateFileA", "lstrlenA",
-            "GetProcessHeap", "HeapAlloc", "HeapFree", "VirtualAlloc", "VirtualFree",
+            "GetConsoleMode", "SetConsoleMode", "WriteFile", "lstrlenA",
             "wsprintfA",
         ):
             self.emitter.emit(f"extern {symbol}")
@@ -7369,7 +4851,9 @@ class _PE32CodeGenerator(_CodeGenerator):
             self.emitter.emit(f"    call {self.symbol_prefix}_console_init", source_line)
         for variable, initializer in self.initializers:
             result_type = self._compile_expr(initializer)
-            if not variable.type_info.scalar and variable.type_info.kind != "class":
+            if result_type == STRING_TYPE:
+                raise self._error("String-Variablen werden im PE32-Backend noch nicht unterstuetzt.", initializer.position)
+            if not variable.type_info.scalar:
                 raise self._error("Aggregate koennen nicht direkt initialisiert werden.", initializer.position)
             if not self._types_compatible(variable.type_info, result_type):
                 raise self._error(f"Initialisierung von {variable.name} besitzt den falschen Typ.", initializer.position)
@@ -7388,535 +4872,6 @@ class _PE32CodeGenerator(_CodeGenerator):
         )
 
 
-
-
-def _normalize_pe64_assembly_text(source: str) -> str:
-    """Macht aus den wenigen geerbten IA-32-Stackaliasen sichtbaren AMD64-Code."""
-    text = str(source)
-    text = text.replace("bits 32", "bits 64")
-    text = text.replace("IA-32-Assembler", "AMD64-Assembler")
-    text = text.replace("Windows PE32 DLL / integrierter COFF32-Linker", "Windows PE64 DLL / integrierter COFF64-Linker")
-    text = text.replace("Windows PE32 / integrierter COFF32-Linker", "Windows PE64 / integrierter COFF64-Linker")
-    text = text.replace("Ziel: Windows PE32", "Ziel: Windows PE64")
-    replacements = {
-        "push ebp":"push rbp", "pop ebp":"pop rbp", "mov ebp, esp":"mov rbp, rsp",
-        "mov esp, ebp":"mov rsp, rbp", "push esi":"push rsi", "pop esi":"pop rsi",
-        "push edi":"push rdi", "pop edi":"pop rdi", "push ebx":"push rbx", "pop ebx":"pop rbx",
-        "push eax":"push rax", "pop eax":"pop rax", "push ecx":"push rcx", "pop ecx":"pop rcx",
-        "push edx":"push rdx", "pop edx":"pop rdx", "jmp edx":"jmp rdx", "jmp eax":"jmp rax",
-    }
-    lines=[]
-    inserted_text_section = False
-    for line in text.splitlines():
-        stripped=line.strip().casefold()
-        if stripped == "bits 64" and not inserted_text_section:
-            lines.append(line)
-            lines.append("section .text")
-            inserted_text_section = True
-            continue
-        for old,new in replacements.items():
-            if stripped == old:
-                indent=line[:len(line)-len(line.lstrip())]; line=indent+new; stripped=new.casefold(); break
-        # Der alte DLL-Einstieg las fdwReason aus [ebp+12]. Unter Win64 liegt
-        # der zweite Parameter direkt in EDX.
-        if re.fullmatch(r"\s*cmp\s+dword\s+ptr\s+\[ebp\+12\]\s*,\s*1\s*", line, re.I):
-            line="    cmp edx, 1"
-        if re.fullmatch(r"\s*ret\s+12\s*", line, re.I):
-            line="    ret"
-        # Der einzige geerbte cdecl-Cleanup in der PE64-Runtime ist wsprintfA:
-        # drei 8-Byte-Pushes statt drei 4-Byte-Pushes.
-        m=re.fullmatch(r"(\s*)add\s+esp\s*,\s*(\d+)\s*", line, re.I)
-        if m:
-            line=f"{m.group(1)}add rsp, {int(m.group(2))*2}"
-        m=re.fullmatch(r"(\s*)sub\s+esp\s*,\s*(\d+)\s*", line, re.I)
-        if m:
-            line=f"{m.group(1)}sub rsp, {int(m.group(2))*2}"
-        lines.append(line)
-    return "\n".join(lines).rstrip()+"\n"
-
-
-class _PE64CodeGenerator(_PE32CodeGenerator):
-    """AMD64-/Windows-PE64-Backend auf Basis desselben Pascal-AST."""
-
-    _EXCEPTION_FRAME_SIZE = 48
-
-    def _install_builtin_exception_class(self) -> None:
-        position = SourcePosition(1, 1)
-        exception_type = _PascalType(
-            "Exception", 16, False, "class",
-            vmt_label=f"{self.symbol_prefix}_vmt_exception",
-        )
-        message_field = _FieldInfo(
-            "FMessage", STRING_TYPE, 8, position, exception_type, "private"
-        )
-        exception_type.fields["fmessage"] = message_field
-        exception_type.properties["message"] = _PropertyInfo(
-            exception_type, "Message", STRING_TYPE, "FMessage", None,
-            "public", position,
-        )
-        self.types["exception"] = exception_type
-        self.class_types.append(exception_type)
-        self.exception_base_type = exception_type
-
-    def _class_pointer_size(self) -> int:
-        return 8
-
-    @staticmethod
-    def _pe32_storage_size(type_info: _PascalType) -> int:
-        if type_info == STRING_TYPE or type_info.kind == "class":
-            return 8
-        return int(type_info.size)
-
-    def _target_storage_size(self, type_info: "_PascalType") -> int:
-        return self._pe32_storage_size(type_info)
-
-    def _compile_readln_call(self, position: SourcePosition) -> None:
-        if not self.console_mode:
-            raise self._error(
-                "ReadLn ist im Windows-PE64-Modus nur für 'Console' verfügbar.",
-                position,
-            )
-        self.runtime.add("readln")
-        self.emitter.emit(f"    call {self.symbol_prefix}_readln", position.line)
-
-    def _emit_address(self, access: _StorageAccess, line: int) -> None:
-        dynamic = access.dynamic
-        if dynamic is not None:
-            self._compile_expr(dynamic.expression)
-            if dynamic.lower_bound:
-                self.emitter.emit(f"    sub eax, {int(dynamic.lower_bound)}", line)
-            ok=self._new_label("index_range_ok")
-            self.emitter.emit(f"    cmp eax, {int(dynamic.element_count)}", line)
-            self.emitter.emit(f"    jb {ok}", line)
-            self.runtime.add("range_error"); self.emitter.emit(f"    jmp {self.symbol_prefix}_range_error", line)
-            self.emitter.emit(f"{ok}:", line)
-            if dynamic.stride != 1:
-                self.emitter.emit(f"    mov edx, {int(dynamic.stride)}", line)
-                self.emitter.emit("    imul eax, edx", line)
-            self.emitter.emit("    mov edx, eax", line)
-        if access.use_self:
-            self.emitter.emit("    mov rcx, rsi", line)
-        else:
-            assert access.base_label is not None
-            if access.class_deref:
-                self.emitter.emit(f"    mov rcx, qword ptr [{access.base_label}]", line)
-                self._emit_nil_reference_check("rcx", line)
-            else:
-                self.emitter.emit(f"    mov rcx, {access.base_label}", line)
-        if dynamic is not None:
-            self.emitter.emit("    add rcx, rdx", line)
-        if access.constant_offset:
-            self.emitter.emit(f"    add rcx, {int(access.constant_offset)}", line)
-
-    def _emit_load_access(self, access: _StorageAccess, line: int) -> None:
-        size=self._pe32_storage_size(access.type_info); self._emit_address(access,line)
-        if size==1: self.emitter.emit("    movzx eax, byte ptr [rcx]",line)
-        elif size==2:
-            ins="movsx" if access.type_info.signed else "movzx"; self.emitter.emit(f"    {ins} eax, word ptr [rcx]",line)
-        elif size==4: self.emitter.emit("    mov eax, dword ptr [rcx]",line)
-        elif size==8: self.emitter.emit("    mov rax, qword ptr [rcx]",line)
-        else: raise self._error("Das PE64-Backend kann skalare 8-, 16-, 32- und 64-Bit-Werte laden.",access.position)
-
-    def _emit_store_access(self, access: _StorageAccess, line: int) -> None:
-        size=self._pe32_storage_size(access.type_info)
-        self.emitter.emit("    push rax",line); self._emit_address(access,line); self.emitter.emit("    pop rax",line)
-        if size==1: self.emitter.emit("    mov byte ptr [rcx], al",line)
-        elif size==2: self.emitter.emit("    mov word ptr [rcx], ax",line)
-        elif size==4: self.emitter.emit("    mov dword ptr [rcx], eax",line)
-        elif size==8: self.emitter.emit("    mov qword ptr [rcx], rax",line)
-        else: raise self._error("Das PE64-Backend kann skalare 8-, 16-, 32- und 64-Bit-Werte speichern.",access.position)
-
-    def _emit_set_self_address(self, receiver: _StorageAccess, line: int) -> None:
-        if receiver.use_self and receiver.constant_offset==0 and receiver.dynamic is None:
-            self._emit_nil_reference_check("rsi",line); return
-        self._emit_address(receiver,line)
-        if receiver.type_info.kind=="class": self.emitter.emit("    mov rsi, qword ptr [rcx]",line)
-        else: self.emitter.emit("    mov rsi, rcx",line)
-        self._emit_nil_reference_check("rsi",line)
-
-    def _compile_method_call(self, method, receiver, arguments, position):
-        self._require_argument_count(method.name,arguments,len(method.parameters),position); line=position.line
-        for argument,parameter,variable in zip(arguments,method.parameters,method.parameter_variables):
-            at=self._compile_expr(argument)
-            if (not at.scalar and at.kind!="class") or (not parameter.type_info.scalar and parameter.type_info.kind!="class"):
-                raise self._error("Record-/Array-Parameter werden noch nicht unterstützt.",argument.position)
-            if not self._types_compatible(parameter.type_info,at): raise self._error(f"Argumenttyp {at.name} passt nicht zu {parameter.type_info.name}.",argument.position)
-            self._store_variable(variable,line)
-        restore=self.current_method is not None
-        if restore: self.emitter.emit("    push rsi",line)
-        self._emit_set_self_address(receiver,line)
-        if method.virtual:
-            if method.vmt_slot is None: raise self._error("Interner Fehler: virtuelle Methode ohne VMT-Slot.",position)
-            self.emitter.emit("    mov rcx, qword ptr [rsi]",line)
-            self.emitter.emit(f"    call qword ptr [rcx+{method.vmt_slot*8}]",line)
-        else: self.emitter.emit(f"    call {method.label}",line)
-        if restore: self.emitter.emit("    pop rsi",line)
-        return method.result_type if method.result_type is not None else BYTE_TYPE
-
-    def _emit_exception_frame_push(self, handler_label: str, line: int) -> None:
-        self.runtime.update({"exception","heap"})
-        self.emitter.emit(f"    sub rsp, {self._EXCEPTION_FRAME_SIZE}",line)
-        self.emitter.emit(f"    mov rax, qword ptr [{self.symbol_prefix}_exception_top]",line)
-        self.emitter.emit("    mov qword ptr [rsp], rax",line)
-        self.emitter.emit(f"    mov rax, {handler_label}",line)
-        self.emitter.emit("    mov qword ptr [rsp+8], rax",line)
-        self.emitter.emit("    mov qword ptr [rsp+16], rbp",line)
-        self.emitter.emit("    mov qword ptr [rsp+24], rsi",line)
-        self.emitter.emit("    mov qword ptr [rsp+32], rbx",line)
-        self.emitter.emit("    mov qword ptr [rsp+40], rdi",line)
-        self.emitter.emit(f"    mov qword ptr [{self.symbol_prefix}_exception_top], rsp",line)
-
-    def _emit_exception_frame_pop(self, line: int) -> None:
-        self.emitter.emit("    mov rax, qword ptr [rsp]",line)
-        self.emitter.emit(f"    mov qword ptr [{self.symbol_prefix}_exception_top], rax",line)
-        self.emitter.emit(f"    add rsp, {self._EXCEPTION_FRAME_SIZE}",line)
-
-    def _compile_statement(self, statement: Statement) -> None:
-        # Nur TRY..EXCEPT benoetigt direkte Breitenanpassung. TRY..FINALLY kann
-        # den geerbten Kontrollfluss mit unseren Frame-Methoden wiederverwenden.
-        if not isinstance(statement, TryExceptStatement):
-            return super()._compile_statement(statement)
-        line=statement.position.line; handler_label=self._new_label("try_except_handler"); end_label=self._new_label("try_except_end")
-        self._emit_exception_frame_push(handler_label,line)
-        break_cleanup,continue_cleanup=self._compile_try_body_with_control_cleanup(statement.try_statement)
-        self._emit_exception_frame_pop(line); self.emitter.emit(f"    jmp {end_label}",line)
-        self._emit_try_control_cleanup(break_cleanup,line); self._emit_try_control_cleanup(continue_cleanup,line)
-        self.emitter.emit(f"{handler_label}:",line)
-        if statement.handlers:
-            for index,handler in enumerate(statement.handlers):
-                et=self._resolve_exception_class(handler.type_name,handler.position); next_label=self._new_label(f"except_next_{index}")
-                hv=self._allocate_variable(handler.variable_name,et,handler.position,internal=True,label_prefix=f"except_{handler.variable_name}")
-                self.emitter.emit(f"    mov rax, qword ptr [{self.symbol_prefix}_exception_object]",line)
-                self.emitter.emit(f"    mov rdx, {et.vmt_label}",line)
-                self.emitter.emit(f"    call {self.symbol_prefix}_exception_is_a",line); self.emitter.emit("    test eax, eax",line); self.emitter.emit(f"    jz {next_label}",line)
-                self.emitter.emit(f"    mov rax, qword ptr [{self.symbol_prefix}_exception_object]",line); self._store_variable(hv,line)
-                previous=self.scope_variables; self.scope_variables=dict(previous); self.scope_variables[self._key(handler.variable_name)]=hv
-                try: _CodeGenerator._compile_statement(self,handler.body)
-                finally: self.scope_variables=previous
-                self.emitter.emit(f"    call {self.symbol_prefix}_exception_release",line); self.emitter.emit(f"    jmp {end_label}",line); self.emitter.emit(f"{next_label}:",line)
-            self.emitter.emit(f"    jmp {self.symbol_prefix}_reraise",line)
-        else:
-            if statement.except_statement is not None: _CodeGenerator._compile_statement(self,statement.except_statement)
-            self.emitter.emit(f"    call {self.symbol_prefix}_exception_release",line)
-        self.emitter.emit(f"{end_label}:",line)
-
-    def _compile_function(self, expression: CallExpression) -> _PascalType:
-        designator=self._as_designator(expression.designator,expression.position); name=self._key(designator.name) if not designator.selectors else ""
-        if name=="exceptionmessage":
-            self._require_argument_count(designator.name,expression.arguments,0,expression.position); self.runtime.add("exception"); self.emitter.emit(f"    mov rax, qword ptr [{self.symbol_prefix}_exception_message]",expression.position.line); return STRING_TYPE
-        return super()._compile_function(expression)
-
-    def _emit_raise_exception_class(self, class_type, message_expression, position):
-        line=position.line; mt=self._compile_expr(message_expression)
-        if mt!=STRING_TYPE: raise self._error("Exception.Create erwartet eine String-Nachricht.",position)
-        self.runtime.update({"heap","exception"})
-        msg=self._allocate_variable(f"$exception_message_{self.label_counter}_{len(self.variable_order)}",STRING_TYPE,position,internal=True,label_prefix="raised_exception_message"); self._store_variable(msg,line)
-        obj=self._allocate_variable(f"$exception_object_{self.label_counter}_{len(self.variable_order)}",class_type,position,internal=True,label_prefix="raised_exception")
-        self.emitter.emit(f"    mov eax, {int(class_type.size)}",line); self.emitter.emit(f"    mov rdx, {class_type.vmt_label}",line); self.emitter.emit(f"    call {self.symbol_prefix}_new_object",line); self._store_variable(obj,line)
-        field=class_type.fields.get("fmessage")
-        if field is None: raise self._error("Interner Fehler: Exception-Klasse ohne FMessage.",position)
-        self._emit_load_access(_StorageAccess(STRING_TYPE,position,msg.label,False),line); self.emitter.emit("    mov rdx, rax",line); self._emit_load_access(_StorageAccess(class_type,position,obj.label,False),line); self.emitter.emit(f"    mov qword ptr [rax+{field.offset}], rdx",line)
-        ctor=class_type.methods.get("create")
-        if ctor is not None and ctor.kind=="constructor": self._compile_method_call(ctor,_StorageAccess(class_type,position,obj.label,False),(DesignatorExpression(position,msg.name),),position)
-        self._emit_load_access(_StorageAccess(class_type,position,obj.label,False),line); self.emitter.emit(f"    call {self.symbol_prefix}_raise_object",line)
-
-    def _emit_library_exports(self) -> None:
-        if not self.library_exports: return
-        arg_regs=("rcx","rdx","r8","r9")
-        for public,internal in self.library_exports.items():
-            method=self._library_export_method(internal); wrapper="__d64_export_"+self._safe_name(public)
-            self.emitter.emit(); self.emitter.emit(f"global {wrapper}"); self.emitter.emit(f'export "{public}", {wrapper}'); self.emitter.emit(f"{wrapper}:")
-            for index,var in enumerate(method.parameter_variables):
-                size=self._pe32_storage_size(var.type_info)
-                if index<4:
-                    reg64=arg_regs[index]
-                    reg32=("ecx","edx","r8d","r9d")[index]
-                    reg16=("cx","dx","r8w","r9w")[index]
-                    reg8=("cl","dl","r8b","r9b")[index]
-                    if size==8: self.emitter.emit(f"    mov qword ptr [{var.label}], {reg64}")
-                    elif size==4: self.emitter.emit(f"    mov dword ptr [{var.label}], {reg32}")
-                    elif size==2: self.emitter.emit(f"    mov word ptr [{var.label}], {reg16}")
-                    elif size==1: self.emitter.emit(f"    mov byte ptr [{var.label}], {reg8}")
-                else:
-                    off=40+(index-4)*8
-                    self.emitter.emit(f"    mov rax, qword ptr [rsp+{off}]")
-                    if size==8: self.emitter.emit(f"    mov qword ptr [{var.label}], rax")
-                    elif size==4: self.emitter.emit(f"    mov dword ptr [{var.label}], eax")
-                    elif size==2: self.emitter.emit(f"    mov word ptr [{var.label}], ax")
-                    elif size==1: self.emitter.emit(f"    mov byte ptr [{var.label}], al")
-            self.emitter.emit("    xor rsi, rsi"); self.emitter.emit(f"    call {method.label}"); self.emitter.emit("    ret")
-
-
-    def _compile_external_call(self, routine, arguments, position):
-        """PE64 external call via linker-generated Microsoft-x64 adapter."""
-        self._require_argument_count(routine.name, arguments, len(routine.parameters), position)
-        for argument, parameter in zip(arguments, routine.parameters):
-            argument_type = self._expression_type(argument)
-            if (
-                (not argument_type.scalar and argument_type.kind != "class")
-                or (not parameter.type_info.scalar and parameter.type_info.kind != "class")
-            ):
-                raise self._error("Aggregatparameter werden fuer externe Routinen noch nicht unterstuetzt.", argument.position)
-            if not self._types_compatible(parameter.type_info, argument_type):
-                raise self._error(
-                    f"Argumenttyp {argument_type.name} passt nicht zu {parameter.type_info.name}.",
-                    argument.position,
-                )
-        line = position.line
-        # Compilerinternes PE64-ABI: ein 8-Byte-Slot pro Parameter. Der Linker
-        # materialisiert aus dem Alias einen Adapter auf Microsoft x64 ABI.
-        for argument in reversed(arguments):
-            self._compile_expr(argument)
-            self.emitter.emit("    push rax", line)
-        adapter_symbol = f"__d64_argc{len(arguments)}__{routine.symbol}"
-        self.emitter.emit(f"    call {adapter_symbol}", line)
-        return routine.result_type if routine.result_type is not None else BYTE_TYPE
-
-    def _compile_implicit_free(self, statement: CallStatement) -> bool:
-        designator = self._as_designator(statement.designator, statement.position)
-        if not designator.selectors or not isinstance(designator.selectors[-1], FieldSelector):
-            return False
-        if self._key(designator.selectors[-1].name) != "free":
-            return False
-        receiver_designator = DesignatorExpression(
-            designator.position, designator.name, designator.selectors[:-1]
-        )
-        receiver = self._resolve_storage(receiver_designator)
-        if receiver.type_info.kind != "class":
-            return False
-        if receiver.type_info.methods.get("free") is not None:
-            return False
-        if statement.arguments:
-            raise self._error("Free erwartet keine Argumente.", statement.position)
-        line = statement.position.line
-        self._emit_load_access(receiver, line)
-        done = self._new_label("free_done")
-        self.emitter.emit("    test rax, rax", line)
-        self.emitter.emit(f"    jz {done}", line)
-        destructor = receiver.type_info.methods.get("destroy")
-        if destructor is not None:
-            if destructor.kind != "destructor":
-                raise self._error(
-                    f"{receiver.type_info.name}.Destroy ist kein Destruktor.", statement.position
-                )
-            self._compile_method_call(destructor, receiver, (), statement.position)
-        self._emit_load_access(receiver, line)
-        self.runtime.add("heap")
-        self.emitter.emit(f"    call {self.symbol_prefix}_free_object", line)
-        self.emitter.emit("    xor eax, eax", line)
-        self._emit_store_access(receiver, line)
-        self.emitter.emit(f"{done}:", line)
-        return True
-
-    def _emit_runtime(self) -> None:
-        if "exception" in self.runtime:
-            p=self.symbol_prefix; self.emitter.emit(); self.emitter.emit("; Pascal PE64 Exception-Transport / Stack-Unwinding")
-            self.emitter.emit(f"{p}_raise_object:"); done=f"{p}_raise_object_replace_done"; self.emitter.emit("    push rax"); self.emitter.emit(f"    mov rcx, qword ptr [{p}_exception_object]"); self.emitter.emit("    test rcx, rcx"); self.emitter.emit(f"    jz {done}"); self.emitter.emit("    cmp rcx, rax"); self.emitter.emit(f"    je {done}"); self.emitter.emit(f"    cmp dword ptr [{p}_exception_owned], 0"); self.emitter.emit(f"    je {done}"); self.emitter.emit("    mov rax, rcx"); self.emitter.emit(f"    call {p}_free_object"); self.emitter.emit(f"{done}:"); self.emitter.emit("    pop rax"); self.emitter.emit(f"    mov qword ptr [{p}_exception_object], rax"); self.emitter.emit(f"    mov dword ptr [{p}_exception_owned], 1"); self.emitter.emit("    test rax, rax"); no=f"{p}_raise_object_no_message"; self.emitter.emit(f"    jz {no}"); self.emitter.emit("    mov rdx, qword ptr [rax+8]"); self.emitter.emit(f"    mov qword ptr [{p}_exception_message], rdx"); self.emitter.emit(f"{no}:"); self.emitter.emit(f"    mov dword ptr [{p}_exception_code], 1"); self.emitter.emit(f"    jmp {p}_exception_unwind")
-            self.emitter.emit(f"{p}_raise:"); self.emitter.emit(f"    mov qword ptr [{p}_exception_message], rax"); self.emitter.emit(f"    mov qword ptr [{p}_raw_exception_object+8], rax"); self.emitter.emit(f"    mov rax, {p}_raw_exception_object"); self.emitter.emit(f"    mov qword ptr [{p}_exception_object], rax"); self.emitter.emit(f"    mov dword ptr [{p}_exception_owned], 0"); self.emitter.emit(f"    mov dword ptr [{p}_exception_code], 1"); self.emitter.emit(f"    jmp {p}_exception_unwind")
-            self.emitter.emit(f"{p}_reraise:"); self.emitter.emit(f"    cmp qword ptr [{p}_exception_message], 0"); rer=f"{p}_reraise_has_message"; self.emitter.emit(f"    jne {rer}"); self.emitter.emit(f"    mov rax, {p}_generic_exception_message"); self.emitter.emit(f"    mov qword ptr [{p}_exception_message], rax"); self.emitter.emit(f"    mov dword ptr [{p}_exception_code], 1"); self.emitter.emit(f"{rer}:")
-            self.emitter.emit(f"{p}_exception_unwind:"); self.emitter.emit(f"    mov rcx, qword ptr [{p}_exception_top]"); self.emitter.emit("    test rcx, rcx"); un=f"{p}_exception_unhandled"; self.emitter.emit(f"    jz {un}"); self.emitter.emit("    mov rdx, qword ptr [rcx+8]"); self.emitter.emit("    mov rax, qword ptr [rcx]"); self.emitter.emit(f"    mov qword ptr [{p}_exception_top], rax"); self.emitter.emit("    mov rbp, qword ptr [rcx+16]"); self.emitter.emit("    mov rsi, qword ptr [rcx+24]"); self.emitter.emit("    mov rbx, qword ptr [rcx+32]"); self.emitter.emit("    mov rdi, qword ptr [rcx+40]"); self.emitter.emit(f"    lea rsp, [rcx+{self._EXCEPTION_FRAME_SIZE}]"); self.emitter.emit("    jmp rdx"); self.emitter.emit(f"{un}:")
-            if self.console_mode:
-                self.emitter.emit(f"    mov rax, {p}_unhandled_prefix"); self.emitter.emit(f"    call {p}_write_cstring"); nm=f"{p}_exception_no_message"; self.emitter.emit(f"    mov rax, qword ptr [{p}_exception_message]"); self.emitter.emit("    test rax, rax"); self.emitter.emit(f"    jz {nm}"); self.emitter.emit(f"    call {p}_write_cstring"); self.emitter.emit(f"{nm}:"); self.emitter.emit(f"    mov rax, {p}_newline"); self.emitter.emit(f"    call {p}_write_cstring")
-            self.emitter.emit("    push 1"); self.emitter.emit("    call ExitProcess"); self.emitter.emit("    ret")
-            self.emitter.emit(f"{p}_exception_is_a:"); raw=f"{p}_exception_is_a_raw"; loop=f"{p}_exception_is_a_loop"; match=f"{p}_exception_is_a_match"; no_match=f"{p}_exception_is_a_no_match"; self.emitter.emit("    test rax, rax"); self.emitter.emit(f"    jz {raw}"); self.emitter.emit("    mov rcx, qword ptr [rax]"); self.emitter.emit(f"{loop}:"); self.emitter.emit("    test rcx, rcx"); self.emitter.emit(f"    jz {no_match}"); self.emitter.emit("    cmp rcx, rdx"); self.emitter.emit(f"    je {match}"); self.emitter.emit("    mov rcx, qword ptr [rcx-8]"); self.emitter.emit(f"    jmp {loop}"); self.emitter.emit(f"{raw}:"); self.emitter.emit(f"    mov rcx, {self.exception_base_type.vmt_label}"); self.emitter.emit("    cmp rdx, rcx"); self.emitter.emit(f"    je {match}"); self.emitter.emit(f"{no_match}:"); self.emitter.emit("    xor eax, eax"); self.emitter.emit("    ret"); self.emitter.emit(f"{match}:"); self.emitter.emit("    mov eax, 1"); self.emitter.emit("    ret")
-            self.emitter.emit(f"{p}_exception_release:"); self.emitter.emit(f"    mov rax, qword ptr [{p}_exception_object]"); clear=f"{p}_exception_release_clear"; self.emitter.emit("    test rax, rax"); self.emitter.emit(f"    jz {clear}"); self.emitter.emit(f"    cmp dword ptr [{p}_exception_owned], 0"); self.emitter.emit(f"    je {clear}"); self.emitter.emit(f"    call {p}_free_object"); self.emitter.emit(f"{clear}:"); self.emitter.emit("    xor rax, rax"); self.emitter.emit(f"    mov qword ptr [{p}_exception_object], rax"); self.emitter.emit(f"    mov dword ptr [{p}_exception_owned], eax"); self.emitter.emit(f"    mov qword ptr [{p}_exception_message], rax"); self.emitter.emit(f"    mov dword ptr [{p}_exception_code], eax"); self.emitter.emit("    ret")
-        if "heap" in self.runtime:
-            p=self.symbol_prefix; self.emitter.emit(); self.emitter.emit("; Pascal PE64 Class-Reference Heap Runtime"); self.emitter.emit(f"{p}_new_object:"); self.emitter.emit("    push rbx"); self.emitter.emit("    push rsi"); self.emitter.emit("    mov ebx, eax"); self.emitter.emit("    mov rsi, rdx"); self.emitter.emit("    call GetProcessHeap"); self.emitter.emit("    push rbx"); self.emitter.emit("    push 8"); self.emitter.emit("    push rax"); self.emitter.emit("    call HeapAlloc"); ok=f"{p}_heap_alloc_ok"; self.emitter.emit("    test rax, rax"); self.emitter.emit(f"    jnz {ok}"); self.emitter.emit(f"    mov rax, {p}_oom_message"); self.emitter.emit(f"    jmp {p}_raise"); self.emitter.emit(f"{ok}:"); self.emitter.emit("    mov qword ptr [rax], rsi"); self.emitter.emit("    pop rsi"); self.emitter.emit("    pop rbx"); self.emitter.emit("    ret"); self.emitter.emit(f"{p}_free_object:"); fd=f"{p}_heap_free_done"; self.emitter.emit("    test rax, rax"); self.emitter.emit(f"    jz {fd}"); self.emitter.emit("    push rbx"); self.emitter.emit("    mov rbx, rax"); self.emitter.emit("    call GetProcessHeap"); self.emitter.emit("    push rbx"); self.emitter.emit("    push 0"); self.emitter.emit("    push rax"); self.emitter.emit("    call HeapFree"); self.emitter.emit("    pop rbx"); self.emitter.emit(f"{fd}:"); self.emitter.emit("    ret")
-        if self.console_mode:
-            p=self.symbol_prefix; self.emitter.emit(); self.emitter.emit(f"{p}_console_init:"); self.emitter.emit("    call AllocConsole")
-            for label,handle,std in ((f"{p}_conin_name",f"{p}_stdin_handle",-10),(f"{p}_conout_name",f"{p}_stdout_handle",-11)):
-                self.emitter.emit("    push 0"); self.emitter.emit("    push 0"); self.emitter.emit("    push 3"); self.emitter.emit("    push 0"); self.emitter.emit("    push 3"); self.emitter.emit("    push 3221225472"); self.emitter.emit(f"    push {label}"); self.emitter.emit("    call CreateFileA"); ok=self._new_label("console_handle_ok"); self.emitter.emit("    cmp rax, -1"); self.emitter.emit(f"    jne {ok}"); self.emitter.emit(f"    push {std}"); self.emitter.emit("    call GetStdHandle"); self.emitter.emit(f"{ok}:"); self.emitter.emit(f"    mov qword ptr [{handle}], rax")
-            self.emitter.emit(f"    push {p}_console_rect"); self.emitter.emit("    push 1"); self.emitter.emit(f"    push qword ptr [{p}_stdout_handle]"); self.emitter.emit("    call SetConsoleWindowInfo"); self.emitter.emit("    push 1638480"); self.emitter.emit(f"    push qword ptr [{p}_stdout_handle]"); self.emitter.emit("    call SetConsoleScreenBufferSize"); self.emitter.emit(f"    push {p}_console_mode"); self.emitter.emit(f"    push qword ptr [{p}_stdout_handle]"); self.emitter.emit("    call GetConsoleMode"); self.emitter.emit(f"    mov eax, dword ptr [{p}_console_mode]"); self.emitter.emit("    or eax, 4"); self.emitter.emit("    push rax"); self.emitter.emit(f"    push qword ptr [{p}_stdout_handle]"); self.emitter.emit("    call SetConsoleMode"); self.emitter.emit("    ret")
-        if "readln" in self.runtime:
-            p = self.symbol_prefix
-            self.emitter.emit()
-            self.emitter.emit("; ReadLn: Eingabepuffer wird beim ersten Aufruf dynamisch angelegt")
-            self.emitter.emit(f"{p}_readln:")
-
-            # __pas_input_buffer enthaelt nur noch einen 64-Bit-Zeiger. Der
-            # eigentliche Speicher wird erst beim ersten ReadLn reserviert.
-            # VirtualAlloc(NULL, 4096, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE)
-            # wird ueber den PE64 Stack->Microsoft-x64 Adapter aufgerufen.
-            buffer_ready = f"{p}_readln_buffer_ready"
-            alloc_ok = f"{p}_readln_buffer_alloc_ok"
-            self.emitter.emit(f"    mov rax, qword ptr [{p}_input_buffer]")
-            self.emitter.emit("    test rax, rax")
-            self.emitter.emit(f"    jnz {buffer_ready}")
-            self.emitter.emit("    push 4")       # PAGE_READWRITE
-            self.emitter.emit("    push 12288")   # MEM_COMMIT | MEM_RESERVE
-            self.emitter.emit("    push 4096")    # eine Windows-Speicherseite
-            self.emitter.emit("    push 0")       # lpAddress = NULL
-            self.emitter.emit("    call VirtualAlloc")
-            self.emitter.emit("    test rax, rax")
-            self.emitter.emit(f"    jnz {alloc_ok}")
-            self.emitter.emit("    push 1")
-            self.emitter.emit("    call ExitProcess")
-            self.emitter.emit(f"{alloc_ok}:")
-            self.emitter.emit(f"    mov qword ptr [{p}_input_buffer], rax")
-            self.emitter.emit(f"{buffer_ready}:")
-
-            # ReadFile darf maximal 4095 Bytes schreiben; Byte 4095 bleibt fuer
-            # den abschliessenden NUL-Terminator reserviert.
-            self.emitter.emit("    xor eax, eax")
-            self.emitter.emit(f"    mov dword ptr [{p}_read_count], eax")
-            self.emitter.emit("    push 0")
-            self.emitter.emit(f"    push {p}_read_count")
-            self.emitter.emit("    push 4095")
-            self.emitter.emit(f"    push qword ptr [{p}_input_buffer]")
-            self.emitter.emit(f"    push qword ptr [{p}_stdin_handle]")
-            self.emitter.emit("    call ReadFile")
-            self.emitter.emit(f"    mov ecx, dword ptr [{p}_read_count]")
-            self.emitter.emit(f"    mov rax, qword ptr [{p}_input_buffer]")
-            self.emitter.emit("    xor edx, edx")
-            self.emitter.emit("    mov byte ptr [rax+rcx], dl")
-            loop = f"{p}_readln_strip"
-            done = f"{p}_readln_done"
-            strip = f"{p}_readln_strip_char"
-            self.emitter.emit(f"{loop}:")
-            self.emitter.emit("    test ecx, ecx")
-            self.emitter.emit(f"    jz {done}")
-            self.emitter.emit("    dec ecx")
-            self.emitter.emit("    movzx edx, byte ptr [rax+rcx]")
-            self.emitter.emit("    cmp edx, 10")
-            self.emitter.emit(f"    je {strip}")
-            self.emitter.emit("    cmp edx, 13")
-            self.emitter.emit(f"    jne {done}")
-            self.emitter.emit(f"{strip}:")
-            self.emitter.emit("    xor edx, edx")
-            self.emitter.emit("    mov byte ptr [rax+rcx], dl")
-            self.emitter.emit(f"    jmp {loop}")
-            self.emitter.emit(f"{done}:")
-            self.emitter.emit(f"    mov rax, qword ptr [{p}_input_buffer]")
-            self.emitter.emit("    ret")
-        if self.runtime.intersection({"print_string","print_int","print_char","print_newline","clear_screen","range_error"}) or (self.console_mode and "exception" in self.runtime):
-            p=self.symbol_prefix; self.emitter.emit(); self.emitter.emit(f"{p}_write_cstring:"); self.emitter.emit("    push rax"); self.emitter.emit("    push rax"); self.emitter.emit("    call lstrlenA"); self.emitter.emit("    mov edx, eax"); self.emitter.emit("    pop rax"); self.emitter.emit("    push 0"); self.emitter.emit(f"    push {p}_written"); self.emitter.emit("    push rdx"); self.emitter.emit("    push rax"); self.emitter.emit(f"    push qword ptr [{p}_stdout_handle]"); self.emitter.emit("    call WriteFile"); self.emitter.emit("    ret")
-        p=self.symbol_prefix
-        if "print_string" in self.runtime: self.emitter.emit(); self.emitter.emit(f"{p}_print_string:"); self.emitter.emit(f"    call {p}_write_cstring"); self.emitter.emit("    ret")
-        if "print_int" in self.runtime: self.emitter.emit(); self.emitter.emit(f"{p}_print_int:"); self.emitter.emit("    push rax"); self.emitter.emit(f"    push {p}_fmt_d"); self.emitter.emit(f"    push {p}_format_buffer"); self.emitter.emit("    call wsprintfA"); self.emitter.emit("    add rsp, 24"); self.emitter.emit(f"    mov rax, {p}_format_buffer"); self.emitter.emit(f"    call {p}_write_cstring"); self.emitter.emit("    ret")
-        if "print_char" in self.runtime: self.emitter.emit(); self.emitter.emit(f"{p}_print_char:"); self.emitter.emit(f"    mov byte ptr [{p}_char_buffer], al"); self.emitter.emit(f"    mov rax, {p}_char_buffer"); self.emitter.emit(f"    call {p}_write_cstring"); self.emitter.emit("    ret")
-        if "print_newline" in self.runtime: self.emitter.emit(); self.emitter.emit(f"{p}_print_newline:"); self.emitter.emit(f"    mov rax, {p}_newline"); self.emitter.emit(f"    call {p}_write_cstring"); self.emitter.emit("    ret")
-        if "clear_screen" in self.runtime: self.emitter.emit(); self.emitter.emit(f"{p}_clear_screen:"); self.emitter.emit(f"    mov rax, {p}_clear_sequence"); self.emitter.emit(f"    call {p}_write_cstring"); self.emitter.emit("    ret")
-        if "range_error" in self.runtime: self.emitter.emit(); self.emitter.emit(f"{p}_range_error:"); self.emitter.emit(f"    mov rax, {p}_range_message"); self.emitter.emit(f"    call {p}_write_cstring"); self.emitter.emit("    push 1"); self.emitter.emit("    call ExitProcess"); self.emitter.emit("    ret")
-
-    def _emit_data(self) -> None:
-        p = self.symbol_prefix
-        initialized_vars = []
-        bss_vars = []
-        for var in self.variable_order:
-            initial = getattr(var, "c_initial_value", None)
-            if initial in (None, 0):
-                bss_vars.append(var)
-            else:
-                initialized_vars.append(var)
-
-        # Initialisierte Daten: VMTs, konstante Strings, Tabellen und explizit
-        # mit einem Nicht-Nullwert initialisierte globale Variablen.
-        self.emitter.emit()
-        self.emitter.emit("section .data")
-        self.emitter.emit("align 8")
-        if self.class_types:
-            self.emitter.emit("; Virtuelle Methodentabellen (VMT), 64 Bit")
-            for ct in self.class_types:
-                base = ct.base_type.vmt_label if ct.base_type is not None else "0"
-                self.emitter.emit(f"{ct.vmt_label}__parent: dq {base}")
-                self.emitter.emit(f"{ct.vmt_label}:")
-                if ct.vmt_methods:
-                    for method in ct.vmt_methods:
-                        self.emitter.emit(f"    dq {method.label}")
-                else:
-                    self.emitter.emit("    dq 0")
-            self.emitter.emit("align 8")
-        if "exception" in self.runtime:
-            # raw_exception_object contains a VMT relocation and therefore is
-            # initialized data. The mutable exception state itself lives in BSS.
-            self.emitter.emit(f"{p}_raw_exception_object: dq {self.exception_base_type.vmt_label}, 0")
-            self.emitter.emit(f"{p}_generic_exception_message: db 69,120,99,101,112,116,105,111,110,0")
-            self.emitter.emit(f"{p}_unhandled_prefix: db 85,110,104,97,110,100,108,101,100,32,101,120,99,101,112,116,105,111,110,58,32,0")
-            self.emitter.emit(f"{p}_nil_message: db 78,105,108,32,99,108,97,115,115,32,114,101,102,101,114,101,110,99,101,0")
-            self.emitter.emit(f"{p}_oom_message: db 79,117,116,32,111,102,32,109,101,109,111,114,121,0")
-        if self.console_mode:
-            self.emitter.emit(f"{p}_conin_name: db 67,79,78,73,78,36,0")
-            self.emitter.emit(f"{p}_conout_name: db 67,79,78,79,85,84,36,0")
-            self.emitter.emit(f"{p}_console_rect: dw 0,0,79,24")
-        self.emitter.emit(f"{p}_fmt_s: db 37,115,0")
-        self.emitter.emit(f"{p}_fmt_d: db 37,100,0")
-        self.emitter.emit(f"{p}_fmt_c: db 37,99,0")
-        self.emitter.emit(f"{p}_newline: db 13,10,0")
-        self.emitter.emit(f"{p}_clear_sequence: db 27,91,50,74,27,91,72,0")
-        self.emitter.emit(f"{p}_range_message: db 82,97,110,103,101,32,101,114,114,111,114,13,10,0")
-
-        if initialized_vars:
-            self.emitter.emit()
-            self.emitter.emit(f"; {self.language_name}-Variablen mit explizitem Initialwert")
-            for var in initialized_vars:
-                comment = "intern" if var.internal else var.name
-                initial = int(getattr(var, "c_initial_value", 0) or 0)
-                size = self._pe32_storage_size(var.type_info)
-                if size == 8:
-                    self.emitter.emit(f"{var.label}: dq {initial & 0xFFFFFFFFFFFFFFFF} ; {comment}: {var.type_info.name}")
-                elif size == 4:
-                    self.emitter.emit(f"{var.label}: dd {initial & 0xFFFFFFFF} ; {comment}: {var.type_info.name}")
-                elif size == 2:
-                    self.emitter.emit(f"{var.label}: dw {initial & 0xFFFF} ; {comment}: {var.type_info.name}")
-                elif size == 1:
-                    self.emitter.emit(f"{var.label}: db {initial & 0xFF} ; {comment}: {var.type_info.name}")
-                else:
-                    # Aggregate initializers are not emitted by this backend yet.
-                    self.emitter.emit(f"{var.label}: db " + ", ".join("0" for _ in range(size)) +
-                                      f" ; {comment}: {var.type_info.name}")
-
-        if self.strings:
-            self.emitter.emit()
-            self.emitter.emit("; Nullterminierte Windows-Latin-1-Zeichenketten")
-            for data, label in self.strings.items():
-                self.emitter.emit(f"{label}: db " + ", ".join(str(v) for v in data + b"\0"))
-
-        # Uninitialisierte/Null-initialisierte Daten bekommen eine echte BSS-
-        # Sektion. Der COFF64/PE32+-Writer reserviert dafür VirtualSize, schreibt
-        # aber keinerlei Nullbytes in die .o/.exe/.dll-Datei. Windows liefert
-        # die Seiten beim Laden automatisch mit Null initialisiert.
-        need_bss = bool(bss_vars or "exception" in self.runtime or self.console_mode)
-        if need_bss:
-            self.emitter.emit()
-            self.emitter.emit("section .bss")
-            self.emitter.emit("align 8")
-            if "exception" in self.runtime:
-                self.emitter.emit(f"{p}_exception_top: resq 1")
-                self.emitter.emit(f"{p}_exception_object: resq 1")
-                self.emitter.emit(f"{p}_exception_owned: resd 1")
-                self.emitter.emit("align 8")
-                self.emitter.emit(f"{p}_exception_message: resq 1")
-                self.emitter.emit(f"{p}_exception_code: resd 1")
-            if self.console_mode:
-                self.emitter.emit("align 8")
-                self.emitter.emit(f"{p}_stdin_handle: resq 1")
-                self.emitter.emit(f"{p}_stdout_handle: resq 1")
-                self.emitter.emit(f"{p}_console_mode: resd 1")
-                self.emitter.emit(f"{p}_written: resd 1")
-                self.emitter.emit(f"{p}_format_buffer: resb 32")
-                self.emitter.emit(f"{p}_char_buffer: resb 2")
-                if "readln" in self.runtime:
-                    self.emitter.emit(f"{p}_read_count: resd 1")
-                    self.emitter.emit("align 8")
-                    # The 4-KiB ReadLn payload remains VirtualAlloc-backed; BSS
-                    # contains only the nullable pointer to that allocation.
-                    self.emitter.emit(f"{p}_input_buffer: resq 1")
-            if bss_vars:
-                self.emitter.emit()
-                self.emitter.emit(f"; {self.language_name}-Nullvariablen (.bss, keine Raw-Bytes)")
-                for var in bss_vars:
-                    comment = "intern" if var.internal else var.name
-                    size = int(self._pe32_storage_size(var.type_info))
-                    align = 8 if size >= 8 else (4 if size >= 4 else (2 if size >= 2 else 1))
-                    if align > 1:
-                        self.emitter.emit(f"align {align}")
-                    self.emitter.emit(f"{var.label}: resb {size} ; {comment}: {var.type_info.name}")
-
-    def generate(self) -> GeneratedAssembly:
-        generated=super().generate()
-        return replace(generated,assembly=_normalize_pe64_assembly_text(generated.assembly))
-
-
 class _AmigaCodeGenerator(_CodeGenerator):
     """Erzeugt eigenständigen Motorola-68000-Assembler für den Amiga 500."""
 
@@ -7930,41 +4885,6 @@ class _AmigaCodeGenerator(_CodeGenerator):
         super().__init__(program)
         self.symbol_prefix = symbol_prefix
         self.language_name = language_name
-
-    def _class_pointer_size(self) -> int:
-        return 4
-
-    def _aggregate_size_limit(self) -> int:
-        return 65535
-
-    def _compile_set_builtin(self, expression: CallExpression) -> Optional[_PascalType]:
-        designator = self._as_designator(expression.designator, expression.position)
-        if designator.selectors:
-            return None
-        name = self._key(designator.name)
-        if name in {"emptyset", "setof", "setrange", "setunion"}:
-            self._emit_load_literal(self._evaluate_set_mask(expression), expression.position.line)
-            return UNTYPED_SET_TYPE
-        if name != "setcontains":
-            return None
-        self._require_argument_count(designator.name, expression.arguments, 2, expression.position)
-        if self._expression_type(expression.arguments[0]).kind != "set":
-            raise self._error("SetContains erwartet als erstes Argument einen Set-Wert.", expression.arguments[0].position)
-        value = int(self._evaluate_constant(expression.arguments[1]))
-        if not 0 <= value <= 15:
-            raise self._error(f"Set-Element {value} liegt außerhalb 0..15.", expression.arguments[1].position)
-        line = expression.position.line
-        self._compile_expr(expression.arguments[0])
-        self.emitter.emit(f"    andi.w #${1 << value:04X},d0", line)
-        false_label = self._new_label("set_contains_false")
-        end_label = self._new_label("set_contains_end")
-        self.emitter.emit(f"    beq {false_label}", line)
-        self.emitter.emit("    moveq #1,d0", line)
-        self.emitter.emit(f"    bra {end_label}", line)
-        self.emitter.emit(f"{false_label}:", line)
-        self.emitter.emit("    moveq #0,d0", line)
-        self.emitter.emit(f"{end_label}:", line)
-        return BOOLEAN_TYPE
 
     def _new_label(self, prefix: str) -> str:
         self.label_counter += 1
@@ -8128,10 +5048,6 @@ class _AmigaCodeGenerator(_CodeGenerator):
                     return STRING_TYPE
                 self._emit_load_literal(int(value), line)
                 return self.constant_types.get(key, self._constant_type(value))
-            if isinstance(expression, DesignatorExpression):
-                property_type = self._compile_property_read(expression)
-                if property_type is not None:
-                    return property_type
             try:
                 access = self._resolve_storage(expression)
             except C64PascalError:
@@ -8196,22 +5112,6 @@ class _AmigaCodeGenerator(_CodeGenerator):
             self.emitter.emit("    move.w d0,d1", line)
             self.emitter.emit("    move.w (sp)+,d0", line)
             operator = expression.operator
-            if left_type.kind == "set" and right_type.kind == "set":
-                result_type = left_type if left_type is not UNTYPED_SET_TYPE else right_type
-                if operator == "+":
-                    self.emitter.emit("    or.w d1,d0", line)
-                    return result_type
-                if operator == "*":
-                    self.emitter.emit("    and.w d1,d0", line)
-                    return result_type
-                if operator == "-":
-                    self.emitter.emit("    eori.w #$FFFF,d1", line)
-                    self.emitter.emit("    and.w d1,d0", line)
-                    return result_type
-                if operator in {"=", "<>"}:
-                    self._emit_comparison(operator, False, line)
-                    return BOOLEAN_TYPE
-                raise self._error(f"Operator {operator} ist für Sets nicht zulässig.", expression.position)
             if operator in {"+", "-", "and", "or", "xor"}:
                 instruction = {
                     "+": "add.w",
@@ -8287,9 +5187,6 @@ class _AmigaCodeGenerator(_CodeGenerator):
         designator = self._as_designator(expression.designator, expression.position)
         name = self._key(designator.name) if not designator.selectors else ""
         line = expression.position.line
-        set_result = self._compile_set_builtin(expression)
-        if set_result is not None:
-            return set_result
         if name == "peek":
             raise self._error(
                 "PEEK ist ein C64-spezifischer Befehl und für Amiga nicht verfügbar.",
@@ -8372,18 +5269,7 @@ class _AmigaCodeGenerator(_CodeGenerator):
         if restore_self:
             self.emitter.emit("    move.l a5,-(sp)", line)
         self._emit_set_self_address(receiver, line)
-        if method.virtual:
-            if method.vmt_slot is None:
-                raise self._error("Interner Fehler: virtuelle Methode ohne VMT-Slot.", position)
-            self.emitter.emit("    move.l (a5),a0", line)
-            offset = method.vmt_slot * 4
-            if offset:
-                self.emitter.emit(f"    move.l ${offset:04X}(a0),a0", line)
-            else:
-                self.emitter.emit("    move.l (a0),a0", line)
-            self.emitter.emit("    jsr (a0)", line)
-        else:
-            self.emitter.emit(f"    bsr {method.label}", line)
+        self.emitter.emit(f"    bsr {method.label}", line)
         if restore_self:
             self.emitter.emit("    move.l (sp)+,a5", line)
         return method.result_type if method.result_type is not None else BYTE_TYPE
@@ -8463,16 +5349,6 @@ class _AmigaCodeGenerator(_CodeGenerator):
         designator = self._as_designator(statement.designator, statement.position)
         name = self._key(designator.name) if not designator.selectors else ""
         line = statement.position.line
-        if name in {"__pas_raise", "__pas_reraise"}:
-            raise self._error(
-                "Exception-Transport mit RAISE ist derzeit nur fuer Windows PE32 implementiert.",
-                statement.position,
-            )
-        if name in {"include", "exclude"}:
-            self._compile_set_mutation(statement, name == "include")
-            return
-        if self._compile_implicit_free(statement):
-            return
 
         # Sprach-/Runtime-Builtins werden vor externen Deklarationen behandelt.
         # Das ist insbesondere fuer C-Systemheader wichtig, die Prototypen wie
@@ -8644,17 +5520,6 @@ class _AmigaCodeGenerator(_CodeGenerator):
                                 implementation.position.line,
                             )
                         self.emitter.emit("    move.b d0,(a0)", implementation.position.line)
-                    if variable.type_info.kind == "class":
-                        assert variable.type_info.vmt_label is not None
-                        self.emitter.emit(
-                            f"    lea {variable.label}(pc),a0",
-                            implementation.position.line,
-                        )
-                        self.emitter.emit(
-                            f"    lea {variable.type_info.vmt_label}(pc),a1",
-                            implementation.position.line,
-                        )
-                        self.emitter.emit("    move.l a1,(a0)", implementation.position.line)
                 if method.result_variable is not None:
                     self.emitter.emit("    moveq #0,d0", implementation.position.line)
                     self._store_variable(method.result_variable, implementation.position.line)
@@ -8885,19 +5750,6 @@ class _AmigaCodeGenerator(_CodeGenerator):
         self.emitter.emit(f"{self.symbol_prefix}_int_buffer: ds.b 8")
         self.emitter.emit(f"{self.symbol_prefix}_int_buffer_end:")
 
-        if self.class_types:
-            self.emitter.emit()
-            self.emitter.emit("; Virtuelle Methodentabellen (VMT)")
-            for class_type in self.class_types:
-                self.emitter.emit("    even")
-                assert class_type.vmt_label is not None
-                self.emitter.emit(f"{class_type.vmt_label}:")
-                if class_type.vmt_methods:
-                    for method in class_type.vmt_methods:
-                        self.emitter.emit(f"    dc.l {method.label}")
-                else:
-                    self.emitter.emit("    dc.l 0")
-
         if self.variable_order:
             self.emitter.emit()
             self.emitter.emit(f"; {self.language_name}-Variablen")
@@ -8905,16 +5757,6 @@ class _AmigaCodeGenerator(_CodeGenerator):
                 self.emitter.emit("    even")
                 comment = "intern" if variable.internal else variable.name
                 initial_value = getattr(variable, "c_initial_value", None)
-                if variable.type_info.kind == "class":
-                    assert variable.type_info.vmt_label is not None
-                    self.emitter.emit(
-                        f"{variable.label}: dc.l {variable.type_info.vmt_label} "
-                        f"; {comment}: {variable.type_info.name}, VMT"
-                    )
-                    remaining = variable.type_info.size - self._class_pointer_size()
-                    if remaining > 0:
-                        self.emitter.emit(f"    ds.b {remaining}")
-                    continue
                 if initial_value is not None and variable.type_info.size == 2:
                     storage = f"dc.w ${int(initial_value) & 0xFFFF:04X}"
                 elif initial_value is not None and variable.type_info.size == 1:
@@ -9009,15 +5851,6 @@ def _unit_marker_assembly(unit_name: str, target: str) -> str:
     """
     safe_name = re.sub(r"[^A-Za-z0-9_]", "_", unit_name)
     normalized_target = str(target).strip().casefold()
-    if normalized_target in {"pe64", "win64", "windows64", "windows-pe64"}:
-        return (
-            "; Von Pascal erzeugtes Windows-PE64-Unit-Modul\n"
-            f"; Unit: {unit_name}\n"
-            "bits 64\n"
-            f"global __unit_{safe_name}\n"
-            f"__unit_{safe_name}:\n"
-            "    ret\n"
-        )
     if normalized_target in {"pe32", "win32", "windows", "windows-pe32"}:
         return (
             "; Von Pascal erzeugtes Windows-PE32-Unit-Modul\n"
@@ -9164,7 +5997,7 @@ def _link_pascal_assembly_modules(
     if not assembly_files:
         return generated
     normalized_target = str(target).strip().casefold()
-    if normalized_target in {"pe32", "win32", "windows", "windows-pe32", "pe64", "win64", "windows64", "windows-pe64"}:
+    if normalized_target in {"pe32", "win32", "windows", "windows-pe32"}:
         linked: List[str] = []
         for filename in assembly_files:
             path = Path(filename).expanduser().resolve()
@@ -9390,102 +6223,6 @@ def _pascal_library_to_program_source(
     return transformed, library_name, public_exports
 
 
-
-def _inject_console_breakpoints(
-    program: PascalProgram,
-    breakpoint_lines: Iterable[int],
-) -> PascalProgram:
-    """Fügt ReadLn-Haltepunkte vor AST-Anweisungen bestimmter Quellzeilen ein.
-
-    Die Quelle selbst wird nicht verändert. Dadurch bleiben ANTLR-Positionen,
-    Compilerfehler und die Zuordnung Gutter -> Pascal-Zeile stabil.
-    """
-    requested = {
-        int(line) for line in breakpoint_lines
-        if int(line) > 0
-    }
-    if not requested:
-        return program
-
-    consumed = set()
-
-    def pause_statement(position: SourcePosition) -> CallStatement:
-        return CallStatement(
-            position,
-            DesignatorExpression(position, "readln", ()),
-            (),
-        )
-
-    def instrument(statement: Statement) -> Statement:
-        line = int(statement.position.line)
-        trigger_here = line in requested and line not in consumed
-        if trigger_here:
-            consumed.add(line)
-
-        if isinstance(statement, CompoundStatement):
-            transformed = replace(
-                statement,
-                statements=tuple(instrument(item) for item in statement.statements),
-            )
-        elif isinstance(statement, IfStatement):
-            transformed = replace(
-                statement,
-                then_statement=instrument(statement.then_statement),
-                else_statement=(
-                    instrument(statement.else_statement)
-                    if statement.else_statement is not None else None
-                ),
-            )
-        elif isinstance(statement, WhileStatement):
-            transformed = replace(statement, body=instrument(statement.body))
-        elif isinstance(statement, RepeatStatement):
-            transformed = replace(
-                statement,
-                statements=tuple(instrument(item) for item in statement.statements),
-            )
-        elif isinstance(statement, ForStatement):
-            transformed = replace(statement, body=instrument(statement.body))
-        elif isinstance(statement, TryFinallyStatement):
-            transformed = replace(
-                statement,
-                try_statement=instrument(statement.try_statement),
-                finally_statement=instrument(statement.finally_statement),
-            )
-        elif isinstance(statement, TryExceptStatement):
-            transformed_handlers = tuple(
-                replace(handler, body=instrument(handler.body))
-                for handler in statement.handlers
-            )
-            transformed = replace(
-                statement,
-                try_statement=instrument(statement.try_statement),
-                except_statement=(
-                    instrument(statement.except_statement)
-                    if statement.except_statement is not None else None
-                ),
-                handlers=transformed_handlers,
-            )
-        else:
-            transformed = statement
-
-        if not trigger_here:
-            return transformed
-        return CompoundStatement(
-            statement.position,
-            (pause_statement(statement.position), transformed),
-        )
-
-    methods = tuple(
-        replace(method, body=instrument(method.body))
-        for method in program.methods
-    )
-    return replace(
-        program,
-        body=instrument(program.body),
-        methods=methods,
-    )
-
-
 def compile_pascal_to_assembly(
     source: str,
     *,
@@ -9496,8 +6233,6 @@ def compile_pascal_to_assembly(
     cpu_model: str = "mk68000",
     fpu_model: str = "FPU: None",
     graphics_backend: str = "Direct2D",
-    windows_application_mode: Optional[str] = None,
-    breakpoint_lines: Iterable[int] = (),
 ) -> GeneratedAssembly:
     """Parst PROGRAM-, UNIT- oder PE32-LIBRARY-Quellen und erzeugt Assembler."""
     source_kind = _pascal_source_kind(source)
@@ -9517,9 +6252,9 @@ def compile_pascal_to_assembly(
     library_exports: Dict[str, str] = {}
     frontend_source = source
     if source_kind == "library":
-        if normalized_target not in {"pe32", "win32", "windows", "windows-pe32", "pe64", "win64", "windows64", "windows-pe64"}:
+        if normalized_target not in {"pe32", "win32", "windows", "windows-pe32"}:
             raise C64PascalError(
-                "Pascal LIBRARY wird derzeit ausschließlich für Windows PE32/PE64 unterstützt."
+                "Pascal LIBRARY wird derzeit ausschließlich für Windows PE32 unterstützt."
             )
         frontend_source, library_name, library_exports = _pascal_library_to_program_source(
             source,
@@ -9537,27 +6272,12 @@ def compile_pascal_to_assembly(
         generated = _CodeGenerator(program).generate()
     elif normalized_target in {"amiga", "amiga500", "a500", "m68k", "68000"}:
         generated = _AmigaCodeGenerator(program).generate()
-    elif normalized_target in {"pe32", "win32", "windows", "windows-pe32", "pe64", "win64", "windows64", "windows-pe64"}:
-        if windows_application_mode is None:
-            uses_graphics = bool(
-                re.search(r"\bInitGraphics\s*\(", source, re.IGNORECASE)
-            )
-            selected_mode = graphics_backend if uses_graphics else "Console"
-        else:
-            selected_mode = str(windows_application_mode).strip() or "Console"
-        mode_key = selected_mode.casefold()
-        console_mode = mode_key in {"console", "konsole"}
-        if console_mode and source_kind != "library":
-            program = _inject_console_breakpoints(program, breakpoint_lines)
-        if mode_key in {"direct3d", "d3d", "d3d9"}:
-            graphics_backend = "Direct3D"
-        elif mode_key in {"direct2d", "d2d"}:
-            graphics_backend = "Direct2D"
-        generator_class = _PE64CodeGenerator if normalized_target in {"pe64", "win64", "windows64", "windows-pe64"} else _PE32CodeGenerator
-        generated = generator_class(
+    elif normalized_target in {"pe32", "win32", "windows", "windows-pe32"}:
+        uses_graphics = bool(re.search(r"\bInitGraphics\s*\(", source, re.IGNORECASE))
+        generated = _PE32CodeGenerator(
             program,
             graphics_backend=graphics_backend,
-            console_mode=(console_mode and source_kind != "library"),
+            console_mode=(not uses_graphics and source_kind != "library"),
             library_name=library_name,
             library_exports=library_exports,
         ).generate()

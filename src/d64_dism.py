@@ -75,6 +75,9 @@
 #  * Stage 163: DBF-Tabellendesigner mit Daten-Tab, typisierten Zellen, Navigation, Kontextmenü und Auto-Save.
 #  * Stage 164: DBF-Dateiöffnung, nicht-visuelle WFM-Properties/Table/SQL, Designer-TAB-Fokus und 4-Space-Indent.
 #  * Stage 166: Bearbeiten-Menü + Ctrl+Z/Ctrl+Y Undo/Redo und Copy/Paste/Cut für Texteditoren.
+#  * Stage 167: Ansicht->Sprache als 4-spaltiges Flaggen-/Radiobutton-Menü aus LANGUAGE_CODES.
+#  * Stage 169: vollständige Stage-167-Basis bleibt erhalten; interner MSZIP-Packer für PE32 und PE32+/AMD64.
+#  * Stage 170: gepacktes Layout .text/.loader/.ztext/.idata und optionale lokale DLL-Ordinalimporte.
 #  * Stage 137: farbcodierte Zahlenmauern sowie Addition/Subtraktion/Einmaleins/Fehlende-Zahl-Spiele.
 #    Mehrtabellen-Tabs, Feldeditoren und Kontextoperationen für Feldzeilen
 #
@@ -114,6 +117,8 @@ from __future__ import annotations
 import argparse
 import ast
 import configparser
+import ctypes
+from ctypes import wintypes
 import hashlib
 import html
 import inspect
@@ -2239,6 +2244,519 @@ def build_pe32_image_with_imports_exports(
     return bytes(image), bytes(text)
 
 
+# ---------------------------------------------------------------------------
+# Stage 169: transparenter MSZIP-.text-Packer für den internen PE32-Linker.
+#
+# Der vollständige Stage-167-PE32-Writer oberhalb bleibt unverändert bestehen.
+# Diese Erweiterung ruft ihn zuerst auf und ergänzt danach .loader/.ztext.
+# ---------------------------------------------------------------------------
+PE32_TEXT_COMPRESSION_MSZIP_DEFAULT = (os.name == "nt")
+PE32_COMPRESS_ALGORITHM_MSZIP = 2
+PE32_D64Z_MAGIC = b"D64Z"
+PE32_D64Z_VERSION = 1
+PE32_D64Z_FLAG_BUFFER_MODE = 0x00000001
+PE32_D64Z_HEADER = struct.Struct("<4sHHIIIIII")
+PE32_D64Z_HEADER_SIZE = PE32_D64Z_HEADER.size
+
+PE32_MSZIP_LOADER_IMPORTS: Dict[str, Tuple[str, str]] = {
+    "__d64_loader_CreateDecompressor": ("cabinet.dll", "CreateDecompressor"),
+    "__d64_loader_Decompress": ("cabinet.dll", "Decompress"),
+    "__d64_loader_CloseDecompressor": ("cabinet.dll", "CloseDecompressor"),
+    "__d64_loader_VirtualProtect": ("kernel32.dll", "VirtualProtect"),
+    "__d64_loader_FlushInstructionCache": ("kernel32.dll", "FlushInstructionCache"),
+    "__d64_loader_ExitProcess": ("kernel32.dll", "ExitProcess"),
+}
+
+
+def _pe32_mszip_compress_buffer(data: bytes) -> bytes:
+    """Komprimiert ausschließlich mit der Windows Compression API."""
+    payload = bytes(data)
+    if not payload:
+        raise PE32AssemblerError("PE32-MSZIP: leere .text-Sektion.")
+    if os.name != "nt":
+        raise PE32AssemblerError(
+            "PE32-MSZIP benötigt die Windows Compression API (Cabinet.dll)."
+        )
+
+    cabinet = ctypes.WinDLL("cabinet.dll", use_last_error=True)
+    handle_t = ctypes.c_void_p
+    size_t = ctypes.c_size_t
+
+    create = cabinet.CreateCompressor
+    create.argtypes = (wintypes.DWORD, ctypes.c_void_p, ctypes.POINTER(handle_t))
+    create.restype = wintypes.BOOL
+    compress = cabinet.Compress
+    compress.argtypes = (
+        handle_t,
+        ctypes.c_void_p,
+        size_t,
+        ctypes.c_void_p,
+        size_t,
+        ctypes.POINTER(size_t),
+    )
+    compress.restype = wintypes.BOOL
+    close = cabinet.CloseCompressor
+    close.argtypes = (handle_t,)
+    close.restype = wintypes.BOOL
+
+    source = ctypes.create_string_buffer(payload, len(payload))
+    handle = handle_t()
+    if not create(PE32_COMPRESS_ALGORITHM_MSZIP, None, ctypes.byref(handle)):
+        error = ctypes.get_last_error()
+        raise PE32AssemblerError(
+            f"CreateCompressor(MSZIP) fehlgeschlagen: Win32-Fehler {error}."
+        )
+    try:
+        required = size_t(0)
+        ok = compress(
+            handle,
+            ctypes.cast(source, ctypes.c_void_p),
+            len(payload),
+            None,
+            0,
+            ctypes.byref(required),
+        )
+        if not ok:
+            error = ctypes.get_last_error()
+            if error != 122 or required.value <= 0:
+                raise PE32AssemblerError(
+                    "Compress(MSZIP)-Größenabfrage fehlgeschlagen: "
+                    f"Win32-Fehler {error}."
+                )
+        if required.value <= 0:
+            raise PE32AssemblerError("Compress(MSZIP) lieferte keine Zielgröße.")
+
+        output = ctypes.create_string_buffer(required.value)
+        written = size_t(0)
+        if not compress(
+            handle,
+            ctypes.cast(source, ctypes.c_void_p),
+            len(payload),
+            ctypes.cast(output, ctypes.c_void_p),
+            required.value,
+            ctypes.byref(written),
+        ):
+            error = ctypes.get_last_error()
+            raise PE32AssemblerError(
+                f"Compress(MSZIP) fehlgeschlagen: Win32-Fehler {error}."
+            )
+        if written.value <= 0:
+            raise PE32AssemblerError("Compress(MSZIP) erzeugte keinen Block.")
+        return bytes(output.raw[:written.value])
+    finally:
+        if handle.value:
+            close(handle)
+
+
+def _pe32_build_d64z_payload(
+    text: bytes,
+    *,
+    text_rva: int,
+    original_entry_rva: int,
+) -> Tuple[bytes, int]:
+    original = bytes(text)
+    packed = _pe32_mszip_compress_buffer(original)
+    header = PE32_D64Z_HEADER.pack(
+        PE32_D64Z_MAGIC,
+        PE32_D64Z_VERSION,
+        PE32_COMPRESS_ALGORITHM_MSZIP,
+        PE32_D64Z_FLAG_BUFFER_MODE,
+        int(text_rva) & 0xFFFFFFFF,
+        len(original) & 0xFFFFFFFF,
+        len(packed) & 0xFFFFFFFF,
+        int(original_entry_rva) & 0xFFFFFFFF,
+        _d64info_zlib.crc32(original) & 0xFFFFFFFF,
+    )
+    return header + packed, len(packed)
+
+
+class _PE32LoaderBuilder:
+    def __init__(self) -> None:
+        self.code = bytearray()
+        self.labels: Dict[str, int] = {}
+        self.fixups: List[Tuple[int, str]] = []
+
+    def emit(self, data: bytes) -> None:
+        self.code.extend(data)
+
+    def u32(self, value: int) -> None:
+        self.code.extend(struct.pack("<I", int(value) & 0xFFFFFFFF))
+
+    def label(self, name: str) -> None:
+        self.labels[str(name)] = len(self.code)
+
+    def jcc(self, opcode2: int, label: str) -> None:
+        self.code.extend(bytes((0x0F, int(opcode2) & 0xFF)))
+        pos = len(self.code)
+        self.code.extend(b"\x00\x00\x00\x00")
+        self.fixups.append((pos, str(label)))
+
+    def finish(self) -> bytes:
+        for pos, label in self.fixups:
+            if label not in self.labels:
+                raise PE32AssemblerError(f"PE32-Loaderlabel fehlt: {label}")
+            struct.pack_into("<i", self.code, pos, self.labels[label] - (pos + 4))
+        return bytes(self.code)
+
+
+def _build_pe32_mszip_loader(
+    *,
+    image_base: int,
+    text_rva: int,
+    text_size: int,
+    ztext_rva: int,
+    packed_size: int,
+    original_entry_rva: int,
+    iat_rvas: Dict[str, int],
+) -> bytes:
+    missing = [name for name in PE32_MSZIP_LOADER_IMPORTS if name not in iat_rvas]
+    if missing:
+        raise PE32AssemblerError(
+            "PE32-MSZIP-Loader: IAT-Einträge fehlen: " + ", ".join(missing)
+        )
+
+    def iat_va(name: str) -> int:
+        return int(image_base) + int(iat_rvas[name])
+
+    text_va = int(image_base) + int(text_rva)
+    packed_va = int(image_base) + int(ztext_rva) + PE32_D64Z_HEADER_SIZE
+    oep_va = int(image_base) + int(original_entry_rva)
+    b = _PE32LoaderBuilder()
+
+    # EBP-04 handle, EBP-08 written, EBP-0C oldProtect, EBP-10 tempProtect
+    b.emit(b"\x55\x8B\xEC\x83\xEC\x10")
+
+    # CreateDecompressor(MSZIP, NULL, &handle)
+    b.emit(b"\x8D\x45\xFC\x50\x6A\x00\x6A\x02\xFF\x15")
+    b.u32(iat_va("__d64_loader_CreateDecompressor"))
+    b.emit(b"\x85\xC0")
+    b.jcc(0x84, "fail")
+
+    # VirtualProtect(.text, size, PAGE_EXECUTE_READWRITE, &oldProtect)
+    b.emit(b"\x8D\x45\xF4\x50\x6A\x40\x68")
+    b.u32(text_size)
+    b.emit(b"\x68")
+    b.u32(text_va)
+    b.emit(b"\xFF\x15")
+    b.u32(iat_va("__d64_loader_VirtualProtect"))
+    b.emit(b"\x85\xC0")
+    b.jcc(0x84, "fail")
+
+    # Decompress(handle, packed, packed_size, text, text_size, &written)
+    b.emit(b"\x8D\x45\xF8\x50\x68")
+    b.u32(text_size)
+    b.emit(b"\x68")
+    b.u32(text_va)
+    b.emit(b"\x68")
+    b.u32(packed_size)
+    b.emit(b"\x68")
+    b.u32(packed_va)
+    b.emit(b"\xFF\x75\xFC\xFF\x15")
+    b.u32(iat_va("__d64_loader_Decompress"))
+    b.emit(b"\x85\xC0")
+    b.jcc(0x84, "fail")
+
+    b.emit(b"\x81\x7D\xF8")
+    b.u32(text_size)
+    b.jcc(0x85, "fail")
+
+    b.emit(b"\xFF\x75\xFC\xFF\x15")
+    b.u32(iat_va("__d64_loader_CloseDecompressor"))
+
+    # FlushInstructionCache((HANDLE)-1, .text, size)
+    b.emit(b"\x68")
+    b.u32(text_size)
+    b.emit(b"\x68")
+    b.u32(text_va)
+    b.emit(b"\x6A\xFF\xFF\x15")
+    b.u32(iat_va("__d64_loader_FlushInstructionCache"))
+
+    # Alten Seitenschutz wiederherstellen.
+    b.emit(b"\x8D\x45\xF0\x50\xFF\x75\xF4\x68")
+    b.u32(text_size)
+    b.emit(b"\x68")
+    b.u32(text_va)
+    b.emit(b"\xFF\x15")
+    b.u32(iat_va("__d64_loader_VirtualProtect"))
+
+    # Originalen EntryPoint anspringen.
+    b.emit(b"\x8B\xE5\x5D\xB8")
+    b.u32(oep_va)
+    b.emit(b"\xFF\xE0")
+
+    b.label("fail")
+    b.emit(b"\x68")
+    b.u32(0xD6400001)
+    b.emit(b"\xFF\x15")
+    b.u32(iat_va("__d64_loader_ExitProcess"))
+    b.emit(b"\xCC")
+    return b.finish()
+
+
+def _pe32_rebuild_with_mszip_loader(
+    stage167_image: bytes,
+    patched_text: bytes,
+    effective_import_specs: Dict[str, Tuple[str, str]],
+    *,
+    original_entry_rva: int,
+    image_base: int,
+) -> Tuple[bytes, bytes]:
+    image = bytes(stage167_image)
+    text = bytes(patched_text)
+    if len(image) < 0x100 or image[:2] != b"MZ":
+        raise PE32AssemblerError("PE32-MSZIP: ungültiges MZ/PE-Image.")
+
+    pe_offset = struct.unpack_from("<I", image, 0x3C)[0]
+    if pe_offset + 24 > len(image) or image[pe_offset:pe_offset + 4] != b"PE\0\0":
+        raise PE32AssemblerError("PE32-MSZIP: PE-Signatur fehlt.")
+    file_header = pe_offset + 4
+    machine, section_count = struct.unpack_from("<HH", image, file_header)
+    if machine != IMAGE_FILE_MACHINE_I386:
+        raise PE32AssemblerError("PE32-MSZIP: kein i386-PE-Image.")
+
+    optional_size = struct.unpack_from("<H", image, file_header + 16)[0]
+    optional_offset = file_header + 20
+    if optional_offset + optional_size > len(image):
+        raise PE32AssemblerError("PE32-MSZIP: Optional Header abgeschnitten.")
+    if struct.unpack_from("<H", image, optional_offset)[0] != 0x010B:
+        raise PE32AssemblerError("PE32-MSZIP: PE32-Magic 0x10B fehlt.")
+
+    section_alignment = struct.unpack_from("<I", image, optional_offset + 0x20)[0]
+    file_alignment = struct.unpack_from("<I", image, optional_offset + 0x24)[0]
+    section_table = optional_offset + optional_size
+    if section_table + section_count * 40 > len(image):
+        raise PE32AssemblerError("PE32-MSZIP: Section-Tabelle abgeschnitten.")
+
+    sections = []
+    text_index = None
+    for index in range(section_count):
+        off = section_table + index * 40
+        header = bytearray(image[off:off + 40])
+        name = bytes(header[:8]).split(b"\0", 1)[0]
+        virtual_size, rva, raw_size, raw_ptr = struct.unpack_from("<IIII", header, 0x08)
+        chars = struct.unpack_from("<I", header, 0x24)[0]
+        if raw_size:
+            if raw_ptr <= 0 or raw_ptr + raw_size > len(image):
+                raise PE32AssemblerError(
+                    f"PE32-MSZIP: Raw-Daten von {name!r} liegen außerhalb der Datei."
+                )
+            raw_block = bytes(image[raw_ptr:raw_ptr + raw_size])
+        else:
+            raw_block = b""
+        if name == b".text":
+            text_index = index
+        sections.append({
+            "header": header,
+            "name": name,
+            "virtual_size": int(virtual_size),
+            "rva": int(rva),
+            "chars": int(chars),
+            "raw_block": raw_block,
+            "raw_size": int(raw_size),
+        })
+
+    if text_index is None or not text:
+        raise PE32AssemblerError("PE32-MSZIP: .text fehlt oder ist leer.")
+    text_section = sections[text_index]
+    text_rva = int(text_section["rva"])
+
+    import_rva, import_size = struct.unpack_from(
+        "<II", image, optional_offset + 0x68
+    )
+    if import_rva <= 0 or import_size <= 0:
+        raise PE32AssemblerError("PE32-MSZIP: Importtabelle für Loader fehlt.")
+    _idata, iat_rvas, _first_iat, _iat_size = _build_pe32_import_section(
+        effective_import_specs,
+        int(import_rva),
+    )
+
+    ztext, packed_size = _pe32_build_d64z_payload(
+        text,
+        text_rva=text_rva,
+        original_entry_rva=int(original_entry_rva),
+    )
+
+    old_image_size = struct.unpack_from("<I", image, optional_offset + 0x38)[0]
+    loader_rva = _align_up(max(int(old_image_size), 1), section_alignment)
+    probe = _build_pe32_mszip_loader(
+        image_base=image_base,
+        text_rva=text_rva,
+        text_size=len(text),
+        ztext_rva=0,
+        packed_size=packed_size,
+        original_entry_rva=int(original_entry_rva),
+        iat_rvas=iat_rvas,
+    )
+    ztext_rva = _align_up(loader_rva + max(1, len(probe)), section_alignment)
+    loader = _build_pe32_mszip_loader(
+        image_base=image_base,
+        text_rva=text_rva,
+        text_size=len(text),
+        ztext_rva=ztext_rva,
+        packed_size=packed_size,
+        original_entry_rva=int(original_entry_rva),
+        iat_rvas=iat_rvas,
+    )
+
+    text_section["raw_block"] = b""
+    text_section["raw_size"] = 0
+    text_section["virtual_size"] = max(1, len(text))
+
+    sections.append({
+        "header": None,
+        "name": b".loader",
+        "virtual_size": len(loader),
+        "rva": loader_rva,
+        "chars": 0x60000020,
+        "raw_block": loader,
+        "raw_size": _align_up(len(loader), file_alignment),
+    })
+    sections.append({
+        "header": None,
+        "name": b".ztext",
+        "virtual_size": len(ztext),
+        "rva": ztext_rva,
+        "chars": 0x40000040,
+        "raw_block": ztext,
+        "raw_size": _align_up(len(ztext), file_alignment),
+    })
+
+    new_section_count = len(sections)
+    new_headers_size = _align_up(
+        section_table + new_section_count * 40,
+        file_alignment,
+    )
+    raw_cursor = new_headers_size
+    for sec in sections:
+        raw_size = int(sec["raw_size"])
+        if raw_size > 0:
+            sec["raw_ptr"] = raw_cursor
+            raw_cursor += raw_size
+        else:
+            sec["raw_ptr"] = 0
+
+    rebuilt = bytearray(new_headers_size)
+    rebuilt[:section_table] = image[:section_table]
+    struct.pack_into("<H", rebuilt, file_header + 2, new_section_count)
+    struct.pack_into("<I", rebuilt, optional_offset + 0x10, loader_rva)
+    struct.pack_into(
+        "<I",
+        rebuilt,
+        optional_offset + 0x38,
+        _align_up(ztext_rva + max(1, len(ztext)), section_alignment),
+    )
+    struct.pack_into("<I", rebuilt, optional_offset + 0x3C, new_headers_size)
+
+    size_of_code = 0
+    size_of_initialized_data = 0
+    for sec in sections:
+        raw_size = int(sec["raw_size"])
+        chars = int(sec["chars"])
+        if chars & 0x00000020:
+            size_of_code += raw_size
+        elif chars & 0x00000040:
+            size_of_initialized_data += raw_size
+    struct.pack_into("<I", rebuilt, optional_offset + 0x04, size_of_code)
+    struct.pack_into("<I", rebuilt, optional_offset + 0x08, size_of_initialized_data)
+
+    for index, sec in enumerate(sections):
+        off = section_table + index * 40
+        if sec["header"] is not None:
+            header = bytearray(sec["header"])
+        else:
+            header = bytearray(40)
+            header[:8] = bytes(sec["name"])[:8].ljust(8, b"\0")
+            struct.pack_into("<I", header, 0x24, int(sec["chars"]))
+        struct.pack_into("<I", header, 0x08, int(sec["virtual_size"]))
+        struct.pack_into("<I", header, 0x0C, int(sec["rva"]))
+        struct.pack_into("<I", header, 0x10, int(sec["raw_size"]))
+        struct.pack_into("<I", header, 0x14, int(sec["raw_ptr"]))
+        rebuilt[off:off + 40] = header
+
+    for sec in sections:
+        raw_size = int(sec["raw_size"])
+        if raw_size <= 0:
+            continue
+        raw_ptr = int(sec["raw_ptr"])
+        raw_block = bytes(sec["raw_block"])
+        if len(raw_block) > raw_size:
+            raise PE32AssemblerError("PE32-MSZIP: Raw-Sektion größer als SizeOfRawData.")
+        if len(rebuilt) < raw_ptr + raw_size:
+            rebuilt.extend(bytes(raw_ptr + raw_size - len(rebuilt)))
+        rebuilt[raw_ptr:raw_ptr + len(raw_block)] = raw_block
+
+    return bytes(rebuilt), text
+
+
+_build_pe32_image_with_imports_exports_stage167 = build_pe32_image_with_imports_exports
+
+
+def build_pe32_image_with_imports_exports(
+    code: bytes,
+    entry_offset: Optional[int],
+    import_specs: Dict[str, Tuple[str, str]],
+    thunk_patches: Dict[str, int],
+    *,
+    exports: Optional[Dict[str, int]] = None,
+    dll_name: str = "library.dll",
+    gui: bool = False,
+    dll: bool = False,
+    image_base: int = PE32_IMAGE_BASE,
+    base_relocations: Optional[Sequence[int]] = None,
+    compress_text_mszip: Optional[bool] = None,
+) -> Tuple[bytes, bytes]:
+    """Stage-169-Wrapper: vollständigen Stage-167-PE32-Writer optional packen."""
+    if compress_text_mszip is None:
+        compress_text_mszip = PE32_TEXT_COMPRESSION_MSZIP_DEFAULT
+
+    pack_text = (
+        bool(compress_text_mszip)
+        and not bool(dll)
+        and bool(code)
+        and entry_offset is not None
+    )
+
+    if not pack_text:
+        return _build_pe32_image_with_imports_exports_stage167(
+            code,
+            entry_offset,
+            import_specs,
+            thunk_patches,
+            exports=exports,
+            dll_name=dll_name,
+            gui=gui,
+            dll=dll,
+            image_base=image_base,
+            base_relocations=base_relocations,
+        )
+
+    effective_import_specs = dict(import_specs)
+    for symbol, spec in PE32_MSZIP_LOADER_IMPORTS.items():
+        effective_import_specs.setdefault(symbol, spec)
+
+    base_image, patched_text = _build_pe32_image_with_imports_exports_stage167(
+        code,
+        entry_offset,
+        effective_import_specs,
+        thunk_patches,
+        exports=exports,
+        dll_name=dll_name,
+        gui=gui,
+        dll=dll,
+        image_base=image_base,
+        base_relocations=base_relocations,
+    )
+
+    original_entry_rva = PE32_SECTION_RVA + int(entry_offset)
+    return _pe32_rebuild_with_mszip_loader(
+        base_image,
+        patched_text,
+        effective_import_specs,
+        original_entry_rva=original_entry_rva,
+        image_base=image_base,
+    )
+
+
 def build_pe32_executable_with_imports(
     code: bytes,
     entry_offset: int,
@@ -4222,6 +4740,450 @@ def build_pe64_image_with_imports_exports(
         image[start:end] = sec["data"]
     return bytes(image), bytes(text)
 
+
+# ---------------------------------------------------------------------------
+# Stage 169: PE32+ / AMD64 MSZIP-Packer.
+#
+# Auch hier bleibt der vollständige Stage-167-PE32+-Writer oberhalb erhalten.
+# Der Wrapper packt ausschließlich den bereits fertig gelinkten .text-Block.
+# ---------------------------------------------------------------------------
+PE64_TEXT_COMPRESSION_MSZIP_DEFAULT = (os.name == "nt")
+PE64_MSZIP_LOADER_IMPORTS: Dict[str, Tuple[str, str]] = dict(
+    PE32_MSZIP_LOADER_IMPORTS
+)
+
+
+class _PE64LoaderBuilder:
+    def __init__(self, loader_rva: int) -> None:
+        self.loader_rva = int(loader_rva)
+        self.code = bytearray()
+        self.labels: Dict[str, int] = {}
+        self.local_fixups: List[Tuple[int, str]] = []
+        self.rva_fixups: List[Tuple[int, int]] = []
+
+    def emit(self, data: bytes) -> None:
+        self.code.extend(data)
+
+    def u32(self, value: int) -> None:
+        self.code.extend(struct.pack("<I", int(value) & 0xFFFFFFFF))
+
+    def u64(self, value: int) -> None:
+        self.code.extend(struct.pack("<Q", int(value) & 0xFFFFFFFFFFFFFFFF))
+
+    def label(self, name: str) -> None:
+        key = str(name)
+        if key in self.labels:
+            raise PE64AssemblerError(f"PE64-Loaderlabel mehrfach definiert: {key}")
+        self.labels[key] = len(self.code)
+
+    def jcc(self, opcode2: int, label: str) -> None:
+        self.code.extend(bytes((0x0F, int(opcode2) & 0xFF)))
+        pos = len(self.code)
+        self.code.extend(b"\x00\x00\x00\x00")
+        self.local_fixups.append((pos, str(label)))
+
+    def rip32(self, prefix: bytes, target_rva: int) -> None:
+        self.code.extend(prefix)
+        pos = len(self.code)
+        self.code.extend(b"\x00\x00\x00\x00")
+        self.rva_fixups.append((pos, int(target_rva)))
+
+    def call_iat(self, iat_rva: int) -> None:
+        self.rip32(b"\xFF\x15", iat_rva)
+
+    def jmp_rva(self, target_rva: int) -> None:
+        self.rip32(b"\xE9", target_rva)
+
+    def finish(self) -> bytes:
+        for pos, label in self.local_fixups:
+            if label not in self.labels:
+                raise PE64AssemblerError(f"PE64-Loaderlabel fehlt: {label}")
+            disp = self.labels[label] - (pos + 4)
+            if not -(1 << 31) <= disp < (1 << 31):
+                raise PE64AssemblerError("PE64-Loader: lokaler Sprung außerhalb REL32.")
+            struct.pack_into("<i", self.code, pos, disp)
+
+        for pos, target_rva in self.rva_fixups:
+            instruction_end_rva = self.loader_rva + pos + 4
+            disp = int(target_rva) - instruction_end_rva
+            if not -(1 << 31) <= disp < (1 << 31):
+                raise PE64AssemblerError(
+                    "PE64-Loader: RIP-relatives Ziel außerhalb des 32-Bit-Bereichs."
+                )
+            struct.pack_into("<i", self.code, pos, disp)
+        return bytes(self.code)
+
+
+def _build_pe64_mszip_loader(
+    *,
+    loader_rva: int,
+    text_rva: int,
+    text_size: int,
+    ztext_rva: int,
+    packed_size: int,
+    original_entry_rva: int,
+    iat_rvas: Dict[str, int],
+) -> bytes:
+    missing = [name for name in PE64_MSZIP_LOADER_IMPORTS if name not in iat_rvas]
+    if missing:
+        raise PE64AssemblerError(
+            "PE32+-MSZIP-Loader: IAT-Einträge fehlen: " + ", ".join(missing)
+        )
+
+    text_size = int(text_size)
+    packed_size = int(packed_size)
+    if text_size <= 0 or packed_size <= 0:
+        raise PE64AssemblerError("PE32+-MSZIP-Loader: ungültige Datenlänge.")
+    if text_size > 0xFFFFFFFF or packed_size > 0xFFFFFFFF:
+        raise PE64AssemblerError("PE32+-MSZIP-Loader: .text/.ztext ist größer als 4 GiB.")
+
+    packed_rva = int(ztext_rva) + PE32_D64Z_HEADER_SIZE
+    b = _PE64LoaderBuilder(loader_rva)
+
+    # Win64 ABI: 32 Byte Shadow Space, Argumente 1..4 in RCX/RDX/R8/R9.
+    # Lokale Variablen: handle, oldProtect, written, tempProtect.
+    b.emit(b"\x55\x48\x89\xE5\x48\x83\xEC\x60")
+
+    # CreateDecompressor(MSZIP, NULL, &handle)
+    b.emit(b"\xB9")
+    b.u32(PE32_COMPRESS_ALGORITHM_MSZIP)
+    b.emit(b"\x31\xD2")
+    b.emit(b"\x4C\x8D\x45\xF8")
+    b.call_iat(iat_rvas["__d64_loader_CreateDecompressor"])
+    b.emit(b"\x85\xC0")
+    b.jcc(0x84, "fail")
+
+    # VirtualProtect(.text, text_size, PAGE_EXECUTE_READWRITE, &oldProtect)
+    b.rip32(b"\x48\x8D\x0D", text_rva)
+    b.emit(b"\xBA")
+    b.u32(text_size)
+    b.emit(b"\x41\xB8")
+    b.u32(0x40)
+    b.emit(b"\x4C\x8D\x4D\xF0")
+    b.call_iat(iat_rvas["__d64_loader_VirtualProtect"])
+    b.emit(b"\x85\xC0")
+    b.jcc(0x84, "fail")
+
+    # Decompress(handle, packed, packed_size, text, text_size, &written)
+    b.emit(b"\x48\x8B\x4D\xF8")
+    b.rip32(b"\x48\x8D\x15", packed_rva)
+    b.emit(b"\x41\xB8")
+    b.u32(packed_size)
+    b.rip32(b"\x4C\x8D\x0D", text_rva)
+    b.emit(b"\x48\xB8")
+    b.u64(text_size)
+    b.emit(b"\x48\x89\x44\x24\x20")
+    b.emit(b"\x48\x8D\x45\xE8")
+    b.emit(b"\x48\x89\x44\x24\x28")
+    b.call_iat(iat_rvas["__d64_loader_Decompress"])
+    b.emit(b"\x85\xC0")
+    b.jcc(0x84, "fail")
+
+    b.emit(b"\x48\x8B\x45\xE8")
+    b.emit(b"\x49\xBA")
+    b.u64(text_size)
+    b.emit(b"\x4C\x39\xD0")
+    b.jcc(0x85, "fail")
+
+    # CloseDecompressor(handle)
+    b.emit(b"\x48\x8B\x4D\xF8")
+    b.call_iat(iat_rvas["__d64_loader_CloseDecompressor"])
+
+    # FlushInstructionCache((HANDLE)-1, .text, text_size)
+    b.emit(b"\x48\xC7\xC1\xFF\xFF\xFF\xFF")
+    b.rip32(b"\x48\x8D\x15", text_rva)
+    b.emit(b"\x49\xB8")
+    b.u64(text_size)
+    b.call_iat(iat_rvas["__d64_loader_FlushInstructionCache"])
+
+    # Seitenschutz wiederherstellen.
+    b.rip32(b"\x48\x8D\x0D", text_rva)
+    b.emit(b"\x48\xBA")
+    b.u64(text_size)
+    b.emit(b"\x44\x8B\x45\xF0")
+    b.emit(b"\x4C\x8D\x4D\xE0")
+    b.call_iat(iat_rvas["__d64_loader_VirtualProtect"])
+
+    # Originalen Stack restaurieren und OEP per REL32 anspringen.
+    b.emit(b"\x48\x89\xEC\x5D")
+    b.jmp_rva(original_entry_rva)
+
+    b.label("fail")
+    b.emit(b"\xB9")
+    b.u32(0xD6400002)
+    b.call_iat(iat_rvas["__d64_loader_ExitProcess"])
+    b.emit(b"\xCC")
+    return b.finish()
+
+
+def _pe64_rebuild_with_mszip_loader(
+    stage167_image: bytes,
+    patched_text: bytes,
+    effective_import_specs: Dict[str, Tuple[str, str]],
+    *,
+    original_entry_rva: int,
+) -> Tuple[bytes, bytes]:
+    image = bytes(stage167_image)
+    text = bytes(patched_text)
+    if len(image) < 0x100 or image[:2] != b"MZ":
+        raise PE64AssemblerError("PE32+-MSZIP: ungültiges MZ/PE-Image.")
+
+    pe_offset = struct.unpack_from("<I", image, 0x3C)[0]
+    if pe_offset + 24 > len(image) or image[pe_offset:pe_offset + 4] != b"PE\0\0":
+        raise PE64AssemblerError("PE32+-MSZIP: PE-Signatur fehlt.")
+    file_header = pe_offset + 4
+    machine, section_count = struct.unpack_from("<HH", image, file_header)
+    if machine != IMAGE_FILE_MACHINE_AMD64:
+        raise PE64AssemblerError("PE32+-MSZIP: kein AMD64-PE-Image.")
+
+    optional_size = struct.unpack_from("<H", image, file_header + 16)[0]
+    optional_offset = file_header + 20
+    if optional_offset + optional_size > len(image):
+        raise PE64AssemblerError("PE32+-MSZIP: Optional Header abgeschnitten.")
+    if struct.unpack_from("<H", image, optional_offset)[0] != 0x020B:
+        raise PE64AssemblerError("PE32+-MSZIP: PE32+-Magic 0x20B fehlt.")
+
+    section_alignment = struct.unpack_from("<I", image, optional_offset + 0x20)[0]
+    file_alignment = struct.unpack_from("<I", image, optional_offset + 0x24)[0]
+    section_table = optional_offset + optional_size
+    if section_table + section_count * 40 > len(image):
+        raise PE64AssemblerError("PE32+-MSZIP: Section-Tabelle abgeschnitten.")
+
+    sections = []
+    text_index = None
+    for index in range(section_count):
+        off = section_table + index * 40
+        header = bytearray(image[off:off + 40])
+        name = bytes(header[:8]).split(b"\0", 1)[0]
+        virtual_size, rva, raw_size, raw_ptr = struct.unpack_from("<IIII", header, 0x08)
+        chars = struct.unpack_from("<I", header, 0x24)[0]
+        if raw_size:
+            if raw_ptr <= 0 or raw_ptr + raw_size > len(image):
+                raise PE64AssemblerError(
+                    f"PE32+-MSZIP: Raw-Daten von {name!r} liegen außerhalb der Datei."
+                )
+            raw_block = bytes(image[raw_ptr:raw_ptr + raw_size])
+        else:
+            raw_block = b""
+        if name == b".text":
+            text_index = index
+        sections.append({
+            "header": header,
+            "name": name,
+            "virtual_size": int(virtual_size),
+            "rva": int(rva),
+            "chars": int(chars),
+            "raw_block": raw_block,
+            "raw_size": int(raw_size),
+        })
+
+    if text_index is None or not text:
+        raise PE64AssemblerError("PE32+-MSZIP: .text fehlt oder ist leer.")
+    text_section = sections[text_index]
+    text_rva = int(text_section["rva"])
+
+    import_rva, import_size = struct.unpack_from(
+        "<II", image, optional_offset + 0x78
+    )
+    if import_rva <= 0 or import_size <= 0:
+        raise PE64AssemblerError("PE32+-MSZIP: Importtabelle für Loader fehlt.")
+    _idata, iat_rvas, _first_iat, _iat_size = _build_pe64_import_section(
+        effective_import_specs,
+        int(import_rva),
+    )
+
+    ztext, packed_size = _pe32_build_d64z_payload(
+        text,
+        text_rva=text_rva,
+        original_entry_rva=int(original_entry_rva),
+    )
+
+    old_image_size = struct.unpack_from("<I", image, optional_offset + 0x38)[0]
+    loader_rva = _align_up(max(int(old_image_size), 1), section_alignment)
+    probe = _build_pe64_mszip_loader(
+        loader_rva=loader_rva,
+        text_rva=text_rva,
+        text_size=len(text),
+        ztext_rva=0,
+        packed_size=packed_size,
+        original_entry_rva=int(original_entry_rva),
+        iat_rvas=iat_rvas,
+    )
+    ztext_rva = _align_up(loader_rva + max(1, len(probe)), section_alignment)
+    loader = _build_pe64_mszip_loader(
+        loader_rva=loader_rva,
+        text_rva=text_rva,
+        text_size=len(text),
+        ztext_rva=ztext_rva,
+        packed_size=packed_size,
+        original_entry_rva=int(original_entry_rva),
+        iat_rvas=iat_rvas,
+    )
+
+    text_section["raw_block"] = b""
+    text_section["raw_size"] = 0
+    text_section["virtual_size"] = max(1, len(text))
+
+    sections.append({
+        "header": None,
+        "name": b".loader",
+        "virtual_size": len(loader),
+        "rva": loader_rva,
+        "chars": 0x60000020,
+        "raw_block": loader,
+        "raw_size": _align_up(len(loader), file_alignment),
+    })
+    sections.append({
+        "header": None,
+        "name": b".ztext",
+        "virtual_size": len(ztext),
+        "rva": ztext_rva,
+        "chars": 0x40000040,
+        "raw_block": ztext,
+        "raw_size": _align_up(len(ztext), file_alignment),
+    })
+
+    new_section_count = len(sections)
+    new_headers_size = _align_up(
+        section_table + new_section_count * 40,
+        file_alignment,
+    )
+    raw_cursor = new_headers_size
+    for sec in sections:
+        raw_size = int(sec["raw_size"])
+        if raw_size > 0:
+            sec["raw_ptr"] = raw_cursor
+            raw_cursor += raw_size
+        else:
+            sec["raw_ptr"] = 0
+
+    rebuilt = bytearray(new_headers_size)
+    rebuilt[:section_table] = image[:section_table]
+    struct.pack_into("<H", rebuilt, file_header + 2, new_section_count)
+    struct.pack_into("<I", rebuilt, optional_offset + 0x10, loader_rva)
+    struct.pack_into(
+        "<I",
+        rebuilt,
+        optional_offset + 0x38,
+        _align_up(ztext_rva + max(1, len(ztext)), section_alignment),
+    )
+    struct.pack_into("<I", rebuilt, optional_offset + 0x3C, new_headers_size)
+
+    size_of_code = 0
+    size_of_initialized_data = 0
+    for sec in sections:
+        raw_size = int(sec["raw_size"])
+        chars = int(sec["chars"])
+        if chars & 0x00000020:
+            size_of_code += raw_size
+        elif chars & 0x00000040:
+            size_of_initialized_data += raw_size
+    struct.pack_into("<I", rebuilt, optional_offset + 0x04, size_of_code)
+    struct.pack_into("<I", rebuilt, optional_offset + 0x08, size_of_initialized_data)
+
+    for index, sec in enumerate(sections):
+        off = section_table + index * 40
+        if sec["header"] is not None:
+            header = bytearray(sec["header"])
+        else:
+            header = bytearray(40)
+            header[:8] = bytes(sec["name"])[:8].ljust(8, b"\0")
+            struct.pack_into("<I", header, 0x24, int(sec["chars"]))
+        struct.pack_into("<I", header, 0x08, int(sec["virtual_size"]))
+        struct.pack_into("<I", header, 0x0C, int(sec["rva"]))
+        struct.pack_into("<I", header, 0x10, int(sec["raw_size"]))
+        struct.pack_into("<I", header, 0x14, int(sec["raw_ptr"]))
+        rebuilt[off:off + 40] = header
+
+    for sec in sections:
+        raw_size = int(sec["raw_size"])
+        if raw_size <= 0:
+            continue
+        raw_ptr = int(sec["raw_ptr"])
+        raw_block = bytes(sec["raw_block"])
+        if len(raw_block) > raw_size:
+            raise PE64AssemblerError("PE32+-MSZIP: Raw-Sektion größer als SizeOfRawData.")
+        if len(rebuilt) < raw_ptr + raw_size:
+            rebuilt.extend(bytes(raw_ptr + raw_size - len(rebuilt)))
+        rebuilt[raw_ptr:raw_ptr + len(raw_block)] = raw_block
+
+    return bytes(rebuilt), text
+
+
+_build_pe64_image_with_imports_exports_stage167 = build_pe64_image_with_imports_exports
+
+
+def build_pe64_image_with_imports_exports(
+    code: bytes,
+    entry_offset: Optional[int],
+    import_specs: Dict[str, Tuple[str, str]],
+    iat_call_patches: Dict[str, List[int]],
+    *,
+    exports=None,
+    dll_name="library.dll",
+    gui=False,
+    dll=False,
+    image_base=PE64_IMAGE_BASE,
+    base_relocations=(),
+    data: bytes = b"",
+    bss_size: int = 0,
+    compress_text_mszip: Optional[bool] = None,
+):
+    """Stage-169-Wrapper: vollständigen Stage-167-PE32+-Writer optional packen."""
+    if compress_text_mszip is None:
+        compress_text_mszip = PE64_TEXT_COMPRESSION_MSZIP_DEFAULT
+
+    pack_text = (
+        bool(compress_text_mszip)
+        and not bool(dll)
+        and bool(code)
+        and entry_offset is not None
+    )
+
+    if not pack_text:
+        return _build_pe64_image_with_imports_exports_stage167(
+            code,
+            entry_offset,
+            import_specs,
+            iat_call_patches,
+            exports=exports,
+            dll_name=dll_name,
+            gui=gui,
+            dll=dll,
+            image_base=image_base,
+            base_relocations=base_relocations,
+            data=data,
+            bss_size=bss_size,
+        )
+
+    effective_import_specs = dict(import_specs)
+    for symbol, spec in PE64_MSZIP_LOADER_IMPORTS.items():
+        effective_import_specs.setdefault(symbol, spec)
+
+    base_image, patched_text = _build_pe64_image_with_imports_exports_stage167(
+        code,
+        entry_offset,
+        effective_import_specs,
+        iat_call_patches,
+        exports=exports,
+        dll_name=dll_name,
+        gui=gui,
+        dll=dll,
+        image_base=image_base,
+        base_relocations=base_relocations,
+        data=data,
+        bss_size=bss_size,
+    )
+
+    original_entry_rva = PE64_SECTION_RVA + int(entry_offset)
+    return _pe64_rebuild_with_mszip_loader(
+        base_image,
+        patched_text,
+        effective_import_specs,
+        original_entry_rva=original_entry_rva,
+    )
+
+
 def link_coff64_objects(
     objects: Sequence[bytes], *, entry_symbol="_start", gui=False, dll=False,
     imports=None, exports=None, dll_name=None,
@@ -4394,7 +5356,1235 @@ def link_coff64_objects(
     for name, (sec, off) in global_refs.items():
         base = {".text": text_rva, ".data": data_rva, ".bss": bss_rva}.get(sec, text_rva)
         public_symbols[name] = base - text_rva + off
+
     return PE64Program(image, patched, int(entry or 0), 0, public_symbols)
+
+
+# ---------------------------------------------------------------------------
+# Stage 170: bevorzugtes Packerlayout und Import-by-Ordinal.
+#
+# Bestehende Stage-169-Funktionen bleiben vollständig oberhalb erhalten. Die
+# folgenden Definitionen sind additive Wrapper/Erweiterungen. Im gepackten
+# EXE-Pfad wird die Section-Reihenfolge bewusst auf
+#
+#     .text -> .loader -> .ztext -> .idata
+#
+# festgelegt. PE32+ hängt vorhandene .data/.bss-Sektionen erst danach an.
+# ---------------------------------------------------------------------------
+PE_PACK_IMPORTS_BY_LOCAL_ORDINAL_DEFAULT = (os.name == "nt")
+PE_PACK_LAST_ORDINAL_IMPORTS: List[Dict[str, object]] = []
+PE_STAGE170_DOS_HEADER_SIZE = 0x40
+
+_build_pe32_import_section_stage169 = _build_pe32_import_section
+_build_pe64_import_section_stage169 = _build_pe64_import_section
+_build_pe32_image_with_imports_exports_stage169_layout = (
+    build_pe32_image_with_imports_exports
+)
+_link_coff64_objects_stage169_layout = link_coff64_objects
+
+
+def _pe_import_spec_parts(spec) -> Tuple[str, object]:
+    """Normalisiert (dll, name|ordinal) sowie dict-Importbeschreibungen."""
+    dll = ""
+    member = None
+
+    if isinstance(spec, dict):
+        dll = str(spec.get("dll", "")).strip()
+        if spec.get("ordinal") is not None:
+            member = spec.get("ordinal")
+        else:
+            member = spec.get("member", spec.get("name"))
+    elif isinstance(spec, (tuple, list)) and len(spec) >= 2:
+        dll = str(spec[0]).strip()
+        member = spec[1]
+    else:
+        raise PE32AssemblerError(
+            "Ungültige PE-Importbeschreibung: " + repr(spec)
+        )
+
+    if not dll:
+        raise PE32AssemblerError("PE-Import besitzt keinen DLL-Namen.")
+
+    if isinstance(member, bool):
+        member = int(member)
+
+    if isinstance(member, int):
+        ordinal = int(member)
+        if not 1 <= ordinal <= 0xFFFF:
+            raise PE32AssemblerError(
+                f"PE-Importordinal außerhalb 1..65535: {ordinal}"
+            )
+        return dll, ordinal
+
+    text = str(member if member is not None else "").strip()
+    if not text:
+        raise PE32AssemblerError("PE-Import besitzt weder Namen noch Ordinal.")
+
+    ordinal_text = text[1:] if text.startswith("#") else text
+    if ordinal_text.isdigit():
+        ordinal = int(ordinal_text, 10)
+        if not 1 <= ordinal <= 0xFFFF:
+            raise PE32AssemblerError(
+                f"PE-Importordinal außerhalb 1..65535: {ordinal}"
+            )
+        return dll, ordinal
+
+    return dll, text
+
+
+def _build_pe_import_section_stage170(
+    import_specs,
+    idata_rva: int,
+    *,
+    pointer_size: int,
+) -> Tuple[bytes, Dict[str, int], int, int]:
+    """Gemeinsamer PE32/PE32+-Importbuilder mit Name- und Ordinalimporten."""
+    if pointer_size not in {4, 8}:
+        raise PE32AssemblerError("PE-Importpointer muss 4 oder 8 Byte groß sein.")
+
+    normalized: Dict[str, Tuple[str, object]] = {}
+    grouped: Dict[str, List[object]] = {}
+
+    for symbol, raw_spec in import_specs.items():
+        dll, member = _pe_import_spec_parts(raw_spec)
+        normalized[str(symbol)] = (dll, member)
+        members = grouped.setdefault(dll, [])
+        if member not in members:
+            members.append(member)
+
+    if not grouped:
+        return b"", {}, 0, 0
+
+    dll_items = list(grouped.items())
+    data = bytearray(20 * (len(dll_items) + 1))
+    ilt_offsets: Dict[str, int] = {}
+    iat_offsets: Dict[str, int] = {}
+    hint_offsets: Dict[Tuple[str, str], int] = {}
+    dll_name_offsets: Dict[str, int] = {}
+
+    for dll, members in dll_items:
+        ilt_offsets[dll] = len(data)
+        data.extend(bytes(pointer_size * (len(members) + 1)))
+
+    for dll, members in dll_items:
+        iat_offsets[dll] = len(data)
+        data.extend(bytes(pointer_size * (len(members) + 1)))
+
+    # IMAGE_IMPORT_BY_NAME wird nur für echte Namensimporte angelegt.
+    for dll, members in dll_items:
+        for member in members:
+            if isinstance(member, int):
+                continue
+            if len(data) & 1:
+                data.append(0)
+            name = str(member)
+            hint_offsets[(dll, name)] = len(data)
+            data.extend(struct.pack("<H", 0))
+            data.extend(name.encode("ascii") + b"\0")
+
+    for dll, _members in dll_items:
+        dll_name_offsets[dll] = len(data)
+        data.extend(dll.encode("ascii") + b"\0")
+
+    iat_by_spec: Dict[Tuple[str, object], int] = {}
+    first_iat_rva = 0
+    total_iat_size = 0
+    ordinal_flag = (
+        0x80000000
+        if pointer_size == 4
+        else 0x8000000000000000
+    )
+    pack_fmt = "<I" if pointer_size == 4 else "<Q"
+
+    for descriptor_index, (dll, members) in enumerate(dll_items):
+        ilt_rva = int(idata_rva) + ilt_offsets[dll]
+        iat_rva = int(idata_rva) + iat_offsets[dll]
+        if first_iat_rva == 0:
+            first_iat_rva = iat_rva
+        total_iat_size += pointer_size * (len(members) + 1)
+
+        struct.pack_into(
+            "<IIIII",
+            data,
+            descriptor_index * 20,
+            ilt_rva,
+            0,
+            0,
+            int(idata_rva) + dll_name_offsets[dll],
+            iat_rva,
+        )
+
+        for member_index, member in enumerate(members):
+            if isinstance(member, int):
+                lookup = ordinal_flag | (int(member) & 0xFFFF)
+            else:
+                lookup = int(idata_rva) + hint_offsets[(dll, str(member))]
+
+            struct.pack_into(
+                pack_fmt,
+                data,
+                ilt_offsets[dll] + member_index * pointer_size,
+                lookup,
+            )
+            struct.pack_into(
+                pack_fmt,
+                data,
+                iat_offsets[dll] + member_index * pointer_size,
+                lookup,
+            )
+            iat_by_spec[(dll, member)] = iat_rva + member_index * pointer_size
+
+    symbol_iat_rvas = {
+        symbol: iat_by_spec[spec]
+        for symbol, spec in normalized.items()
+    }
+    return bytes(data), symbol_iat_rvas, first_iat_rva, total_iat_size
+
+
+def _build_pe32_import_section(import_specs, idata_rva: int):
+    return _build_pe_import_section_stage170(
+        import_specs,
+        idata_rva,
+        pointer_size=4,
+    )
+
+
+def _build_pe64_import_section(import_specs, idata_rva: int):
+    return _build_pe_import_section_stage170(
+        import_specs,
+        idata_rva,
+        pointer_size=8,
+    )
+
+
+def _pe_file_machine(path: Path) -> Optional[int]:
+    try:
+        with Path(path).open("rb") as stream:
+            head = stream.read(0x1000)
+    except OSError:
+        return None
+
+    if len(head) < 0x40 or head[:2] != b"MZ":
+        return None
+    pe_offset = struct.unpack_from("<I", head, 0x3C)[0]
+
+    try:
+        if pe_offset + 6 <= len(head):
+            data = head
+        else:
+            with Path(path).open("rb") as stream:
+                stream.seek(pe_offset)
+                part = stream.read(24)
+            if len(part) < 6 or part[:4] != b"PE\0\0":
+                return None
+            return struct.unpack_from("<H", part, 4)[0]
+    except OSError:
+        return None
+
+    if data[pe_offset:pe_offset + 4] != b"PE\0\0":
+        return None
+    return struct.unpack_from("<H", data, pe_offset + 4)[0]
+
+
+_PE_EXPORT_ORDINAL_CACHE: Dict[Tuple[str, int, int], Dict[str, int]] = {}
+
+
+def _pe_export_name_ordinals(path: Path, expected_machine: int) -> Dict[str, int]:
+    """Liest Name->Ordinal direkt aus der PE-Exporttabelle einer DLL."""
+    file_path = Path(path)
+    try:
+        stat = file_path.stat()
+        cache_key = (
+            str(file_path.resolve()).casefold(),
+            int(stat.st_mtime_ns),
+            int(expected_machine),
+        )
+    except OSError:
+        return {}
+
+    cached = _PE_EXPORT_ORDINAL_CACHE.get(cache_key)
+    if cached is not None:
+        return dict(cached)
+
+    try:
+        data = file_path.read_bytes()
+    except OSError:
+        return {}
+
+    result: Dict[str, int] = {}
+    try:
+        if len(data) < 0x40 or data[:2] != b"MZ":
+            return {}
+        pe_offset = struct.unpack_from("<I", data, 0x3C)[0]
+        if pe_offset + 24 > len(data) or data[pe_offset:pe_offset + 4] != b"PE\0\0":
+            return {}
+
+        file_header = pe_offset + 4
+        machine, section_count = struct.unpack_from("<HH", data, file_header)
+        if int(machine) != int(expected_machine):
+            return {}
+
+        optional_size = struct.unpack_from("<H", data, file_header + 16)[0]
+        optional_offset = file_header + 20
+        if optional_offset + optional_size > len(data):
+            return {}
+        magic = struct.unpack_from("<H", data, optional_offset)[0]
+        if magic == 0x010B:
+            directory_offset = optional_offset + 0x60
+            size_headers_offset = optional_offset + 0x3C
+        elif magic == 0x020B:
+            directory_offset = optional_offset + 0x70
+            size_headers_offset = optional_offset + 0x3C
+        else:
+            return {}
+
+        export_rva, export_size = struct.unpack_from(
+            "<II", data, directory_offset
+        )
+        if export_rva == 0 or export_size == 0:
+            return {}
+
+        section_table = optional_offset + optional_size
+        sections = []
+        for index in range(section_count):
+            off = section_table + index * 40
+            if off + 40 > len(data):
+                return {}
+            virtual_size, rva, raw_size, raw_ptr = struct.unpack_from(
+                "<IIII", data, off + 0x08
+            )
+            sections.append((rva, virtual_size, raw_size, raw_ptr))
+
+        size_of_headers = struct.unpack_from("<I", data, size_headers_offset)[0]
+
+        def rva_to_offset(rva_value: int, size: int = 1) -> int:
+            rva_value = int(rva_value)
+            if 0 <= rva_value < int(size_of_headers):
+                if rva_value + size <= len(data):
+                    return rva_value
+                raise ValueError("RVA außerhalb Header")
+            for sec_rva, virtual_size, raw_size, raw_ptr in sections:
+                span = max(int(virtual_size), int(raw_size))
+                if int(sec_rva) <= rva_value < int(sec_rva) + span:
+                    relative = rva_value - int(sec_rva)
+                    if relative + size > int(raw_size):
+                        raise ValueError("RVA liegt nur im virtuellen Nullbereich")
+                    file_off = int(raw_ptr) + relative
+                    if file_off + size > len(data):
+                        raise ValueError("RVA außerhalb Datei")
+                    return file_off
+            raise ValueError("RVA keiner Section zugeordnet")
+
+        export_off = rva_to_offset(export_rva, 40)
+        (
+            _characteristics,
+            _timestamp,
+            _major,
+            _minor,
+            _name_rva,
+            ordinal_base,
+            _function_count,
+            name_count,
+            _address_functions,
+            address_names,
+            address_name_ordinals,
+        ) = struct.unpack_from("<IIHHIIIIIII", data, export_off)
+
+        names_off = rva_to_offset(address_names, int(name_count) * 4)
+        ordinals_off = rva_to_offset(
+            address_name_ordinals,
+            int(name_count) * 2,
+        )
+
+        for index in range(int(name_count)):
+            name_rva = struct.unpack_from("<I", data, names_off + index * 4)[0]
+            ordinal_index = struct.unpack_from(
+                "<H", data, ordinals_off + index * 2
+            )[0]
+            name_off = rva_to_offset(name_rva, 1)
+            end = data.find(b"\0", name_off)
+            if end < 0:
+                continue
+            try:
+                export_name = data[name_off:end].decode("ascii")
+            except UnicodeDecodeError:
+                continue
+            ordinal = int(ordinal_base) + int(ordinal_index)
+            if 1 <= ordinal <= 0xFFFF:
+                result[export_name] = ordinal
+    except (ValueError, struct.error, OverflowError):
+        result = {}
+
+    _PE_EXPORT_ORDINAL_CACHE[cache_key] = dict(result)
+    return result
+
+
+def _pe_target_dll_candidates(dll_name: str, machine: int) -> List[Path]:
+    raw = str(dll_name).strip().strip('"')
+    if not raw:
+        return []
+
+    candidates: List[Path] = []
+    raw_path = Path(raw)
+    if raw_path.is_absolute() or raw_path.parent != Path("."):
+        candidates.append(raw_path)
+    else:
+        candidates.append(Path.cwd() / raw_path.name)
+
+    if os.name == "nt":
+        windir = Path(os.environ.get("WINDIR", r"C:\Windows"))
+        if int(machine) == IMAGE_FILE_MACHINE_I386:
+            candidates.append(windir / "SysWOW64" / raw_path.name)
+            candidates.append(windir / "System32" / raw_path.name)
+        elif int(machine) == IMAGE_FILE_MACHINE_AMD64:
+            # Sysnative ist für einen 32-Bit-Buildprozess der Zugriff auf die
+            # native 64-Bit-System32-Ansicht; bei 64-Bit-Python existiert der
+            # normale System32-Pfad direkt.
+            candidates.append(windir / "System32" / raw_path.name)
+            candidates.append(windir / "Sysnative" / raw_path.name)
+
+        for entry in os.environ.get("PATH", "").split(os.pathsep):
+            entry = entry.strip().strip('"')
+            if entry:
+                candidates.append(Path(entry) / raw_path.name)
+
+    unique: List[Path] = []
+    seen = set()
+    for candidate in candidates:
+        key = str(candidate).casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(candidate)
+    return unique
+
+
+def _pe_find_target_dll(dll_name: str, machine: int) -> Optional[Path]:
+    for candidate in _pe_target_dll_candidates(dll_name, machine):
+        try:
+            if not candidate.is_file():
+                continue
+        except OSError:
+            continue
+        if _pe_file_machine(candidate) == int(machine):
+            return candidate
+    return None
+
+
+def _pe_import_specs_with_local_ordinals(
+    import_specs,
+    *,
+    machine: int,
+    enabled: Optional[bool] = None,
+) -> Dict[str, Tuple[str, object]]:
+    """Ersetzt Namensimporte durch Ordinale aus der lokalen Ziel-DLL.
+
+    Das spart IMAGE_IMPORT_BY_NAME-Zeichenketten. Die Bindung an lokale
+    System-DLL-Ordinale ist absichtlich abschaltbar, weil Microsoft die
+    Ordinalnummern vieler System-DLLs nicht als stabile API garantiert.
+    """
+    if enabled is None:
+        enabled = PE_PACK_IMPORTS_BY_LOCAL_ORDINAL_DEFAULT
+
+    result: Dict[str, Tuple[str, object]] = {}
+    dll_cache: Dict[str, Tuple[Optional[Path], Dict[str, int]]] = {}
+
+    if enabled:
+        PE_PACK_LAST_ORDINAL_IMPORTS.clear()
+
+    for symbol, raw_spec in import_specs.items():
+        dll, member = _pe_import_spec_parts(raw_spec)
+        if isinstance(member, int) or not enabled:
+            result[str(symbol)] = (dll, member)
+            continue
+
+        dll_key = dll.casefold()
+        cached = dll_cache.get(dll_key)
+        if cached is None:
+            path = _pe_find_target_dll(dll, machine)
+            ordinals = (
+                _pe_export_name_ordinals(path, machine)
+                if path is not None
+                else {}
+            )
+            cached = (path, ordinals)
+            dll_cache[dll_key] = cached
+
+        path, ordinals = cached
+        ordinal = ordinals.get(str(member))
+        if ordinal is None:
+            folded = str(member).casefold()
+            matches = [
+                value
+                for name, value in ordinals.items()
+                if name.casefold() == folded
+            ]
+            if len(matches) == 1:
+                ordinal = matches[0]
+
+        if ordinal is None:
+            result[str(symbol)] = (dll, member)
+            continue
+
+        result[str(symbol)] = (dll, int(ordinal))
+        PE_PACK_LAST_ORDINAL_IMPORTS.append({
+            "machine": int(machine),
+            "dll": dll,
+            "name": str(member),
+            "ordinal": int(ordinal),
+            "path": str(path) if path is not None else "",
+        })
+
+    return result
+
+
+def _pe_stage170_ztext_virtual_span(text_size: int, alignment: int) -> int:
+    """Reserviert genug VA-Raum für einen selten leicht größeren MSZIP-Block."""
+    size = max(1, int(text_size))
+    # MSZIP/DEFLATE kann bei bereits unkomprimierbaren Daten geringfügig
+    # wachsen. 4 KiB + 6,25 Prozent Reserve halten die nachfolgende .idata
+    # nah an .ztext, ohne eine zirkuläre IAT->Kompression->RVA-Abhängigkeit.
+    extra = 0x1000 + (size // 16)
+    wanted = PE32_D64Z_HEADER_SIZE + size + extra
+    return _align_up(max(wanted, alignment), alignment)
+
+
+def _pe_emit_stage170_image(
+    *,
+    machine: int,
+    image_base: int,
+    text_rva: int,
+    text_virtual_size: int,
+    loader_rva: int,
+    loader: bytes,
+    ztext_rva: int,
+    ztext: bytes,
+    ztext_virtual_size: int,
+    idata_rva: int,
+    idata: bytes,
+    first_iat_rva: int,
+    iat_size: int,
+    entry_rva: int,
+    gui: bool,
+    data_rva: int = 0,
+    data: bytes = b"",
+    bss_rva: int = 0,
+    bss_size: int = 0,
+) -> bytes:
+    """Schreibt das Stage-170-Packerlayout für PE32 oder PE32+."""
+    is64 = int(machine) == IMAGE_FILE_MACHINE_AMD64
+    if not is64 and int(machine) != IMAGE_FILE_MACHINE_I386:
+        raise PE32AssemblerError("Stage170: unbekannte PE-Maschine.")
+
+    file_alignment = PE64_FILE_ALIGNMENT if is64 else PE32_FILE_ALIGNMENT
+    section_alignment = PE64_SECTION_ALIGNMENT if is64 else PE32_SECTION_ALIGNMENT
+    optional_size = 0xF0 if is64 else 0xE0
+
+    sections = [
+        {
+            "name": b".text",
+            "data": b"",
+            "virtual_size": max(1, int(text_virtual_size)),
+            "rva": int(text_rva),
+            "chars": 0x60000020 if is64 else 0xE0000020,
+            "raw": False,
+        },
+        {
+            "name": b".loader",
+            "data": bytes(loader),
+            "virtual_size": len(loader),
+            "rva": int(loader_rva),
+            "chars": 0x60000020,
+            "raw": True,
+        },
+        {
+            "name": b".ztext",
+            "data": bytes(ztext),
+            "virtual_size": max(len(ztext), int(ztext_virtual_size)),
+            "rva": int(ztext_rva),
+            "chars": 0x40000040,
+            "raw": True,
+        },
+        {
+            "name": b".idata",
+            "data": bytes(idata),
+            "virtual_size": len(idata),
+            "rva": int(idata_rva),
+            "chars": 0xC0000040,
+            "raw": True,
+        },
+    ]
+
+    if data:
+        sections.append({
+            "name": b".data",
+            "data": bytes(data),
+            "virtual_size": len(data),
+            "rva": int(data_rva),
+            "chars": 0xC0000040,
+            "raw": True,
+        })
+    if int(bss_size) > 0:
+        sections.append({
+            "name": b".bss",
+            "data": b"",
+            "virtual_size": int(bss_size),
+            "rva": int(bss_rva),
+            "chars": 0xC0000080,
+            "raw": False,
+        })
+
+    # Section-RVAs müssen monoton steigen. Das ist für Windows-Images die
+    # robuste Variante und entspricht zugleich der gewünschten sichtbaren
+    # Reihenfolge in PE-Viewern.
+    previous_rva = -1
+    for sec in sections:
+        if int(sec["rva"]) <= previous_rva:
+            raise PE32AssemblerError(
+                "Stage170: Section-RVAs sind nicht streng aufsteigend."
+            )
+        previous_rva = int(sec["rva"])
+
+    section_table = (
+        PE_STAGE170_DOS_HEADER_SIZE
+        + 4
+        + 20
+        + optional_size
+    )
+    headers_size = _align_up(
+        section_table + len(sections) * 40,
+        file_alignment,
+    )
+
+    raw_cursor = headers_size
+    layout = []
+    size_of_code = 0
+    size_of_initialized_data = 0
+    for sec in sections:
+        if sec["raw"] and sec["data"]:
+            raw_size = _align_up(len(sec["data"]), file_alignment)
+            raw_ptr = raw_cursor
+            raw_cursor += raw_size
+        else:
+            raw_size = 0
+            raw_ptr = 0
+        item = dict(sec)
+        item["raw_size"] = raw_size
+        item["raw_ptr"] = raw_ptr
+        layout.append(item)
+        if int(sec["chars"]) & 0x00000020:
+            size_of_code += raw_size
+        elif raw_size:
+            size_of_initialized_data += raw_size
+
+    last = sections[-1]
+    size_of_image = _align_up(
+        int(last["rva"]) + max(1, int(last["virtual_size"])),
+        section_alignment,
+    )
+
+    dos = bytearray(PE_STAGE170_DOS_HEADER_SIZE)
+    dos[:2] = b"MZ"
+    struct.pack_into("<I", dos, 0x3C, PE_STAGE170_DOS_HEADER_SIZE)
+
+    pe = bytearray(b"PE\0\0")
+    if is64:
+        # Gepackter .text wird erst nach dem Windows-Loader dekomprimiert.
+        # Darum wird ASLR für diesen Modus bewusst abgeschaltet: Windows kann
+        # Relocations in einem noch nicht vorhandenen .text nicht vorab patchen.
+        file_chars = 0x0023  # EXECUTABLE | LARGE_ADDRESS_AWARE | RELOCS_STRIPPED
+    else:
+        file_chars = 0x0103  # i386 | EXECUTABLE | RELOCS_STRIPPED
+    pe.extend(struct.pack(
+        "<HHIIIHH",
+        int(machine),
+        len(layout),
+        0,
+        0,
+        0,
+        optional_size,
+        file_chars,
+    ))
+
+    optional = bytearray(optional_size)
+    if is64:
+        struct.pack_into("<H", optional, 0x00, 0x020B)
+        optional[0x02] = 1
+        struct.pack_into("<I", optional, 0x04, size_of_code)
+        struct.pack_into("<I", optional, 0x08, size_of_initialized_data)
+        struct.pack_into("<I", optional, 0x0C, int(bss_size))
+        struct.pack_into("<I", optional, 0x10, int(entry_rva))
+        struct.pack_into("<I", optional, 0x14, int(text_rva))
+        struct.pack_into("<Q", optional, 0x18, int(image_base))
+        struct.pack_into("<I", optional, 0x20, section_alignment)
+        struct.pack_into("<I", optional, 0x24, file_alignment)
+        struct.pack_into("<HHHH", optional, 0x28, 6, 0, 0, 0)
+        struct.pack_into("<HH", optional, 0x30, 6, 0)
+        struct.pack_into("<I", optional, 0x38, size_of_image)
+        struct.pack_into("<I", optional, 0x3C, headers_size)
+        struct.pack_into("<H", optional, 0x44, 2 if gui else 3)
+        struct.pack_into("<H", optional, 0x46, 0x0100)  # NX_COMPAT, kein ASLR
+        struct.pack_into(
+            "<QQQQ",
+            optional,
+            0x48,
+            0x400000,
+            0x4000,
+            0x100000,
+            0x2000,
+        )
+        struct.pack_into("<I", optional, 0x68, 0)
+        struct.pack_into("<I", optional, 0x6C, 16)
+        struct.pack_into("<II", optional, 0x78, int(idata_rva), len(idata))
+        struct.pack_into("<II", optional, 0xD0, int(first_iat_rva), int(iat_size))
+    else:
+        struct.pack_into("<H", optional, 0x00, 0x010B)
+        optional[0x02] = 1
+        struct.pack_into("<I", optional, 0x04, size_of_code)
+        struct.pack_into("<I", optional, 0x08, size_of_initialized_data)
+        struct.pack_into("<I", optional, 0x0C, 0)
+        struct.pack_into("<I", optional, 0x10, int(entry_rva))
+        struct.pack_into("<I", optional, 0x14, int(text_rva))
+        struct.pack_into("<I", optional, 0x18, int(ztext_rva))
+        struct.pack_into("<I", optional, 0x1C, int(image_base))
+        struct.pack_into("<I", optional, 0x20, section_alignment)
+        struct.pack_into("<I", optional, 0x24, file_alignment)
+        struct.pack_into("<HHHH", optional, 0x28, 4, 0, 0, 0)
+        struct.pack_into("<HH", optional, 0x30, 4, 0)
+        struct.pack_into("<I", optional, 0x38, size_of_image)
+        struct.pack_into("<I", optional, 0x3C, headers_size)
+        struct.pack_into("<H", optional, 0x44, 2 if gui else 3)
+        struct.pack_into("<H", optional, 0x46, 0)
+        struct.pack_into(
+            "<IIII",
+            optional,
+            0x48,
+            0x00100000,
+            0x1000,
+            0x00100000,
+            0x1000,
+        )
+        struct.pack_into("<II", optional, 0x58, 0, 16)
+        struct.pack_into("<II", optional, 0x68, int(idata_rva), len(idata))
+        struct.pack_into("<II", optional, 0xC0, int(first_iat_rva), int(iat_size))
+
+    pe.extend(optional)
+
+    for sec in layout:
+        header = bytearray(40)
+        header[:8] = bytes(sec["name"])[:8].ljust(8, b"\0")
+        struct.pack_into("<I", header, 0x08, int(sec["virtual_size"]))
+        struct.pack_into("<I", header, 0x0C, int(sec["rva"]))
+        struct.pack_into("<I", header, 0x10, int(sec["raw_size"]))
+        struct.pack_into("<I", header, 0x14, int(sec["raw_ptr"]))
+        struct.pack_into("<I", header, 0x24, int(sec["chars"]))
+        pe.extend(header)
+
+    headers = bytes(dos) + bytes(pe)
+    if len(headers) > headers_size:
+        raise PE32AssemblerError("Stage170: PE-Header überschreitet SizeOfHeaders.")
+    image = bytearray(headers_size)
+    image[:len(headers)] = headers
+
+    for sec in layout:
+        raw_size = int(sec["raw_size"])
+        if raw_size <= 0:
+            continue
+        raw_ptr = int(sec["raw_ptr"])
+        raw_data = bytes(sec["data"])
+        if len(image) < raw_ptr + raw_size:
+            image.extend(bytes(raw_ptr + raw_size - len(image)))
+        image[raw_ptr:raw_ptr + len(raw_data)] = raw_data
+
+    return bytes(image)
+
+
+def build_pe32_image_with_imports_exports(
+    code: bytes,
+    entry_offset: Optional[int],
+    import_specs,
+    thunk_patches: Dict[str, int],
+    *,
+    exports: Optional[Dict[str, int]] = None,
+    dll_name: str = "library.dll",
+    gui: bool = False,
+    dll: bool = False,
+    image_base: int = PE32_IMAGE_BASE,
+    base_relocations: Optional[Sequence[int]] = None,
+    compress_text_mszip: Optional[bool] = None,
+    imports_by_local_ordinal: Optional[bool] = None,
+) -> Tuple[bytes, bytes]:
+    """Stage170-PE32: .text/.loader/.ztext/.idata in RVA-Reihenfolge."""
+    if compress_text_mszip is None:
+        compress_text_mszip = PE32_TEXT_COMPRESSION_MSZIP_DEFAULT
+
+    pack_text = (
+        bool(compress_text_mszip)
+        and not bool(dll)
+        and not bool(exports)
+        and bool(code)
+        and entry_offset is not None
+    )
+    if not pack_text:
+        return _build_pe32_image_with_imports_exports_stage169_layout(
+            code,
+            entry_offset,
+            import_specs,
+            thunk_patches,
+            exports=exports,
+            dll_name=dll_name,
+            gui=gui,
+            dll=dll,
+            image_base=image_base,
+            base_relocations=base_relocations,
+            compress_text_mszip=False,
+        )
+
+    text = bytearray(code)
+    text_rva = PE32_SECTION_RVA
+    original_entry_rva = text_rva + int(entry_offset)
+
+    effective_import_specs = dict(import_specs)
+    for symbol, spec in PE32_MSZIP_LOADER_IMPORTS.items():
+        effective_import_specs.setdefault(symbol, spec)
+    effective_import_specs = _pe_import_specs_with_local_ordinals(
+        effective_import_specs,
+        machine=IMAGE_FILE_MACHINE_I386,
+        enabled=imports_by_local_ordinal,
+    )
+
+    loader_rva = _align_up(
+        text_rva + max(1, len(text)),
+        PE32_SECTION_ALIGNMENT,
+    )
+    dummy_iat = {name: 0 for name in PE32_MSZIP_LOADER_IMPORTS}
+    probe = _build_pe32_mszip_loader(
+        image_base=image_base,
+        text_rva=text_rva,
+        text_size=len(text),
+        ztext_rva=0,
+        packed_size=max(1, len(text)),
+        original_entry_rva=original_entry_rva,
+        iat_rvas=dummy_iat,
+    )
+    ztext_rva = _align_up(
+        loader_rva + max(1, len(probe)),
+        PE32_SECTION_ALIGNMENT,
+    )
+    ztext_virtual_size = _pe_stage170_ztext_virtual_span(
+        len(text),
+        PE32_SECTION_ALIGNMENT,
+    )
+    idata_rva = ztext_rva + ztext_virtual_size
+
+    idata, iat_rvas, first_iat_rva, iat_size = _build_pe32_import_section(
+        effective_import_specs,
+        idata_rva,
+    )
+
+    for symbol, patch_offset in thunk_patches.items():
+        if symbol not in iat_rvas:
+            raise PE32AssemblerError(
+                f"Stage170-PE32: IAT-Eintrag fehlt für {symbol}."
+            )
+        struct.pack_into(
+            "<I",
+            text,
+            int(patch_offset),
+            (int(image_base) + int(iat_rvas[symbol])) & 0xFFFFFFFF,
+        )
+
+    ztext, packed_size = _pe32_build_d64z_payload(
+        bytes(text),
+        text_rva=text_rva,
+        original_entry_rva=original_entry_rva,
+    )
+    if len(ztext) > ztext_virtual_size:
+        raise PE32AssemblerError(
+            "Stage170-PE32: MSZIP-Block überschreitet reservierten .ztext-VA-Raum."
+        )
+
+    loader = _build_pe32_mszip_loader(
+        image_base=image_base,
+        text_rva=text_rva,
+        text_size=len(text),
+        ztext_rva=ztext_rva,
+        packed_size=packed_size,
+        original_entry_rva=original_entry_rva,
+        iat_rvas=iat_rvas,
+    )
+
+    image = _pe_emit_stage170_image(
+        machine=IMAGE_FILE_MACHINE_I386,
+        image_base=image_base,
+        text_rva=text_rva,
+        text_virtual_size=len(text),
+        loader_rva=loader_rva,
+        loader=loader,
+        ztext_rva=ztext_rva,
+        ztext=ztext,
+        ztext_virtual_size=ztext_virtual_size,
+        idata_rva=idata_rva,
+        idata=idata,
+        first_iat_rva=first_iat_rva,
+        iat_size=iat_size,
+        entry_rva=loader_rva,
+        gui=gui,
+    )
+    return image, bytes(text)
+
+
+def link_coff64_objects(
+    objects: Sequence[bytes],
+    *,
+    entry_symbol="_start",
+    gui=False,
+    dll=False,
+    imports=None,
+    exports=None,
+    dll_name=None,
+) -> PE64Program:
+    """Stage170-PE32+: gepacktes EXE mit .text/.loader/.ztext/.idata."""
+    parsed = [parse_coff64_object(x) for x in objects]
+
+    declared_exports = {}
+    for obj in parsed:
+        declared_exports.update(obj.exports)
+    for public, internal in (exports or {}).items():
+        declared_exports[str(public)] = str(internal).casefold()
+
+    effective_dll = bool(dll or declared_exports)
+    pack_text = bool(PE64_TEXT_COMPRESSION_MSZIP_DEFAULT) and not effective_dll
+    if not pack_text:
+        return _link_coff64_objects_stage169_layout(
+            objects,
+            entry_symbol=entry_symbol,
+            gui=gui,
+            dll=dll,
+            imports=imports,
+            exports=exports,
+            dll_name=dll_name,
+        )
+
+    text = bytearray()
+    init_data = bytearray()
+    text_bases = []
+    data_bases = []
+    bss_bases = []
+    total_bss_size = 0
+    global_refs: Dict[str, Tuple[str, int]] = {}
+    declared_imports = {}
+    declared_dll = None
+
+    for obj in parsed:
+        declared_imports.update(obj.imports)
+        declared_dll = obj.dll_name or declared_dll
+
+    for symbol, raw_spec in (imports or {}).items():
+        declared_imports[str(symbol).casefold()] = _pe_import_spec_parts(raw_spec)
+    if dll_name:
+        declared_dll = str(dll_name)
+
+    image_base = PE64_IMAGE_BASE
+
+    for obj in parsed:
+        tbase = _align_up(len(text), 16)
+        text.extend(bytes(tbase - len(text)))
+        text_bases.append(tbase)
+        text.extend(obj.code)
+
+        dbase = _align_up(len(init_data), 8)
+        init_data.extend(bytes(dbase - len(init_data)))
+        data_bases.append(dbase)
+        init_data.extend(obj.data)
+
+        bbase = _align_up(total_bss_size, 8)
+        bss_bases.append(bbase)
+        total_bss_size = bbase + int(getattr(obj, "bss_size", 0))
+
+        for name, value in obj.symbols.items():
+            if value is None:
+                continue
+            if name in global_refs:
+                raise PE64AssemblerError(
+                    f"COFF64-Symbol mehrfach definiert: {name}"
+                )
+            sec = obj.symbol_sections.get(name, ".text")
+            if sec == ".text":
+                base = tbase
+            elif sec == ".data":
+                base = dbase
+            elif sec == ".bss":
+                base = bbase
+            else:
+                raise PE64AssemblerError(
+                    f"Unbekannte COFF64-Symbolsektion: {sec}"
+                )
+            global_refs[name] = (sec, base + value)
+
+    import_specs = {}
+    iat_patches = {}
+    unresolved = []
+    external_names = []
+    for obj in parsed:
+        for relocation in obj.relocations:
+            symbol = relocation.symbol.casefold()
+            if symbol not in global_refs and symbol not in external_names:
+                external_names.append(symbol)
+
+    for symbol in external_names:
+        alias_match = re.fullmatch(
+            r"__d64_argc(\d+)__(.+)",
+            symbol,
+            re.IGNORECASE,
+        )
+        original_symbol = (
+            alias_match.group(2).casefold()
+            if alias_match
+            else symbol
+        )
+        spec = (
+            declared_imports.get(symbol)
+            or declared_imports.get(original_symbol)
+            or _resolve_pe32_default_import(original_symbol)
+        )
+        if spec is None:
+            unresolved.append(symbol)
+            continue
+
+        start = _align_up(len(text), 16)
+        text.extend(bytes(start - len(text)))
+        if alias_match:
+            signature = (int(alias_match.group(1)), False)
+        else:
+            signature = PE64_IMPORT_SIGNATURES.get(original_symbol)
+
+        if signature is not None:
+            thunk, local_patch = _pe64_import_adapter_bytes(*signature)
+            text.extend(thunk)
+            iat_patches.setdefault(symbol, []).append(start + local_patch)
+        else:
+            text.extend(b"\xFF\x25\0\0\0\0")
+            iat_patches.setdefault(symbol, []).append(start + 2)
+
+        global_refs[symbol] = (".text", start)
+        import_specs[symbol] = spec
+
+    if unresolved:
+        raise PE64AssemblerError(
+            "COFF64-Linker: externe Symbole nicht aufgeloest: "
+            + ", ".join(unresolved)
+        )
+
+    effective_import_specs = dict(import_specs)
+    for symbol, spec in PE64_MSZIP_LOADER_IMPORTS.items():
+        effective_import_specs.setdefault(symbol, spec)
+    effective_import_specs = _pe_import_specs_with_local_ordinals(
+        effective_import_specs,
+        machine=IMAGE_FILE_MACHINE_AMD64,
+    )
+
+    # Virtuelles Layout zuerst festlegen, damit COFF64-Relocations bereits die
+    # endgültigen .data/.bss-RVAs sehen.
+    text_rva = PE64_SECTION_RVA
+    loader_rva = _align_up(
+        text_rva + max(1, len(text)),
+        PE64_SECTION_ALIGNMENT,
+    )
+    dummy_iat = {name: 0 for name in PE64_MSZIP_LOADER_IMPORTS}
+    probe = _build_pe64_mszip_loader(
+        loader_rva=loader_rva,
+        text_rva=text_rva,
+        text_size=len(text),
+        ztext_rva=0,
+        packed_size=max(1, len(text)),
+        original_entry_rva=text_rva,
+        iat_rvas=dummy_iat,
+    )
+    ztext_rva = _align_up(
+        loader_rva + max(1, len(probe)),
+        PE64_SECTION_ALIGNMENT,
+    )
+    ztext_virtual_size = _pe_stage170_ztext_virtual_span(
+        len(text),
+        PE64_SECTION_ALIGNMENT,
+    )
+    idata_rva = ztext_rva + ztext_virtual_size
+    idata, iat_rvas, first_iat, iat_size = _build_pe64_import_section(
+        effective_import_specs,
+        idata_rva,
+    )
+
+    next_rva = _align_up(
+        idata_rva + max(1, len(idata)),
+        PE64_SECTION_ALIGNMENT,
+    )
+    data_rva = 0
+    if init_data:
+        data_rva = next_rva
+        next_rva = _align_up(
+            data_rva + max(1, len(init_data)),
+            PE64_SECTION_ALIGNMENT,
+        )
+    bss_rva = 0
+    if total_bss_size:
+        bss_rva = next_rva
+        next_rva = _align_up(
+            bss_rva + max(1, total_bss_size),
+            PE64_SECTION_ALIGNMENT,
+        )
+
+    def symbol_rva(name: str) -> int:
+        sec, off = global_refs[name]
+        base = {
+            ".text": text_rva,
+            ".data": data_rva,
+            ".bss": bss_rva,
+        }.get(sec)
+        if base is None:
+            raise PE64AssemblerError(
+                f"Unbekannte COFF64-Zielsektion: {sec}"
+            )
+        return int(base) + int(off)
+
+    # Im gepackten PE32+-Modus wird absichtlich fixed-base gelinkt. Absolute
+    # Werte werden daher auf die bevorzugte ImageBase geschrieben und es wird
+    # keine vor dem Entpacken unbrauchbare .reloc-Sektion benötigt.
+    for obj, tbase, dbase in zip(parsed, text_bases, data_bases):
+        for relocation in obj.relocations:
+            target = global_refs.get(relocation.symbol.casefold())
+            if target is None:
+                raise PE64AssemblerError(
+                    f"COFF64-Symbol nicht aufgeloest: {relocation.symbol}"
+                )
+
+            if relocation.section == ".text":
+                buffer = text
+                patch = tbase + relocation.offset
+                patch_rva = text_rva + patch
+            elif relocation.section == ".data":
+                buffer = init_data
+                patch = dbase + relocation.offset
+                patch_rva = data_rva + patch
+            else:
+                raise PE64AssemblerError(
+                    "Unbekannte COFF64-Relocation-Sektion: "
+                    + str(relocation.section)
+                )
+
+            target_rva = symbol_rva(relocation.symbol.casefold())
+            if IMAGE_REL_AMD64_REL32 <= relocation.relocation_type <= IMAGE_REL_AMD64_REL32_5:
+                tail = relocation.relocation_type - IMAGE_REL_AMD64_REL32
+                struct.pack_into(
+                    "<i",
+                    buffer,
+                    patch,
+                    target_rva - (patch_rva + 4 + tail),
+                )
+            elif relocation.relocation_type == IMAGE_REL_AMD64_ADDR64:
+                struct.pack_into(
+                    "<Q",
+                    buffer,
+                    patch,
+                    int(image_base) + int(target_rva),
+                )
+            elif relocation.relocation_type == IMAGE_REL_AMD64_ADDR32:
+                struct.pack_into(
+                    "<I",
+                    buffer,
+                    patch,
+                    (int(image_base) + int(target_rva)) & 0xFFFFFFFF,
+                )
+            else:
+                raise PE64AssemblerError(
+                    "COFF64-Relocation "
+                    f"0x{relocation.relocation_type:04X} nicht unterstützt."
+                )
+
+    for symbol, patches in iat_patches.items():
+        if symbol not in iat_rvas:
+            raise PE64AssemblerError(
+                f"Stage170-PE64: IAT-Eintrag fehlt: {symbol}"
+            )
+        for patch in patches:
+            instruction_end = text_rva + int(patch) + 4
+            displacement = int(iat_rvas[symbol]) - instruction_end
+            struct.pack_into("<i", text, int(patch), displacement)
+
+    wanted = str(entry_symbol or "").casefold()
+    entry_ref = global_refs.get(wanted)
+    if entry_ref is None:
+        for fallback in ("_start", "start", "main", "_main"):
+            if fallback in global_refs:
+                entry_ref = global_refs[fallback]
+                break
+    if entry_ref is None:
+        entry_ref = (".text", 0)
+    if entry_ref[0] != ".text":
+        raise PE64AssemblerError(
+            "PE64-Einstiegspunkt muss in der .text-Sektion liegen."
+        )
+    entry = int(entry_ref[1])
+    original_entry_rva = text_rva + entry
+
+    ztext, packed_size = _pe32_build_d64z_payload(
+        bytes(text),
+        text_rva=text_rva,
+        original_entry_rva=original_entry_rva,
+    )
+    if len(ztext) > ztext_virtual_size:
+        raise PE64AssemblerError(
+            "Stage170-PE64: MSZIP-Block überschreitet reservierten .ztext-VA-Raum."
+        )
+
+    loader = _build_pe64_mszip_loader(
+        loader_rva=loader_rva,
+        text_rva=text_rva,
+        text_size=len(text),
+        ztext_rva=ztext_rva,
+        packed_size=packed_size,
+        original_entry_rva=original_entry_rva,
+        iat_rvas=iat_rvas,
+    )
+
+    image = _pe_emit_stage170_image(
+        machine=IMAGE_FILE_MACHINE_AMD64,
+        image_base=image_base,
+        text_rva=text_rva,
+        text_virtual_size=len(text),
+        loader_rva=loader_rva,
+        loader=loader,
+        ztext_rva=ztext_rva,
+        ztext=ztext,
+        ztext_virtual_size=ztext_virtual_size,
+        idata_rva=idata_rva,
+        idata=idata,
+        first_iat_rva=first_iat,
+        iat_size=iat_size,
+        entry_rva=loader_rva,
+        gui=gui,
+        data_rva=data_rva,
+        data=bytes(init_data),
+        bss_rva=bss_rva,
+        bss_size=total_bss_size,
+    )
+
+    public_symbols = {}
+    for name, (sec, off) in global_refs.items():
+        base_rva = {
+            ".text": text_rva,
+            ".data": data_rva,
+            ".bss": bss_rva,
+        }.get(sec, text_rva)
+        public_symbols[name] = int(base_rva) - text_rva + int(off)
+
+    return PE64Program(
+        image,
+        bytes(text),
+        entry,
+        0,
+        public_symbols,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -8021,6 +10211,7 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             QTreeWidgetItemIterator,
             QVBoxLayout,
             QWidget,
+            QWidgetAction,
         )
     except ImportError as exc:
         print(
@@ -10041,6 +12232,82 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             lay.addWidget(self.radio)
             lay.addWidget(self.flag)
             lay.addStretch(1)
+
+    class LanguageMenuChoice(QWidget):
+        """Stage 167: eine Sprache im 4-spaltigen Ansicht->Sprache-Menü."""
+
+        selected = pyqtSignal(str)
+
+        def __init__(
+            self,
+            code: str,
+            title: str,
+            flag_path: str,
+            parent=None,
+        ):
+            super().__init__(parent)
+            self.code = str(code).strip().upper()
+            self.title = tr(title)
+            self.resource_path = f":/flags/{str(flag_path).strip().lower()}.png"
+            self.setObjectName("language_menu_choice")
+            self.setCursor(Qt.PointingHandCursor)
+            self.setMinimumWidth(205)
+            self.setFixedHeight(28)
+
+            self.radio = QRadioButton(self)
+            self.radio.setObjectName(f"language_radio_{self.code.lower()}")
+            self.radio.setToolTip(f"{self.code} - {self.title}")
+            self.radio.setText("")
+            self.radio.setFocusPolicy(Qt.NoFocus)
+
+            self.flag = QLabel(self)
+            self.flag.setObjectName(f"language_flag_{self.code.lower()}")
+            self.flag.setFixedSize(24, 14)
+            self.flag.setAlignment(Qt.AlignCenter)
+            self.flag.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
+            pixmap = QPixmap(self.resource_path)
+            if not pixmap.isNull():
+                self.flag.setPixmap(
+                    pixmap.scaled(
+                        24,
+                        14,
+                        Qt.KeepAspectRatio,
+                        Qt.SmoothTransformation,
+                    )
+                )
+            else:
+                # Der Eintrag bleibt auch dann vollständig bedienbar, wenn die
+                # kompilierte flags_rc-Resource beim Entwickeln noch fehlt.
+                self.flag.setText("□")
+                self.flag.setToolTip(
+                    f"Resource nicht geladen: {self.resource_path}"
+                )
+
+            self.caption = QLabel(f"- {self.code} - {self.title}", self)
+            self.caption.setObjectName("language_menu_caption")
+            self.caption.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            self.caption.setToolTip(self.title)
+
+            layout = QHBoxLayout(self)
+            layout.setContentsMargins(4, 1, 7, 1)
+            layout.setSpacing(5)
+            layout.addWidget(self.radio, 0, Qt.AlignVCenter)
+            layout.addWidget(self.flag, 0, Qt.AlignVCenter)
+            layout.addWidget(self.caption, 1, Qt.AlignVCenter)
+
+            self.radio.toggled.connect(self._radio_toggled)
+
+        def _radio_toggled(self, checked: bool) -> None:
+            if checked:
+                self.selected.emit(self.code)
+
+        def mouseReleaseEvent(self, event) -> None:
+            if event.button() == Qt.LeftButton:
+                self.radio.setChecked(True)
+                event.accept()
+                return
+            super().mouseReleaseEvent(event)
 
     class LocalizeCodeEditor(QPlainTextEdit):
         def __init__(self, parent=None):
@@ -36079,6 +38346,17 @@ QStackedWidget#learning_content_stack {{
         def __init__(self, requested_directory: Optional[Path]):
             super().__init__()
             self.settings = QSettings(self.ORGANIZATION, self.APPLICATION)
+            # Stage 167: die Sprache des Ansicht-Menüs wird unabhängig vom
+            # Localize-Quell-/Zielsprachenpaar persistent geführt.
+            self.ui_language_code = str(
+                self.settings.value("view/language_code", "DEU") or "DEU"
+            ).strip().upper()
+            if self.ui_language_code not in {code for code, _title, _flag in LANGUAGE_CODES}:
+                self.ui_language_code = "DEU"
+            self.language_menu = None
+            self.language_menu_action = None
+            self.language_button_group = None
+            self.language_menu_entries = {}
             # LocalizeToolWindow historically used _settings.  Preserve that
             # name as an alias so its existing persistence works in the dock.
             self._settings = self.settings
@@ -41132,6 +43410,82 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             self.settings_panel.tabs.setFocus(Qt.OtherFocusReason)
             self.statusBar().showMessage("Desktop-Einstellungen geöffnet")
 
+        def _create_language_menu(self) -> None:
+            """Stage 167: Ansicht->Sprache mit 68 Einträgen in 4 Spalten."""
+            self.language_menu = self.view_menu.addMenu("Sprache")
+            self.language_menu.setObjectName("language_menu")
+
+            host = QWidget(self.language_menu)
+            host.setObjectName("language_menu_grid")
+            grid = QGridLayout(host)
+            grid.setContentsMargins(6, 5, 6, 5)
+            grid.setHorizontalSpacing(10)
+            grid.setVerticalSpacing(0)
+
+            self.language_button_group = QButtonGroup(self.language_menu)
+            self.language_button_group.setExclusive(True)
+            self.language_menu_entries = {}
+
+            # LANGUAGE_CODES ist die alleinige Datenquelle. Bei 68 Einträgen
+            # entstehen 17 Zeilen mit jeweils vier Spalten. Die Reihenfolge
+            # bleibt exakt die Reihenfolge der Konstantenliste.
+            column_count = 4
+            for index, (code, title, flag_path) in enumerate(LANGUAGE_CODES):
+                row = index // column_count
+                column = index % column_count
+                entry = LanguageMenuChoice(
+                    code,
+                    title,
+                    flag_path,
+                    host,
+                )
+                entry.selected.connect(self._select_ui_language)
+                self.language_button_group.addButton(entry.radio)
+                self.language_menu_entries[str(code).upper()] = entry
+                grid.addWidget(entry, row, column)
+
+            for column in range(column_count):
+                grid.setColumnStretch(column, 1)
+
+            self.language_menu_action = QWidgetAction(self.language_menu)
+            self.language_menu_action.setObjectName("language_menu_grid_action")
+            self.language_menu_action.setDefaultWidget(host)
+            self.language_menu.addAction(self.language_menu_action)
+            self.language_menu.aboutToShow.connect(
+                self._sync_ui_language_menu_selection
+            )
+            self._sync_ui_language_menu_selection()
+
+        def _sync_ui_language_menu_selection(self) -> None:
+            entry = self.language_menu_entries.get(self.ui_language_code)
+            if entry is None:
+                entry = self.language_menu_entries.get("DEU")
+            if entry is not None and not entry.radio.isChecked():
+                blocker = entry.radio.blockSignals(True)
+                entry.radio.setChecked(True)
+                entry.radio.blockSignals(blocker)
+
+        def _select_ui_language(self, code: str) -> None:
+            normalized = str(code).strip().upper()
+            entry = self.language_menu_entries.get(normalized)
+            if entry is None:
+                return
+
+            self.ui_language_code = normalized
+            self.settings.setValue("view/language_code", normalized)
+            self.settings.sync()
+            self.statusBar().showMessage(
+                f"Sprache: {normalized} - {entry.title}"
+            )
+
+            # Das eingebettete QWidgetAction schließt QMenu nicht automatisch.
+            # Nach einer Auswahl verhalten wir uns deshalb wie ein normales
+            # Submenü und schließen die Menükette explizit.
+            if self.language_menu is not None:
+                self.language_menu.close()
+            if getattr(self, "view_menu", None) is not None:
+                self.view_menu.close()
+
         def _create_menu(self) -> None:
             file_menu = self.main_menu_bar.addMenu("&Datei")
             self.new_document_menu = file_menu.addMenu(
@@ -41167,6 +43521,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             self.edit_menu.aboutToShow.connect(self._update_edit_actions)
 
             self.view_menu = self.main_menu_bar.addMenu("&Ansicht")
+            self._create_language_menu()
             self.favorites_menu = self.main_menu_bar.addMenu("&Favoriten")
             self._refresh_favorites_menu()
             self.dism_menu = self.main_menu_bar.addMenu("&DISM")

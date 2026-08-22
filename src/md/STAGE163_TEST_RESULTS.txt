@@ -1,0 +1,42 @@
+Stage 163 - dBase Table Designer Data Tab
+
+OK  Stage 163 marker present
+OK  QDoubleValidator imported
+OK  QStyledItemDelegate imported
+OK  Typed DBF data delegate exists
+OK  Logical fields use combo editor
+OK  Numeric fields use QDoubleValidator
+OK  Date fields use digit validator
+OK  Numeric normalizer rejects alphabetic values
+OK  Data tab created after save/load
+OK  Data tab inserted right of fields tab
+OK  Outer tab name is DBF stem
+OK  Data grid headers use DBF field names
+OK  Vertical headers contain record numbers
+OK  All cells are editable
+OK  Dark header style exists
+OK  Context menu Insert
+OK  Context menu Copy
+OK  Context menu Cut
+OK  Context menu Delete record
+OK  Context menu New record
+OK  Navigation buttons exist
+OK  Navigation callbacks wired
+OK  New record emits autosave signal
+OK  Delete record emits autosave signal
+OK  Cell changes emit autosave signal
+OK  Auto-save writes same DBF
+OK  Existing DBF writer retained
+OK  Existing DBF reader retained
+OK  Field designer retained
+OK  Python compile succeeds
+OK  Numeric accepts decimal
+OK  Numeric rejects alphabetic text
+OK  Date accepts YYYYMMDD
+OK  Date rejects non-8-digit text
+OK  Logical normalizes yes to T
+OK  Logical normalizes no to F
+
+checks=36 passed=36 failed=0
+py_compile d64_dism.py: OK
+Native Windows/PyQt5 GUI runtime test: unavailable in this environment.

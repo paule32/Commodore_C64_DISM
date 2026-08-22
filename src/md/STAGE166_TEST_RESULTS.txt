@@ -1,0 +1,22 @@
+Stage 166 – Test Results
+========================
+
+OK  Stage166 marker
+OK  Undo Ctrl+Z action
+OK  Redo Ctrl+Y action
+OK  Copy Ctrl+C action
+OK  Paste Ctrl+V action
+OK  Cut Ctrl+X action
+OK  Bearbeiten main menu
+OK  Menu order exact
+OK  Source editor explicit Ctrl+Z
+OK  Source editor explicit Ctrl+Y
+OK  Central active text routing
+OK  Read-only protection
+OK  Live edit action refresh
+OK  Stage164 indentation preserved
+OK  Original Stage164 source preserved as ordered lines
+
+checks=15 passed=15 failed=0
+python -m py_compile d64_dism.py: OK
+Native PyQt5 GUI runtime test: unavailable (PyQt5 not installed in container).

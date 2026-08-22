@@ -1,0 +1,20 @@
+Stage 149 - math dock max height on open
+
+OK  Explicit math height clamp helper exists
+OK  Math clamp uses MAX_WINDOW_HEIGHT
+OK  Main window is resized down when above maximum
+OK  Floating math dock is resized down
+OK  Math widget is constrained
+OK  Math open path clamps before dock.show
+OK  Math open path clamps after dock.show
+OK  Deferred clamp is scheduled after show
+OK  Vertical resize request no longer uses 100000
+OK  Window max height remains 1000
+OK  Startup height remains 800
+OK  No fixed-height lock added
+OK  Fibonacci QPainter retained
+OK  Python compile succeeds
+
+checks=14 passed=14 failed=0
+py_compile d64_dism.py: OK
+Native Windows/PyQt5 GUI runtime test: unavailable in this environment.

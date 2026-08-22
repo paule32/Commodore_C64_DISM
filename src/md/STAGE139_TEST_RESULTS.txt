@@ -1,0 +1,35 @@
+Stage 139 - Sudoku tests
+
+OK  SudokuTrainerWidget exists
+OK  Sudoku group exists
+OK  Easy Sudoku tree item exists
+OK  Medium Sudoku tree item exists
+OK  Hard Sudoku tree item exists
+OK  Expert Sudoku tree item exists
+OK  Sudoku widget added to content stack
+OK  Sudoku game routing exists
+OK  Sudoku theme propagation exists
+OK  Sudoku uses 1..9 validator
+OK  Check button only enabled when filled
+OK  New Sudoku button exists
+OK  Clear entries button exists
+OK  Sudoku conflict detection exists
+OK  Stage138 QGraphics fix retained
+OK  Base Sudoku solution is valid
+OK  sudoku_easy has 42 clues
+OK  sudoku_easy matches base solution at clues
+OK  sudoku_easy has exactly one solution
+OK  sudoku_medium has 35 clues
+OK  sudoku_medium matches base solution at clues
+OK  sudoku_medium has exactly one solution
+OK  sudoku_hard has 30 clues
+OK  sudoku_hard matches base solution at clues
+OK  sudoku_hard has exactly one solution
+OK  sudoku_expert has 26 clues
+OK  sudoku_expert matches base solution at clues
+OK  sudoku_expert has exactly one solution
+
+checks=28 passed=28 failed=0
+Python AST/algorithm tests: OK
+All four Sudoku templates: unique solution verified
+Native PyQt5 GUI runtime test: unavailable in this environment.

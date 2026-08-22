@@ -7825,7 +7825,7 @@ extern "C" D64QT5_API int DBaseQtObjectBindEvent(
         }
     }
 
-    if (key == QStringLiteral("oninterval")) {
+    if (key == QStringLiteral("ontimer") || key == QStringLiteral("oninterval")) {
         if (QTimer *timer = qobject_cast<QTimer *>(object)) {
             QObject::connect(
                 timer,
@@ -7849,6 +7849,26 @@ extern "C" D64QT5_API int DBaseQtObjectBindEvent(
     return 1;
 }
 
+extern "C" D64QT5_API void *DBaseQtNonVisualCreate(
+    const char *className,
+    int classNameLength,
+    void *parentHandle)
+{
+    if (!parentHandle || g_shutdown_requested)
+        return nullptr;
+
+    // WFM-Handles (Form, Widget, Timer und nicht-visuelle Komponenten) sind
+    // QObject-Ableitungen. Dadurch können Query/DataSource später auch an
+    // eine nicht-visuelle Database/Session-Komponente gehängt werden, ohne
+    // einen QWidget-Parent zu erzwingen.
+    QObject *parentObject = static_cast<QObject *>(parentHandle);
+    QObject *object = new QObject(parentObject);
+    const QString type = wfm_text(className, classNameLength).trimmed();
+    object->setObjectName(type);
+    object->setProperty("dbaseNonVisualClass", type);
+    return object;
+}
+
 extern "C" D64QT5_API void *DBaseQtTimerCreate(void *parentHandle)
 {
     QWidget *parentWidget = wfm_widget(parentHandle);
@@ -7857,22 +7877,20 @@ extern "C" D64QT5_API void *DBaseQtTimerCreate(void *parentHandle)
 
     QTimer *timer = new QTimer(parentWidget);
     timer->setTimerType(Qt::PreciseTimer);
-    // WFM speichert Mikrosekunden. Qt5-QTimer arbeitet in Millisekunden;
-    // 1000 us entsprechen daher dem Default von 1 ms.
-    timer->setInterval(1);
+    // Stage 158: WFM-Timerwerte sind direkt Millisekunden.
+    // Default: 1000 ms = 1 Sekunde.
+    timer->setInterval(1000);
     return timer;
 }
 
 extern "C" D64QT5_API void DBaseQtTimerSetInterval(
     void *handle,
-    int microseconds)
+    int milliseconds)
 {
     QTimer *timer = static_cast<QTimer *>(handle);
     if (!timer)
         return;
-    const int us = qMax(1, microseconds);
-    const int milliseconds = qMax(1, (us + 999) / 1000);
-    timer->setInterval(milliseconds);
+    timer->setInterval(qMax(10, milliseconds));
 }
 
 extern "C" D64QT5_API void DBaseQtTimerSetActive(

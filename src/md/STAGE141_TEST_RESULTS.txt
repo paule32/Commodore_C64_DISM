@@ -1,0 +1,39 @@
+Stage 141 - Gorilla parabola math game
+
+OK  Gorilla game class exists
+OK  Game tree contains Parabeln group
+OK  Gorilla widget added to content stack
+OK  Open-game branch activates gorilla widget
+OK  Theme propagation includes gorilla widget
+OK  Fixed player building indices exist
+OK  Building heights are random
+OK  Retro windows are drawn
+OK  Each player has input box
+OK  Each player has throw button
+OK  Banana follows explicit parabola equation
+OK  Trajectory is not rendered as path
+OK  Wind affects horizontal motion
+OK  Banana visibly rotates
+OK  Building collision exists
+OK  Crater collision pass-through exists
+OK  Crater is persisted per building
+OK  Gorilla hit ends game
+OK  Math task controls throw power
+OK  Stage 140 ISO game retained
+OK  Sudoku retained
+OK  Numbers wall retained
+OK  Python compile succeeds
+OK  Ballistic horizontal solution wind=-28 vx=+172
+OK  Ballistic horizontal solution wind=-28 vx=-172
+OK  Ballistic horizontal solution wind=-10 vx=+172
+OK  Ballistic horizontal solution wind=-10 vx=-172
+OK  Ballistic horizontal solution wind=0 vx=+172
+OK  Ballistic horizontal solution wind=0 vx=-172
+OK  Ballistic horizontal solution wind=13 vx=+172
+OK  Ballistic horizontal solution wind=13 vx=-172
+OK  Ballistic horizontal solution wind=28 vx=+172
+OK  Ballistic horizontal solution wind=28 vx=-172
+
+checks=33 passed=33 failed=0
+py_compile d64_dism.py: OK
+Native PyQt5 GUI/runtime test: unavailable in this environment.

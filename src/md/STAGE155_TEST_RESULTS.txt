@@ -1,0 +1,22 @@
+Stage 155 - Fibonacci scene reduced by 60 percent
+
+OK  Stage 155 marker
+OK  Scale factor is exactly 0.40
+OK  Scene width is 496
+OK  Scene height is 440
+OK  Proxy is scaled instead of canvas geometry rewritten
+OK  Logical canvas remains 1220x1080
+OK  Old scene rect 1240x1100 removed
+OK  Horizontal scrollbar retained
+OK  Vertical scrollbar retained
+OK  Pascal painter retained
+OK  Fibonacci painter retained
+OK  Dark mode starts enabled
+OK  Python compile succeeds
+
+checks=13 passed=13 failed=0
+Scene: 496 x 440
+Proxy scale: 0.40
+Logical canvas: 1220 x 1080
+py_compile d64_dism.py: OK
+Native Windows/PyQt5 GUI runtime test: unavailable in this environment.
