@@ -1,5 +1,8 @@
 # Commodore_C64_DISM
 A Commodore C-64 Disassembler and Disk-Image Information Viewer and de-packer
+
+## Link for a Sponsor Donat:
+https://www.paypal.com/ncp/payment/CUBXY9QPTPHRU
 ---
 Preview
 ![Preview](img/screen0012.png)
