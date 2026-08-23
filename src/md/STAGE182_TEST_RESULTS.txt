@@ -1,0 +1,56 @@
+Stage 182 - System.SysUtils PROPERTY + INHERITED
+=================================================
+
+Exact user source
+-----------------
+OK  units/System/SysUtils.pas stored exactly from the reported example
+OK  Exception = class(TObject)
+OK  constructor Create(const AMessage: String)
+OK  published property Message: String read FMessage
+OK  inherited Create
+OK  FMessage := AMessage
+
+Grammar
+-------
+OK  99 lexer rules
+OK  65 parser rules
+OK  no unknown lexer-token references
+OK  no unknown parser-rule references
+OK  INHERITED lexer token
+OK  inheritedStatement parser rule
+OK  statement accepts inheritedStatement
+OK  PROPERTY grammar from Stage179 retained
+OK  Pointer(Self) typeCast grammar from Stage178 retained
+
+Compiler / compatibility bridge
+-------------------------------
+OK  compiler.py py_compile
+OK  feature-specific generated-parser capability probing
+OK  old parser without propertyDeclaration extracts Message property
+OK  extracted property owner = Exception
+OK  extracted property name = Message
+OK  extracted property type = string
+OK  extracted property read accessor = FMessage
+OK  property source span is blanked line-preservingly for old parser
+OK  old parser without inheritedStatement records inherited Create
+OK  old-parser input becomes ordinary Create call without changing line count
+OK  post-parse AST supports rewriting to InheritedCallStatement
+
+PE32 semantic/codegen
+---------------------
+OK  Exception base type resolves to TObject in manual semantic regression
+OK  Message property installed in Exception property table
+OK  Message.read_accessor = FMessage
+OK  inherited Create resolves through direct base class
+OK  inherited Create selects TObject.Create
+OK  generated call = call __pas_method_tobject_create
+OK  inherited call does not recurse into Exception.Create
+OK  FMessage / AMessage string types remain compatible
+
+Environment limitation
+----------------------
+The Assistant environment still does not contain an ANTLR 4.13.2 generator/runtime
+pair compatible with the checked-in generated Python parser, so native ANTLR
+regeneration was not executed here. The compatibility bridge itself was exercised
+against simulated older generated-parser capabilities, and the PE32 inherited-call
+semantic/codegen path was executed directly.

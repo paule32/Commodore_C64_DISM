@@ -1,0 +1,10 @@
+Stage 171 source preservation proof
+===================================
+Stage170: 2392516 bytes, 54115 lines
+SHA256: 669ace99813b07c35300e508b1bc05517deb5cfa0b16755ff251ab3add974d18
+
+Stage171: 2402830 bytes, 54388 lines
+SHA256: 162c17eb046b0d289c652d20e88c61d81d229e5aa276afa08706f2ea7b51c770
+
+All 54115 Stage170 lines occur unchanged and in original order.
+Unified diff: +273 / -0 source lines.

@@ -5,6 +5,12 @@ options {
 }
 
 PROGRAM      : 'PROGRAM';
+UNIT         : 'UNIT';
+INTERFACE    : 'INTERFACE';
+IMPLEMENTATION : 'IMPLEMENTATION';
+USES         : 'USES';
+LIBRARY      : 'LIBRARY';
+
 CONST        : 'CONST';
 TYPE         : 'TYPE';
 VAR          : 'VAR';
@@ -31,18 +37,42 @@ PRIVATE      : 'PRIVATE';
 PROTECTED    : 'PROTECTED';
 PUBLIC       : 'PUBLIC';
 PUBLISHED    : 'PUBLISHED';
+PROPERTY     : 'PROPERTY';
+READ         : 'READ';
+WRITE        : 'WRITE';
+STORED       : 'STORED';
+DEFAULT      : 'DEFAULT';
+NODEFAULT    : 'NODEFAULT';
 PROCEDURE    : 'PROCEDURE';
 FUNCTION     : 'FUNCTION';
 CONSTRUCTOR  : 'CONSTRUCTOR';
 DESTRUCTOR   : 'DESTRUCTOR';
 
+// Method/routine directives needed by System.Objects.pas.
+VIRTUAL      : 'VIRTUAL';
+OVERRIDE     : 'OVERRIDE';
+CDECL        : 'CDECL';
+EXTERNAL     : 'EXTERNAL';
+FORWARD      : 'FORWARD';
+STATIC       : 'STATIC';
+ABSTRACT     : 'ABSTRACT';
+OVERLOAD     : 'OVERLOAD';
+REINTRODUCE  : 'REINTRODUCE';
+INLINE       : 'INLINE';
+DYNAMIC      : 'DYNAMIC';
+INHERITED    : 'INHERITED';
+
 INTEGER_TYPE : 'INTEGER';
 BYTE_TYPE    : 'BYTE';
 CHAR_TYPE    : 'CHAR';
 BOOLEAN_TYPE : 'BOOLEAN';
+POINTER_TYPE : 'POINTER';
+STRING_TYPE  : 'STRING';
+DOUBLE_TYPE  : 'DOUBLE';
 
 TRUE         : 'TRUE';
 FALSE        : 'FALSE';
+NIL          : 'NIL';
 DIV          : 'DIV';
 MOD          : 'MOD';
 AND          : 'AND';
@@ -61,6 +91,7 @@ PLUS         : '+';
 MINUS        : '-';
 STAR         : '*';
 SLASH        : '/';
+CARET        : '^';
 LPAREN       : '(';
 RPAREN       : ')';
 LBRACK       : '[';
@@ -91,6 +122,9 @@ IDENTIFIER
     : [A-Z_] [A-Z0-9_]*
     ;
 
+// IMPORTANT: compiler directives are handled by the Pascal preprocessor
+// before ANTLR sees the source. Normal brace comments must therefore remain
+// separate from {$...} processing.
 BRACE_COMMENT
     : '{' .*? '}' -> skip
     ;

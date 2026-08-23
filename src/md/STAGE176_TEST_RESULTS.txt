@@ -1,0 +1,61 @@
+Stage 176 - Pascal System.Types preprocessor
+============================================
+
+OK   py_compile d64_dism.py
+OK   all 56645 Stage175 source lines preserved in original order
+OK   unified diff removes 0 Stage175 source lines
+OK   // line comments
+OK   (* ... *) multiline comments
+OK   { ... } multiline comments
+OK   {$...} recognized before { ... } comment stripping
+OK   Pascal strings containing // remain intact
+OK   Pascal strings containing { } remain intact
+OK   {$define NAME}
+OK   {$define NAME value}
+OK   {$undef NAME}
+OK   {$ifdef NAME}
+OK   {$ifndef NAME}
+OK   {$if expression}
+OK   {$elseif expression}
+OK   {$elif expression}
+OK   {$else}
+OK   {$endif}
+OK   nested conditional blocks
+OK   defined(NAME)
+OK   NOT / AND / OR / XOR
+OK   = / <> / < / > / <= / >=
+OK   decimal condition values
+OK   $HEX condition values
+OK   Pascal string condition values
+OK   explicit-value macro expansion outside strings/comments
+OK   inactive branches blanked
+OK   physical line count preserved
+OK   missing {$endif} reports opening line
+OK   System.Types exact regression source loaded
+OK   VERSION = 1
+OK   VERSION_TEXT = '1.0.0'
+OK   VERSION_NAME = 'Community'
+OK   PRODUCT_NAME = 'dBase2Many'
+OK   System.Types original/output line count 70/70
+OK   Boolean = 0..1 preserved
+OK   Byte = 0..255 preserved
+OK   Word = 0..65535 preserved
+OK   DWord = 0..4294967295 preserved
+OK   ShortInt = -128..127 preserved
+OK   SmallInt = -32768..32767 preserved
+OK   Int32 = -2147483648..2147483647 preserved
+OK   PChar = ^Char preserved
+OK   PAnsiChar = ^AnsiChar preserved
+OK   PAnsiString = ^AnsiString preserved
+OK   PByte = ^Byte preserved
+OK   GUI Pascal path invokes preprocess_pascal_source before compiler
+OK   GUI passes resulting macro table forward when supported
+OK   CLI Pascal path invokes preprocess_pascal_source before compiler
+OK   Stage171 .coff32.o Unit path retained
+OK   Stage175 repo-parser synchronization retained
+
+checks=52 passed=52 failed=0
+
+Native c64pascal -> COFF32 compilation: NOT RUN in assistant environment.
+Reason: the user's local c64pascal checkout is not included in the supplied
+Stage175 package/runtime.

@@ -1,0 +1,60 @@
+Stage 177 - System.Types / System.Objects Parser+Lexer Tests
+================================================================
+
+OK  compiler.py py_compile
+OK  generate_parser.py py_compile
+OK  test_stage177_system_units.py py_compile
+OK  86 Lexer-Regeln ermittelt
+OK  58 Parser-Regeln ermittelt
+OK  keine fehlende Lexer-Tokenreferenz in Parser.g4
+OK  keine fehlende Parser-Regelreferenz in Parser.g4
+OK  UNIT / INTERFACE / IMPLEMENTATION / USES
+OK  VIRTUAL / OVERRIDE
+OK  CDECL / EXTERNAL / FORWARD
+OK  POINTER_TYPE / STRING_TYPE / DOUBLE_TYPE
+OK  NIL / CARET
+OK  unitUnit
+OK  subrangeType
+OK  pointerType
+OK  methodDirective
+OK  globalRoutineDeclaration
+OK  routineDirective
+OK  typeName mit Builtin-LHS
+OK  drei Kommentararten maskiert: {...}, (*...*), //...
+OK  {$define} bleibt Preprocessor-Direktive
+OK  System.Types.pas exakte Testquelle integriert
+OK  System.Objects.pas exakte Testquelle integriert
+OK  System.Types Unitname = System.Types
+OK  System.Objects Unitname = System.Objects
+OK  System.Types Bridge: 12 Subrange/Pointer-Typdefinitionen
+OK  System.Objects Bridge: genau 10 cdecl/external Routinen
+OK  cdecl Externals erhalten Win32-Unterstrichsymbol
+OK  virtual; wird fuer alten Generated-Parser zeilentreu ausgeblendet
+OK  Bridge behaelt Zeilenanzahl des transformierten Parsertextes
+OK  System.Types: Word 2 Byte unsigned
+OK  System.Types: DWord 4 Byte unsigned
+OK  System.Types: ShortInt 1 Byte signed
+OK  System.Types: SmallInt 2 Byte signed
+OK  System.Types: Int32 4 Byte signed
+OK  System.Types: Integer Win32 = 4 Byte
+OK  System.Types: Pointer Win32 = 4 Byte
+OK  System.Types: String Win32 = 4 Byte Handle
+OK  System.Types: PChar = 4 Byte Pointer
+OK  System.Types: PAnsiString = 4 Byte Pointer
+OK  System.Types PE32 Unit-Codegen ohne _start
+OK  System.Objects: TClass/Pointer Semantik
+OK  System.Objects: Self <> nil Codegen
+OK  System.Objects: Pointer(Self) Codegen
+OK  System.Objects: parameterlose ClassNameAddress-Methode
+OK  System.Objects: String-Rueckgabe ueber jit_dynstring_from_cstr
+OK  System.Objects: InheritsFrom Boolean-Ausdruck
+OK  System.Objects: alle 10 externen Runtime-Symbole im ASM
+OK  System.Objects: alle 10 TObject-Methoden global im Unit-ASM
+OK  System.Objects: Destroy.is_virtual = true
+OK  PUI: TObject-Klassenmethoden bleiben im Interfaceparsertext erhalten
+OK  PUI: keine TObject-Methode faelschlich als globale PUI-Routine erkannt
+
+Native ANTLR-4.13.2-Regeneration/End-to-End-Parse: NICHT in Assistant-Umgebung
+moeglich (lokal nur antlr4-python3-runtime 4.9.3, kein 4.13.2 Tool-JAR).
+Das Paket enthaelt REGENERATE_PARSER_STAGE177.bat und einen echten Regressionstest
+fuer die Ausfuehrung auf dem Windows-Entwicklungssystem.

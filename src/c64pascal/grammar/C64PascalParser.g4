@@ -5,15 +5,41 @@ options {
 }
 
 compilationUnit
-    : programUnit EOF
+    : (programUnit | unitUnit) EOF
     ;
 
 programUnit
     : PROGRAM IDENTIFIER (LPAREN identifierList RPAREN)? SEMI block DOT
     ;
 
+// Native UNIT syntax. compiler.py still keeps its existing source-splitting
+// path for PUI generation, but regenerated parsers can now parse units too.
+unitUnit
+    : UNIT qualifiedIdentifier SEMI
+      INTERFACE
+      usesClause?
+      declarationSection*
+      globalRoutinePrototype*
+      IMPLEMENTATION
+      usesClause?
+      declarationSection*
+      globalRoutineDeclaration*
+      (globalRoutineImplementation | methodImplementation)*
+      (compoundStatement DOT | END DOT)
+    ;
+
+usesClause
+    : USES qualifiedIdentifier (COMMA qualifiedIdentifier)* SEMI
+    ;
+
+qualifiedIdentifier
+    : IDENTIFIER (DOT IDENTIFIER)*
+    ;
+
 block
-    : declarationSection* methodImplementation* compoundStatement
+    : declarationSection* globalRoutineDeclaration*
+      (globalRoutineImplementation | methodImplementation)*
+      compoundStatement
     ;
 
 declarationSection
@@ -34,16 +60,43 @@ typeSection
     : TYPE typeDefinition+
     ;
 
+// Built-in type tokens are legal on the left side as well. This is required
+// for bootstrap units such as System.Types.pas (Boolean = 0..1, Byte = ...).
 typeDefinition
-    : IDENTIFIER EQ typeSpecification SEMI
+    : typeName EQ typeSpecification SEMI
+    ;
+
+typeName
+    : IDENTIFIER
+    | INTEGER_TYPE
+    | BYTE_TYPE
+    | CHAR_TYPE
+    | BOOLEAN_TYPE
+    | POINTER_TYPE
+    | STRING_TYPE
+    | DOUBLE_TYPE
     ;
 
 typeSpecification
     : typeIdentifier
+    | subrangeType
+    | pointerType
     | enumType
     | recordType
     | arrayType
     | classType
+    ;
+
+subrangeType
+    : signedIntegerLiteral DOTDOT signedIntegerLiteral
+    ;
+
+pointerType
+    : CARET typeIdentifier
+    ;
+
+signedIntegerLiteral
+    : (PLUS | MINUS)? integerLiteral
     ;
 
 enumType
@@ -66,6 +119,7 @@ classMember
     : visibilitySpecifier
     | fieldDeclaration
     | methodDeclaration
+    | propertyDeclaration
     ;
 
 visibilitySpecifier
@@ -79,12 +133,78 @@ fieldDeclaration
     : identifierList COLON typeIdentifier SEMI
     ;
 
+// Delphi/Object-Pascal style class property.  System units commonly use
+// declarations such as:
+//     property Message: String read FMessage write FMessage;
+propertyDeclaration
+    : PROPERTY IDENTIFIER propertyIndexParameters? COLON typeIdentifier
+      propertySpecifier* SEMI
+    ;
+
+propertyIndexParameters
+    : LBRACK formalParameterList? RBRACK
+    ;
+
+propertySpecifier
+    : READ propertyAccessor
+    | WRITE propertyAccessor
+    | STORED (TRUE | FALSE | IDENTIFIER)
+    | DEFAULT expression
+    | NODEFAULT
+    ;
+
+propertyAccessor
+    : IDENTIFIER (DOT IDENTIFIER)*
+    ;
+
 methodDeclaration
-    : routineKind IDENTIFIER formalParameters? (COLON typeIdentifier)? SEMI
+    : CLASS? routineKind IDENTIFIER formalParameters? (COLON typeIdentifier)? SEMI
+      methodDirective*
+    ;
+
+methodDirective
+    : (
+        VIRTUAL
+        | OVERRIDE
+        | CDECL
+        | FORWARD
+        | STATIC
+        | ABSTRACT
+        | OVERLOAD
+        | REINTRODUCE
+        | INLINE
+        | DYNAMIC
+      ) SEMI
+    ;
+
+// Example accepted:
+// function jit_object_class_type(AObject: Pointer): Pointer; cdecl; external;
+// Plain Unit-interface prototype, e.g. function IntToStr(...): String;
+globalRoutinePrototype
+    : (PROCEDURE | FUNCTION) IDENTIFIER formalParameters?
+      (COLON typeIdentifier)? SEMI
+    ;
+
+// External/forward declaration.  At least one directive keeps this rule
+// syntactically distinct from a free implementation.
+globalRoutineDeclaration
+    : (PROCEDURE | FUNCTION) IDENTIFIER formalParameters?
+      (COLON typeIdentifier)? SEMI routineDirective+
+    ;
+
+// Free routine implementation in a PROGRAM/UNIT implementation section.
+// This is distinct from ClassName.MethodName implementations.
+globalRoutineImplementation
+    : (PROCEDURE | FUNCTION) IDENTIFIER formalParameters?
+      (COLON typeIdentifier)? SEMI routineBlock SEMI
+    ;
+
+routineDirective
+    : (CDECL | EXTERNAL | FORWARD) SEMI
     ;
 
 methodImplementation
-    : routineKind IDENTIFIER DOT IDENTIFIER formalParameters?
+    : CLASS? routineKind IDENTIFIER DOT IDENTIFIER formalParameters?
       (COLON typeIdentifier)? SEMI routineBlock SEMI
     ;
 
@@ -128,6 +248,9 @@ typeIdentifier
     | BYTE_TYPE
     | CHAR_TYPE
     | BOOLEAN_TYPE
+    | POINTER_TYPE
+    | STRING_TYPE
+    | DOUBLE_TYPE
     | IDENTIFIER
     ;
 
@@ -142,6 +265,7 @@ statementSequence
 statement
     : compoundStatement                    # compoundStatementNode
     | assignmentStatement                  # assignmentStatementNode
+    | inheritedStatement                   # inheritedStatementNode
     | callStatement                        # callStatementNode
     | ifStatement                          # ifStatementNode
     | whileStatement                       # whileStatementNode
@@ -157,6 +281,13 @@ assignmentStatement
 
 callStatement
     : designator (LPAREN argumentList? RPAREN)?
+    ;
+
+// Object Pascal inherited call.  `inherited Create;` explicitly selects the
+// implementation in the direct base class; bare `inherited;` reuses the
+// current method name.
+inheritedStatement
+    : INHERITED (IDENTIFIER (LPAREN argumentList? RPAREN)?)?
     ;
 
 ifStatement
@@ -176,7 +307,7 @@ forStatement
     ;
 
 designator
-    : IDENTIFIER designatorSuffix*
+    : (IDENTIFIER | NIL) designatorSuffix*
     ;
 
 designatorSuffix
@@ -222,9 +353,29 @@ primaryExpression
     | STRING_LITERAL
     | TRUE
     | FALSE
+    | NIL
+    | typeCastExpression
     | designator LPAREN argumentList? RPAREN
     | designator
     | LPAREN expression RPAREN
+    ;
+
+// Built-in Pascal type casts are distinct from ordinary routine calls.
+// POINTER_TYPE is a lexer keyword, therefore Pointer(Self) cannot be parsed
+// through `designator`, whose root is IDENTIFIER. Keeping casts separate also
+// avoids weakening the lexer by turning Pointer back into an IDENTIFIER.
+typeCastExpression
+    : builtinCastType LPAREN expression RPAREN
+    ;
+
+builtinCastType
+    : INTEGER_TYPE
+    | BYTE_TYPE
+    | CHAR_TYPE
+    | BOOLEAN_TYPE
+    | POINTER_TYPE
+    | STRING_TYPE
+    | DOUBLE_TYPE
     ;
 
 integerLiteral

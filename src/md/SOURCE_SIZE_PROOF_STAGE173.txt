@@ -1,0 +1,10 @@
+Stage 173 source preservation proof
+===================================
+Stage172: 2426290 bytes, 55033 lines
+SHA256: 971708059b01eb6428c0b036b0bc00171484e912c08aa405702751f2f605ab22
+
+Stage173: 2441317 bytes, 55449 lines
+SHA256: 405434fc1926ccaed799b7d92761f6afeca2836aaf2c3e41f89558bb446efded
+
+All Stage172 lines are present unchanged and in original order.
+Unified diff: +416 / -0 source lines.

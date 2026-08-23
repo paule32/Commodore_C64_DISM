@@ -1,3 +1,4 @@
+# Generated from c64pascal/grammar/C64PascalParser.g4 by ANTLR 4.13.2
 from antlr4 import *
 if "." in __name__:
     from .C64PascalParser import C64PascalParser
@@ -15,6 +16,21 @@ class C64PascalParserVisitor(ParseTreeVisitor):
 
     # Visit a parse tree produced by C64PascalParser#programUnit.
     def visitProgramUnit(self, ctx:C64PascalParser.ProgramUnitContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by C64PascalParser#unitUnit.
+    def visitUnitUnit(self, ctx:C64PascalParser.UnitUnitContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by C64PascalParser#usesClause.
+    def visitUsesClause(self, ctx:C64PascalParser.UsesClauseContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by C64PascalParser#qualifiedIdentifier.
+    def visitQualifiedIdentifier(self, ctx:C64PascalParser.QualifiedIdentifierContext):
         return self.visitChildren(ctx)
 
 
@@ -48,8 +64,28 @@ class C64PascalParserVisitor(ParseTreeVisitor):
         return self.visitChildren(ctx)
 
 
+    # Visit a parse tree produced by C64PascalParser#typeName.
+    def visitTypeName(self, ctx:C64PascalParser.TypeNameContext):
+        return self.visitChildren(ctx)
+
+
     # Visit a parse tree produced by C64PascalParser#typeSpecification.
     def visitTypeSpecification(self, ctx:C64PascalParser.TypeSpecificationContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by C64PascalParser#subrangeType.
+    def visitSubrangeType(self, ctx:C64PascalParser.SubrangeTypeContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by C64PascalParser#pointerType.
+    def visitPointerType(self, ctx:C64PascalParser.PointerTypeContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by C64PascalParser#signedIntegerLiteral.
+    def visitSignedIntegerLiteral(self, ctx:C64PascalParser.SignedIntegerLiteralContext):
         return self.visitChildren(ctx)
 
 
@@ -88,8 +124,53 @@ class C64PascalParserVisitor(ParseTreeVisitor):
         return self.visitChildren(ctx)
 
 
+    # Visit a parse tree produced by C64PascalParser#propertyDeclaration.
+    def visitPropertyDeclaration(self, ctx:C64PascalParser.PropertyDeclarationContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by C64PascalParser#propertyIndexParameters.
+    def visitPropertyIndexParameters(self, ctx:C64PascalParser.PropertyIndexParametersContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by C64PascalParser#propertySpecifier.
+    def visitPropertySpecifier(self, ctx:C64PascalParser.PropertySpecifierContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by C64PascalParser#propertyAccessor.
+    def visitPropertyAccessor(self, ctx:C64PascalParser.PropertyAccessorContext):
+        return self.visitChildren(ctx)
+
+
     # Visit a parse tree produced by C64PascalParser#methodDeclaration.
     def visitMethodDeclaration(self, ctx:C64PascalParser.MethodDeclarationContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by C64PascalParser#methodDirective.
+    def visitMethodDirective(self, ctx:C64PascalParser.MethodDirectiveContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by C64PascalParser#globalRoutinePrototype.
+    def visitGlobalRoutinePrototype(self, ctx:C64PascalParser.GlobalRoutinePrototypeContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by C64PascalParser#globalRoutineDeclaration.
+    def visitGlobalRoutineDeclaration(self, ctx:C64PascalParser.GlobalRoutineDeclarationContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by C64PascalParser#globalRoutineImplementation.
+    def visitGlobalRoutineImplementation(self, ctx:C64PascalParser.GlobalRoutineImplementationContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by C64PascalParser#routineDirective.
+    def visitRoutineDirective(self, ctx:C64PascalParser.RoutineDirectiveContext):
         return self.visitChildren(ctx)
 
 
@@ -163,6 +244,11 @@ class C64PascalParserVisitor(ParseTreeVisitor):
         return self.visitChildren(ctx)
 
 
+    # Visit a parse tree produced by C64PascalParser#inheritedStatementNode.
+    def visitInheritedStatementNode(self, ctx:C64PascalParser.InheritedStatementNodeContext):
+        return self.visitChildren(ctx)
+
+
     # Visit a parse tree produced by C64PascalParser#callStatementNode.
     def visitCallStatementNode(self, ctx:C64PascalParser.CallStatementNodeContext):
         return self.visitChildren(ctx)
@@ -205,6 +291,11 @@ class C64PascalParserVisitor(ParseTreeVisitor):
 
     # Visit a parse tree produced by C64PascalParser#callStatement.
     def visitCallStatement(self, ctx:C64PascalParser.CallStatementContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by C64PascalParser#inheritedStatement.
+    def visitInheritedStatement(self, ctx:C64PascalParser.InheritedStatementContext):
         return self.visitChildren(ctx)
 
 
@@ -280,6 +371,16 @@ class C64PascalParserVisitor(ParseTreeVisitor):
 
     # Visit a parse tree produced by C64PascalParser#primaryExpression.
     def visitPrimaryExpression(self, ctx:C64PascalParser.PrimaryExpressionContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by C64PascalParser#typeCastExpression.
+    def visitTypeCastExpression(self, ctx:C64PascalParser.TypeCastExpressionContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by C64PascalParser#builtinCastType.
+    def visitBuiltinCastType(self, ctx:C64PascalParser.BuiltinCastTypeContext):
         return self.visitChildren(ctx)
 
 

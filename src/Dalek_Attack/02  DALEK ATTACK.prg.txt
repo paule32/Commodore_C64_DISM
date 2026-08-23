@@ -1,0 +1,112 @@
+Programmanalyse: 02  DALEK ATTACK.prg
+========================================
+
+1. Grunddaten
+-------------
+
+Programmdatei     : 02  DALEK ATTACK.prg
+C64-Dateiname     : 02  DALEK ATTACK
+Dateigröße        : 9.556 Bytes
+PRG-Nutzdaten     : 9.554 Bytes
+Ladebytes         : 25 4F
+Ladeadresse       : $4F25 (20261)
+Speicherbelegung  : $4F25-$7476
+Adressumlauf      : Nein.
+BASIC-Programm    : nein
+Statischer SYS    : nicht vorhanden
+SHA-256           : 28fe538deb53b0523b27aa5958bad1351d733f480db40f808797abe25a6fc961
+
+
+2. Speicherbelegung
+-------------------
+
+Die Datei belegt beziehungsweise berührt folgende C64-Bereiche:
+
+- $4F25-$7476: normaler RAM-/BASIC-Programmbereich
+
+Der Bereich liegt im normalen RAM. Er überlappt fast vollständig mit Datei 03, weshalb beide sehr wahrscheinlich alternative Spielabschnitte und keine gleichzeitig residenten Blöcke sind.
+
+Die Ladeadresse ist ein Speicherziel, aber kein Programmeinsprung. Eine
+PRG-Datei enthält außer den beiden Ladebytes kein allgemeines Startfeld.
+
+
+3. Gemeinsame Struktur der Dateien 00 bis 06
+--------------------------------------------
+
+Diese Datei gehört prüfsummengenau zu der sieben Dateien umfassenden Reihe
+"00  DALEK ATTACK" bis "06  DALEK ATTACK" desselben Diskettenabbilds.
+
+Gemeinsame, direkt messbare Merkmale:
+
+- alle sieben Nutzdatenblöcke beginnen mit den Bytes B0 00;
+- alle sieben verwenden sämtliche 256 möglichen Bytewerte;
+- ihre Shannon-Entropie liegt zwischen 7,782 und 7,860 Bit/Byte;
+- zwischen allen sieben Dateien treten zahlreiche identische Datenfolgen
+  auf, darunter sieben gemeinsame Folgen mit mindestens 48 Bytes;
+- die Dateien besitzen unterschiedliche Zieladressen und teilweise
+  überlappende Speicherbereiche.
+
+Diese Übereinstimmungen sind zu stark für unabhängige Zufallsdateien. Die
+Blöcke verwenden dasselbe Datenformat und enthalten gemeinsame Tabellen,
+Grafikmuster, Routinen oder durch denselben Packer erzeugte Strukturen.
+
+
+4. Statistische Strukturanalyse dieser Datei
+--------------------------------------------
+
+Shannon-Entropie : 7.845 von maximal 8,000 Bit/Byte
+Bytewerte benutzt: 256 von 256
+Druckbares ASCII : 35.7 %
+Nullbytes        : 1.8 %
+$FF-Bytes        : 0.7 %
+Längster Gleichlauf: 3 gleiche Bytes
+Nutzdatenanfang  : B0 00 80 DB 00 FF 00 00 FF 00 3C 00 DC 00 F5 01 5A 32 F0 37 AE 18 6B EC 91 B7 FB D8 EB DD 95 77 ...
+
+Die hohe Entropie bedeutet nicht automatisch Verschlüsselung. Gemeinsam
+mit dem identischen B0-00-Anfang und den gruppenweit wiederkehrenden
+Binärfolgen spricht sie jedoch deutlich für gepackte beziehungsweise
+grafik-, level- oder tabellenreiche Spielmodule.
+
+
+5. Start- und Ausführungsanalyse
+--------------------------------
+
+Am Nutzdatenanfang existiert weder eine gültige BASIC-Zeilenkette noch ein
+statisch auswertbarer SYS-Starter. Die Adresse $4F25
+ist deshalb nicht als Einsprung zu interpretieren.
+
+Die nummerierte Benennung, das gemeinsame Binärformat und die
+Speicherüberlappungen zeigen, dass die Datei sehr wahrscheinlich vom
+Hauptprogramm bei Bedarf geladen oder entpackt wird. Sie ist kein
+eigenständig mit RUN startbares Programm.
+
+Der exakte Aufrufer, das Entpackformat und die endgültigen Zieladressen
+können erst durch Nachverfolgung des bereits entpackten Hauptprogramms
+oder durch 6510-Emulation sicher bestimmt werden.
+
+
+6. Erkannte Inhalte
+-------------------
+
+Es wurden keine längeren, zuverlässig als Benutzertext interpretierbaren
+ASCII-/PETSCII-Sätze gefunden. Sichtbare alphabetische Reihen und ähnliche
+Muster sind mit hoher Wahrscheinlichkeit Grafik-, Zeichen-, Lookup- oder
+komprimierte Daten und werden nicht als Textmeldung ausgegeben.
+
+Aus Dateiname und Gruppenstruktur lässt sich als begründete, aber nicht
+abschließend bewiesene Rolle ableiten:
+
+- Index beziehungsweise Modulnummer: 02
+- wahrscheinlich austauschbarer Spielabschnitt, Level- oder Ressourcensatz
+- gemeinsames Speicher-/Packformat mit den Modulen 00 bis 06
+- Start nur über den Hauptloader des Spiels
+
+
+7. Prüfergebnis
+---------------
+
+Die Datei ist innerhalb ihrer D64-Sektorkette vollständig und besitzt eine
+gültige zweibyteige Ladeadresse. Sie enthält deutlich mehr analysierbare
+Struktur als nur Größe und Prüfsumme, aber keinen eigenen sicheren
+Einsprung. Die belastbarste Einordnung ist ein gepacktes beziehungsweise
+binäres DALEK-ATTACK-Spielmodul der nummerierten Reihe 00 bis 06.

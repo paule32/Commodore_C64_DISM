@@ -174,6 +174,12 @@ class CallStatement(Statement):
 
 
 @dataclass(frozen=True)
+class InheritedCallStatement(Statement):
+    method_name: Optional[str]
+    arguments: Tuple[Expression, ...]
+
+
+@dataclass(frozen=True)
 class IfStatement(Statement):
     condition: Expression
     then_statement: Statement
@@ -229,6 +235,17 @@ class NamedTypeSpecification(TypeSpecification):
 
 
 @dataclass(frozen=True)
+class SubrangeTypeSpecification(TypeSpecification):
+    lower_bound: Expression
+    upper_bound: Expression
+
+
+@dataclass(frozen=True)
+class PointerTypeSpecification(TypeSpecification):
+    target_type_name: str
+
+
+@dataclass(frozen=True)
 class EnumTypeSpecification(TypeSpecification):
     names: Tuple[str, ...]
 
@@ -261,12 +278,24 @@ class ParameterDeclaration:
 
 
 @dataclass(frozen=True)
+class PropertyDeclaration:
+    name: str
+    type_name: str
+    read_accessor: Optional[str]
+    write_accessor: Optional[str]
+    position: SourcePosition
+    index_parameters: Tuple[ParameterDeclaration, ...] = ()
+
+
+@dataclass(frozen=True)
 class MethodDeclaration:
     kind: str
     name: str
     parameters: Tuple[ParameterDeclaration, ...]
     result_type_name: Optional[str]
     position: SourcePosition
+    directives: Tuple[str, ...] = ()
+    is_class_method: bool = False
 
 
 @dataclass(frozen=True)
@@ -274,6 +303,7 @@ class ClassTypeSpecification(TypeSpecification):
     base_type_name: Optional[str]
     fields: Tuple[FieldDeclaration, ...]
     methods: Tuple[MethodDeclaration, ...]
+    properties: Tuple[PropertyDeclaration, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -288,6 +318,17 @@ class VarDeclaration:
     names: Tuple[str, ...]
     type_name: str
     initializer: Optional[Expression]
+    position: SourcePosition
+
+
+@dataclass(frozen=True)
+class GlobalRoutineImplementation:
+    kind: str
+    name: str
+    parameters: Tuple[ParameterDeclaration, ...]
+    result_type_name: Optional[str]
+    local_variables: Tuple[VarDeclaration, ...]
+    body: CompoundStatement
     position: SourcePosition
 
 
@@ -322,7 +363,9 @@ class PascalProgram:
     types: Tuple[TypeDeclaration, ...] = ()
     methods: Tuple[MethodImplementation, ...] = ()
     external_routines: Tuple[ExternalRoutineDeclaration, ...] = ()
+    global_routines: Tuple[GlobalRoutineImplementation, ...] = ()
     unit_assembly_files: Tuple[str, ...] = ()
+    unit_object_files: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -338,6 +381,7 @@ class GeneratedAssembly:
     unit_name: Optional[str] = None
     pui_path: Optional[str] = None
     linked_assembly_files: Tuple[str, ...] = ()
+    linked_object_files: Tuple[str, ...] = ()
 
     def pascal_line_for_assembly_line(self, assembly_line: int) -> int:
         line = int(assembly_line)
@@ -371,10 +415,23 @@ class _AstBuilder(C64PascalParserVisitor):
     """Wandelt den ANTLR-Parsebaum in einen kleinen, typfreien AST um."""
 
     def visitCompilationUnit(self, ctx):
-        return self.visit(ctx.programUnit())
+        if ctx.programUnit() is not None:
+            return self.visit(ctx.programUnit())
+        unit_accessor = getattr(ctx, "unitUnit", None)
+        if unit_accessor is not None and unit_accessor() is not None:
+            return self.visit(unit_accessor())
+        raise C64PascalError("Interner Fehler: leere Pascal-CompilationUnit.")
 
     def visitProgramUnit(self, ctx):
-        constants, types, variables, methods, body = self.visit(ctx.block())
+        (
+            constants,
+            types,
+            variables,
+            methods,
+            externals,
+            global_routines,
+            body,
+        ) = self.visit(ctx.block())
         return PascalProgram(
             name=ctx.IDENTIFIER().getText(),
             constants=tuple(constants),
@@ -382,6 +439,45 @@ class _AstBuilder(C64PascalParserVisitor):
             body=body,
             types=tuple(types),
             methods=tuple(methods),
+            external_routines=tuple(externals),
+            global_routines=tuple(global_routines),
+        )
+
+    def visitUnitUnit(self, ctx):
+        constants = []
+        types = []
+        variables = []
+        for section in ctx.declarationSection():
+            if section.constSection():
+                constants.extend(self.visit(section.constSection()))
+            elif section.typeSection():
+                types.extend(self.visit(section.typeSection()))
+            elif section.varSection():
+                variables.extend(self.visit(section.varSection()))
+        methods = [self.visit(item) for item in ctx.methodImplementation()]
+        global_routines = [
+            self.visit(item) for item in ctx.globalRoutineImplementation()
+        ] if hasattr(ctx, "globalRoutineImplementation") else []
+        externals = []
+        for item in ctx.globalRoutineDeclaration():
+            declaration = self.visit(item)
+            if declaration is not None:
+                externals.append(declaration)
+        body_ctx = ctx.compoundStatement()
+        body = (
+            self.visit(body_ctx)
+            if body_ctx is not None
+            else CompoundStatement(_position(ctx), ())
+        )
+        return PascalProgram(
+            name=ctx.qualifiedIdentifier().getText(),
+            constants=tuple(constants),
+            variables=tuple(variables),
+            body=body,
+            types=tuple(types),
+            methods=tuple(methods),
+            external_routines=tuple(externals),
+            global_routines=tuple(global_routines),
         )
 
     def visitBlock(self, ctx):
@@ -396,11 +492,26 @@ class _AstBuilder(C64PascalParserVisitor):
             elif section.varSection():
                 variables.extend(self.visit(section.varSection()))
         methods = [self.visit(item) for item in ctx.methodImplementation()]
+        global_routines = [
+            self.visit(item) for item in ctx.globalRoutineImplementation()
+        ] if hasattr(ctx, "globalRoutineImplementation") else []
+        external_contexts = (
+            ctx.globalRoutineDeclaration()
+            if hasattr(ctx, "globalRoutineDeclaration")
+            else []
+        )
+        externals = []
+        for item in external_contexts:
+            declaration = self.visit(item)
+            if declaration is not None:
+                externals.append(declaration)
         return (
             constants,
             types,
             variables,
             methods,
+            externals,
+            global_routines,
             self.visit(ctx.compoundStatement()),
         )
 
@@ -418,8 +529,12 @@ class _AstBuilder(C64PascalParserVisitor):
         return [self.visit(item) for item in ctx.typeDefinition()]
 
     def visitTypeDefinition(self, ctx):
+        if hasattr(ctx, "typeName") and ctx.typeName() is not None:
+            name = ctx.typeName().getText()
+        else:
+            name = ctx.IDENTIFIER().getText()
         return TypeDeclaration(
-            ctx.IDENTIFIER().getText(),
+            name,
             self.visit(ctx.typeSpecification()),
             _position(ctx),
         )
@@ -427,12 +542,15 @@ class _AstBuilder(C64PascalParserVisitor):
     def visitTypeSpecification(self, ctx):
         for child_name in (
             "typeIdentifier",
+            "subrangeType",
+            "pointerType",
             "enumType",
             "recordType",
             "arrayType",
             "classType",
         ):
-            child = getattr(ctx, child_name)()
+            accessor = getattr(ctx, child_name, None)
+            child = accessor() if accessor is not None else None
             if child is not None:
                 if child_name == "typeIdentifier":
                     return NamedTypeSpecification(
@@ -441,6 +559,27 @@ class _AstBuilder(C64PascalParserVisitor):
                     )
                 return self.visit(child)
         raise C64PascalError("Interner Fehler: leere Typdefinition.")
+
+    def visitSubrangeType(self, ctx):
+        values = ctx.signedIntegerLiteral()
+        return SubrangeTypeSpecification(
+            _position(ctx),
+            self.visit(values[0]),
+            self.visit(values[1]),
+        )
+
+    def visitPointerType(self, ctx):
+        return PointerTypeSpecification(
+            _position(ctx),
+            ctx.typeIdentifier().getText().casefold(),
+        )
+
+    def visitSignedIntegerLiteral(self, ctx):
+        literal = self.visit(ctx.integerLiteral())
+        value = int(literal.value)
+        if ctx.MINUS():
+            value = -value
+        return LiteralExpression(_position(ctx), value)
 
     def visitEnumType(self, ctx):
         names = tuple(token.getText() for token in ctx.identifierList().IDENTIFIER())
@@ -464,11 +603,16 @@ class _AstBuilder(C64PascalParserVisitor):
     def visitClassType(self, ctx):
         fields = []
         methods = []
+        properties = []
         for member in ctx.classMember():
             if member.fieldDeclaration():
                 fields.append(self.visit(member.fieldDeclaration()))
             elif member.methodDeclaration():
                 methods.append(self.visit(member.methodDeclaration()))
+            else:
+                property_accessor = getattr(member, "propertyDeclaration", None)
+                if property_accessor is not None and property_accessor() is not None:
+                    properties.append(self.visit(property_accessor()))
         base_type_name = (
             ctx.typeIdentifier().getText().casefold()
             if ctx.typeIdentifier()
@@ -479,6 +623,33 @@ class _AstBuilder(C64PascalParserVisitor):
             base_type_name,
             tuple(fields),
             tuple(methods),
+            tuple(properties),
+        )
+
+    def visitPropertyDeclaration(self, ctx):
+        read_accessor = None
+        write_accessor = None
+        for specifier in ctx.propertySpecifier():
+            accessor = (
+                specifier.propertyAccessor()
+                if hasattr(specifier, "propertyAccessor")
+                else None
+            )
+            if specifier.READ():
+                read_accessor = accessor.getText() if accessor is not None else None
+            elif specifier.WRITE():
+                write_accessor = accessor.getText() if accessor is not None else None
+        index_parameters = ()
+        index_ctx = ctx.propertyIndexParameters()
+        if index_ctx is not None and index_ctx.formalParameterList() is not None:
+            index_parameters = tuple(self.visit(index_ctx.formalParameterList()))
+        return PropertyDeclaration(
+            ctx.IDENTIFIER().getText(),
+            ctx.typeIdentifier().getText().casefold(),
+            read_accessor,
+            write_accessor,
+            _position(ctx),
+            index_parameters,
         )
 
     def visitFieldDeclaration(self, ctx):
@@ -489,11 +660,59 @@ class _AstBuilder(C64PascalParserVisitor):
         )
 
     def visitMethodDeclaration(self, ctx):
+        directive_contexts = (
+            ctx.methodDirective() if hasattr(ctx, "methodDirective") else []
+        )
+        directives = tuple(
+            item.getText().rstrip(";").casefold()
+            for item in directive_contexts
+        )
         return MethodDeclaration(
             ctx.routineKind().getText().casefold(),
             ctx.IDENTIFIER().getText(),
             tuple(self.visit(ctx.formalParameters())) if ctx.formalParameters() else (),
             ctx.typeIdentifier().getText().casefold() if ctx.typeIdentifier() else None,
+            _position(ctx),
+            directives,
+            bool(ctx.CLASS()) if hasattr(ctx, "CLASS") else False,
+        )
+
+    def visitGlobalRoutineDeclaration(self, ctx):
+        kind = "function" if ctx.FUNCTION() else "procedure"
+        directives = tuple(
+            item.getText().rstrip(";").casefold()
+            for item in ctx.routineDirective()
+        )
+        # Ein nackter Header in einem UNIT-INTERFACE ist nur ein Prototyp.
+        # Die eigentliche Implementierung wird separat als
+        # globalRoutineImplementation besucht und darf nicht als EXTERN enden.
+        if "external" not in directives:
+            return None
+        parameters = (
+            tuple(self.visit(ctx.formalParameters()))
+            if ctx.formalParameters()
+            else ()
+        )
+        name = ctx.IDENTIFIER().getText()
+        symbol = "_" + name if "cdecl" in directives else name
+        return ExternalRoutineDeclaration(
+            "",
+            kind,
+            name,
+            parameters,
+            ctx.typeIdentifier().getText().casefold() if ctx.typeIdentifier() else None,
+            symbol,
+        )
+
+    def visitGlobalRoutineImplementation(self, ctx):
+        local_variables, body = self.visit(ctx.routineBlock())
+        return GlobalRoutineImplementation(
+            "function" if ctx.FUNCTION() else "procedure",
+            ctx.IDENTIFIER().getText(),
+            tuple(self.visit(ctx.formalParameters())) if ctx.formalParameters() else (),
+            ctx.typeIdentifier().getText().casefold() if ctx.typeIdentifier() else None,
+            tuple(local_variables),
+            body,
             _position(ctx),
         )
 
@@ -563,6 +782,18 @@ class _AstBuilder(C64PascalParserVisitor):
 
     def visitCallStatementNode(self, ctx):
         return self.visit(ctx.callStatement())
+
+    def visitInheritedStatementNode(self, ctx):
+        return self.visit(ctx.inheritedStatement())
+
+    def visitInheritedStatement(self, ctx):
+        identifier = ctx.IDENTIFIER()
+        arguments = self.visit(ctx.argumentList()) if ctx.argumentList() else []
+        return InheritedCallStatement(
+            _position(ctx),
+            identifier.getText() if identifier is not None else None,
+            tuple(arguments),
+        )
 
     def visitIfStatementNode(self, ctx):
         return self.visit(ctx.ifStatement())
@@ -647,9 +878,15 @@ class _AstBuilder(C64PascalParserVisitor):
                 selectors.append(
                     IndexSelector(_position(suffix), self.visit(suffix.expression()))
                 )
+        identifier = ctx.IDENTIFIER()
+        name = (
+            identifier.getText()
+            if identifier is not None
+            else "nil"
+        )
         return DesignatorExpression(
             _position(ctx),
-            ctx.IDENTIFIER().getText(),
+            name,
             tuple(selectors),
         )
 
@@ -703,6 +940,11 @@ class _AstBuilder(C64PascalParserVisitor):
             return LiteralExpression(position, True)
         if ctx.FALSE():
             return LiteralExpression(position, False)
+        if hasattr(ctx, "NIL") and ctx.NIL():
+            return NameExpression(position, "nil")
+        cast_accessor = getattr(ctx, "typeCastExpression", None)
+        if cast_accessor is not None and cast_accessor() is not None:
+            return self.visit(cast_accessor())
         if ctx.designator():
             designator = self.visit(ctx.designator())
             if ctx.LPAREN():
@@ -710,6 +952,16 @@ class _AstBuilder(C64PascalParserVisitor):
                 return CallExpression(position, designator, tuple(arguments))
             return designator
         return self.visit(ctx.expression())
+
+    def visitTypeCastExpression(self, ctx):
+        position = _position(ctx)
+        type_name = ctx.builtinCastType().getText()
+        designator = DesignatorExpression(position, type_name, ())
+        return CallExpression(
+            position,
+            designator,
+            (self.visit(ctx.expression()),),
+        )
 
     def visitIntegerLiteral(self, ctx):
         text = ctx.getText()
@@ -782,6 +1034,7 @@ class PascalPreprocessResult:
     macros: Dict[str, str]
     notes: Tuple["PascalPreprocessorDiagnostic", ...] = ()
     warnings: Tuple["PascalPreprocessorDiagnostic", ...] = ()
+    link_files: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -966,6 +1219,10 @@ class PascalPreprocessor:
         self.macros: Dict[str, str] = {}
         self.notes: List[PascalPreprocessorDiagnostic] = []
         self.warnings: List[PascalPreprocessorDiagnostic] = []
+        # {$L file.o} / {$LINK file.o}: echte Linker-Eingaben fuer den
+        # integrierten COFF32/COFF64-Linker. Die Liste bleibt ueber rekursiv
+        # verarbeitete USES-Units erhalten und wird am Ende dedupliziert.
+        self.link_files: List[str] = []
         for name, value in (predefined_macros or {}).items():
             key = str(name).casefold()
             if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(name)):
@@ -986,6 +1243,7 @@ class PascalPreprocessor:
     ) -> PascalPreprocessResult:
         text = str(source)
         output: List[str] = []
+        process_link_files: List[str] = []
         frames: List[Dict[str, bool]] = []
         segment_start = 0
         index = 0
@@ -1099,6 +1357,51 @@ class PascalPreprocessor:
                                         0,
                                     )
                                 self.macros[key] = value or "1"
+                    elif command in {"l", "link"}:
+                        if was_active:
+                            link_name = _expand_pascal_macros(
+                                argument, self.macros
+                            ).strip()
+                            if (
+                                len(link_name) >= 2
+                                and link_name[0] == link_name[-1]
+                                and link_name[0] in {"'", '"'}
+                            ):
+                                link_name = link_name[1:-1]
+                            if not link_name:
+                                raise C64PascalError(
+                                    f"{{$%s}} erwartet eine Objekt-/Archivdatei." % command.upper(),
+                                    line,
+                                    0,
+                                )
+                            link_path = Path(link_name).expanduser()
+                            if not link_path.is_absolute():
+                                try:
+                                    source_path = Path(filename).expanduser()
+                                    base_dir = (
+                                        source_path.resolve().parent
+                                        if not str(filename).startswith("<")
+                                        else Path.cwd()
+                                    )
+                                except (OSError, RuntimeError, ValueError):
+                                    base_dir = Path.cwd()
+                                link_path = base_dir / link_path
+                            try:
+                                link_path = link_path.resolve()
+                            except (OSError, RuntimeError):
+                                link_path = link_path.absolute()
+                            if link_path.suffix.casefold() not in {".o", ".obj", ".a", ".lib"}:
+                                raise C64PascalError(
+                                    f"{{$%s}} erwartet .o/.obj/.a/.lib: {link_name}."
+                                    % command.upper(),
+                                    line,
+                                    0,
+                                )
+                            key = str(link_path).casefold()
+                            if all(str(Path(item)).casefold() != key for item in self.link_files):
+                                self.link_files.append(str(link_path))
+                            if all(str(Path(item)).casefold() != key for item in process_link_files):
+                                process_link_files.append(str(link_path))
                     elif command in {"info", "warn", "warning", "error"}:
                         if was_active:
                             message = _expand_pascal_macros(
@@ -1168,6 +1471,7 @@ class PascalPreprocessor:
             macros=dict(self.macros),
             notes=tuple(self.notes),
             warnings=tuple(self.warnings),
+            link_files=tuple(process_link_files),
         )
 
 
@@ -1271,16 +1575,405 @@ def _extract_program_uses(
     return cleaned, names
 
 
+def _generated_parser_supports_rule(rule_name: str) -> bool:
+    return hasattr(C64PascalParser, f"RULE_{str(rule_name)}")
+
+
+def _generated_lexer_supports_token(token_name: str) -> bool:
+    return hasattr(C64PascalLexer, str(token_name))
+
+
+def _legacy_generated_parser_requires_bridge(rule_name: str = "subrangeType") -> bool:
+    """Return True when the loaded generated ANTLR files lack one feature.
+
+    Older stages used only RULE_subrangeType as a global version probe.  That is
+    insufficient after incremental grammar extensions: a generated parser can
+    know subranges while still predating PROPERTY or INHERITED.  Stage 182
+    therefore probes every feature independently.
+    """
+    return not _generated_parser_supports_rule(rule_name)
+
+
+def _blank_pascal_span(source: str, start: int, end: int) -> str:
+    fragment = source[start:end]
+    replacement = "".join(
+        "\n" if ch == "\n" else "\r" if ch == "\r" else " "
+        for ch in fragment
+    )
+    return source[:start] + replacement + source[end:]
+
+
+def _legacy_integer_value(text: str) -> int:
+    value = str(text).strip()
+    sign = 1
+    if value.startswith("+"):
+        value = value[1:].strip()
+    elif value.startswith("-"):
+        sign = -1
+        value = value[1:].strip()
+    if value.startswith("$"):
+        return sign * int(value[1:], 16)
+    if value.startswith("%"):
+        return sign * int(value[1:], 2)
+    return sign * int(value, 10)
+
+
+def _legacy_parameter_declarations(
+    text: str,
+    *,
+    position: SourcePosition,
+) -> Tuple[ParameterDeclaration, ...]:
+    result: List[ParameterDeclaration] = []
+    if not str(text or "").strip():
+        return ()
+    for group in filter(None, (item.strip() for item in str(text).split(";"))):
+        match = re.fullmatch(
+            r"(?is)(?:(const|var)\s+)?"
+            r"([A-Za-z_][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*)*)"
+            r"\s*:\s*([A-Za-z_][A-Za-z0-9_.]*)",
+            group,
+        )
+        if match is None:
+            raise C64PascalError(
+                f"Ungültige Parameterdeklaration: {group}.",
+                position.line,
+                position.column - 1,
+            )
+        modifier = (match.group(1) or "value").casefold()
+        type_name = match.group(3).casefold()
+        for raw_name in match.group(2).split(","):
+            result.append(
+                ParameterDeclaration(
+                    (raw_name.strip(),),
+                    type_name,
+                    modifier,
+                    position,
+                )
+            )
+    return tuple(result)
+
+
+def _legacy_pascal_extension_bridge(
+    source: str,
+) -> Tuple[
+    str,
+    Tuple[TypeDeclaration, ...],
+    Tuple[ExternalRoutineDeclaration, ...],
+    Tuple[Tuple[str, PropertyDeclaration], ...],
+    Tuple[Tuple[int, Optional[str]], ...],
+]:
+    """Adapt current Object-Pascal syntax to older generated ANTLR files.
+
+    Capability checks are feature-specific.  This lets a Stage-178 generated
+    parser (for example) use Stage-182 compiler.py even though it has subranges
+    and Pointer(Self) but does not yet know PROPERTY or INHERITED.
+    """
+    needs_bootstrap = _legacy_generated_parser_requires_bridge("subrangeType")
+    needs_property = (
+        _legacy_generated_parser_requires_bridge("propertyDeclaration")
+        or not _generated_lexer_supports_token("PROPERTY")
+    )
+    needs_inherited = (
+        _legacy_generated_parser_requires_bridge("inheritedStatement")
+        or not _generated_lexer_supports_token("INHERITED")
+    )
+    if not (needs_bootstrap or needs_property or needs_inherited):
+        return source, (), (), (), ()
+
+    working = str(source)
+    extracted_types: List[TypeDeclaration] = []
+    extracted_externals: List[ExternalRoutineDeclaration] = []
+    extracted_properties: List[Tuple[str, PropertyDeclaration]] = []
+    inherited_markers: List[Tuple[int, Optional[str]]] = []
+    spans: List[Tuple[int, int]] = []
+
+    # 1) Subrange and pointer type definitions. They are safe to identify by
+    # their distinctive RHS syntax even without a full TYPE-section parser.
+    if needs_bootstrap:
+        type_pattern = re.compile(
+            r"(?im)^[ \t]*"
+            r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
+            r"(?P<rhs>"
+            r"[+-]?(?:\$[0-9A-Fa-f]+|%[01]+|[0-9]+)\s*\.\.\s*"
+            r"[+-]?(?:\$[0-9A-Fa-f]+|%[01]+|[0-9]+)"
+            r"|\^[ \t]*[A-Za-z_][A-Za-z0-9_.]*"
+            r")\s*;"
+        )
+        for match in type_pattern.finditer(working):
+            name = match.group("name")
+            rhs = match.group("rhs").strip()
+            line = working.count("\n", 0, match.start()) + 1
+            position = SourcePosition(line, 1)
+            if rhs.startswith("^"):
+                target_name = rhs[1:].strip().casefold()
+                specification: TypeSpecification = PointerTypeSpecification(
+                    position,
+                    target_name,
+                )
+            else:
+                left_text, right_text = re.split(r"\s*\.\.\s*", rhs, maxsplit=1)
+                specification = SubrangeTypeSpecification(
+                    position,
+                    LiteralExpression(position, _legacy_integer_value(left_text)),
+                    LiteralExpression(position, _legacy_integer_value(right_text)),
+                )
+            extracted_types.append(TypeDeclaration(name, specification, position))
+            spans.append((match.start(), match.end()))
+
+    # 2) Global EXTERNAL declarations used by System.Objects.pas.
+    if needs_bootstrap:
+        routine_pattern = re.compile(
+            r"(?ims)^[ \t]*(?P<kind>procedure|function)\s+"
+            r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*"
+            r"(?:\((?P<params>[^)]*)\))?\s*"
+            r"(?:\:\s*(?P<result>[A-Za-z_][A-Za-z0-9_.]*))?\s*;"
+            r"(?P<directives>(?:[ \t]*(?:cdecl|external|forward)\s*;[ \t]*(?:\r?\n)?)+)"
+        )
+        for match in routine_pattern.finditer(working):
+            directives = tuple(
+                item.casefold()
+                for item in re.findall(
+                    r"\b(cdecl|external|forward)\b",
+                    match.group("directives") or "",
+                    re.IGNORECASE,
+                )
+            )
+            if "external" not in directives:
+                continue
+            line = working.count("\n", 0, match.start()) + 1
+            position = SourcePosition(line, 1)
+            name = match.group("name")
+            extracted_externals.append(
+                ExternalRoutineDeclaration(
+                    "",
+                    match.group("kind").casefold(),
+                    name,
+                    _legacy_parameter_declarations(
+                        match.group("params") or "",
+                        position=position,
+                    ),
+                    match.group("result").casefold()
+                    if match.group("result")
+                    else None,
+                    "_" + name if "cdecl" in directives else name,
+                )
+            )
+            spans.append((match.start(), match.end()))
+
+        # Old parser reads method directives as field identifiers.
+        directive_pattern = re.compile(
+            r"(?im)\b(?:virtual|override)\s*;"
+        )
+        spans.extend((m.start(), m.end()) for m in directive_pattern.finditer(working))
+
+    # 4) PROPERTY declarations for generated parsers predating Stage 179.
+    if needs_property:
+        mask = _pascal_code_mask(working)
+        class_pattern = re.compile(
+            r"(?is)\b(?P<class>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
+            r"class(?:\s*\([^)]*\))?(?P<body>.*?)\bend\s*;"
+        )
+        property_pattern = re.compile(
+            r"(?is)\bproperty\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)"
+            r"(?:\s*\[(?P<params>[^]]*)\])?\s*:\s*"
+            r"(?P<type>[A-Za-z_][A-Za-z0-9_.]*)"
+            r"(?P<specs>[^;]*)\s*;"
+        )
+        for class_match in class_pattern.finditer(mask):
+            body_start = class_match.start("body")
+            body_text = class_match.group("body")
+            class_name = class_match.group("class")
+            for prop_match in property_pattern.finditer(body_text):
+                start = body_start + prop_match.start()
+                end = body_start + prop_match.end()
+                line = working.count("\n", 0, start) + 1
+                column = start - working.rfind("\n", 0, start)
+                position = SourcePosition(line, column)
+                specs = prop_match.group("specs") or ""
+                read_match = re.search(
+                    r"(?i)\bread\s+([A-Za-z_][A-Za-z0-9_.]*)", specs
+                )
+                write_match = re.search(
+                    r"(?i)\bwrite\s+([A-Za-z_][A-Za-z0-9_.]*)", specs
+                )
+                index_parameters = _legacy_parameter_declarations(
+                    prop_match.group("params") or "",
+                    position=position,
+                )
+                extracted_properties.append((
+                    class_name,
+                    PropertyDeclaration(
+                        prop_match.group("name"),
+                        prop_match.group("type").casefold(),
+                        read_match.group(1) if read_match else None,
+                        write_match.group(1) if write_match else None,
+                        position,
+                        index_parameters,
+                    ),
+                ))
+                spans.append((start, end))
+
+    # 5) INHERITED for generated parsers predating Stage 182.  For named calls
+    # only the keyword is blanked, so the old parser sees an ordinary call with
+    # identical line/column positions.  The AST is rewritten after parsing.
+    if needs_inherited:
+        mask = _pascal_code_mask(working)
+        inherited_pattern = re.compile(
+            r"(?im)\binherited\b(?:[ \t]+(?P<name>[A-Za-z_][A-Za-z0-9_]*))?"
+        )
+        for match in inherited_pattern.finditer(mask):
+            line = working.count("\n", 0, match.start()) + 1
+            name = match.group("name")
+            inherited_markers.append((line, name))
+            if name:
+                keyword_end = match.start() + len("inherited")
+                spans.append((match.start(), keyword_end))
+            else:
+                # Bare `inherited;`: replace the keyword with an equally long
+                # identifier understood by every older grammar.
+                replacement = "_d64inh__"
+                assert len(replacement) == len("inherited")
+                working = (
+                    working[:match.start()]
+                    + replacement
+                    + working[match.start() + len("inherited"):]
+                )
+
+    # Apply back-to-front so offsets stay valid and every newline is preserved.
+    for start, end in sorted(set(spans), reverse=True):
+        working = _blank_pascal_span(working, start, end)
+
+    return (
+        working,
+        tuple(extracted_types),
+        tuple(extracted_externals),
+        tuple(extracted_properties),
+        tuple(inherited_markers),
+    )
+
+
+def _rewrite_legacy_inherited_statement(
+    statement: Statement,
+    markers: Dict[int, Optional[str]],
+) -> Statement:
+    if isinstance(statement, CallStatement):
+        marker = markers.get(statement.position.line, "__missing__")
+        designator = (
+            statement.designator
+            if isinstance(statement.designator, DesignatorExpression)
+            else DesignatorExpression(statement.position, str(statement.designator), ())
+        )
+        if marker != "__missing__":
+            expected = marker or "_d64inh__"
+            if (
+                not designator.selectors
+                and designator.name.casefold() == str(expected).casefold()
+            ):
+                return InheritedCallStatement(
+                    statement.position,
+                    marker,
+                    tuple(statement.arguments),
+                )
+        return statement
+    if isinstance(statement, CompoundStatement):
+        return replace(
+            statement,
+            statements=tuple(
+                _rewrite_legacy_inherited_statement(item, markers)
+                for item in statement.statements
+            ),
+        )
+    if isinstance(statement, IfStatement):
+        return replace(
+            statement,
+            then_statement=_rewrite_legacy_inherited_statement(
+                statement.then_statement, markers
+            ),
+            else_statement=(
+                _rewrite_legacy_inherited_statement(statement.else_statement, markers)
+                if statement.else_statement is not None
+                else None
+            ),
+        )
+    if isinstance(statement, WhileStatement):
+        return replace(
+            statement,
+            body=_rewrite_legacy_inherited_statement(statement.body, markers),
+        )
+    if isinstance(statement, RepeatStatement):
+        return replace(
+            statement,
+            statements=tuple(
+                _rewrite_legacy_inherited_statement(item, markers)
+                for item in statement.statements
+            ),
+        )
+    if isinstance(statement, ForStatement):
+        return replace(
+            statement,
+            body=_rewrite_legacy_inherited_statement(statement.body, markers),
+        )
+    return statement
+
+
 def _parse_pascal_program(source: str) -> PascalProgram:
+    (
+        parser_source,
+        extra_types,
+        extra_externals,
+        extra_properties,
+        inherited_markers,
+    ) = _legacy_pascal_extension_bridge(source)
     listener = _RaisingErrorListener()
-    lexer = C64PascalLexer(InputStream(source))
+    lexer = C64PascalLexer(InputStream(parser_source))
     lexer.removeErrorListeners()
     lexer.addErrorListener(listener)
     parser = C64PascalParser(CommonTokenStream(lexer))
     parser.removeErrorListeners()
     parser.addErrorListener(listener)
     tree = parser.compilationUnit()
-    return _AstBuilder().visit(tree)
+    program = _AstBuilder().visit(tree)
+
+    if extra_properties:
+        by_class: Dict[str, List[PropertyDeclaration]] = {}
+        for class_name, declaration in extra_properties:
+            by_class.setdefault(class_name.casefold(), []).append(declaration)
+        rewritten_types: List[TypeDeclaration] = []
+        for declaration in program.types:
+            additions = by_class.get(declaration.name.casefold(), ())
+            specification = declaration.specification
+            if additions and isinstance(specification, ClassTypeSpecification):
+                specification = replace(
+                    specification,
+                    properties=tuple(specification.properties) + tuple(additions),
+                )
+                declaration = replace(declaration, specification=specification)
+            rewritten_types.append(declaration)
+        program = replace(program, types=tuple(rewritten_types))
+
+    if inherited_markers:
+        markers = {line: name for line, name in inherited_markers}
+        program = replace(
+            program,
+            body=_rewrite_legacy_inherited_statement(program.body, markers),
+            methods=tuple(
+                replace(
+                    method,
+                    body=_rewrite_legacy_inherited_statement(method.body, markers),
+                )
+                for method in program.methods
+            ),
+        )
+
+    if extra_types or extra_externals:
+        program = replace(
+            program,
+            types=tuple(program.types) + tuple(extra_types),
+            external_routines=(
+                tuple(program.external_routines) + tuple(extra_externals)
+            ),
+        )
+    return program
 
 
 def _find_unit_file(unit_name: str, search_paths: Sequence[Path]) -> Optional[Path]:
@@ -1377,6 +2070,18 @@ def _unit_program_source(
         0,
         filename=filename,
     )
+    # Bootstrap-Units wie System.Types.pas verwenden einen leeren
+    # IMPLEMENTATION/BEGIN/END.-Block. Da END. oben bereits als Unit-Abschluss
+    # entfernt wurde, bleibt hier nur BEGIN übrig; für das synthetische PROGRAM
+    # wird dieser leere Initialisierungsblock vollständig ausgeblendet.
+    if re.fullmatch(
+        r"\s*begin\s*",
+        _pascal_code_mask(cleaned_implementation),
+        re.IGNORECASE,
+    ):
+        cleaned_implementation = _blank_pascal_segment(
+            cleaned_implementation, 0, len(cleaned_implementation)
+        )
     unsupported = re.search(
         r"\b(initialization|finalization)\b",
         _pascal_code_mask(cleaned_implementation),
@@ -1388,9 +2093,16 @@ def _unit_program_source(
         )
 
     safe_name = re.sub(r"[^A-Za-z0-9_]", "_", unit_name)
+    # Interface-Prototypen bleiben fuer die PUI erhalten, werden aber im
+    # synthetischen PROGRAM-Parse ausgeblendet. So ist eine freie
+    # Implementierung eindeutig von ihrem Interface-Prototyp getrennt.
+    parser_interface, unused_interface_routines = _pui_routine_information(
+        unit_name, cleaned_interface
+    )
+    del unused_interface_routines
     transformed = (
         f"program __unit_{safe_name};\n"
-        + cleaned_interface
+        + parser_interface
         + "\n"
         + cleaned_implementation
         + "\nbegin\nend.\n"
@@ -1461,14 +2173,43 @@ def _pui_parameter_information(text: str) -> List[Dict[str, object]]:
     return result
 
 
+def _pui_class_spans(source: str) -> Tuple[Tuple[int, int], ...]:
+    """Return CLASS..END spans in an interface section.
+
+    Class method declarations are not global PUI routines. The former regex-only
+    implementation accidentally stripped methods such as TObject.ClassType from
+    System.Objects. This lightweight scanner works on the comment/string mask,
+    so keywords inside comments or literals do not affect nesting.
+    """
+    mask = _pascal_code_mask(source)
+    token_re = re.compile(r"\b(class|end)\b", re.IGNORECASE)
+    stack: List[int] = []
+    result: List[Tuple[int, int]] = []
+    for match in token_re.finditer(mask):
+        token = match.group(1).casefold()
+        if token == "class":
+            stack.append(match.start())
+        elif stack:
+            start = stack.pop()
+            if not stack:
+                result.append((start, match.end()))
+    return tuple(result)
+
+
 def _pui_routine_information(
     unit_name: str,
     interface_source: str,
 ) -> Tuple[str, List[Dict[str, object]]]:
     routines: List[Dict[str, object]] = []
     safe_unit = re.sub(r"[^A-Za-z0-9_]", "_", unit_name)
+    class_spans = _pui_class_spans(interface_source)
+
+    def inside_class(position: int) -> bool:
+        return any(start <= position < end for start, end in class_spans)
 
     def replace_routine(match: re.Match[str]) -> str:
+        if inside_class(match.start()):
+            return match.group(0)
         kind = match.group(1).casefold()
         name = match.group(2)
         parameters = _pui_parameter_information(match.group(3) or '')
@@ -1480,10 +2221,6 @@ def _pui_routine_information(
             'result_type': result_type,
             'symbol': f"__pas_{safe_unit}_{name}",
         })
-        # Die aktuelle ANTLR-Grammatik kennt noch keine globalen
-        # Routinedeklarationen. Für die Typ-/Konstantenanalyse wird die
-        # Deklaration deshalb durch Leerzeilen ersetzt; die vollständige
-        # Signatur bleibt strukturiert in der PUI erhalten.
         return ''.join('\n' if char == '\n' else ' ' for char in match.group(0))
 
     parser_source = _PUI_ROUTINE_RE.sub(replace_routine, interface_source)
@@ -1538,6 +2275,7 @@ def _pui_document(
     interface_units: Sequence[str],
     source_path: Optional[Path],
     guard: Optional[str] = None,
+    link_files: Sequence[str] = (),
 ) -> Dict[str, object]:
     safe_name = re.sub(r"[^A-Za-z0-9_]", "_", unit_name)
     parser_source, routines = _pui_routine_information(unit_name, interface_source)
@@ -1566,6 +2304,7 @@ def _pui_document(
         "implementation": {
             "assembly": _unit_implementation_information(source_path),
             "c": _unit_c_implementation_information(source_path),
+            "objects": [str(item) for item in link_files],
         },
     }
 
@@ -1720,6 +2459,37 @@ def _pui_target_c_source(
     return candidate
 
 
+def _pui_link_object_files(
+    document: Dict[str, object],
+    *,
+    base_directory: Path,
+) -> Tuple[str, ...]:
+    implementation = document.get("implementation")
+    if not isinstance(implementation, dict):
+        return ()
+    raw_items = implementation.get("objects", [])
+    if not isinstance(raw_items, list):
+        return ()
+    result: List[str] = []
+    seen = set()
+    for item in raw_items:
+        if not isinstance(item, str) or not item.strip():
+            continue
+        path = Path(item).expanduser()
+        if not path.is_absolute():
+            path = base_directory / path
+        try:
+            path = path.resolve()
+        except (OSError, RuntimeError):
+            path = path.absolute()
+        key = str(path).casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(str(path))
+    return tuple(result)
+
+
 def _append_pascal_c_aliases(
     assembly: str,
     document: Dict[str, object],
@@ -1866,6 +2636,7 @@ def write_pascal_unit_interface(
             interface_units=interface_units,
             source_path=source_path,
             guard=_pascal_guard_macro(source),
+            link_files=processed.link_files,
         ),
     )
     return destination
@@ -1900,6 +2671,7 @@ class _PascalUnitResolver:
         self.programs: List[PascalProgram] = []
         self.external_routines: List[ExternalRoutineDeclaration] = []
         self.assembly_files: List[str] = []
+        self.object_files: List[str] = []
         self.resolved: Dict[str, Path] = {}
         self.stack: List[str] = []
         self.preprocessor = preprocessor
@@ -1988,11 +2760,17 @@ class _PascalUnitResolver:
                     interface_units=interface_units,
                     source_path=source_path,
                     guard=_pascal_guard_macro(source),
+                    link_files=processed.link_files,
                 )
                 _write_pui_document(pui_path, pui_document)
 
             self.external_routines.extend(_pui_external_routines(pui_document))
             implementation_base = (pui_path or source_path).parent
+            for object_name in _pui_link_object_files(
+                pui_document, base_directory=implementation_base
+            ):
+                if object_name not in self.object_files:
+                    self.object_files.append(object_name)
             implementation_file = _pui_target_assembly(
                 pui_document,
                 target=self.target,
@@ -2052,11 +2830,15 @@ def _parse_pascal_frontend(
     )
     main_program = _parse_pascal_program(cleaned_source)
     if not unit_names:
-        return main_program, PascalPreprocessResult(
+        return replace(
+            main_program,
+            unit_object_files=tuple(preprocessor.link_files),
+        ), PascalPreprocessResult(
             root_processed.source,
             dict(preprocessor.macros),
             tuple(preprocessor.notes),
             tuple(preprocessor.warnings),
+            tuple(preprocessor.link_files),
         )
 
     resolver = _PascalUnitResolver(
@@ -2072,15 +2854,18 @@ def _parse_pascal_frontend(
     types = []
     variables = []
     methods = []
+    global_routines = []
     for unit_program in resolver.programs:
         constants.extend(unit_program.constants)
         types.extend(unit_program.types)
         variables.extend(unit_program.variables)
         methods.extend(unit_program.methods)
+        global_routines.extend(unit_program.global_routines)
     constants.extend(main_program.constants)
     types.extend(main_program.types)
     variables.extend(main_program.variables)
     methods.extend(main_program.methods)
+    global_routines.extend(main_program.global_routines)
     program = PascalProgram(
         name=main_program.name,
         constants=tuple(constants),
@@ -2089,13 +2874,20 @@ def _parse_pascal_frontend(
         types=tuple(types),
         methods=tuple(methods),
         external_routines=tuple(resolver.external_routines),
+        global_routines=tuple(global_routines),
         unit_assembly_files=tuple(resolver.assembly_files),
+        unit_object_files=tuple(
+            dict.fromkeys(
+                list(preprocessor.link_files) + list(resolver.object_files)
+            )
+        ),
     )
     return program, PascalPreprocessResult(
         root_processed.source,
         dict(preprocessor.macros),
         tuple(preprocessor.notes),
         tuple(preprocessor.warnings),
+        tuple(preprocessor.link_files),
     )
 
 
@@ -2121,15 +2913,19 @@ class _PascalType:
     signed: bool = False
     kind: str = "scalar"
     fields: Dict[str, "_FieldInfo"] = field(default_factory=dict)
+    properties: Dict[str, "_PropertyInfo"] = field(default_factory=dict)
     element_type: Optional["_PascalType"] = None
     lower_bound: int = 0
     upper_bound: int = -1
     methods: Dict[str, "_MethodInfo"] = field(default_factory=dict)
     base_type: Optional["_PascalType"] = None
+    pointer_target: Optional["_PascalType"] = None
 
     @property
     def scalar(self) -> bool:
-        return self.kind in {"scalar", "enum", "string"}
+        return self.kind in {
+            "scalar", "enum", "subrange", "pointer", "string", "double"
+        }
 
     @property
     def aggregate(self) -> bool:
@@ -2142,6 +2938,16 @@ class _FieldInfo:
     type_info: _PascalType
     offset: int
     position: SourcePosition
+
+
+@dataclass(frozen=True)
+class _PropertyInfo:
+    name: str
+    type_info: _PascalType
+    read_accessor: Optional[str]
+    write_accessor: Optional[str]
+    position: SourcePosition
+    index_parameters: Tuple[_ParameterInfo, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -2162,6 +2968,9 @@ class _MethodInfo:
     position: SourcePosition
     label: str
     implementation: Optional[MethodImplementation] = None
+    is_virtual: bool = False
+    is_override: bool = False
+    is_class_method: bool = False
     parameter_variables: Tuple["_Variable", ...] = ()
     local_variables: Dict[str, "_Variable"] = field(default_factory=dict)
     local_initializers: List[Tuple["_Variable", Expression]] = field(default_factory=list)
@@ -2178,16 +2987,57 @@ class _ExternalRoutineInfo:
     symbol: str
 
 
+@dataclass
+class _GlobalRoutineInfo:
+    kind: str
+    name: str
+    parameters: Tuple[_ParameterInfo, ...]
+    result_type: Optional[_PascalType]
+    position: SourcePosition
+    label: str
+    implementation: GlobalRoutineImplementation
+    parameter_variables: Tuple["_Variable", ...] = ()
+    local_variables: Dict[str, "_Variable"] = field(default_factory=dict)
+    local_initializers: List[Tuple["_Variable", Expression]] = field(default_factory=list)
+    result_variable: Optional["_Variable"] = None
+
 
 INTEGER_TYPE = _PascalType("integer", 2, True)
 BYTE_TYPE = _PascalType("byte", 1, False)
 CHAR_TYPE = _PascalType("char", 1, False)
 BOOLEAN_TYPE = _PascalType("boolean", 1, False)
-STRING_TYPE = _PascalType("string", 2, False)
+STRING_TYPE = _PascalType("string", 2, False, "string")
+POINTER_TYPE = _PascalType("pointer", 2, False, "pointer")
+DOUBLE_TYPE = _PascalType("double", 8, True, "double")
+
+# Windows PE32 uses native 32-bit Integer, Pointer and dynamic-string handles.
+PE32_INTEGER_TYPE = _PascalType("integer", 4, True)
+PE32_POINTER_TYPE = _PascalType("pointer", 4, False, "pointer")
+PE32_STRING_TYPE = _PascalType("string", 4, False, "string")
+
+# Stage 181: Runtime-Funktionen aus System.Objects werden als echte PE-Imports
+# an libruntime_mini.dll gebunden.  Der erste Name ist der Pascal/DLL-Exportname;
+# der lokale COFF32-cdecl-Symbolname wird weiterhin als _jit_* erzeugt.
+PASCAL_MINIRUNTIME_DLL = "libruntime_mini.dll"
+PASCAL_MINIRUNTIME_IMPORTS: Dict[str, str] = {
+    "jit_object_instance_new": "jit_object_instance_new",
+    "jit_object_instance_free": "jit_object_instance_free",
+    "jit_object_free": "jit_object_free",
+    "jit_object_class_type": "jit_object_class_type",
+    "jit_class_parent": "jit_class_parent",
+    "jit_class_name": "jit_class_name",
+    "jit_class_instance_size": "jit_class_instance_size",
+    "jit_inherits_from_class": "jit_inherits_from_class",
+    "jit_inherits_from_object": "jit_inherits_from_object",
+    "jit_dynstring_from_cstr": "jit_dynstring_from_cstr",
+}
 
 _TYPES = {
     item.name: item
-    for item in (INTEGER_TYPE, BYTE_TYPE, CHAR_TYPE, BOOLEAN_TYPE)
+    for item in (
+        INTEGER_TYPE, BYTE_TYPE, CHAR_TYPE, BOOLEAN_TYPE,
+        STRING_TYPE, POINTER_TYPE, DOUBLE_TYPE,
+    )
 }
 
 
@@ -2253,7 +3103,9 @@ class _CodeGenerator:
         self.initializers: List[Tuple[_Variable, Expression]] = []
         self.methods: List[_MethodInfo] = []
         self.external_routines: Dict[str, _ExternalRoutineInfo] = {}
+        self.global_routines: Dict[str, _GlobalRoutineInfo] = {}
         self.current_method: Optional[_MethodInfo] = None
+        self.current_global_routine: Optional[_GlobalRoutineInfo] = None
         self.scope_variables: Dict[str, _Variable] = {}
         self.strings: Dict[bytes, str] = {}
         self.runtime: set[str] = set()
@@ -2434,6 +3286,62 @@ class _CodeGenerator:
             specification = declaration.specification
             if isinstance(specification, NamedTypeSpecification):
                 type_info = self._resolve_type(specification.name, specification.position)
+            elif isinstance(specification, SubrangeTypeSpecification):
+                lower = self._evaluate_constant(specification.lower_bound)
+                upper = self._evaluate_constant(specification.upper_bound)
+                if isinstance(lower, (str, bool)) or isinstance(upper, (str, bool)):
+                    raise self._error(
+                        "Subrange-Grenzen müssen ganzzahlig sein.",
+                        specification.position,
+                    )
+                lower = int(lower); upper = int(upper)
+                if upper < lower:
+                    raise self._error(
+                        f"Ungültiger Subrange {lower}..{upper}.",
+                        specification.position,
+                    )
+                signed = lower < 0
+                if signed:
+                    if -128 <= lower and upper <= 127:
+                        size = 1
+                    elif -32768 <= lower and upper <= 32767:
+                        size = 2
+                    elif -0x80000000 <= lower and upper <= 0x7FFFFFFF:
+                        size = 4
+                    else:
+                        raise self._error(
+                            f"Subrange außerhalb des 32-Bit-Bereichs: {lower}..{upper}.",
+                            specification.position,
+                        )
+                else:
+                    if upper <= 0xFF:
+                        size = 1
+                    elif upper <= 0xFFFF:
+                        size = 2
+                    elif upper <= 0xFFFFFFFF:
+                        size = 4
+                    else:
+                        raise self._error(
+                            f"Subrange außerhalb des 32-Bit-Bereichs: {lower}..{upper}.",
+                            specification.position,
+                        )
+                type_info = _PascalType(
+                    declaration.name, size, signed, "subrange",
+                    lower_bound=lower, upper_bound=upper,
+                )
+            elif isinstance(specification, PointerTypeSpecification):
+                target_type = self._resolve_type(
+                    specification.target_type_name,
+                    specification.position,
+                )
+                native_pointer = self.types.get("pointer", POINTER_TYPE)
+                type_info = _PascalType(
+                    declaration.name,
+                    native_pointer.size,
+                    False,
+                    "pointer",
+                    pointer_target=target_type,
+                )
             elif isinstance(specification, EnumTypeSpecification):
                 if not specification.names:
                     raise self._error("Ein Aufzählungstyp benötigt mindestens einen Wert.", specification.position)
@@ -2504,11 +3412,13 @@ class _CodeGenerator:
                 if base_type is not None:
                     type_info.fields.update(base_type.fields)
                     type_info.methods.update(base_type.methods)
+                    type_info.properties.update(base_type.properties)
                 self.types[key] = type_info
                 self._install_fields(type_info, specification.fields)
                 if type_info.size == 0:
                     type_info.size = 1
                 self._install_methods(type_info, specification.methods)
+                self._install_properties(type_info, specification.properties)
             else:
                 raise self._error("Nicht unterstützte Typdefinition.", declaration.position)
             self.types[key] = type_info
@@ -2539,6 +3449,49 @@ class _CodeGenerator:
                         f"{owner.name} ist größer als 256 Bytes.",
                         declaration.position,
                     )
+
+    def _install_properties(
+        self,
+        owner: _PascalType,
+        declarations: Sequence[PropertyDeclaration],
+    ) -> None:
+        for declaration in declarations:
+            key = self._key(declaration.name)
+            if key in owner.fields or (
+                key in owner.methods and owner.methods[key].owner is owner
+            ):
+                raise self._error(
+                    f"Klassenmitglied mehrfach deklariert: {declaration.name}.",
+                    declaration.position,
+                )
+            if key in owner.properties and (
+                owner.base_type is None
+                or owner.properties[key] is not owner.base_type.properties.get(key)
+            ):
+                raise self._error(
+                    f"Property mehrfach deklariert: {declaration.name}.",
+                    declaration.position,
+                )
+            property_type = self._resolve_type(
+                declaration.type_name, declaration.position
+            )
+            parameters = tuple(
+                _ParameterInfo(
+                    parameter.names[0],
+                    self._resolve_type(parameter.type_name, parameter.position),
+                    parameter.modifier,
+                    parameter.position,
+                )
+                for parameter in declaration.index_parameters
+            )
+            owner.properties[key] = _PropertyInfo(
+                declaration.name,
+                property_type,
+                declaration.read_accessor,
+                declaration.write_accessor,
+                declaration.position,
+                parameters,
+            )
 
     def _install_methods(
         self,
@@ -2583,6 +3536,9 @@ class _CodeGenerator:
                 result_type,
                 declaration.position,
                 f"__pas_method_{self._safe_name(owner.name)}_{self._safe_name(declaration.name)}",
+                is_virtual=("virtual" in declaration.directives),
+                is_override=("override" in declaration.directives),
+                is_class_method=declaration.is_class_method,
             )
             owner.methods[key] = method
             self.methods.append(method)
@@ -2600,7 +3556,20 @@ class _CodeGenerator:
     def _prepare_symbols(self) -> None:
         for declaration in self.program.types:
             key = self._key(declaration.name)
-            if key in self.types or key in self.type_declarations:
+            if key in self.types:
+                # Bootstrap-Units dürfen die elementaren Pascal-Typen durch ihre
+                # kanonischen Subranges dokumentieren. Der aktive Backend-Typ
+                # bleibt dabei maßgeblich (z.B. Integer/Pointer unter PE32).
+                if (
+                    key in {"boolean", "byte", "char"}
+                    and isinstance(declaration.specification, SubrangeTypeSpecification)
+                ):
+                    continue
+                raise self._error(
+                    f"Datentyp mehrfach deklariert: {declaration.name}.",
+                    declaration.position,
+                )
+            if key in self.type_declarations:
                 raise self._error(f"Datentyp mehrfach deklariert: {declaration.name}.", declaration.position)
             self.type_declarations[key] = declaration
 
@@ -2639,7 +3608,125 @@ class _CodeGenerator:
                     self.initializers.append((variable, declaration.initializer))
 
         self._prepare_external_routines()
+        self._prepare_global_routines()
         self._prepare_method_implementations()
+
+    def _prepare_global_routines(self) -> None:
+        for implementation in self.program.global_routines:
+            key = self._key(implementation.name)
+            if key in self.global_routines:
+                raise self._error(
+                    f"Globale Routine mehrfach implementiert: {implementation.name}.",
+                    implementation.position,
+                )
+            if key in self.external_routines:
+                # A PUI declaration of a source-available Unit routine describes
+                # the same routine from the consumer side.  When the Unit source
+                # is statically merged, its implementation wins and the PUI
+                # external must disappear.  An explicit EXTERNAL in the same
+                # source (unit_name empty) remains an error.
+                previous_external = self.external_routines[key]
+                if previous_external.unit_name:
+                    self.external_routines.pop(key, None)
+                else:
+                    raise self._error(
+                        f"Globale Routine zugleich EXTERNAL und implementiert: {implementation.name}.",
+                        implementation.position,
+                    )
+            parameters: List[_ParameterInfo] = []
+            for item in implementation.parameters:
+                if item.modifier == "var":
+                    raise self._error(
+                        f"Globale Routine {implementation.name}: VAR-Parameter werden "
+                        "in dieser Stufe noch nicht unterstützt.",
+                        item.position,
+                    )
+                parameters.append(
+                    _ParameterInfo(
+                        item.names[0],
+                        self._resolve_type(item.type_name, item.position),
+                        item.modifier,
+                        item.position,
+                    )
+                )
+            result_type = (
+                self._resolve_type(implementation.result_type_name, implementation.position)
+                if implementation.result_type_name
+                else None
+            )
+            if implementation.kind == "function" and result_type is None:
+                raise self._error(
+                    f"FUNCTION {implementation.name} benötigt einen Rückgabetyp.",
+                    implementation.position,
+                )
+            if implementation.kind != "function" and result_type is not None:
+                raise self._error(
+                    f"PROCEDURE {implementation.name} darf keinen Rückgabetyp besitzen.",
+                    implementation.position,
+                )
+            if getattr(self, "unit_name", None):
+                safe_unit = re.sub(r"[^A-Za-z0-9_]", "_", str(self.unit_name))
+                label = f"__pas_{safe_unit}_{implementation.name}"
+            else:
+                label = f"__pas_global_{self._safe_name(implementation.name)}"
+            routine = _GlobalRoutineInfo(
+                implementation.kind,
+                implementation.name,
+                tuple(parameters),
+                result_type,
+                implementation.position,
+                label,
+                implementation,
+            )
+            local_names = set()
+            parameter_variables = []
+            for parameter in routine.parameters:
+                pkey = self._key(parameter.name)
+                if pkey in local_names:
+                    raise self._error(
+                        f"Parameter mehrfach deklariert: {parameter.name}.",
+                        parameter.position,
+                    )
+                local_names.add(pkey)
+                parameter_variables.append(
+                    self._allocate_variable(
+                        parameter.name,
+                        parameter.type_info,
+                        parameter.position,
+                        internal=True,
+                        label_prefix=f"param_global_{implementation.name}",
+                    )
+                )
+            routine.parameter_variables = tuple(parameter_variables)
+            for declaration in implementation.local_variables:
+                local_type = self._resolve_type(declaration.type_name, declaration.position)
+                for name in declaration.names:
+                    lkey = self._key(name)
+                    if lkey in local_names:
+                        raise self._error(
+                            f"Lokaler Bezeichner mehrfach deklariert: {name}.",
+                            declaration.position,
+                        )
+                    local_names.add(lkey)
+                    variable = self._allocate_variable(
+                        name,
+                        local_type,
+                        declaration.position,
+                        internal=True,
+                        label_prefix=f"local_global_{implementation.name}",
+                    )
+                    routine.local_variables[lkey] = variable
+                    if declaration.initializer is not None:
+                        routine.local_initializers.append((variable, declaration.initializer))
+            if routine.result_type is not None:
+                routine.result_variable = self._allocate_variable(
+                    "Result",
+                    routine.result_type,
+                    implementation.position,
+                    internal=True,
+                    label_prefix=f"result_global_{implementation.name}",
+                )
+            self.global_routines[key] = routine
 
     def _prepare_external_routines(self) -> None:
         for declaration in self.program.external_routines:
@@ -2895,6 +3982,43 @@ class _CodeGenerator:
             dynamic,
         )
 
+    def _resolve_inherited_method(
+        self,
+        method_name: Optional[str],
+        position: SourcePosition,
+    ) -> Tuple[_MethodInfo, _StorageAccess]:
+        if self.current_method is None:
+            raise self._error(
+                "INHERITED ist nur innerhalb einer Methode erlaubt.", position
+            )
+        base_type = self.current_method.owner.base_type
+        if base_type is None:
+            raise self._error(
+                f"{self.current_method.owner.name} besitzt keine Basisklasse.",
+                position,
+            )
+        name = method_name or self.current_method.name
+        method = base_type.methods.get(self._key(name))
+        if method is None:
+            raise self._error(
+                f"Geerbte Methode nicht gefunden: {base_type.name}.{name}.",
+                position,
+            )
+        return method, _StorageAccess(
+            base_type,
+            position,
+            None,
+            True,
+        )
+
+    def _compile_inherited_call(self, statement: InheritedCallStatement) -> None:
+        method, receiver = self._resolve_inherited_method(
+            statement.method_name, statement.position
+        )
+        self._compile_method_call(
+            method, receiver, statement.arguments, statement.position
+        )
+
     def _resolve_method_call(
         self,
         designator: DesignatorExpression,
@@ -2958,6 +4082,11 @@ class _CodeGenerator:
             return self._constant_type(expression.value)
         if isinstance(expression, (NameExpression, DesignatorExpression)):
             key = self._key(expression.name)
+            if key == "nil" and (
+                not isinstance(expression, DesignatorExpression)
+                or not expression.selectors
+            ):
+                return self.types.get("pointer", POINTER_TYPE)
             if not isinstance(expression, DesignatorExpression) or not expression.selectors:
                 if key in self.constants:
                     return self.constant_types.get(key, self._constant_type(self.constants[key]))
@@ -2976,6 +4105,9 @@ class _CodeGenerator:
             designator = self._as_designator(expression.designator, expression.position)
             if not designator.selectors:
                 name = self._key(designator.name)
+                cast_type = self.types.get(name)
+                if cast_type is not None and len(expression.arguments) == 1:
+                    return cast_type
                 if name == "peek":
                     return BYTE_TYPE
                 if name == "chr":
@@ -2992,6 +4124,14 @@ class _CodeGenerator:
                 #
                 # faelschlich an die Klassenmethoden-Aufloesung weitergereicht
                 # und endet mit "Methode nicht gefunden: SetOf".
+                global_routine = self.global_routines.get(name)
+                if global_routine is not None:
+                    if global_routine.result_type is None:
+                        raise self._error(
+                            f"{global_routine.name} ist keine Funktion.",
+                            expression.position,
+                        )
+                    return global_routine.result_type
                 routine = self.external_routines.get(name)
                 if routine is not None:
                     if routine.result_type is None:
@@ -3487,10 +4627,16 @@ class _CodeGenerator:
     def _types_compatible(self, target: _PascalType, source: _PascalType) -> bool:
         if target is source:
             return True
+        if target.kind == "pointer":
+            return source.kind in {"pointer", "class"}
+        if source.kind == "pointer":
+            return target.kind == "pointer"
+        if target.kind == "string" or source.kind == "string":
+            return target.kind == source.kind
         if target == BOOLEAN_TYPE or source == BOOLEAN_TYPE:
             return False
-        numeric = {INTEGER_TYPE, BYTE_TYPE, CHAR_TYPE}
-        return target in numeric and (source in numeric or source.kind == "enum")
+        numeric_kinds = {"scalar", "enum", "subrange"}
+        return target.kind in numeric_kinds and source.kind in numeric_kinds
 
     def _emit_set_self_address(self, receiver: _StorageAccess, line: int) -> None:
         if receiver.dynamic is None and receiver.use_self and receiver.constant_offset == 0:
@@ -3629,6 +4775,9 @@ class _CodeGenerator:
             return
         if isinstance(statement, AssignmentStatement):
             self._compile_assignment(statement)
+            return
+        if isinstance(statement, InheritedCallStatement):
+            self._compile_inherited_call(statement)
             return
         if isinstance(statement, CallStatement):
             self._compile_call_statement(statement)
@@ -4210,14 +5359,20 @@ class _PE32CodeGenerator(_CodeGenerator):
         console_mode: bool = True,
         library_name: Optional[str] = None,
         library_exports: Optional[Dict[str, str]] = None,
+        unit_name: Optional[str] = None,
     ) -> None:
         super().__init__(program)
+        # Delphi/Win32-compatible native widths used by bootstrap units.
+        self.types["integer"] = PE32_INTEGER_TYPE
+        self.types["pointer"] = PE32_POINTER_TYPE
+        self.types["string"] = PE32_STRING_TYPE
         self.symbol_prefix = symbol_prefix
         self.language_name = language_name
         self.graphics_backend = str(graphics_backend or "Direct2D")
         self.console_mode = bool(console_mode)
         self.library_name = str(library_name) if library_name else None
         self.library_exports = dict(library_exports or {})
+        self.unit_name = str(unit_name) if unit_name else None
 
     def _new_label(self, prefix: str) -> str:
         self.label_counter += 1
@@ -4338,6 +5493,9 @@ class _PE32CodeGenerator(_CodeGenerator):
         if isinstance(expression, (NameExpression, DesignatorExpression)):
             key = self._key(expression.name)
             has_selectors = isinstance(expression, DesignatorExpression) and bool(expression.selectors)
+            if key == "nil" and not has_selectors:
+                self.emitter.emit("    xor eax, eax", line)
+                return self.types.get("pointer", PE32_POINTER_TYPE)
             if key in self.constants and not has_selectors:
                 value = self.constants[key]
                 if isinstance(value, str):
@@ -4355,6 +5513,12 @@ class _PE32CodeGenerator(_CodeGenerator):
                         method, receiver = resolved
                         return self._compile_method_call(method, receiver, (), expression.position)
                 raise
+            if access.type_info.kind == "class":
+                # In Win32-Ausdrücken ist eine Klasseninstanz referenzartig.
+                # Self <> nil und Pointer(Self) benötigen die Objektadresse.
+                self._emit_address(access, line)
+                self.emitter.emit("    mov eax, ecx", line)
+                return self.types.get("pointer", PE32_POINTER_TYPE)
             if not access.type_info.scalar:
                 raise self._error(
                     f"{access.type_info.name} kann nicht als skalarer Ausdruck geladen werden.",
@@ -4435,10 +5599,60 @@ class _PE32CodeGenerator(_CodeGenerator):
             self.emitter.emit(f"    add esp, {len(arguments) * 4}", line)
         return routine.result_type if routine.result_type is not None else BYTE_TYPE
 
+    def _compile_typecast(
+        self,
+        target_type: _PascalType,
+        argument: Expression,
+        position: SourcePosition,
+    ) -> _PascalType:
+        line = position.line
+        # Pointer(Self) / Pointer(Object) means address conversion, not a load
+        # of the first bytes of the object.
+        if target_type.kind == "pointer" and isinstance(
+            argument, (NameExpression, DesignatorExpression)
+        ):
+            if self._key(argument.name) == "nil":
+                self.emitter.emit("    xor eax, eax", line)
+                return target_type
+            try:
+                access = self._resolve_storage(argument)
+            except C64PascalError:
+                access = None
+            if access is not None and access.type_info.kind == "class":
+                self._emit_address(access, line)
+                self.emitter.emit("    mov eax, ecx", line)
+                return target_type
+        source_type = self._compile_expr(argument)
+        if target_type.kind == "pointer":
+            if source_type.kind not in {"pointer", "class", "scalar", "subrange"}:
+                raise self._error(
+                    f"{source_type.name} kann nicht nach Pointer konvertiert werden.",
+                    position,
+                )
+            return target_type
+        if target_type.scalar and source_type.scalar:
+            if target_type.size == 1:
+                self.emitter.emit("    and eax, 255", line)
+            elif target_type.size == 2:
+                self.emitter.emit("    and eax, 65535", line)
+            return target_type
+        raise self._error(
+            f"Typkonvertierung {source_type.name} -> {target_type.name} wird nicht unterstützt.",
+            position,
+        )
+
     def _compile_function(self, expression: CallExpression) -> _PascalType:
         designator = self._as_designator(expression.designator, expression.position)
         name = self._key(designator.name) if not designator.selectors else ""
         line = expression.position.line
+        cast_type = self.types.get(name) if name else None
+        if cast_type is not None:
+            self._require_argument_count(
+                designator.name, expression.arguments, 1, expression.position
+            )
+            return self._compile_typecast(
+                cast_type, expression.arguments[0], expression.position
+            )
         if name == "peek":
             raise self._error("PEEK ist fuer Windows PE32 nicht verfuegbar.", expression.position)
         if name in {"chr", "ord", "lo", "hi"}:
@@ -4449,6 +5663,15 @@ class _PE32CodeGenerator(_CodeGenerator):
             elif name in {"chr", "lo"}:
                 self.emitter.emit("    and eax, 255", line)
             return CHAR_TYPE if name == "chr" else INTEGER_TYPE
+        global_routine = self.global_routines.get(name)
+        if global_routine is not None:
+            if global_routine.result_type is None:
+                raise self._error(
+                    f"{global_routine.name} ist keine Funktion.", expression.position
+                )
+            return self._compile_global_routine_call(
+                global_routine, expression.arguments, expression.position
+            )
         routine = self.external_routines.get(name)
         if routine is not None:
             if routine.result_type is None:
@@ -4458,6 +5681,35 @@ class _PE32CodeGenerator(_CodeGenerator):
         if method.result_type is None:
             raise self._error(f"{method.owner.name}.{method.name} ist keine Funktion.", expression.position)
         return self._compile_method_call(method, receiver, expression.arguments, expression.position)
+
+    def _compile_global_routine_call(
+        self,
+        routine: _GlobalRoutineInfo,
+        arguments: Sequence[Expression],
+        position: SourcePosition,
+    ) -> _PascalType:
+        self._require_argument_count(
+            routine.name, arguments, len(routine.parameters), position
+        )
+        line = position.line
+        for argument, parameter, variable in zip(
+            arguments, routine.parameters, routine.parameter_variables
+        ):
+            argument_type = self._compile_expr(argument)
+            if not argument_type.scalar or not parameter.type_info.scalar:
+                raise self._error(
+                    "Aggregatparameter werden noch nicht unterstützt.",
+                    argument.position,
+                )
+            if not self._types_compatible(parameter.type_info, argument_type):
+                raise self._error(
+                    f"Argumenttyp {argument_type.name} passt nicht zu "
+                    f"{parameter.type_info.name}.",
+                    argument.position,
+                )
+            self._store_variable(variable, line)
+        self.emitter.emit(f"    call {routine.label}", line)
+        return routine.result_type if routine.result_type is not None else BYTE_TYPE
 
     def _emit_set_self_address(self, receiver: _StorageAccess, line: int) -> None:
         self._emit_address(receiver, line)
@@ -4545,6 +5797,17 @@ class _PE32CodeGenerator(_CodeGenerator):
             self.runtime.add("clear_screen")
             self.emitter.emit(f"    call {self.symbol_prefix}_clear_screen", line)
             return
+        global_routine = self.global_routines.get(name)
+        if global_routine is not None:
+            if global_routine.result_type is not None:
+                raise self._error(
+                    f"{global_routine.name} ist eine Funktion und muss in einem Ausdruck verwendet werden.",
+                    statement.position,
+                )
+            self._compile_global_routine_call(
+                global_routine, statement.arguments, statement.position
+            )
+            return
         routine = self.external_routines.get(name)
         if routine is not None:
             if routine.result_type is not None:
@@ -4569,6 +5832,69 @@ class _PE32CodeGenerator(_CodeGenerator):
         method, receiver = self._resolve_method_call(designator)
         self._compile_method_call(method, receiver, statement.arguments, statement.position)
 
+    def _emit_global_routines(self) -> None:
+        for routine in self.global_routines.values():
+            implementation = routine.implementation
+            self.emitter.emit()
+            self.emitter.emit(
+                f"; {routine.kind} {routine.name}", implementation.position.line
+            )
+            if self.unit_name:
+                self.emitter.emit(
+                    f"global {routine.label}", implementation.position.line
+                )
+            self.emitter.emit(f"{routine.label}:", implementation.position.line)
+            previous_method = self.current_method
+            previous_global = self.current_global_routine
+            previous_scope = self.scope_variables
+            self.current_method = None
+            self.current_global_routine = routine
+            self.scope_variables = {
+                self._key(parameter.name): variable
+                for parameter, variable in zip(
+                    routine.parameters, routine.parameter_variables
+                )
+            }
+            self.scope_variables.update(routine.local_variables)
+            if routine.result_variable is not None:
+                self.scope_variables["result"] = routine.result_variable
+                self.scope_variables[self._key(routine.name)] = routine.result_variable
+            try:
+                self.emitter.emit("    push ebp", implementation.position.line)
+                self.emitter.emit("    mov ebp, esp", implementation.position.line)
+                for variable in routine.local_variables.values():
+                    self.emitter.emit("    xor eax, eax", implementation.position.line)
+                    self._store_variable(variable, implementation.position.line)
+                if routine.result_variable is not None:
+                    self.emitter.emit("    xor eax, eax", implementation.position.line)
+                    self._store_variable(routine.result_variable, implementation.position.line)
+                for variable, initializer in routine.local_initializers:
+                    result_type = self._compile_expr(initializer)
+                    if not self._types_compatible(variable.type_info, result_type):
+                        raise self._error(
+                            f"Initialisierung von {variable.name} besitzt den falschen Typ.",
+                            initializer.position,
+                        )
+                    self._store_variable(variable, initializer.position.line)
+                self._compile_statement(implementation.body)
+                if routine.result_variable is not None:
+                    self._emit_load_access(
+                        _StorageAccess(
+                            routine.result_variable.type_info,
+                            implementation.position,
+                            routine.result_variable.label,
+                            False,
+                        ),
+                        implementation.position.line,
+                    )
+                self.emitter.emit("    mov esp, ebp", implementation.position.line)
+                self.emitter.emit("    pop ebp", implementation.position.line)
+                self.emitter.emit("    ret", implementation.position.line)
+            finally:
+                self.scope_variables = previous_scope
+                self.current_global_routine = previous_global
+                self.current_method = previous_method
+
     def _emit_methods(self) -> None:
         for method in self.methods:
             implementation = method.implementation
@@ -4576,6 +5902,8 @@ class _PE32CodeGenerator(_CodeGenerator):
                 continue
             self.emitter.emit()
             self.emitter.emit(f"; {method.kind} {method.owner.name}.{method.name}", implementation.position.line)
+            if self.unit_name:
+                self.emitter.emit(f"global {method.label}", implementation.position.line)
             self.emitter.emit(f"{method.label}:", implementation.position.line)
             previous_method = self.current_method; previous_scope = self.scope_variables
             self.current_method = method
@@ -4773,6 +6101,39 @@ class _PE32CodeGenerator(_CodeGenerator):
         self._prepare_symbols()
         source_line = self.program.body.position.line
 
+        if self.unit_name:
+            safe_unit = re.sub(r"[^A-Za-z0-9_]", "_", self.unit_name)
+            self.emitter.emit("; Von Pascal erzeugtes Windows-PE32-Unit-Modul")
+            self.emitter.emit(f"; Unit: {self.unit_name}")
+            self.emitter.emit("bits 32")
+            self.emitter.emit(f"global __unit_{safe_unit}")
+            for routine in self.external_routines.values():
+                member = PASCAL_MINIRUNTIME_IMPORTS.get(
+                    routine.name.casefold()
+                )
+                if member is not None:
+                    self.emitter.emit(
+                        f'import {routine.symbol}, "{PASCAL_MINIRUNTIME_DLL}", "{member}"'
+                    )
+                else:
+                    self.emitter.emit(f"extern {routine.symbol}")
+            self.emitter.emit(f"__unit_{safe_unit}:")
+            self.emitter.emit("    ret")
+            self._emit_global_routines()
+            self._emit_methods()
+            self._emit_runtime()
+            self._emit_data()
+            assembly = "\n".join(self.emitter.lines).rstrip() + "\n"
+            return GeneratedAssembly(
+                self.program.name,
+                assembly,
+                dict(self.emitter.source_map),
+                sum(not variable.internal for variable in self.variable_order),
+                len(self.strings),
+                source_kind="unit",
+                unit_name=self.unit_name,
+            )
+
         if self.library_name:
             self.emitter.emit("; Von Pascal erzeugter IA-32-Assembler")
             self.emitter.emit("; Ziel: Windows PE32 DLL / integrierter COFF32-Linker")
@@ -4818,6 +6179,7 @@ class _PE32CodeGenerator(_CodeGenerator):
             self.emitter.emit("    mov esp, ebp", source_line)
             self.emitter.emit("    pop ebp", source_line)
             self.emitter.emit("    ret 12", source_line)
+            self._emit_global_routines()
             self._emit_methods()
             self._emit_library_exports()
             self._emit_runtime()
@@ -4861,7 +6223,7 @@ class _PE32CodeGenerator(_CodeGenerator):
         self._compile_statement(self.program.body)
         self.emitter.emit("    push 0", source_line)
         self.emitter.emit("    call ExitProcess", source_line)
-        self._emit_methods(); self._emit_runtime(); self._emit_data()
+        self._emit_global_routines(); self._emit_methods(); self._emit_runtime(); self._emit_data()
         assembly = "\n".join(self.emitter.lines).rstrip() + "\n"
         return GeneratedAssembly(
             self.program.name,
@@ -5887,6 +7249,7 @@ def _compile_pascal_unit_interface(
     include_paths: Iterable[Path | str],
     predefined_macros: Optional[Dict[str, Union[str, int, bool]]],
     target: str,
+    linked_object_files: Sequence[str] = (),
 ) -> GeneratedAssembly:
     """Kompiliert eine direkt geöffnete Pascal-Unit.
 
@@ -5896,6 +7259,7 @@ def _compile_pascal_unit_interface(
     """
     preprocessor = PascalPreprocessor(predefined_macros)
     processed = preprocessor.process(source, filename=filename)
+    supplied_link_files = tuple(str(item) for item in linked_object_files)
     (
         unused_transformed,
         unit_name,
@@ -5923,6 +7287,9 @@ def _compile_pascal_unit_interface(
             interface_units=interface_units,
             source_path=source_path,
             guard=_pascal_guard_macro(source),
+            link_files=tuple(
+                dict.fromkeys(list(supplied_link_files) + list(processed.link_files))
+            ),
         )
         _write_pui_document(pui_path, pui_document)
 
@@ -5938,31 +7305,97 @@ def _compile_pascal_unit_interface(
     for dependency in interface_units + implementation_units:
         resolver.resolve(dependency)
 
-    # Eine Interface-Unit darf leer implementiert sein. Enthält sie bereits
-    # echten Pascal-Code, muss dieser zukünftig als globales Unit-Modul durch
-    # den Mehrdateien-Linker übersetzt werden; er darf hier nicht stillschweigend
-    # verworfen werden.
     implementation_mask = _pascal_code_mask(implementation_source)
-    if re.search(r"\b(procedure|function|constructor|destructor)\b", implementation_mask, re.IGNORECASE):
-        raise C64PascalError(
-            "Globale Pascal-Routinen im IMPLEMENTATION-Teil einer Unit werden "
-            "vom separaten Unit-Linker noch nicht unterstützt. Die Unit-PUI "
-            "wurde bereits erzeugt; implementiere die Routinen derzeit in den "
-            "getrennten C-/ASM-Modulen."
-        )
+    has_pascal_routines = bool(re.search(
+        r"\b(procedure|function|constructor|destructor)\b",
+        implementation_mask,
+        re.IGNORECASE,
+    ))
+    normalized_target = str(target).strip().casefold()
 
-    generated = GeneratedAssembly(
-        program_name=unit_name,
-        assembly=_unit_marker_assembly(unit_name, target),
-        source_map={},
-        variable_count=0,
-        string_count=0,
-        notes=tuple(preprocessor.notes),
-        warnings=tuple(preprocessor.warnings),
-        source_kind="unit",
-        unit_name=unit_name,
-        pui_path=str(pui_path) if pui_path is not None else None,
-    )
+    if normalized_target in {"pe32", "win32", "windows", "windows-pe32"}:
+        # Für Windows PE32 wird die vollständige Unit als echtes, relocierbares
+        # Pascal-Modul übersetzt. Der vorhandene d64_dism-Assembler baut daraus
+        # anschließend COFF32; es entsteht bewusst keine _start-Routine.
+        transformed, _unit_name2, _iu, _mu, _isrc, _msrc = _unit_program_source(
+            processed.source, filename=filename
+        )
+        unit_program = _parse_pascal_program(transformed)
+
+        constants: List[ConstDeclaration] = []
+        types: List[TypeDeclaration] = []
+        variables: List[VarDeclaration] = []
+        methods: List[MethodImplementation] = []
+        externals: List[ExternalRoutineDeclaration] = []
+        global_routines: List[GlobalRoutineImplementation] = []
+        for dependency_program in resolver.programs:
+            constants.extend(dependency_program.constants)
+            types.extend(dependency_program.types)
+            variables.extend(dependency_program.variables)
+            methods.extend(dependency_program.methods)
+            externals.extend(dependency_program.external_routines)
+            global_routines.extend(dependency_program.global_routines)
+        constants.extend(unit_program.constants)
+        types.extend(unit_program.types)
+        variables.extend(unit_program.variables)
+        methods.extend(unit_program.methods)
+        externals.extend(unit_program.external_routines)
+        global_routines.extend(unit_program.global_routines)
+
+        merged_program = PascalProgram(
+            name=unit_program.name,
+            constants=tuple(constants),
+            variables=tuple(variables),
+            body=unit_program.body,
+            types=tuple(types),
+            methods=tuple(methods),
+            external_routines=tuple(externals),
+            global_routines=tuple(global_routines),
+            unit_assembly_files=tuple(resolver.assembly_files),
+            unit_object_files=tuple(
+                dict.fromkeys(
+                    list(supplied_link_files)
+                    + list(preprocessor.link_files)
+                    + list(resolver.object_files)
+                )
+            ),
+        )
+        generated = _PE32CodeGenerator(
+            merged_program,
+            console_mode=False,
+            unit_name=unit_name,
+        ).generate()
+        generated = replace(
+            generated,
+            notes=tuple(preprocessor.notes),
+            warnings=tuple(preprocessor.warnings),
+            source_kind="unit",
+            unit_name=unit_name,
+            pui_path=str(pui_path) if pui_path is not None else None,
+            linked_object_files=tuple(merged_program.unit_object_files),
+        )
+    else:
+        # C64/Amiga behalten den bisherigen Interface-Unit-Pfad. Echte
+        # Pascal-Implementierungen bleiben dort bis zu einem separaten
+        # Mehrmodul-Backend explizit abgelehnt.
+        if has_pascal_routines:
+            raise C64PascalError(
+                "Globale Pascal-Routinen im IMPLEMENTATION-Teil einer Unit werden "
+                "für dieses Ziel noch nicht unterstützt. Verwende PE32 oder ein "
+                "getrenntes C-/ASM-Implementierungsmodul."
+            )
+        generated = GeneratedAssembly(
+            program_name=unit_name,
+            assembly=_unit_marker_assembly(unit_name, target),
+            source_map={},
+            variable_count=0,
+            string_count=0,
+            notes=tuple(preprocessor.notes),
+            warnings=tuple(preprocessor.warnings),
+            source_kind="unit",
+            unit_name=unit_name,
+            pui_path=str(pui_path) if pui_path is not None else None,
+        )
     if pui_document is not None and pui_path is not None:
         implementation_file = _pui_target_assembly(
             pui_document,
@@ -6233,6 +7666,7 @@ def compile_pascal_to_assembly(
     cpu_model: str = "mk68000",
     fpu_model: str = "FPU: None",
     graphics_backend: str = "Direct2D",
+    linked_object_files: Sequence[str] = (),
 ) -> GeneratedAssembly:
     """Parst PROGRAM-, UNIT- oder PE32-LIBRARY-Quellen und erzeugt Assembler."""
     source_kind = _pascal_source_kind(source)
@@ -6246,6 +7680,7 @@ def compile_pascal_to_assembly(
             include_paths=include_paths,
             predefined_macros=predefined_macros,
             target=target,
+            linked_object_files=linked_object_files,
         )
 
     library_name: Optional[str] = None
@@ -6291,4 +7726,9 @@ def compile_pascal_to_assembly(
         notes=preprocessed.notes,
         warnings=preprocessed.warnings,
         source_kind=source_kind,
+        linked_object_files=tuple(
+            dict.fromkeys(
+                list(linked_object_files) + list(program.unit_object_files)
+            )
+        ),
     )

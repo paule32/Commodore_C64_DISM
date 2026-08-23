@@ -1,0 +1,130 @@
+Programmanalyse: DALEK INTRO  [L].prg
+========================================
+
+1. Grunddaten
+-------------
+
+Programmdatei     : DALEK INTRO  [L].prg
+C64-Dateiname     : DALEK INTRO  [L]
+Dateigröße        : 14.058 Bytes
+PRG-Nutzdaten     : 14.056 Bytes
+Ladebytes         : 01 08
+Ladeadresse       : $0801 (2049)
+Geladener Bereich : $0801-$3EE8
+BASIC-Zeile       : 1680 SYS 2049
+SYS-Einsprung     : $0801 (2049)
+Relokationsziel   : $0100
+SHA-256           : cb2f84b45fe73257d45888ff39fa9fc76883cc9b5241c5770efd7abf3ba91170
+
+
+2. Hybrider BASIC-/Maschinencode-Starter
+----------------------------------------
+
+Der Dateianfang ist zugleich BASIC-Zeile und 6510-Maschinencode:
+
+01 08                   PRG-Ladeadresse $0801
+0B 08                   BASIC-Zeiger auf $080B
+90 06                   BASIC-Zeilennummer 1680
+9E 32 30 34 39 00       BASIC-Token SYS und Dezimaladresse 2049
+
+Als BASIC gelesen entspricht dies:
+
+1680 SYS 2049
+
+2049 ist $0801. RUN springt deshalb nicht direkt hinter den BASIC-Starter,
+sondern an dessen erstes Byte. Das ist eine absichtliche Doppelbelegung des
+Zeilenkopfs als BASIC-Daten und Maschinencode.
+
+
+3. Ausführung ab $0801
+----------------------
+
+Der statisch nachvollziehbare Anfang lautet:
+
+$0801  0B 08       ANC #$08       undokumentierter 6510-Befehl
+$0803  90 06       BCC $080B
+$080B  A0 00       LDY #$00
+$080D  78          SEI
+$080E  E6 01       INC $01
+$0810  B9 2F 3E    LDA $3E2F,Y
+$0813  99 FA 00    STA $00FA,Y
+$0816  C8          INY
+$0817  D0 F7       BNE $0810
+$0819  4C 00 01    JMP $0100
+
+ANC übernimmt beim NMOS-6510 das negative Ergebnisbit in das Carry-Flag.
+Da die Maske $08 das Bit 7 immer löscht, wird Carry gelöscht und BCC
+verzweigt zuverlässig nach $080B. Die dazwischenliegenden BASIC-Bytes
+werden bei der Maschinencode-Ausführung übersprungen.
+
+
+4. Relokation und Speicherumschaltung
+-------------------------------------
+
+Die Routine sperrt zunächst Interrupts mit SEI und verändert anschließend
+den Prozessorport $01. Dieser Port steuert die Einblendung von BASIC-ROM,
+KERNAL-ROM und I/O; der genaue resultierende Zustand hängt vom vorherigen
+Portwert ab.
+
+Danach kopiert die Schleife 256 Bytes:
+
+Quelle           : $3E2F-$3F2E
+Ziel             : $00FA-$01F9
+Weiterer Sprung  : $0100
+
+Das Ziel überdeckt Teile der Zeropage und des Prozessor-Stacks. Das ist ein
+typisches Kennzeichen einer kleinen selbstverlegenden Loader- oder
+Entpackroutine und kein normales BASIC-Programmverhalten.
+
+Die PRG-Datei selbst reicht bis $3EE8. Sie liefert damit 186 Bytes des
+adressierten 256-Byte-Quellfensters; die letzten 70 gelesenen Bytes liegen
+außerhalb der geladenen Datei. Sie können vorhandenen RAM enthalten und
+müssen für den tatsächlich benutzten Routinenkern nicht relevant sein.
+Diese Besonderheit ist kein Beweis für eine beschädigte Datei, zeigt aber,
+dass der Loader stark von seinem Laufzeitumfeld Gebrauch macht.
+
+
+5. Statistische Strukturanalyse
+-------------------------------
+
+Shannon-Entropie : 7.658 von maximal 8,000 Bit/Byte
+Bytewerte benutzt: 256 von 256
+Druckbares ASCII : 32.2 %
+Nullbytes        : 1.3 %
+$FF-Bytes        : 0.6 %
+Längster Gleichlauf: 6 gleiche Bytes
+Nutzdatenanfang  : 0B 08 90 06 9E 32 30 34 39 00 A0 00 78 E6 01 B9 2F 3E 99 FA 00 C8 D0 F7 4C 00 01 AF E6 F7 C5 02 ...
+
+Die dichte Byteverteilung und das Fehlen längerer zuverlässig lesbarer
+Texte sprechen für gepackte beziehungsweise stark binäre Intro-Daten.
+Zufällige alphabetische Folgen im Datenstrom sind Tabellen- oder
+Grafikmuster und keine belastbaren Bildschirmtexte.
+
+
+6. Programmrolle
+----------------
+
+Der Dateiname "DALEK INTRO  [L]", der BASIC/6510-Hybridstarter, die
+Relokation in Zeropage/Stack und die hohe Entropie passen zu einem
+eigenständigen Intro-Loader mit gepacktem Inhalt.
+
+Sicher ermittelt sind:
+
+- Benutzerstart über RUN und SYS $0801
+- absichtlicher Übergang vom BASIC-Zeilenkopf nach $080B
+- Interruptsperre und Änderung des Speicherbank-Ports $01
+- 256-Byte-Kopie nach $00FA-$01F9
+- anschließender Sprung nach $0100
+
+Ein endgültiger Intro-Einsprung nach der Relokations-/Entpackroutine ist
+ohne vollständige 6510-Emulation nicht verifiziert. Er wird deshalb nicht
+als feste Adresse behauptet.
+
+
+7. Prüfergebnis
+---------------
+
+Die Datei ist als PRG vollständig lesbar. Gegenüber einer bloßen
+Containeranalyse lässt sich ihr tatsächlicher Startweg bis $0100
+nachvollziehen. Es handelt sich sehr wahrscheinlich um ein gepacktes,
+selbstverlegendes Intro und nicht um ein gewöhnliches BASIC-Programm.

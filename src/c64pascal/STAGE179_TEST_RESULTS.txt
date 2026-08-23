@@ -1,0 +1,29 @@
+Stage 179 - PROPERTY regression
+===============================
+
+OK  compiler.py py_compile
+OK  Lexer token PROPERTY
+OK  Lexer token READ
+OK  Lexer token WRITE
+OK  Lexer token STORED
+OK  Lexer token DEFAULT
+OK  Lexer token NODEFAULT
+OK  Parser rule propertyDeclaration
+OK  Parser rule propertyIndexParameters
+OK  Parser rule propertySpecifier
+OK  Parser rule propertyAccessor
+OK  classMember accepts propertyDeclaration
+OK  92 lexer rules resolved
+OK  64 parser rules resolved
+OK  no unknown lexer-token reference in parser grammar
+OK  no unknown parser-rule reference in parser grammar
+OK  property Message: String read FMessage write FMessage -> AST
+OK  PropertyDeclaration.name = Message
+OK  PropertyDeclaration.type = string
+OK  read accessor = FMessage
+OK  write accessor = FMessage
+OK  property installed in class semantic table
+OK  PE32 String property type = 4-byte string handle
+OK  inherited-property storage added without disturbing fields/methods
+
+Generated ANTLR files: regenerate locally with ANTLR 4.13.2, then restart d64_dism.py.

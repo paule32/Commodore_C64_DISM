@@ -78,6 +78,12 @@
 #  * Stage 167: Ansicht->Sprache als 4-spaltiges Flaggen-/Radiobutton-Menü aus LANGUAGE_CODES.
 #  * Stage 169: vollständige Stage-167-Basis bleibt erhalten; interner MSZIP-Packer für PE32 und PE32+/AMD64.
 #  * Stage 170: gepacktes Layout .text/.loader/.ztext/.idata und optionale lokale DLL-Ordinalimporte.
+#  * Stage 171: Pascal-UNITs als getrennte COFF32/COFF64-Objekte; zielabhängige Wiederverwendung beim EXE-Link.
+#  * Stage 172: PE32-Packed-Image-Compactor; .ztext wird platzsparend in .loader eingebettet.
+#  * Stage 173: konservativer PE32-Compactor; .ztext-Sectionheader/RVAs bleiben vollständig erhalten.
+#  * Stage 174: Pascal-Projektziele Windows PE32/PE32+ mit Module/Units, EXE/DLL-Build und Start.
+#  * Stage 175: Pascal-ANTLR-Parser-Synchronisierung für CLASS virtual/override und COFF32-UNIT-Build.
+#  * Stage 176: Pascal-Kommentare + {$define/ifdef/ifndef/if/elseif/else/endif}-Vorverarbeitung für UNIT/COFF32.
 #  * Stage 137: farbcodierte Zahlenmauern sowie Addition/Subtraktion/Einmaleins/Fehlende-Zahl-Spiele.
 #    Mehrtabellen-Tabs, Feldeditoren und Kontextoperationen für Feldzeilen
 #
@@ -122,6 +128,7 @@ from ctypes import wintypes
 import hashlib
 import html
 import inspect
+import importlib
 import random
 
 from html.parser import HTMLParser
@@ -148,6 +155,1073 @@ from decimal     import Decimal, localcontext
 from fractions   import Fraction
 from pathlib     import Path
 from typing      import Dict, Iterable, List, Optional, Sequence, Tuple
+
+# ---------------------------------------------------------------------------
+# Stage 175: Pascal frontend / generated ANTLR parser synchronization.
+#
+# d64_dism imports the high-level compiler through ``c64pascal``.  In a source
+# checkout that module can be found before ``src/asmjit`` on sys.path.  An old
+# generated PascalParser.py then causes valid declarations such as
+#
+#     destructor Destroy; virtual;
+#
+# to be read as a field named ``virtual`` and produces the misleading
+# "mismatched input ';' expecting ':'" diagnostic.
+#
+# The source grammar in src/asmjit/compiler/grammar is authoritative.  Before a
+# Pascal build we prefer that checkout's parsers/pascal directory, validate the
+# generated parser, and regenerate it only when grammar and generated output are
+# demonstrably out of sync.  No external C/C++ compiler/linker is involved.
+# ---------------------------------------------------------------------------
+PASCAL_ANTLR_VERSION = "4.13.2"
+PASCAL_FRONTEND_SYNC_LAST: Dict[str, object] = {
+    "ready": False,
+    "reason": "Pascal-Frontend wurde noch nicht geprüft.",
+}
+
+
+def _pascal_path_is_within(path: Path, directory: Path) -> bool:
+    try:
+        Path(path).resolve().relative_to(Path(directory).resolve())
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _pascal_asmjit_root_candidates(
+    source_path: Optional[Path] = None,
+) -> Tuple[Path, ...]:
+    seeds: List[Path] = []
+    if source_path is not None:
+        try:
+            seeds.append(Path(source_path).expanduser().resolve())
+        except OSError:
+            seeds.append(Path(source_path).expanduser())
+    try:
+        seeds.append(Path(__file__).resolve())
+    except OSError:
+        seeds.append(Path(__file__))
+    try:
+        seeds.append(Path.cwd().resolve())
+    except OSError:
+        seeds.append(Path.cwd())
+
+    result: List[Path] = []
+    seen = set()
+    for seed in seeds:
+        current = seed if seed.is_dir() else seed.parent
+        for candidate in (current, *current.parents):
+            grammar = candidate / "compiler" / "grammar" / "PascalParser.g4"
+            parser_dir = candidate / "parsers" / "pascal"
+            if not grammar.is_file() or not parser_dir.is_dir():
+                continue
+            key = str(candidate).casefold()
+            if key not in seen:
+                seen.add(key)
+                result.append(candidate)
+            break
+    return tuple(result)
+
+
+def _pascal_grammar_supports_method_directives(grammar_path: Path) -> bool:
+    try:
+        text = Path(grammar_path).read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeError):
+        return False
+    compact = re.sub(r"\s+", " ", text).casefold()
+    return all((
+        "methoddirective" in compact,
+        "virtual" in compact,
+        "override" in compact,
+        "constructordeclaration" in compact,
+        "destructordeclaration" in compact,
+        "methoddirectivelist?" in compact,
+    ))
+
+
+def _pascal_generated_parser_supports_method_directives(
+    parser_path: Path,
+) -> bool:
+    try:
+        text = Path(parser_path).read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeError):
+        return False
+    return all((
+        "RULE_methodDirectiveList" in text,
+        "VIRTUAL=" in text,
+        "OVERRIDE=" in text,
+        "def constructorDeclaration(" in text,
+        "def destructorDeclaration(" in text,
+        "self.methodDirectiveList()" in text,
+    ))
+
+
+def _pascal_find_antlr4_command() -> Optional[str]:
+    candidates = (
+        "antlr4.exe",
+        "antlr4",
+        "antlr4.bat",
+        "antlr4.cmd",
+    )
+    for name in candidates:
+        resolved = shutil.which(name)
+        if resolved:
+            return resolved
+    return None
+
+
+def _pascal_regenerate_repo_parser(asmjit_root: Path) -> Tuple[bool, str]:
+    root = Path(asmjit_root).resolve()
+    antlr4_command = _pascal_find_antlr4_command()
+    if antlr4_command is None:
+        return False, (
+            "ANTLR4 4.13.2 wurde nicht im PATH gefunden. "
+            "Der Parser kann nicht automatisch nachgeneriert werden."
+        )
+
+    parser_dir = root / "parsers" / "pascal"
+    parser_dir.mkdir(parents=True, exist_ok=True)
+    commands = (
+        [
+            antlr4_command,
+            "-v", PASCAL_ANTLR_VERSION,
+            "-Dlanguage=Python3",
+            "-Xexact-output-dir",
+            "-o", str(Path("parsers") / "pascal"),
+            str(Path("compiler") / "grammar" / "PascalLexer.g4"),
+        ],
+        [
+            antlr4_command,
+            "-v", PASCAL_ANTLR_VERSION,
+            "-Dlanguage=Python3",
+            "-Xexact-output-dir",
+            "-o", str(Path("parsers") / "pascal"),
+            "-visitor",
+            "-lib", str(Path("parsers") / "pascal"),
+            str(Path("compiler") / "grammar" / "PascalParser.g4"),
+        ],
+    )
+
+    transcript: List[str] = []
+    for command in commands:
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=str(root),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+            )
+        except OSError as exc:
+            return False, f"ANTLR4 konnte nicht gestartet werden: {exc}"
+        transcript.append(completed.stdout or "")
+        if completed.returncode != 0:
+            return False, (
+                "ANTLR4 Parser-Erzeugung fehlgeschlagen (Exit "
+                f"{completed.returncode}).\n" + "\n".join(transcript).strip()
+            )
+
+    # Alte Bytecode-Caches dürfen nicht den frisch erzeugten Parser verdecken.
+    cache_dir = parser_dir / "__pycache__"
+    if cache_dir.is_dir():
+        for pattern in (
+            "PascalLexer*.pyc",
+            "PascalParser*.pyc",
+            "PascalParserVisitor*.pyc",
+            "PascalParserListener*.pyc",
+        ):
+            for cached in cache_dir.glob(pattern):
+                try:
+                    cached.unlink()
+                except OSError:
+                    pass
+    importlib.invalidate_caches()
+    parser_path = parser_dir / "PascalParser.py"
+    if not _pascal_generated_parser_supports_method_directives(parser_path):
+        return False, (
+            "ANTLR4 wurde ausgeführt, der erzeugte PascalParser.py enthält "
+            "aber weiterhin keine virtual/override-Methodendirektiven."
+        )
+    return True, "ANTLR4-Pascalparser 4.13.2 wurde erfolgreich nachgeneriert."
+
+
+def _pascal_prefer_repo_parser_path(asmjit_root: Path) -> None:
+    root = Path(asmjit_root).resolve()
+    root_text = str(root)
+    sys.path[:] = [
+        item for item in sys.path
+        if str(item).casefold() != root_text.casefold()
+    ]
+    sys.path.insert(0, root_text)
+
+    # Ein bereits importiertes Top-Level-Paket ``parsers`` kann einen __path__
+    # aus einer älteren Installation besitzen. Den Repo-Pfad vorne ergänzen.
+    parsers_package = sys.modules.get("parsers")
+    desired_parsers = str(root / "parsers")
+    package_path = getattr(parsers_package, "__path__", None)
+    if package_path is not None:
+        existing = [str(item) for item in package_path]
+        if desired_parsers.casefold() not in {
+            item.casefold() for item in existing
+        }:
+            try:
+                package_path.insert(0, desired_parsers)
+            except (AttributeError, TypeError):
+                pass
+
+
+def _pascal_forget_stale_generated_modules(asmjit_root: Path) -> None:
+    root = Path(asmjit_root).resolve()
+    expected_dir = root / "parsers" / "pascal"
+    # Auch ein Modul aus dem richtigen Pfad kann noch den Bytecode der
+    # gerade nachgenerierten alten Version im Speicher halten. Die vier
+    # generierten Teilmodule werden deshalb vor der Prüfung immer neu geladen.
+    for generated_name in (
+        "parsers.pascal.PascalLexer",
+        "parsers.pascal.PascalParser",
+        "parsers.pascal.PascalParserVisitor",
+        "parsers.pascal.PascalParserListener",
+    ):
+        sys.modules.pop(generated_name, None)
+    module_names = (
+        "parsers.pascal.PascalLexer",
+        "parsers.pascal.PascalParser",
+        "parsers.pascal.PascalParserVisitor",
+        "parsers.pascal.PascalParserListener",
+        "parsers.pascal",
+    )
+    for name in module_names:
+        module = sys.modules.get(name)
+        if module is None:
+            continue
+        module_file = getattr(module, "__file__", None)
+        if module_file is None or not _pascal_path_is_within(
+            Path(module_file), expected_dir
+        ):
+            sys.modules.pop(name, None)
+    importlib.invalidate_caches()
+
+
+def _pascal_patch_frontend_parser_bindings(
+    frontend_module,
+    lexer_class,
+    parser_class,
+    visitor_class=None,
+) -> None:
+    targets = [frontend_module]
+    compile_function = getattr(
+        frontend_module, "compile_pascal_to_assembly", None
+    )
+    globals_dict = getattr(compile_function, "__globals__", None)
+    if isinstance(globals_dict, dict):
+        globals_dict["PascalLexer"] = lexer_class
+        globals_dict["PascalParser"] = parser_class
+        if visitor_class is not None:
+            globals_dict["PascalParserVisitor"] = visitor_class
+
+    frontend_name = str(getattr(frontend_module, "__name__", "c64pascal"))
+    for name, module in tuple(sys.modules.items()):
+        if module is None:
+            continue
+        if name == frontend_name or name.startswith(frontend_name + "."):
+            targets.append(module)
+
+    seen = set()
+    for module in targets:
+        key = id(module)
+        if key in seen:
+            continue
+        seen.add(key)
+        if hasattr(module, "PascalLexer"):
+            setattr(module, "PascalLexer", lexer_class)
+        if hasattr(module, "PascalParser"):
+            setattr(module, "PascalParser", parser_class)
+        if visitor_class is not None and hasattr(module, "PascalParserVisitor"):
+            setattr(module, "PascalParserVisitor", visitor_class)
+
+    # Einige ältere c64pascal-Stände importieren den Generator als separates
+    # Top-Level-Modul. Solche Module tragen nicht zwingend den Namen
+    # ``c64pascal.*``. Nur echte PascalParser-Klassen werden hier ersetzt.
+    for module in tuple(sys.modules.values()):
+        if module is None:
+            continue
+        old_parser = getattr(module, "PascalParser", None)
+        if (
+            isinstance(old_parser, type)
+            and getattr(old_parser, "__name__", "") == "PascalParser"
+            and hasattr(old_parser, "ruleNames")
+        ):
+            try:
+                setattr(module, "PascalParser", parser_class)
+            except (AttributeError, TypeError):
+                pass
+        old_lexer = getattr(module, "PascalLexer", None)
+        if (
+            isinstance(old_lexer, type)
+            and getattr(old_lexer, "__name__", "") == "PascalLexer"
+        ):
+            try:
+                setattr(module, "PascalLexer", lexer_class)
+            except (AttributeError, TypeError):
+                pass
+
+
+def prepare_pascal_frontend_for_compile(
+    source_path: Optional[Path] = None,
+) -> Dict[str, object]:
+    """Prefer and validate the repo-local Pascal ANTLR frontend.
+
+    This routine deliberately returns a diagnostic dictionary instead of
+    raising. Existing compiler error handling therefore remains untouched.
+    """
+    info: Dict[str, object] = {
+        "ready": False,
+        "reason": "Kein src/asmjit-Pascalparser gefunden.",
+        "asmjit_root": "",
+        "grammar": "",
+        "parser": "",
+        "compiler": "",
+        "regenerated": False,
+    }
+    roots = _pascal_asmjit_root_candidates(source_path)
+    if not roots:
+        PASCAL_FRONTEND_SYNC_LAST.clear()
+        PASCAL_FRONTEND_SYNC_LAST.update(info)
+        return dict(info)
+
+    root = roots[0]
+    grammar_path = root / "compiler" / "grammar" / "PascalParser.g4"
+    parser_path = root / "parsers" / "pascal" / "PascalParser.py"
+    info["asmjit_root"] = str(root)
+    info["grammar"] = str(grammar_path)
+    info["parser"] = str(parser_path)
+
+    if not _pascal_grammar_supports_method_directives(grammar_path):
+        info["reason"] = (
+            "Die Repo-Grammatik PascalParser.g4 ist zu alt: "
+            "methodDirectiveList mit virtual/override fehlt."
+        )
+        PASCAL_FRONTEND_SYNC_LAST.clear()
+        PASCAL_FRONTEND_SYNC_LAST.update(info)
+        return dict(info)
+
+    parser_current = _pascal_generated_parser_supports_method_directives(
+        parser_path
+    )
+    if not parser_current:
+        regenerated, message = _pascal_regenerate_repo_parser(root)
+        info["regenerated"] = bool(regenerated)
+        if not regenerated:
+            info["reason"] = message
+            PASCAL_FRONTEND_SYNC_LAST.clear()
+            PASCAL_FRONTEND_SYNC_LAST.update(info)
+            return dict(info)
+
+    _pascal_prefer_repo_parser_path(root)
+    _pascal_forget_stale_generated_modules(root)
+
+    try:
+        lexer_module = importlib.import_module(
+            "parsers.pascal.PascalLexer"
+        )
+        parser_module = importlib.import_module(
+            "parsers.pascal.PascalParser"
+        )
+        try:
+            visitor_module = importlib.import_module(
+                "parsers.pascal.PascalParserVisitor"
+            )
+            visitor_class = getattr(
+                visitor_module, "PascalParserVisitor", None
+            )
+        except ImportError:
+            visitor_class = None
+    except ImportError as exc:
+        info["reason"] = f"Repo-Pascalparser konnte nicht importiert werden: {exc}"
+        PASCAL_FRONTEND_SYNC_LAST.clear()
+        PASCAL_FRONTEND_SYNC_LAST.update(info)
+        return dict(info)
+
+    loaded_parser_path = Path(
+        getattr(parser_module, "__file__", parser_path)
+    )
+    info["parser"] = str(loaded_parser_path)
+    parser_class = getattr(parser_module, "PascalParser", None)
+    lexer_class = getattr(lexer_module, "PascalLexer", None)
+    if parser_class is None or lexer_class is None:
+        info["reason"] = "Repo-PascalLexer/PascalParser-Klasse fehlt."
+        PASCAL_FRONTEND_SYNC_LAST.clear()
+        PASCAL_FRONTEND_SYNC_LAST.update(info)
+        return dict(info)
+
+    rule_names = tuple(getattr(parser_class, "ruleNames", ()) or ())
+    if "methodDirectiveList" not in rule_names:
+        info["reason"] = (
+            "Geladener PascalParser besitzt keine Regel methodDirectiveList."
+        )
+        PASCAL_FRONTEND_SYNC_LAST.clear()
+        PASCAL_FRONTEND_SYNC_LAST.update(info)
+        return dict(info)
+    if not hasattr(parser_class, "VIRTUAL") or not hasattr(
+        parser_class, "OVERRIDE"
+    ):
+        info["reason"] = (
+            "Geladener PascalParser besitzt keine VIRTUAL/OVERRIDE-Tokens."
+        )
+        PASCAL_FRONTEND_SYNC_LAST.clear()
+        PASCAL_FRONTEND_SYNC_LAST.update(info)
+        return dict(info)
+
+    try:
+        frontend_module = importlib.import_module("c64pascal")
+    except ImportError as exc:
+        info["reason"] = f"c64pascal konnte nicht importiert werden: {exc}"
+        PASCAL_FRONTEND_SYNC_LAST.clear()
+        PASCAL_FRONTEND_SYNC_LAST.update(info)
+        return dict(info)
+
+    _pascal_patch_frontend_parser_bindings(
+        frontend_module,
+        lexer_class,
+        parser_class,
+        visitor_class,
+    )
+    info["compiler"] = str(
+        getattr(frontend_module, "__file__", "<c64pascal>")
+    )
+    info["ready"] = True
+    info["reason"] = (
+        "Repo-lokaler PascalParser ist synchron und unterstützt "
+        "virtual/override."
+    )
+    PASCAL_FRONTEND_SYNC_LAST.clear()
+    PASCAL_FRONTEND_SYNC_LAST.update(info)
+    return dict(info)
+
+
+# ---------------------------------------------------------------------------
+# Stage 176: Pascal lexical preprocessor.
+#
+# Supported comment forms:
+#   (* block comment *)
+#   // line comment
+#   { block comment }
+#
+# Compiler directives are recognized BEFORE brace-comment stripping, therefore
+#   {$define FOO}
+# is never mistaken for a normal { ... } comment.
+# ---------------------------------------------------------------------------
+class PascalPreprocessorError(Exception):
+    def __init__(self, message: str, line: int = 0):
+        super().__init__(message)
+        self.line = int(line or 0)
+
+
+@dataclass(frozen=True)
+class PascalPreprocessResult:
+    source: str
+    macros: Dict[str, str]
+    defined_symbols: Tuple[str, ...]
+    directives: Tuple[str, ...]
+    warnings: Tuple[str, ...]
+    removed_comment_count: int
+    original_line_count: int
+    output_line_count: int
+    link_files: Tuple[str, ...] = ()
+
+
+def _pascal_pp_key(name: str) -> str:
+    return str(name or "").strip().upper()
+
+
+def _pascal_pp_truthy(value: object) -> bool:
+    text = str(value if value is not None else "").strip()
+    if not text:
+        return True
+    folded = text.casefold()
+    if folded in {"0", "false", "off", "no", "nil"}:
+        return False
+    return True
+
+
+def _pascal_pp_value(value: object):
+    text = str(value if value is not None else "").strip()
+    if not text:
+        return 1
+    if len(text) >= 2 and text[0] == "'" and text[-1] == "'":
+        return text[1:-1].replace("''", "'")
+    if text.startswith("$"):
+        try:
+            return int(text[1:], 16)
+        except ValueError:
+            return text
+    try:
+        return int(text, 0)
+    except ValueError:
+        return text
+
+
+def _pascal_pp_tokenize_condition(expression: str) -> List[str]:
+    pattern = re.compile(
+        r"\s*("
+        r"<>|<=|>=|=|<|>|\(|\)|"
+        r"\bAND\b|\bOR\b|\bXOR\b|\bNOT\b|\bDEFINED\b|"
+        r"\$[0-9A-Fa-f]+|"
+        r"\d+|"
+        r"'(?:''|[^'])*'|"
+        r"[A-Za-z_][A-Za-z0-9_]*"
+        r")",
+        re.IGNORECASE,
+    )
+    tokens = []
+    pos = 0
+    source = str(expression or "")
+    while pos < len(source):
+        match = pattern.match(source, pos)
+        if match is None:
+            if source[pos:].strip():
+                raise ValueError(
+                    "Unbekanntes Token in Pascal-{$if}: "
+                    + repr(source[pos:].strip())
+                )
+            break
+        tokens.append(match.group(1))
+        pos = match.end()
+    return tokens
+
+
+def _pascal_pp_eval_condition(
+    expression: str,
+    macros: Dict[str, str],
+    defined: set,
+) -> bool:
+    tokens = _pascal_pp_tokenize_condition(expression)
+    index = 0
+
+    def peek() -> Optional[str]:
+        return tokens[index] if index < len(tokens) else None
+
+    def take() -> str:
+        nonlocal index
+        if index >= len(tokens):
+            raise ValueError("Unerwartetes Ende der Pascal-Bedingung.")
+        value = tokens[index]
+        index += 1
+        return value
+
+    def atom():
+        token = take()
+        folded = token.casefold()
+        if token == "(":
+            value = parse_or()
+            if take() != ")":
+                raise ValueError("Fehlende ')' in Pascal-Bedingung.")
+            return value
+        if folded == "defined":
+            if peek() == "(":
+                take()
+                name = take()
+                if take() != ")":
+                    raise ValueError("defined(...) erwartet ')'.")
+            else:
+                name = take()
+            return _pascal_pp_key(name) in defined
+        if token.startswith("'"):
+            return _pascal_pp_value(token)
+        if token.startswith("$") or token[:1].isdigit():
+            return _pascal_pp_value(token)
+        key = _pascal_pp_key(token)
+        if key in macros:
+            return _pascal_pp_value(macros[key])
+        if key in defined:
+            return 1
+        return 0
+
+    def parse_compare():
+        left = atom()
+        nxt = peek()
+        if nxt not in {"=", "<>", "<", ">", "<=", ">="}:
+            return bool(left) if isinstance(left, bool) else _pascal_pp_truthy(left)
+        op = take()
+        right = atom()
+        if op == "=":
+            return left == right
+        if op == "<>":
+            return left != right
+        try:
+            if op == "<":
+                return left < right
+            if op == ">":
+                return left > right
+            if op == "<=":
+                return left <= right
+            if op == ">=":
+                return left >= right
+        except TypeError:
+            ltxt, rtxt = str(left), str(right)
+            if op == "<":
+                return ltxt < rtxt
+            if op == ">":
+                return ltxt > rtxt
+            if op == "<=":
+                return ltxt <= rtxt
+            return ltxt >= rtxt
+        return False
+
+    def parse_not():
+        if (peek() or "").casefold() == "not":
+            take()
+            return not bool(parse_not())
+        return parse_compare()
+
+    def parse_and():
+        value = bool(parse_not())
+        while (peek() or "").casefold() == "and":
+            take()
+            rhs = bool(parse_not())
+            value = value and rhs
+        return value
+
+    def parse_xor():
+        value = bool(parse_and())
+        while (peek() or "").casefold() == "xor":
+            take()
+            value = bool(value) ^ bool(parse_and())
+        return value
+
+    def parse_or():
+        value = bool(parse_xor())
+        while (peek() or "").casefold() == "or":
+            take()
+            rhs = bool(parse_xor())
+            value = value or rhs
+        return value
+
+    if not tokens:
+        return False
+    result = bool(parse_or())
+    if index != len(tokens):
+        raise ValueError(
+            "Unerwartete Tokens am Ende der Pascal-Bedingung: "
+            + " ".join(tokens[index:])
+        )
+    return result
+
+
+def _pascal_pp_expand_identifier(
+    identifier: str,
+    macros: Dict[str, str],
+    explicit_value_macros: set,
+    *,
+    filename: str,
+    line_number: int,
+) -> str:
+    key = _pascal_pp_key(identifier)
+    if key == "__LINE__":
+        return str(int(line_number))
+    if key == "__FILE__":
+        return "'" + str(filename).replace("'", "''") + "'"
+    if key == "__DATE__":
+        return "'" + dt.datetime.now().strftime("%Y-%m-%d") + "'"
+    if key == "__TIME__":
+        return "'" + dt.datetime.now().strftime("%H:%M:%S") + "'"
+    if key in explicit_value_macros and key in macros:
+        return str(macros[key])
+    return identifier
+
+
+def preprocess_pascal_source(
+    source: str,
+    *,
+    filename: str = "<memory>",
+    predefined_macros: Optional[Dict[str, object]] = None,
+) -> PascalPreprocessResult:
+    """Preprocess Pascal while preserving physical line numbers.
+
+    Directives are blanked to spaces; comments and inactive conditional blocks
+    are likewise blanked while every original newline remains present. This
+    keeps ANTLR error line numbers aligned with the editor/source file.
+    """
+    text = str(source or "")
+    macros: Dict[str, str] = {}
+    defined = set()
+    explicit_value_macros = set()
+    for name, value in dict(predefined_macros or {}).items():
+        key = _pascal_pp_key(name)
+        if not key:
+            continue
+        defined.add(key)
+        if value is not None:
+            macros[key] = str(value)
+            explicit_value_macros.add(key)
+
+    directives: List[str] = []
+    warnings: List[str] = []
+    link_files: List[str] = []
+    conditional_stack: List[Dict[str, object]] = []
+    output: List[str] = []
+    removed_comments = 0
+    index = 0
+    line = 1
+
+    def active() -> bool:
+        return all(bool(frame.get("active", False)) for frame in conditional_stack)
+
+    def blank_fragment(fragment: str) -> str:
+        return "".join("\n" if ch == "\n" else "\r" if ch == "\r" else " " for ch in fragment)
+
+    def process_directive(content: str, line_number: int) -> None:
+        body = str(content).strip()
+        if body.startswith("$"):
+            body = body[1:].strip()
+        if not body:
+            return
+        parts = body.split(None, 1)
+        command = parts[0].casefold()
+        argument = parts[1].strip() if len(parts) > 1 else ""
+        directives.append(f"{line_number}:{body}")
+
+        current_parent = active()
+        if command in {"ifdef", "ifndef"}:
+            key = _pascal_pp_key(argument.split(None, 1)[0] if argument else "")
+            condition = key in defined
+            if command == "ifndef":
+                condition = not condition
+            parent_active = current_parent
+            this_active = bool(parent_active and condition)
+            conditional_stack.append({
+                "parent_active": parent_active,
+                "branch_taken": bool(condition) if parent_active else False,
+                "active": this_active,
+                "else_seen": False,
+                "line": line_number,
+            })
+            return
+
+        if command == "if":
+            try:
+                condition = _pascal_pp_eval_condition(argument, macros, defined)
+            except ValueError as exc:
+                raise PascalPreprocessorError(
+                    f"Ungültige {{$if}}-Bedingung: {exc}", line_number
+                ) from exc
+            parent_active = current_parent
+            conditional_stack.append({
+                "parent_active": parent_active,
+                "branch_taken": bool(condition) if parent_active else False,
+                "active": bool(parent_active and condition),
+                "else_seen": False,
+                "line": line_number,
+            })
+            return
+
+        if command in {"elseif", "elif"}:
+            if not conditional_stack:
+                raise PascalPreprocessorError(
+                    "{$elseif}/{$elif} ohne vorheriges {$if}.", line_number
+                )
+            frame = conditional_stack[-1]
+            if frame.get("else_seen"):
+                raise PascalPreprocessorError(
+                    "{$elseif} nach {$else} ist nicht erlaubt.", line_number
+                )
+            parent_active = bool(frame.get("parent_active"))
+            already = bool(frame.get("branch_taken"))
+            try:
+                condition = _pascal_pp_eval_condition(argument, macros, defined)
+            except ValueError as exc:
+                raise PascalPreprocessorError(
+                    f"Ungültige {{$elseif}}-Bedingung: {exc}", line_number
+                ) from exc
+            frame["active"] = bool(parent_active and not already and condition)
+            if parent_active and condition:
+                frame["branch_taken"] = True
+            return
+
+        if command == "else":
+            if not conditional_stack:
+                raise PascalPreprocessorError(
+                    "{$else} ohne vorheriges {$if}.", line_number
+                )
+            frame = conditional_stack[-1]
+            if frame.get("else_seen"):
+                raise PascalPreprocessorError(
+                    "Doppeltes {$else}.", line_number
+                )
+            frame["else_seen"] = True
+            parent_active = bool(frame.get("parent_active"))
+            frame["active"] = bool(parent_active and not frame.get("branch_taken"))
+            if parent_active:
+                frame["branch_taken"] = True
+            return
+
+        if command in {"endif", "ifend"}:
+            if not conditional_stack:
+                raise PascalPreprocessorError(
+                    "{$endif} ohne vorheriges {$if}.", line_number
+                )
+            conditional_stack.pop()
+            return
+
+        # Non-conditional directives only have an effect in an active branch.
+        if not current_parent:
+            return
+
+        if command == "define":
+            if not argument:
+                raise PascalPreprocessorError(
+                    "{$define} erwartet einen Symbolnamen.", line_number
+                )
+            define_parts = argument.split(None, 1)
+            key = _pascal_pp_key(define_parts[0])
+            defined.add(key)
+            if len(define_parts) > 1:
+                value = define_parts[1].strip()
+                macros[key] = value
+                explicit_value_macros.add(key)
+            else:
+                macros.setdefault(key, "1")
+                explicit_value_macros.discard(key)
+            return
+
+        if command == "undef":
+            key = _pascal_pp_key(argument.split(None, 1)[0] if argument else "")
+            defined.discard(key)
+            macros.pop(key, None)
+            explicit_value_macros.discard(key)
+            return
+
+        if command == "error":
+            raise PascalPreprocessorError(
+                argument or "Pascal-{$error} ausgelöst.", line_number
+            )
+
+        if command in {"warning", "warn"}:
+            warnings.append(
+                f"Zeile {line_number}: {argument or 'Pascal-Warnung'}"
+            )
+            return
+
+        if command == "info":
+            warnings.append(
+                f"Info Zeile {line_number}: {argument or 'Pascal-Info'}"
+            )
+            return
+
+        # FreePascal/Delphi-style object link directive. It is consumed by
+        # d64_dism but retained structurally in PascalPreprocessResult so the
+        # internal COFF linker receives the object/archive after compilation.
+        if command in {"l", "link"}:
+            link_name = argument.strip()
+            if (
+                len(link_name) >= 2
+                and link_name[0] == link_name[-1]
+                and link_name[0] in {"'", '"'}
+            ):
+                link_name = link_name[1:-1]
+            if not link_name:
+                raise PascalPreprocessorError(
+                    "{$L} erwartet eine Objekt-/Archivdatei.", line_number
+                )
+            link_path = Path(link_name).expanduser()
+            if not link_path.is_absolute():
+                try:
+                    source_path = Path(filename).expanduser()
+                    base_dir = (
+                        source_path.resolve().parent
+                        if not str(filename).startswith("<")
+                        else Path.cwd()
+                    )
+                except (OSError, RuntimeError, ValueError):
+                    base_dir = Path.cwd()
+                link_path = base_dir / link_path
+            try:
+                link_path = link_path.resolve()
+            except (OSError, RuntimeError):
+                link_path = link_path.absolute()
+            if link_path.suffix.casefold() not in {".o", ".obj", ".a", ".lib"}:
+                raise PascalPreprocessorError(
+                    f"{{$L}} erwartet .o/.obj/.a/.lib: {link_name}.",
+                    line_number,
+                )
+            key = str(link_path).casefold()
+            if all(str(Path(item)).casefold() != key for item in link_files):
+                link_files.append(str(link_path))
+            return
+
+        # Recognized non-conditional compiler switches are intentionally
+        # consumed here so the grammar never mistakes them for {comments}.
+        if command in {
+            "mode", "modeswitch", "apptype", "codepage", "packrecords",
+            "packenum", "push", "pop", "hints", "notes", "warnings",
+            "rangechecks", "overflowchecks", "typedaddress", "longstrings",
+        }:
+            return
+
+        # Includes are left visible to c64pascal because that compiler already
+        # owns include-path resolution. Unknown directives are likewise left as
+        # whitespace, but reported for traceability.
+        if command in {"i", "include"}:
+            warnings.append(
+                f"Zeile {line_number}: Include-Direktive wird in Stage 176 noch nicht expandiert und wurde ignoriert: {body}"
+            )
+            return
+        warnings.append(
+            f"Zeile {line_number}: unbekannte Pascal-Direktive ignoriert: {body}"
+        )
+
+    while index < len(text):
+        ch = text[index]
+        is_active = active()
+
+        # Quoted Pascal string. Doubled '' is an escaped quote.
+        if ch == "'":
+            start = index
+            index += 1
+            while index < len(text):
+                if text[index] == "'":
+                    if index + 1 < len(text) and text[index + 1] == "'":
+                        index += 2
+                        continue
+                    index += 1
+                    break
+                if text[index] == "\n":
+                    line += 1
+                index += 1
+            fragment = text[start:index]
+            output.append(fragment if is_active else blank_fragment(fragment))
+            continue
+
+        # // line comment
+        if text.startswith("//", index):
+            end = text.find("\n", index)
+            if end < 0:
+                end = len(text)
+            fragment = text[index:end]
+            output.append(blank_fragment(fragment))
+            removed_comments += 1
+            index = end
+            continue
+
+        # {$directive}
+        if text.startswith("{$", index):
+            end = text.find("}", index + 2)
+            if end < 0:
+                raise PascalPreprocessorError(
+                    "Nicht abgeschlossene Pascal-Direktive {$...}.", line
+                )
+            fragment = text[index:end + 1]
+            process_directive(fragment[1:-1], line)
+            output.append(blank_fragment(fragment))
+            line += fragment.count("\n")
+            index = end + 1
+            continue
+
+        # (*$directive*) - accepted as Delphi/FPC-compatible alternate spelling.
+        if text.startswith("(*$", index):
+            end = text.find("*)", index + 3)
+            if end < 0:
+                raise PascalPreprocessorError(
+                    "Nicht abgeschlossene Pascal-Direktive (*$...*).", line
+                )
+            fragment = text[index:end + 2]
+            process_directive(fragment[2:-2], line)
+            output.append(blank_fragment(fragment))
+            line += fragment.count("\n")
+            index = end + 2
+            continue
+
+        # (* block comment *)
+        if text.startswith("(*", index):
+            end = text.find("*)", index + 2)
+            if end < 0:
+                raise PascalPreprocessorError(
+                    "Nicht abgeschlossener Pascal-Kommentar (* ... *).", line
+                )
+            fragment = text[index:end + 2]
+            output.append(blank_fragment(fragment))
+            removed_comments += 1
+            line += fragment.count("\n")
+            index = end + 2
+            continue
+
+        # { block comment } -- only after {$...} was checked above.
+        if ch == "{":
+            end = text.find("}", index + 1)
+            if end < 0:
+                raise PascalPreprocessorError(
+                    "Nicht abgeschlossener Pascal-Kommentar { ... }.", line
+                )
+            fragment = text[index:end + 1]
+            output.append(blank_fragment(fragment))
+            removed_comments += 1
+            line += fragment.count("\n")
+            index = end + 1
+            continue
+
+        if ch in "\r\n":
+            output.append(ch)
+            if ch == "\n":
+                line += 1
+            index += 1
+            continue
+
+        if not is_active:
+            output.append(" " if ch != "\t" else "\t")
+            index += 1
+            continue
+
+        # Expand object-like macros only on identifiers, never inside strings or
+        # comments. Range types (0..255) and pointer syntax (^Char) are copied
+        # byte-for-byte because they are valid Pascal grammar.
+        if ch.isalpha() or ch == "_":
+            end = index + 1
+            while end < len(text) and (text[end].isalnum() or text[end] == "_"):
+                end += 1
+            identifier = text[index:end]
+            output.append(
+                _pascal_pp_expand_identifier(
+                    identifier,
+                    macros,
+                    explicit_value_macros,
+                    filename=filename,
+                    line_number=line,
+                )
+            )
+            index = end
+            continue
+
+        output.append(ch)
+        index += 1
+
+    if conditional_stack:
+        frame = conditional_stack[-1]
+        raise PascalPreprocessorError(
+            "Nicht abgeschlossener Pascal-Bedingungsblock; {$endif} fehlt.",
+            int(frame.get("line", 0) or 0),
+        )
+
+    result_source = "".join(output)
+    original_lines = text.count("\n") + (1 if text or not text.endswith("\n") else 0)
+    output_lines = result_source.count("\n") + (
+        1 if result_source or not result_source.endswith("\n") else 0
+    )
+    return PascalPreprocessResult(
+        source=result_source,
+        macros=dict(macros),
+        defined_symbols=tuple(sorted(defined)),
+        directives=tuple(directives),
+        warnings=tuple(warnings),
+        removed_comment_count=removed_comments,
+        original_line_count=original_lines,
+        output_line_count=output_lines,
+        link_files=tuple(link_files),
+    )
+
 
 from flags_rc    import *
 
@@ -1905,6 +2979,21 @@ PE32_DEFAULT_IMPORTS: Dict[str, Tuple[str, str]] = {
     "strlen": ("msvcrt.dll", "strlen"),
     "strcmp": ("msvcrt.dll", "strcmp"),
     "strcpy": ("msvcrt.dll", "strcpy"),
+
+    # Stage 181: Object-Pascal-Minimalruntime.  COFF32-cdecl-Symbole tragen
+    # lokal einen fuehrenden Unterstrich (_jit_*).  _resolve_pe32_default_import
+    # entfernt diesen fuer die Tabellenabfrage; der PE-Exportname der DLL
+    # bleibt deshalb absichtlich undecoriert (jit_*).
+    "jit_object_instance_new": ("libruntime_mini.dll", "jit_object_instance_new"),
+    "jit_object_instance_free": ("libruntime_mini.dll", "jit_object_instance_free"),
+    "jit_object_free": ("libruntime_mini.dll", "jit_object_free"),
+    "jit_object_class_type": ("libruntime_mini.dll", "jit_object_class_type"),
+    "jit_class_parent": ("libruntime_mini.dll", "jit_class_parent"),
+    "jit_class_name": ("libruntime_mini.dll", "jit_class_name"),
+    "jit_class_instance_size": ("libruntime_mini.dll", "jit_class_instance_size"),
+    "jit_inherits_from_class": ("libruntime_mini.dll", "jit_inherits_from_class"),
+    "jit_inherits_from_object": ("libruntime_mini.dll", "jit_inherits_from_object"),
+    "jit_dynstring_from_cstr": ("libruntime_mini.dll", "jit_dynstring_from_cstr"),
 }
 
 
@@ -6588,6 +7677,1018 @@ def link_coff64_objects(
 
 
 # ---------------------------------------------------------------------------
+# Stage 172: PE32 packed-image compactor.
+#
+# Stage 170/171 deliberately emitted separate .loader and .ztext sections.
+# With FileAlignment=0x200 both consume a full 512-byte file block even when
+# their logical contents are much smaller.  The compactor below embeds the
+# logical D64Z/MSZIP payload immediately after the x86 loader code and removes
+# only the now redundant .ztext section.  RVAs of all later sections (notably
+# .idata) stay unchanged, so existing IAT addresses and the compressed .text
+# do not need to be rewritten/recompressed.
+#
+# Result for the uploaded Stage-171 sample:
+#
+#     before: .text | .loader(0x200) | .ztext(0x200) | .idata(0x200)
+#             file size 0x800 = 2048
+#
+#     after : .text | .loader+D64Z(0x200) | .idata(0x200)
+#             file size 0x600 = 1536
+# ---------------------------------------------------------------------------
+PE32_PACK_COMPACTOR_DEFAULT = True
+PE32_PACK_COMPACTOR_LAST_RESULT: Dict[str, object] = {}
+
+
+def _pe32_compactor_fail(
+    original: bytes,
+    message: str,
+    *,
+    strict: bool,
+) -> bytes:
+    PE32_PACK_COMPACTOR_LAST_RESULT.clear()
+    PE32_PACK_COMPACTOR_LAST_RESULT.update({
+        "changed": False,
+        "reason": str(message),
+        "before_size": len(original),
+        "after_size": len(original),
+        "saved_bytes": 0,
+    })
+    if strict:
+        raise PE32AssemblerError(str(message))
+    return original
+
+
+def compact_packed_pe32_image(
+    image: bytes,
+    *,
+    strict: bool = False,
+) -> bytes:
+    """Compact a Stage-170/171 packed PE32 image without external tools.
+
+    Only the known D64Z x86 loader layout is touched.  Unsupported, signed or
+    already compact images are returned byte-identically unless ``strict`` is
+    requested.  No PE32+ image is modified by this routine.
+    """
+    original = bytes(image)
+
+    if len(original) < 0x100 or original[:2] != b"MZ":
+        return _pe32_compactor_fail(
+            original,
+            "PE32-Compactor: MZ-Header fehlt.",
+            strict=strict,
+        )
+
+    try:
+        pe_offset = struct.unpack_from("<I", original, 0x3C)[0]
+        if (
+            pe_offset + 24 > len(original)
+            or original[pe_offset:pe_offset + 4] != b"PE\0\0"
+        ):
+            return _pe32_compactor_fail(
+                original,
+                "PE32-Compactor: PE-Signatur fehlt.",
+                strict=strict,
+            )
+
+        file_header = pe_offset + 4
+        machine, section_count = struct.unpack_from(
+            "<HH", original, file_header
+        )
+        optional_size = struct.unpack_from(
+            "<H", original, file_header + 16
+        )[0]
+        optional_offset = file_header + 20
+
+        if machine != IMAGE_FILE_MACHINE_I386:
+            return _pe32_compactor_fail(
+                original,
+                "PE32-Compactor: nur IMAGE_FILE_MACHINE_I386 wird unterstützt.",
+                strict=strict,
+            )
+        if optional_offset + optional_size > len(original):
+            return _pe32_compactor_fail(
+                original,
+                "PE32-Compactor: Optional Header ist abgeschnitten.",
+                strict=strict,
+            )
+        if struct.unpack_from("<H", original, optional_offset)[0] != 0x010B:
+            return _pe32_compactor_fail(
+                original,
+                "PE32-Compactor: PE32-Magic 0x10B fehlt.",
+                strict=strict,
+            )
+
+        file_alignment = struct.unpack_from(
+            "<I", original, optional_offset + 0x24
+        )[0]
+        section_alignment = struct.unpack_from(
+            "<I", original, optional_offset + 0x20
+        )[0]
+        size_of_headers = struct.unpack_from(
+            "<I", original, optional_offset + 0x3C
+        )[0]
+        image_base = struct.unpack_from(
+            "<I", original, optional_offset + 0x1C
+        )[0]
+
+        if (
+            file_alignment <= 0
+            or file_alignment & (file_alignment - 1)
+            or section_alignment <= 0
+            or section_alignment & (section_alignment - 1)
+        ):
+            return _pe32_compactor_fail(
+                original,
+                "PE32-Compactor: ungültiges PE-Alignment.",
+                strict=strict,
+            )
+
+        section_table = optional_offset + optional_size
+        section_table_end = section_table + int(section_count) * 40
+        if section_table_end > len(original):
+            return _pe32_compactor_fail(
+                original,
+                "PE32-Compactor: Section-Tabelle ist abgeschnitten.",
+                strict=strict,
+            )
+        if size_of_headers < section_table_end or size_of_headers > len(original):
+            return _pe32_compactor_fail(
+                original,
+                "PE32-Compactor: SizeOfHeaders ist inkonsistent.",
+                strict=strict,
+            )
+
+        # A PE certificate uses a FILE offset rather than an RVA. Repacking
+        # would invalidate both signature and security-directory location.
+        security_directory = optional_offset + 0x60 + 4 * 8
+        certificate_offset, certificate_size = struct.unpack_from(
+            "<II", original, security_directory
+        )
+        if certificate_offset or certificate_size:
+            return _pe32_compactor_fail(
+                original,
+                "PE32-Compactor: signierte PE-Dateien werden nicht verändert.",
+                strict=strict,
+            )
+
+        # IMAGE_DEBUG_DIRECTORY contains PointerToRawData file offsets.  The
+        # generated d64 images do not use it; reject foreign debug images rather
+        # than silently leaving stale file offsets behind.
+        debug_directory = optional_offset + 0x60 + 6 * 8
+        debug_rva, debug_size = struct.unpack_from(
+            "<II", original, debug_directory
+        )
+        if debug_rva or debug_size:
+            return _pe32_compactor_fail(
+                original,
+                "PE32-Compactor: PE-Images mit Debug-Directory werden nicht verändert.",
+                strict=strict,
+            )
+
+        sections = []
+        loader_index = None
+        ztext_index = None
+        highest_raw_end = int(size_of_headers)
+
+        for index in range(int(section_count)):
+            header_offset = section_table + index * 40
+            header = bytearray(original[header_offset:header_offset + 40])
+            name_bytes = bytes(header[:8]).split(b"\0", 1)[0]
+            name = name_bytes.decode("ascii", errors="replace")
+            virtual_size, rva, raw_size, raw_ptr = struct.unpack_from(
+                "<IIII", header, 0x08
+            )
+            characteristics = struct.unpack_from("<I", header, 0x24)[0]
+
+            if raw_size:
+                if raw_ptr <= 0 or raw_ptr + raw_size > len(original):
+                    return _pe32_compactor_fail(
+                        original,
+                        f"PE32-Compactor: Raw-Daten von {name!r} liegen außerhalb der Datei.",
+                        strict=strict,
+                    )
+                raw_data = bytes(original[raw_ptr:raw_ptr + raw_size])
+                highest_raw_end = max(
+                    highest_raw_end,
+                    int(raw_ptr) + int(raw_size),
+                )
+            else:
+                raw_data = b""
+
+            if name_bytes == b".loader":
+                loader_index = index
+            elif name_bytes == b".ztext":
+                ztext_index = index
+
+            sections.append({
+                "header": header,
+                "name": name_bytes,
+                "name_text": name,
+                "virtual_size": int(virtual_size),
+                "rva": int(rva),
+                "raw_size": int(raw_size),
+                "raw_ptr": int(raw_ptr),
+                "raw_data": raw_data,
+                "chars": int(characteristics),
+            })
+
+        if loader_index is None:
+            return _pe32_compactor_fail(
+                original,
+                "PE32-Compactor: .loader-Sektion fehlt.",
+                strict=strict,
+            )
+        if ztext_index is None:
+            # Already compact or not a D64Z packed image: no error in the
+            # automatic build path.
+            PE32_PACK_COMPACTOR_LAST_RESULT.clear()
+            PE32_PACK_COMPACTOR_LAST_RESULT.update({
+                "changed": False,
+                "reason": "PE32-Compactor: keine separate .ztext-Sektion vorhanden.",
+                "before_size": len(original),
+                "after_size": len(original),
+                "saved_bytes": 0,
+            })
+            return original
+        if int(ztext_index) != int(loader_index) + 1:
+            return _pe32_compactor_fail(
+                original,
+                "PE32-Compactor: .ztext folgt nicht unmittelbar auf .loader.",
+                strict=strict,
+            )
+
+        loader = sections[loader_index]
+        ztext = sections[ztext_index]
+        if loader["raw_size"] <= 0 or ztext["raw_size"] <= 0:
+            return _pe32_compactor_fail(
+                original,
+                "PE32-Compactor: .loader/.ztext besitzen keine Raw-Daten.",
+                strict=strict,
+            )
+        if loader["virtual_size"] <= 0:
+            return _pe32_compactor_fail(
+                original,
+                "PE32-Compactor: .loader VirtualSize ist 0.",
+                strict=strict,
+            )
+        if loader["virtual_size"] > loader["raw_size"]:
+            return _pe32_compactor_fail(
+                original,
+                "PE32-Compactor: Loadercode überschreitet seinen Raw-Block.",
+                strict=strict,
+            )
+
+        zraw = ztext["raw_data"]
+        if len(zraw) < PE32_D64Z_HEADER_SIZE:
+            return _pe32_compactor_fail(
+                original,
+                "PE32-Compactor: .ztext ist kleiner als der D64Z-Header.",
+                strict=strict,
+            )
+
+        (
+            magic,
+            version,
+            algorithm,
+            flags,
+            text_rva,
+            text_size,
+            packed_size,
+            original_entry_rva,
+            crc32,
+        ) = PE32_D64Z_HEADER.unpack_from(zraw, 0)
+
+        if magic != PE32_D64Z_MAGIC or int(version) != PE32_D64Z_VERSION:
+            return _pe32_compactor_fail(
+                original,
+                "PE32-Compactor: unbekannter D64Z-Header.",
+                strict=strict,
+            )
+        if int(algorithm) != PE32_COMPRESS_ALGORITHM_MSZIP:
+            return _pe32_compactor_fail(
+                original,
+                "PE32-Compactor: D64Z benutzt nicht MSZIP.",
+                strict=strict,
+            )
+
+        logical_ztext_size = PE32_D64Z_HEADER_SIZE + int(packed_size)
+        if logical_ztext_size > len(zraw):
+            return _pe32_compactor_fail(
+                original,
+                "PE32-Compactor: D64Z PackedSize überschreitet .ztext.",
+                strict=strict,
+            )
+
+        # Keep the embedded header DWORD-aligned so the layout remains easy to
+        # inspect in a PE/hex viewer.  The loader reads only byte addresses.
+        embedded_ztext_offset = _align_up(
+            int(loader["virtual_size"]),
+            4,
+        )
+        combined_virtual_size = (
+            embedded_ztext_offset + logical_ztext_size
+        )
+        combined_raw_size = _align_up(
+            combined_virtual_size,
+            int(file_alignment),
+        )
+        old_pair_raw_size = (
+            int(loader["raw_size"])
+            + int(ztext["raw_size"])
+        )
+
+        if combined_raw_size >= old_pair_raw_size:
+            PE32_PACK_COMPACTOR_LAST_RESULT.clear()
+            PE32_PACK_COMPACTOR_LAST_RESULT.update({
+                "changed": False,
+                "reason": (
+                    "PE32-Compactor: .loader + D64Z sparen bei diesem "
+                    "FileAlignment keinen Raw-Block."
+                ),
+                "before_size": len(original),
+                "after_size": len(original),
+                "saved_bytes": 0,
+                "loader_size": int(loader["virtual_size"]),
+                "ztext_logical_size": logical_ztext_size,
+                "combined_raw_size": combined_raw_size,
+                "old_pair_raw_size": old_pair_raw_size,
+            })
+            return original
+
+        loader_code = bytearray(
+            loader["raw_data"][:int(loader["virtual_size"])]
+        )
+
+        old_packed_va = (
+            int(image_base)
+            + int(ztext["rva"])
+            + PE32_D64Z_HEADER_SIZE
+        ) & 0xFFFFFFFF
+        new_ztext_rva = (
+            int(loader["rva"])
+            + embedded_ztext_offset
+        )
+        new_packed_va = (
+            int(image_base)
+            + new_ztext_rva
+            + PE32_D64Z_HEADER_SIZE
+        ) & 0xFFFFFFFF
+
+        # Stage-169/170 x86 loader emits exactly:
+        #     push old_packed_va
+        # before Decompress().  Require the opcode as part of the signature so
+        # a coincidental DWORD elsewhere in code is not modified.
+        old_push = b"\x68" + struct.pack("<I", old_packed_va)
+        new_push = b"\x68" + struct.pack("<I", new_packed_va)
+        matches = []
+        cursor = 0
+        while True:
+            position = loader_code.find(old_push, cursor)
+            if position < 0:
+                break
+            matches.append(position)
+            cursor = position + 1
+
+        if len(matches) != 1:
+            return _pe32_compactor_fail(
+                original,
+                "PE32-Compactor: eindeutige Loader-PackedVA-Signatur fehlt.",
+                strict=strict,
+            )
+        position = matches[0]
+        loader_code[position:position + len(old_push)] = new_push
+
+        compact_loader_data = bytearray(combined_raw_size)
+        compact_loader_data[:len(loader_code)] = loader_code
+        compact_loader_data[
+            embedded_ztext_offset:
+            embedded_ztext_offset + logical_ztext_size
+        ] = zraw[:logical_ztext_size]
+
+        # Remove only .ztext.  All later RVAs stay byte-identical; only their
+        # physical PointerToRawData values are packed left.
+        compact_sections = [
+            dict(section)
+            for index, section in enumerate(sections)
+            if index != ztext_index
+        ]
+        compact_loader = compact_sections[loader_index]
+        compact_loader["virtual_size"] = combined_virtual_size
+        compact_loader["raw_size"] = combined_raw_size
+        compact_loader["raw_data"] = bytes(compact_loader_data)
+
+        raw_cursor = int(size_of_headers)
+        for section in compact_sections:
+            raw_size = int(section["raw_size"])
+            if raw_size > 0:
+                section["raw_ptr"] = raw_cursor
+                raw_cursor += raw_size
+            else:
+                section["raw_ptr"] = 0
+
+        overlay = (
+            original[highest_raw_end:]
+            if highest_raw_end < len(original)
+            else b""
+        )
+
+        rebuilt = bytearray(size_of_headers)
+        rebuilt[:section_table] = original[:section_table]
+
+        new_section_count = len(compact_sections)
+        struct.pack_into(
+            "<H",
+            rebuilt,
+            file_header + 2,
+            new_section_count,
+        )
+
+        size_of_code = 0
+        size_of_initialized_data = 0
+        for section in compact_sections:
+            raw_size = int(section["raw_size"])
+            chars = int(section["chars"])
+            if chars & 0x00000020:
+                size_of_code += raw_size
+            elif raw_size and chars & 0x00000040:
+                size_of_initialized_data += raw_size
+
+        struct.pack_into(
+            "<I", rebuilt, optional_offset + 0x04, size_of_code
+        )
+        struct.pack_into(
+            "<I", rebuilt, optional_offset + 0x08, size_of_initialized_data
+        )
+
+        # BaseOfData should refer to the first remaining data section.  The
+        # original Stage170 image pointed it at .ztext.
+        first_data_rva = 0
+        for section in compact_sections:
+            chars = int(section["chars"])
+            if chars & 0x00000040 and not (chars & 0x00000020):
+                first_data_rva = int(section["rva"])
+                break
+        if first_data_rva:
+            struct.pack_into(
+                "<I", rebuilt, optional_offset + 0x18, first_data_rva
+            )
+
+        # SizeOfImage can safely shrink only if the removed section was the
+        # final one.  In normal packed images .idata follows it, so the value
+        # remains unchanged.  Recompute generically from remaining RVAs.
+        if compact_sections:
+            last_virtual_end = max(
+                int(section["rva"])
+                + max(1, int(section["virtual_size"]))
+                for section in compact_sections
+            )
+            struct.pack_into(
+                "<I",
+                rebuilt,
+                optional_offset + 0x38,
+                _align_up(last_virtual_end, int(section_alignment)),
+            )
+
+        # Rewrite compacted section headers and clear the no-longer-used slot.
+        for index, section in enumerate(compact_sections):
+            header = bytearray(section["header"])
+            struct.pack_into(
+                "<I", header, 0x08, int(section["virtual_size"])
+            )
+            struct.pack_into(
+                "<I", header, 0x0C, int(section["rva"])
+            )
+            struct.pack_into(
+                "<I", header, 0x10, int(section["raw_size"])
+            )
+            struct.pack_into(
+                "<I", header, 0x14, int(section["raw_ptr"])
+            )
+            destination = section_table + index * 40
+            rebuilt[destination:destination + 40] = header
+
+        old_last_slot = section_table + (new_section_count * 40)
+        if old_last_slot + 40 <= size_of_headers:
+            rebuilt[old_last_slot:old_last_slot + 40] = bytes(40)
+
+        # Raw sections are now tightly packed at FileAlignment boundaries.
+        for section in compact_sections:
+            raw_size = int(section["raw_size"])
+            if raw_size <= 0:
+                continue
+            raw_ptr = int(section["raw_ptr"])
+            raw_data = bytes(section["raw_data"])
+            if len(raw_data) > raw_size:
+                return _pe32_compactor_fail(
+                    original,
+                    f"PE32-Compactor: {section['name_text']} überschreitet SizeOfRawData.",
+                    strict=strict,
+                )
+            if len(rebuilt) < raw_ptr + raw_size:
+                rebuilt.extend(
+                    bytes(raw_ptr + raw_size - len(rebuilt))
+                )
+            rebuilt[raw_ptr:raw_ptr + len(raw_data)] = raw_data
+
+        if overlay:
+            rebuilt.extend(overlay)
+
+        result = bytes(rebuilt)
+        PE32_PACK_COMPACTOR_LAST_RESULT.clear()
+        PE32_PACK_COMPACTOR_LAST_RESULT.update({
+            "changed": True,
+            "reason": "PE32-Compactor: .ztext erfolgreich in .loader eingebettet.",
+            "before_size": len(original),
+            "after_size": len(result),
+            "saved_bytes": len(original) - len(result),
+            "loader_rva": int(loader["rva"]),
+            "embedded_ztext_rva": new_ztext_rva,
+            "embedded_ztext_offset": embedded_ztext_offset,
+            "loader_code_size": int(loader["virtual_size"]),
+            "ztext_logical_size": logical_ztext_size,
+            "combined_virtual_size": combined_virtual_size,
+            "combined_raw_size": combined_raw_size,
+            "old_pair_raw_size": old_pair_raw_size,
+            "old_packed_va": old_packed_va,
+            "new_packed_va": new_packed_va,
+        })
+        return result
+
+    except (struct.error, OverflowError, ValueError) as exc:
+        return _pe32_compactor_fail(
+            original,
+            f"PE32-Compactor: ungültiges PE-Layout: {exc}",
+            strict=strict,
+        )
+
+
+# Keep a reference to the complete Stage-171 PE32 writer.  The new wrapper is
+# additive and only post-processes a successfully built packed PE32 image.
+_build_pe32_image_with_imports_exports_stage171 = (
+    build_pe32_image_with_imports_exports
+)
+
+
+def build_pe32_image_with_imports_exports(
+    code: bytes,
+    entry_offset: Optional[int],
+    import_specs,
+    thunk_patches: Dict[str, int],
+    *,
+    exports: Optional[Dict[str, int]] = None,
+    dll_name: str = "library.dll",
+    gui: bool = False,
+    dll: bool = False,
+    image_base: int = PE32_IMAGE_BASE,
+    base_relocations: Optional[Sequence[int]] = None,
+    compress_text_mszip: Optional[bool] = None,
+    imports_by_local_ordinal: Optional[bool] = None,
+    compact_packed_image: Optional[bool] = None,
+) -> Tuple[bytes, bytes]:
+    """Stage172 wrapper: Stage171 build + optional safe packed-PE32 compact."""
+    image, patched_text = _build_pe32_image_with_imports_exports_stage171(
+        code,
+        entry_offset,
+        import_specs,
+        thunk_patches,
+        exports=exports,
+        dll_name=dll_name,
+        gui=gui,
+        dll=dll,
+        image_base=image_base,
+        base_relocations=base_relocations,
+        compress_text_mszip=compress_text_mszip,
+        imports_by_local_ordinal=imports_by_local_ordinal,
+    )
+
+    if compact_packed_image is None:
+        compact_packed_image = PE32_PACK_COMPACTOR_DEFAULT
+
+    if bool(compact_packed_image) and not bool(dll):
+        image = compact_packed_pe32_image(
+            image,
+            strict=False,
+        )
+
+    return image, patched_text
+
+
+# ---------------------------------------------------------------------------
+# Stage 173: conservative PE32 compactor correction.
+#
+# Windows rejected the aggressive Stage-172 variant on the user's real system.
+# Keep the complete virtual section table now.  Only the redundant physical
+# .ztext raw block disappears.  This leaves NumberOfSections, section RVAs,
+# BaseOfData, SizeOfImage and all PE data-directory RVAs exactly as generated
+# by the known-working Stage-171/172 writer.
+# ---------------------------------------------------------------------------
+_compact_packed_pe32_image_stage172 = compact_packed_pe32_image
+
+
+def compact_packed_pe32_image(
+    image: bytes,
+    *,
+    strict: bool = False,
+) -> bytes:
+    """Conservatively compact D64Z PE32 while retaining the .ztext section.
+
+    Physical layout after compaction:
+
+        headers | .loader + embedded D64Z | .idata | ...
+
+    Virtual PE layout remains:
+
+        .text | .loader | .ztext | .idata | ...
+
+    .ztext simply becomes a zero-raw virtual placeholder.  This deliberately
+    preserves the Windows-loader-visible section topology of the original PE.
+    """
+    original = bytes(image)
+
+    if len(original) < 0x100 or original[:2] != b"MZ":
+        return _pe32_compactor_fail(
+            original,
+            "PE32-Compactor: MZ-Header fehlt.",
+            strict=strict,
+        )
+
+    try:
+        pe_offset = struct.unpack_from("<I", original, 0x3C)[0]
+        if (
+            pe_offset + 24 > len(original)
+            or original[pe_offset:pe_offset + 4] != b"PE\0\0"
+        ):
+            return _pe32_compactor_fail(
+                original,
+                "PE32-Compactor: PE-Signatur fehlt.",
+                strict=strict,
+            )
+
+        file_header = pe_offset + 4
+        machine, section_count = struct.unpack_from(
+            "<HH", original, file_header
+        )
+        optional_size = struct.unpack_from(
+            "<H", original, file_header + 16
+        )[0]
+        optional_offset = file_header + 20
+
+        if machine != IMAGE_FILE_MACHINE_I386:
+            return _pe32_compactor_fail(
+                original,
+                "PE32-Compactor: nur i386/PE32 wird unterstützt.",
+                strict=strict,
+            )
+        if optional_offset + optional_size > len(original):
+            return _pe32_compactor_fail(
+                original,
+                "PE32-Compactor: Optional Header ist abgeschnitten.",
+                strict=strict,
+            )
+        if struct.unpack_from("<H", original, optional_offset)[0] != 0x010B:
+            return _pe32_compactor_fail(
+                original,
+                "PE32-Compactor: PE32-Magic 0x10B fehlt.",
+                strict=strict,
+            )
+
+        file_alignment = struct.unpack_from(
+            "<I", original, optional_offset + 0x24
+        )[0]
+        size_of_headers = struct.unpack_from(
+            "<I", original, optional_offset + 0x3C
+        )[0]
+        image_base = struct.unpack_from(
+            "<I", original, optional_offset + 0x1C
+        )[0]
+
+        if file_alignment <= 0 or file_alignment & (file_alignment - 1):
+            return _pe32_compactor_fail(
+                original,
+                "PE32-Compactor: ungültiges FileAlignment.",
+                strict=strict,
+            )
+
+        section_table = optional_offset + optional_size
+        if section_table + int(section_count) * 40 > int(size_of_headers):
+            return _pe32_compactor_fail(
+                original,
+                "PE32-Compactor: Section-Tabelle überschreitet SizeOfHeaders.",
+                strict=strict,
+            )
+
+        # Do not rewrite images containing file-offset based PE directories.
+        security_offset, security_size = struct.unpack_from(
+            "<II", original, optional_offset + 0x60 + 4 * 8
+        )
+        if security_offset or security_size:
+            return _pe32_compactor_fail(
+                original,
+                "PE32-Compactor: signierte PE-Dateien werden nicht verändert.",
+                strict=strict,
+            )
+        debug_rva, debug_size = struct.unpack_from(
+            "<II", original, optional_offset + 0x60 + 6 * 8
+        )
+        if debug_rva or debug_size:
+            return _pe32_compactor_fail(
+                original,
+                "PE32-Compactor: Debug-Directory verhindert Raw-Repacking.",
+                strict=strict,
+            )
+
+        sections = []
+        loader_index = None
+        ztext_index = None
+        highest_raw_end = int(size_of_headers)
+
+        for index in range(int(section_count)):
+            off = section_table + index * 40
+            header = bytearray(original[off:off + 40])
+            name = bytes(header[:8]).split(b"\0", 1)[0]
+            virtual_size, rva, raw_size, raw_ptr = struct.unpack_from(
+                "<IIII", header, 0x08
+            )
+            chars = struct.unpack_from("<I", header, 0x24)[0]
+            if raw_size:
+                if raw_ptr <= 0 or raw_ptr + raw_size > len(original):
+                    return _pe32_compactor_fail(
+                        original,
+                        f"PE32-Compactor: Raw-Bereich von {name!r} ist ungültig.",
+                        strict=strict,
+                    )
+                raw_data = bytes(
+                    original[raw_ptr:raw_ptr + raw_size]
+                )
+                highest_raw_end = max(
+                    highest_raw_end,
+                    int(raw_ptr) + int(raw_size),
+                )
+            else:
+                raw_data = b""
+
+            if name == b".loader":
+                loader_index = index
+            elif name == b".ztext":
+                ztext_index = index
+
+            sections.append({
+                "header": header,
+                "name": name,
+                "virtual_size": int(virtual_size),
+                "rva": int(rva),
+                "raw_size": int(raw_size),
+                "raw_ptr": int(raw_ptr),
+                "raw_data": raw_data,
+                "chars": int(chars),
+            })
+
+        if loader_index is None:
+            return _pe32_compactor_fail(
+                original,
+                "PE32-Compactor: .loader fehlt.",
+                strict=strict,
+            )
+        if ztext_index is None:
+            PE32_PACK_COMPACTOR_LAST_RESULT.clear()
+            PE32_PACK_COMPACTOR_LAST_RESULT.update({
+                "changed": False,
+                "reason": "PE32-Compactor: keine separate .ztext-Sektion vorhanden.",
+                "before_size": len(original),
+                "after_size": len(original),
+                "saved_bytes": 0,
+            })
+            return original
+        if int(ztext_index) != int(loader_index) + 1:
+            return _pe32_compactor_fail(
+                original,
+                "PE32-Compactor: .ztext folgt nicht direkt auf .loader.",
+                strict=strict,
+            )
+
+        loader = sections[loader_index]
+        ztext = sections[ztext_index]
+
+        # Already Stage-173 compact: .ztext remains visible but owns no file
+        # block. Return byte-identically on a second pass.
+        if int(ztext["raw_size"]) == 0 and int(ztext["raw_ptr"]) == 0:
+            PE32_PACK_COMPACTOR_LAST_RESULT.clear()
+            PE32_PACK_COMPACTOR_LAST_RESULT.update({
+                "changed": False,
+                "reason": "PE32-Compactor: .ztext ist bereits raw-frei.",
+                "before_size": len(original),
+                "after_size": len(original),
+                "saved_bytes": 0,
+            })
+            return original
+
+        if loader["raw_size"] <= 0 or ztext["raw_size"] <= 0:
+            return _pe32_compactor_fail(
+                original,
+                "PE32-Compactor: .loader/.ztext besitzen keine Raw-Daten.",
+                strict=strict,
+            )
+        if loader["virtual_size"] <= 0 or loader["virtual_size"] > loader["raw_size"]:
+            return _pe32_compactor_fail(
+                original,
+                "PE32-Compactor: ungültige .loader-Größe.",
+                strict=strict,
+            )
+
+        zraw = bytes(ztext["raw_data"])
+        if len(zraw) < PE32_D64Z_HEADER_SIZE:
+            return _pe32_compactor_fail(
+                original,
+                "PE32-Compactor: D64Z-Header fehlt.",
+                strict=strict,
+            )
+
+        (
+            magic,
+            version,
+            algorithm,
+            flags,
+            text_rva,
+            text_size,
+            packed_size,
+            original_entry_rva,
+            crc32,
+        ) = PE32_D64Z_HEADER.unpack_from(zraw, 0)
+
+        if (
+            magic != PE32_D64Z_MAGIC
+            or int(version) != PE32_D64Z_VERSION
+            or int(algorithm) != PE32_COMPRESS_ALGORITHM_MSZIP
+        ):
+            return _pe32_compactor_fail(
+                original,
+                "PE32-Compactor: unbekanntes D64Z/MSZIP-Format.",
+                strict=strict,
+            )
+
+        logical_ztext_size = PE32_D64Z_HEADER_SIZE + int(packed_size)
+        if logical_ztext_size > len(zraw):
+            return _pe32_compactor_fail(
+                original,
+                "PE32-Compactor: PackedSize überschreitet .ztext RawSize.",
+                strict=strict,
+            )
+
+        embedded_offset = _align_up(
+            int(loader["virtual_size"]),
+            4,
+        )
+        combined_virtual_size = embedded_offset + logical_ztext_size
+        combined_raw_size = _align_up(
+            combined_virtual_size,
+            int(file_alignment),
+        )
+        old_pair_raw_size = int(loader["raw_size"]) + int(ztext["raw_size"])
+
+        if combined_raw_size >= old_pair_raw_size:
+            PE32_PACK_COMPACTOR_LAST_RESULT.clear()
+            PE32_PACK_COMPACTOR_LAST_RESULT.update({
+                "changed": False,
+                "reason": "PE32-Compactor: kein FileAlignment-Block einsparbar.",
+                "before_size": len(original),
+                "after_size": len(original),
+                "saved_bytes": 0,
+            })
+            return original
+
+        loader_code = bytearray(
+            loader["raw_data"][:int(loader["virtual_size"])]
+        )
+        old_packed_va = (
+            int(image_base)
+            + int(ztext["rva"])
+            + PE32_D64Z_HEADER_SIZE
+        ) & 0xFFFFFFFF
+        embedded_ztext_rva = int(loader["rva"]) + embedded_offset
+        new_packed_va = (
+            int(image_base)
+            + embedded_ztext_rva
+            + PE32_D64Z_HEADER_SIZE
+        ) & 0xFFFFFFFF
+
+        old_push = b"\x68" + struct.pack("<I", old_packed_va)
+        new_push = b"\x68" + struct.pack("<I", new_packed_va)
+        matches = []
+        pos = 0
+        while True:
+            hit = loader_code.find(old_push, pos)
+            if hit < 0:
+                break
+            matches.append(hit)
+            pos = hit + 1
+        if len(matches) != 1:
+            return _pe32_compactor_fail(
+                original,
+                "PE32-Compactor: Loader-PackedVA-Signatur ist nicht eindeutig.",
+                strict=strict,
+            )
+        hit = matches[0]
+        loader_code[hit:hit + len(old_push)] = new_push
+
+        combined = bytearray(combined_raw_size)
+        combined[:len(loader_code)] = loader_code
+        combined[
+            embedded_offset:embedded_offset + logical_ztext_size
+        ] = zraw[:logical_ztext_size]
+
+        # Preserve every section entry and every RVA. Only physical ownership
+        # changes: .loader grows inside the same 0x200 raw block, .ztext loses
+        # its raw block, following raw sections slide left.
+        loader["virtual_size"] = combined_virtual_size
+        loader["raw_size"] = combined_raw_size
+        loader["raw_data"] = bytes(combined)
+        ztext["raw_size"] = 0
+        ztext["raw_ptr"] = 0
+        ztext["raw_data"] = b""
+
+        raw_cursor = int(size_of_headers)
+        for section in sections:
+            raw_size = int(section["raw_size"])
+            if raw_size > 0:
+                section["raw_ptr"] = raw_cursor
+                raw_cursor += raw_size
+            else:
+                section["raw_ptr"] = 0
+
+        overlay = (
+            original[highest_raw_end:]
+            if highest_raw_end < len(original)
+            else b""
+        )
+
+        # Copy the complete original header first. Do NOT change section count,
+        # BaseOfData, SizeOfImage, SizeOfInitializedData or any data directory.
+        rebuilt = bytearray(original[:int(size_of_headers)])
+
+        for index, section in enumerate(sections):
+            header = bytearray(section["header"])
+            struct.pack_into(
+                "<I", header, 0x08, int(section["virtual_size"])
+            )
+            struct.pack_into(
+                "<I", header, 0x10, int(section["raw_size"])
+            )
+            struct.pack_into(
+                "<I", header, 0x14, int(section["raw_ptr"])
+            )
+            destination = section_table + index * 40
+            rebuilt[destination:destination + 40] = header
+
+        for section in sections:
+            raw_size = int(section["raw_size"])
+            if raw_size <= 0:
+                continue
+            raw_ptr = int(section["raw_ptr"])
+            raw_data = bytes(section["raw_data"])
+            if len(raw_data) > raw_size:
+                return _pe32_compactor_fail(
+                    original,
+                    "PE32-Compactor: Raw-Daten überschreiten SizeOfRawData.",
+                    strict=strict,
+                )
+            if len(rebuilt) < raw_ptr + raw_size:
+                rebuilt.extend(bytes(raw_ptr + raw_size - len(rebuilt)))
+            rebuilt[raw_ptr:raw_ptr + len(raw_data)] = raw_data
+
+        if overlay:
+            rebuilt.extend(overlay)
+
+        result = bytes(rebuilt)
+        PE32_PACK_COMPACTOR_LAST_RESULT.clear()
+        PE32_PACK_COMPACTOR_LAST_RESULT.update({
+            "changed": True,
+            "reason": (
+                "PE32-Compactor Stage173: .ztext-RVA/Section beibehalten; "
+                "nur Raw-Daten in .loader eingebettet."
+            ),
+            "before_size": len(original),
+            "after_size": len(result),
+            "saved_bytes": len(original) - len(result),
+            "section_count_preserved": int(section_count),
+            "ztext_rva_preserved": int(ztext["rva"]),
+            "ztext_virtual_size_preserved": int(ztext["virtual_size"]),
+            "ztext_raw_size": 0,
+            "embedded_ztext_rva": embedded_ztext_rva,
+            "embedded_ztext_offset": embedded_offset,
+            "old_packed_va": old_packed_va,
+            "new_packed_va": new_packed_va,
+        })
+        return result
+
+    except (struct.error, ValueError, OverflowError) as exc:
+        return _pe32_compactor_fail(
+            original,
+            f"PE32-Compactor: ungültiges PE-Layout: {exc}",
+            strict=strict,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Windows-Grafik-ABI. Die Compiler können über target='pe32'/'pe64' und die
 # Präprozessor-Symbole die passende Runtime auswählen. Die eigentliche
 # Direct2D/Direct3D-Runtime kann dadurch plattformgetrennt bleiben, während
@@ -9555,6 +11656,28 @@ PROJECT_NODE_PROLOG_KNOWLEDGE_FILE = "prolog_knowledge_file"
 PROJECT_NODE_ARCHIVE = "archive"
 PROJECT_NODE_ARCHIVE_OBJECT = "archive_object"
 
+# Stage 174: geschützte Pascal-Zielzweige unter Pascal-Programme.
+PROJECT_PASCAL_PE32_MODULES_KEY = "__pascal_pe32_modules__"
+PROJECT_PASCAL_PE32_UNITS_KEY = "__pascal_pe32_units__"
+PROJECT_PASCAL_PE64_MODULES_KEY = "__pascal_pe64_modules__"
+PROJECT_PASCAL_PE64_UNITS_KEY = "__pascal_pe64_units__"
+PROJECT_NODE_PASCAL_TARGET = "pascal_target"
+PROJECT_NODE_PASCAL_MODULE_ROOT = "pascal_module_root"
+PROJECT_NODE_PASCAL_UNIT_ROOT = "pascal_unit_root"
+PROJECT_NODE_PASCAL_TARGET_SOURCE = "pascal_target_source"
+PROJECT_PASCAL_TARGET_ENTRY_KEYS: Dict[Tuple[str, str], str] = {
+    ("pe32", "modules"): PROJECT_PASCAL_PE32_MODULES_KEY,
+    ("pe32", "units"): PROJECT_PASCAL_PE32_UNITS_KEY,
+    ("pe64", "modules"): PROJECT_PASCAL_PE64_MODULES_KEY,
+    ("pe64", "units"): PROJECT_PASCAL_PE64_UNITS_KEY,
+}
+PROJECT_PASCAL_TARGET_SECTIONS: Dict[Tuple[str, str], str] = {
+    ("pe32", "modules"): "Category.pascal.pe32.modules",
+    ("pe32", "units"): "Category.pascal.pe32.units",
+    ("pe64", "modules"): "Category.pascal.pe64.modules",
+    ("pe64", "units"): "Category.pascal.pe64.units",
+}
+
 
 PROJECT_CATEGORY_TITLES: Dict[str, str] = {
     key: title for key, title, _extensions in PROJECT_CATEGORIES
@@ -9607,6 +11730,9 @@ def empty_project_entries() -> Dict[str, List[Dict[str, str]]]:
     # hält diese Hierarchie in der *.pro-Datei getrennt von normalen C-Dateien.
     entries[PROJECT_C_ARCHIVES_KEY] = []
     entries[PROJECT_PROLOG_KNOWLEDGE_KEY] = []
+    # Stage 174: separate Ziel-/Rollenlisten für Pascal.
+    for _special_key in PROJECT_PASCAL_TARGET_ENTRY_KEYS.values():
+        entries[_special_key] = []
     return entries
 
 
@@ -9711,6 +11837,26 @@ def format_project_ini(
         parser[knowledge_section][f"Item{index:04d}"] = json.dumps(
             payload, ensure_ascii=False, separators=(",", ":")
         )
+
+    # Stage 174: Pascal-Programme -> Windows PE32/PE32+ -> Module/Units.
+    for (_target, _role), _entry_key in PROJECT_PASCAL_TARGET_ENTRY_KEYS.items():
+        _section = PROJECT_PASCAL_TARGET_SECTIONS[(_target, _role)]
+        parser[_section] = {
+            "Title": (
+                "Windows PE32" if _target == "pe32" else "Windows PE32+"
+            ) + (" Module" if _role == "modules" else " Units")
+        }
+        for _index, _entry in enumerate(entries.get(_entry_key, ()), 1):
+            _path_value = str(_entry.get("path", "")).strip()
+            if not _path_value:
+                continue
+            _payload = {
+                "title": str(_entry.get("title", "") or Path(_path_value).name),
+                "path": _project_storage_path(_path_value, project_path),
+            }
+            parser[_section][f"Item{_index:04d}"] = json.dumps(
+                _payload, ensure_ascii=False, separators=(",", ":")
+            )
 
     from io import StringIO
     stream = StringIO()
@@ -9817,6 +11963,32 @@ def parse_project_ini(text: str, project_path: Path) -> Dict[str, List[Dict[str,
             entries[PROJECT_PROLOG_KNOWLEDGE_KEY].append({
                 "title": str(payload.get("title", "") or Path(loaded_path).name),
                 "path": loaded_path,
+            })
+    # Stage 174: optionale Pascal-Zielzweige laden.
+    for (_target, _role), _entry_key in PROJECT_PASCAL_TARGET_ENTRY_KEYS.items():
+        _section = PROJECT_PASCAL_TARGET_SECTIONS[(_target, _role)]
+        if not parser.has_section(_section):
+            continue
+        _values = sorted(
+            (
+                (name, value)
+                for name, value in parser.items(_section)
+                if name.casefold().startswith("item")
+            ),
+            key=lambda pair: pair[0].casefold(),
+        )
+        for _name, _value in _values:
+            try:
+                _payload = json.loads(_value)
+            except json.JSONDecodeError:
+                _payload = {"path": _value, "title": Path(_value).name}
+            _path_value = str(_payload.get("path", "")).strip()
+            if not _path_value:
+                continue
+            _loaded_path = _project_loaded_path(_path_value, Path(project_path))
+            entries[_entry_key].append({
+                "title": str(_payload.get("title", "") or Path(_loaded_path).name),
+                "path": _loaded_path,
             })
     return entries
 
@@ -15877,7 +18049,10 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
 
         def set_assembler_target(self, target: str) -> None:
             normalized = str(target).strip().casefold()
-            if normalized in {"pe64", "windows pe64", "windowspe64", "win64"}:
+            if normalized in {
+                "pe64", "windows pe64", "windowspe64", "win64",
+                "pe32+", "windows pe32+", "windowspe32+", "windows pe32 plus",
+            }:
                 self._assembler_target = "pe64"
             elif normalized in {"pe32", "windows", "windows pe32"}:
                 self._assembler_target = "pe32"
@@ -20034,7 +22209,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             # dynamisch ein-/ausgeblendet.
             self.build_target_combo = QComboBox(self.assembler_panel)
             self.build_target_combo.setObjectName("build_target_combo")
-            self.build_target_combo.addItems(("C= 64", "Amiga", "Windows PE32", "Windows PE64"))
+            self.build_target_combo.addItems(("C= 64", "Amiga", "Windows PE32", "Windows PE32+"))
             self.build_target_combo.setCurrentIndex(0)
             self.build_target_combo.setFixedWidth(145)
             self.build_target_combo.setToolTip(
@@ -20224,7 +22399,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 "generated_build_target_combo"
             )
             self.generated_build_target_combo.addItems(
-                ("C= 64", "Amiga", "Windows PE32", "Windows PE64")
+                ("C= 64", "Amiga", "Windows PE32", "Windows PE32+")
             )
             self.generated_build_target_combo.setCurrentIndex(0)
             self.generated_build_target_combo.setFixedWidth(145)
@@ -20679,7 +22854,10 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
 
         def set_build_target(self, target: str) -> None:
             value = str(target).strip().casefold()
-            if value in {"pe64", "win64", "windows64", "windows pe64", "windowspe64"}:
+            if value in {
+                "pe64", "win64", "windows64", "windows pe64", "windowspe64",
+                "pe32+", "windows pe32+", "windowspe32+", "windows pe32 plus",
+            }:
                 normalized = "pe64"
             elif value in {"pe32", "windows", "windows pe32", "windowspe32"}:
                 normalized = "pe32"
@@ -20701,7 +22879,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                     "c64": "C= 64",
                     "amiga": "Amiga",
                     "pe32": "Windows PE32",
-                    "pe64": "Windows PE64",
+                    "pe64": "Windows PE32+",
                 }[normalized]
                 self.build_target_combo.setCurrentText(display_name)
                 self.generated_build_target_combo.setCurrentText(display_name)
@@ -20878,7 +23056,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             if self.build_target == "amiga":
                 return f"Amiga {self.amiga_cpu_model}"
             if self.build_target == "pe64":
-                return "Windows PE64"
+                return "Windows PE32+"
             if self.build_target == "pe32":
                 return "Windows PE32"
             return "C-64"
@@ -46152,6 +48330,19 @@ border: 2px solid #2a69aa;
             document.assembly_status_label.setText(
                 f"ASM erzeugt: {assembly_path.name}"
             )
+            if is_unit and getattr(document, "generated_unit_coff_paths", ()):
+                unit_paths = tuple(
+                    Path(item).expanduser().resolve()
+                    for item in document.generated_unit_coff_paths
+                )
+                document.hints_editor.appendPlainText(
+                    "\nUNIT-Objekt  : "
+                    + ", ".join(path.name for path in unit_paths)
+                )
+                document.generated_assembly_status_label.setText(
+                    "UNIT-COFF erzeugt: "
+                    + ", ".join(path.name for path in unit_paths)
+                )
             self.log(
                 f"COMPILE {language_name.upper()}: "
                 f"{document.display_name} -> {assembly_path.name} "
@@ -46236,6 +48427,9 @@ border: 2px solid #2a69aa;
             """ANTLR-Pascal -> zielabhängiger ASM-Code; kein Binärprogramm."""
             source = document.raw_editor.toPlainText()
             try:
+                pascal_frontend_sync = prepare_pascal_frontend_for_compile(
+                    document.path
+                )
                 from c64pascal import C64PascalError, compile_pascal_to_assembly
             except ImportError as exc:
                 message = (
@@ -46251,6 +48445,19 @@ border: 2px solid #2a69aa;
                 )
                 self.show_error("Pascal-Compiler nicht verfügbar", message)
                 return False
+
+            if pascal_frontend_sync.get("ready"):
+                self.log(
+                    "PASCAL FRONTEND: compiler="
+                    + str(pascal_frontend_sync.get("compiler", ""))
+                    + "; parser="
+                    + str(pascal_frontend_sync.get("parser", ""))
+                    + (
+                        "; ANTLR regenerated"
+                        if pascal_frontend_sync.get("regenerated")
+                        else ""
+                    )
+                )
 
             try:
                 compiler_parameters = inspect.signature(
@@ -46336,11 +48543,109 @@ border: 2px solid #2a69aa;
                         compiler_kwargs["breakpoint_lines"] = (
                             document.raw_editor.breakpoint_lines()
                         )
+                pascal_preprocessed = preprocess_pascal_source(
+                    source,
+                    filename=str(document.path),
+                    predefined_macros=compiler_kwargs.get(
+                        "predefined_macros", {}
+                    ),
+                )
+                if "predefined_macros" in parameter_map:
+                    compiler_kwargs["predefined_macros"] = dict(
+                        pascal_preprocessed.macros
+                    )
+                self.log(
+                    "PASCAL PREPROCESS: "
+                    f"Kommentare={pascal_preprocessed.removed_comment_count}; "
+                    f"Direktiven={len(pascal_preprocessed.directives)}; "
+                    f"Defines={len(pascal_preprocessed.defined_symbols)}; "
+                    f"Zeilen={pascal_preprocessed.original_line_count}"
+                )
+                for _pascal_warning in pascal_preprocessed.warnings:
+                    self.log("PASCAL PREPROCESS: " + _pascal_warning)
+                source = pascal_preprocessed.source
+                if "linked_object_files" in parameter_map:
+                    compiler_kwargs["linked_object_files"] = tuple(
+                        getattr(pascal_preprocessed, "link_files", ()) or ()
+                    )
                 generated = compile_pascal_to_assembly(
                     source, **compiler_kwargs
                 )
+                # Stage 183: {$L file.o}/{$LINK file.o} is consumed by the IDE
+                # preprocessor before c64pascal sees the source. Merge those
+                # object/archive paths back into the compiler result so the
+                # existing internal COFF link path receives them.
+                if hasattr(generated, "linked_object_files"):
+                    generated = replace(
+                        generated,
+                        linked_object_files=tuple(
+                            dict.fromkeys(
+                                list(getattr(generated, "linked_object_files", ()) or ())
+                                + list(getattr(pascal_preprocessed, "link_files", ()) or ())
+                            )
+                        ),
+                    )
+                # Stage 171: A Pascal UNIT for Windows immediately receives an
+                # architecture-specific relocatable COFF companion on Compile.
+                # This is in addition to the existing F2/.o path.
+                if (
+                    getattr(generated, "source_kind", "program") == "unit"
+                    and document.build_target in {"pe32", "pe64"}
+                ):
+                    unit_object_path = _pascal_unit_coff_output_path(
+                        document.path,
+                        document.build_target,
+                    )
+                    try:
+                        unit_object_data = (
+                            assemble_pe64_coff_object(
+                                generated.assembly,
+                                filename=assembly_path.name,
+                            )
+                            if document.build_target == "pe64"
+                            else assemble_pe32_coff_object(
+                                generated.assembly,
+                                filename=assembly_path.name,
+                            )
+                        )
+                        _write_cli_file(unit_object_path, unit_object_data)
+                        document.generated_unit_coff_paths = (
+                            unit_object_path,
+                        )
+                    except (OSError, PE32AssemblerError, PE64AssemblerError) as exc:
+                        message = str(exc)
+                        document.show_assembly_error(
+                            message,
+                            getattr(exc, "line", 0) or 0,
+                            "UNIT-COFF-Fehler",
+                        )
+                        self.show_error(
+                            "Pascal-UNIT-COFF konnte nicht erzeugt werden",
+                            message,
+                        )
+                        self.statusBar().showMessage(
+                            "Pascal-UNIT-COFF-Erzeugung fehlgeschlagen"
+                        )
+                        return False
+            except PascalPreprocessorError as exc:
+                message = str(exc)
+                document.show_assembly_error(
+                    message,
+                    getattr(exc, "line", 0) or 0,
+                    "Pascal-Vorverarbeitungsfehler",
+                )
+                self.show_error("Pascal-Vorverarbeitungsfehler", message)
+                self.statusBar().showMessage("Pascal-Vorverarbeitung fehlgeschlagen")
+                return False
             except C64PascalError as exc:
                 message = str(exc)
+                if not pascal_frontend_sync.get("ready"):
+                    message += (
+                        "\n\nPascal-Frontend-Synchronisierung: "
+                        + str(pascal_frontend_sync.get("reason", "unbekannt"))
+                        + "\nParser: "
+                        + str(pascal_frontend_sync.get("parser", ""))
+                    )
                 document.show_assembly_error(
                     message,
                     exc.line or 0,
@@ -46604,6 +48909,21 @@ border: 2px solid #2a69aa;
                     assembly_path=assembly_path,
                     main_object_path=document.path.with_suffix(".o"),
                 )
+                if (
+                    document.is_pascal_document
+                    and str(getattr(document, "generated_source_kind", "program")).casefold() == "unit"
+                    and object_paths
+                ):
+                    unit_companion = _write_pascal_unit_coff_companion(
+                        object_paths[0],
+                        document.path,
+                        document.build_target,
+                    )
+                    if unit_companion not in object_paths:
+                        object_paths.append(unit_companion)
+                    document.generated_unit_coff_paths = (
+                        unit_companion,
+                    )
             except (OSError, error_type) as exc:
                 message = str(exc)
                 document.show_generated_assembly_error(
@@ -47068,6 +49388,14 @@ border: 2px solid #2a69aa;
                     path = Path(path_value).expanduser().resolve()
                 except OSError:
                     path = Path(path_value).expanduser()
+                if (
+                    document.is_pascal_document
+                    and document.build_target in {"pe32", "pe64"}
+                ):
+                    path = _pascal_preferred_object_for_legacy_o(
+                        path,
+                        document.build_target,
+                    )
                 if not path.is_file():
                     return
                 if path.suffix.casefold() not in {".o", ".obj", ".a", ".lib"}:
@@ -48257,6 +50585,14 @@ border: 2px solid #2a69aa;
             self.project_root_items = {}
             self.project_archive_root = None
             self.project_prolog_knowledge_root = None
+            self.project_pascal_target_nodes = {}
+            self.project_pascal_group_nodes = {}
+            self.project_pascal_last_programs = getattr(
+                self, "project_pascal_last_programs", {}
+            )
+            self.project_pascal_last_dlls = getattr(
+                self, "project_pascal_last_dlls", {}
+            )
             self._project_checkbox_guard = False
             folder_icon = self.style().standardIcon(QStyle.SP_DirClosedIcon)
             for key, title, _extensions in PROJECT_CATEGORIES:
@@ -48276,6 +50612,50 @@ border: 2px solid #2a69aa;
                         "Geschützter Archivknoten für COFF32-/COFF64-Archive",
                     )
                     self.project_archive_root = archive_root
+
+                if key == "pascal":
+                    for _target, _target_title in (
+                        ("pe32", "Windows PE32"),
+                        ("pe64", "Windows PE32+"),
+                    ):
+                        _target_item = QTreeWidgetItem(root, [_target_title])
+                        _target_item.setData(0, Qt.UserRole + 301, "pascal")
+                        _target_item.setData(0, Qt.UserRole + 303, PROJECT_NODE_PASCAL_TARGET)
+                        _target_item.setData(0, Qt.UserRole + 305, _target)
+                        _target_item.setIcon(0, folder_icon)
+                        _target_item.setToolTip(
+                            0, _target_title + "-Buildziel; Rechtsklick für Programm/DLL/Starten"
+                        )
+                        self.project_pascal_target_nodes[_target] = _target_item
+
+                        for _role, _role_title, _role_kind in (
+                            ("modules", "Module", PROJECT_NODE_PASCAL_MODULE_ROOT),
+                            ("units", "Units", PROJECT_NODE_PASCAL_UNIT_ROOT),
+                        ):
+                            _group = QTreeWidgetItem(_target_item, [_role_title])
+                            _group.setData(0, Qt.UserRole + 301, "pascal")
+                            _group.setData(0, Qt.UserRole + 303, _role_kind)
+                            _group.setData(0, Qt.UserRole + 305, _target)
+                            _group.setData(0, Qt.UserRole + 306, _role)
+                            _group.setIcon(0, folder_icon)
+                            _group.setToolTip(
+                                0,
+                                ("Pascal-Module" if _role == "modules" else "Pascal-Units")
+                                + " für " + _target_title,
+                            )
+                            self.project_pascal_group_nodes[(_target, _role)] = _group
+                            _entry_key = PROJECT_PASCAL_TARGET_ENTRY_KEYS[(_target, _role)]
+                            for _entry in values.get(_entry_key, ()):
+                                _path_text = str(_entry.get("path", "")).strip()
+                                if _path_text:
+                                    self._add_project_pascal_target_entry(
+                                        _group,
+                                        Path(_path_text),
+                                        title=str(_entry.get("title", "")),
+                                        mark_modified=False,
+                                    )
+                            _group.setExpanded(True)
+                        _target_item.setExpanded(True)
 
                 if key == "prolog":
                     knowledge_root = QTreeWidgetItem(root, ["Wissen-Datenbanken"])
@@ -48559,6 +50939,12 @@ border: 2px solid #2a69aa;
                     child = root.child(index)
                     if self._project_item_kind(child) == PROJECT_NODE_ARCHIVE_ROOT:
                         continue
+                    if self._project_item_kind(child) in {
+                        PROJECT_NODE_PASCAL_TARGET,
+                        PROJECT_NODE_PASCAL_MODULE_ROOT,
+                        PROJECT_NODE_PASCAL_UNIT_ROOT,
+                    }:
+                        continue
                     path_value = str(child.data(0, Qt.UserRole + 302) or "")
                     if path_value:
                         entries[key].append(
@@ -48601,6 +50987,20 @@ border: 2px solid #2a69aa;
                             "title": child.text(0),
                             "path": path_value,
                         })
+            for (_target, _role), _entry_key in PROJECT_PASCAL_TARGET_ENTRY_KEYS.items():
+                _group = getattr(self, "project_pascal_group_nodes", {}).get((_target, _role))
+                if _group is None:
+                    continue
+                for _index in range(_group.childCount()):
+                    _child = _group.child(_index)
+                    if self._project_item_kind(_child) != PROJECT_NODE_PASCAL_TARGET_SOURCE:
+                        continue
+                    _path_value = str(_child.data(0, Qt.UserRole + 302) or "").strip()
+                    if _path_value:
+                        entries[_entry_key].append({
+                            "title": _child.text(0),
+                            "path": _path_value,
+                        })
             return entries
 
         def project_has_entries(self) -> bool:
@@ -48611,6 +51011,23 @@ border: 2px solid #2a69aa;
             ) or bool(entries.get(PROJECT_C_ARCHIVES_KEY)) or bool(
                 entries.get(PROJECT_PROLOG_KNOWLEDGE_KEY)
             )
+
+        # Stage 174: Zielgebundene Pascal-Einträge zählen ebenfalls als Projektinhalt.
+        def project_has_entries(self) -> bool:
+            entries = self.collect_project_entries()
+            ordinary = any(
+                bool(entries.get(key))
+                for key, _title, _extensions in PROJECT_CATEGORIES
+            )
+            special = (
+                bool(entries.get(PROJECT_C_ARCHIVES_KEY))
+                or bool(entries.get(PROJECT_PROLOG_KNOWLEDGE_KEY))
+                or any(
+                    bool(entries.get(_key))
+                    for _key in PROJECT_PASCAL_TARGET_ENTRY_KEYS.values()
+                )
+            )
+            return bool(ordinary or special)
 
         def set_project_modified(self, modified: bool) -> None:
             self.project_modified = bool(modified)
@@ -49019,12 +51436,550 @@ border: 2px solid #2a69aa;
             self._open_new_project_file(category_key, path)
             return child
 
+        # -------------------------------------------------------------------
+        # Stage 174: Pascal target tree / build orchestration.
+        # -------------------------------------------------------------------
+        def _add_project_pascal_target_entry(
+            self,
+            group_item: QTreeWidgetItem,
+            path: Path,
+            *,
+            title: str = "",
+            mark_modified: bool = True,
+        ) -> Optional[QTreeWidgetItem]:
+            kind = self._project_item_kind(group_item)
+            if kind not in {
+                PROJECT_NODE_PASCAL_MODULE_ROOT,
+                PROJECT_NODE_PASCAL_UNIT_ROOT,
+            }:
+                return None
+            target = str(group_item.data(0, Qt.UserRole + 305) or "").casefold()
+            role = str(group_item.data(0, Qt.UserRole + 306) or "").casefold()
+            if target not in {"pe32", "pe64"} or role not in {"modules", "units"}:
+                return None
+            try:
+                resolved = Path(path).expanduser().resolve()
+            except OSError:
+                resolved = Path(path).expanduser()
+            path_text = str(resolved)
+            for index in range(group_item.childCount()):
+                child = group_item.child(index)
+                existing = str(child.data(0, Qt.UserRole + 302) or "")
+                if existing.casefold() == path_text.casefold():
+                    self.project_tree.setCurrentItem(child)
+                    return child
+            child = QTreeWidgetItem(
+                group_item,
+                [title.strip() or resolved.name or path_text],
+            )
+            child.setData(0, Qt.UserRole + 301, "pascal")
+            child.setData(0, Qt.UserRole + 302, path_text)
+            child.setData(0, Qt.UserRole + 303, PROJECT_NODE_PASCAL_TARGET_SOURCE)
+            child.setData(0, Qt.UserRole + 305, target)
+            child.setData(0, Qt.UserRole + 306, role)
+            child.setToolTip(0, path_text)
+            child.setIcon(0, self.icon_provider.icon(QFileInfo(path_text)))
+            group_item.setExpanded(True)
+            parent = group_item.parent()
+            if parent is not None:
+                parent.setExpanded(True)
+            if mark_modified:
+                self.set_project_modified(True)
+            return child
+
+        def _project_pascal_group_paths(
+            self,
+            target: str,
+            role: str,
+        ) -> Tuple[Path, ...]:
+            group = getattr(self, "project_pascal_group_nodes", {}).get(
+                (str(target).casefold(), str(role).casefold())
+            )
+            if group is None:
+                return ()
+            result = []
+            seen = set()
+            for index in range(group.childCount()):
+                child = group.child(index)
+                if self._project_item_kind(child) != PROJECT_NODE_PASCAL_TARGET_SOURCE:
+                    continue
+                path_text = str(child.data(0, Qt.UserRole + 302) or "").strip()
+                if not path_text:
+                    continue
+                path = Path(path_text).expanduser()
+                try:
+                    path = path.resolve()
+                except OSError:
+                    pass
+                key = str(path).casefold()
+                if key not in seen:
+                    seen.add(key)
+                    result.append(path)
+            return tuple(result)
+
+        def add_project_pascal_target_entries(
+            self,
+            group_item: QTreeWidgetItem,
+        ) -> None:
+            target = str(group_item.data(0, Qt.UserRole + 305) or "").casefold()
+            role = str(group_item.data(0, Qt.UserRole + 306) or "").casefold()
+            if target not in {"pe32", "pe64"} or role not in {"modules", "units"}:
+                return
+            filenames, _selected = QFileDialog.getOpenFileNames(
+                self,
+                "Pascal-Module hinzufügen" if role == "modules" else "Pascal-Units hinzufügen",
+                str(self._project_new_file_directory()),
+                (
+                    "Pascal/COFF (*.pas *.pp *.o *.obj *.a *.lib);;"
+                    "Pascal (*.pas *.pp);;COFF/Archive (*.o *.obj *.a *.lib);;"
+                    "Alle Dateien (*)"
+                ),
+            )
+            added = 0
+            for filename in filenames:
+                if self._add_project_pascal_target_entry(
+                    group_item,
+                    Path(filename),
+                    title=Path(filename).name,
+                ) is not None:
+                    added += 1
+            if added:
+                if self.current_project_path is not None:
+                    self.save_project()
+                self.statusBar().showMessage(
+                    f"{added} Pascal-{role} für {target.upper()} hinzugefügt"
+                )
+
+        def clear_project_pascal_target_entries(
+            self,
+            group_item: QTreeWidgetItem,
+        ) -> None:
+            count = group_item.childCount()
+            if count <= 0:
+                return
+            answer = self._show_message_box(
+                QMessageBox.Question,
+                "Pascal-Zielreferenzen entfernen",
+                f"Sollen alle {count} Referenzen aus '{group_item.text(0)}' "
+                "entfernt werden?\n\nDie Dateien auf dem Datenträger bleiben erhalten.",
+                buttons=QMessageBox.Yes | QMessageBox.No,
+                default_button=QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
+            while group_item.childCount():
+                group_item.takeChild(0)
+            self.set_project_modified(True)
+            if self.current_project_path is not None:
+                self.save_project()
+
+        def remove_project_pascal_target_entry(
+            self,
+            item: QTreeWidgetItem,
+        ) -> None:
+            if self._project_item_kind(item) != PROJECT_NODE_PASCAL_TARGET_SOURCE:
+                return
+            parent = item.parent()
+            if parent is None:
+                return
+            parent.takeChild(parent.indexOfChild(item))
+            self.set_project_modified(True)
+            if self.current_project_path is not None:
+                self.save_project()
+
+        @staticmethod
+        def _project_pascal_declared_kind(path: Path) -> str:
+            if Path(path).suffix.casefold() not in {".pas", ".pp"}:
+                return "object"
+            try:
+                text = Path(path).read_text(encoding="utf-8-sig")
+            except UnicodeError:
+                try:
+                    text = Path(path).read_text(encoding="cp1252")
+                except OSError:
+                    return ""
+            except OSError:
+                return ""
+            cleaned = re.sub(r"\(\*.*?\*\)", " ", text, flags=re.DOTALL)
+            cleaned = re.sub(r"\{.*?\}", " ", cleaned, flags=re.DOTALL)
+            cleaned = re.sub(r"//[^\r\n]*", " ", cleaned)
+            match = re.search(
+                r"\b(program|library|unit)\b",
+                cleaned,
+                re.IGNORECASE,
+            )
+            return match.group(1).casefold() if match else ""
+
+        def _project_pascal_document(
+            self,
+            path: Path,
+            target: str,
+        ) -> Optional[DocumentEditor]:
+            try:
+                resolved = Path(path).expanduser().resolve()
+            except OSError:
+                resolved = Path(path).expanduser()
+            if not resolved.is_file():
+                self.show_error(
+                    "Pascal-Projektdatei fehlt",
+                    f"Datei nicht gefunden:\n{resolved}",
+                )
+                return None
+            document = self._find_open_document(resolved)
+            if document is None:
+                if not self.open_document(resolved):
+                    return None
+                document = self._find_open_document(resolved)
+            if not isinstance(document, DocumentEditor) or not document.is_pascal_document:
+                self.show_error(
+                    "Kein Pascal-Modul",
+                    f"Die Datei ist kein Pascal-Dokument:\n{resolved}",
+                )
+                return None
+            document.set_build_target(target)
+            return document
+
+        def _project_pascal_object_input(
+            self,
+            path: Path,
+            target: str,
+            *,
+            require_unit: bool,
+        ) -> Optional[Path]:
+            try:
+                resolved = Path(path).expanduser().resolve()
+            except OSError:
+                resolved = Path(path).expanduser()
+            suffix = resolved.suffix.casefold()
+            if suffix in {".o", ".obj", ".a", ".lib"}:
+                if not resolved.is_file():
+                    self.show_error(
+                        "Pascal-Linkeingabe fehlt",
+                        f"Datei nicht gefunden:\n{resolved}",
+                    )
+                    return None
+                if suffix in {".o", ".obj"} and not _pascal_unit_coff_matches_target(
+                    resolved, target
+                ):
+                    self.show_error(
+                        "Falsche COFF-Architektur",
+                        f"'{resolved.name}' passt nicht zu {target.upper()}.",
+                    )
+                    return None
+                return resolved
+            if suffix not in {".pas", ".pp"}:
+                self.show_error(
+                    "Ungültiger Pascal-Projekteintrag",
+                    f"Erwartet wird Pascal/COFF, erhalten:\n{resolved}",
+                )
+                return None
+
+            document = self._project_pascal_document(resolved, target)
+            if document is None or not self.assemble_document(document):
+                return None
+            source_kind = str(
+                getattr(document, "generated_source_kind", "program") or "program"
+            ).strip().casefold()
+            if require_unit and source_kind != "unit":
+                self.show_error(
+                    "Pascal-Unit erwartet",
+                    f"'{resolved.name}' ist '{source_kind}', wurde aber unter Units eingefügt.",
+                )
+                return None
+            if source_kind != "unit":
+                self.show_error(
+                    "Zusätzliches Pascal-Modul ist kein Unit",
+                    f"'{resolved.name}' ist '{source_kind}'. Nur das Hauptmodul darf PROGRAM/LIBRARY sein.",
+                )
+                return None
+            if not self.create_coff32_object_document(document):
+                return None
+            companion = _pascal_unit_coff_output_path(resolved, target)
+            if companion.is_file():
+                return companion.resolve()
+            legacy = resolved.with_suffix(".o")
+            if legacy.is_file():
+                return legacy.resolve()
+            self.show_error(
+                "Pascal-Unit-COFF fehlt",
+                f"Für '{resolved.name}' wurde kein COFF-Objekt erzeugt.",
+            )
+            return None
+
+        def _project_pascal_main_source(
+            self,
+            target: str,
+            desired_kind: str,
+            *,
+            report_error: bool = True,
+        ) -> Optional[Path]:
+            modules = self._project_pascal_group_paths(target, "modules")
+            sources = [
+                path for path in modules
+                if path.suffix.casefold() in {".pas", ".pp"}
+            ]
+            matches = [
+                path for path in sources
+                if self._project_pascal_declared_kind(path) == desired_kind
+            ]
+            if len(matches) == 1:
+                return matches[0]
+            if len(matches) > 1:
+                if report_error:
+                    self.show_error(
+                        "Mehrere Pascal-Hauptmodule",
+                        f"Unter {target.upper()} / Module befinden sich mehrere "
+                        f"{desired_kind.upper()}-Quellen:\n\n"
+                        + "\n".join(str(path) for path in matches),
+                    )
+                return None
+            if len(sources) == 1:
+                return sources[0]
+            if report_error:
+                self.show_error(
+                    "Pascal-Hauptmodul fehlt",
+                    (
+                        "Füge unter Pascal-Programme -> "
+                        + ("Windows PE32" if target == "pe32" else "Windows PE32+")
+                        + " -> Module genau eine "
+                        + desired_kind.upper()
+                        + "-Quelle ein."
+                    ),
+                )
+            return None
+
+        def build_project_pascal_target(
+            self,
+            target: str,
+            *,
+            build_kind: str,
+        ) -> bool:
+            target = str(target).casefold()
+            desired_kind = str(build_kind).casefold()
+            if target not in {"pe32", "pe64"} or desired_kind not in {"program", "library"}:
+                return False
+            main_path = self._project_pascal_main_source(target, desired_kind)
+            if main_path is None:
+                return False
+
+            extra_inputs: List[Path] = []
+            seen = set()
+
+            def add_input(path: Path) -> bool:
+                try:
+                    resolved = Path(path).expanduser().resolve()
+                except OSError:
+                    resolved = Path(path).expanduser()
+                key = str(resolved).casefold()
+                if key in seen:
+                    return True
+                if not resolved.is_file():
+                    return False
+                seen.add(key)
+                extra_inputs.append(resolved)
+                return True
+
+            # Units zuerst: PUI und architekturspezifische COFFs sind damit
+            # aktuell, bevor das Hauptmodul kompiliert wird.
+            for unit_path in self._project_pascal_group_paths(target, "units"):
+                object_path = self._project_pascal_object_input(
+                    unit_path,
+                    target,
+                    require_unit=True,
+                )
+                if object_path is None or not add_input(object_path):
+                    return False
+
+            # Weitere Module dürfen COFF/Archive oder Pascal-UNITs sein.
+            for module_path in self._project_pascal_group_paths(target, "modules"):
+                try:
+                    same_as_main = module_path.resolve() == main_path.resolve()
+                except OSError:
+                    same_as_main = module_path == main_path
+                if same_as_main:
+                    continue
+                # Ein PROGRAM- und ein LIBRARY-Hauptmodul dürfen gemeinsam
+                # unter Module liegen. Für die jeweils andere Buildaktion ist
+                # das Gegenstück kein zusätzliches Linkobjekt.
+                _other_kind = self._project_pascal_declared_kind(module_path)
+                if _other_kind in {"program", "library"}:
+                    continue
+                object_path = self._project_pascal_object_input(
+                    module_path,
+                    target,
+                    require_unit=False,
+                )
+                if object_path is None or not add_input(object_path):
+                    return False
+
+            main_document = self._project_pascal_document(main_path, target)
+            if main_document is None or not self.assemble_document(main_document):
+                return False
+            actual_kind = str(
+                getattr(main_document, "generated_source_kind", "program") or "program"
+            ).strip().casefold()
+            if actual_kind != desired_kind:
+                self.show_error(
+                    "Pascal-Hauptmodul passt nicht zur Aktion",
+                    f"'{main_path.name}' wurde als {actual_kind.upper()} erkannt; "
+                    f"für diese Aktion wird {desired_kind.upper()} benötigt.",
+                )
+                return False
+            if not self.assemble_generated_document(
+                main_document,
+                extra_link_inputs=tuple(extra_inputs),
+            ):
+                return False
+
+            output = main_document.assembled_program_path
+            expected_suffix = ".exe" if desired_kind == "program" else ".dll"
+            if (
+                output is None
+                or output.suffix.casefold() != expected_suffix
+                or not output.is_file()
+            ):
+                self.show_error(
+                    "Pascal-Build ohne erwartete Ausgabe",
+                    f"Erwartet wurde {expected_suffix}, erhalten: {output}",
+                )
+                return False
+
+            if desired_kind == "program":
+                self.project_pascal_last_programs[target] = output.resolve()
+                action_name = "Programm"
+            else:
+                self.project_pascal_last_dlls[target] = output.resolve()
+                action_name = "DLL"
+            target_name = "Windows PE32" if target == "pe32" else "Windows PE32+"
+            self.log(
+                f"PASCAL PROJECT {target_name} {action_name.upper()}: "
+                f"{main_path.name} + {len(extra_inputs)} Modul/Unit-Input(s) -> {output}"
+            )
+            self.statusBar().showMessage(
+                f"{target_name}: {action_name} erstellt: {output.name}",
+                8000,
+            )
+            if output.parent.resolve() == self.current_directory.resolve():
+                self.populate_file_list()
+            return True
+
+        def _project_pascal_existing_program(self, target: str) -> Optional[Path]:
+            target = str(target).casefold()
+            remembered = getattr(self, "project_pascal_last_programs", {}).get(target)
+            if remembered is not None and Path(remembered).is_file():
+                return Path(remembered).resolve()
+            main = self._project_pascal_main_source(
+                target,
+                "program",
+                report_error=False,
+            )
+            if main is None:
+                return None
+            candidate = main.with_suffix(".exe")
+            return candidate.resolve() if candidate.is_file() else None
+
+        def start_project_pascal_target(self, target: str) -> bool:
+            target = str(target).casefold()
+            output = self._project_pascal_existing_program(target)
+            if output is None:
+                self.show_error(
+                    "Pascal-Programm nicht vorhanden",
+                    "Erstelle zuerst über das Kontextmenü 'Programm erstellen' eine EXE.",
+                )
+                return False
+            main = self._project_pascal_main_source(
+                target,
+                "program",
+                report_error=False,
+            )
+            if main is None:
+                self.show_error(
+                    "Pascal-Hauptmodul fehlt",
+                    "Das zu startende PROGRAM-Modul ist nicht mehr im Module-Knoten vorhanden.",
+                )
+                return False
+            document = self._project_pascal_document(main, target)
+            if document is None:
+                return False
+            document.assembled_program_path = output
+            document.assembled_target = target
+            return self._launch_assembled_document(document)
+
+        def _show_project_pascal_target_menu(
+            self,
+            item: QTreeWidgetItem,
+            position,
+        ) -> None:
+            target = str(item.data(0, Qt.UserRole + 305) or "").casefold()
+            if target not in {"pe32", "pe64"}:
+                return
+            menu = QMenu(self.project_tree)
+            program_action = menu.addAction("Programm erstellen")
+            dll_action = menu.addAction("DLL erstellen")
+            menu.addSeparator()
+            start_action = menu.addAction("Starten")
+            selected = menu.exec_(
+                self.project_tree.viewport().mapToGlobal(position)
+            )
+            if selected is program_action:
+                self.build_project_pascal_target(target, build_kind="program")
+            elif selected is dll_action:
+                self.build_project_pascal_target(target, build_kind="library")
+            elif selected is start_action:
+                self.start_project_pascal_target(target)
+
+        def _show_project_pascal_group_menu(
+            self,
+            item: QTreeWidgetItem,
+            position,
+        ) -> None:
+            menu = QMenu(self.project_tree)
+            add_action = menu.addAction("Hinzufügen …")
+            clear_action = menu.addAction("Einträge löschen")
+            clear_action.setEnabled(item.childCount() > 0)
+            selected = menu.exec_(
+                self.project_tree.viewport().mapToGlobal(position)
+            )
+            if selected is add_action:
+                self.add_project_pascal_target_entries(item)
+            elif selected is clear_action:
+                self.clear_project_pascal_target_entries(item)
+
+        def _show_project_pascal_source_menu(
+            self,
+            item: QTreeWidgetItem,
+            position,
+        ) -> None:
+            menu = QMenu(self.project_tree)
+            open_action = menu.addAction("Öffnen")
+            menu.addSeparator()
+            remove_action = menu.addAction("Aus Knoten entfernen")
+            selected = menu.exec_(
+                self.project_tree.viewport().mapToGlobal(position)
+            )
+            if selected is open_action:
+                self.open_project_item(item)
+            elif selected is remove_action:
+                self.remove_project_pascal_target_entry(item)
+
         def show_project_context_menu(self, position) -> None:
             item = self.project_tree.itemAt(position)
             if item is None:
                 return
             self.project_tree.setCurrentItem(item)
             kind = self._project_item_kind(item)
+            if kind == PROJECT_NODE_PASCAL_TARGET:
+                self._show_project_pascal_target_menu(item, position)
+                return
+            if kind in {
+                PROJECT_NODE_PASCAL_MODULE_ROOT,
+                PROJECT_NODE_PASCAL_UNIT_ROOT,
+            }:
+                self._show_project_pascal_group_menu(item, position)
+                return
+            if kind == PROJECT_NODE_PASCAL_TARGET_SOURCE:
+                self._show_project_pascal_source_menu(item, position)
+                return
             if kind == PROJECT_NODE_ARCHIVE_ROOT:
                 self._show_project_archive_root_menu(item, position)
                 return
@@ -49049,6 +52004,7 @@ border: 2px solid #2a69aa;
                 if self._project_item_kind(root.child(index)) not in {
                     PROJECT_NODE_ARCHIVE_ROOT,
                     PROJECT_NODE_PROLOG_KNOWLEDGE_ROOT,
+                    PROJECT_NODE_PASCAL_TARGET,
                 }
             )
             clear_action.setEnabled(removable_count > 0)
@@ -49743,6 +52699,7 @@ border: 2px solid #2a69aa;
                 if self._project_item_kind(root.child(index)) not in {
                     PROJECT_NODE_ARCHIVE_ROOT,
                     PROJECT_NODE_PROLOG_KNOWLEDGE_ROOT,
+                    PROJECT_NODE_PASCAL_TARGET,
                 }
             ]
             count = len(removable)
@@ -49862,6 +52819,42 @@ border: 2px solid #2a69aa;
             _column: int = 0,
         ) -> None:
             kind = self._project_item_kind(item)
+            if kind in {
+                PROJECT_NODE_PASCAL_TARGET,
+                PROJECT_NODE_PASCAL_MODULE_ROOT,
+                PROJECT_NODE_PASCAL_UNIT_ROOT,
+            }:
+                item.setExpanded(not item.isExpanded())
+                return
+            if kind == PROJECT_NODE_PASCAL_TARGET_SOURCE:
+                path_value = str(item.data(0, Qt.UserRole + 302) or "")
+                target = str(item.data(0, Qt.UserRole + 305) or "").casefold()
+                if path_value:
+                    path = Path(path_value)
+                    if path.exists():
+                        if (
+                            path.suffix.casefold() in {".pas", ".pp"}
+                            and target in {"pe32", "pe64"}
+                        ):
+                            document = self._project_pascal_document(path, target)
+                            if document is not None:
+                                target_name = (
+                                    "Windows PE32"
+                                    if target == "pe32"
+                                    else "Windows PE32+"
+                                )
+                                self.statusBar().showMessage(
+                                    f"{path.name}: Compilerziel {target_name}",
+                                    5000,
+                                )
+                        else:
+                            self.open_document(path)
+                    else:
+                        self.show_error(
+                            "Pascal-Projektdatei nicht gefunden",
+                            f"Datei nicht gefunden:\n{path}",
+                        )
+                return
             if kind == PROJECT_NODE_ARCHIVE_ROOT:
                 item.setExpanded(not item.isExpanded())
                 return
@@ -53474,6 +56467,15 @@ def parse_arguments(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="COFF32-Objekte/Archive aus --object intern zu PE32-EXE oder bei .dll-Ziel zu DLL linken",
     )
     target.add_argument(
+        "--compact-pe32",
+        metavar="PE32",
+        type=Path,
+        help=(
+            "gepacktes Stage-170/171-PE32 nachträglich komprimieren: "
+            ".ztext in .loader einbetten und redundanten Raw-Block entfernen"
+        ),
+    )
+    target.add_argument(
         "--link-pe64",
         metavar="EXE",
         type=Path,
@@ -53585,6 +56587,128 @@ def _write_cli_file(path: Path, data: bytes) -> None:
         raise
 
 
+
+# ---------------------------------------------------------------------------
+# Stage 171: Pascal-UNIT COFF32/COFF64 object naming and reuse.
+#
+# Existing Stage-170 .o behavior stays intact for compatibility. Pascal UNITs
+# additionally receive architecture-explicit companions so PE32 and PE32+
+# objects can coexist without overwriting one another:
+#
+#     MyUnit.coff32.o
+#     MyUnit.coff64.o
+# ---------------------------------------------------------------------------
+def _pascal_unit_coff_output_path(source_path: Path, target: str) -> Path:
+    source = Path(source_path).expanduser().resolve()
+    key = str(target or "").strip().casefold()
+    if key == "pe64":
+        suffix = ".coff64.o"
+    elif key == "pe32":
+        suffix = ".coff32.o"
+    else:
+        raise ValueError(
+            "Pascal-UNIT-COFF-Ausgabe unterstützt nur pe32 oder pe64."
+        )
+    return source.with_name(source.stem + suffix)
+
+
+def _pascal_unit_coff_matches_target(path: Path, target: str) -> bool:
+    candidate = Path(path).expanduser().resolve()
+    if not candidate.is_file():
+        return False
+    try:
+        data = candidate.read_bytes()
+        if str(target).casefold() == "pe64":
+            parse_coff64_object(data)
+        elif str(target).casefold() == "pe32":
+            parse_coff32_object(data)
+        else:
+            return False
+    except (OSError, PE32AssemblerError, PE64AssemblerError):
+        return False
+    return True
+
+
+def _pascal_prebuilt_unit_object_for_source(
+    source_path: Path,
+    target: str,
+) -> Optional[Path]:
+    source = Path(source_path).expanduser().resolve()
+    if source.suffix.casefold() not in {".pas", ".pp"}:
+        return None
+    candidate = _pascal_unit_coff_output_path(source, target)
+    return candidate if _pascal_unit_coff_matches_target(candidate, target) else None
+
+
+def _pascal_prebuilt_unit_object_for_generated_assembly(
+    assembly_path: Path,
+    target: str,
+) -> Optional[Path]:
+    module_path = Path(assembly_path).expanduser().resolve()
+    name = module_path.name
+    folded = name.casefold()
+    known_suffixes = (
+        ".generated.pe32.asm",
+        ".generated.pe64.asm",
+        ".generated.asm",
+    )
+    base_name = None
+    for suffix in known_suffixes:
+        if folded.endswith(suffix):
+            base_name = name[:-len(suffix)]
+            break
+    if not base_name:
+        return None
+    candidate = module_path.with_name(
+        base_name + (
+            ".coff64.o" if str(target).casefold() == "pe64"
+            else ".coff32.o"
+        )
+    )
+    return candidate if _pascal_unit_coff_matches_target(candidate, target) else None
+
+
+def _pascal_preferred_object_for_legacy_o(
+    object_path: Path,
+    target: str,
+) -> Path:
+    """Map Unit.o to Unit.coff32.o/Unit.coff64.o if that exact object exists."""
+    path = Path(object_path).expanduser().resolve()
+    lower = path.name.casefold()
+    if not lower.endswith(".o"):
+        return path
+    if lower.endswith(".coff32.o") or lower.endswith(".coff64.o"):
+        return path
+    stem = path.name[:-2]
+    candidate = path.with_name(
+        stem + (
+            ".coff64.o" if str(target).casefold() == "pe64"
+            else ".coff32.o"
+        )
+    )
+    if _pascal_unit_coff_matches_target(candidate, target):
+        return candidate
+    return path
+
+
+def _write_pascal_unit_coff_companion(
+    object_path: Path,
+    source_path: Path,
+    target: str,
+) -> Path:
+    source_object = Path(object_path).expanduser().resolve()
+    if not source_object.is_file():
+        raise ValueError(f"COFF-Objekt nicht gefunden: {source_object}")
+    destination = _pascal_unit_coff_output_path(source_path, target)
+    data = source_object.read_bytes()
+    if str(target).casefold() == "pe64":
+        parse_coff64_object(data)
+    else:
+        parse_coff32_object(data)
+    _write_cli_file(destination, data)
+    return destination
+
+
 def _write_pe32_generated_objects(
     generated,
     *,
@@ -53606,6 +56730,17 @@ def _write_pe32_generated_objects(
         seen.add(key)
         result.append(resolved)
 
+    def add_existing_object(path: Path, target: str) -> bool:
+        resolved = Path(path).expanduser().resolve()
+        key = str(resolved).casefold()
+        if key in seen:
+            return True
+        if not _pascal_unit_coff_matches_target(resolved, target):
+            return False
+        seen.add(key)
+        result.append(resolved)
+        return True
+
     main_path = (
         main_object_path.expanduser().resolve()
         if main_object_path is not None
@@ -53616,6 +56751,13 @@ def _write_pe32_generated_objects(
     # Separat kompilierte C-Translation-Units (#pragma link).
     for module_name, module_assembly in getattr(generated, "linked_pe32_modules", ()):
         module_source = Path(module_name).expanduser().resolve()
+        prebuilt_unit = _pascal_prebuilt_unit_object_for_source(
+            module_source, "pe32"
+        )
+        if prebuilt_unit is not None and add_existing_object(
+            prebuilt_unit, "pe32"
+        ):
+            continue
         module_asm = module_source.with_suffix(".generated.pe32.asm")
         _write_cli_file(module_asm, str(module_assembly).encode("utf-8"))
         add_object(module_source.with_suffix(".o"), str(module_assembly), module_asm.name)
@@ -53623,6 +56765,13 @@ def _write_pe32_generated_objects(
     # Bereits vorhandene ASM-Module aus Pascal-Units bzw. #pragma link.
     for module_name in getattr(generated, "linked_assembly_files", ()):
         module_path = Path(module_name).expanduser().resolve()
+        prebuilt_unit = _pascal_prebuilt_unit_object_for_generated_assembly(
+            module_path, "pe32"
+        )
+        if prebuilt_unit is not None and add_existing_object(
+            prebuilt_unit, "pe32"
+        ):
+            continue
         try:
             module_assembly = module_path.read_text(encoding="utf-8-sig")
         except UnicodeError:
@@ -53654,6 +56803,17 @@ def _write_pe64_generated_objects(
         seen.add(key)
         result.append(resolved)
 
+    def add_existing_object(path: Path, target: str) -> bool:
+        resolved = Path(path).expanduser().resolve()
+        key = str(resolved).casefold()
+        if key in seen:
+            return True
+        if not _pascal_unit_coff_matches_target(resolved, target):
+            return False
+        seen.add(key)
+        result.append(resolved)
+        return True
+
     main_path = (
         main_object_path.expanduser().resolve()
         if main_object_path is not None
@@ -53663,12 +56823,26 @@ def _write_pe64_generated_objects(
 
     for module_name, module_assembly in getattr(generated, "linked_pe32_modules", ()):
         module_source = Path(module_name).expanduser().resolve()
+        prebuilt_unit = _pascal_prebuilt_unit_object_for_source(
+            module_source, "pe64"
+        )
+        if prebuilt_unit is not None and add_existing_object(
+            prebuilt_unit, "pe64"
+        ):
+            continue
         module_asm = module_source.with_suffix(".generated.pe64.asm")
         _write_cli_file(module_asm, str(module_assembly).encode("utf-8"))
         add_object(module_source.with_suffix(".o"), str(module_assembly), module_asm.name)
 
     for module_name in getattr(generated, "linked_assembly_files", ()):
         module_path = Path(module_name).expanduser().resolve()
+        prebuilt_unit = _pascal_prebuilt_unit_object_for_generated_assembly(
+            module_path, "pe64"
+        )
+        if prebuilt_unit is not None and add_existing_object(
+            prebuilt_unit, "pe64"
+        ):
+            continue
         try:
             module_assembly = module_path.read_text(encoding="utf-8-sig")
         except UnicodeError:
@@ -53714,6 +56888,7 @@ def _compile_cli(args: argparse.Namespace) -> int:
             source, filename=str(source_path), target="c64"
         )
     elif suffix in {".pas", ".pp"}:
+        prepare_pascal_frontend_for_compile(source_path)
         from c64pascal import compile_pascal_to_assembly
         kwargs = dict(
             filename=str(source_path), include_paths=include_paths,
@@ -53730,7 +56905,28 @@ def _compile_cli(args: argparse.Namespace) -> int:
                 kwargs["fpu_model"] = args.amiga_fpu
         if target in {"pe32", "pe64"} and "graphics_backend" in params:
             kwargs["graphics_backend"] = args.windows_graphics
+        pascal_preprocessed = preprocess_pascal_source(
+            source,
+            filename=str(source_path),
+            predefined_macros=kwargs.get("predefined_macros", {}),
+        )
+        kwargs["predefined_macros"] = dict(pascal_preprocessed.macros)
+        if "linked_object_files" in params:
+            kwargs["linked_object_files"] = tuple(
+                getattr(pascal_preprocessed, "link_files", ()) or ()
+            )
+        source = pascal_preprocessed.source
         generated = compile_pascal_to_assembly(source, **kwargs)
+        if hasattr(generated, "linked_object_files"):
+            generated = replace(
+                generated,
+                linked_object_files=tuple(
+                    dict.fromkeys(
+                        list(getattr(generated, "linked_object_files", ()) or ())
+                        + list(getattr(pascal_preprocessed, "link_files", ()) or ())
+                    )
+                ),
+            )
     elif suffix == ".c":
         from c64c import compile_c_to_assembly
         kwargs = dict(
@@ -53814,6 +57010,17 @@ def _compile_cli(args: argparse.Namespace) -> int:
                 assembly_path=assembly_path,
                 main_object_path=object_path,
             )
+            if (
+                source_kind == "unit"
+                and suffix in {".pas", ".pp"}
+                and args.output is None
+                and object_paths
+            ):
+                unit_companion = _write_pascal_unit_coff_companion(
+                    object_paths[0], source_path, "pe32"
+                )
+                if unit_companion not in object_paths:
+                    object_paths.append(unit_companion)
             pui_path = getattr(generated, "pui_path", None)
             if pui_path:
                 print(f"PUI: {Path(pui_path).resolve()}")
@@ -53877,6 +57084,17 @@ def _compile_cli(args: argparse.Namespace) -> int:
                 assembly_path=assembly_path,
                 main_object_path=object_path,
             )
+            if (
+                source_kind == "unit"
+                and suffix in {".pas", ".pp"}
+                and args.output is None
+                and object_paths
+            ):
+                unit_companion = _write_pascal_unit_coff_companion(
+                    object_paths[0], source_path, "pe64"
+                )
+                if unit_companion not in object_paths:
+                    object_paths.append(unit_companion)
             pui_path = getattr(generated, "pui_path", None)
             if pui_path:
                 print(f"PUI: {Path(pui_path).resolve()}")
@@ -53976,6 +57194,44 @@ def _compile_cli(args: argparse.Namespace) -> int:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_arguments(argv)
+    if args.compact_pe32 is not None:
+        if args.directory is not None:
+            print(
+                "Fehler: Kein GUI-Arbeitsverzeichnis bei --compact-pe32.",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            source_path = args.compact_pe32.expanduser().resolve()
+            if not source_path.is_file():
+                raise ValueError(
+                    f"PE32-Datei nicht gefunden: {source_path}"
+                )
+            source_data = source_path.read_bytes()
+            compacted = compact_packed_pe32_image(
+                source_data,
+                strict=True,
+            )
+            output_path = (
+                args.output.expanduser().resolve()
+                if args.output is not None
+                else source_path.with_name(
+                    source_path.stem + ".compact" + source_path.suffix
+                )
+            )
+            _write_cli_file(output_path, compacted)
+            info = dict(PE32_PACK_COMPACTOR_LAST_RESULT)
+            print(
+                "PE32 COMPACT: "
+                f"{source_path} -> {output_path}; "
+                f"{info.get('before_size', len(source_data))} -> "
+                f"{info.get('after_size', len(compacted))} Bytes; "
+                f"gespart: {info.get('saved_bytes', len(source_data)-len(compacted))} Bytes"
+            )
+            return 0
+        except Exception as exc:
+            print(f"PE32-Compactorfehler: {exc}", file=sys.stderr)
+            return 1
     if args.archive_coff32 is not None:
         if args.directory is not None:
             print("Fehler: Kein GUI-Arbeitsverzeichnis bei --archive-coff32.", file=sys.stderr)
@@ -54071,6 +57327,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             )
             return 2
         try:
+            prepare_pascal_frontend_for_compile(
+                args.write_pui.expanduser().resolve()
+            )
             from c64pascal import write_pascal_unit_interface
             source_path = args.write_pui.expanduser().resolve()
             destination = write_pascal_unit_interface(

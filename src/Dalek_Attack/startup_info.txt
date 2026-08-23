@@ -1,0 +1,59 @@
+Datei          : T:\GitHub\dBase2Many\src\asmjit\compiler\frontend\c64\Dalek_Attack.d64
+Größe          : 174.848 Bytes
+SHA-256        : 2b818b80ba8b5959b3eeaea546d9ee95d298a5312073ef701f8c3400ed6b3773
+Geometrie      : 35 Spuren, 683 Sektoren, 256 Bytes/Sektor
+Fehlertabelle  : nein
+Diskettenname  : '<<<< LEGEND >>>>'
+Disk-ID        : ' 1'
+DOS-Typ        : '92'
+Header-Zusatz  : ' 1992'
+DOS-Version    : 'A'
+
+Verzeichnis
+Blöcke  Typ      Start   Nutzbytes  Dateiname
+------  -----  -------  ----------  ----------------
+   150  PRG    24/00       37881  'DALEK ATTACK/TSM'
+    56  PRG    11/09       14058  'DALEK INTRO  [L]'
+    30  PRG    22/08        7374  '00  DALEK ATTACK'
+    40  PRG    13/19       10136  '01  DALEK ATTACK'
+    38  PRG    17/00        9556  '02  DALEK ATTACK'
+    37  PRG    19/00        9299  '03  DALEK ATTACK'
+    38  PRG    16/02        9473  '04  DALEK ATTACK'
+    35  PRG    20/09        8745  '05  DALEK ATTACK'
+    28  PRG    14/02        7085  '06  DALEK ATTACK'
+
+Dateien        : 9
+Dateiblöcke    : 452
+Freie Blöcke   : 228 (laut BAM)
+
+Programmstart (heuristische Analyse)
+Startdatei     : 'DALEK ATTACK/TSM'
+Auswahl        : erster PRG-Eintrag im Verzeichnis; LOAD"*",8,1 würde diese Datei laden
+Startblock     : 24/00
+Ladeadresse    : $0801 (2049)
+Einsprung      : $080B (2059), erkannt aus BASIC-Zeile 1990: SYS 2059
+Ausführung     : RUN startet den BASIC-Loader und SYS übergibt an den Maschinencode
+Hinweis        : Ein D64 enthält kein allgemeines Autostart-Feld; die Startdatei ist daher eine begründete Annahme.
+Informationsdatei: T:\GitHub\dBase2Many\src\asmjit\compiler\frontend\c64\Dalek_Attack\startup_info.txt
+
+PRG-Extraktion
+Zielverzeichnis: T:\GitHub\dBase2Many\src\asmjit\compiler\frontend\c64\Dalek_Attack
+Übersprungen    : DALEK ATTACK_TSM.prg (bereits vorhanden)
+Analyse         : DALEK ATTACK_TSM.prg.txt ('DALEK ATTACK/TSM')
+Übersprungen    : DALEK INTRO  [L].prg (bereits vorhanden)
+Analyse         : DALEK INTRO  [L].prg.txt ('DALEK INTRO  [L]')
+Übersprungen    : 00  DALEK ATTACK.prg (bereits vorhanden)
+Analyse         : 00  DALEK ATTACK.prg.txt ('00  DALEK ATTACK')
+Übersprungen    : 01  DALEK ATTACK.prg (bereits vorhanden)
+Analyse         : 01  DALEK ATTACK.prg.txt ('01  DALEK ATTACK')
+Übersprungen    : 02  DALEK ATTACK.prg (bereits vorhanden)
+Analyse         : 02  DALEK ATTACK.prg.txt ('02  DALEK ATTACK')
+Übersprungen    : 03  DALEK ATTACK.prg (bereits vorhanden)
+Analyse         : 03  DALEK ATTACK.prg.txt ('03  DALEK ATTACK')
+Übersprungen    : 04  DALEK ATTACK.prg (bereits vorhanden)
+Analyse         : 04  DALEK ATTACK.prg.txt ('04  DALEK ATTACK')
+Übersprungen    : 05  DALEK ATTACK.prg (bereits vorhanden)
+Analyse         : 05  DALEK ATTACK.prg.txt ('05  DALEK ATTACK')
+Übersprungen    : 06  DALEK ATTACK.prg (bereits vorhanden)
+Analyse         : 06  DALEK ATTACK.prg.txt ('06  DALEK ATTACK')
+Ergebnis        : 0 extrahiert, 9 übersprungen
