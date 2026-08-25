@@ -1,0 +1,119 @@
+{
+    "format": "dBase2Many Pascal Unit Interface",
+    "version": 1,
+    "unit": {
+        "name": "Windows.Application",
+        "normalized_name": "windows_application"
+    },
+    "fingerprint": {
+        "source_sha256": "7fdddbcedcb41e64789b9f88c26aef36203aab460c7a843fac3e8c4dd8b059fd"
+    },
+    "target": {
+        "target": "win32",
+        "object_format": "coff32",
+        "machine": "i386",
+        "pointer_size": 4,
+        "calling_convention": "cdecl"
+    },
+    "object": {
+        "file": "Windows.Application.coff32.o",
+        "format": "coff32",
+        "machine": "i386"
+    },
+    "uses": {
+        "interface": [
+            "System",
+            "Windows.Types",
+            "Windows.kernel",
+            "Windows.user",
+            "VCL.Windows"
+        ],
+        "implementation": []
+    },
+    "imports": {},
+    "initialization": {
+        "symbol": "__unit_Windows_Application"
+    },
+    "finalization": {
+        "symbol": null
+    },
+    "constants": [
+        {
+            "name": "ID_BUTTON_INFO",
+            "value": 1001
+        }
+    ],
+    "types": {
+        "aliases": [],
+        "subranges": [],
+        "records": [],
+        "enums": [],
+        "arrays": [],
+        "pointers": []
+    },
+    "symbols": {
+        "functions": [],
+        "procedures": [],
+        "classes": [
+            {
+                "name": "TApplication",
+                "parent": "TObject",
+                "size": 5,
+                "vmt_symbol": null,
+                "class_name_symbol": null,
+                "fields": [],
+                "methods": [
+                    {
+                        "name": "getHandle",
+                        "kind": "function",
+                        "symbol": "__pas_method_tapplication_gethandle",
+                        "params": [],
+                        "return_type": "hwnd",
+                        "visibility": "protected",
+                        "calling_convention": "cdecl",
+                        "is_virtual": false,
+                        "is_override": false,
+                        "is_class_method": false,
+                        "vmt_offset": null
+                    },
+                    {
+                        "name": "Create",
+                        "kind": "constructor",
+                        "symbol": "__pas_method_tapplication_create",
+                        "params": [],
+                        "return_type": null,
+                        "visibility": "public",
+                        "calling_convention": "cdecl",
+                        "is_virtual": false,
+                        "is_override": false,
+                        "is_class_method": false,
+                        "vmt_offset": null
+                    },
+                    {
+                        "name": "Destroy",
+                        "kind": "destructor",
+                        "symbol": "__pas_method_tapplication_destroy",
+                        "params": [],
+                        "return_type": null,
+                        "visibility": "public",
+                        "calling_convention": "cdecl",
+                        "is_virtual": false,
+                        "is_override": false,
+                        "is_class_method": false,
+                        "vmt_offset": null
+                    }
+                ],
+                "properties": []
+            }
+        ],
+        "variables": []
+    },
+    "link": {
+        "objects": [],
+        "archives": [],
+        "resources": [],
+        "embedded_objects": [],
+        "base_directory": "pui"
+    },
+    "macros": {}
+}

@@ -1,0 +1,91 @@
+{
+    "format": "dBase2Many Pascal Unit Interface",
+    "version": 1,
+    "unit": {
+        "name": "Crypto.crc64",
+        "normalized_name": "crypto_crc64"
+    },
+    "fingerprint": {
+        "source_sha256": "e1ec208e1a7a1d88f6f104f964df7504e4fed97d13c72e65f52ebb5242fa1afd"
+    },
+    "target": {
+        "target": "win32",
+        "object_format": "coff32",
+        "machine": "i386",
+        "pointer_size": 4,
+        "calling_convention": "cdecl"
+    },
+    "object": {
+        "file": "Crypto.crc64.coff32.o",
+        "format": "coff32",
+        "machine": "i386"
+    },
+    "uses": {
+        "interface": [
+            "System.Types"
+        ],
+        "implementation": []
+    },
+    "imports": {
+        "__jit_crc64": {
+            "kind": "external",
+            "name": "_jit_crc64",
+            "calling_convention": "cdecl"
+        }
+    },
+    "initialization": {
+        "symbol": "__unit_Crypto_crc64"
+    },
+    "finalization": {
+        "symbol": null
+    },
+    "constants": [],
+    "types": {
+        "aliases": [],
+        "subranges": [],
+        "records": [],
+        "enums": [],
+        "arrays": [],
+        "pointers": []
+    },
+    "symbols": {
+        "functions": [
+            {
+                "name": "crypt",
+                "kind": "function",
+                "symbol": "__pas_Crypto_crc64_crypt",
+                "params": [
+                    {
+                        "name": "S",
+                        "type": "string",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    },
+                    {
+                        "name": "Len",
+                        "type": "integer",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    }
+                ],
+                "return_type": "String",
+                "calling_convention": "cdecl"
+            }
+        ],
+        "procedures": [],
+        "classes": [],
+        "variables": []
+    },
+    "link": {
+        "objects": [
+            "crc64.o"
+        ],
+        "archives": [],
+        "resources": [],
+        "embedded_objects": [],
+        "base_directory": "pui"
+    },
+    "macros": {}
+}

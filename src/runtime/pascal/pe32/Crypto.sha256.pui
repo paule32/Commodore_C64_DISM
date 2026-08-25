@@ -1,0 +1,91 @@
+{
+    "format": "dBase2Many Pascal Unit Interface",
+    "version": 1,
+    "unit": {
+        "name": "Crypto.sha256",
+        "normalized_name": "crypto_sha256"
+    },
+    "fingerprint": {
+        "source_sha256": "6b4fb0739d6214e3d250b76a48f412ee1bd70dcd909cbb3b4e9fd944bd369ea3"
+    },
+    "target": {
+        "target": "win32",
+        "object_format": "coff32",
+        "machine": "i386",
+        "pointer_size": 4,
+        "calling_convention": "cdecl"
+    },
+    "object": {
+        "file": "Crypto.sha256.coff32.o",
+        "format": "coff32",
+        "machine": "i386"
+    },
+    "uses": {
+        "interface": [
+            "System.Types"
+        ],
+        "implementation": []
+    },
+    "imports": {
+        "__jit_sha256": {
+            "kind": "external",
+            "name": "_jit_sha256",
+            "calling_convention": "cdecl"
+        }
+    },
+    "initialization": {
+        "symbol": "__unit_Crypto_sha256"
+    },
+    "finalization": {
+        "symbol": null
+    },
+    "constants": [],
+    "types": {
+        "aliases": [],
+        "subranges": [],
+        "records": [],
+        "enums": [],
+        "arrays": [],
+        "pointers": []
+    },
+    "symbols": {
+        "functions": [
+            {
+                "name": "crypt",
+                "kind": "function",
+                "symbol": "__pas_Crypto_sha256_crypt",
+                "params": [
+                    {
+                        "name": "S",
+                        "type": "string",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    },
+                    {
+                        "name": "Len",
+                        "type": "integer",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    }
+                ],
+                "return_type": "String",
+                "calling_convention": "cdecl"
+            }
+        ],
+        "procedures": [],
+        "classes": [],
+        "variables": []
+    },
+    "link": {
+        "objects": [
+            "sha256.o"
+        ],
+        "archives": [],
+        "resources": [],
+        "embedded_objects": [],
+        "base_directory": "pui"
+    },
+    "macros": {}
+}

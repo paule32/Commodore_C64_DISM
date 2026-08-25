@@ -1,0 +1,114 @@
+{
+    "format": "dBase2Many Pascal Unit Interface",
+    "version": 1,
+    "unit": {
+        "name": "Windows.kernel",
+        "normalized_name": "windows_kernel"
+    },
+    "fingerprint": {
+        "source_sha256": "f6b47af85582f29a58638330a826b6cfb533d29c1e298e3f562158005af27414"
+    },
+    "target": {
+        "target": "win32",
+        "object_format": "coff32",
+        "machine": "i386",
+        "pointer_size": 4,
+        "calling_convention": "cdecl"
+    },
+    "object": {
+        "file": "Windows.kernel.coff32.o",
+        "format": "coff32",
+        "machine": "i386"
+    },
+    "uses": {
+        "interface": [
+            "System",
+            "Windows.Types"
+        ],
+        "implementation": []
+    },
+    "imports": {
+        "_GetModuleHandleA@4": {
+            "kind": "dll",
+            "library": "kernel32.dll",
+            "name": "GetModuleHandleA",
+            "pascal_name": "GetModuleHandleA",
+            "calling_convention": "stdcall"
+        },
+        "_ExitProcess@4": {
+            "kind": "dll",
+            "library": "kernel32.dll",
+            "name": "ExitProcess",
+            "pascal_name": "ExitProcess",
+            "calling_convention": "stdcall"
+        }
+    },
+    "initialization": {
+        "symbol": "__unit_Windows_kernel"
+    },
+    "finalization": {
+        "symbol": null
+    },
+    "constants": [
+        {
+            "name": "DLL_KERNEL32",
+            "value": "kernel32.dll"
+        }
+    ],
+    "types": {
+        "aliases": [],
+        "subranges": [],
+        "records": [],
+        "enums": [],
+        "arrays": [],
+        "pointers": []
+    },
+    "symbols": {
+        "functions": [
+            {
+                "name": "GetModuleHandleA",
+                "kind": "function",
+                "symbol": "_GetModuleHandleA@4",
+                "params": [
+                    {
+                        "name": "lpModuleName",
+                        "type": "pansichar",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    }
+                ],
+                "return_type": "HMODULE",
+                "calling_convention": "stdcall"
+            }
+        ],
+        "procedures": [
+            {
+                "name": "ExitProcess",
+                "kind": "procedure",
+                "symbol": "_ExitProcess@4",
+                "params": [
+                    {
+                        "name": "AValue",
+                        "type": "dword",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    }
+                ],
+                "return_type": null,
+                "calling_convention": "stdcall"
+            }
+        ],
+        "classes": [],
+        "variables": []
+    },
+    "link": {
+        "objects": [],
+        "archives": [],
+        "resources": [],
+        "embedded_objects": [],
+        "base_directory": "pui"
+    },
+    "macros": {}
+}

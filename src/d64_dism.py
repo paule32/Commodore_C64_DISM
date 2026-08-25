@@ -84,6 +84,11 @@
 #  * Stage 174: Pascal-Projektziele Windows PE32/PE32+ mit Module/Units, EXE/DLL-Build und Start.
 #  * Stage 175: Pascal-ANTLR-Parser-Synchronisierung für CLASS virtual/override und COFF32-UNIT-Build.
 #  * Stage 176: Pascal-Kommentare + {$define/ifdef/ifndef/if/elseif/else/endif}-Vorverarbeitung für UNIT/COFF32.
+#  * Stage 186: PUI Information Hiding; nur ABI-/Objekt-Metadaten, kein Pascal-Quelltext.
+#  * Stage 190: Pascal-Projekt-Units nach Namespace (System/Crypto/...) gruppiert; Blattnamen verkürzt.
+#  * Stage 191: PE32+-Pascal-Units nutzen AMD64-Anker; Units-Kontextmenü sortiert auf-/absteigend und speichert.
+#  * Stage 193: interner AMD64-Assembler akzeptiert 8-/16-Bit-ModR/M-Register (z.B. movzx eax, al).
+#  * Stage 198: Pascal-Compile mit QThread und echter 1..100-%-ProgressBar unter dem Quelltexteditor.
 #  * Stage 137: farbcodierte Zahlenmauern sowie Addition/Subtraktion/Einmaleins/Fehlende-Zahl-Spiele.
 #    Mehrtabellen-Tabs, Feldeditoren und Kontextoperationen für Feldzeilen
 #
@@ -239,6 +244,25 @@ def _pascal_grammar_supports_method_directives(grammar_path: Path) -> bool:
     ))
 
 
+def _pascal_grammar_supports_address_operator(grammar_path: Path) -> bool:
+    try:
+        text = Path(grammar_path).read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeError):
+        return False
+    return re.search(r"(?m)^\s*AT\s*:\s*['\"]@['\"]\s*;", text) is not None
+
+
+def _pascal_generated_lexer_supports_address_operator(lexer_path: Path) -> bool:
+    try:
+        text = Path(lexer_path).read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeError):
+        return False
+    return bool(
+        re.search(r"(?m)^\s*AT\s*=\s*\d+", text)
+        and ("'@'" in text or '"@"' in text)
+    )
+
+
 def _pascal_generated_parser_supports_method_directives(
     parser_path: Path,
 ) -> bool:
@@ -341,12 +365,18 @@ def _pascal_regenerate_repo_parser(asmjit_root: Path) -> Tuple[bool, str]:
                     pass
     importlib.invalidate_caches()
     parser_path = parser_dir / "PascalParser.py"
+    lexer_path = parser_dir / "PascalLexer.py"
     if not _pascal_generated_parser_supports_method_directives(parser_path):
         return False, (
             "ANTLR4 wurde ausgeführt, der erzeugte PascalParser.py enthält "
             "aber weiterhin keine virtual/override-Methodendirektiven."
         )
-    return True, "ANTLR4-Pascalparser 4.13.2 wurde erfolgreich nachgeneriert."
+    if not _pascal_generated_lexer_supports_address_operator(lexer_path):
+        return False, (
+            "ANTLR4 wurde ausgeführt, der erzeugte PascalLexer.py erkennt "
+            "den Object-Pascal-Adressoperator '@' aber weiterhin nicht."
+        )
+    return True, "ANTLR4-Pascallexer/-parser 4.13.2 wurden erfolgreich nachgeneriert."
 
 
 def _pascal_prefer_repo_parser_path(asmjit_root: Path) -> None:
@@ -483,6 +513,8 @@ def prepare_pascal_frontend_for_compile(
         "reason": "Kein src/asmjit-Pascalparser gefunden.",
         "asmjit_root": "",
         "grammar": "",
+        "lexer_grammar": "",
+        "lexer": "",
         "parser": "",
         "compiler": "",
         "regenerated": False,
@@ -495,9 +527,13 @@ def prepare_pascal_frontend_for_compile(
 
     root = roots[0]
     grammar_path = root / "compiler" / "grammar" / "PascalParser.g4"
+    lexer_grammar_path = root / "compiler" / "grammar" / "PascalLexer.g4"
     parser_path = root / "parsers" / "pascal" / "PascalParser.py"
+    lexer_path = root / "parsers" / "pascal" / "PascalLexer.py"
     info["asmjit_root"] = str(root)
     info["grammar"] = str(grammar_path)
+    info["lexer_grammar"] = str(lexer_grammar_path)
+    info["lexer"] = str(lexer_path)
     info["parser"] = str(parser_path)
 
     if not _pascal_grammar_supports_method_directives(grammar_path):
@@ -509,10 +545,22 @@ def prepare_pascal_frontend_for_compile(
         PASCAL_FRONTEND_SYNC_LAST.update(info)
         return dict(info)
 
+    if not _pascal_grammar_supports_address_operator(lexer_grammar_path):
+        info["reason"] = (
+            "Die Repo-Grammatik PascalLexer.g4 ist zu alt: "
+            "AT : '@'; fehlt."
+        )
+        PASCAL_FRONTEND_SYNC_LAST.clear()
+        PASCAL_FRONTEND_SYNC_LAST.update(info)
+        return dict(info)
+
     parser_current = _pascal_generated_parser_supports_method_directives(
         parser_path
     )
-    if not parser_current:
+    lexer_current = _pascal_generated_lexer_supports_address_operator(
+        lexer_path
+    )
+    if not (parser_current and lexer_current):
         regenerated, message = _pascal_regenerate_repo_parser(root)
         info["regenerated"] = bool(regenerated)
         if not regenerated:
@@ -549,7 +597,11 @@ def prepare_pascal_frontend_for_compile(
     loaded_parser_path = Path(
         getattr(parser_module, "__file__", parser_path)
     )
+    loaded_lexer_path = Path(
+        getattr(lexer_module, "__file__", lexer_path)
+    )
     info["parser"] = str(loaded_parser_path)
+    info["lexer"] = str(loaded_lexer_path)
     parser_class = getattr(parser_module, "PascalParser", None)
     lexer_class = getattr(lexer_module, "PascalLexer", None)
     if parser_class is None or lexer_class is None:
@@ -575,6 +627,13 @@ def prepare_pascal_frontend_for_compile(
         PASCAL_FRONTEND_SYNC_LAST.clear()
         PASCAL_FRONTEND_SYNC_LAST.update(info)
         return dict(info)
+    if not hasattr(lexer_class, "AT"):
+        info["reason"] = (
+            "Geladener PascalLexer besitzt kein AT-Token für '@'."
+        )
+        PASCAL_FRONTEND_SYNC_LAST.clear()
+        PASCAL_FRONTEND_SYNC_LAST.update(info)
+        return dict(info)
 
     try:
         frontend_module = importlib.import_module("c64pascal")
@@ -595,8 +654,8 @@ def prepare_pascal_frontend_for_compile(
     )
     info["ready"] = True
     info["reason"] = (
-        "Repo-lokaler PascalParser ist synchron und unterstützt "
-        "virtual/override."
+        "Repo-lokaler PascalLexer/PascalParser ist synchron und unterstützt "
+        "@ sowie virtual/override."
     )
     PASCAL_FRONTEND_SYNC_LAST.clear()
     PASCAL_FRONTEND_SYNC_LAST.update(info)
@@ -839,6 +898,7 @@ def preprocess_pascal_source(
     *,
     filename: str = "<memory>",
     predefined_macros: Optional[Dict[str, object]] = None,
+    link_search_paths: Iterable[Path | str] = (),
 ) -> PascalPreprocessResult:
     """Preprocess Pascal while preserving physical line numbers.
 
@@ -862,6 +922,14 @@ def preprocess_pascal_source(
     directives: List[str] = []
     warnings: List[str] = []
     link_files: List[str] = []
+    normalized_link_search_paths: List[Path] = []
+    for _item in link_search_paths or ():
+        try:
+            _path = Path(_item).expanduser().resolve()
+        except (OSError, RuntimeError, ValueError):
+            _path = Path(_item).expanduser().absolute()
+        if _path not in normalized_link_search_paths:
+            normalized_link_search_paths.append(_path)
     conditional_stack: List[Dict[str, object]] = []
     output: List[str] = []
     removed_comments = 0
@@ -1012,10 +1080,11 @@ def preprocess_pascal_source(
             )
             return
 
-        # FreePascal/Delphi-style object link directive. It is consumed by
-        # d64_dism but retained structurally in PascalPreprocessResult so the
-        # internal COFF linker receives the object/archive after compilation.
-        if command in {"l", "link"}:
+        # Stage 185: FreePascal/Delphi-style Linkdirektiven.
+        # {$L foo.o}/{$LINK foo.o} akzeptieren Objekte und Archive;
+        # {$LINKLIB foo.a} ist fuer Archive vorgesehen. Relative Namen werden
+        # zuerst neben der Quelle und danach in den Projekt-Suchpfaden gesucht.
+        if command in {"l", "link", "linklib"}:
             link_name = argument.strip()
             if (
                 len(link_name) >= 2
@@ -1025,29 +1094,43 @@ def preprocess_pascal_source(
                 link_name = link_name[1:-1]
             if not link_name:
                 raise PascalPreprocessorError(
-                    "{$L} erwartet eine Objekt-/Archivdatei.", line_number
+                    "{$L}/{$LINK}/{$LINKLIB} erwartet eine Datei.", line_number
                 )
-            link_path = Path(link_name).expanduser()
-            if not link_path.is_absolute():
+            _allowed = {".a", ".lib"} if command == "linklib" else {
+                ".o", ".obj", ".a", ".lib"
+            }
+            _candidate = Path(link_name).expanduser()
+            if _candidate.suffix.casefold() not in _allowed:
+                raise PascalPreprocessorError(
+                    f"{{${body.split(None, 1)[0]}}} erwartet "
+                    + (".a/.lib" if command == "linklib" else ".o/.obj/.a/.lib")
+                    + f": {link_name}.",
+                    line_number,
+                )
+            _candidates: List[Path] = []
+            if _candidate.is_absolute():
+                _candidates.append(_candidate)
+            else:
                 try:
-                    source_path = Path(filename).expanduser()
-                    base_dir = (
-                        source_path.resolve().parent
+                    _source_path = Path(filename).expanduser()
+                    _base_dir = (
+                        _source_path.resolve().parent
                         if not str(filename).startswith("<")
                         else Path.cwd()
                     )
                 except (OSError, RuntimeError, ValueError):
-                    base_dir = Path.cwd()
-                link_path = base_dir / link_path
+                    _base_dir = Path.cwd()
+                _candidates.append(_base_dir / _candidate)
+                for _directory in normalized_link_search_paths:
+                    _candidates.append(_directory / _candidate)
+            _chosen = next(
+                (path for path in _candidates if path.is_file()),
+                _candidates[0],
+            )
             try:
-                link_path = link_path.resolve()
+                link_path = _chosen.resolve()
             except (OSError, RuntimeError):
-                link_path = link_path.absolute()
-            if link_path.suffix.casefold() not in {".o", ".obj", ".a", ".lib"}:
-                raise PascalPreprocessorError(
-                    f"{{$L}} erwartet .o/.obj/.a/.lib: {link_name}.",
-                    line_number,
-                )
+                link_path = _chosen.absolute()
             key = str(link_path).casefold()
             if all(str(Path(item)).casefold() != key for item in link_files):
                 link_files.append(str(link_path))
@@ -4586,10 +4669,23 @@ def _x64_memory_operand(text: str, line: int):
 
 
 def _x64_rm_body(reg_field: int, operand: str, line: int):
-    """Return (body, rex_r, rex_x, rex_b, relocation_local, relocation_symbol)."""
+    """Return (body, rex_r, rex_x, rex_b, relocation_local, relocation_symbol).
+
+    Stage 193: ModR/M r/m operands are not limited to the 32/64-bit register
+    table.  Instructions such as ``movzx eax, al`` and ``movzx eax, ax``
+    use an 8/16-bit source register but encode the same register number in the
+    ModR/M r/m field.  Rejecting AL here made valid PE64 code generated for
+    Pascal Boolean comparisons fail while assembling System.Objects.pas.
+    """
     key = str(operand).strip().casefold()
     if key in _X64_REG_CODE:
         rm = _X64_REG_CODE[key]
+        return bytes((0xC0 | ((reg_field & 7) << 3) | (rm & 7),)), (reg_field>>3)&1, 0, (rm>>3)&1, None, None
+    if key in _X64_REG16:
+        rm = _X64_REG16[key]
+        return bytes((0xC0 | ((reg_field & 7) << 3) | (rm & 7),)), (reg_field>>3)&1, 0, (rm>>3)&1, None, None
+    if key in _X64_REG8:
+        rm = _X64_REG8[key]
         return bytes((0xC0 | ((reg_field & 7) << 3) | (rm & 7),)), (reg_field>>3)&1, 0, (rm>>3)&1, None, None
     mem = _x64_memory_operand(operand, line)
     if mem is None:
@@ -4808,7 +4904,10 @@ def _encode_pe64_instruction(text: str, line: int, offset: int, *, relocs: Optio
         reg,width=_x64_reg_info(ops[0],line); src=ops[1]; sk=src.casefold(); mem=_x64_memory_operand(src,line)
         source_word = sk in _X64_REG16 or (mem is not None and mem["size"]=="word")
         opcode=(b"\x0F\xB7" if mnemonic=="movzx" and source_word else b"\x0F\xB6" if mnemonic=="movzx" else b"\x0F\xBF" if source_word else b"\x0F\xBE")
-        _x64_append_rm(out,opcode,reg,src,line,w=width==64,force_rex=reg>=8,relocs=relocs,base_offset=offset); return bytes(out)
+        # SPL/BPL/SIL/DIL need a REX prefix even though their register number is
+        # below 8.  R8B..R15B already force REX through rex_b.
+        low_byte_rex = sk in {"spl", "bpl", "sil", "dil"}
+        _x64_append_rm(out,opcode,reg,src,line,w=width==64,force_rex=(reg>=8 or low_byte_rex),relocs=relocs,base_offset=offset); return bytes(out)
     if mnemonic in _X86_SETCC and len(ops)==1:
         target=ops[0]; tk=target.casefold(); code=_X86_SETCC[mnemonic]
         if tk in _X64_REG8:
@@ -11664,6 +11763,7 @@ PROJECT_PASCAL_PE64_UNITS_KEY = "__pascal_pe64_units__"
 PROJECT_NODE_PASCAL_TARGET = "pascal_target"
 PROJECT_NODE_PASCAL_MODULE_ROOT = "pascal_module_root"
 PROJECT_NODE_PASCAL_UNIT_ROOT = "pascal_unit_root"
+PROJECT_NODE_PASCAL_UNIT_NAMESPACE = "pascal_unit_namespace"
 PROJECT_NODE_PASCAL_TARGET_SOURCE = "pascal_target_source"
 PROJECT_PASCAL_TARGET_ENTRY_KEYS: Dict[Tuple[str, str], str] = {
     ("pe32", "modules"): PROJECT_PASCAL_PE32_MODULES_KEY,
@@ -11677,6 +11777,120 @@ PROJECT_PASCAL_TARGET_SECTIONS: Dict[Tuple[str, str], str] = {
     ("pe64", "modules"): "Category.pascal.pe64.modules",
     ("pe64", "units"): "Category.pascal.pe64.units",
 }
+
+# Stage 196: Windows Compiler-Verzeichnisse sind architekturspezifisch.
+# PE32 und PE32+ duerfen niemals dieselbe PUI-Ausgabe ueberschreiben, weil
+# PUI und COFF-Objekt einen architekturspezifischen ABI-Vertrag bilden.
+PROJECT_WINDOWS_PE32_LINK_SEARCH_PATHS_KEY = "__windows_pe32_link_search_paths__"
+PROJECT_WINDOWS_PE64_LINK_SEARCH_PATHS_KEY = "__windows_pe64_link_search_paths__"
+PROJECT_WINDOWS_PE32_OUTPUT_DIRECTORY_KEY = "__windows_pe32_output_directory__"
+PROJECT_WINDOWS_PE64_OUTPUT_DIRECTORY_KEY = "__windows_pe64_output_directory__"
+PROJECT_WINDOWS_PE32_INPUT_RELATIVE_PATHS_KEY = "__windows_pe32_input_relative_paths__"
+PROJECT_WINDOWS_PE32_OUTPUT_RELATIVE_PATHS_KEY = "__windows_pe32_output_relative_paths__"
+PROJECT_WINDOWS_PE64_INPUT_RELATIVE_PATHS_KEY = "__windows_pe64_input_relative_paths__"
+PROJECT_WINDOWS_PE64_OUTPUT_RELATIVE_PATHS_KEY = "__windows_pe64_output_relative_paths__"
+PROJECT_WINDOWS_TARGET_SETTINGS = {
+    "pe32": {
+        "input_key": PROJECT_WINDOWS_PE32_LINK_SEARCH_PATHS_KEY,
+        "output_key": PROJECT_WINDOWS_PE32_OUTPUT_DIRECTORY_KEY,
+        "input_relative_key": PROJECT_WINDOWS_PE32_INPUT_RELATIVE_PATHS_KEY,
+        "output_relative_key": PROJECT_WINDOWS_PE32_OUTPUT_RELATIVE_PATHS_KEY,
+        "input_section": "Settings.Windows.32Bit.Compiler.InputDirectories",
+        "output_section": "Settings.Windows.32Bit.Compiler.OutputDirectory",
+        "title": "32-Bit",
+    },
+    "pe64": {
+        "input_key": PROJECT_WINDOWS_PE64_LINK_SEARCH_PATHS_KEY,
+        "output_key": PROJECT_WINDOWS_PE64_OUTPUT_DIRECTORY_KEY,
+        "input_relative_key": PROJECT_WINDOWS_PE64_INPUT_RELATIVE_PATHS_KEY,
+        "output_relative_key": PROJECT_WINDOWS_PE64_OUTPUT_RELATIVE_PATHS_KEY,
+        "input_section": "Settings.Windows.64Bit.Compiler.InputDirectories",
+        "output_section": "Settings.Windows.64Bit.Compiler.OutputDirectory",
+        "title": "64-Bit",
+    },
+}
+
+# Stage 185/187 legacy sections are read-only migration inputs. Stage 196
+# writes only the architecture-specific sections above.
+PROJECT_WINDOWS_LINK_SEARCH_PATHS_LEGACY_SECTION = "Settings.Windows.Compiler.InputDirectories"
+PROJECT_WINDOWS_LINK_SEARCH_PATHS_OLDER_LEGACY_SECTION = "Settings.Windows.Compiler.Directories"
+PROJECT_WINDOWS_OUTPUT_DIRECTORY_LEGACY_SECTION = "Settings.Windows.Compiler.OutputDirectory"
+
+
+# Stage 190: Sichtbare Pascal-Unit-Hierarchie. Die Projektdatei behaelt den
+# vollstaendigen echten Pfad; lediglich die Darstellung wird nach dem ersten
+# Unit-Namespace aufgeteilt. Dadurch wird z. B.
+#
+#     Crypto.blake2.pas  ->  Units / Crypto / blake2.pas
+#     System.Objects.pas ->  Units / System / Objects.pas
+#     System.pas         ->  Units / System / System.pas
+#
+# Auch Dateien, die physisch nur Objects.pas heissen, werden anhand der
+# ``unit System.Objects;``-Deklaration korrekt dem System-Knoten zugeordnet.
+def project_pascal_unit_tree_parts(
+    path: Path,
+    title: str = "",
+) -> Tuple[str, str]:
+    candidate = Path(path).expanduser()
+    filename = candidate.name or str(title or "").strip() or "Unit.pas"
+    suffix = Path(filename).suffix
+    unit_name = ""
+
+    if candidate.suffix.casefold() in {".pas", ".pp"} and candidate.is_file():
+        source = ""
+        try:
+            source = candidate.read_text(encoding="utf-8-sig")
+        except UnicodeError:
+            try:
+                source = candidate.read_text(encoding="cp1252")
+            except OSError:
+                source = ""
+        except OSError:
+            source = ""
+        if source:
+            # Fuer die Unit-Kopfzeile reicht eine kommentarbereinigte Suche.
+            cleaned = re.sub(r"\(\*.*?\*\)", " ", source, flags=re.DOTALL)
+            cleaned = re.sub(r"\{.*?\}", " ", cleaned, flags=re.DOTALL)
+            cleaned = re.sub(r"//[^\r\n]*", " ", cleaned)
+            match = re.search(
+                r"\bunit\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\s*;",
+                cleaned,
+                re.IGNORECASE,
+            )
+            if match:
+                unit_name = match.group(1)
+
+    if not unit_name:
+        stem = Path(filename).stem.strip()
+        if "." in stem:
+            unit_name = stem
+        else:
+            # Fallback fuer Layouts wie units/System/Objects.pas, falls die
+            # Quelldatei gerade nicht lesbar ist. Generische Ordnernamen
+            # werden nicht als Namespace missverstanden.
+            parent_name = candidate.parent.name.strip()
+            generic_parents = {
+                "", "unit", "units", "pascal", "src", "source", "sources",
+                "runtime", "compiler", "frontend", "c64pascal", "pe32", "pe64",
+                "build", "bin", "obj", "objects",
+            }
+            if (
+                parent_name
+                and parent_name.casefold() not in generic_parents
+                and parent_name.casefold() != stem.casefold()
+            ):
+                unit_name = parent_name + "." + stem
+            else:
+                unit_name = stem
+
+    name_parts = [part for part in unit_name.split(".") if part]
+    namespace = name_parts[0] if name_parts else (Path(filename).stem or "Units")
+    if len(name_parts) > 1:
+        leaf_stem = ".".join(name_parts[1:])
+        leaf_name = leaf_stem + (suffix or candidate.suffix or ".pas")
+    else:
+        leaf_name = filename
+    return namespace, leaf_name
 
 
 PROJECT_CATEGORY_TITLES: Dict[str, str] = {
@@ -11733,6 +11947,12 @@ def empty_project_entries() -> Dict[str, List[Dict[str, str]]]:
     # Stage 174: separate Ziel-/Rollenlisten für Pascal.
     for _special_key in PROJECT_PASCAL_TARGET_ENTRY_KEYS.values():
         entries[_special_key] = []
+    for _settings in PROJECT_WINDOWS_TARGET_SETTINGS.values():
+        entries[_settings["input_key"]] = []
+        entries[_settings["output_key"]] = []
+        # Stage 197: relative Darstellung/Speicherung ist standardmäßig aktiv.
+        entries[_settings["input_relative_key"]] = [{"value": "true"}]
+        entries[_settings["output_relative_key"]] = [{"value": "true"}]
     return entries
 
 
@@ -11758,6 +11978,41 @@ def _project_storage_path(path_value: str, project_path: Path) -> str:
         return Path(relative).as_posix()
     except (OSError, ValueError):
         return str(resolved)
+
+
+def _project_storage_path_mode(
+    path_value: str,
+    project_path: Path,
+    *,
+    relative: bool,
+) -> str:
+    """Stage 197: Projektpfad abhängig vom UI-Modus serialisieren."""
+    if relative:
+        return _project_storage_path(path_value, project_path)
+    candidate = Path(path_value).expanduser()
+    try:
+        return str(candidate.resolve())
+    except (OSError, RuntimeError, ValueError):
+        return str(candidate.absolute())
+
+
+def _project_bool_entry(
+    entries: Dict[str, List[Dict[str, str]]],
+    key: str,
+    default: bool = True,
+) -> bool:
+    values = entries.get(key, ())
+    if not values:
+        return bool(default)
+    raw = str(values[0].get("value", "true" if default else "false")).strip().casefold()
+    return raw not in {"0", "false", "no", "off", "absolute", "absolute paths", "absolute pfade"}
+
+
+def _parse_project_bool(value: str, default: bool = True) -> bool:
+    raw = str(value or "").strip().casefold()
+    if not raw:
+        return bool(default)
+    return raw not in {"0", "false", "no", "off", "absolute", "absolute paths", "absolute pfade"}
 
 
 def _project_loaded_path(path_value: str, project_path: Path) -> str:
@@ -11857,6 +12112,49 @@ def format_project_ini(
             parser[_section][f"Item{_index:04d}"] = json.dumps(
                 _payload, ensure_ascii=False, separators=(",", ":")
             )
+
+    # Stage 197: PE32 und PE32+ speichern getrennte Eingabe-/Ausgabe-
+    # Verzeichnisse und zusätzlich den Darstellungsmodus. RelativePaths=true
+    # serialisiert die Pfade relativ zur *.pro-Datei, false schreibt absolute
+    # Pfade. Die PathXXXX-Reihenfolge bleibt die echte Suchpriorität.
+    for _target, _settings in PROJECT_WINDOWS_TARGET_SETTINGS.items():
+        _input_relative = _project_bool_entry(
+            entries, _settings["input_relative_key"], True
+        )
+        _output_relative = _project_bool_entry(
+            entries, _settings["output_relative_key"], True
+        )
+        _input_section = _settings["input_section"]
+        parser[_input_section] = {
+            "Title": f"Windows {_settings['title']} Compiler Eingabe-Verzeichnis",
+            "RelativePaths": "true" if _input_relative else "false",
+        }
+        for _index, _entry in enumerate(
+            entries.get(_settings["input_key"], ()), 1
+        ):
+            _path_value = str(_entry.get("path", "")).strip()
+            if not _path_value:
+                continue
+            parser[_input_section][f"Path{_index:04d}"] = _project_storage_path_mode(
+                _path_value,
+                project_path,
+                relative=_input_relative,
+            )
+
+        _output_section = _settings["output_section"]
+        parser[_output_section] = {
+            "Title": f"Windows {_settings['title']} Compiler Ausgabe-Verzeichnis",
+            "RelativePaths": "true" if _output_relative else "false",
+        }
+        _output_entries = entries.get(_settings["output_key"], ())
+        if _output_entries:
+            _output_value = str(_output_entries[0].get("path", "")).strip()
+            if _output_value:
+                parser[_output_section]["Path"] = _project_storage_path_mode(
+                    _output_value,
+                    project_path,
+                    relative=_output_relative,
+                )
 
     from io import StringIO
     stream = StringIO()
@@ -11990,6 +12288,129 @@ def parse_project_ini(text: str, project_path: Path) -> Dict[str, List[Dict[str,
                 "title": str(_payload.get("title", "") or Path(_loaded_path).name),
                 "path": _loaded_path,
             })
+
+    # Stage 196: zuerst die getrennten 32-/64-Bit-Abschnitte laden.
+    _have_arch_settings = False
+    for _target, _settings in PROJECT_WINDOWS_TARGET_SETTINGS.items():
+        _input_section = _settings["input_section"]
+        _output_section = _settings["output_section"]
+        if parser.has_section(_input_section):
+            _have_arch_settings = True
+            _input_relative = _parse_project_bool(
+                parser.get(_input_section, "RelativePaths", fallback="true"),
+                True,
+            )
+            entries[_settings["input_relative_key"]] = [
+                {"value": "true" if _input_relative else "false"}
+            ]
+            _values = sorted(
+                (
+                    (name, value)
+                    for name, value in parser.items(_input_section)
+                    if name.casefold().startswith("path")
+                ),
+                key=lambda pair: pair[0].casefold(),
+            )
+            for _name, _value in _values:
+                _path_value = str(_value).strip()
+                if not _path_value:
+                    continue
+                entries[_settings["input_key"]].append({
+                    "path": _project_loaded_path(
+                        _path_value, Path(project_path)
+                    ),
+                })
+        if parser.has_section(_output_section):
+            _have_arch_settings = True
+            _output_relative = _parse_project_bool(
+                parser.get(_output_section, "RelativePaths", fallback="true"),
+                True,
+            )
+            entries[_settings["output_relative_key"]] = [
+                {"value": "true" if _output_relative else "false"}
+            ]
+            _output_value = str(
+                parser.get(_output_section, "Path", fallback="")
+            ).strip()
+            if _output_value:
+                entries[_settings["output_key"]].append({
+                    "path": _project_loaded_path(
+                        _output_value, Path(project_path)
+                    ),
+                })
+
+    # Migration Stage185/187 -> Stage196. Ein bisher gemeinsam genutztes
+    # Ausgabe-Verzeichnis wird absichtlich in zwei Unterordner geteilt. So
+    # kann eine alte coff64-PUI beim ersten PE32-Build nicht erneut die neue
+    # coff32-PUI ueberschreiben (und umgekehrt).
+    if not _have_arch_settings:
+        _legacy_input_section = ""
+        for _candidate_section in (
+            PROJECT_WINDOWS_LINK_SEARCH_PATHS_LEGACY_SECTION,
+            PROJECT_WINDOWS_LINK_SEARCH_PATHS_OLDER_LEGACY_SECTION,
+        ):
+            if parser.has_section(_candidate_section):
+                _legacy_input_section = _candidate_section
+                break
+
+        _legacy_inputs: List[str] = []
+        if _legacy_input_section:
+            _values = sorted(
+                (
+                    (name, value)
+                    for name, value in parser.items(_legacy_input_section)
+                    if name.casefold().startswith("path")
+                ),
+                key=lambda pair: pair[0].casefold(),
+            )
+            for _name, _value in _values:
+                _path_value = str(_value).strip()
+                if _path_value:
+                    _legacy_inputs.append(
+                        _project_loaded_path(_path_value, Path(project_path))
+                    )
+
+        _legacy_output = ""
+        if parser.has_section(PROJECT_WINDOWS_OUTPUT_DIRECTORY_LEGACY_SECTION):
+            _raw_output = str(
+                parser.get(
+                    PROJECT_WINDOWS_OUTPUT_DIRECTORY_LEGACY_SECTION,
+                    "Path",
+                    fallback="",
+                )
+            ).strip()
+            if _raw_output:
+                _legacy_output = _project_loaded_path(
+                    _raw_output, Path(project_path)
+                )
+
+        for _target, _settings in PROJECT_WINDOWS_TARGET_SETTINGS.items():
+            entries[_settings["input_relative_key"]] = [{"value": "true"}]
+            entries[_settings["output_relative_key"]] = [{"value": "true"}]
+            _arch_output = ""
+            if _legacy_output:
+                _arch_output = str(
+                    (
+                        Path(_legacy_output)
+                        / ("pe32" if _target == "pe32" else "pe64")
+                    ).resolve()
+                )
+                entries[_settings["output_key"]].append({"path": _arch_output})
+
+            for _value in _legacy_inputs:
+                # War das alte Output-Verzeichnis zugleich Suchpfad, dann
+                # verweist jede Architektur nach der Migration auf ihren
+                # eigenen Unterordner. Andere gemeinsame Bibliothekspfade
+                # werden fuer beide Ziele erhalten.
+                _mapped = _value
+                if (
+                    _legacy_output
+                    and Path(_value).resolve() == Path(_legacy_output).resolve()
+                    and _arch_output
+                ):
+                    _mapped = _arch_output
+                entries[_settings["input_key"]].append({"path": _mapped})
+
     return entries
 
 
@@ -12269,6 +12690,7 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
         from PyQt5.QtCore import (
             QDir,
             QEvent,
+            QEventLoop,
             QFileInfo,
             QModelIndex,
             QObject,
@@ -12358,6 +12780,7 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             QMenuBar,
             QMessageBox,
             QPlainTextEdit,
+            QProgressBar,
             QPushButton,
             QRadioButton,
             QScrollArea,
@@ -22071,6 +22494,126 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 return
             super().keyPressEvent(event)
 
+    class PascalCompileWorker(QObject):
+        """Stage 198: führt genau einen Pascal-Compilerlauf im QThread aus.
+
+        Die Dateigewichtung erfolgt gleichmäßig pro Pascal-Quelldatei. Innerhalb
+        einer Datei bestimmt die vom ANTLR-Visitor gemeldete Quellzeile den
+        Fortschritt. 1..99 % sind Compile-Fortschritt; 100 % wird erst nach
+        erfolgreicher Rückkehr aus dem Compiler gesetzt.
+        """
+
+        progress = pyqtSignal(int)
+        status = pyqtSignal(str)
+        succeeded = pyqtSignal(object)
+        failed = pyqtSignal(object)
+
+        def __init__(
+            self,
+            compile_callable,
+            source_files: Sequence[Path],
+            *,
+            editor_filename: Optional[Path] = None,
+            editor_line_count: int = 1,
+        ) -> None:
+            super().__init__()
+            self.compile_callable = compile_callable
+            self.source_files: List[Path] = []
+            self._source_keys: Dict[str, int] = {}
+            self._progress_indices: Dict[str, int] = {}
+            self._line_counts: Dict[str, int] = {}
+            self._last_percent = 1
+            self._last_status_key = None
+            self._editor_key = self._path_key(editor_filename)
+            self._editor_line_count = max(1, int(editor_line_count or 1))
+            for source_file in source_files:
+                self._ensure_source(source_file)
+
+        @staticmethod
+        def _path_key(filename) -> str:
+            if filename is None:
+                return ""
+            try:
+                return str(Path(filename).expanduser().resolve()).casefold()
+            except (OSError, RuntimeError, ValueError):
+                return str(Path(filename).expanduser().absolute()).casefold()
+
+        def _count_lines(self, filename: Path) -> int:
+            key = self._path_key(filename)
+            if key and key == self._editor_key:
+                return self._editor_line_count
+            try:
+                with Path(filename).open(
+                    "r",
+                    encoding="utf-8-sig",
+                    errors="replace",
+                ) as source_stream:
+                    return max(1, sum(1 for _ in source_stream))
+            except OSError:
+                return 1
+
+        def _ensure_source(self, filename) -> int:
+            try:
+                path = Path(filename).expanduser().resolve()
+            except (OSError, RuntimeError, ValueError):
+                path = Path(filename).expanduser().absolute()
+            key = self._path_key(path)
+            existing = self._source_keys.get(key)
+            if existing is not None:
+                return existing
+            index = len(self.source_files)
+            self.source_files.append(path)
+            self._source_keys[key] = index
+            self._line_counts[key] = self._count_lines(path)
+            return index
+
+        def report_source_progress(self, filename: str, current_line: int) -> None:
+            self._ensure_source(filename)
+            key = self._path_key(filename)
+            file_index = self._progress_indices.get(key)
+            if file_index is None:
+                file_index = len(self._progress_indices)
+                self._progress_indices[key] = file_index
+            total_lines = max(1, self._line_counts.get(key, 1))
+            line = max(1, min(int(current_line or 1), total_lines))
+            total_files = max(
+                1,
+                len(self.source_files),
+                len(self._progress_indices),
+            )
+
+            # 100 % bleibt bewusst dem vollständig beendeten Compilerlauf
+            # vorbehalten. Während Parser/Visitor laufen, sind 1..99 % möglich.
+            # file_index folgt der tatsächlichen Compiler-Reihenfolge und nicht
+            # der optischen Sortierung des Projektbaums.
+            fraction = (file_index + (line / total_lines)) / total_files
+            percent = 1 + int(fraction * 98)
+            percent = max(1, min(99, percent))
+            percent = max(self._last_percent, percent)
+
+            status_key = (file_index, line, total_lines, total_files, percent)
+            if percent != self._last_percent:
+                self._last_percent = percent
+                self.progress.emit(percent)
+            if status_key != self._last_status_key:
+                self._last_status_key = status_key
+                self.status.emit(
+                    f"{Path(filename).name} – Zeile {line}/{total_lines} – "
+                    f"Datei {file_index + 1}/{total_files}"
+                )
+
+        def run(self) -> None:
+            try:
+                self.progress.emit(1)
+                result = self.compile_callable(self.report_source_progress)
+            except BaseException as exc:
+                self.failed.emit(exc)
+                return
+            self.progress.emit(100)
+            self.status.emit("Pascal-Kompilierung abgeschlossen")
+            self.succeeded.emit(result)
+
+
     class DocumentEditor(QWidget):
         """Ein Dateidokument mit Rohdaten-, Hex- und Hinweisansicht."""
 
@@ -22150,6 +22693,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self._syncing_generated_assembly = False
             self.dbase_process = None
             self.dbase_uses_debug_output = False
+            self._pascal_compile_running = False
 
             layout = QVBoxLayout(self)
             layout.setContentsMargins(0, 0, 0, 0)
@@ -22317,6 +22861,19 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.raw_editor.setPlainText(text)
             self.raw_editor.document().setModified(False)
             source_layout.addWidget(self.raw_editor_container, 1)
+
+            # Stage 198: Pascal-Fortschritt direkt unter dem Eingabe-Editor.
+            # Für andere Sprachen bleibt die Leiste vollständig ausgeblendet.
+            self.pascal_compile_progress = QProgressBar(self.source_page)
+            self.pascal_compile_progress.setObjectName("pascal_compile_progress")
+            self.pascal_compile_progress.setRange(1, 100)
+            self.pascal_compile_progress.setValue(1)
+            self.pascal_compile_progress.setTextVisible(True)
+            self.pascal_compile_progress.setFormat("Pascal: bereit – %p %")
+            self.pascal_compile_progress.setFixedHeight(20)
+            self.pascal_compile_progress.hide()
+            source_layout.addWidget(self.pascal_compile_progress)
+
             self.views.addTab(self.source_page, "Rohdaten")
 
             self.markdown_preview_page = QWidget(self.views)
@@ -23136,6 +23693,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.syntax_highlighter.set_dbase_enabled(is_dbase)
             self.syntax_highlighter.set_markdown_enabled(is_markdown)
             self.raw_editor.set_markdown_mode(is_markdown)
+            self.pascal_compile_progress.setVisible(is_pascal)
             # Stage 60: assembly source uses a 120 px minimum draggable
             # viewport thumb.  Other source editors keep the historic 18 px
             # minimum.  This also updates correctly after Save As/Rename.
@@ -23279,6 +23837,41 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 )
                 if is_assembler_source and self.assembled_program is None:
                     self.assembly_status_label.setText("Noch nicht assembliert")
+
+        def begin_pascal_compile_progress(self, source_count: int) -> None:
+            self._pascal_compile_running = True
+            self.pascal_compile_progress.setVisible(True)
+            self.pascal_compile_progress.setValue(1)
+            self.pascal_compile_progress.setFormat(
+                f"Pascal: 0/{max(1, int(source_count))} Datei(en) vorbereitet – %p %"
+            )
+            self.assemble_button.setEnabled(False)
+            self.build_target_combo.setEnabled(False)
+
+        def set_pascal_compile_progress(self, value: int) -> None:
+            self.pascal_compile_progress.setValue(
+                max(1, min(100, int(value)))
+            )
+
+        def set_pascal_compile_status(self, text: str) -> None:
+            label = str(text or "Pascal wird kompiliert")
+            self.pascal_compile_progress.setFormat(label + " – %p %")
+
+        def finish_pascal_compile_progress(self, success: bool) -> None:
+            self._pascal_compile_running = False
+            self.assemble_button.setEnabled(True)
+            self.build_target_combo.setEnabled(True)
+            if success:
+                self.pascal_compile_progress.setValue(100)
+                self.pascal_compile_progress.setFormat(
+                    "Pascal-Kompilierung abgeschlossen – 100 %"
+                )
+            else:
+                # Der letzte erreichte Wert bleibt sichtbar und zeigt damit,
+                # an welcher Stelle der Compiler abgebrochen hat.
+                self.pascal_compile_progress.setFormat(
+                    "Pascal-Kompilierung fehlgeschlagen – %p %"
+                )
 
         @property
         def is_basic_document(self) -> bool:
@@ -40445,6 +41038,549 @@ QStackedWidget#learning_content_stack {{
                 )
 
 
+    class WindowsCompilerDirectorySettingsPage(QWidget):
+        """Stage 197: architekturspezifische Pfade mit relativer/absoluter Ansicht."""
+
+        def __init__(self, owner, target: str, parent=None):
+            super().__init__(parent)
+            self.owner = owner
+            self.target = "pe64" if str(target).casefold() == "pe64" else "pe32"
+            self._syncing = False
+            self._input_relative = True
+            self._output_relative = True
+            self._output_absolute = ""
+            target_tag = "64" if self.target == "pe64" else "32"
+
+            page_layout = QVBoxLayout(self)
+            page_layout.setContentsMargins(0, 0, 0, 0)
+            self.splitter = QSplitter(Qt.Horizontal, self)
+            page_layout.addWidget(self.splitter, 1)
+
+            self.tree = QTreeWidget(self.splitter)
+            self.tree.setObjectName(f"project_settings_windows_{target_tag}_tree")
+            self.tree.setHeaderHidden(True)
+            self.tree.setMinimumWidth(210)
+            self.tree.setMaximumWidth(360)
+            self.tree.setSelectionMode(QAbstractItemView.SingleSelection)
+            self.nodes = {}
+            for title in ("Umgebung", "Compiler", "Assembler", "Linker"):
+                item = QTreeWidgetItem(self.tree, [title])
+                item.setData(0, Qt.UserRole, title.casefold())
+                self.nodes[title.casefold()] = item
+
+            self.compiler_input_directories_item = QTreeWidgetItem(
+                self.nodes["compiler"], ["Eingabe-Verzeichnis"]
+            )
+            self.compiler_input_directories_item.setData(
+                0, Qt.UserRole, "compiler.input_directories"
+            )
+            self.compiler_output_directory_item = QTreeWidgetItem(
+                self.nodes["compiler"], ["Ausgabe-Verzeichnis"]
+            )
+            self.compiler_output_directory_item.setData(
+                0, Qt.UserRole, "compiler.output_directory"
+            )
+            self.compiler_directories_item = self.compiler_input_directories_item
+            self.nodes["compiler"].setExpanded(True)
+
+            self.stack = QStackedWidget(self.splitter)
+            self.placeholder = QWidget(self.stack)
+            placeholder_layout = QVBoxLayout(self.placeholder)
+            placeholder_layout.addWidget(
+                QLabel("Wähle links eine Projekteinstellung aus.", self.placeholder)
+            )
+            placeholder_layout.addStretch(1)
+            self.stack.addWidget(self.placeholder)
+
+            # Compiler -> Eingabe-Verzeichnis
+            self.input_directories_page = QWidget(self.stack)
+            directories_layout = QVBoxLayout(self.input_directories_page)
+            directories_layout.setContentsMargins(10, 8, 10, 8)
+            directories_layout.setSpacing(8)
+
+            self.input_relative_checkbox = QCheckBox(
+                "relative Pfade", self.input_directories_page
+            )
+            self.input_relative_checkbox.setObjectName(
+                f"project_windows_{target_tag}_input_relative_paths"
+            )
+            self.input_relative_checkbox.setChecked(True)
+            directories_layout.addWidget(self.input_relative_checkbox)
+
+            input_row = QHBoxLayout()
+            self.directory_label = QLabel("Verzeichnis:", self.input_directories_page)
+            self.directory_edit = QLineEdit(self.input_directories_page)
+            self.directory_edit.setObjectName(
+                f"project_windows_{target_tag}_input_directory_edit"
+            )
+            self.directory_choose_button = QPushButton("...", self.input_directories_page)
+            self.directory_choose_button.setObjectName(
+                f"project_windows_{target_tag}_input_directory_choose"
+            )
+            self.directory_choose_button.setToolTip(
+                f"{target_tag}-Bit Eingabe-Verzeichnis wählen"
+            )
+            self.directory_choose_button.setFixedWidth(42)
+            input_row.addWidget(self.directory_label)
+            input_row.addWidget(self.directory_edit, 1)
+            input_row.addWidget(self.directory_choose_button)
+            directories_layout.addLayout(input_row)
+
+            list_row = QHBoxLayout()
+            self.directory_list = QListWidget(self.input_directories_page)
+            self.directory_list.setObjectName(
+                f"project_windows_{target_tag}_input_directory_list"
+            )
+            self.directory_list.setSelectionMode(QAbstractItemView.SingleSelection)
+            list_row.addWidget(self.directory_list, 1)
+
+            button_column = QVBoxLayout()
+            self.directory_add_button = QPushButton("Hinzufügen", self.input_directories_page)
+            self.directory_delete_button = QPushButton("Löschen", self.input_directories_page)
+            self.directory_clear_button = QPushButton("Clear All", self.input_directories_page)
+            button_column.addWidget(self.directory_add_button)
+            button_column.addWidget(self.directory_delete_button)
+            button_column.addWidget(self.directory_clear_button)
+            button_column.addSpacing(14)
+
+            self.directory_up_button = QPushButton(self.input_directories_page)
+            self.directory_up_button.setObjectName(
+                f"project_windows_{target_tag}_input_directory_up"
+            )
+            self.directory_up_button.setIcon(self.style().standardIcon(QStyle.SP_ArrowUp))
+            self.directory_up_button.setToolTip("Ausgewählten Suchpfad nach oben verschieben")
+            self.directory_up_button.setFixedWidth(54)
+            self.directory_down_button = QPushButton(self.input_directories_page)
+            self.directory_down_button.setObjectName(
+                f"project_windows_{target_tag}_input_directory_down"
+            )
+            self.directory_down_button.setIcon(
+                self.style().standardIcon(QStyle.SP_ArrowDown)
+            )
+            self.directory_down_button.setToolTip("Ausgewählten Suchpfad nach unten verschieben")
+            self.directory_down_button.setFixedWidth(54)
+            button_column.addWidget(self.directory_up_button)
+            button_column.addWidget(self.directory_down_button)
+            button_column.addStretch(1)
+            list_row.addLayout(button_column)
+            directories_layout.addLayout(list_row, 1)
+            self.stack.addWidget(self.input_directories_page)
+
+            # Compiler -> Ausgabe-Verzeichnis
+            self.output_directory_page = QWidget(self.stack)
+            output_layout = QVBoxLayout(self.output_directory_page)
+            output_layout.setContentsMargins(10, 8, 10, 8)
+            output_layout.setSpacing(8)
+
+            self.output_relative_checkbox = QCheckBox(
+                "relative Pfade", self.output_directory_page
+            )
+            self.output_relative_checkbox.setObjectName(
+                f"project_windows_{target_tag}_output_relative_paths"
+            )
+            self.output_relative_checkbox.setChecked(True)
+            output_layout.addWidget(self.output_relative_checkbox)
+
+            output_row = QHBoxLayout()
+            self.output_directory_edit = QLineEdit(self.output_directory_page)
+            self.output_directory_edit.setObjectName(
+                f"project_windows_{target_tag}_output_directory_edit"
+            )
+            self.output_directory_button = QPushButton("...", self.output_directory_page)
+            self.output_directory_button.setObjectName(
+                f"project_windows_{target_tag}_output_directory_choose"
+            )
+            self.output_directory_button.setToolTip(
+                f"{target_tag}-Bit Ausgabe-Verzeichnis wählen"
+            )
+            self.output_directory_button.setFixedWidth(42)
+            output_row.addWidget(self.output_directory_edit, 1)
+            output_row.addWidget(self.output_directory_button)
+            output_layout.addLayout(output_row)
+            output_layout.addWidget(
+                QLabel(
+                    f"Erzeugte {target_tag}-Bit *.pui- und *.o-Dateien werden in diesem Verzeichnis abgelegt.",
+                    self.output_directory_page,
+                )
+            )
+            output_layout.addStretch(1)
+            self.stack.addWidget(self.output_directory_page)
+
+            self.splitter.setStretchFactor(0, 0)
+            self.splitter.setStretchFactor(1, 1)
+
+            self.tree.currentItemChanged.connect(self._tree_changed)
+            self.directory_choose_button.clicked.connect(self._choose_directory)
+            self.directory_add_button.clicked.connect(self._add_directory)
+            self.directory_delete_button.clicked.connect(self._delete_directory)
+            self.directory_clear_button.clicked.connect(self._clear_directories)
+            self.directory_up_button.clicked.connect(self._move_directory_up)
+            self.directory_down_button.clicked.connect(self._move_directory_down)
+            self.directory_edit.returnPressed.connect(self._add_directory)
+            self.output_directory_button.clicked.connect(self._choose_output_directory)
+            self.output_directory_edit.editingFinished.connect(self._output_directory_edited)
+            self.input_relative_checkbox.toggled.connect(self._input_relative_toggled)
+            self.output_relative_checkbox.toggled.connect(self._output_relative_toggled)
+            self.tree.setCurrentItem(self.compiler_input_directories_item)
+            self._tree_changed(self.compiler_input_directories_item, None)
+
+        def _tree_changed(self, current, _previous) -> None:
+            key = str(current.data(0, Qt.UserRole) or "") if current is not None else ""
+            if key == "compiler.input_directories":
+                page = self.input_directories_page
+            elif key == "compiler.output_directory":
+                page = self.output_directory_page
+            else:
+                page = self.placeholder
+            self.stack.setCurrentWidget(page)
+
+        def _absolute_path(self, value: Path | str) -> str:
+            callback = getattr(self.owner, "_project_windows_absolute_directory", None)
+            if callback is not None:
+                return str(callback(value))
+            candidate = Path(str(value or "")).expanduser()
+            try:
+                return str(candidate.resolve())
+            except (OSError, RuntimeError, ValueError):
+                return str(candidate.absolute())
+
+        def _display_path(self, value: Path | str, *, relative: bool) -> str:
+            callback = getattr(self.owner, "_project_windows_display_directory", None)
+            if callback is not None:
+                return str(callback(value, relative=relative))
+            return str(value or "")
+
+        def paths(self) -> Tuple[str, ...]:
+            values = []
+            for index in range(self.directory_list.count()):
+                item = self.directory_list.item(index)
+                canonical = str(item.data(Qt.UserRole) or "").strip()
+                values.append(canonical or self._absolute_path(item.text()))
+            return tuple(values)
+
+        def _refresh_input_display(self) -> None:
+            for index in range(self.directory_list.count()):
+                item = self.directory_list.item(index)
+                canonical = str(item.data(Qt.UserRole) or "").strip()
+                if canonical:
+                    item.setText(self._display_path(canonical, relative=self._input_relative))
+
+        def set_paths(self, paths: Iterable[Path | str]) -> None:
+            self._syncing = True
+            try:
+                self.directory_list.clear()
+                seen = set()
+                for value in paths or ():
+                    canonical = self._absolute_path(value)
+                    key = canonical.casefold()
+                    if not canonical or key in seen:
+                        continue
+                    seen.add(key)
+                    item = QListWidgetItem(
+                        self._display_path(canonical, relative=self._input_relative)
+                    )
+                    item.setData(Qt.UserRole, canonical)
+                    self.directory_list.addItem(item)
+            finally:
+                self._syncing = False
+
+        def output_directory(self) -> str:
+            return self._output_absolute
+
+        def set_output_directory(self, value: Optional[Path | str]) -> None:
+            self._syncing = True
+            try:
+                self._output_absolute = (
+                    self._absolute_path(value) if str(value or "").strip() else ""
+                )
+                self.output_directory_edit.setText(
+                    self._display_path(
+                        self._output_absolute, relative=self._output_relative
+                    ) if self._output_absolute else ""
+                )
+            finally:
+                self._syncing = False
+
+        def input_relative_paths(self) -> bool:
+            return bool(self._input_relative)
+
+        def output_relative_paths(self) -> bool:
+            return bool(self._output_relative)
+
+        def set_relative_modes(self, input_relative: bool, output_relative: bool) -> None:
+            self._syncing = True
+            try:
+                self._input_relative = bool(input_relative)
+                self._output_relative = bool(output_relative)
+                self.input_relative_checkbox.setChecked(self._input_relative)
+                self.output_relative_checkbox.setChecked(self._output_relative)
+                self.input_relative_checkbox.setText(
+                    "relative Pfade" if self._input_relative else "absolute Pfade"
+                )
+                self.output_relative_checkbox.setText(
+                    "relative Pfade" if self._output_relative else "absolute Pfade"
+                )
+                self._refresh_input_display()
+                if self._output_absolute:
+                    self.output_directory_edit.setText(
+                        self._display_path(
+                            self._output_absolute, relative=self._output_relative
+                        )
+                    )
+            finally:
+                self._syncing = False
+
+        def _notify(self) -> None:
+            if self._syncing:
+                return
+            callback = getattr(self.owner, "set_project_windows_search_paths", None)
+            if callback is not None:
+                callback(self.target, self.paths(), mark_modified=True)
+
+        def _notify_output_directory(self) -> None:
+            if self._syncing:
+                return
+            callback = getattr(self.owner, "set_project_windows_output_directory", None)
+            if callback is not None:
+                callback(self.target, self._output_absolute, mark_modified=True)
+
+        def _notify_relative_mode(self, kind: str, enabled: bool) -> None:
+            if self._syncing:
+                return
+            callback = getattr(self.owner, "set_project_windows_relative_paths", None)
+            if callback is not None:
+                callback(self.target, kind, enabled, mark_modified=True)
+
+        def _input_relative_toggled(self, checked: bool) -> None:
+            if self._syncing:
+                return
+            pending = self.directory_edit.text().strip()
+            pending_absolute = self._absolute_path(pending) if pending else ""
+            self._input_relative = bool(checked)
+            self.input_relative_checkbox.setText(
+                "relative Pfade" if checked else "absolute Pfade"
+            )
+            self._refresh_input_display()
+            if pending_absolute:
+                self.directory_edit.setText(
+                    self._display_path(pending_absolute, relative=self._input_relative)
+                )
+            self._notify_relative_mode("input", self._input_relative)
+
+        def _output_relative_toggled(self, checked: bool) -> None:
+            if self._syncing:
+                return
+            # Eine noch nicht mit editingFinished übernommene Eingabe wird vor
+            # dem Darstellungswechsel als aktueller Pfad interpretiert.
+            current_text = self.output_directory_edit.text().strip()
+            if current_text:
+                self._output_absolute = self._absolute_path(current_text)
+            self._output_relative = bool(checked)
+            self.output_relative_checkbox.setText(
+                "relative Pfade" if checked else "absolute Pfade"
+            )
+            self.output_directory_edit.setText(
+                self._display_path(
+                    self._output_absolute, relative=self._output_relative
+                ) if self._output_absolute else ""
+            )
+            self._notify_relative_mode("output", self._output_relative)
+            self._notify_output_directory()
+
+        def _choose_directory(self) -> None:
+            start_text = self.directory_edit.text().strip()
+            if start_text:
+                start = self._absolute_path(start_text)
+            else:
+                paths = self.paths()
+                start = paths[-1] if paths else str(
+                    getattr(self.owner, "current_directory", Path.cwd())
+                )
+            selected = QFileDialog.getExistingDirectory(
+                self,
+                "Eingabe-Verzeichnis wählen",
+                start,
+                QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks,
+            )
+            if selected:
+                canonical = self._absolute_path(selected)
+                self.directory_edit.setText(
+                    self._display_path(canonical, relative=self._input_relative)
+                )
+                self.directory_edit.setFocus(Qt.OtherFocusReason)
+
+        def _choose_output_directory(self) -> None:
+            if self._output_absolute:
+                start = self._output_absolute
+            else:
+                current = self.output_directory_edit.text().strip()
+                start = self._absolute_path(current) if current else str(
+                    getattr(self.owner, "current_directory", Path.cwd())
+                )
+            selected = QFileDialog.getExistingDirectory(
+                self,
+                "Ausgabe-Verzeichnis wählen",
+                start,
+                QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks,
+            )
+            if selected:
+                self._output_absolute = self._absolute_path(selected)
+                self.output_directory_edit.setText(
+                    self._display_path(
+                        self._output_absolute, relative=self._output_relative
+                    )
+                )
+                self._notify_output_directory()
+                self.output_directory_edit.setFocus(Qt.OtherFocusReason)
+
+        def _output_directory_edited(self) -> None:
+            value = self.output_directory_edit.text().strip()
+            self._output_absolute = self._absolute_path(value) if value else ""
+            self.output_directory_edit.setText(
+                self._display_path(
+                    self._output_absolute, relative=self._output_relative
+                ) if self._output_absolute else ""
+            )
+            self._notify_output_directory()
+
+        def _add_directory(self) -> None:
+            value = self.directory_edit.text().strip()
+            if not value:
+                return
+            canonical = self._absolute_path(value)
+            for index in range(self.directory_list.count()):
+                item = self.directory_list.item(index)
+                existing = str(item.data(Qt.UserRole) or "").strip()
+                if existing.casefold() == canonical.casefold():
+                    self.directory_list.setCurrentRow(index)
+                    self.directory_edit.clear()
+                    return
+            item = QListWidgetItem(
+                self._display_path(canonical, relative=self._input_relative)
+            )
+            item.setData(Qt.UserRole, canonical)
+            self.directory_list.addItem(item)
+            self.directory_list.setCurrentRow(self.directory_list.count() - 1)
+            self.directory_edit.clear()
+            self._notify()
+
+        def _delete_directory(self) -> None:
+            row = self.directory_list.currentRow()
+            if row < 0:
+                return
+            self.directory_list.takeItem(row)
+            if self.directory_list.count():
+                self.directory_list.setCurrentRow(min(row, self.directory_list.count() - 1))
+            self._notify()
+
+        def _clear_directories(self) -> None:
+            if self.directory_list.count() <= 0:
+                return
+            self.directory_list.clear()
+            self._notify()
+
+        def _move_directory_up(self) -> None:
+            row = self.directory_list.currentRow()
+            if row <= 0:
+                return
+            item = self.directory_list.takeItem(row)
+            self.directory_list.insertItem(row - 1, item)
+            self.directory_list.setCurrentRow(row - 1)
+            self._notify()
+
+        def _move_directory_down(self) -> None:
+            row = self.directory_list.currentRow()
+            if row < 0 or row >= self.directory_list.count() - 1:
+                return
+            item = self.directory_list.takeItem(row)
+            self.directory_list.insertItem(row + 1, item)
+            self.directory_list.setCurrentRow(row + 1)
+            self._notify()
+
+
+    class ProjectSettingsPanel(QWidget):
+        """Stage 197: getrennte Windows-ABIs plus relative/absolute Pfadansicht."""
+
+        def __init__(self, owner, parent=None):
+            super().__init__(parent)
+            self.owner = owner
+            root_layout = QVBoxLayout(self)
+            root_layout.setContentsMargins(8, 8, 8, 8)
+            root_layout.setSpacing(6)
+
+            self.tabs = QTabWidget(self)
+            self.tabs.setObjectName("project_settings_tabs")
+            root_layout.addWidget(self.tabs, 1)
+
+            self.windows_tab = QWidget(self.tabs)
+            self.amiga_tab = QWidget(self.tabs)
+            self.c64_tab = QWidget(self.tabs)
+            self.tabs.addTab(self.windows_tab, "Windows")
+            self.tabs.addTab(self.amiga_tab, "AMIGA")
+            self.tabs.addTab(self.c64_tab, "C= 64")
+
+            windows_layout = QVBoxLayout(self.windows_tab)
+            windows_layout.setContentsMargins(0, 0, 0, 0)
+            self.windows_arch_tabs = QTabWidget(self.windows_tab)
+            self.windows_arch_tabs.setObjectName("project_settings_windows_architecture_tabs")
+            windows_layout.addWidget(self.windows_arch_tabs, 1)
+
+            self.windows_pe32_page = WindowsCompilerDirectorySettingsPage(
+                owner, "pe32", self.windows_arch_tabs
+            )
+            self.windows_pe64_page = WindowsCompilerDirectorySettingsPage(
+                owner, "pe64", self.windows_arch_tabs
+            )
+            self.windows_arch_tabs.addTab(self.windows_pe32_page, "32-Bit")
+            self.windows_arch_tabs.addTab(self.windows_pe64_page, "64-Bit")
+            self.windows_pages = {
+                "pe32": self.windows_pe32_page,
+                "pe64": self.windows_pe64_page,
+            }
+
+            for page, title in ((self.amiga_tab, "AMIGA"), (self.c64_tab, "C= 64")):
+                layout = QVBoxLayout(page)
+                label = QLabel(f"{title}-Projekteinstellungen", page)
+                layout.addWidget(label)
+                layout.addStretch(1)
+
+        @staticmethod
+        def _target_key(target: str) -> str:
+            return "pe64" if str(target).casefold() in {
+                "pe64", "win64", "windows-pe64", "windows pe32+"
+            } else "pe32"
+
+        def page_for_target(self, target: str):
+            return self.windows_pages[self._target_key(target)]
+
+        def paths(self, target: str = "pe32") -> Tuple[str, ...]:
+            return self.page_for_target(target).paths()
+
+        def set_paths(self, target: str, paths: Iterable[Path | str]) -> None:
+            self.page_for_target(target).set_paths(paths)
+
+        def output_directory(self, target: str = "pe32") -> str:
+            return self.page_for_target(target).output_directory()
+
+        def set_output_directory(self, target: str, value: Optional[Path | str]) -> None:
+            self.page_for_target(target).set_output_directory(value)
+
+        def set_relative_modes(
+            self,
+            target: str,
+            input_relative: bool,
+            output_relative: bool,
+        ) -> None:
+            self.page_for_target(target).set_relative_modes(
+                input_relative, output_relative
+            )
+
+        def select_windows_target(self, target: str) -> None:
+            key = self._target_key(target)
+            self.tabs.setCurrentWidget(self.windows_tab)
+            self.windows_arch_tabs.setCurrentWidget(self.windows_pages[key])
+
+
     class ExplorerWindow(QMainWindow):
         ORGANIZATION = "paule32"
         APPLICATION = "Qt5D64Explorer"
@@ -40567,6 +41703,22 @@ QStackedWidget#learning_content_stack {{
             self._dbase_table_workspace_state = {}
             self.settings_dock = None
             self.settings_panel = None
+            self.project_settings_dock = None
+            self.project_settings_panel = None
+            self.project_windows_search_paths: Dict[str, List[str]] = {
+                "pe32": [],
+                "pe64": [],
+            }
+            self.project_windows_output_directories: Dict[str, str] = {
+                "pe32": "",
+                "pe64": "",
+            }
+            self.project_windows_relative_paths: Dict[str, Dict[str, bool]] = {
+                "pe32": {"input": True, "output": True},
+                "pe64": {"input": True, "output": True},
+            }
+            self._project_settings_workspace_active = False
+            self._project_settings_workspace_state = {}
             self._settings_workspace_active = False
             self._settings_workspace_state = {}
             self.current_filter = "ALLE"
@@ -41201,11 +42353,22 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             self.about_action = QAction("Über ...", self)
             self.about_action.triggered.connect(self.show_about_dialog)
 
-            self.settings_action = QAction("Desktop-Einstellungen ...", self)
+            # Stage 185: dieselbe Desktop-Settings-Logik wird nur an eine neue
+            # Menüposition verschoben: Ansicht -> Einstellungen -> Desktop.
+            self.settings_action = QAction("Desktop", self)
             self.settings_action.setObjectName("desktop_settings_action")
             self.settings_action.setShortcut(QKeySequence("Ctrl+Alt+S"))
             self.settings_action.setStatusTip("Desktop-, Tabellen-, Datei- und Alias-Einstellungen öffnen")
             self.settings_action.triggered.connect(self.show_settings_dock)
+
+            self.project_settings_action = QAction("Projekt", self)
+            self.project_settings_action.setObjectName("project_settings_action")
+            self.project_settings_action.setStatusTip(
+                "Projektbezogene Compiler-, Assembler- und Linker-Einstellungen öffnen"
+            )
+            self.project_settings_action.triggered.connect(
+                self.show_project_settings_dock
+            )
 
             self.chm_viewer_action = QAction(
                 self._toolbar_symbol_icon("help"),
@@ -45588,6 +46751,402 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             self.settings_panel.tabs.setFocus(Qt.OtherFocusReason)
             self.statusBar().showMessage("Desktop-Einstellungen geöffnet")
 
+        def _ensure_project_settings_dock(self) -> None:
+            if self.project_settings_dock is not None:
+                return
+            dock = QDockWidget("Projekt-Einstellungen", self)
+            dock.setObjectName("project_settings_dock")
+            dock.setFeatures(self._dock_features())
+            dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+            dock.setMinimumWidth(640)
+            dock.setMinimumHeight(420)
+            dock.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            panel = ProjectSettingsPanel(self, dock)
+            for _target in ("pe32", "pe64"):
+                _modes = self.project_windows_relative_paths.get(
+                    _target, {"input": True, "output": True}
+                )
+                panel.set_relative_modes(
+                    _target,
+                    bool(_modes.get("input", True)),
+                    bool(_modes.get("output", True)),
+                )
+                panel.set_paths(
+                    _target,
+                    self.project_windows_search_paths.get(_target, ()),
+                )
+                panel.set_output_directory(
+                    _target,
+                    self.project_windows_output_directories.get(_target, ""),
+                )
+            dock.setWidget(panel)
+            dock.setTitleBarWidget(DockTitleBar(dock))
+
+            # Stage 187: Das Projekt-Settings-Dock gehört zwischen das
+            # Dateisystem links und den Projekt-/Informationsbaum rechts.
+            self.addDockWidget(Qt.LeftDockWidgetArea, dock)
+            left = getattr(self, "left_dock", None)
+            if left is not None:
+                self.splitDockWidget(left, dock, Qt.Horizontal)
+
+            self.project_settings_panel = panel
+            self.project_settings_dock = dock
+            self._assign_widget_property_ids(dock)
+            dock.visibilityChanged.connect(
+                self._project_settings_dock_visibility_changed
+            )
+            dock.hide()
+
+        def _enter_project_settings_workspace(self) -> None:
+            if self._project_settings_workspace_active:
+                return
+
+            if self._settings_workspace_active:
+                if self.settings_dock is not None:
+                    self.settings_dock.hide()
+                self._restore_settings_workspace()
+            if self._dbase_table_workspace_active:
+                if self.dbase_table_designer_dock is not None:
+                    self.dbase_table_designer_dock.hide()
+                self._restore_dbase_table_workspace()
+            if self._dbase_form_workspace_active:
+                if self.dbase_form_property_dock is not None:
+                    self.dbase_form_property_dock.hide()
+                if self.dbase_form_designer_dock is not None:
+                    self.dbase_form_designer_dock.hide()
+                self._restore_dbase_form_workspace()
+
+            central = self.centralWidget()
+            left = getattr(self, "left_dock", None)
+            right = getattr(self, "right_dock", None)
+            bottom = getattr(self, "bottom_dock", None)
+            self._project_settings_workspace_state = {
+                "central": bool(central is not None and central.isVisible()),
+                "left": bool(left is not None and left.isVisible()),
+                "right": bool(right is not None and right.isVisible()),
+                "bottom": bool(bottom is not None and bottom.isVisible()),
+            }
+            self._project_settings_workspace_active = True
+
+            # Die Mitte wird vollständig dem Projekt-Settings-Dock überlassen.
+            if central is not None:
+                central.hide()
+            if bottom is not None and bottom.isVisible():
+                bottom.hide()
+            if left is not None:
+                left.show()
+                left.raise_()
+            if right is not None:
+                right.show()
+                right.raise_()
+
+        def _restore_project_settings_workspace(self) -> None:
+            if not self._project_settings_workspace_active:
+                return
+            state = dict(self._project_settings_workspace_state or {})
+            self._project_settings_workspace_active = False
+            self._project_settings_workspace_state = {}
+
+            central = self.centralWidget()
+            if central is not None and bool(state.get("central", True)):
+                central.show()
+            for name, attr in (
+                ("left", "left_dock"),
+                ("right", "right_dock"),
+                ("bottom", "bottom_dock"),
+            ):
+                dock = getattr(self, attr, None)
+                if dock is None:
+                    continue
+                if bool(state.get(name, False)):
+                    dock.show()
+                else:
+                    dock.hide()
+
+        def _project_settings_dock_visibility_changed(self, visible: bool) -> None:
+            if self._project_settings_workspace_active and not bool(visible):
+                QTimer.singleShot(0, self._restore_project_settings_workspace)
+
+        def show_project_settings_dock(self, _checked: bool = False) -> None:
+            self._ensure_project_settings_dock()
+            self._enter_project_settings_workspace()
+            for _target in ("pe32", "pe64"):
+                _modes = self.project_windows_relative_paths.get(
+                    _target, {"input": True, "output": True}
+                )
+                self.project_settings_panel.set_relative_modes(
+                    _target,
+                    bool(_modes.get("input", True)),
+                    bool(_modes.get("output", True)),
+                )
+                self.project_settings_panel.set_paths(
+                    _target,
+                    self.project_windows_search_paths.get(_target, ()),
+                )
+                self.project_settings_panel.set_output_directory(
+                    _target,
+                    self.project_windows_output_directories.get(_target, ""),
+                )
+            self.project_settings_dock.show()
+            self.project_settings_dock.raise_()
+
+            left = getattr(self, "left_dock", None)
+            if left is not None:
+                left.show()
+                self.resizeDocks(
+                    [left, self.project_settings_dock],
+                    [320, 100000],
+                    Qt.Horizontal,
+                )
+            right = getattr(self, "right_dock", None)
+            if right is not None:
+                right.show()
+                right.raise_()
+            self.resizeDocks([self.project_settings_dock], [100000], Qt.Vertical)
+
+            current = (
+                self.document_tabs.currentWidget()
+                if getattr(self, "document_tabs", None) is not None
+                else None
+            )
+            _active_target = str(
+                getattr(current, "build_target", "pe32") or "pe32"
+            ).casefold()
+            if _active_target not in {"pe32", "pe64"}:
+                _active_target = "pe32"
+            self.project_settings_panel.select_windows_target(_active_target)
+            _page = self.project_settings_panel.page_for_target(_active_target)
+            _page.tree.setCurrentItem(_page.compiler_input_directories_item)
+            _page.directory_edit.setFocus(Qt.OtherFocusReason)
+            self.statusBar().showMessage(
+                "Projekt-Einstellungen geöffnet: "
+                + ("Windows 64-Bit" if _active_target == "pe64" else "Windows 32-Bit")
+            )
+
+        @staticmethod
+        def _project_windows_target_key(target: str) -> str:
+            return "pe64" if str(target).strip().casefold() in {
+                "pe64", "win64", "windows-pe64", "windows pe32+"
+            } else "pe32"
+
+        def _project_windows_base_directory(self) -> Path:
+            if self.current_project_path is not None:
+                try:
+                    return Path(self.current_project_path).expanduser().resolve().parent
+                except (OSError, RuntimeError, ValueError):
+                    return Path(self.current_project_path).expanduser().absolute().parent
+            try:
+                return Path(self.current_directory).expanduser().resolve()
+            except (OSError, RuntimeError, ValueError):
+                return Path.cwd().resolve()
+
+        def _project_windows_absolute_directory(self, value: Path | str) -> str:
+            text = str(value or "").strip()
+            if not text:
+                return ""
+            candidate = Path(text).expanduser()
+            if not candidate.is_absolute():
+                candidate = self._project_windows_base_directory() / candidate
+            try:
+                return str(candidate.resolve())
+            except (OSError, RuntimeError, ValueError):
+                return str(candidate.absolute())
+
+        def _project_windows_display_directory(
+            self,
+            value: Path | str,
+            *,
+            relative: bool,
+        ) -> str:
+            absolute = self._project_windows_absolute_directory(value)
+            if not absolute:
+                return ""
+            if not relative:
+                return absolute
+            try:
+                relative_value = os.path.relpath(
+                    absolute,
+                    str(self._project_windows_base_directory()),
+                )
+                return Path(relative_value).as_posix()
+            except (OSError, RuntimeError, ValueError):
+                return absolute
+
+        def set_project_windows_relative_paths(
+            self,
+            target: str,
+            kind: str,
+            enabled: bool,
+            *,
+            mark_modified: bool = True,
+        ) -> None:
+            target_key = self._project_windows_target_key(target)
+            kind_key = "output" if str(kind).casefold() == "output" else "input"
+            modes = self.project_windows_relative_paths.setdefault(
+                target_key, {"input": True, "output": True}
+            )
+            value = bool(enabled)
+            changed = bool(modes.get(kind_key, True)) != value
+            modes[kind_key] = value
+            panel = getattr(self, "project_settings_panel", None)
+            if panel is not None:
+                page = panel.page_for_target(target_key)
+                if (
+                    page.input_relative_paths() != bool(modes.get("input", True))
+                    or page.output_relative_paths() != bool(modes.get("output", True))
+                ):
+                    panel.set_relative_modes(
+                        target_key,
+                        bool(modes.get("input", True)),
+                        bool(modes.get("output", True)),
+                    )
+            if changed and mark_modified:
+                self.set_project_modified(True)
+                if self.current_project_path is not None:
+                    self.save_project()
+
+        def set_project_windows_search_paths(
+            self,
+            target: str,
+            paths: Iterable[Path | str],
+            *,
+            mark_modified: bool = True,
+        ) -> None:
+            target_key = self._project_windows_target_key(target)
+            # Reihenfolge absichtlich nicht sortieren: die ListBox-Reihenfolge
+            # ist die Suchprioritaet fuer genau diese Zielarchitektur.
+            normalized: List[str] = []
+            seen = set()
+            for value in paths or ():
+                text = str(value).strip()
+                if not text:
+                    continue
+                try:
+                    path = Path(self._project_windows_absolute_directory(text))
+                except (OSError, RuntimeError, ValueError):
+                    path = Path(text).expanduser().absolute()
+                key = str(path).casefold()
+                if key in seen:
+                    continue
+                seen.add(key)
+                normalized.append(str(path))
+            current = list(self.project_windows_search_paths.get(target_key, ()))
+            changed = normalized != current
+            self.project_windows_search_paths[target_key] = normalized
+            panel = getattr(self, "project_settings_panel", None)
+            if panel is not None and tuple(panel.paths(target_key)) != tuple(normalized):
+                panel.set_paths(target_key, normalized)
+            if changed and mark_modified:
+                self.set_project_modified(True)
+                if self.current_project_path is not None:
+                    self.save_project()
+
+        def set_project_windows_output_directory(
+            self,
+            target: str,
+            value: Optional[Path | str],
+            *,
+            mark_modified: bool = True,
+        ) -> None:
+            target_key = self._project_windows_target_key(target)
+            text = str(value or "").strip()
+            normalized = ""
+            if text:
+                normalized = self._project_windows_absolute_directory(text)
+            current = str(
+                self.project_windows_output_directories.get(target_key, "") or ""
+            )
+            changed = normalized != current
+            self.project_windows_output_directories[target_key] = normalized
+            panel = getattr(self, "project_settings_panel", None)
+            if (
+                panel is not None
+                and panel.output_directory(target_key) != normalized
+            ):
+                panel.set_output_directory(target_key, normalized)
+            if changed and mark_modified:
+                self.set_project_modified(True)
+                if self.current_project_path is not None:
+                    self.save_project()
+
+        def _project_windows_link_search_paths(
+            self,
+            target: str,
+        ) -> Tuple[Path, ...]:
+            target_key = self._project_windows_target_key(target)
+            result: List[Path] = []
+            for value in self.project_windows_search_paths.get(target_key, ()):
+                try:
+                    path = Path(value).expanduser().resolve()
+                except (OSError, RuntimeError, ValueError):
+                    path = Path(value).expanduser().absolute()
+                if path not in result:
+                    result.append(path)
+            return tuple(result)
+
+        def _project_windows_output_path(
+            self,
+            target: str,
+        ) -> Optional[Path]:
+            target_key = self._project_windows_target_key(target)
+            value = str(
+                self.project_windows_output_directories.get(target_key, "") or ""
+            ).strip()
+            if not value:
+                return None
+            try:
+                path = Path(value).expanduser().resolve()
+            except (OSError, RuntimeError, ValueError):
+                path = Path(value).expanduser().absolute()
+            return path
+
+        def _project_generated_object_path(
+            self,
+            source_path: Path,
+            target: str,
+        ) -> Path:
+            source = Path(source_path).expanduser().resolve()
+            output = self._project_windows_output_path(target)
+            return (
+                (output / source.with_suffix(".o").name).resolve()
+                if output is not None
+                else source.with_suffix(".o").resolve()
+            )
+
+        def _resolve_project_link_input(
+            self,
+            value: Path | str,
+            *,
+            source_path: Optional[Path] = None,
+            target: str = "pe32",
+        ) -> Path:
+            candidate = Path(value).expanduser()
+            if candidate.is_file():
+                return candidate.resolve()
+            candidates: List[Path] = []
+            if candidate.is_absolute():
+                candidates.append(candidate)
+                leaf = Path(candidate.name)
+            else:
+                leaf = candidate
+                if source_path is not None:
+                    candidates.append(
+                        Path(source_path).expanduser().resolve().parent / candidate
+                    )
+                if self.current_project_path is not None:
+                    candidates.append(self.current_project_path.parent / candidate)
+            # Die Reihenfolge der aktiven 32-/64-Bit-ListBox wird 1:1
+            # eingehalten; die andere Architektur wird niemals durchsucht.
+            for directory in self._project_windows_link_search_paths(target):
+                candidates.append(directory / leaf)
+            for path in candidates:
+                if path.is_file():
+                    return path.resolve()
+            try:
+                return candidate.resolve()
+            except (OSError, RuntimeError):
+                return candidate.absolute()
+
         def _create_language_menu(self) -> None:
             """Stage 167: Ansicht->Sprache mit 68 Einträgen in 4 Spalten."""
             self.language_menu = self.view_menu.addMenu("Sprache")
@@ -45700,6 +47259,10 @@ QMenu#green_beige_popup_menu::indicator:checked {{
 
             self.view_menu = self.main_menu_bar.addMenu("&Ansicht")
             self._create_language_menu()
+            self.view_settings_menu = self.view_menu.addMenu("Einstellungen")
+            self.view_settings_menu.setObjectName("view_settings_menu")
+            self.view_settings_menu.addAction(self.settings_action)
+            self.view_settings_menu.addAction(self.project_settings_action)
             self.favorites_menu = self.main_menu_bar.addMenu("&Favoriten")
             self._refresh_favorites_menu()
             self.dism_menu = self.main_menu_bar.addMenu("&DISM")
@@ -45739,8 +47302,6 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             tools_menu.addAction(self.resource_action)
             tools_menu.addAction(self.localize_action)
             tools_menu.addAction(self.doxygen_action)
-            tools_menu.addSeparator()
-            tools_menu.addAction(self.settings_action)
 
             learning_menu = self.main_menu_bar.addMenu("&Lernen")
             math_menu = learning_menu.addMenu("Mathematik")
@@ -48423,8 +49984,124 @@ border: 2px solid #2a69aa;
                 document, generated, assembly_path, "C64 BASIC"
             )
 
+        def _pascal_progress_source_files(
+            self,
+            document: DocumentEditor,
+        ) -> Tuple[Path, ...]:
+            """Bekannte Pascal-Quellen für die Stage-198-Dateigewichtung."""
+            result: List[Path] = []
+            seen = set()
+
+            def add(path) -> None:
+                if path is None:
+                    return
+                try:
+                    candidate = Path(path).expanduser().resolve()
+                except (OSError, RuntimeError, ValueError):
+                    candidate = Path(path).expanduser().absolute()
+                if candidate.suffix.casefold() not in DocumentEditor.PASCAL_EXTENSIONS:
+                    return
+                key = str(candidate).casefold()
+                if key in seen:
+                    return
+                seen.add(key)
+                result.append(candidate)
+
+            add(document.path)
+
+            # Bei einem Stage-197-Pascal-Projekt sind die Unit-/Modulquellen
+            # bereits im Projektbaum bekannt. Sie werden vor dem Workerstart
+            # eingerechnet; zusätzlich entdeckte USES-Units fügt der Worker
+            # während des Compilerlaufs dynamisch hinzu.
+            if document.build_target in {"pe32", "pe64"}:
+                for group_name in ("units", "modules"):
+                    try:
+                        project_paths = self._project_pascal_group_paths(
+                            document.build_target,
+                            group_name,
+                        )
+                    except Exception:
+                        project_paths = ()
+                    for project_path in project_paths:
+                        add(project_path)
+
+            return tuple(result)
+
+        def _run_pascal_compile_worker(
+            self,
+            document: DocumentEditor,
+            compile_callable,
+            source_files: Sequence[Path],
+        ):
+            """QThread-Compile mit lokalem EventLoop für Stage-197-Kompatibilität.
+
+            Der lokale EventLoop hält Qt vollständig reaktionsfähig, während
+            die Methode synchron erst nach dem Compilerlauf zurückkehrt. Damit
+            bleiben die bestehenden F2-/Projekt-Build-Ketten unverändert.
+            """
+            if document._pascal_compile_running:
+                raise RuntimeError("Eine Pascal-Kompilierung läuft bereits.")
+
+            source_files = tuple(source_files) or (
+                (document.path,) if document.path is not None else ()
+            )
+            document.begin_pascal_compile_progress(len(source_files))
+
+            thread = QThread(self)
+            worker = PascalCompileWorker(
+                compile_callable,
+                source_files,
+                editor_filename=document.path,
+                editor_line_count=document.raw_editor.document().blockCount(),
+            )
+            worker.moveToThread(thread)
+
+            event_loop = QEventLoop(self)
+            state = {"result": None, "error": None}
+
+            def succeeded(result) -> None:
+                state["result"] = result
+
+            def failed(exc) -> None:
+                state["error"] = exc
+
+            thread.started.connect(worker.run)
+            worker.progress.connect(document.set_pascal_compile_progress)
+            worker.status.connect(document.set_pascal_compile_status)
+            worker.succeeded.connect(succeeded)
+            worker.failed.connect(failed)
+            worker.succeeded.connect(worker.deleteLater)
+            worker.failed.connect(worker.deleteLater)
+            worker.succeeded.connect(thread.quit)
+            worker.failed.connect(thread.quit)
+            thread.finished.connect(event_loop.quit)
+            thread.finished.connect(thread.deleteLater)
+
+            # Referenzen für die Dauer des verschachtelten EventLoops halten.
+            document._pascal_compile_thread = thread
+            document._pascal_compile_worker = worker
+
+            thread.start()
+            event_loop.exec_()
+
+            # Der EventLoop endet erst mit QThread.finished. Damit bleibt die
+            # Stage-197-Aufrufkette synchron, ohne einen laufenden Thread
+            # zurückzulassen oder die Qt-Ereignisverarbeitung zu blockieren.
+            error = state["error"]
+            success = error is None
+            document.finish_pascal_compile_progress(success)
+            document._pascal_compile_thread = None
+            document._pascal_compile_worker = None
+
+            if error is not None:
+                raise error
+            return state["result"]
+
         def _compile_pascal_document(self, document: DocumentEditor) -> bool:
             """ANTLR-Pascal -> zielabhängiger ASM-Code; kein Binärprogramm."""
+            if document._pascal_compile_running:
+                self.statusBar().showMessage("Pascal-Kompilierung läuft bereits")
+                return False
             source = document.raw_editor.toPlainText()
             try:
                 pascal_frontend_sync = prepare_pascal_frontend_for_compile(
@@ -48450,6 +50127,8 @@ border: 2px solid #2a69aa;
                 self.log(
                     "PASCAL FRONTEND: compiler="
                     + str(pascal_frontend_sync.get("compiler", ""))
+                    + "; lexer="
+                    + str(pascal_frontend_sync.get("lexer", ""))
                     + "; parser="
                     + str(pascal_frontend_sync.get("parser", ""))
                     + (
@@ -48503,6 +50182,16 @@ border: 2px solid #2a69aa;
                 ]
                 if self.workspace_root not in include_paths:
                     include_paths.append(self.workspace_root)
+                _project_output_directory = (
+                    self._project_windows_output_path(document.build_target)
+                    if document.build_target in {"pe32", "pe64"}
+                    else None
+                )
+                if (
+                    _project_output_directory is not None
+                    and _project_output_directory not in include_paths
+                ):
+                    include_paths.append(_project_output_directory)
                 compiler_kwargs = {
                     "filename": str(document.path),
                     "include_paths": include_paths,
@@ -48543,16 +50232,32 @@ border: 2px solid #2a69aa;
                         compiler_kwargs["breakpoint_lines"] = (
                             document.raw_editor.breakpoint_lines()
                         )
+                _project_link_search_paths = (
+                    self._project_windows_link_search_paths(document.build_target)
+                    if document.build_target in {"pe32", "pe64"}
+                    else ()
+                )
                 pascal_preprocessed = preprocess_pascal_source(
                     source,
                     filename=str(document.path),
                     predefined_macros=compiler_kwargs.get(
                         "predefined_macros", {}
                     ),
+                    link_search_paths=_project_link_search_paths,
                 )
                 if "predefined_macros" in parameter_map:
                     compiler_kwargs["predefined_macros"] = dict(
                         pascal_preprocessed.macros
+                    )
+                if "link_search_paths" in parameter_map:
+                    compiler_kwargs["link_search_paths"] = tuple(
+                        str(path) for path in _project_link_search_paths
+                    )
+                if "output_directory" in parameter_map:
+                    compiler_kwargs["output_directory"] = (
+                        str(_project_output_directory)
+                        if _project_output_directory is not None
+                        else None
                     )
                 self.log(
                     "PASCAL PREPROCESS: "
@@ -48568,8 +50273,22 @@ border: 2px solid #2a69aa;
                     compiler_kwargs["linked_object_files"] = tuple(
                         getattr(pascal_preprocessed, "link_files", ()) or ()
                     )
-                generated = compile_pascal_to_assembly(
-                    source, **compiler_kwargs
+                pascal_progress_sources = self._pascal_progress_source_files(
+                    document
+                )
+
+                def _compile_in_worker(progress_callback):
+                    worker_kwargs = dict(compiler_kwargs)
+                    if "progress_callback" in parameter_map:
+                        worker_kwargs["progress_callback"] = progress_callback
+                    return compile_pascal_to_assembly(
+                        source, **worker_kwargs
+                    )
+
+                generated = self._run_pascal_compile_worker(
+                    document,
+                    _compile_in_worker,
+                    pascal_progress_sources,
                 )
                 # Stage 183: {$L file.o}/{$LINK file.o} is consumed by the IDE
                 # preprocessor before c64pascal sees the source. Merge those
@@ -48595,6 +50314,7 @@ border: 2px solid #2a69aa;
                     unit_object_path = _pascal_unit_coff_output_path(
                         document.path,
                         document.build_target,
+                        output_directory=_project_output_directory,
                     )
                     try:
                         unit_object_data = (
@@ -48902,12 +50622,16 @@ border: 2px solid #2a69aa;
             )
             writer = _write_pe64_generated_objects if is64 else _write_pe32_generated_objects
             error_type = PE64AssemblerError if is64 else PE32AssemblerError
+            _project_output_directory = self._project_windows_output_path(document.build_target)
             try:
                 object_paths = writer(
                     proxy,
                     source_path=document.path,
                     assembly_path=assembly_path,
-                    main_object_path=document.path.with_suffix(".o"),
+                    main_object_path=self._project_generated_object_path(
+                        document.path, document.build_target
+                    ),
+                    output_directory=_project_output_directory,
                 )
                 if (
                     document.is_pascal_document
@@ -48918,6 +50642,7 @@ border: 2px solid #2a69aa;
                         object_paths[0],
                         document.path,
                         document.build_target,
+                        output_directory=_project_output_directory,
                     )
                     if unit_companion not in object_paths:
                         object_paths.append(unit_companion)
@@ -49061,10 +50786,12 @@ border: 2px solid #2a69aa;
                         _write_pe64_generated_objects if is64
                         else _write_pe32_generated_objects
                     )
+                    _project_output_directory = self._project_windows_output_path(document.build_target)
                     object_paths = object_writer(
                         proxy,
                         source_path=document.path,
                         assembly_path=assembly_path,
+                        output_directory=_project_output_directory,
                     )
                     # Bereits erzeugte Projektobjekte/-archive beim F2-Build
                     # eines Hauptprogramms ebenfalls an den internen Linker
@@ -49079,26 +50806,34 @@ border: 2px solid #2a69aa;
                         getattr(document, "generated_link_object_files", ()) or ()
                     )
                     for pragma_name in pragma_inputs:
-                        pragma_path = Path(pragma_name).expanduser().resolve()
+                        pragma_path = self._resolve_project_link_input(
+                            pragma_name,
+                            source_path=document.path,
+                            target=document.build_target,
+                        )
                         key = str(pragma_path).casefold()
                         if key in known_inputs:
                             continue
                         if not pragma_path.is_file():
                             raise PE64AssemblerError(
-                                f"#pragma link Datei nicht gefunden: {pragma_path}"
+                                f"Linkdatei nicht gefunden (inkl. Projekt-Suchpfade): {pragma_path}"
                             ) if is64 else PE32AssemblerError(
-                                f"#pragma link Datei nicht gefunden: {pragma_path}"
+                                f"Linkdatei nicht gefunden (inkl. Projekt-Suchpfade): {pragma_path}"
                             )
                         if pragma_path.suffix.casefold() not in {".o", ".obj", ".a", ".lib"}:
                             raise PE64AssemblerError(
-                                f"#pragma link erwartet .o/.obj/.a/.lib: {pragma_path}"
+                                f"Linkeingabe erwartet .o/.obj/.a/.lib: {pragma_path}"
                             ) if is64 else PE32AssemblerError(
-                                f"#pragma link erwartet .o/.obj/.a/.lib: {pragma_path}"
+                                f"Linkeingabe erwartet .o/.obj/.a/.lib: {pragma_path}"
                             )
                         object_paths.append(pragma_path)
                         known_inputs.add(key)
                     for extra_path in extra_link_inputs or ():
-                        resolved_extra = Path(extra_path).expanduser().resolve()
+                        resolved_extra = self._resolve_project_link_input(
+                            extra_path,
+                            source_path=document.path,
+                            target=document.build_target,
+                        )
                         key = str(resolved_extra).casefold()
                         if key in known_inputs:
                             continue
@@ -50580,6 +52315,34 @@ border: 2px solid #2a69aa;
             if not hasattr(self, "project_tree"):
                 return
             values = entries or empty_project_entries()
+            for _target, _settings in PROJECT_WINDOWS_TARGET_SETTINGS.items():
+                _input_relative = _project_bool_entry(
+                    values, _settings["input_relative_key"], True
+                )
+                _output_relative = _project_bool_entry(
+                    values, _settings["output_relative_key"], True
+                )
+                self.set_project_windows_relative_paths(
+                    _target, "input", _input_relative, mark_modified=False
+                )
+                self.set_project_windows_relative_paths(
+                    _target, "output", _output_relative, mark_modified=False
+                )
+                self.set_project_windows_search_paths(
+                    _target,
+                    [
+                        entry.get("path", "")
+                        for entry in values.get(_settings["input_key"], ())
+                    ],
+                    mark_modified=False,
+                )
+                _output_entries = values.get(_settings["output_key"], ())
+                self.set_project_windows_output_directory(
+                    _target,
+                    _output_entries[0].get("path", "")
+                    if _output_entries else "",
+                    mark_modified=False,
+                )
             self.project_tree.blockSignals(True)
             self.project_tree.clear()
             self.project_root_items = {}
@@ -50587,6 +52350,8 @@ border: 2px solid #2a69aa;
             self.project_prolog_knowledge_root = None
             self.project_pascal_target_nodes = {}
             self.project_pascal_group_nodes = {}
+            self.project_pascal_unit_namespace_nodes = {}
+            self._project_pascal_entry_sequence = {}
             self.project_pascal_last_programs = getattr(
                 self, "project_pascal_last_programs", {}
             )
@@ -50991,16 +52756,37 @@ border: 2px solid #2a69aa;
                 _group = getattr(self, "project_pascal_group_nodes", {}).get((_target, _role))
                 if _group is None:
                     continue
-                for _index in range(_group.childCount()):
-                    _child = _group.child(_index)
-                    if self._project_item_kind(_child) != PROJECT_NODE_PASCAL_TARGET_SOURCE:
-                        continue
+                for _child in self._project_pascal_source_items_ordered(_group):
                     _path_value = str(_child.data(0, Qt.UserRole + 302) or "").strip()
                     if _path_value:
                         entries[_entry_key].append({
-                            "title": _child.text(0),
+                            "title": str(
+                                _child.data(0, Qt.UserRole + 309)
+                                or _child.text(0)
+                            ),
                             "path": _path_value,
                         })
+            for _target, _settings in PROJECT_WINDOWS_TARGET_SETTINGS.items():
+                entries[_settings["input_key"]] = [
+                    {"path": path}
+                    for path in self.project_windows_search_paths.get(_target, ())
+                    if str(path).strip()
+                ]
+                _output_value = str(
+                    self.project_windows_output_directories.get(_target, "") or ""
+                ).strip()
+                entries[_settings["output_key"]] = (
+                    [{"path": _output_value}] if _output_value else []
+                )
+                _modes = self.project_windows_relative_paths.get(
+                    _target, {"input": True, "output": True}
+                )
+                entries[_settings["input_relative_key"]] = [{
+                    "value": "true" if bool(_modes.get("input", True)) else "false"
+                }]
+                entries[_settings["output_relative_key"]] = [{
+                    "value": "true" if bool(_modes.get("output", True)) else "false"
+                }]
             return entries
 
         def project_has_entries(self) -> bool:
@@ -51025,6 +52811,11 @@ border: 2px solid #2a69aa;
                 or any(
                     bool(entries.get(_key))
                     for _key in PROJECT_PASCAL_TARGET_ENTRY_KEYS.values()
+                )
+                or any(
+                    bool(entries.get(_settings["input_key"]))
+                    or bool(entries.get(_settings["output_key"]))
+                    for _settings in PROJECT_WINDOWS_TARGET_SETTINGS.values()
                 )
             )
             return bool(ordinary or special)
@@ -51438,7 +53229,76 @@ border: 2px solid #2a69aa;
 
         # -------------------------------------------------------------------
         # Stage 174: Pascal target tree / build orchestration.
+        # Stage 190: Unit-Eintraege werden unter einem Namespace-Knoten
+        # (System, Crypto, ...) einsortiert. Der echte Pfad bleibt am Blatt.
         # -------------------------------------------------------------------
+        def _project_pascal_source_items(
+            self,
+            root_item: QTreeWidgetItem,
+        ):
+            for _index in range(root_item.childCount()):
+                _child = root_item.child(_index)
+                _kind = self._project_item_kind(_child)
+                if _kind == PROJECT_NODE_PASCAL_TARGET_SOURCE:
+                    yield _child
+                elif _kind == PROJECT_NODE_PASCAL_UNIT_NAMESPACE:
+                    yield from self._project_pascal_source_items(_child)
+
+        def _project_pascal_source_items_ordered(
+            self,
+            root_item: QTreeWidgetItem,
+        ) -> Tuple[QTreeWidgetItem, ...]:
+            _items = list(self._project_pascal_source_items(root_item))
+            _ordered = sorted(
+                enumerate(_items),
+                key=lambda pair: (
+                    int(pair[1].data(0, Qt.UserRole + 308) or 0),
+                    pair[0],
+                ),
+            )
+            return tuple(pair[1] for pair in _ordered)
+
+        def _project_pascal_unit_namespace_item(
+            self,
+            group_item: QTreeWidgetItem,
+            namespace: str,
+        ) -> Optional[QTreeWidgetItem]:
+            if self._project_item_kind(group_item) != PROJECT_NODE_PASCAL_UNIT_ROOT:
+                return None
+            target = str(group_item.data(0, Qt.UserRole + 305) or "").casefold()
+            role = str(group_item.data(0, Qt.UserRole + 306) or "").casefold()
+            namespace_text = str(namespace or "Units").strip() or "Units"
+            cache = getattr(self, "project_pascal_unit_namespace_nodes", {})
+            cache_key = (target, role, namespace_text.casefold())
+            cached = cache.get(cache_key)
+            if (
+                cached is not None
+                and cached.parent() is group_item
+                and self._project_item_kind(cached) == PROJECT_NODE_PASCAL_UNIT_NAMESPACE
+            ):
+                return cached
+            for _index in range(group_item.childCount()):
+                _child = group_item.child(_index)
+                if self._project_item_kind(_child) != PROJECT_NODE_PASCAL_UNIT_NAMESPACE:
+                    continue
+                _name = str(_child.data(0, Qt.UserRole + 307) or _child.text(0)).strip()
+                if _name.casefold() == namespace_text.casefold():
+                    cache[cache_key] = _child
+                    self.project_pascal_unit_namespace_nodes = cache
+                    return _child
+            _item = QTreeWidgetItem(group_item, [namespace_text])
+            _item.setData(0, Qt.UserRole + 301, "pascal")
+            _item.setData(0, Qt.UserRole + 303, PROJECT_NODE_PASCAL_UNIT_NAMESPACE)
+            _item.setData(0, Qt.UserRole + 305, target)
+            _item.setData(0, Qt.UserRole + 306, role)
+            _item.setData(0, Qt.UserRole + 307, namespace_text)
+            _item.setIcon(0, self.style().standardIcon(QStyle.SP_DirClosedIcon))
+            _item.setToolTip(0, f"Pascal-Unit-Namespace: {namespace_text}")
+            _item.setExpanded(True)
+            cache[cache_key] = _item
+            self.project_pascal_unit_namespace_nodes = cache
+            return _item
+
         def _add_project_pascal_target_entry(
             self,
             group_item: QTreeWidgetItem,
@@ -51462,23 +53322,46 @@ border: 2px solid #2a69aa;
             except OSError:
                 resolved = Path(path).expanduser()
             path_text = str(resolved)
-            for index in range(group_item.childCount()):
-                child = group_item.child(index)
+            for child in self._project_pascal_source_items(group_item):
                 existing = str(child.data(0, Qt.UserRole + 302) or "")
                 if existing.casefold() == path_text.casefold():
                     self.project_tree.setCurrentItem(child)
                     return child
-            child = QTreeWidgetItem(
-                group_item,
-                [title.strip() or resolved.name or path_text],
-            )
+
+            parent_item = group_item
+            display_title = title.strip() or resolved.name or path_text
+            if role == "units":
+                namespace, leaf_title = project_pascal_unit_tree_parts(
+                    resolved, display_title
+                )
+                namespace_item = self._project_pascal_unit_namespace_item(
+                    group_item, namespace
+                )
+                if namespace_item is None:
+                    return None
+                parent_item = namespace_item
+                display_title = leaf_title
+
+            child = QTreeWidgetItem(parent_item, [display_title])
             child.setData(0, Qt.UserRole + 301, "pascal")
             child.setData(0, Qt.UserRole + 302, path_text)
             child.setData(0, Qt.UserRole + 303, PROJECT_NODE_PASCAL_TARGET_SOURCE)
             child.setData(0, Qt.UserRole + 305, target)
             child.setData(0, Qt.UserRole + 306, role)
+            # Der sichtbare Blattname darf verkürzt sein; in der *.pro-Datei
+            # bleibt der bisherige/originale Titel erhalten.
+            child.setData(0, Qt.UserRole + 309, title.strip() or resolved.name or path_text)
+            sequence_key = (target, role)
+            sequence = int(
+                getattr(self, "_project_pascal_entry_sequence", {}).get(
+                    sequence_key, 0
+                )
+            )
+            child.setData(0, Qt.UserRole + 308, sequence)
+            self._project_pascal_entry_sequence[sequence_key] = sequence + 1
             child.setToolTip(0, path_text)
             child.setIcon(0, self.icon_provider.icon(QFileInfo(path_text)))
+            parent_item.setExpanded(True)
             group_item.setExpanded(True)
             parent = group_item.parent()
             if parent is not None:
@@ -51499,10 +53382,7 @@ border: 2px solid #2a69aa;
                 return ()
             result = []
             seen = set()
-            for index in range(group.childCount()):
-                child = group.child(index)
-                if self._project_item_kind(child) != PROJECT_NODE_PASCAL_TARGET_SOURCE:
-                    continue
+            for child in self._project_pascal_source_items_ordered(group):
                 path_text = str(child.data(0, Qt.UserRole + 302) or "").strip()
                 if not path_text:
                     continue
@@ -51554,7 +53434,7 @@ border: 2px solid #2a69aa;
             self,
             group_item: QTreeWidgetItem,
         ) -> None:
-            count = group_item.childCount()
+            count = sum(1 for _item in self._project_pascal_source_items(group_item))
             if count <= 0:
                 return
             answer = self._show_message_box(
@@ -51569,6 +53449,16 @@ border: 2px solid #2a69aa;
                 return
             while group_item.childCount():
                 group_item.takeChild(0)
+            _target = str(group_item.data(0, Qt.UserRole + 305) or "").casefold()
+            _role = str(group_item.data(0, Qt.UserRole + 306) or "").casefold()
+            self.project_pascal_unit_namespace_nodes = {
+                key: value
+                for key, value in getattr(
+                    self, "project_pascal_unit_namespace_nodes", {}
+                ).items()
+                if key[:2] != (_target, _role)
+            }
+            self._project_pascal_entry_sequence[(_target, _role)] = 0
             self.set_project_modified(True)
             if self.current_project_path is not None:
                 self.save_project()
@@ -51583,6 +53473,21 @@ border: 2px solid #2a69aa;
             if parent is None:
                 return
             parent.takeChild(parent.indexOfChild(item))
+            if (
+                self._project_item_kind(parent) == PROJECT_NODE_PASCAL_UNIT_NAMESPACE
+                and parent.childCount() == 0
+            ):
+                group = parent.parent()
+                if group is not None:
+                    target = str(parent.data(0, Qt.UserRole + 305) or "").casefold()
+                    role = str(parent.data(0, Qt.UserRole + 306) or "").casefold()
+                    namespace = str(
+                        parent.data(0, Qt.UserRole + 307) or parent.text(0)
+                    ).casefold()
+                    group.takeChild(group.indexOfChild(parent))
+                    getattr(self, "project_pascal_unit_namespace_nodes", {}).pop(
+                        (target, role, namespace), None
+                    )
             self.set_project_modified(True)
             if self.current_project_path is not None:
                 self.save_project()
@@ -51694,10 +53599,14 @@ border: 2px solid #2a69aa;
                 return None
             if not self.create_coff32_object_document(document):
                 return None
-            companion = _pascal_unit_coff_output_path(resolved, target)
+            companion = _pascal_unit_coff_output_path(
+                resolved,
+                target,
+                output_directory=self._project_windows_output_path(target),
+            )
             if companion.is_file():
                 return companion.resolve()
-            legacy = resolved.with_suffix(".o")
+            legacy = self._project_generated_object_path(resolved, target)
             if legacy.is_file():
                 return legacy.resolve()
             self.show_error(
@@ -51928,6 +53837,60 @@ border: 2px solid #2a69aa;
             elif selected is start_action:
                 self.start_project_pascal_target(target)
 
+        def sort_project_pascal_unit_entries(
+            self,
+            group_item: QTreeWidgetItem,
+            *,
+            descending: bool,
+        ) -> None:
+            """Sort Windows Pascal Unit namespace/leaves and persist the order.
+
+            Stage 190 stores the authoritative build/project order in
+            Qt.UserRole+308.  Merely calling QTreeWidgetItem.sortChildren()
+            would therefore change only the display and collect_project_entries()
+            would still write the old sequence.  Stage 191 sorts the visible
+            namespace tree, then renumbers every source leaf in that exact
+            visual order before save_project().
+            """
+            if self._project_item_kind(group_item) != PROJECT_NODE_PASCAL_UNIT_ROOT:
+                return
+            target = str(group_item.data(0, Qt.UserRole + 305) or "").casefold()
+            role = str(group_item.data(0, Qt.UserRole + 306) or "").casefold()
+            if target not in {"pe32", "pe64"} or role != "units":
+                return
+
+            order = Qt.DescendingOrder if descending else Qt.AscendingOrder
+            # Keep namespace grouping while making the complete Units branch
+            # deterministic in the requested direction.
+            group_item.sortChildren(0, order)
+            for index in range(group_item.childCount()):
+                namespace_item = group_item.child(index)
+                if self._project_item_kind(namespace_item) == PROJECT_NODE_PASCAL_UNIT_NAMESPACE:
+                    namespace_item.sortChildren(0, order)
+
+            sequence = 0
+            for namespace_index in range(group_item.childCount()):
+                namespace_item = group_item.child(namespace_index)
+                if self._project_item_kind(namespace_item) != PROJECT_NODE_PASCAL_UNIT_NAMESPACE:
+                    continue
+                for leaf_index in range(namespace_item.childCount()):
+                    leaf = namespace_item.child(leaf_index)
+                    if self._project_item_kind(leaf) != PROJECT_NODE_PASCAL_TARGET_SOURCE:
+                        continue
+                    leaf.setData(0, Qt.UserRole + 308, sequence)
+                    sequence += 1
+            self._project_pascal_entry_sequence[(target, role)] = sequence
+            self.set_project_modified(True)
+
+            # The requested sort order is project state, not a transient view
+            # preference.  save_project() also opens Save As for an unnamed
+            # project, matching all other project mutations.
+            if self.save_project():
+                direction = "absteigend" if descending else "aufsteigend"
+                self.statusBar().showMessage(
+                    f"Pascal-Units {direction} sortiert und Projekt gespeichert"
+                )
+
         def _show_project_pascal_group_menu(
             self,
             item: QTreeWidgetItem,
@@ -51937,6 +53900,15 @@ border: 2px solid #2a69aa;
             add_action = menu.addAction("Hinzufügen …")
             clear_action = menu.addAction("Einträge löschen")
             clear_action.setEnabled(item.childCount() > 0)
+            ascending_action = None
+            descending_action = None
+            if self._project_item_kind(item) == PROJECT_NODE_PASCAL_UNIT_ROOT:
+                menu.addSeparator()
+                descending_action = menu.addAction("absteigend sortieren")
+                ascending_action = menu.addAction("aufsteigend sortieren")
+                has_units = any(self._project_pascal_source_items(item))
+                descending_action.setEnabled(has_units)
+                ascending_action.setEnabled(has_units)
             selected = menu.exec_(
                 self.project_tree.viewport().mapToGlobal(position)
             )
@@ -51944,6 +53916,10 @@ border: 2px solid #2a69aa;
                 self.add_project_pascal_target_entries(item)
             elif selected is clear_action:
                 self.clear_project_pascal_target_entries(item)
+            elif ascending_action is not None and selected is ascending_action:
+                self.sort_project_pascal_unit_entries(item, descending=False)
+            elif descending_action is not None and selected is descending_action:
+                self.sort_project_pascal_unit_entries(item, descending=True)
 
         def _show_project_pascal_source_menu(
             self,
@@ -51976,6 +53952,20 @@ border: 2px solid #2a69aa;
                 PROJECT_NODE_PASCAL_UNIT_ROOT,
             }:
                 self._show_project_pascal_group_menu(item, position)
+                return
+            if kind == PROJECT_NODE_PASCAL_UNIT_NAMESPACE:
+                menu = QMenu(self.project_tree)
+                add_action = menu.addAction("Unit hinzufügen …")
+                toggle_action = menu.addAction(
+                    "Knoten schließen" if item.isExpanded() else "Knoten öffnen"
+                )
+                selected = menu.exec_(
+                    self.project_tree.viewport().mapToGlobal(position)
+                )
+                if selected is add_action and item.parent() is not None:
+                    self.add_project_pascal_target_entries(item.parent())
+                elif selected is toggle_action:
+                    item.setExpanded(not item.isExpanded())
                 return
             if kind == PROJECT_NODE_PASCAL_TARGET_SOURCE:
                 self._show_project_pascal_source_menu(item, position)
@@ -52823,6 +54813,7 @@ border: 2px solid #2a69aa;
                 PROJECT_NODE_PASCAL_TARGET,
                 PROJECT_NODE_PASCAL_MODULE_ROOT,
                 PROJECT_NODE_PASCAL_UNIT_ROOT,
+                PROJECT_NODE_PASCAL_UNIT_NAMESPACE,
             }:
                 item.setExpanded(not item.isExpanded())
                 return
@@ -56598,7 +58589,11 @@ def _write_cli_file(path: Path, data: bytes) -> None:
 #     MyUnit.coff32.o
 #     MyUnit.coff64.o
 # ---------------------------------------------------------------------------
-def _pascal_unit_coff_output_path(source_path: Path, target: str) -> Path:
+def _pascal_unit_coff_output_path(
+    source_path: Path,
+    target: str,
+    output_directory: Optional[Path | str] = None,
+) -> Path:
     source = Path(source_path).expanduser().resolve()
     key = str(target or "").strip().casefold()
     if key == "pe64":
@@ -56609,7 +58604,14 @@ def _pascal_unit_coff_output_path(source_path: Path, target: str) -> Path:
         raise ValueError(
             "Pascal-UNIT-COFF-Ausgabe unterstützt nur pe32 oder pe64."
         )
-    return source.with_name(source.stem + suffix)
+    filename = source.stem + suffix
+    if output_directory:
+        try:
+            directory = Path(output_directory).expanduser().resolve()
+        except (OSError, RuntimeError, ValueError):
+            directory = Path(output_directory).expanduser().absolute()
+        return directory / filename
+    return source.with_name(filename)
 
 
 def _pascal_unit_coff_matches_target(path: Path, target: str) -> bool:
@@ -56632,17 +58634,21 @@ def _pascal_unit_coff_matches_target(path: Path, target: str) -> bool:
 def _pascal_prebuilt_unit_object_for_source(
     source_path: Path,
     target: str,
+    output_directory: Optional[Path | str] = None,
 ) -> Optional[Path]:
     source = Path(source_path).expanduser().resolve()
     if source.suffix.casefold() not in {".pas", ".pp"}:
         return None
-    candidate = _pascal_unit_coff_output_path(source, target)
+    candidate = _pascal_unit_coff_output_path(
+        source, target, output_directory=output_directory
+    )
     return candidate if _pascal_unit_coff_matches_target(candidate, target) else None
 
 
 def _pascal_prebuilt_unit_object_for_generated_assembly(
     assembly_path: Path,
     target: str,
+    output_directory: Optional[Path | str] = None,
 ) -> Optional[Path]:
     module_path = Path(assembly_path).expanduser().resolve()
     name = module_path.name
@@ -56659,12 +58665,14 @@ def _pascal_prebuilt_unit_object_for_generated_assembly(
             break
     if not base_name:
         return None
-    candidate = module_path.with_name(
-        base_name + (
-            ".coff64.o" if str(target).casefold() == "pe64"
-            else ".coff32.o"
-        )
+    candidate_name = base_name + (
+        ".coff64.o" if str(target).casefold() == "pe64"
+        else ".coff32.o"
     )
+    if output_directory:
+        candidate = Path(output_directory).expanduser().resolve() / candidate_name
+    else:
+        candidate = module_path.with_name(candidate_name)
     return candidate if _pascal_unit_coff_matches_target(candidate, target) else None
 
 
@@ -56695,11 +58703,14 @@ def _write_pascal_unit_coff_companion(
     object_path: Path,
     source_path: Path,
     target: str,
+    output_directory: Optional[Path | str] = None,
 ) -> Path:
     source_object = Path(object_path).expanduser().resolve()
     if not source_object.is_file():
         raise ValueError(f"COFF-Objekt nicht gefunden: {source_object}")
-    destination = _pascal_unit_coff_output_path(source_path, target)
+    destination = _pascal_unit_coff_output_path(
+        source_path, target, output_directory=output_directory
+    )
     data = source_object.read_bytes()
     if str(target).casefold() == "pe64":
         parse_coff64_object(data)
@@ -56715,6 +58726,7 @@ def _write_pe32_generated_objects(
     source_path: Path,
     assembly_path: Path,
     main_object_path: Optional[Path] = None,
+    output_directory: Optional[Path | str] = None,
 ) -> List[Path]:
     """Assembliert Hauptmodul und PE32-Abhängigkeiten separat zu COFF32."""
     result: List[Path] = []
@@ -56741,18 +58753,22 @@ def _write_pe32_generated_objects(
         result.append(resolved)
         return True
 
-    main_path = (
-        main_object_path.expanduser().resolve()
-        if main_object_path is not None
-        else source_path.with_suffix(".o").resolve()
-    )
+    if main_object_path is not None:
+        main_path = main_object_path.expanduser().resolve()
+    elif output_directory:
+        main_path = (
+            Path(output_directory).expanduser().resolve()
+            / source_path.with_suffix(".o").name
+        )
+    else:
+        main_path = source_path.with_suffix(".o").resolve()
     add_object(main_path, generated.assembly, assembly_path.name)
 
     # Separat kompilierte C-Translation-Units (#pragma link).
     for module_name, module_assembly in getattr(generated, "linked_pe32_modules", ()):
         module_source = Path(module_name).expanduser().resolve()
         prebuilt_unit = _pascal_prebuilt_unit_object_for_source(
-            module_source, "pe32"
+            module_source, "pe32", output_directory=output_directory
         )
         if prebuilt_unit is not None and add_existing_object(
             prebuilt_unit, "pe32"
@@ -56760,13 +58776,18 @@ def _write_pe32_generated_objects(
             continue
         module_asm = module_source.with_suffix(".generated.pe32.asm")
         _write_cli_file(module_asm, str(module_assembly).encode("utf-8"))
-        add_object(module_source.with_suffix(".o"), str(module_assembly), module_asm.name)
+        module_object = (
+            Path(output_directory).expanduser().resolve() / module_source.with_suffix(".o").name
+            if output_directory
+            else module_source.with_suffix(".o")
+        )
+        add_object(module_object, str(module_assembly), module_asm.name)
 
     # Bereits vorhandene ASM-Module aus Pascal-Units bzw. #pragma link.
     for module_name in getattr(generated, "linked_assembly_files", ()):
         module_path = Path(module_name).expanduser().resolve()
         prebuilt_unit = _pascal_prebuilt_unit_object_for_generated_assembly(
-            module_path, "pe32"
+            module_path, "pe32", output_directory=output_directory
         )
         if prebuilt_unit is not None and add_existing_object(
             prebuilt_unit, "pe32"
@@ -56776,7 +58797,12 @@ def _write_pe32_generated_objects(
             module_assembly = module_path.read_text(encoding="utf-8-sig")
         except UnicodeError:
             module_assembly = module_path.read_text(encoding="cp1252")
-        add_object(module_path.with_suffix(".o"), module_assembly, module_path.name)
+        module_object = (
+            Path(output_directory).expanduser().resolve() / module_path.with_suffix(".o").name
+            if output_directory
+            else module_path.with_suffix(".o")
+        )
+        add_object(module_object, module_assembly, module_path.name)
 
     return result
 
@@ -56788,6 +58814,7 @@ def _write_pe64_generated_objects(
     source_path: Path,
     assembly_path: Path,
     main_object_path: Optional[Path] = None,
+    output_directory: Optional[Path | str] = None,
 ) -> List[Path]:
     """Assembliert Hauptmodul und PE64-Abhängigkeiten separat zu AMD64-COFF64."""
     result: List[Path] = []
@@ -56814,17 +58841,21 @@ def _write_pe64_generated_objects(
         result.append(resolved)
         return True
 
-    main_path = (
-        main_object_path.expanduser().resolve()
-        if main_object_path is not None
-        else source_path.with_suffix(".o").resolve()
-    )
+    if main_object_path is not None:
+        main_path = main_object_path.expanduser().resolve()
+    elif output_directory:
+        main_path = (
+            Path(output_directory).expanduser().resolve()
+            / source_path.with_suffix(".o").name
+        )
+    else:
+        main_path = source_path.with_suffix(".o").resolve()
     add_object(main_path, generated.assembly, assembly_path.name)
 
     for module_name, module_assembly in getattr(generated, "linked_pe32_modules", ()):
         module_source = Path(module_name).expanduser().resolve()
         prebuilt_unit = _pascal_prebuilt_unit_object_for_source(
-            module_source, "pe64"
+            module_source, "pe64", output_directory=output_directory
         )
         if prebuilt_unit is not None and add_existing_object(
             prebuilt_unit, "pe64"
@@ -56832,12 +58863,17 @@ def _write_pe64_generated_objects(
             continue
         module_asm = module_source.with_suffix(".generated.pe64.asm")
         _write_cli_file(module_asm, str(module_assembly).encode("utf-8"))
-        add_object(module_source.with_suffix(".o"), str(module_assembly), module_asm.name)
+        module_object = (
+            Path(output_directory).expanduser().resolve() / module_source.with_suffix(".o").name
+            if output_directory
+            else module_source.with_suffix(".o")
+        )
+        add_object(module_object, str(module_assembly), module_asm.name)
 
     for module_name in getattr(generated, "linked_assembly_files", ()):
         module_path = Path(module_name).expanduser().resolve()
         prebuilt_unit = _pascal_prebuilt_unit_object_for_generated_assembly(
-            module_path, "pe64"
+            module_path, "pe64", output_directory=output_directory
         )
         if prebuilt_unit is not None and add_existing_object(
             prebuilt_unit, "pe64"
@@ -56847,7 +58883,12 @@ def _write_pe64_generated_objects(
             module_assembly = module_path.read_text(encoding="utf-8-sig")
         except UnicodeError:
             module_assembly = module_path.read_text(encoding="cp1252")
-        add_object(module_path.with_suffix(".o"), module_assembly, module_path.name)
+        module_object = (
+            Path(output_directory).expanduser().resolve() / module_path.with_suffix(".o").name
+            if output_directory
+            else module_path.with_suffix(".o")
+        )
+        add_object(module_object, module_assembly, module_path.name)
     return result
 
 
@@ -57335,6 +59376,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             destination = write_pascal_unit_interface(
                 source_path,
                 predefined_macros=_cli_defines(args.define),
+                target="pe32",
+                include_paths=tuple(
+                    item.expanduser().resolve() for item in args.include_path
+                ),
             )
             print(f"PUI: {source_path} -> {destination}")
             return 0

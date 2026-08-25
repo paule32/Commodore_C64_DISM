@@ -1,0 +1,91 @@
+{
+    "format": "dBase2Many Pascal Unit Interface",
+    "version": 1,
+    "unit": {
+        "name": "Crypto.sha512",
+        "normalized_name": "crypto_sha512"
+    },
+    "fingerprint": {
+        "source_sha256": "b72ededac469e4aec17e8eb97b2e7599b072b17e64098d64bed5d2101dfd6940"
+    },
+    "target": {
+        "target": "win32",
+        "object_format": "coff32",
+        "machine": "i386",
+        "pointer_size": 4,
+        "calling_convention": "cdecl"
+    },
+    "object": {
+        "file": "Crypto.sha512.coff32.o",
+        "format": "coff32",
+        "machine": "i386"
+    },
+    "uses": {
+        "interface": [
+            "System.Types"
+        ],
+        "implementation": []
+    },
+    "imports": {
+        "__jit_sha512": {
+            "kind": "external",
+            "name": "_jit_sha512",
+            "calling_convention": "cdecl"
+        }
+    },
+    "initialization": {
+        "symbol": "__unit_Crypto_sha512"
+    },
+    "finalization": {
+        "symbol": null
+    },
+    "constants": [],
+    "types": {
+        "aliases": [],
+        "subranges": [],
+        "records": [],
+        "enums": [],
+        "arrays": [],
+        "pointers": []
+    },
+    "symbols": {
+        "functions": [
+            {
+                "name": "crypt",
+                "kind": "function",
+                "symbol": "__pas_Crypto_sha512_crypt",
+                "params": [
+                    {
+                        "name": "S",
+                        "type": "string",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    },
+                    {
+                        "name": "Len",
+                        "type": "integer",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    }
+                ],
+                "return_type": "String",
+                "calling_convention": "cdecl"
+            }
+        ],
+        "procedures": [],
+        "classes": [],
+        "variables": []
+    },
+    "link": {
+        "objects": [
+            "sha512.o"
+        ],
+        "archives": [],
+        "resources": [],
+        "embedded_objects": [],
+        "base_directory": "pui"
+    },
+    "macros": {}
+}

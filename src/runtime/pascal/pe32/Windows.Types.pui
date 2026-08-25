@@ -1,0 +1,422 @@
+{
+    "format": "dBase2Many Pascal Unit Interface",
+    "version": 1,
+    "unit": {
+        "name": "Windows.Types",
+        "normalized_name": "windows_types"
+    },
+    "fingerprint": {
+        "source_sha256": "8656109fb8dda3645aabc3980e5663bc32b429dadb5603831ac8600dc378879e"
+    },
+    "target": {
+        "target": "win32",
+        "object_format": "coff32",
+        "machine": "i386",
+        "pointer_size": 4,
+        "calling_convention": "cdecl"
+    },
+    "object": {
+        "file": "Windows.Types.coff32.o",
+        "format": "coff32",
+        "machine": "i386"
+    },
+    "uses": {
+        "interface": [
+            "System.Types"
+        ],
+        "implementation": []
+    },
+    "imports": {},
+    "initialization": {
+        "symbol": "__unit_Windows_Types"
+    },
+    "finalization": {
+        "symbol": null
+    },
+    "constants": [
+        {
+            "name": "WM_NCCREATE",
+            "value": 129
+        },
+        {
+            "name": "WM_NCDESTROY",
+            "value": 130
+        },
+        {
+            "name": "WM_CREATE",
+            "value": 1
+        },
+        {
+            "name": "WM_DESTROY",
+            "value": 2
+        },
+        {
+            "name": "WM_COMMAND",
+            "value": 273
+        },
+        {
+            "name": "GWL_USERDATA",
+            "value": -21
+        },
+        {
+            "name": "CS_REDRAW",
+            "value": 3
+        },
+        {
+            "name": "WS_OVERLAPPEDWINDOW",
+            "value": 13565952
+        },
+        {
+            "name": "WS_TABSTOP",
+            "value": 65536
+        },
+        {
+            "name": "WS_CLIPSIBLINGS",
+            "value": 67108864
+        },
+        {
+            "name": "WS_DISABLED",
+            "value": 134217728
+        },
+        {
+            "name": "WS_VISIBLE",
+            "value": 268435456
+        },
+        {
+            "name": "WS_CHILD",
+            "value": 1073741824
+        },
+        {
+            "name": "WS_BUTTON",
+            "value": 1342242816
+        },
+        {
+            "name": "CW_USEDEFAULT",
+            "value": 0
+        },
+        {
+            "name": "IDI_APPLICATION",
+            "value": 32512
+        },
+        {
+            "name": "IDC_ARROW",
+            "value": 32512
+        },
+        {
+            "name": "COLOR_WINDOW",
+            "value": 5
+        },
+        {
+            "name": "SW_HIDE",
+            "value": 0
+        },
+        {
+            "name": "SW_SHOW",
+            "value": 5
+        },
+        {
+            "name": "SW_SHOWDEFAULT",
+            "value": 10
+        },
+        {
+            "name": "MB_OK",
+            "value": 0
+        },
+        {
+            "name": "MB_ICONERROR",
+            "value": 16
+        },
+        {
+            "name": "MB_ICONINFORMATION",
+            "value": 64
+        },
+        {
+            "name": "BS_PUSHBUTTON",
+            "value": 0
+        }
+    ],
+    "types": {
+        "aliases": [
+            {
+                "kind": "alias",
+                "name": "BOOL",
+                "target_type": "integer"
+            },
+            {
+                "kind": "alias",
+                "name": "UINT",
+                "target_type": "integer"
+            },
+            {
+                "kind": "alias",
+                "name": "LONG",
+                "target_type": "integer"
+            },
+            {
+                "kind": "alias",
+                "name": "WPARAM",
+                "target_type": "integer"
+            },
+            {
+                "kind": "alias",
+                "name": "LPARAM",
+                "target_type": "integer"
+            },
+            {
+                "kind": "alias",
+                "name": "LRESULT",
+                "target_type": "integer"
+            },
+            {
+                "kind": "alias",
+                "name": "HANDLE",
+                "target_type": "integer"
+            },
+            {
+                "kind": "alias",
+                "name": "HINSTANCE",
+                "target_type": "integer"
+            },
+            {
+                "kind": "alias",
+                "name": "HMODULE",
+                "target_type": "integer"
+            },
+            {
+                "kind": "alias",
+                "name": "HWND",
+                "target_type": "integer"
+            },
+            {
+                "kind": "alias",
+                "name": "HICON",
+                "target_type": "integer"
+            },
+            {
+                "kind": "alias",
+                "name": "HCURSOR",
+                "target_type": "integer"
+            },
+            {
+                "kind": "alias",
+                "name": "HBRUSH",
+                "target_type": "integer"
+            },
+            {
+                "kind": "alias",
+                "name": "HMENU",
+                "target_type": "integer"
+            },
+            {
+                "kind": "alias",
+                "name": "LPCREATESTRUCTA",
+                "target_type": "pcreatestructa"
+            }
+        ],
+        "subranges": [],
+        "records": [
+            {
+                "kind": "record",
+                "name": "TPoint",
+                "size": 8,
+                "fields": [
+                    {
+                        "name": "x",
+                        "type": "long",
+                        "offset": 0
+                    },
+                    {
+                        "name": "y",
+                        "type": "long",
+                        "offset": 4
+                    }
+                ]
+            },
+            {
+                "kind": "record",
+                "name": "TMsg",
+                "size": 28,
+                "fields": [
+                    {
+                        "name": "hwnd",
+                        "type": "hwnd",
+                        "offset": 0
+                    },
+                    {
+                        "name": "message",
+                        "type": "uint",
+                        "offset": 4
+                    },
+                    {
+                        "name": "wParam",
+                        "type": "wparam",
+                        "offset": 8
+                    },
+                    {
+                        "name": "lParam",
+                        "type": "lparam",
+                        "offset": 12
+                    },
+                    {
+                        "name": "time",
+                        "type": "dword",
+                        "offset": 16
+                    },
+                    {
+                        "name": "pt",
+                        "type": "tpoint",
+                        "offset": 20
+                    }
+                ]
+            },
+            {
+                "kind": "record",
+                "name": "TCREATESTRUCTA",
+                "size": 48,
+                "fields": [
+                    {
+                        "name": "lpCreateParams",
+                        "type": "pointer",
+                        "offset": 0
+                    },
+                    {
+                        "name": "hInstance",
+                        "type": "hinstance",
+                        "offset": 4
+                    },
+                    {
+                        "name": "hMenu",
+                        "type": "hmenu",
+                        "offset": 8
+                    },
+                    {
+                        "name": "hwndParent",
+                        "type": "hwnd",
+                        "offset": 12
+                    },
+                    {
+                        "name": "cy",
+                        "type": "integer",
+                        "offset": 16
+                    },
+                    {
+                        "name": "cx",
+                        "type": "integer",
+                        "offset": 20
+                    },
+                    {
+                        "name": "y",
+                        "type": "integer",
+                        "offset": 24
+                    },
+                    {
+                        "name": "x",
+                        "type": "integer",
+                        "offset": 28
+                    },
+                    {
+                        "name": "style",
+                        "type": "longint",
+                        "offset": 32
+                    },
+                    {
+                        "name": "lpszName",
+                        "type": "pansichar",
+                        "offset": 36
+                    },
+                    {
+                        "name": "lpszClass",
+                        "type": "pansichar",
+                        "offset": 40
+                    },
+                    {
+                        "name": "dwExStyle",
+                        "type": "longword",
+                        "offset": 44
+                    }
+                ]
+            },
+            {
+                "kind": "record",
+                "name": "TWndClassA",
+                "size": 40,
+                "fields": [
+                    {
+                        "name": "style",
+                        "type": "uint",
+                        "offset": 0
+                    },
+                    {
+                        "name": "lpfnWndProc",
+                        "type": "pointer",
+                        "offset": 4
+                    },
+                    {
+                        "name": "cbClsExtra",
+                        "type": "integer",
+                        "offset": 8
+                    },
+                    {
+                        "name": "cbWndExtra",
+                        "type": "integer",
+                        "offset": 12
+                    },
+                    {
+                        "name": "hInstance",
+                        "type": "hinstance",
+                        "offset": 16
+                    },
+                    {
+                        "name": "hIcon",
+                        "type": "hicon",
+                        "offset": 20
+                    },
+                    {
+                        "name": "hCursor",
+                        "type": "hcursor",
+                        "offset": 24
+                    },
+                    {
+                        "name": "hbrBackground",
+                        "type": "hbrush",
+                        "offset": 28
+                    },
+                    {
+                        "name": "lpszMenuName",
+                        "type": "pansichar",
+                        "offset": 32
+                    },
+                    {
+                        "name": "lpszClassName",
+                        "type": "pansichar",
+                        "offset": 36
+                    }
+                ]
+            }
+        ],
+        "enums": [],
+        "arrays": [],
+        "pointers": [
+            {
+                "kind": "pointer",
+                "name": "PCREATESTRUCTA",
+                "target_type": "tcreatestructa",
+                "size": 4
+            }
+        ]
+    },
+    "symbols": {
+        "functions": [],
+        "procedures": [],
+        "classes": [],
+        "variables": []
+    },
+    "link": {
+        "objects": [],
+        "archives": [],
+        "resources": [],
+        "embedded_objects": [],
+        "base_directory": "pui"
+    },
+    "macros": {}
+}

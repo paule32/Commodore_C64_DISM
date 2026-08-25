@@ -1,0 +1,91 @@
+{
+    "format": "dBase2Many Pascal Unit Interface",
+    "version": 1,
+    "unit": {
+        "name": "Crypto.sha1",
+        "normalized_name": "crypto_sha1"
+    },
+    "fingerprint": {
+        "source_sha256": "9c4d6eb7bc70103ced70caccb5824434ee353e67b89994ece5a90431b0ad441f"
+    },
+    "target": {
+        "target": "win32",
+        "object_format": "coff32",
+        "machine": "i386",
+        "pointer_size": 4,
+        "calling_convention": "cdecl"
+    },
+    "object": {
+        "file": "Crypto.sha1.coff32.o",
+        "format": "coff32",
+        "machine": "i386"
+    },
+    "uses": {
+        "interface": [
+            "System.Types"
+        ],
+        "implementation": []
+    },
+    "imports": {
+        "__jit_sha1": {
+            "kind": "external",
+            "name": "_jit_sha1",
+            "calling_convention": "cdecl"
+        }
+    },
+    "initialization": {
+        "symbol": "__unit_Crypto_sha1"
+    },
+    "finalization": {
+        "symbol": null
+    },
+    "constants": [],
+    "types": {
+        "aliases": [],
+        "subranges": [],
+        "records": [],
+        "enums": [],
+        "arrays": [],
+        "pointers": []
+    },
+    "symbols": {
+        "functions": [
+            {
+                "name": "crypt",
+                "kind": "function",
+                "symbol": "__pas_Crypto_sha1_crypt",
+                "params": [
+                    {
+                        "name": "S",
+                        "type": "string",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    },
+                    {
+                        "name": "Len",
+                        "type": "integer",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    }
+                ],
+                "return_type": "String",
+                "calling_convention": "cdecl"
+            }
+        ],
+        "procedures": [],
+        "classes": [],
+        "variables": []
+    },
+    "link": {
+        "objects": [
+            "sha1.o"
+        ],
+        "archives": [],
+        "resources": [],
+        "embedded_objects": [],
+        "base_directory": "pui"
+    },
+    "macros": {}
+}

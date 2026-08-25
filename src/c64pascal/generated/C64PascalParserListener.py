@@ -287,6 +287,15 @@ class C64PascalParserListener(ParseTreeListener):
         pass
 
 
+    # Enter a parse tree produced by C64PascalParser#externalImportSpecification.
+    def enterExternalImportSpecification(self, ctx:C64PascalParser.ExternalImportSpecificationContext):
+        pass
+
+    # Exit a parse tree produced by C64PascalParser#externalImportSpecification.
+    def exitExternalImportSpecification(self, ctx:C64PascalParser.ExternalImportSpecificationContext):
+        pass
+
+
     # Enter a parse tree produced by C64PascalParser#globalRoutineImplementation.
     def enterGlobalRoutineImplementation(self, ctx:C64PascalParser.GlobalRoutineImplementationContext):
         pass
@@ -296,12 +305,12 @@ class C64PascalParserListener(ParseTreeListener):
         pass
 
 
-    # Enter a parse tree produced by C64PascalParser#routineDirective.
-    def enterRoutineDirective(self, ctx:C64PascalParser.RoutineDirectiveContext):
+    # Enter a parse tree produced by C64PascalParser#globalRoutineCallingConvention.
+    def enterGlobalRoutineCallingConvention(self, ctx:C64PascalParser.GlobalRoutineCallingConventionContext):
         pass
 
-    # Exit a parse tree produced by C64PascalParser#routineDirective.
-    def exitRoutineDirective(self, ctx:C64PascalParser.RoutineDirectiveContext):
+    # Exit a parse tree produced by C64PascalParser#globalRoutineCallingConvention.
+    def exitGlobalRoutineCallingConvention(self, ctx:C64PascalParser.GlobalRoutineCallingConventionContext):
         pass
 
 
@@ -449,6 +458,24 @@ class C64PascalParserListener(ParseTreeListener):
         pass
 
 
+    # Enter a parse tree produced by C64PascalParser#raiseStatementNode.
+    def enterRaiseStatementNode(self, ctx:C64PascalParser.RaiseStatementNodeContext):
+        pass
+
+    # Exit a parse tree produced by C64PascalParser#raiseStatementNode.
+    def exitRaiseStatementNode(self, ctx:C64PascalParser.RaiseStatementNodeContext):
+        pass
+
+
+    # Enter a parse tree produced by C64PascalParser#tryStatementNode.
+    def enterTryStatementNode(self, ctx:C64PascalParser.TryStatementNodeContext):
+        pass
+
+    # Exit a parse tree produced by C64PascalParser#tryStatementNode.
+    def exitTryStatementNode(self, ctx:C64PascalParser.TryStatementNodeContext):
+        pass
+
+
     # Enter a parse tree produced by C64PascalParser#ifStatementNode.
     def enterIfStatementNode(self, ctx:C64PascalParser.IfStatementNodeContext):
         pass
@@ -503,6 +530,15 @@ class C64PascalParserListener(ParseTreeListener):
         pass
 
 
+    # Enter a parse tree produced by C64PascalParser#exitStatementNode.
+    def enterExitStatementNode(self, ctx:C64PascalParser.ExitStatementNodeContext):
+        pass
+
+    # Exit a parse tree produced by C64PascalParser#exitStatementNode.
+    def exitExitStatementNode(self, ctx:C64PascalParser.ExitStatementNodeContext):
+        pass
+
+
     # Enter a parse tree produced by C64PascalParser#assignmentStatement.
     def enterAssignmentStatement(self, ctx:C64PascalParser.AssignmentStatementContext):
         pass
@@ -518,6 +554,24 @@ class C64PascalParserListener(ParseTreeListener):
 
     # Exit a parse tree produced by C64PascalParser#callStatement.
     def exitCallStatement(self, ctx:C64PascalParser.CallStatementContext):
+        pass
+
+
+    # Enter a parse tree produced by C64PascalParser#raiseStatement.
+    def enterRaiseStatement(self, ctx:C64PascalParser.RaiseStatementContext):
+        pass
+
+    # Exit a parse tree produced by C64PascalParser#raiseStatement.
+    def exitRaiseStatement(self, ctx:C64PascalParser.RaiseStatementContext):
+        pass
+
+
+    # Enter a parse tree produced by C64PascalParser#tryStatement.
+    def enterTryStatement(self, ctx:C64PascalParser.TryStatementContext):
+        pass
+
+    # Exit a parse tree produced by C64PascalParser#tryStatement.
+    def exitTryStatement(self, ctx:C64PascalParser.TryStatementContext):
         pass
 
 
@@ -662,6 +716,15 @@ class C64PascalParserListener(ParseTreeListener):
 
     # Exit a parse tree produced by C64PascalParser#primaryExpression.
     def exitPrimaryExpression(self, ctx:C64PascalParser.PrimaryExpressionContext):
+        pass
+
+
+    # Enter a parse tree produced by C64PascalParser#inheritedExpression.
+    def enterInheritedExpression(self, ctx:C64PascalParser.InheritedExpressionContext):
+        pass
+
+    # Exit a parse tree produced by C64PascalParser#inheritedExpression.
+    def exitInheritedExpression(self, ctx:C64PascalParser.InheritedExpressionContext):
         pass
 
 

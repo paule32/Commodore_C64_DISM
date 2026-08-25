@@ -23,8 +23,7 @@ unitUnit
       IMPLEMENTATION
       usesClause?
       declarationSection*
-      globalRoutineDeclaration*
-      (globalRoutineImplementation | methodImplementation)*
+      (globalRoutineDeclaration | globalRoutineImplementation | methodImplementation)*
       (compoundStatement DOT | END DOT)
     ;
 
@@ -37,8 +36,8 @@ qualifiedIdentifier
     ;
 
 block
-    : declarationSection* globalRoutineDeclaration*
-      (globalRoutineImplementation | methodImplementation)*
+    : declarationSection*
+      (globalRoutineDeclaration | globalRoutineImplementation | methodImplementation)*
       compoundStatement
     ;
 
@@ -167,6 +166,7 @@ methodDirective
         VIRTUAL
         | OVERRIDE
         | CDECL
+        | STDCALL
         | FORWARD
         | STATIC
         | ABSTRACT
@@ -179,28 +179,35 @@ methodDirective
 
 // Example accepted:
 // function jit_object_class_type(AObject: Pointer): Pointer; cdecl; external;
-// Plain Unit-interface prototype, e.g. function IntToStr(...): String;
+// Plain Unit-interface prototype. A calling convention belongs to the
+// public ABI and is therefore legal directly after the signature.
 globalRoutinePrototype
     : (PROCEDURE | FUNCTION) IDENTIFIER formalParameters?
-      (COLON typeIdentifier)? SEMI
+      (COLON typeIdentifier)? SEMI globalRoutineCallingConvention?
     ;
 
-// External/forward declaration.  At least one directive keeps this rule
-// syntactically distinct from a free implementation.
+// External/forward declarations must contain EXTERNAL or FORWARD. Keeping
+// CDECL separate makes `function Foo(...); cdecl; begin ... end;` unambiguously
+// an implementation rather than a declaration.
 globalRoutineDeclaration
     : (PROCEDURE | FUNCTION) IDENTIFIER formalParameters?
-      (COLON typeIdentifier)? SEMI routineDirective+
+      (COLON typeIdentifier)? SEMI globalRoutineCallingConvention?
+      (EXTERNAL externalImportSpecification? | FORWARD) SEMI
+    ;
+
+externalImportSpecification
+    : (IDENTIFIER | STRING_LITERAL) (NAME STRING_LITERAL)?
     ;
 
 // Free routine implementation in a PROGRAM/UNIT implementation section.
-// This is distinct from ClassName.MethodName implementations.
 globalRoutineImplementation
     : (PROCEDURE | FUNCTION) IDENTIFIER formalParameters?
-      (COLON typeIdentifier)? SEMI routineBlock SEMI
+      (COLON typeIdentifier)? SEMI globalRoutineCallingConvention?
+      routineBlock SEMI
     ;
 
-routineDirective
-    : (CDECL | EXTERNAL | FORWARD) SEMI
+globalRoutineCallingConvention
+    : (CDECL | STDCALL) SEMI
     ;
 
 methodImplementation
@@ -267,12 +274,15 @@ statement
     | assignmentStatement                  # assignmentStatementNode
     | inheritedStatement                   # inheritedStatementNode
     | callStatement                        # callStatementNode
+    | raiseStatement                       # raiseStatementNode
+    | tryStatement                         # tryStatementNode
     | ifStatement                          # ifStatementNode
     | whileStatement                       # whileStatementNode
     | repeatStatement                      # repeatStatementNode
     | forStatement                         # forStatementNode
     | BREAK                                # breakStatementNode
     | CONTINUE                             # continueStatementNode
+    | EXIT                                 # exitStatementNode
     ;
 
 assignmentStatement
@@ -281,6 +291,15 @@ assignmentStatement
 
 callStatement
     : designator (LPAREN argumentList? RPAREN)?
+    ;
+
+raiseStatement
+    : RAISE expression?
+    ;
+
+tryStatement
+    : TRY statementSequence? EXCEPT statementSequence? END
+    | TRY statementSequence? FINALLY statementSequence? END
     ;
 
 // Object Pascal inherited call.  `inherited Create;` explicitly selects the
@@ -313,6 +332,7 @@ designator
 designatorSuffix
     : DOT IDENTIFIER
     | LBRACK expression RBRACK
+    | CARET
     ;
 
 argumentList
@@ -345,6 +365,7 @@ multiplicativeExpression
 
 unaryExpression
     : (PLUS | MINUS | NOT) unaryExpression
+    | AT designator
     | primaryExpression
     ;
 
@@ -355,9 +376,16 @@ primaryExpression
     | FALSE
     | NIL
     | typeCastExpression
+    | inheritedExpression
     | designator LPAREN argumentList? RPAREN
     | designator
     | LPAREN expression RPAREN
+    ;
+
+// Stage 208: INHERITED can also participate in an expression.  This is
+// required by VCL code such as `Result := inherited GetWindowStyle or ...`.
+inheritedExpression
+    : INHERITED IDENTIFIER (LPAREN argumentList? RPAREN)?
     ;
 
 // Built-in Pascal type casts are distinct from ordinary routine calls.

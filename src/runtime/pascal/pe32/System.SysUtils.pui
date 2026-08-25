@@ -1,0 +1,101 @@
+{
+    "format": "dBase2Many Pascal Unit Interface",
+    "version": 1,
+    "unit": {
+        "name": "System.SysUtils",
+        "normalized_name": "system_sysutils"
+    },
+    "fingerprint": {
+        "source_sha256": "7c84da17a5964acfac1e1f634f836c555b7e9b5a1dcf5180762ccde031dc9c8f"
+    },
+    "target": {
+        "target": "win32",
+        "object_format": "coff32",
+        "machine": "i386",
+        "pointer_size": 4,
+        "calling_convention": "cdecl"
+    },
+    "object": {
+        "file": "System.SysUtils.coff32.o",
+        "format": "coff32",
+        "machine": "i386"
+    },
+    "uses": {
+        "interface": [
+            "System.Objects"
+        ],
+        "implementation": []
+    },
+    "imports": {},
+    "initialization": {
+        "symbol": "__unit_System_SysUtils"
+    },
+    "finalization": {
+        "symbol": null
+    },
+    "constants": [],
+    "types": {
+        "aliases": [],
+        "subranges": [],
+        "records": [],
+        "enums": [],
+        "arrays": [],
+        "pointers": []
+    },
+    "symbols": {
+        "functions": [],
+        "procedures": [],
+        "classes": [
+            {
+                "name": "Exception",
+                "parent": "TObject",
+                "size": 5,
+                "vmt_symbol": null,
+                "class_name_symbol": null,
+                "fields": [],
+                "methods": [
+                    {
+                        "name": "Create",
+                        "kind": "constructor",
+                        "symbol": "__pas_method_exception_create",
+                        "params": [
+                            {
+                                "name": "AMessage",
+                                "type": "string",
+                                "modifier": "const",
+                                "is_var": false,
+                                "is_const": true
+                            }
+                        ],
+                        "return_type": null,
+                        "visibility": "public",
+                        "calling_convention": "cdecl",
+                        "is_virtual": false,
+                        "is_override": false,
+                        "is_class_method": false,
+                        "vmt_offset": null
+                    }
+                ],
+                "properties": [
+                    {
+                        "name": "Message",
+                        "type": "string",
+                        "read": "FMessage",
+                        "write": null,
+                        "visibility": "published",
+                        "index_params": []
+                    }
+                ]
+            }
+        ],
+        "variables": []
+    },
+    "link": {
+        "objects": [],
+        "archives": [],
+        "resources": [],
+        "embedded_objects": [],
+        "base_directory": "pui"
+    },
+    "macros": {}
+}

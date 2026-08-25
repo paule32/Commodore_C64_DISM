@@ -1,0 +1,233 @@
+{
+    "format": "dBase2Many Pascal Unit Interface",
+    "version": 1,
+    "unit": {
+        "name": "VCL.Windows",
+        "normalized_name": "vcl_windows"
+    },
+    "fingerprint": {
+        "source_sha256": "6c8d57096368c5c6b49307ca15388333989f44b8fc200409e8b513784365dfea"
+    },
+    "target": {
+        "target": "win32",
+        "object_format": "coff32",
+        "machine": "i386",
+        "pointer_size": 4,
+        "calling_convention": "cdecl"
+    },
+    "object": {
+        "file": "VCL.Windows.coff32.o",
+        "format": "coff32",
+        "machine": "i386"
+    },
+    "uses": {
+        "interface": [
+            "System",
+            "Windows.Types",
+            "Windows.Kernel",
+            "Windows.User"
+        ],
+        "implementation": []
+    },
+    "imports": {},
+    "initialization": {
+        "symbol": "__unit_VCL_Windows"
+    },
+    "finalization": {
+        "symbol": null
+    },
+    "constants": [],
+    "types": {
+        "aliases": [],
+        "subranges": [],
+        "records": [],
+        "enums": [],
+        "arrays": [],
+        "pointers": []
+    },
+    "symbols": {
+        "functions": [],
+        "procedures": [],
+        "classes": [
+            {
+                "name": "TWindow",
+                "parent": "TObject",
+                "size": 17,
+                "vmt_symbol": null,
+                "class_name_symbol": null,
+                "fields": [],
+                "methods": [
+                    {
+                        "name": "Create",
+                        "kind": "constructor",
+                        "symbol": "__pas_method_twindow_create",
+                        "params": [],
+                        "return_type": null,
+                        "visibility": "public",
+                        "calling_convention": "cdecl",
+                        "is_virtual": false,
+                        "is_override": false,
+                        "is_class_method": false,
+                        "vmt_offset": null
+                    },
+                    {
+                        "name": "Destroy",
+                        "kind": "destructor",
+                        "symbol": "__pas_method_twindow_destroy",
+                        "params": [],
+                        "return_type": null,
+                        "visibility": "public",
+                        "calling_convention": "cdecl",
+                        "is_virtual": false,
+                        "is_override": false,
+                        "is_class_method": false,
+                        "vmt_offset": null
+                    },
+                    {
+                        "name": "GetHandle",
+                        "kind": "function",
+                        "symbol": "__pas_method_twindow_gethandle",
+                        "params": [],
+                        "return_type": "hwnd",
+                        "visibility": "public",
+                        "calling_convention": "cdecl",
+                        "is_virtual": false,
+                        "is_override": false,
+                        "is_class_method": false,
+                        "vmt_offset": null
+                    },
+                    {
+                        "name": "DispatchMessage",
+                        "kind": "function",
+                        "symbol": "__pas_method_twindow_dispatchmessage",
+                        "params": [
+                            {
+                                "name": "winhWnd",
+                                "type": "hwnd",
+                                "modifier": "value",
+                                "is_var": false,
+                                "is_const": false
+                            },
+                            {
+                                "name": "Msg",
+                                "type": "uint",
+                                "modifier": "value",
+                                "is_var": false,
+                                "is_const": false
+                            },
+                            {
+                                "name": "wParam",
+                                "type": "wparam",
+                                "modifier": "value",
+                                "is_var": false,
+                                "is_const": false
+                            },
+                            {
+                                "name": "lParam",
+                                "type": "lparam",
+                                "modifier": "value",
+                                "is_var": false,
+                                "is_const": false
+                            }
+                        ],
+                        "return_type": "lresult",
+                        "visibility": "public",
+                        "calling_convention": "cdecl",
+                        "is_virtual": false,
+                        "is_override": false,
+                        "is_class_method": false,
+                        "vmt_offset": null
+                    }
+                ],
+                "properties": []
+            },
+            {
+                "name": "TForm",
+                "parent": "TWindow",
+                "size": 37,
+                "vmt_symbol": null,
+                "class_name_symbol": null,
+                "fields": [],
+                "methods": [
+                    {
+                        "name": "Create",
+                        "kind": "constructor",
+                        "symbol": "__pas_method_tform_create",
+                        "params": [],
+                        "return_type": null,
+                        "visibility": "public",
+                        "calling_convention": "cdecl",
+                        "is_virtual": false,
+                        "is_override": false,
+                        "is_class_method": false,
+                        "vmt_offset": null
+                    },
+                    {
+                        "name": "Destroy",
+                        "kind": "destructor",
+                        "symbol": "__pas_method_tform_destroy",
+                        "params": [],
+                        "return_type": null,
+                        "visibility": "public",
+                        "calling_convention": "cdecl",
+                        "is_virtual": false,
+                        "is_override": false,
+                        "is_class_method": false,
+                        "vmt_offset": null
+                    }
+                ],
+                "properties": [
+                    {
+                        "name": "Height",
+                        "type": "integer",
+                        "read": "FHeight",
+                        "write": "FHeight",
+                        "visibility": "public",
+                        "index_params": []
+                    },
+                    {
+                        "name": "Width",
+                        "type": "integer",
+                        "read": "FWidth",
+                        "write": "FWidth",
+                        "visibility": "public",
+                        "index_params": []
+                    },
+                    {
+                        "name": "Top",
+                        "type": "integer",
+                        "read": "FTop",
+                        "write": "FTop",
+                        "visibility": "public",
+                        "index_params": []
+                    },
+                    {
+                        "name": "Left",
+                        "type": "integer",
+                        "read": "FLeft",
+                        "write": "FLeft",
+                        "visibility": "public",
+                        "index_params": []
+                    },
+                    {
+                        "name": "Caption",
+                        "type": "string",
+                        "read": "FCaption",
+                        "write": "FCaption",
+                        "visibility": "public",
+                        "index_params": []
+                    }
+                ]
+            }
+        ],
+        "variables": []
+    },
+    "link": {
+        "objects": [],
+        "archives": [],
+        "resources": [],
+        "embedded_objects": [],
+        "base_directory": "pui"
+    },
+    "macros": {}
+}
