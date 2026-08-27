@@ -1,0 +1,9 @@
+; ---------------------------------------------------------------------------
+; File: exception.def
+; Copyright (c) 2026 by Jens Kallup - paule32
+; All rights reserved.
+; ---------------------------------------------------------------------------
+_jit_exception_push             @36
+_jit_exception_pop              @37
+_jit_setjmp                     @38
+_jit_longjmp                    @39

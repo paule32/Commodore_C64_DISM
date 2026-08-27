@@ -81,3 +81,7 @@ src/examples/dbase/Unbenannt_Projekt_13.pro
 src/examples/dbase/Unbenannt_Projekt_14.pro
 src/examples/dbase/Unbenannt_Projekt_15.pro
 src/md/Unbenannt_9.txt
+src/d64qt5/1
+src/runtime/compiler/win64/libdbase2many.64.dll.a
+src/runtime/compiler/win64/libasmjit.64.dll.a
+src/runtime/compiler/win64/libasmjit.64.a

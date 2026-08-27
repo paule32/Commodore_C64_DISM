@@ -1,3 +1,8 @@
+// ---------------------------------------------------------------------------
+// File:   d64_workstation.cpp
+// Author: (c) 2026 Jens Kallup - paule32
+// All rights reserved
+// ---------------------------------------------------------------------------
 #include "d64_workstation.h"
 
 #ifdef _WIN32
@@ -11,15 +16,19 @@
 
 namespace {
 
-HDESK g_original_thread_desktop = nullptr;
-HDESK g_original_input_desktop = nullptr;
-HDESK g_work_desktop = nullptr;
-HHOOK g_keyboard_hook = nullptr;
-HWND g_main_window = nullptr;
-HWND g_exit_window = nullptr;
-HWND g_bottom_panel_window = nullptr;
-ATOM g_exit_window_class = 0;
+HDESK g_original_thread_desktop  = nullptr;
+HDESK g_original_input_desktop   = nullptr;
+HDESK g_work_desktop             = nullptr;
+
+HHOOK g_keyboard_hook            = nullptr;
+
+HWND g_main_window               = nullptr;
+HWND g_exit_window               = nullptr;
+HWND g_bottom_panel_window       = nullptr;
+
+ATOM g_exit_window_class         = 0;
 ATOM g_bottom_panel_window_class = 0;
+
 enum class PanelHotItem {
     None,
     Exit,
@@ -27,38 +36,40 @@ enum class PanelHotItem {
     Db
 };
 PanelHotItem g_panel_hover = PanelHotItem::None;
+
 D64WorkstationCallback g_exit_callback = nullptr;
 D64WorkstationBtxCallback g_btx_callback = nullptr;
 D64WorkstationCallback g_db_callback = nullptr;
 D64WorkstationCallback g_server_callback = nullptr;
 D64WorkstationServerClientCallback g_server_client_callback = nullptr;
+
 int g_server_client_count = 0;
 int g_bottom_hover_client = -2; // -2 none, -1 server, >=0 SRV-PC n
+
 std::vector<DWORD> g_workstation_child_pids;
+
 bool g_workstation_active = false;   // GUI-Thread ist an der Workstation gebunden
 bool g_workstation_visible = false;  // Workstation ist fuer diesen Prozess aktiv/sichtbar
 bool g_leave_started = false;
 bool g_workstation_owner = false;    // nur die erste Instanz besitzt Panel/Switch/Hook
 bool g_workstation_joined = false;   // weitere Prozesse benutzen denselben Desktop
-HANDLE g_workstation_mutex = nullptr;
+
+HANDLE g_workstation_mutex       = nullptr;
 HANDLE g_workstation_ready_event = nullptr;
-HANDLE g_application_mutex = nullptr;
+HANDLE g_application_mutex       = nullptr;
+
 std::wstring g_application_path;
 std::wstring g_application_mutex_name;
 std::wstring g_application_window_property_name;
+
 wchar_t g_desktop_name[128] = {0};
 wchar_t g_original_input_name[128] = {0};
 
-constexpr wchar_t WORKSTATION_MUTEX_NAME[] =
-    L"Global\\dBase2Many.D64Workstation.Singleton";
-constexpr wchar_t WORKSTATION_READY_EVENT_NAME[] =
-    L"Global\\dBase2Many.D64Workstation.Ready";
-constexpr wchar_t WORKSTATION_DESKTOP_NAME[] =
-    L"D64Workstation";
-constexpr wchar_t APPLICATION_MUTEX_PREFIX[] =
-    L"Global\\dBase2Many.D64Application.";
-constexpr wchar_t WORKSTATION_TOOL_WINDOW_PROPERTY[] =
-    L"D64Workstation.ToolWindow";
+constexpr wchar_t WORKSTATION_MUTEX_NAME          [] = L"Global\\dBase2Many.D64Workstation.Singleton";
+constexpr wchar_t WORKSTATION_READY_EVENT_NAME    [] = L"Global\\dBase2Many.D64Workstation.Ready";
+constexpr wchar_t WORKSTATION_DESKTOP_NAME        [] = L"D64Workstation";
+constexpr wchar_t APPLICATION_MUTEX_PREFIX        [] = L"Global\\dBase2Many.D64Application.";
+constexpr wchar_t WORKSTATION_TOOL_WINDOW_PROPERTY[] = L"D64Workstation.ToolWindow";
 
 ACCESS_MASK workstation_desktop_access()
 {
@@ -518,15 +529,15 @@ const wchar_t *workstation_exit_class_name()
     return L"D64WorkstationPanel";
 }
 
-constexpr int WORKSTATION_PANEL_WIDTH = 76;
-constexpr int WORKSTATION_EXIT_TOP = 6;
-constexpr int WORKSTATION_BTX_TOP = 94;
-constexpr int WORKSTATION_DB_TOP = 182;
-constexpr int WORKSTATION_ICON_LEFT = 12;
-constexpr int WORKSTATION_ICON_SIZE = 52;
+constexpr int WORKSTATION_PANEL_WIDTH =  76;
+constexpr int WORKSTATION_EXIT_TOP    =   6;
+constexpr int WORKSTATION_BTX_TOP     =  94;
+constexpr int WORKSTATION_DB_TOP      = 182;
+constexpr int WORKSTATION_ICON_LEFT   =  12;
+constexpr int WORKSTATION_ICON_SIZE   =  52;
 constexpr int WORKSTATION_BOTTOM_PANEL_HEIGHT = WORKSTATION_ICON_SIZE;
-constexpr int WORKSTATION_PANEL_GAP = 4;
-constexpr int WORKSTATION_ITEM_HEIGHT = 86;
+constexpr int WORKSTATION_PANEL_GAP   =   4;
+constexpr int WORKSTATION_ITEM_HEIGHT =  86;
 
 RECT panel_item_rect(int top)
 {
@@ -556,40 +567,48 @@ void draw_exit_symbol(HDC dc, const RECT &iconRect)
 {
     HPEN xPen = CreatePen(PS_SOLID, 5, RGB(255, 255, 255));
     HGDIOBJ oldPen = SelectObject(dc, xPen);
-    MoveToEx(dc, iconRect.left + 14, iconRect.top + 14, nullptr);
-    LineTo(dc, iconRect.right - 14, iconRect.bottom - 14);
-    MoveToEx(dc, iconRect.right - 14, iconRect.top + 14, nullptr);
-    LineTo(dc, iconRect.left + 14, iconRect.bottom - 14);
+    
+    MoveToEx    (dc, iconRect.left + 14, iconRect.top + 14, nullptr);
+    LineTo      (dc, iconRect.right - 14, iconRect.bottom - 14);
+    MoveToEx    (dc, iconRect.right - 14, iconRect.top + 14, nullptr);
+    LineTo      (dc, iconRect.left + 14, iconRect.bottom - 14);
+    
     SelectObject(dc, oldPen);
     DeleteObject(xPen);
 }
 
 void draw_database_symbol(HDC dc, const RECT &iconRect)
 {
-    const int left = iconRect.left + 10;
-    const int right = iconRect.right - 10;
-    const int top = iconRect.top + 9;
-    const int bottom = iconRect.bottom - 9;
+    const int left   = iconRect.left   + 10;
+    const int right  = iconRect.right  - 10;
+    
+    const int top    = iconRect.top    +  9;
+    const int bottom = iconRect.bottom -  9;
+    
     const int ellipseHeight = 12;
 
     HBRUSH bodyBrush = CreateSolidBrush(RGB(0, 128, 82));
-    HPEN outlinePen = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
+    HPEN outlinePen  = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
+    
     HGDIOBJ oldBrush = SelectObject(dc, bodyBrush);
-    HGDIOBJ oldPen = SelectObject(dc, outlinePen);
+    HGDIOBJ oldPen   = SelectObject(dc, outlinePen);
 
     Rectangle(dc, left, top + ellipseHeight / 2, right, bottom - ellipseHeight / 2);
+    
     Ellipse(dc, left, top, right, top + ellipseHeight);
     Ellipse(dc, left, bottom - ellipseHeight, right, bottom);
 
     const int line1 = top + (bottom - top) / 2;
     const int line2 = top + (bottom - top) * 3 / 4;
-    MoveToEx(dc, left + 2, line1, nullptr);
-    LineTo(dc, right - 2, line1);
-    MoveToEx(dc, left + 2, line2, nullptr);
-    LineTo(dc, right - 2, line2);
+    
+    MoveToEx(dc, left  + 2, line1, nullptr);
+    LineTo  (dc, right - 2, line1);
+    MoveToEx(dc, left  + 2, line2, nullptr);
+    LineTo  (dc, right - 2, line2);
 
     SelectObject(dc, oldPen);
     SelectObject(dc, oldBrush);
+    
     DeleteObject(outlinePen);
     DeleteObject(bodyBrush);
 }
@@ -724,8 +743,10 @@ void draw_bottom_button(HDC dc, const RECT &rc, const wchar_t *text, bool hover,
     HGDIOBJ oldBrush = SelectObject(dc, brush);
     HGDIOBJ oldPen = SelectObject(dc, pen);
     RoundRect(dc, rc.left + 3, rc.top + 3, rc.right - 3, rc.bottom - 3, 8, 8);
+    
     SelectObject(dc, oldPen);
     SelectObject(dc, oldBrush);
+    
     DeleteObject(pen);
     DeleteObject(brush);
 
@@ -735,6 +756,7 @@ void draw_bottom_button(HDC dc, const RECT &rc, const wchar_t *text, bool hover,
     HGDIOBJ oldFont = SelectObject(dc, font);
     RECT textRect = rc;
     DrawTextW(dc, text, -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    
     SelectObject(dc, oldFont);
     DeleteObject(font);
 }
@@ -1787,13 +1809,16 @@ void D64WorkstationFinalizeLeave()
     g_original_thread_desktop = nullptr;
     g_original_input_name[0] = L'\0';
     g_desktop_name[0] = L'\0';
-    g_main_window = nullptr;
+    
+    g_main_window   = nullptr;
     g_exit_callback = nullptr;
-    g_btx_callback = nullptr;
-    g_db_callback = nullptr;
+    g_btx_callback  = nullptr;
+    g_db_callback   = nullptr;
+    
     g_workstation_child_pids.clear();
-    g_workstation_active = false;
+    g_workstation_active  = false;
     g_workstation_visible = false;
+    
     g_leave_started = false;
 
     // OWNER gibt den Workstation-Lifetime-Mutex als allerletzten Schritt frei.
@@ -2110,25 +2135,32 @@ void D64WorkstationSetDbCallback(D64WorkstationCallback) {}
 void D64WorkstationSetServerCallback(D64WorkstationCallback) {}
 void D64WorkstationSetServerClientCallback(D64WorkstationServerClientCallback) {}
 void D64WorkstationSetServerClientCount(int) {}
+
 bool D64WorkstationPrepare() { return true; }
 bool D64WorkstationActivate(HWND) { return true; }
 bool D64WorkstationInstallKeyboardGuard(HWND) { return true; }
+
 void D64WorkstationBeginLeave() {}
 void D64WorkstationFinalizeLeave() {}
+
 bool D64WorkstationIsActive() { return false; }
 bool D64WorkstationIsVisible() { return false; }
 bool D64WorkstationOwnsDesktop() { return false; }
 bool D64WorkstationJoinedExisting() { return false; }
 bool D64WorkstationExitIconVisible() { return false; }
 bool D64WorkstationPanelVisible() { return false; }
-int D64WorkstationLeftPanelWidth() { return 0; }
-int D64WorkstationBottomPanelHeight() { return 0; }
+
+int  D64WorkstationLeftPanelWidth() { return 0; }
+int  D64WorkstationBottomPanelHeight() { return 0; }
+
 void D64WorkstationConstrainMovingRect(RECT *) {}
 void D64WorkstationConstrainMaximizeInfo(void *) {}
 void D64WorkstationPositionMinimizedWindow(HWND) {}
 void D64WorkstationCloseApplicationWindows(HWND) {}
+
 bool D64WorkstationLaunchProgram(const wchar_t *, const wchar_t *) { return false; }
 bool D64WorkstationApplicationInstanceOwned() { return false; }
+
 const wchar_t *D64WorkstationApplicationMutexName() { return L""; }
 const wchar_t *D64WorkstationDesktopName() { return L""; }
 

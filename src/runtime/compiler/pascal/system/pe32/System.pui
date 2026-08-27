@@ -1,0 +1,62 @@
+{
+    "format": "dBase2Many Pascal Unit Interface",
+    "version": 1,
+    "unit": {
+        "name": "System",
+        "normalized_name": "system"
+    },
+    "fingerprint": {
+        "source_sha256": "7a3f2a347b373c2b5fca01efc399de36532de29eb08feab8d2ecd5e483328d8b"
+    },
+    "target": {
+        "target": "win32",
+        "object_format": "coff32",
+        "machine": "i386",
+        "pointer_size": 4,
+        "calling_convention": "cdecl"
+    },
+    "object": {
+        "file": "System.coff32.o",
+        "format": "coff32",
+        "machine": "i386"
+    },
+    "uses": {
+        "interface": [
+            "System.Types",
+            "System.Strings",
+            "System.SysUtils",
+            "System.Objects"
+        ],
+        "implementation": []
+    },
+    "imports": {},
+    "initialization": {
+        "symbol": "__unit_System"
+    },
+    "finalization": {
+        "symbol": null
+    },
+    "constants": [],
+    "types": {
+        "aliases": [],
+        "subranges": [],
+        "records": [],
+        "enums": [],
+        "arrays": [],
+        "pointers": []
+    },
+    "symbols": {
+        "functions": [],
+        "procedures": [],
+        "classes": [],
+        "variables": []
+    },
+    "link": {
+        "objects": [],
+        "archives": [],
+        "resources": [],
+        "embedded_objects": [],
+        "base_directory": "pui"
+    },
+    "macros": {}
+}

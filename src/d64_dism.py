@@ -72,6 +72,10 @@
 #  * Stage 160: getdefaultlocale-Aufrufe entfernt; Timer-Property-Absturz mit QTreeWidgetItem behoben.
 #  * Stage 161: interne WFM-Editor-Buildleisten vollständig entfernt; Source-Outline Dark-Mode angepasst.
 #  * Stage 162: CTRL+F-Suchen-Dialog für Quellcode-Editoren, trefferweise Suche und optionale Projektsuche.
+#  * Stage 232: Projektbaum-Mehrfachauswahl/Delete/F2, umlaufende F3-Suche,
+#    getrennte PE32/PE64-Modulausgaben und qmake-Dual-Target-Beispiele.
+#  * Stage 233: Ausgabe-Pfadhelfer ohne ungültige MainWindow-Klassenreferenz.
+#  * Stage 234: Private Unit-EXTERNAL-Routinen bleiben beim USES-Merge erhalten.
 #  * Stage 163: DBF-Tabellendesigner mit Daten-Tab, typisierten Zellen, Navigation, Kontextmenü und Auto-Save.
 #  * Stage 164: DBF-Dateiöffnung, nicht-visuelle WFM-Properties/Table/SQL, Designer-TAB-Fokus und 4-Space-Indent.
 #  * Stage 166: Bearbeiten-Menü + Ctrl+Z/Ctrl+Y Undo/Redo und Copy/Paste/Cut für Texteditoren.
@@ -89,6 +93,17 @@
 #  * Stage 191: PE32+-Pascal-Units nutzen AMD64-Anker; Units-Kontextmenü sortiert auf-/absteigend und speichert.
 #  * Stage 193: interner AMD64-Assembler akzeptiert 8-/16-Bit-ModR/M-Register (z.B. movzx eax, al).
 #  * Stage 198: Pascal-Compile mit QThread und echter 1..100-%-ProgressBar unter dem Quelltexteditor.
+#  * Stage 229: zielgenaue Pascal-COFF-Linkeingaben; Legacy-*.o bevorzugt
+#    *.coff32.o/*.coff64.o, Archive ignorieren Symbolindizes und Fehler nennen
+#    die konkrete Datei samt erkannter Architektur.
+#  * Stage 230: PE32-COFF-Reader akzeptiert .text$*/.data*/.rdata*/.bss*
+#    samt Ausrichtung, Sektionssymbolen und Relocations; kein Zwang mehr auf
+#    eine einzelne, exakt '.text' benannte Sektion. Stage 235 bewahrt .bss virtuell.
+#  * Stage 231: GNU-/Microsoft-Importbibliotheksmitglieder (.idata$* und
+#    IMPORT_OBJECT_HEADER) werden nicht als statische Codeobjekte materialisiert;
+#    DLL-Aufrufe bleiben Aufgabe der vorhandenen d64-Importauflösung.
+#  * Stage 235: echte PE32-.bss-Sektion mit RESB/RESW/RESD/RESQ; nullinitialisierte
+#    Pascal-Runtimeblöcke besitzen keine COFF-/PE-Rohdaten mehr.
 #  * Stage 137: farbcodierte Zahlenmauern sowie Addition/Subtraktion/Einmaleins/Fehlende-Zahl-Spiele.
 #    Mehrtabellen-Tabs, Feldeditoren und Kontextoperationen für Feldzeilen
 #
@@ -1874,7 +1889,7 @@ def windows_application_predefined_macros(mode: str, target: str = "pe32") -> Di
 # ---------------------------------------------------------------------------
 # dBase Qt5 runtime policy.
 #
-# Die generierte dBase-EXE importiert d64qt5.dll. Diese DLL und ihre Qt5-
+# Die generierte dBase-EXE importiert libd64_qt5.dll. Diese DLL und ihre Qt5-
 # Abhaengigkeiten werden ausschliesslich vom Benutzer bereitgestellt.
 # d64_dism fuehrt fuer die Qt5-Runtime keinerlei externen Build aus.
 # ---------------------------------------------------------------------------
@@ -1910,6 +1925,7 @@ class PE32Relocation:
     offset: int
     symbol: str
     relocation_type: int
+    section: str = ".text"
 
 
 @dataclass(frozen=True)
@@ -1922,6 +1938,8 @@ class PE32ObjectProgram:
     imports: Dict[str, Tuple[str, str]] = field(default_factory=dict)
     exports: Dict[str, str] = field(default_factory=dict)
     dll_name: Optional[str] = None
+    bss_size: int = 0
+    symbol_sections: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -1941,6 +1959,8 @@ class Coff32ParsedObject:
     imports: Dict[str, Tuple[str, str]] = field(default_factory=dict)
     exports: Dict[str, str] = field(default_factory=dict)
     dll_name: Optional[str] = None
+    bss_size: int = 0
+    symbol_sections: Dict[str, str] = field(default_factory=dict)
 
 
 _X86_REGISTERS = {
@@ -2293,13 +2313,15 @@ def _pe32_unquote(text: str) -> str:
 def _parse_pe32_source_lines(
     source: str,
 ) -> Tuple[
-    List[Tuple[int, str]],
+    List[Tuple[int, str, str]],
     Dict[str, int],
+    Dict[str, str],
     str,
     Tuple[str, ...],
     Dict[str, Tuple[str, str]],
     Dict[str, str],
     Optional[str],
+    int,
 ]:
     """Parst den internen IA-32-Assembler einschließlich Linker-Metadaten.
 
@@ -2316,14 +2338,16 @@ def _parse_pe32_source_lines(
     ``dllname "name.dll"``
         Speichert den gewünschten DLL-Namen im COFF32-Objekt.
     """
-    lines: List[Tuple[int, str]] = []
+    lines: List[Tuple[int, str, str]] = []
     labels: Dict[str, int] = {}
+    symbol_sections: Dict[str, str] = {}
     externals = set()
     imports: Dict[str, Tuple[str, str]] = {}
     exports: Dict[str, str] = {}
     dll_name: Optional[str] = None
     entry_symbol = "_start"
-    offset = 0
+    current_section = ".text"
+    offsets = {".text": 0, ".bss": 0}
 
     def instruction_size(text: str, line: int) -> int:
         lower = text.strip().casefold()
@@ -2422,7 +2446,8 @@ def _parse_pe32_source_lines(
             key = name.casefold()
             if key in labels:
                 raise PE32AssemblerError(f"Symbol mehrfach definiert: {name}", line_number)
-            labels[key] = offset
+            labels[key] = offsets[current_section]
+            symbol_sections[key] = current_section
             text = match.group(2).strip()
             if not text:
                 break
@@ -2431,14 +2456,35 @@ def _parse_pe32_source_lines(
         parts = text.split(None, 1)
         directive = parts[0].casefold().lstrip(".")
         args = parts[1].strip() if len(parts) > 1 else ""
-        if directive in {"section", "text", "code", "global", "globl", "public", "bits", "cpu", "model"}:
-            lines.append((line_number, text))
+        if directive in {"section", "segment"}:
+            section_name = args.split()[0].casefold() if args else ""
+            if section_name in {"text", ".text", "code", ".code"}:
+                current_section = ".text"
+            elif section_name in {"bss", ".bss"}:
+                current_section = ".bss"
+            else:
+                raise PE32AssemblerError(
+                    f"PE32-Sektion nicht unterstützt: {section_name or '<leer>'}",
+                    line_number,
+                )
+            lines.append((line_number, text, current_section))
+            continue
+        if directive in {"text", "code"}:
+            current_section = ".text"
+            lines.append((line_number, text, current_section))
+            continue
+        if directive == "bss":
+            current_section = ".bss"
+            lines.append((line_number, text, current_section))
+            continue
+        if directive in {"global", "globl", "public", "bits", "cpu", "model"}:
+            lines.append((line_number, text, current_section))
             continue
         if directive in {"extern", "extrn"}:
             for item in _x86_split_operands(args):
                 if item:
                     externals.add(item.strip().casefold())
-            lines.append((line_number, text))
+            lines.append((line_number, text, current_section))
             continue
         if directive == "import":
             operands = _x86_split_operands(args)
@@ -2454,7 +2500,7 @@ def _parse_pe32_source_lines(
             key = symbol.casefold()
             imports[key] = (dll, member)
             externals.add(key)
-            lines.append((line_number, text))
+            lines.append((line_number, text, current_section))
             continue
         if directive == "export":
             operands = _x86_split_operands(args)
@@ -2467,49 +2513,85 @@ def _parse_pe32_source_lines(
             if not public_name or not internal_name:
                 raise PE32AssemblerError("EXPORT enthält einen leeren Namen.", line_number)
             exports[public_name] = internal_name.casefold()
-            lines.append((line_number, text))
+            lines.append((line_number, text, current_section))
             continue
         if directive == "dllname":
             if not args:
                 raise PE32AssemblerError('DLLNAME erwartet z. B. dllname "mylib.dll".', line_number)
             dll_name = _pe32_unquote(args)
-            lines.append((line_number, text))
+            lines.append((line_number, text, current_section))
             continue
         if directive == "entry":
             if not args:
                 raise PE32AssemblerError(".entry erwartet ein Symbol.", line_number)
             entry_symbol = args.split()[0]
-            lines.append((line_number, text))
+            lines.append((line_number, text, current_section))
             continue
         if directive == "align":
             alignment = _x86_parse_int(args)
             if alignment is None or alignment <= 0 or alignment & (alignment - 1):
                 raise PE32AssemblerError("ALIGN erwartet eine Zweierpotenz.", line_number)
-            offset = _align_up(offset, alignment)
-            lines.append((line_number, text))
+            offsets[current_section] = _align_up(offsets[current_section], alignment)
+            lines.append((line_number, text, current_section))
+            continue
+        reserve_unit = {
+            "resb": 1, "rb": 1,
+            "resw": 2, "rw": 2,
+            "resd": 4, "rd": 4,
+            "resq": 8, "rq": 8,
+        }.get(directive)
+        if reserve_unit is not None:
+            if current_section != ".bss":
+                raise PE32AssemblerError(
+                    f"{directive.upper()} ist nur in .bss erlaubt.", line_number
+                )
+            count = _x86_parse_int(args)
+            if count is None or count < 0:
+                raise PE32AssemblerError(
+                    f"{directive.upper()} erwartet eine nichtnegative Anzahl.",
+                    line_number,
+                )
+            offsets[current_section] += int(count) * reserve_unit
+            lines.append((line_number, text, current_section))
             continue
         if directive in {"db", "byte"}:
-            offset += len(_x86_data_values(args, line_number, 1))
-            lines.append((line_number, text))
+            if current_section == ".bss":
+                raise PE32AssemblerError(
+                    "Initialisierte Daten sind in .bss nicht erlaubt; RESB/RESW/RESD/RESQ verwenden.",
+                    line_number,
+                )
+            offsets[current_section] += len(_x86_data_values(args, line_number, 1))
+            lines.append((line_number, text, current_section))
             continue
         if directive in {"dw", "word"}:
-            offset += len(_x86_data_values(args, line_number, 2))
-            lines.append((line_number, text))
+            if current_section == ".bss":
+                raise PE32AssemblerError("Initialisierte Daten sind in .bss nicht erlaubt.", line_number)
+            offsets[current_section] += len(_x86_data_values(args, line_number, 2))
+            lines.append((line_number, text, current_section))
             continue
         if directive in {"dd", "dword", "long"}:
-            offset += 4 * len(_x86_split_operands(args))
-            lines.append((line_number, text))
+            if current_section == ".bss":
+                raise PE32AssemblerError("Initialisierte Daten sind in .bss nicht erlaubt.", line_number)
+            offsets[current_section] += 4 * len(_x86_split_operands(args))
+            lines.append((line_number, text, current_section))
             continue
-        offset += instruction_size(text, line_number)
-        lines.append((line_number, text))
+        if current_section != ".text":
+            raise PE32AssemblerError(
+                f"Ausführbarer IA-32-Befehl ist in {current_section} nicht erlaubt: {text}",
+                line_number,
+            )
+        offsets[current_section] += instruction_size(text, line_number)
+        lines.append((line_number, text, current_section))
     return (
         lines,
         labels,
+        symbol_sections,
         entry_symbol,
         tuple(sorted(externals)),
         imports,
         exports,
         dll_name,
+        int(offsets[".bss"]),
     )
 
 def assemble_pe32_object_source(
@@ -2519,8 +2601,8 @@ def assemble_pe32_object_source(
 ) -> PE32ObjectProgram:
     del filename
     (
-        lines, labels, entry_symbol, declared_externals,
-        declared_imports, declared_exports, dll_name,
+        lines, labels, symbol_sections, entry_symbol, declared_externals,
+        declared_imports, declared_exports, dll_name, bss_size,
     ) = _parse_pe32_source_lines(source)
     output = bytearray()
     relocations: List[PE32Relocation] = []
@@ -2529,7 +2611,9 @@ def assemble_pe32_object_source(
 
     def emit_symbol32(symbol: str, relocation_type: int) -> None:
         relocations.append(
-            PE32Relocation(len(output), symbol.casefold(), relocation_type)
+            PE32Relocation(
+                len(output), symbol.casefold(), relocation_type, ".text"
+            )
         )
         output.extend(b"\x00\x00\x00\x00")
         if symbol.casefold() not in labels:
@@ -2553,6 +2637,7 @@ def assemble_pe32_object_source(
                     start + relocation_local,
                     symbol.casefold(),
                     IMAGE_REL_I386_DIR32,
+                    ".text",
                 )
             )
             if symbol.casefold() not in labels:
@@ -2560,11 +2645,15 @@ def assemble_pe32_object_source(
 
     # zweiter Durchlauf: Labels liefern aus dem ersten Pass die Zieloffsets.
     cursor = 0
-    label_positions = sorted((offset, name) for name, offset in labels.items())
+    label_positions = sorted(
+        (offset, name)
+        for name, offset in labels.items()
+        if symbol_sections.get(name, ".text") == ".text"
+    )
     label_iter = iter(label_positions)
     next_label = next(label_iter, None)
 
-    for line_number, original in lines:
+    for line_number, original, section in lines:
         # Position auf die im ersten Durchlauf implizit berechnete Reihenfolge bringen.
         while next_label is not None and next_label[0] <= len(output):
             next_label = next(label_iter, None)
@@ -2573,15 +2662,25 @@ def assemble_pe32_object_source(
         directive = parts[0].casefold().lstrip(".")
         args = parts[1].strip() if len(parts) > 1 else ""
         if directive in {
-            "section", "text", "code", "global", "globl", "public",
+            "section", "segment", "text", "code", "bss",
+            "global", "globl", "public",
             "bits", "cpu", "model", "extern", "extrn", "entry",
             "import", "export", "dllname",
         }:
             continue
+        if directive in {"resb", "rb", "resw", "rw", "resd", "rd", "resq", "rq"}:
+            continue
         if directive == "align":
+            if section == ".bss":
+                continue
             alignment = int(_x86_parse_int(args) or 1)
             ensure_offset(_align_up(len(output), alignment))
             continue
+        if section != ".text":
+            raise PE32AssemblerError(
+                f"Nur Reservierungsdirektiven sind in {section} erlaubt.",
+                line_number,
+            )
         if directive in {"db", "byte"}:
             output.extend(_x86_data_values(args, line_number, 1))
             continue
@@ -2899,6 +2998,8 @@ def assemble_pe32_object_source(
         imports=dict(declared_imports),
         exports=dict(declared_exports),
         dll_name=dll_name,
+        bss_size=int(bss_size),
+        symbol_sections=dict(symbol_sections),
     )
 
 
@@ -2997,6 +3098,8 @@ PE32_DEFAULT_IMPORTS: Dict[str, Tuple[str, str]] = {
     "getstdhandle": ("kernel32.dll", "GetStdHandle"),
     "setconsolescreenbuffersize": ("kernel32.dll", "SetConsoleScreenBufferSize"),
     "setconsolewindowinfo": ("kernel32.dll", "SetConsoleWindowInfo"),
+    "getconsolescreenbufferinfo": ("kernel32.dll", "GetConsoleScreenBufferInfo"),
+    "setconsolecursorposition": ("kernel32.dll", "SetConsoleCursorPosition"),
     "getconsolemode": ("kernel32.dll", "GetConsoleMode"),
     "setconsolemode": ("kernel32.dll", "SetConsoleMode"),
     "writefile": ("kernel32.dll", "WriteFile"),
@@ -3067,16 +3170,16 @@ PE32_DEFAULT_IMPORTS: Dict[str, Tuple[str, str]] = {
     # lokal einen fuehrenden Unterstrich (_jit_*).  _resolve_pe32_default_import
     # entfernt diesen fuer die Tabellenabfrage; der PE-Exportname der DLL
     # bleibt deshalb absichtlich undecoriert (jit_*).
-    "jit_object_instance_new": ("libruntime_mini.dll", "jit_object_instance_new"),
-    "jit_object_instance_free": ("libruntime_mini.dll", "jit_object_instance_free"),
-    "jit_object_free": ("libruntime_mini.dll", "jit_object_free"),
-    "jit_object_class_type": ("libruntime_mini.dll", "jit_object_class_type"),
-    "jit_class_parent": ("libruntime_mini.dll", "jit_class_parent"),
-    "jit_class_name": ("libruntime_mini.dll", "jit_class_name"),
-    "jit_class_instance_size": ("libruntime_mini.dll", "jit_class_instance_size"),
-    "jit_inherits_from_class": ("libruntime_mini.dll", "jit_inherits_from_class"),
-    "jit_inherits_from_object": ("libruntime_mini.dll", "jit_inherits_from_object"),
-    "jit_dynstring_from_cstr": ("libruntime_mini.dll", "jit_dynstring_from_cstr"),
+    "jit_object_instance_new"   : ("libd64_qt5.dll", "jit_object_instance_new"),
+    "jit_object_instance_free"  : ("libd64_qt5.dll", "jit_object_instance_free"),
+    "jit_object_free"           : ("libd64_qt5.dll", "jit_object_free"),
+    "jit_object_class_type"     : ("libd64_qt5.dll", "jit_object_class_type"),
+    "jit_class_parent"          : ("libd64_qt5.dll", "jit_class_parent"),
+    "jit_class_name"            : ("libd64_qt5.dll", "jit_class_name"),
+    "jit_class_instance_size"   : ("libd64_qt5.dll", "jit_class_instance_size"),
+    "jit_inherits_from_class"   : ("libd64_qt5.dll", "jit_inherits_from_class"),
+    "jit_inherits_from_object"  : ("libd64_qt5.dll", "jit_inherits_from_object"),
+    "jit_dynstring_from_cstr"   : ("libd64_qt5.dll", "jit_dynstring_from_cstr"),
 }
 
 
@@ -3259,6 +3362,7 @@ def build_pe32_image_with_imports_exports(
     dll: bool = False,
     image_base: int = PE32_IMAGE_BASE,
     base_relocations: Optional[Sequence[int]] = None,
+    bss_size: int = 0,
 ) -> Tuple[bytes, bytes]:
     """Schreibt ein vollständiges PE32-EXE- oder DLL-Image intern.
 
@@ -3267,13 +3371,22 @@ def build_pe32_image_with_imports_exports(
     """
     text = bytearray(code)
     text_rva = PE32_SECTION_RVA
+    bss_size = max(0, int(bss_size or 0))
+    next_rva = _align_up(
+        text_rva + max(1, len(text)), PE32_SECTION_ALIGNMENT
+    )
+    bss_rva = 0
+    if bss_size:
+        bss_rva = next_rva
+        next_rva = _align_up(
+            bss_rva + max(1, bss_size), PE32_SECTION_ALIGNMENT
+        )
 
     idata = b""
     iat_rvas: Dict[str, int] = {}
     first_iat_rva = 0
     iat_size = 0
     idata_rva = 0
-    next_rva = _align_up(text_rva + max(1, len(text)), PE32_SECTION_ALIGNMENT)
     if import_specs:
         idata_rva = next_rva
         idata, iat_rvas, first_iat_rva, iat_size = _build_pe32_import_section(
@@ -3314,28 +3427,38 @@ def build_pe32_image_with_imports_exports(
             reloc_rva + max(1, len(reloc)), PE32_SECTION_ALIGNMENT
         )
 
-    sections: List[Tuple[bytes, bytes, int, int]] = []
+    sections: List[Tuple[bytes, bytes, int, int, int]] = []
     # Gemischte Code-/Datensektion des internen Assemblers: EXECUTE | READ |
     # WRITE | CODE. Runtime-Variablen wie stdout_handle/read_count liegen bis
     # zur echten .data-Aufteilung ebenfalls hier und werden zur Laufzeit
     # beschrieben.
-    sections.append((b".text\0\0\0", bytes(text), text_rva, 0xE0000020))
+    sections.append((
+        b".text\0\0\0", bytes(text), text_rva, 0xE0000020, len(text)
+    ))
+    if bss_size:
+        sections.append((
+            b".bss\0\0\0\0", b"", bss_rva, 0xC0000080, bss_size
+        ))
     
-    if idata: sections.append((b".idata\0\0", idata, idata_rva, 0xC0000040))
-    if edata: sections.append((b".edata\0\0", edata, edata_rva, 0x40000040))
-    if reloc: sections.append((b".reloc\0\0", reloc, reloc_rva, 0x42000040))
+    if idata: sections.append((b".idata\0\0", idata, idata_rva, 0xC0000040, len(idata)))
+    if edata: sections.append((b".edata\0\0", edata, edata_rva, 0x40000040, len(edata)))
+    if reloc: sections.append((b".reloc\0\0", reloc, reloc_rva, 0x42000040, len(reloc)))
 
     number_of_sections = len(sections)
     headers_unaligned = 0x80 + 4 + 20 + 0xE0 + number_of_sections * 40
     size_of_headers = _align_up(headers_unaligned, PE32_FILE_ALIGNMENT)
 
-    raw_layout: List[Tuple[bytes, bytes, int, int, int, int]] = []
+    raw_layout: List[Tuple[bytes, bytes, int, int, int, int, int]] = []
     raw_pointer = size_of_headers
     size_of_code = 0
     size_of_initialized_data = 0
-    for name, data, rva, characteristics in sections:
-        raw_size = _align_up(len(data), PE32_FILE_ALIGNMENT)
-        raw_layout.append((name, data, rva, characteristics, raw_pointer, raw_size))
+    for name, data, rva, characteristics, virtual_size in sections:
+        raw_size = _align_up(len(data), PE32_FILE_ALIGNMENT) if data else 0
+        section_raw_pointer = raw_pointer if raw_size else 0
+        raw_layout.append((
+            name, data, rva, characteristics, section_raw_pointer,
+            raw_size, virtual_size,
+        ))
         raw_pointer += raw_size
         if name.startswith(b".text"):
             size_of_code += raw_size
@@ -3365,10 +3488,11 @@ def build_pe32_image_with_imports_exports(
     optional[0x02] = 1
     struct.pack_into("<I", optional, 0x04, size_of_code)
     struct.pack_into("<I", optional, 0x08, size_of_initialized_data)
+    struct.pack_into("<I", optional, 0x0C, bss_size)
     address_of_entry = 0 if entry_offset is None else text_rva + int(entry_offset)
     struct.pack_into("<I", optional, 0x10, address_of_entry)
     struct.pack_into("<I", optional, 0x14, text_rva)
-    first_data_rva = idata_rva or edata_rva or 0
+    first_data_rva = bss_rva or idata_rva or edata_rva or 0
     struct.pack_into("<I", optional, 0x18, first_data_rva)
     struct.pack_into("<I", optional, 0x1C, int(image_base))
     struct.pack_into("<I", optional, 0x20, PE32_SECTION_ALIGNMENT)
@@ -3397,10 +3521,10 @@ def build_pe32_image_with_imports_exports(
         struct.pack_into("<II", optional, 0x88, reloc_rva, len(reloc))
     pe.extend(optional)
 
-    for name, data, rva, section_chars, section_raw_pointer, raw_size in raw_layout:
+    for name, data, rva, section_chars, section_raw_pointer, raw_size, virtual_size in raw_layout:
         section = bytearray(40)
         section[0:8] = name[:8].ljust(8, b"\0")
-        struct.pack_into("<I", section, 0x08, len(data))
+        struct.pack_into("<I", section, 0x08, virtual_size)
         struct.pack_into("<I", section, 0x0C, rva)
         struct.pack_into("<I", section, 0x10, raw_size)
         struct.pack_into("<I", section, 0x14, section_raw_pointer)
@@ -3410,7 +3534,7 @@ def build_pe32_image_with_imports_exports(
     headers = bytes(dos) + bytes(pe)
     headers += bytes(size_of_headers - len(headers))
     image = bytearray(headers)
-    for _name, data, _rva, _chars, _raw_pointer, raw_size in raw_layout:
+    for _name, data, _rva, _chars, _raw_pointer, raw_size, _virtual_size in raw_layout:
         image.extend(data)
         image.extend(bytes(raw_size - len(data)))
     return bytes(image), bytes(text)
@@ -3876,6 +4000,7 @@ def build_pe32_image_with_imports_exports(
     image_base: int = PE32_IMAGE_BASE,
     base_relocations: Optional[Sequence[int]] = None,
     compress_text_mszip: Optional[bool] = None,
+    bss_size: int = 0,
 ) -> Tuple[bytes, bytes]:
     """Stage-169-Wrapper: vollständigen Stage-167-PE32-Writer optional packen."""
     if compress_text_mszip is None:
@@ -3900,6 +4025,7 @@ def build_pe32_image_with_imports_exports(
             dll=dll,
             image_base=image_base,
             base_relocations=base_relocations,
+            bss_size=bss_size,
         )
 
     effective_import_specs = dict(import_specs)
@@ -3917,6 +4043,7 @@ def build_pe32_image_with_imports_exports(
         dll=dll,
         image_base=image_base,
         base_relocations=base_relocations,
+        bss_size=bss_size,
     )
 
     original_entry_rva = PE32_SECTION_RVA + int(entry_offset)
@@ -4014,82 +4141,108 @@ def write_coff32_object(obj: PE32ObjectProgram) -> bytes:
     symbol_index = {name: index for index, name in enumerate(all_names)}
 
     metadata = _coff32_metadata_bytes(obj)
-    section_count = 2 if metadata else 1
-    header_size = 20 + section_count * 40
-    text_raw_pointer = header_size
-    drectve_raw_pointer = text_raw_pointer + len(obj.code) if metadata else 0
-    relocation_pointer = text_raw_pointer + len(obj.code) + len(metadata)
-    symbol_pointer = relocation_pointer + len(obj.relocations) * 10
+    text_relocations = [
+        item for item in obj.relocations
+        if getattr(item, "section", ".text") == ".text"
+    ]
+    unsupported = [
+        item for item in obj.relocations
+        if getattr(item, "section", ".text") != ".text"
+    ]
+    if unsupported:
+        raise PE32AssemblerError(
+            "COFF32-BSS darf keine Relocations enthalten."
+        )
+
+    section_defs = [{
+        "name": b".text\0\0\0",
+        "data": bytes(obj.code),
+        "virtual_size": len(obj.code),
+        "chars": 0xE0500020,
+        "relocs": text_relocations,
+        "key": ".text",
+    }]
+    if int(getattr(obj, "bss_size", 0)) or any(
+        value == ".bss" for value in obj.symbol_sections.values()
+    ):
+        section_defs.append({
+            "name": b".bss\0\0\0\0",
+            "data": b"",
+            "virtual_size": int(getattr(obj, "bss_size", 0)),
+            "chars": 0xC0500080,
+            "relocs": [],
+            "key": ".bss",
+        })
+    if metadata:
+        section_defs.append({
+            "name": b".drectve",
+            "data": metadata,
+            "virtual_size": len(metadata),
+            "chars": 0x00100A00,
+            "relocs": [],
+            "key": ".drectve",
+        })
+
+    section_numbers = {
+        item["key"]: index + 1
+        for index, item in enumerate(section_defs)
+    }
+    header_size = 20 + len(section_defs) * 40
+    cursor = header_size
+    for item in section_defs:
+        item["raw_pointer"] = cursor if item["data"] else 0
+        cursor += len(item["data"])
+    for item in section_defs:
+        item["reloc_pointer"] = cursor if item["relocs"] else 0
+        cursor += len(item["relocs"]) * 10
+    symbol_pointer = cursor
 
     header = struct.pack(
-        "<HHIIIHH",
-        IMAGE_FILE_MACHINE_I386,
-        section_count,
-        0,
-        symbol_pointer,
-        len(all_names),
-        0,
-        0,
+        "<HHIIIHH", IMAGE_FILE_MACHINE_I386, len(section_defs), 0,
+        symbol_pointer, len(all_names), 0, 0,
     )
+    section_headers = bytearray()
+    for item in section_defs:
+        section = bytearray(40)
+        section[:8] = item["name"][:8].ljust(8, b"\0")
+        struct.pack_into("<I", section, 0x08, int(item["virtual_size"]))
+        struct.pack_into("<I", section, 0x10, len(item["data"]))
+        struct.pack_into("<I", section, 0x14, int(item["raw_pointer"]))
+        struct.pack_into("<I", section, 0x18, int(item["reloc_pointer"]))
+        struct.pack_into("<H", section, 0x20, len(item["relocs"]))
+        struct.pack_into("<I", section, 0x24, int(item["chars"]))
+        section_headers.extend(section)
 
-    text_section = bytearray(40)
-    text_section[0:8] = b".text\0\0\0"
-    struct.pack_into("<I", text_section, 0x10, len(obj.code))
-    struct.pack_into("<I", text_section, 0x14, text_raw_pointer)
-    struct.pack_into(
-        "<I", text_section, 0x18,
-        relocation_pointer if obj.relocations else 0,
-    )
-    struct.pack_into("<H", text_section, 0x20, len(obj.relocations))
-    # Das COFF32-Objekt enthaelt derzeit Code und Daten gemeinsam in .text.
-    # IMAGE_SCN_MEM_WRITE muss deshalb erhalten bleiben, damit auch ein spaeter
-    # gelinktes Objekt seine Runtime-/Variablendaten beschreiben darf.
-    struct.pack_into("<I", text_section, 0x24, 0xE0500020)
-
-    section_headers = bytearray(text_section)
-    if metadata:
-        drectve_section = bytearray(40)
-        drectve_section[0:8] = b".drectve"
-        struct.pack_into("<I", drectve_section, 0x10, len(metadata))
-        struct.pack_into("<I", drectve_section, 0x14, drectve_raw_pointer)
-        # IMAGE_SCN_LNK_INFO | IMAGE_SCN_LNK_REMOVE | ALIGN_1BYTES
-        struct.pack_into("<I", drectve_section, 0x24, 0x00100A00)
-        section_headers.extend(drectve_section)
-
+    raw_data = bytearray()
     relocation_bytes = bytearray()
-    for relocation in obj.relocations:
-        if relocation.symbol not in symbol_index:
-            raise PE32AssemblerError(f"COFF-Symbol fehlt: {relocation.symbol}")
-        relocation_bytes.extend(struct.pack(
-            "<IIH",
-            relocation.offset,
-            symbol_index[relocation.symbol],
-            relocation.relocation_type,
-        ))
+    for item in section_defs:
+        raw_data.extend(item["data"])
+    for item in section_defs:
+        for relocation in item["relocs"]:
+            if relocation.symbol not in symbol_index:
+                raise PE32AssemblerError(
+                    f"COFF-Symbol fehlt: {relocation.symbol}"
+                )
+            relocation_bytes.extend(struct.pack(
+                "<IIH", relocation.offset,
+                symbol_index[relocation.symbol], relocation.relocation_type,
+            ))
 
     strings = bytearray()
     symbols = bytearray()
     for name in all_names:
         symbols.extend(_coff_symbol_name_bytes(name, strings))
         defined = name in obj.symbols
-        value = obj.symbols.get(name, 0)
+        section_name = obj.symbol_sections.get(name, ".text") if defined else None
+        section_number = section_numbers.get(section_name, 0) if defined else 0
         symbols.extend(struct.pack(
-            "<IhHBB",
-            int(value),
-            1 if defined else 0,
-            0,
-            2,
-            0,
+            "<IhHBB", int(obj.symbols.get(name, 0)),
+            section_number, 0, 2, 0,
         ))
     string_table = struct.pack("<I", 4 + len(strings)) + bytes(strings)
     return (
-        header
-        + bytes(section_headers)
-        + obj.code
-        + metadata
-        + bytes(relocation_bytes)
-        + bytes(symbols)
-        + string_table
+        header + bytes(section_headers) + bytes(raw_data)
+        + bytes(relocation_bytes) + bytes(symbols) + string_table
     )
 
 
@@ -4115,87 +4268,223 @@ def parse_coff32_object(data: bytes) -> Coff32ParsedObject:
             "Nur relocierbare IA-32-COFF-Objekte werden unterstützt."
         )
 
-    text_info = None
+    section_table_end = 20 + sections * 40
+    if section_table_end > len(payload):
+        raise PE32AssemblerError("COFF32-Sektionstabelle ist beschädigt.")
+
+    if symbol_count:
+        if symbol_pointer < section_table_end:
+            raise PE32AssemblerError("COFF32-Symboltabelle ist beschädigt.")
+        string_table_offset = symbol_pointer + symbol_count * 18
+        if string_table_offset + 4 > len(payload):
+            raise PE32AssemblerError("COFF32-Symboltabelle ist beschädigt.")
+        string_size = struct.unpack_from("<I", payload, string_table_offset)[0]
+        if string_size < 4 or string_table_offset + string_size > len(payload):
+            raise PE32AssemblerError("COFF32-Stringtabelle ist beschädigt.")
+        string_table = payload[
+            string_table_offset:string_table_offset + string_size
+        ]
+    else:
+        string_table = b"\x04\x00\x00\x00"
+
+    def string_at(relative: int) -> str:
+        offset = int(relative)
+        if offset < 4 or offset >= len(string_table):
+            raise PE32AssemblerError(
+                "COFF32-Name verweist außerhalb der Stringtabelle."
+            )
+        end = string_table.find(b"\0", offset)
+        if end < 0:
+            end = len(string_table)
+        return string_table[offset:end].decode("utf-8", errors="replace")
+
+    def name_from_raw(raw_name: bytes, *, section_name: bool = False) -> str:
+        raw = bytes(raw_name[:8]).ljust(8, b"\0")
+        short = raw.rstrip(b"\0").decode("ascii", errors="replace")
+        if section_name and short.startswith("/") and short[1:].isdigit():
+            return string_at(int(short[1:]))
+        zeroes, relative = struct.unpack("<II", raw)
+        if not section_name and zeroes == 0 and relative:
+            return string_at(relative)
+        return short
+
+    section_records = []
     metadata_payload = b""
     for section_index in range(sections):
         section_offset = 20 + section_index * 40
-        if section_offset + 40 > len(payload):
-            raise PE32AssemblerError("COFF32-Sektionstabelle ist beschädigt.")
-        name = payload[section_offset:section_offset + 8].rstrip(b"\0")
+        name = name_from_raw(
+            payload[section_offset:section_offset + 8],
+            section_name=True,
+        )
+        virtual_size = struct.unpack_from("<I", payload, section_offset + 0x08)[0]
         raw_size, raw_pointer, reloc_pointer = struct.unpack_from(
             "<III", payload, section_offset + 0x10
         )
         reloc_count = struct.unpack_from("<H", payload, section_offset + 0x20)[0]
+        characteristics = struct.unpack_from(
+            "<I", payload, section_offset + 0x24
+        )[0]
         if raw_pointer and raw_pointer + raw_size > len(payload):
-            raise PE32AssemblerError("COFF32-Sektion liegt außerhalb der Datei.")
-        if name == b".text":
-            text_info = (raw_size, raw_pointer, reloc_pointer, reloc_count)
-        elif name == b".drectve" and raw_pointer:
+            raise PE32AssemblerError(
+                f"COFF32-Sektion '{name}' liegt außerhalb der Datei."
+            )
+        if reloc_count and (
+            not reloc_pointer or reloc_pointer + reloc_count * 10 > len(payload)
+        ):
+            raise PE32AssemblerError(
+                f"COFF32-Relocationstabelle der Sektion '{name}' ist beschädigt."
+            )
+        if name.casefold() == ".drectve" and raw_pointer:
             metadata_payload = payload[raw_pointer:raw_pointer + raw_size]
+        section_records.append({
+            "number": section_index + 1,
+            "name": name,
+            "virtual_size": int(virtual_size),
+            "raw_size": int(raw_size),
+            "raw_pointer": int(raw_pointer),
+            "reloc_pointer": int(reloc_pointer),
+            "reloc_count": int(reloc_count),
+            "characteristics": int(characteristics),
+        })
 
-    if text_info is None:
-        raise PE32AssemblerError("COFF32-Objekt enthält keine .text-Sektion.")
-    raw_size, raw_pointer, reloc_pointer, reloc_count = text_info
-    code = payload[raw_pointer:raw_pointer + raw_size]
+    # Initialisierte Fremdsektionen bleiben für Kompatibilität im gemeinsamen
+    # PE32-Laufzeitpuffer. Echte .bss*-Sektionen werden dagegen nur virtuell
+    # reserviert und belegen weder COFF- noch PE-Rohdaten.
+    loadable_mask = 0x00000020 | 0x00000040 | 0x00000080
+    section_bases: Dict[int, int] = {}
+    section_kinds: Dict[int, str] = {}
+    code_buffer = bytearray()
+    bss_size = 0
+    loadable_records = []
+    for record in section_records:
+        name = str(record["name"])
+        folded_name = name.casefold()
+        characteristics = int(record["characteristics"])
+        is_loadable = bool(characteristics & loadable_mask) or folded_name.startswith(
+            (".text", ".data", ".rdata", ".bss")
+        )
+        is_linker_only = (
+            folded_name == ".drectve"
+            or folded_name.startswith((".debug", ".comment", ".llvm", ".note"))
+            or bool(characteristics & 0x00000800)  # IMAGE_SCN_LNK_REMOVE
+        )
+        if not is_loadable or is_linker_only:
+            continue
+        alignment_code = (characteristics >> 20) & 0x0F
+        alignment = (
+            1 << (alignment_code - 1)
+            if 1 <= alignment_code <= 14
+            else 16
+        )
+        alignment = min(max(1, alignment), 4096)
+        is_bss = folded_name.startswith(".bss") or (
+            bool(characteristics & 0x00000080)
+            and not int(record["raw_pointer"])
+        )
+        if is_bss:
+            base = _align_up(bss_size, alignment)
+            section_size = max(
+                int(record["raw_size"]), int(record["virtual_size"])
+            )
+            bss_size = base + section_size
+            section_kinds[int(record["number"])] = ".bss"
+        else:
+            base = _align_up(len(code_buffer), alignment)
+            if base > len(code_buffer):
+                code_buffer.extend(bytes(base - len(code_buffer)))
+            section_kinds[int(record["number"])] = ".text"
+        section_bases[int(record["number"])] = base
+        raw_size = int(record["raw_size"])
+        raw_pointer = int(record["raw_pointer"])
+        virtual_size = int(record["virtual_size"])
+        if not is_bss:
+            if raw_pointer and raw_size:
+                code_buffer.extend(payload[raw_pointer:raw_pointer + raw_size])
+            else:
+                code_buffer.extend(bytes(max(raw_size, virtual_size)))
+        loadable_records.append(record)
 
-    string_table_offset = symbol_pointer + symbol_count * 18
-    if string_table_offset + 4 > len(payload):
-        raise PE32AssemblerError("COFF32-Symboltabelle ist beschädigt.")
-    string_size = struct.unpack_from("<I", payload, string_table_offset)[0]
-    string_table = payload[
-        string_table_offset:string_table_offset + max(4, string_size)
-    ]
-    symbol_names: List[str] = []
+    if not loadable_records:
+        names = ", ".join(str(item["name"]) for item in section_records)
+        raise PE32AssemblerError(
+            "COFF32-Objekt enthält keine linkbare Code-/Datensektion"
+            + (f"; vorhanden: {names}." if names else ".")
+        )
+
+    symbol_names: List[str] = [""] * symbol_count
     symbols: Dict[str, Optional[int]] = {}
+    symbol_sections: Dict[str, str] = {}
+    object_tag = hashlib.sha256(payload).hexdigest()[:16]
     index = 0
     while index < symbol_count:
         offset = symbol_pointer + index * 18
-        raw_name = payload[offset:offset + 8]
-        zeroes, string_offset = struct.unpack("<II", raw_name)
-        if zeroes == 0 and string_offset:
-            relative = string_offset
-            end = string_table.find(b"\0", relative)
-            if end < 0:
-                end = len(string_table)
-            symbol_name = string_table[relative:end].decode(
-                "utf-8", errors="replace"
-            )
-        else:
-            symbol_name = raw_name.rstrip(b"\0").decode(
-                "ascii", errors="replace"
-            )
-        value, section_number, _type, _storage, aux_count = struct.unpack_from(
+        if offset + 18 > len(payload):
+            raise PE32AssemblerError("COFF32-Symboltabelle ist beschädigt.")
+        symbol_name = name_from_raw(payload[offset:offset + 8])
+        value, section_number, _type, storage, aux_count = struct.unpack_from(
             "<IhHBB", payload, offset + 8
         )
+        if index + aux_count >= symbol_count:
+            raise PE32AssemblerError("COFF32-Aux-Symboltabelle ist beschädigt.")
         key = symbol_name.casefold()
-        symbol_names.append(key)
-        symbols[key] = int(value) if section_number == 1 else None
-        for _ in range(aux_count):
-            index += 1
-            symbol_names.append("")
-        index += 1
+        if storage != 2 and section_number > 0:
+            safe_name = re.sub(r"[^a-z0-9_]", "_", key) or "symbol"
+            key = f"__coff32_local_{object_tag}_{index}_{safe_name}"
+        symbol_names[index] = key
+        base = section_bases.get(int(section_number))
+        symbols[key] = (
+            base + int(value)
+            if base is not None and section_number > 0
+            else None
+        )
+        if base is not None and section_number > 0:
+            symbol_sections[key] = section_kinds.get(
+                int(section_number), ".text"
+            )
+        index += 1 + aux_count
 
     relocations = []
-    for rel_index in range(reloc_count):
-        offset = reloc_pointer + rel_index * 10
-        if offset + 10 > len(payload):
-            raise PE32AssemblerError("COFF32-Relocationstabelle ist beschädigt.")
-        virtual_address, symbol_table_index, relocation_type = struct.unpack_from(
-            "<IIH", payload, offset
-        )
-        if symbol_table_index >= len(symbol_names):
-            raise PE32AssemblerError(
-                "COFF32-Relocation verweist auf ein ungültiges Symbol."
+    for record in loadable_records:
+        section_number = int(record["number"])
+        if section_kinds.get(section_number) == ".bss":
+            if int(record["reloc_count"]):
+                raise PE32AssemblerError(
+                    f"COFF32-BSS-Sektion '{record['name']}' enthält Relocations."
+                )
+            continue
+        section_base = section_bases[section_number]
+        reloc_pointer = int(record["reloc_pointer"])
+        reloc_count = int(record["reloc_count"])
+        for rel_index in range(reloc_count):
+            offset = reloc_pointer + rel_index * 10
+            virtual_address, symbol_table_index, relocation_type = struct.unpack_from(
+                "<IIH", payload, offset
             )
-        symbol_name = symbol_names[symbol_table_index]
-        relocations.append(
-            PE32Relocation(virtual_address, symbol_name, relocation_type)
-        )
+            if symbol_table_index >= len(symbol_names):
+                raise PE32AssemblerError(
+                    "COFF32-Relocation verweist auf ein ungültiges Symbol."
+                )
+            symbol_name = symbol_names[symbol_table_index]
+            if not symbol_name:
+                raise PE32AssemblerError(
+                    "COFF32-Relocation verweist auf einen Aux-Symboleintrag."
+                )
+            patch_offset = section_base + int(virtual_address)
+            if patch_offset + 4 > len(code_buffer):
+                raise PE32AssemblerError(
+                    f"COFF32-Relocation in Sektion '{record['name']}' liegt "
+                    "außerhalb der materialisierten Daten."
+                )
+            relocations.append(
+                PE32Relocation(
+                    patch_offset, symbol_name, relocation_type, ".text"
+                )
+            )
 
     imports: Dict[str, Tuple[str, str]] = {}
     exports: Dict[str, str] = {}
     dll_name: Optional[str] = None
-    if metadata_payload.strip():
+    if metadata_payload.strip().startswith(b"{"):
         try:
             document = json.loads(metadata_payload.decode("ascii"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -4223,12 +4512,14 @@ def parse_coff32_object(data: bytes) -> Coff32ParsedObject:
                 dll_name = str(raw_dll_name)
 
     return Coff32ParsedObject(
-        code,
+        bytes(code_buffer),
         symbols,
         tuple(relocations),
         imports=imports,
         exports=exports,
         dll_name=dll_name,
+        bss_size=int(bss_size),
+        symbol_sections=symbol_sections,
     )
 
 
@@ -4262,20 +4553,62 @@ def parse_coff32_archive(data: bytes) -> Tuple[Tuple[str, bytes], ...]:
         raise PE32AssemblerError("Ungültiges .a/.lib-Archiv.")
     offset = len(AR_MAGIC)
     members = []
+    long_names = b""
     while offset + 60 <= len(payload):
         header = payload[offset:offset + 60]
         offset += 60
         if header[58:60] != b"`\n":
             raise PE32AssemblerError("Beschädigter Archivkopf.")
-        name = header[:16].decode("ascii", errors="replace").strip().rstrip("/")
+        raw_name = header[:16].decode("ascii", errors="replace").strip()
         try:
             size = int(header[48:58].decode("ascii").strip() or "0")
         except ValueError as exc:
             raise PE32AssemblerError("Ungültige Archiv-Mitgliedsgröße.") from exc
         if offset + size > len(payload):
             raise PE32AssemblerError("Archivmitglied liegt außerhalb der Datei.")
-        members.append((name, payload[offset:offset + size]))
+        member_data = payload[offset:offset + size]
         offset += size + (size & 1)
+
+        # Microsoft-/GNU-Archive enthalten vor den eigentlichen COFF-Dateien
+        # Symbolindizes ('/' bzw. '/SYM64/') und optional eine Tabelle langer
+        # Dateinamen ('//'). Diese Verwaltungsmitglieder sind keine Objekte und
+        # dürfen deshalb niemals an parse_coff32_object() weitergereicht werden.
+        if raw_name in {"/", "/SYM64/"}:
+            continue
+        if raw_name == "//":
+            long_names = member_data
+            continue
+
+        name = raw_name.rstrip("/")
+        if raw_name.startswith("/") and raw_name[1:].rstrip("/").isdigit():
+            name_offset = int(raw_name[1:].rstrip("/"))
+            if name_offset >= len(long_names):
+                raise PE32AssemblerError(
+                    "Archivmitglied verweist auf einen ungültigen langen Namen."
+                )
+            name_end = long_names.find(b"/\n", name_offset)
+            if name_end < 0:
+                name_end = long_names.find(b"\0", name_offset)
+            if name_end < 0:
+                name_end = len(long_names)
+            name = long_names[name_offset:name_end].decode(
+                "utf-8", errors="replace"
+            )
+        elif raw_name.startswith("#1/"):
+            try:
+                name_size = int(raw_name[3:])
+            except ValueError as exc:
+                raise PE32AssemblerError(
+                    "Archivmitglied besitzt einen ungültigen BSD-Namen."
+                ) from exc
+            if name_size > len(member_data):
+                raise PE32AssemblerError(
+                    "BSD-Archivname liegt außerhalb des Mitglieds."
+                )
+            name = member_data[:name_size].decode("utf-8", errors="replace")
+            member_data = member_data[name_size:]
+
+        members.append((name or "<unbenannt>", member_data))
     return tuple(members)
 
 
@@ -4299,7 +4632,10 @@ def link_coff32_objects(
     parsed = [parse_coff32_object(item) for item in objects]
     code = bytearray()
     object_bases: List[int] = []
+    object_bss_bases: List[int] = []
     globals_map: Dict[str, int] = {}
+    bss_symbols: Dict[str, int] = {}
+    total_bss_size = 0
 
     declared_imports: Dict[str, Tuple[str, str]] = {}
     declared_exports: Dict[str, str] = {}
@@ -4345,14 +4681,20 @@ def link_coff32_objects(
             code.extend(bytes(base - len(code)))
         object_bases.append(base)
         code.extend(obj.code)
+        bss_base = _align_up(total_bss_size, 4)
+        object_bss_bases.append(bss_base)
+        total_bss_size = bss_base + int(getattr(obj, "bss_size", 0))
         for name, value in obj.symbols.items():
             if value is None:
                 continue
-            if name in globals_map:
+            if name in globals_map or name in bss_symbols:
                 raise PE32AssemblerError(
                     f"COFF32-Symbol mehrfach definiert: {name}"
                 )
-            globals_map[name] = base + value
+            if obj.symbol_sections.get(name, ".text") == ".bss":
+                bss_symbols[name] = bss_base + value
+            else:
+                globals_map[name] = base + value
 
     # DLL-Imports werden vor der Relocation-Phase als lokale JMP-IAT-Thunks
     # materialisiert. CALL/JMP aus allen COFF32-Objekten bleiben damit REL32.
@@ -4362,7 +4704,7 @@ def link_coff32_objects(
     for obj in parsed:
         for relocation in obj.relocations:
             symbol = relocation.symbol.casefold()
-            if symbol in globals_map or symbol in import_specs:
+            if symbol in globals_map or symbol in bss_symbols or symbol in import_specs:
                 continue
             spec = declared_imports.get(symbol)
             if spec is None:
@@ -4393,17 +4735,71 @@ def link_coff32_objects(
             + ", ".join(unique)
         )
 
+    text_rva = PE32_SECTION_RVA
+    packed_layout = bool(
+        PE32_TEXT_COMPRESSION_MSZIP_DEFAULT
+        and not effective_dll
+        and code
+    )
+    if total_bss_size and packed_layout:
+        effective_import_specs = dict(import_specs)
+        for symbol, spec in PE32_MSZIP_LOADER_IMPORTS.items():
+            effective_import_specs.setdefault(symbol, spec)
+        effective_import_specs = _pe_import_specs_with_local_ordinals(
+            effective_import_specs,
+            machine=IMAGE_FILE_MACHINE_I386,
+        )
+        loader_rva = _align_up(
+            text_rva + max(1, len(code)), PE32_SECTION_ALIGNMENT
+        )
+        dummy_iat = {name: 0 for name in PE32_MSZIP_LOADER_IMPORTS}
+        loader_probe = _build_pe32_mszip_loader(
+            image_base=image_base,
+            text_rva=text_rva,
+            text_size=len(code),
+            ztext_rva=0,
+            packed_size=max(1, len(code)),
+            original_entry_rva=text_rva,
+            iat_rvas=dummy_iat,
+        )
+        ztext_rva = _align_up(
+            loader_rva + max(1, len(loader_probe)),
+            PE32_SECTION_ALIGNMENT,
+        )
+        idata_rva = ztext_rva + _pe_stage170_ztext_virtual_span(
+            len(code), PE32_SECTION_ALIGNMENT
+        )
+        idata, _iat_rvas, _first_iat, _iat_size = _build_pe32_import_section(
+            effective_import_specs, idata_rva
+        )
+        bss_rva = _align_up(
+            idata_rva + max(1, len(idata)), PE32_SECTION_ALIGNMENT
+        )
+    elif total_bss_size:
+        bss_rva = _align_up(
+            text_rva + max(1, len(code)), PE32_SECTION_ALIGNMENT
+        )
+    else:
+        bss_rva = 0
+
     for obj, base in zip(parsed, object_bases):
         for relocation in obj.relocations:
-            target = globals_map.get(relocation.symbol.casefold())
-            if target is None:
+            symbol_key = relocation.symbol.casefold()
+            if symbol_key in globals_map:
+                target_rva = text_rva + globals_map[symbol_key]
+            elif symbol_key in bss_symbols:
+                target_rva = bss_rva + bss_symbols[symbol_key]
+            else:
                 raise PE32AssemblerError(
                     "COFF32-Linker: externes Symbol nicht aufgeloest: "
                     f"{relocation.symbol}"
                 )
             patch = base + relocation.offset
+            patch_rva = text_rva + patch
             if relocation.relocation_type == IMAGE_REL_I386_REL32:
-                struct.pack_into("<i", code, patch, target - (patch + 4))
+                struct.pack_into(
+                    "<i", code, patch, target_rva - (patch_rva + 4)
+                )
             elif relocation.relocation_type == IMAGE_REL_I386_DIR32:
                 # COFF DIR32: vorhandenen 32-Bit-Wert als Addend erhalten.
                 # Ohne dies zeigt [symbol+4] faelschlich auf [symbol].
@@ -4412,7 +4808,7 @@ def link_coff32_objects(
                     "<I",
                     code,
                     patch,
-                    (image_base + PE32_SECTION_RVA + target + addend) & 0xFFFFFFFF,
+                    (image_base + target_rva + addend) & 0xFFFFFFFF,
                 )
                 if effective_dll:
                     base_relocations.append(PE32_SECTION_RVA + patch)
@@ -4469,14 +4865,196 @@ def link_coff32_objects(
         dll=effective_dll,
         image_base=image_base,
         base_relocations=base_relocations,
+        bss_size=total_bss_size,
     )
     return PE32Program(
         executable=executable,
         code=patched_code,
         entry_offset=int(entry or 0),
         instruction_count=0,
-        symbols=globals_map,
+        symbols={
+            **globals_map,
+            **{
+                name: bss_rva - text_rva + offset
+                for name, offset in bss_symbols.items()
+            },
+        },
     )
+
+def _coff_target_header_matches(data: bytes, target: str) -> bool:
+    payload = bytes(data)
+    if len(payload) < 20:
+        return False
+    machine, sections = struct.unpack_from("<HH", payload, 0)
+    optional_size = struct.unpack_from("<H", payload, 16)[0]
+    expected_machine = (
+        IMAGE_FILE_MACHINE_AMD64
+        if str(target).casefold() == "pe64"
+        else IMAGE_FILE_MACHINE_I386
+    )
+    return machine == expected_machine and sections >= 1 and optional_size == 0
+
+
+def _coff_import_library_member(data: bytes, target: str) -> bool:
+    """Erkennt GNU-dlltool- und Microsoft-Short-Import-Mitglieder.
+
+    Importbibliotheken sind Symbolkataloge für eine DLL, keine statischen
+    Laufzeitobjekte. Der d64-Linker erzeugt seine IAT/ILT bereits aus den
+    ``import``-Deklarationen des generierten Hauptobjekts. Ein zusätzliches
+    Materialisieren der .idata$*-Fragmente würde unvollständige fremde
+    Importtabellen als normalen Programmcode behandeln.
+    """
+    payload = bytes(data)
+    expected_machine = (
+        IMAGE_FILE_MACHINE_AMD64
+        if str(target).casefold() == "pe64"
+        else IMAGE_FILE_MACHINE_I386
+    )
+
+    # Microsoft IMPORT_OBJECT_HEADER: Sig1=0, Sig2=0xffff, Machine bei +6.
+    if (
+        len(payload) >= 20
+        and payload[0:4] == b"\x00\x00\xff\xff"
+        and struct.unpack_from("<H", payload, 6)[0] == expected_machine
+    ):
+        return True
+
+    if not _coff_target_header_matches(payload, target):
+        return False
+    sections = struct.unpack_from("<H", payload, 2)[0]
+    if 20 + sections * 40 > len(payload):
+        return False
+    for section_index in range(sections):
+        section_offset = 20 + section_index * 40
+        raw_name = payload[section_offset:section_offset + 8].rstrip(b"\0")
+        if raw_name.lower().startswith(b".idata$"):
+            return True
+    return False
+
+
+def _coff_target_description(data: bytes) -> str:
+    payload = bytes(data)
+    if payload.startswith(b"MZ"):
+        return "Windows-PE-Programm/DLL (nicht relocierbar)"
+    if payload.startswith(b"\x7fELF"):
+        return "ELF-Datei"
+    if payload.startswith(AR_MAGIC):
+        return "COFF-Archiv"
+    if len(payload) < 20:
+        return f"Datei mit nur {len(payload)} Byte"
+    machine, sections = struct.unpack_from("<HH", payload, 0)
+    optional_size = struct.unpack_from("<H", payload, 16)[0]
+    machine_name = {
+        IMAGE_FILE_MACHINE_I386: "IA-32/COFF32",
+        IMAGE_FILE_MACHINE_AMD64: "AMD64/COFF64",
+    }.get(machine, f"unbekannte Maschine 0x{machine:04X}")
+    kind = "PE-Abbild" if optional_size else "relocierbares COFF-Objekt"
+    return (
+        f"{machine_name}, {kind}, {sections} Sektion(en), "
+        f"OptionalHeader={optional_size} Byte"
+    )
+
+
+def _coff_target_companion_candidates(path: Path, target: str) -> Tuple[Path, ...]:
+    candidate = Path(path)
+    folded = candidate.name.casefold()
+    if folded.endswith((".coff32.o", ".coff64.o", ".coff32.obj", ".coff64.obj")):
+        return ()
+    target_tag = "coff64" if str(target).casefold() == "pe64" else "coff32"
+    if folded.endswith(".o"):
+        return (candidate.with_name(candidate.name[:-2] + f".{target_tag}.o"),)
+    if folded.endswith(".obj"):
+        stem = candidate.name[:-4]
+        return (
+            candidate.with_name(stem + f".{target_tag}.obj"),
+            candidate.with_name(stem + f".{target_tag}.o"),
+        )
+    return ()
+
+
+def _coff_preferred_input_for_target(path: Path, target: str) -> Path:
+    """Bevorzugt den architektureindeutigen Begleiter eines Legacy-*.o."""
+    original = Path(path).expanduser()
+    try:
+        original = original.resolve()
+    except (OSError, RuntimeError):
+        original = original.absolute()
+    for candidate in _coff_target_companion_candidates(original, target):
+        if not candidate.is_file():
+            continue
+        try:
+            if _coff_target_header_matches(candidate.read_bytes(), target):
+                return candidate.resolve()
+        except OSError:
+            continue
+    return original
+
+
+def _coff_link_input_objects(
+    paths: Sequence[Path],
+    *,
+    target: str,
+) -> List[bytes]:
+    is64 = str(target).casefold() == "pe64"
+    expected = "AMD64-COFF64" if is64 else "IA-32-COFF32"
+    error_type = PE64AssemblerError if is64 else PE32AssemblerError
+    archive_parser = parse_coff64_archive if is64 else parse_coff32_archive
+    object_parser = parse_coff64_object if is64 else parse_coff32_object
+    objects: List[bytes] = []
+    for path_value in paths:
+        requested_path = Path(path_value).expanduser()
+        path = _coff_preferred_input_for_target(requested_path, target)
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            raise error_type(f"COFF-Linkeingabe kann nicht gelesen werden: {path}: {exc}") from exc
+        if path.suffix.casefold() in {".a", ".lib"}:
+            try:
+                members = archive_parser(data)
+            except (PE32AssemblerError, PE64AssemblerError) as exc:
+                raise error_type(f"COFF-Archiv '{path}' ist ungültig: {exc}") from exc
+            for member_name, member_data in members:
+                if _coff_import_library_member(member_data, target):
+                    continue
+                if not _coff_target_header_matches(member_data, target):
+                    raise error_type(
+                        f"COFF-Archivmitglied '{member_name}' in '{path}' passt "
+                        f"nicht zum Ziel {expected}. Erkannt: "
+                        f"{_coff_target_description(member_data)}."
+                    )
+                try:
+                    object_parser(member_data)
+                except (PE32AssemblerError, PE64AssemblerError) as exc:
+                    raise error_type(
+                        f"COFF-Archivmitglied '{member_name}' in '{path}' "
+                        f"kann nicht gelesen werden: {exc}"
+                    ) from exc
+                objects.append(member_data)
+            continue
+        if _coff_import_library_member(data, target):
+            continue
+        if not _coff_target_header_matches(data, target):
+            companion_note = ""
+            candidates = _coff_target_companion_candidates(path, target)
+            if candidates:
+                companion_note = (
+                    " Erwarteter architekturspezifischer Begleiter: "
+                    + " oder ".join(str(item) for item in candidates)
+                    + "."
+                )
+            raise error_type(
+                f"COFF-Linkeingabe '{path}' passt nicht zum Ziel {expected}. "
+                f"Erkannt: {_coff_target_description(data)}.{companion_note}"
+            )
+        try:
+            object_parser(data)
+        except (PE32AssemblerError, PE64AssemblerError) as exc:
+            raise error_type(
+                f"COFF-Linkeingabe '{path}' kann nicht gelesen werden: {exc}"
+            ) from exc
+        objects.append(data)
+    return objects
+
 
 def link_coff32_inputs(
     paths: Sequence[Path],
@@ -4488,15 +5066,7 @@ def link_coff32_inputs(
     exports: Optional[Dict[str, str]] = None,
     dll_name: Optional[str] = None,
 ) -> PE32Program:
-    objects: List[bytes] = []
-    for path_value in paths:
-        path = Path(path_value)
-        data = path.read_bytes()
-        if path.suffix.casefold() in {".a", ".lib"}:
-            for _name, member_data in parse_coff32_archive(data):
-                objects.append(member_data)
-        else:
-            objects.append(data)
+    objects = _coff_link_input_objects(paths, target="pe32")
     if not objects:
         raise PE32AssemblerError("Der COFF32-Linker benötigt mindestens ein Objekt.")
     return link_coff32_objects(
@@ -5277,12 +5847,7 @@ def link_coff64_objects(objects: Sequence[bytes], *, entry_symbol="_start", gui=
 
 
 def link_coff64_inputs(paths: Sequence[Path], *, entry_symbol="_start", gui=False, dll=False, imports=None, exports=None, dll_name=None) -> PE64Program:
-    objects=[]
-    for p in paths:
-        path=Path(p); data=path.read_bytes()
-        if path.suffix.casefold() in {".a",".lib"}:
-            for _name,member in parse_coff64_archive(data): objects.append(member)
-        else: objects.append(data)
+    objects = _coff_link_input_objects(paths, target="pe64")
     if not objects: raise PE64AssemblerError("Der COFF64-Linker benötigt mindestens ein Objekt.")
     return link_coff64_objects(objects,entry_symbol=entry_symbol,gui=gui,dll=dll,imports=imports,exports=exports,dll_name=dll_name)
 
@@ -7230,7 +7795,7 @@ def _pe_emit_stage170_image(
         optional[0x02] = 1
         struct.pack_into("<I", optional, 0x04, size_of_code)
         struct.pack_into("<I", optional, 0x08, size_of_initialized_data)
-        struct.pack_into("<I", optional, 0x0C, 0)
+        struct.pack_into("<I", optional, 0x0C, int(bss_size))
         struct.pack_into("<I", optional, 0x10, int(entry_rva))
         struct.pack_into("<I", optional, 0x14, int(text_rva))
         struct.pack_into("<I", optional, 0x18, int(ztext_rva))
@@ -7301,6 +7866,7 @@ def build_pe32_image_with_imports_exports(
     base_relocations: Optional[Sequence[int]] = None,
     compress_text_mszip: Optional[bool] = None,
     imports_by_local_ordinal: Optional[bool] = None,
+    bss_size: int = 0,
 ) -> Tuple[bytes, bytes]:
     """Stage170-PE32: .text/.loader/.ztext/.idata in RVA-Reihenfolge."""
     if compress_text_mszip is None:
@@ -7326,6 +7892,7 @@ def build_pe32_image_with_imports_exports(
             image_base=image_base,
             base_relocations=base_relocations,
             compress_text_mszip=False,
+            bss_size=bss_size,
         )
 
     text = bytearray(code)
@@ -7369,6 +7936,11 @@ def build_pe32_image_with_imports_exports(
         effective_import_specs,
         idata_rva,
     )
+    bss_rva = 0
+    if int(bss_size) > 0:
+        bss_rva = _align_up(
+            idata_rva + max(1, len(idata)), PE32_SECTION_ALIGNMENT
+        )
 
     for symbol, patch_offset in thunk_patches.items():
         if symbol not in iat_rvas:
@@ -7418,6 +7990,8 @@ def build_pe32_image_with_imports_exports(
         iat_size=iat_size,
         entry_rva=loader_rva,
         gui=gui,
+        bss_rva=bss_rva,
+        bss_size=int(bss_size),
     )
     return image, bytes(text)
 
@@ -8343,6 +8917,7 @@ def build_pe32_image_with_imports_exports(
     compress_text_mszip: Optional[bool] = None,
     imports_by_local_ordinal: Optional[bool] = None,
     compact_packed_image: Optional[bool] = None,
+    bss_size: int = 0,
 ) -> Tuple[bytes, bytes]:
     """Stage172 wrapper: Stage171 build + optional safe packed-PE32 compact."""
     image, patched_text = _build_pe32_image_with_imports_exports_stage171(
@@ -8358,6 +8933,7 @@ def build_pe32_image_with_imports_exports(
         base_relocations=base_relocations,
         compress_text_mszip=compress_text_mszip,
         imports_by_local_ordinal=imports_by_local_ordinal,
+        bss_size=bss_size,
     )
 
     if compact_packed_image is None:
@@ -11777,6 +12353,21 @@ PROJECT_PASCAL_TARGET_SECTIONS: Dict[Tuple[str, str], str] = {
     ("pe64", "modules"): "Category.pascal.pe64.modules",
     ("pe64", "units"): "Category.pascal.pe64.units",
 }
+
+
+def _project_document_output_path(document, filename: str) -> Path:
+    """Resolve a generated file without depending on the GUI class name."""
+    override = getattr(
+        document, "project_tree_compile_output_directory", None
+    )
+    if override:
+        return Path(override).expanduser().resolve() / str(filename)
+    source_path = getattr(document, "path", None)
+    if source_path is None:
+        raise AssemblerError(
+            "Der Quelltext muss vor dem Erzeugen einer Ausgabe gespeichert werden."
+        )
+    return Path(source_path).with_name(str(filename))
 
 # Stage 196: Windows Compiler-Verzeichnisse sind architekturspezifisch.
 # PE32 und PE32+ duerfen niemals dieselbe PUI-Ausgabe ueberschreiben, weil
@@ -15922,6 +16513,8 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             "MOV", "PUSH", "POP", "CALL", "JE", "JNE", "JZ", "JNZ",
             "JL", "JLE", "JG", "JGE", "TEST", "IMUL", "SHL", "SHR",
             "SAR", "INC", "LEAVE", "INT", "PUSHAD", "POPAD", "CDQ",
+            "SECTION", "ALIGN", "DB", "DW", "DD", "DQ",
+            "RESB", "RESW", "RESD", "RESQ", "RB", "RW", "RD", "RQ",
         )
         OPCODE_PATTERN = re.compile(
             r"(?<![A-Za-z0-9_])(?:"
@@ -18308,6 +18901,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
         context_help_requested = pyqtSignal(str)
         build_requested = pyqtSignal()
         find_requested = pyqtSignal(object)
+        find_next_requested = pyqtSignal(object)
         breakpoints_changed = pyqtSignal()
         bookmarks_changed = pyqtSignal()
 
@@ -19101,6 +19695,10 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             # Stage 162: Standard-Shortcut CTRL+F in jedem SourceTextEdit.
             if event.matches(QKeySequence.Find):
                 self.find_requested.emit(self)
+                event.accept()
+                return
+            if event.key() == Qt.Key_F3:
+                self.find_next_requested.emit(self)
                 event.accept()
                 return
             if event.key() == Qt.Key_F1:
@@ -22627,6 +23225,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
         build_requested = pyqtSignal(object)
         build_generated_requested = pyqtSignal(object)
         find_requested = pyqtSignal(object, object)
+        find_next_requested = pyqtSignal(object, object)
 
         BASIC_EXTENSIONS     = {".bas", ".basic"}
         ASSEMBLER_EXTENSIONS = {".asm", ".s", ".a65", ".m68k", ".inc"}
@@ -22690,6 +23289,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.generated_linked_assembly_files: Tuple[str, ...] = ()
             self.generated_pe32_modules: Tuple[Tuple[str, str], ...] = ()
             self.generated_link_object_files: Tuple[str, ...] = ()
+            self.project_tree_compile_output_directory: Optional[Path] = None
             self._syncing_generated_assembly = False
             self.dbase_process = None
             self.dbase_uses_debug_output = False
@@ -22854,6 +23454,9 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             )
             self.raw_editor.find_requested.connect(
                 lambda editor: self.find_requested.emit(self, editor)
+            )
+            self.raw_editor.find_next_requested.connect(
+                lambda editor: self.find_next_requested.emit(self, editor)
             )
             self.raw_editor.breakpoints_changed.connect(
                 self._source_breakpoints_changed
@@ -23091,6 +23694,9 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             )
             self.generated_assembly_editor.find_requested.connect(
                 lambda editor: self.find_requested.emit(self, editor)
+            )
+            self.generated_assembly_editor.find_next_requested.connect(
+                lambda editor: self.find_next_requested.emit(self, editor)
             )
             generated_assembly_layout.addWidget(
                 self.generated_assembly_editor_container,
@@ -44559,7 +45165,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             """Kompiliert WFM/OOP additiv auf Basis der vorhandenen dBase-Runtime.
 
             Der normale d64dbase-Compiler liefert den Runtime-Shell. Die FORM-
-            Objekte werden danach ausschließlich über d64qt5.dll aufgebaut.
+            Objekte werden danach ausschließlich über d64_qt5.dll aufgebaut.
             """
             try:
                 from d64dbase import compile_dbase_to_assembly
@@ -44631,13 +45237,13 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             # eingefügt; wenn keiner existiert, direkt hinter die bits-Zeile.
             missing_imports = []
             for name in imports:
-                declaration = f'import {name}, "d64qt5.dll", "{name}"'
+                declaration = f'import {name}, "libd64_qt5.dll", "{name}"'
                 if declaration not in assembly:
                     missing_imports.append(declaration + "\n")
 
             if uses_nonvisual:
                 name = "DBaseQtNonVisualCreate"
-                declaration = f'import {name}, "d64qt5.dll", "{name}"'
+                declaration = f'import {name}, "libd64_qt5.dll", "{name}"'
                 if declaration not in assembly:
                     missing_imports.append(declaration + "\n")
 
@@ -45511,19 +46117,19 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             return True
 
         def _prepare_dbase_form_runtime(self, output_path: Path) -> bool:
-            """Stage 118: vorhandene d64qt5.dll neben die Formular-EXE legen."""
+            """Stage 118: vorhandene d64_qt5.dll neben die Formular-EXE legen."""
             output_path = Path(output_path).resolve()
-            destination = output_path.parent / "d64qt5.dll"
+            destination = output_path.parent / "libd64_qt5.dll"
             if destination.is_file():
                 return True
 
             base_dir = Path(__file__).resolve().parent
             candidates = (
-                base_dir / "d64qt5.dll",
-                base_dir / "d64qt5" / "d64qt5.dll",
-                base_dir / "d64qt5" / "release" / "d64qt5.dll",
-                base_dir / "d64qt5" / "debug" / "d64qt5.dll",
-                self.current_directory / "d64qt5.dll",
+                base_dir / "libd64_qt5.dll",
+                base_dir / "d64_qt5" / "libd64_qt5.dll",
+                base_dir / "d64_qt5" / "release" / "libd64_qt5.dll",
+                base_dir / "d64_qt5" / "debug"   / "libd64_qt5.dll",
+                self.current_directory / "libd64_qt5.dll",
             )
             for candidate in candidates:
                 try:
@@ -45541,21 +46147,21 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     return True
                 except OSError as exc:
                     self.show_error(
-                        "d64qt5.dll konnte nicht bereitgestellt werden",
+                        "libd64_qt5.dll konnte nicht bereitgestellt werden",
                         f"Quelle: {candidate}\nZiel: {destination}\n\n{exc}",
                     )
                     return False
 
             self.show_error(
-                "d64qt5.dll fehlt",
+                "libd64_qt5.dll fehlt",
                 "Das Formular wurde erfolgreich erzeugt, aber die Qt5-Runtime "
-                "d64qt5.dll wurde nicht gefunden.\n\n"
-                "Lege eine gebaute d64qt5.dll in eines dieser Verzeichnisse:\n"
+                "libd64_qt5.dll wurde nicht gefunden.\n\n"
+                "Lege eine gebaute libd64_qt5.dll in eines dieser Verzeichnisse:\n"
                 f"  {base_dir}\n"
-                f"  {base_dir / 'd64qt5'}\n"
-                f"  {base_dir / 'd64qt5' / 'release'}\n"
+                f"  {base_dir / 'd64_qt5'}\n"
+                f"  {base_dir / 'd64_qt5' / 'release'}\n"
                 f"  {self.current_directory}\n\n"
-                "Die vollständigen Runtime-Quelldateien liegen im Paket unter d64qt5/.",
+                "Die vollständigen Runtime-Quelldateien liegen im Paket unter d64_qt5/.",
             )
             return False
 
@@ -47100,13 +47706,32 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 path = Path(value).expanduser().absolute()
             return path
 
+        def _document_windows_output_path(
+            self,
+            document: DocumentEditor,
+        ) -> Optional[Path]:
+            override = getattr(
+                document, "project_tree_compile_output_directory", None
+            )
+            if override:
+                try:
+                    return Path(override).expanduser().resolve()
+                except (OSError, RuntimeError, ValueError):
+                    return Path(override).expanduser().absolute()
+            return self._project_windows_output_path(document.build_target)
+
         def _project_generated_object_path(
             self,
             source_path: Path,
             target: str,
+            output_directory: Optional[Path] = None,
         ) -> Path:
             source = Path(source_path).expanduser().resolve()
-            output = self._project_windows_output_path(target)
+            output = (
+                Path(output_directory).expanduser().resolve()
+                if output_directory is not None
+                else self._project_windows_output_path(target)
+            )
             return (
                 (output / source.with_suffix(".o").name).resolve()
                 if output is not None
@@ -48737,6 +49362,35 @@ border: 2px solid #2a69aa;
             dialog.activateWindow()
             dialog.focus_search_text()
 
+        def repeat_source_find(
+            self,
+            document: DocumentEditor,
+            editor: SourceTextEdit,
+        ) -> None:
+            """F3 setzt die letzte Editorsuche fort und läuft am Ende um."""
+            dialog = self.source_find_dialog
+            if dialog is None:
+                self.show_source_find_dialog(document, editor)
+                return
+
+            criteria = dialog.criteria()
+            search_value = (
+                str(criteria.get("regex_text", ""))
+                if criteria.get("regex")
+                else str(criteria.get("text", ""))
+            )
+            if not search_value:
+                self.show_source_find_dialog(document, editor)
+                return
+
+            self._source_find_document = document
+            self._source_find_editor = editor
+            dialog.set_target(
+                document.display_name,
+                project_file_count=len(self._source_find_project_paths()),
+            )
+            self._execute_source_find(True, allow_wrap=True)
+
         def _abort_source_find(self) -> None:
             self._source_find_cancel_requested = True
             self._source_find_project_order = []
@@ -48750,6 +49404,7 @@ border: 2px solid #2a69aa;
         def _execute_source_find(
             self,
             continue_search: bool,
+            allow_wrap: bool = False,
         ) -> None:
             dialog = self.source_find_dialog
             document = self._source_find_document
@@ -48843,6 +49498,39 @@ border: 2px solid #2a69aa;
                 return
 
             if not project_mode:
+                if continue_search and allow_wrap:
+                    wrap_position = 0 if forward else len(current_text)
+                    wrapped_span = self._source_find_span(
+                        current_text,
+                        pattern,
+                        wrap_position,
+                        forward,
+                    )
+                    if wrapped_span is not None:
+                        self._source_find_select_span(
+                            editor,
+                            wrapped_span[0],
+                            wrapped_span[1],
+                            forward,
+                        )
+                        line = current_text.count(
+                            "\n", 0, wrapped_span[0]
+                        ) + 1
+                        dialog.set_status(
+                            tr(
+                                "Suche am {boundary} fortgesetzt; "
+                                "Treffer in {name}, Zeile {line}."
+                            ).format(
+                                boundary=(
+                                    tr("Dokumentanfang")
+                                    if forward
+                                    else tr("Dokumentende")
+                                ),
+                                name=document.display_name,
+                                line=line,
+                            )
+                        )
+                        return
                 dialog.set_status(
                     tr("Kein weiterer Treffer gefunden.")
                     if continue_search
@@ -49425,6 +50113,9 @@ border: 2px solid #2a69aa;
             document.find_requested.connect(
                 self.show_source_find_dialog
             )
+            document.find_next_requested.connect(
+                self.repeat_source_find
+            )
             document.raw_editor.bookmarks_changed.connect(
                 self._refresh_favorites_menu
             )
@@ -49672,6 +50363,14 @@ border: 2px solid #2a69aa;
             return True
 
         @staticmethod
+        def _document_output_path(
+            document: DocumentEditor,
+            filename: str,
+        ) -> Path:
+            """Zielpfad für einen gezielten Projektbaum-Compilelauf."""
+            return _project_document_output_path(document, filename)
+
+        @staticmethod
         def _assembler_output_path(
             document: DocumentEditor,
             assembly_source: str = "",
@@ -49702,7 +50401,9 @@ border: 2px solid #2a69aa;
                     #from amiga500 import is_amiga_boot_source
                     if is_amiga_boot_source(assembly_source):
                         suffix = ".adf"
-            return document.path.with_suffix(suffix)
+            return _project_document_output_path(
+                document, document.path.with_suffix(suffix).name
+            )
 
         @staticmethod
         def _basic_assembly_output_path(document: DocumentEditor) -> Path:
@@ -49710,8 +50411,8 @@ border: 2px solid #2a69aa;
                 raise AssemblerError(
                     "Der BASIC-Quelltext muss zuerst gespeichert werden."
                 )
-            return document.path.with_name(
-                document.path.stem + ".generated.asm"
+            return _project_document_output_path(
+                document, document.path.stem + ".generated.asm"
             )
 
         @staticmethod
@@ -49720,7 +50421,8 @@ border: 2px solid #2a69aa;
                 raise AssemblerError(
                     "Der Pascal-Quelltext muss zuerst gespeichert werden."
                 )
-            return document.path.with_name(
+            return _project_document_output_path(
+                document,
                 document.path.stem
                 + (
                     ".generated.amiga.asm"
@@ -49743,7 +50445,8 @@ border: 2px solid #2a69aa;
                 raise AssemblerError(
                     "Der C-Quelltext muss zuerst gespeichert werden."
                 )
-            return document.path.with_name(
+            return _project_document_output_path(
+                document,
                 document.path.stem
                 + (
                     ".generated.amiga.asm"
@@ -49927,7 +50630,9 @@ border: 2px solid #2a69aa;
                 raise AssemblerError("Der LOGO-Quelltext muss zuerst gespeichert werden.")
             if document.build_target != "pe32":
                 raise AssemblerError("LOGO unterstützt im ersten Stand ausschließlich Windows PE32.")
-            return document.path.with_name(document.path.stem + ".generated.pe32.asm")
+            return _project_document_output_path(
+                document, document.path.stem + ".generated.pe32.asm"
+            )
 
         @staticmethod
         def _dbase_assembly_output_path(document: DocumentEditor) -> Path:
@@ -49936,7 +50641,9 @@ border: 2px solid #2a69aa;
             if document.build_target not in {"pe32", "pe64"}:
                 raise AssemblerError("dBase unterstützt nur Windows PE32 und Windows PE32+/PE64.")
             suffix = ".generated.pe64.asm" if document.build_target == "pe64" else ".generated.pe32.asm"
-            return document.path.with_name(document.path.stem + suffix)
+            return _project_document_output_path(
+                document, document.path.stem + suffix
+            )
 
         @staticmethod
         def _prolog_assembly_output_path(document: DocumentEditor) -> Path:
@@ -49945,7 +50652,9 @@ border: 2px solid #2a69aa;
             if document.build_target not in {"pe32", "pe64"}:
                 raise AssemblerError("PROLOG unterstützt nur Windows PE32 und Windows PE64/PE32+.")
             suffix = ".generated.pe64.asm" if document.build_target == "pe64" else ".generated.pe32.asm"
-            return document.path.with_name(document.path.stem + suffix)
+            return _project_document_output_path(
+                document, document.path.stem + suffix
+            )
 
         @staticmethod
         def _lisp_assembly_output_path(document: DocumentEditor) -> Path:
@@ -49954,7 +50663,9 @@ border: 2px solid #2a69aa;
             if document.build_target not in {"pe32", "pe64"}:
                 raise AssemblerError("LISP unterstützt derzeit nur Windows PE32 und Windows PE64/PE32+.")
             suffix = ".generated.pe64.asm" if document.build_target == "pe64" else ".generated.pe32.asm"
-            return document.path.with_name(document.path.stem + suffix)
+            return _project_document_output_path(
+                document, document.path.stem + suffix
+            )
 
         def _compile_basic_document(self, document: DocumentEditor) -> bool:
             """C64 BASIC -> editierbarer MOS-6510-Assemblercode."""
@@ -50183,7 +50894,7 @@ border: 2px solid #2a69aa;
                 if self.workspace_root not in include_paths:
                     include_paths.append(self.workspace_root)
                 _project_output_directory = (
-                    self._project_windows_output_path(document.build_target)
+                    self._document_windows_output_path(document)
                     if document.build_target in {"pe32", "pe64"}
                     else None
                 )
@@ -50622,14 +51333,16 @@ border: 2px solid #2a69aa;
             )
             writer = _write_pe64_generated_objects if is64 else _write_pe32_generated_objects
             error_type = PE64AssemblerError if is64 else PE32AssemblerError
-            _project_output_directory = self._project_windows_output_path(document.build_target)
+            _project_output_directory = self._document_windows_output_path(document)
             try:
                 object_paths = writer(
                     proxy,
                     source_path=document.path,
                     assembly_path=assembly_path,
                     main_object_path=self._project_generated_object_path(
-                        document.path, document.build_target
+                        document.path,
+                        document.build_target,
+                        output_directory=_project_output_directory,
                     ),
                     output_directory=_project_output_directory,
                 )
@@ -50786,7 +51499,7 @@ border: 2px solid #2a69aa;
                         _write_pe64_generated_objects if is64
                         else _write_pe32_generated_objects
                     )
-                    _project_output_directory = self._project_windows_output_path(document.build_target)
+                    _project_output_directory = self._document_windows_output_path(document)
                     object_paths = object_writer(
                         proxy,
                         source_path=document.path,
@@ -51711,7 +52424,7 @@ border: 2px solid #2a69aa;
                     f"Programm: {output_path}\n\n{exc}\n\n"
                     "Der Start-Button startet ausschliesslich die bereits vom "
                     "internen Linker erzeugte EXE. Stelle sicher, dass die bereits "
-                    "manuell erzeugte d64qt5.dll sowie ihre Qt5-Abhaengigkeiten "
+                    "manuell erzeugte libd64_qt5.dll sowie ihre Qt5-Abhaengigkeiten "
                     "ueber das EXE-Verzeichnis oder den Windows-DLL-Suchpfad "
                     "verfuegbar sind.",
                 )
@@ -52273,10 +52986,12 @@ border: 2px solid #2a69aa;
             self.project_tree.setHeaderHidden(True)
             self.project_tree.setUniformRowHeights(True)
             self.project_tree.setAlternatingRowColors(True)
+            self.project_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
+            self.project_tree.setSelectionBehavior(QAbstractItemView.SelectRows)
             self.project_tree.setContextMenuPolicy(Qt.CustomContextMenu)
             self.project_tree.setToolTip(
-                "Doppelklick öffnet Dateien bzw. zeigt Archiv-/Objektinformationen; "
-                "Checkboxen werden mit einfachem Klick umgeschaltet"
+                "Shift markiert Bereiche, Strg markiert einzelne Blätter; "
+                "F2 kompiliert und Entf entfernt markierte Blätter"
             )
             self.project_tree.setStyleSheet(
                 self._project_tree_checkbox_stylesheet()
@@ -53927,22 +54642,176 @@ border: 2px solid #2a69aa;
             position,
         ) -> None:
             menu = QMenu(self.project_tree)
+            compile_action = menu.addAction("Kompilieren")
+            compile_action.setShortcut(QKeySequence("F2"))
             open_action = menu.addAction("Öffnen")
             menu.addSeparator()
             remove_action = menu.addAction("Aus Knoten entfernen")
             selected = menu.exec_(
                 self.project_tree.viewport().mapToGlobal(position)
             )
-            if selected is open_action:
+            if selected is compile_action:
+                self.compile_selected_project_sources(preferred_item=item)
+            elif selected is open_action:
                 self.open_project_item(item)
             elif selected is remove_action:
                 self.remove_project_pascal_target_entry(item)
+
+        @staticmethod
+        def _project_source_extensions() -> set[str]:
+            return set().union(
+                DocumentEditor.BASIC_EXTENSIONS,
+                DocumentEditor.ASSEMBLER_EXTENSIONS,
+                DocumentEditor.PASCAL_EXTENSIONS,
+                DocumentEditor.C_EXTENSIONS,
+                DocumentEditor.LISP_EXTENSIONS,
+                DocumentEditor.PROLOG_EXTENSIONS,
+                DocumentEditor.LOGO_EXTENSIONS,
+                DocumentEditor.DBASE_EXTENSIONS,
+            )
+
+        def _project_source_path(
+            self,
+            item: Optional[QTreeWidgetItem],
+        ) -> Optional[Path]:
+            if item is None or item.childCount() != 0:
+                return None
+            value = str(item.data(0, Qt.UserRole + 302) or "").strip()
+            if not value:
+                return None
+            path = Path(value).expanduser()
+            if path.suffix.casefold() not in self._project_source_extensions():
+                return None
+            try:
+                return path.resolve()
+            except OSError:
+                return path.absolute()
+
+        def _project_compilable_selection(
+            self,
+            preferred_item: Optional[QTreeWidgetItem] = None,
+        ) -> List[QTreeWidgetItem]:
+            selected = list(self.project_tree.selectedItems())
+            if preferred_item is not None and preferred_item not in selected:
+                selected = [preferred_item]
+            if not selected and self.project_tree.currentItem() is not None:
+                selected = [self.project_tree.currentItem()]
+            return [
+                item for item in selected
+                if self._project_source_path(item) is not None
+            ]
+
+        def compile_selected_project_sources(
+            self,
+            *,
+            preferred_item: Optional[QTreeWidgetItem] = None,
+        ) -> bool:
+            """Kompiliert markierte Projektblätter ohne EXE-Start."""
+            items = self._project_compilable_selection(preferred_item)
+            if not items:
+                self.statusBar().showMessage(
+                    "F2: Kein kompilierbares Modul/Unit-Blatt markiert", 5000
+                )
+                return False
+
+            succeeded = 0
+            failed = 0
+            for item in items:
+                path = self._project_source_path(item)
+                if path is None or not path.is_file():
+                    failed += 1
+                    self.show_error(
+                        "Projektquelle nicht gefunden",
+                        f"Datei nicht gefunden:\n{path or item.text(0)}",
+                    )
+                    continue
+
+                target = str(
+                    item.data(0, Qt.UserRole + 305) or ""
+                ).casefold()
+                document = self._find_open_document(path)
+                if document is None:
+                    if not self.open_document(path):
+                        failed += 1
+                        continue
+                    document = self._find_open_document(path)
+                if not isinstance(document, DocumentEditor):
+                    failed += 1
+                    continue
+                if target in {"pe32", "pe64"}:
+                    document.set_build_target(target)
+                else:
+                    target = str(document.build_target or "").casefold()
+
+                if target in {"pe32", "pe64"}:
+                    output_directory = path.parent / target
+                    document.project_tree_compile_output_directory = (
+                        output_directory.resolve()
+                    )
+                else:
+                    document.project_tree_compile_output_directory = None
+
+                if not self.assemble_document(document):
+                    failed += 1
+                    continue
+
+                needs_object = (
+                    target in {"pe32", "pe64"}
+                    and not (
+                        document.is_pascal_document
+                        and str(
+                            getattr(document, "generated_source_kind", "")
+                        ).casefold() == "unit"
+                    )
+                    and not document.is_assembler_document
+                )
+                if needs_object and not self.create_coff32_object_document(document):
+                    failed += 1
+                    continue
+                succeeded += 1
+
+            if succeeded:
+                self.statusBar().showMessage(
+                    f"F2: {succeeded} Projektblatt/-blätter kompiliert"
+                    + (f", {failed} fehlgeschlagen" if failed else ""),
+                    8000,
+                )
+            return failed == 0 and succeeded == len(items)
+
+        def _show_project_source_menu(
+            self,
+            item: QTreeWidgetItem,
+            position,
+        ) -> None:
+            menu = QMenu(self.project_tree)
+            compile_action = menu.addAction("Kompilieren")
+            compile_action.setShortcut(QKeySequence("F2"))
+            open_action = menu.addAction("Öffnen")
+            menu.addSeparator()
+            remove_action = menu.addAction("Aus Projekt entfernen")
+            selected = menu.exec_(
+                self.project_tree.viewport().mapToGlobal(position)
+            )
+            if selected is compile_action:
+                self.compile_selected_project_sources(preferred_item=item)
+            elif selected is open_action:
+                self.open_project_item(item)
+            elif selected is remove_action:
+                self.delete_selected_project_leaves(preferred_item=item)
 
         def show_project_context_menu(self, position) -> None:
             item = self.project_tree.itemAt(position)
             if item is None:
                 return
+            previous_selection = list(self.project_tree.selectedItems())
+            item_was_selected = item in previous_selection
             self.project_tree.setCurrentItem(item)
+            if item_was_selected:
+                for selected_item in previous_selection:
+                    selected_item.setSelected(True)
+            else:
+                self.project_tree.clearSelection()
+                item.setSelected(True)
             kind = self._project_item_kind(item)
             if kind == PROJECT_NODE_PASCAL_TARGET:
                 self._show_project_pascal_target_menu(item, position)
@@ -53969,6 +54838,9 @@ border: 2px solid #2a69aa;
                 return
             if kind == PROJECT_NODE_PASCAL_TARGET_SOURCE:
                 self._show_project_pascal_source_menu(item, position)
+                return
+            if not kind and self._project_source_path(item) is not None:
+                self._show_project_source_menu(item, position)
                 return
             if kind == PROJECT_NODE_ARCHIVE_ROOT:
                 self._show_project_archive_root_menu(item, position)
@@ -54278,6 +55150,8 @@ border: 2px solid #2a69aa;
             self, item: QTreeWidgetItem, position
         ) -> None:
             menu = QMenu(self.project_tree)
+            compile_action = menu.addAction("Kompilieren")
+            compile_action.setShortcut(QKeySequence("F2"))
             browser_action = menu.addAction("Im Wissensdatenbank-Browser öffnen")
             source_action = menu.addAction("Quelltext öffnen")
             menu.addSeparator()
@@ -54285,7 +55159,9 @@ border: 2px solid #2a69aa;
             selected = menu.exec_(
                 self.project_tree.viewport().mapToGlobal(position)
             )
-            if selected is browser_action:
+            if selected is compile_action:
+                self.compile_selected_project_sources(preferred_item=item)
+            elif selected is browser_action:
                 path_text = str(item.data(0, Qt.UserRole + 302) or "").strip()
                 if path_text:
                     self.open_prolog_knowledge_browser(Path(path_text))
@@ -54785,6 +55661,114 @@ border: 2px solid #2a69aa;
             )
             if child is not None:
                 self.project_tree.setCurrentItem(child)
+
+        def _project_removable_leaf_selection(
+            self,
+            preferred_item: Optional[QTreeWidgetItem] = None,
+        ) -> List[QTreeWidgetItem]:
+            selected = list(self.project_tree.selectedItems())
+            if preferred_item is not None and preferred_item not in selected:
+                selected = [preferred_item]
+            if not selected and self.project_tree.currentItem() is not None:
+                selected = [self.project_tree.currentItem()]
+            protected_kinds = {
+                PROJECT_NODE_ARCHIVE_ROOT,
+                PROJECT_NODE_ARCHIVE,
+                PROJECT_NODE_PROLOG_KNOWLEDGE_ROOT,
+                PROJECT_NODE_PASCAL_TARGET,
+                PROJECT_NODE_PASCAL_MODULE_ROOT,
+                PROJECT_NODE_PASCAL_UNIT_ROOT,
+                PROJECT_NODE_PASCAL_UNIT_NAMESPACE,
+            }
+            return [
+                item for item in selected
+                if item.parent() is not None
+                and item.childCount() == 0
+                and self._project_item_kind(item) not in protected_kinds
+                and bool(str(item.data(0, Qt.UserRole + 302) or "").strip())
+            ]
+
+        def delete_selected_project_leaves(
+            self,
+            *,
+            preferred_item: Optional[QTreeWidgetItem] = None,
+        ) -> bool:
+            leaves = self._project_removable_leaf_selection(preferred_item)
+            if not leaves:
+                self.statusBar().showMessage(
+                    "Entf: Keine entfernbaren Projektblätter markiert", 5000
+                )
+                return False
+
+            names = "\n".join(f"  • {item.text(0)}" for item in leaves[:12])
+            if len(leaves) > 12:
+                names += f"\n  • … und {len(leaves) - 12} weitere"
+            box = QMessageBox(self)
+            box.setWindowIcon(self.windowIcon())
+            box.setWindowTitle("Projektblätter entfernen")
+            box.setIcon(QMessageBox.Question)
+            box.setText(
+                "Sollen die markierten Blätter aus der Projekt-TreeList "
+                "entfernt werden?\n\n"
+                + names
+                + "\n\nDie Dateien auf dem Datenträger bleiben erhalten."
+            )
+            delete_button = box.addButton(
+                "OK - Löschen", QMessageBox.DestructiveRole
+            )
+            cancel_button = box.addButton(
+                "Abbrechen", QMessageBox.RejectRole
+            )
+            box.setDefaultButton(cancel_button)
+            self._apply_message_box_theme(box)
+            box.exec_()
+            if box.clickedButton() is not delete_button:
+                return False
+
+            removed = 0
+            archive_parents: List[QTreeWidgetItem] = []
+            for item in leaves:
+                parent = item.parent()
+                if parent is None:
+                    continue
+                kind = self._project_item_kind(item)
+                parent.takeChild(parent.indexOfChild(item))
+                removed += 1
+                if kind == PROJECT_NODE_ARCHIVE_OBJECT:
+                    archive_parents.append(parent)
+                if (
+                    kind == PROJECT_NODE_PASCAL_TARGET_SOURCE
+                    and self._project_item_kind(parent)
+                    == PROJECT_NODE_PASCAL_UNIT_NAMESPACE
+                    and parent.childCount() == 0
+                ):
+                    group = parent.parent()
+                    if group is not None:
+                        target = str(
+                            parent.data(0, Qt.UserRole + 305) or ""
+                        ).casefold()
+                        role = str(
+                            parent.data(0, Qt.UserRole + 306) or ""
+                        ).casefold()
+                        namespace = str(
+                            parent.data(0, Qt.UserRole + 307)
+                            or parent.text(0)
+                        ).casefold()
+                        group.takeChild(group.indexOfChild(parent))
+                        getattr(
+                            self, "project_pascal_unit_namespace_nodes", {}
+                        ).pop((target, role, namespace), None)
+
+            for archive_parent in archive_parents:
+                self._refresh_archive_check_state(archive_parent)
+            if removed:
+                self.set_project_modified(True)
+                if self.current_project_path is not None:
+                    self.save_project()
+                self.statusBar().showMessage(
+                    f"{removed} Projektblatt/-blätter entfernt", 7000
+                )
+            return removed > 0
 
         def delete_project_item(self, item: QTreeWidgetItem) -> None:
             parent = item.parent()
@@ -55353,6 +56337,16 @@ border: 2px solid #2a69aa;
             if event.type() == QEvent.Show and isinstance(watched, QWidget):
                 self._assign_widget_property_id(watched)
             if event.type() == QEvent.KeyPress and not event.isAutoRepeat():
+                project_tree = getattr(self, "project_tree", None)
+                if watched is project_tree:
+                    if event.key() == Qt.Key_Delete:
+                        self.delete_selected_project_leaves()
+                        event.accept()
+                        return True
+                    if event.key() == Qt.Key_F2:
+                        self.compile_selected_project_sources()
+                        event.accept()
+                        return True
                 if event.key() == Qt.Key_F1:
                     # For now only log the ID. Do not consume F1 so the existing
                     # source-editor keyword help remains intact until CHM widget

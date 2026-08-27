@@ -1,0 +1,19 @@
+; ---------------------------------------------------------------------------
+; File: console.def
+; Copyright (c) 2026 by Jens Kallup - paule32
+; All rights reserved.
+; ---------------------------------------------------------------------------
+_jit_read_int                  @2
+_jit_read_string               @3
+_jit_read_char                 @200
+
+; ---------------------------------------------------------------------------
+; Application Command Line Interface (CLI) ...
+; ---------------------------------------------------------------------------
+_jit_args_init                 @70
+_jit_args_shutdown             @71
+
+_jit_param_count               @72
+_jit_param_str_cstr            @73
+
+_jit_command_line_cstr         @74

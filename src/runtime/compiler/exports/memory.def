@@ -1,0 +1,47 @@
+; ---------------------------------------------------------------------------
+; File: memory.def
+; Copyright (c) 2026 by Jens Kallup - paule32
+; All rights reserved.
+; ---------------------------------------------------------------------------
+_jit_new_memory                 @90
+_jit_dispose_memory             @91
+
+_jit_malloc         @92
+_jit_calloc         @93
+_jit_realloc        @94
+_jit_free           @95
+
+_jit_memcpy         @40
+_jit_memset         @41
+_jit_memcmp         @42
+_jit_memmove        @43
+
+_jit_setlength_memory @44
+memset                @45
+
+_jit_strdup         @100
+_jit_strlen         @101
+
+; ---------------------------------------------------------------------------
+; Pascal TObject
+; ---------------------------------------------------------------------------
+_jit_object_error_set_hook       @170
+_jit_object_error_last           @171
+_jit_object_error_last_message   @172
+_jit_object_error_clear          @173
+
+_jit_object_instance_new         @130
+_jit_object_instance_free        @131
+_jit_object_free                 @132
+
+_jit_object_class_type           @140
+
+_jit_class_parent                @141
+_jit_class_name                  @142
+_jit_class_instance_size         @143
+
+_jit_inherits_from_class         @150
+_jit_inherits_from_object        @151
+
+_jit_get_virtual_vmt             @160
+_jit_get_virtual_object          @161

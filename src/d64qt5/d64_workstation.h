@@ -1,3 +1,8 @@
+// ---------------------------------------------------------------------------
+// File:   d64_workstation.h
+// Author: (c) 2026 Jens Kallup - paule32
+// All rights reserved
+// ---------------------------------------------------------------------------
 #ifndef D64_WORKSTATION_H
 #define D64_WORKSTATION_H
 
@@ -48,28 +53,35 @@ void D64WorkstationSetDbCallback(D64WorkstationCallback callback);
 void D64WorkstationSetServerCallback(D64WorkstationCallback callback);
 void D64WorkstationSetServerClientCallback(D64WorkstationServerClientCallback callback);
 void D64WorkstationSetServerClientCount(int count);
+
 bool D64WorkstationPrepare();
 bool D64WorkstationActivate(HWND mainWindow);
 bool D64WorkstationInstallKeyboardGuard(HWND mainWindow);
+
 void D64WorkstationBeginLeave();
 void D64WorkstationFinalizeLeave();
 bool D64WorkstationIsActive();
+
 bool D64WorkstationIsVisible();
 bool D64WorkstationOwnsDesktop();
 bool D64WorkstationJoinedExisting();
 bool D64WorkstationExitIconVisible();
 bool D64WorkstationPanelVisible();
+
 int D64WorkstationLeftPanelWidth();
 int D64WorkstationBottomPanelHeight();
+
 void D64WorkstationConstrainMovingRect(RECT *rect);
 void D64WorkstationConstrainMaximizeInfo(void *minMaxInfo);
 void D64WorkstationPositionMinimizedWindow(HWND mainWindow);
 void D64WorkstationCloseApplicationWindows(HWND mainWindow);
+
 bool D64WorkstationLaunchProgram(
     const wchar_t *applicationPath,
     const wchar_t *workingDirectory
 );
 bool D64WorkstationApplicationInstanceOwned();
+
 const wchar_t *D64WorkstationApplicationMutexName();
 const wchar_t *D64WorkstationDesktopName();
 

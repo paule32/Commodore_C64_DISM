@@ -5455,6 +5455,31 @@ class _PascalUnitResolver:
             self.stack.pop()
 
 
+def _merge_external_routines_for_link(
+    resolver_routines: Sequence[ExternalRoutineDeclaration],
+    unit_programs: Sequence[PascalProgram],
+    main_program: PascalProgram,
+) -> Tuple[ExternalRoutineDeclaration, ...]:
+    """Keep public PUI imports and private source-level runtime imports.
+
+    ``resolver_routines`` contains the public declarations reconstructed from
+    PUI metadata.  When a Unit is compiled from its available Pascal source,
+    its implementation can additionally contain private EXTERNAL declarations
+    which deliberately do not belong in the public PUI.  The merged PE module
+    still needs those symbols while emitting that Unit's method bodies.
+
+    The main program's own EXTERNAL declarations must be retained as well when
+    the program has a USES clause.  Duplicate compatible declarations are
+    intentionally left to ``_prepare_external_routines()``, which already
+    validates their linker symbols.
+    """
+    merged: List[ExternalRoutineDeclaration] = list(resolver_routines)
+    for unit_program in unit_programs:
+        merged.extend(unit_program.external_routines)
+    merged.extend(main_program.external_routines)
+    return tuple(merged)
+
+
 def _parse_pascal_frontend(
     source: str,
     *,
@@ -5529,7 +5554,11 @@ def _parse_pascal_frontend(
         body=main_program.body,
         types=tuple(types),
         methods=tuple(methods),
-        external_routines=tuple(resolver.external_routines),
+        external_routines=_merge_external_routines_for_link(
+            resolver.external_routines,
+            resolver.programs,
+            main_program,
+        ),
         global_routines=tuple(global_routines),
         unit_assembly_files=tuple(resolver.assembly_files),
         unit_object_files=tuple(
@@ -5690,20 +5719,20 @@ PE64_POINTER_TYPE = _PascalType("pointer", 8, False, "pointer")
 PE64_STRING_TYPE = _PascalType("string", 8, False, "string")
 
 # Stage 181: Runtime-Funktionen aus System.Objects werden als echte PE-Imports
-# an libruntime_mini.dll gebunden.  Der erste Name ist der Pascal/DLL-Exportname;
+# an d64qt5.dll gebunden. Der erste Name ist der Pascal/DLL-Exportname;
 # der lokale COFF32-cdecl-Symbolname wird weiterhin als _jit_* erzeugt.
-PASCAL_MINIRUNTIME_DLL = "libruntime_mini.dll"
+PASCAL_MINIRUNTIME_DLL = "libd64_runtime.dll"
 PASCAL_MINIRUNTIME_IMPORTS: Dict[str, str] = {
-    "jit_object_instance_new": "jit_object_instance_new",
-    "jit_object_instance_free": "jit_object_instance_free",
-    "jit_object_free": "jit_object_free",
-    "jit_object_class_type": "jit_object_class_type",
-    "jit_class_parent": "jit_class_parent",
-    "jit_class_name": "jit_class_name",
-    "jit_class_instance_size": "jit_class_instance_size",
-    "jit_inherits_from_class": "jit_inherits_from_class",
-    "jit_inherits_from_object": "jit_inherits_from_object",
-    "jit_dynstring_from_cstr": "jit_dynstring_from_cstr",
+    "jit_object_instance_new"   : "jit_object_instance_new",
+    "jit_object_instance_free"  : "jit_object_instance_free",
+    "jit_object_free"           : "jit_object_free",
+    "jit_object_class_type"     : "jit_object_class_type",
+    "jit_class_parent"          : "jit_class_parent",
+    "jit_class_name"            : "jit_class_name",
+    "jit_class_instance_size"   : "jit_class_instance_size",
+    "jit_inherits_from_class"   : "jit_inherits_from_class",
+    "jit_inherits_from_object"  : "jit_inherits_from_object",
+    "jit_dynstring_from_cstr"   : "_jit_dynstring_from_cstr",
 }
 
 _TYPES = {
@@ -9312,7 +9341,7 @@ class _PE32CodeGenerator(_CodeGenerator):
                     argument.position,
                 )
 
-            self._emit_read_runtime_call("_jit_read_int", line)
+            self._emit_read_runtime_call("jit_read_int", line)
             if type_info == BOOLEAN_TYPE:
                 self.emitter.emit("    test eax, eax", line)
                 self.emitter.emit("    setne al", line)
@@ -9799,6 +9828,12 @@ class _PE32CodeGenerator(_CodeGenerator):
             self.emitter.emit("    push -11")
             self.emitter.emit("    call GetStdHandle")
             self.emitter.emit(f"    mov dword ptr [{self.symbol_prefix}_stdout_handle], eax")
+            self.emitter.emit(f"    push {self.symbol_prefix}_console_info")
+            self.emitter.emit("    push eax")
+            self.emitter.emit("    call GetConsoleScreenBufferInfo")
+            self.emitter.emit(
+                f"    mov dword ptr [{self.symbol_prefix}_console_state_valid], eax"
+            )
             # Zuerst das sichtbare Fenster verkleinern, danach den Puffer exakt
             # auf 80x25 setzen. Umgekehrt kann SetConsoleScreenBufferSize bei
             # einem noch groesseren Fenster fehlschlagen.
@@ -9818,6 +9853,51 @@ class _PE32CodeGenerator(_CodeGenerator):
             self.emitter.emit("    push eax")
             self.emitter.emit(f"    push dword ptr [{self.symbol_prefix}_stdout_handle]")
             self.emitter.emit("    call SetConsoleMode")
+            self.emitter.emit("    ret")
+
+            self.emitter.emit()
+            self.emitter.emit(f"{self.symbol_prefix}_console_restore:")
+            restore_done = f"{self.symbol_prefix}_console_restore_done"
+            self.emitter.emit(
+                f"    cmp dword ptr [{self.symbol_prefix}_console_state_valid], 0"
+            )
+            self.emitter.emit(f"    je {restore_done}")
+            self.emitter.emit(
+                f"    push dword ptr [{self.symbol_prefix}_console_mode]"
+            )
+            self.emitter.emit(
+                f"    push dword ptr [{self.symbol_prefix}_stdout_handle]"
+            )
+            self.emitter.emit("    call SetConsoleMode")
+            self.emitter.emit(f"    push {self.symbol_prefix}_console_restore_rect")
+            self.emitter.emit("    push 1")
+            self.emitter.emit(
+                f"    push dword ptr [{self.symbol_prefix}_stdout_handle]"
+            )
+            self.emitter.emit("    call SetConsoleWindowInfo")
+            self.emitter.emit(
+                f"    push dword ptr [{self.symbol_prefix}_console_info]"
+            )
+            self.emitter.emit(
+                f"    push dword ptr [{self.symbol_prefix}_stdout_handle]"
+            )
+            self.emitter.emit("    call SetConsoleScreenBufferSize")
+            self.emitter.emit(f"    mov eax, {self.symbol_prefix}_console_info")
+            self.emitter.emit("    add eax, 10")
+            self.emitter.emit("    push eax")
+            self.emitter.emit("    push 1")
+            self.emitter.emit(
+                f"    push dword ptr [{self.symbol_prefix}_stdout_handle]"
+            )
+            self.emitter.emit("    call SetConsoleWindowInfo")
+            self.emitter.emit(
+                f"    push dword ptr [{self.symbol_prefix}_console_info+4]"
+            )
+            self.emitter.emit(
+                f"    push dword ptr [{self.symbol_prefix}_stdout_handle]"
+            )
+            self.emitter.emit("    call SetConsoleCursorPosition")
+            self.emitter.emit(f"{restore_done}:")
             self.emitter.emit("    ret")
 
         if self.runtime.intersection({"print_string", "print_int", "print_char", "print_newline", "clear_screen", "range_error"}):
@@ -9864,17 +9944,14 @@ class _PE32CodeGenerator(_CodeGenerator):
             self.emitter.emit(); self.emitter.emit(f"{self.symbol_prefix}_range_error:")
             self.emitter.emit(f"    mov eax, {self.symbol_prefix}_range_message")
             self.emitter.emit(f"    call {self.symbol_prefix}_write_cstring")
+            if self.console_mode:
+                self.emitter.emit(f"    call {self.symbol_prefix}_console_restore")
             self.emitter.emit("    push 1"); self.emitter.emit("    call ExitProcess"); self.emitter.emit("    ret")
 
     def _emit_data(self) -> None:
         self.emitter.emit(); self.emitter.emit("align 4")
         if self.console_mode:
-            self.emitter.emit(f"{self.symbol_prefix}_stdout_handle: dd 0")
             self.emitter.emit(f"{self.symbol_prefix}_console_rect: dw 0, 0, 79, 24")
-            self.emitter.emit(f"{self.symbol_prefix}_console_mode: dd 0")
-            self.emitter.emit(f"{self.symbol_prefix}_written: dd 0")
-            self.emitter.emit(f"{self.symbol_prefix}_format_buffer: db " + ", ".join(["0"] * 32))
-            self.emitter.emit(f"{self.symbol_prefix}_char_buffer: db 0, 0")
         self.emitter.emit(f"{self.symbol_prefix}_fmt_s: db 37, 115, 0")
         self.emitter.emit(f"{self.symbol_prefix}_fmt_d: db 37, 100, 0")
         self.emitter.emit(f"{self.symbol_prefix}_fmt_c: db 37, 99, 0")
@@ -9900,16 +9977,30 @@ class _PE32CodeGenerator(_CodeGenerator):
                     self.emitter.emit(f"{variable.label}: db {values} ; {comment}: {variable.type_info.name}")
                 else:
                     self.emitter.emit(f"{variable.label}: {directive} {value} ; {comment}: {variable.type_info.name}")
-        if self.exception_frames:
-            self.emitter.emit(); self.emitter.emit("; Pascal TRY/EXCEPT exception frames (PE32)")
-            for env_label, frame_label in self.exception_frames:
-                self.emitter.emit(f"{env_label}: db " + ", ".join("0" for _ in range(24)))
-                self.emitter.emit(f"{frame_label}: db " + ", ".join("0" for _ in range(268)))
         if self.strings:
             self.emitter.emit(); self.emitter.emit("; Nullterminierte Windows-Latin-1-Zeichenketten")
             for data, label in self.strings.items():
                 values = ", ".join(str(value) for value in data + b"\x00")
                 self.emitter.emit(f"{label}: db {values}")
+        if self.console_mode or self.exception_frames:
+            self.emitter.emit()
+            self.emitter.emit("section .bss")
+            self.emitter.emit("align 4")
+        if self.console_mode:
+            self.emitter.emit(f"{self.symbol_prefix}_stdout_handle: resd 1")
+            self.emitter.emit(f"{self.symbol_prefix}_console_restore_rect: resw 4")
+            self.emitter.emit(f"{self.symbol_prefix}_console_info: resb 22")
+            self.emitter.emit(f"{self.symbol_prefix}_console_state_valid: resd 1")
+            self.emitter.emit(f"{self.symbol_prefix}_console_mode: resd 1")
+            self.emitter.emit(f"{self.symbol_prefix}_written: resd 1")
+            self.emitter.emit(f"{self.symbol_prefix}_format_buffer: resb 32")
+            self.emitter.emit(f"{self.symbol_prefix}_char_buffer: resb 2")
+        if self.exception_frames:
+            self.emitter.emit()
+            self.emitter.emit("; Pascal TRY/EXCEPT exception frames (PE32, BSS)")
+            for env_label, frame_label in self.exception_frames:
+                self.emitter.emit(f"{env_label}: resb 24")
+                self.emitter.emit(f"{frame_label}: resb 268")
 
     def _emit_external_declarations(self) -> None:
         emitted: set[str] = set()
@@ -9996,6 +10087,7 @@ class _PE32CodeGenerator(_CodeGenerator):
             for symbol in (
                 "ExitProcess", "AllocConsole", "GetStdHandle",
                 "SetConsoleScreenBufferSize", "SetConsoleWindowInfo",
+                "GetConsoleScreenBufferInfo", "SetConsoleCursorPosition",
                 "GetConsoleMode", "SetConsoleMode", "WriteFile", "lstrlenA",
                 "wsprintfA",
             ):
@@ -10056,6 +10148,7 @@ class _PE32CodeGenerator(_CodeGenerator):
         for symbol in (
             "ExitProcess", "AllocConsole", "GetStdHandle",
             "SetConsoleScreenBufferSize", "SetConsoleWindowInfo",
+            "GetConsoleScreenBufferInfo", "SetConsoleCursorPosition",
             "GetConsoleMode", "SetConsoleMode", "WriteFile", "lstrlenA",
             "wsprintfA",
         ):
@@ -10074,6 +10167,8 @@ class _PE32CodeGenerator(_CodeGenerator):
                 raise self._error(f"Initialisierung von {variable.name} besitzt den falschen Typ.", initializer.position)
             self._store_variable(variable, initializer.position.line)
         self._compile_statement(self.program.body)
+        if self.console_mode:
+            self.emitter.emit(f"    call {self.symbol_prefix}_console_restore", source_line)
         self.emitter.emit("    push 0", source_line)
         self.emitter.emit("    call ExitProcess", source_line)
         self._emit_global_routines(); self._emit_methods(); self._emit_runtime(); self._emit_data()
@@ -11052,6 +11147,16 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
                 f"    mov qword ptr [{self.symbol_prefix}_stdout_handle], rax"
             )
             self.emitter.emit("    mov rcx, rax")
+            self.emitter.emit(f"    mov rdx, {self.symbol_prefix}_console_info")
+            self.emitter.emit("    sub rsp, 32")
+            self.emitter.emit("    call GetConsoleScreenBufferInfo")
+            self.emitter.emit("    add rsp, 32")
+            self.emitter.emit(
+                f"    mov dword ptr [{self.symbol_prefix}_console_state_valid], eax"
+            )
+            self.emitter.emit(
+                f"    mov rcx, qword ptr [{self.symbol_prefix}_stdout_handle]"
+            )
             self.emitter.emit("    mov edx, 1")
             self.emitter.emit(f"    mov r8, {self.symbol_prefix}_console_rect")
             self.emitter.emit("    sub rsp, 32")
@@ -11082,6 +11187,61 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
             self.emitter.emit("    sub rsp, 32")
             self.emitter.emit("    call SetConsoleMode")
             self.emitter.emit("    add rsp, 32")
+            self._emit_runtime_epilogue()
+
+            self._emit_runtime_prologue(
+                f"{self.symbol_prefix}_console_restore"
+            )
+            restore_done = f"{self.symbol_prefix}_console_restore_done"
+            self.emitter.emit(
+                f"    cmp dword ptr [{self.symbol_prefix}_console_state_valid], 0"
+            )
+            self.emitter.emit(f"    je {restore_done}")
+            self.emitter.emit(
+                f"    mov rcx, qword ptr [{self.symbol_prefix}_stdout_handle]"
+            )
+            self.emitter.emit(
+                f"    mov edx, dword ptr [{self.symbol_prefix}_console_mode]"
+            )
+            self.emitter.emit("    sub rsp, 32")
+            self.emitter.emit("    call SetConsoleMode")
+            self.emitter.emit("    add rsp, 32")
+            self.emitter.emit(
+                f"    mov rcx, qword ptr [{self.symbol_prefix}_stdout_handle]"
+            )
+            self.emitter.emit("    mov edx, 1")
+            self.emitter.emit(f"    mov r8, {self.symbol_prefix}_console_restore_rect")
+            self.emitter.emit("    sub rsp, 32")
+            self.emitter.emit("    call SetConsoleWindowInfo")
+            self.emitter.emit("    add rsp, 32")
+            self.emitter.emit(
+                f"    mov rcx, qword ptr [{self.symbol_prefix}_stdout_handle]"
+            )
+            self.emitter.emit(
+                f"    mov edx, dword ptr [{self.symbol_prefix}_console_info]"
+            )
+            self.emitter.emit("    sub rsp, 32")
+            self.emitter.emit("    call SetConsoleScreenBufferSize")
+            self.emitter.emit("    add rsp, 32")
+            self.emitter.emit(
+                f"    mov rcx, qword ptr [{self.symbol_prefix}_stdout_handle]"
+            )
+            self.emitter.emit("    mov edx, 1")
+            self.emitter.emit(f"    mov r8, {self.symbol_prefix}_console_info")
+            self.emitter.emit("    add r8, 10")
+            self.emitter.emit("    sub rsp, 32")
+            self.emitter.emit("    call SetConsoleWindowInfo")
+            self.emitter.emit("    add rsp, 32")
+            self.emitter.emit(
+                f"    mov rcx, qword ptr [{self.symbol_prefix}_stdout_handle]"
+            )
+            self.emitter.emit(
+                f"    mov edx, dword ptr [{self.symbol_prefix}_console_info+4]"
+            )
+            self.emitter.emit("    sub rsp, 32")
+            self.emitter.emit("    call SetConsoleCursorPosition")
+            self.emitter.emit("    add rsp, 32")
+            self.emitter.emit(f"{restore_done}:")
             self._emit_runtime_epilogue()
 
         if self.runtime.intersection(
@@ -11146,6 +11306,10 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
             self._emit_runtime_prologue(f"{self.symbol_prefix}_range_error")
             self.emitter.emit(f"    mov rax, {self.symbol_prefix}_range_message")
             self._emit_internal_call(f"{self.symbol_prefix}_write_cstring", 0)
+            if self.console_mode:
+                self._emit_internal_call(
+                    f"{self.symbol_prefix}_console_restore", 0
+                )
             self.emitter.emit("    mov ecx, 1")
             self.emitter.emit("    sub rsp, 32")
             self.emitter.emit("    call ExitProcess")
@@ -11156,15 +11320,7 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
         self.emitter.emit()
         self.emitter.emit("align 8")
         if self.console_mode:
-            self.emitter.emit(f"{self.symbol_prefix}_stdout_handle: dq 0")
             self.emitter.emit(f"{self.symbol_prefix}_console_rect: dw 0, 0, 79, 24")
-            self.emitter.emit(f"{self.symbol_prefix}_console_mode: dd 0")
-            self.emitter.emit(f"{self.symbol_prefix}_written: dd 0")
-            self.emitter.emit(f"{self.symbol_prefix}_write_ptr: dq 0")
-            self.emitter.emit(
-                f"{self.symbol_prefix}_format_buffer: db " + ", ".join(["0"] * 32)
-            )
-            self.emitter.emit(f"{self.symbol_prefix}_char_buffer: db 0, 0")
         self.emitter.emit(f"{self.symbol_prefix}_fmt_s: db 37, 115, 0")
         self.emitter.emit(f"{self.symbol_prefix}_fmt_d: db 37, 100, 0")
         self.emitter.emit(f"{self.symbol_prefix}_fmt_c: db 37, 99, 0")
@@ -11175,11 +11331,6 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
         self.emitter.emit(
             f"{self.symbol_prefix}_range_message: db 82, 97, 110, 103, 101, 32, 101, 114, 114, 111, 114, 13, 10, 0"
         )
-        if self.call_temporaries:
-            self.emitter.emit()
-            self.emitter.emit("; PE64 Win64-call temporaries")
-            for label in self.call_temporaries:
-                self.emitter.emit(f"{label}: dq 0")
         if self.variable_order:
             self.emitter.emit()
             self.emitter.emit(f"; {self.language_name}-Variablen")
@@ -11212,6 +11363,25 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
             for data, label in self.strings.items():
                 values = ", ".join(str(value) for value in data + b"\x00")
                 self.emitter.emit(f"{label}: db {values}")
+        if self.console_mode or self.call_temporaries:
+            self.emitter.emit()
+            self.emitter.emit("section .bss")
+            self.emitter.emit("align 8")
+        if self.console_mode:
+            self.emitter.emit(f"{self.symbol_prefix}_stdout_handle: resq 1")
+            self.emitter.emit(f"{self.symbol_prefix}_console_restore_rect: resw 4")
+            self.emitter.emit(f"{self.symbol_prefix}_console_info: resb 22")
+            self.emitter.emit(f"{self.symbol_prefix}_console_state_valid: resd 1")
+            self.emitter.emit(f"{self.symbol_prefix}_console_mode: resd 1")
+            self.emitter.emit(f"{self.symbol_prefix}_written: resd 1")
+            self.emitter.emit(f"{self.symbol_prefix}_write_ptr: resq 1")
+            self.emitter.emit(f"{self.symbol_prefix}_format_buffer: resb 32")
+            self.emitter.emit(f"{self.symbol_prefix}_char_buffer: resb 2")
+        if self.call_temporaries:
+            self.emitter.emit()
+            self.emitter.emit("; PE64 Win64-call temporaries (BSS)")
+            for label in self.call_temporaries:
+                self.emitter.emit(f"{label}: resq 1")
 
     def _emit_external_declarations(self) -> None:
         emitted: set[str] = set()
@@ -11338,6 +11508,7 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
         for symbol in (
             "ExitProcess", "AllocConsole", "GetStdHandle",
             "SetConsoleScreenBufferSize", "SetConsoleWindowInfo",
+            "GetConsoleScreenBufferInfo", "SetConsoleCursorPosition",
             "GetConsoleMode", "SetConsoleMode", "WriteFile", "lstrlenA",
             "wsprintfA",
         ):
@@ -11361,6 +11532,10 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
                 )
             self._store_variable(variable, initializer.position.line)
         self._compile_statement(self.program.body)
+        if self.console_mode:
+            self._emit_internal_call(
+                f"{self.symbol_prefix}_console_restore", source_line
+            )
         self.emitter.emit("    xor ecx, ecx", source_line)
         self.emitter.emit("    sub rsp, 32", source_line)
         self.emitter.emit("    call ExitProcess", source_line)
