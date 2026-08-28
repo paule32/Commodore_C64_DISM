@@ -3,12 +3,12 @@
 // Author: (c) 2026 Jens Kallup - paule32
 // All rights reserved
 // ---------------------------------------------------------------------------
-{$linklib libruntime_mini.dll.a}
 program test_raise;
 
 uses System.SysUtils;
 
 begin
+writeln('start');
     try
         WriteLn('before raise');
         raise Exception.Create('fuzz');

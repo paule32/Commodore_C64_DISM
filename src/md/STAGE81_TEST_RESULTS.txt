@@ -1,4 +1,0 @@
-Stage 81 targeted tests: 17/17 OK
-Full regression: 774/774 OK
-py_compile: OK
-No __pycache__/.pyc shipped

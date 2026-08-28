@@ -85,3 +85,10 @@ src/d64qt5/1
 src/runtime/compiler/win64/libdbase2many.64.dll.a
 src/runtime/compiler/win64/libasmjit.64.dll.a
 src/runtime/compiler/win64/libasmjit.64.a
+src/runtime/pascal/test/libd64_runtime.a
+src/runtime/pascal/test/libd64_qt5.dll.a
+src/runtime/pascal/test/libd64_qt5.a
+src/runtime/pascal/test/libd64_runtime.dll.a
+src/runtime/pascal/test/pe32/System.Objects.pui
+src/runtime/pascal/test/pe32/System.SysUtils.pui
+src/runtime/pascal/pe32/System.Objects.pui

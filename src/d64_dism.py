@@ -7124,7 +7124,9 @@ def link_coff64_objects(
 #
 # festgelegt. PE32+ hängt vorhandene .data/.bss-Sektionen erst danach an.
 # ---------------------------------------------------------------------------
-PE_PACK_IMPORTS_BY_LOCAL_ORDINAL_DEFAULT = (os.name == "nt")
+# Projektoption statt impliziter Host-Entscheidung: Ohne gesetzte Checkbox
+# bleiben Namensimporte auch unter Windows echte Namensimporte.
+PE_PACK_IMPORTS_BY_LOCAL_ORDINAL_DEFAULT = False
 PE_PACK_LAST_ORDINAL_IMPORTS: List[Dict[str, object]] = []
 PE_STAGE170_DOS_HEADER_SIZE = 0x40
 
@@ -7472,7 +7474,11 @@ def _pe_export_name_ordinals(path: Path, expected_machine: int) -> Dict[str, int
     return result
 
 
-def _pe_target_dll_candidates(dll_name: str, machine: int) -> List[Path]:
+def _pe_target_dll_candidates(
+    dll_name: str,
+    machine: int,
+    search_paths: Iterable[Path | str] = (),
+) -> List[Path]:
     raw = str(dll_name).strip().strip('"')
     if not raw:
         return []
@@ -7482,6 +7488,8 @@ def _pe_target_dll_candidates(dll_name: str, machine: int) -> List[Path]:
     if raw_path.is_absolute() or raw_path.parent != Path("."):
         candidates.append(raw_path)
     else:
+        for search_path in search_paths or ():
+            candidates.append(Path(search_path).expanduser() / raw_path.name)
         candidates.append(Path.cwd() / raw_path.name)
 
     if os.name == "nt":
@@ -7512,8 +7520,14 @@ def _pe_target_dll_candidates(dll_name: str, machine: int) -> List[Path]:
     return unique
 
 
-def _pe_find_target_dll(dll_name: str, machine: int) -> Optional[Path]:
-    for candidate in _pe_target_dll_candidates(dll_name, machine):
+def _pe_find_target_dll(
+    dll_name: str,
+    machine: int,
+    search_paths: Iterable[Path | str] = (),
+) -> Optional[Path]:
+    for candidate in _pe_target_dll_candidates(
+        dll_name, machine, search_paths
+    ):
         try:
             if not candidate.is_file():
                 continue
@@ -7529,6 +7543,8 @@ def _pe_import_specs_with_local_ordinals(
     *,
     machine: int,
     enabled: Optional[bool] = None,
+    search_paths: Iterable[Path | str] = (),
+    require_all: bool = False,
 ) -> Dict[str, Tuple[str, object]]:
     """Ersetzt Namensimporte durch Ordinale aus der lokalen Ziel-DLL.
 
@@ -7554,7 +7570,7 @@ def _pe_import_specs_with_local_ordinals(
         dll_key = dll.casefold()
         cached = dll_cache.get(dll_key)
         if cached is None:
-            path = _pe_find_target_dll(dll, machine)
+            path = _pe_find_target_dll(dll, machine, search_paths)
             ordinals = (
                 _pe_export_name_ordinals(path, machine)
                 if path is not None
@@ -7576,6 +7592,23 @@ def _pe_import_specs_with_local_ordinals(
                 ordinal = matches[0]
 
         if ordinal is None:
+            if require_all:
+                target_name = (
+                    "PE32+ (AMD64)"
+                    if int(machine) == IMAGE_FILE_MACHINE_AMD64
+                    else "PE32 (IA-32)"
+                )
+                if path is None:
+                    raise PE32AssemblerError(
+                        f"Ordinalimport für '{member}' aus '{dll}' ist nicht "
+                        f"möglich: passende {target_name}-DLL wurde in den "
+                        "Projekt-Suchpfaden nicht gefunden."
+                    )
+                raise PE32AssemblerError(
+                    f"Ordinalimport für '{member}' aus '{dll}' ist nicht "
+                    f"möglich: die Exporttabelle von '{path}' enthält diesen "
+                    "Funktionsnamen nicht."
+                )
             result[str(symbol)] = (dll, member)
             continue
 
@@ -7589,6 +7622,90 @@ def _pe_import_specs_with_local_ordinals(
         })
 
     return result
+
+
+def rewrite_pe_assembly_imports_to_ordinals(
+    source: str,
+    *,
+    target: str,
+    search_paths: Iterable[Path | str] = (),
+    require_all: bool = True,
+) -> str:
+    """Ersetzt sichtbare DLL-Funktionsnamen durch ``"#<Ordinal>"``.
+
+    Die Zeilenzahl bleibt unverändert, damit Source-Maps und ASM-Diagnosen
+    weiterhin auf dieselben Zeilen zeigen.
+    """
+    target_key = str(target or "").strip().casefold()
+    if target_key not in {"pe32", "pe64"}:
+        return str(source)
+    machine = (
+        IMAGE_FILE_MACHINE_AMD64
+        if target_key == "pe64"
+        else IMAGE_FILE_MACHINE_I386
+    )
+    lines = str(source).splitlines(keepends=True)
+    imports: Dict[str, Tuple[str, object]] = {}
+    line_imports: Dict[int, Tuple[str, str, object]] = {}
+
+    for index, raw_line in enumerate(lines):
+        code = _x86_strip_comment(raw_line).strip()
+        if not code:
+            continue
+        parts = code.split(None, 1)
+        if parts[0].casefold().lstrip(".") != "import" or len(parts) != 2:
+            continue
+        operands = _x86_split_operands(parts[1])
+        if len(operands) not in {2, 3}:
+            continue
+        symbol = _pe32_unquote(operands[0]).strip()
+        dll = _pe32_unquote(operands[1]).strip()
+        member = (
+            _pe32_unquote(operands[2]).strip()
+            if len(operands) == 3
+            else symbol
+        )
+        if not symbol or not dll or not member:
+            continue
+        ordinal_text = member[1:] if member.startswith("#") else member
+        member_value: object = (
+            int(ordinal_text, 10) if ordinal_text.isdigit() else member
+        )
+        key = f"__d64_import_line_{index}"
+        imports[key] = (dll, member_value)
+        line_imports[index] = (key, symbol, member_value)
+
+    if not imports:
+        return str(source)
+
+    converted = _pe_import_specs_with_local_ordinals(
+        imports,
+        machine=machine,
+        enabled=True,
+        search_paths=search_paths,
+        require_all=require_all,
+    )
+    for index, (key, symbol, original_member) in line_imports.items():
+        dll, member = converted[key]
+        if not isinstance(member, int) or isinstance(original_member, int):
+            continue
+        raw_line = lines[index]
+        newline = (
+            "\r\n" if raw_line.endswith("\r\n")
+            else "\n" if raw_line.endswith("\n")
+            else ""
+        )
+        body = raw_line[:-len(newline)] if newline else raw_line
+        indentation = body[:len(body) - len(body.lstrip())]
+        comment = ""
+        semicolon = body.find(";")
+        if semicolon >= 0:
+            comment = " " + body[semicolon:].lstrip()
+        lines[index] = (
+            f'{indentation}import {symbol}, "{dll}", "#{int(member)}"'
+            f"{comment}{newline}"
+        )
+    return "".join(lines)
 
 
 def _pe_stage170_ztext_virtual_span(text_size: int, alignment: int) -> int:
@@ -12369,6 +12486,67 @@ def _project_document_output_path(document, filename: str) -> Path:
         )
     return Path(source_path).with_name(str(filename))
 
+
+def _recent_path_key(value: Path | str) -> str:
+    """Plattformunabhängiger Vergleichsschlüssel für MRU-Pfade."""
+    return os.path.normcase(str(value)).casefold()
+
+
+def normalize_recent_paths(
+    values: Iterable[Path | str],
+    *,
+    limit: int,
+) -> List[str]:
+    """Normalisiert, dedupliziert und begrenzt eine persistente MRU-Liste."""
+    result: List[str] = []
+    seen = set()
+    for value in values or ():
+        text = str(value or "").strip()
+        if not text:
+            continue
+        try:
+            normalized = str(Path(text).expanduser().resolve())
+        except (OSError, RuntimeError, ValueError):
+            normalized = str(Path(text).expanduser().absolute())
+        key = _recent_path_key(normalized)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(normalized)
+        if len(result) >= max(0, int(limit)):
+            break
+    return result
+
+
+def prepend_recent_path(
+    values: Iterable[Path | str],
+    path: Path | str,
+    *,
+    limit: int,
+) -> List[str]:
+    """Setzt die letzte Benutzeraktion an Position eins der MRU-Liste."""
+    return normalize_recent_paths(
+        (path, *(values or ())),
+        limit=limit,
+    )
+
+
+def remove_recent_path(
+    values: Iterable[Path | str],
+    path: Path | str,
+    *,
+    limit: int,
+) -> List[str]:
+    wanted = _recent_path_key(Path(path).expanduser())
+    return normalize_recent_paths(
+        (
+            value
+            for value in values or ()
+            if _recent_path_key(Path(value).expanduser()) != wanted
+        ),
+        limit=limit,
+    )
+
 # Stage 196: Windows Compiler-Verzeichnisse sind architekturspezifisch.
 # PE32 und PE32+ duerfen niemals dieselbe PUI-Ausgabe ueberschreiben, weil
 # PUI und COFF-Objekt einen architekturspezifischen ABI-Vertrag bilden.
@@ -12380,14 +12558,18 @@ PROJECT_WINDOWS_PE32_INPUT_RELATIVE_PATHS_KEY = "__windows_pe32_input_relative_p
 PROJECT_WINDOWS_PE32_OUTPUT_RELATIVE_PATHS_KEY = "__windows_pe32_output_relative_paths__"
 PROJECT_WINDOWS_PE64_INPUT_RELATIVE_PATHS_KEY = "__windows_pe64_input_relative_paths__"
 PROJECT_WINDOWS_PE64_OUTPUT_RELATIVE_PATHS_KEY = "__windows_pe64_output_relative_paths__"
+PROJECT_WINDOWS_PE32_LINK_WITH_ORDINALS_KEY = "__windows_pe32_link_with_ordinals__"
+PROJECT_WINDOWS_PE64_LINK_WITH_ORDINALS_KEY = "__windows_pe64_link_with_ordinals__"
 PROJECT_WINDOWS_TARGET_SETTINGS = {
     "pe32": {
         "input_key": PROJECT_WINDOWS_PE32_LINK_SEARCH_PATHS_KEY,
         "output_key": PROJECT_WINDOWS_PE32_OUTPUT_DIRECTORY_KEY,
         "input_relative_key": PROJECT_WINDOWS_PE32_INPUT_RELATIVE_PATHS_KEY,
         "output_relative_key": PROJECT_WINDOWS_PE32_OUTPUT_RELATIVE_PATHS_KEY,
+        "link_with_ordinals_key": PROJECT_WINDOWS_PE32_LINK_WITH_ORDINALS_KEY,
         "input_section": "Settings.Windows.32Bit.Compiler.InputDirectories",
         "output_section": "Settings.Windows.32Bit.Compiler.OutputDirectory",
+        "linker_section": "Settings.Windows.32Bit.Linker",
         "title": "32-Bit",
     },
     "pe64": {
@@ -12395,8 +12577,10 @@ PROJECT_WINDOWS_TARGET_SETTINGS = {
         "output_key": PROJECT_WINDOWS_PE64_OUTPUT_DIRECTORY_KEY,
         "input_relative_key": PROJECT_WINDOWS_PE64_INPUT_RELATIVE_PATHS_KEY,
         "output_relative_key": PROJECT_WINDOWS_PE64_OUTPUT_RELATIVE_PATHS_KEY,
+        "link_with_ordinals_key": PROJECT_WINDOWS_PE64_LINK_WITH_ORDINALS_KEY,
         "input_section": "Settings.Windows.64Bit.Compiler.InputDirectories",
         "output_section": "Settings.Windows.64Bit.Compiler.OutputDirectory",
+        "linker_section": "Settings.Windows.64Bit.Linker",
         "title": "64-Bit",
     },
 }
@@ -12544,6 +12728,7 @@ def empty_project_entries() -> Dict[str, List[Dict[str, str]]]:
         # Stage 197: relative Darstellung/Speicherung ist standardmäßig aktiv.
         entries[_settings["input_relative_key"]] = [{"value": "true"}]
         entries[_settings["output_relative_key"]] = [{"value": "true"}]
+        entries[_settings["link_with_ordinals_key"]] = [{"value": "false"}]
     return entries
 
 
@@ -12747,6 +12932,14 @@ def format_project_ini(
                     relative=_output_relative,
                 )
 
+        _link_with_ordinals = _project_bool_entry(
+            entries, _settings["link_with_ordinals_key"], False
+        )
+        parser[_settings["linker_section"]] = {
+            "Title": f"Windows {_settings['title']} Linker",
+            "LinkWithOrdinals": "true" if _link_with_ordinals else "false",
+        }
+
     from io import StringIO
     stream = StringIO()
     parser.write(stream)
@@ -12885,6 +13078,7 @@ def parse_project_ini(text: str, project_path: Path) -> Dict[str, List[Dict[str,
     for _target, _settings in PROJECT_WINDOWS_TARGET_SETTINGS.items():
         _input_section = _settings["input_section"]
         _output_section = _settings["output_section"]
+        _linker_section = _settings["linker_section"]
         if parser.has_section(_input_section):
             _have_arch_settings = True
             _input_relative = _parse_project_bool(
@@ -12929,6 +13123,18 @@ def parse_project_ini(text: str, project_path: Path) -> Dict[str, List[Dict[str,
                         _output_value, Path(project_path)
                     ),
                 })
+        if parser.has_section(_linker_section):
+            _link_with_ordinals = _parse_project_bool(
+                parser.get(
+                    _linker_section,
+                    "LinkWithOrdinals",
+                    fallback="false",
+                ),
+                False,
+            )
+            entries[_settings["link_with_ordinals_key"]] = [{
+                "value": "true" if _link_with_ordinals else "false"
+            }]
 
     # Migration Stage185/187 -> Stage196. Ein bisher gemeinsam genutztes
     # Ausgabe-Verzeichnis wird absichtlich in zwei Unterordner geteilt. So
@@ -14591,6 +14797,7 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
         "mo:PrologKnowledgeDialog.query_main_scroll": tr("mo:PrologKnowledgeDialog.query_main_scroll"),
         "mo:raw_data_editor": tr("mo:raw_data_editor"),
         "mo:recent_program_files_menu": tr("mo:recent_program_files_menu"),
+        "mo:recent_files_and_projects_menu": tr("mo:recent_files_and_projects_menu"),
         "mo:ResourceBuilderToolWindow.alias_host": tr("mo:ResourceBuilderToolWindow.alias_host"),
         "mo:ResourceBuilderToolWindow.alias_scroll": tr("mo:ResourceBuilderToolWindow.alias_scroll"),
         "mo:ResourceBuilderToolWindow.btn_apply": tr("mo:ResourceBuilderToolWindow.btn_apply"),
@@ -41812,6 +42019,31 @@ QStackedWidget#learning_content_stack {{
             output_layout.addStretch(1)
             self.stack.addWidget(self.output_directory_page)
 
+            # Linker -> Ordinalimporte
+            self.linker_page = QWidget(self.stack)
+            linker_layout = QVBoxLayout(self.linker_page)
+            linker_layout.setContentsMargins(10, 8, 10, 8)
+            linker_layout.setSpacing(8)
+            self.link_with_ordinals_checkbox = QCheckBox(
+                "Link mit Ordinale", self.linker_page
+            )
+            self.link_with_ordinals_checkbox.setObjectName(
+                f"project_windows_{target_tag}_link_with_ordinals"
+            )
+            self.link_with_ordinals_checkbox.setChecked(False)
+            self.link_with_ordinals_checkbox.setToolTip(
+                "Importiert DLL-Funktionen als #Ordinal statt über den Exportnamen"
+            )
+            linker_layout.addWidget(self.link_with_ordinals_checkbox)
+            linker_layout.addWidget(QLabel(
+                "Die Ordinale wird beim Kompilieren aus der Exporttabelle der "
+                "zur Zielarchitektur passenden DLL gelesen. Die erzeugte "
+                "Assemblerdatei enthält anschließend #<Ordinal>.",
+                self.linker_page,
+            ))
+            linker_layout.addStretch(1)
+            self.stack.addWidget(self.linker_page)
+
             self.splitter.setStretchFactor(0, 0)
             self.splitter.setStretchFactor(1, 1)
 
@@ -41827,6 +42059,9 @@ QStackedWidget#learning_content_stack {{
             self.output_directory_edit.editingFinished.connect(self._output_directory_edited)
             self.input_relative_checkbox.toggled.connect(self._input_relative_toggled)
             self.output_relative_checkbox.toggled.connect(self._output_relative_toggled)
+            self.link_with_ordinals_checkbox.toggled.connect(
+                self._link_with_ordinals_toggled
+            )
             self.tree.setCurrentItem(self.compiler_input_directories_item)
             self._tree_changed(self.compiler_input_directories_item, None)
 
@@ -41836,6 +42071,8 @@ QStackedWidget#learning_content_stack {{
                 page = self.input_directories_page
             elif key == "compiler.output_directory":
                 page = self.output_directory_page
+            elif key == "linker":
+                page = self.linker_page
             else:
                 page = self.placeholder
             self.stack.setCurrentWidget(page)
@@ -41913,6 +42150,16 @@ QStackedWidget#learning_content_stack {{
         def output_relative_paths(self) -> bool:
             return bool(self._output_relative)
 
+        def link_with_ordinals(self) -> bool:
+            return bool(self.link_with_ordinals_checkbox.isChecked())
+
+        def set_link_with_ordinals(self, enabled: bool) -> None:
+            self._syncing = True
+            try:
+                self.link_with_ordinals_checkbox.setChecked(bool(enabled))
+            finally:
+                self._syncing = False
+
         def set_relative_modes(self, input_relative: bool, output_relative: bool) -> None:
             self._syncing = True
             try:
@@ -41956,6 +42203,15 @@ QStackedWidget#learning_content_stack {{
             callback = getattr(self.owner, "set_project_windows_relative_paths", None)
             if callback is not None:
                 callback(self.target, kind, enabled, mark_modified=True)
+
+        def _link_with_ordinals_toggled(self, checked: bool) -> None:
+            if self._syncing:
+                return
+            callback = getattr(
+                self.owner, "set_project_windows_link_with_ordinals", None
+            )
+            if callback is not None:
+                callback(self.target, bool(checked), mark_modified=True)
 
         def _input_relative_toggled(self, checked: bool) -> None:
             if self._syncing:
@@ -42171,6 +42427,12 @@ QStackedWidget#learning_content_stack {{
         def set_output_directory(self, target: str, value: Optional[Path | str]) -> None:
             self.page_for_target(target).set_output_directory(value)
 
+        def link_with_ordinals(self, target: str = "pe32") -> bool:
+            return self.page_for_target(target).link_with_ordinals()
+
+        def set_link_with_ordinals(self, target: str, enabled: bool) -> None:
+            self.page_for_target(target).set_link_with_ordinals(enabled)
+
         def set_relative_modes(
             self,
             target: str,
@@ -42228,18 +42490,8 @@ QStackedWidget#learning_content_stack {{
             ".px16", ".pixel", ".pix",
             ".pro",
         }
-        # Stage 84: MRU-Liste bewusst auf Quell-/Programmdateien begrenzen.
-        # Projekt-, Dokumentations- und reine Ressourcendateien landen nicht
-        # im Datei-Menue "Zuletzt verwendete Programme".
-        RECENT_PROGRAM_EXTENSIONS = {
-            ".asm", ".s", ".a65", ".m68k", ".inc",
-            ".pas", ".pp", ".c", ".h",
-            ".lisp", ".lsp", ".pl", ".prolog",
-            ".logo", ".lgo", ".dbase", ".dbp",
-            ".bas", ".basic", ".prg", ".bin",
-            ".amiga", ".adf", ".ram",
-        }
-        RECENT_PROGRAM_LIMIT = 10
+        RECENT_PROJECT_LIMIT = 5
+        RECENT_FILE_LIMIT = 5
         FILTERS = {
             "D64": {".d64"},
             "RAM": {".ram"},
@@ -42280,7 +42532,10 @@ QStackedWidget#learning_content_stack {{
             # LocalizeToolWindow historically used _settings.  Preserve that
             # name as an alias so its existing persistence works in the dock.
             self._settings = self.settings
-            self.recent_program_files = self._load_recent_program_files()
+            self.recent_project_files = self._load_recent_project_files()
+            self.recent_files = self._load_recent_files()
+            self.recent_menu = None
+            # Kompatibilitätsalias für ältere Übersetzungs-/Widget-Zugriffe.
             self.recent_program_menu = None
             self.dbase_form_property_dock = None
             self.dbase_form_designer_dock = None
@@ -42322,6 +42577,10 @@ QStackedWidget#learning_content_stack {{
             self.project_windows_relative_paths: Dict[str, Dict[str, bool]] = {
                 "pe32": {"input": True, "output": True},
                 "pe64": {"input": True, "output": True},
+            }
+            self.project_windows_link_with_ordinals: Dict[str, bool] = {
+                "pe32": False,
+                "pe64": False,
             }
             self._project_settings_workspace_active = False
             self._project_settings_workspace_state = {}
@@ -44256,109 +44515,152 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             )
 
         # -------------------------------------------------------------------
-        # Stage 84: zehn zuletzt verwendete Programmdateien (MRU).
+        # Zuletzt verwendet: fünf Projekte und fünf Dateien.
         # -------------------------------------------------------------------
-        def _load_recent_program_files(self) -> List[str]:
-            raw = self.settings.value("files/recent_programs", [])
+        @staticmethod
+        def _settings_path_list(raw) -> List[str]:
             if raw is None:
-                values = []
-            elif isinstance(raw, str):
-                values = [raw]
-            else:
-                try:
-                    values = list(raw)
-                except TypeError:
-                    values = []
-
-            result = []
-            seen = set()
-            for value in values:
-                text = str(value or "").strip()
-                if not text:
-                    continue
-                try:
-                    normalized = str(Path(text).expanduser().resolve())
-                except OSError:
-                    normalized = str(Path(text).expanduser())
-                key = os.path.normcase(normalized)
-                if key in seen:
-                    continue
-                seen.add(key)
-                result.append(normalized)
-                if len(result) >= self.RECENT_PROGRAM_LIMIT:
-                    break
-            return result
-
-        def _is_recent_program_path(self, path: Path) -> bool:
+                return []
+            if isinstance(raw, str):
+                return [raw]
             try:
-                suffix = Path(path).suffix.casefold()
-            except (TypeError, ValueError):
-                return False
-            return suffix in self.RECENT_PROGRAM_EXTENSIONS
+                return [str(value) for value in raw]
+            except TypeError:
+                return []
 
-        def _remember_recent_program_file(self, path: Path) -> None:
-            if not self._is_recent_program_path(path):
+        def _load_recent_project_files(self) -> List[str]:
+            values = self._settings_path_list(
+                self.settings.value("projects/recent_projects", [])
+            )
+            return normalize_recent_paths(
+                values,
+                limit=self.RECENT_PROJECT_LIMIT,
+            )
+
+        def _load_recent_files(self) -> List[str]:
+            raw = self.settings.value("files/recent_files", None)
+            if raw is None:
+                # Einmalige, verlustfreie Migration der bisherigen Liste.
+                raw = self.settings.value("files/recent_programs", [])
+            return normalize_recent_paths(
+                self._settings_path_list(raw),
+                limit=self.RECENT_FILE_LIMIT,
+            )
+
+        def _remember_recent_project(self, path: Path) -> None:
+            candidate = Path(path).expanduser()
+            if candidate.suffix.casefold() != ".pro":
                 return
-            try:
-                normalized = str(Path(path).expanduser().resolve())
-            except OSError:
-                normalized = str(Path(path).expanduser())
+            self.recent_project_files = prepend_recent_path(
+                self.recent_project_files,
+                candidate,
+                limit=self.RECENT_PROJECT_LIMIT,
+            )
+            self.settings.setValue(
+                "projects/recent_projects", self.recent_project_files
+            )
+            self._refresh_recent_menu()
 
-            wanted = os.path.normcase(normalized)
-            updated = [normalized]
-            for existing in self.recent_program_files:
-                if os.path.normcase(str(existing)) == wanted:
-                    continue
-                updated.append(str(existing))
-                if len(updated) >= self.RECENT_PROGRAM_LIMIT:
-                    break
-            self.recent_program_files = updated[: self.RECENT_PROGRAM_LIMIT]
-            self.settings.setValue("files/recent_programs", self.recent_program_files)
-            self._refresh_recent_program_menu()
+        def _remember_recent_file(self, path: Path) -> None:
+            candidate = Path(path).expanduser()
+            if candidate.suffix.casefold() == ".pro":
+                return
+            self.recent_files = prepend_recent_path(
+                self.recent_files,
+                candidate,
+                limit=self.RECENT_FILE_LIMIT,
+            )
+            self.settings.setValue("files/recent_files", self.recent_files)
+            self._refresh_recent_menu()
 
-        def _remove_recent_program_file(self, path: Path) -> None:
-            wanted = os.path.normcase(str(Path(path).expanduser()))
-            self.recent_program_files = [
-                value
-                for value in self.recent_program_files
-                if os.path.normcase(str(Path(value).expanduser())) != wanted
-            ][: self.RECENT_PROGRAM_LIMIT]
-            self.settings.setValue("files/recent_programs", self.recent_program_files)
-            self._refresh_recent_program_menu()
+        def _remove_recent_project(self, path: Path) -> None:
+            self.recent_project_files = remove_recent_path(
+                self.recent_project_files,
+                path,
+                limit=self.RECENT_PROJECT_LIMIT,
+            )
+            self.settings.setValue(
+                "projects/recent_projects", self.recent_project_files
+            )
+            self._refresh_recent_menu()
 
-        def _refresh_recent_program_menu(self) -> None:
-            menu = getattr(self, "recent_program_menu", None)
+        def _remove_recent_file(self, path: Path) -> None:
+            self.recent_files = remove_recent_path(
+                self.recent_files,
+                path,
+                limit=self.RECENT_FILE_LIMIT,
+            )
+            self.settings.setValue("files/recent_files", self.recent_files)
+            self._refresh_recent_menu()
+
+        def _refresh_recent_menu(self) -> None:
+            menu = getattr(self, "recent_menu", None)
             if menu is None:
                 return
             menu.clear()
-            if not self.recent_program_files:
-                empty = menu.addAction("(noch keine Programmdateien)")
-                empty.setEnabled(False)
-                return
 
-            for index, value in enumerate(
-                self.recent_program_files[: self.RECENT_PROGRAM_LIMIT],
-                start=1,
-            ):
-                path = Path(value)
-                accelerator = f"&{index}" if index < 10 else "1&0"
-                action = QAction(
-                    f"{accelerator}  {path.name} — {path.parent}",
-                    menu,
-                )
-                action.setToolTip(str(path))
-                action.setStatusTip(f"Programmdatei erneut öffnen: {path}")
-                action.triggered.connect(
-                    lambda _checked=False, filename=str(path): self._open_recent_program(
-                        Path(filename)
+            if self.recent_project_files:
+                for index, value in enumerate(
+                    self.recent_project_files[: self.RECENT_PROJECT_LIMIT],
+                    start=1,
+                ):
+                    path = Path(value)
+                    action = QAction(
+                        f"&{index}  Projekt: {path.name} — {path.parent}",
+                        menu,
                     )
-                )
-                menu.addAction(action)
+                    action.setToolTip(str(path))
+                    action.setStatusTip(f"Projekt erneut öffnen: {path}")
+                    action.triggered.connect(
+                        lambda _checked=False, filename=str(path): self._open_recent_project(
+                            Path(filename)
+                        )
+                    )
+                    menu.addAction(action)
+            else:
+                empty_projects = menu.addAction("(noch keine Projekte)")
+                empty_projects.setEnabled(False)
 
-        def _open_recent_program(self, path: Path) -> None:
+            menu.addSeparator()
+
+            if self.recent_files:
+                for index, value in enumerate(
+                    self.recent_files[: self.RECENT_FILE_LIMIT],
+                    start=6,
+                ):
+                    path = Path(value)
+                    accelerator = f"&{index}" if index < 10 else "1&0"
+                    action = QAction(
+                        f"{accelerator}  Datei: {path.name} — {path.parent}",
+                        menu,
+                    )
+                    action.setToolTip(str(path))
+                    action.setStatusTip(f"Datei erneut öffnen: {path}")
+                    action.triggered.connect(
+                        lambda _checked=False, filename=str(path): self._open_recent_file(
+                            Path(filename)
+                        )
+                    )
+                    menu.addAction(action)
+            else:
+                empty_files = menu.addAction("(noch keine Dateien)")
+                empty_files.setEnabled(False)
+
+        def _open_recent_project(self, path: Path) -> None:
             path = Path(path).expanduser()
             if not path.is_file():
-                self._remove_recent_program_file(path)
+                self._remove_recent_project(path)
+                self.show_error(
+                    "Zuletzt verwendetes Projekt nicht gefunden",
+                    f"Die Projektdatei existiert nicht mehr:\n{path}",
+                )
+                return
+            self.load_project_file(path)
+
+        def _open_recent_file(self, path: Path) -> None:
+            path = Path(path).expanduser()
+            if not path.is_file():
+                self._remove_recent_file(path)
                 self.show_error(
                     "Zuletzt verwendete Datei nicht gefunden",
                     f"Die Datei existiert nicht mehr:\n{path}",
@@ -47385,6 +47687,10 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     _target,
                     self.project_windows_output_directories.get(_target, ""),
                 )
+                panel.set_link_with_ordinals(
+                    _target,
+                    self.project_windows_link_with_ordinals.get(_target, False),
+                )
             dock.setWidget(panel)
             dock.setTitleBarWidget(DockTitleBar(dock))
 
@@ -47492,6 +47798,10 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 self.project_settings_panel.set_output_directory(
                     _target,
                     self.project_windows_output_directories.get(_target, ""),
+                )
+                self.project_settings_panel.set_link_with_ordinals(
+                    _target,
+                    self.project_windows_link_with_ordinals.get(_target, False),
                 )
             self.project_settings_dock.show()
             self.project_settings_dock.raise_()
@@ -47611,6 +47921,30 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 if self.current_project_path is not None:
                     self.save_project()
 
+        def set_project_windows_link_with_ordinals(
+            self,
+            target: str,
+            enabled: bool,
+            *,
+            mark_modified: bool = True,
+        ) -> None:
+            target_key = self._project_windows_target_key(target)
+            value = bool(enabled)
+            changed = bool(
+                self.project_windows_link_with_ordinals.get(target_key, False)
+            ) != value
+            self.project_windows_link_with_ordinals[target_key] = value
+            panel = getattr(self, "project_settings_panel", None)
+            if (
+                panel is not None
+                and panel.link_with_ordinals(target_key) != value
+            ):
+                panel.set_link_with_ordinals(target_key, value)
+            if changed and mark_modified:
+                self.set_project_modified(True)
+                if self.current_project_path is not None:
+                    self.save_project()
+
         def set_project_windows_search_paths(
             self,
             target: str,
@@ -47689,6 +48023,66 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 if path not in result:
                     result.append(path)
             return tuple(result)
+
+        def _project_windows_ordinal_search_paths(
+            self,
+            document: DocumentEditor,
+        ) -> Tuple[Path, ...]:
+            candidates: List[Path] = []
+            if document.path is not None:
+                candidates.append(Path(document.path).expanduser().resolve().parent)
+            output = self._document_windows_output_path(document)
+            if output is not None:
+                candidates.append(output)
+            candidates.append(self._project_windows_base_directory())
+            candidates.extend(
+                self._project_windows_link_search_paths(document.build_target)
+            )
+            result: List[Path] = []
+            seen = set()
+            for candidate in candidates:
+                try:
+                    path = Path(candidate).expanduser().resolve()
+                except (OSError, RuntimeError, ValueError):
+                    path = Path(candidate).expanduser().absolute()
+                key = str(path).casefold()
+                if key not in seen:
+                    seen.add(key)
+                    result.append(path)
+            return tuple(result)
+
+        def _apply_project_ordinal_imports(self, document, generated):
+            target = self._project_windows_target_key(document.build_target)
+            enabled = bool(
+                self.project_windows_link_with_ordinals.get(target, False)
+            )
+            if document.build_target not in {"pe32", "pe64"} or not enabled:
+                return generated
+            search_paths = self._project_windows_ordinal_search_paths(document)
+            assembly = rewrite_pe_assembly_imports_to_ordinals(
+                generated.assembly,
+                target=target,
+                search_paths=search_paths,
+                require_all=True,
+            )
+            changes = {"assembly": assembly}
+            linked_modules = tuple(
+                getattr(generated, "linked_pe32_modules", ()) or ()
+            )
+            if linked_modules:
+                changes["linked_pe32_modules"] = tuple(
+                    (
+                        module_name,
+                        rewrite_pe_assembly_imports_to_ordinals(
+                            str(module_assembly),
+                            target=target,
+                            search_paths=search_paths,
+                            require_all=True,
+                        ),
+                    )
+                    for module_name, module_assembly in linked_modules
+                )
+            return replace(generated, **changes)
 
         def _project_windows_output_path(
             self,
@@ -47856,11 +48250,10 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             )
             self._populate_new_document_menu(self.new_document_menu)
             file_menu.addAction(self.open_file_action)
-            self.recent_program_menu = file_menu.addMenu(
-                "Zuletzt verwendete Programme"
-            )
-            self.recent_program_menu.setObjectName("recent_program_files_menu")
-            self._refresh_recent_program_menu()
+            self.recent_menu = file_menu.addMenu("Zuletzt verwendet")
+            self.recent_menu.setObjectName("recent_files_and_projects_menu")
+            self.recent_program_menu = self.recent_menu
+            self._refresh_recent_menu()
             file_menu.addAction(self.save_file_action)
             file_menu.addAction(self.save_as_action)
             file_menu.addAction(self.close_document_action)
@@ -49696,6 +50089,7 @@ border: 2px solid #2a69aa;
                 self.log(
                     f"Automatisches Projekt angelegt: {self.current_project_path}"
                 )
+                self._remember_recent_project(self.current_project_path)
             return Path(self.current_project_path)
 
         def _new_project_item_for_category(
@@ -49846,25 +50240,35 @@ border: 2px solid #2a69aa;
                 return False
 
             if path.suffix.lower() == ".wfm":
-                return self.open_dbase_form_file(path)
+                opened = self.open_dbase_form_file(path)
+                if opened:
+                    self._remember_recent_file(path)
+                return opened
 
             if path.suffix.lower() == ".dbf":
-                return self.open_dbase_table_file(path)
+                opened = self.open_dbase_table_file(path)
+                if opened:
+                    self._remember_recent_file(path)
+                return opened
 
             if path.suffix.lower() in {".chr", ".charset"}:
                 self.show_character_editor(initial_path=path)
+                self._remember_recent_file(path)
                 return True
 
             if path.suffix.lower() in {".pal", ".palette"}:
                 self.show_palette_editor(initial_path=path)
+                self._remember_recent_file(path)
                 return True
 
             if path.suffix.lower() in {".scr", ".screen"}:
                 self.show_text_screen_editor(initial_path=path)
+                self._remember_recent_file(path)
                 return True
 
             if path.suffix.lower() in {".px16", ".pixel", ".pix"}:
                 self.show_pixel_screen_editor(initial_path=path)
+                self._remember_recent_file(path)
                 return True
 
             if path.suffix.lower() == ".pro":
@@ -49875,7 +50279,7 @@ border: 2px solid #2a69aa;
                 self.document_tabs.setCurrentWidget(existing)
                 self._apply_document_theme(existing)
                 existing.focus_preferred_editor()
-                self._remember_recent_program_file(path)
+                self._remember_recent_file(path)
                 self.statusBar().showMessage(f"Bereits geöffnet: {path.name}")
                 return True
 
@@ -49938,7 +50342,7 @@ border: 2px solid #2a69aa;
                 self.statusBar().showMessage(
                     f"{path.name} - Kodierung: {encoding}"
                 )
-            self._remember_recent_program_file(path)
+            self._remember_recent_file(path)
             return True
 
         def show_character_editor(
@@ -50359,7 +50763,7 @@ border: 2px solid #2a69aa;
             self._refresh_favorites_menu()
             if document.path.parent == self.current_directory:
                 self.populate_file_list()
-            self._remember_recent_program_file(document.path)
+            self._remember_recent_file(document.path)
             return True
 
         @staticmethod
@@ -50494,6 +50898,20 @@ border: 2px solid #2a69aa;
             is_unit: bool = False,
         ) -> bool:
             """Beendet nur Compile: ASM speichern, aber noch nicht assemblieren."""
+            try:
+                generated = self._apply_project_ordinal_imports(
+                    document, generated
+                )
+            except (PE32AssemblerError, PE64AssemblerError) as exc:
+                message = str(exc)
+                document.show_assembly_error(
+                    message,
+                    getattr(exc, "line", 0) or 0,
+                    "Ordinalimport-Fehler",
+                )
+                self.show_error("Ordinalimporte konnten nicht erzeugt werden", message)
+                self.statusBar().showMessage("Ordinalimport-Erzeugung fehlgeschlagen")
+                return False
             open_assembly = self._find_open_document(assembly_path)
             if open_assembly is not None and open_assembly.is_modified:
                 message = (
@@ -51015,6 +51433,12 @@ border: 2px solid #2a69aa;
                             )
                         ),
                     )
+                # Vor dem sofortigen Unit-COFF-Schritt umschreiben, damit
+                # nicht nur die sichtbare ASM-Datei, sondern auch die in der
+                # .drectve-Sektion gespeicherten Importmetadaten Ordinale sind.
+                generated = self._apply_project_ordinal_imports(
+                    document, generated
+                )
                 # Stage 171: A Pascal UNIT for Windows immediately receives an
                 # architecture-specific relocatable COFF companion on Compile.
                 # This is in addition to the existing F2/.o path.
@@ -51067,6 +51491,16 @@ border: 2px solid #2a69aa;
                 )
                 self.show_error("Pascal-Vorverarbeitungsfehler", message)
                 self.statusBar().showMessage("Pascal-Vorverarbeitung fehlgeschlagen")
+                return False
+            except (PE32AssemblerError, PE64AssemblerError) as exc:
+                message = str(exc)
+                document.show_assembly_error(
+                    message,
+                    getattr(exc, "line", 0) or 0,
+                    "Ordinalimport-Fehler",
+                )
+                self.show_error("Ordinalimporte konnten nicht erzeugt werden", message)
+                self.statusBar().showMessage("Ordinalimport-Erzeugung fehlgeschlagen")
                 return False
             except C64PascalError as exc:
                 message = str(exc)
@@ -53058,6 +53492,15 @@ border: 2px solid #2a69aa;
                     if _output_entries else "",
                     mark_modified=False,
                 )
+                self.set_project_windows_link_with_ordinals(
+                    _target,
+                    _project_bool_entry(
+                        values,
+                        _settings["link_with_ordinals_key"],
+                        False,
+                    ),
+                    mark_modified=False,
+                )
             self.project_tree.blockSignals(True)
             self.project_tree.clear()
             self.project_root_items = {}
@@ -53502,6 +53945,17 @@ border: 2px solid #2a69aa;
                 entries[_settings["output_relative_key"]] = [{
                     "value": "true" if bool(_modes.get("output", True)) else "false"
                 }]
+                entries[_settings["link_with_ordinals_key"]] = [{
+                    "value": (
+                        "true"
+                        if bool(
+                            self.project_windows_link_with_ordinals.get(
+                                _target, False
+                            )
+                        )
+                        else "false"
+                    )
+                }]
             return entries
 
         def project_has_entries(self) -> bool:
@@ -53530,6 +53984,11 @@ border: 2px solid #2a69aa;
                 or any(
                     bool(entries.get(_settings["input_key"]))
                     or bool(entries.get(_settings["output_key"]))
+                    or _project_bool_entry(
+                        entries,
+                        _settings["link_with_ordinals_key"],
+                        False,
+                    )
                     for _settings in PROJECT_WINDOWS_TARGET_SETTINGS.values()
                 )
             )
@@ -53674,6 +54133,7 @@ border: 2px solid #2a69aa;
             self.right_dock.raise_()
             self.statusBar().showMessage(f"Projekt geöffnet: {resolved.name}")
             self.log(f"Projekt geöffnet: {resolved}")
+            self._remember_recent_project(resolved)
             return True
 
         def save_project(self) -> bool:
@@ -53696,6 +54156,7 @@ border: 2px solid #2a69aa;
                 f"Projekt gespeichert: {self.current_project_path.name}"
             )
             self.log(f"Projekt gespeichert: {self.current_project_path}")
+            self._remember_recent_project(self.current_project_path)
             return True
 
         def save_project_as(self) -> bool:

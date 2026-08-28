@@ -1,8 +1,0 @@
-Stage 75 – Green & Beige Titelbalken und Menüs
-
-Stage-75-spezifische Tests: 8 / 8 OK
-Gesamtprojekt:               735 / 735 OK
-Fehler:                        0
-Python py_compile:             OK
-
-Native visuelle Windows/PyQt5-GUI-Ausführung im Container: nicht verfügbar.

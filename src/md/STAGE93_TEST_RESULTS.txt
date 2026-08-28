@@ -1,4 +1,0 @@
-py_compile_returncode=0
-existing_patterns=12
-new_patterns=77
-all_patterns=89

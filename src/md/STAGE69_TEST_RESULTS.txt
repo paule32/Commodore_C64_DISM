@@ -1,9 +1,0 @@
-Stage 69 – Test Results
-=======================
-
-Stage-69-spezifische Tests: 7 / 7 OK
-Relevante Wissen-Browser Regressionen (Stage 61–69): 68 / 68 OK
-Gesamtprojekt: 696 / 696 OK
-Python Syntax: OK
-
-Native Windows/PyQt5 GUI visual execution: not available in this container.

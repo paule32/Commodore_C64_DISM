@@ -1,4 +1,0 @@
-Stage 57 targeted tests: 6/6 OK
-Full regression suite: 596/596 OK
-Python syntax compile: OK
-Native PyQt5 GUI execution in this container: not available

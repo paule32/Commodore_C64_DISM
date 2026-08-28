@@ -5732,7 +5732,7 @@ PASCAL_MINIRUNTIME_IMPORTS: Dict[str, str] = {
     "jit_class_instance_size"   : "jit_class_instance_size",
     "jit_inherits_from_class"   : "jit_inherits_from_class",
     "jit_inherits_from_object"  : "jit_inherits_from_object",
-    "jit_dynstring_from_cstr"   : "_jit_dynstring_from_cstr",
+    "jit_dynstring_from_cstr"   : "jit_dynstring_from_cstr",
 }
 
 _TYPES = {
@@ -9053,6 +9053,34 @@ class _PE32CodeGenerator(_CodeGenerator):
         self.exception_frames.append((env_label, frame_label))
         return env_label, frame_label
 
+    def _emit_exception_checkpoint(
+        self,
+        env_label: str,
+        handler_label: str,
+        line: int,
+    ) -> None:
+        """Store a native IA-32 longjmp target without a C wrapper frame.
+
+        ``_jit_setjmp`` is exported through a normal C wrapper by the current
+        PE32 runtime.  A later ``longjmp`` therefore resumes inside a wrapper
+        invocation which has already returned.  Depending on the compiler
+        prologue/epilogue used for the runtime DLL, that stale frame corrupts
+        ESP before control reaches the Pascal EXCEPT block.
+
+        The six dwords below are the established ``JitJumpBuffer`` ABI:
+        EBX, ESI, EDI, EBP, ESP and EIP.  Saving the Pascal handler address
+        directly makes the non-local jump independent of the runtime
+        wrapper's private stack frame.
+        """
+        self.emitter.emit(f"    mov dword ptr [{env_label}+0], ebx", line)
+        self.emitter.emit(f"    mov dword ptr [{env_label}+4], esi", line)
+        self.emitter.emit(f"    mov dword ptr [{env_label}+8], edi", line)
+        self.emitter.emit(f"    mov dword ptr [{env_label}+12], ebp", line)
+        self.emitter.emit(f"    mov dword ptr [{env_label}+16], esp", line)
+        self.emitter.emit(
+            f"    mov dword ptr [{env_label}+20], {handler_label}", line
+        )
+
     def _emit_exception_pop(self, line: int) -> None:
         self.emitter.emit("    call _jit_exception_pop", line)
 
@@ -9068,11 +9096,7 @@ class _PE32CodeGenerator(_CodeGenerator):
         self.emitter.emit(f"    push {frame_label}", line)
         self.emitter.emit("    call _jit_exception_push", line)
         self.emitter.emit("    add esp, 4", line)
-        self.emitter.emit(f"    push {env_label}", line)
-        self.emitter.emit("    call _jit_setjmp", line)
-        self.emitter.emit("    add esp, 4", line)
-        self.emitter.emit("    test eax, eax", line)
-        self.emitter.emit(f"    jnz {handler_label}", line)
+        self._emit_exception_checkpoint(env_label, handler_label, line)
 
         for child in statement.try_statements:
             self._compile_statement(child)
@@ -10036,7 +10060,7 @@ class _PE32CodeGenerator(_CodeGenerator):
                 self.emitter.emit(line)
                 emitted.add(line)
         if self.uses_try:
-            for symbol in ("_jit_exception_push", "_jit_exception_pop", "_jit_setjmp"):
+            for symbol in ("_jit_exception_push", "_jit_exception_pop"):
                 line = f'import {symbol}, "{PASCAL_MINIRUNTIME_DLL}", "{symbol}"'
                 if line not in emitted:
                     self.emitter.emit(line)

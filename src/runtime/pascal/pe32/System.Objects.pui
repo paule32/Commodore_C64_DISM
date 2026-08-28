@@ -6,7 +6,7 @@
         "normalized_name": "system_objects"
     },
     "fingerprint": {
-        "source_sha256": "00decf425f4010b5eb81a6bcf73564b2ee7bffd53b490ffcc443b615e01d3b39"
+        "source_sha256": "4eecaa4721c86cdde7453f192da020b53fd0d6081a6008b0d5aa1e9c70e58032"
     },
     "target": {
         "target": "win32",
@@ -27,70 +27,70 @@
     "imports": {
         "_jit_object_instance_new": {
             "kind": "dll",
-            "library": "libruntime_mini.dll",
+            "library": "libd64_runtime.dll",
             "name": "jit_object_instance_new",
             "pascal_name": "jit_object_instance_new",
             "calling_convention": "cdecl"
         },
         "_jit_object_instance_free": {
             "kind": "dll",
-            "library": "libruntime_mini.dll",
+            "library": "libd64_runtime.dll",
             "name": "jit_object_instance_free",
             "pascal_name": "jit_object_instance_free",
             "calling_convention": "cdecl"
         },
         "_jit_object_free": {
             "kind": "dll",
-            "library": "libruntime_mini.dll",
+            "library": "libd64_runtime.dll",
             "name": "jit_object_free",
             "pascal_name": "jit_object_free",
             "calling_convention": "cdecl"
         },
         "_jit_object_class_type": {
             "kind": "dll",
-            "library": "libruntime_mini.dll",
+            "library": "libd64_runtime.dll",
             "name": "jit_object_class_type",
             "pascal_name": "jit_object_class_type",
             "calling_convention": "cdecl"
         },
         "_jit_class_parent": {
             "kind": "dll",
-            "library": "libruntime_mini.dll",
+            "library": "libd64_runtime.dll",
             "name": "jit_class_parent",
             "pascal_name": "jit_class_parent",
             "calling_convention": "cdecl"
         },
         "_jit_class_name": {
             "kind": "dll",
-            "library": "libruntime_mini.dll",
+            "library": "libd64_runtime.dll",
             "name": "jit_class_name",
             "pascal_name": "jit_class_name",
             "calling_convention": "cdecl"
         },
         "_jit_class_instance_size": {
             "kind": "dll",
-            "library": "libruntime_mini.dll",
+            "library": "libd64_runtime.dll",
             "name": "jit_class_instance_size",
             "pascal_name": "jit_class_instance_size",
             "calling_convention": "cdecl"
         },
         "_jit_inherits_from_class": {
             "kind": "dll",
-            "library": "libruntime_mini.dll",
+            "library": "libd64_runtime.dll",
             "name": "jit_inherits_from_class",
             "pascal_name": "jit_inherits_from_class",
             "calling_convention": "cdecl"
         },
         "_jit_inherits_from_object": {
             "kind": "dll",
-            "library": "libruntime_mini.dll",
+            "library": "libd64_runtime.dll",
             "name": "jit_inherits_from_object",
             "pascal_name": "jit_inherits_from_object",
             "calling_convention": "cdecl"
         },
         "_jit_dynstring_from_cstr": {
             "kind": "dll",
-            "library": "libruntime_mini.dll",
+            "library": "libd64_runtime.dll",
             "name": "jit_dynstring_from_cstr",
             "pascal_name": "jit_dynstring_from_cstr",
             "calling_convention": "cdecl"
