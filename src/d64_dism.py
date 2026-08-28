@@ -104,6 +104,14 @@
 #    DLL-Aufrufe bleiben Aufgabe der vorhandenen d64-Importauflösung.
 #  * Stage 235: echte PE32-.bss-Sektion mit RESB/RESW/RESD/RESQ; nullinitialisierte
 #    Pascal-Runtimeblöcke besitzen keine COFF-/PE-Rohdaten mehr.
+#  * Stage 239: deutsche Qt-Standard-Kontextmenüs in DBF-Grid-Editoren;
+#    Undo/Redo/Cut/Copy/Paste/Delete/Select All werden übersetzt, Shortcuts bleiben.
+#  * Stage 236: Pascal PE32/PE32+ Projektzweig „Tabellen“ mit DBF-Hinzufügen,
+#    Projektpersistenz und Doppelklick in Tabellen-Designer/-Editor.
+#  * Stage 237: DBF-Datengrid mit Ganzgrid-/Zeilen-/Spaltenauswahl, Auswahl-Clipboard,
+#    Ausschneiden/Löschen sowie bestätigtem Bereinigen aller Datensätze.
+#  * Stage 238: ESC löscht im DBF-Datengrid ausschließlich die aktuelle Auswahl/Markierung;
+#    Daten und DBF-Inhalt bleiben unverändert. ZIP legt compiler.py unter c64pascal/ ab.
 #  * Stage 137: farbcodierte Zahlenmauern sowie Addition/Subtraktion/Einmaleins/Fehlende-Zahl-Spiele.
 #    Mehrtabellen-Tabs, Feldeditoren und Kontextoperationen für Feldzeilen
 #
@@ -12453,11 +12461,17 @@ PROJECT_PASCAL_PE32_MODULES_KEY = "__pascal_pe32_modules__"
 PROJECT_PASCAL_PE32_UNITS_KEY = "__pascal_pe32_units__"
 PROJECT_PASCAL_PE64_MODULES_KEY = "__pascal_pe64_modules__"
 PROJECT_PASCAL_PE64_UNITS_KEY = "__pascal_pe64_units__"
+# Stage 236: DBF-Tabellen sind zielgebundene Pascal-Projektressourcen, aber
+# ausdrücklich keine Compilerquellen. Darum besitzen sie eigene Keys/Node-Kinds.
+PROJECT_PASCAL_PE32_TABLES_KEY = "__pascal_pe32_tables__"
+PROJECT_PASCAL_PE64_TABLES_KEY = "__pascal_pe64_tables__"
 PROJECT_NODE_PASCAL_TARGET = "pascal_target"
 PROJECT_NODE_PASCAL_MODULE_ROOT = "pascal_module_root"
 PROJECT_NODE_PASCAL_UNIT_ROOT = "pascal_unit_root"
 PROJECT_NODE_PASCAL_UNIT_NAMESPACE = "pascal_unit_namespace"
 PROJECT_NODE_PASCAL_TARGET_SOURCE = "pascal_target_source"
+PROJECT_NODE_PASCAL_TABLE_ROOT = "pascal_table_root"
+PROJECT_NODE_PASCAL_TABLE_FILE = "pascal_table_file"
 PROJECT_PASCAL_TARGET_ENTRY_KEYS: Dict[Tuple[str, str], str] = {
     ("pe32", "modules"): PROJECT_PASCAL_PE32_MODULES_KEY,
     ("pe32", "units"): PROJECT_PASCAL_PE32_UNITS_KEY,
@@ -12469,6 +12483,14 @@ PROJECT_PASCAL_TARGET_SECTIONS: Dict[Tuple[str, str], str] = {
     ("pe32", "units"): "Category.pascal.pe32.units",
     ("pe64", "modules"): "Category.pascal.pe64.modules",
     ("pe64", "units"): "Category.pascal.pe64.units",
+}
+PROJECT_PASCAL_TABLE_ENTRY_KEYS: Dict[str, str] = {
+    "pe32": PROJECT_PASCAL_PE32_TABLES_KEY,
+    "pe64": PROJECT_PASCAL_PE64_TABLES_KEY,
+}
+PROJECT_PASCAL_TABLE_SECTIONS: Dict[str, str] = {
+    "pe32": "Category.pascal.pe32.tables",
+    "pe64": "Category.pascal.pe64.tables",
 }
 
 
@@ -12722,6 +12744,8 @@ def empty_project_entries() -> Dict[str, List[Dict[str, str]]]:
     # Stage 174: separate Ziel-/Rollenlisten für Pascal.
     for _special_key in PROJECT_PASCAL_TARGET_ENTRY_KEYS.values():
         entries[_special_key] = []
+    for _special_key in PROJECT_PASCAL_TABLE_ENTRY_KEYS.values():
+        entries[_special_key] = []
     for _settings in PROJECT_WINDOWS_TARGET_SETTINGS.values():
         entries[_settings["input_key"]] = []
         entries[_settings["output_key"]] = []
@@ -12876,6 +12900,26 @@ def format_project_ini(
             "Title": (
                 "Windows PE32" if _target == "pe32" else "Windows PE32+"
             ) + (" Module" if _role == "modules" else " Units")
+        }
+        for _index, _entry in enumerate(entries.get(_entry_key, ()), 1):
+            _path_value = str(_entry.get("path", "")).strip()
+            if not _path_value:
+                continue
+            _payload = {
+                "title": str(_entry.get("title", "") or Path(_path_value).name),
+                "path": _project_storage_path(_path_value, project_path),
+            }
+            parser[_section][f"Item{_index:04d}"] = json.dumps(
+                _payload, ensure_ascii=False, separators=(",", ":")
+            )
+
+    # Stage 236: Pascal-Tabellen werden pro Windows-Ziel separat gespeichert.
+    for _target, _entry_key in PROJECT_PASCAL_TABLE_ENTRY_KEYS.items():
+        _section = PROJECT_PASCAL_TABLE_SECTIONS[_target]
+        parser[_section] = {
+            "Title": (
+                "Windows PE32" if _target == "pe32" else "Windows PE32+"
+            ) + " Tabellen"
         }
         for _index, _entry in enumerate(entries.get(_entry_key, ()), 1):
             _path_value = str(_entry.get("path", "")).strip()
@@ -13049,6 +13093,33 @@ def parse_project_ini(text: str, project_path: Path) -> Dict[str, List[Dict[str,
     # Stage 174: optionale Pascal-Zielzweige laden.
     for (_target, _role), _entry_key in PROJECT_PASCAL_TARGET_ENTRY_KEYS.items():
         _section = PROJECT_PASCAL_TARGET_SECTIONS[(_target, _role)]
+        if not parser.has_section(_section):
+            continue
+        _values = sorted(
+            (
+                (name, value)
+                for name, value in parser.items(_section)
+                if name.casefold().startswith("item")
+            ),
+            key=lambda pair: pair[0].casefold(),
+        )
+        for _name, _value in _values:
+            try:
+                _payload = json.loads(_value)
+            except json.JSONDecodeError:
+                _payload = {"path": _value, "title": Path(_value).name}
+            _path_value = str(_payload.get("path", "")).strip()
+            if not _path_value:
+                continue
+            _loaded_path = _project_loaded_path(_path_value, Path(project_path))
+            entries[_entry_key].append({
+                "title": str(_payload.get("title", "") or Path(_loaded_path).name),
+                "path": _loaded_path,
+            })
+
+    # Stage 236: optionale Pascal-Tabellenzweige laden.
+    for _target, _entry_key in PROJECT_PASCAL_TABLE_ENTRY_KEYS.items():
+        _section = PROJECT_PASCAL_TABLE_SECTIONS[_target]
         if not parser.has_section(_section):
             continue
         _values = sorted(
@@ -30521,6 +30592,88 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
     # -----------------------------------------------------------------------
     # Stage 85: dBase-Tabellendesigner (DBF-Struktur).
     # -----------------------------------------------------------------------
+    def _dbase_translate_grid_editor_context_menu(menu: QMenu) -> None:
+        """Stage 239: Qt-Standardmenüs der DBF-Grid-Editoren eindeutschen.
+
+        Es werden ausschließlich die sichtbaren QAction-Texte geändert. Die
+        von Qt gesetzten QAction-Shortcuts bleiben dadurch unverändert aktiv.
+        Falls ein Qt-Stil den Shortcut historisch als ``\t...`` direkt im
+        Aktionstext führt, wird auch dieser Textsuffix bewahrt.
+        """
+        translations = {
+            "undo": "Rückgängig",
+            "redo": "Wiederherstellen",
+            "cut": "Ausschneiden",
+            "copy": "Kopieren",
+            "paste": "Einfügen",
+            "delete": "Löschen",
+            "select all": "Alles auswählen",
+        }
+
+        for action in menu.actions():
+            if action is None or action.isSeparator():
+                continue
+
+            raw_text = str(action.text() or "")
+            visible_text, separator, text_shortcut = raw_text.partition("\t")
+            normalized = visible_text.replace("&", "").strip()
+            normalized = normalized.replace("…", "...")
+            if normalized.endswith("..."):
+                normalized = normalized[:-3].rstrip()
+
+            translated = translations.get(normalized.casefold())
+            if translated is None:
+                continue
+
+            # Normalerweise steckt der Shortcut in QAction.shortcut() und wird
+            # von setText() überhaupt nicht berührt. Nur wenn Qt ihn direkt in
+            # action.text() kodiert, hängen wir diesen Suffix wieder an.
+            shortcut = action.shortcut()
+            if separator and (shortcut is None or shortcut.isEmpty()):
+                action.setText(translated + "\t" + text_shortcut)
+            else:
+                action.setText(translated)
+
+
+    def _dbase_install_grid_editor_context_menu(editor) -> None:
+        """Installiert das deutsche Standardmenü auf einem Grid-Editor."""
+        line_edit = None
+        if isinstance(editor, QLineEdit):
+            line_edit = editor
+        elif isinstance(editor, (QSpinBox, QComboBox)):
+            if isinstance(editor, QComboBox) and not editor.isEditable():
+                return
+            try:
+                line_edit = editor.lineEdit()
+            except (AttributeError, RuntimeError):
+                line_edit = None
+
+        if not isinstance(line_edit, QLineEdit):
+            return
+        if bool(line_edit.property("dbaseGermanGridContextMenu")):
+            return
+
+        line_edit.setProperty("dbaseGermanGridContextMenu", True)
+        line_edit.setContextMenuPolicy(Qt.CustomContextMenu)
+
+        def show_menu(pos: QPoint, widget=line_edit) -> None:
+            menu = widget.createStandardContextMenu()
+            _dbase_translate_grid_editor_context_menu(menu)
+            menu.exec_(widget.mapToGlobal(pos))
+            menu.deleteLater()
+
+        line_edit.customContextMenuRequested.connect(show_menu)
+
+
+    class DBaseTableFieldDelegate(QStyledItemDelegate):
+        """Stage 239: auch temporäre QTableWidget-Zelleditoren eindeutschen."""
+
+        def createEditor(self, parent, option, index):
+            editor = super().createEditor(parent, option, index)
+            _dbase_install_grid_editor_context_menu(editor)
+            return editor
+
+
     class DBaseTableFieldGrid(QTableWidget):
         """Felddefinitionen einer DBF-Tabelle mit dBase-typischen Editoren."""
 
@@ -30542,6 +30695,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.setAlternatingRowColors(True)
             self.setContextMenuPolicy(Qt.CustomContextMenu)
             self.customContextMenuRequested.connect(self._show_context_menu)
+            self.setItemDelegate(DBaseTableFieldDelegate(self))
             self.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
             self.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
             self.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
@@ -30627,6 +30781,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             spin.setRange(1, 254)
             spin.setValue(20)
             spin.setFixedWidth(84)
+            _dbase_install_grid_editor_context_menu(spin)
             return spin
 
         def _make_decimals_spin(self) -> QSpinBox:
@@ -30635,6 +30790,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             spin.setRange(0, 18)
             spin.setValue(0)
             spin.setFixedWidth(84)
+            _dbase_install_grid_editor_context_menu(spin)
             return spin
 
         def _make_index_check(self) -> QCheckBox:
@@ -30901,6 +31057,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 return combo
 
             editor = QLineEdit(parent)
+            _dbase_install_grid_editor_context_menu(editor)
 
             if code in {"C", "M"}:
                 editor.setMaxLength(max(1, int(field_spec.length)))
@@ -31012,13 +31169,42 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self._updating = False
 
             self.setSelectionBehavior(QAbstractItemView.SelectItems)
-            self.setSelectionMode(QAbstractItemView.SingleSelection)
+            # Stage 237: Mehrfachauswahl ist Voraussetzung dafür, dass der
+            # Tabellen-Corner-Button das komplette Grid und die Header ganze
+            # Zeilen/Spalten markieren können.
+            self.setSelectionMode(QAbstractItemView.ExtendedSelection)
             self.setEditTriggers(QAbstractItemView.AllEditTriggers)
             self.setAlternatingRowColors(True)
+            self.setCornerButtonEnabled(True)
 
-            self.horizontalHeader().setStretchLastSection(False)
-            self.verticalHeader().setVisible(True)
-            self.verticalHeader().setDefaultAlignment(Qt.AlignCenter)
+            horizontal_header = self.horizontalHeader()
+            horizontal_header.setStretchLastSection(False)
+            horizontal_header.setSectionsClickable(True)
+            horizontal_header.setHighlightSections(True)
+            horizontal_header.sectionClicked.connect(
+                self._horizontal_header_clicked
+            )
+            horizontal_header.setContextMenuPolicy(
+                Qt.CustomContextMenu
+            )
+            horizontal_header.customContextMenuRequested.connect(
+                self._show_horizontal_header_context_menu
+            )
+
+            vertical_header = self.verticalHeader()
+            vertical_header.setVisible(True)
+            vertical_header.setDefaultAlignment(Qt.AlignCenter)
+            vertical_header.setSectionsClickable(True)
+            vertical_header.setHighlightSections(True)
+            vertical_header.sectionClicked.connect(
+                self._vertical_header_clicked
+            )
+            vertical_header.setContextMenuPolicy(
+                Qt.CustomContextMenu
+            )
+            vertical_header.customContextMenuRequested.connect(
+                self._show_vertical_header_context_menu
+            )
 
             self.setContextMenuPolicy(Qt.CustomContextMenu)
             self.customContextMenuRequested.connect(
@@ -31031,6 +31217,21 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.itemChanged.connect(
                 self._item_changed
             )
+
+        def keyPressEvent(self, event) -> None:
+            # Stage 238: ESC hebt ausschließlich die aktuelle Tabellen-
+            # markierung auf. Weder Zellwerte noch Datensätze werden geändert
+            # und deshalb wird auch kein Autosave/records_changed ausgelöst.
+            if event.key() == Qt.Key_Escape:
+                selection_model = self.selectionModel()
+                if selection_model is not None:
+                    selection_model.clear()
+                else:
+                    self.clearSelection()
+                event.accept()
+                return
+
+            super().keyPressEvent(event)
 
         def set_dark_mode(self, enabled: bool) -> None:
             if bool(enabled):
@@ -31484,30 +31685,257 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 self.setItem(row, column, item)
             return item
 
-        def copy_cell(self) -> None:
-            item = self._current_item_or_create()
-            if item is None:
-                return
-            QApplication.clipboard().setText(
-                item.text()
+        # ------------------------------------------------------------------
+        # Stage 237: Tabellenartige Auswahl-/Clipboard-Operationen.
+        #
+        # Die Zwischenablage bleibt absichtlich textbasiert (TSV): dadurch
+        # lassen sich DBF-Werte auch zwischen zwei Tabellen sowie mit externer
+        # Tabellenkalkulation austauschen. Feldnamen/DBF-Struktur gehören nicht
+        # in die Zwischenablage; nur die tatsächlich markierten Werte werden
+        # übertragen.
+        # ------------------------------------------------------------------
+        def _selected_indexes_sorted(self):
+            return sorted(
+                self.selectedIndexes(),
+                key=lambda index: (index.row(), index.column()),
             )
 
-        def cut_cell(self) -> None:
-            item = self._current_item_or_create()
+        def _selection_coordinates(self):
+            indexes = self._selected_indexes_sorted()
+            return [
+                (index.row(), index.column())
+                for index in indexes
+            ]
+
+        def _selection_matrix_text(self) -> str:
+            coordinates = self._selection_coordinates()
+            if not coordinates:
+                return ""
+
+            selected = set(coordinates)
+            rows = sorted({row for row, _column in coordinates})
+            columns = sorted({column for _row, column in coordinates})
+            lines = []
+
+            for row in rows:
+                values = []
+                for column in columns:
+                    if (row, column) not in selected:
+                        value = ""
+                    else:
+                        item = self.item(row, column)
+                        value = item.text() if item is not None else ""
+
+                    # Das Daten-Grid verwendet einzeilige Editoren. Tabs und
+                    # Zeilenumbrüche würden das TSV-Format selbst verändern.
+                    value = str(value).replace("\t", " ")
+                    value = value.replace("\r", " ").replace("\n", " ")
+                    values.append(value)
+                lines.append("\t".join(values))
+
+            return "\n".join(lines)
+
+        @staticmethod
+        def _clipboard_matrix(text: str):
+            source = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+            lines = source.split("\n")
+
+            # Viele externe Programme hängen genau einen finalen Zeilenumbruch
+            # an kopierte Bereiche. Dieser ist kein zusätzlicher DBF-Datensatz.
+            if len(lines) > 1 and lines[-1] == "":
+                lines.pop()
+            if not lines:
+                lines = [""]
+
+            return [line.split("\t") for line in lines]
+
+        def _set_cell_value_without_signal(
+            self,
+            row: int,
+            column: int,
+            value: str,
+        ) -> None:
+            item = self.item(int(row), int(column))
             if item is None:
+                item = self._new_item("")
+                self.setItem(int(row), int(column), item)
+
+            text_value = str(value or "")
+            item.setText(text_value)
+            item.setData(Qt.UserRole, text_value)
+
+        def copy_selection(self) -> None:
+            if not self._selection_coordinates():
                 return
             QApplication.clipboard().setText(
-                item.text()
+                self._selection_matrix_text()
             )
-            item.setText("")
 
-        def paste_cell(self) -> None:
-            item = self._current_item_or_create()
-            if item is None:
+        def delete_selection_values(self) -> None:
+            coordinates = self._selection_coordinates()
+            if not coordinates:
                 return
-            item.setText(
+
+            self._updating = True
+            try:
+                for row, column in coordinates:
+                    self._set_cell_value_without_signal(
+                        row,
+                        column,
+                        "",
+                    )
+            finally:
+                self._updating = False
+
+            self.records_changed.emit()
+
+        def cut_selection(self) -> None:
+            if not self._selection_coordinates():
+                return
+            self.copy_selection()
+            self.delete_selection_values()
+
+        def _validated_paste_plan(self, matrix):
+            coordinates = self._selection_coordinates()
+            if not coordinates:
+                return []
+
+            selected = set(coordinates)
+            rows = sorted({row for row, _column in coordinates})
+            columns = sorted({column for _row, column in coordinates})
+            plan = []
+
+            if len(coordinates) == 1:
+                # Tabellenkalkulations-Verhalten: bei nur einer Zielzelle wird
+                # ein mehrzeiliger/-spaltiger Clipboard-Block ab dieser Zelle
+                # eingesetzt. Die vorhandene DBF-Struktur und Datensatzanzahl
+                # werden dabei nicht verändert.
+                start_row, start_column = coordinates[0]
+                for row_offset, source_row in enumerate(matrix):
+                    target_row = start_row + row_offset
+                    if target_row >= self.rowCount():
+                        break
+                    for column_offset, source_value in enumerate(source_row):
+                        target_column = start_column + column_offset
+                        if target_column >= self.columnCount():
+                            break
+                        field_spec = self.field_for_column(target_column)
+                        if field_spec is None:
+                            continue
+                        normalized = self._normalize_value(
+                            field_spec,
+                            source_value,
+                        )
+                        plan.append(
+                            (target_row, target_column, normalized)
+                        )
+                return plan
+
+            # Bei einer markierten Fläche wird diese zunächst vollständig
+            # ersetzt: nicht durch Clipboard-Daten belegte markierte Zellen
+            # werden daher leer. Das gilt identisch für Ganzgrid, Spalten und
+            # Zeilen, weil sie alle als echte Zellselektion vorliegen.
+            for row_offset, target_row in enumerate(rows):
+                for column_offset, target_column in enumerate(columns):
+                    if (target_row, target_column) not in selected:
+                        continue
+                    source_value = ""
+                    if row_offset < len(matrix):
+                        source_row = matrix[row_offset]
+                        if column_offset < len(source_row):
+                            source_value = source_row[column_offset]
+
+                    field_spec = self.field_for_column(target_column)
+                    if field_spec is None:
+                        continue
+                    normalized = self._normalize_value(
+                        field_spec,
+                        source_value,
+                    )
+                    plan.append(
+                        (target_row, target_column, normalized)
+                    )
+
+            return plan
+
+        def paste_selection(self) -> None:
+            if not self._selection_coordinates():
+                return
+
+            matrix = self._clipboard_matrix(
                 QApplication.clipboard().text()
             )
+            try:
+                plan = self._validated_paste_plan(matrix)
+            except ValueError as exc:
+                # Keine Teilmutation: erst wenn alle Clipboard-Werte zu ihren
+                # DBF-Feldtypen passen, wird der komplette Bereich geändert.
+                self.validation_failed.emit(str(exc))
+                return
+
+            if not plan:
+                return
+
+            self._updating = True
+            try:
+                for row, column, value in plan:
+                    self._set_cell_value_without_signal(
+                        row,
+                        column,
+                        value,
+                    )
+            finally:
+                self._updating = False
+
+            self.records_changed.emit()
+
+        def clean_table(self) -> None:
+            if self.rowCount() <= 0:
+                return
+
+            dialog = QMessageBox(
+                QMessageBox.Question,
+                tr("Tabelle bereinigen"),
+                tr(
+                    "Sollen wirklich alle Datensätze aus der Tabelle "
+                    "gelöscht werden?\n\nDie Tabellenstruktur und Felder "
+                    "bleiben erhalten."
+                ),
+                QMessageBox.Yes | QMessageBox.No,
+                self,
+            )
+            yes_button = dialog.button(QMessageBox.Yes)
+            no_button = dialog.button(QMessageBox.No)
+            if yes_button is not None:
+                yes_button.setText(tr("Ja"))
+            if no_button is not None:
+                no_button.setText(tr("Nein"))
+            dialog.setDefaultButton(QMessageBox.No)
+
+            if dialog.exec_() != QMessageBox.Yes:
+                return
+
+            self._updating = True
+            try:
+                self.clearSelection()
+                self.setRowCount(0)
+                self._refresh_vertical_headers()
+            finally:
+                self._updating = False
+
+            # Stage 163-Autosave schreibt damit eine echte DBF mit 0 Records.
+            self.records_changed.emit()
+
+        # Kompatibilitätsnamen für eventuell vorhandene Aufrufer aus früheren
+        # Stages. Sie arbeiten jetzt auf der vollständigen Auswahl.
+        def copy_cell(self) -> None:
+            self.copy_selection()
+
+        def cut_cell(self) -> None:
+            self.cut_selection()
+
+        def paste_cell(self) -> None:
+            self.paste_selection()
 
         def new_record(self) -> None:
             current = self.currentRow()
@@ -31618,24 +32046,92 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 self.rowCount() - 1
             )
 
-        def _show_context_menu(
+        def _horizontal_header_clicked(
+            self,
+            column: int,
+        ) -> None:
+            # QTableView markiert Header-Sektionen bereits selbst. Dieser
+            # Fallback garantiert die gewünschte Ganzspaltenauswahl auch bei
+            # Styles/Qt5-Versionen, die nur den Current-Index versetzen.
+            column = int(column)
+            if column < 0 or column >= self.columnCount():
+                return
+
+            modifiers = QApplication.keyboardModifiers()
+            if modifiers & (Qt.ControlModifier | Qt.ShiftModifier):
+                return
+
+            self.clearSelection()
+            self.selectColumn(column)
+
+        def _vertical_header_clicked(
+            self,
+            row: int,
+        ) -> None:
+            row = int(row)
+            if row < 0 or row >= self.rowCount():
+                return
+
+            modifiers = QApplication.keyboardModifiers()
+            if modifiers & (Qt.ControlModifier | Qt.ShiftModifier):
+                return
+
+            self.clearSelection()
+            self.selectRow(row)
+
+        def _show_horizontal_header_context_menu(
             self,
             pos: QPoint,
         ) -> None:
-            index = self.indexAt(pos)
-            if index.isValid():
-                self.setCurrentCell(
-                    index.row(),
-                    index.column(),
-                )
+            header = self.horizontalHeader()
+            column = header.logicalIndexAt(pos)
+            if column < 0:
+                return
 
+            selection_model = self.selectionModel()
+            if not selection_model.isColumnSelected(
+                column,
+                QModelIndex(),
+            ):
+                self.clearSelection()
+                self.selectColumn(column)
+
+            self._exec_selection_context_menu(
+                header.mapToGlobal(pos)
+            )
+
+        def _show_vertical_header_context_menu(
+            self,
+            pos: QPoint,
+        ) -> None:
+            header = self.verticalHeader()
+            row = header.logicalIndexAt(pos)
+            if row < 0:
+                return
+
+            selection_model = self.selectionModel()
+            if not selection_model.isRowSelected(
+                row,
+                QModelIndex(),
+            ):
+                self.clearSelection()
+                self.selectRow(row)
+
+            self._exec_selection_context_menu(
+                header.mapToGlobal(pos)
+            )
+
+        def _exec_selection_context_menu(
+            self,
+            global_pos: QPoint,
+        ) -> None:
             menu = QMenu(self)
 
-            paste_action = menu.addAction(
-                tr("Einfügen")
-            )
             copy_action = menu.addAction(
                 tr("Kopieren")
+            )
+            paste_action = menu.addAction(
+                tr("Einfügen")
             )
             cut_action = menu.addAction(
                 tr("Ausschneiden")
@@ -31643,41 +32139,57 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
 
             menu.addSeparator()
 
-            delete_record_action = menu.addAction(
-                tr("Löschen Datensatz")
+            delete_action = menu.addAction(
+                tr("Löschen")
             )
-            new_record_action = menu.addAction(
-                tr("Neuer Datensatz")
-            )
-
-            has_cell = (
-                self.currentRow() >= 0
-                and self.currentColumn() >= 0
-                and self.rowCount() > 0
-                and self.columnCount() > 0
-            )
-            copy_action.setEnabled(has_cell)
-            cut_action.setEnabled(has_cell)
-            paste_action.setEnabled(has_cell)
-            delete_record_action.setEnabled(
-                self.currentRow() >= 0
-                and self.rowCount() > 0
+            clean_action = menu.addAction(
+                tr("Bereinigen")
             )
 
-            chosen = menu.exec_(
+            has_selection = bool(
+                self._selection_coordinates()
+            )
+            copy_action.setEnabled(has_selection)
+            paste_action.setEnabled(has_selection)
+            cut_action.setEnabled(has_selection)
+            delete_action.setEnabled(has_selection)
+            clean_action.setEnabled(self.rowCount() > 0)
+
+            chosen = menu.exec_(global_pos)
+
+            if chosen is copy_action:
+                self.copy_selection()
+            elif chosen is paste_action:
+                self.paste_selection()
+            elif chosen is cut_action:
+                self.cut_selection()
+            elif chosen is delete_action:
+                self.delete_selection_values()
+            elif chosen is clean_action:
+                self.clean_table()
+
+        def _show_context_menu(
+            self,
+            pos: QPoint,
+        ) -> None:
+            index = self.indexAt(pos)
+            if index.isValid():
+                selection_model = self.selectionModel()
+                if not selection_model.isSelected(index):
+                    # Rechtsklick außerhalb der bisherigen Markierung verhält
+                    # sich wie in Tabellenkalkulationen: die angeklickte Zelle
+                    # wird zum neuen Operationsziel. Ein Rechtsklick innerhalb
+                    # einer Header-/Ganzgrid-Auswahl lässt die Auswahl intakt.
+                    self.clearSelection()
+                    self.setCurrentCell(
+                        index.row(),
+                        index.column(),
+                    )
+
+            self._exec_selection_context_menu(
                 self.viewport().mapToGlobal(pos)
             )
 
-            if chosen is paste_action:
-                self.paste_cell()
-            elif chosen is copy_action:
-                self.copy_cell()
-            elif chosen is cut_action:
-                self.cut_cell()
-            elif chosen is delete_record_action:
-                self.delete_current_record()
-            elif chosen is new_record_action:
-                self.new_record()
 
 
     class DBaseTablePage(QWidget):
@@ -42665,6 +43177,18 @@ QStackedWidget#learning_content_stack {{
                 )
                 border = int(self.FRAMELESS_VISIBLE_BORDER)
                 self.setContentsMargins(border, border, border, border)
+
+            # Stage 240: WM_NCHITTEST allein ist bei einem Qt-Frameless-
+            # QMainWindow nicht auf allen Windows/Qt5-Kombinationen stabil.
+            # Der globale Eventfilter startet deshalb bei einem Linksklick in
+            # der 7-px-Randzone bevorzugt QWindow.startSystemResize(). Falls
+            # die Plattformoperation nicht verfügbar ist, übernimmt ein
+            # manueller Geometrie-Fallback. Strings statt Integer-Bitmasken
+            # vermeiden dabei die frühere int-vs-Qt.Edges-Regressionsklasse.
+            self._frameless_resize_active = False
+            self._frameless_resize_role = ""
+            self._frameless_resize_start_global = QPoint()
+            self._frameless_resize_start_geometry = QRect()
             # Stage 148: Die gewünschte sichtbare Starthöhe ist 800 px.
             self.resize(1360, self.DEFAULT_WINDOW_HEIGHT)
             self.setMaximumHeight(self.MAX_WINDOW_HEIGHT)
@@ -42943,42 +43467,157 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             frame_path.lineTo(left, bottom)
             painter.drawPath(frame_path)
 
-        def nativeEvent(self, event_type, message):
-            """Keep native Windows edge/corner resizing for the frameless shell."""
-            if sys.platform == "win32" and not self.isMaximized():
+        def _frameless_resize_role_at_global(self, global_pos) -> str:
+            """Return n/s/e/w role for a point inside the outer resize zone."""
+            if sys.platform != "win32" or self.isMaximized() or self.isFullScreen():
+                return ""
+            if global_pos is None:
+                return ""
+
+            pos = self.mapFromGlobal(QPoint(global_pos))
+            border = max(1, int(self.FRAMELESS_RESIZE_BORDER))
+            width = int(self.width())
+            height = int(self.height())
+            x = int(pos.x())
+            y = int(pos.y())
+            if x < 0 or y < 0 or x >= width or y >= height:
+                return ""
+
+            west = x < border
+            east = x >= max(0, width - border)
+            north = y < border
+            south = y >= max(0, height - border)
+
+            if north and west:
+                return "nw"
+            if north and east:
+                return "ne"
+            if south and west:
+                return "sw"
+            if south and east:
+                return "se"
+            if west:
+                return "w"
+            if east:
+                return "e"
+            if north:
+                return "n"
+            if south:
+                return "s"
+            return ""
+
+        @staticmethod
+        def _frameless_qt_edges_for_role(role: str):
+            """Create a genuine Qt.Edges value; never mix it with plain ints."""
+            mapping = {
+                "w": Qt.LeftEdge,
+                "e": Qt.RightEdge,
+                "n": Qt.TopEdge,
+                "s": Qt.BottomEdge,
+                "nw": Qt.TopEdge | Qt.LeftEdge,
+                "ne": Qt.TopEdge | Qt.RightEdge,
+                "sw": Qt.BottomEdge | Qt.LeftEdge,
+                "se": Qt.BottomEdge | Qt.RightEdge,
+            }
+            return mapping.get(str(role or ""), None)
+
+        def _begin_frameless_resize(self, global_pos) -> bool:
+            """Start native system resize; retain a manual fallback for Qt5."""
+            role = self._frameless_resize_role_at_global(global_pos)
+            if not role:
+                return False
+
+            handle = self.windowHandle()
+            edges = self._frameless_qt_edges_for_role(role)
+            if handle is not None and edges is not None and hasattr(handle, "startSystemResize"):
                 try:
-                    import ctypes
-                    from ctypes import wintypes
-
-                    msg = wintypes.MSG.from_address(int(message))
-                    if msg.message == 0x0084:  # WM_NCHITTEST
-                        x = ctypes.c_short(msg.lParam & 0xFFFF).value
-                        y = ctypes.c_short((msg.lParam >> 16) & 0xFFFF).value
-                        pos = self.mapFromGlobal(QPoint(x, y))
-                        border = int(self.FRAMELESS_RESIZE_BORDER)
-                        left = 0 <= pos.x() < border
-                        right = self.width() - border <= pos.x() < self.width()
-                        top = 0 <= pos.y() < border
-                        bottom = self.height() - border <= pos.y() < self.height()
-
-                        if top and left:
-                            return True, 13   # HTTOPLEFT
-                        if top and right:
-                            return True, 14   # HTTOPRIGHT
-                        if bottom and left:
-                            return True, 16   # HTBOTTOMLEFT
-                        if bottom and right:
-                            return True, 17   # HTBOTTOMRIGHT
-                        if left:
-                            return True, 10   # HTLEFT
-                        if right:
-                            return True, 11   # HTRIGHT
-                        if top:
-                            return True, 12   # HTTOP
-                        if bottom:
-                            return True, 15   # HTBOTTOM
-                except (AttributeError, OSError, TypeError, ValueError):
+                    if bool(handle.startSystemResize(edges)):
+                        return True
+                except (AttributeError, RuntimeError, TypeError, ValueError):
                     pass
+
+            # Fallback for Qt versions/platform plugins which reject the native
+            # operation. No data/widget state is touched; only window geometry.
+            self._frameless_resize_active = True
+            self._frameless_resize_role = role
+            self._frameless_resize_start_global = QPoint(global_pos)
+            self._frameless_resize_start_geometry = QRect(self.geometry())
+            try:
+                self.grabMouse()
+            except RuntimeError:
+                pass
+            return True
+
+        def _update_manual_frameless_resize(self, global_pos) -> bool:
+            if not self._frameless_resize_active:
+                return False
+
+            role = str(self._frameless_resize_role or "")
+            start = QRect(self._frameless_resize_start_geometry)
+            current = QPoint(global_pos)
+            delta = current - self._frameless_resize_start_global
+
+            left = int(start.x())
+            top = int(start.y())
+            width = int(start.width())
+            height = int(start.height())
+            right = left + width
+            bottom = top + height
+
+            min_width = max(1, int(self.minimumWidth()))
+            min_height = max(1, int(self.minimumHeight()))
+            max_width = max(min_width, int(self.maximumWidth()))
+            max_height = max(min_height, int(self.maximumHeight()))
+
+            if "w" in role:
+                proposed_left = left + int(delta.x())
+                proposed_width = right - proposed_left
+                proposed_width = max(min_width, min(max_width, proposed_width))
+                left = right - proposed_width
+                width = proposed_width
+            elif "e" in role:
+                width = max(
+                    min_width,
+                    min(max_width, width + int(delta.x())),
+                )
+
+            if "n" in role:
+                proposed_top = top + int(delta.y())
+                proposed_height = bottom - proposed_top
+                proposed_height = max(
+                    min_height, min(max_height, proposed_height)
+                )
+                top = bottom - proposed_height
+                height = proposed_height
+            elif "s" in role:
+                height = max(
+                    min_height,
+                    min(max_height, height + int(delta.y())),
+                )
+
+            self.setGeometry(left, top, width, height)
+            return True
+
+        def _finish_manual_frameless_resize(self) -> bool:
+            if not self._frameless_resize_active:
+                return False
+            self._frameless_resize_active = False
+            self._frameless_resize_role = ""
+            try:
+                self.releaseMouse()
+            except RuntimeError:
+                pass
+            return True
+
+        def nativeEvent(self, event_type, message):
+            """Let Qt receive border mouse presses used by Stage-240 resizing.
+
+            Older stages returned HTLEFT/HTRIGHT/... for WM_NCHITTEST. With a
+            Qt.FramelessWindowHint those non-client hit results can consume the
+            mouse press without Windows actually starting a resize operation.
+            Stage 240 therefore performs the edge detection in the application
+            event filter and calls QWindow.startSystemResize() explicitly.
+            """
             return super().nativeEvent(event_type, message)
 
         def _focus_project_panel_on_startup(self) -> None:
@@ -53508,6 +54147,7 @@ border: 2px solid #2a69aa;
             self.project_prolog_knowledge_root = None
             self.project_pascal_target_nodes = {}
             self.project_pascal_group_nodes = {}
+            self.project_pascal_table_nodes = {}
             self.project_pascal_unit_namespace_nodes = {}
             self._project_pascal_entry_sequence = {}
             self.project_pascal_last_programs = getattr(
@@ -53578,6 +54218,32 @@ border: 2px solid #2a69aa;
                                         mark_modified=False,
                                     )
                             _group.setExpanded(True)
+
+                        # Stage 236: DBF-Tabellen liegen als eigener geschützter
+                        # Ressourcen-Zweig direkt unter dem jeweiligen Windows-Ziel.
+                        _table_group = QTreeWidgetItem(_target_item, ["Tabellen"])
+                        _table_group.setData(0, Qt.UserRole + 301, "pascal")
+                        _table_group.setData(0, Qt.UserRole + 303, PROJECT_NODE_PASCAL_TABLE_ROOT)
+                        _table_group.setData(0, Qt.UserRole + 305, _target)
+                        _table_group.setData(0, Qt.UserRole + 306, "tables")
+                        _table_group.setIcon(0, folder_icon)
+                        _table_group.setToolTip(
+                            0,
+                            "DBF-Tabellen für " + _target_title
+                            + "; Rechtsklick zum Hinzufügen, Doppelklick auf eine Datei öffnet Designer/Editor",
+                        )
+                        self.project_pascal_table_nodes[_target] = _table_group
+                        _table_key = PROJECT_PASCAL_TABLE_ENTRY_KEYS[_target]
+                        for _entry in values.get(_table_key, ()):
+                            _path_text = str(_entry.get("path", "")).strip()
+                            if _path_text:
+                                self._add_project_pascal_table_entry(
+                                    _table_group,
+                                    Path(_path_text),
+                                    title=str(_entry.get("title", "")),
+                                    mark_modified=False,
+                                )
+                        _table_group.setExpanded(True)
                         _target_item.setExpanded(True)
 
                 if key == "prolog":
@@ -53866,6 +54532,7 @@ border: 2px solid #2a69aa;
                         PROJECT_NODE_PASCAL_TARGET,
                         PROJECT_NODE_PASCAL_MODULE_ROOT,
                         PROJECT_NODE_PASCAL_UNIT_ROOT,
+                        PROJECT_NODE_PASCAL_TABLE_ROOT,
                     }:
                         continue
                     path_value = str(child.data(0, Qt.UserRole + 302) or "")
@@ -53924,6 +54591,21 @@ border: 2px solid #2a69aa;
                             ),
                             "path": _path_value,
                         })
+            for _target, _entry_key in PROJECT_PASCAL_TABLE_ENTRY_KEYS.items():
+                _group = getattr(self, "project_pascal_table_nodes", {}).get(_target)
+                if _group is None:
+                    continue
+                for _index in range(_group.childCount()):
+                    _child = _group.child(_index)
+                    if self._project_item_kind(_child) != PROJECT_NODE_PASCAL_TABLE_FILE:
+                        continue
+                    _path_value = str(_child.data(0, Qt.UserRole + 302) or "").strip()
+                    if _path_value:
+                        entries[_entry_key].append({
+                            "title": _child.text(0),
+                            "path": _path_value,
+                        })
+
             for _target, _settings in PROJECT_WINDOWS_TARGET_SETTINGS.items():
                 entries[_settings["input_key"]] = [
                     {"path": path}
@@ -53980,6 +54662,10 @@ border: 2px solid #2a69aa;
                 or any(
                     bool(entries.get(_key))
                     for _key in PROJECT_PASCAL_TARGET_ENTRY_KEYS.values()
+                )
+                or any(
+                    bool(entries.get(_key))
+                    for _key in PROJECT_PASCAL_TABLE_ENTRY_KEYS.values()
                 )
                 or any(
                     bool(entries.get(_settings["input_key"]))
@@ -54545,6 +55231,138 @@ border: 2px solid #2a69aa;
             if mark_modified:
                 self.set_project_modified(True)
             return child
+
+        def _add_project_pascal_table_entry(
+            self,
+            table_root: QTreeWidgetItem,
+            path: Path,
+            *,
+            title: str = "",
+            mark_modified: bool = True,
+        ) -> Optional[QTreeWidgetItem]:
+            """Stage 236: fügt eine vorhandene *.DBF in einen Pascal-Tabellenzweig ein."""
+            if self._project_item_kind(table_root) != PROJECT_NODE_PASCAL_TABLE_ROOT:
+                return None
+            target = str(table_root.data(0, Qt.UserRole + 305) or "").casefold()
+            if target not in {"pe32", "pe64"}:
+                return None
+            try:
+                resolved = Path(path).expanduser().resolve()
+            except OSError:
+                resolved = Path(path).expanduser()
+            if resolved.suffix.casefold() != ".dbf":
+                return None
+            path_text = str(resolved)
+            for index in range(table_root.childCount()):
+                child = table_root.child(index)
+                existing = str(child.data(0, Qt.UserRole + 302) or "")
+                if existing.casefold() == path_text.casefold():
+                    self.project_tree.setCurrentItem(child)
+                    return child
+            child = QTreeWidgetItem(table_root, [title.strip() or resolved.name])
+            child.setData(0, Qt.UserRole + 301, "pascal")
+            child.setData(0, Qt.UserRole + 302, path_text)
+            child.setData(0, Qt.UserRole + 303, PROJECT_NODE_PASCAL_TABLE_FILE)
+            child.setData(0, Qt.UserRole + 305, target)
+            child.setData(0, Qt.UserRole + 306, "tables")
+            child.setToolTip(0, path_text)
+            child.setIcon(0, self.icon_provider.icon(QFileInfo(path_text)))
+            table_root.setExpanded(True)
+            parent = table_root.parent()
+            if parent is not None:
+                parent.setExpanded(True)
+            if mark_modified:
+                self.set_project_modified(True)
+            return child
+
+        def add_project_pascal_tables(
+            self,
+            table_root: QTreeWidgetItem,
+        ) -> None:
+            if self._project_item_kind(table_root) != PROJECT_NODE_PASCAL_TABLE_ROOT:
+                return
+            target = str(table_root.data(0, Qt.UserRole + 305) or "").casefold()
+            if target not in {"pe32", "pe64"}:
+                return
+            filenames, _selected = QFileDialog.getOpenFileNames(
+                self,
+                "DBF-Tabellen hinzufügen",
+                str(self._project_new_file_directory()),
+                "dBase DBF (*.dbf);;Alle Dateien (*)",
+            )
+            added = 0
+            for filename in filenames:
+                if self._add_project_pascal_table_entry(
+                    table_root, Path(filename), title=Path(filename).name
+                ) is not None:
+                    added += 1
+            if added:
+                if self.current_project_path is not None:
+                    self.save_project()
+                target_name = "Windows PE32" if target == "pe32" else "Windows PE32+"
+                self.statusBar().showMessage(
+                    f"{added} DBF-Tabelle(n) zu {target_name} hinzugefügt"
+                )
+
+        def clear_project_pascal_tables(
+            self,
+            table_root: QTreeWidgetItem,
+        ) -> None:
+            if self._project_item_kind(table_root) != PROJECT_NODE_PASCAL_TABLE_ROOT:
+                return
+            count = table_root.childCount()
+            if count <= 0:
+                return
+            answer = self._show_message_box(
+                QMessageBox.Question,
+                "Pascal-Tabellenreferenzen entfernen",
+                f"Sollen alle {count} DBF-Referenzen aus '{table_root.text(0)}' "
+                "entfernt werden?\n\nDie DBF-Dateien auf dem Datenträger bleiben erhalten.",
+                buttons=QMessageBox.Yes | QMessageBox.No,
+                default_button=QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
+            while table_root.childCount():
+                table_root.takeChild(0)
+            self.set_project_modified(True)
+            if self.current_project_path is not None:
+                self.save_project()
+
+        def _show_project_pascal_table_root_menu(
+            self,
+            item: QTreeWidgetItem,
+            position,
+        ) -> None:
+            menu = QMenu(self.project_tree)
+            add_action = menu.addAction("Hinzufügen …")
+            menu.addSeparator()
+            clear_action = menu.addAction("Einträge löschen")
+            clear_action.setEnabled(item.childCount() > 0)
+            selected = menu.exec_(
+                self.project_tree.viewport().mapToGlobal(position)
+            )
+            if selected is add_action:
+                self.add_project_pascal_tables(item)
+            elif selected is clear_action:
+                self.clear_project_pascal_tables(item)
+
+        def _show_project_pascal_table_file_menu(
+            self,
+            item: QTreeWidgetItem,
+            position,
+        ) -> None:
+            menu = QMenu(self.project_tree)
+            open_action = menu.addAction("Öffnen")
+            menu.addSeparator()
+            remove_action = menu.addAction("Aus Knoten entfernen")
+            selected = menu.exec_(
+                self.project_tree.viewport().mapToGlobal(position)
+            )
+            if selected is open_action:
+                self.open_project_item(item)
+            elif selected is remove_action:
+                self.delete_selected_project_leaves(preferred_item=item)
 
         def _project_pascal_group_paths(
             self,
@@ -55283,6 +56101,12 @@ border: 2px solid #2a69aa;
             }:
                 self._show_project_pascal_group_menu(item, position)
                 return
+            if kind == PROJECT_NODE_PASCAL_TABLE_ROOT:
+                self._show_project_pascal_table_root_menu(item, position)
+                return
+            if kind == PROJECT_NODE_PASCAL_TABLE_FILE:
+                self._show_project_pascal_table_file_menu(item, position)
+                return
             if kind == PROJECT_NODE_PASCAL_UNIT_NAMESPACE:
                 menu = QMenu(self.project_tree)
                 add_action = menu.addAction("Unit hinzufügen …")
@@ -55328,6 +56152,7 @@ border: 2px solid #2a69aa;
                     PROJECT_NODE_ARCHIVE_ROOT,
                     PROJECT_NODE_PROLOG_KNOWLEDGE_ROOT,
                     PROJECT_NODE_PASCAL_TARGET,
+                    PROJECT_NODE_PASCAL_TABLE_ROOT,
                 }
             )
             clear_action.setEnabled(removable_count > 0)
@@ -56140,6 +56965,7 @@ border: 2px solid #2a69aa;
                 PROJECT_NODE_PASCAL_MODULE_ROOT,
                 PROJECT_NODE_PASCAL_UNIT_ROOT,
                 PROJECT_NODE_PASCAL_UNIT_NAMESPACE,
+                PROJECT_NODE_PASCAL_TABLE_ROOT,
             }
             return [
                 item for item in selected
@@ -56259,8 +57085,29 @@ border: 2px solid #2a69aa;
                 PROJECT_NODE_PASCAL_MODULE_ROOT,
                 PROJECT_NODE_PASCAL_UNIT_ROOT,
                 PROJECT_NODE_PASCAL_UNIT_NAMESPACE,
+                PROJECT_NODE_PASCAL_TABLE_ROOT,
             }:
                 item.setExpanded(not item.isExpanded())
+                return
+            if kind == PROJECT_NODE_PASCAL_TABLE_FILE:
+                path_value = str(item.data(0, Qt.UserRole + 302) or "").strip()
+                if not path_value:
+                    return
+                path = Path(path_value)
+                if not path.is_file():
+                    self.show_error(
+                        "Pascal-Projekttabelle nicht gefunden",
+                        f"DBF-Datei nicht gefunden:\n{path}",
+                    )
+                    return
+                if self.open_dbase_table_file(path):
+                    self._remember_recent_file(path)
+                    target = str(item.data(0, Qt.UserRole + 305) or "").casefold()
+                    target_name = "Windows PE32" if target == "pe32" else "Windows PE32+"
+                    self.statusBar().showMessage(
+                        f"{path.name}: Tabellen-Designer und Tabellen-Editor geöffnet ({target_name})",
+                        6000,
+                    )
                 return
             if kind == PROJECT_NODE_PASCAL_TARGET_SOURCE:
                 path_value = str(item.data(0, Qt.UserRole + 302) or "")
@@ -56792,6 +57639,46 @@ border: 2px solid #2a69aa;
             return True
 
         def eventFilter(self, watched, event):
+            # Stage 240: fuer das frameless Hauptfenster werden Mausereignisse
+            # global beobachtet. Dadurch funktioniert die Resize-Hit-Zone auch
+            # dann, wenn DockWidgets, MenuWidget oder CentralWidget bis dicht
+            # an den optischen 2-px-Rand reichen und den Klick erhalten.
+            if sys.platform == "win32" and isinstance(watched, QWidget):
+                try:
+                    belongs_to_main_window = watched.window() is self
+                except RuntimeError:
+                    belongs_to_main_window = False
+                if belongs_to_main_window:
+                    event_type = event.type()
+                    if (
+                        event_type == QEvent.MouseButtonPress
+                        and event.button() == Qt.LeftButton
+                    ):
+                        try:
+                            global_pos = event.globalPos()
+                        except AttributeError:
+                            global_pos = None
+                        if global_pos is not None and self._begin_frameless_resize(global_pos):
+                            event.accept()
+                            return True
+                    elif event_type == QEvent.MouseMove and self._frameless_resize_active:
+                        try:
+                            global_pos = event.globalPos()
+                        except AttributeError:
+                            global_pos = None
+                        if global_pos is not None:
+                            self._update_manual_frameless_resize(global_pos)
+                            event.accept()
+                            return True
+                    elif (
+                        event_type == QEvent.MouseButtonRelease
+                        and event.button() == Qt.LeftButton
+                        and self._frameless_resize_active
+                    ):
+                        self._finish_manual_frameless_resize()
+                        event.accept()
+                        return True
+
             # Stage 67: every widget which becomes visible after startup also
             # receives the dynamic help property. No manual registration is
             # required for dialogs, docking content, query lanes or popups.

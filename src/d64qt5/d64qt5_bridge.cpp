@@ -1,88 +1,89 @@
 #define D64QT5_BRIDGE_EXPORTS 1
-#include "d64qt5_bridge.h"
+# include "d64qt5_bridge.h"
+
 #ifdef _WIN32
-#  include <winsock2.h>
-#  include <ws2tcpip.h>
+# include <winsock2.h>
+# include <ws2tcpip.h>
 #endif
-#include "d64_workstation.h"
+# include "d64_workstation.h"
 
-#include <QApplication>
-#include <QAction>
-#include <QAbstractButton>
-#include <QByteArray>
-#include <QColor>
-#include <QCoreApplication>
-#include <QDialog>
-#include <QDir>
-#include <QEventLoop>
-#include <QEvent>
-#include <QFileInfo>
-#include <QFont>
-#include <QFontDatabase>
-#include <QFontInfo>
-#include <QFontMetrics>
-#include <QFrame>
-#include <QHBoxLayout>
-#include <QGridLayout>
-#include <QIcon>
-#include <QJsonArray>
-#include <QJsonDocument>
-#include <QJsonObject>
-#include <QJsonValue>
-#include <QLineEdit>
-#include <QLabel>
-#include <QComboBox>
-#include <QCheckBox>
-#include <QHash>
-#include <QKeyEvent>
-#include <QKeySequence>
-#include <QList>
-#include <QMainWindow>
-#include <QMenu>
-#include <QMenuBar>
-#include <QPainter>
-#include <QPaintDevice>
-#include <QPaintEvent>
-#include <QMouseEvent>
-#include <QPalette>
-#include <QPixmap>
-#include <QPlainTextEdit>
-#include <QPointer>
-#include <QProcess>
-#include <QPushButton>
-#include <QRadioButton>
-#include <QTableWidget>
-#include <QRegularExpression>
-#include <QRegion>
-#include <QCloseEvent>
-#include <QScrollBar>
-#include <QSize>
-#include <QSizePolicy>
-#include <QStackedWidget>
-#include <QStatusBar>
-#include <QTabBar>
-#include <QTextCharFormat>
-#include <QTextDocument>
-#include <QTextCursor>
-#include <QToolBar>
-#include <QToolButton>
-#include <QTimer>
-#include <QVBoxLayout>
-#include <QTextEdit>
-#include <QWidget>
-#include <QString>
-#include <QStringList>
-#include <QVariant>
-#include <QVector>
-#include <QUuid>
+# include <QApplication>
+# include <QAction>
+# include <QAbstractButton>
+# include <QByteArray>
+# include <QColor>
+# include <QCoreApplication>
+# include <QDialog>
+# include <QDir>
+# include <QEventLoop>
+# include <QEvent>
+# include <QFileInfo>
+# include <QFont>
+# include <QFontDatabase>
+# include <QFontInfo>
+# include <QFontMetrics>
+# include <QFrame>
+# include <QHBoxLayout>
+# include <QGridLayout>
+# include <QIcon>
+# include <QJsonArray>
+# include <QJsonDocument>
+# include <QJsonObject>
+# include <QJsonValue>
+# include <QLineEdit>
+# include <QLabel>
+# include <QComboBox>
+# include <QCheckBox>
+# include <QHash>
+# include <QKeyEvent>
+# include <QKeySequence>
+# include <QList>
+# include <QMainWindow>
+# include <QMenu>
+# include <QMenuBar>
+# include <QPainter>
+# include <QPaintDevice>
+# include <QPaintEvent>
+# include <QMouseEvent>
+# include <QPalette>
+# include <QPixmap>
+# include <QPlainTextEdit>
+# include <QPointer>
+# include <QProcess>
+# include <QPushButton>
+# include <QRadioButton>
+# include <QTableWidget>
+# include <QRegularExpression>
+# include <QRegion>
+# include <QCloseEvent>
+# include <QScrollBar>
+# include <QSize>
+# include <QSizePolicy>
+# include <QStackedWidget>
+# include <QStatusBar>
+# include <QTabBar>
+# include <QTextCharFormat>
+# include <QTextDocument>
+# include <QTextCursor>
+# include <QToolBar>
+# include <QToolButton>
+# include <QTimer>
+# include <QVBoxLayout>
+# include <QTextEdit>
+# include <QWidget>
+# include <QString>
+# include <QStringList>
+# include <QVariant>
+# include <QVector>
+# include <QUuid>
 
-#include <cmath>
-#include <cstdio>
-#include <string>
-#include <vector>
-#include <algorithm>
-#include <cstdint>
-#include <functional>
+# include <cmath>
+# include <cstdio>
+# include <string>
+# include <vector>
+# include <algorithm>
+# include <cstdint>
+# include <functional>
 
 #ifdef _WIN32
 #  define WIN32_LEAN_AND_MEAN
@@ -94,29 +95,36 @@
 namespace {
 QApplication *g_app = nullptr;
 QList<QWidget *> g_wfm_forms;
-bool g_owns_app = false;
-bool g_wfm_gui_mode = false;
-bool g_wfm_console_allocated = false;
-QMainWindow *g_window = nullptr;
 
-QWidget *g_root = nullptr;
-QWidget *g_header = nullptr;
-QTabBar *g_tab_bar = nullptr;
-QStackedWidget *g_stack = nullptr;
+bool g_owns_app                     = false;
+bool g_wfm_gui_mode                 = false;
+bool g_wfm_console_allocated        = false;
 
-QWidget *g_console_page = nullptr;
-QWidget *g_debug_page = nullptr;
-QFrame *g_console_frame = nullptr;
-QFrame *g_debug_frame = nullptr;
-QMenuBar *g_menu_bar = nullptr;
-QStatusBar *g_status_bar = nullptr;
-QPlainTextEdit *g_console = nullptr;
-QPlainTextEdit *g_debug = nullptr;
-QLineEdit *g_debug_input = nullptr;
-QLabel *g_remote_listener_label = nullptr;
+QMainWindow     * g_window          = nullptr;
 
-QToolButton *g_zoom_in = nullptr;
-QToolButton *g_zoom_out = nullptr;
+QWidget         * g_root            = nullptr;
+QWidget         * g_header          = nullptr;
+QTabBar         * g_tab_bar         = nullptr;
+QStackedWidget  * g_stack           = nullptr;
+
+QWidget         * g_console_page    = nullptr;
+QWidget         * g_debug_page      = nullptr;
+
+QFrame          * g_console_frame   = nullptr;
+QFrame          * g_debug_frame     = nullptr;
+
+QMenuBar        * g_menu_bar        = nullptr;
+QStatusBar      * g_status_bar      = nullptr;
+
+QPlainTextEdit  * g_console         = nullptr;
+QPlainTextEdit  * g_debug           = nullptr;
+
+QLineEdit       * g_debug_input     = nullptr;
+
+QLabel          * g_remote_listener_label = nullptr;
+
+QToolButton     * g_zoom_in         = nullptr;
+QToolButton     * g_zoom_out        = nullptr;
 
 class LoginDialog;
 class WarningDialog;
@@ -127,33 +135,40 @@ class RemoteCursorMarker;
 // Stage 44A: ServerDialog wird weiter unten definiert, verwendet aber bereits
 // im Konstruktor denselben Zoom-Button-Helper wie das Client-Hauptfenster.
 // Die Deklaration muss daher vor der ServerDialog-Definition sichtbar sein.
-QToolButton *make_zoom_button(bool plus, QWidget *parent);
+QToolButton * make_zoom_button(bool plus, QWidget *parent);
 
-LoginDialog *g_login_dialog = nullptr;
-WarningDialog *g_warning_dialog = nullptr;
-BtxDialog *g_btx_dialog = nullptr;
-ServerDialog *g_server_dialog = nullptr;
-RemoteCursorMarker *g_remote_cursor_marker = nullptr;
-QMenu *g_security_file_menu = nullptr;
-QAction *g_login_action = nullptr;
-QAction *g_quit_action = nullptr;
+LoginDialog         * g_login_dialog            = nullptr;
+WarningDialog       * g_warning_dialog          = nullptr;
+BtxDialog           * g_btx_dialog              = nullptr;
+ServerDialog        * g_server_dialog           = nullptr;
+RemoteCursorMarker  * g_remote_cursor_marker    = nullptr;
+
+QMenu               * g_security_file_menu      = nullptr;
+QAction             * g_login_action            = nullptr;
+QAction             * g_quit_action             = nullptr;
+
 struct SessionNode;
 struct DatabaseNode;
-SessionNode *g_active_login_session = nullptr;
-bool g_login_session = false;
 
-bool g_debug_visible = false;
-bool g_program_finished = false;
+SessionNode         * g_active_login_session    = nullptr;
+
+bool g_login_session        = false;
+
+bool g_debug_visible        = false;
+bool g_program_finished     = false;
 bool g_default_menu_created = false;
+
 // Stage 29: zentraler, idempotenter Shutdown-Status. Er wird bereits beim
 // Schliessen des Hauptfensters gesetzt, also auch dann, wenn gerade ein
 // eigener Login-QEventLoop laeuft.
-bool g_shutdown_requested = false;
-bool g_shutdown_in_progress = false;
+bool g_shutdown_requested       = false;
+bool g_shutdown_in_progress     = false;
+
 // Stage 38: ein normales Close versteckt nur das Hauptfenster. Nur EXIT + JA
 // darf den Prozess-/Desktop-Shutdown autorisieren.
-bool g_exit_authorized = false;
-bool g_exit_confirmation_open = false;
+bool g_exit_authorized          = false;
+bool g_exit_confirmation_open   = false;
+
 // Stage 41: Wenn der OWNER sein Hauptfenster nur versteckt, duerfen seine
 // zugehoerigen top-level Dialoge nicht frei auf der Workstation stehenbleiben.
 // Das zuletzt aktive Unterfenster wird fuer die Wiederherstellung ueber das
@@ -163,10 +178,11 @@ QPointer<QWidget> g_owner_hidden_active_window;
 bool g_owner_restore_activated_window = false;
 int g_font_point_size = 10;
 QString g_console_font_family;
-QColor g_console_background(0, 0, 0);
-QColor g_console_border_color(255, 255, 255);
-QColor g_output_foreground(169, 169, 169);
-QColor g_output_background(0, 0, 0);
+
+QColor g_console_background     (0, 0, 0);
+QColor g_console_border_color   (255, 255, 255);
+QColor g_output_foreground      (169, 169, 169);
+QColor g_output_background      (0, 0, 0);
 
 // Stage 26: CLEAR SCREEN-Zustand fuer Raster-Neuberechnungen merken.
 // Nur ein unveraendertes Zeichenmuster wird nach einem Lupen-Zoom neu
@@ -524,29 +540,29 @@ public:
         setObjectName(QStringLiteral("dbaseAsciiPopupMenu"));
         setPointSize(g_font_point_size);
         setStyleSheet(QStringLiteral(
-            "QMenu#dbaseAsciiPopupMenu {"
-            " background-color: #909090;"
-            " color: #000000;"
-            " border: 0px;"
-            " margin: 0px;"
-            " padding: 0px;"
+            "QMenu#dbaseAsciiPopupMenu{"
+            "background-color:#909090;"
+            "color:#000000;"
+            "border:0px;"
+            "margin:0px;"
+            "padding:0px;"
             "}"
-            "QMenu#dbaseAsciiPopupMenu::item {"
-            " background-color: transparent;"
-            " color: #000000;"
-            " padding: 3px 34px 3px 8px;"
+            "QMenu#dbaseAsciiPopupMenu::item{"
+            "background-color:transparent;"
+            "color:#000000;"
+            "padding:3px 34px 3px 8px;"
             "}"
-            "QMenu#dbaseAsciiPopupMenu::item:selected {"
-            " background-color: #000080;"
-            " color: #ffffff;"
+            "QMenu#dbaseAsciiPopupMenu::item:selected{"
+            "background-color:#000080;"
+            "color:#ffffff;"
             "}"
-            "QMenu#dbaseAsciiPopupMenu::item:disabled {"
-            " color: #505050;"
+            "QMenu#dbaseAsciiPopupMenu::item:disabled{"
+            "color:#505050;"
             "}"
             "QMenu#dbaseAsciiPopupMenu::separator {"
-            " height: 1px;"
-            " background-color: #505050;"
-            " margin: 3px 6px;"
+            "height:1px;"
+            "background-color:#505050;"
+            "margin:3px 6px;"
             "}"
         ));
     }
@@ -1149,12 +1165,12 @@ void apply_console_appearance()
     // auch oberhalb der Menueleiste bzw. unterhalb der Statusleiste. Der
     // eigentliche QPlainTextEdit besitzt keinen eigenen Rahmen mehr.
     const QString frameStyle = QStringLiteral(
-        "QFrame#dbaseConsoleFrame, QFrame#dbaseDebugFrame {"
-        " background-color: #000000;"
-        " border: 3px solid %1;"
-        " margin: 0px;"
-        " padding: 0px;"
-        " }"
+        "QFrame#dbaseConsoleFrame,QFrame#dbaseDebugFrame{"
+        "background-color:#000000;"
+        "border:3px solid %1;"
+        "margin:0px;"
+        "padding:0px;"
+        "}"
     ).arg(border);
     if (g_console_frame)
         g_console_frame->setStyleSheet(frameStyle);
@@ -1167,20 +1183,20 @@ void apply_console_appearance()
     if (g_status_bar) {
         g_status_bar->setStyleSheet(
             QStringLiteral(
-                "QStatusBar#dbaseStatusBar {"
-                " background-color: #909090;"
-                " color: #000000;"
-                " border-style: solid;"
-                " border-color: %1;"
-                " border-width: 2px 0px 0px 0px;"
-                " margin: 0px;"
-                " padding: 0px;"
-                " }"
-                "QStatusBar#dbaseStatusBar::item {"
-                " border: 0px;"
-                " margin: 0px;"
-                " padding: 0px;"
-                " }"
+                "QStatusBar#dbaseStatusBar{"
+                "background-color:#909090;"
+                "color:#000000;"
+                "border-style:solid;"
+                "border-color:%1;"
+                "border-width:2px 0px 0px 0px;"
+                "margin:0px;"
+                "padding:0px;"
+                "}"
+                "QStatusBar#dbaseStatusBar::item{"
+                "border:0px;"
+                "margin:0px;"
+                "padding:0px;"
+                "}"
             ).arg(border)
         );
     }
@@ -1188,12 +1204,12 @@ void apply_console_appearance()
     if (g_console) {
         g_console->setStyleSheet(
             QStringLiteral(
-                "QPlainTextEdit#dbaseConsole {"
-                " background-color: %1;"
-                " border: 0px;"
-                " margin: 0px;"
-                " padding: 0px;"
-                " }"
+                "QPlainTextEdit#dbaseConsole{"
+                "background-color:%1;"
+                "border:0px;"
+                "margin:0px;"
+                "padding:0px;"
+                "}"
             ).arg(background)
         );
         g_console->setContentsMargins(0, 0, 0, 0);
@@ -1320,13 +1336,13 @@ public:
         m_layout->setColumnStretch(1, 1);
 
         setStyleSheet(QStringLiteral(
-            "QDialog#dbaseLoginDialog { background-color: #909090; color: #000000; border: 0px; }"
-            "QLabel { background-color: #909090; color: #000000; border: 0px; }"
-            "QLineEdit { background-color: #008000; color: #ffffff; border: 1px solid #ffffff; padding: 0px; margin: 0px; }"
-            "QLineEdit:focus { border: 1px solid #ffff00; }"
-            "QPushButton { background-color: #909090; color: #000000; border: 1px solid #ffffff; padding: 2px 8px; }"
-            "QPushButton:hover { background-color: #b0b0b0; }"
-            "QPushButton:pressed { background-color: #707070; color: #ffffff; }"
+            "QDialog#dbaseLoginDialog{background-color:#909090;color:#000000;border:0px;}"
+            "QLabel{background-color:#909090;color:#000000;border:0px;}"
+            "QLineEdit{background-color:#008000;color:#ffffff;border:1px solid #ffffff;padding:0px;margin:0px;}"
+            "QLineEdit:focus{border:1px solid #ffff00;}"
+            "QPushButton{background-color:#909090;color:#000000;border:1px solid #ffffff;padding:2px 8px;}"
+            "QPushButton:hover{background-color:#b0b0b0;}"
+            "QPushButton:pressed{background-color:#707070;color:#ffffff;}"
         ));
 
         QObject::connect(m_loginButton, &QPushButton::clicked, [this]() { submitLogin(); });
@@ -1723,11 +1739,11 @@ public:
         m_layout->addWidget(m_ok, 5, 5, 1, 2);
 
         setStyleSheet(QStringLiteral(
-            "QDialog#dbaseWarningDialog { background-color: #ff0000; color: #000000; border: 0px; }"
-            "QLabel { background-color: #ff0000; color: #000000; border: 0px; }"
-            "QPushButton { background-color: #909090; color: #000000; border: 1px solid #ffffff; padding: 2px 8px; }"
-            "QPushButton:hover { background-color: #b0b0b0; }"
-            "QPushButton:pressed { background-color: #707070; color: #ffffff; }"
+            "QDialog#dbaseWarningDialog{background-color:#ff0000;color:#000000;border:0px;}"
+            "QLabel{background-color:#ff0000;color:#000000;border:0px;}"
+            "QPushButton{background-color:#909090;color:#000000;border:1px solid #ffffff;padding:2px 8px;}"
+            "QPushButton:hover{background-color:#b0b0b0;}"
+            "QPushButton:pressed{background-color:#707070;color:#ffffff;}"
         ));
 
         QObject::connect(m_ok, &QPushButton::clicked, this, &QDialog::accept);
@@ -2027,12 +2043,12 @@ public:
         m_screen->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         m_screen->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         m_screen->setStyleSheet(QStringLiteral(
-            "QPlainTextEdit#dbaseBtxScreen {"
-            " background-color: #000000;"
-            " color: #c0c0c0;"
-            " border: 0px;"
-            " padding: 0px;"
-            " margin: 0px;"
+            "QPlainTextEdit#dbaseBtxScreen{"
+            "background-color:#000000;"
+            "color:#c0c0c0;"
+            "border:0px;"
+            "padding:0px;"
+            "margin:0px;"
             "}"
         ));
         m_screen->setPlainText(QStringLiteral("BTX"));
@@ -4987,26 +5003,26 @@ private:
                 borderColor = parsed.name(QColor::HexRgb);
         }
         setStyleSheet(QStringLiteral(
-            "QDialog#dbaseServerDialog, QWidget#dbaseServerHeader { background-color:#000000; color:#a9a9a9; }"
-            "QFrame#dbaseServerFrame { background-color:#000000; border:3px solid %1; }"
-            "QTabBar { background-color:#000000; color:#a9a9a9; }"
-            "QTabBar::tab { background-color:#111111; color:#a9a9a9; border:1px solid #505050; border-bottom:0px; padding:5px 14px; min-width:72px; }"
-            "QTabBar::tab:selected { background-color:#000000; color:#c0c0c0; }"
-            "QMenuBar { background-color:#909090; color:#000000; border:0px; padding:1px 3px; }"
-            "QMenuBar::item { background-color:transparent; color:#000000; padding:3px 8px; }"
-            "QMenuBar::item:selected, QMenuBar::item:pressed { background-color:#b0b0b0; color:#000000; }"
-            "QMenu { background-color:#909090; color:#000000; border:0px; }"
-            "QMenu::item { color:#000000; padding:4px 24px 4px 10px; }"
-            "QMenu::item:selected { background-color:#b0b0b0; color:#000000; }"
-            "QWidget#dbaseServerConnectPanel { background-color:#909090; color:#000000; }"
-            "QWidget#dbaseServerConnectPanel QLabel { background-color:#909090; color:#000000; }"
-            "QWidget#dbaseServerConnectPanel QLineEdit { background-color:#008000; color:#ffffff; border:1px solid #ffffff; padding:0px; margin:0px; }"
-            "QWidget#dbaseServerConnectPanel QLineEdit:focus { border:1px solid #ffff00; }"
-            "QPushButton { background-color:#909090; color:#000000; border:1px solid #ffffff; padding:2px 8px; }"
-            "QPushButton:hover { background-color:#b0b0b0; }"
-            "QPushButton:pressed { background-color:#707070; color:#ffffff; }"
-            "QStatusBar#dbaseServerStatusBar { background-color:#909090; color:#000000; border-style:solid; border-color:%1; border-width:2px 0px 0px 0px; margin:0px; padding:0px; }"
-            "QStatusBar#dbaseServerStatusBar QLabel { background-color:#909090; color:#000000; }"
+            "QDialog#dbaseServerDialog,QWidget#dbaseServerHeader{background-color:#000000;color:#a9a9a9;}"
+            "QFrame#dbaseServerFrame{background-color:#000000;border:3px solid %1;}"
+            "QTabBar{background-color:#000000;color:#a9a9a9;}"
+            "QTabBar::tab{background-color:#111111;color:#a9a9a9;border:1px solid #505050;border-bottom:0px;padding:5px 14px;min-width:72px;}"
+            "QTabBar::tab:selected{background-color:#000000; color:#c0c0c0;}"
+            "QMenuBar{background-color:#909090; color:#000000; border:0px; padding:1px 3px;}"
+            "QMenuBar::item{background-color:transparent;color:#000000;padding:3px 8px;}"
+            "QMenuBar::item:selected,QMenuBar::item:pressed{background-color:#b0b0b0;color:#000000;}"
+            "QMenu{background-color:#909090;color:#000000;border:0px;}"
+            "QMenu::item{color:#000000;padding:4px 24px 4px 10px;}"
+            "QMenu::item:selected{background-color:#b0b0b0;color:#000000;}"
+            "QWidget#dbaseServerConnectPanel{background-color:#909090;color:#000000;}"
+            "QWidget#dbaseServerConnectPanel QLabel{background-color:#909090;color:#000000;}"
+            "QWidget#dbaseServerConnectPanel QLineEdit{background-color:#008000;color:#ffffff;border:1px solid #ffffff;padding:0px;margin:0px;}"
+            "QWidget#dbaseServerConnectPanel QLineEdit:focus{border:1px solid #ffff00;}"
+            "QPushButton{background-color:#909090;color:#000000;border:1px solid #ffffff;padding:2px 8px;}"
+            "QPushButton:hover{background-color:#b0b0b0;}"
+            "QPushButton:pressed{background-color:#707070;color:#ffffff;}"
+            "QStatusBar#dbaseServerStatusBar{background-color:#909090;color:#000000;border-style:solid;border-color:%1;border-width:2px 0px 0px 0px;margin:0px;padding:0px;}"
+            "QStatusBar#dbaseServerStatusBar QLabel{background-color:#909090;color:#000000;}"
         ).arg(borderColor));
     }
 
@@ -5500,10 +5516,10 @@ bool confirm_runtime_exit()
     const int ch = qMax(1, fm.lineSpacing());
     dialog.setFixedSize(46 * cw, 7 * ch);
     dialog.setStyleSheet(QStringLiteral(
-        "QDialog#dbaseExitConfirmDialog { background-color: #909090; border: 2px solid #ffffff; }"
-        "QLabel { color: #000000; background: transparent; }"
-        "QPushButton { background-color: #909090; color: #000000; border: 1px solid #ffffff; padding: 2px 12px; }"
-        "QPushButton:focus { border: 1px solid #ffff00; }"
+        "QDialog#dbaseExitConfirmDialog{background-color:#909090;border:2px solid #ffffff;}"
+        "QLabel{color:#000000;background:transparent;}"
+        "QPushButton{background-color:#909090;color:#000000;border:1px solid #ffffff;padding:2px 12px;}"
+        "QPushButton:focus{border:1px solid #ffff00;}"
     ));
 
     auto *layout = new QVBoxLayout(&dialog);
@@ -6238,122 +6254,122 @@ void apply_dark_style()
         return;
 
     g_window->setStyleSheet(QStringLiteral(
-        "QMainWindow, QWidget#dbaseRoot, QWidget#dbaseHeader, "
-        "QWidget#dbaseConsolePage, QWidget#dbaseDebugPage {"
-        "  background-color: #000000;"
-        "  color: #a9a9a9;"
+        "QMainWindow,QWidget#dbaseRoot,QWidget#dbaseHeader,"
+        "QWidget#dbaseConsolePage,QWidget#dbaseDebugPage{"
+        "background-color:#000000;"
+        "color:#a9a9a9;"
         "}"
-        "QTabBar {"
-        "  background-color: #000000;"
-        "  color: #a9a9a9;"
+        "QTabBar{"
+        "background-color:#000000;"
+        "color:#a9a9a9;"
         "}"
-        "QTabBar::tab {"
-        "  background-color: #111111;"
-        "  color: #a9a9a9;"
-        "  border: 1px solid #505050;"
-        "  border-bottom: 0px;"
-        "  padding: 5px 14px;"
-        "  min-width: 72px;"
+        "QTabBar::tab{"
+        "background-color:#111111;"
+        "color:#a9a9a9;"
+        "border:1px solid #505050;"
+        "border-bottom:0px;"
+        "padding:5px 14px;"
+        "min-width:72px;"
         "}"
-        "QTabBar::tab:selected {"
-        "  background-color: #000000;"
-        "  color: #c0c0c0;"
+        "QTabBar::tab:selected{"
+        "background-color:#000000;"
+        "color:#c0c0c0;"
         "}"
-        "QTabBar::tab:hover {"
-        "  background-color: #1a1a1a;"
+        "QTabBar::tab:hover{"
+        "background-color:#1a1a1a;"
         "}"
-        "QMenuBar {"
-        "  background-color: #909090;"
-        "  color: #000000;"
-        "  border: 0px;"
-        "  padding: 1px 3px;"
+        "QMenuBar{"
+        "background-color:#909090;"
+        "color:#000000;"
+        "border:0px;"
+        "padding:1px 3px;"
         "}"
-        "QMenuBar::item {"
-        "  background-color: transparent;"
-        "  color: #000000;"
-        "  padding: 3px 8px;"
+        "QMenuBar::item{"
+        "background-color:transparent;"
+        "color:#000000;"
+        "padding:3px 8px;"
         "}"
-        "QMenuBar::item:selected, QMenuBar::item:pressed {"
-        "  background-color: #b0b0b0;"
-        "  color: #000000;"
+        "QMenuBar::item:selected,QMenuBar::item:pressed{"
+        "background-color:#b0b0b0;"
+        "color:#000000;"
         "}"
-        "QMenu {"
-        "  background-color: #909090;"
-        "  color: #000000;"
-        "  border: 0px;"
+        "QMenu{"
+        "background-color:#909090;"
+        "color:#000000;"
+        "border:0px;"
         "}"
-        "QMenu::item {"
-        "  color: #000000;"
-        "  padding: 4px 24px 4px 10px;"
+        "QMenu::item{"
+        "color:#000000;"
+        "padding:4px 24px 4px 10px;"
         "}"
-        "QMenu::item:selected {"
-        "  background-color: #b0b0b0;"
-        "  color: #000000;"
+        "QMenu::item:selected{"
+        "background-color:#b0b0b0;"
+        "color:#000000;"
         "}"
-        "QMenu::separator {"
-        "  height: 1px;"
-        "  background: #505050;"
-        "  margin: 3px 6px;"
+        "QMenu::separator{"
+        "height:1px;"
+        "background:#505050;"
+        "margin:3px 6px;"
         "}"
-        "QPlainTextEdit {"
-        "  background-color: #000000;"
-        "  color: #a9a9a9;"
-        "  border: 0px;"
-        "  margin: 0px;"
-        "  padding: 0px;"
-        "  selection-background-color: #404040;"
-        "  selection-color: #ffffff;"
+        "QPlainTextEdit{"
+        "background-color:#000000;"
+        "color:#a9a9a9;"
+        "border:0px;"
+        "margin:0px;"
+        "padding:0px;"
+        "selection-background-color:#404040;"
+        "selection-color:#ffffff;"
         "}"
-        "QStatusBar#dbaseStatusBar {"
-        "  background-color: #909090;"
-        "  color: #000000;"
-        "  border: 0px;"
-        "  margin: 0px;"
-        "  padding: 0px;"
+        "QStatusBar#dbaseStatusBar{"
+        "background-color:#909090;"
+        "color: #000000;"
+        "border: 0px;"
+        "margin: 0px;"
+        "padding: 0px;"
         "}"
-        "QStatusBar#dbaseStatusBar::item {"
-        "  border: 0px;"
-        "  margin: 0px;"
-        "  padding: 0px;"
+        "QStatusBar#dbaseStatusBar::item{"
+        "border:0px;"
+        "margin:0px;"
+        "padding:0px;"
         "}"
-        "QLineEdit {"
-        "  background-color: #000000;"
-        "  color: #a9a9a9;"
-        "  border: 1px solid #505050;"
-        "  border-top: 0px;"
-        "  selection-background-color: #404040;"
-        "  selection-color: #ffffff;"
-        "  padding: 5px 7px;"
+        "QLineEdit{"
+        "background-color:#000000;"
+        "color:#a9a9a9;"
+        "border:1px solid #505050;"
+        "border-top:0px;"
+        "selection-background-color:#404040;"
+        "selection-color:#ffffff;"
+        "padding:5px 7px;"
         "}"
-        "QToolButton {"
-        "  background-color: #000000;"
-        "  border: 1px solid transparent;"
-        "  padding: 1px;"
+        "QToolButton{"
+        "background-color:#000000;"
+        "border:1px solid transparent;"
+        "padding:1px;"
         "}"
-        "QToolButton:hover {"
-        "  background-color: #181818;"
-        "  border: 1px solid #505050;"
+        "QToolButton:hover{"
+        "background-color:#181818;"
+        "border:1px solid #505050;"
         "}"
-        "QToolButton:pressed {"
-        "  background-color: #303030;"
+        "QToolButton:pressed{"
+        "background-color:#303030;"
         "}"
-        "QScrollBar:vertical {"
-        "  background: #000000;"
-        "  width: 15px;"
-        "  margin: 0px;"
+        "QScrollBar:vertical{"
+        "background:#000000;"
+        "width:15px;"
+        "margin:0px;"
         "}"
-        "QScrollBar::handle:vertical {"
-        "  background: #555555;"
-        "  min-height: 25px;"
+        "QScrollBar::handle:vertical{"
+        "background:#555555;"
+        "min-height:25px;"
         "}"
-        "QScrollBar:horizontal {"
-        "  background: #000000;"
-        "  height: 15px;"
-        "  margin: 0px;"
+        "QScrollBar:horizontal{"
+        "background:#000000;"
+        "height:15px;"
+        "margin:0px;"
         "}"
-        "QScrollBar::handle:horizontal {"
-        "  background: #555555;"
-        "  min-width: 25px;"
+        "QScrollBar::handle:horizontal{"
+        "background:#555555;"
+        "min-width:25px;"
         "}"
     ));
 }
