@@ -92,3 +92,11 @@ src/runtime/pascal/test/libd64_runtime.dll.a
 src/runtime/pascal/test/pe32/System.Objects.pui
 src/runtime/pascal/test/pe32/System.SysUtils.pui
 src/runtime/pascal/pe32/System.Objects.pui
+src/d64qt5/release/libd64_qt5.a
+src/c64pascal/grammar/C64PascalParser_stage249.patch
+src/c64pascal/grammar/C64PascalParser_stage250.patch
+src/c64pascal/grammar/C64PascalParser_stage251.patch
+src/runtime/win32/libasmjit.32.a
+src/runtime/win32/libasmjit.32.dll.a
+src/runtime/win32/libcrypto.a
+src/runtime/win32/libd64_runtime.dll.a

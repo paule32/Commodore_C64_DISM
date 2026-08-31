@@ -1,0 +1,180 @@
+** END HEADER -- do not remove this line
+// Generated on 19.08.2026
+//
+PARAMETER bmodal
+LOCAL B
+B = NEW Form1(51,4)
+B.Init(121,2)
+B.Open()
+
+CLASS Form1 OF FORM
+
+    WITH (THIS)
+        Left = 10
+        Top = 20
+        Width = 640
+        Height = 480
+        Text = "Demo"
+        Name = "Form1"
+
+        WITH (THIS.Brush)
+            Background = "#800a141e"
+            Foreground = "#ffffff"
+            Gradient = "linear_horizontal"
+
+            WITH (THIS.Style)
+                Pattern = 7
+                CutWidth = 65
+                CutHeight = 45
+            ENDWITH
+        ENDWITH
+
+        WITH (THIS.Border)
+            Style = "solid"
+            Size = 2
+            Color = "#808080"
+
+            WITH (THIS.Shadow)
+                Color = "#101010"
+            ENDWITH
+
+            WITH (THIS.Rounded)
+                TopLeft = 1
+                TopRight = 2
+                BottomLeft = 3
+                BottomRight = 4
+            ENDWITH
+
+            WITH (THIS.Left)
+                Enabled = .T.
+                Style = "double"
+                Size = 3
+                Color = "#ff0000"
+            ENDWITH
+
+            WITH (THIS.Top)
+                Enabled = .T.
+                Style = "solid"
+                Size = 2
+                Color = "#808080"
+            ENDWITH
+
+            WITH (THIS.Right)
+                Enabled = .T.
+                Style = "solid"
+                Size = 2
+                Color = "#808080"
+            ENDWITH
+
+            WITH (THIS.Bottom)
+                Enabled = .T.
+                Style = "solid"
+                Size = 2
+                Color = "#808080"
+            ENDWITH
+        ENDWITH
+
+        WITH (THIS.Font)
+            Name = "Consolas"
+            Size = 12
+            Bold = .T.
+            Cursive = .F.
+            Stroke = .T.
+            Underline = .F.
+            Alpha = 200
+            Background = "#202020"
+            Foreground = "#eeeeee"
+        ENDWITH
+    ENDWITH
+
+    THIS.FONT1 = NEW FONT("Arial")
+    WITH (THIS.FONT1)
+        Name = "Arial"
+        Size = 9
+        Bold = .T.
+        Cursive = .F.
+        Stroke = .T.
+        Underline = .F.
+        Alpha = 123
+        Background = "#111111"
+        Foreground = "#eeeeee"
+    ENDWITH
+
+    THIS.PushButton1 = NEW PUSHBUTTON(THIS, "Button1")
+    WITH (THIS.PushButton1)
+        Name = "PushButton1"
+        Left = 30
+        Top = 40
+        Width = 174
+        Height = 85
+
+        THIS.Font = THIS.FONT1
+
+        WITH (THIS.Brush)
+            Background = "#333333"
+            Foreground = "#ebeef2"
+            Gradient = "none"
+
+            WITH (THIS.Style)
+                Pattern = 0
+                CutWidth = 80
+                CutHeight = 90
+            ENDWITH
+        ENDWITH
+
+        WITH (THIS.Border)
+            Style = "dashed"
+            Size = 4
+            Color = "#55ff7f"
+
+            WITH (THIS.Shadow)
+                Color = "#000000"
+            ENDWITH
+
+            WITH (THIS.Rounded)
+                TopLeft = 0
+                TopRight = 0
+                BottomLeft = 0
+                BottomRight = 0
+            ENDWITH
+
+            WITH (THIS.Left)
+                Enabled = .T.
+                Style = "dashed"
+                Size = 4
+                Color = "#55ff7f"
+            ENDWITH
+
+            WITH (THIS.Top)
+                Enabled = .T.
+                Style = "dashed"
+                Size = 4
+                Color = "#55ff7f"
+            ENDWITH
+
+            WITH (THIS.Right)
+                Enabled = .F.
+                Style = "dotted"
+                Size = 4
+                Color = "#55ff7f"
+            ENDWITH
+
+            WITH (THIS.Bottom)
+                Enabled = .T.
+                Style = "dashed"
+                Size = 4
+                Color = "#55ff7f"
+            ENDWITH
+        ENDWITH
+    ENDWITH
+
+    procedure __init__
+        return
+
+    procedure __del__
+        return
+
+    function __main__
+        return 7
+
+ENDCLASS

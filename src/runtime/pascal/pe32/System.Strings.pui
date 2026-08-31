@@ -30,7 +30,7 @@
     "imports": {
         "_jit_dynstring_from_cstr": {
             "kind": "dll",
-            "library": "libruntime_mini.dll",
+            "library": "libd64_runtime.dll",
             "name": "jit_dynstring_from_cstr",
             "pascal_name": "jit_dynstring_from_cstr",
             "calling_convention": "cdecl"

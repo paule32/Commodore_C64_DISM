@@ -6,7 +6,7 @@
         "normalized_name": "windows_types"
     },
     "fingerprint": {
-        "source_sha256": "8656109fb8dda3645aabc3980e5663bc32b429dadb5603831ac8600dc378879e"
+        "source_sha256": "84fb4029ceffc3a39c715a613a9f4417cfedd3f0514dde17ddabe9a6a85152bc"
     },
     "target": {
         "target": "win32",
@@ -145,6 +145,11 @@
             {
                 "kind": "alias",
                 "name": "UINT",
+                "target_type": "integer"
+            },
+            {
+                "kind": "alias",
+                "name": "DWORD",
                 "target_type": "integer"
             },
             {

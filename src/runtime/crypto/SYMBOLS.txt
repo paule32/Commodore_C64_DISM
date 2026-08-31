@@ -1,0 +1,14 @@
+_jit_blake2
+_jit_crc16
+_jit_crc32
+_jit_crc32c
+_jit_crc64
+_jit_md5
+_jit_sha1
+_jit_sha224
+_jit_sha256
+_jit_sha3
+_jit_sha384
+
+External runtime symbol used by all heap-result variants:
+_jit_malloc

@@ -13,6 +13,7 @@ import base64
 import hashlib
 import json
 import re
+import struct
 
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from pathlib import Path
@@ -26,7 +27,7 @@ from .generated.C64PascalParser import C64PascalParser
 from .generated.C64PascalParserVisitor import C64PascalParserVisitor
 
 
-ScalarValue = Union[int, str, bool]
+ScalarValue = Union[int, float, str, bool]
 
 
 # Fest eingebetteter 8x8-Bitmapzeichensatz für ASCII $20..$7F. Die Glyphen
@@ -685,27 +686,108 @@ class _AstBuilder(C64PascalParserVisitor):
         constants = []
         types = []
         variables = []
-        for section in ctx.declarationSection():
-            if section.constSection():
-                constants.extend(self.visit(section.constSection()))
-            elif section.typeSection():
-                types.extend(self.visit(section.typeSection()))
-            elif section.varSection():
-                variables.extend(self.visit(section.varSection()))
-        methods = [self.visit(item) for item in ctx.methodImplementation()]
-        global_routines = [
-            self.visit(item) for item in ctx.globalRoutineImplementation()
-        ] if hasattr(ctx, "globalRoutineImplementation") else []
-        external_contexts = (
-            ctx.globalRoutineDeclaration()
-            if hasattr(ctx, "globalRoutineDeclaration")
-            else []
-        )
+        methods = []
+        global_routines = []
         externals = []
-        for item in external_contexts:
-            declaration = self.visit(item)
-            if declaration is not None:
-                externals.append(declaration)
+
+        # Stage 251: regenerated parsers use
+        #
+        #     block : blockItem* compoundStatement ;
+        #
+        # so declaration sections and routine/method implementations may be
+        # interleaved.  Keep support for older generated parsers as well.
+        block_item_accessor = getattr(ctx, "blockItem", None)
+        block_items = block_item_accessor() if callable(block_item_accessor) else []
+
+        if block_items:
+            for item in block_items:
+                declaration_accessor = getattr(item, "declarationSection", None)
+                declaration_section = (
+                    declaration_accessor()
+                    if callable(declaration_accessor)
+                    else None
+                )
+                if declaration_section is not None:
+                    if declaration_section.constSection():
+                        constants.extend(
+                            self.visit(declaration_section.constSection())
+                        )
+                    elif declaration_section.typeSection():
+                        types.extend(
+                            self.visit(declaration_section.typeSection())
+                        )
+                    elif declaration_section.varSection():
+                        variables.extend(
+                            self.visit(declaration_section.varSection())
+                        )
+                    continue
+
+                method_accessor = getattr(item, "methodImplementation", None)
+                method_context = (
+                    method_accessor()
+                    if callable(method_accessor)
+                    else None
+                )
+                if method_context is not None:
+                    methods.append(self.visit(method_context))
+                    continue
+
+                implementation_accessor = getattr(
+                    item, "globalRoutineImplementation", None
+                )
+                implementation_context = (
+                    implementation_accessor()
+                    if callable(implementation_accessor)
+                    else None
+                )
+                if implementation_context is not None:
+                    global_routines.append(
+                        self.visit(implementation_context)
+                    )
+                    continue
+
+                external_accessor = getattr(
+                    item, "globalRoutineDeclaration", None
+                )
+                external_context = (
+                    external_accessor()
+                    if callable(external_accessor)
+                    else None
+                )
+                if external_context is not None:
+                    declaration = self.visit(external_context)
+                    if declaration is not None:
+                        externals.append(declaration)
+        else:
+            # Legacy generated parser: declarations were required to precede
+            # every routine/method implementation.
+            for section in ctx.declarationSection():
+                if section.constSection():
+                    constants.extend(self.visit(section.constSection()))
+                elif section.typeSection():
+                    types.extend(self.visit(section.typeSection()))
+                elif section.varSection():
+                    variables.extend(self.visit(section.varSection()))
+
+            methods.extend(
+                self.visit(item) for item in ctx.methodImplementation()
+            )
+            if hasattr(ctx, "globalRoutineImplementation"):
+                global_routines.extend(
+                    self.visit(item)
+                    for item in ctx.globalRoutineImplementation()
+                )
+
+            external_contexts = (
+                ctx.globalRoutineDeclaration()
+                if hasattr(ctx, "globalRoutineDeclaration")
+                else []
+            )
+            for item in external_contexts:
+                declaration = self.visit(item)
+                if declaration is not None:
+                    externals.append(declaration)
+
         return (
             constants,
             types,
@@ -1275,6 +1357,21 @@ class _AstBuilder(C64PascalParserVisitor):
         position = _position(ctx)
         if ctx.integerLiteral():
             return self.visit(ctx.integerLiteral())
+
+        # Stage 249: native parser generated from the updated grammar.
+        real_accessor = getattr(ctx, "REAL_LITERAL", None)
+        if callable(real_accessor):
+            real_token = real_accessor()
+            if real_token is not None:
+                try:
+                    return LiteralExpression(position, float(real_token.getText()))
+                except ValueError as exc:
+                    raise C64PascalError(
+                        f"Ungültige Double-Konstante: {real_token.getText()}.",
+                        position.line,
+                        position.column - 1,
+                    ) from exc
+
         if ctx.STRING_LITERAL():
             text = ctx.STRING_LITERAL().getText()[1:-1].replace("''", "'")
             return LiteralExpression(position, text)
@@ -1303,6 +1400,33 @@ class _AstBuilder(C64PascalParserVisitor):
             designator = self.visit(ctx.designator())
             if ctx.LPAREN():
                 arguments = self.visit(ctx.argumentList()) if ctx.argumentList() else []
+
+                # Stage 249 compatibility bridge for generated parsers that do
+                # not yet know REAL_LITERAL.
+                if (
+                    isinstance(designator, DesignatorExpression)
+                    and not designator.selectors
+                    and designator.name.casefold() == "__d64_real"
+                ):
+                    if (
+                        len(arguments) != 1
+                        or not isinstance(arguments[0], LiteralExpression)
+                        or not isinstance(arguments[0].value, str)
+                    ):
+                        raise C64PascalError(
+                            "Interner Double-Literal-Bridge erwartet genau einen String.",
+                            position.line,
+                            position.column - 1,
+                        )
+                    try:
+                        return LiteralExpression(position, float(arguments[0].value))
+                    except ValueError as exc:
+                        raise C64PascalError(
+                            f"Ungültige Double-Konstante: {arguments[0].value}.",
+                            position.line,
+                            position.column - 1,
+                        ) from exc
+
                 if (
                     isinstance(designator, DesignatorExpression)
                     and not designator.selectors
@@ -1992,6 +2116,24 @@ def _generated_lexer_supports_token(token_name: str) -> bool:
     return hasattr(C64PascalLexer, str(token_name))
 
 
+def _generated_parser_primary_supports_token(token_name: str) -> bool:
+    """Return whether primaryExpression really accepts one token.
+
+    Merely finding REAL_LITERAL in C64PascalLexer is not sufficient.  ANTLR can
+    be regenerated with the new lexer token vocabulary while the parser grammar
+    still has the old primaryExpression rule.  In that mixed state the lexer
+    emits REAL_LITERAL correctly, but the parser rejects e.g. 3.21 with
+    "mismatched input ... expecting ... DECIMAL_INTEGER ...".
+
+    ANTLR emits one accessor method per token used by a parser rule.  Therefore
+    PrimaryExpressionContext.REAL_LITERAL is a precise feature probe.
+    """
+    context_type = getattr(C64PascalParser, "PrimaryExpressionContext", None)
+    if context_type is None:
+        return False
+    return callable(getattr(context_type, str(token_name), None))
+
+
 def _legacy_generated_parser_requires_bridge(rule_name: str = "subrangeType") -> bool:
     """Return True when the loaded generated ANTLR files lack one feature.
 
@@ -2026,6 +2168,42 @@ def _legacy_integer_value(text: str) -> int:
         return sign * int(value[1:], 2)
     return sign * int(value, 10)
 
+
+
+
+_REAL_LITERAL_RE = re.compile(
+    r"(?<![$%A-Za-z0-9_])"
+    r"(?:"
+    r"[0-9]+\.[0-9]+(?:[eE][+-]?[0-9]+)?"
+    r"|"
+    r"[0-9]+[eE][+-]?[0-9]+"
+    r")"
+    r"(?![A-Za-z0-9_])"
+)
+
+
+def _rewrite_real_literals(source: str) -> Tuple[str, bool]:
+    """Lower Double literals for generated ANTLR files predating REAL_LITERAL.
+
+    Examples:
+        1.5      -> __d64_real('1.5')
+        1E3      -> __d64_real('1E3')
+        2.5e-2   -> __d64_real('2.5e-2')
+
+    Strings/comments are masked first.  The regexp deliberately requires at
+    least one digit after a decimal point, therefore Pascal ranges such as
+    ``1..10`` remain DECIMAL_INTEGER, DOTDOT, DECIMAL_INTEGER.
+    """
+    working = str(source)
+    mask = _pascal_code_mask(working)
+    matches = list(_REAL_LITERAL_RE.finditer(mask))
+    if not matches:
+        return working, False
+    for match in reversed(matches):
+        literal = working[match.start():match.end()]
+        replacement = "__d64_real('" + literal + "')"
+        working = working[:match.start()] + replacement + working[match.end():]
+    return working, True
 
 
 def _rewrite_raise_statements(source: str) -> Tuple[str, bool]:
@@ -2413,11 +2591,137 @@ def _legacy_parameter_declarations(
     return tuple(result)
 
 
+
+def _shift_pascal_source_lines(value, delta: int):
+    """Shift SourcePosition.line recursively in one immutable AST fragment."""
+    delta = int(delta)
+    if delta == 0:
+        return value
+    if isinstance(value, SourcePosition):
+        return replace(value, line=max(1, int(value.line) + delta))
+    if is_dataclass(value):
+        updates = {}
+        for item in fields(value):
+            current = getattr(value, item.name)
+            shifted = _shift_pascal_source_lines(current, delta)
+            if shifted is not current:
+                updates[item.name] = shifted
+        return replace(value, **updates) if updates else value
+    if isinstance(value, tuple):
+        return tuple(_shift_pascal_source_lines(item, delta) for item in value)
+    if isinstance(value, list):
+        return [_shift_pascal_source_lines(item, delta) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: _shift_pascal_source_lines(item, delta)
+            for key, item in value.items()
+        }
+    return value
+
+
+_INTERLEAVED_GLOBAL_VAR_RE = re.compile(
+    r"(?ims)"
+    r"\bend\s*;"
+    r"(?P<gap>[ \t\r\n]*)"
+    r"(?P<section>\bvar\b.*?)(?="
+    r"^[ \t]*(?:class[ \t]+)?(?:procedure|function|constructor|destructor)\b"
+    r"|^[ \t]*begin\b"
+    r")"
+)
+
+
+def _rewrite_interleaved_global_var_sections(
+    source: str,
+) -> Tuple[str, Tuple[VarDeclaration, ...]]:
+    """Bridge Stage-251 global VAR sections for an older generated parser.
+
+    The old grammar allows
+
+        declarations* routines* BEGIN ... END.
+
+    but rejects the requested Object-Pascal layout
+
+        procedure TFoo.Show;
+        begin
+        end;
+
+        var
+            Foo: TFoo;
+
+        begin
+        end.
+
+    Each post-routine VAR section is parsed independently in a tiny legal
+    Pascal program, then replaced in the parser stream by a harmless FORWARD
+    declaration.  The replacement preserves the number of newline characters,
+    so methods, statements and gutter breakpoints retain their original source
+    line numbers.
+    """
+    working = str(source)
+    extracted: List[VarDeclaration] = []
+
+    # Re-run after every replacement so multiple interleaved VAR blocks are
+    # supported: method -> var -> method -> var -> main BEGIN.
+    serial = 0
+    search_from = 0
+    while True:
+        match = _INTERLEAVED_GLOBAL_VAR_RE.search(working, search_from)
+        if match is None:
+            break
+
+        section_start = match.start("section")
+        section_end = match.end("section")
+        section_text = working[section_start:section_end]
+
+        original_line = working.count("\n", 0, section_start) + 1
+
+        # Parse only the declaration fragment in a layout accepted by old and
+        # new parsers alike.  This recursive call terminates because the
+        # fragment's VAR section precedes its BEGIN and has no preceding END;.
+        fragment_source = (
+            "program __D64InterleavedVarFragment;\n"
+            + section_text
+            + "\nbegin\nend."
+        )
+        fragment_program = _parse_pascal_program(fragment_source)
+
+        # In the fragment the VAR keyword starts at line 2.  Restore all
+        # declaration/initializer source positions to the user's real lines.
+        line_delta = original_line - 2
+        extracted.extend(
+            _shift_pascal_source_lines(variable, line_delta)
+            for variable in fragment_program.variables
+        )
+
+        serial += 1
+        placeholder = (
+            f"procedure __D64InterleavedVarBridge{serial}; forward;"
+        )
+
+        # Keep the exact newline count of the removed VAR block.  Character
+        # columns inside the synthetic line are irrelevant, while every later
+        # source line remains identical to the user's file.
+        newline_count = section_text.count("\n")
+        replacement_text = placeholder + ("\n" * newline_count)
+        working = (
+            working[:section_start]
+            + replacement_text
+            + working[section_end:]
+        )
+
+        # Continue after the synthetic declaration.  This avoids matching the
+        # same preceding END; again.
+        search_from = section_start + len(replacement_text)
+
+    return working, tuple(extracted)
+
+
 def _legacy_pascal_extension_bridge(
     source: str,
 ) -> Tuple[
     str,
     Tuple[TypeDeclaration, ...],
+    Tuple[VarDeclaration, ...],
     Tuple[ExternalRoutineDeclaration, ...],
     Tuple[Tuple[str, PropertyDeclaration], ...],
     Tuple[Tuple[int, Optional[str]], ...],
@@ -2429,6 +2733,11 @@ def _legacy_pascal_extension_bridge(
     parser (for example) use Stage-182 compiler.py even though it has subranges
     and Pointer(Self) but does not yet know PROPERTY or INHERITED.
     """
+    # Stage 251: a regenerated grammar exposes RULE_blockItem.  Older
+    # generated parsers need the line-preserving post-routine VAR bridge.
+    needs_interleaved_global_declarations = (
+        _legacy_generated_parser_requires_bridge("blockItem")
+    )
     needs_bootstrap = _legacy_generated_parser_requires_bridge("subrangeType")
     needs_property = (
         _legacy_generated_parser_requires_bridge("propertyDeclaration")
@@ -2451,6 +2760,16 @@ def _legacy_pascal_extension_bridge(
         or not _generated_lexer_supports_token("CDECL")
         or not _generated_lexer_supports_token("STDCALL")
     )
+    # Stage 250: checking the lexer alone is insufficient.  A freshly
+    # generated lexer can already emit REAL_LITERAL while primaryExpression in
+    # the generated parser still accepts only integer/string/etc. literals.
+    # Keep the bridge active until BOTH generated components support it.
+    needs_real_literal = (
+        not _generated_lexer_supports_token("REAL_LITERAL")
+        or not hasattr(C64PascalParser, "REAL_LITERAL")
+        or not _generated_parser_primary_supports_token("REAL_LITERAL")
+    )
+
     needs_external_routine = (
         _legacy_generated_parser_requires_bridge("globalRoutineDeclaration")
         or _legacy_generated_parser_requires_bridge("externalImportSpecification")
@@ -2469,6 +2788,10 @@ def _legacy_pascal_extension_bridge(
         or not _generated_lexer_supports_token("FINALLY")
     )
     working = str(source)
+    real_literal_rewritten = False
+    if needs_real_literal:
+        working, real_literal_rewritten = _rewrite_real_literals(working)
+
     if needs_try_bridge:
         working, unused_try_rewritten = _rewrite_try_statements(working)
 
@@ -2490,7 +2813,8 @@ def _legacy_pascal_extension_bridge(
     working, needs_address_of = _rewrite_address_of_uses(working)
 
     if not (
-        needs_bootstrap
+        needs_interleaved_global_declarations
+        or needs_bootstrap
         or needs_property
         or needs_inherited
         or needs_inherited_expression
@@ -2500,10 +2824,12 @@ def _legacy_pascal_extension_bridge(
         or needs_pointer_dereference
         or needs_address_of
         or needs_raise
+        or real_literal_rewritten
     ):
-        return source, (), (), (), (), ()
+        return source, (), (), (), (), (), ()
 
     extracted_types: List[TypeDeclaration] = list(anonymous_pointer_types)
+    extracted_variables: List[VarDeclaration] = []
     extracted_externals: List[ExternalRoutineDeclaration] = []
     extracted_properties: List[Tuple[str, PropertyDeclaration]] = []
     inherited_markers: List[Tuple[int, Optional[str]]] = []
@@ -2758,9 +3084,19 @@ def _legacy_pascal_extension_bridge(
         ):
             working = working[:start] + replacement + working[end:]
 
+    # Stage 251 runs last because previous compatibility passes save character
+    # offsets.  This transformation preserves line counts but may change the
+    # byte/character length of one declaration line.
+    if needs_interleaved_global_declarations:
+        working, interleaved_variables = (
+            _rewrite_interleaved_global_var_sections(working)
+        )
+        extracted_variables.extend(interleaved_variables)
+
     return (
         working,
         tuple(extracted_types),
+        tuple(extracted_variables),
         tuple(extracted_externals),
         tuple(extracted_properties),
         tuple(inherited_markers),
@@ -2978,6 +3314,7 @@ def _parse_pascal_program(
     (
         parser_source,
         extra_types,
+        extra_variables,
         extra_externals,
         extra_properties,
         inherited_markers,
@@ -3075,12 +3412,17 @@ def _parse_pascal_program(
             ),
         )
 
-    if extra_types or extra_externals:
+    if extra_types or extra_variables or extra_externals:
         program = replace(
             program,
             # Stage 192: a bootstrap type may arrive both from a partially
             # regenerated parser and from the legacy extraction bridge.
             types=_merge_pascal_type_declarations(program.types, extra_types),
+            # Stage 251: post-routine VAR declarations extracted for an old
+            # generated parser remain ordinary global Pascal variables.
+            variables=(
+                tuple(program.variables) + tuple(extra_variables)
+            ),
             external_routines=(
                 tuple(program.external_routines) + tuple(extra_externals)
             ),
@@ -5455,27 +5797,85 @@ class _PascalUnitResolver:
             self.stack.pop()
 
 
+def _merge_global_routines_for_link(
+    unit_programs: Sequence[PascalProgram],
+    local_program: PascalProgram,
+) -> Tuple[GlobalRoutineImplementation, ...]:
+    """Merge executable global routines using Pascal lexical precedence.
+
+    Stage 248: an explicit source-level ``external;`` declaration in the
+    current program/unit means that the implementation is supplied outside the
+    Pascal source, for example by::
+
+        {$L inttostr.o}
+        function IntToStr(v: Integer): String; external;
+
+    A same-named implementation found in a USED unit must therefore *not* be
+    merged into the current PE module.  Otherwise code generation would emit
+    an unwanted local body such as ``__pas_global_inttostr:`` and the object
+    supplied by {$L ...} would no longer be the authoritative implementation.
+
+    Only imported/dependency implementations are filtered.  Implementations
+    written in ``local_program`` are retained so the normal semantic check can
+    still diagnose an invalid source that declares the same routine both
+    EXTERNAL and implemented locally.
+    """
+    local_external_names = {
+        declaration.name.casefold()
+        for declaration in local_program.external_routines
+    }
+
+    merged: List[GlobalRoutineImplementation] = []
+    for unit_program in unit_programs:
+        for implementation in unit_program.global_routines:
+            if implementation.name.casefold() in local_external_names:
+                continue
+            merged.append(implementation)
+
+    merged.extend(local_program.global_routines)
+    return tuple(merged)
+
+
 def _merge_external_routines_for_link(
     resolver_routines: Sequence[ExternalRoutineDeclaration],
     unit_programs: Sequence[PascalProgram],
     main_program: PascalProgram,
 ) -> Tuple[ExternalRoutineDeclaration, ...]:
-    """Keep public PUI imports and private source-level runtime imports.
+    """Merge external routines with normal Pascal scope precedence.
 
-    ``resolver_routines`` contains the public declarations reconstructed from
-    PUI metadata.  When a Unit is compiled from its available Pascal source,
-    its implementation can additionally contain private EXTERNAL declarations
-    which deliberately do not belong in the public PUI.  The merged PE module
-    still needs those symbols while emitting that Unit's method bodies.
+    ``resolver_routines`` contains public declarations reconstructed from PUI
+    metadata.  Unit source can additionally contribute private EXTERNAL
+    declarations which are needed while emitting the merged module.
 
-    The main program's own EXTERNAL declarations must be retained as well when
-    the program has a USES clause.  Duplicate compatible declarations are
-    intentionally left to ``_prepare_external_routines()``, which already
-    validates their linker symbols.
+    Stage 247: a declaration written directly in the main PROGRAM has lexical
+    precedence over a same-named declaration imported through USES/PUI.  This
+    is especially important for object-only routines such as::
+
+        {$L inttostr.o}
+        function IntToStr(v: Integer): String; external;
+
+    No PUI metadata is required for ``inttostr.o``.  The local declaration
+    supplies the Pascal type/ABI contract, while {$L ...} supplies the COFF
+    object that resolves the emitted ``extern IntToStr`` symbol.
+
+    Keep duplicates from imported scopes for the normal semantic validator, but
+    remove imported declarations shadowed by a local main-program EXTERNAL.
     """
     merged: List[ExternalRoutineDeclaration] = list(resolver_routines)
     for unit_program in unit_programs:
         merged.extend(unit_program.external_routines)
+
+    local_external_names = {
+        declaration.name.casefold()
+        for declaration in main_program.external_routines
+    }
+    if local_external_names:
+        merged = [
+            declaration
+            for declaration in merged
+            if declaration.name.casefold() not in local_external_names
+        ]
+
     merged.extend(main_program.external_routines)
     return tuple(merged)
 
@@ -5531,18 +5931,23 @@ def _parse_pascal_frontend(
     type_groups: List[Sequence[TypeDeclaration]] = []
     variables = []
     methods = []
-    global_routines = []
     for unit_program in resolver.programs:
         constants.extend(unit_program.constants)
         type_groups.append(unit_program.types)
         variables.extend(unit_program.variables)
         methods.extend(unit_program.methods)
-        global_routines.extend(unit_program.global_routines)
     constants.extend(main_program.constants)
     type_groups.append(main_program.types)
     variables.extend(main_program.variables)
     methods.extend(main_program.methods)
-    global_routines.extend(main_program.global_routines)
+
+    # Stage 248: a local EXTERNAL declaration selects the implementation from
+    # {$L ...} (or another linker source), so a same-named body from USES must
+    # not be emitted into the main module.
+    global_routines = _merge_global_routines_for_link(
+        resolver.programs,
+        main_program,
+    )
     types = _merge_pascal_type_scopes(
         tuple(type_groups[:-1]),
         tuple(type_groups[-1]) if type_groups else (),
@@ -5559,7 +5964,7 @@ def _parse_pascal_frontend(
             resolver.programs,
             main_program,
         ),
-        global_routines=tuple(global_routines),
+        global_routines=global_routines,
         unit_assembly_files=tuple(resolver.assembly_files),
         unit_object_files=tuple(
             dict.fromkeys(
@@ -5832,6 +6237,25 @@ class _CodeGenerator:
         )
         return result or "value"
 
+    def _owner_class_name_text(self, position: SourcePosition) -> str:
+        """Static owner of the method implementation currently being emitted.
+
+        ClassName is dynamic and is obtained from Self's runtime class/VMT.
+        OwnerClassName is intentionally different: it names the Pascal class
+        that owns the currently executing method body.
+        """
+        if self.current_method is None:
+            raise self._error(
+                "OwnerClassName ist nur innerhalb einer Methodenimplementierung "
+                "verfügbar.",
+                position,
+            )
+        return str(self.current_method.owner.name)
+
+    def _owner_class_name_type(self, position: SourcePosition) -> _PascalType:
+        self._owner_class_name_text(position)
+        return self.types.get("string", STRING_TYPE)
+
     def _value_storage_size(self, type_info: _PascalType) -> int:
         """Bytes occupied by one Pascal value in a variable/field slot.
 
@@ -5926,9 +6350,9 @@ class _CodeGenerator:
             return self.constants[key]
         if isinstance(expression, UnaryExpression):
             value = self._evaluate_constant(expression.operand)
-            if expression.operator == "+" and isinstance(value, int):
+            if expression.operator == "+" and isinstance(value, (int, float)):
                 return +value
-            if expression.operator == "-" and isinstance(value, int):
+            if expression.operator == "-" and isinstance(value, (int, float)):
                 return -value
             if expression.operator == "not":
                 return not bool(value)
@@ -5941,18 +6365,17 @@ class _CodeGenerator:
                 if operator == "+":
                     return left + right
                 if operator == "-":
-                    return int(left) - int(right)
+                    return left - right
                 if operator == "*":
-                    return int(left) * int(right)
+                    return left * right
                 if operator == "div":
                     if int(right) == 0:
                         raise ZeroDivisionError
                     return int(left) // int(right)
                 if operator == "/":
-                    raise self._error(
-                        "Der Real-Operator '/' wird nicht unterstützt; verwende DIV.",
-                        expression.position,
-                    )
+                    if float(right) == 0.0:
+                        raise ZeroDivisionError
+                    return float(left) / float(right)
                 if operator == "mod":
                     if int(right) == 0:
                         raise ZeroDivisionError
@@ -6576,12 +6999,24 @@ class _CodeGenerator:
             key = self._key(declaration.name)
             if key in self.external_routines:
                 previous = self.external_routines[key]
-                if previous.symbol != declaration.symbol:
-                    raise self._error(
-                        f"Globale Routine mehrfach deklariert: {declaration.name}.",
-                        SourcePosition(1, 1),
-                    )
-                continue
+
+                # Stage 247: a source-level EXTERNAL in the main PROGRAM
+                # shadows a public declaration imported from a Unit/PUI.  This
+                # mirrors _prepare_global_routines(), where a source-available
+                # implementation already wins over a consumer-side PUI symbol.
+                #
+                # Do not merely keep the previous entry when the linker symbol
+                # happens to be equal: the local declaration's parameter and
+                # result types are the authoritative ABI contract too.
+                if previous.unit_name and not declaration.unit_name:
+                    self.external_routines.pop(key, None)
+                else:
+                    if previous.symbol != declaration.symbol:
+                        raise self._error(
+                            f"Globale Routine mehrfach deklariert: {declaration.name}.",
+                            SourcePosition(1, 1),
+                        )
+                    continue
             parameters: List[_ParameterInfo] = []
             for item in declaration.parameters:
                 modifier = str(item.modifier or "value").casefold()
@@ -6735,6 +7170,8 @@ class _CodeGenerator:
             return STRING_TYPE
         if isinstance(value, bool):
             return BOOLEAN_TYPE
+        if isinstance(value, float):
+            return self.types.get("double", DOUBLE_TYPE)
         if 0 <= int(value) <= 255:
             return BYTE_TYPE
         return INTEGER_TYPE
@@ -7080,6 +7517,11 @@ class _CodeGenerator:
             return self._constant_type(expression.value)
         if isinstance(expression, (NameExpression, DesignatorExpression)):
             key = self._key(expression.name)
+            if key == "ownerclassname" and (
+                not isinstance(expression, DesignatorExpression)
+                or not expression.selectors
+            ):
+                return self._owner_class_name_type(expression.position)
             if key == "nil" and (
                 not isinstance(expression, DesignatorExpression)
                 or not expression.selectors
@@ -7138,6 +7580,14 @@ class _CodeGenerator:
                 return class_type
             if not designator.selectors:
                 name = self._key(designator.name)
+                if name == "ownerclassname":
+                    self._require_argument_count(
+                        designator.name,
+                        expression.arguments,
+                        0,
+                        expression.position,
+                    )
+                    return self._owner_class_name_type(expression.position)
                 cast_type = self.types.get(name)
                 if cast_type is not None and len(expression.arguments) == 1:
                     return cast_type
@@ -7214,12 +7664,25 @@ class _CodeGenerator:
                 return BOOLEAN_TYPE
             left = self._expression_type(expression.left)
             right = self._expression_type(expression.right)
-            if left == STRING_TYPE or right == STRING_TYPE:
+            if left.kind == "string" or right.kind == "string":
                 raise self._error("Zeichenkettenarithmetik wird noch nicht unterstützt.", expression.position)
             if not left.scalar or not right.scalar:
                 raise self._error("Operator erwartet skalare Operanden.", expression.position)
-            if left == INTEGER_TYPE or right == INTEGER_TYPE:
-                return INTEGER_TYPE
+
+            if expression.operator in {"and", "or", "xor", "div", "mod"}:
+                if left.kind == "double" or right.kind == "double":
+                    raise self._error(
+                        f"Operator {expression.operator.upper()} ist für Double nicht zulässig.",
+                        expression.position,
+                    )
+
+            # Pascal '/' is a real division even for two Integer operands.
+            if expression.operator == "/" or left.kind == "double" or right.kind == "double":
+                return self.types.get("double", DOUBLE_TYPE)
+
+            integer_type = self.types.get("integer", INTEGER_TYPE)
+            if left == integer_type or right == integer_type or left == INTEGER_TYPE or right == INTEGER_TYPE:
+                return integer_type
             return BYTE_TYPE
         raise self._error("Unbekannter Ausdruck.", expression.position)
 
@@ -7267,6 +7730,16 @@ class _CodeGenerator:
             self.strings[data] = label
         return label
 
+    def _compile_owner_class_name_builtin(
+        self,
+        position: SourcePosition,
+    ) -> _PascalType:
+        owner_name = self._owner_class_name_text(position)
+        label = self._string_label(owner_name, position)
+        self.emitter.emit(f"    lda #<{label}", position.line)
+        self.emitter.emit(f"    ldx #>{label}", position.line)
+        return self.types.get("string", STRING_TYPE)
+
     def _compile_expr(self, expression: Expression) -> _PascalType:
         line = expression.position.line
         if isinstance(expression, AddressOfExpression):
@@ -7290,6 +7763,8 @@ class _CodeGenerator:
                 isinstance(expression, DesignatorExpression)
                 and bool(expression.selectors)
             )
+            if key == "ownerclassname" and not has_selectors:
+                return self._compile_owner_class_name_builtin(expression.position)
             if key in self.constants and not has_selectors:
                 value = self.constants[key]
                 if isinstance(value, str):
@@ -7667,6 +8142,14 @@ class _CodeGenerator:
         designator = self._as_designator(expression.designator, expression.position)
         name = self._key(designator.name) if not designator.selectors else ""
         line = expression.position.line
+        if name == "ownerclassname":
+            self._require_argument_count(
+                designator.name,
+                expression.arguments,
+                0,
+                expression.position,
+            )
+            return self._compile_owner_class_name_builtin(expression.position)
         if name == "peek":
             self._require_argument_count(designator.name, expression.arguments, 1, expression.position)
             self._compile_expr(expression.arguments[0])
@@ -7719,7 +8202,14 @@ class _CodeGenerator:
             return target.kind == source.kind
         if target == BOOLEAN_TYPE or source == BOOLEAN_TYPE:
             return False
+
+        # Stage 249: Pascal permits widening ordinal/integer values to Double.
+        # The inverse conversion remains explicit (Double(...)/Integer(...)).
         numeric_kinds = {"scalar", "enum", "subrange"}
+        if target.kind == "double":
+            return source.kind == "double" or source.kind in numeric_kinds
+        if source.kind == "double":
+            return target.kind == "double"
         return target.kind in numeric_kinds and source.kind in numeric_kinds
 
     def _emit_set_self_address(self, receiver: _StorageAccess, line: int) -> None:
@@ -8632,6 +9122,25 @@ def _program_contains_try(program: PascalProgram) -> bool:
     return any(_statement_contains_try(routine.body) for routine in program.global_routines)
 
 
+def _program_contains_double(program: PascalProgram) -> bool:
+    """Return True if AST declarations/expressions mention Double/float."""
+    def walk(value) -> bool:
+        if isinstance(value, float):
+            return True
+        if isinstance(value, str):
+            return value.casefold() == "double"
+        if isinstance(value, (bytes, int, bool, type(None), SourcePosition)):
+            return False
+        if is_dataclass(value):
+            return any(walk(getattr(value, item.name)) for item in fields(value))
+        if isinstance(value, dict):
+            return any(walk(k) or walk(v) for k, v in value.items())
+        if isinstance(value, (tuple, list, set)):
+            return any(walk(item) for item in value)
+        return False
+    return walk(program)
+
+
 def _program_contains_raise(program: PascalProgram) -> bool:
     if _statement_contains_raise(program.body):
         return True
@@ -8654,6 +9163,7 @@ class _PE32CodeGenerator(_CodeGenerator):
         library_name: Optional[str] = None,
         library_exports: Optional[Dict[str, str]] = None,
         unit_name: Optional[str] = None,
+        breakpoint_lines: Iterable[int] = (),
     ) -> None:
         super().__init__(program)
         # Delphi/Win32-compatible native widths used by bootstrap units.
@@ -8667,6 +9177,18 @@ class _PE32CodeGenerator(_CodeGenerator):
         self.library_name = str(library_name) if library_name else None
         self.library_exports = dict(library_exports or {})
         self.unit_name = str(unit_name) if unit_name else None
+
+        # Stage 245: red gutter markers become source-line breakpoints.
+        self.breakpoint_lines = {
+            int(line)
+            for line in (breakpoint_lines or ())
+            if int(line) > 0
+        }
+        self._emitted_breakpoint_lines: set[int] = set()
+        self.uses_debug_break = bool(
+            self.breakpoint_lines
+            and (self.console_mode or self.unit_name is not None)
+        )
 
         # Stage 227: every PE32/PE64 Pascal UNIT is a separate COFF object.
         # The integrated linker currently exposes assembler labels from each
@@ -8682,6 +9204,25 @@ class _PE32CodeGenerator(_CodeGenerator):
         self.uses_try = _program_contains_try(program)
         self.uses_readln = _program_contains_builtin_call(program, "readln")
         self.exception_frames: List[Tuple[str, str]] = []
+
+        # Stage 249: IEEE-754 Double constants are kept by exact 64-bit pattern.
+        self.double_literals: Dict[int, str] = {}
+        self.uses_double_runtime = _program_contains_double(program)
+
+    def _compile_statement(self, statement: Statement) -> None:
+        # Stage 245: a red gutter point emits exactly:
+        #     call _jit_debug_break
+        # BEGIN/END containers themselves are structural only.
+        if self.uses_debug_break and not isinstance(statement, CompoundStatement):
+            line = int(statement.position.line)
+            if (
+                line in self.breakpoint_lines
+                and line not in self._emitted_breakpoint_lines
+            ):
+                self._emitted_breakpoint_lines.add(line)
+                self.emitter.emit(f"    ; BREAKPOINT source line {line}", line)
+                self.emitter.emit("    call _jit_debug_break", line)
+        super()._compile_statement(statement)
 
     def _value_storage_size(self, type_info: _PascalType) -> int:
         if type_info.kind == "class":
@@ -8724,6 +9265,8 @@ class _PE32CodeGenerator(_CodeGenerator):
             return self.types["string"]
         if isinstance(value, bool):
             return BOOLEAN_TYPE
+        if isinstance(value, float):
+            return self.types.get("double", DOUBLE_TYPE)
         if 0 <= int(value) <= 255:
             return BYTE_TYPE
         return self.types["integer"]
@@ -8755,6 +9298,112 @@ class _PE32CodeGenerator(_CodeGenerator):
             label = f"{self.symbol_prefix}_string_{len(self.strings)}"
             self.strings[data] = label
         return label
+
+    def _compile_owner_class_name_builtin(
+        self,
+        position: SourcePosition,
+    ) -> _PascalType:
+        owner_name = self._owner_class_name_text(position)
+        label = self._string_label(owner_name, position)
+        self.emitter.emit(f"    mov eax, {label}", position.line)
+        return self.types.get("string", PE32_STRING_TYPE)
+
+    def _double_literal_label(
+        self,
+        value: float,
+        position: SourcePosition,
+    ) -> str:
+        bits = struct.unpack("<Q", struct.pack("<d", float(value)))[0]
+        label = self.double_literals.get(bits)
+        if label is None:
+            label = f"{self.symbol_prefix}_double_{len(self.double_literals)}"
+            self.double_literals[bits] = label
+        self.uses_double_runtime = True
+        return label
+
+    def _compile_double_operand(self, expression: Expression) -> _PascalType:
+        """Compile one numeric operand and leave it in x87 ST0."""
+        expected = self._expression_type(expression)
+        if expected.kind == "double":
+            actual = self._compile_expr(expression)
+            if actual.kind != "double":
+                raise self._error(
+                    f"Interner Double-Codegen-Typfehler: {actual.name}.",
+                    expression.position,
+                )
+            self.uses_double_runtime = True
+            return self.types.get("double", DOUBLE_TYPE)
+
+        if expected.kind not in {"scalar", "enum", "subrange"} or expected == BOOLEAN_TYPE:
+            raise self._error(
+                f"{expected.name} kann nicht nach Double erweitert werden.",
+                expression.position,
+            )
+        actual = self._compile_expr(expression)
+        if actual.kind not in {"scalar", "enum", "subrange"} or actual == BOOLEAN_TYPE:
+            raise self._error(
+                f"{actual.name} kann nicht nach Double erweitert werden.",
+                expression.position,
+            )
+        self.uses_double_runtime = True
+        self.emitter.emit(
+            f"    mov dword ptr [{self.symbol_prefix}_double_int_scratch], eax",
+            expression.position.line,
+        )
+        self.emitter.emit(
+            f"    fild dword ptr [{self.symbol_prefix}_double_int_scratch]",
+            expression.position.line,
+        )
+        return self.types.get("double", DOUBLE_TYPE)
+
+    def _compile_double_binary(
+        self,
+        expression: BinaryExpression,
+        left_type: _PascalType,
+        right_type: _PascalType,
+    ) -> _PascalType:
+        line = expression.position.line
+        operator = expression.operator
+        if operator in {"and", "or", "xor", "div", "mod"}:
+            raise self._error(
+                f"Operator {operator.upper()} ist für Double nicht zulässig.",
+                expression.position,
+            )
+
+        # Preserve normal Pascal left-to-right evaluation order:
+        # ST0=left, then ST0=right/ST1=left.
+        self._compile_double_operand(expression.left)
+        self._compile_double_operand(expression.right)
+
+        if operator in {"+", "-", "*", "/"}:
+            instruction = {
+                "+": "faddp",
+                "-": "fsubp",
+                "*": "fmulp",
+                "/": "fdivp",
+            }[operator]
+            self.emitter.emit(f"    {instruction}", line)
+            return self.types.get("double", DOUBLE_TYPE)
+
+        if operator in {"=", "<>", "<", "<=", ">", ">="}:
+            # FUCOMIP ST0,ST1 compares right against left because operands were
+            # evaluated left first.  Therefore relational conditions are the
+            # inverse of a direct left/right compare.
+            instruction = {
+                "=": "sete",
+                "<>": "setne",
+                "<": "seta",
+                "<=": "setae",
+                ">": "setb",
+                ">=": "setbe",
+            }[operator]
+            self.emitter.emit("    fucomip st0, st1", line)
+            self.emitter.emit("    fstp st0", line)
+            self.emitter.emit(f"    {instruction} al", line)
+            self.emitter.emit("    movzx eax, al", line)
+            return BOOLEAN_TYPE
+
+        raise self._error(f"Unbekannter Double-Operator: {operator}.", expression.position)
 
     def _emit_address(self, access: _StorageAccess, line: int) -> None:
         dynamic = access.dynamic
@@ -8791,6 +9440,11 @@ class _PE32CodeGenerator(_CodeGenerator):
 
     def _emit_load_access(self, access: _StorageAccess, line: int) -> None:
         value_size = self._value_storage_size(access.type_info)
+        if access.type_info.kind == "double":
+            self.uses_double_runtime = True
+            self._emit_address(access, line)
+            self.emitter.emit("    fld qword ptr [ecx]", line)
+            return
         if value_size not in {1, 2, 4}:
             raise self._error(
                 "Das PE32-Backend kann derzeit skalare 8-, 16- und 32-Bit-Werte laden "
@@ -8809,6 +9463,11 @@ class _PE32CodeGenerator(_CodeGenerator):
 
     def _emit_store_access(self, access: _StorageAccess, line: int) -> None:
         value_size = self._value_storage_size(access.type_info)
+        if access.type_info.kind == "double":
+            self.uses_double_runtime = True
+            self._emit_address(access, line)
+            self.emitter.emit("    fstp qword ptr [ecx]", line)
+            return
         if value_size not in {1, 2, 4}:
             raise self._error(
                 "Das PE32-Backend kann derzeit skalare 8-, 16- und 32-Bit-Werte speichern "
@@ -8833,14 +9492,17 @@ class _PE32CodeGenerator(_CodeGenerator):
         )
 
     def _zero_variable(self, variable: _Variable, line: int) -> None:
-        """Zero-initialize one PE32 local variable.
-
-        Scalar values keep the historic EAX/store path.  Real Pascal
-        aggregates (records/arrays) occupy their complete value size and must
-        be cleared in-place instead of being routed through _store_variable(),
-        which intentionally only handles scalar-width stores.
-        """
+        """Zero-initialize one PE32 local variable."""
         value_size = self._value_storage_size(variable.type_info)
+
+        # Stage 249: Double stores consume x87 ST0, therefore zero must also be
+        # represented as a floating value rather than only EAX=0.
+        if variable.type_info.kind == "double":
+            self.uses_double_runtime = True
+            self.emitter.emit("    fldz", line)
+            self._store_variable(variable, line)
+            return
+
         if self._value_is_scalar(variable.type_info) and value_size in {1, 2, 4}:
             self.emitter.emit("    xor eax, eax", line)
             self._store_variable(variable, line)
@@ -8891,12 +9553,18 @@ class _PE32CodeGenerator(_CodeGenerator):
                 label = self._string_label(expression.value, expression.position)
                 self.emitter.emit(f"    mov eax, {label}", line)
                 return self.types.get("string", PE32_STRING_TYPE)
+            if isinstance(expression.value, float):
+                label = self._double_literal_label(expression.value, expression.position)
+                self.emitter.emit(f"    fld qword ptr [{label}]", line)
+                return self.types.get("double", DOUBLE_TYPE)
             self._emit_load_literal(int(expression.value), line)
             return self._constant_type(expression.value)
 
         if isinstance(expression, (NameExpression, DesignatorExpression)):
             key = self._key(expression.name)
             has_selectors = isinstance(expression, DesignatorExpression) and bool(expression.selectors)
+            if key == "ownerclassname" and not has_selectors:
+                return self._compile_owner_class_name_builtin(expression.position)
             if key == "nil" and not has_selectors:
                 self.emitter.emit("    xor eax, eax", line)
                 return self.types.get("pointer", PE32_POINTER_TYPE)
@@ -8906,6 +9574,10 @@ class _PE32CodeGenerator(_CodeGenerator):
                     label = self._string_label(value, expression.position)
                     self.emitter.emit(f"    mov eax, {label}", line)
                     return self.types.get("string", PE32_STRING_TYPE)
+                if isinstance(value, float):
+                    label = self._double_literal_label(value, expression.position)
+                    self.emitter.emit(f"    fld qword ptr [{label}]", line)
+                    return self.types.get("double", DOUBLE_TYPE)
                 self._emit_load_literal(int(value), line)
                 return self.constant_types.get(key, self._constant_type(value))
             if isinstance(expression, DesignatorExpression):
@@ -8951,8 +9623,11 @@ class _PE32CodeGenerator(_CodeGenerator):
             if expression.operator == "+":
                 return operand_type
             if expression.operator == "-":
+                if operand_type.kind == "double":
+                    self.emitter.emit("    fchs", line)
+                    return self.types.get("double", DOUBLE_TYPE)
                 self.emitter.emit("    neg eax", line)
-                return INTEGER_TYPE
+                return self.types.get("integer", PE32_INTEGER_TYPE)
             if expression.operator == "not":
                 self.emitter.emit("    cmp eax, 0", line)
                 self.emitter.emit("    sete al", line)
@@ -8965,6 +9640,14 @@ class _PE32CodeGenerator(_CodeGenerator):
             right_type = self._expression_type(expression.right)
             if left_type.kind == "string" or right_type.kind == "string":
                 raise self._error("String-Vergleiche und String-Arithmetik werden nicht unterstuetzt.", expression.position)
+
+            if (
+                left_type.kind == "double"
+                or right_type.kind == "double"
+                or expression.operator == "/"
+            ):
+                return self._compile_double_binary(expression, left_type, right_type)
+
             self._compile_expr(expression.left)
             self.emitter.emit("    push eax", line)
             self._compile_expr(expression.right)
@@ -8987,8 +9670,6 @@ class _PE32CodeGenerator(_CodeGenerator):
                 if operator == "mod":
                     self.emitter.emit("    mov eax, edx", line)
                 return INTEGER_TYPE
-            if operator == "/":
-                raise self._error("Der Real-Operator '/' wird nicht unterstuetzt; verwende DIV.", expression.position)
             if operator in {"=", "<>", "<", "<=", ">", ">="}:
                 self._emit_comparison(operator, left_type.signed or right_type.signed, line)
                 return BOOLEAN_TYPE
@@ -9392,6 +10073,14 @@ class _PE32CodeGenerator(_CodeGenerator):
             )
         name = self._key(designator.name) if not designator.selectors else ""
         line = expression.position.line
+        if name == "ownerclassname":
+            self._require_argument_count(
+                designator.name,
+                expression.arguments,
+                0,
+                expression.position,
+            )
+            return self._compile_owner_class_name_builtin(expression.position)
         if name == "assigned":
             return self._compile_assigned_builtin(expression)
         if name == "readln":
@@ -9569,6 +10258,13 @@ class _PE32CodeGenerator(_CodeGenerator):
         result_type = self._compile_expr(expression)
         if result_type.kind == "string":
             raise self._error("String kann nicht als Bedingung verwendet werden.", expression.position)
+        if result_type.kind == "double":
+            line = expression.position.line
+            self.emitter.emit("    fldz", line)
+            self.emitter.emit("    fucomip st0, st1", line)
+            self.emitter.emit("    fstp st0", line)
+            self.emitter.emit(f"    je {target}", line)
+            return
         self.emitter.emit("    test eax, eax", expression.position.line)
         self.emitter.emit(f"    jz {target}", expression.position.line)
 
@@ -9613,6 +10309,10 @@ class _PE32CodeGenerator(_CodeGenerator):
                 if type_info.kind == "string":
                     self.runtime.add("print_string")
                     self.emitter.emit(f"    call {self.symbol_prefix}_print_string", line)
+                elif type_info.kind == "double":
+                    self.runtime.add("print_double")
+                    self.uses_double_runtime = True
+                    self.emitter.emit(f"    call {self.symbol_prefix}_print_double", line)
                 elif type_info == CHAR_TYPE:
                     self.runtime.add("print_char")
                     self.emitter.emit(f"    call {self.symbol_prefix}_print_char", line)
@@ -9720,8 +10420,7 @@ class _PE32CodeGenerator(_CodeGenerator):
                 for variable in routine.local_variables.values():
                     self._zero_variable(variable, implementation.position.line)
                 if routine.result_variable is not None:
-                    self.emitter.emit("    xor eax, eax", implementation.position.line)
-                    self._store_variable(routine.result_variable, implementation.position.line)
+                    self._zero_variable(routine.result_variable, implementation.position.line)
                 for variable, initializer in routine.local_initializers:
                     result_type = self._compile_expr(initializer)
                     if not self._types_compatible(variable.type_info, result_type):
@@ -9780,8 +10479,7 @@ class _PE32CodeGenerator(_CodeGenerator):
                 for variable in method.local_variables.values():
                     self._zero_variable(variable, implementation.position.line)
                 if method.result_variable is not None:
-                    self.emitter.emit("    xor eax, eax", implementation.position.line)
-                    self._store_variable(method.result_variable, implementation.position.line)
+                    self._zero_variable(method.result_variable, implementation.position.line)
                 for variable, initializer in method.local_initializers:
                     result_type = self._compile_expr(initializer)
                     if not self._types_compatible(variable.type_info, result_type):
@@ -9845,6 +10543,22 @@ class _PE32CodeGenerator(_CodeGenerator):
             self.emitter.emit("    ret")
 
     def _emit_runtime(self) -> None:
+        if self.uses_debug_break:
+            # _getch waits for one key without echo.  For extended keys the
+            # leading 0/E0 byte and following scan code belong to one event.
+            self.emitter.emit()
+            self.emitter.emit("_jit_debug_break:")
+            self.emitter.emit("    call _getch")
+            self.emitter.emit("    cmp eax, 0")
+            self.emitter.emit(f"    je {self.symbol_prefix}_debug_break_extended")
+            self.emitter.emit("    cmp eax, 224")
+            self.emitter.emit(f"    je {self.symbol_prefix}_debug_break_extended")
+            self.emitter.emit("    ret")
+            self.emitter.emit(f"{self.symbol_prefix}_debug_break_extended:")
+            self.emitter.emit("    call _getch")
+            self.emitter.emit("    or eax, 256")
+            self.emitter.emit("    ret")
+
         if self.console_mode:
             self.emitter.emit()
             self.emitter.emit(f"{self.symbol_prefix}_console_init:")
@@ -9924,7 +10638,7 @@ class _PE32CodeGenerator(_CodeGenerator):
             self.emitter.emit(f"{restore_done}:")
             self.emitter.emit("    ret")
 
-        if self.runtime.intersection({"print_string", "print_int", "print_char", "print_newline", "clear_screen", "range_error"}):
+        if self.runtime.intersection({"print_string", "print_int", "print_double", "print_char", "print_newline", "clear_screen", "range_error"}):
             self.emitter.emit(); self.emitter.emit(f"{self.symbol_prefix}_write_cstring:")
             self.emitter.emit("    push eax")
             self.emitter.emit("    push eax")
@@ -9951,6 +10665,18 @@ class _PE32CodeGenerator(_CodeGenerator):
             self.emitter.emit("    add esp, 12")
             self.emitter.emit(f"    mov eax, {self.symbol_prefix}_format_buffer")
             self.emitter.emit(f"    call {self.symbol_prefix}_write_cstring"); self.emitter.emit("    ret")
+        if "print_double" in self.runtime:
+            self.emitter.emit(); self.emitter.emit(f"{self.symbol_prefix}_print_double:")
+            self.emitter.emit(f"    fstp qword ptr [{self.symbol_prefix}_double_scratch]")
+            self.emitter.emit(f"    push {self.symbol_prefix}_double_buffer")
+            self.emitter.emit("    push 15")
+            self.emitter.emit(f"    push dword ptr [{self.symbol_prefix}_double_scratch+4]")
+            self.emitter.emit(f"    push dword ptr [{self.symbol_prefix}_double_scratch]")
+            self.emitter.emit("    call _gcvt")
+            self.emitter.emit("    add esp, 16")
+            self.emitter.emit(f"    mov eax, {self.symbol_prefix}_double_buffer")
+            self.emitter.emit(f"    call {self.symbol_prefix}_write_cstring")
+            self.emitter.emit("    ret")
         if "print_char" in self.runtime:
             self.emitter.emit(); self.emitter.emit(f"{self.symbol_prefix}_print_char:")
             self.emitter.emit(f"    mov byte ptr [{self.symbol_prefix}_char_buffer], al")
@@ -9982,6 +10708,12 @@ class _PE32CodeGenerator(_CodeGenerator):
         self.emitter.emit(f"{self.symbol_prefix}_newline: db 13, 10, 0")
         self.emitter.emit(f"{self.symbol_prefix}_clear_sequence: db 27, 91, 50, 74, 27, 91, 72, 0")
         self.emitter.emit(f"{self.symbol_prefix}_range_message: db 82, 97, 110, 103, 101, 32, 101, 114, 114, 111, 114, 13, 10, 0")
+        if self.double_literals:
+            self.emitter.emit(); self.emitter.emit("; IEEE-754 Double-Literale")
+            for bits, label in self.double_literals.items():
+                low = bits & 0xFFFFFFFF
+                high = (bits >> 32) & 0xFFFFFFFF
+                self.emitter.emit(f"{label}: dd {low}, {high}")
         if self.variable_order:
             self.emitter.emit(); self.emitter.emit(f"; {self.language_name}-Variablen")
             for variable in self.variable_order:
@@ -10006,7 +10738,7 @@ class _PE32CodeGenerator(_CodeGenerator):
             for data, label in self.strings.items():
                 values = ", ".join(str(value) for value in data + b"\x00")
                 self.emitter.emit(f"{label}: db {values}")
-        if self.console_mode or self.exception_frames:
+        if self.console_mode or self.exception_frames or self.uses_double_runtime:
             self.emitter.emit()
             self.emitter.emit("section .bss")
             self.emitter.emit("align 4")
@@ -10019,6 +10751,10 @@ class _PE32CodeGenerator(_CodeGenerator):
             self.emitter.emit(f"{self.symbol_prefix}_written: resd 1")
             self.emitter.emit(f"{self.symbol_prefix}_format_buffer: resb 32")
             self.emitter.emit(f"{self.symbol_prefix}_char_buffer: resb 2")
+        if self.uses_double_runtime:
+            self.emitter.emit(f"{self.symbol_prefix}_double_scratch: resq 1")
+            self.emitter.emit(f"{self.symbol_prefix}_double_int_scratch: resd 1")
+            self.emitter.emit(f"{self.symbol_prefix}_double_buffer: resb 64")
         if self.exception_frames:
             self.emitter.emit()
             self.emitter.emit("; Pascal TRY/EXCEPT exception frames (PE32, BSS)")
@@ -10054,7 +10790,18 @@ class _PE32CodeGenerator(_CodeGenerator):
             if line not in emitted:
                 self.emitter.emit(line)
                 emitted.add(line)
-        if self.uses_raise:
+        if self.uses_double_runtime:
+            line = 'import _gcvt, "msvcrt.dll", "_gcvt"'
+            if line not in emitted:
+                self.emitter.emit(line)
+                emitted.add(line)
+        if self.uses_debug_break:
+            line = 'import _getch, "msvcrt.dll", "_getch"'
+            if line not in emitted:
+                self.emitter.emit(line)
+                emitted.add(line)
+        # Stage 253: TRY and RAISE share the exception runtime.
+        if self.uses_raise or self.uses_try:
             line = f'import _jit_raise, "{PASCAL_MINIRUNTIME_DLL}", "_jit_raise"'
             if line not in emitted:
                 self.emitter.emit(line)
@@ -10228,6 +10975,7 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
         library_name: Optional[str] = None,
         library_exports: Optional[Dict[str, str]] = None,
         unit_name: Optional[str] = None,
+        breakpoint_lines: Iterable[int] = (),
     ) -> None:
         super().__init__(
             program,
@@ -10238,6 +10986,7 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
             library_name=library_name,
             library_exports=library_exports,
             unit_name=unit_name,
+            breakpoint_lines=breakpoint_lines,
         )
         self.types["integer"] = PE64_INTEGER_TYPE
         self.types["pointer"] = PE64_POINTER_TYPE
@@ -10248,6 +10997,15 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
     def _align16(value: int) -> int:
         value = int(value)
         return (value + 15) & ~15
+
+    def _compile_owner_class_name_builtin(
+        self,
+        position: SourcePosition,
+    ) -> _PascalType:
+        owner_name = self._owner_class_name_text(position)
+        label = self._string_label(owner_name, position)
+        self.emitter.emit(f"    mov rax, {label}", position.line)
+        return self.types.get("string", PE64_STRING_TYPE)
 
     def _external_symbol(self, routine: _ExternalRoutineInfo) -> str:
         symbol = str(routine.symbol)
@@ -10412,6 +11170,11 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
 
     def _emit_load_access(self, access: _StorageAccess, line: int) -> None:
         value_size = self._value_storage_size(access.type_info)
+        if access.type_info.kind == "double":
+            self.uses_double_runtime = True
+            self._emit_address(access, line)
+            self.emitter.emit("    fld qword ptr [r11]", line)
+            return
         if value_size not in {1, 2, 4, 8}:
             raise self._error(
                 "Das PE64-Backend kann derzeit skalare 8-, 16-, 32- und 64-Bit-Werte laden.",
@@ -10430,6 +11193,11 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
 
     def _emit_store_access(self, access: _StorageAccess, line: int) -> None:
         value_size = self._value_storage_size(access.type_info)
+        if access.type_info.kind == "double":
+            self.uses_double_runtime = True
+            self._emit_address(access, line)
+            self.emitter.emit("    fstp qword ptr [r11]", line)
+            return
         if value_size not in {1, 2, 4, 8}:
             raise self._error(
                 "Das PE64-Backend kann derzeit skalare 8-, 16-, 32- und 64-Bit-Werte speichern.",
@@ -10456,6 +11224,14 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
     def _zero_variable(self, variable: _Variable, line: int) -> None:
         """Zero-initialize one PE64 local, including full aggregates."""
         value_size = self._value_storage_size(variable.type_info)
+
+        # Stage 249: _emit_store_access(Double) expects x87 ST0.
+        if variable.type_info.kind == "double":
+            self.uses_double_runtime = True
+            self.emitter.emit("    fldz", line)
+            self._store_variable(variable, line)
+            return
+
         if self._value_is_scalar(variable.type_info) and value_size in {1, 2, 4, 8}:
             self.emitter.emit("    xor rax, rax", line)
             self._store_variable(variable, line)
@@ -10518,6 +11294,10 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
                 label = self._string_label(expression.value, expression.position)
                 self.emitter.emit(f"    mov rax, {label}", line)
                 return self.types.get("string", PE64_STRING_TYPE)
+            if isinstance(expression.value, float):
+                label = self._double_literal_label(expression.value, expression.position)
+                self.emitter.emit(f"    fld qword ptr [{label}]", line)
+                return self.types.get("double", DOUBLE_TYPE)
             self._emit_load_literal(int(expression.value), line)
             return self._constant_type(expression.value)
 
@@ -10533,6 +11313,10 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
                     label = self._string_label(value, expression.position)
                     self.emitter.emit(f"    mov rax, {label}", line)
                     return self.types.get("string", PE64_STRING_TYPE)
+                if isinstance(value, float):
+                    label = self._double_literal_label(value, expression.position)
+                    self.emitter.emit(f"    fld qword ptr [{label}]", line)
+                    return self.types.get("double", DOUBLE_TYPE)
                 self._emit_load_literal(int(value), line)
                 return self.constant_types.get(key, self._constant_type(value))
             if isinstance(expression, DesignatorExpression):
@@ -10580,6 +11364,9 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
             if expression.operator == "+":
                 return operand_type
             if expression.operator == "-":
+                if operand_type.kind == "double":
+                    self.emitter.emit("    fchs", line)
+                    return self.types.get("double", DOUBLE_TYPE)
                 self.emitter.emit("    neg eax", line)
                 return self.types.get("integer", PE64_INTEGER_TYPE)
             if expression.operator == "not":
@@ -10600,6 +11387,14 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
                     "String-Vergleiche und String-Arithmetik werden noch nicht unterstützt.",
                     expression.position,
                 )
+
+            if (
+                left_type.kind == "double"
+                or right_type.kind == "double"
+                or expression.operator == "/"
+            ):
+                return self._compile_double_binary(expression, left_type, right_type)
+
             self._compile_expr(expression.left)
             self.emitter.emit("    push rax", line)
             self._compile_expr(expression.right)
@@ -10624,11 +11419,6 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
                 if operator == "mod":
                     self.emitter.emit("    mov eax, edx", line)
                 return self.types.get("integer", PE64_INTEGER_TYPE)
-            if operator == "/":
-                raise self._error(
-                    "Der Real-Operator '/' wird nicht unterstützt; verwende DIV.",
-                    expression.position,
-                )
             if operator in {"=", "<>", "<", "<=", ">", ">="}:
                 width64 = (
                     left_type.kind in {"pointer", "class"}
@@ -10885,6 +11675,13 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
             raise self._error(
                 "String kann nicht als Bedingung verwendet werden.", expression.position
             )
+        if result_type.kind == "double":
+            line = expression.position.line
+            self.emitter.emit("    fldz", line)
+            self.emitter.emit("    fucomip st0, st1", line)
+            self.emitter.emit("    fstp st0", line)
+            self.emitter.emit(f"    je {target}", line)
+            return
         instruction = (
             "test rax, rax"
             if self._value_storage_size(result_type) == 8
@@ -10903,6 +11700,10 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
                 if type_info.kind == "string":
                     self.runtime.add("print_string")
                     self._emit_internal_call(f"{self.symbol_prefix}_print_string", line)
+                elif type_info.kind == "double":
+                    self.runtime.add("print_double")
+                    self.uses_double_runtime = True
+                    self._emit_internal_call(f"{self.symbol_prefix}_print_double", line)
                 elif type_info == CHAR_TYPE:
                     self.runtime.add("print_char")
                     self._emit_internal_call(f"{self.symbol_prefix}_print_char", line)
@@ -11025,8 +11826,7 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
                 for variable in routine.local_variables.values():
                     self._zero_variable(variable, line)
                 if routine.result_variable is not None:
-                    self.emitter.emit("    xor rax, rax", line)
-                    self._store_variable(routine.result_variable, line)
+                    self._zero_variable(routine.result_variable, line)
                 for variable, initializer in routine.local_initializers:
                     result_type = self._compile_expr(initializer)
                     if not self._types_compatible(variable.type_info, result_type):
@@ -11091,8 +11891,7 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
                 for variable in method.local_variables.values():
                     self._zero_variable(variable, line)
                 if method.result_variable is not None:
-                    self.emitter.emit("    xor rax, rax", line)
-                    self._store_variable(method.result_variable, line)
+                    self._zero_variable(method.result_variable, line)
                 for variable, initializer in method.local_initializers:
                     result_type = self._compile_expr(initializer)
                     if not self._types_compatible(variable.type_info, result_type):
@@ -11158,6 +11957,25 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
         self.emitter.emit("    ret")
 
     def _emit_runtime(self) -> None:
+        if self.uses_debug_break:
+            self.emitter.emit()
+            self.emitter.emit("_jit_debug_break:")
+            self.emitter.emit("    push rbp")
+            self.emitter.emit("    mov rbp, rsp")
+            self.emitter.emit("    sub rsp, 32")
+            self.emitter.emit("    call _getch")
+            self.emitter.emit("    cmp eax, 0")
+            self.emitter.emit(f"    je {self.symbol_prefix}_debug_break_extended")
+            self.emitter.emit("    cmp eax, 224")
+            self.emitter.emit(f"    jne {self.symbol_prefix}_debug_break_done")
+            self.emitter.emit(f"{self.symbol_prefix}_debug_break_extended:")
+            self.emitter.emit("    call _getch")
+            self.emitter.emit("    or eax, 256")
+            self.emitter.emit(f"{self.symbol_prefix}_debug_break_done:")
+            self.emitter.emit("    add rsp, 32")
+            self.emitter.emit("    pop rbp")
+            self.emitter.emit("    ret")
+
         if self.console_mode:
             self._emit_runtime_prologue(f"{self.symbol_prefix}_console_init")
             self.emitter.emit("    sub rsp, 32")
@@ -11269,7 +12087,7 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
             self._emit_runtime_epilogue()
 
         if self.runtime.intersection(
-            {"print_string", "print_int", "print_char", "print_newline", "clear_screen", "range_error"}
+            {"print_string", "print_int", "print_double", "print_char", "print_newline", "clear_screen", "range_error"}
         ):
             self._emit_runtime_prologue(f"{self.symbol_prefix}_write_cstring")
             self.emitter.emit(
@@ -11306,6 +12124,18 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
             self.emitter.emit("    call wsprintfA")
             self.emitter.emit("    add rsp, 32")
             self.emitter.emit(f"    mov rax, {self.symbol_prefix}_format_buffer")
+            self._emit_internal_call(f"{self.symbol_prefix}_write_cstring", 0)
+            self._emit_runtime_epilogue()
+        if "print_double" in self.runtime:
+            self._emit_runtime_prologue(f"{self.symbol_prefix}_print_double")
+            self.emitter.emit(f"    fstp qword ptr [{self.symbol_prefix}_double_scratch]")
+            self.emitter.emit(f"    movsd xmm0, qword ptr [{self.symbol_prefix}_double_scratch]")
+            self.emitter.emit("    mov edx, 15")
+            self.emitter.emit(f"    mov r8, {self.symbol_prefix}_double_buffer")
+            self.emitter.emit("    sub rsp, 32")
+            self.emitter.emit("    call _gcvt")
+            self.emitter.emit("    add rsp, 32")
+            self.emitter.emit(f"    mov rax, {self.symbol_prefix}_double_buffer")
             self._emit_internal_call(f"{self.symbol_prefix}_write_cstring", 0)
             self._emit_runtime_epilogue()
         if "print_char" in self.runtime:
@@ -11355,6 +12185,11 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
         self.emitter.emit(
             f"{self.symbol_prefix}_range_message: db 82, 97, 110, 103, 101, 32, 101, 114, 114, 111, 114, 13, 10, 0"
         )
+        if self.double_literals:
+            self.emitter.emit()
+            self.emitter.emit("; IEEE-754 Double-Literale")
+            for bits, label in self.double_literals.items():
+                self.emitter.emit(f"{label}: dq {bits}")
         if self.variable_order:
             self.emitter.emit()
             self.emitter.emit(f"; {self.language_name}-Variablen")
@@ -11387,7 +12222,7 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
             for data, label in self.strings.items():
                 values = ", ".join(str(value) for value in data + b"\x00")
                 self.emitter.emit(f"{label}: db {values}")
-        if self.console_mode or self.call_temporaries:
+        if self.console_mode or self.call_temporaries or self.uses_double_runtime:
             self.emitter.emit()
             self.emitter.emit("section .bss")
             self.emitter.emit("align 8")
@@ -11401,6 +12236,10 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
             self.emitter.emit(f"{self.symbol_prefix}_write_ptr: resq 1")
             self.emitter.emit(f"{self.symbol_prefix}_format_buffer: resb 32")
             self.emitter.emit(f"{self.symbol_prefix}_char_buffer: resb 2")
+        if self.uses_double_runtime:
+            self.emitter.emit(f"{self.symbol_prefix}_double_scratch: resq 1")
+            self.emitter.emit(f"{self.symbol_prefix}_double_int_scratch: resd 1")
+            self.emitter.emit(f"{self.symbol_prefix}_double_buffer: resb 64")
         if self.call_temporaries:
             self.emitter.emit()
             self.emitter.emit("; PE64 Win64-call temporaries (BSS)")
@@ -11433,7 +12272,17 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
             if line not in emitted:
                 self.emitter.emit(line)
                 emitted.add(line)
-        if self.uses_raise:
+        if self.uses_double_runtime:
+            self.emitter.emit(f"{self.symbol_prefix}_double_scratch: resq 1")
+            self.emitter.emit(f"{self.symbol_prefix}_double_int_scratch: resd 1")
+            self.emitter.emit(f"{self.symbol_prefix}_double_buffer: resb 64")
+        if self.uses_debug_break:
+            line = 'import _getch, "msvcrt.dll", "_getch"'
+            if line not in emitted:
+                self.emitter.emit(line)
+                emitted.add(line)
+        # Stage 253: TRY and RAISE share the exception runtime.
+        if self.uses_raise or self.uses_try:
             line = f'import _jit_raise, "{PASCAL_MINIRUNTIME_DLL}", "_jit_raise"'
             if line not in emitted:
                 self.emitter.emit(line)
@@ -11627,6 +12476,15 @@ class _AmigaCodeGenerator(_CodeGenerator):
             self.strings[data] = label
         return label
 
+    def _compile_owner_class_name_builtin(
+        self,
+        position: SourcePosition,
+    ) -> _PascalType:
+        owner_name = self._owner_class_name_text(position)
+        label = self._string_label(owner_name, position)
+        self.emitter.emit(f"    lea {label}(pc),a0", position.line)
+        return self.types.get("string", STRING_TYPE)
+
     def _emit_address(self, access: _StorageAccess, line: int) -> None:
         dynamic = access.dynamic
         if dynamic is not None:
@@ -11760,6 +12618,8 @@ class _AmigaCodeGenerator(_CodeGenerator):
             has_selectors = isinstance(expression, DesignatorExpression) and bool(
                 expression.selectors
             )
+            if key == "ownerclassname" and not has_selectors:
+                return self._compile_owner_class_name_builtin(expression.position)
             if key in self.constants and not has_selectors:
                 value = self.constants[key]
                 if isinstance(value, str):
@@ -11910,6 +12770,14 @@ class _AmigaCodeGenerator(_CodeGenerator):
         designator = self._as_designator(expression.designator, expression.position)
         name = self._key(designator.name) if not designator.selectors else ""
         line = expression.position.line
+        if name == "ownerclassname":
+            self._require_argument_count(
+                designator.name,
+                expression.arguments,
+                0,
+                expression.position,
+            )
+            return self._compile_owner_class_name_builtin(expression.position)
         if name == "peek":
             raise self._error(
                 "PEEK ist ein C64-spezifischer Befehl und für Amiga nicht verfügbar.",
@@ -12624,6 +13492,7 @@ def _compile_pascal_unit_interface(
     link_search_paths: Iterable[Path | str] = (),
     output_directory: Optional[Path | str] = None,
     progress_callback: Optional[Callable[[str, int], None]] = None,
+    breakpoint_lines: Iterable[int] = (),
 ) -> GeneratedAssembly:
     """Kompiliert eine direkt geöffnete Pascal-Unit.
 
@@ -12739,8 +13608,6 @@ def _compile_pascal_unit_interface(
         variables: List[VarDeclaration] = []
         methods: List[MethodImplementation] = []
         externals: List[ExternalRoutineDeclaration] = []
-        global_routines: List[GlobalRoutineImplementation] = []
-
         # Stage212: public routines imported through dependency PUIs live in
         # resolver.external_routines.  Program compilation already consumes
         # this visibility list, but the PE32/PE64 Unit path previously merged
@@ -12756,13 +13623,15 @@ def _compile_pascal_unit_interface(
             variables.extend(dependency_program.variables)
             methods.extend(dependency_program.methods)
             externals.extend(dependency_program.external_routines)
-            global_routines.extend(dependency_program.global_routines)
         constants.extend(unit_program.constants)
         type_groups.append(unit_program.types)
         variables.extend(unit_program.variables)
         methods.extend(unit_program.methods)
         externals.extend(unit_program.external_routines)
-        global_routines.extend(unit_program.global_routines)
+        global_routines = _merge_global_routines_for_link(
+            resolver.programs,
+            unit_program,
+        )
         types = _merge_pascal_type_scopes(
             tuple(type_groups[:-1]),
             tuple(type_groups[-1]) if type_groups else (),
@@ -12776,7 +13645,7 @@ def _compile_pascal_unit_interface(
             types=tuple(types),
             methods=tuple(methods),
             external_routines=tuple(externals),
-            global_routines=tuple(global_routines),
+            global_routines=global_routines,
             unit_assembly_files=tuple(resolver.assembly_files),
             unit_object_files=tuple(
                 dict.fromkeys(
@@ -12790,6 +13659,7 @@ def _compile_pascal_unit_interface(
             merged_program,
             console_mode=False,
             unit_name=unit_name,
+            breakpoint_lines=breakpoint_lines,
         ).generate()
         generated = replace(
             generated,
@@ -12811,8 +13681,6 @@ def _compile_pascal_unit_interface(
         variables: List[VarDeclaration] = []
         methods: List[MethodImplementation] = []
         externals: List[ExternalRoutineDeclaration] = []
-        global_routines: List[GlobalRoutineImplementation] = []
-
         # Stage212: public routines imported through dependency PUIs live in
         # resolver.external_routines.  Program compilation already consumes
         # this visibility list, but the PE32/PE64 Unit path previously merged
@@ -12828,13 +13696,15 @@ def _compile_pascal_unit_interface(
             variables.extend(dependency_program.variables)
             methods.extend(dependency_program.methods)
             externals.extend(dependency_program.external_routines)
-            global_routines.extend(dependency_program.global_routines)
         constants.extend(unit_program.constants)
         type_groups.append(unit_program.types)
         variables.extend(unit_program.variables)
         methods.extend(unit_program.methods)
         externals.extend(unit_program.external_routines)
-        global_routines.extend(unit_program.global_routines)
+        global_routines = _merge_global_routines_for_link(
+            resolver.programs,
+            unit_program,
+        )
         types = _merge_pascal_type_scopes(
             tuple(type_groups[:-1]),
             tuple(type_groups[-1]) if type_groups else (),
@@ -12847,7 +13717,7 @@ def _compile_pascal_unit_interface(
             types=tuple(types),
             methods=tuple(methods),
             external_routines=tuple(externals),
-            global_routines=tuple(global_routines),
+            global_routines=global_routines,
             unit_assembly_files=tuple(resolver.assembly_files),
             unit_object_files=tuple(
                 dict.fromkeys(
@@ -12861,6 +13731,7 @@ def _compile_pascal_unit_interface(
             merged_program,
             console_mode=False,
             unit_name=unit_name,
+            breakpoint_lines=breakpoint_lines,
         ).generate()
         generated = replace(
             generated,
@@ -13173,11 +14044,17 @@ def compile_pascal_to_assembly(
     link_search_paths: Iterable[Path | str] = (),
     output_directory: Optional[Path | str] = None,
     progress_callback: Optional[Callable[[str, int], None]] = None,
+    breakpoint_lines: Iterable[int] = (),
 ) -> GeneratedAssembly:
     """Parst PROGRAM-, UNIT- oder PE32-LIBRARY-Quellen und erzeugt Assembler.
 
     Stage 198: ``progress_callback(filename, line)`` meldet echte Pascal-
     Quellzeilen aus dem ANTLR-Visitor und aus aufgelösten USES-Units.
+
+    Stage 245/246: ``breakpoint_lines`` sind beliebig viele 1-basierte rote
+    Gutter-Breakpoints. Für PE32/PE32+ wird vor jeder passenden Anweisung
+    ``call _jit_debug_break`` erzeugt; dies gilt nun auch für separat gebaute
+    Pascal-Units, deren Breakpoints aus dem Projekt geladen wurden.
     """
     source_kind = _pascal_source_kind(source)
     normalized_target = str(target).strip().casefold()
@@ -13197,6 +14074,7 @@ def compile_pascal_to_assembly(
             link_search_paths=link_search_paths,
             output_directory=output_directory,
             progress_callback=progress_callback,
+            breakpoint_lines=breakpoint_lines,
         )
 
     library_name: Optional[str] = None
@@ -13237,6 +14115,7 @@ def compile_pascal_to_assembly(
             console_mode=(not uses_graphics and source_kind != "library"),
             library_name=library_name,
             library_exports=library_exports,
+            breakpoint_lines=breakpoint_lines,
         ).generate()
     elif normalized_target in {
         "pe64", "win64", "windows64", "windows-pe64", "windows-pe32+"
@@ -13248,6 +14127,7 @@ def compile_pascal_to_assembly(
             console_mode=(not uses_graphics and source_kind != "library"),
             library_name=library_name,
             library_exports=library_exports,
+            breakpoint_lines=breakpoint_lines,
         ).generate()
     else:
         raise C64PascalError(f"Unbekanntes Compilerziel: {target}.")

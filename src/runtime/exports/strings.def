@@ -1,0 +1,19 @@
+; ---------------------------------------------------------------------------
+; File: strings.def
+; Copyright (c) 2026 by Jens Kallup - paule32
+; All rights reserved.
+; ---------------------------------------------------------------------------
+_jit_dynstring_setlength       @57
+_jit_dynstring_from_cstr       @58
+_jit_dynstring_length          @59
+_jit_dynstring_concat          @60
+_jit_dynstring_copy            @61
+_jit_dynstring_pos             @62
+
+_jit_strncpy                   @180
+_jit_printf                    @181
+_jit_snprintf                  @182
+_jit_vprintf                   @183
+_jit_vsnprintf                 @184
+
+strlen                         @185

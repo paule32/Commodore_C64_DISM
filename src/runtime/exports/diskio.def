@@ -1,0 +1,19 @@
+; ---------------------------------------------------------------------------
+; File: diskio.def
+; Copyright (c) 2026 by Jens Kallup - paule32
+; All rights reserved.
+; ---------------------------------------------------------------------------
+_jit_disk_free           @17
+_jit_disk_total          @18
+_jit_disk_label          @19
+_jit_disk_serial         @20
+_jit_disk_filesystem     @21
+_jit_disk_type           @22
+_jit_disk_share          @23
+_jit_disk_used           @24
+_jit_disk_exists         @25
+_jit_disk_ready          @26
+_jit_disk_is_cdrom       @27
+_jit_disk_is_network     @28
+_jit_disk_is_removable   @29
+_jit_disk_is_fixed       @30

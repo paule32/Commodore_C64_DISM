@@ -1,0 +1,29 @@
+; ---------------------------------------------------------------------------
+; File: kernel32.def
+; Copyright (c) 2026 by Jens Kallup - paule32
+; All rights reserved.
+; ---------------------------------------------------------------------------
+_jit_ExitProcess                @122
+_jit_GetCommandLineA            @123
+
+_jit_locale_user                @120
+_jit_locale_system              @121
+
+ExitProcess@4                   @500
+GetCommandLineA@0               @501
+GetDiskFreeSpaceA@20            @512
+GetDiskFreeSpaceExA@16          @513
+GetDriveTypeA@4                 @514
+GetVolumeInformationA@32        @515
+
+LoadLibraryA@4                  @520
+MessageBoxA@16                  @521
+SetLastError@4                  @522
+GetLastError@0                  @523
+GetProcAddress@8                @524
+GetStdHandle@4                  @525
+
+ReadFile@20                     @530
+WriteFile@20                    @531
+
+WNetGetConnectionA@12           @600

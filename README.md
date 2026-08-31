@@ -64,6 +64,10 @@ I will give my best to not remove seals by, and with other Software.
 
 
 Preview
+![Preview](img/screen0015.png)
+
+
+Preview
 ![Preview](img/screen0012.png)
 
 
@@ -105,3 +109,7 @@ Preview A<br>
 
 Preview
 ![Preview](img/screen0002.png)
+
+
+Preview
+![Preview](img/screen0014.png)

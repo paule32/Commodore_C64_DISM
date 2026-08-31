@@ -6,7 +6,7 @@
         "normalized_name": "vcl_windows"
     },
     "fingerprint": {
-        "source_sha256": "6c8d57096368c5c6b49307ca15388333989f44b8fc200409e8b513784365dfea"
+        "source_sha256": "4b9bcc78d29e3acc51bb4457b0ce5792b7ead5ef9a155b7e71619d73807fe744"
     },
     "target": {
         "target": "win32",
@@ -79,7 +79,7 @@
                         "visibility": "public",
                         "calling_convention": "cdecl",
                         "is_virtual": false,
-                        "is_override": false,
+                        "is_override": true,
                         "is_class_method": false,
                         "vmt_offset": null
                     },
@@ -171,7 +171,7 @@
                         "visibility": "public",
                         "calling_convention": "cdecl",
                         "is_virtual": false,
-                        "is_override": false,
+                        "is_override": true,
                         "is_class_method": false,
                         "vmt_offset": null
                     }
@@ -182,7 +182,7 @@
                         "type": "integer",
                         "read": "FHeight",
                         "write": "FHeight",
-                        "visibility": "public",
+                        "visibility": "published",
                         "index_params": []
                     },
                     {
@@ -190,7 +190,7 @@
                         "type": "integer",
                         "read": "FWidth",
                         "write": "FWidth",
-                        "visibility": "public",
+                        "visibility": "published",
                         "index_params": []
                     },
                     {
@@ -198,7 +198,7 @@
                         "type": "integer",
                         "read": "FTop",
                         "write": "FTop",
-                        "visibility": "public",
+                        "visibility": "published",
                         "index_params": []
                     },
                     {
@@ -206,7 +206,7 @@
                         "type": "integer",
                         "read": "FLeft",
                         "write": "FLeft",
-                        "visibility": "public",
+                        "visibility": "published",
                         "index_params": []
                     },
                     {
@@ -214,7 +214,7 @@
                         "type": "string",
                         "read": "FCaption",
                         "write": "FCaption",
-                        "visibility": "public",
+                        "visibility": "published",
                         "index_params": []
                     }
                 ]

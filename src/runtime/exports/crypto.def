@@ -1,0 +1,57 @@
+; ---------------------------------------------------------------------------
+; File: crypto.def
+; Copyright (c) 2026 by Jens Kallup - paule32
+; All rights reserved.
+; ---------------------------------------------------------------------------
+_jit_blake2         @4
+_jit_crc16          @5
+_jit_crc32          @6
+_jit_crc32c         @7
+_jit_crc64          @8
+_jit_md5            @9
+_jit_sha1           @10
+_jit_sha3           @11
+_jit_sha224         @12
+_jit_sha256         @13
+_jit_sha384         @14
+_jit_sha512         @15
+
+crc16_init       @210
+crc16_update     @211
+crc16_final      @212
+
+crc32_init       @220
+crc32_update     @221
+crc32_final      @222
+
+crc32c_init      @230
+crc32c_update    @231
+crc32c_final     @232
+
+_jit_md5_init         @240
+_jit_md5_update       @241
+_jit_md5_final        @242
+
+sha1_init        @250
+sha1_update      @251
+sha1_final       @252
+
+sha3_init        @260
+sha3_update      @261
+sha3_final       @262
+
+sha224_init      @270
+sha224_update    @271
+sha224_final     @272
+
+sha256_init      @280
+sha256_update    @281
+sha256_final     @282
+
+sha384_init      @290
+sha384_update    @291
+sha384_final     @292
+
+sha512_init      @300
+sha512_update    @301
+sha512_final     @302

@@ -1,0 +1,32 @@
+; Export aliases for a 32-bit MinGW/NASM build.
+; The left side is the DLL-visible name, the right side is the COFF symbol.
+EXPORTS
+    _jit_new_memory=__jit_new_memory
+    _jit_dispose_memory=__jit_dispose_memory
+    _jit_setlength_memory=__jit_setlength_memory
+    _jit_dynarray_setlength=__jit_dynarray_setlength
+    _jit_dynstring_setlength=__jit_dynstring_setlength
+    _jit_dynstring_length=__jit_dynstring_length
+    _jit_dynstring_concat=__jit_dynstring_concat
+    _jit_dynstring_from_cstr=__jit_dynstring_from_cstr
+    _jit_malloc=__jit_malloc
+    _jit_calloc=__jit_calloc
+    _jit_realloc=__jit_realloc
+    _jit_free=__jit_free
+    _jit_strlen=__jit_strlen
+    _jit_strdup=__jit_strdup
+    _jit_memcpy=__jit_memcpy
+    _jit_memset=__jit_memset
+    memset=_memset
+    _jit_memcmp=__jit_memcmp
+    _jit_memmove=__jit_memmove
+    _jit_setjmp=__jit_setjmp
+    _jit_longjmp=__jit_longjmp
+    _jit_vprintf=__jit_vprintf
+    _jit_printf=__jit_printf
+    _jit_vsnprintf=__jit_vsnprintf
+    _jit_snprintf=__jit_snprintf
+    _jit_read_int=__jit_read_int
+    _jit_read_string=__jit_read_string
+    _jit_read_char=__jit_read_char
+    _jit_debug_break=__jit_debug_break

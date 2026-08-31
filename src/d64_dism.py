@@ -48,6 +48,9 @@
 #  * Stage 108: WFM/OOP-Formulare, gefuellter Hard-Shadow und Border-Farbdialoge.
 #  * Stage 110: Form-Fenster-Scene mit Titelbar, Designer-only Resize und Client-Limits.
 #  * Stage 136: Lernen->Mathematik mit Zahlenmauer-Dock und 2x5 QGraphicsScene-Aufgaben.
+#  * Stage 263: Lernen->Keyboard mit Musik-Dock, 4 Notensystemen und 88-Tasten-Piano.
+#  * Stage 264: Musik-Arbeitsbereich schließt alle Docks; Instrument-Dock rechts mit
+#    General-MIDI, Play/Loop/Freihand, Lautstärke und Musikprojekt Save/Load.
 #  * Stage 139: Sudoku mit Leicht/Mittel/Schwer/Experte im Mathematik-Lernbereich.
 #  * Stage 140: ISO-Metrik Mathe-Stadt mit Mausweg, Bauen, Budget und Lern-Banken.
 #  * Stage 141: Gorilla-Parabelspiel mit Wolkenkratzern, Wind, Gebäudeschäden und Mathe-Würfen.
@@ -108,6 +111,16 @@
 #    Undo/Redo/Cut/Copy/Paste/Delete/Select All werden übersetzt, Shortcuts bleiben.
 #  * Stage 236: Pascal PE32/PE32+ Projektzweig „Tabellen“ mit DBF-Hinzufügen,
 #    Projektpersistenz und Doppelklick in Tabellen-Designer/-Editor.
+#  * Stage 255: Projekt-Hauptknoten „Commodore C= 64“ direkt unter Bookmarks.
+#  * Stage 256: *.prg bleibt Binärprogramm; Rohdaten zeigt Disassembly, Hex zeigt 4+4 Bytes.
+#  * Stage 257: C64-PRG/BIN-Disassembly im QThread mit bytebasierter 0..100-%-ProgressBar;
+#  * Stage 259: C64-ProgressBar wird vor Workerstart garantiert gezeichnet; Live-Repaint,
+#               verzögerter Threadstart und Mindestanzeigezeit bis/bei 100 %.
+#    __main__.py startet d64_dism hinter einem Commodore-C64-Splash und übergibt danach den Fokus.
+#  * Stage 258: QtWebEngine-OpenGL-Kontext wird vor QApplication aktiviert; Splash lädt C64Pro.ttf
+#    nicht mehr doppelt. C64Pro bleibt exklusiv für die C64-/Hex-Darstellung im Hauptprogramm.
+#  * Stage 241: Workstation Runner: generischer PE32/PE32+-Session-Host auf Basis
+#    des vorhandenen src/d64qt5/d64_workstation.cpp; keine Quellsprachenpflicht.
 #  * Stage 237: DBF-Datengrid mit Ganzgrid-/Zeilen-/Spaltenauswahl, Auswahl-Clipboard,
 #    Ausschneiden/Löschen sowie bestätigtem Bereinigen aller Datensätze.
 #  * Stage 238: ESC löscht im DBF-Datengrid ausschließlich die aktuelle Auswahl/Markierung;
@@ -3188,6 +3201,14 @@ PE32_DEFAULT_IMPORTS: Dict[str, Tuple[str, str]] = {
     "jit_inherits_from_class"   : ("libd64_qt5.dll", "jit_inherits_from_class"),
     "jit_inherits_from_object"  : ("libd64_qt5.dll", "jit_inherits_from_object"),
     "jit_dynstring_from_cstr"   : ("libd64_qt5.dll", "jit_dynstring_from_cstr"),
+
+    # Stage 253: Pascal Exception-Runtime.
+    # Lokale COFF-cdecl-Symbole tragen einen fuehrenden Unterstrich; der
+    # Resolver entfernt ihn fuer die Tabellenabfrage. Die aktuell etablierte
+    # DLL-Exportschreibweise (_jit_*) bleibt unveraendert.
+    "jit_raise"                  : ("libd64_runtime.dll", "_jit_raise"),
+    "jit_exception_push"         : ("libd64_runtime.dll", "_jit_exception_push"),
+    "jit_exception_pop"          : ("libd64_runtime.dll", "_jit_exception_pop"),
 }
 
 
@@ -12105,6 +12126,126 @@ def resolve_chm_path(root: Path, relative: str) -> Optional[Path]:
         return None
     return current if current.is_file() else None
 
+# ---------------------------------------------------------------------------
+# Stage ASM 1: stabile C64-Hilfekontexte fuer klickbare Disassembler-Overlays.
+#
+# WICHTIG: Ein Python-Dictionary wird mit Doppelpunkt geschrieben.
+#     help_py = {"test": 21}
+# Die Zahl ist die stabile Context-ID; der Text bleibt der Such-Fallback.
+# ---------------------------------------------------------------------------
+help_py = {
+    "test": 21,
+    # Stage ASM 7: Hilfe-Kontext fuer das semantische Relocation-/Bootstrap-Overlay.
+    # Wenn c64.chm eine passende MAP/ALIAS-Zuordnung besitzt, wird ID 22 direkt
+    # aufgeloest; andernfalls sucht der integrierte Viewer nach dem Topic-Text.
+    "relocation_bootstrap": 22,
+}
+
+
+def read_chm_context_map(root: Path) -> Dict[int, str]:
+    """Liest numerische CHM-Context-IDs aus [MAP]/[ALIAS], soweit vorhanden.
+
+    Unterstuetzt die ueblichen HHP-Formen::
+
+        [MAP]
+        #define IDH_TEST 21
+
+        [ALIAS]
+        IDH_TEST=test.html
+
+    sowie MAP-Includes/Header mit ``#define``. Fehlen diese Metadaten in einer
+    bereits kompilierten CHM, bleibt die Text-/Keyword-Suche des Viewers der
+    sichere Fallback.
+    """
+    root = Path(root)
+    project = find_chm_file_by_suffix(root, ".hhp")
+    if project is None:
+        return {}
+
+    map_symbols: Dict[str, int] = {}
+    aliases: Dict[str, str] = {}
+    include_names: List[str] = []
+    section = ""
+
+    def parse_define(line: str) -> None:
+        match = re.match(
+            r"^\s*#define\s+([A-Za-z_][A-Za-z0-9_]*)\s+"
+            r"(0[xX][0-9A-Fa-f]+|\d+)\b",
+            line,
+        )
+        if not match:
+            return
+        try:
+            map_symbols[match.group(1)] = int(match.group(2), 0)
+        except ValueError:
+            pass
+
+    for raw_line in decode_chm_text(project).splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith(";"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line.casefold()
+            continue
+
+        if section == "[map]":
+            parse_define(line)
+            include = re.match(r'^\s*#include\s+[<"]([^>"]+)[>"]', line)
+            if include:
+                include_names.append(include.group(1).strip())
+                continue
+            if "=" in line:
+                key, value = line.split("=", 1)
+                try:
+                    map_symbols[key.strip()] = int(value.strip(), 0)
+                except ValueError:
+                    pass
+
+        elif section == "[alias]" and "=" in line:
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+            if key and value:
+                aliases[key] = value
+
+    # MAP-Konstanten liegen bei vielen Projekten in einer Headerdatei.
+    # Zuerst explizite Includes, danach als robuste Reserve alle kleinen .h/.hh.
+    header_candidates: List[Path] = []
+    for name in include_names:
+        candidate = resolve_chm_path(root, name.replace("\\", "/"))
+        if candidate is not None:
+            header_candidates.append(candidate)
+    try:
+        for candidate in root.rglob("*"):
+            if candidate.is_file() and candidate.suffix.casefold() in {".h", ".hh", ".hpp"}:
+                if candidate not in header_candidates:
+                    header_candidates.append(candidate)
+    except OSError:
+        pass
+
+    for header in header_candidates:
+        try:
+            for raw_line in decode_chm_text(header).splitlines():
+                parse_define(raw_line)
+        except OSError:
+            continue
+
+    result: Dict[int, str] = {}
+    for symbol, local in aliases.items():
+        context_id = map_symbols.get(symbol)
+        if context_id is None:
+            # Einige HHP-Dateien verwenden die numerische ID direkt links.
+            try:
+                context_id = int(symbol, 0)
+            except ValueError:
+                continue
+        relative, fragment = clean_chm_local(local)
+        if not relative:
+            continue
+        result[int(context_id)] = relative + (("#" + fragment) if fragment else "")
+    return result
+
+
 def read_chm_project_options(project_file: Optional[Path]) -> Dict[str, str]:
     if project_file is None:
         return {}
@@ -12430,6 +12571,8 @@ class D64Image:
 # koennen in der GUI weder umbenannt noch geloescht werden.
 # ---------------------------------------------------------------------------
 PROJECT_CATEGORIES: Tuple[Tuple[str, str, Tuple[str, ...]], ...] = (
+    # Stage 255: erster normaler Hauptknoten -> direkt unter Bookmarks.
+    ("c64", "Commodore C= 64", (".prg",)),
     ("basic", "BASIC - Programme", (".bas", ".basic")),
     ("assembler", "Assembler-Programme", (".asm", ".s", ".a65", ".m68k", ".inc")),
     ("pascal", "Pascal-Programme", (".pas", ".pp")),
@@ -12450,6 +12593,20 @@ PROJECT_CATEGORIES: Tuple[Tuple[str, str, Tuple[str, ...]], ...] = (
 
 PROJECT_C_ARCHIVES_KEY = "__c_archives__"
 PROJECT_PROLOG_KNOWLEDGE_KEY = "__prolog_knowledge_databases__"
+
+# Stage 246: Breakpoints und Bookmarks sind echte Projektressourcen.
+# Sie werden absichtlich außerhalb der Sprachkategorien gespeichert, damit
+# der Projektbaum sie ganz oben und unabhängig vom Build-Ziel anzeigen kann.
+PROJECT_BREAKPOINTS_KEY = "__debug_breakpoints__"
+PROJECT_BOOKMARKS_KEY = "__source_bookmarks__"
+PROJECT_MARKER_SECTIONS: Dict[str, Tuple[str, str]] = {
+    "breakpoint": (PROJECT_BREAKPOINTS_KEY, "Debug.Breakpoints"),
+    "bookmark": (PROJECT_BOOKMARKS_KEY, "Debug.Bookmarks"),
+}
+PROJECT_NODE_MARKER_ROOT = "project_marker_root"
+PROJECT_NODE_MARKER_FILE = "project_marker_file"
+PROJECT_NODE_MARKER_LINE = "project_marker_line"
+
 PROJECT_NODE_ARCHIVE_ROOT = "archive_root"
 PROJECT_NODE_PROLOG_KNOWLEDGE_ROOT = "prolog_knowledge_root"
 PROJECT_NODE_PROLOG_KNOWLEDGE_FILE = "prolog_knowledge_file"
@@ -12582,6 +12739,8 @@ PROJECT_WINDOWS_PE64_INPUT_RELATIVE_PATHS_KEY = "__windows_pe64_input_relative_p
 PROJECT_WINDOWS_PE64_OUTPUT_RELATIVE_PATHS_KEY = "__windows_pe64_output_relative_paths__"
 PROJECT_WINDOWS_PE32_LINK_WITH_ORDINALS_KEY = "__windows_pe32_link_with_ordinals__"
 PROJECT_WINDOWS_PE64_LINK_WITH_ORDINALS_KEY = "__windows_pe64_link_with_ordinals__"
+PROJECT_WINDOWS_PE32_WORKSTATION_MODE_KEY = "__windows_pe32_workstation_mode__"
+PROJECT_WINDOWS_PE64_WORKSTATION_MODE_KEY = "__windows_pe64_workstation_mode__"
 PROJECT_WINDOWS_TARGET_SETTINGS = {
     "pe32": {
         "input_key": PROJECT_WINDOWS_PE32_LINK_SEARCH_PATHS_KEY,
@@ -12589,6 +12748,8 @@ PROJECT_WINDOWS_TARGET_SETTINGS = {
         "input_relative_key": PROJECT_WINDOWS_PE32_INPUT_RELATIVE_PATHS_KEY,
         "output_relative_key": PROJECT_WINDOWS_PE32_OUTPUT_RELATIVE_PATHS_KEY,
         "link_with_ordinals_key": PROJECT_WINDOWS_PE32_LINK_WITH_ORDINALS_KEY,
+        "workstation_mode_key": PROJECT_WINDOWS_PE32_WORKSTATION_MODE_KEY,
+        "environment_section": "Settings.Windows.32Bit.Environment",
         "input_section": "Settings.Windows.32Bit.Compiler.InputDirectories",
         "output_section": "Settings.Windows.32Bit.Compiler.OutputDirectory",
         "linker_section": "Settings.Windows.32Bit.Linker",
@@ -12600,6 +12761,8 @@ PROJECT_WINDOWS_TARGET_SETTINGS = {
         "input_relative_key": PROJECT_WINDOWS_PE64_INPUT_RELATIVE_PATHS_KEY,
         "output_relative_key": PROJECT_WINDOWS_PE64_OUTPUT_RELATIVE_PATHS_KEY,
         "link_with_ordinals_key": PROJECT_WINDOWS_PE64_LINK_WITH_ORDINALS_KEY,
+        "workstation_mode_key": PROJECT_WINDOWS_PE64_WORKSTATION_MODE_KEY,
+        "environment_section": "Settings.Windows.64Bit.Environment",
         "input_section": "Settings.Windows.64Bit.Compiler.InputDirectories",
         "output_section": "Settings.Windows.64Bit.Compiler.OutputDirectory",
         "linker_section": "Settings.Windows.64Bit.Linker",
@@ -12741,6 +12904,8 @@ def empty_project_entries() -> Dict[str, List[Dict[str, str]]]:
     # hält diese Hierarchie in der *.pro-Datei getrennt von normalen C-Dateien.
     entries[PROJECT_C_ARCHIVES_KEY] = []
     entries[PROJECT_PROLOG_KNOWLEDGE_KEY] = []
+    entries[PROJECT_BREAKPOINTS_KEY] = []
+    entries[PROJECT_BOOKMARKS_KEY] = []
     # Stage 174: separate Ziel-/Rollenlisten für Pascal.
     for _special_key in PROJECT_PASCAL_TARGET_ENTRY_KEYS.values():
         entries[_special_key] = []
@@ -12753,6 +12918,7 @@ def empty_project_entries() -> Dict[str, List[Dict[str, str]]]:
         entries[_settings["input_relative_key"]] = [{"value": "true"}]
         entries[_settings["output_relative_key"]] = [{"value": "true"}]
         entries[_settings["link_with_ordinals_key"]] = [{"value": "false"}]
+        entries[_settings["workstation_mode_key"]] = [{"value": "false"}]
     return entries
 
 
@@ -12933,6 +13099,32 @@ def format_project_ini(
                 _payload, ensure_ascii=False, separators=(",", ":")
             )
 
+    # Stage 246: Breakpoints/Bookmarks werden pro Quelldatei gespeichert.
+    # Die Blätter selbst sind reine 1-basierte Zeilennummern.
+    for _marker_kind, (_entry_key, _section) in PROJECT_MARKER_SECTIONS.items():
+        parser[_section] = {
+            "Title": "Break points" if _marker_kind == "breakpoint" else "Bookmarks"
+        }
+        for _index, _entry in enumerate(entries.get(_entry_key, ()), 1):
+            _path_value = str(_entry.get("path", "")).strip()
+            if not _path_value:
+                continue
+            _lines = sorted({
+                int(_line)
+                for _line in _entry.get("lines", ())
+                if str(_line).strip() and int(_line) > 0
+            })
+            if not _lines:
+                continue
+            _payload = {
+                "title": str(_entry.get("title", "") or Path(_path_value).name),
+                "path": _project_storage_path(_path_value, project_path),
+                "lines": _lines,
+            }
+            parser[_section][f"Item{_index:04d}"] = json.dumps(
+                _payload, ensure_ascii=False, separators=(",", ":")
+            )
+
     # Stage 197: PE32 und PE32+ speichern getrennte Eingabe-/Ausgabe-
     # Verzeichnisse und zusätzlich den Darstellungsmodus. RelativePaths=true
     # serialisiert die Pfade relativ zur *.pro-Datei, false schreibt absolute
@@ -12975,6 +13167,14 @@ def format_project_ini(
                     project_path,
                     relative=_output_relative,
                 )
+
+        _workstation_mode = _project_bool_entry(
+            entries, _settings["workstation_mode_key"], False
+        )
+        parser[_settings["environment_section"]] = {
+            "Title": f"Windows {_settings['title']} Umgebung",
+            "WorkstationMode": "true" if _workstation_mode else "false",
+        }
 
         _link_with_ordinals = _project_bool_entry(
             entries, _settings["link_with_ordinals_key"], False
@@ -13144,11 +13344,52 @@ def parse_project_ini(text: str, project_path: Path) -> Dict[str, List[Dict[str,
                 "path": _loaded_path,
             })
 
+    # Stage 246: persistente Breakpoints/Bookmarks laden.
+    for _marker_kind, (_entry_key, _section) in PROJECT_MARKER_SECTIONS.items():
+        if not parser.has_section(_section):
+            continue
+        _values = sorted(
+            (
+                (name, value)
+                for name, value in parser.items(_section)
+                if name.casefold().startswith("item")
+            ),
+            key=lambda pair: pair[0].casefold(),
+        )
+        for _name, _value in _values:
+            try:
+                _payload = json.loads(_value)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(_payload, dict):
+                continue
+            _path_value = str(_payload.get("path", "")).strip()
+            if not _path_value:
+                continue
+            _loaded_path = _project_loaded_path(_path_value, Path(project_path))
+            _lines = []
+            for _line in _payload.get("lines", ()):
+                try:
+                    _line_number = int(_line)
+                except (TypeError, ValueError):
+                    continue
+                if _line_number > 0 and _line_number not in _lines:
+                    _lines.append(_line_number)
+            if _lines:
+                entries[_entry_key].append({
+                    "title": str(
+                        _payload.get("title", "") or Path(_loaded_path).name
+                    ),
+                    "path": _loaded_path,
+                    "lines": sorted(_lines),
+                })
+
     # Stage 196: zuerst die getrennten 32-/64-Bit-Abschnitte laden.
     _have_arch_settings = False
     for _target, _settings in PROJECT_WINDOWS_TARGET_SETTINGS.items():
         _input_section = _settings["input_section"]
         _output_section = _settings["output_section"]
+        _environment_section = _settings["environment_section"]
         _linker_section = _settings["linker_section"]
         if parser.has_section(_input_section):
             _have_arch_settings = True
@@ -13194,6 +13435,19 @@ def parse_project_ini(text: str, project_path: Path) -> Dict[str, List[Dict[str,
                         _output_value, Path(project_path)
                     ),
                 })
+        if parser.has_section(_environment_section):
+            _have_arch_settings = True
+            _workstation_mode = _parse_project_bool(
+                parser.get(
+                    _environment_section,
+                    "WorkstationMode",
+                    fallback="false",
+                ),
+                False,
+            )
+            entries[_settings["workstation_mode_key"]] = [{
+                "value": "true" if _workstation_mode else "false"
+            }]
         if parser.has_section(_linker_section):
             _link_with_ordinals = _parse_project_bool(
                 parser.get(
@@ -13553,9 +13807,15 @@ def analyze_coff_archive_bytes(payload: bytes) -> Dict[str, object]:
 # ---------------------------------------------------------------------------
 # Qt5-Anwendung
 # ---------------------------------------------------------------------------
-def run_gui(initial_directory: Optional[Path] = None) -> int:
+def run_gui(
+    initial_directory: Optional[Path] = None,
+    *,
+    application=None,
+    window_shown_callback=None,
+) -> int:
     try:
         from PyQt5.QtCore import (
+            QCoreApplication,
             QDir,
             QEvent,
             QEventLoop,
@@ -13587,6 +13847,7 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             QDesktopServices,
             QFont,
             QFontDatabase,
+            QFontMetrics,
             QIcon,
             QImage,
             QDoubleValidator,
@@ -13653,6 +13914,7 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
             QRadioButton,
             QScrollArea,
             QScrollBar,
+            QSlider,
             QSizePolicy,
             QSpinBox,
             QSplitter,
@@ -13685,6 +13947,15 @@ def run_gui(initial_directory: Optional[Path] = None) -> int:
         )
         print(f"Technischer Fehler: {exc}", file=sys.stderr)
         return 2
+
+    # Stage 258: Muss vor dem Import/Initialisieren von QtWebEngine und vor
+    # jeder neu erzeugten QApplication gesetzt sein. Bei Start über
+    # __main__.py ist das Attribut dort bereits gesetzt; der Aufruf hier ist
+    # idempotent und schützt zusätzlich den direkten Start von d64_dism.py.
+    if QApplication.instance() is None:
+        QCoreApplication.setAttribute(Qt.AA_ShareOpenGLContexts, True)
+        QCoreApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+        QCoreApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
 
     try:
         from PyQt5.QtWebEngineWidgets import (
@@ -19182,6 +19453,9 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
         find_next_requested = pyqtSignal(object)
         breakpoints_changed = pyqtSignal()
         bookmarks_changed = pyqtSignal()
+        # Stage ASM 4: meldet Aenderungen der sichtbaren Editor-/Viewport-
+        # Geometrie an viewportgebundene Overlays.
+        viewport_geometry_changed = pyqtSignal()
 
         GUTTER_MARKER_COLUMN_WIDTH = 13
         GUTTER_MARKER_COLUMNS = 2
@@ -19284,6 +19558,11 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             instruction_help_layout.addWidget(self.instruction_help_description)
             self._instruction_help_mnemonic = ""
             self._instruction_help_operands = ""
+            # Stage ASM 3: Maus-Hilfe und Cursor-Hilfe benutzen dasselbe
+            # Overlay, besitzen aber getrennte Trigger.  Ein Hover darf nur
+            # auf den tatsaechlich gezeichneten Mnemonic-Zeichen ausloesen.
+            self._instruction_help_hover_active = False
+            self._instruction_help_anchor_rect = None
             self.instruction_help_current.hide()
             self.instruction_help_frame.hide()
 
@@ -19517,14 +19796,9 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             dialog = NumberCalculatorDialog(self, context)
             dialog.exec_()
 
-        def _assembler_instruction_info_at_cursor(self):
-            """Return command metadata for the assembler statement at cursor."""
-            if not self._assembler_navigation_enabled:
-                return None
-
-            cursor = self.textCursor()
-            block_text = cursor.block().text()
-            code = block_text.split(";", 1)[0]
+        def _assembler_instruction_match(self, block_text: str):
+            """Stage ASM 3: parst eine ASM-Zeile und liefert nur echte Opcodes."""
+            code = str(block_text).split(";", 1)[0]
             match = re.match(
                 r"^\s*(?:[A-Za-z_.$][A-Za-z0-9_.$]*\s*:\s*)?"
                 r"(?P<opcode>[A-Za-z]{2,8})(?:\.[BbWwLl])?"
@@ -19533,45 +19807,133 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             )
             if match is None:
                 return None
-
             mnemonic = match.group("opcode").upper()
             info = self._assembler_commands().get(mnemonic)
             if info is None:
                 return None
+            return code, match, info
+
+        def _assembler_instruction_context_from_cursor(
+            self,
+            cursor: QTextCursor,
+            *,
+            require_opcode: bool = True,
+        ):
+            """Liefert Hilfe nur, wenn der Cursor wirklich im Mnemonic steht."""
+            parsed = self._assembler_instruction_match(cursor.block().text())
+            if parsed is None:
+                return None
+            code, match, info = parsed
 
             position = cursor.positionInBlock()
-            opcode_start, _opcode_end = match.span("opcode")
-            if position < opcode_start or position > len(code):
+            opcode_start, opcode_end = match.span("opcode")
+            if require_opcode and not (opcode_start <= position < opcode_end):
                 return None
 
             operand = (match.group("operand") or "").strip()
             semantic = None
             if self._assembler_target == "c64":
-                semantic = c64_assembler_call_description(mnemonic, operand)
+                semantic = c64_assembler_call_description(
+                    info.mnemonic, operand
+                )
             return info, operand, semantic
+
+        def _assembler_instruction_info_at_cursor(self):
+            """Return command metadata only while the caret is on opcode text."""
+            if not self._assembler_navigation_enabled:
+                return None
+            return self._assembler_instruction_context_from_cursor(
+                self.textCursor(),
+                require_opcode=True,
+            )
+
+        def _assembler_instruction_info_at_point(self, point: QPoint):
+            """Stage ASM 3: pixelgenaue Mnemonic-Hitbox fuer Maus-Hilfe.
+
+            ``cursorForPosition`` allein reicht nicht, weil Qt rechts neben dem
+            Zeilenende weiterhin den naechsten Text-Cursor liefern kann.  Die
+            X-Koordinate muss deshalb zusaetzlich innerhalb des gezeichneten
+            Opcode-Rechtecks liegen.
+            """
+            if not self._assembler_navigation_enabled:
+                return None
+
+            cursor = self.cursorForPosition(point)
+            parsed = self._assembler_instruction_match(cursor.block().text())
+            if parsed is None:
+                return None
+            _code, match, info = parsed
+            opcode_start, opcode_end = match.span("opcode")
+
+            block = cursor.block()
+            block_position = block.position()
+            start_cursor = QTextCursor(self.document())
+            start_cursor.setPosition(block_position + opcode_start)
+            end_cursor = QTextCursor(self.document())
+            end_cursor.setPosition(block_position + opcode_end)
+            start_rect = self.cursorRect(start_cursor)
+            end_rect = self.cursorRect(end_cursor)
+            left = start_rect.left()
+            right = max(left + 1, end_rect.left())
+            top = min(start_rect.top(), end_rect.top())
+            bottom = max(start_rect.bottom(), end_rect.bottom())
+
+            # Ausschliesslich die sichtbaren Buchstaben des Mnemonics treffen.
+            if not (left <= point.x() < right and top <= point.y() <= bottom):
+                return None
+
+            operand = (match.group("operand") or "").strip()
+            semantic = None
+            if self._assembler_target == "c64":
+                semantic = c64_assembler_call_description(
+                    info.mnemonic, operand
+                )
+            anchor = QRect(left, top, max(1, right - left), max(1, bottom - top + 1))
+            return (info, operand, semantic), anchor
 
         def _schedule_instruction_help_update(self) -> None:
             QTimer.singleShot(0, self._update_instruction_help)
 
         def _update_instruction_help(self) -> None:
+            # Solange die Maus direkt ueber einem Mnemonic steht, hat die
+            # Hover-Hilfe Vorrang.  Cursorbewegungen duerfen sie nicht durch
+            # eine Hilfe fuer eine andere Position ersetzen.
+            if self._instruction_help_hover_active:
+                return
             context = self._assembler_instruction_info_at_cursor()
+            if context is None:
+                self.instruction_help_frame.hide()
+                self._instruction_help_anchor_rect = None
+                return
+            self._show_instruction_help_context(
+                context,
+                anchor_rect=self.cursorRect(),
+            )
+
+        def _show_instruction_help_context(
+            self,
+            context,
+            *,
+            anchor_rect: Optional[QRect] = None,
+        ) -> None:
             if context is None:
                 self.instruction_help_frame.hide()
                 return
 
             info, operand, semantic = context
-            # Stage 83: mnemonic/operand syntax stays in the yellow header.
-            # "Aktuell" gets its own green row below it.  The header itself is
-            # reflowed in _position_instruction_help_frame() when the operand
-            # syntax would exceed the available help width.
             self._instruction_help_mnemonic = str(info.mnemonic)
             self._instruction_help_operands = str(info.operands)
+            self._instruction_help_anchor_rect = (
+                QRect(anchor_rect) if anchor_rect is not None else self.cursorRect()
+            )
+
             if operand:
                 self.instruction_help_current.setText(f"Aktuell: {operand}")
                 self.instruction_help_current.show()
             else:
                 self.instruction_help_current.clear()
                 self.instruction_help_current.hide()
+
             description = info.description
             if semantic:
                 description += f"\nZielbeschreibung: {semantic}"
@@ -19588,6 +19950,8 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
 
             self.instruction_help_description.setText(description)
             self.instruction_help_frame.show()
+            # Dieses Frame ist die gemeinsame Hilfe-Ebene fuer Hover und
+            # Text-Cursor. Es muss ueber jedem Code-Erklaerungs-Overlay liegen.
             self.instruction_help_frame.raise_()
             self._position_instruction_help_frame()
 
@@ -19600,9 +19964,6 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             width = max(300, min(680, viewport_rectangle.width() - 12))
             content_width = max(40, width - 20)
 
-            # Stage 83: do not let a long operand signature paint past the
-            # live-help area.  If mnemonic + operands do not fit, begin the
-            # complete operand signature on the following line.
             mnemonic = self._instruction_help_mnemonic
             operands = self._instruction_help_operands
             one_line = mnemonic
@@ -19622,20 +19983,25 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 width,
                 self.instruction_help_frame.sizeHint().height(),
             )
-            cursor_rectangle = self.cursorRect()
+
+            anchor = self._instruction_help_anchor_rect
+            if anchor is None or anchor.isNull():
+                anchor = self.cursorRect()
             x_position = min(
-                max(4, cursor_rectangle.left()),
+                max(4, anchor.left()),
                 max(4, viewport_rectangle.width() - width - 4),
             )
-            y_position = cursor_rectangle.bottom() + 5
-            if y_position + self.instruction_help_frame.height() > viewport_rectangle.bottom():
+            y_position = anchor.bottom() + 5
+            if (
+                y_position + self.instruction_help_frame.height()
+                > viewport_rectangle.bottom()
+            ):
                 y_position = max(
                     4,
-                    cursor_rectangle.top()
-                    - self.instruction_help_frame.height()
-                    - 5,
+                    anchor.top() - self.instruction_help_frame.height() - 5,
                 )
             self.instruction_help_frame.move(x_position, y_position)
+            self.instruction_help_frame.raise_()
 
         def _schedule_completion_update(self) -> None:
             QTimer.singleShot(0, self._update_completion)
@@ -20020,10 +20386,27 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
 
         def focusOutEvent(self, event) -> None:
             self._hide_completion()
+            self._instruction_help_hover_active = False
+            self._instruction_help_anchor_rect = None
             self.instruction_help_frame.hide()
             super().focusOutEvent(event)
 
         def mouseMoveEvent(self, event) -> None:
+            # Stage ASM 3: Live-Hilfe nur auf den sichtbaren Opcode-Buchstaben.
+            # Operand, Kommentar und freier Zeilenbereich sind keine Treffer.
+            hover = self._assembler_instruction_info_at_point(event.pos())
+            if hover is not None:
+                context, anchor = hover
+                self._instruction_help_hover_active = True
+                self._show_instruction_help_context(
+                    context,
+                    anchor_rect=anchor,
+                )
+            elif self._instruction_help_hover_active:
+                self._instruction_help_hover_active = False
+                self._instruction_help_anchor_rect = None
+                self._update_instruction_help()
+
             if self._jump_target_at_point(event.pos()) is not None:
                 self.viewport().setCursor(Qt.PointingHandCursor)
             else:
@@ -20057,6 +20440,9 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             menu.deleteLater()
 
         def leaveEvent(self, event) -> None:
+            self._instruction_help_hover_active = False
+            self._instruction_help_anchor_rect = None
+            self._update_instruction_help()
             self.viewport().setCursor(Qt.IBeamCursor)
             super().leaveEvent(event)
 
@@ -20080,6 +20466,47 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
 
         def bookmark_lines(self) -> Tuple[int, ...]:
             return self._cursor_line_numbers(self._bookmark_cursors)
+
+        def replace_gutter_markers(
+            self,
+            marker_kind: str,
+            line_numbers: Iterable[int],
+            *,
+            emit_change: bool = True,
+        ) -> None:
+            """Stage 246: ersetzt einen Marker-Satz atomar durch beliebig viele Zeilen."""
+            normalized = []
+            for value in line_numbers or ():
+                try:
+                    line_number = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if line_number <= 0 or line_number in normalized:
+                    continue
+                block = self.document().findBlockByNumber(line_number - 1)
+                if block.isValid():
+                    normalized.append(line_number)
+
+            cursors = []
+            for line_number in sorted(normalized):
+                block = self.document().findBlockByNumber(line_number - 1)
+                cursor = QTextCursor(self.document())
+                cursor.setPosition(block.position())
+                cursors.append(cursor)
+
+            if marker_kind == "breakpoint":
+                self._breakpoint_cursors = cursors
+            elif marker_kind == "bookmark":
+                self._bookmark_cursors = cursors
+            else:
+                raise ValueError(f"Unbekannter Gutter-Marker: {marker_kind}")
+
+            self.line_number_area.update()
+            if emit_change:
+                if marker_kind == "breakpoint":
+                    self.breakpoints_changed.emit()
+                else:
+                    self.bookmarks_changed.emit()
 
         def _marker_cursors(self, marker_kind: str):
             if marker_kind == "breakpoint":
@@ -20218,6 +20645,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             )
             self._position_completion_widgets()
             self._position_instruction_help_frame()
+            self.viewport_geometry_changed.emit()
 
         def set_gutter_dark_mode(self, enabled: bool) -> None:
             self._dark_mode = bool(enabled)
@@ -22746,6 +23174,10 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
         dataChanged = pyqtSignal()
         modificationChanged = pyqtSignal(bool)
         saveRequested = pyqtSignal(bool)
+        # Stage 261: F1 im Hex-Viewer fordert die feste C64-Hilfe an.
+        # Der aktuelle Byteindex wird an DocumentEditor weitergereicht, damit
+        # bei PRG-Dateien die zugehoerige C64-Speicheradresse berechnet wird.
+        contextHelpRequested = pyqtSignal(int)
 
         def __init__(self, parent: Optional[QWidget] = None):
             super().__init__(parent)
@@ -23323,6 +23755,11 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.dataChanged.emit()
 
         def keyPressEvent(self, event) -> None:
+            if event.key() == Qt.Key_F1:
+                self.contextHelpRequested.emit(max(0, int(self._cursor_index)))
+                event.accept()
+                return
+
             if event.matches(QKeySequence.Copy):
                 self.copy_selection()
                 event.accept()
@@ -23369,6 +23806,61 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 event.accept()
                 return
             super().keyPressEvent(event)
+
+    class C64DisassemblyWorker(QObject):
+        """Stage 257: lädt und disassembliert C64-Binärdateien im QThread.
+
+        Die GUI erhält zuerst die Dateigröße. Danach meldet der eigentliche
+        6510-Disassembler den bereits verarbeiteten Bytebereich. 100 % wird
+        ausschließlich nach vollständig erzeugtem Listing gesendet.
+        """
+
+        size_ready = pyqtSignal(int)
+        progress = pyqtSignal(int, int, int)
+        succeeded = pyqtSignal(object, str, int)
+        failed = pyqtSignal(str)
+
+        def __init__(self, path: Path) -> None:
+            super().__init__()
+            self.path = Path(path)
+            self._last_percent = 1
+            self._last_processed = -1
+
+        def _report_progress(self, processed: int, total: int) -> None:
+            total = max(1, int(total or 1))
+            processed = max(0, min(int(processed or 0), total))
+            percent = max(1, min(99, int((processed * 100) / total)))
+            if percent == self._last_percent and processed < total:
+                return
+            self._last_percent = percent
+            self._last_processed = processed
+            self.progress.emit(percent, processed, total)
+
+        def run(self) -> None:
+            try:
+                total_size = int(self.path.stat().st_size)
+                self.size_ready.emit(total_size)
+                self.progress.emit(1, 0, max(1, total_size))
+
+                # Auch das Einlesen erfolgt im Worker. Eine große Datei kann
+                # deshalb den Qt-GUI-Thread nicht blockieren.
+                with self.path.open("rb") as stream:
+                    raw_bytes = stream.read()
+
+                text, load_address = format_c64_program_disassembly(
+                    raw_bytes,
+                    suffix=self.path.suffix,
+                    source_name=self.path.name,
+                    progress_callback=self._report_progress,
+                )
+            except BaseException as exc:
+                self.failed.emit(f"{type(exc).__name__}: {exc}")
+                return
+
+            total_size = max(1, len(raw_bytes))
+            self.progress.emit(100, len(raw_bytes), total_size)
+            self.succeeded.emit(raw_bytes, text, int(load_address))
+
 
     class PascalCompileWorker(QObject):
         """Stage 198: führt genau einen Pascal-Compilerlauf im QThread aus.
@@ -23490,6 +23982,324 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.succeeded.emit(result)
 
 
+    class C64RelocationSemanticOverlay(QWidget):
+        help_requested = pyqtSignal(str, int)
+
+        """QPainter-Overlay fuer die Relocation-/Bootstrap-Erklaerung.
+
+        Das Widget orientiert sich farblich am vorhandenen Drei-Befehle-Overlay,
+        zeichnet seinen Inhalt jedoch vollstaendig selbst mit QPainter. Die
+        Groesse haengt nur von der vorgegebenen Breite und den Textmetrikdaten
+        ab; die Breite wird daher vom Editor vorgegeben und nicht automatisch
+        inhaltlich verkleinert.
+        """
+
+        def __init__(self, parent: Optional[QWidget] = None):
+            super().__init__(parent)
+            self._content_width = 560
+            self._help_topic = "relocation_bootstrap"
+            self._help_context_id = int(help_py.get(self._help_topic, 0))
+            self._help_link_rect = QRect()
+            self.setMouseTracking(True)
+            self.setCursor(Qt.ArrowCursor)
+            self.setAutoFillBackground(False)
+            self.hide()
+
+        def set_content_width(self, width: int) -> None:
+            width = max(280, int(width))
+            if width == self._content_width:
+                return
+            self._content_width = width
+            self.updateGeometry()
+
+        def _title_font(self) -> QFont:
+            font = QFont(self.font())
+            font.setPointSize(max(10, font.pointSize() + 1))
+            font.setBold(True)
+            return font
+
+        def _section_title_font(self) -> QFont:
+            font = QFont(self.font())
+            font.setBold(True)
+            return font
+
+        def _body_font(self) -> QFont:
+            return QFont(self.font())
+
+        def _bullet_font(self) -> QFont:
+            font = QFont(self.font())
+            font.setBold(False)
+            return font
+
+        def _link_font(self) -> QFont:
+            font = QFont(self.font())
+            font.setUnderline(True)
+            return font
+
+        def _help_link_text(self) -> str:
+            return (
+                "Hilfe öffnen: Relocation / Bootstrap "
+                f"(Context-ID {self._help_context_id})"
+            )
+
+        def _wrapped_height(self, font: QFont, text: str, width: int) -> int:
+            if width <= 0:
+                return 0
+            metrics = QFontMetrics(font)
+            rect = metrics.boundingRect(
+                QRect(0, 0, width, 10000),
+                int(Qt.TextWordWrap | Qt.AlignLeft | Qt.AlignTop),
+                text,
+            )
+            return max(metrics.height(), rect.height())
+
+        def preferred_height(self, width: int) -> int:
+            width = max(280, int(width))
+            outer_margin = 10
+            inner_left = 14
+            inner_right = 14
+            inner_top = 10
+            inner_bottom = 10
+            icon_box = 28
+            gap = 10
+            content_x = outer_margin + inner_left
+            content_y = outer_margin + inner_top
+            content_width = width - (outer_margin * 2) - inner_left - inner_right
+            if content_width < 80:
+                content_width = 80
+            text_width = max(60, content_width - icon_box - gap)
+
+            title_h = self._wrapped_height(self._title_font(), '256-Byte Relocation / Bootstrap', content_width)
+            summary_h = self._wrapped_height(
+                self._body_font(),
+                'Kopiert $081D-$091C ueber einen vollstaendigen Zero-Page-Umlauf nach $FB-$FA.',
+                text_width,
+            )
+            line_h = QFontMetrics(self._body_font()).lineSpacing()
+            bullet_lines = [
+                'X dient als 8-Bit-Zaehler',
+                'TXS synchronisiert den Stack Pointer mit X',
+                'Nach 256 Durchlaeufen ist X wieder $00',
+                'anschliessend Sprung nach $0100',
+            ]
+            max_bullet_h = 0
+            for line in bullet_lines:
+                max_bullet_h += max(line_h, self._wrapped_height(self._bullet_font(), line, text_width - 18)) + 4
+            note_title_h = self._wrapped_height(self._section_title_font(), 'Hinweis:', text_width)
+            note_body_h = self._wrapped_height(
+                self._body_font(),
+                'Bytes nach JMP $0100 sind im linearen Pfad nicht erreichbar und koennten Daten sein.',
+                text_width,
+            )
+            link_h = self._wrapped_height(
+                self._link_font(),
+                self._help_link_text(),
+                content_width,
+            )
+            section_gap = 10
+            sep_h = 8
+            total = 0
+            total += outer_margin + inner_top
+            total += title_h + 10
+            total += sep_h
+            total += max(icon_box, summary_h) + section_gap
+            total += sep_h
+            total += max(icon_box, line_h) + 6
+            total += max_bullet_h + section_gap
+            total += sep_h
+            total += max(icon_box, note_title_h + 4 + note_body_h)
+            total += section_gap
+            total += sep_h
+            total += link_h
+            total += inner_bottom + outer_margin
+            return total
+
+        def sizeHint(self) -> QSize:
+            width = max(280, int(self._content_width))
+            return QSize(width, self.preferred_height(width))
+
+        def _draw_section_icon(self, painter: QPainter, rect: QRect, icon: QIcon) -> None:
+            painter.save()
+            frame_pen = QPen(QColor('#4fc3ff'))
+            frame_pen.setWidth(1)
+            painter.setPen(frame_pen)
+            painter.setBrush(QColor(8, 22, 54, 150))
+            painter.drawRoundedRect(rect, 5, 5)
+            pix = icon.pixmap(max(16, rect.width() - 8), max(16, rect.height() - 8))
+            px = rect.x() + (rect.width() - pix.width()) // 2
+            py = rect.y() + (rect.height() - pix.height()) // 2
+            painter.drawPixmap(px, py, pix)
+            painter.restore()
+
+        def paintEvent(self, _event) -> None:
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            outer = self.rect().adjusted(0, 0, -1, -1)
+            bg = QLinearGradient(outer.topLeft(), outer.bottomLeft())
+            bg.setColorAt(0.0, QColor(5, 18, 45, 240))
+            bg.setColorAt(0.5, QColor(8, 27, 68, 236))
+            bg.setColorAt(1.0, QColor(4, 16, 40, 242))
+            painter.setPen(QPen(QColor('#4fc3ff'), 1))
+            painter.setBrush(bg)
+            painter.drawRoundedRect(outer.adjusted(1, 1, -1, -1), 7, 7)
+
+            inner = outer.adjusted(14, 10, -14, -10)
+            icon_box = 28
+            gap = 10
+            section_gap = 10
+            line_color = QColor(79, 195, 255, 110)
+            title_font = self._title_font()
+            section_title_font = self._section_title_font()
+            body_font = self._body_font()
+            bullet_font = self._bullet_font()
+            title_metrics = QFontMetrics(title_font)
+            body_metrics = QFontMetrics(body_font)
+            line_h = body_metrics.lineSpacing()
+            content_width = inner.width()
+            text_width = max(60, content_width - icon_box - gap)
+            y = inner.top()
+
+            painter.setFont(title_font)
+            painter.setPen(QColor('#ffe600'))
+            title_rect = QRect(inner.left(), y, content_width, self._wrapped_height(title_font, '256-Byte Relocation / Bootstrap', content_width))
+            painter.drawText(title_rect, int(Qt.TextWordWrap | Qt.AlignLeft | Qt.AlignTop), '256-Byte Relocation / Bootstrap')
+            y = title_rect.bottom() + 10
+
+            painter.setPen(QPen(line_color, 1))
+            painter.drawLine(inner.left(), y, inner.right(), y)
+            y += 8
+
+            style = QApplication.style()
+            info_icon = style.standardIcon(QStyle.SP_FileIcon)
+            loop_icon = style.standardIcon(QStyle.SP_BrowserReload)
+            warning_icon = style.standardIcon(QStyle.SP_MessageBoxWarning)
+
+            summary_text = 'Kopiert $081D-$091C ueber einen vollstaendigen Zero-Page-Umlauf nach $FB-$FA.'
+            summary_h = self._wrapped_height(body_font, summary_text, text_width)
+            row_h = max(icon_box, summary_h)
+            icon_rect = QRect(inner.left(), y, icon_box, icon_box)
+            if row_h > icon_box:
+                icon_rect.moveTop(y + (row_h - icon_box) // 2)
+            self._draw_section_icon(painter, icon_rect, info_icon)
+            painter.setFont(body_font)
+            painter.setPen(QColor('#f2f5f8'))
+            text_rect = QRect(inner.left() + icon_box + gap, y, text_width, row_h)
+            painter.drawText(text_rect, int(Qt.TextWordWrap | Qt.AlignLeft | Qt.AlignTop), summary_text)
+            y += row_h + section_gap
+
+            painter.setPen(QPen(line_color, 1))
+            painter.drawLine(inner.left(), y, inner.right(), y)
+            y += 8
+
+            head_h = max(icon_box, line_h)
+            icon_rect = QRect(inner.left(), y, icon_box, icon_box)
+            if head_h > icon_box:
+                icon_rect.moveTop(y + (head_h - icon_box) // 2)
+            self._draw_section_icon(painter, icon_rect, loop_icon)
+            painter.setFont(section_title_font)
+            painter.setPen(QColor('#ffe600'))
+            painter.drawText(
+                QRect(inner.left() + icon_box + gap, y, text_width, head_h),
+                int(Qt.AlignLeft | Qt.AlignVCenter),
+                'Dabei:',
+            )
+            y += head_h + 6
+
+            bullet_lines = [
+                'X dient als 8-Bit-Zaehler',
+                'TXS synchronisiert den Stack Pointer mit X',
+                'Nach 256 Durchlaeufen ist X wieder $00',
+                'anschliessend Sprung nach $0100',
+            ]
+            bullet_x = inner.left() + icon_box + gap
+            bullet_text_x = bullet_x + 18
+            for line in bullet_lines:
+                bullet_h = max(line_h, self._wrapped_height(bullet_font, line, text_width - 18))
+                bullet_rect = QRect(bullet_x, y, 12, bullet_h)
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(QColor('#7fdbff'))
+                painter.drawEllipse(QRectF(bullet_rect.x(), bullet_rect.y() + max(0, (bullet_h - 6) / 2.0), 6, 6))
+                painter.setFont(bullet_font)
+                painter.setPen(QColor('#f2f5f8'))
+                painter.drawText(
+                    QRect(bullet_text_x, y, text_width - 18, bullet_h),
+                    int(Qt.TextWordWrap | Qt.AlignLeft | Qt.AlignTop),
+                    line,
+                )
+                y += bullet_h + 4
+            y += max(0, section_gap - 4)
+
+            painter.setPen(QPen(line_color, 1))
+            painter.drawLine(inner.left(), y, inner.right(), y)
+            y += 8
+
+            note_title = 'Hinweis:'
+            note_text = 'Bytes nach JMP $0100 sind im linearen Pfad nicht erreichbar und koennten Daten sein.'
+            note_title_h = self._wrapped_height(section_title_font, note_title, text_width)
+            note_body_h = self._wrapped_height(body_font, note_text, text_width)
+            row_h = max(icon_box, note_title_h + 4 + note_body_h)
+            icon_rect = QRect(inner.left(), y, icon_box, icon_box)
+            if row_h > icon_box:
+                icon_rect.moveTop(y + (row_h - icon_box) // 2)
+            self._draw_section_icon(painter, icon_rect, warning_icon)
+            text_x = inner.left() + icon_box + gap
+            painter.setFont(section_title_font)
+            painter.setPen(QColor('#ffe600'))
+            painter.drawText(
+                QRect(text_x, y, text_width, note_title_h),
+                int(Qt.TextWordWrap | Qt.AlignLeft | Qt.AlignTop),
+                note_title,
+            )
+            painter.setFont(body_font)
+            painter.setPen(QColor('#f2f5f8'))
+            painter.drawText(
+                QRect(text_x, y + note_title_h + 4, text_width, note_body_h),
+                int(Qt.TextWordWrap | Qt.AlignLeft | Qt.AlignTop),
+                note_text,
+            )
+            y += row_h + section_gap
+
+            painter.setPen(QPen(line_color, 1))
+            painter.drawLine(inner.left(), y, inner.right(), y)
+            y += 8
+
+            link_text = self._help_link_text()
+            link_font = self._link_font()
+            link_h = self._wrapped_height(link_font, link_text, content_width)
+            self._help_link_rect = QRect(inner.left(), y, content_width, link_h)
+            painter.setFont(link_font)
+            painter.setPen(QColor('#7fdbff'))
+            painter.drawText(
+                self._help_link_rect,
+                int(Qt.TextWordWrap | Qt.AlignLeft | Qt.AlignTop),
+                link_text,
+            )
+            painter.end()
+
+        def mouseMoveEvent(self, event) -> None:
+            if self._help_link_rect.contains(event.pos()):
+                self.setCursor(Qt.PointingHandCursor)
+            else:
+                self.setCursor(Qt.ArrowCursor)
+            super().mouseMoveEvent(event)
+
+        def leaveEvent(self, event) -> None:
+            self.setCursor(Qt.ArrowCursor)
+            super().leaveEvent(event)
+
+        def mousePressEvent(self, event) -> None:
+            if (
+                event.button() == Qt.LeftButton
+                and self._help_link_rect.contains(event.pos())
+            ):
+                self.help_requested.emit(
+                    self._help_topic,
+                    self._help_context_id,
+                )
+                event.accept()
+                return
+            event.ignore()
+
     class DocumentEditor(QWidget):
         """Ein Dateidokument mit Rohdaten-, Hex- und Hinweisansicht."""
 
@@ -23500,6 +24310,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
         start_generated_requested = pyqtSignal(object)
         coff_requested = pyqtSignal(object)
         context_help_requested = pyqtSignal(object, str, str)
+        c64_help_topic_requested = pyqtSignal(object, str, int)
         build_requested = pyqtSignal(object)
         build_generated_requested = pyqtSignal(object)
         find_requested = pyqtSignal(object, object)
@@ -23534,6 +24345,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             editor_font     : Optional[QFont] = None,
             dark_mode       : bool = False,
             binary_disassembly_mode: bool = False,
+            assembler_text_mode: bool = False,
         ):
             super().__init__(parent)
             self.path = Path(path).resolve() if path is not None else None
@@ -23543,6 +24355,12 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.newline                 = newline
             self._syncing_views          = False
             self.binary_disassembly_mode = bool(binary_disassembly_mode)
+            # Stage 256: .prg-Dateien werden unabhängig vom Öffnungsweg als
+            # C64-Binärprogramme behandelt. Der Rohdaten-Tab zeigt das
+            # disassemblierte Listing; der Hex-Editor behält die Originalbytes.
+            # assembler_text_mode bleibt nur als kompatibler Sondermodus für
+            # ausdrücklich als Assemblertext erzeugte Dokumente erhalten.
+            self.assembler_text_mode     = bool(assembler_text_mode)
             self._data_source            = (
                 "hex" if self.binary_disassembly_mode else "text"
             )
@@ -23707,8 +24525,11 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             raw_minimap_viewport_height = (
                 SourceMiniMap.ASSEMBLER_MIN_VIEWPORT_HEIGHT
                 if (
-                    self.path is not None
-                    and self.path.suffix.lower() in self.ASSEMBLER_EXTENSIONS
+                    self.assembler_text_mode
+                    or (
+                        self.path is not None
+                        and self.path.suffix.lower() in self.ASSEMBLER_EXTENSIONS
+                    )
                 )
                 else None
             )
@@ -23742,6 +24563,152 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.raw_editor.setPlainText(text)
             self.raw_editor.document().setModified(False)
             source_layout.addWidget(self.raw_editor_container, 1)
+
+            # Stage ASM 8: Overlay-Marker werden nur bei Textaenderungen neu
+            # gesucht. Scrollen/Resize benutzen danach ausschließlich die
+            # gecachten Blocknummern. Damit kann ein Paint-/Scroll-Ereignis
+            # niemals mehr das komplette Disassembly erneut durchsuchen.
+            self._c64_overlay_cache_dirty = True
+            self._c64_memory_switch_block_numbers = None
+            self._c64_relocation_block_numbers = None
+            self._c64_overlay_refresh_timer = QTimer(self)
+            self._c64_overlay_refresh_timer.setSingleShot(True)
+            self._c64_overlay_refresh_timer.setInterval(16)
+            self._c64_overlay_refresh_timer.timeout.connect(
+                self._refresh_c64_overlays_now
+            )
+
+            # Stage ASM 1: kontextuelles Overlay fuer die typische C64-Sequenz
+            #     LDX #$00 / SEI / STX $01
+            # Das Widget liegt im Viewport und veraendert den ASM-Text nicht.
+            self.c64_code_overlay = QFrame(self.raw_editor.viewport())
+            self.c64_code_overlay.setObjectName("c64_code_explanation_overlay")
+            self.c64_code_overlay.setFrameShape(QFrame.StyledPanel)
+            self.c64_code_overlay.hide()
+            # Stage ASM 2: Das Overlay bleibt fest an den drei C64-Zeilen
+            # verankert. Falls seine Hoehe mehr als drei Editorzeilen benoetigt,
+            # werden nach STX $01 automatisch Leerzeilen eingefuegt.
+            self._c64_overlay_padding_adjusting = False
+            self._c64_overlay_padding_lines = 0
+            self._c64_code_overlay_cached_width = -1
+            self._c64_code_overlay_cached_height = 0
+            overlay_layout = QVBoxLayout(self.c64_code_overlay)
+            overlay_layout.setContentsMargins(10, 7, 10, 7)
+            overlay_layout.setSpacing(2)
+
+            self.c64_code_overlay_title = QLabel(
+                "6510: Speicher-Konfiguration $0001",
+                self.c64_code_overlay,
+            )
+            self.c64_code_overlay_title.setObjectName("c64_code_overlay_title")
+            self.c64_code_overlay_title.setTextFormat(Qt.PlainText)
+            overlay_layout.addWidget(self.c64_code_overlay_title)
+
+            self.c64_code_overlay_text = QLabel(
+                "X wird auf $00 gesetzt, IRQs werden gesperrt und danach "
+                "$00 nach $0001 geschrieben. Dadurch werden BASIC-/KERNAL-ROM "
+                "und I/O ausgeblendet; das darunterliegende RAM wird sichtbar.",
+                self.c64_code_overlay,
+            )
+            self.c64_code_overlay_text.setObjectName("c64_code_overlay_text")
+            self.c64_code_overlay_text.setWordWrap(True)
+            self.c64_code_overlay_text.setTextFormat(Qt.PlainText)
+            overlay_layout.addWidget(self.c64_code_overlay_text)
+
+            topic_name = "test"
+            topic_id = int(help_py.get(topic_name, 0))
+            self.c64_code_overlay_link = QLabel(
+                f'<a href="c64help:{topic_name}:{topic_id}">'
+                f'Hilfe öffnen: {topic_name} (Context-ID {topic_id})</a>',
+                self.c64_code_overlay,
+            )
+            self.c64_code_overlay_link.setObjectName("c64_code_overlay_link")
+            self.c64_code_overlay_link.setTextFormat(Qt.RichText)
+            self.c64_code_overlay_link.setTextInteractionFlags(
+                Qt.TextBrowserInteraction
+            )
+            self.c64_code_overlay_link.setOpenExternalLinks(False)
+            self.c64_code_overlay_link.linkActivated.connect(
+                self._open_c64_code_overlay_help
+            )
+            overlay_layout.addWidget(self.c64_code_overlay_link)
+
+            # Stage ASM 8: updateRequest wird absichtlich NICHT verwendet.
+            # Dieses Signal entsteht waehrend Paint-/Scroll-Zyklen und konnte
+            # zusammen mit Overlay-Geometrieaenderungen eine Repaint-Kaskade
+            # erzeugen. Scrollbars reichen als Positionssignal vollkommen aus.
+            self.raw_editor.horizontalScrollBar().valueChanged.connect(
+                lambda _value: self._schedule_c64_overlay_refresh()
+            )
+            self.raw_editor.verticalScrollBar().valueChanged.connect(
+                lambda _value: self._schedule_c64_overlay_refresh()
+            )
+            # Stage ASM 4: Auch das Ein-/Ausblenden einer Scrollbar sowie eine
+            # geaenderte Gutterbreite (z. B. bei mehr Zeilennummer-Ziffern)
+            # veraendern die tatsaechliche Viewportbreite. Das Overlay wird
+            # deshalb nach Range-/Block-Aenderungen erneut auf die komplette
+            # sichtbare Editorflaeche angepasst.
+            self.raw_editor.horizontalScrollBar().rangeChanged.connect(
+                lambda _minimum, _maximum: QTimer.singleShot(
+                    0, self._schedule_c64_overlay_refresh
+                )
+            )
+            self.raw_editor.verticalScrollBar().rangeChanged.connect(
+                lambda _minimum, _maximum: QTimer.singleShot(
+                    0, self._schedule_c64_overlay_refresh
+                )
+            )
+            self.raw_editor.blockCountChanged.connect(
+                lambda _count: QTimer.singleShot(
+                    0, self._schedule_c64_overlay_refresh
+                )
+            )
+            self.raw_editor.viewport_geometry_changed.connect(
+                lambda: self._schedule_c64_overlay_refresh()
+            )
+            self.raw_editor.textChanged.connect(
+                self._invalidate_c64_overlay_cache
+            )
+
+            # Stage ASM 6: Zweites, mit QPainter gezeichnetes semantisches
+            # Overlay fuer die Relocation-/Bootstrap-Schleife. Die Optik lehnt
+            # sich an das vorhandene Drei-Befehle-Overlay an, die Inhalte werden
+            # jedoch komplett manuell gezeichnet.
+            self.c64_relocation_overlay = C64RelocationSemanticOverlay(
+                self.raw_editor.viewport()
+            )
+            self.c64_relocation_overlay.setObjectName(
+                "c64_relocation_semantic_overlay"
+            )
+            self.c64_relocation_overlay.setFont(self.c64_code_overlay.font())
+            self.c64_relocation_overlay.help_requested.connect(
+                lambda topic, context_id: self.c64_help_topic_requested.emit(
+                    self, topic, context_id
+                )
+            )
+            self.c64_relocation_overlay.hide()
+            self._c64_relocation_overlay_padding_adjusting = False
+            self._c64_relocation_overlay_padding_lines = 0
+            self._c64_relocation_overlay_cached_width = -1
+            self._c64_relocation_overlay_cached_height = 0
+            # Stage ASM 8: Das zweite Overlay teilt sich denselben
+            # gedrosselten Refresh-Timer mit dem Drei-Befehle-Overlay.
+
+            # Stage 257: Fortschritt des C64-Disassemblers direkt am unteren
+            # Rand des Eingabe-/Rohdaten-Editors. Die Leiste wird vor dem Start
+            # mit 1 % sichtbar und erst nach Abschluss wieder ausgeblendet.
+            self.c64_disassembly_progress = QProgressBar(self.source_page)
+            self.c64_disassembly_progress.setObjectName("c64_disassembly_progress")
+            self.c64_disassembly_progress.setRange(0, 100)
+            self.c64_disassembly_progress.setValue(1)
+            self.c64_disassembly_progress.setTextVisible(True)
+            self.c64_disassembly_progress.setFormat("C64-Disassembly: 1 %")
+            self.c64_disassembly_progress.setFixedHeight(20)
+            self.c64_disassembly_progress.hide()
+            source_layout.addWidget(self.c64_disassembly_progress)
+            self._c64_disassembly_total_size = 0
+            self._c64_disassembly_running = False
+            self._c64_disassembly_started_at = 0.0
 
             # Stage 198: Pascal-Fortschritt direkt unter dem Eingabe-Editor.
             # Für andere Sprachen bleibt die Leiste vollständig ausgeblendet.
@@ -24009,6 +24976,9 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 self._view_modification_changed
             )
             self.hex_editor.saveRequested.connect(self._request_hex_save)
+            self.hex_editor.contextHelpRequested.connect(
+                self._emit_c64_hex_help
+            )
             self.views.addTab(self.hex_editor, "Hex-Editor")
 
             self.hints_editor = SourceTextEdit(self.views)
@@ -24041,7 +25011,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
 
             self.update_syntax_highlighting()
 
-            if self.binary_disassembly_mode:
+            if self.binary_disassembly_mode or self.assembler_text_mode:
                 self.views.setCurrentWidget(self.source_page)
             elif (
                 self.path is not None
@@ -24051,6 +25021,537 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
 
             layout.addWidget(self.views)
             self.set_dark_mode(dark_mode)
+            self._invalidate_c64_overlay_cache()
+
+        def _schedule_c64_overlay_refresh(self, delay_ms: int = 16) -> None:
+            """Koalesziert alle Scroll-/Resize-Refreshes in einen GUI-Tick."""
+            timer = getattr(self, "_c64_overlay_refresh_timer", None)
+            if timer is None:
+                return
+            delay = max(0, int(delay_ms))
+            # Bei kontinuierlichem Scrollen nicht fuer jedes Signal einen neuen
+            # Event erzeugen. Ein bereits geplanter 16-ms-Refresh genuegt.
+            if not timer.isActive():
+                timer.start(delay)
+
+        def _invalidate_c64_overlay_cache(self) -> None:
+            """Markiert Markerpositionen nach echtem Textwechsel als ungueltig."""
+            self._c64_overlay_cache_dirty = True
+            self._c64_memory_switch_block_numbers = None
+            self._c64_relocation_block_numbers = None
+            timer = getattr(self, "_c64_overlay_refresh_timer", None)
+            if timer is not None:
+                # Beim Tippen etwas staerker entprellen; setPlainText wird nach
+                # spaetestens 40 ms einmal analysiert.
+                timer.start(40)
+
+        def _refresh_c64_overlays_now(self) -> None:
+            self._refresh_c64_code_overlay()
+            self._refresh_c64_relocation_overlay()
+
+        def _scan_c64_overlay_markers(self) -> None:
+            """Durchsucht das Listing hoechstens einmal pro Textaenderung."""
+            if not getattr(self, "_c64_overlay_cache_dirty", True):
+                return
+
+            memory_numbers = None
+            relocation_numbers = None
+            document = self.raw_editor.document()
+            block = document.firstBlock()
+            while block.isValid() and (
+                memory_numbers is None or relocation_numbers is None
+            ):
+                text0 = block.text()
+                upper0 = text0.upper()
+
+                if (
+                    memory_numbers is None
+                    and "$0817" in upper0
+                    and "LDX" in upper0
+                    and "#$00" in upper0
+                ):
+                    second = block.next()
+                    third = second.next() if second.isValid() else second
+                    if (
+                        second.isValid()
+                        and third.isValid()
+                        and re.search(r"\bLDX\s+#\$00\b", text0, re.IGNORECASE)
+                        and re.search(r"\$0817\s*:\s*A2\s+00\b", text0, re.IGNORECASE)
+                        and re.search(r"^\s*SEI\b", second.text(), re.IGNORECASE)
+                        and re.search(r"\$0819\s*:\s*78\b", second.text(), re.IGNORECASE)
+                        and re.search(r"\bSTX\s+\$01\b", third.text(), re.IGNORECASE)
+                        and re.search(r"\$081A\s*:\s*86\s+01\b", third.text(), re.IGNORECASE)
+                    ):
+                        memory_numbers = (
+                            block.blockNumber(),
+                            second.blockNumber(),
+                            third.blockNumber(),
+                        )
+
+                if (
+                    relocation_numbers is None
+                    and "$081C" in upper0
+                    and "LDA" in upper0
+                    and "$081D,X" in upper0
+                ):
+                    blocks = [block]
+                    current = block
+                    for _ in range(5):
+                        current = current.next()
+                        if not current.isValid():
+                            break
+                        blocks.append(current)
+                    if len(blocks) == 6:
+                        checks = (
+                            (r"^\s*LDA\s+\$081D,X\b", r"\$081C\s*:\s*BD\s+1D\s+08\b"),
+                            (r"^\s*STA\s+\$FB,X\b", r"\$081F\s*:\s*95\s+FB\b"),
+                            (r"^\s*TXS\b", r"\$0821\s*:\s*9A\b"),
+                            (r"^\s*INX\b", r"\$0822\s*:\s*E8\b"),
+                            (r"^\s*BNE\s+L081C\b", r"\$0823\s*:\s*D0\s+F7\b"),
+                            (r"^\s*JMP\s+\$0100\b", r"\$0825\s*:\s*4C\s+00\s+01\b"),
+                        )
+                        if all(
+                            re.search(op_pat, candidate.text(), re.IGNORECASE)
+                            and re.search(byte_pat, candidate.text(), re.IGNORECASE)
+                            for candidate, (op_pat, byte_pat) in zip(blocks, checks)
+                        ):
+                            relocation_numbers = tuple(
+                                candidate.blockNumber() for candidate in blocks
+                            )
+
+                block = block.next()
+
+            self._c64_memory_switch_block_numbers = memory_numbers
+            self._c64_relocation_block_numbers = relocation_numbers
+            self._c64_overlay_cache_dirty = False
+
+        def _blocks_from_numbers(self, numbers):
+            if not numbers:
+                return None
+            document = self.raw_editor.document()
+            blocks = tuple(document.findBlockByNumber(int(n)) for n in numbers)
+            if any(not block.isValid() for block in blocks):
+                return None
+            return blocks
+
+        def _find_c64_memory_switch_blocks(self):
+            self._scan_c64_overlay_markers()
+            return self._blocks_from_numbers(
+                self._c64_memory_switch_block_numbers
+            )
+
+        def _c64_overlay_blank_lines_after(self, block) -> int:
+            """Zaehlt direkt folgende echte Leerzeilen hinter *block*."""
+            count = 0
+            current = block.next()
+            while current.isValid() and not current.text().strip():
+                count += 1
+                current = current.next()
+            return count
+
+        def _ensure_c64_code_overlay_padding(
+            self,
+            blocks,
+            overlay_height: int,
+            three_line_height: int,
+        ) -> bool:
+            """Reserviert unter den drei Befehlen genug vertikalen Platz.
+
+            Das Overlay selbst bleibt rechts hinter den Kommentaren und beginnt
+            auf Hoehe von LDX #$00. Ist es hoeher als die drei Quelltextzeilen,
+            werden direkt nach STX $01 so viele Leerzeilen eingefuegt, dass der
+            nachfolgende Assembler-Code garantiert erst unterhalb des Overlays
+            beginnt. Bereits vorhandene Leerzeilen werden angerechnet.
+            """
+            if getattr(self, "_c64_overlay_padding_adjusting", False):
+                return False
+
+            line_height = max(1, int(self.raw_editor.fontMetrics().lineSpacing()))
+            extra_pixels = max(0, int(overlay_height) - int(three_line_height) + 4)
+            required_blank_lines = (extra_pixels + line_height - 1) // line_height
+            self._c64_overlay_padding_lines = int(required_blank_lines)
+            if required_blank_lines <= 0:
+                return False
+
+            existing_blank_lines = self._c64_overlay_blank_lines_after(blocks[2])
+            missing = max(0, required_blank_lines - existing_blank_lines)
+            if missing <= 0:
+                return False
+
+            document = self.raw_editor.document()
+            was_modified = document.isModified()
+            cursor = QTextCursor(blocks[2])
+            cursor.movePosition(QTextCursor.EndOfBlock)
+
+            self._c64_overlay_padding_adjusting = True
+            try:
+                cursor.beginEditBlock()
+                for _ in range(missing):
+                    cursor.insertBlock()
+                cursor.endEditBlock()
+                # Das Listing stammt bei PRG-Dateien aus dem Disassembler. Die
+                # rein visuell benoetigten Abstandzeilen sollen eine frisch
+                # geoeffnete Datei nicht als vom Benutzer geaendert markieren.
+                document.setModified(was_modified)
+            finally:
+                self._c64_overlay_padding_adjusting = False
+
+            self._invalidate_c64_overlay_cache()
+            return True
+
+        def _refresh_c64_code_overlay(self) -> None:
+            overlay = getattr(self, "c64_code_overlay", None)
+            if overlay is None:
+                return
+            if not self.binary_disassembly_mode:
+                overlay.hide()
+                return
+
+            blocks = self._find_c64_memory_switch_blocks()
+            if not blocks:
+                overlay.hide()
+                return
+
+            viewport = self.raw_editor.viewport()
+            first_cursor = QTextCursor(blocks[0])
+            third_cursor = QTextCursor(blocks[2])
+            first_end = QTextCursor(blocks[0])
+            second_end = QTextCursor(blocks[1])
+            third_end = QTextCursor(blocks[2])
+            for cursor in (first_end, second_end, third_end):
+                cursor.movePosition(QTextCursor.EndOfBlock)
+
+            first_rect = self.raw_editor.cursorRect(first_cursor)
+            third_rect = self.raw_editor.cursorRect(third_cursor)
+
+            # Stage ASM 2: Das Overlay gehoert ausschliesslich zu diesen drei
+            # Zeilen. Sobald eine der drei Zeilen den sichtbaren Editorbereich
+            # verlaesst, wird auch die Erklaerung ausgeblendet.
+            if first_rect.top() < 0 or third_rect.bottom() > viewport.height():
+                overlay.hide()
+                return
+
+            # Stage ASM 5: Die in Stage 4 eingefuehrte Overlay-Breite bleibt
+            # unveraendert: der gesamte sichtbare Editor-Viewport abzueglich
+            # je 5 Pixel links/rechts. Die *Position* ist dagegen wieder an den
+            # Assemblertext gebunden. Die linke Kante beginnt direkt hinter dem
+            # laengsten Kommentar der drei Befehle und wandert daher beim
+            # horizontalen Scrollen mit dem Listing mit.
+            overlay_left_margin = 5
+            overlay_right_margin = 5
+            viewport_width = max(0, int(viewport.width()))
+            overlay_width = max(
+                1,
+                viewport_width - overlay_left_margin - overlay_right_margin,
+            )
+
+            end_x = max(
+                self.raw_editor.cursorRect(first_end).right(),
+                self.raw_editor.cursorRect(second_end).right(),
+                self.raw_editor.cursorRect(third_end).right(),
+            )
+            preferred_x = end_x + 14
+
+            overlay_layout = overlay.layout()
+            # Stage ASM 8: QLabel-/Layout-Geometrie nur dann neu setzen, wenn
+            # sich die Viewportbreite wirklich geaendert hat. Beim Scrollen ist
+            # die Breite konstant; wiederholtes setFixedWidth()/activate() war
+            # daher reine GUI-Arbeit im Hot Path.
+            if self._c64_code_overlay_cached_width != overlay_width:
+                if overlay_layout is not None:
+                    margins = overlay_layout.contentsMargins()
+                    content_width = max(
+                        1, overlay_width - margins.left() - margins.right()
+                    )
+                else:
+                    content_width = max(1, overlay_width - 20)
+                self.c64_code_overlay_title.setFixedWidth(content_width)
+                self.c64_code_overlay_text.setFixedWidth(content_width)
+                self.c64_code_overlay_link.setFixedWidth(content_width)
+                overlay.setMinimumWidth(overlay_width)
+                overlay.setMaximumWidth(overlay_width)
+                if overlay_layout is not None:
+                    overlay_layout.activate()
+                target_height = max(1, int(overlay.sizeHint().height()))
+                self._c64_code_overlay_cached_width = overlay_width
+                self._c64_code_overlay_cached_height = target_height
+            else:
+                target_height = max(
+                    1, int(self._c64_code_overlay_cached_height or overlay.height())
+                )
+            if overlay.width() != overlay_width or overlay.height() != target_height:
+                overlay.resize(overlay_width, target_height)
+
+            line_height = max(1, int(self.raw_editor.fontMetrics().lineSpacing()))
+            three_line_height = max(
+                line_height * 3,
+                int(third_rect.bottom() - first_rect.top() + 1),
+            )
+            if self._ensure_c64_code_overlay_padding(
+                blocks, overlay.height(), three_line_height
+            ):
+                # Die QTextBlocks sind nach dem Einfuegen ungueltig geworden;
+                # der per QTimer geplante Durchlauf berechnet ihre Position neu.
+                overlay.hide()
+                return
+
+            # Stage ASM 5: Wie in Stage 3 beginnt das Overlay hinter den
+            # Kommentaren der drei Befehle. Da cursorRect() den aktuellen
+            # horizontalen Scroll-Offset bereits beruecksichtigt, scrollt das
+            # Overlay exakt mit dem Assemblertext. Es wird absichtlich nicht an
+            # x=5 festgeklemmt; dadurch kann man durch horizontales Scrollen die
+            # komplette (Stage-4-)Breite in den sichtbaren Viewport holen.
+            x = preferred_x
+            y = max(0, first_rect.top())
+            if overlay.x() != x or overlay.y() != y:
+                overlay.move(x, y)
+            if not overlay.isVisible():
+                overlay.show()
+                overlay.raise_()
+            # Stage ASM 3: Maschinenbefehl-Live-Hilfe ist die oberste
+            # Overlay-Ebene. Ein vorhandenes C64-Code-Overlay darf sie nicht
+            # verdecken.
+            instruction_help = getattr(
+                self.raw_editor, "instruction_help_frame", None
+            )
+            if instruction_help is not None and instruction_help.isVisible():
+                instruction_help.raise_()
+
+        def _find_c64_relocation_loop_blocks(self):
+            self._scan_c64_overlay_markers()
+            return self._blocks_from_numbers(
+                self._c64_relocation_block_numbers
+            )
+
+        def _ensure_c64_relocation_overlay_padding(
+            self,
+            blocks,
+            overlay_height: int,
+            block_height: int,
+        ) -> bool:
+            """Reserviert unter dem Relocation-Block genug vertikalen Platz."""
+            if getattr(self, "_c64_relocation_overlay_padding_adjusting", False):
+                return False
+
+            line_height = max(1, int(self.raw_editor.fontMetrics().lineSpacing()))
+            extra_pixels = max(0, int(overlay_height) - int(block_height) + 4)
+            required_blank_lines = (extra_pixels + line_height - 1) // line_height
+            self._c64_relocation_overlay_padding_lines = int(required_blank_lines)
+            if required_blank_lines <= 0:
+                return False
+
+            existing_blank_lines = self._c64_overlay_blank_lines_after(blocks[-1])
+            missing = max(0, required_blank_lines - existing_blank_lines)
+            if missing <= 0:
+                return False
+
+            document = self.raw_editor.document()
+            was_modified = document.isModified()
+            cursor = QTextCursor(blocks[-1])
+            cursor.movePosition(QTextCursor.EndOfBlock)
+
+            self._c64_relocation_overlay_padding_adjusting = True
+            try:
+                cursor.beginEditBlock()
+                for _ in range(missing):
+                    cursor.insertBlock()
+                cursor.endEditBlock()
+                document.setModified(was_modified)
+            finally:
+                self._c64_relocation_overlay_padding_adjusting = False
+
+            self._invalidate_c64_overlay_cache()
+            return True
+
+        def _refresh_c64_relocation_overlay(self) -> None:
+            overlay = getattr(self, "c64_relocation_overlay", None)
+            if overlay is None:
+                return
+            if not self.binary_disassembly_mode:
+                overlay.hide()
+                return
+
+            blocks = self._find_c64_relocation_loop_blocks()
+            if not blocks:
+                overlay.hide()
+                return
+
+            viewport = self.raw_editor.viewport()
+            first_cursor = QTextCursor(blocks[0])
+            last_cursor = QTextCursor(blocks[-1])
+            end_cursors = []
+            for block in blocks:
+                cursor = QTextCursor(block)
+                cursor.movePosition(QTextCursor.EndOfBlock)
+                end_cursors.append(cursor)
+
+            first_rect = self.raw_editor.cursorRect(first_cursor)
+            last_rect = self.raw_editor.cursorRect(last_cursor)
+            if first_rect.top() < 0 or last_rect.bottom() > viewport.height():
+                overlay.hide()
+                return
+
+            viewport_width = max(0, int(viewport.width()))
+            overlay_width = max(1, viewport_width - 10)
+            if self._c64_relocation_overlay_cached_width != overlay_width:
+                overlay.set_content_width(overlay_width)
+                target_height = max(1, int(overlay.preferred_height(overlay_width)))
+                self._c64_relocation_overlay_cached_width = overlay_width
+                self._c64_relocation_overlay_cached_height = target_height
+            else:
+                target_height = max(
+                    1, int(self._c64_relocation_overlay_cached_height or overlay.height())
+                )
+            if overlay.width() != overlay_width or overlay.height() != target_height:
+                overlay.resize(overlay_width, target_height)
+
+            line_height = max(1, int(self.raw_editor.fontMetrics().lineSpacing()))
+            block_height = max(
+                line_height * len(blocks),
+                int(last_rect.bottom() - first_rect.top() + 1),
+            )
+            if self._ensure_c64_relocation_overlay_padding(
+                blocks, overlay.height(), block_height
+            ):
+                overlay.hide()
+                return
+
+            end_x = max(self.raw_editor.cursorRect(cursor).right() for cursor in end_cursors)
+            x = end_x + 14
+            y = max(0, first_rect.top())
+            if overlay.x() != x or overlay.y() != y:
+                overlay.move(x, y)
+            if not overlay.isVisible():
+                overlay.show()
+                overlay.raise_()
+            instruction_help = getattr(self.raw_editor, "instruction_help_frame", None)
+            if instruction_help is not None and instruction_help.isVisible():
+                instruction_help.raise_()
+
+        def _open_c64_code_overlay_help(self, _link: str = "") -> None:
+            topic = "test"
+            context_id = int(help_py.get(topic, 0))
+            self.c64_help_topic_requested.emit(self, topic, context_id)
+
+        def begin_c64_disassembly(self) -> None:
+            """Zeigt den C64-Fortschritt *vor* dem Workerstart sichtbar an.
+
+            Stage 259: Ein direkt nach show() gestarteter schneller Worker konnte
+            fertig sein, bevor Qt den ersten Paint-Event der ProgressBar ausfuehrte.
+            Deshalb erzwingen wir hier einmal Layout + Paint. Der Worker selbst
+            wird zusaetzlich erst ueber QTimer im naechsten GUI-Zyklus gestartet.
+            """
+            self._c64_disassembly_running = True
+            self._c64_disassembly_total_size = 0
+            self._c64_disassembly_started_at = time.monotonic()
+            self.c64_disassembly_progress.setRange(0, 100)
+            self.c64_disassembly_progress.setValue(1)
+            self.c64_disassembly_progress.setFormat("C64-Disassembly: 1 %")
+            self.c64_disassembly_progress.setVisible(True)
+            self.c64_disassembly_progress.raise_()
+            self.c64_disassembly_progress.updateGeometry()
+            self.source_page.updateGeometry()
+            self.source_page.layout().activate()
+            self.c64_disassembly_progress.repaint()
+            # Nur Paint/Timer ausliefern, keine Benutzereingaben verschachteln.
+            QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
+            self.raw_editor.setReadOnly(True)
+            self.hex_editor.setEnabled(False)
+
+        def set_c64_disassembly_size(self, total_size: int) -> None:
+            total = max(0, int(total_size or 0))
+            self._c64_disassembly_total_size = total
+            self.c64_disassembly_progress.setVisible(True)
+            self.c64_disassembly_progress.setValue(1)
+            self.c64_disassembly_progress.setFormat(
+                f"C64-Disassembly: 0 / {total} Bytes – %p %"
+            )
+            self.c64_disassembly_progress.update()
+
+        def set_c64_disassembly_progress(
+            self,
+            percent: int,
+            processed: int,
+            total_size: int,
+        ) -> None:
+            total = max(1, int(total_size or self._c64_disassembly_total_size or 1))
+            current = max(0, min(int(processed or 0), total))
+            value = max(1, min(100, int(percent or 1)))
+            self._c64_disassembly_total_size = total
+            self.c64_disassembly_progress.setVisible(True)
+            self.c64_disassembly_progress.setValue(value)
+            self.c64_disassembly_progress.setFormat(
+                f"C64-Disassembly: {current} / {total} Bytes – %p %"
+            )
+            # Stage ASM 8: progress() ist bereits auf Prozentwechsel gedrosselt.
+            # update() plant den Paint asynchron und blockiert den GUI-Thread
+            # nicht wie ein erzwungenes repaint() in jedem Signal-Slot.
+            self.c64_disassembly_progress.update()
+
+        def finish_c64_disassembly(
+            self,
+            raw_bytes: bytes,
+            listing: str,
+        ) -> None:
+            """Übernimmt Worker-Ergebnis atomar in Rohdaten- und Hex-Ansicht."""
+            self._syncing_views = True
+            try:
+                # Stage ASM 2: Ein neues Disassembly beginnt ohne geerbte
+                # Overlay-Abstandsverwaltung; die noetigen Leerzeilen werden
+                # nach dem Setzen anhand der aktuellen Font-/Overlayhoehe neu
+                # bestimmt.
+                self._c64_overlay_padding_lines = 0
+                self._c64_overlay_padding_adjusting = False
+                self.raw_editor.setPlainText(str(listing))
+                self.raw_editor.document().setModified(False)
+                self.hex_editor.set_data(bytes(raw_bytes), modified=False)
+                self._data_source = "hex"
+            finally:
+                self._syncing_views = False
+
+            total = len(raw_bytes)
+            self.c64_disassembly_progress.setVisible(True)
+            self.c64_disassembly_progress.setValue(100)
+            self.c64_disassembly_progress.setFormat(
+                f"C64-Disassembly: {total} / {total} Bytes – 100 %"
+            )
+            self.c64_disassembly_progress.repaint()
+            self.raw_editor.setReadOnly(False)
+            self.hex_editor.setEnabled(True)
+            self._c64_disassembly_running = False
+            self.update_syntax_highlighting()
+            self._last_modified_state = False
+            self._invalidate_c64_overlay_cache()
+
+            # Stage 259: Die Leiste muss auch bei winzigen PRGs wahrnehmbar sein.
+            # Mindestens 1200 ms ab Start sichtbar halten und 100 % mindestens
+            # 650 ms stehen lassen. Das verlangsamt den Worker nicht; lediglich
+            # das Ausblenden der bereits fertigen Leiste wird verzoegert.
+            elapsed_ms = max(0, int(
+                (time.monotonic() - self._c64_disassembly_started_at) * 1000
+            ))
+            hide_delay_ms = max(650, 1200 - elapsed_ms)
+            QTimer.singleShot(hide_delay_ms, self._hide_c64_disassembly_progress)
+
+        def fail_c64_disassembly(self, message: str) -> None:
+            self._syncing_views = True
+            try:
+                self.raw_editor.setPlainText(
+                    "; C64-Disassembly fehlgeschlagen\n"
+                    f"; {str(message)}\n"
+                )
+                self.raw_editor.document().setModified(False)
+            finally:
+                self._syncing_views = False
+            self.raw_editor.setReadOnly(False)
+            self.hex_editor.setEnabled(True)
+            self._c64_disassembly_running = False
+            self.c64_disassembly_progress.setFormat("C64-Disassembly: Fehler")
+            QTimer.singleShot(1800, self._hide_c64_disassembly_progress)
+
+        def _hide_c64_disassembly_progress(self) -> None:
+            if not self._c64_disassembly_running:
+                self.c64_disassembly_progress.hide()
 
         @property
         def display_name(self) -> str:
@@ -24070,7 +25571,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             return ""
 
         def source_language(self) -> str:
-            if self.binary_disassembly_mode:
+            if self.binary_disassembly_mode or self.assembler_text_mode:
                 return "assembler"
             suffix = self.effective_suffix
             if suffix in {".bas", ".basic"}:
@@ -24093,7 +25594,67 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 return "markdown"
             return "text"
 
+        def _c64_disassembly_word_at_cursor(self, fallback: str = "") -> str:
+            """Liefert fuer das PRG-Disassembly Opcode, Symbol oder $Adresse.
+
+            SourceTextEdit erkennt normale Bezeichner bereits selbst. Bei C64-
+            Listings sind jedoch Speicheradressen wie ``$D020`` und ``$0001``
+            mindestens genauso wichtig. Liegt F1 auf einem solchen Hexwert,
+            wird dieser hier als CHM-Suchbegriff uebernommen.
+            """
+            fallback = str(fallback or "").strip()
+            if fallback:
+                return fallback
+
+            editor = self.raw_editor
+            cursor = editor.textCursor()
+            line = cursor.block().text()
+            column = max(0, int(cursor.positionInBlock()))
+            for match in re.finditer(r"\$[0-9A-Fa-f]{2,4}", line):
+                if match.start() <= column <= match.end():
+                    return match.group(0).upper()
+                if column > 0 and match.start() <= column - 1 < match.end():
+                    return match.group(0).upper()
+            return ""
+
+        def _emit_c64_hex_help(self, byte_index: int) -> None:
+            """F1-Hilfe im Hex-Viewer mit PRG-Byteindex -> C64-Adresse."""
+            index = max(0, int(byte_index))
+            data = self.hex_editor.data()
+            word = ""
+
+            if (
+                self.effective_suffix == ".prg"
+                and len(data) >= 2
+            ):
+                load_address = int(data[0]) | (int(data[1]) << 8)
+                # Die ersten zwei PRG-Bytes sind die Ladeadresse selbst.
+                # Ab Byte 2 beginnt der Inhalt an load_address.
+                address = (
+                    load_address
+                    if index < 2
+                    else load_address + index - 2
+                ) & 0xFFFF
+                word = f"${address:04X}"
+            else:
+                # Fuer andere C64-Binaeransichten ist der Byteoffset der
+                # sinnvollste reproduzierbare Kontext.
+                word = f"${index & 0xFFFF:04X}"
+
+            self.context_help_requested.emit(self, "c64", word)
+
         def _emit_context_help(self, view_kind: str, word: str) -> None:
+            # Ein geoeffnetes PRG zeigt im Rohdaten-Tab das C64-Disassembly.
+            # F1 muss hier immer die feste help/c64.chm verwenden und darf
+            # nicht auf die zuletzt geoeffnete allgemeine CHM zurueckfallen.
+            if self.binary_disassembly_mode and view_kind == "source":
+                self.context_help_requested.emit(
+                    self,
+                    "c64",
+                    self._c64_disassembly_word_at_cursor(word),
+                )
+                return
+
             language = (
                 "assembler"
                 if view_kind == "assembler"
@@ -24178,7 +25739,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self._view_modification_changed(False)
 
         def focus_preferred_editor(self) -> None:
-            if self.binary_disassembly_mode:
+            if self.binary_disassembly_mode or self.assembler_text_mode:
                 self.views.setCurrentWidget(self.source_page)
                 self.raw_editor.setFocus()
             elif (
@@ -24271,6 +25832,35 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             if self._syncing_views:
                 return
             data = self.hex_editor.data()
+
+            # Stage 256: Bei C64-.prg/.bin darf der Rohdaten-Editor niemals
+            # eine Latin-1-Darstellung der Binärbytes zeigen. Er bleibt die
+            # disassemblierte ASM-Sicht auf genau den aktuellen Hex-Puffer.
+            if self.binary_disassembly_mode:
+                try:
+                    text, _load_address = format_c64_program_disassembly(
+                        data,
+                        suffix=self.effective_suffix or ".prg",
+                        source_name=self.display_name,
+                    )
+                except ValueError as exc:
+                    text = (
+                        f"; Disassembly nicht möglich: {exc}\n"
+                        f"; Binärdaten: {len(data)} Byte\n"
+                    )
+
+                self._syncing_views = True
+                try:
+                    self.raw_editor.setPlainText(text)
+                    self.raw_editor.document().setModified(False)
+                    self._data_source = "hex"
+                finally:
+                    self._syncing_views = False
+                self._view_modification_changed(True)
+                self._invalidate_c64_overlay_cache()
+                QTimer.singleShot(0, self._refresh_c64_relocation_overlay)
+                return
+
             try:
                 text = data.decode(self.encoding)
             except UnicodeError:
@@ -24284,6 +25874,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             finally:
                 self._syncing_views = False
             self._view_modification_changed(True)
+            self._invalidate_c64_overlay_cache()
 
         def _request_hex_save(self, save_as: bool) -> None:
             window = self.window()
@@ -24525,8 +26116,11 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             # Quelltext ist ein vollwertiger Assembler-Quelltext. Dadurch
             # erscheinen Assemble/Start direkt ueber dem Editor.
             is_disassembly = self.binary_disassembly_mode
+            is_assembler_text = self.assembler_text_mode
             is_assembler_source = (
-                suffix in self.ASSEMBLER_EXTENSIONS or is_disassembly
+                suffix in self.ASSEMBLER_EXTENSIONS
+                or is_disassembly
+                or is_assembler_text
             )
             is_assembler = is_assembler_source
             is_pascal = suffix in self.PASCAL_EXTENSIONS
@@ -24768,6 +26362,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             # ueber denselben internen Assembler-/Startpfad laufen.
             return (
                 self.binary_disassembly_mode
+                or self.assembler_text_mode
                 or self.effective_suffix in self.ASSEMBLER_EXTENSIONS
             )
 
@@ -25051,6 +26646,19 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                     editor.set_markdown_mode(source_is_markdown)
                 editor.viewport().update()
 
+            # Stage ASM 1: Overlay bleibt auf dem navyfarbenen C64-Listing
+            # kontrastreich und klickbar.
+            if hasattr(self, "c64_code_overlay"):
+                self.c64_code_overlay.setStyleSheet(
+                    "QFrame#c64_code_explanation_overlay{"
+                    "background:rgba(5,18,45,235);border:1px solid #4fc3ff;"
+                    "border-radius:6px;}"
+                    "QLabel#c64_code_overlay_title{color:#ffe600;font-weight:bold;}"
+                    "QLabel#c64_code_overlay_text{color:#f2f5f8;}"
+                    "QLabel#c64_code_overlay_link{color:#7fdbff;}"
+                    "QLabel#c64_code_overlay_link a{color:#7fdbff;text-decoration:underline;}"
+                )
+
             hex_palette = QPalette(QApplication.palette())
             if enabled:
                 hex_palette.setColor(QPalette.Base, QColor(0, 0, 128))
@@ -25241,12 +26849,23 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.source_dialogs = []
             self.pending_context_language = ""
             self.pending_context_word = ""
+            self.pending_context_id = 0
+            self.context_id_map: Dict[int, str] = {}
+
+            # Stage 262: Eigene gelbe Scrollbar-Pfeile fuer den CHM-Viewer.
+            # Die Dateien bleiben fuer die gesamte Lebensdauer des Dialogs
+            # erhalten und werden nach dem Schliessen automatisch entfernt.
+            self.chm_scrollbar_asset_directory = QTemporaryDir()
+            self.chm_scrollbar_arrow_assets = (
+                self._create_chm_scrollbar_arrow_assets()
+            )
 
             self.create_actions()
             self.create_menu()
             self.create_toolbar()
             self.create_content()
             self.create_statusbar()
+            self.apply_widget_scrollbar_theme()
             self.connect_signals()
             self.restore_state()
             self.update_navigation()
@@ -25448,6 +27067,166 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
 
         # ----- Theme des HTML-Inhalts --------------------------------
 
+        def _create_chm_scrollbar_arrow_assets(self) -> dict:
+            '''Erzeugt gelbe Pfeile fuer die nativen Qt-Scrollbars.'''
+            directory = getattr(
+                self,
+                "chm_scrollbar_asset_directory",
+                None,
+            )
+            if directory is None or not directory.isValid():
+                return {}
+
+            asset_directory = Path(directory.path())
+            directions = {
+                "up": ((7.0, 3.0), (3.0, 10.0), (11.0, 10.0)),
+                "down": ((3.0, 4.0), (11.0, 4.0), (7.0, 11.0)),
+                "left": ((3.0, 7.0), (10.0, 3.0), (10.0, 11.0)),
+                "right": ((4.0, 3.0), (11.0, 7.0), (4.0, 11.0)),
+            }
+            assets = {}
+
+            for direction, points in directions.items():
+                pixmap = QPixmap(14, 14)
+                pixmap.fill(Qt.transparent)
+                painter = QPainter(pixmap)
+                painter.setRenderHint(QPainter.Antialiasing, True)
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(QColor(255, 230, 0))
+
+                arrow = QPainterPath()
+                arrow.moveTo(QPointF(*points[0]))
+                arrow.lineTo(QPointF(*points[1]))
+                arrow.lineTo(QPointF(*points[2]))
+                arrow.closeSubpath()
+                painter.drawPath(arrow)
+                painter.end()
+
+                filename = asset_directory / f"chm_scrollbar_{direction}.png"
+                if pixmap.save(str(filename), "PNG"):
+                    assets[direction] = filename.as_posix()
+
+            return assets
+
+        def apply_widget_scrollbar_theme(self) -> None:
+            '''Faerbt die nativen Qt-Scrollbars des CHM-Dialogs.'''
+            if self.dark_mode_enabled:
+                # Stage ASM 3: etwas heller als klassisches Navyblau.
+                track = "#163b73"
+                handle = "#245a9a"
+                handle_hover = "#3375bd"
+                button = "#1d4d87"
+                border = "#4b79ad"
+            else:
+                track = "#d0d0d0"
+                handle = "#969696"
+                handle_hover = "#7f7f7f"
+                button = "#b8b8b8"
+                border = "#8b8b8b"
+
+            arrows = getattr(self, "chm_scrollbar_arrow_assets", {})
+            up = arrows.get("up", "")
+            down = arrows.get("down", "")
+            left = arrows.get("left", "")
+            right = arrows.get("right", "")
+
+            arrow_rules = ""
+            if all((up, down, left, right)):
+                arrow_rules = f'''
+QDialog#chm_viewer_dialog QScrollBar::up-arrow:vertical {{
+    image: url("{up}");
+    width: 14px;
+    height: 14px;
+}}
+QDialog#chm_viewer_dialog QScrollBar::down-arrow:vertical {{
+    image: url("{down}");
+    width: 14px;
+    height: 14px;
+}}
+QDialog#chm_viewer_dialog QScrollBar::left-arrow:horizontal {{
+    image: url("{left}");
+    width: 14px;
+    height: 14px;
+}}
+QDialog#chm_viewer_dialog QScrollBar::right-arrow:horizontal {{
+    image: url("{right}");
+    width: 14px;
+    height: 14px;
+}}
+'''
+
+            self.setStyleSheet(
+                f'''
+QDialog#chm_viewer_dialog QScrollBar:vertical {{
+    background: {track};
+    width: 16px;
+    margin: 16px 0 16px 0;
+    border: 1px solid {border};
+}}
+QDialog#chm_viewer_dialog QScrollBar::handle:vertical {{
+    background: {handle};
+    min-height: 24px;
+    border: 1px solid {border};
+    border-radius: 3px;
+}}
+QDialog#chm_viewer_dialog QScrollBar::handle:vertical:hover {{
+    background: {handle_hover};
+}}
+QDialog#chm_viewer_dialog QScrollBar::sub-line:vertical {{
+    background: {button};
+    height: 16px;
+    subcontrol-position: top;
+    subcontrol-origin: margin;
+    border: 1px solid {border};
+}}
+QDialog#chm_viewer_dialog QScrollBar::add-line:vertical {{
+    background: {button};
+    height: 16px;
+    subcontrol-position: bottom;
+    subcontrol-origin: margin;
+    border: 1px solid {border};
+}}
+QDialog#chm_viewer_dialog QScrollBar::add-page:vertical,
+QDialog#chm_viewer_dialog QScrollBar::sub-page:vertical {{
+    background: {track};
+}}
+QDialog#chm_viewer_dialog QScrollBar:horizontal {{
+    background: {track};
+    height: 16px;
+    margin: 0 16px 0 16px;
+    border: 1px solid {border};
+}}
+QDialog#chm_viewer_dialog QScrollBar::handle:horizontal {{
+    background: {handle};
+    min-width: 24px;
+    border: 1px solid {border};
+    border-radius: 3px;
+}}
+QDialog#chm_viewer_dialog QScrollBar::handle:horizontal:hover {{
+    background: {handle_hover};
+}}
+QDialog#chm_viewer_dialog QScrollBar::sub-line:horizontal {{
+    background: {button};
+    width: 16px;
+    subcontrol-position: left;
+    subcontrol-origin: margin;
+    border: 1px solid {border};
+}}
+QDialog#chm_viewer_dialog QScrollBar::add-line:horizontal {{
+    background: {button};
+    width: 16px;
+    subcontrol-position: right;
+    subcontrol-origin: margin;
+    border: 1px solid {border};
+}}
+QDialog#chm_viewer_dialog QScrollBar::add-page:horizontal,
+QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
+    background: {track};
+}}
+{arrow_rules}
+'''
+            )
+
         def content_background_color(self) -> QColor:
             return QColor("#000000" if self.dark_mode_enabled else "#ffffff")
 
@@ -25487,6 +27266,12 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 visited     = "#c792ea"
                 active      = "#ffcc66"
                 scheme      = "dark"
+                # Stage ASM 3: WebEngine-Scrollbar passend zur helleren
+                # nativen CHM-Scrollbar.
+                scroll_track = "#163b73"
+                scroll_thumb = "#245a9a"
+                scroll_hover = "#3375bd"
+                scroll_button = "#1d4d87"
             else:
                 background  = "#ffffff"
                 foreground  = "#000000"
@@ -25494,6 +27279,34 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 visited     = "#551a8b"
                 active      = "#ee0000"
                 scheme      = "light"
+                scroll_track = "#d0d0d0"
+                scroll_thumb = "#969696"
+                scroll_hover = "#7f7f7f"
+                scroll_button = "#b8b8b8"
+
+            # QWebEngine/Chromium besitzt eigene Scrollbars. Qt-QSS erreicht
+            # diese nicht, daher bekommt der HTML-Inhalt eigenes WebKit-CSS.
+            # Die vier SVGs zeichnen die Scrollbar-Pfeile in Gelb.
+            arrow_up = (
+                "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' "
+                "width='14' height='14' viewBox='0 0 14 14'%3E"
+                "%3Cpath fill='%23ffe600' d='M7 3 L3 10 L11 10 Z'/%3E%3C/svg%3E"
+            )
+            arrow_down = (
+                "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' "
+                "width='14' height='14' viewBox='0 0 14 14'%3E"
+                "%3Cpath fill='%23ffe600' d='M3 4 L11 4 L7 11 Z'/%3E%3C/svg%3E"
+            )
+            arrow_left = (
+                "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' "
+                "width='14' height='14' viewBox='0 0 14 14'%3E"
+                "%3Cpath fill='%23ffe600' d='M3 7 L10 3 L10 11 Z'/%3E%3C/svg%3E"
+            )
+            arrow_right = (
+                "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' "
+                "width='14' height='14' viewBox='0 0 14 14'%3E"
+                "%3Cpath fill='%23ffe600' d='M4 3 L11 7 L4 11 Z'/%3E%3C/svg%3E"
+            )
 
             return (
                 ":root { color-scheme: " + scheme + "; }\n"
@@ -25504,8 +27317,44 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 f"a:link {{ color: {link}; }}\n"
                 f"a:visited {{ color: {visited}; }}\n"
                 f"a:active {{ color: {active}; }}\n"
+                "::-webkit-scrollbar {"
+                " width: 16px; height: 16px;"
+                f" background: {scroll_track};"
+                "}\n"
+                "::-webkit-scrollbar-track {"
+                f" background: {scroll_track};"
+                "}\n"
+                "::-webkit-scrollbar-thumb {"
+                f" background: {scroll_thumb};"
+                f" border: 2px solid {scroll_track};"
+                " border-radius: 4px;"
+                "}\n"
+                "::-webkit-scrollbar-thumb:hover {"
+                f" background: {scroll_hover};"
+                "}\n"
+                "::-webkit-scrollbar-corner {"
+                f" background: {scroll_track};"
+                "}\n"
+                "::-webkit-scrollbar-button:single-button {"
+                " width: 16px; height: 16px; display: block;"
+                f" background-color: {scroll_button};"
+                " background-repeat: no-repeat;"
+                " background-position: center;"
+                "}\n"
+                "::-webkit-scrollbar-button:single-button:vertical:decrement {"
+                f" background-image: url(\"{arrow_up}\");"
+                "}\n"
+                "::-webkit-scrollbar-button:single-button:vertical:increment {"
+                f" background-image: url(\"{arrow_down}\");"
+                "}\n"
+                "::-webkit-scrollbar-button:single-button:horizontal:decrement {"
+                f" background-image: url(\"{arrow_left}\");"
+                "}\n"
+                "::-webkit-scrollbar-button:single-button:horizontal:increment {"
+                f" background-image: url(\"{arrow_right}\");"
+                "}\n"
             )
-            
+
         # -------------------------------------------------------------------
         # Wendet das Anwendungstheme auf die aktuelle HTML-Seite an.
         # -------------------------------------------------------------------
@@ -25547,6 +27396,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
 
         def set_dark_mode(self, enabled: bool) -> None:
             self.dark_mode_enabled = bool(enabled)
+            self.apply_widget_scrollbar_theme()
             self.apply_content_theme()
 
         # ----- CHM laden ----------------------------------------------
@@ -25567,7 +27417,12 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 )
                 self.open_chm(filename)
 
-        def open_chm(self, filename: str) -> bool:
+        def open_chm(
+            self,
+            filename: str,
+            *,
+            remember_last: bool = True,
+        ) -> bool:
             source = Path(filename).expanduser().resolve()
             if not source.is_file():
                 QMessageBox.warning(
@@ -25588,6 +27443,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 root = Path(new_temporary.name)
                 ChmExtractor.extract(source, root)
                 topics, keywords, home_local = self.read_metadata(root)
+                context_id_map = read_chm_context_map(root)
             except Exception as exc:
                 if new_temporary is not None:
                     new_temporary.cleanup()
@@ -25607,6 +27463,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.content_root = root
             self.chm_path = source
             self.home_local = home_local
+            self.context_id_map = dict(context_id_map)
             if old_temporary is not None:
                 try:
                     old_temporary.cleanup()
@@ -25618,7 +27475,8 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.load_favorites()
             self.tabs.setCurrentWidget(self.topics_tab)
             self.file_status.setText(str(source))
-            self.settings.setValue("chm/last_file", str(source))
+            if remember_last:
+                self.settings.setValue("chm/last_file", str(source))
             self.setWindowTitle(f"{source.name} – CHM Viewer")
 
             topic_count = self.tree_count(self.topics_tab.tree)
@@ -25644,19 +27502,84 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                     lambda: self.open_context_topic(
                         self.pending_context_language,
                         self.pending_context_word,
+                        self.pending_context_id,
                     ),
                 )
             return True
 
-        def set_pending_context(self, language: str, word: str) -> None:
+        def set_pending_context(
+            self,
+            language: str,
+            word: str,
+            context_id: int = 0,
+        ) -> None:
             self.pending_context_language = str(language or "").casefold()
             self.pending_context_word = str(word or "").strip()
+            self.pending_context_id = max(0, int(context_id or 0))
 
-        def open_context_topic(self, language: str, word: str) -> bool:
-            """Sucht ein kontextbezogenes Thema in Index und Themenbaum."""
+        def _select_context_local(self, local: str) -> bool:
+            relative, fragment = clean_chm_local(local)
+            if not relative:
+                return False
+            wanted = relative.casefold()
+            best_item = None
+            for tree in (self.keywords_tab.tree, self.topics_tab.tree):
+                iterator = QTreeWidgetItemIterator(tree)
+                while iterator.value() is not None:
+                    item = iterator.value()
+                    item_local = str(item.data(0, CHM_ROLE_LOCAL) or "")
+                    item_relative, _item_fragment = clean_chm_local(item_local)
+                    if item_relative.casefold() == wanted:
+                        best_item = item
+                        break
+                    iterator += 1
+                if best_item is not None:
+                    break
+
+            if best_item is not None:
+                parent = best_item.parent()
+                while parent is not None:
+                    parent.setExpanded(True)
+                    parent = parent.parent()
+                tree = best_item.treeWidget()
+                tree.setCurrentItem(best_item)
+                tree.scrollToItem(best_item)
+                self.tabs.setCurrentWidget(
+                    self.keywords_tab if tree is self.keywords_tab.tree
+                    else self.topics_tab
+                )
+
+            resolved_local = relative + (("#" + fragment) if fragment else "")
+            self.load_local(resolved_local)
+            return True
+
+        def open_context_topic(
+            self,
+            language: str,
+            word: str,
+            context_id: int = 0,
+        ) -> bool:
+            """Oeffnet erst eine numerische Context-ID, sonst Text/Keyword."""
             needle = str(word or "").strip().casefold()
             language_name = str(language or "").strip().casefold()
+            context_id = max(0, int(context_id or 0))
+
+            if context_id:
+                local = str(self.context_id_map.get(context_id, "") or "")
+                if local and self._select_context_local(local):
+                    self.status_bar.showMessage(
+                        f"Kontexthilfe-ID {context_id}: {word or local}",
+                        5000,
+                    )
+                    return True
+
+            # Falls die CHM keine MAP/ALIAS-Metadaten mitliefert, ist der
+            # lesbare Dictionary-Key der reproduzierbare Fallback.
             if not needle:
+                self.status_bar.showMessage(
+                    f"Keine CHM-Zuordnung fuer Context-ID {context_id}",
+                    5000,
+                )
                 return False
 
             best_item = None
@@ -42033,6 +43956,1213 @@ QStackedWidget#learning_content_stack {{
                 self.arithmetic_widget.activate_game(game_key, title)
                 self.arithmetic_widget.setFocus(Qt.OtherFocusReason)
 
+    class MusicStaffCanvas(QWidget):
+        """Stage 263: vier interaktive Notensysteme mit 30 Setzpositionen."""
+
+        notes_changed = pyqtSignal()
+        note_selected = pyqtSignal(str)
+
+        NOTE_TYPES = (
+            ('whole', 'Ganze Note'),
+            ('half', 'Halbe Note'),
+            ('quarter', 'Viertelnote'),
+            ('eighth', 'Achtelnote'),
+            ('sixteenth', 'Sechzehntelnote'),
+        )
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.setObjectName('music_staff_canvas')
+            self.setMinimumSize(1320, 520)
+            self.setMouseTracking(True)
+            self.setContextMenuPolicy(Qt.DefaultContextMenu)
+            self._dark_mode = True
+            self.current_note_type = 'quarter'
+            self.notes = []
+            self._hover_staff = -1
+            self._hover_slot = -1
+            self._hover_step = 0
+            self.setToolTip(
+                'Linksklick: Note setzen • Rechtsklick: Notentyp auswählen/löschen'
+            )
+            self.setFocusPolicy(Qt.StrongFocus)
+
+        @staticmethod
+        def _note_type_label(note_type: str) -> str:
+            for key, label in MusicStaffCanvas.NOTE_TYPES:
+                if key == note_type:
+                    return label
+            return 'Viertelnote'
+
+        def set_dark_mode(self, enabled: bool) -> None:
+            self._dark_mode = bool(enabled)
+            self.update()
+
+        def _layout_metrics(self):
+            left = 92
+            right = max(left + 900, self.width() - 48)
+            slot_count = 30
+            slot_width = (right - left) / float(slot_count)
+            line_gap = 10.0
+            staff_tops = [55.0, 170.0, 285.0, 400.0]
+            return left, right, slot_count, slot_width, line_gap, staff_tops
+
+        def _position_from_point(self, point: QPoint):
+            left, right, count, slot_width, line_gap, staff_tops = self._layout_metrics()
+            x = max(left, min(right - 1, float(point.x())))
+            slot = int((x - left) / slot_width)
+            slot = max(0, min(count - 1, slot))
+
+            best_staff = 0
+            best_dist = 1e9
+            best_step = 0
+            y = float(point.y())
+            for staff_index, top in enumerate(staff_tops):
+                bottom_line = top + (4.0 * line_gap)
+                center = top + (2.0 * line_gap)
+                dist = abs(y - center)
+                if dist < best_dist:
+                    best_dist = dist
+                    best_staff = staff_index
+                    # Halber Linienabstand = Schritt von Linie zu Zwischenraum.
+                    best_step = int(round((bottom_line - y) / (line_gap / 2.0)))
+            best_step = max(-6, min(14, best_step))
+            return best_staff, slot, best_step
+
+        def _slot_center_x(self, slot: int) -> float:
+            left, _right, _count, slot_width, _gap, _tops = self._layout_metrics()
+            return left + ((slot + 0.5) * slot_width)
+
+        def _note_center_y(self, staff: int, step: int) -> float:
+            _left, _right, _count, _slot_width, line_gap, staff_tops = self._layout_metrics()
+            bottom_line = staff_tops[staff] + (4.0 * line_gap)
+            return bottom_line - (step * (line_gap / 2.0))
+
+        def _set_note_at(self, staff: int, slot: int, step: int) -> None:
+            self.notes = [
+                n for n in self.notes
+                if not (n['staff'] == staff and n['slot'] == slot)
+            ]
+            note = {
+                'staff': int(staff),
+                'slot': int(slot),
+                'step': int(step),
+                'type': str(self.current_note_type),
+            }
+            self.notes.append(note)
+            self.notes.sort(key=lambda n: (n['staff'], n['slot']))
+            self.note_selected.emit(
+                f"System {staff + 1}, Position {slot + 1}: "
+                f"{self._note_type_label(self.current_note_type)}"
+            )
+            self.notes_changed.emit()
+            self.update()
+
+        def _delete_note_at(self, staff: int, slot: int) -> bool:
+            before = len(self.notes)
+            self.notes = [
+                n for n in self.notes
+                if not (n['staff'] == staff and n['slot'] == slot)
+            ]
+            changed = len(self.notes) != before
+            if changed:
+                self.notes_changed.emit()
+                self.update()
+            return changed
+
+        def clear_notes(self) -> None:
+            if not self.notes:
+                return
+            self.notes.clear()
+            self.notes_changed.emit()
+            self.update()
+
+        def mouseMoveEvent(self, event) -> None:
+            staff, slot, step = self._position_from_point(event.pos())
+            if (staff, slot, step) != (
+                self._hover_staff, self._hover_slot, self._hover_step
+            ):
+                self._hover_staff = staff
+                self._hover_slot = slot
+                self._hover_step = step
+                self.update()
+            super().mouseMoveEvent(event)
+
+        def leaveEvent(self, event) -> None:
+            self._hover_staff = -1
+            self._hover_slot = -1
+            self.update()
+            super().leaveEvent(event)
+
+        def mousePressEvent(self, event) -> None:
+            if event.button() == Qt.LeftButton:
+                staff, slot, step = self._position_from_point(event.pos())
+                self._set_note_at(staff, slot, step)
+                event.accept()
+                return
+            super().mousePressEvent(event)
+
+        def contextMenuEvent(self, event) -> None:
+            staff, slot, step = self._position_from_point(event.pos())
+            menu = QMenu(self)
+            menu.setTitle('Noten')
+            header = menu.addAction('Note auswählen')
+            header.setEnabled(False)
+            menu.addSeparator()
+            for key, label in self.NOTE_TYPES:
+                action = menu.addAction(label)
+                action.setCheckable(True)
+                action.setChecked(self.current_note_type == key)
+                action.triggered.connect(
+                    lambda _checked=False, k=key: self._select_note_type(k)
+                )
+            menu.addSeparator()
+            set_action = menu.addAction(
+                f'{self._note_type_label(self.current_note_type)} hier setzen'
+            )
+            set_action.triggered.connect(
+                lambda _checked=False, a=staff, b=slot, c=step:
+                self._set_note_at(a, b, c)
+            )
+            delete_action = menu.addAction('Note an dieser Position löschen')
+            delete_action.setEnabled(
+                any(n['staff'] == staff and n['slot'] == slot for n in self.notes)
+            )
+            delete_action.triggered.connect(
+                lambda _checked=False, a=staff, b=slot:
+                self._delete_note_at(a, b)
+            )
+            menu.addSeparator()
+            clear_action = menu.addAction('Alle Noten löschen')
+            clear_action.setEnabled(bool(self.notes))
+            clear_action.triggered.connect(self.clear_notes)
+            menu.exec_(event.globalPos())
+
+        def _select_note_type(self, note_type: str) -> None:
+            self.current_note_type = str(note_type)
+            self.note_selected.emit(
+                f'Aktive Note: {self._note_type_label(self.current_note_type)}'
+            )
+            self.update()
+
+        def _draw_note(self, painter: QPainter, note: dict, preview=False) -> None:
+            x = self._slot_center_x(int(note['slot']))
+            y = self._note_center_y(int(note['staff']), int(note['step']))
+            note_type = str(note.get('type') or 'quarter')
+
+            ink = QColor('#FFE25A') if preview else (
+                QColor('#8BE9FD') if self._dark_mode else QColor('#173B68')
+            )
+            painter.setPen(QPen(ink, 1.6))
+
+            head = QRectF(x - 6.5, y - 4.5, 13.0, 9.0)
+            if note_type in ('whole', 'half'):
+                painter.setBrush(Qt.NoBrush)
+            else:
+                painter.setBrush(QBrush(ink))
+            painter.drawEllipse(head)
+
+            # Ganze Noten besitzen keinen Hals.
+            if note_type == 'whole':
+                return
+
+            stem_x = x + 6.0
+            stem_top = y - 31.0
+            painter.drawLine(QPointF(stem_x, y), QPointF(stem_x, stem_top))
+
+            if note_type in ('eighth', 'sixteenth'):
+                path = QPainterPath(QPointF(stem_x, stem_top))
+                path.cubicTo(
+                    QPointF(stem_x + 15.0, stem_top + 3.0),
+                    QPointF(stem_x + 15.0, stem_top + 16.0),
+                    QPointF(stem_x + 4.0, stem_top + 20.0),
+                )
+                painter.drawPath(path)
+                if note_type == 'sixteenth':
+                    path2 = QPainterPath(QPointF(stem_x, stem_top + 8.0))
+                    path2.cubicTo(
+                        QPointF(stem_x + 13.0, stem_top + 10.0),
+                        QPointF(stem_x + 13.0, stem_top + 22.0),
+                        QPointF(stem_x + 4.0, stem_top + 25.0),
+                    )
+                    painter.drawPath(path2)
+
+        def paintEvent(self, _event) -> None:
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.Antialiasing, True)
+
+            if self._dark_mode:
+                bg_top = QColor('#071421')
+                bg_bottom = QColor('#102B43')
+                line_color = QColor('#C9D7E5')
+                subtle = QColor('#48647C')
+                label = QColor('#FFD84D')
+            else:
+                bg_top = QColor('#F8F8F6')
+                bg_bottom = QColor('#DDE7F0')
+                line_color = QColor('#263746')
+                subtle = QColor('#9AA8B3')
+                label = QColor('#173B68')
+
+            gradient = QLinearGradient(0, 0, 0, self.height())
+            gradient.setColorAt(0.0, bg_top)
+            gradient.setColorAt(1.0, bg_bottom)
+            painter.fillRect(self.rect(), QBrush(gradient))
+
+            left, right, count, slot_width, line_gap, staff_tops = self._layout_metrics()
+            painter.setFont(QFont('Arial', 9, QFont.Bold))
+
+            for staff_index, top in enumerate(staff_tops):
+                # Schattenplatte hinter jedem System.
+                plate = QRectF(left - 50, top - 27, right - left + 62, 88)
+                painter.setPen(QPen(subtle, 1.0))
+                painter.setBrush(QColor(0, 0, 0, 28) if self._dark_mode else QColor(255, 255, 255, 110))
+                painter.drawRoundedRect(plate, 8, 8)
+
+                painter.setPen(QPen(line_color, 1.2))
+                for row in range(5):
+                    y = top + row * line_gap
+                    painter.drawLine(QPointF(left, y), QPointF(right, y))
+
+                painter.setPen(QPen(label, 1.0))
+                system_name = ('Tief 1', 'Tief 2', 'Hoch 1', 'Hoch 2')[staff_index]
+                painter.drawText(
+                    QRectF(10, top - 10, 72, 26),
+                    Qt.AlignCenter,
+                    system_name,
+                )
+
+                # 30 diskrete Setzpositionen: 15 links + 15 rechts.
+                painter.setPen(QPen(subtle, 0.8, Qt.DotLine))
+                for slot in range(1, count):
+                    x = left + slot * slot_width
+                    if slot == 15:
+                        painter.setPen(QPen(label, 1.1, Qt.DashLine))
+                    else:
+                        painter.setPen(QPen(subtle, 0.55, Qt.DotLine))
+                    painter.drawLine(
+                        QPointF(x, top - 15),
+                        QPointF(x, top + 55),
+                    )
+
+                painter.setPen(QPen(subtle, 1.0))
+                painter.setFont(QFont('Arial', 7))
+                painter.drawText(
+                    QRectF(left, top + 48, (right-left)/2, 18),
+                    Qt.AlignCenter,
+                    '15 tiefe Notenpositionen',
+                )
+                painter.drawText(
+                    QRectF(left+(right-left)/2, top + 48, (right-left)/2, 18),
+                    Qt.AlignCenter,
+                    '15 hohe Notenpositionen',
+                )
+
+            # Bereits gesetzte Noten.
+            for note in self.notes:
+                self._draw_note(painter, note)
+
+            # Gelbe Vorschau an der Mausposition.
+            if self._hover_staff >= 0 and self._hover_slot >= 0:
+                preview = {
+                    'staff': self._hover_staff,
+                    'slot': self._hover_slot,
+                    'step': self._hover_step,
+                    'type': self.current_note_type,
+                }
+                self._draw_note(painter, preview, preview=True)
+
+    class PianoKeyboardWidget(QWidget):
+        """Stage 263: klickbares 88-Tasten-Piano von A0 bis C8."""
+
+        key_pressed = pyqtSignal(str, int)
+        key_released = pyqtSignal(int)
+        WHITE_WIDTH = 30
+        WHITE_HEIGHT = 150
+        BLACK_WIDTH = 19
+        BLACK_HEIGHT = 92
+        BLACK_PITCH_CLASSES = {1, 3, 6, 8, 10}
+        NOTE_NAMES = ('C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B')
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.setObjectName('music_piano_keyboard')
+            self._dark_mode = True
+            self._pressed_midi = None
+            self._mouse_midi = None
+            self._white_keys = []
+            self._black_keys = []
+            self._build_keys()
+            self.setFixedSize(52 * self.WHITE_WIDTH + 2, self.WHITE_HEIGHT + 28)
+            self.setCursor(Qt.PointingHandCursor)
+            self.setToolTip('Eine Klaviertaste anklicken')
+
+        @classmethod
+        def _label_for_midi(cls, midi: int) -> str:
+            pitch = midi % 12
+            octave = (midi // 12) - 1
+            return f'{cls.NOTE_NAMES[pitch]}{octave}'
+
+        def _build_keys(self) -> None:
+            self._white_keys.clear()
+            self._black_keys.clear()
+            white_count = 0
+            for midi in range(21, 109):  # A0 ... C8
+                pitch = midi % 12
+                label = self._label_for_midi(midi)
+                if pitch in self.BLACK_PITCH_CLASSES:
+                    x = (white_count * self.WHITE_WIDTH) - (self.BLACK_WIDTH / 2.0)
+                    rect = QRectF(x, 0, self.BLACK_WIDTH, self.BLACK_HEIGHT)
+                    self._black_keys.append((midi, label, rect))
+                else:
+                    x = white_count * self.WHITE_WIDTH
+                    rect = QRectF(x, 0, self.WHITE_WIDTH, self.WHITE_HEIGHT)
+                    self._white_keys.append((midi, label, rect))
+                    white_count += 1
+
+        def set_dark_mode(self, enabled: bool) -> None:
+            self._dark_mode = bool(enabled)
+            self.update()
+
+        def _key_at(self, point: QPoint):
+            p = QPointF(point)
+            # Schwarze Tasten liegen visuell über weißen und haben Vorrang.
+            for midi, label, rect in self._black_keys:
+                if rect.contains(p):
+                    return midi, label
+            for midi, label, rect in self._white_keys:
+                if rect.contains(p):
+                    return midi, label
+            return None
+
+        def mousePressEvent(self, event) -> None:
+            if event.button() == Qt.LeftButton:
+                key = self._key_at(event.pos())
+                if key is not None:
+                    midi, label = key
+                    self._pressed_midi = midi
+                    self._mouse_midi = midi
+                    self.key_pressed.emit(label, midi)
+                    self.update()
+                    event.accept()
+                    return
+            super().mousePressEvent(event)
+
+        def mouseReleaseEvent(self, event) -> None:
+            if event.button() == Qt.LeftButton and self._mouse_midi is not None:
+                midi = int(self._mouse_midi)
+                self._mouse_midi = None
+                self._pressed_midi = None
+                self.key_released.emit(midi)
+                self.update()
+                event.accept()
+                return
+            super().mouseReleaseEvent(event)
+
+        def _release_visual_key(self) -> None:
+            # Legacy helper: die sichtbare Taste wird jetzt beim echten
+            # MouseRelease freigegeben, damit Freihand-MIDI so lange klingt,
+            # wie die Maustaste gehalten wird.
+            if self._mouse_midi is None:
+                self._pressed_midi = None
+                self.update()
+
+        def paintEvent(self, _event) -> None:
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            painter.fillRect(
+                self.rect(),
+                QColor('#06101B') if self._dark_mode else QColor('#C8D0D8'),
+            )
+
+            # Metallische obere Leiste.
+            top_grad = QLinearGradient(0, 0, self.width(), 0)
+            top_grad.setColorAt(0.0, QColor('#1F5D8F'))
+            top_grad.setColorAt(0.5, QColor('#6C2C63'))
+            top_grad.setColorAt(1.0, QColor('#1F5D8F'))
+            painter.fillRect(QRectF(0, 0, self.width(), 7), QBrush(top_grad))
+
+            painter.setFont(QFont('Arial', 7, QFont.Bold))
+            for midi, label, rect in self._white_keys:
+                if midi == self._pressed_midi:
+                    fill = QColor('#7FDBFF')
+                else:
+                    fill = QColor('#F7F4EA')
+                painter.setBrush(QBrush(fill))
+                painter.setPen(QPen(QColor('#1B1B1B'), 1.0))
+                painter.drawRect(rect)
+                painter.setPen(QColor('#17202A'))
+                painter.drawText(
+                    QRectF(rect.left()+1, rect.bottom()-31, rect.width()-2, 27),
+                    Qt.AlignHCenter | Qt.AlignBottom,
+                    label,
+                )
+
+            # Schwarze Tasten danach zeichnen.
+            painter.setFont(QFont('Arial', 6, QFont.Bold))
+            for midi, label, rect in self._black_keys:
+                if midi == self._pressed_midi:
+                    fill = QColor('#1E88E5')
+                    text = QColor('#FFE45C')
+                else:
+                    fill = QColor('#101319')
+                    text = QColor('#FFD84D')
+                painter.setBrush(QBrush(fill))
+                painter.setPen(QPen(QColor('#000000'), 1.0))
+                painter.drawRoundedRect(rect, 2, 2)
+                painter.save()
+                painter.translate(rect.center().x(), rect.bottom()-5)
+                painter.rotate(-90)
+                painter.setPen(text)
+                painter.drawText(
+                    QRectF(-36, -8, 34, 16),
+                    Qt.AlignCenter,
+                    label,
+                )
+                painter.restore()
+
+            painter.setPen(QPen(QColor('#FFD84D'), 1.0))
+            painter.setFont(QFont('Arial', 8, QFont.Bold))
+            painter.drawText(
+                QRectF(0, self.WHITE_HEIGHT+4, self.width(), 20),
+                Qt.AlignCenter,
+                '88 Tasten • A0 – C8',
+            )
+
+    class MusicKeyboardDockWidget(QWidget):
+        """Stage 263: Lern-Dock mit Notensystemen, Notenliste und 88er-Piano."""
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.setObjectName('music_keyboard_dock_widget')
+            self._dark_mode = True
+
+            root = QVBoxLayout(self)
+            root.setContentsMargins(8, 8, 8, 8)
+            root.setSpacing(6)
+
+            self.tabs = QTabWidget(self)
+            self.tabs.setObjectName('music_keyboard_tabs')
+            self.tabs.setDocumentMode(True)
+            root.addWidget(self.tabs, 1)
+
+            # --- Keyboard -------------------------------------------------
+            keyboard_tab = QWidget(self.tabs)
+            keyboard_layout = QVBoxLayout(keyboard_tab)
+            keyboard_layout.setContentsMargins(8, 8, 8, 8)
+            keyboard_layout.setSpacing(7)
+
+            info_row = QHBoxLayout()
+            self.help_label = QLabel(
+                'Rechtsklick im Notensystem: Notentyp wählen • Linksklick: Note setzen',
+                keyboard_tab,
+            )
+            self.help_label.setWordWrap(True)
+            info_row.addWidget(self.help_label, 1)
+            self.current_note_label = QLabel('Aktive Note: Viertelnote', keyboard_tab)
+            self.current_note_label.setObjectName('music_current_note_label')
+            info_row.addWidget(self.current_note_label, 0)
+            keyboard_layout.addLayout(info_row)
+
+            self.staff_canvas = MusicStaffCanvas(keyboard_tab)
+            self.staff_scroll = QScrollArea(keyboard_tab)
+            self.staff_scroll.setObjectName('music_staff_scroll')
+            self.staff_scroll.setWidgetResizable(False)
+            self.staff_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.staff_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.staff_scroll.setWidget(self.staff_canvas)
+            keyboard_layout.addWidget(self.staff_scroll, 1)
+
+            piano_caption = QLabel('Keyboard', keyboard_tab)
+            piano_caption.setObjectName('music_piano_caption')
+            piano_caption.setAlignment(Qt.AlignCenter)
+            keyboard_layout.addWidget(piano_caption)
+
+            self.piano = PianoKeyboardWidget(keyboard_tab)
+            self.piano_scroll = QScrollArea(keyboard_tab)
+            self.piano_scroll.setObjectName('music_piano_scroll')
+            self.piano_scroll.setWidgetResizable(False)
+            self.piano_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            self.piano_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.piano_scroll.setFixedHeight(self.piano.height() + 22)
+            self.piano_scroll.setWidget(self.piano)
+            keyboard_layout.addWidget(self.piano_scroll, 0)
+
+            self.key_status = QLabel('Taste: —', keyboard_tab)
+            self.key_status.setObjectName('music_key_status')
+            self.key_status.setAlignment(Qt.AlignCenter)
+            keyboard_layout.addWidget(self.key_status)
+            self.tabs.addTab(keyboard_tab, 'Keyboard')
+
+            # --- Noten ----------------------------------------------------
+            notes_tab = QWidget(self.tabs)
+            notes_layout = QVBoxLayout(notes_tab)
+            notes_layout.setContentsMargins(10, 10, 10, 10)
+            notes_layout.setSpacing(8)
+            notes_title = QLabel('Gesetzte Noten', notes_tab)
+            notes_title.setObjectName('music_notes_title')
+            notes_layout.addWidget(notes_title)
+            self.notes_list = QListWidget(notes_tab)
+            self.notes_list.setObjectName('music_notes_list')
+            notes_layout.addWidget(self.notes_list, 1)
+            self.clear_notes_button = QPushButton('Alle Noten löschen', notes_tab)
+            self.clear_notes_button.clicked.connect(self.staff_canvas.clear_notes)
+            notes_layout.addWidget(self.clear_notes_button, 0, Qt.AlignRight)
+            self.tabs.addTab(notes_tab, 'Noten')
+
+            self.piano.key_pressed.connect(self._piano_key_pressed)
+            self.staff_canvas.notes_changed.connect(self._refresh_note_list)
+            self.staff_canvas.note_selected.connect(self.current_note_label.setText)
+            self._refresh_note_list()
+            self.set_dark_mode(True)
+
+        def _piano_key_pressed(self, label: str, midi: int) -> None:
+            self.key_status.setText(f'Taste: {label}   •   MIDI {midi}')
+
+        def _refresh_note_list(self) -> None:
+            self.notes_list.clear()
+            if not self.staff_canvas.notes:
+                item = QListWidgetItem('(noch keine Noten gesetzt)')
+                item.setFlags(item.flags() & ~Qt.ItemIsSelectable)
+                self.notes_list.addItem(item)
+                return
+            for note in self.staff_canvas.notes:
+                self.notes_list.addItem(
+                    f"System {note['staff'] + 1} • Position {note['slot'] + 1:02d} • "
+                    f"{MusicStaffCanvas._note_type_label(note['type'])} • "
+                    f"Tonstufe {note['step']:+d}"
+                )
+
+        def set_dark_mode(self, enabled: bool) -> None:
+            self._dark_mode = bool(enabled)
+            if self._dark_mode:
+                bg = '#071421'
+                panel = '#0B1F33'
+                border = '#35516A'
+                text = '#F2F6FA'
+                accent = '#FFD84D'
+                button = '#12395B'
+                selected = '#1E5A86'
+            else:
+                bg = '#EEF2F5'
+                panel = '#FFFFFF'
+                border = '#A6B2BD'
+                text = '#1B2730'
+                accent = '#8C2D2D'
+                button = '#D9E5EF'
+                selected = '#B9D9F3'
+
+            self.setStyleSheet(f"""
+QWidget#music_keyboard_dock_widget {{
+    background: {bg};
+    color: {text};
+}}
+QTabWidget#music_keyboard_tabs::pane {{
+    border: 1px solid {border};
+    background: {panel};
+}}
+QTabWidget#music_keyboard_tabs QTabBar::tab {{
+    background: {button};
+    color: {text};
+    border: 1px solid {border};
+    padding: 7px 16px;
+    margin-right: 2px;
+}}
+QTabWidget#music_keyboard_tabs QTabBar::tab:selected {{
+    background: {selected};
+    color: {accent};
+    font-weight: bold;
+}}
+QLabel#music_current_note_label,
+QLabel#music_key_status,
+QLabel#music_piano_caption,
+QLabel#music_notes_title {{
+    color: {accent};
+    font-weight: bold;
+}}
+QScrollArea#music_staff_scroll,
+QScrollArea#music_piano_scroll,
+QListWidget#music_notes_list {{
+    background: {panel};
+    color: {text};
+    border: 1px solid {border};
+}}
+QPushButton {{
+    background: {button};
+    color: {text};
+    border: 1px solid {border};
+    border-radius: 5px;
+    padding: 6px 12px;
+}}
+QPushButton:hover {{
+    color: {accent};
+    border-color: {accent};
+}}
+""")
+            self.staff_canvas.set_dark_mode(enabled)
+            self.piano.set_dark_mode(enabled)
+
+    class GeneralMidiOutput(QObject):
+        """Stage 264: kleine Windows-winmm-Ausgabe für General MIDI."""
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self._handle = ctypes.c_void_p()
+            self._winmm = None
+            self._opened = False
+
+        @property
+        def available(self) -> bool:
+            return os.name == 'nt'
+
+        def open(self) -> bool:
+            if self._opened:
+                return True
+            if os.name != 'nt':
+                return False
+            try:
+                self._winmm = ctypes.WinDLL('winmm')
+                result = self._winmm.midiOutOpen(
+                    ctypes.byref(self._handle),
+                    ctypes.c_uint(0xFFFFFFFF),  # MIDI_MAPPER
+                    0,
+                    0,
+                    0,
+                )
+                self._opened = (int(result) == 0)
+            except Exception:
+                self._opened = False
+            return self._opened
+
+        def _short(self, status: int, data1: int = 0, data2: int = 0) -> None:
+            if not self.open() or self._winmm is None:
+                return
+            msg = (
+                (int(status) & 0xFF)
+                | ((int(data1) & 0x7F) << 8)
+                | ((int(data2) & 0x7F) << 16)
+            )
+            try:
+                self._winmm.midiOutShortMsg(self._handle, ctypes.c_uint(msg))
+            except Exception:
+                pass
+
+        def program_change(self, program: int) -> None:
+            self._short(0xC0, max(0, min(127, int(program))), 0)
+
+        def set_volume(self, volume: int) -> None:
+            self._short(0xB0, 7, max(0, min(127, int(volume))))
+
+        def note_on(self, midi: int, velocity: int = 96) -> None:
+            self._short(0x90, max(0, min(127, int(midi))), velocity)
+
+        def note_off(self, midi: int) -> None:
+            self._short(0x80, max(0, min(127, int(midi))), 0)
+
+        def all_notes_off(self) -> None:
+            self._short(0xB0, 123, 0)
+            self._short(0xB0, 120, 0)
+
+        def close(self) -> None:
+            if self._opened and self._winmm is not None:
+                try:
+                    self.all_notes_off()
+                    self._winmm.midiOutReset(self._handle)
+                    self._winmm.midiOutClose(self._handle)
+                except Exception:
+                    pass
+            self._opened = False
+            self._handle = ctypes.c_void_p()
+
+
+    class MusicPlaybackThread(QThread):
+        """Stage 264: zeitgesteuerte Notenwiedergabe ohne GUI-Blockade."""
+
+        note_on = pyqtSignal(int, int)
+        note_off = pyqtSignal(int)
+        playback_cycle = pyqtSignal(int)
+
+        def __init__(self, events, *, loop=False, parent=None):
+            super().__init__(parent)
+            self.events = list(events)
+            self.loop = bool(loop)
+            self._stop_requested = False
+
+        def request_stop(self) -> None:
+            self._stop_requested = True
+
+        def _sleep_interruptible(self, milliseconds: int) -> bool:
+            remaining = max(0, int(milliseconds))
+            while remaining > 0 and not self._stop_requested:
+                chunk = min(20, remaining)
+                self.msleep(chunk)
+                remaining -= chunk
+            return not self._stop_requested
+
+        def run(self) -> None:
+            if not self.events:
+                return
+            cycle = 0
+            while not self._stop_requested:
+                cycle += 1
+                self.playback_cycle.emit(cycle)
+                previous_slot = None
+                for event in self.events:
+                    if self._stop_requested:
+                        break
+                    slot = int(event.get('slot', 0))
+                    if previous_slot is not None and slot > previous_slot + 1:
+                        if not self._sleep_interruptible(
+                            min(900, (slot - previous_slot - 1) * 110)
+                        ):
+                            break
+                    midis = [int(value) for value in event.get('midis', [])]
+                    for midi in midis:
+                        self.note_on.emit(midi, 100)
+                    if not self._sleep_interruptible(int(event.get('duration', 400))):
+                        for midi in midis:
+                            self.note_off.emit(midi)
+                        break
+                    for midi in midis:
+                        self.note_off.emit(midi)
+                    previous_slot = slot
+                if not self.loop:
+                    break
+                if self._stop_requested:
+                    break
+                if not self._sleep_interruptible(180):
+                    break
+
+
+    class InstrumentDockWidget(QWidget):
+        """Stage 264: Instrumentwahl, MIDI-Steuerung und Musikprojektverwaltung."""
+
+        GENERAL_MIDI = (
+            'Acoustic Grand Piano','Bright Acoustic Piano','Electric Grand Piano','Honky-tonk Piano',
+            'Electric Piano 1','Electric Piano 2','Harpsichord','Clavinet',
+            'Celesta','Glockenspiel','Music Box','Vibraphone','Marimba','Xylophone','Tubular Bells','Dulcimer',
+            'Drawbar Organ','Percussive Organ','Rock Organ','Church Organ','Reed Organ','Accordion','Harmonica','Tango Accordion',
+            'Acoustic Guitar (nylon)','Acoustic Guitar (steel)','Electric Guitar (jazz)','Electric Guitar (clean)',
+            'Electric Guitar (muted)','Overdriven Guitar','Distortion Guitar','Guitar Harmonics',
+            'Acoustic Bass','Electric Bass (finger)','Electric Bass (pick)','Fretless Bass','Slap Bass 1','Slap Bass 2','Synth Bass 1','Synth Bass 2',
+            'Violin','Viola','Cello','Contrabass','Tremolo Strings','Pizzicato Strings','Orchestral Harp','Timpani',
+            'String Ensemble 1','String Ensemble 2','Synth Strings 1','Synth Strings 2','Choir Aahs','Voice Oohs','Synth Voice','Orchestra Hit',
+            'Trumpet','Trombone','Tuba','Muted Trumpet','French Horn','Brass Section','Synth Brass 1','Synth Brass 2',
+            'Soprano Sax','Alto Sax','Tenor Sax','Baritone Sax','Oboe','English Horn','Bassoon','Clarinet',
+            'Piccolo','Flute','Recorder','Pan Flute','Blown Bottle','Shakuhachi','Whistle','Ocarina',
+            'Lead 1 (square)','Lead 2 (sawtooth)','Lead 3 (calliope)','Lead 4 (chiff)','Lead 5 (charang)','Lead 6 (voice)','Lead 7 (fifths)','Lead 8 (bass + lead)',
+            'Pad 1 (new age)','Pad 2 (warm)','Pad 3 (polysynth)','Pad 4 (choir)','Pad 5 (bowed)','Pad 6 (metallic)','Pad 7 (halo)','Pad 8 (sweep)',
+            'FX 1 (rain)','FX 2 (soundtrack)','FX 3 (crystal)','FX 4 (atmosphere)','FX 5 (brightness)','FX 6 (goblins)','FX 7 (echoes)','FX 8 (sci-fi)',
+            'Sitar','Banjo','Shamisen','Koto','Kalimba','Bag Pipe','Fiddle','Shanai',
+            'Tinkle Bell','Agogo','Steel Drums','Woodblock','Taiko Drum','Melodic Tom','Synth Drum','Reverse Cymbal',
+            'Guitar Fret Noise','Breath Noise','Seashore','Bird Tweet','Telephone Ring','Helicopter','Applause','Gunshot',
+        )
+
+        POP_PROGRAMS = (4, 5, 17, 18, 25, 26, 27, 29, 30, 33, 34, 38, 39, 48, 49, 52, 53, 56, 57, 61, 62, 80, 81, 88, 89)
+        OTHER_PROGRAMS = tuple(range(8, 16)) + tuple(range(64, 80)) + tuple(range(96, 128))
+        DURATION_MS = {
+            'whole': 1400,
+            'half': 850,
+            'quarter': 430,
+            'eighth': 230,
+            'sixteenth': 125,
+        }
+        DIATONIC_SEMITONES = (0, 2, 4, 5, 7, 9, 11)
+        # Untere Linie: Tief 1=G2, Tief 2=G3, Hoch 1=E4, Hoch 2=E5.
+        STAFF_BASES = ((2, 4), (3, 4), (4, 2), (5, 2))  # (Oktave, C-Degree)
+
+        def __init__(self, music_widget: MusicKeyboardDockWidget, parent=None):
+            super().__init__(parent)
+            self.setObjectName('music_instrument_widget')
+            self.music_widget = music_widget
+            self._dark_mode = True
+            self.midi = GeneralMidiOutput(self)
+            self.playback_thread = None
+            self.project_path = None
+            self._selected_program = 0
+            self._freehand_midis = set()
+
+            root = QVBoxLayout(self)
+            root.setContentsMargins(8, 8, 8, 8)
+            root.setSpacing(7)
+
+            self.tabs = QTabWidget(self)
+            self.tabs.setObjectName('instrument_tabs')
+            self.tabs.setDocumentMode(True)
+            root.addWidget(self.tabs, 1)
+
+            normal = QWidget(self.tabs)
+            normal_layout = QVBoxLayout(normal)
+            normal_layout.setContentsMargins(7, 7, 7, 7)
+            normal_layout.setSpacing(7)
+            normal_layout.addWidget(QLabel('General MIDI Instrument', normal))
+            self.normal_list = QListWidget(normal)
+            self.normal_list.setObjectName('instrument_normal_list')
+            self._fill_instrument_list(self.normal_list, range(128))
+            normal_layout.addWidget(self.normal_list, 1)
+
+            controls = QGridLayout()
+            controls.setHorizontalSpacing(5)
+            controls.setVerticalSpacing(5)
+            self.play_button = QPushButton('Spielen', normal)
+            self.loop_button = QPushButton('Loop', normal)
+            self.freehand_button = QPushButton('Freihand', normal)
+            self.freehand_button.setCheckable(True)
+            self.stop_button = QPushButton('Abbrechen', normal)
+            controls.addWidget(self.play_button, 0, 0)
+            controls.addWidget(self.loop_button, 0, 1)
+            controls.addWidget(self.freehand_button, 1, 0)
+            controls.addWidget(self.stop_button, 1, 1)
+            normal_layout.addLayout(controls)
+
+            volume_row = QHBoxLayout()
+            self.volume_text = QLabel('Lautstärke: 100', normal)
+            volume_row.addWidget(self.volume_text)
+            self.volume_slider = QSlider(Qt.Horizontal, normal)
+            self.volume_slider.setRange(0, 127)
+            self.volume_slider.setValue(100)
+            self.volume_slider.setTickInterval(16)
+            self.volume_slider.setTickPosition(QSlider.TicksBelow)
+            volume_row.addWidget(self.volume_slider, 1)
+            normal_layout.addLayout(volume_row)
+            self.tabs.addTab(normal, 'Normal')
+
+            pop = QWidget(self.tabs)
+            pop_layout = QVBoxLayout(pop)
+            pop_layout.setContentsMargins(7, 7, 7, 7)
+            pop_layout.addWidget(QLabel('Pop / Band', pop))
+            self.pop_list = QListWidget(pop)
+            self._fill_instrument_list(self.pop_list, self.POP_PROGRAMS)
+            pop_layout.addWidget(self.pop_list, 1)
+            self.tabs.addTab(pop, 'Pop')
+
+            other = QWidget(self.tabs)
+            other_layout = QVBoxLayout(other)
+            other_layout.setContentsMargins(7, 7, 7, 7)
+            other_layout.addWidget(QLabel('Sonstige Instrumente / Effekte', other))
+            self.other_list = QListWidget(other)
+            self._fill_instrument_list(self.other_list, self.OTHER_PROGRAMS)
+            other_layout.addWidget(self.other_list, 1)
+            self.tabs.addTab(other, 'Sonstige')
+
+            self.status_label = QLabel('MIDI bereit', self)
+            self.status_label.setObjectName('instrument_status')
+            self.status_label.setWordWrap(True)
+            root.addWidget(self.status_label)
+
+            save_row = QHBoxLayout()
+            self.save_button = QPushButton('Speichern', self)
+            self.save_as_button = QPushButton('Speichern unter...', self)
+            self.load_button = QPushButton('Laden', self)
+            save_row.addWidget(self.save_button)
+            save_row.addWidget(self.save_as_button)
+            save_row.addWidget(self.load_button)
+            root.addLayout(save_row)
+
+            for lst in (self.normal_list, self.pop_list, self.other_list):
+                lst.currentItemChanged.connect(self._instrument_item_changed)
+            self.normal_list.setCurrentRow(0)
+
+            self.play_button.clicked.connect(lambda: self.start_playback(False))
+            self.loop_button.clicked.connect(lambda: self.start_playback(True))
+            self.freehand_button.toggled.connect(self._freehand_toggled)
+            self.stop_button.clicked.connect(self.stop_playback)
+            self.volume_slider.valueChanged.connect(self._volume_changed)
+            self.save_button.clicked.connect(self.save_project)
+            self.save_as_button.clicked.connect(self.save_project_as)
+            self.load_button.clicked.connect(self.load_project)
+            self.music_widget.piano.key_pressed.connect(self._piano_pressed)
+            self.music_widget.piano.key_released.connect(self._piano_released)
+            self.set_dark_mode(True)
+
+        def _fill_instrument_list(self, widget: QListWidget, programs) -> None:
+            for program in programs:
+                program = int(program)
+                item = QListWidgetItem(
+                    f'{program + 1:03d}  {self.GENERAL_MIDI[program]}'
+                )
+                item.setData(Qt.UserRole, program)
+                widget.addItem(item)
+
+        def _instrument_item_changed(self, current, _previous) -> None:
+            if current is None:
+                return
+            program = current.data(Qt.UserRole)
+            if program is None:
+                return
+            self._selected_program = max(0, min(127, int(program)))
+            self.midi.program_change(self._selected_program)
+            self.status_label.setText(
+                f'Instrument: {self._selected_program + 1:03d} '
+                f'{self.GENERAL_MIDI[self._selected_program]}'
+            )
+
+        def _select_program(self, program: int) -> None:
+            program = max(0, min(127, int(program)))
+            for lst in (self.normal_list, self.pop_list, self.other_list):
+                for row in range(lst.count()):
+                    item = lst.item(row)
+                    if int(item.data(Qt.UserRole)) == program:
+                        lst.setCurrentItem(item)
+                        self._selected_program = program
+                        return
+            self._selected_program = program
+
+        def _volume_changed(self, value: int) -> None:
+            value = int(value)
+            self.volume_text.setText(f'Lautstärke: {value}')
+            self.midi.set_volume(value)
+
+        @classmethod
+        def _staff_step_to_midi(cls, staff: int, step: int) -> int:
+            staff = max(0, min(3, int(staff)))
+            octave, degree = cls.STAFF_BASES[staff]
+            absolute_degree = (octave * 7) + degree + int(step)
+            target_octave, target_degree = divmod(absolute_degree, 7)
+            midi = ((target_octave + 1) * 12) + cls.DIATONIC_SEMITONES[target_degree]
+            return max(21, min(108, int(midi)))
+
+        def _build_play_events(self):
+            grouped = {}
+            for note in self.music_widget.staff_canvas.notes:
+                slot = int(note.get('slot', 0))
+                entry = grouped.setdefault(slot, {'slot': slot, 'midis': [], 'duration': 0})
+                entry['midis'].append(
+                    self._staff_step_to_midi(note.get('staff', 0), note.get('step', 0))
+                )
+                entry['duration'] = max(
+                    int(entry['duration']),
+                    int(self.DURATION_MS.get(str(note.get('type', 'quarter')), 430)),
+                )
+            return [grouped[key] for key in sorted(grouped)]
+
+        def _ensure_midi(self) -> bool:
+            if not self.midi.open():
+                QMessageBox.warning(
+                    self,
+                    'MIDI',
+                    'Es konnte kein Windows-MIDI-Ausgabegerät geöffnet werden.',
+                )
+                return False
+            self.midi.program_change(self._selected_program)
+            self.midi.set_volume(self.volume_slider.value())
+            return True
+
+        def start_playback(self, loop: bool) -> None:
+            events = self._build_play_events()
+            if not events:
+                QMessageBox.information(
+                    self,
+                    'Musik - Keyboard',
+                    'Es wurden noch keine Noten auf den Notensystemen gesetzt.',
+                )
+                return
+            if not self._ensure_midi():
+                return
+            self.stop_playback(update_status=False)
+            thread = MusicPlaybackThread(events, loop=loop, parent=self)
+            thread.note_on.connect(self._thread_note_on)
+            thread.note_off.connect(self._thread_note_off)
+            thread.playback_cycle.connect(
+                lambda cycle: self.status_label.setText(
+                    f"{'Loop' if loop else 'Spielen'} • Durchlauf {cycle} • "
+                    f"{self.GENERAL_MIDI[self._selected_program]}"
+                )
+            )
+            thread.finished.connect(self._playback_finished)
+            self.playback_thread = thread
+            thread.start()
+
+        def _thread_note_on(self, midi: int, velocity: int) -> None:
+            self.midi.note_on(midi, velocity)
+
+        def _thread_note_off(self, midi: int) -> None:
+            self.midi.note_off(midi)
+
+        def _playback_finished(self) -> None:
+            self.midi.all_notes_off()
+            thread = self.sender()
+            if thread is self.playback_thread:
+                self.playback_thread = None
+            if isinstance(thread, QThread):
+                thread.deleteLater()
+            if not self.freehand_button.isChecked():
+                self.status_label.setText('Wiedergabe beendet')
+
+        def stop_playback(self, _checked=False, *, update_status=True) -> None:
+            thread = self.playback_thread
+            if thread is not None and thread.isRunning():
+                thread.request_stop()
+            self.midi.all_notes_off()
+            self._freehand_midis.clear()
+            if update_status:
+                self.status_label.setText('Wiedergabe abgebrochen')
+
+        def _freehand_toggled(self, checked: bool) -> None:
+            checked = bool(checked)
+            if checked:
+                if not self._ensure_midi():
+                    self.freehand_button.blockSignals(True)
+                    self.freehand_button.setChecked(False)
+                    self.freehand_button.blockSignals(False)
+                    return
+                self.stop_playback(update_status=False)
+                self.status_label.setText('Freihand aktiv • Keyboard mit der Maus spielen')
+            else:
+                for midi in tuple(self._freehand_midis):
+                    self.midi.note_off(midi)
+                self._freehand_midis.clear()
+                self.status_label.setText('Freihand beendet')
+
+        def _piano_pressed(self, _label: str, midi: int) -> None:
+            if not self.freehand_button.isChecked():
+                return
+            if not self._ensure_midi():
+                return
+            midi = int(midi)
+            self._freehand_midis.add(midi)
+            self.midi.note_on(midi, 105)
+
+        def _piano_released(self, midi: int) -> None:
+            midi = int(midi)
+            if midi in self._freehand_midis:
+                self.midi.note_off(midi)
+                self._freehand_midis.discard(midi)
+
+        def _project_payload(self) -> dict:
+            return {
+                'format': 'd64_music_project',
+                'version': 1,
+                'instrument_program': int(self._selected_program),
+                'instrument_name': self.GENERAL_MIDI[self._selected_program],
+                'volume': int(self.volume_slider.value()),
+                'active_note_type': str(self.music_widget.staff_canvas.current_note_type),
+                'notes': [dict(note) for note in self.music_widget.staff_canvas.notes],
+            }
+
+        def _write_project(self, path: Path) -> bool:
+            try:
+                path.write_text(
+                    json.dumps(self._project_payload(), ensure_ascii=False, indent=2),
+                    encoding='utf-8',
+                )
+            except Exception as exc:
+                QMessageBox.critical(self, 'Musik-Projekt', f'Speichern fehlgeschlagen:\n{exc}')
+                return False
+            self.project_path = path
+            self.status_label.setText(f'Gespeichert: {path.name}')
+            return True
+
+        def save_project(self) -> None:
+            if self.project_path is None:
+                self.save_project_as()
+                return
+            self._write_project(Path(self.project_path))
+
+        def save_project_as(self) -> None:
+            start = str(self.project_path or (Path.cwd() / 'musikprojekt.d64music'))
+            filename, _selected = QFileDialog.getSaveFileName(
+                self,
+                'Musik-Projekt speichern unter',
+                start,
+                'd64 Musik-Projekt (*.d64music);;JSON (*.json);;Alle Dateien (*)',
+            )
+            if not filename:
+                return
+            path = Path(filename)
+            if not path.suffix:
+                path = path.with_suffix('.d64music')
+            self._write_project(path)
+
+        def load_project(self) -> None:
+            start = str(self.project_path.parent if self.project_path else Path.cwd())
+            filename, _selected = QFileDialog.getOpenFileName(
+                self,
+                'Musik-Projekt laden',
+                start,
+                'd64 Musik-Projekt (*.d64music);;JSON (*.json);;Alle Dateien (*)',
+            )
+            if not filename:
+                return
+            path = Path(filename)
+            try:
+                data = json.loads(path.read_text(encoding='utf-8'))
+                notes = data.get('notes', [])
+                if not isinstance(notes, list):
+                    raise ValueError('Ungültige Notenliste')
+                normalized = []
+                valid_types = {key for key, _label in MusicStaffCanvas.NOTE_TYPES}
+                for note in notes:
+                    if not isinstance(note, dict):
+                        continue
+                    normalized.append({
+                        'staff': max(0, min(3, int(note.get('staff', 0)))),
+                        'slot': max(0, min(29, int(note.get('slot', 0)))),
+                        'step': max(-6, min(14, int(note.get('step', 0)))),
+                        'type': (
+                            str(note.get('type', 'quarter'))
+                            if str(note.get('type', 'quarter')) in valid_types
+                            else 'quarter'
+                        ),
+                    })
+            except Exception as exc:
+                QMessageBox.critical(self, 'Musik-Projekt', f'Laden fehlgeschlagen:\n{exc}')
+                return
+
+            self.stop_playback(update_status=False)
+            self.music_widget.staff_canvas.notes = normalized
+            self.music_widget.staff_canvas.current_note_type = str(
+                data.get('active_note_type', 'quarter')
+            )
+            if self.music_widget.staff_canvas.current_note_type not in valid_types:
+                self.music_widget.staff_canvas.current_note_type = 'quarter'
+            self.music_widget.staff_canvas.notes_changed.emit()
+            self.music_widget.staff_canvas.update()
+            self._select_program(int(data.get('instrument_program', 0)))
+            self.volume_slider.setValue(max(0, min(127, int(data.get('volume', 100)))))
+            self.project_path = path
+            self.status_label.setText(
+                f'Geladen: {path.name} • {len(normalized)} Noten'
+            )
+            self.music_widget.tabs.setCurrentIndex(0)
+
+        def shutdown(self) -> None:
+            self.stop_playback(update_status=False)
+            self.midi.close()
+
+        def set_dark_mode(self, enabled: bool) -> None:
+            self._dark_mode = bool(enabled)
+            if self._dark_mode:
+                bg, panel, border = '#071421', '#0B1F33', '#35516A'
+                text, accent, button, selected = '#F2F6FA', '#FFD84D', '#12395B', '#1E5A86'
+                list_bg = '#07111B'
+            else:
+                bg, panel, border = '#EEF2F5', '#FFFFFF', '#A6B2BD'
+                text, accent, button, selected = '#1B2730', '#8C2D2D', '#D9E5EF', '#B9D9F3'
+                list_bg = '#FFFFFF'
+            self.setStyleSheet(f"""
+QWidget#music_instrument_widget {{ background: {bg}; color: {text}; }}
+QTabWidget#instrument_tabs::pane {{ border: 1px solid {border}; background: {panel}; }}
+QTabWidget#instrument_tabs QTabBar::tab {{
+    background: {button}; color: {text}; border: 1px solid {border};
+    padding: 6px 10px; margin-right: 1px;
+}}
+QTabWidget#instrument_tabs QTabBar::tab:selected {{
+    background: {selected}; color: {accent}; font-weight: bold;
+}}
+QListWidget {{ background: {list_bg}; color: {text}; border: 1px solid {border}; }}
+QListWidget::item:selected {{ background: {selected}; color: {accent}; }}
+QPushButton {{
+    background: {button}; color: {text}; border: 1px solid {border};
+    border-radius: 4px; padding: 6px 7px;
+}}
+QPushButton:hover, QPushButton:checked {{ color: {accent}; border-color: {accent}; }}
+QSlider::groove:horizontal {{ height: 5px; background: {border}; border-radius: 2px; }}
+QSlider::handle:horizontal {{ width: 13px; margin: -5px 0; background: {accent}; border-radius: 6px; }}
+QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
+""")
+
+
     class SourceFindDialog(QDialog):
         """Stage 162: nicht-modaler, dauerhaft sichtbarer Quelltext-Suchdialog."""
 
@@ -42417,6 +45547,34 @@ QStackedWidget#learning_content_stack {{
             placeholder_layout.addStretch(1)
             self.stack.addWidget(self.placeholder)
 
+            # Umgebung -> Workstation Mode
+            self.environment_page = QWidget(self.stack)
+            environment_layout = QVBoxLayout(self.environment_page)
+            environment_layout.setContentsMargins(10, 8, 10, 8)
+            environment_layout.setSpacing(8)
+            self.workstation_mode_checkbox = QCheckBox(
+                "Workstation Mode", self.environment_page
+            )
+            self.workstation_mode_checkbox.setObjectName(
+                f"project_windows_{target_tag}_workstation_mode"
+            )
+            self.workstation_mode_checkbox.setChecked(False)
+            self.workstation_mode_checkbox.setToolTip(
+                "Erzeugtes PE32/PE32+-Projekt über die Workstation ausführen"
+            )
+            environment_layout.addWidget(self.workstation_mode_checkbox)
+            environment_hint = QLabel(
+                "Wenn Workstation Mode aktiv ist, wird ein erfolgreich "
+                "gelinktes Windows-Hauptprogramm an den Workstation-Executor "
+                "weitergereicht und nicht über den normalen lokalen Startpfad "
+                "ausgeführt.",
+                self.environment_page,
+            )
+            environment_hint.setWordWrap(True)
+            environment_layout.addWidget(environment_hint)
+            environment_layout.addStretch(1)
+            self.stack.addWidget(self.environment_page)
+
             # Compiler -> Eingabe-Verzeichnis
             self.input_directories_page = QWidget(self.stack)
             directories_layout = QVBoxLayout(self.input_directories_page)
@@ -42574,12 +45732,17 @@ QStackedWidget#learning_content_stack {{
             self.link_with_ordinals_checkbox.toggled.connect(
                 self._link_with_ordinals_toggled
             )
+            self.workstation_mode_checkbox.toggled.connect(
+                self._workstation_mode_toggled
+            )
             self.tree.setCurrentItem(self.compiler_input_directories_item)
             self._tree_changed(self.compiler_input_directories_item, None)
 
         def _tree_changed(self, current, _previous) -> None:
             key = str(current.data(0, Qt.UserRole) or "") if current is not None else ""
-            if key == "compiler.input_directories":
+            if key == "umgebung":
+                page = self.environment_page
+            elif key == "compiler.input_directories":
                 page = self.input_directories_page
             elif key == "compiler.output_directory":
                 page = self.output_directory_page
@@ -42672,6 +45835,16 @@ QStackedWidget#learning_content_stack {{
             finally:
                 self._syncing = False
 
+        def workstation_mode(self) -> bool:
+            return bool(self.workstation_mode_checkbox.isChecked())
+
+        def set_workstation_mode(self, enabled: bool) -> None:
+            self._syncing = True
+            try:
+                self.workstation_mode_checkbox.setChecked(bool(enabled))
+            finally:
+                self._syncing = False
+
         def set_relative_modes(self, input_relative: bool, output_relative: bool) -> None:
             self._syncing = True
             try:
@@ -42721,6 +45894,15 @@ QStackedWidget#learning_content_stack {{
                 return
             callback = getattr(
                 self.owner, "set_project_windows_link_with_ordinals", None
+            )
+            if callback is not None:
+                callback(self.target, bool(checked), mark_modified=True)
+
+        def _workstation_mode_toggled(self, checked: bool) -> None:
+            if self._syncing:
+                return
+            callback = getattr(
+                self.owner, "set_project_windows_workstation_mode", None
             )
             if callback is not None:
                 callback(self.target, bool(checked), mark_modified=True)
@@ -42945,6 +46127,12 @@ QStackedWidget#learning_content_stack {{
         def set_link_with_ordinals(self, target: str, enabled: bool) -> None:
             self.page_for_target(target).set_link_with_ordinals(enabled)
 
+        def workstation_mode(self, target: str = "pe32") -> bool:
+            return self.page_for_target(target).workstation_mode()
+
+        def set_workstation_mode(self, target: str, enabled: bool) -> None:
+            self.page_for_target(target).set_workstation_mode(enabled)
+
         def set_relative_modes(
             self,
             target: str,
@@ -43094,6 +46282,10 @@ QStackedWidget#learning_content_stack {{
                 "pe32": False,
                 "pe64": False,
             }
+            self.project_windows_workstation_mode: Dict[str, bool] = {
+                "pe32": False,
+                "pe64": False,
+            }
             self._project_settings_workspace_active = False
             self._project_settings_workspace_state = {}
             self._settings_workspace_active = False
@@ -43116,6 +46308,9 @@ QStackedWidget#learning_content_stack {{
             self._winuae_boot_directories = []
             self.dism_thread = None
             self.dism_worker = None
+            # Stage 257: ein eigener QThread pro geöffnetem C64-PRG/BIN.
+            # Das Dictionary hält Thread und Worker bis zum finished-Signal am Leben.
+            self._c64_disassembly_jobs = {}
             self.character_editor_dialog = None
             self.palette_editor_dialog = None
             self.text_screen_editor_dialog = None
@@ -43142,6 +46337,15 @@ QStackedWidget#learning_content_stack {{
             self.doxygen_dock = None
             self.math_learning_dock = None
             self.math_learning_widget = None
+            # Stage 263/264: Musik-Lernarbeitsfläche unter Lernen -> Keyboard.
+            self.music_keyboard_dock = None
+            self.music_keyboard_widget = None
+            self.music_instrument_dock = None
+            self.music_instrument_widget = None
+            self._music_keyboard_replaced_filesystem_dock = False
+            self._music_workspace_hidden_docks = []
+            self._music_workspace_replaced_central_widget = False
+            self._music_workspace_active = False
             self._math_learning_replaced_filesystem_dock = False
             self._math_learning_replaced_central_widget = False
             self._localize_replaced_filesystem_dock = False
@@ -43962,6 +47166,14 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             )
             self.math_learning_action.triggered.connect(self.show_math_learning_dock)
 
+            self.music_keyboard_action = QAction("Keyboard", self)
+            self.music_keyboard_action.setStatusTip(
+                "Das Musik-Keyboard mit vier Notensystemen und 88 Klaviertasten öffnen"
+            )
+            self.music_keyboard_action.triggered.connect(
+                self.show_music_keyboard_dock
+            )
+
             self.math_numbers_wall_100_action = QAction("Zahlenmauer bis 100", self)
             self.math_numbers_wall_100_action.setStatusTip(
                 "Die Zahlenmauer-Aufgaben bis 100 direkt öffnen"
@@ -44622,6 +47834,185 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 widget.left_tabs.setFocus(Qt.OtherFocusReason)
                 widget.games_tree.setFocus(Qt.OtherFocusReason)
             self.statusBar().showMessage('Mathematik-Arbeitsfläche geöffnet')
+
+        def _restore_music_workspace(self) -> None:
+            if not getattr(self, '_music_workspace_active', False):
+                return
+            self._music_workspace_active = False
+
+            instrument = getattr(self, 'music_instrument_widget', None)
+            if instrument is not None:
+                instrument.shutdown()
+
+            instrument_dock = getattr(self, 'music_instrument_dock', None)
+            if instrument_dock is not None and instrument_dock.isVisible():
+                instrument_dock.hide()
+
+            if self._music_workspace_replaced_central_widget:
+                central = self.centralWidget()
+                if central is not None:
+                    central.show()
+            self._music_workspace_replaced_central_widget = False
+
+            saved = list(getattr(self, '_music_workspace_hidden_docks', []))
+            self._music_workspace_hidden_docks = []
+            for candidate in saved:
+                try:
+                    if candidate is not None:
+                        candidate.show()
+                except RuntimeError:
+                    pass
+
+        def _music_keyboard_dock_visibility_changed(self, visible: bool) -> None:
+            """Stage 264: Musik + Instrument bilden einen exklusiven Dock-Arbeitsbereich."""
+            if not visible:
+                self._restore_music_workspace()
+
+        def _prepare_music_workspace(self, music_dock, instrument_dock) -> None:
+            """Alle bisherigen Docks schließen und den Central-Editor freigeben."""
+            if not self._music_workspace_active:
+                self._music_workspace_hidden_docks = []
+                for candidate in self.findChildren(QDockWidget):
+                    if candidate in (music_dock, instrument_dock):
+                        continue
+                    if candidate.isVisible():
+                        self._music_workspace_hidden_docks.append(candidate)
+
+                # Zuerst Tool-Docks schließen. left_dock kommt absichtlich zuletzt,
+                # weil Visibility-Handler anderer Arbeitsbereiche es ggf. wieder zeigen.
+                left = getattr(self, 'left_dock', None)
+                for candidate in list(self._music_workspace_hidden_docks):
+                    if candidate is left:
+                        continue
+                    try:
+                        candidate.close()
+                    except RuntimeError:
+                        pass
+                if left is not None and left.isVisible():
+                    left.close()
+
+                # Nach eventgetriebenen Restore-Handlern nochmals jeden Fremd-Dock
+                # sicher schließen. Damit ist vor Musik.show() garantiert alles weg.
+                for candidate in self.findChildren(QDockWidget):
+                    if candidate in (music_dock, instrument_dock):
+                        continue
+                    if candidate.isVisible():
+                        candidate.hide()
+
+                central = self.centralWidget()
+                self._music_workspace_replaced_central_widget = bool(
+                    central is not None and central.isVisible()
+                )
+                if self._music_workspace_replaced_central_widget:
+                    central.hide()
+
+                self._music_workspace_active = True
+
+        def _expand_music_workspace(self) -> None:
+            music = getattr(self, 'music_keyboard_dock', None)
+            instrument = getattr(self, 'music_instrument_dock', None)
+            if music is None or instrument is None:
+                return
+            if not music.isVisible() or not instrument.isVisible():
+                return
+
+            # Instrument bleibt kompakt rechts. Musik erhält exakt den Rest.
+            instrument_width = max(340, min(410, int(self.width() * 0.23)))
+            music_width = max(680, self.width() - instrument_width)
+            try:
+                self.resizeDocks(
+                    [music, instrument],
+                    [music_width, instrument_width],
+                    Qt.Horizontal,
+                )
+                self.resizeDocks(
+                    [music, instrument],
+                    [max(520, self.height() - 80), max(520, self.height() - 80)],
+                    Qt.Vertical,
+                )
+            except Exception:
+                pass
+
+        def _ensure_music_keyboard_dock(self):
+            dock = getattr(self, 'music_keyboard_dock', None)
+            widget = getattr(self, 'music_keyboard_widget', None)
+            instrument_dock = getattr(self, 'music_instrument_dock', None)
+            instrument_widget = getattr(self, 'music_instrument_widget', None)
+            if (
+                dock is not None and widget is not None
+                and instrument_dock is not None and instrument_widget is not None
+            ):
+                return dock, widget, instrument_dock, instrument_widget
+
+            dock = QDockWidget('Musik - Keyboard', self)
+            dock.setObjectName('music_keyboard_dock')
+            dock.setFeatures(self._dock_features())
+            dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+            dock.setMinimumSize(680, 440)
+            dock.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+            widget = MusicKeyboardDockWidget(dock)
+            widget.set_dark_mode(self.dark_mode_enabled)
+            dock.setWidget(widget)
+            dock.hide()
+            self.addDockWidget(Qt.LeftDockWidgetArea, dock)
+
+            instrument_dock = QDockWidget('Instrument', self)
+            instrument_dock.setObjectName('music_instrument_dock')
+            instrument_dock.setFeatures(self._dock_features())
+            instrument_dock.setAllowedAreas(Qt.RightDockWidgetArea)
+            instrument_dock.setMinimumWidth(340)
+            instrument_dock.setMaximumWidth(430)
+            instrument_dock.setMinimumHeight(440)
+            instrument_widget = InstrumentDockWidget(widget, instrument_dock)
+            instrument_widget.set_dark_mode(self.dark_mode_enabled)
+            instrument_dock.setWidget(instrument_widget)
+            instrument_dock.hide()
+            self.addDockWidget(Qt.RightDockWidgetArea, instrument_dock)
+
+            dock.visibilityChanged.connect(
+                self._music_keyboard_dock_visibility_changed
+            )
+
+            self.music_keyboard_dock = dock
+            self.music_keyboard_widget = widget
+            self.music_instrument_dock = instrument_dock
+            self.music_instrument_widget = instrument_widget
+            self._assign_widget_property_ids(dock)
+            self._assign_widget_property_ids(instrument_dock)
+            return dock, widget, instrument_dock, instrument_widget
+
+        def show_music_keyboard_dock(self, _checked: bool = False) -> None:
+            """Lernen -> Keyboard: nur Musik links/zentral und Instrument rechts."""
+            dock, widget, instrument_dock, instrument_widget = (
+                self._ensure_music_keyboard_dock()
+            )
+
+            # MUSS vollständig vor show() passieren.
+            self._prepare_music_workspace(dock, instrument_dock)
+
+            # Falls beide Docks bereits irgendwo umgeordnet waren, ihre Bereiche
+            # vor dem Anzeigen wieder eindeutig herstellen.
+            if not dock.isFloating():
+                self.addDockWidget(Qt.LeftDockWidgetArea, dock)
+            if not instrument_dock.isFloating():
+                self.addDockWidget(Qt.RightDockWidgetArea, instrument_dock)
+
+            instrument_dock.show()
+            instrument_dock.raise_()
+            dock.show()
+            dock.raise_()
+
+            QTimer.singleShot(0, self._expand_music_workspace)
+            QTimer.singleShot(60, self._expand_music_workspace)
+
+            widget.tabs.setCurrentIndex(0)
+            widget.staff_canvas.setFocus(Qt.OtherFocusReason)
+            self._assign_widget_property_ids(dock)
+            self._assign_widget_property_ids(instrument_dock)
+            self.statusBar().showMessage(
+                'Musik - Keyboard geöffnet • Instrument rechts • übriger Platz vollständig Musik'
+            )
 
         def _localize_dock_visibility_changed(self, visible: bool) -> None:
             """Replace the normal work area while Localize PO/MO is visible.
@@ -48330,6 +51721,10 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     _target,
                     self.project_windows_link_with_ordinals.get(_target, False),
                 )
+                panel.set_workstation_mode(
+                    _target,
+                    self.project_windows_workstation_mode.get(_target, False),
+                )
             dock.setWidget(panel)
             dock.setTitleBarWidget(DockTitleBar(dock))
 
@@ -48441,6 +51836,10 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 self.project_settings_panel.set_link_with_ordinals(
                     _target,
                     self.project_windows_link_with_ordinals.get(_target, False),
+                )
+                self.project_settings_panel.set_workstation_mode(
+                    _target,
+                    self.project_windows_workstation_mode.get(_target, False),
                 )
             self.project_settings_dock.show()
             self.project_settings_dock.raise_()
@@ -48579,6 +51978,30 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 and panel.link_with_ordinals(target_key) != value
             ):
                 panel.set_link_with_ordinals(target_key, value)
+            if changed and mark_modified:
+                self.set_project_modified(True)
+                if self.current_project_path is not None:
+                    self.save_project()
+
+        def set_project_windows_workstation_mode(
+            self,
+            target: str,
+            enabled: bool,
+            *,
+            mark_modified: bool = True,
+        ) -> None:
+            target_key = self._project_windows_target_key(target)
+            value = bool(enabled)
+            changed = bool(
+                self.project_windows_workstation_mode.get(target_key, False)
+            ) != value
+            self.project_windows_workstation_mode[target_key] = value
+            panel = getattr(self, "project_settings_panel", None)
+            if (
+                panel is not None
+                and panel.workstation_mode(target_key) != value
+            ):
+                panel.set_workstation_mode(target_key, value)
             if changed and mark_modified:
                 self.set_project_modified(True)
                 if self.current_project_path is not None:
@@ -48961,6 +52384,9 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             tools_menu.addAction(self.doxygen_action)
 
             learning_menu = self.main_menu_bar.addMenu("&Lernen")
+            # Stage 263: direkter Menüpfad Lernen -> Keyboard.
+            learning_menu.addAction(self.music_keyboard_action)
+            learning_menu.addSeparator()
             math_menu = learning_menu.addMenu("Mathematik")
             math_menu.addAction(self.math_learning_action)
             math_menu.addSeparator()
@@ -49833,6 +53259,10 @@ border: 2px solid #2a69aa;
                 elif isinstance(widget, DBaseFormPropertyPanel):
                     widget.set_dark_mode(enabled)
                 elif isinstance(widget, MathematicsLearningDockWidget):
+                    widget.set_dark_mode(enabled)
+                elif isinstance(widget, MusicKeyboardDockWidget):
+                    widget.set_dark_mode(enabled)
+                elif isinstance(widget, InstrumentDockWidget):
                     widget.set_dark_mode(enabled)
                 elif isinstance(widget, DockTitleBar):
                     widget.set_dark_mode(enabled)
@@ -50871,12 +54301,23 @@ border: 2px solid #2a69aa;
                 self._register_opened_file_in_project(path)
                 self.statusBar().showMessage(f"Geöffnet: {path.name}")
 
-        def open_document(self, path: Path) -> bool:
+        def open_document(
+            self,
+            path: Path,
+            *,
+            assembler_text_mode: bool = False,
+        ) -> bool:
             try:
                 path = Path(path).expanduser().resolve()
             except OSError as exc:
                 self.show_error("Pfadfehler", str(exc))
                 return False
+
+            # Stage 256: Eine .prg-Datei ist immer ein C64-Binärprogramm.
+            # Auch ein Aufrufer darf sie nicht mehr in den Stage-255-
+            # Assembler-Textmodus zwingen.
+            if path.suffix.casefold() == ".prg":
+                assembler_text_mode = False
 
             if path.suffix.lower() == ".wfm":
                 opened = self.open_dbase_form_file(path)
@@ -50922,24 +54363,24 @@ border: 2px solid #2a69aa;
                 self.statusBar().showMessage(f"Bereits geöffnet: {path.name}")
                 return True
 
-            binary_disassembly_mode = path.suffix.casefold() in {".prg", ".bin"}
+            binary_disassembly_mode = (
+                not assembler_text_mode
+                and path.suffix.casefold() in {".prg", ".bin"}
+            )
             if binary_disassembly_mode:
-                try:
-                    raw_bytes = path.read_bytes()
-                    text, _load_address = format_c64_program_disassembly(
-                        raw_bytes,
-                        suffix=path.suffix,
-                        source_name=path.name,
-                    )
-                    encoding = "utf-8"
-                    newline = "\n"
-                except (OSError, ValueError) as exc:
+                # Stage 257: Weder read_bytes() noch der Disassembler laufen
+                # hier im GUI-Thread. Der Editor wird sofort sichtbar; sein
+                # Worker übernimmt Dateigröße, Laden und 6510-Disassembly.
+                if not path.is_file():
                     self.show_error(
-                        "C64-Binärdatei konnte nicht disassembliert werden",
-                        f"Die Datei konnte nicht als C64-Programm geladen werden:\n"
-                        f"{path}\n\n{exc}",
+                        "C64-Binärdatei konnte nicht geöffnet werden",
+                        f"Datei nicht gefunden:\n{path}",
                     )
                     return False
+                raw_bytes = b""
+                text = "; C64-Disassembly wird vorbereitet ...\n"
+                encoding = "utf-8"
+                newline = "\n"
             else:
                 try:
                     text, encoding, newline, raw_bytes = self._decode_text_file(path)
@@ -50965,10 +54406,17 @@ border: 2px solid #2a69aa;
                 editor_font=self._make_editor_font(),
                 dark_mode=dark_mode,
                 binary_disassembly_mode=binary_disassembly_mode,
+                assembler_text_mode=assembler_text_mode,
             )
             self._add_document_tab(document)
             document.focus_preferred_editor()
+            if binary_disassembly_mode:
+                self._start_c64_document_disassembly(document, path)
             self.log(f"Datei im Editor geöffnet: {path}")
+            if assembler_text_mode:
+                self.log(
+                    f"ASM-TEXTMODUS: {path.name} -> textueller Assembler-Editor"
+                )
             if binary_disassembly_mode:
                 self.log(
                     f"C64-DISASSEMBLY: {path.name} -> Rohdaten-Tab "
@@ -50983,6 +54431,91 @@ border: 2px solid #2a69aa;
                 )
             self._remember_recent_file(path)
             return True
+
+        def _start_c64_document_disassembly(
+            self,
+            document: DocumentEditor,
+            path: Path,
+        ) -> None:
+            """Startet Stage-257-C64-Disassembly ohne Arbeit im GUI-Thread."""
+            key = id(document)
+            old_job = self._c64_disassembly_jobs.get(key)
+            if old_job is not None and old_job[0].isRunning():
+                return
+
+            document.begin_c64_disassembly()
+            thread = QThread(self)
+            worker = C64DisassemblyWorker(path)
+            worker.moveToThread(thread)
+            self._c64_disassembly_jobs[key] = (thread, worker, document)
+
+            thread.started.connect(worker.run)
+            worker.size_ready.connect(document.set_c64_disassembly_size)
+            worker.progress.connect(document.set_c64_disassembly_progress)
+            worker.succeeded.connect(
+                lambda raw, listing, load_address, doc=document:
+                    self._c64_document_disassembly_finished(
+                        doc, raw, listing, load_address
+                    )
+            )
+            worker.failed.connect(
+                lambda message, doc=document:
+                    self._c64_document_disassembly_failed(doc, message)
+            )
+            worker.succeeded.connect(thread.quit)
+            worker.failed.connect(thread.quit)
+            worker.succeeded.connect(worker.deleteLater)
+            worker.failed.connect(worker.deleteLater)
+            thread.finished.connect(
+                lambda job_key=key: self._c64_disassembly_thread_finished(job_key)
+            )
+            thread.finished.connect(thread.deleteLater)
+
+            # Stage 259: Nicht im selben Call-Stack wie show()/Tab-Aufbau starten.
+            # 40 ms geben Qt sicher Gelegenheit, die 1-%-Leiste zu layouten und
+            # auf den Bildschirm zu zeichnen. Danach bleibt alles asynchron.
+            QTimer.singleShot(40, thread.start)
+
+        def _c64_document_disassembly_finished(
+            self,
+            document: DocumentEditor,
+            raw_bytes: bytes,
+            listing: str,
+            load_address: int,
+        ) -> None:
+            try:
+                if self._document_index(document) < 0:
+                    return
+                document.finish_c64_disassembly(raw_bytes, listing)
+            except RuntimeError:
+                return
+            self.log(
+                f"C64-DISASSEMBLY FERTIG: {document.display_name}; "
+                f"{len(raw_bytes)} Bytes; Ladeadresse ${int(load_address) & 0xFFFF:04X}"
+            )
+            self.statusBar().showMessage(
+                f"{document.display_name} – C64-Disassembly abgeschlossen"
+            )
+            self._update_editor_status_panels()
+
+        def _c64_document_disassembly_failed(
+            self,
+            document: DocumentEditor,
+            message: str,
+        ) -> None:
+            try:
+                if self._document_index(document) >= 0:
+                    document.fail_c64_disassembly(message)
+            except RuntimeError:
+                pass
+            self.log(f"C64-DISASSEMBLY FEHLER: {message}")
+            self.show_error(
+                "C64-Binärdatei konnte nicht disassembliert werden",
+                str(message),
+            )
+
+        def _c64_disassembly_thread_finished(self, job_key: int) -> None:
+            self._c64_disassembly_jobs.pop(int(job_key), None)
 
         def show_character_editor(
             self,
@@ -51147,6 +54680,9 @@ border: 2px solid #2a69aa;
             document.context_help_requested.connect(
                 self.show_context_help_for_document
             )
+            document.c64_help_topic_requested.connect(
+                self.show_c64_help_topic
+            )
             document.build_requested.connect(
                 self.build_and_run_source_document
             )
@@ -51158,6 +54694,19 @@ border: 2px solid #2a69aa;
             )
             document.find_next_requested.connect(
                 self.repeat_source_find
+            )
+            # Stage 246: Projektmarker werden zuerst atomar in den Editor geladen,
+            # danach synchronisieren weitere Gutter-Klicks zurück in den Baum.
+            self._restore_project_markers_for_document(document)
+            document.raw_editor.breakpoints_changed.connect(
+                lambda value=document: self._sync_document_marker_to_project(
+                    value, "breakpoint", persist=True
+                )
+            )
+            document.raw_editor.bookmarks_changed.connect(
+                lambda value=document: self._sync_document_marker_to_project(
+                    value, "bookmark", persist=True
+                )
             )
             document.raw_editor.bookmarks_changed.connect(
                 self._refresh_favorites_menu
@@ -51403,6 +54952,25 @@ border: 2px solid #2a69aa;
             if document.path.parent == self.current_directory:
                 self.populate_file_list()
             self._remember_recent_file(document.path)
+
+            # Stage 246: bei Speichern unter wandern Breakpoint-/Bookmark-Knoten
+            # auf den neuen Dateipfad; verwaiste alte Dateiknoten werden entfernt.
+            marker_changed = False
+            if previous_path is not None and previous_path != document.path:
+                marker_changed |= self._replace_project_marker_file(
+                    "breakpoint", previous_path, (), mark_modified=True, persist=False
+                )
+                marker_changed |= self._replace_project_marker_file(
+                    "bookmark", previous_path, (), mark_modified=True, persist=False
+                )
+            marker_changed |= self._sync_document_marker_to_project(
+                document, "breakpoint", persist=False
+            )
+            marker_changed |= self._sync_document_marker_to_project(
+                document, "bookmark", persist=False
+            )
+            if marker_changed and self.current_project_path is not None:
+                self.save_project()
             return True
 
         @staticmethod
@@ -51997,9 +55565,25 @@ border: 2px solid #2a69aa;
                             document.windows_application_mode
                         ) == "Console"
                     ):
-                        compiler_kwargs["breakpoint_lines"] = (
+                        _editor_breakpoints = set(
                             document.raw_editor.breakpoint_lines()
                         )
+                        _project_breakpoints = set()
+                        if document.path is not None:
+                            _project_breakpoints.update(
+                                self._project_marker_lines_for_path(
+                                    "breakpoint", document.path
+                                )
+                            )
+                        _breakpoint_lines = tuple(
+                            sorted(_editor_breakpoints | _project_breakpoints)
+                        )
+                        compiler_kwargs["breakpoint_lines"] = _breakpoint_lines
+                        if _breakpoint_lines:
+                            self.log(
+                                "PASCAL DEBUG BREAKPOINTS: "
+                                + ", ".join(str(line) for line in _breakpoint_lines)
+                            )
                 _project_link_search_paths = (
                     self._project_windows_link_search_paths(document.build_target)
                     if document.build_target in {"pe32", "pe64"}
@@ -53530,6 +57114,312 @@ border: 2px solid #2a69aa;
         ) -> bool:
             return self._launch_dbase_qt5_gui(document, output_path)
 
+        @staticmethod
+        def _d64_workstation_is_open() -> bool:
+            'Advisory check for the existing d64qt5 Workstation singleton.'
+            if os.name != "nt":
+                return False
+            try:
+                import ctypes
+                from ctypes import wintypes
+
+                SYNCHRONIZE = 0x00100000
+                kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+                open_mutex = kernel32.OpenMutexW
+                open_mutex.argtypes = [
+                    wintypes.DWORD,
+                    wintypes.BOOL,
+                    wintypes.LPCWSTR,
+                ]
+                open_mutex.restype = wintypes.HANDLE
+
+                close_handle = kernel32.CloseHandle
+                close_handle.argtypes = [wintypes.HANDLE]
+                close_handle.restype = wintypes.BOOL
+
+                handle = open_mutex(
+                    SYNCHRONIZE,
+                    False,
+                    r"Global\\dBase2Many.D64Workstation.Singleton",
+                )
+                if not handle:
+                    return False
+                close_handle(handle)
+                return True
+            except Exception:
+                # Advisory only. The C++ runtime performs the authoritative
+                # mutex/ready-event check before QApplication/QWidget creation.
+                return False
+
+        @staticmethod
+        def _workstation_runner_pipe_name() -> str:
+            return r"\\.\pipe\dBase2Many.D64Workstation.Runner.v1"
+
+        def _workstation_runner_candidates(self) -> List[Path]:
+            """Liefert moegliche Pfade des einmalig gebauten Runner-Programms."""
+            name = "d64_workstation_runner.exe"
+            candidates: List[Path] = []
+
+            try:
+                source_dir = Path(__file__).resolve().parent
+            except Exception:
+                source_dir = Path.cwd()
+
+            candidates.extend([
+                source_dir / "d64qt5" / "build-mingw32" / name,
+                source_dir / "d64qt5" / name,
+                source_dir / name,
+            ])
+
+            try:
+                exe_dir = Path(sys.executable).resolve().parent
+                candidates.extend([
+                    exe_dir / name,
+                    exe_dir / "d64qt5" / "build-mingw32" / name,
+                ])
+            except Exception:
+                pass
+
+            meipass = getattr(sys, "_MEIPASS", None)
+            if meipass:
+                base = Path(meipass)
+                candidates.extend([
+                    base / name,
+                    base / "d64qt5" / "build-mingw32" / name,
+                ])
+
+            unique: List[Path] = []
+            seen = set()
+            for candidate in candidates:
+                try:
+                    resolved = candidate.resolve()
+                except Exception:
+                    resolved = candidate
+                key = os.path.normcase(str(resolved))
+                if key in seen:
+                    continue
+                seen.add(key)
+                unique.append(resolved)
+            return unique
+
+        def _find_workstation_runner(self) -> Optional[Path]:
+            for candidate in self._workstation_runner_candidates():
+                if candidate.is_file():
+                    return candidate
+            return None
+
+        def _send_workstation_runner_request(
+            self,
+            output_path: Path,
+            *,
+            console_mode: bool,
+            timeout_ms: int = 200,
+        ) -> bool:
+            """Uebergibt eine fertige PE-EXE an den laufenden Runner."""
+            if os.name != "nt":
+                return False
+
+            try:
+                import ctypes
+                from ctypes import wintypes
+
+                pipe_name = self._workstation_runner_pipe_name()
+                kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+                wait_named_pipe = kernel32.WaitNamedPipeW
+                wait_named_pipe.argtypes = [wintypes.LPCWSTR, wintypes.DWORD]
+                wait_named_pipe.restype = wintypes.BOOL
+
+                create_file = kernel32.CreateFileW
+                create_file.argtypes = [
+                    wintypes.LPCWSTR,
+                    wintypes.DWORD,
+                    wintypes.DWORD,
+                    wintypes.LPVOID,
+                    wintypes.DWORD,
+                    wintypes.DWORD,
+                    wintypes.HANDLE,
+                ]
+                create_file.restype = wintypes.HANDLE
+
+                write_file = kernel32.WriteFile
+                write_file.argtypes = [
+                    wintypes.HANDLE,
+                    wintypes.LPCVOID,
+                    wintypes.DWORD,
+                    ctypes.POINTER(wintypes.DWORD),
+                    wintypes.LPVOID,
+                ]
+                write_file.restype = wintypes.BOOL
+
+                close_handle = kernel32.CloseHandle
+                close_handle.argtypes = [wintypes.HANDLE]
+                close_handle.restype = wintypes.BOOL
+
+                if not wait_named_pipe(pipe_name, max(0, int(timeout_ms))):
+                    return False
+
+                GENERIC_WRITE = 0x40000000
+                OPEN_EXISTING = 3
+                handle = create_file(
+                    pipe_name,
+                    GENERIC_WRITE,
+                    0,
+                    None,
+                    OPEN_EXISTING,
+                    0,
+                    None,
+                )
+                invalid_handle = ctypes.c_void_p(-1).value
+                handle_value = int(handle) if handle else 0
+                if not handle_value or handle_value == int(invalid_handle):
+                    return False
+
+                try:
+                    exe = str(Path(output_path).resolve())
+                    cwd = str(Path(output_path).resolve().parent)
+                    exe_bytes = exe.encode("utf-16-le")
+                    cwd_bytes = cwd.encode("utf-16-le")
+                    flags = 1 if console_mode else 0
+                    payload = (
+                        struct.pack(
+                            "<IIII",
+                            0x31525744,  # DWR1
+                            flags,
+                            len(exe_bytes),
+                            len(cwd_bytes),
+                        )
+                        + exe_bytes
+                        + cwd_bytes
+                    )
+                    buffer = ctypes.create_string_buffer(payload)
+                    written = wintypes.DWORD(0)
+                    ok = write_file(
+                        handle,
+                        buffer,
+                        len(payload),
+                        ctypes.byref(written),
+                        None,
+                    )
+                    return bool(ok) and int(written.value) == len(payload)
+                finally:
+                    close_handle(handle)
+            except Exception:
+                return False
+
+        def _start_workstation_runner_process(
+            self,
+            runner: Path,
+            output_path: Path,
+            *,
+            console_mode: bool,
+        ) -> bool:
+            """Startet Runner + Anwendung direkt; kein Compiler/Make-Aufruf.
+
+            Eine bereits laufende Runner-Instanz wird vom C++-Runner selbst
+            erkannt. Die kurzlebige zweite Instanz leitet den Startauftrag
+            dann ueber die bestehende Named Pipe an den OWNER weiter.
+            """
+            try:
+                output_path = Path(output_path).resolve()
+                mode_switch = "--console" if console_mode else "--gui"
+                command = [str(runner), mode_switch, str(output_path)]
+                options = {
+                    "cwd": str(runner.parent),
+                    "stdin": subprocess.DEVNULL,
+                    "stdout": subprocess.DEVNULL,
+                    "stderr": subprocess.DEVNULL,
+                }
+                creationflags = 0
+                if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
+                    creationflags |= subprocess.CREATE_NEW_PROCESS_GROUP
+                if creationflags:
+                    options["creationflags"] = creationflags
+                process = subprocess.Popen(command, **options)
+            except OSError as exc:
+                self.show_error(
+                    "Workstation Mode",
+                    "Der Workstation Runner konnte nicht gestartet werden:\n\n"
+                    f"{runner}\n\n{exc}",
+                )
+                return False
+
+            processes = [
+                p for p in getattr(self, "_workstation_runner_processes", [])
+                if p.poll() is None
+            ]
+            processes.append(process)
+            self._workstation_runner_processes = processes
+            return True
+
+        def _launch_via_workstation_runner(
+            self,
+            output_path: Path,
+            *,
+            console_mode: bool,
+        ) -> bool:
+            """Startet PE32/PE32+ direkt ueber den Workstation Runner.
+
+            Der Runner linkt src/d64qt5/d64_workstation.cpp und entscheidet
+            selbst race-sicher zwischen OWNER und bestehender Session. Bei
+            einem bereits residenten Runner leitet eine zweite, kurzlebige
+            Runner-Instanz den Auftrag ueber die kompatible Named Pipe weiter.
+            d64_dism baut den Runner beim Start ausdruecklich NICHT.
+            """
+            if os.name != "nt":
+                self.show_error(
+                    "Workstation Mode",
+                    "Workstation Mode steht nur unter Windows zur Verfügung.",
+                )
+                return False
+
+            output_path = Path(output_path).resolve()
+            workstation_was_open = self._d64_workstation_is_open()
+
+            runner = self._find_workstation_runner()
+            if runner is None:
+                expected = "\n".join(
+                    f"  - {candidate}"
+                    for candidate in self._workstation_runner_candidates()[:4]
+                )
+                self.show_error(
+                    "Workstation Mode",
+                    "Der einmalig gebaute Workstation Runner fehlt.\n\n"
+                    "Baue ihn einmal mit:\n"
+                    "  src\\d64qt5\\build_workstation_runner_mingw32.bat\n\n"
+                    "Beim normalen Projekt-Start wird dieser Build NICHT "
+                    "automatisch ausgeführt.\n\n"
+                    "Gesuchte Pfade:\n" + expected,
+                )
+                return False
+
+            if not self._start_workstation_runner_process(
+                runner,
+                output_path,
+                console_mode=console_mode,
+            ):
+                return False
+
+            if workstation_was_open:
+                message = (
+                    "Workstation Mode: Startauftrag an vorhandene "
+                    "Workstation-Session übergeben"
+                )
+            else:
+                message = (
+                    "Workstation Mode: Runner startet neue Workstation-Session; "
+                    f"{output_path.name} wird geladen"
+                )
+
+            self.log(
+                "WORKSTATION RUNNER DIRECT START: "
+                f"{runner} {'--console' if console_mode else '--gui'} "
+                f"{output_path}"
+            )
+            self.statusBar().showMessage(message, 7000)
+            return True
+
         def _launch_assembled_document(
             self,
             document: DocumentEditor,
@@ -53540,6 +57430,14 @@ border: 2px solid #2a69aa;
             if document.build_target == "amiga":
                 return self._launch_amiga_document(document, output_path)
             if document.build_target in {"pe32", "pe64"}:
+                target_key = self._project_windows_target_key(
+                    document.build_target
+                )
+                workstation_mode = bool(
+                    self.project_windows_workstation_mode.get(
+                        target_key, False
+                    )
+                )
                 if document.is_dbase_document:
                     return self._launch_dbase_qt5_gui(document, output_path)
                 target_label = "PE64" if document.build_target == "pe64" else "PE32"
@@ -53562,6 +57460,7 @@ border: 2px solid #2a69aa;
                         document.windows_application_mode
                     ) == "Console"
                 )
+
                 if document.is_logo_document and not console_mode:
                     runtime_dll = output_path.parent / "d64graphics.dll"
                     if not runtime_dll.is_file():
@@ -53576,6 +57475,11 @@ border: 2px solid #2a69aa;
                                 "Der automatische Build ist fehlgeschlagen:\n\n" + str(exc),
                             )
                             return False
+                if workstation_mode:
+                    return self._launch_via_workstation_runner(
+                        output_path,
+                        console_mode=console_mode,
+                    )
                 options = {"cwd": str(output_path.parent)}
                 if not console_mode:
                     options.update({
@@ -54096,6 +58000,247 @@ border: 2px solid #2a69aa;
             self.reset_project_tree()
             return tab
 
+        @staticmethod
+        def _project_marker_path_key(path: Path | str) -> str:
+            try:
+                return os.path.normcase(str(Path(path).expanduser().resolve())).casefold()
+            except (OSError, RuntimeError, ValueError):
+                return os.path.normcase(str(Path(path).expanduser())).casefold()
+
+        def _project_marker_root(self, marker_kind: str) -> Optional[QTreeWidgetItem]:
+            return getattr(self, "project_marker_roots", {}).get(str(marker_kind))
+
+        def _project_marker_file_item(
+            self,
+            marker_kind: str,
+            path: Path | str,
+        ) -> Optional[QTreeWidgetItem]:
+            root = self._project_marker_root(marker_kind)
+            if root is None:
+                return None
+            wanted = self._project_marker_path_key(path)
+            for index in range(root.childCount()):
+                child = root.child(index)
+                if self._project_item_kind(child) != PROJECT_NODE_MARKER_FILE:
+                    continue
+                existing = str(child.data(0, Qt.UserRole + 302) or "")
+                if existing and self._project_marker_path_key(existing) == wanted:
+                    return child
+            return None
+
+        @staticmethod
+        def _project_marker_line_values(file_item: QTreeWidgetItem) -> Tuple[int, ...]:
+            values = set()
+            for index in range(file_item.childCount()):
+                leaf = file_item.child(index)
+                try:
+                    value = int(leaf.data(0, Qt.UserRole + 311) or leaf.text(0))
+                except (TypeError, ValueError):
+                    continue
+                if value > 0:
+                    values.add(value)
+            return tuple(sorted(values))
+
+        def _project_marker_lines_for_path(
+            self,
+            marker_kind: str,
+            path: Path | str,
+        ) -> Tuple[int, ...]:
+            item = self._project_marker_file_item(marker_kind, path)
+            if item is None:
+                return ()
+            return self._project_marker_line_values(item)
+
+        def _replace_project_marker_file(
+            self,
+            marker_kind: str,
+            path: Path | str,
+            line_numbers: Iterable[int],
+            *,
+            title: str = "",
+            mark_modified: bool = True,
+            persist: bool = False,
+        ) -> bool:
+            root = self._project_marker_root(marker_kind)
+            if root is None:
+                return False
+            try:
+                resolved = Path(path).expanduser().resolve()
+            except (OSError, RuntimeError, ValueError):
+                resolved = Path(path).expanduser()
+            path_text = str(resolved)
+            lines = tuple(sorted({
+                int(value)
+                for value in (line_numbers or ())
+                if str(value).strip() and int(value) > 0
+            }))
+            current = self._project_marker_file_item(marker_kind, resolved)
+            old_lines = self._project_marker_line_values(current) if current is not None else ()
+            old_title = current.text(0) if current is not None else ""
+            new_title = str(title).strip() or resolved.name or path_text
+            if old_lines == lines and (current is None or old_title == new_title):
+                return False
+
+            _signals_were_blocked = self.project_tree.signalsBlocked()
+            self.project_tree.blockSignals(True)
+            try:
+                if not lines:
+                    if current is not None:
+                        root.takeChild(root.indexOfChild(current))
+                else:
+                    if current is None:
+                        current = QTreeWidgetItem(root, [new_title])
+                        current.setData(0, Qt.UserRole + 303, PROJECT_NODE_MARKER_FILE)
+                        current.setData(0, Qt.UserRole + 310, marker_kind)
+                    current.setText(0, new_title)
+                    current.setData(0, Qt.UserRole + 302, path_text)
+                    current.setToolTip(0, path_text)
+                    current.setIcon(0, self.icon_provider.icon(QFileInfo(path_text)))
+                    current.takeChildren()
+                    for line_number in lines:
+                        leaf = QTreeWidgetItem(current, [str(line_number)])
+                        leaf.setData(0, Qt.UserRole + 302, path_text)
+                        leaf.setData(0, Qt.UserRole + 303, PROJECT_NODE_MARKER_LINE)
+                        leaf.setData(0, Qt.UserRole + 310, marker_kind)
+                        leaf.setData(0, Qt.UserRole + 311, int(line_number))
+                        leaf.setToolTip(
+                            0,
+                            f"{resolved.name}, Zeile {line_number} – Doppelklick zum Navigieren",
+                        )
+                    current.setExpanded(True)
+                    root.setExpanded(True)
+                root.sortChildren(0, Qt.AscendingOrder)
+            finally:
+                self.project_tree.blockSignals(_signals_were_blocked)
+
+            if mark_modified:
+                self.set_project_modified(True)
+            if persist and self.current_project_path is not None:
+                self.save_project()
+            return True
+
+        def _project_marker_entries(self, marker_kind: str) -> List[Dict[str, object]]:
+            root = self._project_marker_root(marker_kind)
+            if root is None:
+                return []
+            result = []
+            for index in range(root.childCount()):
+                child = root.child(index)
+                if self._project_item_kind(child) != PROJECT_NODE_MARKER_FILE:
+                    continue
+                path_value = str(child.data(0, Qt.UserRole + 302) or "").strip()
+                lines = self._project_marker_line_values(child)
+                if path_value and lines:
+                    result.append({
+                        "title": child.text(0),
+                        "path": path_value,
+                        "lines": list(lines),
+                    })
+            return result
+
+        def _sync_document_marker_to_project(
+            self,
+            document: DocumentEditor,
+            marker_kind: str,
+            *,
+            persist: bool = True,
+        ) -> bool:
+            if getattr(self, "_project_marker_restore_guard", False):
+                return False
+            if document.path is None:
+                return False
+            if marker_kind == "breakpoint" and not document.is_pascal_document:
+                return False
+            editor = document.raw_editor
+            lines = (
+                editor.breakpoint_lines()
+                if marker_kind == "breakpoint"
+                else editor.bookmark_lines()
+            )
+            previous = self._project_marker_lines_for_path(marker_kind, document.path)
+            if tuple(previous) == tuple(lines):
+                return False
+            return self._replace_project_marker_file(
+                marker_kind,
+                document.path,
+                lines,
+                title=document.path.name,
+                mark_modified=True,
+                persist=persist,
+            )
+
+        def _restore_project_markers_for_document(self, document: DocumentEditor) -> None:
+            if document.path is None:
+                return
+            self._project_marker_restore_guard = True
+            try:
+                breakpoints = (
+                    self._project_marker_lines_for_path("breakpoint", document.path)
+                    if document.is_pascal_document
+                    else ()
+                )
+                bookmarks = self._project_marker_lines_for_path("bookmark", document.path)
+                document.raw_editor.replace_gutter_markers(
+                    "breakpoint", breakpoints, emit_change=False
+                )
+                document.raw_editor.replace_gutter_markers(
+                    "bookmark", bookmarks, emit_change=False
+                )
+                if document.is_pascal_document and breakpoints:
+                    document.invalidate_assembly_result("Breakpoints aus Projekt geladen")
+            finally:
+                self._project_marker_restore_guard = False
+
+        def _restore_project_markers_for_open_documents(self) -> None:
+            tabs = getattr(self, "document_tabs", None)
+            if tabs is None:
+                return
+            for index in range(tabs.count()):
+                document = tabs.widget(index)
+                if isinstance(document, DocumentEditor):
+                    self._restore_project_markers_for_document(document)
+            self._refresh_favorites_menu()
+
+        def _jump_to_project_marker(self, item: QTreeWidgetItem) -> None:
+            path_value = str(item.data(0, Qt.UserRole + 302) or "").strip()
+            try:
+                line_number = int(item.data(0, Qt.UserRole + 311) or item.text(0))
+            except (TypeError, ValueError):
+                return
+            if not path_value or line_number <= 0:
+                return
+            path = Path(path_value)
+            if not path.is_file():
+                self.show_error(
+                    "Quelldatei nicht gefunden",
+                    f"Die Marker-Datei wurde nicht gefunden:\n{path}",
+                )
+                return
+            if not self.open_document(path):
+                return
+            document = self._find_open_document(path)
+            if not isinstance(document, DocumentEditor):
+                return
+            block = document.raw_editor.document().findBlockByNumber(line_number - 1)
+            if not block.isValid():
+                self.show_error(
+                    "Zeile nicht vorhanden",
+                    f"{path.name} besitzt keine Zeile {line_number}.",
+                )
+                return
+            self.document_tabs.setCurrentWidget(document)
+            document.views.setCurrentWidget(document.source_page)
+            cursor = QTextCursor(block)
+            cursor.clearSelection()
+            document.raw_editor.setTextCursor(cursor)
+            document.raw_editor.centerCursor()
+            document.raw_editor.setFocus(Qt.OtherFocusReason)
+            marker_kind = str(item.data(0, Qt.UserRole + 310) or "")
+            marker_name = "Breakpoint" if marker_kind == "breakpoint" else "Bookmark"
+            self.statusBar().showMessage(
+                f"{marker_name}: {path.name}, Zeile {line_number}", 6000
+            )
+
         def reset_project_tree(
             self,
             entries: Optional[Dict[str, List[Dict[str, str]]]] = None,
@@ -54140,9 +58285,19 @@ border: 2px solid #2a69aa;
                     ),
                     mark_modified=False,
                 )
+                self.set_project_windows_workstation_mode(
+                    _target,
+                    _project_bool_entry(
+                        values,
+                        _settings["workstation_mode_key"],
+                        False,
+                    ),
+                    mark_modified=False,
+                )
             self.project_tree.blockSignals(True)
             self.project_tree.clear()
             self.project_root_items = {}
+            self.project_marker_roots = {}
             self.project_archive_root = None
             self.project_prolog_knowledge_root = None
             self.project_pascal_target_nodes = {}
@@ -54158,6 +58313,37 @@ border: 2px solid #2a69aa;
             )
             self._project_checkbox_guard = False
             folder_icon = self.style().standardIcon(QStyle.SP_DirClosedIcon)
+
+            # Stage 246: exakt die beiden Debug-Navigationsbereiche stehen
+            # vor allen bisherigen Projektkategorien.
+            for _marker_kind, _marker_title, _entry_key in (
+                ("breakpoint", "Break points", PROJECT_BREAKPOINTS_KEY),
+                ("bookmark", "Bookmarks", PROJECT_BOOKMARKS_KEY),
+            ):
+                _marker_root = QTreeWidgetItem(self.project_tree, [_marker_title])
+                _marker_root.setData(0, Qt.UserRole + 303, PROJECT_NODE_MARKER_ROOT)
+                _marker_root.setData(0, Qt.UserRole + 310, _marker_kind)
+                _marker_root.setIcon(0, folder_icon)
+                _marker_root.setToolTip(
+                    0,
+                    "Gespeicherte Breakpoints"
+                    if _marker_kind == "breakpoint"
+                    else "Gespeicherte Bookmarks",
+                )
+                self.project_marker_roots[_marker_kind] = _marker_root
+                for _entry in values.get(_entry_key, ()):
+                    _path_text = str(_entry.get("path", "")).strip()
+                    if _path_text:
+                        self._replace_project_marker_file(
+                            _marker_kind,
+                            Path(_path_text),
+                            _entry.get("lines", ()),
+                            title=str(_entry.get("title", "")),
+                            mark_modified=False,
+                            persist=False,
+                        )
+                _marker_root.setExpanded(True)
+
             for key, title, _extensions in PROJECT_CATEGORIES:
                 root = QTreeWidgetItem(self.project_tree, [title])
                 root.setData(0, Qt.UserRole + 301, key)
@@ -54300,6 +58486,7 @@ border: 2px solid #2a69aa;
             if self.project_archive_root is not None:
                 self.project_archive_root.setExpanded(True)
             self.project_tree.blockSignals(False)
+            self._restore_project_markers_for_open_documents()
 
         def _add_project_entry(
             self,
@@ -54606,6 +58793,9 @@ border: 2px solid #2a69aa;
                             "path": _path_value,
                         })
 
+            entries[PROJECT_BREAKPOINTS_KEY] = self._project_marker_entries("breakpoint")
+            entries[PROJECT_BOOKMARKS_KEY] = self._project_marker_entries("bookmark")
+
             for _target, _settings in PROJECT_WINDOWS_TARGET_SETTINGS.items():
                 entries[_settings["input_key"]] = [
                     {"path": path}
@@ -54638,6 +58828,17 @@ border: 2px solid #2a69aa;
                         else "false"
                     )
                 }]
+                entries[_settings["workstation_mode_key"]] = [{
+                    "value": (
+                        "true"
+                        if bool(
+                            self.project_windows_workstation_mode.get(
+                                _target, False
+                            )
+                        )
+                        else "false"
+                    )
+                }]
             return entries
 
         def project_has_entries(self) -> bool:
@@ -54659,6 +58860,8 @@ border: 2px solid #2a69aa;
             special = (
                 bool(entries.get(PROJECT_C_ARCHIVES_KEY))
                 or bool(entries.get(PROJECT_PROLOG_KNOWLEDGE_KEY))
+                or bool(entries.get(PROJECT_BREAKPOINTS_KEY))
+                or bool(entries.get(PROJECT_BOOKMARKS_KEY))
                 or any(
                     bool(entries.get(_key))
                     for _key in PROJECT_PASCAL_TARGET_ENTRY_KEYS.values()
@@ -56092,6 +60295,50 @@ border: 2px solid #2a69aa;
                 self.project_tree.clearSelection()
                 item.setSelected(True)
             kind = self._project_item_kind(item)
+            if kind in {PROJECT_NODE_MARKER_ROOT, PROJECT_NODE_MARKER_FILE, PROJECT_NODE_MARKER_LINE}:
+                menu = QMenu(self.project_tree)
+                if kind == PROJECT_NODE_MARKER_LINE:
+                    goto_action = menu.addAction("Zu Zeile gehen")
+                    remove_action = menu.addAction("Marker entfernen")
+                    selected = menu.exec_(
+                        self.project_tree.viewport().mapToGlobal(position)
+                    )
+                    if selected is goto_action:
+                        self._jump_to_project_marker(item)
+                    elif selected is remove_action:
+                        marker_kind = str(item.data(0, Qt.UserRole + 310) or "")
+                        path_value = str(item.data(0, Qt.UserRole + 302) or "")
+                        try:
+                            line_number = int(item.data(0, Qt.UserRole + 311) or item.text(0))
+                        except (TypeError, ValueError):
+                            line_number = 0
+                        remaining = [
+                            value
+                            for value in self._project_marker_lines_for_path(marker_kind, path_value)
+                            if value != line_number
+                        ]
+                        if self._replace_project_marker_file(
+                            marker_kind, path_value, remaining, persist=True
+                        ):
+                            document = self._find_open_document(Path(path_value))
+                            if isinstance(document, DocumentEditor):
+                                document.raw_editor.replace_gutter_markers(
+                                    marker_kind, remaining, emit_change=False
+                                )
+                                if marker_kind == "breakpoint":
+                                    document.invalidate_assembly_result("Breakpoint entfernt")
+                                else:
+                                    self._refresh_favorites_menu()
+                    return
+                toggle_action = menu.addAction(
+                    "Knoten schließen" if item.isExpanded() else "Knoten öffnen"
+                )
+                selected = menu.exec_(
+                    self.project_tree.viewport().mapToGlobal(position)
+                )
+                if selected is toggle_action:
+                    item.setExpanded(not item.isExpanded())
+                return
             if kind == PROJECT_NODE_PASCAL_TARGET:
                 self._show_project_pascal_target_menu(item, position)
                 return
@@ -57080,6 +61327,12 @@ border: 2px solid #2a69aa;
             _column: int = 0,
         ) -> None:
             kind = self._project_item_kind(item)
+            if kind == PROJECT_NODE_MARKER_LINE:
+                self._jump_to_project_marker(item)
+                return
+            if kind in {PROJECT_NODE_MARKER_ROOT, PROJECT_NODE_MARKER_FILE}:
+                item.setExpanded(not item.isExpanded())
+                return
             if kind in {
                 PROJECT_NODE_PASCAL_TARGET,
                 PROJECT_NODE_PASCAL_MODULE_ROOT,
@@ -57168,6 +61421,16 @@ border: 2px solid #2a69aa;
                     "Projektdatei nicht gefunden",
                     f"Der Projekteintrag verweist auf eine nicht vorhandene Datei:\n{path}",
                 )
+                return
+            category_key = str(
+                item.data(0, Qt.UserRole + 301) or ""
+            ).casefold()
+            # Stage 256: .prg ist auch im Commodore-C64-Projektzweig ein
+            # Binärprogramm. open_document() erzeugt daraus das Disassembly
+            # für den Rohdaten-Tab und legt die unveränderten Bytes in den
+            # Hex-Editor (4 Byte links + Trennlinie + 4 Byte rechts).
+            if category_key == "c64" and path.suffix.casefold() == ".prg":
+                self.open_document(path)
                 return
             if path.suffix.casefold() in self.EDITOR_EXTENSIONS:
                 self.open_document(path)
@@ -57880,6 +62143,28 @@ border: 2px solid #2a69aa;
             native = QDir.toNativeSeparators(str(chm_path))
             return f"mk:@MSITStore:{native}::/{folder}/{topic}.html"
 
+        def show_c64_help_topic(
+            self,
+            document: DocumentEditor,
+            topic: str,
+            context_id: int = 0,
+        ) -> None:
+            """Oeffnet help/c64.chm per ID und faellt auf Topic-Text zurueck."""
+            if self._document_index(document) >= 0:
+                self.document_tabs.setCurrentWidget(document)
+            topic = str(topic or "").strip()
+            context_id = max(0, int(context_id or 0))
+            self.statusBar().showMessage(
+                f"C64-Hilfe: {topic or '-'} / Context-ID {context_id}",
+                5000,
+            )
+            self.show_chm_viewer(
+                context_language="c64",
+                context_word=topic,
+                context_id=context_id,
+                fixed_chm=Path(__file__).resolve().parent / "help" / "c64.chm",
+            )
+
         def show_context_help_for_document(
             self,
             document: DocumentEditor,
@@ -57905,10 +62190,18 @@ border: 2px solid #2a69aa;
                 f"F1-Kontexthilfe: {language.upper()} / {word}",
                 5000,
             )
-            self.show_chm_viewer(
-                context_language=language,
-                context_word=word,
-            )
+            if language.casefold() == "c64":
+                self.show_chm_viewer(
+                    context_language="c64",
+                    context_word=word,
+                    fixed_chm=Path(__file__).resolve().parent
+                    / "help" / "c64.chm",
+                )
+            else:
+                self.show_chm_viewer(
+                    context_language=language,
+                    context_word=word,
+                )
 
         # ----- Navigation --------------------------------------------------
 
@@ -58414,6 +62707,8 @@ border: 2px solid #2a69aa;
             *,
             context_language: str = "",
             context_word: str = "",
+            context_id: int = 0,
+            fixed_chm: Optional[Path] = None,
         ) -> None:
             if not QT_WEBENGINE_AVAILABLE:
                 self._show_message_box(
@@ -58441,14 +62736,35 @@ border: 2px solid #2a69aa;
             # Noch vor CHM-Extraktion, erstem Seitenladen und exec_() wird die
             # Web-Oberflaeche auf den zuvor ermittelten Modus festgelegt.
             dialog.set_dark_mode(dark_mode)
-            dialog.set_pending_context(context_language, context_word)
-            last_file = str(
-                self.settings.value("chm/last_file", "") or ""
+            dialog.set_pending_context(
+                context_language,
+                context_word,
+                context_id,
             )
-            if last_file and Path(last_file).is_file():
-                dialog.open_chm(last_file)
+
+            if fixed_chm is not None:
+                help_file = Path(fixed_chm).expanduser().resolve()
+                if not help_file.is_file():
+                    self._show_message_box(
+                        QMessageBox.Warning,
+                        "C64-Hilfe nicht gefunden",
+                        "Die C64-Hilfedatei wurde nicht gefunden:<br><br>"
+                        f"<code>{html.escape(str(help_file))}</code><br><br>"
+                        "Erwarteter relativer Pfad: <code>help/c64.chm</code>",
+                        rich_text=True,
+                    )
+                    return
+                # Die feste C64-Hilfe darf die zuletzt manuell gewaehlte
+                # allgemeine CHM nicht ueberschreiben.
+                dialog.open_chm(str(help_file), remember_last=False)
             else:
-                QTimer.singleShot(0, dialog.choose_chm)
+                last_file = str(
+                    self.settings.value("chm/last_file", "") or ""
+                )
+                if last_file and Path(last_file).is_file():
+                    dialog.open_chm(last_file)
+                else:
+                    QTimer.singleShot(0, dialog.choose_chm)
             dialog.exec_()
 
         def show_about_dialog(self) -> None:
@@ -58548,6 +62864,19 @@ border: 2px solid #2a69aa;
                     event.ignore()
                     return
 
+            if any(
+                thread.isRunning()
+                for thread, _worker, _document in self._c64_disassembly_jobs.values()
+            ):
+                self._show_message_box(
+                    QMessageBox.Information,
+                    "C64-Disassembler läuft",
+                    "Die Anwendung kann erst geschlossen werden, wenn der "
+                    "laufende C64-Disassembler beendet ist.",
+                )
+                event.ignore()
+                return
+
             if self.dism_thread is not None and self.dism_thread.isRunning():
                 self._show_message_box(
                     QMessageBox.Information,
@@ -58563,11 +62892,10 @@ border: 2px solid #2a69aa;
             self.settings.setValue("workspace/root", str(self.workspace_root))
             super().closeEvent(event)
 
-    if hasattr(QApplication, "setAttribute"):
-        QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
-        QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
-
-    app = QApplication(sys.argv)
+    app = application or QApplication.instance()
+    if app is None:
+        # Die Stage-258-Qt-Attribute wurden bereits vor QtWebEngine gesetzt.
+        app = QApplication(sys.argv)
     app.setOrganizationName(ExplorerWindow.ORGANIZATION)
     app.setApplicationName(ExplorerWindow.APPLICATION)
     app.setApplicationDisplayName("Qt5 D64-Explorer")
@@ -58595,8 +62923,20 @@ border: 2px solid #2a69aa;
         return 1
 
     HexEditor.C64_FONT_FAMILY = c64_font_families[0]
+    # Das Hauptfenster wird vollständig konstruiert, bevor es sichtbar wird.
+    # winId() erzwingt bei Bedarf die native Handle-Erzeugung. __main__.py kann
+    # seinen Splash deshalb exakt nach show() und vorhandenem Handle schließen.
     window = ExplorerWindow(initial_directory)
+    window.winId()
     window.show()
+    app.processEvents()
+    window.raise_()
+    window.activateWindow()
+    if callable(window_shown_callback):
+        try:
+            window_shown_callback(window)
+        except Exception:
+            pass
     return app.exec_()
 
 # ---------------------------------------------------------------------------
@@ -59411,19 +63751,128 @@ def _c64_basic_sys_entry(data: bytes, load_address: int) -> Optional[int]:
     return None
 
 
+def _c64_disassemble_mos6510_region_progressive(
+    data: bytes,
+    start_address: int,
+    *,
+    progress_callback=None,
+    processed_base: int = 0,
+    total_size: Optional[int] = None,
+) -> List[str]:
+    """Stage 257: verlustfreies 6510-Listing mit Byte-Fortschritt.
+
+    Die Logik entspricht dem eingebetteten d64info-Disassembler, meldet aber
+    nach jeder vollständig konsumierten Instruktion den absoluten Bytezähler.
+    """
+    payload = bytes(data)
+    records = []
+    offset = 0
+    total = max(1, int(total_size if total_size is not None else len(payload)))
+    base = max(0, int(processed_base or 0))
+
+    while offset < len(payload):
+        address = (int(start_address) + offset) & 0xFFFF
+        opcode = payload[offset]
+        operation = _D64INFO_MODULE.MOS6510_OPCODES.get(opcode)
+
+        if operation is None:
+            instruction = payload[offset : offset + 1]
+            records.append((address, instruction, None, None))
+            offset += 1
+        else:
+            mnemonic, mode = operation
+            size = int(_D64INFO_MODULE.MOS6510_MODE_SIZE[mode])
+            if offset + size > len(payload):
+                instruction = payload[offset:]
+                records.append((address, instruction, None, None))
+                offset = len(payload)
+            else:
+                instruction = payload[offset : offset + size]
+                records.append((address, instruction, mnemonic, mode))
+                offset += size
+
+        if callable(progress_callback):
+            progress_callback(min(total, base + offset), total)
+
+    instruction_addresses = {
+        address
+        for address, _instruction, mnemonic, _mode in records
+        if mnemonic is not None
+    }
+    labels = set()
+
+    for address, instruction, mnemonic, mode in records:
+        if mnemonic is None or mode is None:
+            continue
+        if mode == "rel":
+            displacement = (
+                instruction[1]
+                if instruction[1] < 0x80
+                else instruction[1] - 0x100
+            )
+            target = (address + 2 + displacement) & 0xFFFF
+            if target in instruction_addresses:
+                labels.add(target)
+        elif mnemonic in {"JMP", "JSR"} and mode == "abs":
+            target = int.from_bytes(instruction[1:3], "little")
+            if target in instruction_addresses:
+                labels.add(target)
+
+    lines = []
+    for address, instruction, mnemonic, mode in records:
+        if address in labels:
+            lines.append(f"L{address:04X}:")
+
+        byte_text = " ".join(f"{value:02X}" for value in instruction)
+        if mnemonic is None or mode is None:
+            statement = f".byte ${instruction[0]:02X}"
+            comment = "undokumentierter Opcode oder unvollständiges Datenbyte"
+        else:
+            operand = _D64INFO_MODULE.mos6510_operand(
+                mode,
+                instruction[1:],
+                address,
+                labels=labels,
+            )
+            statement = mnemonic if not operand else f"{mnemonic} {operand}"
+            comment = ""
+
+        line = f"    {statement:<18} ; ${address:04X}: {byte_text:<8}"
+        if comment:
+            line += f"  {comment}"
+        lines.append(line.rstrip())
+
+    return lines
+
+
 def _c64_listing_records(
     code: bytes,
     start_address: int,
+    *,
+    progress_callback=None,
+    processed_base: int = 0,
+    total_size: Optional[int] = None,
 ) -> List[Tuple[str, str]]:
     """Konvertiert das bestehende d64info-Listing in ausrichtbare ASM-Zeilen."""
     records: List[Tuple[str, str]] = []
     # Index/mnemonic/bytes of the immediately preceding machine instruction.
     # Non-executable formatting lines do not become predecessors.
     previous_instruction: Optional[Tuple[int, str, bytes]] = None
-    for raw_line in _D64INFO_MODULE.disassemble_mos6510_region(
-        bytes(code),
-        int(start_address) & 0xFFFF,
-    ):
+    if callable(progress_callback):
+        source_lines = _c64_disassemble_mos6510_region_progressive(
+            bytes(code),
+            int(start_address) & 0xFFFF,
+            progress_callback=progress_callback,
+            processed_base=processed_base,
+            total_size=total_size,
+        )
+    else:
+        source_lines = _D64INFO_MODULE.disassemble_mos6510_region(
+            bytes(code),
+            int(start_address) & 0xFFFF,
+        )
+
+    for raw_line in source_lines:
         line = str(raw_line).rstrip()
         if not line:
             records.append(("", ""))
@@ -59547,6 +63996,7 @@ def format_c64_program_disassembly(
     *,
     suffix: str = ".prg",
     source_name: str = "",
+    progress_callback=None,
 ) -> Tuple[str, int]:
     """Disassembliert C64-.prg/.bin als dokumentierbaren ASM-Quelltext.
 
@@ -59555,17 +64005,23 @@ def format_c64_program_disassembly(
     """
     raw = bytes(payload)
     ext = str(suffix).casefold()
+    total_size = max(1, len(raw))
+    header_size = 0
 
     if ext == ".prg":
         if len(raw) < 2:
             raise ValueError("C64-PRG ist zu kurz; die 2-Byte-Ladeadresse fehlt.")
         load_address = raw[0] | (raw[1] << 8)
         program = raw[2:]
+        header_size = 2
         address_note = "PRG-Header"
     else:
         load_address = C64_RAW_BINARY_DEFAULT_LOAD_ADDRESS
         program = raw
         address_note = "Standard fuer rohe .bin-Datei"
+
+    if callable(progress_callback):
+        progress_callback(min(header_size, len(raw)), total_size)
 
     title = source_name or "C64-Binärprogramm"
     output = [
@@ -59581,23 +64037,39 @@ def format_c64_program_disassembly(
         stub_size = entry_address - load_address
         stub = program[:stub_size]
         values = ", ".join(f"${value:02X}" for value in stub)
-        records: List[Tuple[str, str]] = [
-            (f"    .byte {values}", "BASIC SYS-Startstub"),
-        ]
         if stub:
-            output.extend(_format_c64_disassembly_records(records))
+            # BASIC-SYS-Startstub als eigener Kommentarblock.  Die Kennzeichnung
+            # steht bewusst oberhalb der Bytes, damit das Listing wie eine
+            # dokumentierte Assemblerquelle gelesen werden kann.
+            output.append("; BASIC SYS-Startstub")
+            output.append(f"    .byte {values}")
             output.extend(("", f".org ${entry_address:04X}"))
+        if callable(progress_callback):
+            progress_callback(
+                min(total_size, header_size + stub_size),
+                total_size,
+            )
         code = program[stub_size:]
         code_start = entry_address
+        processed_base = header_size + stub_size
     else:
         code = program
         code_start = load_address
+        processed_base = header_size
 
     output.extend(
         _format_c64_disassembly_records(
-            _c64_listing_records(code, code_start),
+            _c64_listing_records(
+                code,
+                code_start,
+                progress_callback=progress_callback,
+                processed_base=processed_base,
+                total_size=total_size,
+            ),
         )
     )
+    if callable(progress_callback):
+        progress_callback(len(raw), total_size)
     return "\n".join(output).rstrip() + "\n", load_address
 
 
@@ -61575,7 +66047,12 @@ def _compile_cli(args: argparse.Namespace) -> int:
     print(f"{target.upper()}: {source_path} -> {assembly_path} -> {output_path}")
     return 0
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(
+    argv: Optional[Sequence[str]] = None,
+    *,
+    application=None,
+    window_shown_callback=None,
+) -> int:
     args = parse_arguments(argv)
     if args.compact_pe32 is not None:
         if args.directory is not None:
@@ -61755,7 +66232,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             file=sys.stderr,
         )
         return 2
-    return run_gui(args.directory)
+    return run_gui(
+        args.directory,
+        application=application,
+        window_shown_callback=window_shown_callback,
+    )
 
 if __name__ == "__main__":
     raise SystemExit(main())

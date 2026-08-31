@@ -6,7 +6,7 @@
         "normalized_name": "windows_application"
     },
     "fingerprint": {
-        "source_sha256": "7fdddbcedcb41e64789b9f88c26aef36203aab460c7a843fac3e8c4dd8b059fd"
+        "source_sha256": "87add3dc14dbc3d1fe398577da889e8d0486185346fc7afdf21043da32f55613"
     },
     "target": {
         "target": "win32",
@@ -64,19 +64,6 @@
                 "fields": [],
                 "methods": [
                     {
-                        "name": "getHandle",
-                        "kind": "function",
-                        "symbol": "__pas_method_tapplication_gethandle",
-                        "params": [],
-                        "return_type": "hwnd",
-                        "visibility": "protected",
-                        "calling_convention": "cdecl",
-                        "is_virtual": false,
-                        "is_override": false,
-                        "is_class_method": false,
-                        "vmt_offset": null
-                    },
-                    {
                         "name": "Create",
                         "kind": "constructor",
                         "symbol": "__pas_method_tapplication_create",
@@ -98,7 +85,7 @@
                         "visibility": "public",
                         "calling_convention": "cdecl",
                         "is_virtual": false,
-                        "is_override": false,
+                        "is_override": true,
                         "is_class_method": false,
                         "vmt_offset": null
                     }

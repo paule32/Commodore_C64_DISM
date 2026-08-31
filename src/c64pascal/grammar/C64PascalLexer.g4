@@ -53,7 +53,6 @@ FUNCTION     : 'FUNCTION';
 CONSTRUCTOR  : 'CONSTRUCTOR';
 DESTRUCTOR   : 'DESTRUCTOR';
 
-// Method/routine directives needed by System.Objects.pas.
 VIRTUAL      : 'VIRTUAL';
 OVERRIDE     : 'OVERRIDE';
 CDECL        : 'CDECL';
@@ -118,6 +117,13 @@ BINARY_INTEGER
     : '%' [01]+
     ;
 
+// Stage 249: Require digits on both sides of the decimal point so 1..10 is
+// still tokenized as DECIMAL_INTEGER DOTDOT DECIMAL_INTEGER.
+REAL_LITERAL
+    : [0-9]+ '.' [0-9]+ ([eE] [+-]? [0-9]+)?
+    | [0-9]+ [eE] [+-]? [0-9]+
+    ;
+
 DECIMAL_INTEGER
     : [0-9]+
     ;
@@ -130,9 +136,6 @@ IDENTIFIER
     : [A-Z_] [A-Z0-9_]*
     ;
 
-// IMPORTANT: compiler directives are handled by the Pascal preprocessor
-// before ANTLR sees the source. Normal brace comments must therefore remain
-// separate from {$...} processing.
 BRACE_COMMENT
     : '{' .*? '}' -> skip
     ;

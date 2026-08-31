@@ -1,0 +1,284 @@
+{
+    "format": "dBase2Many Pascal Unit Interface",
+    "version": 1,
+    "unit": {
+        "name": "System.Objects",
+        "normalized_name": "system_objects"
+    },
+    "fingerprint": {
+        "source_sha256": "00decf425f4010b5eb81a6bcf73564b2ee7bffd53b490ffcc443b615e01d3b39"
+    },
+    "target": {
+        "target": "win32",
+        "object_format": "coff32",
+        "machine": "i386",
+        "pointer_size": 4,
+        "calling_convention": "cdecl"
+    },
+    "object": {
+        "file": "System.Objects.coff32.o",
+        "format": "coff32",
+        "machine": "i386"
+    },
+    "uses": {
+        "interface": [],
+        "implementation": []
+    },
+    "imports": {
+        "_jit_object_instance_new": {
+            "kind": "dll",
+            "library": "libd64_qt5.dll",
+            "name": "jit_object_instance_new",
+            "pascal_name": "jit_object_instance_new",
+            "calling_convention": "cdecl"
+        },
+        "_jit_object_instance_free": {
+            "kind": "dll",
+            "library": "libd64_qt5.dll",
+            "name": "jit_object_instance_free",
+            "pascal_name": "jit_object_instance_free",
+            "calling_convention": "cdecl"
+        },
+        "_jit_object_free": {
+            "kind": "dll",
+            "library": "libd64_qt5.dll",
+            "name": "jit_object_free",
+            "pascal_name": "jit_object_free",
+            "calling_convention": "cdecl"
+        },
+        "_jit_object_class_type": {
+            "kind": "dll",
+            "library": "libd64_qt5.dll",
+            "name": "jit_object_class_type",
+            "pascal_name": "jit_object_class_type",
+            "calling_convention": "cdecl"
+        },
+        "_jit_class_parent": {
+            "kind": "dll",
+            "library": "libd64_qt5.dll",
+            "name": "jit_class_parent",
+            "pascal_name": "jit_class_parent",
+            "calling_convention": "cdecl"
+        },
+        "_jit_class_name": {
+            "kind": "dll",
+            "library": "libd64_qt5.dll",
+            "name": "jit_class_name",
+            "pascal_name": "jit_class_name",
+            "calling_convention": "cdecl"
+        },
+        "_jit_class_instance_size": {
+            "kind": "dll",
+            "library": "libd64_qt5.dll",
+            "name": "jit_class_instance_size",
+            "pascal_name": "jit_class_instance_size",
+            "calling_convention": "cdecl"
+        },
+        "_jit_inherits_from_class": {
+            "kind": "dll",
+            "library": "libd64_qt5.dll",
+            "name": "jit_inherits_from_class",
+            "pascal_name": "jit_inherits_from_class",
+            "calling_convention": "cdecl"
+        },
+        "_jit_inherits_from_object": {
+            "kind": "dll",
+            "library": "libd64_qt5.dll",
+            "name": "jit_inherits_from_object",
+            "pascal_name": "jit_inherits_from_object",
+            "calling_convention": "cdecl"
+        },
+        "_jit_dynstring_from_cstr": {
+            "kind": "dll",
+            "library": "libd64_qt5.dll",
+            "name": "jit_dynstring_from_cstr",
+            "pascal_name": "jit_dynstring_from_cstr",
+            "calling_convention": "cdecl"
+        }
+    },
+    "initialization": {
+        "symbol": "__unit_System_Objects"
+    },
+    "finalization": {
+        "symbol": null
+    },
+    "constants": [],
+    "types": {
+        "aliases": [
+            {
+                "kind": "alias",
+                "name": "TClass",
+                "target_type": "pointer"
+            }
+        ],
+        "subranges": [],
+        "records": [],
+        "enums": [],
+        "arrays": [],
+        "pointers": []
+    },
+    "symbols": {
+        "functions": [],
+        "procedures": [],
+        "classes": [
+            {
+                "name": "TObject",
+                "parent": null,
+                "size": 1,
+                "vmt_symbol": null,
+                "class_name_symbol": null,
+                "fields": [],
+                "methods": [
+                    {
+                        "name": "Create",
+                        "kind": "constructor",
+                        "symbol": "__pas_method_tobject_create",
+                        "params": [],
+                        "return_type": null,
+                        "visibility": "public",
+                        "calling_convention": "cdecl",
+                        "is_virtual": false,
+                        "is_override": false,
+                        "is_class_method": false,
+                        "vmt_offset": null
+                    },
+                    {
+                        "name": "Destroy",
+                        "kind": "destructor",
+                        "symbol": "__pas_method_tobject_destroy",
+                        "params": [],
+                        "return_type": null,
+                        "visibility": "public",
+                        "calling_convention": "cdecl",
+                        "is_virtual": false,
+                        "is_override": false,
+                        "is_class_method": false,
+                        "vmt_offset": null
+                    },
+                    {
+                        "name": "Free",
+                        "kind": "procedure",
+                        "symbol": "__pas_method_tobject_free",
+                        "params": [],
+                        "return_type": null,
+                        "visibility": "public",
+                        "calling_convention": "cdecl",
+                        "is_virtual": false,
+                        "is_override": false,
+                        "is_class_method": false,
+                        "vmt_offset": null
+                    },
+                    {
+                        "name": "FreeInstance",
+                        "kind": "procedure",
+                        "symbol": "__pas_method_tobject_freeinstance",
+                        "params": [],
+                        "return_type": null,
+                        "visibility": "public",
+                        "calling_convention": "cdecl",
+                        "is_virtual": false,
+                        "is_override": false,
+                        "is_class_method": false,
+                        "vmt_offset": null
+                    },
+                    {
+                        "name": "ClassType",
+                        "kind": "function",
+                        "symbol": "__pas_method_tobject_classtype",
+                        "params": [],
+                        "return_type": "tclass",
+                        "visibility": "public",
+                        "calling_convention": "cdecl",
+                        "is_virtual": false,
+                        "is_override": false,
+                        "is_class_method": false,
+                        "vmt_offset": null
+                    },
+                    {
+                        "name": "ClassParent",
+                        "kind": "function",
+                        "symbol": "__pas_method_tobject_classparent",
+                        "params": [],
+                        "return_type": "tclass",
+                        "visibility": "public",
+                        "calling_convention": "cdecl",
+                        "is_virtual": false,
+                        "is_override": false,
+                        "is_class_method": false,
+                        "vmt_offset": null
+                    },
+                    {
+                        "name": "ClassNameAddress",
+                        "kind": "function",
+                        "symbol": "__pas_method_tobject_classnameaddress",
+                        "params": [],
+                        "return_type": "pointer",
+                        "visibility": "public",
+                        "calling_convention": "cdecl",
+                        "is_virtual": false,
+                        "is_override": false,
+                        "is_class_method": false,
+                        "vmt_offset": null
+                    },
+                    {
+                        "name": "ClassName",
+                        "kind": "function",
+                        "symbol": "__pas_method_tobject_classname",
+                        "params": [],
+                        "return_type": "string",
+                        "visibility": "public",
+                        "calling_convention": "cdecl",
+                        "is_virtual": false,
+                        "is_override": false,
+                        "is_class_method": false,
+                        "vmt_offset": null
+                    },
+                    {
+                        "name": "InstanceSize",
+                        "kind": "function",
+                        "symbol": "__pas_method_tobject_instancesize",
+                        "params": [],
+                        "return_type": "integer",
+                        "visibility": "public",
+                        "calling_convention": "cdecl",
+                        "is_virtual": false,
+                        "is_override": false,
+                        "is_class_method": false,
+                        "vmt_offset": null
+                    },
+                    {
+                        "name": "InheritsFrom",
+                        "kind": "function",
+                        "symbol": "__pas_method_tobject_inheritsfrom",
+                        "params": [
+                            {
+                                "name": "AClass",
+                                "type": "tclass",
+                                "modifier": "value",
+                                "is_var": false,
+                                "is_const": false
+                            }
+                        ],
+                        "return_type": "boolean",
+                        "visibility": "public",
+                        "calling_convention": "cdecl",
+                        "is_virtual": false,
+                        "is_override": false,
+                        "is_class_method": false,
+                        "vmt_offset": null
+                    }
+                ],
+                "properties": []
+            }
+        ],
+        "variables": []
+    },
+    "link": {
+        "objects": [],
+        "archives": [],
+        "resources": [],
+        "embedded_objects": [],
+        "base_directory": "pui"
+    },
+    "macros": {}
+}
