@@ -112,6 +112,10 @@
 #  * Stage 236: Pascal PE32/PE32+ Projektzweig „Tabellen“ mit DBF-Hinzufügen,
 #    Projektpersistenz und Doppelklick in Tabellen-Designer/-Editor.
 #  * Stage 255: Projekt-Hauptknoten „Commodore C= 64“ direkt unter Bookmarks.
+#  * Stage ASM 11: dBase SQL Builder mit verschiebbaren Tabellen-Proxies, feldgenauen orthogonalen Beziehungen,
+#    Linienauswahl/Löschen, SQL-Regel-Editor sowie Speichern/Laden von *.d64sql-Projekten.
+#  * Stage ASM 12: SQL-Builder mit vertikalem Dreiweg-Splitter, Beziehungs-/Sortierungsgrid,
+#    ORDER-BY-Synchronisierung sowie Design/View-Tabs mit vorbereitetem Query-Ergebnisgrid.
 #  * Stage 256: *.prg bleibt Binärprogramm; Rohdaten zeigt Disassembly, Hex zeigt 4+4 Bytes.
 #  * Stage 257: C64-PRG/BIN-Disassembly im QThread mit bytebasierter 0..100-%-ProgressBar;
 #  * Stage 259: C64-ProgressBar wird vor Workerstart garantiert gezeichnet; Live-Repaint,
@@ -196,6 +200,160 @@ from decimal     import Decimal, localcontext
 from fractions   import Fraction
 from pathlib     import Path
 from typing      import Dict, Iterable, List, Optional, Sequence, Tuple
+
+# ---------------------------------------------------------------------------
+# Stage ASM 9: robuste Ressourcenauflösung für Skript- und PyInstaller-Betrieb.
+#
+# Im Frozen-Betrieb zeigt __file__ auf den Bundle-Bereich (bei onedir typischer-
+# weise `_internal`). Benutzerdateien wie help/c64.chm dürfen aber auch direkt
+# neben d64_dism.exe liegen. Daher wird zuerst neben der EXE, danach im
+# PyInstaller-Bundle und zuletzt relativ zum Quellmodul gesucht.
+# ---------------------------------------------------------------------------
+def d64_runtime_resource_candidates(relative_path: str) -> List[Path]:
+    relative = Path(str(relative_path).replace("\\", "/"))
+    result: List[Path] = []
+
+    if getattr(sys, "frozen", False):
+        try:
+            result.append(Path(sys.executable).resolve().parent / relative)
+        except Exception:
+            pass
+        bundle_root = getattr(sys, "_MEIPASS", "")
+        if bundle_root:
+            try:
+                result.append(Path(bundle_root).resolve() / relative)
+            except Exception:
+                pass
+
+    try:
+        result.append(Path(__file__).resolve().parent / relative)
+    except Exception:
+        pass
+
+    unique: List[Path] = []
+    seen = set()
+    for candidate in result:
+        key = os.path.normcase(os.path.abspath(str(candidate)))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(candidate)
+    return unique
+
+
+def d64_resolve_runtime_resource(relative_path: str) -> Path:
+    candidates = d64_runtime_resource_candidates(relative_path)
+    for candidate in candidates:
+        try:
+            if candidate.is_file() or candidate.is_dir():
+                return candidate
+        except OSError:
+            continue
+    if candidates:
+        return candidates[0]
+    return Path(relative_path).resolve()
+
+
+_QTWEBENGINE_PREFLIGHT_CACHE: Optional[Tuple[bool, str]] = None
+
+
+def d64_qtwebengine_frozen_preflight() -> Tuple[bool, str]:
+    """Prüft im PyInstaller-Bundle die für QtWebEngine nötigen Dateien.
+
+    Die Prüfung läuft bewusst vor der Konstruktion von QWebEngineView. Fehlt
+    eine native Chromium-Komponente, kann Qt sonst den Prozess beenden, bevor
+    Python eine Exception oder einen Traceback erzeugen kann.
+    """
+    global _QTWEBENGINE_PREFLIGHT_CACHE
+    if _QTWEBENGINE_PREFLIGHT_CACHE is not None:
+        return _QTWEBENGINE_PREFLIGHT_CACHE
+    if not getattr(sys, "frozen", False):
+        _QTWEBENGINE_PREFLIGHT_CACHE = (True, "")
+        return _QTWEBENGINE_PREFLIGHT_CACHE
+
+    roots: List[Path] = []
+    bundle_root = getattr(sys, "_MEIPASS", "")
+    if bundle_root:
+        roots.append(Path(bundle_root))
+    try:
+        roots.append(Path(sys.executable).resolve().parent)
+    except Exception:
+        pass
+
+    def existing_env_file(name: str) -> Optional[Path]:
+        value = os.environ.get(name, "").strip()
+        if not value:
+            return None
+        path = Path(value)
+        return path if path.is_file() else None
+
+    def existing_env_dir(name: str) -> Optional[Path]:
+        value = os.environ.get(name, "").strip()
+        if not value:
+            return None
+        path = Path(value)
+        return path if path.is_dir() else None
+
+    process = existing_env_file("QTWEBENGINEPROCESS_PATH")
+    resources = existing_env_dir("QTWEBENGINE_RESOURCES_PATH")
+    locales = existing_env_dir("QTWEBENGINE_LOCALES_PATH")
+
+    def find_file(filename: str) -> Optional[Path]:
+        for root in roots:
+            if not root.exists():
+                continue
+            try:
+                for found in root.rglob(filename):
+                    if found.is_file():
+                        return found
+            except OSError:
+                continue
+        return None
+
+    def find_dir(dirname: str) -> Optional[Path]:
+        for root in roots:
+            if not root.exists():
+                continue
+            try:
+                for found in root.rglob(dirname):
+                    if found.is_dir():
+                        return found
+            except OSError:
+                continue
+        return None
+
+    if process is None:
+        process = find_file("QtWebEngineProcess.exe")
+    if resources is None:
+        pak = find_file("qtwebengine_resources.pak")
+        if pak is not None:
+            resources = pak.parent
+    if locales is None:
+        locales = find_dir("qtwebengine_locales")
+
+    missing: List[str] = []
+    if process is None:
+        missing.append("QtWebEngineProcess.exe")
+    if resources is None:
+        missing.append("qtwebengine_resources.pak / resources-Verzeichnis")
+    else:
+        for required_name in ("qtwebengine_resources.pak", "icudtl.dat"):
+            if not (resources / required_name).is_file():
+                missing.append(required_name)
+    if locales is None or not any(locales.glob("*.pak")):
+        missing.append("qtwebengine_locales/*.pak")
+
+    if missing:
+        detail = (
+            "Im PyInstaller-Bundle fehlen QtWebEngine-Laufzeitdateien:\n\n- "
+            + "\n- ".join(missing)
+            + "\n\nBaue die Anwendung mit der mitgelieferten d64_dism.spec "
+              "neu und deaktiviere UPX für Qt/WebEngine."
+        )
+        _QTWEBENGINE_PREFLIGHT_CACHE = (False, detail)
+    else:
+        _QTWEBENGINE_PREFLIGHT_CACHE = (True, "")
+    return _QTWEBENGINE_PREFLIGHT_CACHE
 
 # ---------------------------------------------------------------------------
 # Stage 175: Pascal frontend / generated ANTLR parser synchronization.
@@ -13859,6 +14017,7 @@ def run_gui(
             QConicalGradient,
             QPainter,
             QPainterPath,
+            QPainterPathStroker,
             QPalette,
             QPen,
             QPixmap,
@@ -13887,6 +14046,8 @@ def run_gui(
             QFileSystemModel,
             QFrame,
             QGraphicsItem,
+            QGraphicsLineItem,
+            QGraphicsPathItem,
             QGraphicsObject,
             QGraphicsProxyWidget,
             QGraphicsDropShadowEffect,
@@ -32597,6 +32758,1218 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             return editor
 
 
+    class DBaseSQLTableCard(QFrame):
+        """Visuelles Tabellenfenster fuer den dBase-SQL-Builder.
+
+        Stage ASM 11: Jede Feldzeile besitzt einen eigenen Anschluss. Dadurch
+        kann ein einzelnes Feld mit beliebig vielen Feldern anderer Tabellen
+        verbunden werden. Die Checkbox bleibt ausschliesslich fuer die SELECT-
+        Auswahl zustaendig.
+        """
+
+        field_connector_clicked = pyqtSignal(str)
+        field_selection_changed = pyqtSignal()
+
+        def __init__(self, table_path: Path, table: DBaseDBFTable, parent=None):
+            super().__init__(parent)
+            self.table_path = Path(table_path)
+            self.table = table
+            self.setObjectName("dbase_sql_table_card")
+            self.setMinimumWidth(260)
+            self.setMaximumWidth(340)
+            self.setFrameShape(QFrame.StyledPanel)
+
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(8, 7, 8, 8)
+            layout.setSpacing(4)
+
+            self.title_label = QLabel(self.table_path.name, self)
+            self.title_label.setObjectName("dbase_sql_table_title")
+            # Der Titel ist Drag-Zone: Mausereignisse gehen an den Proxy.
+            self.title_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            title_font = QFont(self.title_label.font())
+            title_font.setBold(True)
+            self.title_label.setFont(title_font)
+            layout.addWidget(self.title_label)
+
+            self.select_all_checkbox = QCheckBox("Alle auswählen", self)
+            self.select_all_checkbox.setObjectName("dbase_sql_select_all")
+            layout.addWidget(self.select_all_checkbox)
+
+            separator = QFrame(self)
+            separator.setFrameShape(QFrame.HLine)
+            separator.setFrameShadow(QFrame.Sunken)
+            layout.addWidget(separator)
+
+            self.field_checkboxes: List[QCheckBox] = []
+            self.field_connectors: Dict[str, QToolButton] = {}
+            self._field_checkbox_by_name: Dict[str, QCheckBox] = {}
+
+            for field_info in table.fields:
+                field_name = str(field_info.name)
+                row_widget = QWidget(self)
+                row_widget.setObjectName("dbase_sql_field_row")
+                row_layout = QHBoxLayout(row_widget)
+                row_layout.setContentsMargins(0, 0, 0, 0)
+                row_layout.setSpacing(4)
+
+                checkbox = QCheckBox(field_name, row_widget)
+                checkbox.setProperty("dbase_sql_field_name", field_name)
+                checkbox.setToolTip(
+                    f"{field_name} ({field_info.field_type}, Länge {field_info.length})"
+                )
+                row_layout.addWidget(checkbox, 1)
+
+                connector = QToolButton(row_widget)
+                connector.setObjectName("dbase_sql_field_connector")
+                connector.setText("●")
+                connector.setAutoRaise(True)
+                connector.setFixedSize(18, 18)
+                connector.setCursor(Qt.PointingHandCursor)
+                connector.setToolTip(
+                    f"Verbindung für Feld {field_name} beginnen/beenden"
+                )
+                connector.clicked.connect(
+                    lambda _checked=False, name=field_name:
+                    self.field_connector_clicked.emit(name)
+                )
+                row_layout.addWidget(connector, 0, Qt.AlignVCenter)
+
+                self.field_checkboxes.append(checkbox)
+                self._field_checkbox_by_name[field_name.casefold()] = checkbox
+                self.field_connectors[field_name.casefold()] = connector
+                layout.addWidget(row_widget)
+
+            if not self.field_checkboxes:
+                empty = QLabel("Keine Felder", self)
+                empty.setEnabled(False)
+                layout.addWidget(empty)
+
+            layout.addStretch(1)
+            self.select_all_checkbox.toggled.connect(self._toggle_all_fields)
+            for checkbox in self.field_checkboxes:
+                checkbox.toggled.connect(self._field_selection_changed)
+
+        def _toggle_all_fields(self, checked: bool) -> None:
+            for checkbox in self.field_checkboxes:
+                old = checkbox.blockSignals(True)
+                checkbox.setChecked(bool(checked))
+                checkbox.blockSignals(old)
+            self.field_selection_changed.emit()
+
+        def _field_selection_changed(self, _checked: bool) -> None:
+            if self.field_checkboxes:
+                all_checked = all(cb.isChecked() for cb in self.field_checkboxes)
+                old = self.select_all_checkbox.blockSignals(True)
+                self.select_all_checkbox.setChecked(all_checked)
+                self.select_all_checkbox.blockSignals(old)
+            self.field_selection_changed.emit()
+
+        def selected_fields(self) -> List[str]:
+            return [
+                str(cb.property("dbase_sql_field_name") or cb.text())
+                for cb in self.field_checkboxes
+                if cb.isChecked()
+            ]
+
+        def set_selected_fields(self, fields: Sequence[str]) -> None:
+            wanted = {str(name).casefold() for name in fields}
+            for cb in self.field_checkboxes:
+                name = str(cb.property("dbase_sql_field_name") or cb.text())
+                old = cb.blockSignals(True)
+                cb.setChecked(name.casefold() in wanted)
+                cb.blockSignals(old)
+            all_checked = bool(self.field_checkboxes) and all(
+                cb.isChecked() for cb in self.field_checkboxes
+            )
+            old = self.select_all_checkbox.blockSignals(True)
+            self.select_all_checkbox.setChecked(all_checked)
+            self.select_all_checkbox.blockSignals(old)
+            self.field_selection_changed.emit()
+
+        def field_checkbox(self, field_name: str) -> Optional[QCheckBox]:
+            return self._field_checkbox_by_name.get(str(field_name).casefold())
+
+        def field_row_center_y(self, field_name: str) -> float:
+            checkbox = self.field_checkbox(field_name)
+            if checkbox is None:
+                return float(self.height()) / 2.0
+            point = checkbox.mapTo(
+                self,
+                QPoint(0, max(0, checkbox.height() // 2)),
+            )
+            return float(point.y())
+
+        def set_field_connection_pending(self, field_name: str, pending: bool) -> None:
+            connector = self.field_connectors.get(str(field_name).casefold())
+            if connector is None:
+                return
+            connector.setProperty("dbaseSqlConnectionPending", bool(pending))
+            connector.style().unpolish(connector)
+            connector.style().polish(connector)
+            connector.update()
+
+        def set_dark_mode(self, enabled: bool) -> None:
+            if enabled:
+                self.setStyleSheet(
+                    "QFrame#dbase_sql_table_card{background:#07162f;color:#f4f7fb;"
+                    "border:1px solid #4fc3ff;border-radius:7px;}"
+                    "QLabel#dbase_sql_table_title{color:#ffe600;}"
+                    "QCheckBox{color:#f4f7fb;spacing:6px;}"
+                    "QToolButton#dbase_sql_field_connector{color:#7fdbff;font-size:14px;"
+                    "border:1px solid transparent;border-radius:8px;padding:0;}"
+                    "QToolButton#dbase_sql_field_connector:hover{color:#ffe600;"
+                    "border-color:#3375bd;}"
+                    "QToolButton#dbase_sql_field_connector[dbaseSqlConnectionPending=\"true\"]{"
+                    "color:#ff4040;border-color:#ffe600;background:#163b73;}"
+                )
+            else:
+                self.setStyleSheet(
+                    "QFrame#dbase_sql_table_card{background:#f4f6f8;color:#111;"
+                    "border:1px solid #5c7fa3;border-radius:7px;}"
+                    "QLabel#dbase_sql_table_title{color:#173a63;}"
+                    "QCheckBox{color:#111;spacing:6px;}"
+                    "QToolButton#dbase_sql_field_connector{color:#1769aa;font-size:14px;"
+                    "border:1px solid transparent;border-radius:8px;padding:0;}"
+                    "QToolButton#dbase_sql_field_connector:hover{color:#b00020;"
+                    "border-color:#8aa5c0;}"
+                    "QToolButton#dbase_sql_field_connector[dbaseSqlConnectionPending=\"true\"]{"
+                    "color:#b00020;border-color:#cc8b00;background:#e6edf5;}"
+                )
+
+
+    class DBaseSQLTableProxy(QGraphicsProxyWidget):
+        """Verschiebbares Proxyfenster, dessen Verbindungslinien mitwandern."""
+
+        def __init__(self, scene_owner, table_key: str):
+            super().__init__()
+            self.scene_owner = scene_owner
+            self.table_key = str(table_key)
+            self.setFlag(QGraphicsItem.ItemIsMovable, True)
+            self.setFlag(QGraphicsItem.ItemIsSelectable, True)
+            self.setFlag(QGraphicsItem.ItemSendsGeometryChanges, True)
+            self.setCacheMode(QGraphicsItem.DeviceCoordinateCache)
+            self.setZValue(10)
+
+        def itemChange(self, change, value):
+            result = super().itemChange(change, value)
+            if change == QGraphicsItem.ItemPositionHasChanged:
+                owner = getattr(self, "scene_owner", None)
+                if owner is not None:
+                    owner.update_connections_for(self)
+            return result
+
+        def field_anchor(self, field_name: str, side: str) -> QPointF:
+            card = self.widget()
+            if not isinstance(card, DBaseSQLTableCard):
+                rect = self.sceneBoundingRect()
+                return QPointF(
+                    rect.right() if side == "right" else rect.left(),
+                    rect.center().y(),
+                )
+            card.layout().activate()
+            y = card.field_row_center_y(field_name)
+            x = float(card.width()) if side == "right" else 0.0
+            return self.mapToScene(QPointF(x, y))
+
+
+    class DBaseSQLConnectionItem(QGraphicsPathItem):
+        """Orthogonale, selektierbare Feldverbindung mit grosser Hitbox."""
+
+        def __init__(
+            self,
+            scene_owner,
+            first_proxy: DBaseSQLTableProxy,
+            first_field: str,
+            second_proxy: DBaseSQLTableProxy,
+            second_field: str,
+            sort_mode: str = "Ohne",
+        ):
+            super().__init__()
+            self.scene_owner = scene_owner
+            self.first_proxy = first_proxy
+            self.first_field = str(first_field)
+            self.second_proxy = second_proxy
+            self.second_field = str(second_field)
+            self.sort_mode = str(sort_mode or "Ohne")
+            self.setFlag(QGraphicsItem.ItemIsSelectable, True)
+            self.setZValue(2)
+            self.setCursor(Qt.PointingHandCursor)
+            self.update_style()
+            self.update_path()
+
+        def shape(self) -> QPainterPath:
+            # Sichtbare Linie 2 px + je 2 px Selektionsabstand auf beiden Seiten.
+            stroker = QPainterPathStroker()
+            stroker.setWidth(max(6.0, float(self.pen().widthF()) + 4.0))
+            stroker.setCapStyle(Qt.SquareCap)
+            stroker.setJoinStyle(Qt.MiterJoin)
+            return stroker.createStroke(self.path())
+
+        def itemChange(self, change, value):
+            result = super().itemChange(change, value)
+            if change == QGraphicsItem.ItemSelectedHasChanged:
+                self.update_style(selected=bool(value))
+            return result
+
+        def update_style(self, selected: Optional[bool] = None) -> None:
+            dark = bool(getattr(self.scene_owner, "dark_mode", False))
+            is_selected = self.isSelected() if selected is None else bool(selected)
+            if is_selected:
+                color = QColor("#ff4040") if dark else QColor("#c00020")
+                width = 3
+            else:
+                color = QColor("#ffe600") if dark else QColor("#1769aa")
+                width = 2
+            pen = QPen(color)
+            pen.setWidth(width)
+            pen.setCosmetic(True)
+            pen.setCapStyle(Qt.SquareCap)
+            pen.setJoinStyle(Qt.MiterJoin)
+            self.setPen(pen)
+
+        def update_path(self) -> None:
+            a = self.first_proxy.sceneBoundingRect()
+            b = self.second_proxy.sceneBoundingRect()
+            first_on_left = a.center().x() <= b.center().x()
+            first_side = "right" if first_on_left else "left"
+            second_side = "left" if first_on_left else "right"
+
+            p1 = self.first_proxy.field_anchor(self.first_field, first_side)
+            p2 = self.second_proxy.field_anchor(self.second_field, second_side)
+
+            d1 = 1.0 if first_side == "right" else -1.0
+            d2 = 1.0 if second_side == "right" else -1.0
+            out1 = QPointF(p1.x() + 4.0 * d1, p1.y())
+            out2 = QPointF(p2.x() + 4.0 * d2, p2.y())
+            mid_x = (out1.x() + out2.x()) / 2.0
+
+            path = QPainterPath(p1)
+            path.lineTo(out1)
+            path.lineTo(QPointF(mid_x, out1.y()))
+            path.lineTo(QPointF(mid_x, out2.y()))
+            path.lineTo(out2)
+            path.lineTo(p2)
+            self.setPath(path)
+
+        def contextMenuEvent(self, event) -> None:
+            self.setSelected(True)
+            menu = QMenu()
+            delete_action = menu.addAction("Löschen")
+            delete_all_action = menu.addAction("Alle Löschen")
+            chosen = menu.exec_(event.screenPos())
+            if chosen is delete_action:
+                self.scene_owner.delete_connection(self)
+            elif chosen is delete_all_action:
+                self.scene_owner.delete_all_connections(clear_sql=True)
+            event.accept()
+
+        def to_dict(self) -> Dict[str, str]:
+            return {
+                "first_table": self.first_proxy.table_key,
+                "first_field": self.first_field,
+                "second_table": self.second_proxy.table_key,
+                "second_field": self.second_field,
+                "sort_mode": self.sort_mode,
+            }
+
+
+    class DBaseSQLBuilderScene(QGraphicsScene):
+        """Scene mit verschiebbaren Tabellen und feldgenauen Beziehungen."""
+
+        def __init__(self, builder, parent=None):
+            super().__init__(parent)
+            self.builder = builder
+            self.table_proxies: Dict[str, DBaseSQLTableProxy] = {}
+            self.connections: List[DBaseSQLConnectionItem] = []
+            self.pending_endpoint: Optional[Tuple[DBaseSQLTableProxy, str]] = None
+            self.setSceneRect(0, 0, 4000, 2600)
+            self.dark_mode = False
+
+        @staticmethod
+        def _key(path: Path) -> str:
+            try:
+                return os.path.normcase(str(Path(path).resolve()))
+            except OSError:
+                return os.path.normcase(str(Path(path)))
+
+        def notify_project_changed(self) -> None:
+            builder = getattr(self, "builder", None)
+            if builder is not None:
+                builder._builder_state_changed()
+
+        def add_table(self, path: Path, table: DBaseDBFTable) -> DBaseSQLTableProxy:
+            key = self._key(path)
+            existing = self.table_proxies.get(key)
+            if existing is not None:
+                existing.setSelected(True)
+                return existing
+
+            card = DBaseSQLTableCard(path, table)
+            card.set_dark_mode(self.dark_mode)
+            proxy = DBaseSQLTableProxy(self, key)
+            proxy.setWidget(card)
+            self.addItem(proxy)
+            self.table_proxies[key] = proxy
+
+            index = len(self.table_proxies) - 1
+            column = index % 4
+            row = index // 4
+            proxy.setPos(40 + column * 320, 40 + row * 330)
+            card.field_connector_clicked.connect(
+                lambda field_name, current=proxy:
+                self.connection_click(current, field_name)
+            )
+            card.field_selection_changed.connect(self.notify_project_changed)
+            self._grow_scene_to_items()
+            self.notify_project_changed()
+            return proxy
+
+        def connection_click(
+            self,
+            proxy: DBaseSQLTableProxy,
+            field_name: str,
+        ) -> None:
+            endpoint = (proxy, str(field_name))
+            if self.pending_endpoint is None:
+                self.pending_endpoint = endpoint
+                card = proxy.widget()
+                if isinstance(card, DBaseSQLTableCard):
+                    card.set_field_connection_pending(field_name, True)
+                return
+
+            first_proxy, first_field = self.pending_endpoint
+            first_card = first_proxy.widget()
+            if isinstance(first_card, DBaseSQLTableCard):
+                first_card.set_field_connection_pending(first_field, False)
+            self.pending_endpoint = None
+
+            if first_proxy is proxy and first_field.casefold() == str(field_name).casefold():
+                return
+            # Beziehungen sollen zwischen Tabellenfeldern entstehen. Ein Feld
+            # darf aber beliebig viele Beziehungen zu anderen Tabellen haben.
+            if first_proxy is proxy:
+                return
+
+            # Nur exakt identische Feld-zu-Feld-Beziehungen nicht doppeln.
+            for connection in self.connections:
+                same_forward = (
+                    connection.first_proxy is first_proxy
+                    and connection.second_proxy is proxy
+                    and connection.first_field.casefold() == first_field.casefold()
+                    and connection.second_field.casefold() == str(field_name).casefold()
+                )
+                same_reverse = (
+                    connection.first_proxy is proxy
+                    and connection.second_proxy is first_proxy
+                    and connection.first_field.casefold() == str(field_name).casefold()
+                    and connection.second_field.casefold() == first_field.casefold()
+                )
+                if same_forward or same_reverse:
+                    connection.setSelected(True)
+                    return
+
+            self.create_connection(
+                first_proxy,
+                first_field,
+                proxy,
+                str(field_name),
+            )
+
+        def create_connection(
+            self,
+            first_proxy: DBaseSQLTableProxy,
+            first_field: str,
+            second_proxy: DBaseSQLTableProxy,
+            second_field: str,
+            *,
+            notify: bool = True,
+            sort_mode: str = "Ohne",
+        ) -> Optional[DBaseSQLConnectionItem]:
+            if first_proxy is second_proxy:
+                return None
+            first_card = first_proxy.widget()
+            second_card = second_proxy.widget()
+            if not isinstance(first_card, DBaseSQLTableCard):
+                return None
+            if not isinstance(second_card, DBaseSQLTableCard):
+                return None
+            if first_card.field_checkbox(first_field) is None:
+                return None
+            if second_card.field_checkbox(second_field) is None:
+                return None
+            connection = DBaseSQLConnectionItem(
+                self,
+                first_proxy,
+                first_field,
+                second_proxy,
+                second_field,
+                sort_mode=sort_mode,
+            )
+            self.addItem(connection)
+            self.connections.append(connection)
+            self._grow_scene_to_items()
+            if notify:
+                self.notify_project_changed()
+            return connection
+
+        def delete_connection(self, connection: DBaseSQLConnectionItem) -> None:
+            if connection not in self.connections:
+                return
+            self.connections.remove(connection)
+            self.removeItem(connection)
+            self.notify_project_changed()
+
+        def delete_selected_connections(self) -> bool:
+            selected = [
+                item for item in self.selectedItems()
+                if isinstance(item, DBaseSQLConnectionItem)
+            ]
+            if not selected:
+                return False
+            for item in selected:
+                if item in self.connections:
+                    self.connections.remove(item)
+                self.removeItem(item)
+            self.notify_project_changed()
+            return True
+
+        def delete_all_connections(self, *, clear_sql: bool = False) -> None:
+            if self.pending_endpoint is not None:
+                proxy, field_name = self.pending_endpoint
+                card = proxy.widget()
+                if isinstance(card, DBaseSQLTableCard):
+                    card.set_field_connection_pending(field_name, False)
+                self.pending_endpoint = None
+            for connection in list(self.connections):
+                self.removeItem(connection)
+            self.connections.clear()
+            if clear_sql and self.builder is not None:
+                self.builder.clear_sql_expression()
+            else:
+                self.notify_project_changed()
+
+        def update_connections_for(self, proxy: DBaseSQLTableProxy) -> None:
+            for connection in self.connections:
+                if proxy is connection.first_proxy or proxy is connection.second_proxy:
+                    connection.update_path()
+            self._grow_scene_to_items()
+
+        def keyPressEvent(self, event) -> None:
+            if event.key() == Qt.Key_Delete:
+                if self.delete_selected_connections():
+                    event.accept()
+                    return
+            super().keyPressEvent(event)
+
+        def clear_builder(self) -> None:
+            self.pending_endpoint = None
+            for connection in list(self.connections):
+                self.removeItem(connection)
+            self.connections.clear()
+            for proxy in list(self.table_proxies.values()):
+                self.removeItem(proxy)
+            self.table_proxies.clear()
+            self.setSceneRect(0, 0, 4000, 2600)
+
+        def _grow_scene_to_items(self) -> None:
+            bounds = self.itemsBoundingRect().adjusted(-80, -80, 240, 240)
+            current = self.sceneRect()
+            width = max(1800.0, current.width(), bounds.right() + 120.0)
+            height = max(1200.0, current.height(), bounds.bottom() + 120.0)
+            self.setSceneRect(0, 0, width, height)
+
+        def set_dark_mode(self, enabled: bool) -> None:
+            self.dark_mode = bool(enabled)
+            for proxy in self.table_proxies.values():
+                card = proxy.widget()
+                if isinstance(card, DBaseSQLTableCard):
+                    card.set_dark_mode(self.dark_mode)
+            for connection in self.connections:
+                connection.update_style()
+
+
+    class DBaseSQLBuilderView(QGraphicsView):
+        """GraphicsView mit Delete-Unterstuetzung fuer selektierte Beziehungen."""
+
+        def keyPressEvent(self, event) -> None:
+            if event.key() == Qt.Key_Delete:
+                scene = self.scene()
+                if isinstance(scene, DBaseSQLBuilderScene):
+                    if scene.delete_selected_connections():
+                        event.accept()
+                        return
+            super().keyPressEvent(event)
+
+
+    class DBaseSQLBuilderWidget(QWidget):
+        """dBase SQL Builder mit DBF-Browser, SQL-Regeln und Projektpersistenz."""
+
+        PROJECT_SUFFIX = ".d64sql"
+        SORT_OPTIONS = (
+            "Ohne",
+            "aufwärts",
+            "abwärts",
+            "nummerisch auf",
+            "nummerisch ab",
+            "alpha auf",
+            "alpha ab",
+        )
+
+        def __init__(self, owner, parent=None):
+            super().__init__(parent)
+            self.owner = owner
+            self.dark_mode = False
+            self.project_path: Optional[Path] = None
+            self._loading_project = False
+            self._updating_sql = False
+            self._refreshing_relationship_grid = False
+            self.setObjectName("dbase_sql_builder_widget")
+
+            root = QHBoxLayout(self)
+            root.setContentsMargins(6, 6, 6, 6)
+            root.setSpacing(7)
+
+            splitter = QSplitter(Qt.Horizontal, self)
+            splitter.setChildrenCollapsible(False)
+            root.addWidget(splitter, 1)
+
+            left_panel = QFrame(splitter)
+            left_panel.setObjectName("dbase_sql_builder_left_panel")
+            left_panel.setMinimumWidth(280)
+            left_panel.setMaximumWidth(440)
+            left_layout = QVBoxLayout(left_panel)
+            left_layout.setContentsMargins(6, 6, 6, 6)
+            left_layout.setSpacing(6)
+
+            path_row = QHBoxLayout()
+            path_row.setContentsMargins(0, 0, 0, 0)
+            path_row.setSpacing(5)
+            self.browse_button = QPushButton("…", left_panel)
+            self.browse_button.setObjectName("dbase_sql_builder_browse")
+            self.browse_button.setFixedWidth(34)
+            self.browse_button.setToolTip("DBF-Verzeichnis auswählen")
+            path_row.addWidget(self.browse_button)
+
+            self.directory_edit = QLineEdit(left_panel)
+            self.directory_edit.setObjectName("dbase_sql_builder_directory")
+            self.directory_edit.setPlaceholderText("Verzeichnis mit DBF-Tabellen")
+            self.directory_edit.setClearButtonEnabled(True)
+            path_row.addWidget(self.directory_edit, 1)
+            left_layout.addLayout(path_row)
+
+            self.left_vertical_splitter = QSplitter(Qt.Vertical, left_panel)
+            self.left_vertical_splitter.setObjectName("dbase_sql_builder_left_splitter")
+            self.left_vertical_splitter.setChildrenCollapsible(False)
+            left_layout.addWidget(self.left_vertical_splitter, 1)
+
+            table_panel = QWidget(self.left_vertical_splitter)
+            table_layout = QVBoxLayout(table_panel)
+            table_layout.setContentsMargins(0, 0, 0, 0)
+            table_layout.setSpacing(0)
+            self.table_list = QListWidget(table_panel)
+            self.table_list.setObjectName("dbase_sql_builder_table_list")
+            self.table_list.setSelectionMode(QAbstractItemView.SingleSelection)
+            self.table_list.setMinimumHeight(70)
+            table_layout.addWidget(self.table_list, 1)
+
+            sql_panel = QWidget(self.left_vertical_splitter)
+            sql_layout = QVBoxLayout(sql_panel)
+            sql_layout.setContentsMargins(0, 0, 0, 0)
+            sql_layout.setSpacing(4)
+            sql_label = QLabel("SQL-Regeln / Ausdruck", sql_panel)
+            sql_label.setObjectName("dbase_sql_builder_sql_label")
+            sql_layout.addWidget(sql_label)
+            self.sql_editor = QPlainTextEdit(sql_panel)
+            self.sql_editor.setObjectName("dbase_sql_builder_sql_editor")
+            self.sql_editor.setPlaceholderText(
+                "Ausgewählte Tabellenfelder und Beziehungen erzeugen hier den SQL-Ausdruck."
+            )
+            self.sql_editor.setMinimumHeight(80)
+            sql_layout.addWidget(self.sql_editor, 1)
+
+            relation_panel = QWidget(self.left_vertical_splitter)
+            relation_layout = QVBoxLayout(relation_panel)
+            relation_layout.setContentsMargins(0, 0, 0, 0)
+            relation_layout.setSpacing(0)
+            self.relationship_grid = QTableWidget(0, 2, relation_panel)
+            self.relationship_grid.setObjectName("dbase_sql_builder_relationship_grid")
+            self.relationship_grid.setHorizontalHeaderLabels(("Beziehung", "Sortierung"))
+            self.relationship_grid.setSelectionBehavior(QAbstractItemView.SelectRows)
+            self.relationship_grid.setSelectionMode(QAbstractItemView.SingleSelection)
+            self.relationship_grid.setEditTriggers(QAbstractItemView.NoEditTriggers)
+            self.relationship_grid.setAlternatingRowColors(True)
+            self.relationship_grid.verticalHeader().setVisible(False)
+            self.relationship_grid.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+            self.relationship_grid.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+            self.relationship_grid.setMinimumHeight(80)
+            relation_layout.addWidget(self.relationship_grid, 1)
+
+            self.left_vertical_splitter.addWidget(table_panel)
+            self.left_vertical_splitter.addWidget(sql_panel)
+            self.left_vertical_splitter.addWidget(relation_panel)
+            self.left_vertical_splitter.setStretchFactor(0, 2)
+            self.left_vertical_splitter.setStretchFactor(1, 2)
+            self.left_vertical_splitter.setStretchFactor(2, 1)
+            self.left_vertical_splitter.setSizes([280, 220, 150])
+
+            button_row = QHBoxLayout()
+            button_row.setContentsMargins(0, 0, 0, 0)
+            button_row.setSpacing(5)
+            self.save_button = QPushButton("Speichern", left_panel)
+            self.save_as_button = QPushButton("Speichern unter...", left_panel)
+            self.load_button = QPushButton("Laden", left_panel)
+            button_row.addWidget(self.save_button)
+            button_row.addWidget(self.save_as_button)
+            button_row.addWidget(self.load_button)
+            left_layout.addLayout(button_row)
+
+            self.right_tabs = QTabWidget(splitter)
+            self.right_tabs.setObjectName("dbase_sql_builder_tabs")
+            self.design_tab = QWidget(self.right_tabs)
+            design_layout = QVBoxLayout(self.design_tab)
+            design_layout.setContentsMargins(0, 0, 0, 0)
+            design_layout.setSpacing(0)
+            self.scene = DBaseSQLBuilderScene(self, self)
+            self.graphics_view = DBaseSQLBuilderView(self.scene, self.design_tab)
+            self.graphics_view.setObjectName("dbase_sql_builder_graphics_view")
+            self.graphics_view.setRenderHint(QPainter.Antialiasing, True)
+            self.graphics_view.setDragMode(QGraphicsView.RubberBandDrag)
+            self.graphics_view.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+            self.graphics_view.setResizeAnchor(QGraphicsView.AnchorViewCenter)
+            self.graphics_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.graphics_view.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.graphics_view.setFocusPolicy(Qt.StrongFocus)
+            design_layout.addWidget(self.graphics_view, 1)
+
+            self.view_tab = QWidget(self.right_tabs)
+            view_layout = QVBoxLayout(self.view_tab)
+            view_layout.setContentsMargins(0, 0, 0, 0)
+            view_layout.setSpacing(0)
+            self.query_grid = QTableWidget(0, 0, self.view_tab)
+            self.query_grid.setObjectName("dbase_sql_builder_query_grid")
+            self.query_grid.setEditTriggers(QAbstractItemView.NoEditTriggers)
+            self.query_grid.setSelectionBehavior(QAbstractItemView.SelectRows)
+            self.query_grid.setSelectionMode(QAbstractItemView.SingleSelection)
+            self.query_grid.setAlternatingRowColors(True)
+            self.query_grid.verticalHeader().setVisible(True)
+            view_layout.addWidget(self.query_grid, 1)
+
+            self.right_tabs.addTab(self.design_tab, "Design")
+            self.right_tabs.addTab(self.view_tab, "View")
+            splitter.addWidget(left_panel)
+            splitter.addWidget(self.right_tabs)
+            splitter.setStretchFactor(0, 0)
+            splitter.setStretchFactor(1, 1)
+            splitter.setSizes([340, 1100])
+
+            self.browse_button.clicked.connect(self.choose_directory)
+            self.directory_edit.returnPressed.connect(self.refresh_tables)
+            self.directory_edit.editingFinished.connect(self._directory_edit_finished)
+            self.table_list.itemClicked.connect(self._table_clicked)
+            self.save_button.clicked.connect(self.save_project)
+            self.save_as_button.clicked.connect(self.save_project_as)
+            self.load_button.clicked.connect(self.load_project)
+
+            initial = Path(getattr(owner, "current_directory", Path.cwd()))
+            self.set_directory(initial)
+
+        @staticmethod
+        def _sql_identifier(name: str) -> str:
+            value = str(name)
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
+                return value
+            return "[" + value.replace("]", "]]" ) + "]"
+
+        def _table_sql_name(self, proxy: DBaseSQLTableProxy) -> str:
+            card = proxy.widget()
+            if isinstance(card, DBaseSQLTableCard):
+                return self._sql_identifier(card.table_path.stem)
+            return self._sql_identifier(Path(proxy.table_key).stem)
+
+        def _field_sql_name(self, proxy: DBaseSQLTableProxy, field_name: str) -> str:
+            return f"{self._table_sql_name(proxy)}.{self._sql_identifier(field_name)}"
+
+        def _builder_state_changed(self) -> None:
+            if self._loading_project or self._updating_sql:
+                return
+            self.refresh_relationship_grid()
+            self.rebuild_sql_expression()
+
+        def _connection_label(self, connection: DBaseSQLConnectionItem) -> str:
+            return (
+                f"{self._field_sql_name(connection.first_proxy, connection.first_field)} = "
+                f"{self._field_sql_name(connection.second_proxy, connection.second_field)}"
+            )
+
+        def refresh_relationship_grid(self) -> None:
+            if self._refreshing_relationship_grid:
+                return
+            self._refreshing_relationship_grid = True
+            try:
+                self.relationship_grid.setRowCount(len(self.scene.connections))
+                for row, connection in enumerate(self.scene.connections):
+                    item = QTableWidgetItem(self._connection_label(connection))
+                    item.setData(Qt.UserRole, connection)
+                    item.setToolTip(item.text())
+                    self.relationship_grid.setItem(row, 0, item)
+                    combo = QComboBox(self.relationship_grid)
+                    combo.setObjectName("dbase_sql_builder_sort_combo")
+                    combo.addItems(self.SORT_OPTIONS)
+                    mode = connection.sort_mode if connection.sort_mode in self.SORT_OPTIONS else "Ohne"
+                    connection.sort_mode = mode
+                    combo.setCurrentText(mode)
+                    combo.currentTextChanged.connect(
+                        lambda text, current=connection: self._relationship_sort_changed(current, text)
+                    )
+                    self.relationship_grid.setCellWidget(row, 1, combo)
+                self.relationship_grid.resizeRowsToContents()
+            finally:
+                self._refreshing_relationship_grid = False
+
+        def _relationship_sort_changed(self, connection: DBaseSQLConnectionItem, mode: str) -> None:
+            if self._refreshing_relationship_grid or self._loading_project:
+                return
+            mode = str(mode or "Ohne")
+            if mode not in self.SORT_OPTIONS:
+                mode = "Ohne"
+            if connection.sort_mode == mode:
+                return
+            connection.sort_mode = mode
+            self.rebuild_sql_expression()
+
+        def _sort_sql_term(self, connection: DBaseSQLConnectionItem) -> Optional[str]:
+            mode = str(connection.sort_mode or "Ohne")
+            if mode == "Ohne":
+                return None
+            field_sql = self._field_sql_name(connection.first_proxy, connection.first_field)
+            if mode == "aufwärts":
+                return f"{field_sql} ASC"
+            if mode == "abwärts":
+                return f"{field_sql} DESC"
+            if mode == "nummerisch auf":
+                return f"VAL({field_sql}) ASC"
+            if mode == "nummerisch ab":
+                return f"VAL({field_sql}) DESC"
+            if mode == "alpha auf":
+                return f"UPPER({field_sql}) ASC"
+            if mode == "alpha ab":
+                return f"UPPER({field_sql}) DESC"
+            return None
+
+        def _query_preview_headers(self) -> List[str]:
+            selected: List[str] = []
+            for proxy in self.scene.table_proxies.values():
+                card = proxy.widget()
+                if not isinstance(card, DBaseSQLTableCard):
+                    continue
+                fields = card.selected_fields()
+                if fields:
+                    selected.extend(self._field_sql_name(proxy, field_name) for field_name in fields)
+            if selected:
+                return selected
+            all_fields: List[str] = []
+            for proxy in self.scene.table_proxies.values():
+                card = proxy.widget()
+                if not isinstance(card, DBaseSQLTableCard):
+                    continue
+                all_fields.extend(
+                    self._field_sql_name(proxy, field_info.name)
+                    for field_info in card.table.fields
+                )
+            return all_fields
+
+        def refresh_query_view(self) -> None:
+            headers = self._query_preview_headers()
+            self.query_grid.clear()
+            self.query_grid.setRowCount(0)
+            self.query_grid.setColumnCount(len(headers))
+            if headers:
+                self.query_grid.setHorizontalHeaderLabels(headers)
+
+        def set_query_result(self, headers: Sequence[str], rows: Sequence[Sequence[object]]) -> None:
+            """Schnittstelle für den späteren SQL-Parser/Executor."""
+            header_list = [str(value) for value in headers]
+            self.query_grid.clear()
+            self.query_grid.setColumnCount(len(header_list))
+            self.query_grid.setHorizontalHeaderLabels(header_list)
+            self.query_grid.setRowCount(len(rows))
+            for row_index, row_values in enumerate(rows):
+                for column, value in enumerate(row_values):
+                    if column >= len(header_list):
+                        break
+                    self.query_grid.setItem(
+                        row_index, column,
+                        QTableWidgetItem("" if value is None else str(value)),
+                    )
+
+        def rebuild_sql_expression(self) -> None:
+            if self._loading_project:
+                return
+            proxies = list(self.scene.table_proxies.values())
+            selected_columns: List[str] = []
+            selected_tables: List[DBaseSQLTableProxy] = []
+            for proxy in proxies:
+                card = proxy.widget()
+                if not isinstance(card, DBaseSQLTableCard):
+                    continue
+                fields = card.selected_fields()
+                if fields:
+                    selected_tables.append(proxy)
+                    selected_columns.extend(
+                        self._field_sql_name(proxy, field_name)
+                        for field_name in fields
+                    )
+
+            # Bereits das Öffnen eines Proxy-Fensters bedeutet, dass die
+            # Tabelle Bestandteil des SQL-Builders ist. Ohne explizite
+            # Feldauswahl entsteht daher SELECT * FROM <Tabelle>.
+            involved: List[DBaseSQLTableProxy] = list(proxies)
+            for connection in self.scene.connections:
+                for proxy in (connection.first_proxy, connection.second_proxy):
+                    if proxy not in involved:
+                        involved.append(proxy)
+
+            if not involved and not selected_columns:
+                generated = ""
+            else:
+                columns = selected_columns or ["*"]
+                lines = ["SELECT"]
+                for index, column in enumerate(columns):
+                    suffix = "," if index < len(columns) - 1 else ""
+                    lines.append(f"    {column}{suffix}")
+
+                if involved:
+                    root = involved[0]
+                    lines.append(f"FROM {self._table_sql_name(root)}")
+                    joined = {root}
+                    remaining = [proxy for proxy in involved if proxy is not root]
+
+                    # Tabellen werden entlang der vorhandenen Beziehungen aufgebaut.
+                    while remaining:
+                        progress = False
+                        for proxy in list(remaining):
+                            matching = [
+                                connection for connection in self.scene.connections
+                                if (
+                                    connection.first_proxy is proxy
+                                    and connection.second_proxy in joined
+                                ) or (
+                                    connection.second_proxy is proxy
+                                    and connection.first_proxy in joined
+                                )
+                            ]
+                            if not matching:
+                                continue
+                            conditions = []
+                            for connection in matching:
+                                conditions.append(
+                                    f"{self._field_sql_name(connection.first_proxy, connection.first_field)} = "
+                                    f"{self._field_sql_name(connection.second_proxy, connection.second_field)}"
+                                )
+                            lines.append(
+                                f"INNER JOIN {self._table_sql_name(proxy)} ON "
+                                + " AND ".join(conditions)
+                            )
+                            joined.add(proxy)
+                            remaining.remove(proxy)
+                            progress = True
+                        if not progress:
+                            # Nicht verbundene, aber ausgewählte Tabellen bleiben gültige
+                            # FROM-Quellen und werden als CROSS JOIN ergänzt.
+                            proxy = remaining.pop(0)
+                            lines.append(f"CROSS JOIN {self._table_sql_name(proxy)}")
+                            joined.add(proxy)
+                order_terms = [
+                    term for term in (self._sort_sql_term(connection) for connection in self.scene.connections)
+                    if term
+                ]
+                if order_terms:
+                    lines.append("ORDER BY " + ", ".join(order_terms))
+                lines[-1] = lines[-1] + ";"
+                generated = "\n".join(lines)
+
+            self._updating_sql = True
+            try:
+                self.sql_editor.setPlainText(generated)
+            finally:
+                self._updating_sql = False
+            self.refresh_query_view()
+
+        def clear_sql_expression(self) -> None:
+            self._updating_sql = True
+            try:
+                self.sql_editor.clear()
+            finally:
+                self._updating_sql = False
+            self.query_grid.clear()
+            self.query_grid.setRowCount(0)
+            self.query_grid.setColumnCount(0)
+            self.refresh_relationship_grid()
+
+        def choose_directory(self) -> None:
+            start = self.directory_edit.text().strip()
+            if not start:
+                start = str(getattr(self.owner, "current_directory", Path.cwd()))
+            directory = QFileDialog.getExistingDirectory(
+                self,
+                "Verzeichnis mit dBase-Tabellen auswählen",
+                start,
+                QFileDialog.ShowDirsOnly | QFileDialog.DontUseNativeDialog,
+            )
+            if directory:
+                self.set_directory(Path(directory))
+
+        def _directory_edit_finished(self) -> None:
+            value = self.directory_edit.text().strip()
+            if value:
+                self.set_directory(Path(value))
+
+        def set_directory(self, directory: Path) -> None:
+            try:
+                directory = Path(directory).expanduser().resolve()
+            except OSError:
+                directory = Path(directory).expanduser()
+            self.directory_edit.setText(str(directory))
+            self.refresh_tables()
+
+        def refresh_tables(self) -> None:
+            self.table_list.clear()
+            value = self.directory_edit.text().strip()
+            if not value:
+                return
+            directory = Path(value).expanduser()
+            if not directory.is_dir():
+                return
+            try:
+                candidates = sorted(
+                    (
+                        entry for entry in directory.iterdir()
+                        if entry.is_file() and entry.suffix.casefold() == ".dbf"
+                    ),
+                    key=lambda entry: entry.name.casefold(),
+                )
+            except OSError:
+                candidates = []
+            for path in candidates:
+                item = QListWidgetItem(path.name)
+                item.setData(Qt.UserRole, str(path))
+                item.setToolTip(str(path))
+                self.table_list.addItem(item)
+
+        def _table_clicked(self, item: QListWidgetItem) -> None:
+            raw = str(item.data(Qt.UserRole) or "").strip()
+            if not raw:
+                return
+            path = Path(raw)
+            try:
+                table = read_dbase_dbf(path)
+            except (OSError, ValueError, struct.error) as exc:
+                QMessageBox.warning(
+                    self,
+                    "SQL Builder",
+                    f"Die Tabelle konnte nicht gelesen werden:\n{path}\n\n{exc}",
+                )
+                return
+            proxy = self.scene.add_table(path, table)
+            self.graphics_view.ensureVisible(proxy, 40, 40)
+            proxy.setSelected(True)
+
+        def _project_payload(self) -> Dict[str, object]:
+            tables = []
+            for proxy in self.scene.table_proxies.values():
+                card = proxy.widget()
+                if not isinstance(card, DBaseSQLTableCard):
+                    continue
+                tables.append(
+                    {
+                        "path": str(card.table_path),
+                        "x": float(proxy.pos().x()),
+                        "y": float(proxy.pos().y()),
+                        "selected_fields": card.selected_fields(),
+                    }
+                )
+            return {
+                "format": "d64-sql-builder",
+                "version": 2,
+                "directory": self.directory_edit.text().strip(),
+                "sql": self.sql_editor.toPlainText(),
+                "tables": tables,
+                "connections": [connection.to_dict() for connection in self.scene.connections],
+            }
+
+        def _write_project(self, path: Path) -> bool:
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(
+                    json.dumps(self._project_payload(), ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            except OSError as exc:
+                QMessageBox.warning(self, "SQL Builder", f"Speichern fehlgeschlagen:\n{exc}")
+                return False
+            self.project_path = path
+            return True
+
+        def save_project(self) -> None:
+            if self.project_path is None:
+                self.save_project_as()
+                return
+            self._write_project(self.project_path)
+
+        def save_project_as(self) -> None:
+            start = self.project_path or (
+                Path(self.directory_edit.text().strip() or Path.cwd()) / "sql_builder.d64sql"
+            )
+            filename, _selected = QFileDialog.getSaveFileName(
+                self,
+                "SQL-Builder-Projekt speichern unter",
+                str(start),
+                "d64 SQL Builder (*.d64sql);;JSON (*.json);;Alle Dateien (*)",
+            )
+            if not filename:
+                return
+            path = Path(filename)
+            if not path.suffix:
+                path = path.with_suffix(self.PROJECT_SUFFIX)
+            self._write_project(path)
+
+        def load_project(self) -> None:
+            start = self.project_path or Path(self.directory_edit.text().strip() or Path.cwd())
+            filename, _selected = QFileDialog.getOpenFileName(
+                self,
+                "SQL-Builder-Projekt laden",
+                str(start),
+                "d64 SQL Builder (*.d64sql);;JSON (*.json);;Alle Dateien (*)",
+            )
+            if not filename:
+                return
+            path = Path(filename)
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError) as exc:
+                QMessageBox.warning(self, "SQL Builder", f"Projekt konnte nicht geladen werden:\n{exc}")
+                return
+
+            self._loading_project = True
+            try:
+                self.scene.clear_builder()
+                directory = str(payload.get("directory", "") or "").strip()
+                if directory:
+                    self.directory_edit.setText(directory)
+                    self.refresh_tables()
+
+                loaded_by_key: Dict[str, DBaseSQLTableProxy] = {}
+                for table_data in payload.get("tables", []) or []:
+                    if not isinstance(table_data, dict):
+                        continue
+                    table_path = Path(str(table_data.get("path", "") or ""))
+                    if not table_path.is_file():
+                        continue
+                    try:
+                        table = read_dbase_dbf(table_path)
+                    except (OSError, ValueError, struct.error):
+                        continue
+                    proxy = self.scene.add_table(table_path, table)
+                    proxy.setPos(
+                        float(table_data.get("x", proxy.pos().x())),
+                        float(table_data.get("y", proxy.pos().y())),
+                    )
+                    card = proxy.widget()
+                    if isinstance(card, DBaseSQLTableCard):
+                        card.set_selected_fields(table_data.get("selected_fields", []) or [])
+                    loaded_by_key[proxy.table_key] = proxy
+
+                for relation in payload.get("connections", []) or []:
+                    if not isinstance(relation, dict):
+                        continue
+                    first = loaded_by_key.get(str(relation.get("first_table", "")))
+                    second = loaded_by_key.get(str(relation.get("second_table", "")))
+                    if first is None or second is None:
+                        continue
+                    self.scene.create_connection(
+                        first,
+                        str(relation.get("first_field", "")),
+                        second,
+                        str(relation.get("second_field", "")),
+                        notify=False,
+                        sort_mode=str(relation.get("sort_mode", "Ohne") or "Ohne"),
+                    )
+
+                self.project_path = path
+                self.sql_editor.setPlainText(str(payload.get("sql", "") or ""))
+                self.scene._grow_scene_to_items()
+            finally:
+                self._loading_project = False
+            self.refresh_relationship_grid()
+            self.refresh_query_view()
+
+        def set_dark_mode(self, enabled: bool) -> None:
+            self.dark_mode = bool(enabled)
+            self.scene.set_dark_mode(self.dark_mode)
+            if self.dark_mode:
+                self.setStyleSheet(
+                    "QWidget#dbase_sql_builder_widget{background:#050b18;color:#f2f5f8;}"
+                    "QFrame#dbase_sql_builder_left_panel{background:#07162f;"
+                    "border:1px solid #245a9a;border-radius:6px;}"
+                    "QLineEdit#dbase_sql_builder_directory,QListWidget#dbase_sql_builder_table_list,"
+                    "QPlainTextEdit#dbase_sql_builder_sql_editor{background:#020817;color:#f2f5f8;"
+                    "border:1px solid #245a9a;}"
+                    "QLabel#dbase_sql_builder_sql_label{color:#ffe600;font-weight:bold;}"
+                    "QListWidget#dbase_sql_builder_table_list::item:selected{"
+                    "background:#163b73;color:#ffe600;}"
+                    "QGraphicsView#dbase_sql_builder_graphics_view{"
+                    "background:#030914;border:1px solid #245a9a;}"
+                    "QPushButton{background:#163b73;color:#ffe600;"
+                    "border:1px solid #3375bd;border-radius:4px;padding:4px 7px;}"
+                    "QPushButton:hover{background:#245a9a;}"
+                    "QTableWidget#dbase_sql_builder_relationship_grid,"
+                    "QTableWidget#dbase_sql_builder_query_grid{background:#020817;color:#f2f5f8;"
+                    "gridline-color:#245a9a;border:1px solid #245a9a;}"
+                    "QTableWidget#dbase_sql_builder_relationship_grid QHeaderView::section,"
+                    "QTableWidget#dbase_sql_builder_query_grid QHeaderView::section{"
+                    "background:#163b73;color:#ffe600;border:1px solid #245a9a;padding:4px;}"
+                    "QComboBox#dbase_sql_builder_sort_combo{background:#020817;color:#ffe600;"
+                    "border:1px solid #3375bd;padding:2px 5px;}"
+                    "QSplitter#dbase_sql_builder_left_splitter::handle{background:#245a9a;height:5px;}"
+                    "QTabWidget#dbase_sql_builder_tabs::pane{border:1px solid #245a9a;}"
+                    "QTabWidget#dbase_sql_builder_tabs QTabBar::tab{background:#07162f;color:#f2f5f8;"
+                    "padding:5px 14px;border:1px solid #245a9a;}"
+                    "QTabWidget#dbase_sql_builder_tabs QTabBar::tab:selected{background:#163b73;color:#ffe600;}"
+                )
+                self.scene.setBackgroundBrush(QColor("#030914"))
+            else:
+                self.setStyleSheet(
+                    "QWidget#dbase_sql_builder_widget{background:#eceff3;color:#111;}"
+                    "QFrame#dbase_sql_builder_left_panel{background:#f7f8fa;"
+                    "border:1px solid #a9b6c4;border-radius:6px;}"
+                    "QLineEdit#dbase_sql_builder_directory,QListWidget#dbase_sql_builder_table_list,"
+                    "QPlainTextEdit#dbase_sql_builder_sql_editor{background:#fff;color:#111;"
+                    "border:1px solid #a9b6c4;}"
+                    "QLabel#dbase_sql_builder_sql_label{color:#173a63;font-weight:bold;}"
+                    "QListWidget#dbase_sql_builder_table_list::item:selected{"
+                    "background:#c9ddf3;color:#111;}"
+                    "QGraphicsView#dbase_sql_builder_graphics_view{"
+                    "background:#eef2f6;border:1px solid #a9b6c4;}"
+                    "QPushButton{background:#e6edf5;color:#111;"
+                    "border:1px solid #8aa5c0;border-radius:4px;padding:4px 7px;}"
+                    "QTableWidget#dbase_sql_builder_relationship_grid,"
+                    "QTableWidget#dbase_sql_builder_query_grid{background:#fff;color:#111;"
+                    "gridline-color:#a9b6c4;border:1px solid #a9b6c4;}"
+                    "QTableWidget#dbase_sql_builder_relationship_grid QHeaderView::section,"
+                    "QTableWidget#dbase_sql_builder_query_grid QHeaderView::section{"
+                    "background:#e6edf5;color:#173a63;border:1px solid #a9b6c4;padding:4px;}"
+                    "QComboBox#dbase_sql_builder_sort_combo{background:#fff;color:#111;"
+                    "border:1px solid #8aa5c0;padding:2px 5px;}"
+                    "QSplitter#dbase_sql_builder_left_splitter::handle{background:#a9b6c4;height:5px;}"
+                    "QTabWidget#dbase_sql_builder_tabs::pane{border:1px solid #a9b6c4;}"
+                    "QTabWidget#dbase_sql_builder_tabs QTabBar::tab{background:#e6edf5;color:#111;"
+                    "padding:5px 14px;border:1px solid #a9b6c4;}"
+                    "QTabWidget#dbase_sql_builder_tabs QTabBar::tab:selected{background:#fff;color:#173a63;}"
+                )
+                self.scene.setBackgroundBrush(QColor("#eef2f6"))
+
+
     class DBaseTableFieldGrid(QTableWidget):
         """Felddefinitionen einer DBF-Tabelle mit dBase-typischen Editoren."""
 
@@ -46262,6 +47635,11 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.dbase_table_designer_widget = None
             self._dbase_table_workspace_active = False
             self._dbase_table_workspace_state = {}
+            # Stage ASM 10: grafischer dBase SQL Builder.
+            self.dbase_sql_builder_dock = None
+            self.dbase_sql_builder_widget = None
+            self._dbase_sql_workspace_active = False
+            self._dbase_sql_workspace_state = {}
             self.settings_dock = None
             self.settings_panel = None
             self.project_settings_dock = None
@@ -47474,6 +48852,13 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     "dBase-Tabellendesigner für lokale DBF-Dateien öffnen",
                 )
             )
+            self.compact_new_actions["dbase"]["sql_builder"] = (
+                self._make_compact_new_action(
+                    "SQL Builder",
+                    self.show_dbase_sql_builder,
+                    "Grafischen dBase SQL Builder für lokale DBF-Tabellen öffnen",
+                )
+            )
 
             # Die bisherigen Sprachaktionen werden nicht gelöscht.  Sie werden
             # als zielgebundene Proxy-Aktionen in die passenden neuen Untermenüs
@@ -47548,6 +48933,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     submenu.addSeparator()
                     submenu.addAction(actions["form"])
                     submenu.addAction(actions["table"])
+                    submenu.addAction(actions["sql_builder"])
 
                 legacy_actions = self.compact_new_legacy_actions.get(
                     profile_key, ()
@@ -51293,6 +52679,112 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             return self.save_dbase_form(save_as=True)
 
         # -------------------------------------------------------------------
+        # Stage ASM 10: grafischer dBase SQL Builder.
+        # -------------------------------------------------------------------
+        def _ensure_dbase_sql_builder(self) -> None:
+            if self.dbase_sql_builder_dock is not None:
+                return
+
+            panel = DBaseSQLBuilderWidget(self, self)
+            panel.set_dark_mode(self.dark_mode_enabled)
+            dock = QDockWidget("SQL Builder", self)
+            dock.setObjectName("dbase_sql_builder_dock")
+            dock.setFeatures(self._dock_features())
+            dock.setAllowedAreas(
+                Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea
+                | Qt.TopDockWidgetArea | Qt.BottomDockWidgetArea
+            )
+            dock.setMinimumWidth(760)
+            dock.setMinimumHeight(460)
+            dock.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            dock.setWidget(panel)
+            dock.setTitleBarWidget(DockTitleBar(dock))
+
+            self.addDockWidget(Qt.LeftDockWidgetArea, dock)
+            self.dbase_sql_builder_widget = panel
+            self.dbase_sql_builder_dock = dock
+            self._assign_widget_property_ids(dock)
+            dock.visibilityChanged.connect(
+                self._dbase_sql_builder_visibility_changed
+            )
+            dock.hide()
+
+        def _enter_dbase_sql_workspace(self) -> None:
+            if self._dbase_sql_workspace_active:
+                return
+
+            # Andere dBase-Vollflaechen zuerst sauber verlassen.
+            if self._dbase_table_workspace_active:
+                if self.dbase_table_designer_dock is not None:
+                    self.dbase_table_designer_dock.hide()
+                self._restore_dbase_table_workspace()
+            if self._dbase_form_workspace_active:
+                if self.dbase_form_property_dock is not None:
+                    self.dbase_form_property_dock.hide()
+                if self.dbase_form_designer_dock is not None:
+                    self.dbase_form_designer_dock.hide()
+                self._restore_dbase_form_workspace()
+
+            central = self.centralWidget()
+            left = getattr(self, "left_dock", None)
+            self._dbase_sql_workspace_state = {
+                "central": bool(central is not None and central.isVisible()),
+                "left": bool(left is not None and left.isVisible()),
+            }
+            self._dbase_sql_workspace_active = True
+
+            # Vorgabe: Dateisystem schliessen/ausblenden, bevor SQL Builder
+            # sichtbar wird. Die zentrale Dokumentflaeche wird ebenfalls
+            # freigegeben, damit das Dock die komplette freie Flaeche nutzt.
+            if left is not None:
+                left.hide()
+            if central is not None:
+                central.hide()
+
+        def _restore_dbase_sql_workspace(self) -> None:
+            if not self._dbase_sql_workspace_active:
+                return
+            state = dict(self._dbase_sql_workspace_state or {})
+            self._dbase_sql_workspace_active = False
+            self._dbase_sql_workspace_state = {}
+
+            central = self.centralWidget()
+            if central is not None and bool(state.get("central", True)):
+                central.show()
+
+            left = getattr(self, "left_dock", None)
+            if left is not None:
+                if bool(state.get("left", False)):
+                    left.show()
+                else:
+                    left.hide()
+
+        def _dbase_sql_builder_visibility_changed(self, visible: bool) -> None:
+            if self._dbase_sql_workspace_active and not bool(visible):
+                QTimer.singleShot(0, self._restore_dbase_sql_workspace)
+
+        def show_dbase_sql_builder(self) -> None:
+            self._ensure_dbase_sql_builder()
+            self._enter_dbase_sql_workspace()
+            self.dbase_sql_builder_widget.set_dark_mode(self.dark_mode_enabled)
+            self.dbase_sql_builder_dock.show()
+            self.dbase_sql_builder_dock.raise_()
+            self.resizeDocks(
+                [self.dbase_sql_builder_dock],
+                [100000],
+                Qt.Horizontal,
+            )
+            self.resizeDocks(
+                [self.dbase_sql_builder_dock],
+                [100000],
+                Qt.Vertical,
+            )
+            self.dbase_sql_builder_widget.table_list.setFocus(
+                Qt.OtherFocusReason
+            )
+            self.statusBar().showMessage("dBase SQL Builder geöffnet")
+
+        # -------------------------------------------------------------------
         # Stage 85/86: dBase-Tabellendesigner als eigener Tabellen-Workspace.
         # -------------------------------------------------------------------
         def _ensure_dbase_table_designer(self) -> None:
@@ -53286,6 +54778,10 @@ border: 2px solid #2a69aa;
             self._apply_application_theme(self.dark_mode_enabled)
             for document in self._documents():
                 document.set_dark_mode(self.dark_mode_enabled)
+            if self.dbase_sql_builder_widget is not None:
+                self.dbase_sql_builder_widget.set_dark_mode(
+                    self.dark_mode_enabled
+                )
 
             self.chm_viewer_action.setIcon(self._toolbar_symbol_icon("help"))
             self.zoom_in_action.setIcon(self._toolbar_symbol_icon("zoom_in"))
@@ -62162,7 +63658,7 @@ border: 2px solid #2a69aa;
                 context_language="c64",
                 context_word=topic,
                 context_id=context_id,
-                fixed_chm=Path(__file__).resolve().parent / "help" / "c64.chm",
+                fixed_chm=d64_resolve_runtime_resource("help/c64.chm"),
             )
 
         def show_context_help_for_document(
@@ -62194,8 +63690,7 @@ border: 2px solid #2a69aa;
                 self.show_chm_viewer(
                     context_language="c64",
                     context_word=word,
-                    fixed_chm=Path(__file__).resolve().parent
-                    / "help" / "c64.chm",
+                    fixed_chm=d64_resolve_runtime_resource("help/c64.chm"),
                 )
             else:
                 self.show_chm_viewer(
@@ -62722,6 +64217,40 @@ border: 2px solid #2a69aa;
                 )
                 return
 
+            # Stage ASM 9: Im Frozen-Betrieb native WebEngine-Dateien pruefen,
+            # bevor ChmViewerDialog/QWebEngineView erzeugt wird. So wird aus
+            # einem fehlenden QtWebEngineProcess/resources-Bundle eine normale
+            # Fehlermeldung statt eines nativen Prozessabbruchs.
+            webengine_ok, webengine_error = d64_qtwebengine_frozen_preflight()
+            if not webengine_ok:
+                self._show_message_box(
+                    QMessageBox.Critical,
+                    "QtWebEngine-Bundle unvollstaendig",
+                    html.escape(webengine_error).replace("\n", "<br>"),
+                    rich_text=True,
+                )
+                return
+
+            # Eine fest vorgegebene CHM-Datei wird ebenfalls VOR dem Erzeugen
+            # des QWebEngineView geprueft. Im Frozen-Betrieb darf c64.chm sowohl
+            # neben der EXE als auch im eingebetteten help/-Verzeichnis liegen.
+            resolved_fixed_chm = None
+            if fixed_chm is not None:
+                resolved_fixed_chm = Path(fixed_chm).expanduser().resolve()
+                if not resolved_fixed_chm.is_file():
+                    candidates = d64_runtime_resource_candidates("help/c64.chm")
+                    searched = "<br>".join(
+                        f"<code>{html.escape(str(path))}</code>" for path in candidates
+                    )
+                    self._show_message_box(
+                        QMessageBox.Warning,
+                        "C64-Hilfe nicht gefunden",
+                        "Die C64-Hilfedatei wurde nicht gefunden.<br><br>"
+                        "Gesuchte Pfade:<br>" + searched,
+                        rich_text=True,
+                    )
+                    return
+
             # Unmittelbar vor dem Oeffnen wird die tatsaechlich aktive
             # Anwendungspalette abgefragt. Das ist verlaesslicher als ein
             # moeglicherweise noch nicht synchronisiertes Umschalt-Flag.
@@ -62742,21 +64271,10 @@ border: 2px solid #2a69aa;
                 context_id,
             )
 
-            if fixed_chm is not None:
-                help_file = Path(fixed_chm).expanduser().resolve()
-                if not help_file.is_file():
-                    self._show_message_box(
-                        QMessageBox.Warning,
-                        "C64-Hilfe nicht gefunden",
-                        "Die C64-Hilfedatei wurde nicht gefunden:<br><br>"
-                        f"<code>{html.escape(str(help_file))}</code><br><br>"
-                        "Erwarteter relativer Pfad: <code>help/c64.chm</code>",
-                        rich_text=True,
-                    )
-                    return
+            if resolved_fixed_chm is not None:
                 # Die feste C64-Hilfe darf die zuletzt manuell gewaehlte
                 # allgemeine CHM nicht ueberschreiben.
-                dialog.open_chm(str(help_file), remember_last=False)
+                dialog.open_chm(str(resolved_fixed_chm), remember_last=False)
             else:
                 last_file = str(
                     self.settings.value("chm/last_file", "") or ""

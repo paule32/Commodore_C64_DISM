@@ -1,0 +1,33 @@
+{
+  "format": "d64-sql-builder",
+  "version": 1,
+  "directory": "T:\\GitHub\\dBase2Many\\src\\asmjit\\compiler\\frontend\\c64\\examples\\dbase",
+  "sql": "SELECT\n    data1.FELD1,\n    data1.FELD2,\n    data2.FELD3\nFROM data1\nINNER JOIN data2 ON data1.FELD1 = data2.FELD3;",
+  "tables": [
+    {
+      "path": "T:\\GitHub\\dBase2Many\\src\\asmjit\\compiler\\frontend\\c64\\examples\\dbase\\data1.dbf",
+      "x": 40.0,
+      "y": 40.0,
+      "selected_fields": [
+        "FELD1",
+        "FELD2"
+      ]
+    },
+    {
+      "path": "T:\\GitHub\\dBase2Many\\src\\asmjit\\compiler\\frontend\\c64\\examples\\dbase\\data2.dbf",
+      "x": 360.0,
+      "y": 40.0,
+      "selected_fields": [
+        "FELD3"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "first_table": "t:\\github\\dbase2many\\src\\asmjit\\compiler\\frontend\\c64\\examples\\dbase\\data1.dbf",
+      "first_field": "FELD1",
+      "second_table": "t:\\github\\dbase2many\\src\\asmjit\\compiler\\frontend\\c64\\examples\\dbase\\data2.dbf",
+      "second_field": "FELD3"
+    }
+  ]
+}
