@@ -1,8 +1,34 @@
 {
   "format": "d64-sql-builder",
-  "version": 1,
+  "version": 8,
   "directory": "T:\\GitHub\\dBase2Many\\src\\asmjit\\compiler\\frontend\\c64\\examples\\dbase",
-  "sql": "SELECT\n    data1.FELD1,\n    data1.FELD2,\n    data2.FELD3\nFROM data1\nINNER JOIN data2 ON data1.FELD1 = data2.FELD3;",
+  "sql": "SELECT\n    data1.FELD1,\n    data1.FELD2,\n    data2.FELD1,\n    data2.FELD2,\n    data2.FELD3,\n    data2.FELD4\nFROM data1\nCROSS JOIN data2;",
+  "odbc_dsn": "test",
+  "odbc_driver": "Driver do Microsoft dBase (*.dbf)",
+  "odbc_bitness": 32,
+  "odbc_scope": "Benutzer",
+  "odbc_combo_text": "[32-Bit] test  —  Driver do Microsoft dBase (*.dbf)  (Benutzer · Helper)",
+  "odbc_combo_index": 3,
+  "odbc_dbq": "",
+  "odbc_dbq_mode": "dsn",
+  "header_widths": {
+    "relationship": [
+      220,
+      120
+    ],
+    "view": {
+      "data1.FELD1": 52,
+      "data1.FELD2": 52,
+      "data2.FELD1": 100,
+      "data2.FELD2": 100,
+      "data2.FELD3": 52,
+      "data2.FELD4": 52,
+      "FELD4": 132,
+      "FELD1": 52,
+      "FELD2": 52,
+      "FELD3": 52
+    }
+  },
   "tables": [
     {
       "path": "T:\\GitHub\\dBase2Many\\src\\asmjit\\compiler\\frontend\\c64\\examples\\dbase\\data1.dbf",
@@ -18,16 +44,12 @@
       "x": 360.0,
       "y": 40.0,
       "selected_fields": [
-        "FELD3"
+        "FELD1",
+        "FELD2",
+        "FELD3",
+        "FELD4"
       ]
     }
   ],
-  "connections": [
-    {
-      "first_table": "t:\\github\\dbase2many\\src\\asmjit\\compiler\\frontend\\c64\\examples\\dbase\\data1.dbf",
-      "first_field": "FELD1",
-      "second_table": "t:\\github\\dbase2many\\src\\asmjit\\compiler\\frontend\\c64\\examples\\dbase\\data2.dbf",
-      "second_field": "FELD3"
-    }
-  ]
+  "connections": []
 }

@@ -31,6 +31,10 @@ for filename in (
     if source.is_file():
         binaries.append((str(source), "."))
 
+odbc_bridge = ROOT / "odbc_bitness_bridge.ps1"
+if odbc_bridge.is_file():
+    datas.append((str(odbc_bridge), "."))
+
 font_file = ROOT / "C64Pro.ttf"
 if font_file.is_file():
     datas.append((str(font_file), "."))
@@ -41,6 +45,10 @@ hiddenimports = [
     "PyQt5.QtWebEngineWidgets",
     "PyQt5.QtWebEngineCore",
     "PyQt5.QtWebEngine",
+    # Stage ASM 22: pyodbc is imported optionally at runtime. Listing Windows
+    # DSNs works without it, but Test/Connect needs the compiled extension in
+    # a frozen build.
+    "pyodbc",
 ]
 
 a = Analysis(

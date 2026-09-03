@@ -48,6 +48,7 @@
 #  * Stage 108: WFM/OOP-Formulare, gefuellter Hard-Shadow und Border-Farbdialoge.
 #  * Stage 110: Form-Fenster-Scene mit Titelbar, Designer-only Resize und Client-Limits.
 #  * Stage 136: Lernen->Mathematik mit Zahlenmauer-Dock und 2x5 QGraphicsScene-Aufgaben.
+#  * Stage 38: Lernen->Memory mit 42 Karten, 21 Rechenpaaren und ausgeblendeten Treffern.
 #  * Stage 263: Lernen->Keyboard mit Musik-Dock, 4 Notensystemen und 88-Tasten-Piano.
 #  * Stage 264: Musik-Arbeitsbereich schließt alle Docks; Instrument-Dock rechts mit
 #    General-MIDI, Play/Loop/Freihand, Lautstärke und Musikprojekt Save/Load.
@@ -112,10 +113,28 @@
 #  * Stage 236: Pascal PE32/PE32+ Projektzweig „Tabellen“ mit DBF-Hinzufügen,
 #    Projektpersistenz und Doppelklick in Tabellen-Designer/-Editor.
 #  * Stage 255: Projekt-Hauptknoten „Commodore C= 64“ direkt unter Bookmarks.
+#  * Stage ASM 30: dBase-Bericht-Builder mit Kopf/Detail/Fuss, PDF/Druck und Projektknoten Berichte.
+#  * Stage ASM 32: Report-PDF-Fontskalierung korrigiert; 10 pt bleiben physische 10 pt.
+#  * Stage ASM 29: dBase-Projektbaum mit Programme/Formulare/Tabellen/Abfragen/Objekt-/Archiv-Dateien.
+#  * Stage ASM 45: SQL-Builder-Headerbreiten persistent; SQL-/Bericht-Builder schliessen alle Docks ausser Projekt.
 #  * Stage ASM 11: dBase SQL Builder mit verschiebbaren Tabellen-Proxies, feldgenauen orthogonalen Beziehungen,
+#  * Stage ASM 20: ODBC-Datenquellen/DSN-Auswahl (User/System, 32/64-Bit Fallback),
+#    Login/Test-Dialog und View-Datensatznavigator,
 #    Linienauswahl/Löschen, SQL-Regel-Editor sowie Speichern/Laden von *.d64sql-Projekten.
+# Stage ASM 39: Report-Datenfelder werden vor PDF/Druck frisch aus DBF bzw. aktiver SQL/ODBC-Query geladen.
+# Stage ASM 40: Alle Meldungsdialoge des Bericht-Builders folgen explizit dem Dark-/Light-Mode.
 #  * Stage ASM 12: SQL-Builder mit vertikalem Dreiweg-Splitter, Beziehungs-/Sortierungsgrid,
 #    ORDER-BY-Synchronisierung sowie Design/View-Tabs mit vorbereitetem Query-Ergebnisgrid.
+#  * Stage ASM 27: dBase-ODBC nutzt den SQL-Builder-Pfad explizit als DBQ; DSN-/Effektivpfad-Diagnose
+#  * Stage ASM 41: ODBC-Login mit editierbarem DBQ; DSN-Pfad wird nicht mehr automatisch ueberschrieben.
+#  * Stage ASM 42: dBase ODBC strikt DSN-Manager ODER expliziter Dialog-DBQ; keine versteckten Pfad-Overrides.
+#  * Stage ASM 43: SQL-Builder speichert exakte ODBC-Auswahl; lokaler DBF-SQL-Parser fuer *.d64sql/Reports.
+#  * Stage ASM 28: interner PE32-Assembler mit echter COFF32-.data-Sektion; .section .data/.data/.rdata,
+#    initialisierte DB/DW/DD-Daten und Relocations zwischen .text und .data werden unterstützt.
+#  * Stage ASM 23: ODBC-Login- und ODBC-Meldungsdialoge mit Dark-/Light-Mode
+#  * Stage ASM 24: bitness-aware ODBC-DSNs; 32-Bit-DSNs werden aus 64-Bit-Prozess
+#    ueber einen 32-Bit-Windows-PowerShell-ODBC-Helper getestet/abgefragt.
+#    und Resultat als Python-Liste oder formatierter String.
 #  * Stage 256: *.prg bleibt Binärprogramm; Rohdaten zeigt Disassembly, Hex zeigt 4+4 Bytes.
 #  * Stage 257: C64-PRG/BIN-Disassembly im QThread mit bytebasierter 0..100-%-ProgressBar;
 #  * Stage 259: C64-ProgressBar wird vor Workerstart garantiert gezeichnet; Live-Repaint,
@@ -157,7 +176,7 @@
 #  * Editor-Zoom sowie umschaltbarer Hell-/Dunkelmodus
 #
 # Installation:
-#    py -m pip install PyQt5 PyQtWebEngine antlr4-python3-runtime==4.13.2
+#    py -m pip install PyQt5 PyQtWebEngine antlr4-python3-runtime==4.13.2 pyodbc
 #
 # Start:
 #    py d64_dism.py
@@ -195,11 +214,779 @@ import datetime as dt
 import zlib      as _d64info_zlib
 import base64    as _d64info_base64
 
+# ---------------------------------------------------------------------------
+# Stage ASM 18 (neu auf Basis ASM 17): optionale ODBC-Unterstuetzung.
+#
+# pyodbc wird absichtlich optional importiert, damit d64_dism auch auf
+# Systemen ohne ODBC/Python-Binding normal starten kann. Erst ein echter
+# ODBC-Zugriff benoetigt das Modul. Durch den statischen Import erkennt
+# PyInstaller pyodbc automatisch, wenn es in der Build-Umgebung installiert
+# ist.
+# ---------------------------------------------------------------------------
+try:
+    import pyodbc as _d64_pyodbc
+except ImportError:
+    _d64_pyodbc = None
+
 from dataclasses import dataclass, field, replace
 from decimal     import Decimal, localcontext
 from fractions   import Fraction
 from pathlib     import Path
-from typing      import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing      import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
+
+# ---------------------------------------------------------------------------
+# Stage ASM 18 (neu auf Basis ASM 17): ODBC-Datenbankzugriff.
+# ---------------------------------------------------------------------------
+class D64ODBCError(RuntimeError):
+    """Fehler beim Aufbau einer ODBC-Verbindung oder Ausfuehren von SQL."""
+
+
+def _require_d64_pyodbc():
+    if _d64_pyodbc is None:
+        raise D64ODBCError(
+            "ODBC-Unterstuetzung ist nicht installiert. "
+            "Bitte 'py -m pip install pyodbc' in derselben Python-Umgebung ausfuehren."
+        )
+    return _d64_pyodbc
+
+
+def odbc_python_binding_available() -> bool:
+    """True, wenn das Python-Modul pyodbc erfolgreich geladen wurde."""
+    return _d64_pyodbc is not None
+
+
+def odbc_available_drivers() -> List[str]:
+    """Liefert die auf dem System registrierten ODBC-Treiber."""
+    module = _require_d64_pyodbc()
+    try:
+        return [str(name) for name in module.drivers()]
+    except Exception as exc:
+        raise D64ODBCError(f"ODBC-Treiber konnten nicht gelesen werden: {exc}") from exc
+
+
+def odbc_process_bitness() -> int:
+    """Bitness des aktuell laufenden Python-/PyInstaller-Prozesses."""
+    return int(struct.calcsize("P") * 8)
+
+
+def _odbc_registry_installed_drivers_by_bitness() -> Dict[int, set]:
+    """Liest installierte Windows-ODBC-Treibernamen getrennt nach 32/64 Bit."""
+    result: Dict[int, set] = {32: set(), 64: set()}
+    if os.name != "nt":
+        return result
+    try:
+        import winreg
+    except ImportError:
+        return result
+
+    subkey = r"SOFTWARE\ODBC\ODBCINST.INI\ODBC Drivers"
+    flag32 = int(getattr(winreg, "KEY_WOW64_32KEY", 0) or 0)
+    flag64 = int(getattr(winreg, "KEY_WOW64_64KEY", 0) or 0)
+    views: List[Tuple[int, int]] = []
+    if flag32:
+        views.append((32, flag32))
+    if flag64:
+        views.append((64, flag64))
+    if not views:
+        views.append((odbc_process_bitness(), 0))
+
+    for bitness, view_flag in views:
+        try:
+            key = winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                subkey,
+                0,
+                winreg.KEY_READ | view_flag,
+            )
+        except OSError:
+            continue
+        try:
+            index = 0
+            while True:
+                try:
+                    name, state, _kind = winreg.EnumValue(key, index)
+                except OSError:
+                    break
+                index += 1
+                driver = str(name or "").strip()
+                enabled = str(state or "").strip().casefold()
+                if driver and enabled not in ("", "0", "false", "no", "disabled"):
+                    result.setdefault(int(bitness), set()).add(driver.casefold())
+        finally:
+            winreg.CloseKey(key)
+    return result
+
+
+def _odbc_registry_data_sources_detailed() -> List[Tuple[str, str, int, str]]:
+    """
+    Liest Windows-ODBC-DSNs und ordnet sie einer echten Treiber-Bitness zu.
+
+    Benutzer-DSNs sind auf 64-Bit-Windows ein Sonderfall: Windows kann denselben
+    Benutzer-DSN in beiden ODBC-Administratoren anzeigen. Darum darf die Bitness
+    bei HKCU *nicht* aus KEY_WOW64_32KEY/64KEY abgeleitet werden. Stattdessen
+    wird der im DSN eingetragene Treiber gegen ODBCINST.INI der 32-/64-Bit-
+    Treiberregistrierung aufgeloest.
+
+    Rueckgabe: ``[(dsn, driver, bitness, scope), ...]``.
+    """
+    if os.name != "nt":
+        return []
+    try:
+        import winreg
+    except ImportError:
+        return []
+
+    ds_subkey = r"SOFTWARE\ODBC\ODBC.INI\ODBC Data Sources"
+    drivers_by_bits = _odbc_registry_installed_drivers_by_bitness()
+    rows: Dict[Tuple[str, int, str], Tuple[str, str, int, str]] = {}
+
+    def add_dsn(dsn: str, driver: str, bitness: int, scope: str) -> None:
+        dsn = str(dsn or "").strip()
+        driver = str(driver or "").strip()
+        if not dsn or bitness not in (32, 64):
+            return
+        key = (dsn.casefold(), int(bitness), scope.casefold())
+        rows[key] = (dsn, driver, int(bitness), scope)
+
+    def enum_values(root, view_flag: int = 0) -> List[Tuple[str, str]]:
+        values: List[Tuple[str, str]] = []
+        try:
+            key = winreg.OpenKey(root, ds_subkey, 0, winreg.KEY_READ | int(view_flag))
+        except OSError:
+            return values
+        try:
+            index = 0
+            while True:
+                try:
+                    name, driver, _kind = winreg.EnumValue(key, index)
+                except OSError:
+                    break
+                index += 1
+                dsn = str(name or "").strip()
+                drv = str(driver or "").strip()
+                if dsn:
+                    values.append((dsn, drv))
+        finally:
+            winreg.CloseKey(key)
+        return values
+
+    flag32 = int(getattr(winreg, "KEY_WOW64_32KEY", 0) or 0)
+    flag64 = int(getattr(winreg, "KEY_WOW64_64KEY", 0) or 0)
+    views: List[Tuple[int, int]] = []
+    if flag32:
+        views.append((32, flag32))
+    if flag64:
+        views.append((64, flag64))
+    if not views:
+        views.append((odbc_process_bitness(), 0))
+
+    # System-DSNs sind wirklich nach Registry-View getrennt.
+    for bits, view_flag in views:
+        for dsn, driver in enum_values(winreg.HKEY_LOCAL_MACHINE, view_flag):
+            # Wenn der Treiber in dieser Architektur nicht installiert ist,
+            # handelt es sich meist um einen verwaisten/falsch angelegten DSN.
+            known = drivers_by_bits.get(bits, set())
+            if driver and known and driver.casefold() not in known:
+                continue
+            add_dsn(dsn, driver, bits, "System")
+
+    # Benutzer-DSNs NICHT anhand der Registry-View klassifizieren.
+    # Einmal lesen und die vorhandenen Treiberarchitekturen aufloesen.
+    user_values = enum_values(winreg.HKEY_CURRENT_USER, 0)
+    seen_user = set()
+    for dsn, driver in user_values:
+        ident = (dsn.casefold(), driver.casefold())
+        if ident in seen_user:
+            continue
+        seen_user.add(ident)
+        matches = [
+            bits for bits in (32, 64)
+            if driver and driver.casefold() in drivers_by_bits.get(bits, set())
+        ]
+        if not matches:
+            # Unbekannter/verwaister Treiber: als aktuelle Architektur anzeigen,
+            # aber nicht als vermeintlichen 32-Bit-Treiber erfinden.
+            matches = [odbc_process_bitness()]
+        for bits in matches:
+            add_dsn(dsn, driver, bits, "Benutzer")
+
+    return sorted(rows.values(), key=lambda x: (x[0].casefold(), x[2], x[3]))
+
+def odbc_registry_dsn_details(dsn_name: str, bitness: int = 0, scope: str = "") -> Dict[str, str]:
+    """Liest die wichtigsten Registry-Werte eines Windows-ODBC-DSN.
+
+    Die Funktion dient nur der Diagnose/Anzeige im SQL Builder. Fuer dBase ist
+    insbesondere DBQ/DefaultDir interessant, da dieser Pfad das Verzeichnis
+    der DBF-Dateien bezeichnet.
+    """
+    result: Dict[str, str] = {
+        "dsn": str(dsn_name or "").strip(),
+        "scope": str(scope or "").strip(),
+        "driver": "",
+        "dbq": "",
+    }
+    if os.name != "nt" or not result["dsn"]:
+        return result
+    try:
+        import winreg
+    except ImportError:
+        return result
+
+    bits = int(bitness or odbc_process_bitness())
+    flag = 0
+    if bits == 32:
+        flag = int(getattr(winreg, "KEY_WOW64_32KEY", 0) or 0)
+    elif bits == 64:
+        flag = int(getattr(winreg, "KEY_WOW64_64KEY", 0) or 0)
+
+    scope_cf = result["scope"].casefold()
+    roots = []
+    if scope_cf.startswith("system"):
+        roots = [(winreg.HKEY_LOCAL_MACHINE, flag)]
+    elif scope_cf.startswith("benutzer") or scope_cf.startswith("user"):
+        # Benutzer-DSNs liegen unter HKCU und sind nicht sauber nach Registry-
+        # View getrennt. Deshalb ohne WOW64-Flag lesen.
+        roots = [(winreg.HKEY_CURRENT_USER, 0)]
+    else:
+        roots = [
+            (winreg.HKEY_CURRENT_USER, 0),
+            (winreg.HKEY_LOCAL_MACHINE, flag),
+        ]
+
+    subkey = "SOFTWARE\\ODBC\\ODBC.INI\\" + result["dsn"]
+    for root, view_flag in roots:
+        try:
+            key = winreg.OpenKey(root, subkey, 0, winreg.KEY_READ | int(view_flag))
+        except OSError:
+            continue
+        try:
+            values: Dict[str, str] = {}
+            index = 0
+            while True:
+                try:
+                    name, value, _kind = winreg.EnumValue(key, index)
+                except OSError:
+                    break
+                index += 1
+                values[str(name)] = str(value or "")
+            for candidate in ("DriverName", "Driver"):
+                value = values.get(candidate, "").strip()
+                if value:
+                    result["driver"] = value
+                    break
+            # Fuer den Microsoft-dBASE-Treiber sind DBQ/DEFAULTDIR die
+            # relevanten Verzeichniswerte. Allgemeine Anzeigenamen wie
+            # ``Database=(unbenannt)`` duerfen niemals als Dateipfad gelten.
+            invalid_directory_names = {
+                "(unbenannt)", "<unbenannt>", "unbenannt",
+                "(unbekannt)", "<unbekannt>", "unbekannt",
+                "(unnamed)", "<unnamed>", "unnamed",
+                "(unknown)", "<unknown>", "unknown",
+            }
+            for candidate in ("DBQ", "DefaultDir", "Directory", "Path"):
+                value = values.get(candidate, "").strip()
+                if value and value.casefold() not in invalid_directory_names:
+                    result["dbq"] = value
+                    break
+            result["scope"] = "Benutzer" if root == winreg.HKEY_CURRENT_USER else "System"
+            break
+        finally:
+            winreg.CloseKey(key)
+    return result
+
+
+def odbc_available_data_sources_detailed() -> List[Tuple[str, str, int, str]]:
+    """Liefert DSNs mit Treiber, 32/64-Bit-Zuordnung und Scope."""
+    sources = _odbc_registry_data_sources_detailed()
+
+    # pyodbc.dataSources() sieht nur die Bitness des aktuellen Prozesses.
+    # Es wird als Ergaenzung genutzt, falls ein DSN nicht in der Registry-
+    # Abfrage gefunden wurde (z.B. herstellerspezifische Konfiguration).
+    module = _d64_pyodbc
+    if module is not None:
+        try:
+            raw = getattr(module, "dataSources", lambda: {})() or {}
+            if isinstance(raw, dict):
+                current_bits = odbc_process_bitness()
+                existing = {(dsn.casefold(), bits) for dsn, _drv, bits, _scope in sources}
+                for name, driver in raw.items():
+                    dsn = str(name or "").strip()
+                    if not dsn:
+                        continue
+                    ident = (dsn.casefold(), current_bits)
+                    if ident not in existing:
+                        sources.append((dsn, str(driver or "").strip(), current_bits, "ODBC"))
+                        existing.add(ident)
+        except Exception:
+            pass
+
+    return sorted(sources, key=lambda x: (x[0].casefold(), x[2], x[3]))
+
+
+def _odbc_registry_data_sources() -> Dict[str, str]:
+    """Kompatibilitaets-Wrapper fuer aelteren Code ohne Bitness-Metadaten."""
+    result: Dict[str, str] = {}
+    for dsn, driver, _bits, _scope in odbc_available_data_sources_detailed():
+        result.setdefault(dsn, driver)
+    return result
+
+
+def odbc_available_data_sources() -> List[Tuple[str, str]]:
+    """Kompatible DSN-Liste ohne Bitness-Metadaten."""
+    result: Dict[str, str] = {}
+    for dsn, driver, _bits, _scope in odbc_available_data_sources_detailed():
+        result.setdefault(dsn, driver)
+    return sorted(result.items(), key=lambda item: item[0].casefold())
+
+
+def _odbc_bridge_script_path() -> Path:
+    """Findet das mitgelieferte PowerShell-ODBC-Bridge-Script."""
+    candidates: List[Path] = []
+    if getattr(sys, "frozen", False):
+        try:
+            candidates.append(Path(sys.executable).resolve().parent / "odbc_bitness_bridge.ps1")
+        except Exception:
+            pass
+        bundle = getattr(sys, "_MEIPASS", None)
+        if bundle:
+            candidates.append(Path(bundle) / "odbc_bitness_bridge.ps1")
+    candidates.append(Path(__file__).resolve().parent / "odbc_bitness_bridge.ps1")
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    raise D64ODBCError(
+        "ODBC-Bitness-Helper fehlt: odbc_bitness_bridge.ps1 muss neben der Anwendung liegen."
+    )
+
+
+def _odbc_powershell_for_bitness(target_bitness: int) -> Path:
+    """Liefert Windows PowerShell in der gewuenschten Prozess-Bitness."""
+    if os.name != "nt":
+        raise D64ODBCError("Der ODBC-Bitness-Helper ist nur unter Windows verfuegbar.")
+    bits = int(target_bitness)
+    windir = Path(os.environ.get("WINDIR", r"C:\Windows"))
+    current = odbc_process_bitness()
+
+    candidates: List[Path] = []
+    if bits == 32:
+        # Auf 64-Bit-Windows enthaelt SysWOW64 die 32-Bit-Binaries.
+        candidates.append(windir / "SysWOW64" / "WindowsPowerShell" / "v1.0" / "powershell.exe")
+        if current == 32:
+            candidates.append(windir / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe")
+    elif bits == 64:
+        if current == 32:
+            # Sysnative umgeht die Dateisystem-Umleitung eines 32-Bit-Prozesses.
+            candidates.append(windir / "Sysnative" / "WindowsPowerShell" / "v1.0" / "powershell.exe")
+        candidates.append(windir / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe")
+    else:
+        raise D64ODBCError(f"Unbekannte ODBC-Bitness: {target_bitness}")
+
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    raise D64ODBCError(
+        f"Windows PowerShell ({bits}-Bit) wurde nicht gefunden. Geprueft: "
+        + ", ".join(str(p) for p in candidates)
+    )
+
+
+class D64ODBCPowerShellBridgeConnection:
+    """
+    Bitness-Bridge fuer ODBC.
+
+    Eine 64-Bit-Anwendung kann keine 32-Bit-ODBC-DLL in denselben Prozess
+    laden. Deshalb wird fuer eine abweichende DSN-Bitness ein Windows-
+    PowerShell-Prozess der Ziel-Bitness gestartet. Dieser benutzt
+    System.Data.Odbc und damit die passende native ODBC-Treiberwelt.
+
+    Die Verbindung wird bei ``open()`` getestet. SQL-Aufrufe werden bewusst
+    als einzelne Helper-Aufrufe ausgefuehrt; Benutzername/Passwort werden nur
+    ueber stdin uebergeben und nicht auf der Kommandozeile sichtbar gemacht.
+    """
+
+    def __init__(
+        self,
+        connection_string: str,
+        *,
+        target_bitness: int,
+        timeout: int = 30,
+        autocommit: bool = False,
+        data_directory: str = "",
+    ) -> None:
+        self.connection_string = str(connection_string or "").strip()
+        self.target_bitness = int(target_bitness)
+        self.timeout = max(1, int(timeout))
+        self.autocommit = bool(autocommit)
+        self.data_directory = str(data_directory or "").strip()
+        self._open = False
+
+    @property
+    def is_open(self) -> bool:
+        return bool(self._open)
+
+    def _invoke(self, action: str, sql: str = "", parameters: Optional[Sequence[object]] = None) -> Dict[str, object]:
+        if not self.connection_string:
+            raise D64ODBCError("Die ODBC-Connection-String ist leer.")
+        ps_exe = _odbc_powershell_for_bitness(self.target_bitness)
+        script = _odbc_bridge_script_path()
+        payload = {
+            "action": str(action),
+            "connection_string": self.connection_string,
+            "sql": str(sql or ""),
+            "parameters": list(parameters or ()),
+            # Der Helper setzt diesen Wert direkt auf
+            # System.Data.Odbc.OdbcConnection.ConnectionTimeout.  Wichtig:
+            # Der .NET-Standardwert ist 15 s; der aeussere Prozess-Timeout darf
+            # deshalb niemals kuerzer als der eigentliche ODBC-Login-Timeout sein.
+            "timeout": int(self.timeout),
+            # Fuer Desktop-/dBase-Treiber: der SQL-Builder gibt das aktuell
+            # gewaehlte DBF-Verzeichnis explizit an. Der 32-Bit-Helper darf
+            # damit einen veralteten DBQ-Wert aus der DSN ueberschreiben.
+            "data_directory": self.data_directory,
+        }
+        creationflags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0) or 0)
+        try:
+            completed = subprocess.run(
+                [
+                    str(ps_exe),
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy", "Bypass",
+                    "-File", str(script),
+                ],
+                input=json.dumps(payload, ensure_ascii=False),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                # PowerShell/CLR-Start braucht zusaetzliche Zeit. Der eigentliche
+                # ODBC-Login-Timeout wird *innerhalb* des Helpers gesetzt.
+                timeout=max(20, self.timeout + 20),
+                creationflags=creationflags,
+            )
+        except subprocess.TimeoutExpired as exc:
+            partial_err = getattr(exc, "stderr", "") or ""
+            if isinstance(partial_err, bytes):
+                partial_err = partial_err.decode("utf-8", errors="replace")
+            partial_err = str(partial_err).strip()
+            detail = ""
+            if partial_err:
+                lines = [line.strip() for line in partial_err.splitlines() if line.strip()]
+                # Nur die letzten Diagnosezeilen anzeigen; Zugangsdaten werden vom
+                # Helper dort niemals ausgegeben.
+                if lines:
+                    detail = "\nHelper-Diagnose: " + " | ".join(lines[-4:])
+            raise D64ODBCError(
+                f"{self.target_bitness}-Bit-ODBC-Helper: Der native ODBC-Aufruf "
+                f"hat auch nach {self.timeout} Sekunden nicht geantwortet.{detail}"
+            ) from exc
+        except Exception as exc:
+            raise D64ODBCError(
+                f"{self.target_bitness}-Bit-ODBC-Helper konnte nicht gestartet werden: {exc}"
+            ) from exc
+
+        output = (completed.stdout or "").strip()
+        try:
+            result = json.loads(output) if output else {}
+        except Exception as exc:
+            detail = (completed.stderr or output or "Keine Ausgabe").strip()
+            raise D64ODBCError(
+                f"{self.target_bitness}-Bit-ODBC-Helper lieferte keine gueltige Antwort: {detail}"
+            ) from exc
+
+        if completed.returncode != 0 or not bool(result.get("ok", False)):
+            error = str(result.get("error") or completed.stderr or "Unbekannter ODBC-Fehler").strip()
+            source_items = result.get("sources") or []
+            source_names: List[str] = []
+            if isinstance(source_items, list):
+                for item in source_items:
+                    if isinstance(item, dict):
+                        name = str(item.get("name") or "").strip()
+                    else:
+                        name = str(item or "").strip()
+                    if name and name.casefold() not in {x.casefold() for x in source_names}:
+                        source_names.append(name)
+            diagnostic = ""
+            if self.data_directory:
+                diagnostic += f"\nVerwendeter DBQ: {self.data_directory}"
+            if "IM002" in error.upper():
+                if source_names:
+                    preview = ", ".join(source_names[:12])
+                    if len(source_names) > 12:
+                        preview += ", ..."
+                    diagnostic = (
+                        f"\nVom {self.target_bitness}-Bit-ODBC-Driver-Manager sichtbare DSNs: {preview}"
+                    )
+                else:
+                    diagnostic = (
+                        f"\nDer {self.target_bitness}-Bit-ODBC-Driver-Manager meldet keine sichtbare DSN. "
+                        "Bitte den DSN im passenden ODBC-Datenquellen-Administrator pruefen."
+                    )
+            raise D64ODBCError(
+                f"{self.target_bitness}-Bit-ODBC-Verbindung fehlgeschlagen: {error}{diagnostic}"
+            )
+        return result
+
+    def open(self) -> "D64ODBCPowerShellBridgeConnection":
+        if self._open:
+            return self
+        # Zuerst nur Registry/DSN/Treiber pruefen. Das startet noch keinen
+        # nativen ODBC-Open-Aufruf und liefert bei alten dBase-Treibern eine
+        # deutlich bessere Diagnose (z.B. fehlendes DBQ-Verzeichnis).
+        self._invoke("probe")
+        self._invoke("test")
+        self._open = True
+        return self
+
+    def close(self) -> None:
+        self._open = False
+
+    def __enter__(self):
+        return self.open()
+
+    def __exit__(self, exc_type, exc_value, traceback) -> bool:
+        self.close()
+        return False
+
+    def execute(
+        self,
+        sql: str,
+        parameters: Optional[Sequence[object]] = None,
+        *,
+        result_type: str = "list",
+        include_columns: bool = False,
+        column_separator: str = "\t",
+        row_separator: str = "\n",
+    ) -> Union[List[List[Any]], str]:
+        sql_text = str(sql or "").strip()
+        if not sql_text:
+            raise D64ODBCError("Der SQL-String ist leer.")
+        mode = str(result_type or "list").strip().casefold()
+        if mode not in ("list", "string"):
+            raise ValueError("result_type muss 'list' oder 'string' sein.")
+        if not self._open:
+            self.open()
+
+        result = self._invoke("execute", sql_text, parameters)
+        columns = [str(x) for x in (result.get("columns") or [])]
+        rows = [list(row) for row in (result.get("rows") or [])]
+        if not columns:
+            rowcount = result.get("rowcount", -1)
+            rows = [[rowcount]]
+
+        if mode == "list":
+            if include_columns and columns:
+                return [columns] + rows
+            return rows
+
+        lines: List[str] = []
+        if include_columns and columns:
+            lines.append(column_separator.join(columns))
+        for row in rows:
+            lines.append(column_separator.join(_odbc_text_value(value) for value in row))
+        return row_separator.join(lines)
+
+def _odbc_text_value(value: object) -> str:
+    """Konvertiert einen ODBC-Wert verlustarm in die String-Ausgabe."""
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        try:
+            return value.decode("utf-8")
+        except UnicodeDecodeError:
+            return value.hex(" ").upper()
+    if isinstance(value, (dt.datetime, dt.date, dt.time)):
+        return value.isoformat(sep=" ") if isinstance(value, dt.datetime) else value.isoformat()
+    return str(value)
+
+
+class D64ODBCConnection:
+    """
+    Kleine, wiederverwendbare ODBC-Verbindung fuer den dBase SQL Builder.
+
+    Beispiel::
+
+        with D64ODBCConnection("DSN=MeineDatenbank;UID=user;PWD=pw") as db:
+            rows = db.execute("SELECT ID, NAME FROM CUSTOMER", result_type="list")
+
+    result_type="list"   -> List[List[Any]]
+    result_type="string" -> tabulatorgetrennter String
+    """
+
+    def __init__(
+        self,
+        connection_string: str,
+        *,
+        timeout: int = 30,
+        autocommit: bool = False,
+    ) -> None:
+        self.connection_string = str(connection_string or "").strip()
+        self.timeout = max(0, int(timeout))
+        self.autocommit = bool(autocommit)
+        self.connection = None
+
+    @property
+    def is_open(self) -> bool:
+        return self.connection is not None
+
+    def open(self) -> "D64ODBCConnection":
+        if self.connection is not None:
+            return self
+        if not self.connection_string:
+            raise D64ODBCError("Die ODBC-Connection-String ist leer.")
+        module = _require_d64_pyodbc()
+        try:
+            self.connection = module.connect(
+                self.connection_string,
+                timeout=self.timeout,
+                autocommit=self.autocommit,
+            )
+        except Exception as exc:
+            raise D64ODBCError(f"ODBC-Verbindung konnte nicht geoeffnet werden: {exc}") from exc
+        return self
+
+    def close(self) -> None:
+        connection = self.connection
+        self.connection = None
+        if connection is not None:
+            try:
+                connection.close()
+            except Exception:
+                pass
+
+    def __enter__(self) -> "D64ODBCConnection":
+        return self.open()
+
+    def __exit__(self, exc_type, exc_value, traceback) -> bool:
+        self.close()
+        return False
+
+    def execute(
+        self,
+        sql: str,
+        parameters: Optional[Sequence[object]] = None,
+        *,
+        result_type: str = "list",
+        include_columns: bool = False,
+        column_separator: str = "\t",
+        row_separator: str = "\n",
+    ) -> Union[List[List[Any]], str]:
+        """Fuehrt SQL aus und liefert das Resultat als Liste oder String."""
+        sql_text = str(sql or "").strip()
+        if not sql_text:
+            raise D64ODBCError("Der SQL-String ist leer.")
+
+        mode = str(result_type or "list").strip().casefold()
+        if mode not in ("list", "string"):
+            raise ValueError("result_type muss 'list' oder 'string' sein.")
+
+        if self.connection is None:
+            self.open()
+        connection = self.connection
+        if connection is None:
+            raise D64ODBCError("ODBC-Verbindung ist nicht geoeffnet.")
+
+        cursor = None
+        try:
+            cursor = connection.cursor()
+            params = tuple(parameters or ())
+            if params:
+                cursor.execute(sql_text, *params)
+            else:
+                cursor.execute(sql_text)
+
+            # SELECT/EXEC mit Resultset
+            if cursor.description is not None:
+                columns = [str(column[0]) for column in cursor.description]
+                rows = [list(row) for row in cursor.fetchall()]
+
+                if mode == "list":
+                    if include_columns:
+                        return [list(columns)] + rows
+                    return rows
+
+                text_rows: List[str] = []
+                if include_columns:
+                    text_rows.append(column_separator.join(columns))
+                text_rows.extend(
+                    column_separator.join(_odbc_text_value(value) for value in row)
+                    for row in rows
+                )
+                return row_separator.join(text_rows)
+
+            # INSERT/UPDATE/DELETE/DDL: bei autocommit=False explizit committen.
+            if not self.autocommit:
+                connection.commit()
+            affected = int(cursor.rowcount) if cursor.rowcount is not None else -1
+            if mode == "string":
+                return str(affected)
+            return [[affected]]
+
+        except Exception as exc:
+            if connection is not None and not self.autocommit:
+                try:
+                    connection.rollback()
+                except Exception:
+                    pass
+            raise D64ODBCError(f"ODBC-SQL-Fehler: {exc}\nSQL: {sql_text}") from exc
+        finally:
+            if cursor is not None:
+                try:
+                    cursor.close()
+                except Exception:
+                    pass
+
+
+def execute_odbc_sql(
+    connection_string: str,
+    sql: str,
+    parameters: Optional[Sequence[object]] = None,
+    *,
+    result_type: str = "list",
+    include_columns: bool = False,
+    timeout: int = 30,
+    autocommit: bool = False,
+    column_separator: str = "\t",
+    row_separator: str = "\n",
+) -> Union[List[List[Any]], str]:
+    """
+    One-Shot-Helfer: ODBC verbinden -> SQL ausfuehren -> Verbindung schliessen.
+
+    Beispiel Liste::
+
+        rows = execute_odbc_sql(
+            "DSN=MeineDB;UID=user;PWD=secret",
+            "SELECT ID, NAME FROM CUSTOMER WHERE ID > ?",
+            [10],
+            result_type="list",
+            include_columns=True,
+        )
+
+    Beispiel String::
+
+        text = execute_odbc_sql(
+            "DSN=MeineDB",
+            "SELECT ID, NAME FROM CUSTOMER",
+            result_type="string",
+            include_columns=True,
+        )
+    """
+    with D64ODBCConnection(
+        connection_string,
+        timeout=timeout,
+        autocommit=autocommit,
+    ) as database:
+        return database.execute(
+            sql,
+            parameters,
+            result_type=result_type,
+            include_columns=include_columns,
+            column_separator=column_separator,
+            row_separator=row_separator,
+        )
+
 
 # ---------------------------------------------------------------------------
 # Stage ASM 9: robuste Ressourcenauflösung für Skript- und PyInstaller-Betrieb.
@@ -1691,6 +2478,365 @@ def read_dbase_dbf(path: Path) -> DBaseDBFTable:
     return table
 
 
+
+# ---------------------------------------------------------------------------
+# Stage ASM 43: kleiner SQL-Parser/-Executor fuer lokale dBase-DBF-Abfragen.
+# Er versteht bewusst den vom integrierten SQL Builder erzeugten SELECT-Dialekt
+# und kann dadurch *.d64sql-Dateien auch ohne aktive ODBC-Verbindung als
+# Berichtsdatenquelle verwenden.
+# ---------------------------------------------------------------------------
+class D64DBFSQLParseError(ValueError):
+    pass
+
+
+def _d64sql_unquote_identifier(value: str) -> str:
+    text = str(value or "").strip()
+    if len(text) >= 2 and text[0] == '[' and text[-1] == ']':
+        return text[1:-1].replace(']]', ']')
+    if len(text) >= 2 and text[0] == '`' and text[-1] == '`':
+        return text[1:-1].replace('``', '`')
+    if len(text) >= 2 and text[0] == '"' and text[-1] == '"':
+        return text[1:-1].replace('""', '"')
+    return text
+
+
+def _d64sql_split_top_level(text: str, delimiter: str = ',') -> List[str]:
+    parts: List[str] = []
+    current: List[str] = []
+    depth = 0
+    quote = ''
+    bracket = False
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if bracket:
+            current.append(ch)
+            if ch == ']':
+                if i + 1 < len(text) and text[i + 1] == ']':
+                    current.append(text[i + 1]); i += 1
+                else:
+                    bracket = False
+            i += 1; continue
+        if quote:
+            current.append(ch)
+            if ch == quote:
+                if i + 1 < len(text) and text[i + 1] == quote:
+                    current.append(text[i + 1]); i += 1
+                else:
+                    quote = ''
+            i += 1; continue
+        if ch == '[':
+            bracket = True; current.append(ch)
+        elif ch in ('\'', '"', '`'):
+            quote = ch; current.append(ch)
+        elif ch == '(':
+            depth += 1; current.append(ch)
+        elif ch == ')':
+            depth = max(0, depth - 1); current.append(ch)
+        elif ch == delimiter and depth == 0:
+            parts.append(''.join(current).strip()); current = []
+        else:
+            current.append(ch)
+        i += 1
+    if current or text.strip():
+        parts.append(''.join(current).strip())
+    return [part for part in parts if part]
+
+
+def _d64sql_field_ref(expr: str) -> Tuple[str, str]:
+    text = str(expr or '').strip()
+    match = re.fullmatch(
+        r'(?is)\s*(?:(\[[^\]]+(?:\]\][^\]]*)*\]|`[^`]+`|"[^"]+"|[A-Za-z_][A-Za-z0-9_$]*)\s*\.\s*)?'
+        r'(\[[^\]]+(?:\]\][^\]]*)*\]|`[^`]+`|"[^"]+"|[A-Za-z_][A-Za-z0-9_$]*)\s*',
+        text,
+    )
+    if not match:
+        raise D64DBFSQLParseError(f'Ungueltige Feldreferenz: {text}')
+    return (
+        _d64sql_unquote_identifier(match.group(1) or ''),
+        _d64sql_unquote_identifier(match.group(2) or ''),
+    )
+
+
+def _d64sql_parse_select(sql: str) -> Dict[str, object]:
+    statement = str(sql or '').strip().rstrip(';').strip()
+    if not statement:
+        raise D64DBFSQLParseError('Der SQL-Ausdruck ist leer.')
+    m = re.match(r'(?is)^\s*SELECT\s+(.*?)\s+FROM\s+(.+)$', statement)
+    if not m:
+        raise D64DBFSQLParseError('Der lokale DBF-SQL-Parser erwartet SELECT ... FROM ... .')
+    select_text = m.group(1).strip()
+    tail = m.group(2).strip()
+
+    order_text = ''
+    order_match = re.search(r'(?is)\s+ORDER\s+BY\s+', tail)
+    if order_match:
+        order_text = tail[order_match.end():].strip()
+        tail = tail[:order_match.start()].strip()
+    where_text = ''
+    where_match = re.search(r'(?is)\s+WHERE\s+', tail)
+    if where_match:
+        where_text = tail[where_match.end():].strip()
+        tail = tail[:where_match.start()].strip()
+
+    join_re = re.compile(r'(?is)\s+(INNER\s+JOIN|CROSS\s+JOIN)\s+')
+    pieces = join_re.split(tail)
+    root_text = pieces[0].strip()
+
+    def parse_table_decl(text: str) -> Tuple[str, str]:
+        mm = re.match(
+            r'(?is)^\s*(\[[^\]]+(?:\]\][^\]]*)*\]|`[^`]+`|"[^"]+"|[A-Za-z_][A-Za-z0-9_$]*)'
+            r'(?:\s+(?:AS\s+)?(\[[^\]]+\]|`[^`]+`|"[^"]+"|[A-Za-z_][A-Za-z0-9_$]*))?\s*$',
+            text,
+        )
+        if not mm:
+            raise D64DBFSQLParseError(f'Ungueltige Tabellenangabe: {text}')
+        name = _d64sql_unquote_identifier(mm.group(1))
+        alias = _d64sql_unquote_identifier(mm.group(2) or name)
+        return name, alias
+
+    root_name, root_alias = parse_table_decl(root_text)
+    joins = []
+    for i in range(1, len(pieces), 2):
+        kind = re.sub(r'\s+', ' ', pieces[i].strip().upper())
+        body = pieces[i + 1].strip()
+        if kind == 'INNER JOIN':
+            on_m = re.search(r'(?is)\s+ON\s+', body)
+            if not on_m:
+                raise D64DBFSQLParseError('INNER JOIN ohne ON-Bedingung.')
+            table_decl = body[:on_m.start()].strip()
+            cond_text = body[on_m.end():].strip()
+        else:
+            table_decl = body
+            cond_text = ''
+        name, alias = parse_table_decl(table_decl)
+        joins.append({'kind': kind, 'table': name, 'alias': alias, 'condition': cond_text})
+
+    columns = []
+    for raw in _d64sql_split_top_level(select_text):
+        if raw == '*':
+            columns.append({'expr': '*', 'alias': ''}); continue
+        am = re.match(r'(?is)^(.*?)\s+AS\s+(\[[^\]]+\]|`[^`]+`|"[^"]+"|[A-Za-z_][A-Za-z0-9_$]*)\s*$', raw)
+        if am:
+            expr = am.group(1).strip(); alias = _d64sql_unquote_identifier(am.group(2))
+        else:
+            expr = raw.strip(); alias = ''
+        _d64sql_field_ref(expr)  # validation
+        columns.append({'expr': expr, 'alias': alias})
+
+    orders = []
+    if order_text:
+        for raw in _d64sql_split_top_level(order_text):
+            om = re.match(r'(?is)^(.*?)(?:\s+(ASC|DESC))?\s*$', raw)
+            expr = om.group(1).strip(); direction = (om.group(2) or 'ASC').upper()
+            transform = ''
+            fm = re.fullmatch(r'(?is)(VAL|UPPER)\s*\((.*?)\)', expr)
+            if fm:
+                transform = fm.group(1).upper(); expr = fm.group(2).strip()
+            _d64sql_field_ref(expr)
+            orders.append({'expr': expr, 'direction': direction, 'transform': transform})
+
+    return {
+        'columns': columns,
+        'root_table': root_name,
+        'root_alias': root_alias,
+        'joins': joins,
+        'where': where_text,
+        'order_by': orders,
+    }
+
+
+def _d64sql_split_boolean_and(text: str) -> List[str]:
+    # Der SQL Builder erzeugt JOIN-Bedingungen mit AND. Klammern/Strings werden
+    # beim Splitten beruecksichtigt; OR bleibt fuer eine spaetere Parserstufe.
+    source = str(text or '').strip()
+    if not source:
+        return []
+    parts = []
+    start = 0; depth = 0; quote = ''; bracket = False; i = 0
+    while i < len(source):
+        ch = source[i]
+        if bracket:
+            if ch == ']': bracket = False
+            i += 1; continue
+        if quote:
+            if ch == quote: quote = ''
+            i += 1; continue
+        if ch == '[': bracket = True; i += 1; continue
+        if ch in ('\'', '"', '`'): quote = ch; i += 1; continue
+        if ch == '(': depth += 1; i += 1; continue
+        if ch == ')': depth = max(0, depth - 1); i += 1; continue
+        if depth == 0 and source[i:i+3].upper() == 'AND':
+            before = source[i-1] if i else ' '
+            after = source[i+3] if i+3 < len(source) else ' '
+            if not (before.isalnum() or before == '_') and not (after.isalnum() or after == '_'):
+                parts.append(source[start:i].strip()); start = i + 3; i += 3; continue
+        i += 1
+    parts.append(source[start:].strip())
+    return [p for p in parts if p]
+
+
+def execute_d64sql_dbf_project(payload: Dict[str, object], *, sql: str = '') -> Tuple[List[str], List[List[object]]]:
+    """Fuehrt den SELECT-Dialekt des SQL Builders direkt auf DBF-Dateien aus.
+
+    Dadurch kann insbesondere der Bericht Builder *.d64sql als Datenquelle
+    verwenden, ohne dass eine ODBC-Verbindung bereits live geoeffnet sein muss.
+    """
+    query_text = str(sql or payload.get('sql', '') or '').strip()
+    parsed = _d64sql_parse_select(query_text)
+
+    table_paths: Dict[str, Path] = {}
+    for item in payload.get('tables', []) or []:
+        if not isinstance(item, dict):
+            continue
+        raw = str(item.get('path', '') or '').strip()
+        if not raw:
+            continue
+        path = Path(raw).expanduser()
+        table_paths[path.stem.casefold()] = path
+    directory = Path(str(payload.get('directory', '') or '')).expanduser()
+
+    def find_table(name: str) -> Path:
+        key = str(name).casefold()
+        path = table_paths.get(key)
+        if path is not None and path.is_file():
+            return path
+        if directory.is_dir():
+            direct = directory / f'{name}.dbf'
+            if direct.is_file(): return direct
+            for candidate in directory.glob('*.dbf'):
+                if candidate.stem.casefold() == key:
+                    return candidate
+        raise D64DBFSQLParseError(f'DBF-Tabelle fuer SQL nicht gefunden: {name}')
+
+    loaded: Dict[str, Tuple[List[str], List[Dict[str, str]]]] = {}
+    def load_table(name: str):
+        key = name.casefold()
+        if key not in loaded:
+            table = read_dbase_dbf(find_table(name))
+            fields = [str(f.name) for f in table.fields]
+            rows = [dict(values) for deleted, values in table.records if not deleted]
+            loaded[key] = (fields, rows)
+        return loaded[key]
+
+    aliases: Dict[str, str] = {str(parsed['root_alias']).casefold(): str(parsed['root_table'])}
+    aliases[str(parsed['root_table']).casefold()] = str(parsed['root_table'])
+    table_order = [(str(parsed['root_table']), str(parsed['root_alias']))]
+    for join in parsed['joins']:
+        aliases[str(join['alias']).casefold()] = str(join['table'])
+        aliases[str(join['table']).casefold()] = str(join['table'])
+        table_order.append((str(join['table']), str(join['alias'])))
+
+    def ctx_value(ctx: Dict[str, Dict[str, str]], expr: str):
+        table_ref, field = _d64sql_field_ref(expr)
+        if table_ref:
+            target = table_ref.casefold()
+            for alias, row in ctx.items():
+                if alias.casefold() == target:
+                    for k, v in row.items():
+                        if str(k).casefold() == field.casefold(): return v
+            actual = aliases.get(target, '')
+            if actual:
+                for alias, row in ctx.items():
+                    if aliases.get(alias.casefold(), alias).casefold() == actual.casefold():
+                        for k, v in row.items():
+                            if str(k).casefold() == field.casefold(): return v
+            return ''
+        matches = []
+        for row in ctx.values():
+            for k, v in row.items():
+                if str(k).casefold() == field.casefold(): matches.append(v)
+        return matches[0] if len(matches) == 1 else (matches[0] if matches else '')
+
+    def scalar(expr: str, ctx):
+        text = str(expr).strip()
+        if len(text) >= 2 and text[0] == "'" and text[-1] == "'":
+            return text[1:-1].replace("''", "'")
+        if re.fullmatch(r'[+-]?\d+(?:\.\d+)?', text):
+            try: return float(text) if '.' in text else int(text)
+            except Exception: return text
+        return ctx_value(ctx, text)
+
+    def compare_values(left, op: str, right) -> bool:
+        def number(v):
+            try: return float(str(v).strip().replace(',', '.'))
+            except Exception: return None
+        ln, rn = number(left), number(right)
+        a, b = (ln, rn) if ln is not None and rn is not None else (str(left), str(right))
+        return {'=': a == b, '<>': a != b, '!=': a != b,
+                '<': a < b, '<=': a <= b, '>': a > b, '>=': a >= b}.get(op, False)
+
+    def condition_ok(text: str, ctx) -> bool:
+        for part in _d64sql_split_boolean_and(text):
+            cm = re.match(r'(?is)^\s*(.*?)\s*(<=|>=|<>|!=|=|<|>)\s*(.*?)\s*$', part)
+            if not cm:
+                raise D64DBFSQLParseError(f'Nicht unterstuetzte SQL-Bedingung: {part}')
+            if not compare_values(scalar(cm.group(1), ctx), cm.group(2), scalar(cm.group(3), ctx)):
+                return False
+        return True
+
+    _root_fields, root_rows = load_table(str(parsed['root_table']))
+    contexts = [{str(parsed['root_alias']): row} for row in root_rows]
+    for join in parsed['joins']:
+        _fields, right_rows = load_table(str(join['table']))
+        new_contexts = []
+        for ctx in contexts:
+            for row in right_rows:
+                merged = dict(ctx); merged[str(join['alias'])] = row
+                if str(join['kind']) == 'CROSS JOIN' or condition_ok(str(join['condition']), merged):
+                    new_contexts.append(merged)
+        contexts = new_contexts
+
+    where_text = str(parsed.get('where', '') or '').strip()
+    if where_text:
+        contexts = [ctx for ctx in contexts if condition_ok(where_text, ctx)]
+
+    # ORDER BY von hinten nach vorne stabil sortieren.
+    for order in reversed(parsed['order_by']):
+        def order_key(ctx, o=order):
+            value = ctx_value(ctx, str(o['expr']))
+            transform = str(o.get('transform', ''))
+            if transform == 'VAL':
+                try: return (0, float(str(value).strip().replace(',', '.')))
+                except Exception: return (1, 0.0)
+            if transform == 'UPPER': return str(value).upper()
+            try: return (0, float(str(value).strip().replace(',', '.')))
+            except Exception: return (1, str(value).casefold())
+        contexts.sort(key=order_key, reverse=str(order['direction']).upper() == 'DESC')
+
+    columns = list(parsed['columns'])
+    if len(columns) == 1 and columns[0]['expr'] == '*':
+        expanded = []
+        seen = set()
+        for table_name, alias in table_order:
+            fields, _rows = load_table(table_name)
+            for field in fields:
+                header = field
+                if header.casefold() in seen:
+                    header = f'{alias}.{field}'
+                seen.add(header.casefold())
+                expanded.append({'expr': f'{alias}.{field}', 'alias': header})
+        columns = expanded
+
+    headers: List[str] = []
+    for column in columns:
+        expr = str(column['expr'])
+        alias = str(column.get('alias', '') or '')
+        if alias:
+            header = alias
+        else:
+            _table, field = _d64sql_field_ref(expr)
+            header = field
+        if header in headers:
+            table_ref, field = _d64sql_field_ref(expr)
+            header = f'{table_ref}.{field}' if table_ref else field
+        headers.append(header)
+
+    rows: List[List[object]] = []
+    for ctx in contexts:
+        rows.append([ctx_value(ctx, str(column['expr'])) for column in columns])
+    return headers, rows
+
 def write_dbase_dbf(
     path: Path,
     fields: Sequence[DBaseDBFField],
@@ -1790,18 +2936,141 @@ def write_dbase_dbf(
     return path
 
 # ---------------------------------------------------------------------------
-# C64 Pro Mono: direkte PETSCII-Zuordnung fuer die Zeichenansicht des
-# Hex-Editors. Die privaten Unicode-Codepunkte U+E000..U+E0FF stammen aus der
-# "Direct PETSCII"-Belegung des Fonts. PETSCII-Steuercodes in 00..1F und
-# 80..9F besitzen absichtlich keine druckbare Glyphe; fuer sie wird die
-# ebenfalls im C64-Font enthaltene Punktglyphe U+E071 verwendet.
+# Stage 14 - PETSCII -> Unicode -> C64Pro.ttf Mapping fuer den Hex-Viewer.
+#
+# PETSCII-Bytewerte duerfen nicht mit Unicode-Codepoints gleichgesetzt werden.
+# C64 Pro Mono besitzt neben den Direct-PETSCII-PUA-Seiten auch die passenden
+# Unicode-Zeichen fuer ASCII, Pfeile, Box-Drawing, Blockgrafik, Kartenfarben
+# und die historischen CUS/PUA-Zeichen. Die Tabelle unten bildet deshalb den
+# PETSCII-Wert explizit auf den Unicode-Codepoint ab, der mit C64Pro.ttf
+# gezeichnet werden soll.
+#
+# Nicht eindeutig definierte Steuerbytes fallen auf die Direct-PETSCII-Seite
+# U+E000..U+E0FF zurueck. Dadurch bleibt jedes der 256 Bytes sichtbar.
+#
+# Wichtig: Die Tabelle ist absichtlich editierbar. Wenn eine lokal verwendete
+# C64Pro.ttf-Version ein PETSCII-Zeichen an einem anderen Unicode-Codepoint
+# ablegt, muss nur der betreffende Eintrag geaendert werden, z.B. hypothetisch:
+#     C64_PETSCII_TO_C64PRO_CODEPOINT[203] = 0x1000
 # ---------------------------------------------------------------------------
-C64_PRO_CONTROL_GLYPH = "\uE071"
+
+def _build_c64_petscii_to_c64pro_codepoint() -> Dict[int, int]:
+    # Sicherer Fallback: Style Direct PETSCII (Upper/Graphics, reverse off).
+    mapping: Dict[int, int] = {
+        value: 0xE000 + value
+        for value in range(0x100)
+    }
+
+    # PETSCII-Steuerzeichen, fuer die eine definierte Unicode/CUS-Zuordnung
+    # existiert. Nicht definierte Controls behalten den Direct-PETSCII-Fallback.
+    mapping.update({
+        0x05: 0xF100,  # white
+        0x08: 0xF118,  # disable charset switching
+        0x09: 0xF119,  # enable charset switching
+        0x0D: 0x000D,  # carriage return
+        0x0E: 0x000E,  # shift out
+        0x11: 0xF11C,  # cursor down
+        0x12: 0xF11A,  # reverse on
+        0x13: 0xF120,  # home
+        0x14: 0x007F,  # delete
+        0x1C: 0xF101,  # red
+        0x1D: 0xF11D,  # cursor right
+        0x1E: 0xF102,  # green
+        0x1F: 0xF103,  # blue
+        0x81: 0xF104,  # orange
+        0x85: 0xF110,  # F1
+        0x86: 0xF112,  # F3
+        0x87: 0xF114,  # F5
+        0x88: 0xF116,  # F7
+        0x89: 0xF111,  # F2
+        0x8A: 0xF113,  # F4
+        0x8B: 0xF115,  # F6
+        0x8C: 0xF117,  # F8
+        0x8D: 0x000A,  # line feed
+        0x8E: 0x000F,  # shift in
+        0x90: 0xF105,  # black
+        0x91: 0xF11E,  # cursor up
+        0x92: 0xF11B,  # reverse off
+        0x93: 0x000C,  # clear/form feed
+        0x94: 0xF121,  # insert
+        0x95: 0xF106,  # brown
+        0x96: 0xF107,  # light red
+        0x97: 0xF108,  # gray 1
+        0x98: 0xF109,  # gray 2
+        0x99: 0xF10A,  # light green
+        0x9A: 0xF10B,  # light blue
+        0x9B: 0xF10C,  # gray 3
+        0x9C: 0xF10D,  # purple
+        0x9D: 0xF11D,  # cursor left
+        0x9E: 0xF10E,  # yellow
+        0x9F: 0xF10F,  # cyan
+    })
+
+    # PETSCII $20..$5B entspricht den druckbaren Unicode/ASCII-Zeichen.
+    for value in range(0x20, 0x5C):
+        mapping[value] = value
+    mapping.update({
+        0x5C: 0x00A3,  # pound sign
+        0x5D: 0x005D,
+        0x5E: 0x2191,  # up arrow
+        0x5F: 0x2190,  # left arrow
+    })
+
+    # Upper/Graphics PETSCII $60..$7F.
+    upper_graphics = (
+        0x2501, 0x2660, 0x2502, 0x2501,
+        0xF122, 0xF123, 0xF124, 0xF126,
+        0xF128, 0x256E, 0x2570, 0x256F,
+        0xF12A, 0x2572, 0x2571, 0xF12B,
+        0xF12C, 0x25CF, 0xF125, 0x2665,
+        0xF127, 0x256D, 0x2573, 0x25CB,
+        0x2663, 0xF129, 0x2666, 0x253C,
+        0xF12E, 0x2502, 0x03C0, 0x25E5,
+    )
+    for offset, codepoint in enumerate(upper_graphics):
+        mapping[0x60 + offset] = codepoint
+
+    # Block-/Box-Grafik PETSCII $A0..$BF.
+    block_graphics = (
+        0x00A0, 0x258C, 0x2584, 0x2594,
+        0x2581, 0x258F, 0x2592, 0x2595,
+        0xF12F, 0x25E4, 0xF130, 0x251C,
+        0xF134, 0x2514, 0x2510, 0x2582,
+        0x250C, 0x2534, 0x252C, 0x2524,
+        0x258E, 0x258D, 0xF131, 0xF132,
+        0xF133, 0x2583, 0xF12D, 0xF135,
+        0xF136, 0x2518, 0xF137, 0xF138,
+    )
+    for offset, codepoint in enumerate(block_graphics):
+        mapping[0xA0 + offset] = codepoint
+
+    # $C0..$DE wiederholen die sichtbaren Upper/Graphics-Zeichen von $60..$7E.
+    for offset in range(0x1F):
+        mapping[0xC0 + offset] = mapping[0x60 + offset]
+    mapping[0xDF] = 0x25E5
+
+    # $E0..$FE wiederholen die Blockgrafik von $A0..$BE; $FF ist PI.
+    for offset in range(0x1F):
+        mapping[0xE0 + offset] = mapping[0xA0 + offset]
+    mapping[0xFF] = 0x03C0
+
+    return mapping
+
+
+C64_PETSCII_TO_C64PRO_CODEPOINT: Dict[int, int] = (
+    _build_c64_petscii_to_c64pro_codepoint()
+)
+
+# Unicode-Zeichen-Map fuer die eigentliche QPainter-Ausgabe.
+C64_PETSCII_TO_C64PRO_UNICODE: Dict[int, str] = {
+    petscii_byte: chr(codepoint)
+    for petscii_byte, codepoint in C64_PETSCII_TO_C64PRO_CODEPOINT.items()
+}
+
+# Kompatibilitaets-Tuple fuer bestehende Dialoge/Editoren.
 C64_PRO_PETSCII_GLYPHS: Tuple[str, ...] = tuple(
-    chr(0xE000 + byte_value)
-    if 0x20 <= byte_value <= 0x7F or 0xA0 <= byte_value <= 0xFF
-    else C64_PRO_CONTROL_GLYPH
-    for byte_value in range(0x100)
+    C64_PETSCII_TO_C64PRO_UNICODE[petscii_byte]
+    for petscii_byte in range(0x100)
 )
 
 # ---------------------------------------------------------------------------
@@ -2117,6 +3386,7 @@ class PE32ObjectProgram:
     imports: Dict[str, Tuple[str, str]] = field(default_factory=dict)
     exports: Dict[str, str] = field(default_factory=dict)
     dll_name: Optional[str] = None
+    data: bytes = b""
     bss_size: int = 0
     symbol_sections: Dict[str, str] = field(default_factory=dict)
 
@@ -2526,7 +3796,7 @@ def _parse_pe32_source_lines(
     dll_name: Optional[str] = None
     entry_symbol = "_start"
     current_section = ".text"
-    offsets = {".text": 0, ".bss": 0}
+    offsets = {".text": 0, ".data": 0, ".bss": 0}
 
     def instruction_size(text: str, line: int) -> int:
         lower = text.strip().casefold()
@@ -2639,6 +3909,12 @@ def _parse_pe32_source_lines(
             section_name = args.split()[0].casefold() if args else ""
             if section_name in {"text", ".text", "code", ".code"}:
                 current_section = ".text"
+            elif section_name in {"data", ".data", "rdata", ".rdata"}:
+                # PE32 section model: initialized data is kept in a real
+                # writable COFF .data section.  .rdata is intentionally
+                # folded into .data for compatibility with generated runtime
+                # structures that may be patched after load.
+                current_section = ".data"
             elif section_name in {"bss", ".bss"}:
                 current_section = ".bss"
             else:
@@ -2650,6 +3926,10 @@ def _parse_pe32_source_lines(
             continue
         if directive in {"text", "code"}:
             current_section = ".text"
+            lines.append((line_number, text, current_section))
+            continue
+        if directive in {"data", "rdata"}:
+            current_section = ".data"
             lines.append((line_number, text, current_section))
             continue
         if directive == "bss":
@@ -2783,7 +4063,9 @@ def assemble_pe32_object_source(
         lines, labels, symbol_sections, entry_symbol, declared_externals,
         declared_imports, declared_exports, dll_name, bss_size,
     ) = _parse_pe32_source_lines(source)
-    output = bytearray()
+    buffers = {".text": bytearray(), ".data": bytearray(), ".bss": bytearray()}
+    output = buffers[".text"]
+    current_output_section = ".text"
     relocations: List[PE32Relocation] = []
     externals = set(declared_externals)
     instruction_count = 0
@@ -2791,7 +4073,7 @@ def assemble_pe32_object_source(
     def emit_symbol32(symbol: str, relocation_type: int) -> None:
         relocations.append(
             PE32Relocation(
-                len(output), symbol.casefold(), relocation_type, ".text"
+                len(output), symbol.casefold(), relocation_type, current_output_section
             )
         )
         output.extend(b"\x00\x00\x00\x00")
@@ -2816,7 +4098,7 @@ def assemble_pe32_object_source(
                     start + relocation_local,
                     symbol.casefold(),
                     IMAGE_REL_I386_DIR32,
-                    ".text",
+                    current_output_section,
                 )
             )
             if symbol.casefold() not in labels:
@@ -2840,8 +4122,10 @@ def assemble_pe32_object_source(
         parts = text.split(None, 1)
         directive = parts[0].casefold().lstrip(".")
         args = parts[1].strip() if len(parts) > 1 else ""
+        current_output_section = section
+        output = buffers[section]
         if directive in {
-            "section", "segment", "text", "code", "bss",
+            "section", "segment", "text", "code", "data", "rdata", "bss",
             "global", "globl", "public",
             "bits", "cpu", "model", "extern", "extrn", "entry",
             "import", "export", "dllname",
@@ -2855,11 +4139,6 @@ def assemble_pe32_object_source(
             alignment = int(_x86_parse_int(args) or 1)
             ensure_offset(_align_up(len(output), alignment))
             continue
-        if section != ".text":
-            raise PE32AssemblerError(
-                f"Nur Reservierungsdirektiven sind in {section} erlaubt.",
-                line_number,
-            )
         if directive in {"db", "byte"}:
             output.extend(_x86_data_values(args, line_number, 1))
             continue
@@ -2874,6 +4153,11 @@ def assemble_pe32_object_source(
                 else:
                     output.extend(struct.pack("<I", value & 0xFFFFFFFF))
             continue
+        if section != ".text":
+            raise PE32AssemblerError(
+                f"Ausführbarer IA-32-Befehl ist in {section} nicht erlaubt: {text}",
+                line_number,
+            )
 
         inst_parts = text.split(None, 1)
         mnemonic = inst_parts[0].casefold()
@@ -3169,7 +4453,7 @@ def assemble_pe32_object_source(
         raise PE32AssemblerError(f"PE32-Assemblerbefehl nicht unterstützt: {text}", line_number)
 
     return PE32ObjectProgram(
-        code=bytes(output),
+        code=bytes(buffers[".text"]),
         symbols=dict(labels),
         externals=tuple(sorted(externals)),
         relocations=tuple(relocations),
@@ -3177,6 +4461,7 @@ def assemble_pe32_object_source(
         imports=dict(declared_imports),
         exports=dict(declared_exports),
         dll_name=dll_name,
+        data=bytes(buffers[".data"]),
         bss_size=int(bss_size),
         symbol_sections=dict(symbol_sections),
     )
@@ -4332,9 +5617,13 @@ def write_coff32_object(obj: PE32ObjectProgram) -> bytes:
         item for item in obj.relocations
         if getattr(item, "section", ".text") == ".text"
     ]
+    data_relocations = [
+        item for item in obj.relocations
+        if getattr(item, "section", ".text") == ".data"
+    ]
     unsupported = [
         item for item in obj.relocations
-        if getattr(item, "section", ".text") != ".text"
+        if getattr(item, "section", ".text") not in {".text", ".data"}
     ]
     if unsupported:
         raise PE32AssemblerError(
@@ -4349,6 +5638,17 @@ def write_coff32_object(obj: PE32ObjectProgram) -> bytes:
         "relocs": text_relocations,
         "key": ".text",
     }]
+    if bytes(getattr(obj, "data", b"")) or any(
+        value == ".data" for value in obj.symbol_sections.values()
+    ):
+        section_defs.append({
+            "name": b".data\0\0\0",
+            "data": bytes(getattr(obj, "data", b"")),
+            "virtual_size": len(bytes(getattr(obj, "data", b""))),
+            "chars": 0xC0500040,
+            "relocs": data_relocations,
+            "key": ".data",
+        })
     if int(getattr(obj, "bss_size", 0)) or any(
         value == ".bss" for value in obj.symbol_sections.values()
     ):
@@ -5181,25 +6481,75 @@ def _coff_link_input_objects(
     paths: Sequence[Path],
     *,
     target: str,
+    required_symbols: Sequence[str] = (),
 ) -> List[bytes]:
+    """Liest COFF-Objekte und extrahiert Archive symbolorientiert.
+
+    Stage ASM 29: ``.a/.lib`` werden nicht mehr blind vollständig in den
+    Link aufgenommen. Zuerst werden die normalen Objektdateien ausgewertet;
+    anschließend werden aus Archiven iterativ nur Mitglieder übernommen, die
+    aktuell noch undefinierte Symbole bereitstellen. Referenzen eines neu
+    ausgewählten Archivmitglieds können wiederum weitere Mitglieder nachziehen.
+    """
     is64 = str(target).casefold() == "pe64"
     expected = "AMD64-COFF64" if is64 else "IA-32-COFF32"
     error_type = PE64AssemblerError if is64 else PE32AssemblerError
     archive_parser = parse_coff64_archive if is64 else parse_coff32_archive
     object_parser = parse_coff64_object if is64 else parse_coff32_object
-    objects: List[bytes] = []
+
+    direct_objects: List[Tuple[bytes, object]] = []
+    archive_members: List[Tuple[str, Path, bytes, object, set, set]] = []
+
+    def parse_valid_object(data: bytes, label: str):
+        if _coff_import_library_member(data, target):
+            return None
+        if not _coff_target_header_matches(data, target):
+            raise error_type(
+                f"COFF-Linkeingabe '{label}' passt nicht zum Ziel {expected}. "
+                f"Erkannt: {_coff_target_description(data)}."
+            )
+        try:
+            return object_parser(data)
+        except (PE32AssemblerError, PE64AssemblerError) as exc:
+            raise error_type(
+                f"COFF-Linkeingabe '{label}' kann nicht gelesen werden: {exc}"
+            ) from exc
+
+    def symbol_sets(parsed) -> Tuple[set, set]:
+        defined = {
+            str(name).casefold()
+            for name, value in getattr(parsed, "symbols", {}).items()
+            if value is not None
+        }
+        referenced = {
+            str(name).casefold()
+            for name, value in getattr(parsed, "symbols", {}).items()
+            if value is None and str(name).strip()
+        }
+        for relocation in getattr(parsed, "relocations", ()):
+            symbol = str(getattr(relocation, "symbol", "") or "").strip().casefold()
+            if symbol:
+                referenced.add(symbol)
+        referenced.difference_update(defined)
+        return defined, referenced
+
     for path_value in paths:
         requested_path = Path(path_value).expanduser()
         path = _coff_preferred_input_for_target(requested_path, target)
         try:
             data = path.read_bytes()
         except OSError as exc:
-            raise error_type(f"COFF-Linkeingabe kann nicht gelesen werden: {path}: {exc}") from exc
+            raise error_type(
+                f"COFF-Linkeingabe kann nicht gelesen werden: {path}: {exc}"
+            ) from exc
+
         if path.suffix.casefold() in {".a", ".lib"}:
             try:
                 members = archive_parser(data)
             except (PE32AssemblerError, PE64AssemblerError) as exc:
-                raise error_type(f"COFF-Archiv '{path}' ist ungültig: {exc}") from exc
+                raise error_type(
+                    f"COFF-Archiv '{path}' ist ungültig: {exc}"
+                ) from exc
             for member_name, member_data in members:
                 if _coff_import_library_member(member_data, target):
                     continue
@@ -5210,14 +6560,18 @@ def _coff_link_input_objects(
                         f"{_coff_target_description(member_data)}."
                     )
                 try:
-                    object_parser(member_data)
+                    parsed = object_parser(member_data)
                 except (PE32AssemblerError, PE64AssemblerError) as exc:
                     raise error_type(
                         f"COFF-Archivmitglied '{member_name}' in '{path}' "
                         f"kann nicht gelesen werden: {exc}"
                     ) from exc
-                objects.append(member_data)
+                defs, refs = symbol_sets(parsed)
+                archive_members.append(
+                    (str(member_name), path, member_data, parsed, defs, refs)
+                )
             continue
+
         if _coff_import_library_member(data, target):
             continue
         if not _coff_target_header_matches(data, target):
@@ -5234,12 +6588,47 @@ def _coff_link_input_objects(
                 f"Erkannt: {_coff_target_description(data)}.{companion_note}"
             )
         try:
-            object_parser(data)
+            parsed = object_parser(data)
         except (PE32AssemblerError, PE64AssemblerError) as exc:
             raise error_type(
                 f"COFF-Linkeingabe '{path}' kann nicht gelesen werden: {exc}"
             ) from exc
-        objects.append(data)
+        direct_objects.append((data, parsed))
+
+    objects: List[bytes] = [data for data, _parsed in direct_objects]
+    defined = set()
+    unresolved = {
+        str(symbol).strip().casefold()
+        for symbol in required_symbols or ()
+        if str(symbol).strip()
+    }
+    for _data, parsed in direct_objects:
+        defs, refs = symbol_sets(parsed)
+        defined.update(defs)
+        unresolved.update(refs)
+    unresolved.difference_update(defined)
+
+    selected_members = set()
+    progress = True
+    while progress and unresolved:
+        progress = False
+        for index, (_name, _archive, member_data, _parsed, defs, refs) in enumerate(
+            archive_members
+        ):
+            if index in selected_members:
+                continue
+            if not (defs & unresolved):
+                continue
+            selected_members.add(index)
+            objects.append(member_data)
+            defined.update(defs)
+            unresolved.update(refs)
+            unresolved.difference_update(defined)
+            progress = True
+
+    # Ist kein normales Objekt vorhanden und kein Archivmitglied über ein
+    # gefordertes Symbol erreichbar, bleibt die historische Fehlermeldung des
+    # nachfolgenden Linkers erhalten ("mindestens ein Objekt").
     return objects
 
 
@@ -5253,7 +6642,7 @@ def link_coff32_inputs(
     exports: Optional[Dict[str, str]] = None,
     dll_name: Optional[str] = None,
 ) -> PE32Program:
-    objects = _coff_link_input_objects(paths, target="pe32")
+    objects = _coff_link_input_objects(paths, target="pe32", required_symbols=(entry_symbol,))
     if not objects:
         raise PE32AssemblerError("Der COFF32-Linker benötigt mindestens ein Objekt.")
     return link_coff32_objects(
@@ -6034,7 +7423,7 @@ def link_coff64_objects(objects: Sequence[bytes], *, entry_symbol="_start", gui=
 
 
 def link_coff64_inputs(paths: Sequence[Path], *, entry_symbol="_start", gui=False, dll=False, imports=None, exports=None, dll_name=None) -> PE64Program:
-    objects = _coff_link_input_objects(paths, target="pe64")
+    objects = _coff_link_input_objects(paths, target="pe64", required_symbols=(entry_symbol,))
     if not objects: raise PE64AssemblerError("Der COFF64-Linker benötigt mindestens ein Objekt.")
     return link_coff64_objects(objects,entry_symbol=entry_symbol,gui=gui,dll=dll,imports=imports,exports=exports,dll_name=dll_name)
 
@@ -12752,6 +14141,35 @@ PROJECT_CATEGORIES: Tuple[Tuple[str, str, Tuple[str, ...]], ...] = (
 PROJECT_C_ARCHIVES_KEY = "__c_archives__"
 PROJECT_PROLOG_KNOWLEDGE_KEY = "__prolog_knowledge_databases__"
 
+# Stage ASM 30: dBase-Programme besitzt feste geschützte Unterknoten einschließlich Berichte.
+# Programme bleiben für Rückwärtskompatibilität im normalen ``dbase``-Eintrag;
+# die übrigen Ressourcen bekommen getrennte Projektabschnitte.
+PROJECT_DBASE_FORMS_KEY = "__dbase_forms__"
+PROJECT_DBASE_TABLES_KEY = "__dbase_tables__"
+PROJECT_DBASE_QUERIES_KEY = "__dbase_queries__"
+PROJECT_DBASE_REPORTS_KEY = "__dbase_reports__"
+PROJECT_DBASE_OBJECTS_KEY = "__dbase_objects__"
+PROJECT_DBASE_ARCHIVES_KEY = "__dbase_archives__"
+PROJECT_DBASE_GROUPS: Tuple[Tuple[str, str, Tuple[str, ...], str], ...] = (
+    ("programs", "Programme", (".prg",), "dbase"),
+    ("forms", "Formulare", (".wfm",), PROJECT_DBASE_FORMS_KEY),
+    ("tables", "Tabellen", (".dbf",), PROJECT_DBASE_TABLES_KEY),
+    ("queries", "Abfragen", (".d64sql",), PROJECT_DBASE_QUERIES_KEY),
+    ("reports", "Berichte", (".d64report",), PROJECT_DBASE_REPORTS_KEY),
+    ("objects", "Objekt Dateien", (".o",), PROJECT_DBASE_OBJECTS_KEY),
+    ("archives", "Archiv Dateien", (".a",), PROJECT_DBASE_ARCHIVES_KEY),
+)
+PROJECT_DBASE_GROUP_BY_ROLE = {role: (title, exts, key) for role, title, exts, key in PROJECT_DBASE_GROUPS}
+PROJECT_DBASE_ENTRY_KEYS = tuple(key for _role, _title, _exts, key in PROJECT_DBASE_GROUPS if key != "dbase")
+PROJECT_DBASE_SECTIONS = {
+    PROJECT_DBASE_FORMS_KEY: "Category.dbase.forms",
+    PROJECT_DBASE_TABLES_KEY: "Category.dbase.tables",
+    PROJECT_DBASE_QUERIES_KEY: "Category.dbase.queries",
+    PROJECT_DBASE_REPORTS_KEY: "Category.dbase.reports",
+    PROJECT_DBASE_OBJECTS_KEY: "Category.dbase.objects",
+    PROJECT_DBASE_ARCHIVES_KEY: "Category.dbase.archives",
+}
+
 # Stage 246: Breakpoints und Bookmarks sind echte Projektressourcen.
 # Sie werden absichtlich außerhalb der Sprachkategorien gespeichert, damit
 # der Projektbaum sie ganz oben und unabhängig vom Build-Ziel anzeigen kann.
@@ -12770,6 +14188,8 @@ PROJECT_NODE_PROLOG_KNOWLEDGE_ROOT = "prolog_knowledge_root"
 PROJECT_NODE_PROLOG_KNOWLEDGE_FILE = "prolog_knowledge_file"
 PROJECT_NODE_ARCHIVE = "archive"
 PROJECT_NODE_ARCHIVE_OBJECT = "archive_object"
+PROJECT_NODE_DBASE_GROUP = "dbase_group"
+PROJECT_NODE_DBASE_FILE = "dbase_file"
 
 # Stage 174: geschützte Pascal-Zielzweige unter Pascal-Programme.
 PROJECT_PASCAL_PE32_MODULES_KEY = "__pascal_pe32_modules__"
@@ -13064,6 +14484,8 @@ def empty_project_entries() -> Dict[str, List[Dict[str, str]]]:
     entries[PROJECT_PROLOG_KNOWLEDGE_KEY] = []
     entries[PROJECT_BREAKPOINTS_KEY] = []
     entries[PROJECT_BOOKMARKS_KEY] = []
+    for _dbase_key in PROJECT_DBASE_ENTRY_KEYS:
+        entries[_dbase_key] = []
     # Stage 174: separate Ziel-/Rollenlisten für Pascal.
     for _special_key in PROJECT_PASCAL_TARGET_ENTRY_KEYS.values():
         entries[_special_key] = []
@@ -13176,6 +14598,24 @@ def format_project_ini(
                 ensure_ascii=False,
                 separators=(",", ":"),
             )
+    # Stage ASM 29: dBase-Unterknoten außer Programme separat speichern.
+    for _role, _title, _extensions, _entry_key in PROJECT_DBASE_GROUPS:
+        if _entry_key == "dbase":
+            continue
+        _section = PROJECT_DBASE_SECTIONS[_entry_key]
+        parser[_section] = {"Title": _title}
+        for _index, _entry in enumerate(entries.get(_entry_key, ()), 1):
+            _path_value = str(_entry.get("path", "")).strip()
+            if not _path_value:
+                continue
+            _payload = {
+                "title": str(_entry.get("title", "") or Path(_path_value).name),
+                "path": _project_storage_path(_path_value, project_path),
+            }
+            parser[_section][f"Item{_index:04d}"] = json.dumps(
+                _payload, ensure_ascii=False, separators=(",", ":")
+            )
+
     # C-Programme -> Archive -> <archive.a> -> <object.o>
     # wird als eigener INI-Abschnitt gespeichert, damit alte Projektdateien
     # weiterhin ohne Migration geladen werden können.
@@ -13380,6 +14820,33 @@ def parse_project_ini(text: str, project_path: Path) -> Dict[str, List[Dict[str,
                     "path": loaded_path,
                 }
             )
+
+    # Stage ASM 29: dBase-Ressourcen aus den festen Unterknoten laden.
+    for _role, _title, _extensions, _entry_key in PROJECT_DBASE_GROUPS:
+        if _entry_key == "dbase":
+            continue
+        _section = PROJECT_DBASE_SECTIONS[_entry_key]
+        if not parser.has_section(_section):
+            continue
+        _values = sorted(
+            ((name, value) for name, value in parser.items(_section)
+             if name.casefold().startswith("item")),
+            key=lambda pair: pair[0].casefold(),
+        )
+        for _name, _value in _values:
+            try:
+                _payload = json.loads(_value)
+            except json.JSONDecodeError:
+                _payload = {"path": _value, "title": Path(_value).name}
+            _path_value = str(_payload.get("path", "")).strip()
+            if not _path_value:
+                continue
+            _loaded_path = _project_loaded_path(_path_value, Path(project_path))
+            entries[_entry_key].append({
+                "title": str(_payload.get("title", "") or Path(_loaded_path).name),
+                "path": _loaded_path,
+            })
+
     archive_section = "Category.c.archives"
     if parser.has_section(archive_section):
         values = sorted(
@@ -13979,6 +15446,7 @@ def run_gui(
             QEventLoop,
             QFileInfo,
             QModelIndex,
+            QMimeData,
             QObject,
             QPoint,
             QPointF,
@@ -14006,6 +15474,7 @@ def run_gui(
             QFont,
             QFontDatabase,
             QFontMetrics,
+            QFontMetricsF,
             QIcon,
             QImage,
             QDoubleValidator,
@@ -14053,6 +15522,7 @@ def run_gui(
             QGraphicsDropShadowEffect,
             QGraphicsRectItem,
             QGraphicsScene,
+            QGraphicsTextItem,
             QGraphicsView,
             QGridLayout,
             QGroupBox,
@@ -14099,6 +15569,7 @@ def run_gui(
             QWidget,
             QWidgetAction,
         )
+        from PyQt5.QtPrintSupport import QPrinter, QPrintDialog
     except ImportError as exc:
         print(
             "PyQt5 ist nicht installiert.\n"
@@ -23331,6 +24802,13 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
         BYTES_PER_ROW = 8
         BYTES_PER_GROUP = 4
         C64_FONT_FAMILY = "C64 Pro Mono"
+        # Stage 17: C64Pro wird mit 11 pt gerendert. Wichtig ist dabei,
+        # dass die 8x8-C64-Glyphen NICHT in die teilweise sehr kleinen
+        # horizontalAdvance()/height-Werte der TTF-Datei gequetscht werden.
+        # Die Zeichenmatrix erhaelt deshalb zusaetzlich eine aus 11 pt und
+        # der aktuellen DPI berechnete Mindest-Pixelzelle.
+        DEFAULT_HEX_POINT_SIZE = 11
+        HEX_FONT_SCALE = 1.0
 
         dataChanged = pyqtSignal()
         modificationChanged = pyqtSignal(bool)
@@ -23353,6 +24831,17 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self._selection_anchor = None
             self._selection_end = None
             self._dragging = False
+
+            # Stage 17: Der komplette Hex-Editor benutzt C64Pro.ttf.
+            # _create_c64_font() kalibriert die tatsaechliche Glyphengroesse,
+            # falls die TTF-internen 8x8-Outlines bei 11 pt nur wenige Pixel
+            # hoch gezeichnet wuerden.
+            c64_font = self._create_c64_font(
+                self.DEFAULT_HEX_POINT_SIZE
+            )
+            self._hex_font = QFont(c64_font)
+            self._petscii_font = QFont(c64_font)
+            self.setFont(QFont(c64_font))
 
             self.verticalScrollBar().valueChanged.connect(
                 self.viewport().update
@@ -23385,11 +24874,67 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self._update_scrollbars()
             self.viewport().update()
 
-        def set_c64_font_size(self, point_size: int) -> None:
-            font = QFont(self.C64_FONT_FAMILY, max(1, int(point_size)))
+        def _create_c64_font(self, point_size: float) -> QFont:
+            """Erzeugt C64Pro mit einer *sichtbaren* 11-pt-Glyphengroesse.
+
+            Einige C64Pro-TTF-Versionen besitzen Font-Metriken, bei denen die
+            historischen 8x8-Outlines nur einen kleinen Teil des EM-Quadrats
+            belegen. Ein normales QFont(..., 11) kann dann optisch wie 4-5 px
+            aussehen. Wir messen deshalb die echte Tintenhoehe und vergroessern
+            nur in diesem Sonderfall den internen Font-Scale, bis die Glyphen
+            ungefaehr die Pixelhoehe von 11 pt erreichen.
+            """
+            requested_pt = max(
+                float(self.DEFAULT_HEX_POINT_SIZE),
+                float(point_size),
+            )
+            # Sichtbare Sollgroesse getrennt von einer eventuell notwendigen
+            # internen TTF-Kalibrierung speichern.
+            self._requested_c64_point_size = requested_pt
+            font = QFont(self.C64_FONT_FAMILY)
+            font.setPointSizeF(requested_pt)
             font.setFixedPitch(True)
             font.setStyleHint(QFont.Monospace)
-            self.setFont(font)
+            font.setHintingPreference(QFont.PreferFullHinting)
+            font.setStyleStrategy(QFont.PreferAntialias)
+
+            dpi_y = max(72.0, float(self.logicalDpiY()))
+            target_ink_height = requested_pt * dpi_y / 72.0
+            metrics = QFontMetricsF(font)
+            ink_rect = metrics.tightBoundingRect("0AFM")
+            ink_height = max(1.0, float(ink_rect.height()))
+
+            # Nur offensichtlich zu klein gerenderte C64Pro-Versionen
+            # nachskalieren. Bei einer normal metrisierten TTF bleibt der
+            # angeforderte 11-pt-Font unveraendert.
+            if ink_height < target_ink_height * 0.80:
+                scale = min(4.0, target_ink_height / ink_height)
+                font.setPointSizeF(requested_pt * scale)
+
+            return font
+
+        def set_editor_font(self, font: QFont) -> None:
+            # Die globale Editor-Einstellung liefert nur noch die gewuenschte
+            # Groesse. Die Schriftfamilie des Hex-Editors bleibt immer C64Pro.
+            requested_size = int(font.pointSize()) if font.pointSize() > 0 else 0
+            scaled_size = int(round(requested_size * self.HEX_FONT_SCALE))
+            point_size = max(self.DEFAULT_HEX_POINT_SIZE, scaled_size)
+
+            c64_font = self._create_c64_font(point_size)
+
+            self._hex_font = QFont(c64_font)
+            self._petscii_font = QFont(c64_font)
+            self.setFont(QFont(c64_font))
+            self._update_scrollbars()
+            self.viewport().update()
+
+        def set_c64_font_size(self, point_size: int) -> None:
+            # Rueckwaertskompatibler Einstieg fuer alten Aufrufer-Code.
+            requested = max(self.DEFAULT_HEX_POINT_SIZE, int(point_size))
+            c64_font = self._create_c64_font(requested)
+            self._hex_font = QFont(c64_font)
+            self._petscii_font = QFont(c64_font)
+            self.setFont(QFont(c64_font))
             self._update_scrollbars()
             self.viewport().update()
 
@@ -23404,30 +24949,101 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self._set_modified(False)
 
         def _font_geometry(self):
-            metrics = self.fontMetrics()
-            character_width = max(1, metrics.horizontalAdvance("0"))
-            row_height = max(1, metrics.height() + 4)
-            byte_cell_width = character_width * 3
-            # ---------------------------------------------------------------
-            # Vierstelliger 16-Bit-Offset plus drei Zeichen Abstand vor den
-            # beiden Hex-Byte-Gruppen.
-            # ---------------------------------------------------------------
-            left_x = 12 + character_width * 7
-            separator_x = left_x + self.BYTES_PER_GROUP * byte_cell_width
-            right_x = separator_x + character_width * 3
-            character_x = (
-                right_x
-                + self.BYTES_PER_GROUP * byte_cell_width
-                + character_width * 3
+            # Stage 17: C64Pro ist ein C64-Zeichensatzfont. Die optische
+            # 8x8-Glyphenmatrix darf nicht direkt mit einem eventuell sehr
+            # kleinen TTF-Advance als Bildschirmzelle benutzt werden.
+            #
+            # 11 pt entsprechen bei 96 DPI rund 14.7 Pixel. Diese effektive
+            # Pixelhoehe wird als Mindestbreite/-hoehe einer C64-Zelle benutzt.
+            # Dadurch bleiben die 8x8-Glyphen sichtbar und das Raster stabil:
+            #
+            # 0000  00 00 00 00  00 00 00 00  PETSCII8
+            # ^     ^            ^             ^
+            # addr  linke 4      rechte 4      8 C64Pro-Glyphen
+            hex_metrics = QFontMetricsF(self._hex_font)
+            petscii_metrics = QFontMetricsF(self._petscii_font)
+
+            point_size = float(getattr(
+                self,
+                "_requested_c64_point_size",
+                self.DEFAULT_HEX_POINT_SIZE,
+            ))
+
+            # Punkt -> Pixel. logicalDpiY() beruecksichtigt die aktuelle
+            # Anzeige/Windows-DPI-Skalierung. Mindestens 11 Pixel, selbst
+            # wenn ein fehlerhafter Font extrem kleine Metriken meldet.
+            dpi_y = max(72.0, float(self.logicalDpiY()))
+            requested_pixel_height = max(
+                self.DEFAULT_HEX_POINT_SIZE,
+                int(round(point_size * dpi_y / 72.0)),
             )
+
+            measured_hex_width = max(
+                float(hex_metrics.horizontalAdvance("0")),
+                float(hex_metrics.horizontalAdvance("F")),
+            )
+            measured_petscii_width = float(
+                petscii_metrics.horizontalAdvance(
+                    C64_PETSCII_TO_C64PRO_UNICODE[0x41]
+                )
+            )
+
+            # C64-Zeichen stammen aus einer quadratischen 8x8-Matrix.
+            # Deshalb erzwingen wir mindestens eine quadratische Zelle in
+            # der effektiven 11-pt-Pixelgroesse. Groessere echte Fontmetriken
+            # bleiben erhalten.
+            glyph_cell_width = max(
+                1,
+                int(round(measured_hex_width)),
+                int(round(measured_petscii_width)),
+                requested_pixel_height,
+            )
+            hex_character_width = glyph_cell_width
+            petscii_character_width = glyph_cell_width
+
+            # Fuer die sichtbare Zeilenhoehe zaehlt die tatsaechliche
+            # Glyphen-Tintenbox, nicht die EM-/lineSpacing-Hoehe der TTF.
+            # Genau diese kann bei 8x8-C64-Fonts stark vom sichtbaren Zeichen
+            # abweichen und war der Ausloeser fuer zu kleine/verschachtelte
+            # Darstellung.
+            hex_ink_height = float(
+                hex_metrics.tightBoundingRect("0AFM").height()
+            )
+            petscii_ink_height = float(
+                petscii_metrics.tightBoundingRect(
+                    C64_PETSCII_TO_C64PRO_UNICODE[0x41]
+                ).height()
+            )
+            visible_ink_height = max(
+                1.0,
+                hex_ink_height,
+                petscii_ink_height,
+            )
+            row_height = max(
+                requested_pixel_height + 4,
+                int(round(visible_ink_height)) + 4,
+            )
+
+            # Zwei Hex-Zeichen + eine komplette C64-Zelle Abstand.
+            byte_cell_width = hex_character_width * 3
+
+            address_x = 12
+            # Zeichenpositionen entsprechen exakt:
+            # "0000  00 00 00 00  00 00 00 00  ........"
+            left_x = address_x + hex_character_width * 6
+            separator_x = address_x + hex_character_width * 18
+            right_x = address_x + hex_character_width * 19
+            character_x = address_x + hex_character_width * 32
             content_width = (
                 character_x
-                + self.BYTES_PER_ROW * character_width
+                + self.BYTES_PER_ROW * petscii_character_width
                 + 12
             )
             return (
-                metrics,
-                character_width,
+                hex_metrics,
+                petscii_metrics,
+                hex_character_width,
+                petscii_character_width,
                 row_height,
                 byte_cell_width,
                 left_x,
@@ -23446,8 +25062,10 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
 
         def _update_scrollbars(self) -> None:
             (
-                _metrics,
-                _character_width,
+                _hex_metrics,
+                _petscii_metrics,
+                hex_character_width,
+                _petscii_character_width,
                 row_height,
                 _byte_cell_width,
                 _left_x,
@@ -23469,7 +25087,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 max(0, content_width - self.viewport().width()),
             )
             horizontal.setPageStep(max(1, self.viewport().width()))
-            horizontal.setSingleStep(max(1, self.fontMetrics().horizontalAdvance("0")))
+            horizontal.setSingleStep(max(1, hex_character_width))
 
         def resizeEvent(self, event) -> None:
             super().resizeEvent(event)
@@ -23505,16 +25123,17 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
 
         @staticmethod
         def _display_character(value: int) -> str:
-            return C64_PRO_PETSCII_GLYPHS[value & 0xFF]
+            return C64_PETSCII_TO_C64PRO_UNICODE[value & 0xFF]
 
         def paintEvent(self, event) -> None:
             painter = QPainter(self.viewport())
             painter.fillRect(event.rect(), self.palette().color(QPalette.Base))
-            painter.setFont(self.font())
 
             (
-                metrics,
-                character_width,
+                hex_metrics,
+                petscii_metrics,
+                hex_character_width,
+                petscii_character_width,
                 row_height,
                 byte_cell_width,
                 left_x,
@@ -23536,18 +25155,31 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 row = first_row + visible_row
                 if row >= self._row_count():
                     break
-                top = visible_row * row_height
-                baseline = top + metrics.ascent() + 2
 
+                top = visible_row * row_height
+                row_rect = QRectF(
+                    0.0,
+                    float(top),
+                    float(self.viewport().width()),
+                    float(row_height),
+                )
+
+                # Adresse / Dateiposition sowie beide 4-Byte-Hexgruppen.
+                painter.setFont(self._hex_font)
                 painter.setPen(address_color)
                 painter.drawText(
-                    12 - horizontal_offset,
-                    baseline,
+                    QRectF(
+                        float(12 - horizontal_offset),
+                        float(top),
+                        float(hex_character_width * 4),
+                        float(row_height),
+                    ),
+                    int(Qt.AlignLeft | Qt.AlignVCenter),
                     f"{(row * self.BYTES_PER_ROW) & 0xFFFF:04X}",
                 )
 
                 painter.setPen(separator_color)
-                separator_screen_x = separator_x - horizontal_offset + character_width
+                separator_screen_x = separator_x - horizontal_offset
                 painter.drawLine(
                     separator_screen_x,
                     top + 1,
@@ -23574,7 +25206,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                             QRect(
                                 x - 1,
                                 top,
-                                character_width * 2 + 2,
+                                hex_character_width * 2 + 2,
                                 row_height,
                             ),
                             selected_background,
@@ -23584,18 +25216,14 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                         painter.setPen(normal_color)
 
                     painter.drawText(
-                        x,
-                        baseline,
+                        QRectF(
+                            float(x),
+                            float(top),
+                            float(hex_character_width * 2),
+                            float(row_height),
+                        ),
+                        int(Qt.AlignLeft | Qt.AlignVCenter),
                         f"{self._data[index]:02X}",
-                    )
-
-                    painter.setPen(normal_color)
-                    painter.drawText(
-                        character_x
-                        + column * character_width
-                        - horizontal_offset,
-                        baseline,
-                        self._display_character(self._data[index]),
                     )
 
                     if (
@@ -23603,21 +25231,46 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                         and index == self._cursor_index
                         and not self._dragging
                     ):
-                        cursor_x = x + self._active_nibble * character_width
+                        cursor_x = x + self._active_nibble * hex_character_width
                         painter.setPen(QPen(normal_color, 1))
                         painter.drawRect(
                             QRect(
                                 cursor_x - 1,
                                 top + 1,
-                                character_width + 1,
+                                hex_character_width + 1,
                                 row_height - 3,
                             )
                         )
 
+                # Rechte Spalte: exakt acht PETSCII-Bytes mit C64Pro.ttf.
+                painter.setFont(self._petscii_font)
+                painter.setPen(normal_color)
+                for column in range(self.BYTES_PER_ROW):
+                    index = row * self.BYTES_PER_ROW + column
+                    if index >= len(self._data):
+                        break
+                    petscii_char = self._display_character(self._data[index])
+                    painter.drawText(
+                        QRectF(
+                            float(
+                                character_x
+                                + column * petscii_character_width
+                                - horizontal_offset
+                            ),
+                            float(top),
+                            float(petscii_character_width),
+                            float(row_height),
+                        ),
+                        int(Qt.AlignCenter),
+                        petscii_char,
+                    )
+
         def _index_at_position(self, position) -> Optional[int]:
             (
-                _metrics,
-                character_width,
+                _hex_metrics,
+                _petscii_metrics,
+                hex_character_width,
+                petscii_character_width,
                 row_height,
                 byte_cell_width,
                 left_x,
@@ -23634,19 +25287,20 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             if left_x <= x < left_x + left_width:
                 local = x - left_x
                 candidate = local // byte_cell_width
-                if local % byte_cell_width < character_width * 2:
+                if local % byte_cell_width < hex_character_width * 2:
                     column = candidate
             elif right_x <= x < right_x + left_width:
                 local = x - right_x
                 candidate = local // byte_cell_width
-                if local % byte_cell_width < character_width * 2:
+                if local % byte_cell_width < hex_character_width * 2:
                     column = self.BYTES_PER_GROUP + candidate
             elif (
                 character_x
                 <= x
-                < character_x + self.BYTES_PER_ROW * character_width
+                < character_x
+                + self.BYTES_PER_ROW * petscii_character_width
             ):
-                column = (x - character_x) // character_width
+                column = (x - character_x) // petscii_character_width
 
             if column is None:
                 return None
@@ -24507,6 +26161,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             dark_mode       : bool = False,
             binary_disassembly_mode: bool = False,
             assembler_text_mode: bool = False,
+            language_override: str = "",
         ):
             super().__init__(parent)
             self.path = Path(path).resolve() if path is not None else None
@@ -24522,6 +26177,9 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             # assembler_text_mode bleibt nur als kompatibler Sondermodus für
             # ausdrücklich als Assemblertext erzeugte Dokumente erhalten.
             self.assembler_text_mode     = bool(assembler_text_mode)
+            # Stage ASM 29: .prg kann im dBase-Projekt ein Textprogramm sein,
+            # ohne die globale C64-.prg-Bedeutung zu verändern.
+            self.language_override       = str(language_override or "").strip().casefold()
             self._data_source            = (
                 "hex" if self.binary_disassembly_mode else "text"
             )
@@ -25128,7 +26786,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             )
 
             self.hex_editor = HexEditor(self.views)
-            self.hex_editor.set_c64_font_size(fixed_font.pointSize())
+            self.hex_editor.set_editor_font(fixed_font)
             if raw_bytes is None:
                 raw_bytes = self.text_for_saving().encode(self.encoding)
             self.hex_editor.set_data(raw_bytes, modified=False)
@@ -25732,6 +27390,8 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             return ""
 
         def source_language(self) -> str:
+            if self.language_override:
+                return self.language_override
             if self.binary_disassembly_mode or self.assembler_text_mode:
                 return "assembler"
             suffix = self.effective_suffix
@@ -26290,8 +27950,8 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             is_lisp = suffix in self.LISP_EXTENSIONS
             is_prolog = suffix in self.PROLOG_EXTENSIONS
             is_logo = suffix in self.LOGO_EXTENSIONS
-            is_dbase = suffix in self.DBASE_EXTENSIONS
-            is_markdown = suffix in self.MARKDOWN_EXTENSIONS
+            is_dbase = (self.language_override == "dbase") or suffix in self.DBASE_EXTENSIONS
+            is_markdown = suffix in self.MARKDOWN_EXTENSIONS and not self.language_override
             self.configure_dbase_output_tabs(inspect_source=True)
             self._set_tab_visible_for_widget(self.markdown_preview_page, is_markdown)
             if is_markdown:
@@ -26549,7 +28209,10 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
 
         @property
         def is_dbase_document(self) -> bool:
-            return self.effective_suffix in self.DBASE_EXTENSIONS
+            return (
+                self.language_override == "dbase"
+                or self.effective_suffix in self.DBASE_EXTENSIONS
+            )
 
         @property
         def is_markdown_document(self) -> bool:
@@ -26711,7 +28374,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             ):
                 editor.setFont(QFont(font))
                 editor.update_line_number_area_width(0)
-            self.hex_editor.set_c64_font_size(font.pointSize())
+            self.hex_editor.set_editor_font(font)
 
         def set_dark_mode(self, enabled: bool) -> None:
             enabled = bool(enabled)
@@ -32769,6 +34432,7 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
 
         field_connector_clicked = pyqtSignal(str)
         field_selection_changed = pyqtSignal()
+        close_requested = pyqtSignal()
 
         def __init__(self, table_path: Path, table: DBaseDBFTable, parent=None):
             super().__init__(parent)
@@ -32849,6 +34513,20 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             self.select_all_checkbox.toggled.connect(self._toggle_all_fields)
             for checkbox in self.field_checkboxes:
                 checkbox.toggled.connect(self._field_selection_changed)
+
+        def contextMenuEvent(self, event) -> None:
+            """Kontextmenü des Tabellenfensters im SQL-Designer.
+
+            Stage ASM 44: Das Tabellen-Widget kann direkt aus der Scene
+            geschlossen werden. Die Scene entfernt danach auch alle
+            Beziehungen dieses Widgets und baut den SQL-Ausdruck neu auf.
+            """
+            menu = QMenu(self)
+            close_action = menu.addAction("Schließen")
+            chosen = menu.exec_(event.globalPos())
+            if chosen is close_action:
+                self.close_requested.emit()
+            event.accept()
 
         def _toggle_all_fields(self, checked: bool) -> None:
             for checkbox in self.field_checkboxes:
@@ -32971,6 +34649,21 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             y = card.field_row_center_y(field_name)
             x = float(card.width()) if side == "right" else 0.0
             return self.mapToScene(QPointF(x, y))
+
+        def contextMenuEvent(self, event) -> None:
+            """Fallback-Kontextmenü auf Proxy-Ebene.
+
+            Das eingebettete QWidget behandelt normalerweise den Rechtsklick.
+            Dieses Menü deckt zusätzlich freie Proxy-/Rahmenbereiche ab.
+            """
+            menu = QMenu()
+            close_action = menu.addAction("Schließen")
+            chosen = menu.exec_(event.screenPos())
+            if chosen is close_action:
+                owner = getattr(self, "scene_owner", None)
+                if owner is not None:
+                    owner.remove_table(self)
+            event.accept()
 
 
     class DBaseSQLConnectionItem(QGraphicsPathItem):
@@ -33121,6 +34814,9 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                 self.connection_click(current, field_name)
             )
             card.field_selection_changed.connect(self.notify_project_changed)
+            card.close_requested.connect(
+                lambda current=proxy: self.remove_table(current)
+            )
             self._grow_scene_to_items()
             self.notify_project_changed()
             return proxy
@@ -33213,6 +34909,59 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                 self.notify_project_changed()
             return connection
 
+        def remove_table(self, proxy: DBaseSQLTableProxy) -> None:
+            """Entfernt ein Tabellen-Proxy samt aller Beziehungen.
+
+            Der SQL-Ausdruck wird danach genau einmal aus dem verbleibenden
+            Scene-Zustand neu erzeugt. Dadurch verschwinden auch SELECT-Felder,
+            JOINs und ORDER-BY-Einträge, die zu der geschlossenen Tabelle
+            gehörten.
+            """
+            if not isinstance(proxy, DBaseSQLTableProxy):
+                return
+            if proxy not in self.table_proxies.values():
+                return
+
+            # Eine gerade begonnene Verbindung darf nicht auf ein entferntes
+            # Proxy zeigen. Den visuellen Pending-Zustand vorher zurücksetzen.
+            if self.pending_endpoint is not None:
+                pending_proxy, pending_field = self.pending_endpoint
+                if pending_proxy is proxy:
+                    card = pending_proxy.widget()
+                    if isinstance(card, DBaseSQLTableCard):
+                        card.set_field_connection_pending(pending_field, False)
+                    self.pending_endpoint = None
+
+            # Alle Feld-zu-Feld-Verbindungen dieses Widgets entfernen, ohne
+            # zwischen den einzelnen Löschungen mehrfach SQL neu zu generieren.
+            removed_connections = [
+                connection for connection in self.connections
+                if connection.first_proxy is proxy or connection.second_proxy is proxy
+            ]
+            for connection in removed_connections:
+                if connection in self.connections:
+                    self.connections.remove(connection)
+                self.removeItem(connection)
+
+            key = str(proxy.table_key)
+            if self.table_proxies.get(key) is proxy:
+                self.table_proxies.pop(key, None)
+            else:
+                # Fallback für ältere/normalisierte Projektstände.
+                for current_key, current_proxy in list(self.table_proxies.items()):
+                    if current_proxy is proxy:
+                        self.table_proxies.pop(current_key, None)
+                        break
+
+            self.removeItem(proxy)
+            try:
+                proxy.deleteLater()
+            except (AttributeError, RuntimeError):
+                pass
+
+            self._grow_scene_to_items()
+            self.notify_project_changed()
+
         def delete_connection(self, connection: DBaseSQLConnectionItem) -> None:
             if connection not in self.connections:
                 return
@@ -33289,6 +35038,308 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                 connection.update_style()
 
 
+    def _dbase_sql_odbc_dialog_stylesheet(dark_mode: bool) -> str:
+        """Eigenes Theme fuer ODBC-Login und ODBC-Meldungsdialoge.
+
+        QMessageBox.warning()/information() sind statische Convenience-Aufrufe.
+        Je nach Plattform/Qt-Style uebernehmen sie das Stylesheet des SQL-Builders
+        nicht zuverlaessig. Deshalb verwenden die ODBC-Dialoge ein eigenes QSS.
+        """
+        if bool(dark_mode):
+            return (
+                "QDialog#dbase_sql_builder_odbc_login,QMessageBox{"
+                "background-color:#050b18;color:#f2f5f8;}"
+                "QDialog#dbase_sql_builder_odbc_login QLabel,QMessageBox QLabel{"
+                "color:#f2f5f8;background:transparent;}"
+                "QLabel#dbase_sql_builder_odbc_status{color:#ffe600;}"
+                "QLineEdit#dbase_sql_builder_odbc_user,"
+                "QLineEdit#dbase_sql_builder_odbc_password,"
+                "QLineEdit#dbase_sql_builder_odbc_dbq{"
+                "background-color:#020817;color:#ffe600;"
+                "selection-background-color:#163b73;selection-color:#ffffff;"
+                "border:1px solid #3375bd;border-radius:4px;padding:5px 7px;}"
+                "QLineEdit#dbase_sql_builder_odbc_user:focus,"
+                "QLineEdit#dbase_sql_builder_odbc_password:focus,"
+                "QLineEdit#dbase_sql_builder_odbc_dbq:focus{"
+                "border:1px solid #66c7ff;}"
+                "QDialog#dbase_sql_builder_odbc_login QPushButton,QMessageBox QPushButton{"
+                "background-color:#163b73;color:#ffe600;"
+                "border:1px solid #3375bd;border-radius:4px;"
+                "min-width:82px;padding:5px 10px;}"
+                "QDialog#dbase_sql_builder_odbc_login QPushButton:hover,"
+                "QMessageBox QPushButton:hover{background-color:#245a9a;}"
+                "QDialog#dbase_sql_builder_odbc_login QPushButton:pressed,"
+                "QMessageBox QPushButton:pressed{background-color:#0d2b54;}"
+                "QDialog#dbase_sql_builder_odbc_login QPushButton:disabled,"
+                "QMessageBox QPushButton:disabled{background-color:#111827;"
+                "color:#667085;border-color:#344054;}"
+            )
+        return (
+            "QDialog#dbase_sql_builder_odbc_login,QMessageBox{"
+            "background-color:#f7f8fa;color:#111111;}"
+            "QDialog#dbase_sql_builder_odbc_login QLabel,QMessageBox QLabel{"
+            "color:#111111;background:transparent;}"
+            "QLabel#dbase_sql_builder_odbc_status{color:#173a63;}"
+            "QLineEdit#dbase_sql_builder_odbc_user,"
+            "QLineEdit#dbase_sql_builder_odbc_password,"
+            "QLineEdit#dbase_sql_builder_odbc_dbq{"
+            "background-color:#ffffff;color:#111111;"
+            "selection-background-color:#c9ddf3;selection-color:#111111;"
+            "border:1px solid #8aa5c0;border-radius:4px;padding:5px 7px;}"
+            "QDialog#dbase_sql_builder_odbc_login QPushButton,QMessageBox QPushButton{"
+            "background-color:#e6edf5;color:#111111;"
+            "border:1px solid #8aa5c0;border-radius:4px;"
+            "min-width:82px;padding:5px 10px;}"
+            "QDialog#dbase_sql_builder_odbc_login QPushButton:hover,"
+            "QMessageBox QPushButton:hover{background-color:#d5e4f3;}"
+        )
+
+
+    def _dbase_sql_odbc_message(parent, dark_mode: bool, icon, title: str, text: str) -> int:
+        """ODBC-Meldungsbox, die garantiert dem SQL-Builder-Theme folgt."""
+        box = QMessageBox(parent)
+        box.setWindowTitle(str(title))
+        box.setIcon(icon)
+        box.setText(str(text))
+        box.setStandardButtons(QMessageBox.Ok)
+        box.setDefaultButton(QMessageBox.Ok)
+        box.setStyleSheet(_dbase_sql_odbc_dialog_stylesheet(dark_mode))
+        return box.exec_()
+
+
+    class DBaseODBCLoginDialog(QDialog):
+        """Benutzer/Passwort-Dialog fuer die im SQL Builder gewaehlte ODBC-Verbindung."""
+
+        def __init__(self, builder, source_name: str, source_driver: str = "", source_bitness: int = 0, parent=None):
+            super().__init__(parent or builder)
+            self.builder = builder
+            self.source_name = str(source_name or "").strip()
+            self.source_driver = str(source_driver or "").strip()
+            self.source_bitness = int(source_bitness or 0)
+            self.dark_mode = bool(getattr(builder, "dark_mode", False))
+            self.setObjectName("dbase_sql_builder_odbc_login")
+            self.setWindowTitle("ODBC-Verbindung")
+            self.setModal(True)
+            self.setMinimumWidth(430)
+
+            root = QVBoxLayout(self)
+            root.setContentsMargins(12, 12, 12, 12)
+            root.setSpacing(8)
+
+            driver_label = QLabel(self)
+            driver_label.setWordWrap(True)
+            source_text = self.source_name or "(nicht gewählt)"
+            if self.source_driver:
+                source_text += f"\nTreiber: {self.source_driver}"
+            if self.source_bitness:
+                bridge_note = ""
+                if self.source_bitness != odbc_process_bitness():
+                    bridge_note = " (über Bitness-Helper)"
+                source_text += f"\nArchitektur: {self.source_bitness}-Bit{bridge_note}"
+            driver_label.setText(f"ODBC-Datenquelle: {source_text}")
+            root.addWidget(driver_label)
+
+            # dBase/DBF: Der im Windows-ODBC-Manager konfigurierte Pfad ist
+            # die Vorgabe. Er wird NICHT mehr automatisch durch das allgemeine
+            # SQL-Builder-Verzeichnis ueberschrieben. Ein abweichender DBQ kann
+            # hier im Dialog explizit gewaehlt werden.
+            self.path_info = builder.odbc_path_information()
+            self.uses_directory = bool(self.path_info.get("uses_directory"))
+            if self.uses_directory:
+                path_label = QLabel(self)
+                path_label.setObjectName("dbase_sql_builder_odbc_path")
+                path_label.setWordWrap(True)
+                dsn_dbq = str(self.path_info.get("dsn_dbq") or "").strip() or "(nicht gesetzt)"
+                builder_dbq = str(self.path_info.get("builder_dbq") or "").strip() or "(nicht gesetzt)"
+                path_label.setText(
+                    "Im DSN gespeicherter Datenpfad: " + dsn_dbq +
+                    "\nSQL-Builder Tabellenverzeichnis: " + builder_dbq +
+                    "\nDSN = ODBC-Manager verwenden; eine Änderung im Feld aktiviert einen expliziten DBQ."
+                )
+                root.addWidget(path_label)
+
+            form = QGridLayout()
+            form.setContentsMargins(0, 0, 0, 0)
+            form.setHorizontalSpacing(8)
+            form.setVerticalSpacing(7)
+
+            row = 0
+            if self.uses_directory:
+                dbq_label = QLabel("Datenpfad / DBQ:", self)
+                self.dbq_edit = QLineEdit(self)
+                self.dbq_edit.setObjectName("dbase_sql_builder_odbc_dbq")
+                self.dbq_edit.setClearButtonEnabled(True)
+                self.dbq_edit.setPlaceholderText("DBF-Verzeichnis des ODBC-dBase-Treibers")
+                self.dbq_browse_button = QPushButton("…", self)
+                self.dbq_browse_button.setFixedWidth(34)
+                self.dbq_browse_button.setToolTip("DBF-Verzeichnis auswählen")
+
+                # Stage 42: Das Textfeld darf den DSN-Pfad anzeigen, ohne ihn
+                # dadurch automatisch als DBQ-Override zu behandeln. Nur ein
+                # zuvor explizit gespeicherter Override oder eine Benutzereingabe
+                # aktiviert den Dialog-Pfad.
+                self._dsn_dbq = str(self.path_info.get("dsn_dbq") or "").strip()
+                explicit_dbq = str(getattr(builder, "_odbc_last_dbq", "") or "").strip()
+                self._dbq_is_explicit = bool(explicit_dbq)
+                initial_dbq = explicit_dbq or self._dsn_dbq
+                self.dbq_edit.setText(initial_dbq)
+
+                self.dbq_dsn_button = QPushButton("DSN", self)
+                self.dbq_dsn_button.setFixedWidth(48)
+                self.dbq_dsn_button.setToolTip(
+                    "Den im Windows-ODBC-Manager gespeicherten Datenpfad verwenden"
+                )
+
+                dbq_row = QHBoxLayout()
+                dbq_row.setContentsMargins(0, 0, 0, 0)
+                dbq_row.setSpacing(5)
+                dbq_row.addWidget(self.dbq_edit, 1)
+                dbq_row.addWidget(self.dbq_dsn_button, 0)
+                dbq_row.addWidget(self.dbq_browse_button, 0)
+                form.addWidget(dbq_label, row, 0)
+                form.addLayout(dbq_row, row, 1)
+                self.dbq_edit.textEdited.connect(self._dbq_text_edited)
+                self.dbq_dsn_button.clicked.connect(self._use_dsn_dbq)
+                self.dbq_browse_button.clicked.connect(self._choose_dbq_directory)
+                row += 1
+            else:
+                self.dbq_edit = None
+                self.dbq_browse_button = None
+                self.dbq_dsn_button = None
+                self._dsn_dbq = ""
+                self._dbq_is_explicit = False
+
+            user_label = QLabel("Benutzer-Name:", self)
+            self.user_edit = QLineEdit(self)
+            self.user_edit.setObjectName("dbase_sql_builder_odbc_user")
+            self.user_edit.setText(getattr(builder, "_odbc_last_user", ""))
+            self.user_edit.setClearButtonEnabled(True)
+            form.addWidget(user_label, row, 0)
+            form.addWidget(self.user_edit, row, 1)
+            row += 1
+
+            password_label = QLabel("Passwort:", self)
+            self.password_edit = QLineEdit(self)
+            self.password_edit.setObjectName("dbase_sql_builder_odbc_password")
+            self.password_edit.setEchoMode(QLineEdit.Password)
+            self.password_edit.setClearButtonEnabled(True)
+            form.addWidget(password_label, row, 0)
+            form.addWidget(self.password_edit, row, 1)
+            root.addLayout(form)
+
+            self.status_label = QLabel("", self)
+            self.status_label.setObjectName("dbase_sql_builder_odbc_status")
+            self.status_label.setWordWrap(True)
+            root.addWidget(self.status_label)
+
+            buttons = QHBoxLayout()
+            buttons.addStretch(1)
+            self.connect_button = QPushButton("Verbinden", self)
+            self.test_button = QPushButton("Testen", self)
+            self.cancel_button = QPushButton("Abbrechen", self)
+            buttons.addWidget(self.connect_button)
+            buttons.addWidget(self.test_button)
+            buttons.addWidget(self.cancel_button)
+            root.addLayout(buttons)
+
+            self.connect_button.clicked.connect(self._connect_clicked)
+            self.test_button.clicked.connect(self._test_clicked)
+            self.cancel_button.clicked.connect(self.reject)
+
+            # Eigenes ODBC-Theme statt vom nativen Windows-Dialog abhaengig zu sein.
+            self.setStyleSheet(_dbase_sql_odbc_dialog_stylesheet(self.dark_mode))
+
+        def _show_message(self, icon, title: str, text: str) -> int:
+            return _dbase_sql_odbc_message(self, self.dark_mode, icon, title, text)
+
+        def _credentials(self) -> Tuple[str, str]:
+            return self.user_edit.text(), self.password_edit.text()
+
+        def _dbq_text_edited(self, _text: str) -> None:
+            # textEdited wird nur durch den Benutzer ausgelöst, nicht durch
+            # setText() beim Vorbelegen mit dem DSN-Pfad.
+            self._dbq_is_explicit = True
+
+        def _use_dsn_dbq(self) -> None:
+            if self.dbq_edit is None:
+                return
+            self._dbq_is_explicit = False
+            self.dbq_edit.setText(self._dsn_dbq)
+            self.status_label.setText(
+                "Datenpfad wird vom Windows-ODBC-Manager (DSN) aufgelöst."
+            )
+
+        def _choose_dbq_directory(self) -> None:
+            if self.dbq_edit is None:
+                return
+            start = self.dbq_edit.text().strip()
+            if not self.builder._is_real_odbc_directory(start):
+                start = str(self.path_info.get("dsn_dbq") or "").strip()
+            if not self.builder._is_real_odbc_directory(start):
+                start = str(Path.home())
+            directory = QFileDialog.getExistingDirectory(
+                self,
+                "DBF-Datenverzeichnis auswählen",
+                start,
+                QFileDialog.ShowDirsOnly | QFileDialog.DontUseNativeDialog,
+            )
+            if directory:
+                self._dbq_is_explicit = True
+                self.dbq_edit.setText(str(directory))
+
+        def _data_directory(self) -> str:
+            if self.dbq_edit is None or not self._dbq_is_explicit:
+                # Stage 42: Kein expliziter Override -> KEIN DBQ in den
+                # Connection-String schreiben. Der ODBC-Manager/DSN ist allein
+                # fuer die Pfadauflösung zuständig.
+                return ""
+            value = self.dbq_edit.text().strip()
+            if not value:
+                # Ein bewusst geleertes Feld schaltet ebenfalls auf DSN zurueck.
+                self._dbq_is_explicit = False
+                return ""
+            if not self.builder._is_real_odbc_directory(value):
+                raise D64ODBCError(
+                    "Der angegebene dBase-Datenpfad ist kein vorhandenes Verzeichnis:\n" + value
+                )
+            return str(Path(value).expanduser().resolve())
+
+        def _test_clicked(self) -> None:
+            user, password = self._credentials()
+            self.status_label.setText("ODBC-Verbindung wird getestet …")
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            try:
+                data_directory = self._data_directory()
+                self.builder.test_odbc_connection(self.source_name, user, password, data_directory)
+            except D64ODBCError as exc:
+                self.status_label.setText(f"Test fehlgeschlagen: {exc}")
+                self._show_message(QMessageBox.Warning, "ODBC testen", str(exc))
+            else:
+                self.status_label.setText("ODBC-Datenquelle und Verbindung sind erreichbar.")
+                self._show_message(
+                    QMessageBox.Information,
+                    "ODBC testen",
+                    "Die ODBC-Datenquelle konnte angesprochen und die Verbindung geöffnet werden.",
+                )
+            finally:
+                QApplication.restoreOverrideCursor()
+
+        def _connect_clicked(self) -> None:
+            user, password = self._credentials()
+            self.status_label.setText("ODBC-Verbindung wird geöffnet …")
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            try:
+                data_directory = self._data_directory()
+                self.builder.connect_odbc(self.source_name, user, password, data_directory)
+            except D64ODBCError as exc:
+                self.status_label.setText(f"Verbindung fehlgeschlagen: {exc}")
+                self._show_message(QMessageBox.Warning, "ODBC verbinden", str(exc))
+                return
+            finally:
+                QApplication.restoreOverrideCursor()
+            self.accept()
+
+
     class DBaseSQLBuilderView(QGraphicsView):
         """GraphicsView mit Delete-Unterstuetzung fuer selektierte Beziehungen."""
 
@@ -33324,6 +35375,16 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             self._loading_project = False
             self._updating_sql = False
             self._refreshing_relationship_grid = False
+            self._odbc_connection: Optional[object] = None
+            self._odbc_connection_string = ""
+            self._odbc_last_user = ""
+            self._odbc_last_dbq = ""
+            self._query_headers: List[str] = []
+            self._query_rows: List[List[object]] = []
+            self._query_current_row = -1
+            # Stage ASM 45: vom Benutzer eingestellte Kopf-Header-Breiten
+            # des View-Grids bleiben auch nach einem Query-Refresh erhalten.
+            self._query_header_widths: Dict[str, int] = {}
             self.setObjectName("dbase_sql_builder_widget")
 
             root = QHBoxLayout(self)
@@ -33388,6 +35449,36 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             self.sql_editor.setMinimumHeight(80)
             sql_layout.addWidget(self.sql_editor, 1)
 
+            # Eigene, nicht kollabierbare ODBC-Leiste.  Sie darf vom
+            # vertikalen Splitter nicht auf 0 Hoehe zusammengedrueckt werden.
+            self.odbc_bar = QFrame(sql_panel)
+            self.odbc_bar.setObjectName("dbase_sql_builder_odbc_bar")
+            self.odbc_bar.setMinimumHeight(38)
+            self.odbc_bar.setMaximumHeight(42)
+            self.odbc_bar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+            odbc_row = QHBoxLayout(self.odbc_bar)
+            odbc_row.setContentsMargins(0, 3, 0, 3)
+            odbc_row.setSpacing(5)
+
+            self.odbc_button = QPushButton("ODBC…", self.odbc_bar)
+            self.odbc_button.setObjectName("dbase_sql_builder_odbc_button")
+            self.odbc_button.setToolTip("ODBC-Benutzer und Passwort eingeben / Verbindung herstellen")
+            self.odbc_button.setMinimumWidth(72)
+            self.odbc_button.setFixedHeight(30)
+            self.odbc_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            odbc_row.addWidget(self.odbc_button, 0)
+
+            self.odbc_driver_combo = QComboBox(self.odbc_bar)
+            self.odbc_driver_combo.setObjectName("dbase_sql_builder_odbc_combo")
+            self.odbc_driver_combo.setToolTip("Eingerichtete ODBC-Datenquelle (DSN) auswählen")
+            self.odbc_driver_combo.setMinimumHeight(30)
+            self.odbc_driver_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            odbc_row.addWidget(self.odbc_driver_combo, 1)
+
+            sql_layout.addWidget(self.odbc_bar, 0)
+            sql_panel.setMinimumHeight(155)
+
             relation_panel = QWidget(self.left_vertical_splitter)
             relation_layout = QVBoxLayout(relation_panel)
             relation_layout.setContentsMargins(0, 0, 0, 0)
@@ -33400,8 +35491,11 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             self.relationship_grid.setEditTriggers(QAbstractItemView.NoEditTriggers)
             self.relationship_grid.setAlternatingRowColors(True)
             self.relationship_grid.verticalHeader().setVisible(False)
-            self.relationship_grid.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-            self.relationship_grid.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+            relation_header = self.relationship_grid.horizontalHeader()
+            relation_header.setSectionResizeMode(0, QHeaderView.Interactive)
+            relation_header.setSectionResizeMode(1, QHeaderView.Interactive)
+            relation_header.resizeSection(0, 220)
+            relation_header.resizeSection(1, 120)
             self.relationship_grid.setMinimumHeight(80)
             relation_layout.addWidget(self.relationship_grid, 1)
 
@@ -33411,7 +35505,7 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             self.left_vertical_splitter.setStretchFactor(0, 2)
             self.left_vertical_splitter.setStretchFactor(1, 2)
             self.left_vertical_splitter.setStretchFactor(2, 1)
-            self.left_vertical_splitter.setSizes([280, 220, 150])
+            self.left_vertical_splitter.setSizes([260, 260, 150])
 
             button_row = QHBoxLayout()
             button_row.setContentsMargins(0, 0, 0, 0)
@@ -33445,7 +35539,29 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             self.view_tab = QWidget(self.right_tabs)
             view_layout = QVBoxLayout(self.view_tab)
             view_layout.setContentsMargins(0, 0, 0, 0)
-            view_layout.setSpacing(0)
+            view_layout.setSpacing(4)
+
+            navigator = QFrame(self.view_tab)
+            navigator.setObjectName("dbase_sql_builder_navigator")
+            navigator_layout = QHBoxLayout(navigator)
+            navigator_layout.setContentsMargins(5, 4, 5, 4)
+            navigator_layout.setSpacing(5)
+            self.nav_first_button = QPushButton("Anfang", navigator)
+            self.nav_prev_button = QPushButton("Zurück", navigator)
+            self.nav_next_button = QPushButton("Vorwärts", navigator)
+            self.nav_last_button = QPushButton("Ende", navigator)
+            self.nav_refresh_button = QPushButton("Aktualisieren", navigator)
+            navigator_layout.addWidget(self.nav_first_button)
+            navigator_layout.addWidget(self.nav_prev_button)
+            navigator_layout.addWidget(self.nav_next_button)
+            navigator_layout.addWidget(self.nav_last_button)
+            navigator_layout.addWidget(self.nav_refresh_button)
+            navigator_layout.addStretch(1)
+            self.nav_position_label = QLabel("0 / 0", navigator)
+            self.nav_position_label.setObjectName("dbase_sql_builder_nav_position")
+            navigator_layout.addWidget(self.nav_position_label)
+            view_layout.addWidget(navigator, 0)
+
             self.query_grid = QTableWidget(0, 0, self.view_tab)
             self.query_grid.setObjectName("dbase_sql_builder_query_grid")
             self.query_grid.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -33453,6 +35569,10 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             self.query_grid.setSelectionMode(QAbstractItemView.SingleSelection)
             self.query_grid.setAlternatingRowColors(True)
             self.query_grid.verticalHeader().setVisible(True)
+            self.query_grid.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+            self.query_grid.horizontalHeader().sectionResized.connect(
+                self._query_header_section_resized
+            )
             view_layout.addWidget(self.query_grid, 1)
 
             self.right_tabs.addTab(self.design_tab, "Design")
@@ -33470,9 +35590,490 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             self.save_button.clicked.connect(self.save_project)
             self.save_as_button.clicked.connect(self.save_project_as)
             self.load_button.clicked.connect(self.load_project)
+            self.odbc_button.clicked.connect(self.open_odbc_login_dialog)
+            self.odbc_driver_combo.currentIndexChanged.connect(self._odbc_source_changed)
+            self.nav_first_button.clicked.connect(self.query_first)
+            self.nav_prev_button.clicked.connect(self.query_previous)
+            self.nav_next_button.clicked.connect(self.query_next)
+            self.nav_last_button.clicked.connect(self.query_last)
+            self.nav_refresh_button.clicked.connect(self.execute_current_query)
+            self.right_tabs.currentChanged.connect(self._right_tab_changed)
 
+            self.refresh_odbc_sources()
+            self._update_query_navigator()
             initial = Path(getattr(owner, "current_directory", Path.cwd()))
             self.set_directory(initial)
+
+        def closeEvent(self, event) -> None:
+            self.disconnect_odbc()
+            super().closeEvent(event)
+
+        # ------------------------------------------------------------------
+        # Stage ASM 45: persistente Header-Breiten im SQL Builder.
+        # ------------------------------------------------------------------
+        def _query_header_section_resized(self, logical_index: int, _old: int, new: int) -> None:
+            item = self.query_grid.horizontalHeaderItem(int(logical_index))
+            if item is None:
+                return
+            name = str(item.text() or "").strip()
+            if name:
+                self._query_header_widths[name] = max(20, int(new))
+
+        def _capture_query_header_widths(self) -> None:
+            header = self.query_grid.horizontalHeader()
+            for index in range(self.query_grid.columnCount()):
+                item = self.query_grid.horizontalHeaderItem(index)
+                if item is None:
+                    continue
+                name = str(item.text() or "").strip()
+                if name:
+                    self._query_header_widths[name] = max(20, int(header.sectionSize(index)))
+
+        def _apply_query_header_widths(self) -> None:
+            header = self.query_grid.horizontalHeader()
+            for index in range(self.query_grid.columnCount()):
+                item = self.query_grid.horizontalHeaderItem(index)
+                if item is None:
+                    continue
+                name = str(item.text() or "").strip()
+                width = int(self._query_header_widths.get(name, 0) or 0)
+                if width > 0:
+                    header.resizeSection(index, max(20, width))
+
+        def _relationship_header_widths(self) -> List[int]:
+            header = self.relationship_grid.horizontalHeader()
+            return [
+                max(20, int(header.sectionSize(index)))
+                for index in range(self.relationship_grid.columnCount())
+            ]
+
+        def _apply_relationship_header_widths(self, widths) -> None:
+            if not isinstance(widths, (list, tuple)):
+                return
+            header = self.relationship_grid.horizontalHeader()
+            for index, raw_width in enumerate(widths):
+                if index >= self.relationship_grid.columnCount():
+                    break
+                try:
+                    width = int(raw_width)
+                except (TypeError, ValueError):
+                    continue
+                if width > 0:
+                    header.resizeSection(index, max(20, width))
+
+        @staticmethod
+        def _odbc_quote_value(value: str) -> str:
+            # ODBC-Connection-Strings verwenden {...}; eine schliessende
+            # Klammer wird darin durch }} escaped.
+            return "{" + str(value or "").replace("}", "}}") + "}"
+
+        def refresh_odbc_sources(self) -> None:
+            current_dsn = self._selected_odbc_source()
+            current_bits = self._selected_odbc_source_bitness()
+            self.odbc_driver_combo.blockSignals(True)
+            try:
+                self.odbc_driver_combo.clear()
+                try:
+                    sources = odbc_available_data_sources_detailed()
+                except D64ODBCError as exc:
+                    sources = []
+                    self.odbc_driver_combo.setToolTip(str(exc))
+
+                self.odbc_driver_combo.setEnabled(True)
+                self.odbc_button.setEnabled(bool(sources))
+                process_bits = odbc_process_bitness()
+                for dsn, driver, bitness, scope in sources:
+                    bridge = ""
+                    if int(bitness) != process_bits:
+                        bridge = " · Helper"
+                    label = f"[{bitness}-Bit] {dsn}"
+                    if driver:
+                        label += f"  —  {driver}"
+                    if scope:
+                        label += f"  ({scope}{bridge})"
+                    self.odbc_driver_combo.addItem(label, dsn)
+                    index = self.odbc_driver_combo.count() - 1
+                    self.odbc_driver_combo.setItemData(index, driver, Qt.UserRole + 1)
+                    self.odbc_driver_combo.setItemData(index, int(bitness), Qt.UserRole + 2)
+                    self.odbc_driver_combo.setItemData(index, scope, Qt.UserRole + 3)
+
+                if not sources:
+                    self.odbc_driver_combo.addItem("Keine ODBC-Datenquellen (DSN) gefunden", "")
+                    self.odbc_driver_combo.setEnabled(False)
+                    self.odbc_button.setEnabled(False)
+                    self.odbc_driver_combo.setToolTip(
+                        "Keine Benutzer- oder System-DSN gefunden. "
+                        "Bitte eine Datenquelle im Windows ODBC-Datenquellen-Administrator einrichten."
+                    )
+                else:
+                    self.odbc_driver_combo.setToolTip(
+                        f"Aktuelle Anwendung: {process_bits}-Bit. "
+                        "DSNs mit anderer Bitness werden automatisch über den passenden Windows-ODBC-Helper angesprochen."
+                    )
+                    if current_dsn:
+                        for index in range(self.odbc_driver_combo.count()):
+                            if str(self.odbc_driver_combo.itemData(index, Qt.UserRole) or "") == current_dsn:
+                                bits = int(self.odbc_driver_combo.itemData(index, Qt.UserRole + 2) or 0)
+                                if not current_bits or bits == current_bits:
+                                    self.odbc_driver_combo.setCurrentIndex(index)
+                                    break
+            finally:
+                self.odbc_driver_combo.blockSignals(False)
+
+        def _selected_odbc_source(self) -> str:
+            return str(self.odbc_driver_combo.currentData() or "").strip()
+
+        def _selected_odbc_source_driver(self) -> str:
+            index = self.odbc_driver_combo.currentIndex()
+            if index < 0:
+                return ""
+            return str(
+                self.odbc_driver_combo.itemData(index, Qt.UserRole + 1) or ""
+            ).strip()
+
+        def _selected_odbc_source_bitness(self) -> int:
+            index = self.odbc_driver_combo.currentIndex()
+            if index < 0:
+                return 0
+            return int(self.odbc_driver_combo.itemData(index, Qt.UserRole + 2) or 0)
+
+        def _selected_odbc_source_scope(self) -> str:
+            index = self.odbc_driver_combo.currentIndex()
+            if index < 0:
+                return ""
+            return str(self.odbc_driver_combo.itemData(index, Qt.UserRole + 3) or "").strip()
+
+        def _selected_odbc_source_uses_directory(self) -> bool:
+            """True fuer Desktop-Treiber, bei denen ein DBF-Verzeichnis die Datenbank bildet."""
+            driver = self._selected_odbc_source_driver().casefold()
+            return any(token in driver for token in ("dbase", "dbf"))
+
+        @staticmethod
+        def _is_real_odbc_directory(value: str) -> bool:
+            text = str(value or "").strip()
+            if not text:
+                return False
+            if text.casefold() in {
+                "(unbenannt)", "<unbenannt>", "unbenannt",
+                "(unbekannt)", "<unbekannt>", "unbekannt",
+                "(unnamed)", "<unnamed>", "unnamed",
+                "(unknown)", "<unknown>", "unknown",
+            }:
+                return False
+            try:
+                return Path(text).expanduser().is_dir()
+            except Exception:
+                return False
+
+        def _sql_builder_dbq(self, *, require_existing: bool = False) -> str:
+            """Tabellenbrowser-Pfad des SQL Builders.
+
+            Dieser Pfad ist NICHT automatisch der ODBC-DBQ. Seit Stage 41 darf
+            das allgemeine Tabellenverzeichnis einen im DSN konfigurierten
+            dBase-Pfad nicht mehr still ueberschreiben.
+            """
+            value = self.directory_edit.text().strip()
+            if not value or value.casefold() in {
+                "(unbenannt)", "<unbenannt>", "unbenannt",
+                "(unbekannt)", "<unbekannt>", "unbekannt",
+                "(unnamed)", "<unnamed>", "unnamed",
+                "(unknown)", "<unknown>", "unknown",
+            }:
+                if require_existing:
+                    raise D64ODBCError(
+                        "Bitte ein vorhandenes DBF-Verzeichnis auswählen."
+                    )
+                return ""
+            try:
+                path = Path(value).expanduser().resolve()
+            except Exception:
+                path = Path(value).expanduser()
+            if require_existing and not path.is_dir():
+                raise D64ODBCError(
+                    "Das gewählte DBF-Verzeichnis existiert nicht:\n" + str(path)
+                )
+            return str(path) if path.is_dir() else ""
+
+        def odbc_path_information(self) -> Dict[str, object]:
+            """Diagnosewerte fuer den ODBC-Anmeldedialog.
+
+            ``dsn_dbq`` kommt direkt aus der ODBC-DSN. ``builder_dbq`` ist nur
+            der Tabellenbrowser-Pfad. ``effective_dbq`` ist ein zuvor explizit
+            gewaehlter Override oder sonst der DSN-Pfad.
+            """
+            uses_directory = self._selected_odbc_source_uses_directory()
+            details = odbc_registry_dsn_details(
+                self._selected_odbc_source(),
+                self._selected_odbc_source_bitness(),
+                self._selected_odbc_source_scope(),
+            )
+            dsn_dbq = str(details.get("dbq") or "").strip()
+            builder_dbq = self._sql_builder_dbq(require_existing=False) if uses_directory else ""
+            explicit_dbq = str(getattr(self, "_odbc_last_dbq", "") or "").strip()
+            effective = explicit_dbq or dsn_dbq
+            if not effective and self._is_real_odbc_directory(builder_dbq):
+                effective = builder_dbq
+            return {
+                "uses_directory": uses_directory,
+                "dsn_dbq": dsn_dbq,
+                "builder_dbq": builder_dbq,
+                "effective_dbq": effective,
+            }
+
+        def _build_odbc_connection_string(
+            self,
+            source_name: str,
+            user: str,
+            password: str,
+            data_directory: str = "",
+        ) -> str:
+            dsn = str(source_name or "").strip()
+            if not dsn:
+                raise D64ODBCError("Bitte zuerst eine ODBC-Datenquelle (DSN) auswählen.")
+            if ";" in dsn:
+                raise D64ODBCError("Der DSN-Name darf kein Semikolon enthalten.")
+
+            explicit_dbq = str(data_directory or "").strip()
+            uses_directory = self._selected_odbc_source_uses_directory()
+
+            if uses_directory and explicit_dbq:
+                # Stage 42: Ein im Dialog explizit gewaehlter dBase-Pfad wird
+                # DSN-LOS verbunden. Damit koennen keine versteckten/alten
+                # DefaultDir/Database-Werte aus dem DSN den Dialog-DBQ
+                # ueberschreiben. Es existiert genau eine Pfadquelle: DBQ.
+                if not self._is_real_odbc_directory(explicit_dbq):
+                    raise D64ODBCError(
+                        "Der angegebene dBase-Datenpfad existiert nicht:\n" + explicit_dbq
+                    )
+                driver = self._selected_odbc_source_driver()
+                if not driver:
+                    raise D64ODBCError(
+                        "Zum ausgewaehlten DSN konnte der dBase-ODBC-Treiber nicht ermittelt werden."
+                    )
+                explicit_dbq = str(Path(explicit_dbq).expanduser().resolve())
+                parts = [
+                    f"DRIVER={self._odbc_quote_value(driver)}",
+                    f"DBQ={self._odbc_quote_value(explicit_dbq)}",
+                ]
+            else:
+                # Kein expliziter DBQ: Nur DSN uebergeben. Der Windows-ODBC-
+                # Manager und der darin konfigurierte Treiber loesen den Pfad.
+                parts = [f"DSN={dsn}"]
+
+            if user:
+                parts.append(f"UID={self._odbc_quote_value(user)}")
+            if password:
+                parts.append(f"PWD={self._odbc_quote_value(password)}")
+            return ";".join(parts) + ";"
+
+        def open_odbc_login_dialog(self) -> None:
+            source = self._selected_odbc_source()
+            if not source:
+                _dbase_sql_odbc_message(
+                    self,
+                    self.dark_mode,
+                    QMessageBox.Warning,
+                    "ODBC",
+                    "Es ist keine ODBC-Datenquelle (DSN) ausgewählt.",
+                )
+                return
+            dialog = DBaseODBCLoginDialog(
+                self,
+                source,
+                self._selected_odbc_source_driver(),
+                self._selected_odbc_source_bitness(),
+                self,
+            )
+            dialog.exec_()
+
+        def _make_odbc_connection(
+            self,
+            connection_string: str,
+            *,
+            timeout: int,
+            data_directory: str = "",
+        ):
+            source_bits = self._selected_odbc_source_bitness() or odbc_process_bitness()
+            process_bits = odbc_process_bitness()
+            if os.name == "nt" and int(source_bits) != int(process_bits):
+                return D64ODBCPowerShellBridgeConnection(
+                    connection_string,
+                    target_bitness=int(source_bits),
+                    timeout=timeout,
+                    autocommit=False,
+                    data_directory=str(data_directory or "").strip(),
+                )
+            return D64ODBCConnection(connection_string, timeout=timeout, autocommit=False)
+
+        def test_odbc_connection(
+            self,
+            source_name: str,
+            user: str,
+            password: str,
+            data_directory: str = "",
+        ) -> None:
+            connection_string = self._build_odbc_connection_string(
+                source_name, user, password, data_directory
+            )
+            # Alte Desktop-/dBase-ODBC-Treiber benoetigen beim ersten Laden
+            # gelegentlich mehr als 5 Sekunden. Der Helper setzt denselben Wert
+            # als echten ODBC ConnectionTimeout.
+            test_connection = self._make_odbc_connection(
+                connection_string, timeout=10, data_directory=data_directory
+            )
+            try:
+                test_connection.open()
+            finally:
+                test_connection.close()
+
+        def connect_odbc(
+            self,
+            source_name: str,
+            user: str,
+            password: str,
+            data_directory: str = "",
+        ) -> None:
+            connection_string = self._build_odbc_connection_string(
+                source_name, user, password, data_directory
+            )
+            new_connection = self._make_odbc_connection(
+                connection_string, timeout=30, data_directory=data_directory
+            )
+            new_connection.open()
+            old_connection = self._odbc_connection
+            self._odbc_connection = new_connection
+            self._odbc_connection_string = connection_string
+            self._odbc_last_user = str(user or "")
+            self._odbc_last_dbq = str(data_directory or "").strip()
+            if old_connection is not None:
+                old_connection.close()
+            self.nav_refresh_button.setEnabled(True)
+            bits = self._selected_odbc_source_bitness() or odbc_process_bitness()
+            helper = ""
+            if bits != odbc_process_bitness():
+                helper = f" ({bits}-Bit Helper)"
+            try:
+                self.owner.statusBar().showMessage(f"ODBC verbunden: {source_name}{helper}", 5000)
+            except Exception:
+                pass
+
+        def disconnect_odbc(self) -> None:
+            connection = self._odbc_connection
+            self._odbc_connection = None
+            self._odbc_connection_string = ""
+            if connection is not None:
+                connection.close()
+            self._update_query_navigator()
+
+        def _odbc_source_changed(self, _index: int) -> None:
+            # Eine andere DSN invalidiert eine bestehende Verbindung und einen
+            # zuvor explizit gewaehlten DBQ-Override.
+            if self._odbc_connection is not None:
+                self.disconnect_odbc()
+            self._odbc_last_dbq = ""
+
+        def _right_tab_changed(self, index: int) -> None:
+            if self.right_tabs.widget(index) is not self.view_tab:
+                return
+            if self._odbc_connection is None:
+                return
+            if self._query_rows or self._query_headers:
+                return
+            sql = self.sql_editor.toPlainText().strip()
+            if sql and self._is_view_query(sql):
+                self.execute_current_query(show_errors=False)
+
+        @staticmethod
+        def _is_view_query(sql: str) -> bool:
+            text = str(sql or "").lstrip()
+            # Kommentare am Anfang fuer die einfache Sicherheitspruefung
+            # entfernen; View soll niemals UPDATE/DELETE beim Tabwechsel ausfuehren.
+            while text.startswith("--"):
+                nl = text.find("\n")
+                if nl < 0:
+                    return False
+                text = text[nl + 1:].lstrip()
+            keyword = text.split(None, 1)[0].upper() if text else ""
+            return keyword in ("SELECT", "WITH")
+
+        def execute_current_query(self, _checked=False, *, show_errors: bool = True) -> None:
+            sql = self.sql_editor.toPlainText().strip()
+            if not sql:
+                if show_errors:
+                    QMessageBox.information(self, "SQL View", "Der SQL-Editor ist leer.")
+                return
+            if not self._is_view_query(sql):
+                if show_errors:
+                    QMessageBox.warning(
+                        self,
+                        "SQL View",
+                        "Im View-Tab werden nur SELECT- bzw. WITH-Abfragen ausgeführt.",
+                    )
+                return
+            database = self._odbc_connection
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            try:
+                if database is not None and database.is_open:
+                    result = database.execute(sql, result_type="list", include_columns=True)
+                    rows = list(result) if isinstance(result, list) else []
+                    if rows:
+                        headers = [str(value) for value in rows[0]]
+                        data_rows = [list(row) for row in rows[1:]]
+                    else:
+                        headers, data_rows = [], []
+                else:
+                    # Stage 43: lokale DBF-Ausfuehrung als echter SQL-Parser-
+                    # Fallback. Damit funktioniert der View-Tab fuer die vom
+                    # SQL Builder verwalteten DBF-Tabellen auch ohne ODBC.
+                    headers, data_rows = execute_d64sql_dbf_project(self._project_payload(), sql=sql)
+            except (D64ODBCError, D64DBFSQLParseError, OSError, ValueError) as exc:
+                if show_errors:
+                    QMessageBox.warning(self, "SQL-Abfrage", str(exc))
+                return
+            finally:
+                QApplication.restoreOverrideCursor()
+            self.set_query_result(headers, data_rows)
+
+        def _set_query_current_row(self, row: int) -> None:
+            count = len(self._query_rows)
+            if count <= 0:
+                self._query_current_row = -1
+                self.query_grid.clearSelection()
+                self._update_query_navigator()
+                return
+            row = max(0, min(int(row), count - 1))
+            self._query_current_row = row
+            self.query_grid.selectRow(row)
+            item = self.query_grid.item(row, 0) if self.query_grid.columnCount() else None
+            if item is not None:
+                self.query_grid.scrollToItem(item, QAbstractItemView.PositionAtCenter)
+            self._update_query_navigator()
+
+        def _update_query_navigator(self) -> None:
+            count = len(getattr(self, "_query_rows", []))
+            row = getattr(self, "_query_current_row", -1)
+            has_rows = count > 0
+            self.nav_first_button.setEnabled(has_rows and row > 0)
+            self.nav_prev_button.setEnabled(has_rows and row > 0)
+            self.nav_next_button.setEnabled(has_rows and row < count - 1)
+            self.nav_last_button.setEnabled(has_rows and row < count - 1)
+            self.nav_refresh_button.setEnabled(
+                (self._odbc_connection is not None and self._odbc_connection.is_open)
+                or bool(self.scene.table_proxies)
+            )
+            self.nav_position_label.setText(f"{row + 1 if has_rows else 0} / {count}")
+
+        def query_first(self) -> None:
+            self._set_query_current_row(0)
+
+        def query_previous(self) -> None:
+            self._set_query_current_row(self._query_current_row - 1)
+
+        def query_next(self) -> None:
+            self._set_query_current_row(self._query_current_row + 1)
+
+        def query_last(self) -> None:
+            self._set_query_current_row(len(self._query_rows) - 1)
 
         @staticmethod
         def _sql_identifier(name: str) -> str:
@@ -33580,21 +36181,33 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             return all_fields
 
         def refresh_query_view(self) -> None:
+            self._capture_query_header_widths()
             headers = self._query_preview_headers()
+            self._query_headers = list(headers)
+            self._query_rows = []
+            self._query_current_row = -1
             self.query_grid.clear()
             self.query_grid.setRowCount(0)
             self.query_grid.setColumnCount(len(headers))
             if headers:
                 self.query_grid.setHorizontalHeaderLabels(headers)
+            self._apply_query_header_widths()
+            self._update_query_navigator()
 
         def set_query_result(self, headers: Sequence[str], rows: Sequence[Sequence[object]]) -> None:
-            """Schnittstelle für den späteren SQL-Parser/Executor."""
+            """Zeigt ein ODBC-Query-Resultat im View-Grid und initialisiert den Navigator."""
+            self._capture_query_header_widths()
             header_list = [str(value) for value in headers]
+            row_list = [list(row) for row in rows]
+            self._query_headers = header_list
+            self._query_rows = row_list
+            self._query_current_row = 0 if row_list else -1
             self.query_grid.clear()
             self.query_grid.setColumnCount(len(header_list))
-            self.query_grid.setHorizontalHeaderLabels(header_list)
-            self.query_grid.setRowCount(len(rows))
-            for row_index, row_values in enumerate(rows):
+            if header_list:
+                self.query_grid.setHorizontalHeaderLabels(header_list)
+            self.query_grid.setRowCount(len(row_list))
+            for row_index, row_values in enumerate(row_list):
                 for column, value in enumerate(row_values):
                     if column >= len(header_list):
                         break
@@ -33602,6 +36215,18 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                         row_index, column,
                         QTableWidgetItem("" if value is None else str(value)),
                     )
+            # ResizeToContents darf die bereits gespeicherten manuellen
+            # Breiten nicht ueber das sectionResized-Signal ueberschreiben.
+            preserved_widths = dict(self._query_header_widths)
+            self.query_grid.resizeColumnsToContents()
+            self._query_header_widths.update(preserved_widths)
+            # Bereits vom Benutzer eingestellte oder aus *.d64sql geladene
+            # Breiten haben Vorrang vor ResizeToContents.
+            self._apply_query_header_widths()
+            if row_list:
+                self._set_query_current_row(0)
+            else:
+                self._update_query_navigator()
 
         def rebuild_sql_expression(self) -> None:
             if self._loading_project:
@@ -33702,9 +36327,13 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                 self.sql_editor.clear()
             finally:
                 self._updating_sql = False
+            self._query_headers = []
+            self._query_rows = []
+            self._query_current_row = -1
             self.query_grid.clear()
             self.query_grid.setRowCount(0)
             self.query_grid.setColumnCount(0)
+            self._update_query_navigator()
             self.refresh_relationship_grid()
 
         def choose_directory(self) -> None:
@@ -33776,6 +36405,8 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             proxy.setSelected(True)
 
         def _project_payload(self) -> Dict[str, object]:
+            # Aktuelle manuelle Breiten unmittelbar vor dem Speichern erfassen.
+            self._capture_query_header_widths()
             tables = []
             for proxy in self.scene.table_proxies.values():
                 card = proxy.widget()
@@ -33791,9 +36422,21 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                 )
             return {
                 "format": "d64-sql-builder",
-                "version": 2,
+                "version": 8,
                 "directory": self.directory_edit.text().strip(),
                 "sql": self.sql_editor.toPlainText(),
+                "odbc_dsn": self._selected_odbc_source(),
+                "odbc_driver": self._selected_odbc_source_driver(),
+                "odbc_bitness": self._selected_odbc_source_bitness(),
+                "odbc_scope": self._selected_odbc_source_scope(),
+                "odbc_combo_text": self.odbc_driver_combo.currentText(),
+                "odbc_combo_index": self.odbc_driver_combo.currentIndex(),
+                "odbc_dbq": str(self._odbc_last_dbq or ""),
+                "odbc_dbq_mode": "override" if self._odbc_last_dbq else "dsn",
+                "header_widths": {
+                    "relationship": self._relationship_header_widths(),
+                    "view": dict(self._query_header_widths),
+                },
                 "tables": tables,
                 "connections": [connection.to_dict() for connection in self.scene.connections],
             }
@@ -33834,17 +36477,23 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                 path = path.with_suffix(self.PROJECT_SUFFIX)
             self._write_project(path)
 
-        def load_project(self) -> None:
-            start = self.project_path or Path(self.directory_edit.text().strip() or Path.cwd())
-            filename, _selected = QFileDialog.getOpenFileName(
-                self,
-                "SQL-Builder-Projekt laden",
-                str(start),
-                "d64 SQL Builder (*.d64sql);;JSON (*.json);;Alle Dateien (*)",
-            )
-            if not filename:
-                return
-            path = Path(filename)
+        def load_project(self, requested_path=None) -> None:
+            # Stage ASM 29: ein Projektbaum-Doppelklick darf eine konkrete
+            # *.d64sql-Datei ohne zusaetzlichen Dateidialog laden. QPushButton
+            # kann hier weiterhin sein boolesches ``checked`` uebergeben.
+            if isinstance(requested_path, (str, Path)):
+                path = Path(requested_path)
+            else:
+                start = self.project_path or Path(self.directory_edit.text().strip() or Path.cwd())
+                filename, _selected = QFileDialog.getOpenFileName(
+                    self,
+                    "SQL-Builder-Projekt laden",
+                    str(start),
+                    "d64 SQL Builder (*.d64sql);;JSON (*.json);;Alle Dateien (*)",
+                )
+                if not filename:
+                    return
+                path = Path(filename)
             try:
                 payload = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, ValueError, TypeError) as exc:
@@ -33854,10 +36503,96 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             self._loading_project = True
             try:
                 self.scene.clear_builder()
+                header_widths = payload.get("header_widths", {}) or {}
+                if isinstance(header_widths, dict):
+                    self._apply_relationship_header_widths(
+                        header_widths.get("relationship", [])
+                    )
+                    saved_view_widths = header_widths.get("view", {}) or {}
+                    if isinstance(saved_view_widths, dict):
+                        self._query_header_widths = {
+                            str(name): max(20, int(width))
+                            for name, width in saved_view_widths.items()
+                            if str(name).strip() and str(width).strip().lstrip("-").isdigit()
+                        }
+
                 directory = str(payload.get("directory", "") or "").strip()
                 if directory:
                     self.directory_edit.setText(directory)
                     self.refresh_tables()
+
+                # Stage 43: die ComboBox repraesentiert eine konkrete ODBC-Quelle.
+                # Vor der Wiederherstellung neu einlesen, damit auch nach einem
+                # Neustart die aktuelle Windows-DSN-Liste verwendet wird.
+                self.refresh_odbc_sources()
+                saved_dsn = str(payload.get("odbc_dsn", "") or "")
+                saved_driver = str(payload.get("odbc_driver", "") or "")
+                saved_bits = int(payload.get("odbc_bitness", 0) or 0)
+                saved_scope = str(payload.get("odbc_scope", "") or "")
+                saved_combo_text = str(payload.get("odbc_combo_text", "") or "")
+                saved_dbq = str(payload.get("odbc_dbq", "") or "").strip()
+                saved_dbq_mode = str(payload.get("odbc_dbq_mode", "") or "").strip().casefold()
+                if saved_dsn:
+                    for source_index in range(self.odbc_driver_combo.count()):
+                        dsn_value = str(
+                            self.odbc_driver_combo.itemData(source_index, Qt.UserRole) or ""
+                        )
+                        bits_value = int(
+                            self.odbc_driver_combo.itemData(source_index, Qt.UserRole + 2) or 0
+                        )
+                        if dsn_value != saved_dsn:
+                            continue
+                        if saved_bits and bits_value != saved_bits:
+                            continue
+                        scope_value = str(self.odbc_driver_combo.itemData(source_index, Qt.UserRole + 3) or "")
+                        driver_value = str(self.odbc_driver_combo.itemData(source_index, Qt.UserRole + 1) or "")
+                        if saved_scope and scope_value.casefold() != saved_scope.casefold():
+                            continue
+                        if saved_driver and driver_value.casefold() != saved_driver.casefold():
+                            continue
+                        self.odbc_driver_combo.setCurrentIndex(source_index)
+                        break
+                    else:
+                        # Letzter Fallback: exakte sichtbare ComboBox-Beschriftung.
+                        if saved_combo_text:
+                            combo_index = self.odbc_driver_combo.findText(saved_combo_text, Qt.MatchFixedString)
+                            if combo_index >= 0:
+                                self.odbc_driver_combo.setCurrentIndex(combo_index)
+                elif saved_driver:
+                    # Stage-19-Kompatibilitaet: dort wurde nur der Treiber
+                    # gespeichert. Falls mehrere DSNs denselben Treiber nutzen,
+                    # wird die erste passende Datenquelle gewaehlt.
+                    for source_index in range(self.odbc_driver_combo.count()):
+                        driver_value = str(
+                            self.odbc_driver_combo.itemData(source_index, Qt.UserRole + 1) or ""
+                        )
+                        if driver_value.casefold() == saved_driver.casefold():
+                            self.odbc_driver_combo.setCurrentIndex(source_index)
+                            break
+
+                # Erst nach der DSN-Auswahl wiederherstellen. Stage 42
+                # unterscheidet explizit DSN-Manager und Dialog-Override. Bei
+                # alten Stage-41-Dateien war der DSN-Pfad oft versehentlich als
+                # Override gespeichert; entspricht er dem aktuellen DSN-Pfad,
+                # wird er deshalb als Manager-Modus interpretiert.
+                self._odbc_last_dbq = ""
+                if self._is_real_odbc_directory(saved_dbq):
+                    current_details = odbc_registry_dsn_details(
+                        self._selected_odbc_source(),
+                        self._selected_odbc_source_bitness(),
+                        self._selected_odbc_source_scope(),
+                    )
+                    current_dsn_dbq = str(current_details.get("dbq") or "").strip()
+                    same_as_dsn = False
+                    try:
+                        same_as_dsn = (
+                            current_dsn_dbq
+                            and Path(saved_dbq).resolve() == Path(current_dsn_dbq).resolve()
+                        )
+                    except Exception:
+                        same_as_dsn = saved_dbq.casefold() == current_dsn_dbq.casefold()
+                    if saved_dbq_mode == "override" or (not saved_dbq_mode and not same_as_dsn):
+                        self._odbc_last_dbq = saved_dbq
 
                 loaded_by_key: Dict[str, DBaseSQLTableProxy] = {}
                 for table_data in payload.get("tables", []) or []:
@@ -33903,6 +36638,27 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                 self._loading_project = False
             self.refresh_relationship_grid()
             self.refresh_query_view()
+            # refresh_query_view() ermittelt zunaechst die aktuellen Preview-
+            # Spalten. Danach die im Projekt gespeicherten Breiten verbindlich
+            # wiederherstellen, damit ein vorheriger View-Zustand sie nicht
+            # ueberschreiben kann.
+            loaded_header_widths = payload.get("header_widths", {}) or {}
+            if isinstance(loaded_header_widths, dict):
+                self._apply_relationship_header_widths(
+                    loaded_header_widths.get("relationship", [])
+                )
+                saved_view_widths = loaded_header_widths.get("view", {}) or {}
+                if isinstance(saved_view_widths, dict):
+                    restored = {}
+                    for name, width in saved_view_widths.items():
+                        try:
+                            parsed_width = int(width)
+                        except (TypeError, ValueError):
+                            continue
+                        if str(name).strip() and parsed_width > 0:
+                            restored[str(name)] = max(20, parsed_width)
+                    self._query_header_widths = restored
+                    self._apply_query_header_widths()
 
         def set_dark_mode(self, enabled: bool) -> None:
             self.dark_mode = bool(enabled)
@@ -33929,8 +36685,11 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                     "QTableWidget#dbase_sql_builder_relationship_grid QHeaderView::section,"
                     "QTableWidget#dbase_sql_builder_query_grid QHeaderView::section{"
                     "background:#163b73;color:#ffe600;border:1px solid #245a9a;padding:4px;}"
-                    "QComboBox#dbase_sql_builder_sort_combo{background:#020817;color:#ffe600;"
+                    "QComboBox#dbase_sql_builder_sort_combo,QComboBox#dbase_sql_builder_odbc_combo{background:#020817;color:#ffe600;"
                     "border:1px solid #3375bd;padding:2px 5px;}"
+                    "QFrame#dbase_sql_builder_odbc_bar{background:transparent;border:0;}"
+                    "QFrame#dbase_sql_builder_navigator{background:#07162f;border-bottom:1px solid #245a9a;}"
+                    "QLabel#dbase_sql_builder_nav_position{color:#ffe600;font-weight:bold;}"
                     "QSplitter#dbase_sql_builder_left_splitter::handle{background:#245a9a;height:5px;}"
                     "QTabWidget#dbase_sql_builder_tabs::pane{border:1px solid #245a9a;}"
                     "QTabWidget#dbase_sql_builder_tabs QTabBar::tab{background:#07162f;color:#f2f5f8;"
@@ -33959,8 +36718,11 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                     "QTableWidget#dbase_sql_builder_relationship_grid QHeaderView::section,"
                     "QTableWidget#dbase_sql_builder_query_grid QHeaderView::section{"
                     "background:#e6edf5;color:#173a63;border:1px solid #a9b6c4;padding:4px;}"
-                    "QComboBox#dbase_sql_builder_sort_combo{background:#fff;color:#111;"
+                    "QComboBox#dbase_sql_builder_sort_combo,QComboBox#dbase_sql_builder_odbc_combo{background:#fff;color:#111;"
                     "border:1px solid #8aa5c0;padding:2px 5px;}"
+                    "QFrame#dbase_sql_builder_odbc_bar{background:transparent;border:0;}"
+                    "QFrame#dbase_sql_builder_navigator{background:#f7f8fa;border-bottom:1px solid #a9b6c4;}"
+                    "QLabel#dbase_sql_builder_nav_position{color:#173a63;font-weight:bold;}"
                     "QSplitter#dbase_sql_builder_left_splitter::handle{background:#a9b6c4;height:5px;}"
                     "QTabWidget#dbase_sql_builder_tabs::pane{border:1px solid #a9b6c4;}"
                     "QTabWidget#dbase_sql_builder_tabs QTabBar::tab{background:#e6edf5;color:#111;"
@@ -33968,6 +36730,1757 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                     "QTabWidget#dbase_sql_builder_tabs QTabBar::tab:selected{background:#fff;color:#173a63;}"
                 )
                 self.scene.setBackgroundBrush(QColor("#eef2f6"))
+
+
+    class DBaseReportElement(QGraphicsObject):
+        """Verschiebbares und per Maus skalierbares Berichtselement.
+
+        Stage ASM 31:
+        - normale QGraphicsItem-Verschiebung bleibt erhalten,
+        - acht Resize-Zonen liegen direkt im Elementrahmen,
+        - Label, Datenfeld und Bild verwenden dieselbe Geometrie-Logik,
+        - Breite/Höhe werden weiterhin über ``to_dict`` persistiert.
+        """
+
+        HANDLE_SIZE = 9.0
+        MIN_WIDTH = 24.0
+        MIN_HEIGHT = 18.0
+
+        _RESIZE_CURSORS = {
+            "top_left": Qt.SizeFDiagCursor,
+            "bottom_right": Qt.SizeFDiagCursor,
+            "top_right": Qt.SizeBDiagCursor,
+            "bottom_left": Qt.SizeBDiagCursor,
+            "top": Qt.SizeVerCursor,
+            "bottom": Qt.SizeVerCursor,
+            "left": Qt.SizeHorCursor,
+            "right": Qt.SizeHorCursor,
+        }
+
+        def __init__(
+            self,
+            item_type: str,
+            text: str,
+            *,
+            section: str = "detail",
+            field_name: str = "",
+            image_path: str = "",
+            width: float = 220.0,
+            height: float = 42.0,
+            parent=None,
+        ):
+            super().__init__(parent)
+            self.report_builder = None
+            self.item_type = str(item_type or "label")
+            self.text = str(text or "")
+            self.section = str(section or "detail")
+            self.field_name = str(field_name or "")
+            self.image_path = str(image_path or "")
+            self.item_width = float(max(self.MIN_WIDTH, width))
+            self.item_height = float(max(self.MIN_HEIGHT, height))
+            self.font_point_size = 10
+            self.font_bold = False
+            self.font_italic = False
+            self.font_underline = False
+            self.font_strikeout = False
+            self.font_uppercase = False
+            self.foreground = QColor("#101010")
+            self.background = QColor(255, 255, 255, 0)
+
+            self._resize_handle: Optional[str] = None
+            self._resize_start_scene_pos = None
+            self._resize_start_item_pos = None
+            self._resize_start_size = None
+
+            self.setFlags(
+                QGraphicsItem.ItemIsMovable
+                | QGraphicsItem.ItemIsSelectable
+                | QGraphicsItem.ItemIsFocusable
+                | QGraphicsItem.ItemSendsGeometryChanges
+            )
+            self.setAcceptHoverEvents(True)
+            self.setZValue(20)
+
+        def boundingRect(self) -> QRectF:
+            return QRectF(0.0, 0.0, self.item_width, self.item_height)
+
+        def set_size(self, width: float, height: float) -> None:
+            width = float(max(self.MIN_WIDTH, width))
+            height = float(max(self.MIN_HEIGHT, height))
+            if abs(width - self.item_width) < 0.001 and abs(height - self.item_height) < 0.001:
+                return
+            self.prepareGeometryChange()
+            self.item_width = width
+            self.item_height = height
+            self.update()
+
+        def _handle_rects(self) -> Dict[str, QRectF]:
+            """Acht Resize-Zonen innerhalb des sichtbaren Elementrahmens."""
+            s = min(self.HANDLE_SIZE, self.item_width / 3.0, self.item_height / 3.0)
+            s = max(4.0, s)
+            w = self.item_width
+            h = self.item_height
+            cx = max(0.0, (w - s) / 2.0)
+            cy = max(0.0, (h - s) / 2.0)
+            return {
+                "top_left": QRectF(0.0, 0.0, s, s),
+                "top": QRectF(cx, 0.0, s, s),
+                "top_right": QRectF(max(0.0, w - s), 0.0, s, s),
+                "right": QRectF(max(0.0, w - s), cy, s, s),
+                "bottom_right": QRectF(max(0.0, w - s), max(0.0, h - s), s, s),
+                "bottom": QRectF(cx, max(0.0, h - s), s, s),
+                "bottom_left": QRectF(0.0, max(0.0, h - s), s, s),
+                "left": QRectF(0.0, cy, s, s),
+            }
+
+        def _resize_handle_at(self, pos) -> Optional[str]:
+            # Resize-Zonen sind bewusst nur an einem selektierten Element aktiv,
+            # damit ein normaler Klick zunächst sauber selektieren/verschieben kann.
+            if not self.isSelected():
+                return None
+            for name, rect in self._handle_rects().items():
+                if rect.contains(pos):
+                    return name
+            return None
+
+        def _update_hover_cursor(self, pos) -> None:
+            handle = self._resize_handle_at(pos)
+            if handle:
+                self.setCursor(QCursor(self._RESIZE_CURSORS[handle]))
+            elif self.isSelected():
+                self.setCursor(QCursor(Qt.SizeAllCursor))
+            else:
+                self.unsetCursor()
+
+        def hoverMoveEvent(self, event) -> None:
+            self._update_hover_cursor(event.pos())
+            super().hoverMoveEvent(event)
+
+        def hoverLeaveEvent(self, event) -> None:
+            if self._resize_handle is None:
+                self.unsetCursor()
+            super().hoverLeaveEvent(event)
+
+        def mousePressEvent(self, event) -> None:
+            if event.button() == Qt.LeftButton:
+                # Ein bereits selektiertes Element kann an jeder der acht Zonen
+                # unmittelbar skaliert werden.
+                handle = self._resize_handle_at(event.pos())
+                if handle:
+                    self._resize_handle = handle
+                    self._resize_start_scene_pos = event.scenePos()
+                    self._resize_start_item_pos = QPointF(self.pos())
+                    self._resize_start_size = (self.item_width, self.item_height)
+                    self.setCursor(QCursor(self._RESIZE_CURSORS[handle]))
+                    event.accept()
+                    return
+                self.setCursor(QCursor(Qt.ClosedHandCursor))
+            super().mousePressEvent(event)
+
+        def mouseMoveEvent(self, event) -> None:
+            if (
+                self._resize_handle
+                and self._resize_start_scene_pos is not None
+                and self._resize_start_item_pos is not None
+                and self._resize_start_size is not None
+            ):
+                delta = event.scenePos() - self._resize_start_scene_pos
+                dx = float(delta.x())
+                dy = float(delta.y())
+                start_x = float(self._resize_start_item_pos.x())
+                start_y = float(self._resize_start_item_pos.y())
+                start_w = float(self._resize_start_size[0])
+                start_h = float(self._resize_start_size[1])
+
+                new_x = start_x
+                new_y = start_y
+                new_w = start_w
+                new_h = start_h
+                handle = self._resize_handle
+
+                if "left" in handle:
+                    new_w = max(self.MIN_WIDTH, start_w - dx)
+                    new_x = start_x + (start_w - new_w)
+                elif "right" in handle:
+                    new_w = max(self.MIN_WIDTH, start_w + dx)
+
+                if "top" in handle:
+                    new_h = max(self.MIN_HEIGHT, start_h - dy)
+                    new_y = start_y + (start_h - new_h)
+                elif "bottom" in handle:
+                    new_h = max(self.MIN_HEIGHT, start_h + dy)
+
+                self.set_size(new_w, new_h)
+                if abs(new_x - self.pos().x()) > 0.001 or abs(new_y - self.pos().y()) > 0.001:
+                    self.setPos(new_x, new_y)
+                event.accept()
+                return
+            super().mouseMoveEvent(event)
+
+        def mouseReleaseEvent(self, event) -> None:
+            if self._resize_handle is not None:
+                self._resize_handle = None
+                self._resize_start_scene_pos = None
+                self._resize_start_item_pos = None
+                self._resize_start_size = None
+                self._update_hover_cursor(event.pos())
+                event.accept()
+                return
+            self.unsetCursor()
+            super().mouseReleaseEvent(event)
+
+        def contextMenuEvent(self, event) -> None:
+            builder = getattr(self, "report_builder", None)
+            if builder is not None and hasattr(builder, "_show_report_element_context_menu"):
+                builder._show_report_element_context_menu(self, event.screenPos())
+                event.accept()
+                return
+            super().contextMenuEvent(event)
+
+        def paint(self, painter: QPainter, _option, _widget=None) -> None:
+            rect = self.boundingRect()
+            painter.save()
+            if self.background.alpha() > 0:
+                painter.fillRect(rect, self.background)
+            pen = QPen(QColor("#1c6ea4") if self.isSelected() else QColor("#7a8794"))
+            pen.setStyle(Qt.DashLine if self.isSelected() else Qt.DotLine)
+            pen.setWidth(1)
+            painter.setPen(pen)
+            painter.drawRect(rect.adjusted(0.5, 0.5, -0.5, -0.5))
+
+            if self.item_type == "image":
+                pixmap = QPixmap(self.image_path) if self.image_path else QPixmap()
+                if not pixmap.isNull():
+                    painter.drawPixmap(rect.toRect(), pixmap)
+                else:
+                    painter.setPen(QColor("#777777"))
+                    painter.drawText(rect, Qt.AlignCenter, "Bild")
+            else:
+                font = QFont("Arial", int(self.font_point_size))
+                font.setBold(bool(self.font_bold))
+                font.setItalic(bool(self.font_italic))
+                font.setUnderline(bool(self.font_underline))
+                font.setStrikeOut(bool(self.font_strikeout))
+                painter.setFont(font)
+                painter.setPen(self.foreground)
+                display = self.text
+                if self.item_type == "field" and self.field_name:
+                    display = "{" + self.field_name + "}"
+                elif self.item_type == "special" and self.field_name:
+                    display = self.text or ("{" + self.field_name.upper() + "}")
+                if self.font_uppercase:
+                    display = display.upper()
+                painter.drawText(
+                    rect.adjusted(4, 2, -4, -2),
+                    Qt.AlignLeft | Qt.AlignVCenter | Qt.TextWordWrap,
+                    display,
+                )
+
+            # Stage ASM 31: sichtbare 8 Resize-Handles wie in einem klassischen
+            # Formular-/Reportdesigner. Sie liegen innerhalb des Elementrahmens,
+            # daher entstehen keine zusätzlichen Scene-/BoundingRect-Kosten.
+            if self.isSelected():
+                painter.setPen(QPen(QColor("#0b4670"), 1))
+                painter.setBrush(QBrush(QColor("#f7fbff")))
+                for handle_rect in self._handle_rects().values():
+                    painter.drawRect(handle_rect.adjusted(0.5, 0.5, -0.5, -0.5))
+            painter.restore()
+
+        def to_dict(self, band_top: float) -> Dict[str, object]:
+            return {
+                "type": self.item_type,
+                "text": self.text,
+                "section": self.section,
+                "field": self.field_name,
+                "image": self.image_path,
+                "x": float(self.pos().x()),
+                "y": float(self.pos().y() - band_top),
+                "width": self.item_width,
+                "height": self.item_height,
+                "font_size": int(self.font_point_size),
+                "bold": bool(self.font_bold),
+                "italic": bool(self.font_italic),
+                "underline": bool(self.font_underline),
+                "strikeout": bool(self.font_strikeout),
+                "uppercase": bool(self.font_uppercase),
+                "foreground": self.foreground.name(QColor.HexArgb),
+                "background": self.background.name(QColor.HexArgb),
+            }
+
+
+    class DBaseReportBuilderWidget(QWidget):
+        """Druckorientierter Bericht-Designer mit Kopf, Detail und Fuß."""
+
+        PROJECT_SUFFIX = ".d64report"
+        REPORT_CLIPBOARD_MIME = "application/x-d64-report-element+json"
+        SPECIAL_REPORT_ITEMS = (
+            ("Datum: jjjj-mm-dd", "date_yyyy_mm_dd"),
+            ("Datum: jj-mm-dd", "date_yy_mm_dd"),
+            ("Datum: dd-mm-jjjj", "date_dd_mm_yyyy"),
+            ("Datum: dd-mm-jj", "date_dd_mm_yy"),
+            ("Seiten-Nummer", "page_number"),
+            ("Anzahl Seiten", "page_count"),
+            ("Seite / Anzahl", "page_of_count"),
+        )
+
+        # Stage ASM 37: auswählbare Papierformate. Die Scene-Auflösung folgt
+        # weiterhin ca. 96 DPI (rund 3.78 Scene-Pixel/mm), damit bestehende
+        # Report-Elemente aus älteren Stages ihre physische Größe behalten.
+        PAPER_FORMATS = {
+            "A4": {
+                "label": "A4 - Standard",
+                "width_mm": 210.0,
+                "height_mm": 297.0,
+                "width": 794.0,
+                "height": 1123.0,
+            },
+            "A5": {
+                "label": "A5 - Half A4",
+                "width_mm": 148.0,
+                "height_mm": 210.0,
+                "width": 560.0,
+                "height": 794.0,
+            },
+        }
+        PAGE_WIDTH = 794.0
+        PAGE_HEIGHT = 1123.0
+        PAGE_WIDTH_MM = 210.0
+        PAGE_HEIGHT_MM = 297.0
+        HEADER_HEIGHT = 250.0
+        DETAIL_HEIGHT = 96.0
+        FOOTER_HEIGHT = 190.0
+        MM_TO_SCENE_X = PAGE_WIDTH / PAGE_WIDTH_MM
+        MM_TO_SCENE_Y = PAGE_HEIGHT / PAGE_HEIGHT_MM
+        DEFAULT_MARGIN_LEFT_MM = 20
+        DEFAULT_MARGIN_RIGHT_MM = 20
+        DEFAULT_MARGIN_TOP_MM = 15
+        DEFAULT_MARGIN_BOTTOM_MM = 15
+        # Stage ASM 37: Lochmarken links/rechts in der vertikalen Seitenmitte.
+        # Sie sind im Designer exakt 15 x 2 Scene-Pixel groß und werden im
+        # PDF/Druck proportional mit dem gewählten Papierformat skaliert.
+        PUNCH_MARK_WIDTH = 15.0
+        PUNCH_MARK_HEIGHT = 2.0
+
+        def __init__(self, owner, parent=None):
+            super().__init__(parent)
+            self.owner = owner
+            self.project_path: Optional[Path] = None
+            self.data_source_path: Optional[Path] = None
+            self.data_fields: List[str] = []
+            self.data_records: List[Dict[str, str]] = []
+            self._loading = False
+            self._dark_mode = False
+            self.page_format = "A4"
+            a4 = self.PAPER_FORMATS[self.page_format]
+            self.PAGE_WIDTH = float(a4["width"])
+            self.PAGE_HEIGHT = float(a4["height"])
+            self.PAGE_WIDTH_MM = float(a4["width_mm"])
+            self.PAGE_HEIGHT_MM = float(a4["height_mm"])
+            self.MM_TO_SCENE_X = self.PAGE_WIDTH / self.PAGE_WIDTH_MM
+            self.MM_TO_SCENE_Y = self.PAGE_HEIGHT / self.PAGE_HEIGHT_MM
+            self.margin_left_mm = int(self.DEFAULT_MARGIN_LEFT_MM)
+            self.margin_right_mm = int(self.DEFAULT_MARGIN_RIGHT_MM)
+            self.margin_top_mm = int(self.DEFAULT_MARGIN_TOP_MM)
+            self.margin_bottom_mm = int(self.DEFAULT_MARGIN_BOTTOM_MM)
+            self.header_height = float(self.HEADER_HEIGHT)
+            self.footer_height = float(self.FOOTER_HEIGHT)
+            self._build_ui()
+            self.new_report()
+
+        def _report_message_stylesheet(self) -> str:
+            """Theme fuer alle Meldungsdialoge des Bericht-Builders.
+
+            Statische QMessageBox.warning()/information()-Aufrufe uebernehmen
+            unter Windows nicht zuverlaessig das Stylesheet des eingebetteten
+            Dock-Widgets. Deshalb werden Report-Meldungen als eigene
+            QMessageBox-Instanzen erzeugt und explizit dem aktuellen
+            Dark-/Light-Mode angepasst.
+            """
+            if bool(self._dark_mode):
+                return (
+                    "QMessageBox{background-color:#050b18;color:#f2f5f8;}"
+                    "QMessageBox QLabel{color:#f2f5f8;background:transparent;}"
+                    "QMessageBox QPushButton{"
+                    "background-color:#163b73;color:#ffe600;"
+                    "border:1px solid #3375bd;border-radius:4px;"
+                    "min-width:82px;min-height:24px;padding:5px 10px;}"
+                    "QMessageBox QPushButton:hover{background-color:#245a9a;}"
+                    "QMessageBox QPushButton:pressed{background-color:#0d2b54;}"
+                    "QMessageBox QPushButton:default{border:1px solid #66c7ff;}"
+                )
+            return (
+                "QMessageBox{background-color:#f7f8fa;color:#111111;}"
+                "QMessageBox QLabel{color:#111111;background:transparent;}"
+                "QMessageBox QPushButton{"
+                "background-color:#e6edf5;color:#173a63;"
+                "border:1px solid #9aabba;border-radius:4px;"
+                "min-width:82px;min-height:24px;padding:5px 10px;}"
+                "QMessageBox QPushButton:hover{background-color:#d5e4f3;}"
+                "QMessageBox QPushButton:default{border:1px solid #6f91b3;}"
+            )
+
+        def _report_message(self, icon, title: str, text: str,
+                            buttons=QMessageBox.Ok,
+                            default_button=QMessageBox.Ok) -> int:
+            """Zeigt eine zum Bericht-Designer passend gestylte QMessageBox."""
+            box = QMessageBox(self)
+            box.setWindowTitle(str(title))
+            box.setIcon(icon)
+            box.setText(str(text))
+            box.setTextFormat(Qt.PlainText)
+            box.setStandardButtons(buttons)
+            if default_button is not None and default_button != QMessageBox.NoButton:
+                box.setDefaultButton(default_button)
+            box.setStyleSheet(self._report_message_stylesheet())
+            return box.exec_()
+
+        def _report_warning(self, text: str, title: str = "Bericht Builder") -> int:
+            return self._report_message(QMessageBox.Warning, title, text)
+
+        def _report_information(self, text: str, title: str = "Bericht Builder") -> int:
+            return self._report_message(QMessageBox.Information, title, text)
+
+        def _build_ui(self) -> None:
+            self.setObjectName("dbase_report_builder")
+            outer = QHBoxLayout(self)
+            # Stage ASM 31: der Report-Designer soll den kompletten vom Dock
+            # bereitgestellten Clientbereich benutzen. Keine künstlichen
+            # Außenränder mehr; nur der Splitter trennt Werkzeugbereich und
+            # eigentliche Designerfläche.
+            outer.setContentsMargins(0, 0, 0, 0)
+            outer.setSpacing(0)
+
+            splitter = QSplitter(Qt.Horizontal, self)
+            self.main_splitter = splitter
+            splitter.setChildrenCollapsible(True)
+            splitter.setHandleWidth(5)
+            outer.addWidget(splitter, 1)
+
+            tools = QWidget(splitter)
+            tools.setObjectName("dbase_report_tools")
+            tools.setMinimumWidth(230)
+            tools.setMaximumWidth(390)
+            tools.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+            tl = QVBoxLayout(tools)
+            # Stage ASM 35: Die linke Werkzeugspalte darf ihre Inhalts-Höhe
+            # nicht mehr an das Dock/Hauptfenster weitergeben. Zwei voneinander
+            # unabhängige ScrollAreas liegen in einem vertikalen Splitter:
+            # oben Datenquelle/Felder, unten Elemente + Seite/Bereiche.
+            tl.setContentsMargins(0, 0, 0, 0)
+            tl.setSpacing(0)
+
+            self.report_tools_splitter = QSplitter(Qt.Vertical, tools)
+            self.report_tools_splitter.setObjectName("dbase_report_tools_splitter")
+            self.report_tools_splitter.setChildrenCollapsible(False)
+            self.report_tools_splitter.setHandleWidth(5)
+            tl.addWidget(self.report_tools_splitter, 1)
+
+            # Oberer, separat scrollbarerer Bereich: Datenquelle + Feldliste.
+            self.source_scroll = QScrollArea(self.report_tools_splitter)
+            self.source_scroll.setObjectName("dbase_report_source_scroll")
+            self.source_scroll.setWidgetResizable(True)
+            self.source_scroll.setSizeAdjustPolicy(QAbstractScrollArea.AdjustIgnored)
+            self.source_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.source_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.source_scroll.setMinimumHeight(0)
+
+            source_panel = QWidget()
+            source_panel.setObjectName("dbase_report_source_panel")
+            source_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            source_layout = QVBoxLayout(source_panel)
+            source_layout.setContentsMargins(7, 7, 7, 7)
+            source_layout.setSpacing(6)
+
+            source_label = QLabel("Datenquelle / Tabelle / Query", source_panel)
+            source_layout.addWidget(source_label)
+            source_row = QHBoxLayout()
+            self.source_button = QPushButton("…", source_panel)
+            self.source_button.setFixedWidth(34)
+            self.source_edit = QLineEdit(source_panel)
+            self.source_edit.setPlaceholderText("*.dbf oder *.d64sql")
+            source_row.addWidget(self.source_button)
+            source_row.addWidget(self.source_edit, 1)
+            source_layout.addLayout(source_row)
+            self.source_button.clicked.connect(self.choose_data_source)
+            self.source_edit.editingFinished.connect(self._source_edit_finished)
+
+            self.field_list = QListWidget(source_panel)
+            self.field_list.setObjectName("dbase_report_fields")
+            self.field_list.setMinimumHeight(120)
+            self.field_list.itemDoubleClicked.connect(
+                lambda item: self.add_field(str(item.text()))
+            )
+            source_layout.addWidget(self.field_list, 1)
+            self.source_scroll.setWidget(source_panel)
+
+            # Unterer, ebenfalls scrollbarerer Bereich: Elementpalette,
+            # Eigenschaften, Seiteneinstellungen und Datei-/Druckaktionen.
+            self.settings_scroll = QScrollArea(self.report_tools_splitter)
+            self.settings_scroll.setObjectName("dbase_report_settings_scroll")
+            self.settings_scroll.setWidgetResizable(True)
+            self.settings_scroll.setSizeAdjustPolicy(QAbstractScrollArea.AdjustIgnored)
+            self.settings_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.settings_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.settings_scroll.setMinimumHeight(0)
+
+            settings_panel = QWidget()
+            settings_panel.setObjectName("dbase_report_settings_panel")
+            settings_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            settings_layout = QVBoxLayout(settings_panel)
+            settings_layout.setContentsMargins(7, 7, 7, 7)
+            settings_layout.setSpacing(6)
+
+            palette = QGridLayout()
+            self.add_label_button = QPushButton("Label", settings_panel)
+            self.add_field_button = QPushButton("Datenfeld", settings_panel)
+            self.add_image_button = QPushButton("Bild", settings_panel)
+            self.delete_item_button = QPushButton("Element löschen", settings_panel)
+            palette.addWidget(self.add_label_button, 0, 0)
+            palette.addWidget(self.add_field_button, 0, 1)
+            palette.addWidget(self.add_image_button, 1, 0)
+            palette.addWidget(self.delete_item_button, 1, 1)
+            settings_layout.addLayout(palette)
+            self.add_label_button.clicked.connect(self.add_label)
+            self.add_field_button.clicked.connect(self.add_selected_field)
+            self.add_image_button.clicked.connect(self.add_image)
+            self.delete_item_button.clicked.connect(self.delete_selected_element)
+
+            # Stage ASM 37: Papierformat direkt über der Element-GroupBox.
+            # Die Auswahl ändert ausschließlich die Report-Seite/Printer-
+            # Geometrie; die eigentlichen Designer-Werkzeuge bleiben gleich.
+            format_row = QHBoxLayout()
+            format_label = QLabel("Format", settings_panel)
+            self.page_format_combo = QComboBox(settings_panel)
+            self.page_format_combo.addItem("A4 - Standard", "A4")
+            self.page_format_combo.addItem("A5 - Half A4", "A5")
+            format_row.addWidget(format_label)
+            format_row.addWidget(self.page_format_combo, 1)
+            settings_layout.addLayout(format_row)
+            self.page_format_combo.currentIndexChanged.connect(self._page_format_changed)
+
+            props = QGroupBox("Element", settings_panel)
+            pl = QGridLayout(props)
+            self.section_combo = QComboBox(props)
+            self.section_combo.addItem("Kopfbereich", "header")
+            self.section_combo.addItem("Inhaltsbereich", "detail")
+            self.section_combo.addItem("Fußbereich", "footer")
+            self.element_text_edit = QLineEdit(props)
+            self.element_field_combo = QComboBox(props)
+            self.element_font_spin = QSpinBox(props)
+            self.element_font_spin.setRange(6, 72)
+            self.element_font_spin.setValue(10)
+            self.element_bold = QCheckBox("Fett", props)
+            self.element_italic = QCheckBox("Kursiv", props)
+            self.element_underline = QCheckBox("Unterstrichen", props)
+            self.element_strikeout = QCheckBox("Durchgestrichen", props)
+            self.element_uppercase = QCheckBox("Großbuchstaben", props)
+            pl.addWidget(QLabel("Bereich"), 0, 0); pl.addWidget(self.section_combo, 0, 1)
+            pl.addWidget(QLabel("Text"), 1, 0); pl.addWidget(self.element_text_edit, 1, 1)
+            pl.addWidget(QLabel("Datenfeld"), 2, 0); pl.addWidget(self.element_field_combo, 2, 1)
+            pl.addWidget(QLabel("Schrift"), 3, 0); pl.addWidget(self.element_font_spin, 3, 1)
+            pl.addWidget(self.element_bold, 4, 0)
+            pl.addWidget(self.element_italic, 4, 1)
+            pl.addWidget(self.element_underline, 5, 0)
+            pl.addWidget(self.element_strikeout, 5, 1)
+            pl.addWidget(self.element_uppercase, 6, 0, 1, 2)
+            settings_layout.addWidget(props)
+
+            # Stage ASM 46: dynamische Druck-/Seitenfelder. Diese Elemente
+            # werden wie normale Berichtselemente auf der Scene platziert,
+            # aber erst im PDF-/Druckpfad mit Datum/Seitennummern aufgeloest.
+            misc_group = QGroupBox("Sonstige", settings_panel)
+            misc_layout = QHBoxLayout(misc_group)
+            self.misc_list = QListWidget(misc_group)
+            self.misc_list.setObjectName("dbase_report_misc_fields")
+            self.misc_add_button = QPushButton("Hinzufügen", misc_group)
+            self.misc_add_button.setMinimumWidth(84)
+            for label, token in self.SPECIAL_REPORT_ITEMS:
+                list_item = QListWidgetItem(label)
+                list_item.setData(Qt.UserRole, token)
+                self.misc_list.addItem(list_item)
+            misc_layout.addWidget(self.misc_list, 1)
+            misc_layout.addWidget(self.misc_add_button, 0, Qt.AlignTop)
+            settings_layout.addWidget(misc_group)
+            self.misc_add_button.clicked.connect(self.add_selected_misc_item)
+            self.misc_list.itemDoubleClicked.connect(lambda _item: self.add_selected_misc_item())
+
+            self.section_combo.currentIndexChanged.connect(self._property_changed)
+            self.element_text_edit.editingFinished.connect(self._property_changed)
+            self.element_field_combo.currentIndexChanged.connect(self._property_changed)
+            self.element_font_spin.valueChanged.connect(self._property_changed)
+            self.element_bold.toggled.connect(self._property_changed)
+            self.element_italic.toggled.connect(self._property_changed)
+            self.element_underline.toggled.connect(self._property_changed)
+            self.element_strikeout.toggled.connect(self._property_changed)
+            self.element_uppercase.toggled.connect(self._property_changed)
+
+            # Stage ASM 34: A4-Seitenränder sowie frei einstellbare Kopf-/Fußhöhe.
+            # Stage ASM 35: Seite/Bereiche liegt zusammen mit den Element-
+            # Eigenschaften in der unteren ScrollArea und kann das Hauptfenster
+            # deshalb nicht mehr über seinen sizeHint in der Höhe vergrößern.
+            page_group = QGroupBox("Seite / Bereiche", settings_panel)
+            pg = QGridLayout(page_group)
+            self.margin_left_spin = QSpinBox(page_group)
+            self.margin_right_spin = QSpinBox(page_group)
+            self.margin_top_spin = QSpinBox(page_group)
+            self.margin_bottom_spin = QSpinBox(page_group)
+            for spin in (
+                self.margin_left_spin, self.margin_right_spin,
+                self.margin_top_spin, self.margin_bottom_spin,
+            ):
+                spin.setRange(0, 80)
+                spin.setSuffix(" mm")
+            self.margin_left_spin.setValue(self.margin_left_mm)
+            self.margin_right_spin.setValue(self.margin_right_mm)
+            self.margin_top_spin.setValue(self.margin_top_mm)
+            self.margin_bottom_spin.setValue(self.margin_bottom_mm)
+
+            self.header_height_spin = QSpinBox(page_group)
+            self.footer_height_spin = QSpinBox(page_group)
+            for spin in (self.header_height_spin, self.footer_height_spin):
+                spin.setRange(20, 140)
+                spin.setSuffix(" mm")
+            self.header_height_spin.setValue(max(20, int(round(self.header_height / self.MM_TO_SCENE_Y))))
+            self.footer_height_spin.setValue(max(20, int(round(self.footer_height / self.MM_TO_SCENE_Y))))
+
+            pg.addWidget(QLabel("Rand links"), 0, 0); pg.addWidget(self.margin_left_spin, 0, 1)
+            pg.addWidget(QLabel("Rand rechts"), 1, 0); pg.addWidget(self.margin_right_spin, 1, 1)
+            pg.addWidget(QLabel("Rand oben"), 2, 0); pg.addWidget(self.margin_top_spin, 2, 1)
+            pg.addWidget(QLabel("Rand unten"), 3, 0); pg.addWidget(self.margin_bottom_spin, 3, 1)
+            pg.addWidget(QLabel("Kopfbereich"), 4, 0); pg.addWidget(self.header_height_spin, 4, 1)
+            pg.addWidget(QLabel("Fußbereich"), 5, 0); pg.addWidget(self.footer_height_spin, 5, 1)
+            settings_layout.addWidget(page_group)
+
+            for spin in (
+                self.margin_left_spin, self.margin_right_spin,
+                self.margin_top_spin, self.margin_bottom_spin,
+                self.header_height_spin, self.footer_height_spin,
+            ):
+                spin.valueChanged.connect(self._page_geometry_changed)
+
+            file_buttons = QGridLayout()
+            self.new_button = QPushButton("Neu", settings_panel)
+            self.save_button = QPushButton("Speichern", settings_panel)
+            self.save_as_button = QPushButton("Speichern unter…", settings_panel)
+            self.load_button = QPushButton("Laden", settings_panel)
+            self.pdf_button = QPushButton("PDF", settings_panel)
+            self.print_button = QPushButton("Drucken", settings_panel)
+            file_buttons.addWidget(self.new_button, 0, 0)
+            file_buttons.addWidget(self.save_button, 0, 1)
+            file_buttons.addWidget(self.save_as_button, 1, 0)
+            file_buttons.addWidget(self.load_button, 1, 1)
+            file_buttons.addWidget(self.pdf_button, 2, 0)
+            file_buttons.addWidget(self.print_button, 2, 1)
+            settings_layout.addLayout(file_buttons)
+            settings_layout.addStretch(1)
+            self.new_button.clicked.connect(self.new_report)
+            self.save_button.clicked.connect(self.save_report)
+            self.save_as_button.clicked.connect(self.save_report_as)
+            self.load_button.clicked.connect(self.load_report)
+            self.pdf_button.clicked.connect(self.export_pdf)
+            self.print_button.clicked.connect(self.print_report)
+
+            self.settings_scroll.setWidget(settings_panel)
+
+            # Zwischen Datenquelle und Element/Seite-Bereich liegt nun ein
+            # echter Splitter. Beide Seiten bleiben trotz großer Inhalte auf
+            # die verfügbare Dockhöhe begrenzt und werden intern gescrollt.
+            self.report_tools_splitter.addWidget(self.source_scroll)
+            self.report_tools_splitter.addWidget(self.settings_scroll)
+            self.report_tools_splitter.setStretchFactor(0, 1)
+            self.report_tools_splitter.setStretchFactor(1, 1)
+            self.report_tools_splitter.setSizes([260, 390])
+
+            right = QWidget(splitter)
+            right.setObjectName("dbase_report_designer_area")
+            right.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            rl = QVBoxLayout(right)
+            rl.setContentsMargins(0, 0, 0, 0)
+            rl.setSpacing(0)
+            self.scene = QGraphicsScene(self)
+            self.scene.setSceneRect(0, 0, self.PAGE_WIDTH + 80, self.PAGE_HEIGHT + 80)
+            self.scene.selectionChanged.connect(self._selection_changed)
+            self.view = QGraphicsView(self.scene, right)
+            self.view.setObjectName("dbase_report_view")
+            self.view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            self.view.setRenderHints(QPainter.Antialiasing | QPainter.TextAntialiasing)
+            self.view.setDragMode(QGraphicsView.RubberBandDrag)
+            self.view.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+            self.view.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.view.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.view.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+            self.view.setResizeAnchor(QGraphicsView.AnchorViewCenter)
+            rl.addWidget(self.view, 1)
+
+            # Werkzeugspalte bleibt auf Wunsch einklappbar; der Designer ist
+            # der einzige Stretch-Bereich und erhält jeden zusätzlich
+            # verfügbaren Pixel des Dockingfensters.
+            splitter.setStretchFactor(0, 0)
+            splitter.setStretchFactor(1, 1)
+            splitter.setCollapsible(0, True)
+            splitter.setCollapsible(1, False)
+            splitter.setSizes([270, 100000])
+
+        def _paper_format_spec(self, key: str) -> Dict[str, float]:
+            key = str(key or "A4").upper()
+            return self.PAPER_FORMATS.get(key, self.PAPER_FORMATS["A4"])
+
+        def _apply_page_format(
+            self, key: str, *, move_elements: bool = True, redraw: bool = True
+        ) -> None:
+            """Papierformat wechseln, ohne Scene-Millimetermaßstab zu zerstören."""
+            key = str(key or "A4").upper()
+            if key not in self.PAPER_FORMATS:
+                key = "A4"
+
+            old_tops = None
+            old_mm_y = float(self.MM_TO_SCENE_Y or 1.0)
+            header_mm = float(self.header_height) / old_mm_y
+            footer_mm = float(self.footer_height) / old_mm_y
+            if move_elements and hasattr(self, "scene"):
+                old_tops = {
+                    name: self._section_top(name)
+                    for name in ("header", "detail", "footer")
+                }
+
+            spec = self._paper_format_spec(key)
+            self.page_format = key
+            self.PAGE_WIDTH = float(spec["width"])
+            self.PAGE_HEIGHT = float(spec["height"])
+            self.PAGE_WIDTH_MM = float(spec["width_mm"])
+            self.PAGE_HEIGHT_MM = float(spec["height_mm"])
+            self.MM_TO_SCENE_X = self.PAGE_WIDTH / self.PAGE_WIDTH_MM
+            self.MM_TO_SCENE_Y = self.PAGE_HEIGHT / self.PAGE_HEIGHT_MM
+
+            # Kopf/Fuß behalten beim Formatwechsel ihre physische Höhe in mm.
+            self.header_height = header_mm * self.MM_TO_SCENE_Y
+            self.footer_height = footer_mm * self.MM_TO_SCENE_Y
+            minimum_detail = 80.0
+            max_bands = max(minimum_detail, self.PAGE_HEIGHT - minimum_detail)
+            if self.header_height + self.footer_height > max_bands:
+                self.footer_height = max(
+                    20.0 * self.MM_TO_SCENE_Y,
+                    max_bands - self.header_height,
+                )
+            if self.header_height + self.footer_height > max_bands:
+                self.header_height = max(
+                    20.0 * self.MM_TO_SCENE_Y,
+                    max_bands - self.footer_height,
+                )
+
+            if hasattr(self, "page_format_combo"):
+                idx = self.page_format_combo.findData(key)
+                if idx >= 0 and self.page_format_combo.currentIndex() != idx:
+                    self.page_format_combo.blockSignals(True)
+                    self.page_format_combo.setCurrentIndex(idx)
+                    self.page_format_combo.blockSignals(False)
+
+            if hasattr(self, "header_height_spin"):
+                max_band_mm = max(20, int(self.PAGE_HEIGHT_MM - 40.0))
+                for spin in (self.header_height_spin, self.footer_height_spin):
+                    spin.blockSignals(True)
+                    spin.setMaximum(max_band_mm)
+                    spin.blockSignals(False)
+                self.header_height_spin.blockSignals(True)
+                self.footer_height_spin.blockSignals(True)
+                self.header_height_spin.setValue(
+                    max(20, int(round(self.header_height / self.MM_TO_SCENE_Y)))
+                )
+                self.footer_height_spin.setValue(
+                    max(20, int(round(self.footer_height / self.MM_TO_SCENE_Y)))
+                )
+                self.header_height_spin.blockSignals(False)
+                self.footer_height_spin.blockSignals(False)
+
+            if hasattr(self, "scene"):
+                self.scene.setSceneRect(
+                    0, 0, self.PAGE_WIDTH + 80.0, self.PAGE_HEIGHT + 80.0
+                )
+
+            if old_tops is not None:
+                new_tops = {
+                    name: self._section_top(name)
+                    for name in ("header", "detail", "footer")
+                }
+                for item in self._elements():
+                    delta = new_tops.get(item.section, 0.0) - old_tops.get(item.section, 0.0)
+                    if abs(delta) > 0.001:
+                        item.setPos(item.pos().x(), item.pos().y() + delta)
+
+            if redraw and hasattr(self, "scene"):
+                self._remove_page_guides()
+                self._draw_bands()
+
+        def _page_format_changed(self, *_args) -> None:
+            if self._loading:
+                return
+            key = str(self.page_format_combo.currentData() or "A4")
+            if key == self.page_format:
+                return
+            self._apply_page_format(key, move_elements=True, redraw=True)
+
+        def _printer_page_size(self):
+            return QPrinter.A5 if self.page_format == "A5" else QPrinter.A4
+
+        def _band_layout(self) -> Dict[str, Tuple[float, float]]:
+            header_top = 20.0
+            detail_top = header_top + float(self.header_height)
+            footer_top = self.PAGE_HEIGHT - float(self.footer_height) + 20.0
+            return {
+                "header": (header_top, float(self.header_height)),
+                "detail": (detail_top, max(80.0, footer_top - detail_top)),
+                "footer": (footer_top, float(self.footer_height)),
+            }
+
+        def _page_margin_rect(self) -> QRectF:
+            left = float(self.margin_left_mm) * self.MM_TO_SCENE_X
+            right = float(self.margin_right_mm) * self.MM_TO_SCENE_X
+            top = float(self.margin_top_mm) * self.MM_TO_SCENE_Y
+            bottom = float(self.margin_bottom_mm) * self.MM_TO_SCENE_Y
+            width = max(1.0, self.PAGE_WIDTH - left - right)
+            height = max(1.0, self.PAGE_HEIGHT - top - bottom)
+            return QRectF(20.0 + left, 20.0 + top, width, height)
+
+        def _remove_page_guides(self) -> None:
+            for item in list(self.scene.items()):
+                if item.data(0) in {
+                    "report_page", "report_band", "report_band_label",
+                    "report_margin_guide", "report_margin_label",
+                    "report_punch_mark",
+                }:
+                    self.scene.removeItem(item)
+
+        def _page_geometry_changed(self, *_args) -> None:
+            if self._loading:
+                return
+            old_tops = {name: self._section_top(name) for name in ("header", "detail", "footer")}
+
+            self.margin_left_mm = int(self.margin_left_spin.value())
+            self.margin_right_mm = int(self.margin_right_spin.value())
+            self.margin_top_mm = int(self.margin_top_spin.value())
+            self.margin_bottom_mm = int(self.margin_bottom_spin.value())
+
+            requested_header = float(self.header_height_spin.value()) * self.MM_TO_SCENE_Y
+            requested_footer = float(self.footer_height_spin.value()) * self.MM_TO_SCENE_Y
+            minimum_detail = 80.0
+            max_bands = max(minimum_detail, self.PAGE_HEIGHT - minimum_detail)
+            sender = self.sender()
+            if requested_header + requested_footer > max_bands:
+                if sender is self.header_height_spin:
+                    requested_header = max(20.0 * self.MM_TO_SCENE_Y, max_bands - requested_footer)
+                    self.header_height_spin.blockSignals(True)
+                    self.header_height_spin.setValue(int(round(requested_header / self.MM_TO_SCENE_Y)))
+                    self.header_height_spin.blockSignals(False)
+                else:
+                    requested_footer = max(20.0 * self.MM_TO_SCENE_Y, max_bands - requested_header)
+                    self.footer_height_spin.blockSignals(True)
+                    self.footer_height_spin.setValue(int(round(requested_footer / self.MM_TO_SCENE_Y)))
+                    self.footer_height_spin.blockSignals(False)
+            self.header_height = requested_header
+            self.footer_height = requested_footer
+
+            new_tops = {name: self._section_top(name) for name in ("header", "detail", "footer")}
+            for item in self._elements():
+                delta = new_tops.get(item.section, 0.0) - old_tops.get(item.section, 0.0)
+                if abs(delta) > 0.001:
+                    item.setPos(item.pos().x(), item.pos().y() + delta)
+
+            self._remove_page_guides()
+            self._draw_bands()
+
+        def _draw_bands(self) -> None:
+            self.scene.setSceneRect(0, 0, self.PAGE_WIDTH + 80.0, self.PAGE_HEIGHT + 80.0)
+            bands = self._band_layout()
+            page = QGraphicsRectItem(20, 20, self.PAGE_WIDTH, self.PAGE_HEIGHT)
+            page.setBrush(QColor("#ffffff"))
+            page.setPen(QPen(QColor("#777777"), 1))
+            page.setZValue(-100)
+            page.setData(0, "report_page")
+            self.scene.addItem(page)
+            colors = {
+                "header": QColor(225, 239, 250, 175),
+                "detail": QColor(250, 250, 250, 200),
+                "footer": QColor(236, 236, 236, 210),
+            }
+            names = {"header": "Kopfbereich", "detail": "Inhaltsbereich (wiederholend)", "footer": "Fußbereich"}
+            for key in ("header", "detail", "footer"):
+                top, height = bands[key]
+                rect = QGraphicsRectItem(20, top, self.PAGE_WIDTH, height)
+                rect.setBrush(colors[key])
+                rect.setPen(QPen(QColor("#7e94a8"), 1, Qt.DashLine))
+                rect.setZValue(-80)
+                rect.setData(0, "report_band")
+                self.scene.addItem(rect)
+                label = QGraphicsTextItem(names[key])
+                label.setDefaultTextColor(QColor("#316a92"))
+                label.setPos(26, top + 2)
+                label.setZValue(-70)
+                label.setData(0, "report_band_label")
+                self.scene.addItem(label)
+
+            # Stage ASM 34: gestrichelte Druckrand-Hilfe. Sie ist ausschließlich
+            # ein Scene-Guide. PDF/Druck verwenden _render_to_printer() und
+            # zeichnen diese QGraphicsItems daher absichtlich niemals mit.
+            margin_rect = QGraphicsRectItem(self._page_margin_rect())
+            margin_pen = QPen(QColor("#d26a2e"), 1, Qt.DashLine)
+            margin_pen.setCosmetic(True)
+            margin_rect.setPen(margin_pen)
+            margin_rect.setBrush(QBrush(Qt.NoBrush))
+            margin_rect.setZValue(-55)
+            margin_rect.setData(0, "report_margin_guide")
+            self.scene.addItem(margin_rect)
+
+            margin_label = QGraphicsTextItem("Druckrand (nur Designer)")
+            margin_label.setDefaultTextColor(QColor("#b65a25"))
+            margin_label.setPos(margin_rect.rect().left() + 4.0, margin_rect.rect().top() + 2.0)
+            margin_label.setZValue(-54)
+            margin_label.setData(0, "report_margin_label")
+            self.scene.addItem(margin_label)
+
+            # Stage ASM 36: Loch-/Ausrichtungsmarken. Anders als der
+            # gestrichelte Druckrand sind diese beiden Marken Bestandteil des
+            # eigentlichen Berichts und werden deshalb auch in PDF/Druck
+            # ausgegeben. Im Designer liegen sie exakt am linken/rechten
+            # Seitenrand des aktiven Formats und mittig in der Seitenhoehe.
+            mark_w = float(self.PUNCH_MARK_WIDTH)
+            mark_h = float(self.PUNCH_MARK_HEIGHT)
+            page_left = 20.0
+            page_right = page_left + float(self.PAGE_WIDTH)
+            mark_y = 20.0 + (float(self.PAGE_HEIGHT) - mark_h) / 2.0
+            for mark_x in (page_left, page_right - mark_w):
+                mark = QGraphicsRectItem(mark_x, mark_y, mark_w, mark_h)
+                mark.setPen(QPen(Qt.NoPen))
+                mark.setBrush(QBrush(QColor("#101010")))
+                mark.setZValue(-40)
+                mark.setData(0, "report_punch_mark")
+                self.scene.addItem(mark)
+
+        def _clear_report_scene(self) -> None:
+            self.scene.clear()
+            self._draw_bands()
+
+        def new_report(self) -> None:
+            self.project_path = None
+            self.data_source_path = None
+            # Neue Berichte beginnen immer mit dem Standardformat A4.
+            self._apply_page_format("A4", move_elements=False, redraw=False)
+            self.data_fields = []
+            self.data_records = []
+            self.source_edit.clear()
+            self.field_list.clear()
+            self.element_field_combo.clear()
+            self.margin_left_mm = int(self.DEFAULT_MARGIN_LEFT_MM)
+            self.margin_right_mm = int(self.DEFAULT_MARGIN_RIGHT_MM)
+            self.margin_top_mm = int(self.DEFAULT_MARGIN_TOP_MM)
+            self.margin_bottom_mm = int(self.DEFAULT_MARGIN_BOTTOM_MM)
+            self.header_height = float(self.HEADER_HEIGHT)
+            self.footer_height = float(self.FOOTER_HEIGHT)
+            self._loading = True
+            try:
+                self.margin_left_spin.setValue(self.margin_left_mm)
+                self.margin_right_spin.setValue(self.margin_right_mm)
+                self.margin_top_spin.setValue(self.margin_top_mm)
+                self.margin_bottom_spin.setValue(self.margin_bottom_mm)
+                self.header_height_spin.setValue(max(20, int(round(self.header_height / self.MM_TO_SCENE_Y))))
+                self.footer_height_spin.setValue(max(20, int(round(self.footer_height / self.MM_TO_SCENE_Y))))
+            finally:
+                self._loading = False
+            self._clear_report_scene()
+            # DIN-5008-nahe Grundstruktur: links Anschrift, rechts Kontaktdaten.
+            self._add_element(
+                "label",
+                "{NAME}\n{STRASSE}\n{PLZ} {ORT}",
+                section="header", x=55, y=78, width=330, height=115,
+            )
+            self._add_element(
+                "label",
+                "Aktenzeichen: {AKTENZEICHEN}\nAnsprechpartner: {ANSPRECHPARTNER}\nTelefon: {TELEFON}\nDatum: {DATUM}",
+                section="header", x=455, y=72, width=300, height=125,
+            )
+            self._add_element(
+                "label",
+                "Geschäftsführer: ____________________    Bankverbindung: ____________________\nHinweis: Es gelten unsere Allgemeinen Geschäftsbedingungen (AGB).",
+                section="footer", x=55, y=38, width=700, height=70,
+            )
+            self.scene.clearSelection()
+            self._selection_changed()
+
+        def _section_top(self, section: str) -> float:
+            return self._band_layout().get(str(section), self._band_layout()["detail"])[0]
+
+        def _add_element(
+            self, item_type: str, text: str, *, section: str = "detail",
+            field_name: str = "", image_path: str = "",
+            x: float = 70.0, y: float = 50.0,
+            width: float = 220.0, height: float = 42.0,
+        ) -> DBaseReportElement:
+            item = DBaseReportElement(
+                item_type, text, section=section, field_name=field_name,
+                image_path=image_path, width=width, height=height,
+            )
+            item.report_builder = self
+            item.setPos(float(x), self._section_top(section) + float(y))
+            self.scene.addItem(item)
+            self.scene.clearSelection()
+            item.setSelected(True)
+            return item
+
+        def add_label(self) -> None:
+            self._add_element("label", "Text", section="detail", x=70, y=38)
+
+        def add_selected_field(self) -> None:
+            item = self.field_list.currentItem()
+            if item is None:
+                return
+            self.add_field(item.text())
+
+        def add_field(self, name: str) -> None:
+            name = str(name or "").strip()
+            if name:
+                self._add_element("field", "", section="detail", field_name=name, x=70, y=38)
+
+        def add_image(self) -> None:
+            filename, _ = QFileDialog.getOpenFileName(
+                self, "Bild für Bericht auswählen", str(Path.cwd()),
+                "Bilder (*.png *.jpg *.jpeg *.bmp *.gif);;Alle Dateien (*)",
+            )
+            if filename:
+                self._add_element("image", "", section="detail", image_path=filename,
+                                  x=500, y=28, width=150, height=80)
+
+        def add_selected_misc_item(self) -> None:
+            current = self.misc_list.currentItem() if hasattr(self, "misc_list") else None
+            if current is None:
+                return
+            token = str(current.data(Qt.UserRole) or "").strip()
+            label = str(current.text() or "").strip()
+            if not token:
+                return
+            preview = {
+                "date_yyyy_mm_dd": "{DATE_YYYY_MM_DD}",
+                "date_yy_mm_dd": "{DATE_YY_MM_DD}",
+                "date_dd_mm_yyyy": "{DATE_DD_MM_YYYY}",
+                "date_dd_mm_yy": "{DATE_DD_MM_YY}",
+                "page_number": "{PAGE_NUMBER}",
+                "page_count": "{PAGE_COUNT}",
+                "page_of_count": "{PAGE_OF_COUNT}",
+            }.get(token, label)
+            self._add_element(
+                "special", preview, section="detail", field_name=token,
+                x=70, y=38, width=180, height=36,
+            )
+
+        def _clipboard_element_payload(self, item: DBaseReportElement) -> Dict[str, object]:
+            payload = item.to_dict(self._section_top(item.section))
+            payload["clipboard_version"] = 1
+            return payload
+
+        def _clipboard_has_report_element(self) -> bool:
+            mime = QApplication.clipboard().mimeData()
+            return bool(mime is not None and mime.hasFormat(self.REPORT_CLIPBOARD_MIME))
+
+        def cut_report_element(self, item: Optional[DBaseReportElement]) -> None:
+            if item is None:
+                return
+            try:
+                raw = json.dumps(self._clipboard_element_payload(item), ensure_ascii=False).encode("utf-8")
+                mime = QMimeData()
+                mime.setData(self.REPORT_CLIPBOARD_MIME, raw)
+                mime.setText(raw.decode("utf-8"))
+                QApplication.clipboard().setMimeData(mime)
+            except Exception as exc:
+                self._report_warning(f"Element konnte nicht in die Zwischenablage kopiert werden:\n{exc}")
+                return
+            self.scene.removeItem(item)
+            self._selection_changed()
+
+        def paste_report_element(self) -> None:
+            mime = QApplication.clipboard().mimeData()
+            if mime is None or not mime.hasFormat(self.REPORT_CLIPBOARD_MIME):
+                return
+            try:
+                raw = bytes(mime.data(self.REPORT_CLIPBOARD_MIME)).decode("utf-8")
+                entry = json.loads(raw)
+                section = str(entry.get("section", "detail") or "detail")
+                item = self._add_element(
+                    str(entry.get("type", "label") or "label"),
+                    str(entry.get("text", "") or ""),
+                    section=section,
+                    field_name=str(entry.get("field", "") or ""),
+                    image_path=str(entry.get("image", "") or ""),
+                    x=float(entry.get("x", 70.0)) + 20.0,
+                    y=float(entry.get("y", 38.0)) + 20.0,
+                    width=float(entry.get("width", 220.0)),
+                    height=float(entry.get("height", 42.0)),
+                )
+                item.font_point_size = int(entry.get("font_size", 10) or 10)
+                item.font_bold = bool(entry.get("bold", False))
+                item.font_italic = bool(entry.get("italic", False))
+                item.font_underline = bool(entry.get("underline", False))
+                item.font_strikeout = bool(entry.get("strikeout", False))
+                item.font_uppercase = bool(entry.get("uppercase", False))
+                fg = QColor(str(entry.get("foreground", "#ff101010")))
+                bg = QColor(str(entry.get("background", "#00ffffff")))
+                if fg.isValid():
+                    item.foreground = fg
+                if bg.isValid():
+                    item.background = bg
+                item.update()
+                self._selection_changed()
+            except Exception as exc:
+                self._report_warning(f"Element konnte nicht eingefügt werden:\n{exc}")
+
+        def delete_all_report_fields(self) -> None:
+            for element in list(self._elements()):
+                self.scene.removeItem(element)
+            self.scene.clearSelection()
+            self._selection_changed()
+
+        def show_report_help(self) -> None:
+            if hasattr(self.owner, "show_chm_viewer"):
+                self.owner.show_chm_viewer(
+                    context_language="dbase",
+                    context_word="Bericht Builder",
+                )
+            else:
+                self._report_information("Für den Bericht Builder ist derzeit kein CHM-Viewer verfügbar.")
+
+        def _show_report_element_context_menu(self, item: DBaseReportElement, screen_pos) -> None:
+            if not item.isSelected():
+                self.scene.clearSelection()
+                item.setSelected(True)
+            menu = QMenu(self)
+            cut_action = menu.addAction("Ausschneiden")
+            paste_action = menu.addAction("Einfügen")
+            paste_action.setEnabled(self._clipboard_has_report_element())
+            delete_action = menu.addAction("Löschen")
+            menu.addSeparator()
+            delete_all_action = menu.addAction("Alle Felder löschen")
+            help_action = menu.addAction("Hilfe")
+            chosen = menu.exec_(screen_pos)
+            if chosen is cut_action:
+                self.cut_report_element(item)
+            elif chosen is paste_action:
+                self.paste_report_element()
+            elif chosen is delete_action:
+                self.delete_selected_element()
+            elif chosen is delete_all_action:
+                self.delete_all_report_fields()
+            elif chosen is help_action:
+                self.show_report_help()
+
+        def delete_selected_element(self) -> None:
+            for item in list(self.scene.selectedItems()):
+                if isinstance(item, DBaseReportElement):
+                    self.scene.removeItem(item)
+
+        def _selected_element(self) -> Optional[DBaseReportElement]:
+            for item in self.scene.selectedItems():
+                if isinstance(item, DBaseReportElement):
+                    return item
+            return None
+
+        def _selection_changed(self) -> None:
+            item = self._selected_element()
+            enabled = item is not None
+            for widget in (
+                self.section_combo, self.element_text_edit,
+                self.element_font_spin, self.element_bold, self.element_italic,
+                self.element_underline, self.element_strikeout, self.element_uppercase,
+                self.delete_item_button,
+            ):
+                widget.setEnabled(enabled)
+            self.element_field_combo.setEnabled(bool(item is not None and item.item_type == "field"))
+            if item is None:
+                return
+            self._loading = True
+            try:
+                idx = self.section_combo.findData(item.section)
+                if idx >= 0: self.section_combo.setCurrentIndex(idx)
+                self.element_text_edit.setText(item.text)
+                idx = self.element_field_combo.findText(item.field_name)
+                if idx >= 0: self.element_field_combo.setCurrentIndex(idx)
+                self.element_font_spin.setValue(int(item.font_point_size))
+                self.element_bold.setChecked(bool(item.font_bold))
+                self.element_italic.setChecked(bool(item.font_italic))
+                self.element_underline.setChecked(bool(item.font_underline))
+                self.element_strikeout.setChecked(bool(item.font_strikeout))
+                self.element_uppercase.setChecked(bool(item.font_uppercase))
+            finally:
+                self._loading = False
+
+        def _property_changed(self, *_args) -> None:
+            if self._loading:
+                return
+            item = self._selected_element()
+            if item is None:
+                return
+            old_top = self._section_top(item.section)
+            rel_y = item.pos().y() - old_top
+            new_section = str(self.section_combo.currentData() or item.section)
+            item.section = new_section
+            item.setPos(item.pos().x(), self._section_top(new_section) + max(24.0, rel_y))
+            item.text = self.element_text_edit.text()
+            if item.item_type == "field":
+                item.field_name = self.element_field_combo.currentText().strip()
+            item.font_point_size = self.element_font_spin.value()
+            item.font_bold = self.element_bold.isChecked()
+            item.font_italic = self.element_italic.isChecked()
+            item.font_underline = self.element_underline.isChecked()
+            item.font_strikeout = self.element_strikeout.isChecked()
+            item.font_uppercase = self.element_uppercase.isChecked()
+            item.update()
+
+        def choose_data_source(self) -> None:
+            filename, _ = QFileDialog.getOpenFileName(
+                self, "Datenquelle für Bericht auswählen", str(Path.cwd()),
+                "dBase Daten (*.dbf *.d64sql);;DBF Tabellen (*.dbf);;SQL Builder (*.d64sql);;Alle Dateien (*)",
+            )
+            if filename:
+                self.set_data_source(Path(filename))
+
+        def _source_edit_finished(self) -> None:
+            value = self.source_edit.text().strip()
+            if value:
+                self.set_data_source(Path(value))
+
+        def set_data_source(self, path: Path) -> None:
+            try:
+                path = Path(path).expanduser().resolve()
+            except OSError:
+                path = Path(path).expanduser()
+            fields: List[str] = []
+            records: List[Dict[str, str]] = []
+            try:
+                if path.suffix.casefold() == ".dbf":
+                    table = read_dbase_dbf(path)
+                    fields = [str(field.name) for field in table.fields]
+                    records = [
+                        {str(k): "" if v is None else str(v) for k, v in dict(values).items()}
+                        for deleted, values in table.records if not deleted
+                    ]
+                elif path.suffix.casefold() == ".d64sql":
+                    # Stage 43: echter SQL-Pfad. Lokale DBF-Queries laufen ueber
+                    # den integrierten Parser; fuer weitergehenden SQL-Dialekt
+                    # bleibt eine aktive ODBC-Verbindung als Fallback moeglich.
+                    fields, records = self._load_sql_report_records(path)
+                else:
+                    raise ValueError("Unterstützt werden *.dbf und *.d64sql.")
+            except Exception as exc:
+                self._report_warning(f"Datenquelle konnte nicht geladen werden:\n{path}\n\n{exc}")
+                return
+            self.data_source_path = path
+            self.data_fields = fields
+            self.data_records = records
+            self.source_edit.setText(str(path))
+            self.field_list.clear()
+            self.element_field_combo.clear()
+            for field_name in fields:
+                self.field_list.addItem(field_name)
+                self.element_field_combo.addItem(field_name)
+
+        def _elements(self) -> List[DBaseReportElement]:
+            return [item for item in self.scene.items() if isinstance(item, DBaseReportElement)]
+
+        def _payload(self) -> Dict[str, object]:
+            bands = self._band_layout()
+            return {
+                "format": "d64-report-builder",
+                "version": 5,
+                "data_source": str(self.data_source_path or self.source_edit.text().strip()),
+                "page": {
+                    "format": self.page_format,
+                    "width": self.PAGE_WIDTH,
+                    "height": self.PAGE_HEIGHT,
+                    "width_mm": self.PAGE_WIDTH_MM,
+                    "height_mm": self.PAGE_HEIGHT_MM,
+                    "margins_mm": {
+                        "left": int(self.margin_left_mm),
+                        "right": int(self.margin_right_mm),
+                        "top": int(self.margin_top_mm),
+                        "bottom": int(self.margin_bottom_mm),
+                    },
+                },
+                "bands": {
+                    name: {"top": top, "height": height}
+                    for name, (top, height) in bands.items()
+                },
+                "elements": [item.to_dict(self._section_top(item.section)) for item in self._elements()],
+            }
+
+        def _write_report(self, path: Path) -> bool:
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(self._payload(), ensure_ascii=False, indent=2), encoding="utf-8")
+            except OSError as exc:
+                self._report_warning(f"Bericht konnte nicht gespeichert werden:\n{exc}")
+                return False
+            self.project_path = path
+            if hasattr(self.owner, "_register_report_in_project"):
+                self.owner._register_report_in_project(path)
+            return True
+
+        def save_report(self) -> None:
+            if self.project_path is None:
+                self.save_report_as()
+            else:
+                self._write_report(self.project_path)
+
+        def save_report_as(self) -> None:
+            start = self.project_path or (
+                Path(getattr(self.owner, "current_directory", Path.cwd())) / "Bericht_1.d64report"
+            )
+            filename, _ = QFileDialog.getSaveFileName(
+                self, "Bericht speichern unter", str(start),
+                "dBase Berichte (*.d64report);;JSON (*.json);;Alle Dateien (*)",
+            )
+            if not filename:
+                return
+            path = Path(filename)
+            if not path.suffix:
+                path = path.with_suffix(self.PROJECT_SUFFIX)
+            self._write_report(path)
+
+        def load_report(self, requested_path=None) -> bool:
+            if isinstance(requested_path, (str, Path)):
+                path = Path(requested_path)
+            else:
+                filename, _ = QFileDialog.getOpenFileName(
+                    self, "Bericht laden", str(self.project_path or Path.cwd()),
+                    "dBase Berichte (*.d64report);;Alle Dateien (*)",
+                )
+                if not filename:
+                    return False
+                path = Path(filename)
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except Exception as exc:
+                self._report_warning(f"Bericht konnte nicht geladen werden:\n{exc}")
+                return False
+            page_info = payload.get("page", {}) if isinstance(payload.get("page", {}), dict) else {}
+            saved_format = str(page_info.get("format", "") or "").upper()
+            if saved_format not in self.PAPER_FORMATS:
+                # Kompatibilität zu älteren Reports ohne Formatkennung:
+                # A5 lässt sich bei gespeicherter kleiner Seitenhöhe erkennen.
+                try:
+                    saved_height = float(page_info.get("height", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    saved_height = 0.0
+                saved_format = "A5" if 0.0 < saved_height < 900.0 else "A4"
+            self._apply_page_format(saved_format, move_elements=False, redraw=False)
+            margins = page_info.get("margins_mm", {}) if isinstance(page_info.get("margins_mm", {}), dict) else {}
+            bands_info = payload.get("bands", {}) if isinstance(payload.get("bands", {}), dict) else {}
+            header_info = bands_info.get("header", {}) if isinstance(bands_info.get("header", {}), dict) else {}
+            footer_info = bands_info.get("footer", {}) if isinstance(bands_info.get("footer", {}), dict) else {}
+
+            self.margin_left_mm = int(margins.get("left", self.DEFAULT_MARGIN_LEFT_MM) or 0)
+            self.margin_right_mm = int(margins.get("right", self.DEFAULT_MARGIN_RIGHT_MM) or 0)
+            self.margin_top_mm = int(margins.get("top", self.DEFAULT_MARGIN_TOP_MM) or 0)
+            self.margin_bottom_mm = int(margins.get("bottom", self.DEFAULT_MARGIN_BOTTOM_MM) or 0)
+            self.header_height = float(header_info.get("height", self.HEADER_HEIGHT) or self.HEADER_HEIGHT)
+            self.footer_height = float(footer_info.get("height", self.FOOTER_HEIGHT) or self.FOOTER_HEIGHT)
+            self._loading = True
+            try:
+                self.margin_left_spin.setValue(max(0, min(80, self.margin_left_mm)))
+                self.margin_right_spin.setValue(max(0, min(80, self.margin_right_mm)))
+                self.margin_top_spin.setValue(max(0, min(80, self.margin_top_mm)))
+                self.margin_bottom_spin.setValue(max(0, min(80, self.margin_bottom_mm)))
+                self.header_height_spin.setValue(max(20, min(self.header_height_spin.maximum(), int(round(self.header_height / self.MM_TO_SCENE_Y)))))
+                self.footer_height_spin.setValue(max(20, min(self.footer_height_spin.maximum(), int(round(self.footer_height / self.MM_TO_SCENE_Y)))))
+            finally:
+                self._loading = False
+
+            self._clear_report_scene()
+            source = str(payload.get("data_source", "") or "").strip()
+            if source:
+                self.set_data_source(Path(source))
+            for entry in payload.get("elements", []):
+                if not isinstance(entry, dict):
+                    continue
+                section = str(entry.get("section", "detail") or "detail")
+                item = self._add_element(
+                    str(entry.get("type", "label")), str(entry.get("text", "")),
+                    section=section, field_name=str(entry.get("field", "")),
+                    image_path=str(entry.get("image", "")),
+                    x=float(entry.get("x", 70.0)), y=float(entry.get("y", 40.0)),
+                    width=float(entry.get("width", 220.0)), height=float(entry.get("height", 42.0)),
+                )
+                item.font_point_size = int(entry.get("font_size", 10) or 10)
+                item.font_bold = bool(entry.get("bold", False))
+                item.font_italic = bool(entry.get("italic", False))
+                item.font_underline = bool(entry.get("underline", False))
+                item.font_strikeout = bool(entry.get("strikeout", False))
+                item.font_uppercase = bool(entry.get("uppercase", False))
+                fg = QColor(str(entry.get("foreground", "#ff101010")))
+                bg = QColor(str(entry.get("background", "#00ffffff")))
+                if fg.isValid(): item.foreground = fg
+                if bg.isValid(): item.background = bg
+                item.update()
+                item.setSelected(False)
+            self.project_path = path
+            self._selection_changed()
+            return True
+
+        @staticmethod
+        def _normalized_report_field_name(name: str) -> str:
+            """Normalisiert DBF/ODBC-Feldnamen fuer die Report-Datenbindung.
+
+            SQL-Builder-Abfragen koennen Feldnamen z.B. als ``TABLE.FIELD`` oder
+            ``[FIELD]`` liefern, waehrend DBF-Datensaetze nur ``FIELD`` als Key
+            besitzen. Die Bindung soll deshalb nicht an Gross/Kleinschreibung,
+            Qualifiern oder SQL-Klammern scheitern.
+            """
+            value = str(name or "").strip()
+            if "." in value:
+                value = value.rsplit(".", 1)[-1]
+            return value.strip(" []`\"'").strip().casefold()
+
+        @classmethod
+        def _record_value(cls, record: Dict[str, object], field_name: str) -> str:
+            """Liest einen Feldwert robust und case-insensitive aus einem Record."""
+            if not isinstance(record, dict):
+                return ""
+            wanted_raw = str(field_name or "").strip()
+            if not wanted_raw:
+                return ""
+            # Schnellpfad fuer DBF-Felder mit exakt gleichem Namen.
+            if wanted_raw in record:
+                value = record.get(wanted_raw)
+                return "" if value is None else str(value)
+            wanted = cls._normalized_report_field_name(wanted_raw)
+            for key, value in record.items():
+                if cls._normalized_report_field_name(str(key)) == wanted:
+                    return "" if value is None else str(value)
+            return ""
+
+        @classmethod
+        def _expanded_text(cls, text: str, record: Dict[str, object]) -> str:
+            context = {
+                cls._normalized_report_field_name(str(k)): "" if v is None else str(v)
+                for k, v in (record.items() if isinstance(record, dict) else [])
+            }
+            now = QDateTime.currentDateTime()
+            context.setdefault("datum", now.toString("dd.MM.yyyy"))
+            context.setdefault("date", now.toString("dd.MM.yyyy"))
+            context.setdefault("zeit", now.toString("HH:mm:ss"))
+            def repl(match):
+                key = cls._normalized_report_field_name(str(match.group(1)))
+                return context.get(key, "")
+            return re.sub(r"\{([^{}]+)\}", repl, str(text or ""))
+
+        def _load_sql_report_records(self, path: Path) -> Tuple[List[str], List[Dict[str, str]]]:
+            """Liest *.d64sql als echte Query-Datenquelle.
+
+            Stage 43 versucht zuerst den integrierten lokalen DBF-SQL-Parser.
+            Nur fuer SQL, das ueber dessen Dialekt hinausgeht, wird eine aktive
+            ODBC-Verbindung des SQL Builders als Fallback verwendet.
+            """
+            payload = json.loads(Path(path).read_text(encoding="utf-8"))
+            sql = str(payload.get("sql", "") or "").strip()
+            if not sql:
+                raise D64ODBCError("Die SQL-Builder-Datei enthält keinen SQL-Ausdruck.")
+
+            local_error = None
+            try:
+                headers, data_rows = execute_d64sql_dbf_project(payload, sql=sql)
+                records: List[Dict[str, str]] = []
+                for values in data_rows:
+                    record = {
+                        str(header): "" if index >= len(values) or values[index] is None else str(values[index])
+                        for index, header in enumerate(headers)
+                    }
+                    records.append(record)
+                return list(headers), records
+            except Exception as exc:
+                local_error = exc
+
+            sql_builder = getattr(self.owner, "dbase_sql_builder_widget", None)
+            connection = getattr(sql_builder, "_odbc_connection", None) if sql_builder is not None else None
+            if connection is None or not bool(getattr(connection, "is_open", False)):
+                raise D64ODBCError(
+                    "Die SQL-Datei konnte lokal nicht als DBF-SELECT ausgeführt werden und es besteht "
+                    "keine aktive ODBC-Verbindung.\n\n"
+                    f"Lokaler SQL-Parser: {local_error}\n\n"
+                    "Öffnen Sie die *.d64sql im SQL Builder und verbinden Sie ODBC, falls die Query "
+                    "Funktionen verwendet, die der lokale DBF-SQL-Parser noch nicht unterstützt."
+                )
+
+            saved_dsn = str(payload.get("odbc_dsn", "") or "").strip()
+            current_dsn = ""
+            try:
+                current_dsn = str(sql_builder._selected_odbc_source() or "").strip()
+            except Exception:
+                pass
+            if saved_dsn and current_dsn and saved_dsn.casefold() != current_dsn.casefold():
+                raise D64ODBCError(
+                    "Die aktive ODBC-Verbindung gehört zu einer anderen Datenquelle.\n"
+                    f"Query erwartet: {saved_dsn}\nAktiv verbunden: {current_dsn}"
+                )
+
+            result = connection.execute(sql, result_type="list", include_columns=True)
+            rows = list(result) if isinstance(result, list) else []
+            if not rows:
+                return [], []
+            headers = [str(value) for value in rows[0]]
+            records = []
+            for values in rows[1:]:
+                records.append({
+                    str(header): "" if index >= len(values) or values[index] is None else str(values[index])
+                    for index, header in enumerate(headers)
+                })
+            return headers, records
+
+        def _refresh_report_records_for_output(self) -> bool:
+            """Laedt die Datenquelle unmittelbar vor PDF/Druck erneut.
+
+            Damit werden geaenderte DBF-Daten sofort ausgegeben und ein Bericht
+            kann nicht versehentlich mit einer leeren/stale ``data_records``-Liste
+            gerendert werden.
+            """
+            path = self.data_source_path
+            if path is None:
+                raw = self.source_edit.text().strip()
+                path = Path(raw) if raw else None
+            if path is None:
+                # Reine statische Berichte ohne Datenfelder sind weiterhin erlaubt.
+                if any(i.item_type == "field" for i in self._elements()):
+                    self._report_information(
+                        "Der Bericht enthält Datenfelder, aber es wurde keine Datenquelle ausgewählt."
+                    )
+                    return False
+                return True
+
+            try:
+                path = Path(path).expanduser()
+                if path.suffix.casefold() == ".dbf":
+                    table = read_dbase_dbf(path)
+                    fields = [str(field.name) for field in table.fields]
+                    records = [
+                        {str(k): "" if v is None else str(v) for k, v in dict(values).items()}
+                        for deleted, values in table.records if not deleted
+                    ]
+                elif path.suffix.casefold() == ".d64sql":
+                    fields, records = self._load_sql_report_records(path)
+                else:
+                    raise ValueError("Unterstützt werden *.dbf und *.d64sql.")
+            except Exception as exc:
+                self._report_warning(
+                    "Die Daten für PDF/Druck konnten nicht geladen werden:\n"
+                    f"{path}\n\n{exc}"
+                )
+                return False
+
+            self.data_source_path = path
+            self.data_fields = list(fields)
+            self.data_records = list(records)
+
+            # Datenfelder aktualisieren, ohne die aktuell selektierte Property
+            # durch currentIndexChanged-Signale unbeabsichtigt zu veraendern.
+            self._loading = True
+            try:
+                self.field_list.clear()
+                self.element_field_combo.clear()
+                for field_name in self.data_fields:
+                    self.field_list.addItem(str(field_name))
+                    self.element_field_combo.addItem(str(field_name))
+            finally:
+                self._loading = False
+            self._selection_changed()
+
+            field_items = [i for i in self._elements() if i.item_type == "field"]
+            if field_items and not self.data_records:
+                self._report_information(
+                    "Die Datenquelle enthält keine auszugebenden Datensätze. "
+                    "Das PDF wurde nicht erzeugt."
+                )
+                return False
+            return True
+
+        def _paint_element(self, painter: QPainter, item: DBaseReportElement,
+                           record: Dict[str, str], x: float, y: float,
+                           printer_scale: float = 1.0,
+                           page_number: int = 1, page_count: int = 1) -> None:
+            """Ein Berichtselement in Scene-Koordinaten ausgeben.
+
+            Die Report-Seite ist mit 794 x 1123 Punkten als 96-DPI-Scene
+            modelliert. Beim Druck/PDF wird der Painter auf die deutlich
+            hoehere QPrinter-Aufloesung skaliert. QFont-Punktgroessen werden
+            von Qt bereits auf die Drucker-DPI umgerechnet und duerfen deshalb
+            nicht ein zweites Mal mit dieser World-Transformation vergroessert
+            werden.
+
+            ``printer_scale`` kompensiert nur diesen World-Scale fuer den
+            Font. Dadurch bleiben z.B. 10 pt im Designer auch physische 10 pt
+            im PDF bzw. auf dem Drucker. Geometrie und Bilder werden weiterhin
+            normal mit der Seite skaliert.
+            """
+            rect = QRectF(x, y, item.item_width, item.item_height)
+            if item.item_type == "image":
+                pixmap = QPixmap(item.image_path) if item.image_path else QPixmap()
+                if not pixmap.isNull():
+                    painter.drawPixmap(rect.toRect(), pixmap)
+                return
+
+            requested_pt = float(item.font_point_size or 10.0)
+            scale = max(0.000001, float(printer_scale or 1.0))
+            font = QFont("Arial")
+            font.setPointSizeF(requested_pt / scale)
+            font.setBold(bool(item.font_bold))
+            font.setItalic(bool(item.font_italic))
+            font.setUnderline(bool(item.font_underline))
+            font.setStrikeOut(bool(item.font_strikeout))
+            painter.setFont(font)
+            painter.setPen(item.foreground)
+            if item.item_type == "field":
+                text = self._record_value(record, item.field_name)
+            elif item.item_type == "special":
+                now = QDateTime.currentDateTime()
+                token = str(item.field_name or "").strip().casefold()
+                text = {
+                    "date_yyyy_mm_dd": now.toString("yyyy-MM-dd"),
+                    "date_yy_mm_dd": now.toString("yy-MM-dd"),
+                    "date_dd_mm_yyyy": now.toString("dd-MM-yyyy"),
+                    "date_dd_mm_yy": now.toString("dd.MM.yy"),
+                    "page_number": str(max(1, int(page_number))),
+                    "page_count": str(max(1, int(page_count))),
+                    "page_of_count": f"{max(1, int(page_number))} / {max(1, int(page_count))}",
+                }.get(token, self._expanded_text(item.text, record))
+            else:
+                text = self._expanded_text(item.text, record)
+            if item.font_uppercase:
+                text = text.upper()
+            painter.drawText(rect, Qt.AlignLeft | Qt.AlignVCenter | Qt.TextWordWrap, text)
+
+        def _render_to_printer(self, printer: QPrinter) -> None:
+            records = list(self.data_records) or [{}]
+            header_items = [i for i in self._elements() if i.section == "header"]
+            detail_items = [i for i in self._elements() if i.section == "detail"]
+            footer_items = [i for i in self._elements() if i.section == "footer"]
+            header_top = self._section_top("header")
+            detail_top = self._section_top("detail")
+            footer_top = self._section_top("footer")
+            detail_band_height = self.DETAIL_HEIGHT
+            printable_detail_height = max(1.0, footer_top - detail_top - 10.0)
+            rows_per_page = max(1, int(printable_detail_height // detail_band_height))
+            page_count = max(1, (len(records) + rows_per_page - 1) // rows_per_page)
+
+            painter = QPainter(printer)
+            if not painter.isActive():
+                raise RuntimeError("Druckausgabe konnte nicht gestartet werden.")
+            try:
+                page_rect = printer.pageRect(QPrinter.DevicePixel)
+                scale = min(page_rect.width() / self.PAGE_WIDTH, page_rect.height() / self.PAGE_HEIGHT)
+                for page_index in range(page_count):
+                    if page_index:
+                        printer.newPage()
+                    painter.save()
+                    painter.scale(scale, scale)
+
+                    # Stage ASM 36: echte Lochmarken links/rechts in der
+                    # vertikalen Seitenmitte. Diese werden absichtlich hier im
+                    # Druckpfad gezeichnet (im Gegensatz zum gestrichelten
+                    # Designer-Druckrand).
+                    mark_w = float(self.PUNCH_MARK_WIDTH)
+                    mark_h = float(self.PUNCH_MARK_HEIGHT)
+                    mark_y = (float(self.PAGE_HEIGHT) - mark_h) / 2.0
+                    painter.fillRect(QRectF(0.0, mark_y, mark_w, mark_h), QColor("#101010"))
+                    painter.fillRect(
+                        QRectF(float(self.PAGE_WIDTH) - mark_w, mark_y, mark_w, mark_h),
+                        QColor("#101010"),
+                    )
+
+                    base_record = records[min(page_index * rows_per_page, len(records) - 1)] if records else {}
+                    for item in header_items:
+                        self._paint_element(
+                            painter, item, base_record,
+                            item.pos().x() - 20.0,
+                            item.pos().y() - header_top + 20.0,
+                            printer_scale=scale,
+                            page_number=page_index + 1, page_count=page_count,
+                        )
+                    start = page_index * rows_per_page
+                    stop = min(len(records), start + rows_per_page)
+                    for row_index, record in enumerate(records[start:stop]):
+                        row_top = float(self.header_height) + 12.0 + row_index * detail_band_height
+                        for item in detail_items:
+                            rel_y = item.pos().y() - detail_top
+                            self._paint_element(
+                                painter, item, record,
+                                item.pos().x() - 20.0, row_top + rel_y,
+                                printer_scale=scale,
+                                page_number=page_index + 1, page_count=page_count,
+                            )
+                    footer_base = self.PAGE_HEIGHT - float(self.footer_height)
+                    for item in footer_items:
+                        rel_y = item.pos().y() - footer_top
+                        self._paint_element(
+                            painter, item, base_record,
+                            item.pos().x() - 20.0, footer_base + rel_y,
+                            printer_scale=scale,
+                            page_number=page_index + 1, page_count=page_count,
+                        )
+                    painter.restore()
+            finally:
+                painter.end()
+
+        def export_pdf(self) -> None:
+            filename, _ = QFileDialog.getSaveFileName(
+                self, "Bericht als PDF ausgeben",
+                str((self.project_path or Path.cwd() / "Bericht.d64report").with_suffix(".pdf")),
+                "PDF (*.pdf)",
+            )
+            if not filename:
+                return
+            if not self._refresh_report_records_for_output():
+                return
+            printer = QPrinter(QPrinter.HighResolution)
+            printer.setOutputFormat(QPrinter.PdfFormat)
+            printer.setOutputFileName(filename)
+            printer.setPageSize(self._printer_page_size())
+            try:
+                self._render_to_printer(printer)
+            except Exception as exc:
+                self._report_warning(f"PDF-Ausgabe fehlgeschlagen:\n{exc}")
+
+        def print_report(self) -> None:
+            if not self._refresh_report_records_for_output():
+                return
+            printer = QPrinter(QPrinter.HighResolution)
+            printer.setPageSize(self._printer_page_size())
+            dialog = QPrintDialog(printer, self)
+            dialog.setWindowTitle("dBase Bericht drucken")
+            if dialog.exec_() != QDialog.Accepted:
+                return
+            try:
+                self._render_to_printer(printer)
+            except Exception as exc:
+                self._report_warning(f"Drucken fehlgeschlagen:\n{exc}")
+
+        def set_dark_mode(self, enabled: bool) -> None:
+            self._dark_mode = bool(enabled)
+            if self._dark_mode:
+                self.setStyleSheet(
+                    "QWidget#dbase_report_builder{background:#050b18;color:#f2f5f8;}"
+                    "QWidget#dbase_report_tools,QWidget#dbase_report_source_panel,QWidget#dbase_report_settings_panel,QGroupBox{background:#07162f;color:#f2f5f8;}"
+                    "QScrollArea#dbase_report_source_scroll,QScrollArea#dbase_report_settings_scroll{background:#07162f;border:0;}"
+                    "QScrollArea#dbase_report_source_scroll>QWidget>QWidget,QScrollArea#dbase_report_settings_scroll>QWidget>QWidget{background:#07162f;}"
+                    "QLineEdit,QListWidget,QComboBox,QSpinBox{background:#020817;color:#ffe600;border:1px solid #245a9a;}"
+                    "QPushButton{background:#163b73;color:#fff;border:1px solid #3375bd;padding:4px 7px;}"
+                    "QPushButton:hover{background:#245a9a;}"
+                    "QGraphicsView#dbase_report_view{background:#1b2330;border:1px solid #245a9a;}"
+                )
+                self.scene.setBackgroundBrush(QColor("#1b2330"))
+            else:
+                self.setStyleSheet(
+                    "QWidget#dbase_report_builder{background:#eceff3;color:#111;}"
+                    "QWidget#dbase_report_tools,QWidget#dbase_report_source_panel,QWidget#dbase_report_settings_panel,QGroupBox{background:#f7f8fa;color:#111;}"
+                    "QScrollArea#dbase_report_source_scroll,QScrollArea#dbase_report_settings_scroll{background:#f7f8fa;border:0;}"
+                    "QScrollArea#dbase_report_source_scroll>QWidget>QWidget,QScrollArea#dbase_report_settings_scroll>QWidget>QWidget{background:#f7f8fa;}"
+                    "QLineEdit,QListWidget,QComboBox,QSpinBox{background:#fff;color:#111;border:1px solid #9aabba;}"
+                    "QPushButton{background:#e6edf5;color:#173a63;border:1px solid #9aabba;padding:4px 7px;}"
+                    "QGraphicsView#dbase_report_view{background:#c8ced5;border:1px solid #9aabba;}"
+                )
+                self.scene.setBackgroundBrush(QColor("#c8ced5"))
 
 
     class DBaseTableFieldGrid(QTableWidget):
@@ -44940,6 +49453,451 @@ QScrollBar:horizontal {{
             )
 
 
+    class MathMemoryCardButton(QToolButton):
+        """Eine normale Qt-Karte ohne eigenes Painting für das Mathe-Memory."""
+
+        def __init__(
+            self,
+            card_number: int,
+            symbol: str,
+            task_text: str,
+            pair_id: int,
+            expected,
+            answer_kind: str,
+            parent=None,
+        ):
+            super().__init__(parent)
+            self.card_number = int(card_number)
+            self.symbol = str(symbol)
+            self.task_text = str(task_text)
+            self.pair_id = int(pair_id)
+            self.expected = expected
+            self.answer_kind = str(answer_kind)
+            self.face_up = False
+            self.solved = False
+            self._dark_mode = True
+            self.setObjectName('math_memory_card')
+            self.setCursor(Qt.PointingHandCursor)
+            self.setFocusPolicy(Qt.StrongFocus)
+            self.setToolButtonStyle(Qt.ToolButtonTextOnly)
+            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            self.setMinimumSize(96, 92)
+            self.setMaximumHeight(118)
+            self._front_font = QFont('Segoe UI Symbol', 14)
+            self._front_font.setBold(True)
+            self._task_font = QFont('Arial', 11)
+            self._task_font.setBold(True)
+            self.show_front()
+            self.set_dark_mode(True)
+
+        def show_front(self) -> None:
+            self.face_up = False
+            self.solved = False
+            self.setFont(self._front_font)
+            self.setText(f'{self.card_number}\n{self.symbol}')
+            self.setToolTip(f'Karte {self.card_number} umdrehen')
+            self._apply_style()
+
+        def show_back(self) -> None:
+            self.face_up = True
+            self.setFont(self._task_font)
+            self.setText(self.task_text)
+            self.setToolTip('Löse die Rechenaufgabe unter den Karten.')
+            self._apply_style()
+
+        def set_solved(self, solved: bool) -> None:
+            self.solved = bool(solved)
+            self._apply_style()
+
+        def set_dark_mode(self, enabled: bool) -> None:
+            self._dark_mode = bool(enabled)
+            self._apply_style()
+
+        def _apply_style(self) -> None:
+            if self._dark_mode:
+                front_bg = '#17395c'
+                back_bg = '#5a4b19'
+                solved_bg = '#1f5a38'
+                border = '#6f8aa4'
+                text = '#f5f7fa'
+                hover = '#245a86'
+            else:
+                front_bg = '#dceeff'
+                back_bg = '#fff3bf'
+                solved_bg = '#d9f2df'
+                border = '#8497a8'
+                text = '#18212a'
+                hover = '#c7e3fb'
+            bg = solved_bg if self.solved else (back_bg if self.face_up else front_bg)
+            self.setStyleSheet(
+                f'''QToolButton#math_memory_card {{
+    background: {bg};
+    color: {text};
+    border: 2px solid {border};
+    border-radius: 9px;
+    padding: 5px;
+}}
+QToolButton#math_memory_card:hover {{
+    background: {hover};
+}}
+QToolButton#math_memory_card:disabled {{
+    color: {text};
+}}'''
+            )
+
+
+    class MathMemoryGameWidget(QWidget):
+        """42 Karten / 21 Paare mit Aufgaben aus den vier Grundrechenarten."""
+
+        CARD_COUNT = 42
+        PAIR_COUNT = 21
+        GRID_COLUMNS = 7
+        SYMBOLS = (
+            '★', '●', '▲', '■', '◆', '♥', '♣',
+            '♠', '☀', '☂', '☎', '☺', '☻', '♫',
+            '✈', '⚓', '⚙', '☕', '✿', '☯', '⌂',
+        )
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self._dark_mode = True
+            self._cards = []
+            self._active_card = None
+            self._first_solved_card = None
+            self._locked = False
+            self._pairs_found = 0
+
+            root = QVBoxLayout(self)
+            root.setContentsMargins(10, 10, 10, 10)
+            root.setSpacing(8)
+
+            top = QHBoxLayout()
+            self.title_label = QLabel('Memory – Grundrechenarten', self)
+            title_font = QFont('Arial', 13)
+            title_font.setBold(True)
+            self.title_label.setFont(title_font)
+            top.addWidget(self.title_label, 1)
+            self.new_round_button = QPushButton('Neue Runde', self)
+            self.new_round_button.clicked.connect(self.build_new_round)
+            top.addWidget(self.new_round_button)
+            root.addLayout(top)
+
+            self.help_label = QLabel(
+                '42 Karten bilden 21 Paare. Klicke eine Karte an, löse die '
+                'angezeigte Aufgabe und suche danach die zugehörige Partnerkarte. '
+                'Gefundene Paare werden ausgeblendet.',
+                self,
+            )
+            self.help_label.setWordWrap(True)
+            root.addWidget(self.help_label)
+
+            self.card_scroll = QScrollArea(self)
+            self.card_scroll.setWidgetResizable(True)
+            self.card_scroll.setFrameShape(QFrame.NoFrame)
+            self.card_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.card_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.card_table = QWidget(self.card_scroll)
+            self.card_grid = QGridLayout(self.card_table)
+            self.card_grid.setContentsMargins(8, 8, 8, 8)
+            self.card_grid.setHorizontalSpacing(8)
+            self.card_grid.setVerticalSpacing(8)
+            self.card_scroll.setWidget(self.card_table)
+            root.addWidget(self.card_scroll, 1)
+
+            answer_row = QHBoxLayout()
+            answer_row.addWidget(QLabel('Lösung:', self))
+            self.answer_edit = QLineEdit(self)
+            self.answer_edit.setObjectName('math_memory_answer')
+            self.answer_edit.setPlaceholderText('Zahl oder Operator (+ - * /) eingeben')
+            self.answer_edit.setEnabled(False)
+            self.answer_edit.returnPressed.connect(self.solve_current_card)
+            answer_row.addWidget(self.answer_edit, 1)
+            self.solve_button = QPushButton('Lösen', self)
+            self.solve_button.setEnabled(False)
+            self.solve_button.clicked.connect(self.solve_current_card)
+            answer_row.addWidget(self.solve_button)
+            root.addLayout(answer_row)
+
+            self.status_label = QLabel('Neue Runde wird vorbereitet …', self)
+            self.status_label.setWordWrap(True)
+            root.addWidget(self.status_label)
+
+            self.set_dark_mode(True)
+            self.build_new_round()
+
+        def activate_game(self, _game_key: str = 'memory_math', _title: str = 'Memory') -> None:
+            if not self._cards or self._pairs_found >= self.PAIR_COUNT:
+                self.build_new_round()
+            self.setFocus(Qt.OtherFocusReason)
+
+        def set_dark_mode(self, enabled: bool) -> None:
+            self._dark_mode = bool(enabled)
+            if self._dark_mode:
+                background = '#10151c'
+                text = '#f0f6fc'
+                panel = '#0b1f33'
+                border = '#465c70'
+            else:
+                background = '#f7f2e8'
+                text = '#1c1c1c'
+                panel = '#ffffff'
+                border = '#b7ab92'
+            self.setStyleSheet(
+                f'''QWidget {{ background: {background}; color: {text}; }}
+QLabel {{ background: transparent; color: {text}; }}
+QScrollArea {{ background: {background}; border: 1px solid {border}; }}
+QLineEdit#math_memory_answer {{
+    min-height: 30px;
+    background: {panel};
+    color: {text};
+    border: 1px solid {border};
+    border-radius: 5px;
+    padding: 3px 7px;
+}}
+QPushButton {{ min-height: 28px; padding: 4px 12px; }}'''
+            )
+            for card in self._cards:
+                card.set_dark_mode(enabled)
+
+        @staticmethod
+        def _normalize_operator(text: str) -> str:
+            value = str(text or '').strip().lower()
+            aliases = {
+                'x': '*', '×': '*', 'mal': '*',
+                ':': '/', '÷': '/', 'geteilt': '/',
+                'plus': '+', 'minus': '-',
+            }
+            return aliases.get(value, value)
+
+        @staticmethod
+        def _operator_display(operator: str) -> str:
+            return {'*': '×', '/': '÷'}.get(operator, operator)
+
+        def _generate_equation(self, operator: str):
+            operator = str(operator)
+            if operator == '+':
+                a = random.randint(1, 90)
+                b = random.randint(1, 100 - a)
+                result = a + b
+            elif operator == '-':
+                b = random.randint(1, 50)
+                result = random.randint(0, 100 - b)
+                a = result + b
+            elif operator == '*':
+                a = random.randint(1, 10)
+                b = random.randint(1, 10)
+                result = a * b
+            else:
+                b = random.randint(1, 10)
+                result = random.randint(1, 10)
+                a = b * result
+            return int(a), operator, int(b), int(result)
+
+        def _pair_cards(self, pair_id: int, symbol: str, operator: str):
+            a, op, b, result = self._generate_equation(operator)
+            op_text = self._operator_display(op)
+
+            if random.choice((True, False)):
+                prompt_a = f'? {op_text} {b}\n= {result}'
+                expected_a = a
+                other_missing = 'b'
+            else:
+                prompt_a = f'{a} {op_text} ?\n= {result}'
+                expected_a = b
+                other_missing = 'a'
+
+            if random.choice((True, False)):
+                prompt_b = f'{a} ? {b}\n= {result}'
+                expected_b = op
+                kind_b = 'operator'
+            elif other_missing == 'a':
+                prompt_b = f'? {op_text} {b}\n= {result}'
+                expected_b = a
+                kind_b = 'number'
+            else:
+                prompt_b = f'{a} {op_text} ?\n= {result}'
+                expected_b = b
+                kind_b = 'number'
+
+            return [
+                {
+                    'pair_id': pair_id,
+                    'symbol': symbol,
+                    'prompt': prompt_a,
+                    'expected': expected_a,
+                    'answer_kind': 'number',
+                },
+                {
+                    'pair_id': pair_id,
+                    'symbol': symbol,
+                    'prompt': prompt_b,
+                    'expected': expected_b,
+                    'answer_kind': kind_b,
+                },
+            ]
+
+        def _clear_cards(self) -> None:
+            while self.card_grid.count():
+                item = self.card_grid.takeAt(0)
+                widget = item.widget()
+                if widget is not None:
+                    widget.deleteLater()
+            self._cards = []
+
+        def build_new_round(self) -> None:
+            self._locked = False
+            self._pairs_found = 0
+            self._active_card = None
+            self._first_solved_card = None
+            self.answer_edit.clear()
+            self.answer_edit.setEnabled(False)
+            self.solve_button.setEnabled(False)
+            self._clear_cards()
+
+            operators = ['+', '-', '*', '/']
+            records = []
+            for pair_id in range(self.PAIR_COUNT):
+                op = operators[pair_id % len(operators)]
+                records.extend(self._pair_cards(pair_id, self.SYMBOLS[pair_id], op))
+            random.shuffle(records)
+
+            for card_number, record in enumerate(records, start=1):
+                card = MathMemoryCardButton(
+                    card_number,
+                    record['symbol'],
+                    record['prompt'],
+                    record['pair_id'],
+                    record['expected'],
+                    record['answer_kind'],
+                    self.card_table,
+                )
+                card.set_dark_mode(self._dark_mode)
+                card.clicked.connect(lambda _checked=False, c=card: self._card_clicked(c))
+                row = (card_number - 1) // self.GRID_COLUMNS
+                col = (card_number - 1) % self.GRID_COLUMNS
+                self.card_grid.addWidget(card, row, col)
+                self._cards.append(card)
+
+            for col in range(self.GRID_COLUMNS):
+                self.card_grid.setColumnStretch(col, 1)
+            self.status_label.setText(
+                '21 Paare liegen verdeckt. Klicke eine Karte an und löse ihre Aufgabe.'
+            )
+
+        def _card_clicked(self, card) -> None:
+            if self._locked or card is None or not card.isVisible():
+                return
+            if card is self._first_solved_card:
+                self.status_label.setText(
+                    'Diese Karte ist bereits gelöst. Wähle jetzt eine andere Karte als möglichen Partner.'
+                )
+                return
+            if self._active_card is not None:
+                self.status_label.setText(
+                    'Löse zuerst die aktuell umgedrehte Karte mit dem Button „Lösen“.'
+                )
+                self.answer_edit.setFocus(Qt.OtherFocusReason)
+                return
+            card.show_back()
+            self._active_card = card
+            self.answer_edit.clear()
+            self.answer_edit.setEnabled(True)
+            self.solve_button.setEnabled(True)
+            self.answer_edit.setFocus(Qt.OtherFocusReason)
+            self.status_label.setText(
+                f'Karte {card.card_number}: Gib die fehlende Zahl oder den fehlenden Operator ein.'
+            )
+
+        def _answer_is_correct(self, card, text: str) -> bool:
+            if card.answer_kind == 'operator':
+                return self._normalize_operator(text) == str(card.expected)
+            try:
+                return int(str(text).strip(), 10) == int(card.expected)
+            except Exception:
+                return False
+
+        def solve_current_card(self) -> None:
+            if self._locked or self._active_card is None:
+                return
+            card = self._active_card
+            answer = self.answer_edit.text().strip()
+            if not answer:
+                self.status_label.setText('Bitte zuerst eine Lösung eingeben.')
+                QApplication.beep()
+                return
+            if not self._answer_is_correct(card, answer):
+                self.status_label.setText(
+                    f'Karte {card.card_number}: Die Lösung ist noch nicht richtig.'
+                )
+                QApplication.beep()
+                self.answer_edit.selectAll()
+                self.answer_edit.setFocus(Qt.OtherFocusReason)
+                return
+
+            card.set_solved(True)
+            self.answer_edit.clear()
+            self.answer_edit.setEnabled(False)
+            self.solve_button.setEnabled(False)
+            self._active_card = None
+
+            if self._first_solved_card is None:
+                self._first_solved_card = card
+                self.status_label.setText(
+                    f'Karte {card.card_number} ist gelöst. Suche nun die zweite Karte dieses Paares.'
+                )
+                return
+
+            first = self._first_solved_card
+            second = card
+            if first.pair_id == second.pair_id:
+                self._locked = True
+                self._pairs_found += 1
+                self.status_label.setText(
+                    f'Paar gefunden! {self._pairs_found} von {self.PAIR_COUNT} Paaren gelöst. '
+                    'Die beiden Karten werden ausgeblendet.'
+                )
+                QTimer.singleShot(450, lambda f=first, s=second: self._hide_found_pair(f, s))
+            else:
+                self._locked = True
+                self.status_label.setText(
+                    'Beide Aufgaben sind richtig gelöst, gehören aber nicht zusammen. '
+                    'Die Karten werden wieder umgedreht.'
+                )
+                QTimer.singleShot(950, lambda f=first, s=second: self._flip_mismatch_back(f, s))
+
+        def _hide_found_pair(self, first, second) -> None:
+            for card in (first, second):
+                if card is not None:
+                    card.hide()
+            self._first_solved_card = None
+            self._active_card = None
+            self._locked = False
+            if self._pairs_found >= self.PAIR_COUNT:
+                self.status_label.setText(
+                    'Geschafft! Alle 21 Paare wurden gefunden und ausgeblendet.'
+                )
+                QMessageBox.information(
+                    self,
+                    'Memory',
+                    'Sehr gut! Alle 21 mathematischen Paare wurden gelöst.',
+                )
+            else:
+                self.status_label.setText(
+                    f'{self._pairs_found} von {self.PAIR_COUNT} Paaren gefunden. Wähle die nächste Karte.'
+                )
+
+        def _flip_mismatch_back(self, first, second) -> None:
+            for card in (first, second):
+                if card is not None and card.isVisible():
+                    card.show_front()
+            self._first_solved_card = None
+            self._active_card = None
+            self._locked = False
+            self.status_label.setText(
+                f'{self._pairs_found} von {self.PAIR_COUNT} Paaren gefunden. Versuche es erneut.'
+            )
+
+
     class MathematicsLearningDockWidget(QWidget):
         """Lern-Workspace mit linksseitigen Tabs und rechts eingebetteter Szene."""
 
@@ -45038,6 +49996,11 @@ QScrollBar:horizontal {{
                 '<p>Zusätzlich stehen Addition bis 100, Subtraktion bis 100, das kleine Einmaleins '
                 'und Aufgaben mit einer fehlenden Zahl zur Verfügung. Richtige Lösungen werden '
                 'grün, fehlerhafte rot markiert.</p>'
+                '<h3>Memory</h3>'
+                '<p>42 nummerierte Karten bilden 21 mathematische Paare. Auf der Vorderseite hilft '
+                'ein Symbol bei der Orientierung. Nach dem Umdrehen wird eine Aufgabe aus Addition, '
+                'Subtraktion, Multiplikation oder Division sichtbar. Eine Zahl oder der Operator fehlt. '
+                'Nach zwei richtig gelösten Partnerkarten wird das gefundene Paar ausgeblendet.</p>'
                 '<h3>Sudoku</h3>'
                 '<p>Sudoku steht in vier Stufen bereit: Leicht, Mittel, Schwer und Experte. '
                 'In jeder Zeile, Spalte und jedem 3×3-Block dürfen die Ziffern 1 bis 9 nur einmal '
@@ -45084,6 +50047,8 @@ QScrollBar:horizontal {{
             self.content_stack.addWidget(self.iso_metric_widget)
             self.gorilla_parabola_widget = GorillaParabolaMathGameWidget(self.content_stack)
             self.content_stack.addWidget(self.gorilla_parabola_widget)
+            self.memory_widget = MathMemoryGameWidget(self.content_stack)
+            self.content_stack.addWidget(self.memory_widget)
             self.content_stack.setCurrentWidget(self.placeholder)
 
             splitter.setStretchFactor(0, 0)
@@ -45140,6 +50105,9 @@ QScrollBar:horizontal {{
                     ('subtraction_100', 'Subtraktion bis 100'),
                     ('multiplication_1x1', 'Kleines Einmaleins'),
                     ('missing_number_100', 'Fehlende Zahl bis 100'),
+                ]),
+                ('Memory', [
+                    ('memory_math', 'Memory'),
                 ]),
                 ('Sudoku', [
                     ('sudoku_easy', 'Sudoku – Leicht'),
@@ -45242,6 +50210,7 @@ QStackedWidget#learning_content_stack {{
             self.sudoku_widget.set_dark_mode(enabled)
             self.iso_metric_widget.set_dark_mode(enabled)
             self.gorilla_parabola_widget.set_dark_mode(enabled)
+            self.memory_widget.set_dark_mode(enabled)
 
         def _handle_fact_double_click(self, item: QTreeWidgetItem, _column: int) -> None:
             if item is None:
@@ -45324,6 +50293,10 @@ QStackedWidget#learning_content_stack {{
                 self.content_stack.setCurrentWidget(self.gorilla_parabola_widget)
                 self.gorilla_parabola_widget.activate_game(game_key, title)
                 self.gorilla_parabola_widget.view.setFocus(Qt.OtherFocusReason)
+            elif game_key == 'memory_math':
+                self.content_stack.setCurrentWidget(self.memory_widget)
+                self.memory_widget.activate_game(game_key, title or 'Memory')
+                self.memory_widget.setFocus(Qt.OtherFocusReason)
             else:
                 self.content_stack.setCurrentWidget(self.arithmetic_widget)
                 self.arithmetic_widget.activate_game(game_key, title)
@@ -47640,6 +52613,11 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.dbase_sql_builder_widget = None
             self._dbase_sql_workspace_active = False
             self._dbase_sql_workspace_state = {}
+            # Stage ASM 30: druckorientierter dBase Bericht Builder.
+            self.dbase_report_builder_dock = None
+            self.dbase_report_builder_widget = None
+            self._dbase_report_workspace_active = False
+            self._dbase_report_workspace_state = {}
             self.settings_dock = None
             self.settings_panel = None
             self.project_settings_dock = None
@@ -48552,6 +53530,14 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 self.show_music_keyboard_dock
             )
 
+            self.math_memory_action = QAction("Memory", self)
+            self.math_memory_action.setStatusTip(
+                "Mathe-Memory mit 42 Karten und 21 Aufgabenpaaren öffnen"
+            )
+            self.math_memory_action.triggered.connect(
+                lambda _checked=False: self.show_math_learning_dock(game_key='memory_math')
+            )
+
             self.math_numbers_wall_100_action = QAction("Zahlenmauer bis 100", self)
             self.math_numbers_wall_100_action.setStatusTip(
                 "Die Zahlenmauer-Aufgaben bis 100 direkt öffnen"
@@ -48859,6 +53845,13 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     "Grafischen dBase SQL Builder für lokale DBF-Tabellen öffnen",
                 )
             )
+            self.compact_new_actions["dbase"]["report"] = (
+                self._make_compact_new_action(
+                    "Bericht",
+                    self.new_dbase_report,
+                    "Neuen dBase Bericht mit Kopf-, Detail- und Fußbereichen öffnen",
+                )
+            )
 
             # Die bisherigen Sprachaktionen werden nicht gelöscht.  Sie werden
             # als zielgebundene Proxy-Aktionen in die passenden neuen Untermenüs
@@ -48934,6 +53927,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     submenu.addAction(actions["form"])
                     submenu.addAction(actions["table"])
                     submenu.addAction(actions["sql_builder"])
+                    submenu.addAction(actions["report"])
 
                 legacy_actions = self.compact_new_legacy_actions.get(
                     profile_key, ()
@@ -49215,6 +54209,8 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     title = 'Zahlenmauer bis 100'
                 elif game_key == 'numbers_wall_1000':
                     title = 'Zahlenmauer bis 1000'
+                elif game_key == 'memory_math':
+                    title = 'Memory'
                 widget.open_game(game_key, title)
             else:
                 widget.left_tabs.setFocus(Qt.OtherFocusReason)
@@ -52679,6 +57675,54 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             return self.save_dbase_form(save_as=True)
 
         # -------------------------------------------------------------------
+        # Stage ASM 45: exklusive dBase-Vollflaechen.
+        # SQL Builder und Bericht Builder schliessen vor dem Oeffnen alle
+        # Docking-Fenster ausser dem Projekt-/Informations-Dock rechts.
+        # -------------------------------------------------------------------
+        def _close_docks_except_project(self, keep_dock=None) -> None:
+            project_dock = getattr(self, "right_dock", None)
+
+            # Alte Workspace-Restore-Callbacks duerfen beim programmgesteuerten
+            # Schliessen nicht spaeter wieder Dateisystem/andere Docks oeffnen.
+            for active_name, state_name in (
+                ("_dbase_sql_workspace_active", "_dbase_sql_workspace_state"),
+                ("_dbase_report_workspace_active", "_dbase_report_workspace_state"),
+                ("_dbase_table_workspace_active", "_dbase_table_workspace_state"),
+                ("_dbase_form_workspace_active", "_dbase_form_workspace_state"),
+                ("_settings_workspace_active", "_settings_workspace_state"),
+                ("_project_settings_workspace_active", "_project_settings_workspace_state"),
+            ):
+                if hasattr(self, active_name):
+                    setattr(self, active_name, False)
+                if hasattr(self, state_name):
+                    setattr(self, state_name, {})
+
+            # Auch nicht-dBase-Arbeitsflaechen duerfen beim Schliessen keine
+            # spaete Wiederherstellung anstossen.
+            for flag_name in (
+                "_music_workspace_active",
+                "_math_learning_replaced_filesystem_dock",
+                "_localize_replaced_filesystem_dock",
+                "_knowledge_replaced_filesystem_dock",
+                "_doxygen_replaced_filesystem_dock",
+            ):
+                if hasattr(self, flag_name):
+                    setattr(self, flag_name, False)
+
+            for dock in self.findChildren(QDockWidget):
+                if dock is project_dock or dock is keep_dock:
+                    continue
+                old_blocked = dock.blockSignals(True)
+                try:
+                    dock.hide()
+                finally:
+                    dock.blockSignals(old_blocked)
+
+            if project_dock is not None:
+                project_dock.show()
+                project_dock.raise_()
+
+        # -------------------------------------------------------------------
         # Stage ASM 10: grafischer dBase SQL Builder.
         # -------------------------------------------------------------------
         def _ensure_dbase_sql_builder(self) -> None:
@@ -52765,6 +57809,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
 
         def show_dbase_sql_builder(self) -> None:
             self._ensure_dbase_sql_builder()
+            self._close_docks_except_project(self.dbase_sql_builder_dock)
             self._enter_dbase_sql_workspace()
             self.dbase_sql_builder_widget.set_dark_mode(self.dark_mode_enabled)
             self.dbase_sql_builder_dock.show()
@@ -52783,6 +57828,126 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 Qt.OtherFocusReason
             )
             self.statusBar().showMessage("dBase SQL Builder geöffnet")
+
+        # -------------------------------------------------------------------
+        # Stage ASM 30: dBase Bericht Builder.
+        # -------------------------------------------------------------------
+        def _ensure_dbase_report_builder(self) -> None:
+            if self.dbase_report_builder_dock is not None:
+                return
+            panel = DBaseReportBuilderWidget(self, self)
+            panel.set_dark_mode(self.dark_mode_enabled)
+            dock = QDockWidget("Bericht Builder", self)
+            dock.setObjectName("dbase_report_builder_dock")
+            dock.setFeatures(self._dock_features())
+            dock.setAllowedAreas(
+                Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea
+                | Qt.TopDockWidgetArea | Qt.BottomDockWidgetArea
+            )
+            dock.setMinimumWidth(760)
+            dock.setMinimumHeight(500)
+            dock.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            dock.setWidget(panel)
+            dock.setTitleBarWidget(DockTitleBar(dock))
+            self.addDockWidget(Qt.LeftDockWidgetArea, dock)
+            self.dbase_report_builder_widget = panel
+            self.dbase_report_builder_dock = dock
+            self._assign_widget_property_ids(dock)
+            dock.visibilityChanged.connect(self._dbase_report_visibility_changed)
+            dock.hide()
+
+        def _enter_dbase_report_workspace(self) -> None:
+            if self._dbase_report_workspace_active:
+                return
+            if self._dbase_sql_workspace_active:
+                if self.dbase_sql_builder_dock is not None:
+                    self.dbase_sql_builder_dock.hide()
+                self._restore_dbase_sql_workspace()
+            if self._dbase_table_workspace_active:
+                if self.dbase_table_designer_dock is not None:
+                    self.dbase_table_designer_dock.hide()
+                self._restore_dbase_table_workspace()
+            if self._dbase_form_workspace_active:
+                if self.dbase_form_property_dock is not None:
+                    self.dbase_form_property_dock.hide()
+                if self.dbase_form_designer_dock is not None:
+                    self.dbase_form_designer_dock.hide()
+                self._restore_dbase_form_workspace()
+            central = self.centralWidget()
+            left = getattr(self, "left_dock", None)
+            self._dbase_report_workspace_state = {
+                "central": bool(central is not None and central.isVisible()),
+                "left": bool(left is not None and left.isVisible()),
+            }
+            self._dbase_report_workspace_active = True
+            if left is not None:
+                left.hide()
+            if central is not None:
+                central.hide()
+
+        def _restore_dbase_report_workspace(self) -> None:
+            if not self._dbase_report_workspace_active:
+                return
+            state = dict(self._dbase_report_workspace_state or {})
+            self._dbase_report_workspace_active = False
+            self._dbase_report_workspace_state = {}
+            central = self.centralWidget()
+            if central is not None and bool(state.get("central", True)):
+                central.show()
+            left = getattr(self, "left_dock", None)
+            if left is not None:
+                if bool(state.get("left", False)):
+                    left.show()
+                else:
+                    left.hide()
+
+        def _dbase_report_visibility_changed(self, visible: bool) -> None:
+            if self._dbase_report_workspace_active and not bool(visible):
+                QTimer.singleShot(0, self._restore_dbase_report_workspace)
+
+        def new_dbase_report(self) -> None:
+            self.show_dbase_report_builder()
+            if self.dbase_report_builder_widget is not None:
+                self.dbase_report_builder_widget.new_report()
+
+        def show_dbase_report_builder(self) -> None:
+            self._ensure_dbase_report_builder()
+            self._close_docks_except_project(self.dbase_report_builder_dock)
+            self._enter_dbase_report_workspace()
+            self.dbase_report_builder_widget.set_dark_mode(self.dark_mode_enabled)
+            self.dbase_report_builder_dock.show()
+            self.dbase_report_builder_dock.raise_()
+            self.resizeDocks([self.dbase_report_builder_dock], [100000], Qt.Horizontal)
+            self.resizeDocks([self.dbase_report_builder_dock], [100000], Qt.Vertical)
+            self.statusBar().showMessage("dBase Bericht Builder geöffnet")
+
+        def _register_report_in_project(self, path: Path) -> None:
+            try:
+                path = Path(path).expanduser().resolve()
+            except OSError:
+                path = Path(path).expanduser()
+            # *.d64report ist eindeutig dBase-spezifisch und kann deshalb
+            # unabhängig von anderen Sprachzweigen sicher unter Berichte liegen.
+            self._ensure_project_for_new_document()
+            child = self._add_project_dbase_entry("reports", path, title=path.name)
+            if child is not None:
+                self.project_tree.setCurrentItem(child)
+                if self.current_project_path is not None:
+                    self.save_project()
+
+        def open_dbase_report_file(self, path: Path) -> bool:
+            path = Path(path)
+            if not path.is_file():
+                self.show_error("Bericht nicht gefunden", f"Datei nicht gefunden:\n{path}")
+                return False
+            self.show_dbase_report_builder()
+            if self.dbase_report_builder_widget is None:
+                return False
+            if not self.dbase_report_builder_widget.load_report(path):
+                return False
+            self._register_report_in_project(path)
+            self.statusBar().showMessage(f"Bericht geöffnet: {path.name}", 6000)
+            return True
 
         # -------------------------------------------------------------------
         # Stage 85/86: dBase-Tabellendesigner als eigener Tabellen-Workspace.
@@ -53876,8 +59041,9 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             tools_menu.addAction(self.doxygen_action)
 
             learning_menu = self.main_menu_bar.addMenu("&Lernen")
-            # Stage 263: direkter Menüpfad Lernen -> Keyboard.
+            # Direkte Lernwerkzeuge.
             learning_menu.addAction(self.music_keyboard_action)
+            learning_menu.addAction(self.math_memory_action)
             learning_menu.addSeparator()
             math_menu = learning_menu.addMenu("Mathematik")
             math_menu.addAction(self.math_learning_action)
@@ -55657,6 +60823,45 @@ border: 2px solid #2a69aa;
                 self._remember_recent_project(self.current_project_path)
             return Path(self.current_project_path)
 
+        def _create_new_dbase_program_item(
+            self,
+            *,
+            use_template: bool = True,
+        ) -> Optional[QTreeWidgetItem]:
+            """Stage ASM 29: neue dBase-Programme als *.prg unter Programme."""
+            self._ensure_project_for_new_document()
+            directory = self._project_new_file_directory()
+            used = {name.casefold() for name in self._project_existing_names()}
+            number = 1
+            while True:
+                filename = f"Unbenannt_{number}.prg"
+                if filename.casefold() not in used and not (directory / filename).exists():
+                    break
+                number += 1
+            path = directory / filename
+            try:
+                self._write_new_project_file(
+                    "dbase", path, use_template=use_template
+                )
+            except (OSError, ValueError) as exc:
+                self.show_error(
+                    "Neues dBase-Programm konnte nicht angelegt werden",
+                    f"Die Datei konnte nicht erzeugt werden:\n{path}\n\n{exc}",
+                )
+                return None
+            child = self._add_project_dbase_entry(
+                "programs", path, title=filename
+            )
+            if child is None:
+                return None
+            self.project_tree.setCurrentItem(child)
+            if self.current_project_path is not None:
+                self.save_project()
+            self.open_document(path, language_override="dbase")
+            self.statusBar().showMessage(f"Neues dBase-Programm angelegt: {filename}")
+            self.log(f"Neues dBase-Programm angelegt: {path}")
+            return child
+
         def _new_project_item_for_category(
             self,
             category_key: str,
@@ -55698,10 +60903,15 @@ border: 2px solid #2a69aa;
                 "text": "text_files",
             }
             category_key = category_map.get(key, "text_files")
-            child = self._new_project_item_for_category(
-                category_key,
-                use_template=use_template,
-            )
+            if category_key == "dbase":
+                child = self._create_new_dbase_program_item(
+                    use_template=use_template
+                )
+            else:
+                child = self._new_project_item_for_category(
+                    category_key,
+                    use_template=use_template,
+                )
             if child is None:
                 return None
             document = self.current_document()
@@ -55740,21 +60950,40 @@ border: 2px solid #2a69aa;
                 if values:
                     extensions.update(values)
             extensions.update({
-                ".exe", ".o", ".obj", ".a", ".lib", ".sid", ".d64", ".dbf"
+                ".exe", ".o", ".obj", ".a", ".lib", ".sid", ".d64", ".dbf", ".d64report"
             })
             return sorted(extensions)
 
         def _register_opened_file_in_project(self, path: Path) -> None:
             path = Path(path)
-            if path.suffix.casefold() == ".pro":
+            suffix = path.suffix.casefold()
+            if suffix == ".pro":
                 return
             self._ensure_project_for_new_document()
-            category_key = project_category_for_path(path)
-            child = self._add_project_entry(
-                category_key,
-                path,
-                title=path.name,
-            )
+
+            # Stage ASM 29: nur ein explizites dBase-Projekt ordnet die
+            # Ressourcen automatisch den festen dBase-Unterknoten zu. So
+            # bleibt z. B. die vorhandene Pascal-DBF-Projektlogik unangetastet.
+            role = ""
+            if str(getattr(self, "current_project_kind", "")).casefold() == "dbase":
+                role = {
+                    ".prg": "programs",
+                    ".wfm": "forms",
+                    ".dbf": "tables",
+                    ".d64sql": "queries",
+                    ".d64report": "reports",
+                    ".o": "objects",
+                    ".a": "archives",
+                }.get(suffix, "")
+            if role:
+                child = self._add_project_dbase_entry(role, path, title=path.name)
+            else:
+                category_key = project_category_for_path(path)
+                child = self._add_project_entry(
+                    category_key,
+                    path,
+                    title=path.name,
+                )
             if child is None:
                 return
             self.project_tree.setCurrentItem(child)
@@ -55787,7 +61016,13 @@ border: 2px solid #2a69aa;
                 return
 
             path = Path(dialog.fileName)
-            if self.open_document(path):
+            _dbase_prg = (
+                path.suffix.casefold() == ".prg"
+                and str(getattr(self, "current_project_kind", "")).casefold() == "dbase"
+            )
+            if self.open_document(
+                path, language_override="dbase" if _dbase_prg else ""
+            ):
                 # Eine manuell in der unteren ComboBox eingegebene absolute
                 # Datei kann ausserhalb des gerade angezeigten Ordners liegen.
                 # In diesem Sonderfall folgt das Arbeitsverzeichnis der
@@ -55802,6 +61037,7 @@ border: 2px solid #2a69aa;
             path: Path,
             *,
             assembler_text_mode: bool = False,
+            language_override: str = "",
         ) -> bool:
             try:
                 path = Path(path).expanduser().resolve()
@@ -55809,10 +61045,11 @@ border: 2px solid #2a69aa;
                 self.show_error("Pfadfehler", str(exc))
                 return False
 
-            # Stage 256: Eine .prg-Datei ist immer ein C64-Binärprogramm.
-            # Auch ein Aufrufer darf sie nicht mehr in den Stage-255-
-            # Assembler-Textmodus zwingen.
-            if path.suffix.casefold() == ".prg":
+            language_override = str(language_override or "").strip().casefold()
+            # Stage ASM 29: .prg bleibt standardmaessig ein C64-Binaerprogramm.
+            # Nur ein Blatt unter dBase-Programme -> Programme erzwingt den
+            # dBase-Textmodus.
+            if path.suffix.casefold() == ".prg" and language_override != "dbase":
                 assembler_text_mode = False
 
             if path.suffix.lower() == ".wfm":
@@ -55823,6 +61060,12 @@ border: 2px solid #2a69aa;
 
             if path.suffix.lower() == ".dbf":
                 opened = self.open_dbase_table_file(path)
+                if opened:
+                    self._remember_recent_file(path)
+                return opened
+
+            if path.suffix.lower() == ".d64report":
+                opened = self.open_dbase_report_file(path)
                 if opened:
                     self._remember_recent_file(path)
                 return opened
@@ -55851,7 +61094,10 @@ border: 2px solid #2a69aa;
                 return self.load_project_file(path)
 
             existing = self._find_open_document(path)
-            if existing is not None:
+            if (
+                existing is not None
+                and (not language_override or existing.source_language() == language_override)
+            ):
                 self.document_tabs.setCurrentWidget(existing)
                 self._apply_document_theme(existing)
                 existing.focus_preferred_editor()
@@ -55861,6 +61107,7 @@ border: 2px solid #2a69aa;
 
             binary_disassembly_mode = (
                 not assembler_text_mode
+                and not language_override
                 and path.suffix.casefold() in {".prg", ".bin"}
             )
             if binary_disassembly_mode:
@@ -55903,6 +61150,7 @@ border: 2px solid #2a69aa;
                 dark_mode=dark_mode,
                 binary_disassembly_mode=binary_disassembly_mode,
                 assembler_text_mode=assembler_text_mode,
+                language_override=language_override,
             )
             self._add_document_tab(document)
             document.focus_preferred_editor()
@@ -58047,6 +63295,20 @@ border: 2px solid #2a69aa;
                     ):
                         add(source_path.with_suffix(".o"))
 
+            if document.is_dbase_document:
+                # Stage ASM 29: explizite dBase-Linkerressourcen.
+                # .o-Dateien werden direkt zugelinkt; .a-Dateien werden vom
+                # vorhandenen internen Linker nach benötigten Symbolen durchsucht.
+                for _role in ("objects", "archives"):
+                    _group = getattr(self, "project_dbase_group_nodes", {}).get(_role)
+                    if _group is None:
+                        continue
+                    for _index in range(_group.childCount()):
+                        _child = _group.child(_index)
+                        if self._project_item_kind(_child) != PROJECT_NODE_DBASE_FILE:
+                            continue
+                        add(_child.data(0, Qt.UserRole + 302))
+
             if document.is_c_document:
                 archive_root = getattr(self, "project_archive_root", None)
                 if archive_root is not None:
@@ -59799,6 +65061,7 @@ border: 2px solid #2a69aa;
             self.project_pascal_target_nodes = {}
             self.project_pascal_group_nodes = {}
             self.project_pascal_table_nodes = {}
+            self.project_dbase_group_nodes = {}
             self.project_pascal_unit_namespace_nodes = {}
             self._project_pascal_entry_sequence = {}
             self.project_pascal_last_programs = getattr(
@@ -59857,6 +65120,33 @@ border: 2px solid #2a69aa;
                         "Geschützter Archivknoten für COFF32-/COFF64-Archive",
                     )
                     self.project_archive_root = archive_root
+
+                if key == "dbase":
+                    # Stage ASM 29: dBase-Dateien werden nicht mehr direkt
+                    # unter dem Hauptknoten gemischt, sondern nach Ressourcentyp
+                    # in sieben geschützten Unterknoten organisiert.
+                    for _role, _role_title, _role_exts, _entry_key in PROJECT_DBASE_GROUPS:
+                        _group = QTreeWidgetItem(root, [_role_title])
+                        _group.setData(0, Qt.UserRole + 301, "dbase")
+                        _group.setData(0, Qt.UserRole + 303, PROJECT_NODE_DBASE_GROUP)
+                        _group.setData(0, Qt.UserRole + 306, _role)
+                        _group.setIcon(0, folder_icon)
+                        _group.setToolTip(
+                            0,
+                            f"dBase {_role_title}; Dateien: "
+                            + ", ".join(f"*{ext}" for ext in _role_exts),
+                        )
+                        self.project_dbase_group_nodes[_role] = _group
+                        for _entry in values.get(_entry_key, ()):
+                            _path_text = str(_entry.get("path", "")).strip()
+                            if _path_text:
+                                self._add_project_dbase_entry(
+                                    _role,
+                                    Path(_path_text),
+                                    title=str(_entry.get("title", "")),
+                                    mark_modified=False,
+                                )
+                        _group.setExpanded(True)
 
                 if key == "pascal":
                     for _target, _target_title in (
@@ -59941,13 +65231,14 @@ border: 2px solid #2a69aa;
                     )
                     self.project_prolog_knowledge_root = knowledge_root
 
-                for entry in values.get(key, ()):
-                    self._add_project_entry(
-                        key,
-                        Path(str(entry.get("path", ""))),
-                        title=str(entry.get("title", "")),
-                        mark_modified=False,
-                    )
+                if key != "dbase":
+                    for entry in values.get(key, ()):
+                        self._add_project_entry(
+                            key,
+                            Path(str(entry.get("path", ""))),
+                            title=str(entry.get("title", "")),
+                            mark_modified=False,
+                        )
                 root.setExpanded(True)
 
             for knowledge in values.get(PROJECT_PROLOG_KNOWLEDGE_KEY, ()):
@@ -60012,6 +65303,47 @@ border: 2px solid #2a69aa;
             child.setToolTip(0, path_text)
             child.setIcon(0, self.icon_provider.icon(QFileInfo(path_text)))
             root.setExpanded(True)
+            if mark_modified:
+                self.set_project_modified(True)
+            return child
+
+        def _add_project_dbase_entry(
+            self,
+            role: str,
+            path: Path,
+            *,
+            title: str = "",
+            mark_modified: bool = True,
+        ) -> Optional[QTreeWidgetItem]:
+            """Fuegt eine Datei in einen festen dBase-Unterknoten ein."""
+            role = str(role or "").strip().casefold()
+            group = getattr(self, "project_dbase_group_nodes", {}).get(role)
+            spec = PROJECT_DBASE_GROUP_BY_ROLE.get(role)
+            if group is None or spec is None:
+                return None
+            _role_title, extensions, _entry_key = spec
+            try:
+                resolved = Path(path).expanduser().resolve()
+            except OSError:
+                resolved = Path(path).expanduser()
+            if resolved.suffix.casefold() not in set(extensions):
+                return None
+            path_text = str(resolved)
+            for index in range(group.childCount()):
+                child = group.child(index)
+                existing = str(child.data(0, Qt.UserRole + 302) or "")
+                if existing.casefold() == path_text.casefold():
+                    self.project_tree.setCurrentItem(child)
+                    return child
+            display_title = str(title or "").strip() or resolved.name or path_text
+            child = QTreeWidgetItem(group, [display_title])
+            child.setData(0, Qt.UserRole + 301, "dbase")
+            child.setData(0, Qt.UserRole + 302, path_text)
+            child.setData(0, Qt.UserRole + 303, PROJECT_NODE_DBASE_FILE)
+            child.setData(0, Qt.UserRole + 306, role)
+            child.setToolTip(0, path_text)
+            child.setIcon(0, self.icon_provider.icon(QFileInfo(path_text)))
+            group.setExpanded(True)
             if mark_modified:
                 self.set_project_modified(True)
             return child
@@ -60211,6 +65543,8 @@ border: 2px solid #2a69aa;
                     child = root.child(index)
                     if self._project_item_kind(child) == PROJECT_NODE_ARCHIVE_ROOT:
                         continue
+                    if self._project_item_kind(child) == PROJECT_NODE_DBASE_GROUP:
+                        continue
                     if self._project_item_kind(child) in {
                         PROJECT_NODE_PASCAL_TARGET,
                         PROJECT_NODE_PASCAL_MODULE_ROOT,
@@ -60226,6 +65560,22 @@ border: 2px solid #2a69aa;
                                 "path": path_value,
                             }
                         )
+
+            # Stage ASM 29: feste dBase-Unterknoten getrennt persistieren.
+            for _role, _title, _extensions, _entry_key in PROJECT_DBASE_GROUPS:
+                _group = getattr(self, "project_dbase_group_nodes", {}).get(_role)
+                if _group is None:
+                    continue
+                for _index in range(_group.childCount()):
+                    _child = _group.child(_index)
+                    if self._project_item_kind(_child) != PROJECT_NODE_DBASE_FILE:
+                        continue
+                    _path_value = str(_child.data(0, Qt.UserRole + 302) or "").strip()
+                    if _path_value:
+                        entries[_entry_key].append({
+                            "title": _child.text(0),
+                            "path": _path_value,
+                        })
 
             archive_root = getattr(self, "project_archive_root", None)
             if archive_root is not None:
@@ -60365,6 +65715,10 @@ border: 2px solid #2a69aa;
                 or any(
                     bool(entries.get(_key))
                     for _key in PROJECT_PASCAL_TABLE_ENTRY_KEYS.values()
+                )
+                or any(
+                    bool(entries.get(_key))
+                    for _key in PROJECT_DBASE_ENTRY_KEYS
                 )
                 or any(
                     bool(entries.get(_settings["input_key"]))
@@ -60511,6 +65865,19 @@ border: 2px solid #2a69aa;
                 return False
             self.current_project_path = resolved
             self.project_path_edit.setText(str(resolved))
+            # Stage ASM 29: Ein geladenes Projekt mit dBase-Ressourcen behält
+            # den dBase-Kontext. Dadurch werden später manuell hinzugefügte
+            # *.prg/*.o/*.a-Dateien ebenfalls den festen dBase-Unterknoten
+            # zugeordnet und *.prg als dBase-Text statt als C64-Binärdatei
+            # behandelt.
+            self.current_project_kind = (
+                "dbase"
+                if (
+                    bool(entries.get("dbase"))
+                    or any(bool(entries.get(_key)) for _key in PROJECT_DBASE_ENTRY_KEYS)
+                )
+                else "generic"
+            )
             self.reset_project_tree(entries)
             self.set_project_modified(False)
             self.right_panel_tabs.setCurrentWidget(self.project_tab)
@@ -61777,6 +67144,90 @@ border: 2px solid #2a69aa;
             elif selected is remove_action:
                 self.delete_selected_project_leaves(preferred_item=item)
 
+        def add_project_dbase_entries(self, group_item: QTreeWidgetItem) -> None:
+            role = str(group_item.data(0, Qt.UserRole + 306) or "").casefold()
+            spec = PROJECT_DBASE_GROUP_BY_ROLE.get(role)
+            if spec is None:
+                return
+            title, extensions, _entry_key = spec
+            patterns = " ".join(f"*{ext}" for ext in extensions)
+            initial = str(
+                self.current_project_path.parent
+                if self.current_project_path is not None
+                else self.current_directory
+            )
+            filenames, _selected = QFileDialog.getOpenFileNames(
+                self,
+                f"dBase {title} hinzufügen",
+                initial,
+                f"{title} ({patterns});;Alle Dateien (*)",
+            )
+            added = 0
+            for filename in filenames:
+                child = self._add_project_dbase_entry(
+                    role, Path(filename), title=Path(filename).name
+                )
+                if child is not None:
+                    added += 1
+            if added and self.current_project_path is not None:
+                self.save_project()
+            if added:
+                group_item.setExpanded(True)
+                self.statusBar().showMessage(
+                    f"{added} dBase-{title}-Datei(en) hinzugefügt", 6000
+                )
+
+        def clear_project_dbase_group(self, group_item: QTreeWidgetItem) -> None:
+            count = group_item.childCount()
+            if count <= 0:
+                return
+            answer = self._show_message_box(
+                QMessageBox.Question,
+                "dBase-Projekteinträge entfernen",
+                f"Sollen alle {count} Einträge aus '{group_item.text(0)}' entfernt werden?\n\n"
+                "Die Dateien auf dem Datenträger bleiben erhalten.",
+                buttons=QMessageBox.Yes | QMessageBox.No,
+                default_button=QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
+            while group_item.childCount():
+                group_item.takeChild(0)
+            self.set_project_modified(True)
+            if self.current_project_path is not None:
+                self.save_project()
+
+        def _show_project_dbase_group_menu(self, item: QTreeWidgetItem, position) -> None:
+            menu = QMenu(self.project_tree)
+            add_action = menu.addAction("Hinzufügen …")
+            clear_action = menu.addAction("Einträge löschen")
+            clear_action.setEnabled(item.childCount() > 0)
+            menu.addSeparator()
+            toggle_action = menu.addAction(
+                "Knoten schließen" if item.isExpanded() else "Knoten öffnen"
+            )
+            selected = menu.exec_(
+                self.project_tree.viewport().mapToGlobal(position)
+            )
+            if selected is add_action:
+                self.add_project_dbase_entries(item)
+            elif selected is clear_action:
+                self.clear_project_dbase_group(item)
+            elif selected is toggle_action:
+                item.setExpanded(not item.isExpanded())
+
+        def _show_project_dbase_file_menu(self, item: QTreeWidgetItem, position) -> None:
+            menu = QMenu(self.project_tree)
+            open_action = menu.addAction("Öffnen")
+            remove_action = menu.addAction("Aus Projekt entfernen")
+            selected = menu.exec_(
+                self.project_tree.viewport().mapToGlobal(position)
+            )
+            if selected is open_action:
+                self.open_project_item(item)
+            elif selected is remove_action:
+                self.delete_selected_project_leaves(preferred_item=item)
+
         def show_project_context_menu(self, position) -> None:
             item = self.project_tree.itemAt(position)
             if item is None:
@@ -61849,6 +67300,26 @@ border: 2px solid #2a69aa;
                 return
             if kind == PROJECT_NODE_PASCAL_TABLE_FILE:
                 self._show_project_pascal_table_file_menu(item, position)
+                return
+            if kind == PROJECT_NODE_DBASE_GROUP:
+                self._show_project_dbase_group_menu(item, position)
+                return
+            if kind == PROJECT_NODE_DBASE_FILE:
+                self._show_project_dbase_file_menu(item, position)
+                return
+            if (
+                item.parent() is None
+                and str(item.data(0, Qt.UserRole + 301) or "").casefold() == "dbase"
+            ):
+                menu = QMenu(self.project_tree)
+                toggle_action = menu.addAction(
+                    "Knoten schließen" if item.isExpanded() else "Knoten öffnen"
+                )
+                selected = menu.exec_(
+                    self.project_tree.viewport().mapToGlobal(position)
+                )
+                if selected is toggle_action:
+                    item.setExpanded(not item.isExpanded())
                 return
             if kind == PROJECT_NODE_PASCAL_UNIT_NAMESPACE:
                 menu = QMenu(self.project_tree)
@@ -62709,6 +68180,7 @@ border: 2px solid #2a69aa;
                 PROJECT_NODE_PASCAL_UNIT_ROOT,
                 PROJECT_NODE_PASCAL_UNIT_NAMESPACE,
                 PROJECT_NODE_PASCAL_TABLE_ROOT,
+                PROJECT_NODE_DBASE_GROUP,
             }
             return [
                 item for item in selected
@@ -62835,8 +68307,61 @@ border: 2px solid #2a69aa;
                 PROJECT_NODE_PASCAL_UNIT_ROOT,
                 PROJECT_NODE_PASCAL_UNIT_NAMESPACE,
                 PROJECT_NODE_PASCAL_TABLE_ROOT,
+                PROJECT_NODE_DBASE_GROUP,
             }:
                 item.setExpanded(not item.isExpanded())
+                return
+            if kind == PROJECT_NODE_DBASE_FILE:
+                path_value = str(item.data(0, Qt.UserRole + 302) or "").strip()
+                role = str(item.data(0, Qt.UserRole + 306) or "").casefold()
+                if not path_value:
+                    return
+                path = Path(path_value)
+                if not path.is_file():
+                    self.show_error(
+                        "dBase-Projektdatei nicht gefunden",
+                        f"Datei nicht gefunden:\n{path}",
+                    )
+                    return
+                if role == "programs":
+                    if self.open_document(path, language_override="dbase"):
+                        self._remember_recent_file(path)
+                        self.statusBar().showMessage(
+                            f"{path.name}: dBase-Texteditor geöffnet", 6000
+                        )
+                elif role == "forms":
+                    if self.open_dbase_form_file(path):
+                        self._remember_recent_file(path)
+                        self.statusBar().showMessage(
+                            f"{path.name}: Formular-Designer geöffnet", 6000
+                        )
+                elif role == "tables":
+                    if self.open_dbase_table_file(path):
+                        self._remember_recent_file(path)
+                        self.statusBar().showMessage(
+                            f"{path.name}: Tabellen-Designer geöffnet", 6000
+                        )
+                elif role == "queries":
+                    self.show_dbase_sql_builder()
+                    if self.dbase_sql_builder_widget is not None:
+                        self.dbase_sql_builder_widget.load_project(path)
+                        self.statusBar().showMessage(
+                            f"{path.name}: SQL Builder geöffnet", 6000
+                        )
+                elif role == "reports":
+                    if self.open_dbase_report_file(path):
+                        self._remember_recent_file(path)
+                        self.statusBar().showMessage(
+                            f"{path.name}: Bericht Builder geöffnet", 6000
+                        )
+                elif role == "objects":
+                    # Objektdateien sind Linkerressourcen; Doppelklick zeigt
+                    # die vorhandene Objekt-Information statt Binärtext.
+                    self.show_project_object_information(item)
+                elif role == "archives":
+                    # Archive werden beim Linken als Symbolquellen verwendet;
+                    # Doppelklick zeigt zugleich die vorhandene Archivanalyse.
+                    self.show_project_archive_information(item)
                 return
             if kind == PROJECT_NODE_PASCAL_TABLE_FILE:
                 path_value = str(item.data(0, Qt.UserRole + 302) or "").strip()

@@ -1,321 +1,180 @@
 ** END HEADER -- do not remove this line
-// Generated on 18.08.2026
+// Generated on 19.08.2026
 //
 PARAMETER bmodal
 LOCAL B
-B = NEW ParentForm(51,4)
+B = NEW Form1(51,4)
 B.Init(121,2)
 B.Open()
 
-CLASS ParentForm OF FORM
+CLASS Form1 OF FORM
 
     WITH (THIS)
-        Width = 644
-        Height = 349
-        Top = 200
-        Left = 200
-        BackColor = "#1b1b1b"
-        ForeColor = "#303030"
-        BrushGradient = "none"
-        BrushStyle = 0
-        BrushCutWidth = 100
-        BrushCutHeight = 100
-        Font = NEW FONT("MS Shell Dlg 2",8, .T., .F., .F.)
-        Font.stroke = .F.
-        FontBackground = "#292929"
-        FontForeground = "#f0f0f0"
-        FontAlpha = 255
-        BorderStyle = "solid"
-        BorderWidth = 2
-        BorderColor = "#808080"
-        ShadowColor = "#000000"
-        BorderRoundedTL = 0
-        BorderRoundedTR = 0
-        BorderRoundedBL = 0
-        BorderRoundedBR = 0
-        Radius = 0
-        BorderLeft = .T.
-        BorderLeftStyle = "solid"
-        BorderLeftSize = 2
-        BorderLeftColor = "#808080"
-        BorderTop = .T.
-        BorderTopStyle = "solid"
-        BorderTopSize = 2
-        BorderTopColor = "#808080"
-        BorderRight = .T.
-        BorderRightStyle = "solid"
-        BorderRightSize = 2
-        BorderRightColor = "#808080"
-        BorderBottom = .T.
-        BorderBottomStyle = "solid"
-        BorderBottomSize = 2
-        BorderBottomColor = "#808080"
+        Left = 10
+        Top = 20
+        Width = 640
+        Height = 480
+        Text = "Demo"
+        Name = "Form1"
+
+        WITH (THIS.Brush)
+            Background = "#800a141e"
+            Foreground = "#ffffff"
+            Gradient = "linear_horizontal"
+
+            WITH (THIS.Style)
+                Pattern = 7
+                CutWidth = 65
+                CutHeight = 45
+            ENDWITH
+        ENDWITH
+
+        WITH (THIS.Border)
+            Style = "solid"
+            Size = 2
+            Color = "#808080"
+
+            WITH (THIS.Shadow)
+                Color = "#101010"
+            ENDWITH
+
+            WITH (THIS.Rounded)
+                TopLeft = 1
+                TopRight = 2
+                BottomLeft = 3
+                BottomRight = 4
+            ENDWITH
+
+            WITH (THIS.Left)
+                Enabled = .T.
+                Style = "double"
+                Size = 3
+                Color = "#ff0000"
+            ENDWITH
+
+            WITH (THIS.Top)
+                Enabled = .T.
+                Style = "solid"
+                Size = 2
+                Color = "#808080"
+            ENDWITH
+
+            WITH (THIS.Right)
+                Enabled = .T.
+                Style = "solid"
+                Size = 2
+                Color = "#808080"
+            ENDWITH
+
+            WITH (THIS.Bottom)
+                Enabled = .T.
+                Style = "solid"
+                Size = 2
+                Color = "#808080"
+            ENDWITH
+        ENDWITH
+
+        WITH (THIS.Font)
+            Name = "Consolas"
+            Size = 12
+            Bold = .T.
+            Cursive = .F.
+            Stroke = .T.
+            Underline = .F.
+            Alpha = 200
+            Background = "#202020"
+            Foreground = "#eeeeee"
+        ENDWITH
     ENDWITH
 
-    THIS.Menu1 = NEW MENU(THIS)
-    WITH (THIS.Menu1)
-        Left = 0
-        Top = 0
-        Width = 644
-        Height = 27
-        BackColor = "#2d3542"
-        ForeColor = "#ebeef2"
-        BrushGradient = "none"
-        BrushStyle = 0
-        BrushCutWidth = 100
-        BrushCutHeight = 100
-        Font = NEW FONT("MS Shell Dlg 2",8, .F., .F., .F.)
-        Font.stroke = .F.
-        FontBackground = "#2d3542"
-        FontForeground = "#ebeef2"
-        FontAlpha = 255
-        BorderStyle = "none"
-        BorderWidth = 1
-        BorderColor = "#7a7a7a"
-        ShadowColor = "#000000"
-        BorderRoundedTL = 0
-        BorderRoundedTR = 0
-        BorderRoundedBL = 0
-        BorderRoundedBR = 0
-        Radius = 0
-        BorderLeft = .T.
-        BorderLeftStyle = "none"
-        BorderLeftSize = 1
-        BorderLeftColor = "#7a7a7a"
-        BorderTop = .T.
-        BorderTopStyle = "none"
-        BorderTopSize = 1
-        BorderTopColor = "#7a7a7a"
-        BorderRight = .T.
-        BorderRightStyle = "none"
-        BorderRightSize = 1
-        BorderRightColor = "#7a7a7a"
-        BorderBottom = .T.
-        BorderBottomStyle = "none"
-        BorderBottomSize = 1
-        BorderBottomColor = "#7a7a7a"
+    THIS.FONT1 = NEW FONT("Arial")
+    WITH (THIS.FONT1)
+        Name = "Arial"
+        Size = 9
+        Bold = .T.
+        Cursive = .F.
+        Stroke = .T.
+        Underline = .F.
+        Alpha = 123
+        Background = "#111111"
+        Foreground = "#eeeeee"
     ENDWITH
 
-    THIS.Panel1 = NEW CONTAINER(THIS)
-    WITH (THIS.Panel1)
-        Left = 345
-        Top = 63
-        Width = 220
-        Height = 150
-        BackColor = "#ffff00"
-        ForeColor = "#aa0000"
-        BrushGradient = "linear_horizontal"
-        BrushStyle = 0
-        BrushCutWidth = 100
-        BrushCutHeight = 100
-        Font = NEW FONT("MS Shell Dlg 2",8, .F., .F., .F.)
-        Font.stroke = .F.
-        FontBackground = "#202630"
-        FontForeground = "#ebeef2"
-        FontAlpha = 255
-        BorderStyle = "solid"
-        BorderWidth = 4
-        BorderColor = "#ffff00"
-        ShadowColor = "#000000"
-        BorderRoundedTL = 0
-        BorderRoundedTR = 0
-        BorderRoundedBL = 0
-        BorderRoundedBR = 0
-        Radius = 0
-        BorderLeft = .T.
-        BorderLeftStyle = "solid"
-        BorderLeftSize = 4
-        BorderLeftColor = "#ffff00"
-        BorderTop = .T.
-        BorderTopStyle = "solid"
-        BorderTopSize = 4
-        BorderTopColor = "#ffff00"
-        BorderRight = .T.
-        BorderRightStyle = "solid"
-        BorderRightSize = 4
-        BorderRightColor = "#ffff00"
-        BorderBottom = .T.
-        BorderBottomStyle = "solid"
-        BorderBottomSize = 4
-        BorderBottomColor = "#ffff00"
+    THIS.PushButton1 = NEW PUSHBUTTON(THIS, "Button1")
+    WITH (THIS.PushButton1)
+        Name = "PushButton1"
+        Left = 30
+        Top = 40
+        Width = 174
+        Height = 85
+
+        THIS.Font = THIS.FONT1
+
+        WITH (THIS.Brush)
+            Background = "#333333"
+            Foreground = "#ebeef2"
+            Gradient = "none"
+
+            WITH (THIS.Style)
+                Pattern = 0
+                CutWidth = 80
+                CutHeight = 90
+            ENDWITH
+        ENDWITH
+
+        WITH (THIS.Border)
+            Style = "dashed"
+            Size = 4
+            Color = "#55ff7f"
+
+            WITH (THIS.Shadow)
+                Color = "#000000"
+            ENDWITH
+
+            WITH (THIS.Rounded)
+                TopLeft = 0
+                TopRight = 0
+                BottomLeft = 0
+                BottomRight = 0
+            ENDWITH
+
+            WITH (THIS.Left)
+                Enabled = .T.
+                Style = "dashed"
+                Size = 4
+                Color = "#55ff7f"
+            ENDWITH
+
+            WITH (THIS.Top)
+                Enabled = .T.
+                Style = "dashed"
+                Size = 4
+                Color = "#55ff7f"
+            ENDWITH
+
+            WITH (THIS.Right)
+                Enabled = .F.
+                Style = "dotted"
+                Size = 4
+                Color = "#55ff7f"
+            ENDWITH
+
+            WITH (THIS.Bottom)
+                Enabled = .T.
+                Style = "dashed"
+                Size = 4
+                Color = "#55ff7f"
+            ENDWITH
+        ENDWITH
     ENDWITH
 
-    THIS.Button1 = NEW PUSHBUTTON(THIS)
-    WITH (THIS.Button1)
-        Left = 65
-        Top = 80
-        Width = 120
-        Height = 34
-        Text = "Button 1"
-        BackColor = "#2d3542"
-        ForeColor = "#ebeef2"
-        BrushGradient = "none"
-        BrushStyle = 0
-        BrushCutWidth = 100
-        BrushCutHeight = 100
-        Font = NEW FONT("MS Shell Dlg 2",8, .F., .F., .F.)
-        Font.stroke = .F.
-        FontBackground = "#2d3542"
-        FontForeground = "#ebeef2"
-        FontAlpha = 255
-        BorderStyle = "none"
-        BorderWidth = 1
-        BorderColor = "#7a7a7a"
-        ShadowColor = "#000000"
-        BorderRoundedTL = 0
-        BorderRoundedTR = 0
-        BorderRoundedBL = 0
-        BorderRoundedBR = 0
-        Radius = 0
-        BorderLeft = .T.
-        BorderLeftStyle = "none"
-        BorderLeftSize = 1
-        BorderLeftColor = "#7a7a7a"
-        BorderTop = .T.
-        BorderTopStyle = "none"
-        BorderTopSize = 1
-        BorderTopColor = "#7a7a7a"
-        BorderRight = .T.
-        BorderRightStyle = "none"
-        BorderRightSize = 1
-        BorderRightColor = "#7a7a7a"
-        BorderBottom = .T.
-        BorderBottomStyle = "none"
-        BorderBottomSize = 1
-        BorderBottomColor = "#7a7a7a"
-    ENDWITH
+    procedure __init__
+        return
 
-    THIS.VScrollBar1 = NEW VSCROLLBAR(THIS)
-    WITH (THIS.VScrollBar1)
-        Left = 101
-        Top = 141
-        Width = 22
-        Height = 150
-        BackColor = "#202630"
-        ForeColor = "#ebeef2"
-        BrushGradient = "none"
-        BrushStyle = 0
-        BrushCutWidth = 100
-        BrushCutHeight = 100
-        Font = NEW FONT("MS Shell Dlg 2",8, .F., .F., .F.)
-        Font.stroke = .F.
-        FontBackground = "#202630"
-        FontForeground = "#ebeef2"
-        FontAlpha = 255
-        BorderStyle = "none"
-        BorderWidth = 1
-        BorderColor = "#7a7a7a"
-        ShadowColor = "#000000"
-        BorderRoundedTL = 0
-        BorderRoundedTR = 0
-        BorderRoundedBL = 0
-        BorderRoundedBR = 0
-        Radius = 0
-        BorderLeft = .T.
-        BorderLeftStyle = "none"
-        BorderLeftSize = 1
-        BorderLeftColor = "#7a7a7a"
-        BorderTop = .T.
-        BorderTopStyle = "none"
-        BorderTopSize = 1
-        BorderTopColor = "#7a7a7a"
-        BorderRight = .T.
-        BorderRightStyle = "none"
-        BorderRightSize = 1
-        BorderRightColor = "#7a7a7a"
-        BorderBottom = .T.
-        BorderBottomStyle = "none"
-        BorderBottomSize = 1
-        BorderBottomColor = "#7a7a7a"
-    ENDWITH
+    procedure __del__
+        return
 
-    THIS.Button2 = NEW PUSHBUTTON(THIS)
-    WITH (THIS.Button2)
-        Left = 245
-        Top = 160
-        Width = 120
-        Height = 43
-        Text = "Button 2"
-        BackColor = "#2d3542"
-        ForeColor = "#ebeef2"
-        BrushGradient = "none"
-        BrushStyle = 0
-        BrushCutWidth = 100
-        BrushCutHeight = 100
-        Font = NEW FONT("MS Shell Dlg 2",8, .F., .F., .F.)
-        Font.stroke = .F.
-        FontBackground = "#2d3542"
-        FontForeground = "#ebeef2"
-        FontAlpha = 255
-        BorderStyle = "none"
-        BorderWidth = 1
-        BorderColor = "#7a7a7a"
-        ShadowColor = "#000000"
-        BorderRoundedTL = 0
-        BorderRoundedTR = 0
-        BorderRoundedBL = 0
-        BorderRoundedBR = 0
-        Radius = 0
-        BorderLeft = .T.
-        BorderLeftStyle = "none"
-        BorderLeftSize = 1
-        BorderLeftColor = "#7a7a7a"
-        BorderTop = .T.
-        BorderTopStyle = "none"
-        BorderTopSize = 1
-        BorderTopColor = "#7a7a7a"
-        BorderRight = .T.
-        BorderRightStyle = "none"
-        BorderRightSize = 1
-        BorderRightColor = "#7a7a7a"
-        BorderBottom = .T.
-        BorderBottomStyle = "none"
-        BorderBottomSize = 1
-        BorderBottomColor = "#7a7a7a"
-    ENDWITH
-
-    THIS.StatusBar1 = NEW STATUSBAR(THIS)
-    WITH (THIS.StatusBar1)
-        Left = 0
-        Top = 323
-        Width = 644
-        Height = 26
-        BackColor = "#202630"
-        ForeColor = "#ebeef2"
-        BrushGradient = "none"
-        BrushStyle = 0
-        BrushCutWidth = 100
-        BrushCutHeight = 100
-        Font = NEW FONT("Segoe UI",9, .F., .F., .F.)
-        Font.stroke = .F.
-        FontBackground = "#202630"
-        FontForeground = "#ebeef2"
-        FontAlpha = 255
-        BorderStyle = "none"
-        BorderWidth = 1
-        BorderColor = "#7a7a7a"
-        ShadowColor = "#000000"
-        BorderRoundedTL = 0
-        BorderRoundedTR = 0
-        BorderRoundedBL = 0
-        BorderRoundedBR = 0
-        Radius = 0
-        BorderLeft = .T.
-        BorderLeftStyle = "none"
-        BorderLeftSize = 1
-        BorderLeftColor = "#7a7a7a"
-        BorderTop = .T.
-        BorderTopStyle = "none"
-        BorderTopSize = 1
-        BorderTopColor = "#7a7a7a"
-        BorderRight = .T.
-        BorderRightStyle = "none"
-        BorderRightSize = 1
-        BorderRightColor = "#7a7a7a"
-        BorderBottom = .T.
-        BorderBottomStyle = "none"
-        BorderBottomSize = 1
-        BorderBottomColor = "#7a7a7a"
-    ENDWITH
+    function __main__
+        return 7
 
 ENDCLASS
