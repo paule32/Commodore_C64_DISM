@@ -6,6 +6,8 @@ import math
 import re
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
+from .optimizer import C64BasicOptimizer, normalize_print_strategy
+
 
 class C64BasicError(Exception):
     """Fehler im C64-BASIC-Quelltext mit optionaler BASIC-Zeilennummer."""
@@ -360,9 +362,26 @@ def _safe_symbol(name: str) -> str:
 
 
 def _petscii_bytes(text: str) -> bytes:
-    # Die vorhandenen Editoren und der frühere Compiler verwenden Latin-1 als
-    # direkte Byteabbildung. Diese Abbildung bleibt für Kompatibilität erhalten.
-    return text.replace('""', '"').encode("latin-1", errors="replace")[:255]
+    """Kodiert BASIC-Stringtext in PETSCII-Bytes.
+
+    Stage ASM 62 führt für die C64Pro-Mono-Grafikpalette eine verlustfreie
+    Direct-PETSCII-Darstellung ein: U+E000..U+E0FF entspricht exakt $00..$FF.
+    Normales historisches Latin-1-Verhalten bleibt für bestehende Quellen
+    erhalten. Nicht darstellbare Unicode-Zeichen werden weiterhin zu ``?``.
+    """
+    normalized = text.replace('""', '"')
+    payload = bytearray()
+    for character in normalized:
+        codepoint = ord(character)
+        if 0xE000 <= codepoint <= 0xE0FF:
+            payload.append(codepoint - 0xE000)
+        elif codepoint <= 0xFF:
+            payload.append(codepoint)
+        else:
+            payload.append(ord('?'))
+        if len(payload) >= 255:
+            break
+    return bytes(payload)
 
 
 def _encode_cbm_float(value: Decimal) -> bytes:
@@ -451,7 +470,16 @@ def _looks_like_string_expression(text: str) -> bool:
 
 
 class _BasicCompiler:
-    def __init__(self, source: str, filename: str):
+    AUTO_PRINT_LITERAL_MARKER = ";@BASIC_AUTO_PRINT_LITERAL "
+
+    def __init__(
+        self,
+        source: str,
+        filename: str,
+        *,
+        optimizer_enabled: bool = True,
+        optimizer_strategy: str = "direct",
+    ):
         self.source = source
         self.filename = filename
         self.lines: List[str] = []
@@ -460,6 +488,10 @@ class _BasicCompiler:
         self.arrays: Dict[str, _ArrayInfo] = {}
         self.float_temporaries: List[str] = []
         self.string_literals: List[Tuple[str, bytes]] = []
+        self._string_literal_by_payload: Dict[bytes, str] = {}
+        self._string_literal_print_uses: Dict[str, int] = {}
+        self._string_literal_thunks: set[str] = set()
+        self._inline_pointer_runtime_needed = False
         self.float_constants: Dict[str, Tuple[str, bytes]] = {}
         self.label_counter = 0
         self.temp_counter = 0
@@ -470,6 +502,9 @@ class _BasicCompiler:
         self.data_by_line: List[Tuple[int, List[str]]] = []
         self.data_line_labels: Dict[int, str] = {}
         self.total_array_bytes = 0
+        self.optimizer_enabled = bool(optimizer_enabled)
+        self.optimizer_strategy = normalize_print_strategy(optimizer_strategy)
+        self.optimizer = C64BasicOptimizer()
 
     def new_label(self, prefix: str) -> str:
         self.label_counter += 1
@@ -505,10 +540,80 @@ class _BasicCompiler:
         return self.string_variables[key]
 
     def add_string_literal(self, text: str) -> str:
-        symbol = self.new_label("string")
+        # Immutable Stringliterale können sicher zusammengelegt werden. Das ist
+        # insbesondere für String-Thunks wichtig: mehrfach verwendeter Text
+        # erhält ein gemeinsames Zielsymbol.
         payload = _petscii_bytes(text)
+        existing = self._string_literal_by_payload.get(payload)
+        if existing is not None:
+            return existing
+        symbol = self.new_label("string")
+        self._string_literal_by_payload[payload] = symbol
         self.string_literals.append((symbol, payload))
         return symbol
+
+    @staticmethod
+    def _print_thunk_label(symbol: str) -> str:
+        suffix = str(symbol).removeprefix("__basic_string_")
+        return f"__basic_print_thunk_{suffix}"
+
+    def _emit_direct_literal_print(self, symbol: str) -> None:
+        self.emit(f"    lda #<{symbol}")
+        self.emit(f"    ldy #>{symbol}")
+        self.emit("    jsr __basic_print_string")
+        self.optimizer.stats.direct_literal_prints += 1
+
+    def _emit_inline_pointer_literal_print(self, symbol: str) -> None:
+        self._inline_pointer_runtime_needed = True
+        self.emit("    jsr __basic_print_literal_inline")
+        self.emit(f"    .word {symbol}")
+        self.optimizer.stats.inline_pointer_prints += 1
+
+    def _emit_string_thunk_literal_print(self, symbol: str) -> None:
+        self._string_literal_thunks.add(symbol)
+        self.emit(f"    jsr {self._print_thunk_label(symbol)}")
+        self.optimizer.stats.string_thunk_prints += 1
+
+    def emit_print_literal(self, symbol: str) -> None:
+        strategy = self.optimizer_strategy if self.optimizer_enabled else "direct"
+        self._string_literal_print_uses[symbol] = (
+            self._string_literal_print_uses.get(symbol, 0) + 1
+        )
+        if strategy == "direct":
+            self._emit_direct_literal_print(symbol)
+        elif strategy == "inline_pointer":
+            self._emit_inline_pointer_literal_print(symbol)
+        elif strategy == "string_thunk":
+            self._emit_string_thunk_literal_print(symbol)
+        elif strategy == "auto":
+            # Die endgültige Entscheidung ist erst möglich, nachdem alle
+            # PRINT-Stellen bekannt sind. Der Marker wird vor der Runtime-
+            # Ausgabe in echte 6502-Instruktionen umgeschrieben.
+            self.emit(self.AUTO_PRINT_LITERAL_MARKER + symbol)
+        else:
+            self._emit_direct_literal_print(symbol)
+
+    def resolve_auto_print_literals(self) -> None:
+        if not (self.optimizer_enabled and self.optimizer_strategy == "auto"):
+            return
+        resolved: List[str] = []
+        marker = self.AUTO_PRINT_LITERAL_MARKER
+        for line in self.lines:
+            if not line.startswith(marker):
+                resolved.append(line)
+                continue
+            symbol = line[len(marker):].strip()
+            count = int(self._string_literal_print_uses.get(symbol, 0))
+            if count >= 2:
+                self._string_literal_thunks.add(symbol)
+                resolved.append(f"    jsr {self._print_thunk_label(symbol)}")
+                self.optimizer.stats.string_thunk_prints += 1
+            else:
+                self._inline_pointer_runtime_needed = True
+                resolved.append("    jsr __basic_print_literal_inline")
+                resolved.append(f"    .word {symbol}")
+                self.optimizer.stats.inline_pointer_prints += 1
+        self.lines = resolved
 
     def float_constant(self, value: Decimal) -> str:
         normalized = str(value.normalize()) if value != 0 else "0"
@@ -580,6 +685,8 @@ class _BasicCompiler:
         return info
 
     def compile_numeric_expression(self, node: Node, basic_line: int) -> None:
+        if self.optimizer_enabled:
+            node = self.optimizer.optimize_numeric_node(node)
         kind = node[0]
         if kind == "number":
             self.emit_load_float(self.float_constant(Decimal(node[1])))
@@ -869,6 +976,60 @@ class _BasicCompiler:
         else:
             self.emit_pointer("$FD", "$FE", self.string_variable(name))
 
+    def compile_print_string_term(self, term: str, line: int) -> None:
+        """Gibt genau einen Stringterm ohne __basic_string_expr aus."""
+        stripped = term.strip()
+        if len(stripped) >= 2 and stripped.startswith('"') and stripped.endswith('"'):
+            symbol = self.add_string_literal(stripped[1:-1])
+            self.emit_print_literal(symbol)
+            return
+
+        function_match = re.fullmatch(r"(?is)\s*(CHR\$|STR\$)\s*\((.*)\)\s*", stripped)
+        if function_match is not None:
+            name = function_match.group(1).upper()
+            argument = function_match.group(2)
+            self.compile_numeric_text(argument, line)
+            if name == "CHR$":
+                self.emit("    jsr __basic_fac_to_int")
+                self.emit("    sta __basic_string_term+1")
+                self.emit("    lda #$01")
+                self.emit("    sta __basic_string_term")
+            else:
+                self.emit("    jsr __basic_float_to_string_term")
+            self.emit("    lda #<__basic_string_term")
+            self.emit("    ldy #>__basic_string_term")
+            self.emit("    jsr __basic_print_string")
+            return
+
+        name, index_texts = _parse_lvalue(stripped, line)
+        if not _is_string_name(name):
+            raise C64BasicError("Stringausdruck erwartet.", line)
+        if index_texts:
+            info = self.ensure_array(name, len(index_texts), line)
+            if info.kind != "string":
+                raise C64BasicError(f"Array {name} ist kein Stringarray.", line)
+            nodes = tuple(_parse_expression(item, line) for item in index_texts)
+            self.compile_array_address(info, nodes, line)
+            self.emit("    lda $FB")
+            self.emit("    ldy $FC")
+        else:
+            symbol = self.string_variable(name)
+            self.emit(f"    lda #<{symbol}")
+            self.emit(f"    ldy #>{symbol}")
+        self.emit("    jsr __basic_print_string")
+
+    def compile_print_string_expression_direct(self, text: str, line: int) -> bool:
+        """Streamt einen PRINT-Stringausdruck direkt, falls sicher darstellbar."""
+        if not self.optimizer_enabled:
+            return False
+        terms = self.optimizer.direct_print_terms(text)
+        if terms is None:
+            return False
+        for term in terms:
+            self.compile_print_string_term(term, line)
+        self.optimizer.record_streamed_print(len(terms))
+        return True
+
     def compile_string_expression_to(self, text: str, destination: str, line: int) -> None:
         terms = _split_top_level(text, "+")
         if not terms or any(not term for term in terms):
@@ -920,10 +1081,11 @@ class _BasicCompiler:
             if not value:
                 continue
             if _looks_like_string_expression(value):
-                self.compile_string_expression_to(value, "__basic_string_expr", line)
-                self.emit("    lda #<__basic_string_expr")
-                self.emit("    ldy #>__basic_string_expr")
-                self.emit("    jsr __basic_print_string")
+                if not self.compile_print_string_expression_direct(value, line):
+                    self.compile_string_expression_to(value, "__basic_string_expr", line)
+                    self.emit("    lda #<__basic_string_expr")
+                    self.emit("    ldy #>__basic_string_expr")
+                    self.emit("    jsr __basic_print_string")
             else:
                 self.compile_numeric_text(value, line)
                 self.emit("    jsr __basic_print_float")
@@ -1150,10 +1312,11 @@ class _BasicCompiler:
         else:
             prompt_match = re.match(r'(?is)^\s*("(?:""|[^"])*")\s*([;,])\s*(.*)$', rest)
             if prompt_match is not None:
-                self.compile_string_expression_to(prompt_match.group(1), "__basic_string_expr", line)
-                self.emit("    lda #<__basic_string_expr")
-                self.emit("    ldy #>__basic_string_expr")
-                self.emit("    jsr __basic_print_string")
+                if not self.compile_print_string_expression_direct(prompt_match.group(1), line):
+                    self.compile_string_expression_to(prompt_match.group(1), "__basic_string_expr", line)
+                    self.emit("    lda #<__basic_string_expr")
+                    self.emit("    ldy #>__basic_string_expr")
+                    self.emit("    jsr __basic_print_string")
                 if prompt_match.group(2) == ",":
                     self.emit("    lda #$3F")
                     self.emit("    jsr $FFD2")
@@ -1472,6 +1635,35 @@ class _BasicCompiler:
     def emit_runtime(self) -> None:
         self.emit("")
         self.emit("; ---- C64 BASIC Fließkomma-/String-/I/O-Runtime --------------------")
+        self.emit("; C64-CBSS: nicht im PRG gespeicherter, beim Start genullter RAM")
+        self.emit("__basic_init_cbss:")
+        self.emit("    lda #<__basic_cbss_start")
+        self.emit("    sta $FB")
+        self.emit("    lda #>__basic_cbss_start")
+        self.emit("    sta $FC")
+        self.emit("    lda #$00")
+        self.emit("    ldx #>(__basic_cbss_end-__basic_cbss_start)")
+        self.emit("    beq __basic_init_cbss_remainder")
+        self.emit("__basic_init_cbss_page:")
+        self.emit("    ldy #$00")
+        self.emit("__basic_init_cbss_page_loop:")
+        self.emit("    sta ($FB),y")
+        self.emit("    iny")
+        self.emit("    bne __basic_init_cbss_page_loop")
+        self.emit("    inc $FC")
+        self.emit("    dex")
+        self.emit("    bne __basic_init_cbss_page")
+        self.emit("__basic_init_cbss_remainder:")
+        self.emit("    ldy #$00")
+        self.emit("__basic_init_cbss_remainder_loop:")
+        self.emit("    cpy #<(__basic_cbss_end-__basic_cbss_start)")
+        self.emit("    beq __basic_init_cbss_done")
+        self.emit("    sta ($FB),y")
+        self.emit("    iny")
+        self.emit("    bne __basic_init_cbss_remainder_loop")
+        self.emit("__basic_init_cbss_done:")
+        self.emit("    rts")
+        self.emit("")
         self.emit("__basic_newline:")
         self.emit("    lda #$0D")
         self.emit("    jmp $FFD2")
@@ -1497,6 +1689,38 @@ class _BasicCompiler:
         self.emit("__basic_print_string_done:")
         self.emit("    rts")
         self.emit("")
+        if self._inline_pointer_runtime_needed:
+            self.emit("; Inline-Pointer PRINT: JSR + .word Stringadresse")
+            self.emit("__basic_print_literal_inline:")
+            self.emit("    pla")
+            self.emit("    sta $FB")
+            self.emit("    pla")
+            self.emit("    sta $FC")
+            self.emit("    inc $FB")
+            self.emit("    bne __basic_print_literal_ptr_ready")
+            self.emit("    inc $FC")
+            self.emit("__basic_print_literal_ptr_ready:")
+            self.emit("    ldy #$00")
+            self.emit("    lda ($FB),y")
+            self.emit("    sta $FD")
+            self.emit("    iny")
+            self.emit("    lda ($FB),y")
+            self.emit("    sta $FE")
+            # Returnadresse ist aktuell die Adresse des ersten Inline-Bytes.
+            # Für RTS muss Adresse_des_zweiten_Inline_Bytes auf dem Stack liegen,
+            # damit das implizite +1 hinter das .word springt.
+            self.emit("    inc $FB")
+            self.emit("    bne __basic_print_literal_return_ready")
+            self.emit("    inc $FC")
+            self.emit("__basic_print_literal_return_ready:")
+            self.emit("    lda $FC")
+            self.emit("    pha")
+            self.emit("    lda $FB")
+            self.emit("    pha")
+            self.emit("    lda $FD")
+            self.emit("    ldy $FE")
+            self.emit("    jmp __basic_print_string")
+            self.emit("")
         self.emit("__basic_print_z:")
         self.emit("    sta $FB")
         self.emit("    sty $FC")
@@ -1903,42 +2127,27 @@ class _BasicCompiler:
         self.emit("    txs")
         self.emit("    jmp __basic_program_end")
 
-    def emit_storage(self) -> None:
+    def emit_print_literal_thunks(self) -> None:
+        if not self._string_literal_thunks:
+            return
         self.emit("")
-        self.emit("; ---- Variablen, Arrays und Compiler-Temporärspeicher ---------------")
-        for _name, (symbol, kind) in sorted(self.numeric_variables.items()):
-            if kind == "float":
-                self.emit(f"{symbol}: .fill 5, $00")
-            else:
-                self.emit(f"{symbol}: .word $0000")
-        for _name, symbol in sorted(self.string_variables.items()):
-            self.emit(f"{symbol}: .fill 256, $00")
-        for _name, info in sorted(self.arrays.items()):
-            self.emit(f"{info.symbol}: .fill {info.byte_size}, $00")
-        for symbol in self.float_temporaries:
-            self.emit(f"{symbol}: .fill 5, $00")
-        for symbol in ("__basic_float_hold", "__basic_float_hold2"):
-            self.emit(f"{symbol}: .fill 5, $00")
-        for symbol in (
-            "__basic_int_left", "__basic_int_right", "__basic_int_result",
-            "__basic_int_hold", "__basic_index", "__basic_linear_index",
-            "__basic_dest_ptr", "__basic_data_ptr", "__basic_string_base_ptr",
+        self.emit("; ---- Optimizer: String-Thunks --------------------------------------")
+        for symbol in sorted(
+            self._string_literal_thunks,
+            key=lambda value: int(str(value).rsplit("_", 1)[-1])
+            if str(value).rsplit("_", 1)[-1].isdigit() else str(value),
         ):
-            self.emit(f"{symbol}: .word $0000")
-        for symbol in (
-            "__basic_compare_result", "__basic_string_dest_length",
-            "__basic_string_source_length", "__basic_string_left_length",
-            "__basic_string_right_length", "__basic_field_position",
-            "__basic_get_char", "__basic_lfn", "__basic_device",
-            "__basic_secondary", "__basic_entry_sp",
-        ):
-            self.emit(f"{symbol}: .byte $00")
-        for symbol in (
-            "__basic_string_expr", "__basic_string_left", "__basic_string_right",
-            "__basic_string_term", "__basic_input_buffer", "__basic_field_buffer",
-        ):
-            self.emit(f"{symbol}: .fill 256, $00")
+            self.emit(f"{self._print_thunk_label(symbol)}:")
+            self.emit(f"    lda #<{symbol}")
+            self.emit(f"    ldy #>{symbol}")
+            self.emit("    jmp __basic_print_string")
 
+    def emit_storage(self) -> None:
+        # Geladene, unveränderliche/initialisierte Daten kommen zuerst. Alles
+        # was beim BASIC-Programmstart den Wert 0 haben soll, wird danach in
+        # einem C64-spezifischen .cbss-Bereich nur adressiert, nicht ins PRG
+        # geschrieben. __basic_init_cbss löscht diesen RAM vor der ersten
+        # BASIC-Zeile.
         self.emit("")
         self.emit("; ---- Fließkommakonstanten im kompakten CBM-5-Byte-Format ----------")
         # Stabile Aliasnamen für Runtime und Tests.
@@ -1952,7 +2161,7 @@ class _BasicCompiler:
 
         if self.string_literals:
             self.emit("")
-            self.emit("; ---- Zeichenkettenliterale ------------------------------------------")
+            self.emit("; ---- ShortString-Literale: [1 Byte Länge][0..255 Datenbytes] ------")
             for symbol, payload in self.string_literals:
                 values = ", ".join(f"${byte:02X}" for byte in bytes((len(payload),)) + payload)
                 self.emit(f"{symbol}: .byte {values}")
@@ -1967,8 +2176,50 @@ class _BasicCompiler:
                 values = ", ".join(f"${byte:02X}" for byte in bytes((len(payload),)) + payload)
                 self.emit(f"    .byte {values}")
         self.emit("__basic_data_end: .byte $FF")
-        self.emit("__basic_error_bad_subscript: .byte \"?BAD SUBSCRIPT ERROR\", $0D, $00")
-        self.emit("__basic_error_out_of_data: .byte \"?OUT OF DATA ERROR\", $0D, $00")
+        self.emit('__basic_error_bad_subscript: .byte "?BAD SUBSCRIPT ERROR", $0D, $00')
+        self.emit('__basic_error_out_of_data: .byte "?OUT OF DATA ERROR", $0D, $00')
+
+        self.emit("")
+        self.emit("; ---- Ende des physisch im PRG gespeicherten Images ----------------")
+        self.emit("__basic_image_end:")
+        self.emit("")
+        self.emit("; ---- C64 CBSS: nur RAM-Adressen, KEINE Bytes im PRG ----------------")
+        self.emit("; Strings sind Pascal/Turbo-Pascal-artige ShortStrings:")
+        self.emit(";   Byte 0 = Länge 0..255, Byte 1..255 = Zeichen")
+        self.emit("__basic_cbss_start:")
+
+        for _name, (symbol, kind) in sorted(self.numeric_variables.items()):
+            size = 5 if kind == "float" else 2
+            self.emit(f"{symbol}: .cbss {size}")
+        for _name, symbol in sorted(self.string_variables.items()):
+            self.emit(f"{symbol}: .cbss 256")
+        for _name, info in sorted(self.arrays.items()):
+            self.emit(f"{info.symbol}: .cbss {info.byte_size}")
+        for symbol in self.float_temporaries:
+            self.emit(f"{symbol}: .cbss 5")
+        for symbol in ("__basic_float_hold", "__basic_float_hold2"):
+            self.emit(f"{symbol}: .cbss 5")
+        for symbol in (
+            "__basic_int_left", "__basic_int_right", "__basic_int_result",
+            "__basic_int_hold", "__basic_index", "__basic_linear_index",
+            "__basic_dest_ptr", "__basic_data_ptr", "__basic_string_base_ptr",
+        ):
+            self.emit(f"{symbol}: .cbss 2")
+        for symbol in (
+            "__basic_compare_result", "__basic_string_dest_length",
+            "__basic_string_source_length", "__basic_string_left_length",
+            "__basic_string_right_length", "__basic_field_position",
+            "__basic_get_char", "__basic_lfn", "__basic_device",
+            "__basic_secondary", "__basic_entry_sp",
+        ):
+            self.emit(f"{symbol}: .cbss 1")
+        for symbol in (
+            "__basic_string_expr", "__basic_string_left", "__basic_string_right",
+            "__basic_string_term", "__basic_input_buffer", "__basic_field_buffer",
+        ):
+            self.emit(f"{symbol}: .cbss 256")
+
+        self.emit("__basic_cbss_end:")
 
     def compile(self) -> C64BasicCompileResult:
         parsed = self.parse_source()
@@ -1986,6 +2237,7 @@ class _BasicCompiler:
         self.emit(".entry __basic_start")
         self.emit("")
         self.emit("__basic_start:")
+        self.emit("    jsr __basic_init_cbss")
         self.emit("    tsx")
         self.emit("    stx __basic_entry_sp")
         self.emit("    lda #<__basic_data_start")
@@ -2018,14 +2270,29 @@ class _BasicCompiler:
                 f"Sprungziel {missing[0]} ist nicht vorhanden.", source_line
             )
 
+        self.resolve_auto_print_literals()
         self.emit_runtime()
+        self.emit_print_literal_thunks()
         self.emit_storage()
         self.emit("end")
+        optimizer_stats = self.optimizer.stats
         notes = (
             "Numerische Standardvariablen verwenden das originale 5-Byte-CBM-Fließkommaformat.",
             "Variablen mit %-Suffix und Integerarrays verwenden 16-Bit-Ganzzahlen.",
-            "Strings besitzen bis zu 255 Bytes; Arrays werden statisch in das PRG eingebettet.",
+            "Strings verwenden 256-Byte-ShortString-Slots: 1 Längenbyte (0..255) plus bis zu 255 Zeichen.",
+            "Nullinitialisierte Variablen, Arrays und Runtime-Puffer liegen im C64-CBSS hinter dem PRG und werden beim Start per 6510-Schleife gelöscht.",
             "OPEN/CLOSE/CMD/PRINT#/INPUT#/GET# verwenden die C64-KERNAL-Sprungtabelle.",
+            (
+                "Optimizer: "
+                + ("aktiv" if self.optimizer_enabled else "deaktiviert")
+                + f"; Strategie={self.optimizer_strategy}; "
+                f"{optimizer_stats.constant_folds} Konstantenfaltung(en), "
+                f"{optimizer_stats.streamed_print_expressions} direkt gestreamte PRINT-Ausdrücke, "
+                f"{optimizer_stats.avoided_string_materializations} vermiedene String-Zwischenpuffer; "
+                f"Literal-PRINT direct={optimizer_stats.direct_literal_prints}, "
+                f"inline={optimizer_stats.inline_pointer_prints}, "
+                f"thunk={optimizer_stats.string_thunk_prints}."
+            ),
             "Der erzeugte ASM-Code kann im ASM-Tab geprüft und anschließend assembliert werden.",
         )
         return C64BasicCompileResult(
@@ -2040,9 +2307,16 @@ def compile_basic_to_assembly(
     *,
     filename: str = "<memory>",
     target: str = "c64",
+    optimizer_enabled: bool = True,
+    optimizer_strategy: str = "direct",
 ) -> C64BasicCompileResult:
     if str(target).strip().casefold() not in {"c64", "c-64", "commodore64"}:
         raise C64BasicError(
             "Der BASIC-Compiler unterstützt derzeit ausschließlich das Ziel C-64."
         )
-    return _BasicCompiler(str(source), str(filename)).compile()
+    return _BasicCompiler(
+        str(source),
+        str(filename),
+        optimizer_enabled=bool(optimizer_enabled),
+        optimizer_strategy=optimizer_strategy,
+    ).compile()

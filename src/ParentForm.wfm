@@ -1,0 +1,58 @@
+** END HEADER -- do not remove this line
+// Generated on 02.12.2025
+//
+PARAMETER bmodal
+LOCAL B
+B = NEW ParentForm(51,4)
+B.Init(121,2)
+B.Open()
+
+CLASS ParentForm OF FORM
+    PROPERTY width = 200.23
+    PROPERTY top   = 231
+    WITH (THIS)
+        Width = 400
+        Height = 400
+        Top = 223
+        Left = 200
+    ENDWITH
+    THIS.PushButton1 = NEW PUSHBUTTON(THIS)
+    THIS.PushButton1.Top = 180
+    THIS.PushButton1.Left = 30
+    WITH (THIS.PushButton1)
+        onMouseMove = THIS.PushButton1_onMouseMove
+        onMouseRButton = THIS.PushButton1_onMouseRButton
+        Top = 82
+        Width = 128
+        Text = "Click Me"
+    ENDWITH
+    THIS.PushButton2 = NEW PUSHBUTTON(THIS)
+    WITH (THIS.PushButton2)
+        onClick = THIS.PushButton2_onClick
+        Font = NEW FONT("Arial",12, .T., .T., .T.)
+        Font.bold = .F.
+        Left = 200
+        Top = 82
+        Width = 128
+        Text = "Click Me, too"
+    ENDWITH
+    THIS.Container1 = NEW CONTAINER(THIS)
+    WITH (THIS.Container1)
+        Left = 20
+        Top = 190
+        Width = 300
+        Height = 180
+        BackColor = "#202225"
+        BorderColor = "#7a1c1c"
+        BorderWidth = 2
+        Radius = 10
+    ENDWITH
+    THIS.Container1.PushButton1 = NEW PUSHBUTTON(THIS.Container1)
+    WITH (THIS.Container1.PushButton1)
+        Left = 20
+        Top = 20
+        Width = 120
+        Height = 28
+        Text = "OK"
+    ENDWITH
+ENDCLASS

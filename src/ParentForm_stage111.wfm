@@ -1,0 +1,61 @@
+** END HEADER -- do not remove this line
+// Stage 111 sample: FORM itself uses the same visual properties as controls.
+//
+PARAMETER bmodal
+LOCAL B
+B = NEW ParentForm(51,4)
+B.Init(121,2)
+B.Open()
+
+CLASS ParentForm OF FORM
+    WITH (THIS)
+        Width = 520
+        Height = 360
+        Top = 223
+        Left = 200
+        BackColor = "#1B1B1B"
+        ForeColor = "#303030"
+        BrushGradient = "linear_h"
+        BrushStyle = 0
+        BrushCutWidth = 100
+        BrushCutHeight = 100
+        Font = NEW FONT("Arial",10, .T., .F., .F.)
+        Font.stroke = .F.
+        FontBackground = "#292929"
+        FontForeground = "#F0F0F0"
+        FontAlpha = 255
+        BorderStyle = "solid"
+        BorderWidth = 2
+        BorderColor = "#808080"
+        ShadowColor = "#000000"
+        BorderRoundedTL = 0
+        BorderRoundedTR = 0
+        BorderRoundedBL = 0
+        BorderRoundedBR = 0
+        BorderLeft = .T.
+        BorderLeftStyle = "solid"
+        BorderLeftSize = 2
+        BorderLeftColor = "#808080"
+        BorderTop = .T.
+        BorderTopStyle = "solid"
+        BorderTopSize = 2
+        BorderTopColor = "#808080"
+        BorderRight = .T.
+        BorderRightStyle = "solid"
+        BorderRightSize = 2
+        BorderRightColor = "#808080"
+        BorderBottom = .T.
+        BorderBottomStyle = "solid"
+        BorderBottomSize = 2
+        BorderBottomColor = "#808080"
+    ENDWITH
+
+    THIS.PushButton1 = NEW PUSHBUTTON(THIS)
+    WITH (THIS.PushButton1)
+        Left = 20
+        Top = 20
+        Width = 140
+        Height = 34
+        Text = "Button im Formular"
+    ENDWITH
+ENDCLASS

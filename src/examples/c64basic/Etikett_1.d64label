@@ -1,0 +1,48 @@
+{
+  "format": "d64-label-designer",
+  "version": 1,
+  "data_source": "T:\\GitHub\\dBase2Many\\src\\asmjit\\compiler\\frontend\\c64\\examples\\dbase\\sql_builder.d64sql",
+  "label": {
+    "name": "50 × 25 mm",
+    "width_mm": 50.0,
+    "height_mm": 25.0
+  },
+  "layout": {
+    "main_splitter_sizes": [
+      315,
+      445
+    ]
+  },
+  "elements": [
+    {
+      "type": "field",
+      "field": "FELD1",
+      "text": "FELD1",
+      "x_mm": 2.0,
+      "y_mm": 2.0,
+      "font": {
+        "family": "Arial",
+        "point_size": 9.0,
+        "bold": false,
+        "italic": false,
+        "underline": false
+      },
+      "color": "#101010"
+    },
+    {
+      "type": "field",
+      "field": "FELD2",
+      "text": "FELD2",
+      "x_mm": 2.0,
+      "y_mm": 6.5,
+      "font": {
+        "family": "Arial",
+        "point_size": 9.0,
+        "bold": false,
+        "italic": false,
+        "underline": false
+      },
+      "color": "#101010"
+    }
+  ]
+}

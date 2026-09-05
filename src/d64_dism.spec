@@ -39,6 +39,20 @@ font_file = ROOT / "C64Pro.ttf"
 if font_file.is_file():
     datas.append((str(font_file), "."))
 
+# Stage ASM 53: Wenn der Benutzer eine lizenzierte C64-Pro-Mono-Datei lokal
+# neben das Projekt legt, wird sie automatisch in den PyInstaller-Build
+# uebernommen. Das Projekt selbst verteilt keine Fontdatei.
+for mono_name in (
+    "C64ProMono.ttf",
+    "C64 Pro Mono.ttf",
+    "C64ProMono.otf",
+    "C64 Pro Mono.otf",
+):
+    mono_font = ROOT / mono_name
+    if mono_font.is_file():
+        datas.append((str(mono_font), "."))
+        break
+
 # Explicit imports force PyInstaller's official PyQt5/QtWebEngine hooks to run,
 # which collect QtWebEngineProcess.exe, ICU/resources .pak files and locales.
 hiddenimports = [
@@ -49,6 +63,8 @@ hiddenimports = [
     # DSNs works without it, but Test/Connect needs the compiled extension in
     # a frozen build.
     "pyodbc",
+    # Stage ASM 50: optional at runtime from the C64 final image stage.
+    "c64packer",
 ]
 
 a = Analysis(

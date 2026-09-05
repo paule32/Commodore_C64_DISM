@@ -1,144 +1,152 @@
 ; ---------------------------------------------------------------------------
-; C64 BASIC Compiler output: /mnt/data/d64_dism_c64_basic_project_fix/d64_dism_editor_compile_pipeline_fix/examples/c64basic/basic_demo.bas
-; 16-Bit-Integer-Compiler, Ziel: MOS 6510 / C64
+; C64 BASIC Compiler output: T:\GitHub\dBase2Many\src\asmjit\compiler\frontend\c64\examples\c64basic\basic_demo.bas
+; CBM-5-Byte-Fließkomma, Strings, Arrays, DATA/INPUT und KERNAL-I/O
+; Ziel: MOS 6510 / Commodore 64
 ; ---------------------------------------------------------------------------
 .org $080D
 .entry __basic_start
 
 __basic_start:
+    jsr __basic_init_cbss
+    tsx
+    stx __basic_entry_sp
+    lda #<__basic_data_start
+    sta __basic_data_ptr
+    lda #>__basic_data_start
+    sta __basic_data_ptr+1
 __basic_line_10:
 __basic_line_20:
-    lda #<__basic_string_1
-    ldy #>__basic_string_1
-    jsr __basic_print_string
+    jsr __basic_print_thunk_1
     jsr __basic_newline
 __basic_line_30:
-    lda #$02
-    ldx #$00
-    sta __basic_expr_tmp_1
-    stx __basic_expr_tmp_1+1
-    lda #$03
-    ldx #$00
-    sta __basic_expr_tmp_2
-    stx __basic_expr_tmp_2+1
-    lda #$04
-    ldx #$00
-    sta __basic_right
-    stx __basic_right+1
-    lda __basic_expr_tmp_2
-    ldx __basic_expr_tmp_2+1
-    sta __basic_left
-    stx __basic_left+1
-    jsr __basic_mul
-    sta __basic_right
-    stx __basic_right+1
-    lda __basic_expr_tmp_1
-    ldx __basic_expr_tmp_1+1
-    sta __basic_left
-    stx __basic_left+1
-    jsr __basic_add
-    sta __basic_var_A
-    stx __basic_var_A+1
+    lda #<__basic_float_const_3
+    ldy #>__basic_float_const_3
+    jsr $BBA2
+    ldx #<__basic_var_A
+    ldy #>__basic_var_A
+    jsr $BBD4
 __basic_line_40:
-    lda #<__basic_string_2
-    ldy #>__basic_string_2
-    jsr __basic_print_string
-    lda __basic_var_A
-    ldx __basic_var_A+1
-    jsr __basic_print_int
+    jsr __basic_print_thunk_2
+    lda #<__basic_var_A
+    ldy #>__basic_var_A
+    jsr $BBA2
+    jsr __basic_print_float
     jsr __basic_newline
 __basic_line_50:
-    lda #$01
-    ldx #$00
-    sta __basic_var_I
-    stx __basic_var_I+1
-    lda #$05
-    ldx #$00
-    sta __basic_expr_tmp_3
-    stx __basic_expr_tmp_3+1
-    lda #$01
-    ldx #$00
-    sta __basic_expr_tmp_4
-    stx __basic_expr_tmp_4+1
+    lda #<__basic_float_const_2
+    ldy #>__basic_float_const_2
+    jsr $BBA2
+    ldx #<__basic_var_I
+    ldy #>__basic_var_I
+    jsr $BBD4
+    lda #<__basic_float_const_4
+    ldy #>__basic_float_const_4
+    jsr $BBA2
+    ldx #<__basic_float_tmp_1
+    ldy #>__basic_float_tmp_1
+    jsr $BBD4
+    lda #<__basic_float_const_2
+    ldy #>__basic_float_const_2
+    jsr $BBA2
+    ldx #<__basic_float_tmp_2
+    ldy #>__basic_float_tmp_2
+    jsr $BBD4
 __basic_for_loop_3:
 __basic_line_60:
-    lda __basic_var_I
-    ldx __basic_var_I+1
-    jsr __basic_print_int
+    lda #<__basic_var_I
+    ldy #>__basic_var_I
+    jsr $BBA2
+    jsr __basic_print_float
 __basic_line_70:
-    lda __basic_var_I
-    ldx __basic_var_I+1
-    sta __basic_left
-    stx __basic_left+1
-    lda __basic_expr_tmp_4
-    ldx __basic_expr_tmp_4+1
-    sta __basic_right
-    stx __basic_right+1
+    lda #<__basic_float_tmp_2
+    ldy #>__basic_float_tmp_2
+    jsr $BBA2
+    lda #<__basic_var_I
+    ldy #>__basic_var_I
     jsr __basic_add
-    sta __basic_var_I
-    stx __basic_var_I+1
-    sta __basic_left
-    stx __basic_left+1
-    lda __basic_expr_tmp_3
-    ldx __basic_expr_tmp_3+1
-    sta __basic_right
-    stx __basic_right+1
-    lda __basic_expr_tmp_4
-    ldx __basic_expr_tmp_4+1
-    txa
-    bpl __basic_for_positive_4
-    jsr __basic_cmp_ge
-    jmp __basic_for_done_5
-__basic_for_positive_4:
-    jsr __basic_cmp_le
+    ldx #<__basic_var_I
+    ldy #>__basic_var_I
+    jsr $BBD4
+    lda #<__basic_var_I
+    ldy #>__basic_var_I
+    jsr $BBA2
+    lda #<__basic_float_tmp_1
+    ldy #>__basic_float_tmp_1
+    jsr $BC5B
+    sta __basic_compare_result
+    lda #<__basic_float_tmp_2
+    ldy #>__basic_float_tmp_2
+    jsr $BBA2
+    lda $66
+    bmi __basic_for_negative_4
+    lda __basic_compare_result
+    cmp #$01
+    beq __basic_for_done_5
+    jmp __basic_for_loop_3
+__basic_for_negative_4:
+    lda __basic_compare_result
+    cmp #$FF
+    beq __basic_for_done_5
+    jmp __basic_for_loop_3
 __basic_for_done_5:
-    cmp #$00
-    bne __basic_for_loop_3
 __basic_line_80:
     jsr __basic_newline
 __basic_line_90:
-    lda __basic_var_A
-    ldx __basic_var_A+1
-    sta __basic_expr_tmp_5
-    stx __basic_expr_tmp_5+1
-    lda #$0E
-    ldx #$00
-    sta __basic_right
-    stx __basic_right+1
-    lda __basic_expr_tmp_5
-    ldx __basic_expr_tmp_5+1
-    sta __basic_left
-    stx __basic_left+1
+    lda #<__basic_var_A
+    ldy #>__basic_var_A
+    jsr $BBA2
+    ldx #<__basic_float_tmp_3
+    ldy #>__basic_float_tmp_3
+    jsr $BBD4
+    lda #<__basic_float_const_3
+    ldy #>__basic_float_const_3
+    jsr $BBA2
+    lda #<__basic_float_tmp_3
+    ldy #>__basic_float_tmp_3
     jsr __basic_cmp_eq
-    cpx #$00
-    bne __basic_if_true_high_7
-    cmp #$00
+    lda $61
     beq __basic_if_skip_6
-__basic_if_true_high_7:
-    jmp __basic_line_120
+    jmp __basic_line_110
 __basic_if_skip_6:
 __basic_line_100:
-    lda #<__basic_string_8
-    ldy #>__basic_string_8
-    jsr __basic_print_string
+    jsr __basic_print_thunk_7
     jsr __basic_newline
 __basic_line_110:
-    jmp __basic_line_130
-__basic_line_120:
-    lda #$20
-    ldx #$D0
-    sta $FB
-    stx $FC
-    lda #$06
-    ldx #$00
-    ldy #$00
-    sta ($FB),y
-__basic_line_130:
     rts
 __basic_program_end:
+    jsr $FFCC
     rts
 
-; ---- C64 BASIC Integer-Runtime ------------------------------------
+; ---- C64 BASIC Fließkomma-/String-/I/O-Runtime --------------------
+; C64-CBSS: nicht im PRG gespeicherter, beim Start genullter RAM
+__basic_init_cbss:
+    lda #<__basic_cbss_start
+    sta $FB
+    lda #>__basic_cbss_start
+    sta $FC
+    lda #$00
+    ldx #>(__basic_cbss_end-__basic_cbss_start)
+    beq __basic_init_cbss_remainder
+__basic_init_cbss_page:
+    ldy #$00
+__basic_init_cbss_page_loop:
+    sta ($FB),y
+    iny
+    bne __basic_init_cbss_page_loop
+    inc $FC
+    dex
+    bne __basic_init_cbss_page
+__basic_init_cbss_remainder:
+    ldy #$00
+__basic_init_cbss_remainder_loop:
+    cpy #<(__basic_cbss_end-__basic_cbss_start)
+    beq __basic_init_cbss_done
+    sta ($FB),y
+    iny
+    bne __basic_init_cbss_remainder_loop
+__basic_init_cbss_done:
+    rts
+
 __basic_newline:
     lda #$0D
     jmp $FFD2
@@ -147,412 +155,527 @@ __basic_print_string:
     sta $FB
     sty $FC
     ldy #$00
-__basic_print_string_9:
     lda ($FB),y
-    beq __basic_print_string_done_10
+    tax
+    beq __basic_print_string_done
+    inc $FB
+    bne __basic_print_string_ptr_ok
+    inc $FC
+__basic_print_string_ptr_ok:
+    ldy #$00
+__basic_print_string_loop:
+    lda ($FB),y
     jsr $FFD2
     iny
-    bne __basic_print_string_9
-__basic_print_string_done_10:
+    dex
+    bne __basic_print_string_loop
+__basic_print_string_done:
     rts
 
-__basic_print_int:
-    sta __basic_print_value
-    stx __basic_print_value+1
+__basic_print_z:
+    sta $FB
+    sty $FC
+    ldy #$00
+__basic_print_z_loop:
+    lda ($FB),y
+    beq __basic_print_z_done
+    jsr $FFD2
+    iny
+    bne __basic_print_z_loop
+__basic_print_z_done:
+    rts
+
+__basic_print_float:
+    jsr $BDDD
+    jmp __basic_print_z
+
+__basic_float_to_string_term:
+    jsr $BDDD
+    sta $FD
+    sty $FE
+    ldx #$00
+    ldy #$00
+__basic_float_to_string_loop:
+    lda ($FD),y
+    beq __basic_float_to_string_done
+    sta __basic_string_term+1,x
+    inx
+    iny
+    cpx #$FF
+    bne __basic_float_to_string_loop
+__basic_float_to_string_done:
+    stx __basic_string_term
+    rts
+
+; FAC-/Integer-Konvertierung
+__basic_fac_to_int:
+    jsr $B1AA
+    tax
+    tya
+    rts
+__basic_int_to_fac:
+    tay
     txa
-    bpl __basic_print_positive_11
-    lda #$2D
-    jsr $FFD2
-    lda __basic_print_value
-    eor #$FF
-    clc
-    adc #$01
-    sta __basic_print_value
-    lda __basic_print_value+1
-    eor #$FF
-    adc #$00
-    sta __basic_print_value+1
-__basic_print_positive_11:
-    lda #$00
-    sta __basic_print_started
-    ldy #$00
-__basic_print_digit_4_12:
-    lda __basic_print_value+1
-    cmp #$27
-    bcc __basic_print_emit_4_13
-    bne __basic_print_greater_4_15
-    lda __basic_print_value
-    cmp #$10
-    bcc __basic_print_emit_4_13
-__basic_print_greater_4_15:
-    sec
-    lda __basic_print_value
-    sbc #$10
-    sta __basic_print_value
-    lda __basic_print_value+1
-    sbc #$27
-    sta __basic_print_value+1
-    iny
-    jmp __basic_print_digit_4_12
-__basic_print_emit_4_13:
-    tya
-    bne __basic_print_skip_4_14
-    lda __basic_print_started
-    beq __basic_print_skip_4_14_done
-__basic_print_skip_4_14:
-    tya
-    ora #$30
-    jsr $FFD2
-    lda #$01
-    sta __basic_print_started
-__basic_print_skip_4_14_done:
-    ldy #$00
-__basic_print_digit_3_16:
-    lda __basic_print_value+1
-    cmp #$03
-    bcc __basic_print_emit_3_17
-    bne __basic_print_greater_3_19
-    lda __basic_print_value
-    cmp #$E8
-    bcc __basic_print_emit_3_17
-__basic_print_greater_3_19:
-    sec
-    lda __basic_print_value
-    sbc #$E8
-    sta __basic_print_value
-    lda __basic_print_value+1
-    sbc #$03
-    sta __basic_print_value+1
-    iny
-    jmp __basic_print_digit_3_16
-__basic_print_emit_3_17:
-    tya
-    bne __basic_print_skip_3_18
-    lda __basic_print_started
-    beq __basic_print_skip_3_18_done
-__basic_print_skip_3_18:
-    tya
-    ora #$30
-    jsr $FFD2
-    lda #$01
-    sta __basic_print_started
-__basic_print_skip_3_18_done:
-    ldy #$00
-__basic_print_digit_2_20:
-    lda __basic_print_value+1
-    cmp #$00
-    bne __basic_print_emit_2_21
-    lda __basic_print_value
-    cmp #$64
-    bcc __basic_print_emit_2_21
-    sec
-    lda __basic_print_value
-    sbc #$64
-    sta __basic_print_value
-    lda __basic_print_value+1
-    sbc #$00
-    sta __basic_print_value+1
-    iny
-    jmp __basic_print_digit_2_20
-__basic_print_emit_2_21:
-    tya
-    bne __basic_print_skip_2_22
-    lda __basic_print_started
-    beq __basic_print_skip_2_22_done
-__basic_print_skip_2_22:
-    tya
-    ora #$30
-    jsr $FFD2
-    lda #$01
-    sta __basic_print_started
-__basic_print_skip_2_22_done:
-    ldy #$00
-__basic_print_digit_1_23:
-    lda __basic_print_value+1
-    cmp #$00
-    bne __basic_print_emit_1_24
-    lda __basic_print_value
-    cmp #$0A
-    bcc __basic_print_emit_1_24
-    sec
-    lda __basic_print_value
-    sbc #$0A
-    sta __basic_print_value
-    lda __basic_print_value+1
-    sbc #$00
-    sta __basic_print_value+1
-    iny
-    jmp __basic_print_digit_1_23
-__basic_print_emit_1_24:
-    tya
-    bne __basic_print_skip_1_25
-    lda __basic_print_started
-    beq __basic_print_skip_1_25_done
-__basic_print_skip_1_25:
-    tya
-    ora #$30
-    jsr $FFD2
-    lda #$01
-    sta __basic_print_started
-__basic_print_skip_1_25_done:
-    lda __basic_print_value
-    ora #$30
-    jmp $FFD2
+    jmp $B391
 
+; Kompatible Arithmetik-Helfernamen; linker Operand liegt im Speicher A/Y
 __basic_add:
-    clc
-    lda __basic_left
-    adc __basic_right
-    pha
-    lda __basic_left+1
-    adc __basic_right+1
-    tax
-    pla
-    rts
+    jmp $B867
 __basic_sub:
-    sec
-    lda __basic_left
-    sbc __basic_right
-    pha
-    lda __basic_left+1
-    sbc __basic_right+1
-    tax
-    pla
-    rts
-__basic_and:
-    lda __basic_left
-    and __basic_right
-    pha
-    lda __basic_left+1
-    and __basic_right+1
-    tax
-    pla
-    rts
-__basic_or:
-    lda __basic_left
-    ora __basic_right
-    pha
-    lda __basic_left+1
-    ora __basic_right+1
-    tax
-    pla
-    rts
-
+    jmp $B850
 __basic_mul:
-    lda #$00
-    sta __basic_result
-    sta __basic_result+1
-    ldy #$10
-__basic_mul_loop_26:
-    lsr __basic_right+1
-    ror __basic_right
-    bcc __basic_mul_skip_27
-    clc
-    lda __basic_result
-    adc __basic_left
-    sta __basic_result
-    lda __basic_result+1
-    adc __basic_left+1
-    sta __basic_result+1
-__basic_mul_skip_27:
-    asl __basic_left
-    rol __basic_left+1
-    dey
-    bne __basic_mul_loop_26
-    lda __basic_result
-    ldx __basic_result+1
+    jmp $BA28
+__basic_div:
+    jmp $BB0F
+
+; Vergleich: FAC ist rechter Operand, Speicher A/Y ist linker Operand
+__basic_cmp_eq:
+    jsr $BC5B
+    beq __basic_cmp_eq_true
+    lda #<__basic_float_zero
+    ldy #>__basic_float_zero
+    jmp $BBA2
+__basic_cmp_eq_true:
+    lda #<__basic_float_one
+    ldy #>__basic_float_one
+    jmp $BBA2
+__basic_cmp_ne:
+    jsr $BC5B
+    bne __basic_cmp_ne_true
+    lda #<__basic_float_zero
+    ldy #>__basic_float_zero
+    jmp $BBA2
+__basic_cmp_ne_true:
+    lda #<__basic_float_one
+    ldy #>__basic_float_one
+    jmp $BBA2
+__basic_cmp_lt:
+    jsr $BC5B
+    cmp #$01
+    beq __basic_cmp_lt_true
+    lda #<__basic_float_zero
+    ldy #>__basic_float_zero
+    jmp $BBA2
+__basic_cmp_lt_true:
+    lda #<__basic_float_one
+    ldy #>__basic_float_one
+    jmp $BBA2
+__basic_cmp_gt:
+    jsr $BC5B
+    cmp #$FF
+    beq __basic_cmp_gt_true
+    lda #<__basic_float_zero
+    ldy #>__basic_float_zero
+    jmp $BBA2
+__basic_cmp_gt_true:
+    lda #<__basic_float_one
+    ldy #>__basic_float_one
+    jmp $BBA2
+__basic_cmp_le:
+    jsr $BC5B
+    cmp #$FF
+    bne __basic_cmp_le_true
+    lda #<__basic_float_zero
+    ldy #>__basic_float_zero
+    jmp $BBA2
+__basic_cmp_le_true:
+    lda #<__basic_float_one
+    ldy #>__basic_float_one
+    jmp $BBA2
+__basic_cmp_ge:
+    jsr $BC5B
+    cmp #$01
+    bne __basic_cmp_ge_true
+    lda #<__basic_float_zero
+    ldy #>__basic_float_zero
+    jmp $BBA2
+__basic_cmp_ge_true:
+    lda #<__basic_float_one
+    ldy #>__basic_float_one
+    jmp $BBA2
+
+__basic_int_and:
+    lda __basic_int_left
+    and __basic_int_right
+    pha
+    lda __basic_int_left+1
+    and __basic_int_right+1
+    tax
+    pla
+    rts
+__basic_int_or:
+    lda __basic_int_left
+    ora __basic_int_right
+    pha
+    lda __basic_int_left+1
+    ora __basic_int_right+1
+    tax
+    pla
     rts
 
-__basic_div:
-    jsr __basic_divmod
-    lda __basic_result
-    ldx __basic_result+1
+__basic_u16_add:
+    clc
+    lda __basic_int_left
+    adc __basic_int_right
+    pha
+    lda __basic_int_left+1
+    adc __basic_int_right+1
+    tax
+    pla
     rts
-__basic_mod:
-    jsr __basic_divmod
-    lda __basic_left
-    ldx __basic_left+1
+__basic_u16_mul:
+    lda #$00
+    sta __basic_int_result
+    sta __basic_int_result+1
+    ldy #$10
+__basic_u16_mul_loop:
+    lsr __basic_int_right+1
+    ror __basic_int_right
+    bcc __basic_u16_mul_skip
+    clc
+    lda __basic_int_result
+    adc __basic_int_left
+    sta __basic_int_result
+    lda __basic_int_result+1
+    adc __basic_int_left+1
+    sta __basic_int_result+1
+__basic_u16_mul_skip:
+    asl __basic_int_left
+    rol __basic_int_left+1
+    dey
+    bne __basic_u16_mul_loop
+    lda __basic_int_result
+    ldx __basic_int_result+1
     rts
-__basic_divmod:
-    lda __basic_right
-    ora __basic_right+1
-    bne __basic_divisor_ok_28
+__basic_int_mod:
+    lda __basic_int_right
+    ora __basic_int_right+1
+    bne __basic_int_mod_nonzero
     lda #$00
     tax
-    sta __basic_result
-    sta __basic_result+1
     rts
-__basic_divisor_ok_28:
-    lda #$00
-    sta __basic_result
-    sta __basic_result+1
-__basic_div_loop_29:
-    jsr __basic_cmp_left_right_unsigned
-    cmp #$00
-    beq __basic_div_done_30
+__basic_int_mod_nonzero:
+__basic_int_mod_loop:
+    lda __basic_int_left+1
+    cmp __basic_int_right+1
+    bcc __basic_int_mod_done
+    bne __basic_int_mod_sub
+    lda __basic_int_left
+    cmp __basic_int_right
+    bcc __basic_int_mod_done
+__basic_int_mod_sub:
     sec
-    lda __basic_left
-    sbc __basic_right
-    sta __basic_left
-    lda __basic_left+1
-    sbc __basic_right+1
-    sta __basic_left+1
-    inc __basic_result
-    bne __basic_div_no_carry_31
-    inc __basic_result+1
-__basic_div_no_carry_31:
-    jmp __basic_div_loop_29
-__basic_div_done_30:
+    lda __basic_int_left
+    sbc __basic_int_right
+    sta __basic_int_left
+    lda __basic_int_left+1
+    sbc __basic_int_right+1
+    sta __basic_int_left+1
+    jmp __basic_int_mod_loop
+__basic_int_mod_done:
+    lda __basic_int_left
+    ldx __basic_int_left+1
     rts
 
-__basic_cmp_left_right_unsigned:
-    lda __basic_left+1
-    cmp __basic_right+1
-    bcc __basic_cmp_u_false_32
-    bne __basic_cmp_u_true_33
-    lda __basic_left
-    cmp __basic_right
-    bcc __basic_cmp_u_false_32
-__basic_cmp_u_true_33:
+; Stringroutinen: [Länge][bis zu 255 Bytes]
+__basic_string_clear:
+    ldy #$00
+    lda #$00
+    sta ($FB),y
+    rts
+__basic_string_copy:
+    jsr __basic_string_clear
+    jmp __basic_string_append
+__basic_string_append:
+    lda $FB
+    sta __basic_string_base_ptr
+    lda $FC
+    sta __basic_string_base_ptr+1
+    ldy #$00
+    lda ($FB),y
+    sta __basic_string_dest_length
+    lda ($FD),y
+    sta __basic_string_source_length
+    beq __basic_string_append_empty
+    inc $FD
+    bne __basic_string_src_ptr_ok
+    inc $FE
+__basic_string_src_ptr_ok:
+    clc
+    lda $FB
+    adc __basic_string_dest_length
+    sta $FB
+    lda $FC
+    adc #$00
+    sta $FC
+    inc $FB
+    bne __basic_string_dst_ptr_ok
+    inc $FC
+__basic_string_dst_ptr_ok:
+    ldx #$00
+__basic_string_append_loop:
+    lda __basic_string_dest_length
+    cmp #$FF
+    beq __basic_string_append_done
+    ldy #$00
+    lda ($FD),y
+    sta ($FB),y
+    inc $FD
+    bne __basic_string_append_src_ok
+    inc $FE
+__basic_string_append_src_ok:
+    inc $FB
+    bne __basic_string_append_dst_ok
+    inc $FC
+__basic_string_append_dst_ok:
+    inc __basic_string_dest_length
+    inx
+    cpx __basic_string_source_length
+    bne __basic_string_append_loop
+__basic_string_append_done:
+    lda __basic_string_base_ptr
+    sta $FB
+    lda __basic_string_base_ptr+1
+    sta $FC
+    ldy #$00
+    lda __basic_string_dest_length
+    sta ($FB),y
+__basic_string_append_empty:
+    rts
+
+__basic_string_compare:
+    ldy #$00
+    lda ($FB),y
+    sta __basic_string_left_length
+    lda ($FD),y
+    sta __basic_string_right_length
+    inc $FB
+    bne __basic_string_cmp_lptr_ok
+    inc $FC
+__basic_string_cmp_lptr_ok:
+    inc $FD
+    bne __basic_string_cmp_rptr_ok
+    inc $FE
+__basic_string_cmp_rptr_ok:
+    ldy #$00
+__basic_string_cmp_loop:
+    cpy __basic_string_left_length
+    beq __basic_string_cmp_left_end
+    cpy __basic_string_right_length
+    beq __basic_string_cmp_right_shorter
+    lda ($FB),y
+    cmp ($FD),y
+    bcc __basic_string_cmp_less
+    bne __basic_string_cmp_greater
+    iny
+    bne __basic_string_cmp_loop
+__basic_string_cmp_left_end:
+    cpy __basic_string_right_length
+    beq __basic_string_cmp_equal
+__basic_string_cmp_less:
+    lda #$FF
+    rts
+__basic_string_cmp_right_shorter:
+__basic_string_cmp_greater:
     lda #$01
     rts
-__basic_cmp_u_false_32:
+__basic_string_cmp_equal:
     lda #$00
     rts
 
-__basic_cmp_prepare:
-    lda __basic_left+1
-    eor #$80
-    sta __basic_cmp_left_high
-    lda __basic_right+1
-    eor #$80
-    sta __basic_cmp_right_high
-    rts
-__basic_cmp_eq:
-    lda __basic_left+1
-    cmp __basic_right+1
-    bne __basic___basic_cmp_eq_false_34
-    lda __basic_left
-    cmp __basic_right
-    beq __basic___basic_cmp_eq_true_35
-    jmp __basic___basic_cmp_eq_false_34
-__basic___basic_cmp_eq_true_35:
-    lda #$01
-    jmp __basic___basic_cmp_eq_done_36
-__basic___basic_cmp_eq_false_34:
-    lda #$00
-__basic___basic_cmp_eq_done_36:
+; INPUT/INPUT#/READ-Feldpuffer
+__basic_read_line:
     ldx #$00
+__basic_read_line_loop:
+    jsr $FFCF
+    cmp #$0D
+    beq __basic_read_line_done
+    cpx #$FF
+    beq __basic_read_line_done
+    sta __basic_input_buffer+1,x
+    inx
+    bne __basic_read_line_loop
+__basic_read_line_done:
+    stx __basic_input_buffer
     rts
-__basic_cmp_ne:
-    lda __basic_left+1
-    cmp __basic_right+1
-    bne __basic___basic_cmp_ne_true_38
-    lda __basic_left
-    cmp __basic_right
-    bne __basic___basic_cmp_ne_true_38
-    jmp __basic___basic_cmp_ne_false_37
-__basic___basic_cmp_ne_true_38:
-    lda #$01
-    jmp __basic___basic_cmp_ne_done_39
-__basic___basic_cmp_ne_false_37:
-    lda #$00
-__basic___basic_cmp_ne_done_39:
+__basic_input_next_field:
+    ldy __basic_field_position
+__basic_input_skip_spaces:
+    cpy __basic_input_buffer
+    beq __basic_input_field_empty
+    lda __basic_input_buffer+1,y
+    cmp #$20
+    bne __basic_input_copy_start
+    iny
+    bne __basic_input_skip_spaces
+__basic_input_copy_start:
     ldx #$00
+__basic_input_copy_loop:
+    cpy __basic_input_buffer
+    beq __basic_input_copy_done
+    lda __basic_input_buffer+1,y
+    cmp #$2C
+    beq __basic_input_comma
+    sta __basic_field_buffer+1,x
+    inx
+    iny
+    bne __basic_input_copy_loop
+__basic_input_comma:
+    iny
+__basic_input_copy_done:
+    sty __basic_field_position
+__basic_input_trim:
+    cpx #$00
+    beq __basic_input_field_store
+    lda __basic_field_buffer,x
+    cmp #$20
+    bne __basic_input_field_store
+    dex
+    jmp __basic_input_trim
+__basic_input_field_empty:
+    ldx #$00
+__basic_input_field_store:
+    stx __basic_field_buffer
     rts
-__basic_cmp_lt:
-    jsr __basic_cmp_prepare
-    lda __basic_cmp_left_high
-    cmp __basic_cmp_right_high
-    bcc __basic___basic_cmp_lt_true_41
-    bne __basic___basic_cmp_lt_false_40
-    lda __basic_left
-    cmp __basic_right
-    bcc __basic___basic_cmp_lt_true_41
-    jmp __basic___basic_cmp_lt_false_40
-__basic___basic_cmp_lt_true_41:
-    lda #$01
-    jmp __basic___basic_cmp_lt_done_42
-__basic___basic_cmp_lt_false_40:
-    lda #$00
-__basic___basic_cmp_lt_done_42:
-    ldx #$00
-    rts
-__basic_cmp_le:
-    jsr __basic_cmp_prepare
-    lda __basic_cmp_left_high
-    cmp __basic_cmp_right_high
-    bcc __basic___basic_cmp_le_true_44
-    bne __basic___basic_cmp_le_false_43
-    lda __basic_left
-    cmp __basic_right
-    bcc __basic___basic_cmp_le_true_44
-    beq __basic___basic_cmp_le_true_44
-    jmp __basic___basic_cmp_le_false_43
-__basic___basic_cmp_le_true_44:
-    lda #$01
-    jmp __basic___basic_cmp_le_done_45
-__basic___basic_cmp_le_false_43:
-    lda #$00
-__basic___basic_cmp_le_done_45:
-    ldx #$00
-    rts
-__basic_cmp_gt:
-    jsr __basic_cmp_prepare
-    lda __basic_cmp_left_high
-    cmp __basic_cmp_right_high
-    bcc __basic___basic_cmp_gt_false_46
-    bne __basic___basic_cmp_gt_true_47
-    lda __basic_left
-    cmp __basic_right
-    bcc __basic___basic_cmp_gt_false_46
-    beq __basic___basic_cmp_gt_false_46
-    jmp __basic___basic_cmp_gt_true_47
-__basic___basic_cmp_gt_true_47:
-    lda #$01
-    jmp __basic___basic_cmp_gt_done_48
-__basic___basic_cmp_gt_false_46:
-    lda #$00
-__basic___basic_cmp_gt_done_48:
-    ldx #$00
-    rts
-__basic_cmp_ge:
-    jsr __basic_cmp_prepare
-    lda __basic_cmp_left_high
-    cmp __basic_cmp_right_high
-    bcc __basic___basic_cmp_ge_false_49
-    bne __basic___basic_cmp_ge_true_50
-    lda __basic_left
-    cmp __basic_right
-    bcc __basic___basic_cmp_ge_false_49
-    jmp __basic___basic_cmp_ge_true_50
-__basic___basic_cmp_ge_true_50:
-    lda #$01
-    jmp __basic___basic_cmp_ge_done_51
-__basic___basic_cmp_ge_false_49:
-    lda #$00
-__basic___basic_cmp_ge_done_51:
-    ldx #$00
+__basic_field_to_float:
+    lda __basic_field_buffer
+    bne __basic_field_to_float_nonempty
+    lda #<__basic_float_zero
+    ldy #>__basic_float_zero
+    jmp $BBA2
+__basic_field_to_float_nonempty:
+    lda #<__basic_field_buffer+1
+    sta $22
+    lda #>__basic_field_buffer+1
+    sta $23
+    lda __basic_field_buffer
+    jmp $B7B5
+
+__basic_data_read_field:
+    lda __basic_data_ptr
+    sta $FB
+    lda __basic_data_ptr+1
+    sta $FC
+    ldy #$00
+    lda ($FB),y
+    cmp #$FF
+    bne __basic_data_available
+    jmp __basic_out_of_data
+__basic_data_available:
+    tax
+    sta __basic_field_buffer
+    inc $FB
+    bne __basic_data_ptr_ok
+    inc $FC
+__basic_data_ptr_ok:
+    ldy #$00
+__basic_data_copy_loop:
+    cpx #$00
+    beq __basic_data_copy_done
+    lda ($FB),y
+    sta __basic_field_buffer+1,y
+    iny
+    dex
+    bne __basic_data_copy_loop
+__basic_data_copy_done:
+    tya
+    clc
+    adc $FB
+    sta __basic_data_ptr
+    lda $FC
+    adc #$00
+    sta __basic_data_ptr+1
     rts
 
-; ---- Variablen und Compiler-Temporärspeicher -----------------------
-__basic_var_A: .word $0000
-__basic_var_I: .word $0000
-__basic_expr_tmp_1: .word $0000
-__basic_expr_tmp_2: .word $0000
-__basic_expr_tmp_3: .word $0000
-__basic_expr_tmp_4: .word $0000
-__basic_expr_tmp_5: .word $0000
-__basic_left: .word $0000
-__basic_right: .word $0000
-__basic_result: .word $0000
-__basic_print_value: .word $0000
-__basic_print_started: .byte $00
-__basic_cmp_left_high: .byte $00
-__basic_cmp_right_high: .byte $00
+__basic_sys_indirect:
+    jmp ($FB)
 
-; ---- Zeichenketten --------------------------------------------------
-__basic_string_1: .byte $43, $36, $34, $20, $42, $41, $53, $49, $43, $20, $43, $4F, $4D, $50, $49, $4C, $45, $52, $00
-__basic_string_2: .byte $41, $3D, $00
-__basic_string_8: .byte $46, $45, $48, $4C, $45, $52, $00
+__basic_bad_subscript:
+    lda #<__basic_error_bad_subscript
+    ldy #>__basic_error_bad_subscript
+    jsr __basic_print_z
+    jmp __basic_abort
+__basic_out_of_data:
+    lda #<__basic_error_out_of_data
+    ldy #>__basic_error_out_of_data
+    jsr __basic_print_z
+__basic_abort:
+    ldx __basic_entry_sp
+    txs
+    jmp __basic_program_end
+
+; ---- Optimizer: String-Thunks --------------------------------------
+__basic_print_thunk_1:
+    lda #<__basic_string_1
+    ldy #>__basic_string_1
+    jmp __basic_print_string
+__basic_print_thunk_2:
+    lda #<__basic_string_2
+    ldy #>__basic_string_2
+    jmp __basic_print_string
+__basic_print_thunk_7:
+    lda #<__basic_string_7
+    ldy #>__basic_string_7
+    jmp __basic_print_string
+
+; ---- Fließkommakonstanten im kompakten CBM-5-Byte-Format ----------
+__basic_float_zero = __basic_float_const_1
+__basic_float_one = __basic_float_const_2
+__basic_float_const_1: .byte $00, $00, $00, $00, $00
+__basic_float_const_2: .byte $81, $00, $00, $00, $00
+__basic_float_const_3: .byte $84, $60, $00, $00, $00
+__basic_float_const_4: .byte $83, $20, $00, $00, $00
+
+; ---- ShortString-Literale: [1 Byte Länge][0..255 Datenbytes] ------
+__basic_string_1: .byte $16, $43, $36, $34, $20, $42, $41, $53, $49, $43, $20, $43, $4F, $4D, $50, $49, $4C, $45, $52, $20, $21, $21, $21
+__basic_string_2: .byte $02, $41, $3D
+__basic_string_7: .byte $06, $46, $45, $48, $4C, $45, $52
+
+; ---- DATA-Tabelle: [Länge][Textbytes], $FF beendet -----------------
+__basic_data_start:
+__basic_data_end: .byte $FF
+__basic_error_bad_subscript: .byte "?BAD SUBSCRIPT ERROR", $0D, $00
+__basic_error_out_of_data: .byte "?OUT OF DATA ERROR", $0D, $00
+
+; ---- Ende des physisch im PRG gespeicherten Images ----------------
+__basic_image_end:
+
+; ---- C64 CBSS: nur RAM-Adressen, KEINE Bytes im PRG ----------------
+; Strings sind Pascal/Turbo-Pascal-artige ShortStrings:
+;   Byte 0 = Länge 0..255, Byte 1..255 = Zeichen
+__basic_cbss_start:
+__basic_var_A: .cbss 5
+__basic_var_I: .cbss 5
+__basic_float_tmp_1: .cbss 5
+__basic_float_tmp_2: .cbss 5
+__basic_float_tmp_3: .cbss 5
+__basic_float_hold: .cbss 5
+__basic_float_hold2: .cbss 5
+__basic_int_left: .cbss 2
+__basic_int_right: .cbss 2
+__basic_int_result: .cbss 2
+__basic_int_hold: .cbss 2
+__basic_index: .cbss 2
+__basic_linear_index: .cbss 2
+__basic_dest_ptr: .cbss 2
+__basic_data_ptr: .cbss 2
+__basic_string_base_ptr: .cbss 2
+__basic_compare_result: .cbss 1
+__basic_string_dest_length: .cbss 1
+__basic_string_source_length: .cbss 1
+__basic_string_left_length: .cbss 1
+__basic_string_right_length: .cbss 1
+__basic_field_position: .cbss 1
+__basic_get_char: .cbss 1
+__basic_lfn: .cbss 1
+__basic_device: .cbss 1
+__basic_secondary: .cbss 1
+__basic_entry_sp: .cbss 1
+__basic_string_expr: .cbss 256
+__basic_string_left: .cbss 256
+__basic_string_right: .cbss 256
+__basic_string_term: .cbss 256
+__basic_input_buffer: .cbss 256
+__basic_field_buffer: .cbss 256
+__basic_cbss_end:
 end

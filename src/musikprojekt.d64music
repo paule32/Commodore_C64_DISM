@@ -1,0 +1,52 @@
+{
+  "format": "d64_music_project",
+  "version": 1,
+  "instrument_program": 18,
+  "instrument_name": "Rock Organ",
+  "volume": 100,
+  "active_note_type": "whole",
+  "notes": [
+    {
+      "staff": 1,
+      "slot": 5,
+      "step": 0,
+      "type": "quarter"
+    },
+    {
+      "staff": 1,
+      "slot": 7,
+      "step": 6,
+      "type": "quarter"
+    },
+    {
+      "staff": 1,
+      "slot": 8,
+      "step": 2,
+      "type": "quarter"
+    },
+    {
+      "staff": 1,
+      "slot": 9,
+      "step": 8,
+      "type": "quarter"
+    },
+    {
+      "staff": 1,
+      "slot": 10,
+      "step": 9,
+      "type": "quarter"
+    },
+    {
+      "staff": 1,
+      "slot": 11,
+      "step": 5,
+      "type": "quarter"
+    },
+    {
+      "staff": 1,
+      "slot": 13,
+      "step": 2,
+      "type": "quarter"
+    }
+  ]
+}

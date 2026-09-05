@@ -117,6 +117,10 @@
 #  * Stage ASM 32: Report-PDF-Fontskalierung korrigiert; 10 pt bleiben physische 10 pt.
 #  * Stage ASM 29: dBase-Projektbaum mit Programme/Formulare/Tabellen/Abfragen/Objekt-/Archiv-Dateien.
 #  * Stage ASM 45: SQL-Builder-Headerbreiten persistent; SQL-/Bericht-Builder schliessen alle Docks ausser Projekt.
+#  * Stage ASM 73: dBase-Etiketten-Designer mit Formatbibliothek und DBF/SQL-Feldpalette.
+#  * Stage ASM 74: Etiketten-Layout Speichern/Speichern unter sowie Daten-PDF und druckfertige A4-PDF.
+#  * Stage ASM 75: Etiketten-Layout Laden-Button ueber Speichern; verwendet die bestehende load_layout()-Restore-Logik.
+#  * Stage ASM 76: dBase-Projektbaum mit Etiketten-Unterknoten unter Berichte, *.d64label-Hinzufuegen/Entfernen und Doppelklick-Laden.
 #  * Stage ASM 11: dBase SQL Builder mit verschiebbaren Tabellen-Proxies, feldgenauen orthogonalen Beziehungen,
 #  * Stage ASM 20: ODBC-Datenquellen/DSN-Auswahl (User/System, 32/64-Bit Fallback),
 #    Login/Test-Dialog und View-Datensatznavigator,
@@ -186,6 +190,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import base64
 import configparser
 import ctypes
 from ctypes import wintypes
@@ -14148,6 +14153,7 @@ PROJECT_DBASE_FORMS_KEY = "__dbase_forms__"
 PROJECT_DBASE_TABLES_KEY = "__dbase_tables__"
 PROJECT_DBASE_QUERIES_KEY = "__dbase_queries__"
 PROJECT_DBASE_REPORTS_KEY = "__dbase_reports__"
+PROJECT_DBASE_LABELS_KEY = "__dbase_labels__"
 PROJECT_DBASE_OBJECTS_KEY = "__dbase_objects__"
 PROJECT_DBASE_ARCHIVES_KEY = "__dbase_archives__"
 PROJECT_DBASE_GROUPS: Tuple[Tuple[str, str, Tuple[str, ...], str], ...] = (
@@ -14156,6 +14162,7 @@ PROJECT_DBASE_GROUPS: Tuple[Tuple[str, str, Tuple[str, ...], str], ...] = (
     ("tables", "Tabellen", (".dbf",), PROJECT_DBASE_TABLES_KEY),
     ("queries", "Abfragen", (".d64sql",), PROJECT_DBASE_QUERIES_KEY),
     ("reports", "Berichte", (".d64report",), PROJECT_DBASE_REPORTS_KEY),
+    ("labels", "Etiketten", (".d64label",), PROJECT_DBASE_LABELS_KEY),
     ("objects", "Objekt Dateien", (".o",), PROJECT_DBASE_OBJECTS_KEY),
     ("archives", "Archiv Dateien", (".a",), PROJECT_DBASE_ARCHIVES_KEY),
 )
@@ -14166,6 +14173,7 @@ PROJECT_DBASE_SECTIONS = {
     PROJECT_DBASE_TABLES_KEY: "Category.dbase.tables",
     PROJECT_DBASE_QUERIES_KEY: "Category.dbase.queries",
     PROJECT_DBASE_REPORTS_KEY: "Category.dbase.reports",
+    PROJECT_DBASE_LABELS_KEY: "Category.dbase.labels",
     PROJECT_DBASE_OBJECTS_KEY: "Category.dbase.objects",
     PROJECT_DBASE_ARCHIVES_KEY: "Category.dbase.archives",
 }
@@ -14175,6 +14183,29 @@ PROJECT_DBASE_SECTIONS = {
 # der Projektbaum sie ganz oben und unabhängig vom Build-Ziel anzeigen kann.
 PROJECT_BREAKPOINTS_KEY = "__debug_breakpoints__"
 PROJECT_BOOKMARKS_KEY = "__source_bookmarks__"
+# Stage ASM 63: Das im Dateisystem-Dock sichtbare Arbeitsverzeichnis und die
+# Root-Wurzel der TreeList werden getrennt projektbezogen gespeichert. Damit
+# wird beim erneuten Laden exakt derselbe Dateisystemzustand wiederhergestellt.
+PROJECT_WORKING_DIRECTORY_KEY = "__project_working_directory__"
+PROJECT_WORKSPACE_ROOT_KEY = "__project_workspace_root__"
+# Stage ASM 65: projektbezogener QMainWindow-Dock-/Ansichtszustand.
+# Der Base64-Wert stammt direkt aus QMainWindow.saveState() und enthält die
+# Positionen/Größen/Sichtbarkeit der Docks um den zentralen Editor.
+PROJECT_VIEW_STATE_KEY = "__project_view_state__"
+# Stage ASM 69: autoritative Projekt-/Dateisystem-Dockbeziehung. Anders als
+# geometrische Heuristiken wird dieser Zustand nur durch Benutzer-Snap bzw.
+# beim Projektladen gesetzt und deshalb nicht durch die Bildschirmtastatur
+# versehentlich von "gestapelt" auf "nebeneinander" umgedeutet.
+PROJECT_PRIMARY_DOCK_LAYOUT_KEY = "__project_primary_dock_layout__"
+# Stage ASM 67: offene C64-BASIC-Dateireferenzen werden als projektspezifische
+# Editor-Session gespeichert und beim Laden wieder geöffnet.
+PROJECT_C64_OPEN_EDITORS_KEY = "__project_c64_open_editors__"
+# Stage ASM 70/71: expliziter projektbezogener Geometrie-/Layout-Snapshot.
+# saveState() bleibt als vollständiger Qt-Dockzustand erhalten; zusätzlich
+# werden die vom Benutzer verschiebbaren Trennlinien (Dock-Separatoren und
+# C64-BASIC-QSplitter) deterministisch und lesbar gespeichert.
+PROJECT_SESSION_GEOMETRY_KEY = "__project_session_geometry__"
+PROJECT_C64_LAST_BASIC_FILE_KEY = "__project_c64_last_basic_file__"
 PROJECT_MARKER_SECTIONS: Dict[str, Tuple[str, str]] = {
     "breakpoint": (PROJECT_BREAKPOINTS_KEY, "Debug.Breakpoints"),
     "bookmark": (PROJECT_BOOKMARKS_KEY, "Debug.Bookmarks"),
@@ -14354,6 +14385,102 @@ PROJECT_WINDOWS_LINK_SEARCH_PATHS_LEGACY_SECTION = "Settings.Windows.Compiler.In
 PROJECT_WINDOWS_LINK_SEARCH_PATHS_OLDER_LEGACY_SECTION = "Settings.Windows.Compiler.Directories"
 PROJECT_WINDOWS_OUTPUT_DIRECTORY_LEGACY_SECTION = "Settings.Windows.Compiler.OutputDirectory"
 
+# Stage ASM 48: C=64-Projekt-Optimizerprofile.
+PROJECT_C64_OPTIMIZER_ACTIVE_PROFILE_KEY = "__c64_optimizer_active_profile__"
+PROJECT_C64_OPTIMIZER_PROFILES = {
+    "68000": {
+        "enabled_key": "__c64_68000_optimizer_enabled__",
+        "strategy_key": "__c64_68000_optimizer_strategy__",
+        "section": "Settings.C64.68000.Compiler.Optimizer",
+    },
+    "68020": {
+        "enabled_key": "__c64_68020_optimizer_enabled__",
+        "strategy_key": "__c64_68020_optimizer_strategy__",
+        "section": "Settings.C64.68020.Compiler.Optimizer",
+    },
+    "68030": {
+        "enabled_key": "__c64_68030_optimizer_enabled__",
+        "strategy_key": "__c64_68030_optimizer_strategy__",
+        "section": "Settings.C64.68030.Compiler.Optimizer",
+    },
+}
+PROJECT_C64_OPTIMIZER_STRATEGIES = (
+    "direct", "inline_pointer", "string_thunk", "auto"
+)
+
+# Stage ASM 50: C64 Self-Extracting Image Packer. Auto ist ausschließlich
+# eine explizite Projekteinstellung; RLE/LZ werden nie wegen der Dateigröße
+# stillschweigend deaktiviert.
+PROJECT_C64_PACKER_PROFILES = {
+    profile: {
+        "enabled_key": f"__c64_{profile}_packer_enabled__",
+        "mode_key": f"__c64_{profile}_packer_mode__",
+        "search_key": f"__c64_{profile}_packer_search__",
+        "include_decruncher_source_key": f"__c64_{profile}_packer_include_decruncher_source__",
+        "section": f"Settings.C64.{profile}.Compiler.ImagePacker",
+    }
+    for profile in ("68000", "68020", "68030")
+}
+PROJECT_C64_PACKER_MODES = ("none", "rle", "lz", "auto")
+PROJECT_C64_PACKER_SEARCH_MODES = ("fast", "balanced", "maximum")
+
+# Stage ASM 59: C64-Umgebungseinstellungen je Architekturprofil.
+# Die Bildschirmtastatur ist standardmaessig aus und kann projektbezogen
+# aktiviert werden.
+PROJECT_C64_ENVIRONMENT_PROFILES = {
+    profile: {
+        "screen_keyboard_key": f"__c64_{profile}_screen_keyboard__",
+        "keyboard_layout_key": f"__c64_{profile}_keyboard_layout__",
+        "section": f"Settings.C64.{profile}.Environment",
+    }
+    for profile in ("68000", "68020", "68030")
+}
+PROJECT_C64_KEYBOARD_LAYOUTS = ("qwertz", "qwerty")
+
+
+def _normalize_project_c64_keyboard_layout(value: str) -> str:
+    text = str(value or "qwertz").strip().casefold().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "de": "qwertz", "deu": "qwertz", "german": "qwertz",
+        "deutsch": "qwertz", "deutsche_belegung": "qwertz",
+        "en": "qwerty", "eng": "qwerty", "english": "qwerty",
+        "englisch": "qwerty", "englische_belegung": "qwerty",
+    }
+    text = aliases.get(text, text)
+    return text if text in PROJECT_C64_KEYBOARD_LAYOUTS else "qwertz"
+
+
+def _normalize_project_c64_packer_mode(value: str) -> str:
+    text = str(value or "none").strip().casefold().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "off": "none", "disabled": "none", "false": "none",
+        "runlength": "rle", "run_length": "rle",
+        "lz77": "lz", "lzss": "lz", "automatic": "auto",
+    }
+    text = aliases.get(text, text)
+    return text if text in PROJECT_C64_PACKER_MODES else "none"
+
+
+def _normalize_project_c64_packer_search(value: str) -> str:
+    text = str(value or "balanced").strip().casefold().replace("-", "_").replace(" ", "_")
+    aliases = {"normal": "balanced", "default": "balanced", "max": "maximum", "best": "maximum"}
+    text = aliases.get(text, text)
+    return text if text in PROJECT_C64_PACKER_SEARCH_MODES else "balanced"
+
+
+def _normalize_project_c64_optimizer_strategy(value: str) -> str:
+    text = str(value or "direct").strip().casefold().replace(" ", "_")
+    aliases = {
+        "inline": "inline_pointer",
+        "inlinepointer": "inline_pointer",
+        "inline-pointer": "inline_pointer",
+        "thunk": "string_thunk",
+        "stringthunk": "string_thunk",
+        "string-thunk": "string_thunk",
+    }
+    text = aliases.get(text, text)
+    return text if text in PROJECT_C64_OPTIMIZER_STRATEGIES else "direct"
+
 
 # Stage 190: Sichtbare Pascal-Unit-Hierarchie. Die Projektdatei behaelt den
 # vollstaendigen echten Pfad; lediglich die Darstellung wird nach dem ersten
@@ -14484,6 +14611,15 @@ def empty_project_entries() -> Dict[str, List[Dict[str, str]]]:
     entries[PROJECT_PROLOG_KNOWLEDGE_KEY] = []
     entries[PROJECT_BREAKPOINTS_KEY] = []
     entries[PROJECT_BOOKMARKS_KEY] = []
+    # Stage ASM 63: Arbeitsverzeichnis (Pfadfeld/current_directory) und
+    # TreeList-Wurzel getrennt halten. Alte Projekte dürfen beide leer lassen.
+    entries[PROJECT_WORKING_DIRECTORY_KEY] = []
+    entries[PROJECT_WORKSPACE_ROOT_KEY] = []
+    entries[PROJECT_VIEW_STATE_KEY] = []
+    entries[PROJECT_PRIMARY_DOCK_LAYOUT_KEY] = []
+    entries[PROJECT_C64_OPEN_EDITORS_KEY] = []
+    entries[PROJECT_SESSION_GEOMETRY_KEY] = []
+    entries[PROJECT_C64_LAST_BASIC_FILE_KEY] = []
     for _dbase_key in PROJECT_DBASE_ENTRY_KEYS:
         entries[_dbase_key] = []
     # Stage 174: separate Ziel-/Rollenlisten für Pascal.
@@ -14499,6 +14635,20 @@ def empty_project_entries() -> Dict[str, List[Dict[str, str]]]:
         entries[_settings["output_relative_key"]] = [{"value": "true"}]
         entries[_settings["link_with_ordinals_key"]] = [{"value": "false"}]
         entries[_settings["workstation_mode_key"]] = [{"value": "false"}]
+    entries[PROJECT_C64_OPTIMIZER_ACTIVE_PROFILE_KEY] = [{"value": "68000"}]
+    for _profile_settings in PROJECT_C64_OPTIMIZER_PROFILES.values():
+        entries[_profile_settings["enabled_key"]] = [{"value": "true"}]
+        entries[_profile_settings["strategy_key"]] = [{"value": "direct"}]
+    for _profile_settings in PROJECT_C64_PACKER_PROFILES.values():
+        entries[_profile_settings["enabled_key"]] = [{"value": "false"}]
+        entries[_profile_settings["mode_key"]] = [{"value": "none"}]
+        entries[_profile_settings["search_key"]] = [{"value": "balanced"}]
+        # Stage ASM 55: symbolic De-Cruncher source is shown in the packed ASM
+        # editor by default, preserving Stage 51-54 behaviour.
+        entries[_profile_settings["include_decruncher_source_key"]] = [{"value": "true"}]
+    for _profile_settings in PROJECT_C64_ENVIRONMENT_PROFILES.values():
+        entries[_profile_settings["screen_keyboard_key"]] = [{"value": "false"}]
+        entries[_profile_settings["keyboard_layout_key"]] = [{"value": "qwertz"}]
     return entries
 
 
@@ -14582,6 +14732,123 @@ def format_project_ini(
         "Format": "dBase2Many Project",
         "Version": "2",
     }
+    # Stage ASM 63: WorkingDirectory ist exakt der im Dateisystem-Dock
+    # angezeigte Pfad (current_directory). WorkspaceRoot hält zusätzlich die
+    # Wurzel der linken TreeList fest. Beide Pfade werden möglichst relativ zur
+    # *.pro-Datei gespeichert.
+    _working_entries = entries.get(PROJECT_WORKING_DIRECTORY_KEY, ())
+    _working_value = (
+        str(_working_entries[0].get("path", "") or "").strip()
+        if _working_entries else ""
+    )
+    _workspace_entries = entries.get(PROJECT_WORKSPACE_ROOT_KEY, ())
+    _workspace_value = (
+        str(_workspace_entries[0].get("path", "") or "").strip()
+        if _workspace_entries else ""
+    )
+    if _working_value:
+        parser["Project"]["WorkingDirectory"] = _project_storage_path(
+            _working_value, project_path
+        )
+    if _workspace_value:
+        parser["Project"]["WorkspaceRoot"] = _project_storage_path(
+            _workspace_value, project_path
+        )
+
+    # Stage ASM 65: Der komplette Dock-/Ansichtszustand wird projektbezogen
+    # gespeichert. Base64 vermeidet Binärdaten in der INI-Datei und bleibt
+    # vollständig text-/git-freundlich.
+    _view_entries = entries.get("__project_view_state__", ())
+    _view_state = (
+        str(_view_entries[0].get("value", "") or "").strip()
+        if _view_entries else ""
+    )
+    if _view_state:
+        parser["Project"]["ViewState"] = _view_state
+
+    # Stage ASM 69: explizite Split-/Stack-Beziehung der beiden seitlichen
+    # Primaer-Docks. JSON bleibt menschenlesbar und unabhaengig vom Qt-Blob.
+    _primary_layout_entries = entries.get("__project_primary_dock_layout__", ())
+    _primary_layout = (
+        _primary_layout_entries[0].get("value", {})
+        if _primary_layout_entries else {}
+    )
+    if isinstance(_primary_layout, str):
+        try:
+            _primary_layout = json.loads(_primary_layout)
+        except json.JSONDecodeError:
+            _primary_layout = {}
+    if isinstance(_primary_layout, dict) and _primary_layout.get("paired"):
+        parser["Project"]["PrimaryDockLayout"] = json.dumps(
+            _primary_layout, ensure_ascii=False, separators=(",", ":")
+        )
+
+    # Stage ASM 70: explizite Geometrien zusätzlich zum Qt-ViewState.
+    # Dadurch können Hauptfenster, einzelne Docks und ihre Sichtbarkeit
+    # deterministisch und unabhängig von Qt-Heuristiken wiederhergestellt werden.
+    _geometry_entries = entries.get("__project_session_geometry__", ())
+    _geometry = (
+        _geometry_entries[0].get("value", {})
+        if _geometry_entries else {}
+    )
+    if isinstance(_geometry, str):
+        try:
+            _geometry = json.loads(_geometry)
+        except json.JSONDecodeError:
+            _geometry = {}
+    if isinstance(_geometry, dict) and _geometry:
+        parser["Session.Geometry"] = {"Version": "2"}
+        for _key in (
+            "MainWindow", "CentralArea", "PrimaryDockArea",
+            "FileSystemDock", "ProjectDock", "ProtocolDock",
+        ):
+            _payload = _geometry.get(_key)
+            if isinstance(_payload, dict) and _payload:
+                parser["Session.Geometry"][_key] = json.dumps(
+                    _payload, ensure_ascii=False, separators=(",", ":")
+                )
+
+    # Stage ASM 70: zuletzt geöffnete BASIC-Datei separat merken. Die offene
+    # Editorliste enthält weiterhin alle Tabs; dieser Wert ist die MRU-Referenz.
+    _last_basic_entries = entries.get("__project_c64_last_basic_file__", ())
+    _last_basic_path = (
+        str(_last_basic_entries[0].get("path", "") or "").strip()
+        if _last_basic_entries else ""
+    )
+    if _last_basic_path:
+        parser["Session.C64"] = {
+            "LastBasicFile": _project_storage_path(_last_basic_path, project_path)
+        }
+
+    # Stage ASM 67: offene C64-BASIC-Dateireferenzen als Editor-Session.
+    # Die Pfade werden wie alle Projektressourcen moeglichst relativ zur
+    # Projektdatei gespeichert.
+    _c64_editor_section = "Session.C64.Editors"
+    parser[_c64_editor_section] = {"Title": "Offene C64 BASIC Editoren"}
+    for _index, _entry in enumerate(
+        entries.get("__project_c64_open_editors__", ()), 1
+    ):
+        _path_value = str(_entry.get("path", "") or "").strip()
+        if not _path_value:
+            continue
+        _payload = {
+            "path": _project_storage_path(_path_value, project_path),
+            "active": bool(_entry.get("active", False)),
+        }
+        # Stage ASM 70: Editor-/Bildschirmtastatur-Geometrie je BASIC-Datei.
+        for _name in (
+            "keyboard_visible", "splitter_sizes", "keyboard_last_sizes",
+            "splitter_state", "splitter_handle_width",
+            "keyboard_width", "keyboard_height",
+            "keyboard_host_width", "keyboard_host_height",
+            "keyboard_scroll_x", "keyboard_scroll_y",
+        ):
+            if _name in _entry:
+                _payload[_name] = _entry[_name]
+        parser[_c64_editor_section][f"Item{_index:04d}"] = json.dumps(
+            _payload, ensure_ascii=False, separators=(",", ":")
+        )
+
     for key, title, _extensions in PROJECT_CATEGORIES:
         section = f"Category.{key}"
         parser[section] = {"Title": title}
@@ -14782,6 +15049,69 @@ def format_project_ini(
             "LinkWithOrdinals": "true" if _link_with_ordinals else "false",
         }
 
+    # Stage ASM 48: C=64 Optimizerprofile speichern.
+    _active_entries = entries.get(PROJECT_C64_OPTIMIZER_ACTIVE_PROFILE_KEY, ())
+    _active_profile = (
+        str(_active_entries[0].get("value", "68000") or "68000").strip()
+        if _active_entries else "68000"
+    )
+    if _active_profile not in PROJECT_C64_OPTIMIZER_PROFILES:
+        _active_profile = "68000"
+    parser["Settings.C64"] = {
+        "Title": "C=64 Projekteinstellungen",
+        "ActiveProfile": _active_profile,
+    }
+    for _profile, _profile_settings in PROJECT_C64_OPTIMIZER_PROFILES.items():
+        _enabled = _project_bool_entry(entries, _profile_settings["enabled_key"], True)
+        _strategy_entries = entries.get(_profile_settings["strategy_key"], ())
+        _strategy = (
+            str(_strategy_entries[0].get("value", "direct") or "direct")
+            if _strategy_entries else "direct"
+        )
+        _strategy = _normalize_project_c64_optimizer_strategy(_strategy)
+        parser[_profile_settings["section"]] = {
+            "Title": f"C=64 {_profile} Compiler Optimizer",
+            "Enabled": "true" if _enabled else "false",
+            "Strategy": _strategy,
+        }
+
+    # Stage ASM 60: C64-Umgebung / optionale Bildschirmtastatur und Layout.
+    for _profile, _profile_settings in PROJECT_C64_ENVIRONMENT_PROFILES.items():
+        _screen_keyboard = _project_bool_entry(
+            entries, _profile_settings["screen_keyboard_key"], False
+        )
+        _layout_entries = entries.get(_profile_settings["keyboard_layout_key"], ())
+        _keyboard_layout = _normalize_project_c64_keyboard_layout(
+            _layout_entries[0].get("value", "qwertz") if _layout_entries else "qwertz"
+        )
+        parser[_profile_settings["section"]] = {
+            "Title": f"C=64 {_profile} Umgebung",
+            "ScreenKeyboard": "true" if _screen_keyboard else "false",
+            "KeyboardLayout": _keyboard_layout,
+        }
+
+    # Stage ASM 50: Image-Packer je C64-Profil speichern.
+    for _profile, _profile_settings in PROJECT_C64_PACKER_PROFILES.items():
+        _enabled = _project_bool_entry(entries, _profile_settings["enabled_key"], False)
+        _mode_entries = entries.get(_profile_settings["mode_key"], ())
+        _mode = _normalize_project_c64_packer_mode(
+            _mode_entries[0].get("value", "none") if _mode_entries else "none"
+        )
+        _search_entries = entries.get(_profile_settings["search_key"], ())
+        _search = _normalize_project_c64_packer_search(
+            _search_entries[0].get("value", "balanced") if _search_entries else "balanced"
+        )
+        _include_decruncher_source = _project_bool_entry(
+            entries, _profile_settings["include_decruncher_source_key"], True
+        )
+        parser[_profile_settings["section"]] = {
+            "Title": f"C=64 {_profile} Compiler Image Packer",
+            "Enabled": "true" if _enabled else "false",
+            "Mode": _mode,
+            "Search": _search,
+            "IncludeDecruncherSource": "true" if _include_decruncher_source else "false",
+        }
+
     from io import StringIO
     stream = StringIO()
     parser.write(stream)
@@ -14793,6 +15123,110 @@ def parse_project_ini(text: str, project_path: Path) -> Dict[str, List[Dict[str,
     parser.optionxform = str
     parser.read_string(text)
     entries = empty_project_entries()
+
+    # Stage ASM 63: das sichtbare Arbeitsverzeichnis und die TreeList-Wurzel
+    # getrennt wiederherstellen. Bei Stage-57-Projekten ohne WorkspaceRoot
+    # dient WorkingDirectory zugleich als Root (voll rückwärtskompatibel).
+    if parser.has_section("Project"):
+        _working_value = str(
+            parser.get("Project", "WorkingDirectory", fallback="") or ""
+        ).strip()
+        _workspace_value = str(
+            parser.get("Project", "WorkspaceRoot", fallback="") or ""
+        ).strip()
+        if _working_value:
+            _loaded_working = _project_loaded_path(
+                _working_value, Path(project_path)
+            )
+            entries[PROJECT_WORKING_DIRECTORY_KEY] = [{"path": _loaded_working}]
+        if _workspace_value:
+            entries[PROJECT_WORKSPACE_ROOT_KEY] = [{
+                "path": _project_loaded_path(_workspace_value, Path(project_path))
+            }]
+        elif _working_value:
+            entries[PROJECT_WORKSPACE_ROOT_KEY] = [{"path": _loaded_working}]
+
+        # Stage ASM 65: Projektlayout aus der INI übernehmen. Ungültige oder
+        # ältere Projekte dürfen den Wert einfach weglassen.
+        _view_state = str(
+            parser.get("Project", "ViewState", fallback="") or ""
+        ).strip()
+        if _view_state:
+            entries[PROJECT_VIEW_STATE_KEY] = [{"value": _view_state}]
+
+        _primary_layout_text = str(
+            parser.get("Project", "PrimaryDockLayout", fallback="") or ""
+        ).strip()
+        if _primary_layout_text:
+            try:
+                _primary_layout = json.loads(_primary_layout_text)
+            except json.JSONDecodeError:
+                _primary_layout = {}
+            if isinstance(_primary_layout, dict) and _primary_layout.get("paired"):
+                entries["__project_primary_dock_layout__"] = [{"value": _primary_layout}]
+
+    # Stage ASM 70: explizite Fenster-/Dockgeometrien laden.
+    if parser.has_section("Session.Geometry"):
+        _geometry = {}
+        for _key in (
+            "MainWindow", "CentralArea", "PrimaryDockArea",
+            "FileSystemDock", "ProjectDock", "ProtocolDock",
+        ):
+            _text = str(parser.get("Session.Geometry", _key, fallback="") or "").strip()
+            if not _text:
+                continue
+            try:
+                _payload = json.loads(_text)
+            except json.JSONDecodeError:
+                _payload = {}
+            if isinstance(_payload, dict):
+                _geometry[_key] = _payload
+        if _geometry:
+            entries["__project_session_geometry__"] = [{"value": _geometry}]
+
+    if parser.has_section("Session.C64"):
+        _last_basic = str(
+            parser.get("Session.C64", "LastBasicFile", fallback="") or ""
+        ).strip()
+        if _last_basic:
+            entries["__project_c64_last_basic_file__"] = [{
+                "path": _project_loaded_path(_last_basic, Path(project_path))
+            }]
+
+    # Stage ASM 67: gespeicherte C64-BASIC-Editor-Dateireferenzen laden.
+    _c64_editor_section = "Session.C64.Editors"
+    if parser.has_section(_c64_editor_section):
+        _values = sorted(
+            (
+                (name, value)
+                for name, value in parser.items(_c64_editor_section)
+                if name.casefold().startswith("item")
+            ),
+            key=lambda pair: pair[0].casefold(),
+        )
+        for _name, _value in _values:
+            try:
+                _payload = json.loads(_value)
+            except json.JSONDecodeError:
+                _payload = {"path": _value, "active": False}
+            _path_value = str(_payload.get("path", "") or "").strip()
+            if not _path_value:
+                continue
+            _editor_entry = {
+                "path": _project_loaded_path(_path_value, Path(project_path)),
+                "active": bool(_payload.get("active", False)),
+            }
+            for _field in (
+                "keyboard_visible", "splitter_sizes", "keyboard_last_sizes",
+                "splitter_state", "splitter_handle_width",
+                "keyboard_width", "keyboard_height",
+                "keyboard_host_width", "keyboard_host_height",
+                "keyboard_scroll_x", "keyboard_scroll_y",
+            ):
+                if _field in _payload:
+                    _editor_entry[_field] = _payload[_field]
+            entries.setdefault("__project_c64_open_editors__", []).append(_editor_entry)
+
     for key, _title, _extensions in PROJECT_CATEGORIES:
         section = f"Category.{key}"
         if not parser.has_section(section):
@@ -15085,6 +15519,73 @@ def parse_project_ini(text: str, project_path: Path) -> Dict[str, List[Dict[str,
             entries[_settings["link_with_ordinals_key"]] = [{
                 "value": "true" if _link_with_ordinals else "false"
             }]
+
+    # Stage ASM 48: C=64 Optimizerprofile laden.
+    if parser.has_section("Settings.C64"):
+        _active_profile = str(
+            parser.get("Settings.C64", "ActiveProfile", fallback="68000")
+        ).strip()
+        if _active_profile not in PROJECT_C64_OPTIMIZER_PROFILES:
+            _active_profile = "68000"
+        entries[PROJECT_C64_OPTIMIZER_ACTIVE_PROFILE_KEY] = [{"value": _active_profile}]
+    for _profile, _profile_settings in PROJECT_C64_OPTIMIZER_PROFILES.items():
+        _section = _profile_settings["section"]
+        if not parser.has_section(_section):
+            continue
+        _enabled = _parse_project_bool(
+            parser.get(_section, "Enabled", fallback="true"), True
+        )
+        _strategy = _normalize_project_c64_optimizer_strategy(
+            parser.get(_section, "Strategy", fallback="direct")
+        )
+        entries[_profile_settings["enabled_key"]] = [
+            {"value": "true" if _enabled else "false"}
+        ]
+        entries[_profile_settings["strategy_key"]] = [{"value": _strategy}]
+
+    # Stage ASM 60: C64-Umgebung / Bildschirmtastatur und Layout laden.
+    for _profile, _profile_settings in PROJECT_C64_ENVIRONMENT_PROFILES.items():
+        _section = _profile_settings["section"]
+        if not parser.has_section(_section):
+            continue
+        _screen_keyboard = _parse_project_bool(
+            parser.get(_section, "ScreenKeyboard", fallback="false"), False
+        )
+        _keyboard_layout = _normalize_project_c64_keyboard_layout(
+            parser.get(_section, "KeyboardLayout", fallback="qwertz")
+        )
+        entries[_profile_settings["screen_keyboard_key"]] = [{
+            "value": "true" if _screen_keyboard else "false"
+        }]
+        entries[_profile_settings["keyboard_layout_key"]] = [{
+            "value": _keyboard_layout
+        }]
+
+    # Stage ASM 50: C64 Image-Packer laden.
+    for _profile, _profile_settings in PROJECT_C64_PACKER_PROFILES.items():
+        _section = _profile_settings["section"]
+        if not parser.has_section(_section):
+            continue
+        _enabled = _parse_project_bool(
+            parser.get(_section, "Enabled", fallback="false"), False
+        )
+        _mode = _normalize_project_c64_packer_mode(
+            parser.get(_section, "Mode", fallback="none")
+        )
+        _search = _normalize_project_c64_packer_search(
+            parser.get(_section, "Search", fallback="balanced")
+        )
+        _include_decruncher_source = _parse_project_bool(
+            parser.get(_section, "IncludeDecruncherSource", fallback="true"), True
+        )
+        entries[_profile_settings["enabled_key"]] = [{
+            "value": "true" if _enabled else "false"
+        }]
+        entries[_profile_settings["mode_key"]] = [{"value": _mode}]
+        entries[_profile_settings["search_key"]] = [{"value": _search}]
+        entries[_profile_settings["include_decruncher_source_key"]] = [{
+            "value": "true" if _include_decruncher_source else "false"
+        }]
 
     # Migration Stage185/187 -> Stage196. Ein bisher gemeinsam genutztes
     # Ausgabe-Verzeichnis wird absichtlich in zwei Unterordner geteilt. So
@@ -15441,6 +15942,7 @@ def run_gui(
     try:
         from PyQt5.QtCore import (
             QCoreApplication,
+            QByteArray,
             QDir,
             QEvent,
             QEventLoop,
@@ -15494,6 +15996,7 @@ def run_gui(
             QRegion,
             QSyntaxHighlighter,
             QTextBlockFormat,
+            QTextBlockUserData,
             QTextCharFormat,
             QTextCursor,
             QTextFormat,
@@ -15552,6 +16055,8 @@ def run_gui(
             QStackedWidget,
             QStatusBar,
             QStyle,
+            QStyleOptionComboBox,
+            QStylePainter,
             QStyledItemDelegate,
             QTabBar,
             QTabWidget,
@@ -16051,6 +16556,41 @@ def run_gui(
         "mo:C64CharacterEditorDialog.shift_right_button": tr("mo:C64CharacterEditorDialog.shift_right_button"),
         "mo:C64CharacterEditorDialog.shift_up_button": tr("mo:C64CharacterEditorDialog.shift_up_button"),
         "mo:C64CharacterEditorDialog.status_label": tr("mo:C64CharacterEditorDialog.status_label"),
+        # Stage ASM 56: components introduced by the C64 project settings,
+        # BASIC optimizer and D64PACK image-packer stages 48-55.
+        "mo:C64CompilerSettingsPage.environment_group": tr("mo:C64CompilerSettingsPage.environment_group"),
+        "mo:C64CompilerSettingsPage.environment_page": tr("mo:C64CompilerSettingsPage.environment_page"),
+        "mo:C64CompilerSettingsPage.screen_keyboard_checkbox": tr("mo:C64CompilerSettingsPage.screen_keyboard_checkbox"),
+        "mo:C64CompilerSettingsPage.keyboard_layout_combo": tr("mo:C64CompilerSettingsPage.keyboard_layout_combo"),
+        "mo:project_settings_scroll_area": tr("mo:project_settings_scroll_area"),
+        "mo:c64_environment_screen_keyboard_checkbox": tr("mo:c64_environment_screen_keyboard_checkbox"),
+        "mo:c64_environment_keyboard_layout_combo": tr("mo:c64_environment_keyboard_layout_combo"),
+        "mo:c64_environment_screen_keyboard_hint": tr("mo:c64_environment_screen_keyboard_hint"),
+        "mo:C64CompilerSettingsPage.optimizer_enabled_checkbox": tr("mo:C64CompilerSettingsPage.optimizer_enabled_checkbox"),
+        "mo:C64CompilerSettingsPage.optimizer_group": tr("mo:C64CompilerSettingsPage.optimizer_group"),
+        "mo:C64CompilerSettingsPage.optimizer_page": tr("mo:C64CompilerSettingsPage.optimizer_page"),
+        "mo:C64CompilerSettingsPage.packer_enabled_checkbox": tr("mo:C64CompilerSettingsPage.packer_enabled_checkbox"),
+        "mo:C64CompilerSettingsPage.packer_group": tr("mo:C64CompilerSettingsPage.packer_group"),
+        "mo:C64CompilerSettingsPage.packer_include_decruncher_source_checkbox": tr("mo:C64CompilerSettingsPage.packer_include_decruncher_source_checkbox"),
+        "mo:C64CompilerSettingsPage.packer_page": tr("mo:C64CompilerSettingsPage.packer_page"),
+        "mo:C64CompilerSettingsPage.packer_search_groupbox": tr("mo:C64CompilerSettingsPage.packer_search_groupbox"),
+        "mo:C64CompilerSettingsPage.splitter": tr("mo:C64CompilerSettingsPage.splitter"),
+        "mo:C64CompilerSettingsPage.stack": tr("mo:C64CompilerSettingsPage.stack"),
+        "mo:C64CompilerSettingsPage.tree": tr("mo:C64CompilerSettingsPage.tree"),
+        "mo:c64_optimizer_direct_radio": tr("mo:c64_optimizer_direct_radio"),
+        "mo:c64_optimizer_inline_pointer_radio": tr("mo:c64_optimizer_inline_pointer_radio"),
+        "mo:c64_optimizer_string_thunk_radio": tr("mo:c64_optimizer_string_thunk_radio"),
+        "mo:c64_optimizer_auto_radio": tr("mo:c64_optimizer_auto_radio"),
+        "mo:c64_optimizer_auto_hint": tr("mo:c64_optimizer_auto_hint"),
+        "mo:c64_image_packer_none_radio": tr("mo:c64_image_packer_none_radio"),
+        "mo:c64_image_packer_rle_radio": tr("mo:c64_image_packer_rle_radio"),
+        "mo:c64_image_packer_lz_radio": tr("mo:c64_image_packer_lz_radio"),
+        "mo:c64_image_packer_auto_radio": tr("mo:c64_image_packer_auto_radio"),
+        "mo:c64_image_packer_search_fast_radio": tr("mo:c64_image_packer_search_fast_radio"),
+        "mo:c64_image_packer_search_balanced_radio": tr("mo:c64_image_packer_search_balanced_radio"),
+        "mo:c64_image_packer_search_maximum_radio": tr("mo:c64_image_packer_search_maximum_radio"),
+        "mo:c64_image_packer_hint": tr("mo:c64_image_packer_hint"),
+        "mo:project_settings_c64_architecture_tabs": tr("mo:project_settings_c64_architecture_tabs"),
         "mo:C64PaletteEditorDialog.apply_button": tr("mo:C64PaletteEditorDialog.apply_button"),
         "mo:C64PaletteEditorDialog.close_button": tr("mo:C64PaletteEditorDialog.close_button"),
         "mo:C64PaletteEditorDialog.color_heading": tr("mo:C64PaletteEditorDialog.color_heading"),
@@ -16147,6 +16687,7 @@ def run_gui(
         "mo:ChmViewerDialog.web_view": tr("mo:ChmViewerDialog.web_view"),
         "mo:coff_object_button": tr("mo:coff_object_button"),
         "mo:custom_dock_title_bar": tr("mo:custom_dock_title_bar"),
+        "mo:dock_snap_overlay": tr("mo:dock_snap_overlay"),
         "mo:custom_dock_title_label": tr("mo:custom_dock_title_label"),
         "mo:d64_content_dock": tr("mo:d64_content_dock"),
         "mo:d64_content_list": tr("mo:d64_content_list"),
@@ -16197,6 +16738,26 @@ def run_gui(
         "mo:dbase_form_timer_active_checkbox": tr("mo:dbase_form_timer_active_checkbox"),
         "mo:dbase_form_timer_interval_spinbox": tr("mo:dbase_form_timer_interval_spinbox"),
         "mo:dbase_form_upper_tabs": tr("mo:dbase_form_upper_tabs"),
+        "mo:dbase_label_add_field_button": tr("mo:dbase_label_add_field_button"),
+        "mo:dbase_label_add_format_button": tr("mo:dbase_label_add_format_button"),
+        "mo:dbase_label_designer": tr("mo:dbase_label_designer"),
+        "mo:dbase_label_field_list": tr("mo:dbase_label_field_list"),
+        "mo:dbase_label_fields_group": tr("mo:dbase_label_fields_group"),
+        "mo:dbase_label_format_actions": tr("mo:dbase_label_format_actions"),
+        "mo:dbase_label_format_list": tr("mo:dbase_label_format_list"),
+        "mo:dbase_label_formats_group": tr("mo:dbase_label_formats_group"),
+        "mo:dbase_label_main_splitter": tr("mo:dbase_label_main_splitter"),
+        "mo:dbase_label_load_button": tr("mo:dbase_label_load_button"),
+        "mo:dbase_label_pdf_button": tr("mo:dbase_label_pdf_button"),
+        "mo:dbase_label_print_button": tr("mo:dbase_label_print_button"),
+        "mo:dbase_label_save_as_button": tr("mo:dbase_label_save_as_button"),
+        "mo:dbase_label_save_button": tr("mo:dbase_label_save_button"),
+        "mo:dbase_label_source_button": tr("mo:dbase_label_source_button"),
+        "mo:dbase_label_source_edit": tr("mo:dbase_label_source_edit"),
+        "mo:dbase_label_source_group": tr("mo:dbase_label_source_group"),
+        "mo:dbase_label_tools": tr("mo:dbase_label_tools"),
+        "mo:dbase_label_tools_scroll": tr("mo:dbase_label_tools_scroll"),
+        "mo:dbase_label_view": tr("mo:dbase_label_view"),
         "mo:dbase_table_designer_dock": tr("mo:dbase_table_designer_dock"),
         "mo:dbase_table_field_decimals_spin": tr("mo:dbase_table_field_decimals_spin"),
         "mo:dbase_table_field_grid": tr("mo:dbase_table_field_grid"),
@@ -16372,6 +16933,15 @@ def run_gui(
         "mo:DocumentEditor.assemble_button": tr("mo:DocumentEditor.assemble_button"),
         "mo:DocumentEditor.assemble_generated_button": tr("mo:DocumentEditor.assemble_generated_button"),
         "mo:DocumentEditor.assembler_panel": tr("mo:DocumentEditor.assembler_panel"),
+        "mo:DocumentEditor.basic_line_control_panel": tr("mo:DocumentEditor.basic_line_control_panel"),
+        "mo:DocumentEditor.basic_line_update_button": tr("mo:DocumentEditor.basic_line_update_button"),
+        "mo:DocumentEditor.basic_editor_splitter": tr("mo:DocumentEditor.basic_editor_splitter"),
+        "mo:DocumentEditor.basic_screen_keyboard": tr("mo:DocumentEditor.basic_screen_keyboard"),
+        "mo:DocumentEditor.basic_screen_keyboard_scroll": tr("mo:DocumentEditor.basic_screen_keyboard_scroll"),
+        "mo:DocumentEditor.basic_keyboard_toggle_button": tr("mo:DocumentEditor.basic_keyboard_toggle_button"),
+        "mo:c64_basic_screen_keyboard": tr("mo:c64_basic_screen_keyboard"),
+        "mo:c64_basic_keyboard_space": tr("mo:c64_basic_keyboard_space"),
+        "mo:c64_basic_keyboard_petscii": tr("mo:c64_basic_keyboard_petscii"),
         "mo:DocumentEditor.assembly_status_label": tr("mo:DocumentEditor.assembly_status_label"),
         "mo:DocumentEditor.build_target_combo": tr("mo:DocumentEditor.build_target_combo"),
         "mo:DocumentEditor.coff_object_button": tr("mo:DocumentEditor.coff_object_button"),
@@ -19302,6 +19872,16 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
     # -----------------------------------------------------------------------
     # Schmale Zeichenflaeche links neben einem Quelltexteditor.
     # -----------------------------------------------------------------------
+    class C64BasicLineBlockData(QTextBlockUserData):
+        """Per-QTextBlock BASIC line number stored outside source text."""
+
+        def __init__(self, line_number: Optional[int] = None):
+            super().__init__()
+            self.line_number = (
+                int(line_number) if line_number is not None else None
+            )
+
+
     class LineNumberArea(QWidget):
         def __init__(self, editor: "SourceTextEdit"):
             super().__init__(editor)
@@ -21104,6 +21684,24 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self._assembler_navigation_enabled = False
             self._assembler_highlighter = None
             self._lisp_help_enabled = False
+            # Stage ASM 54: C64 BASIC keeps semantic BASIC line numbers in
+            # QTextBlock user data. They are painted in the gutter and are
+            # materialized only when the file is saved/compiled.
+            self._basic_line_number_mode = False
+            self._basic_line_update_guard = False
+            self._basic_gutter_font = None
+            self._basic_first_overflow_block = -1
+            self._basic_overflow_blocks = ()
+            self._basic_max_columns = 80
+            # Stage ASM 62: C64-artiger blinkender Blockcursor. Der Cursor ist
+            # ausschließlich ein Paint-Overlay; der QTextDocument-Inhalt wird
+            # niemals mit einem Ersatzzeichen überschrieben.
+            self._basic_block_cursor_visible = True
+            self._basic_block_cursor_timer = QTimer(self)
+            self._basic_block_cursor_timer.setInterval(450)
+            self._basic_block_cursor_timer.timeout.connect(
+                self._toggle_basic_block_cursor
+            )
             self._breakpoint_cursors = []
             self._bookmark_cursors = []
             self.line_number_area = LineNumberArea(self)
@@ -21205,6 +21803,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.textChanged.connect(self._schedule_completion_update)
             self.textChanged.connect(self._schedule_instruction_help_update)
             self.textChanged.connect(self._gutter_document_changed)
+            self.textChanged.connect(self._basic_document_changed)
             self.cursorPositionChanged.connect(
                 self._schedule_completion_update
             )
@@ -21214,9 +21813,294 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.cursorPositionChanged.connect(
                 self._update_current_line_highlight
             )
+            self.cursorPositionChanged.connect(
+                self._reset_basic_block_cursor_blink
+            )
+            self.textChanged.connect(self._reset_basic_block_cursor_blink)
             self.update_line_number_area_width(0)
             self._update_completion_theme()
             self._update_current_line_highlight()
+
+        # -----------------------------------------------------------------------
+        # Stage ASM 54: C64 BASIC line-number gutter / 80-column source model.
+        # -----------------------------------------------------------------------
+        def set_basic_gutter_font(self, font: QFont) -> None:
+            self._basic_gutter_font = QFont(font)
+            self.line_number_area.update()
+            self.update_line_number_area_width(0)
+
+        def set_basic_editor_mode(
+            self,
+            enabled: bool,
+            *,
+            initial_source: Optional[str] = None,
+        ) -> None:
+            enabled = bool(enabled)
+            previous = self._basic_line_number_mode
+            if enabled:
+                self._basic_line_number_mode = True
+                self.setLineWrapMode(QPlainTextEdit.NoWrap)
+                # Den normalen Qt-I-Beam ausblenden; Stage 62 zeichnet den
+                # blinkenden C64-Blockcursor selbst im Viewport.
+                self.setCursorWidth(0)
+                self._reset_basic_block_cursor_blink()
+                self.set_basic_gutter_font(self.font())
+                if initial_source is not None:
+                    self.load_basic_editor_source(initial_source)
+                elif not previous:
+                    self.load_basic_editor_source(self.toPlainText())
+                else:
+                    self._basic_reconcile_line_numbers()
+                return
+
+            if not previous:
+                self._basic_line_number_mode = False
+                return
+
+            # When a BASIC document is renamed to a non-BASIC extension, show
+            # the actual serialized representation in the normal text editor.
+            try:
+                materialized = self.basic_source_with_line_numbers()
+            except Exception:
+                materialized = self.toPlainText()
+            modified = self.document().isModified()
+            self._basic_line_number_mode = False
+            self._basic_block_cursor_timer.stop()
+            self._basic_block_cursor_visible = False
+            self.setCursorWidth(1)
+            self.viewport().update()
+            self._basic_line_update_guard = True
+            try:
+                self.setPlainText(materialized)
+                self.document().setModified(modified)
+            finally:
+                self._basic_line_update_guard = False
+            self._basic_first_overflow_block = -1
+            self._basic_overflow_blocks = ()
+            self.update_line_number_area_width(0)
+            self._update_current_line_highlight()
+
+        def load_basic_editor_source(self, source: str) -> None:
+            from c64basic.editor_model import (
+                assign_missing_basic_numbers,
+                split_numbered_basic_source,
+                wrap_basic_lines,
+            )
+
+            modified = self.document().isModified()
+            lines, numbers = split_numbered_basic_source(source)
+            lines, numbers = wrap_basic_lines(
+                lines,
+                numbers,
+                max_columns=self._basic_max_columns,
+            )
+            numbers = assign_missing_basic_numbers(numbers)
+
+            self._basic_line_update_guard = True
+            try:
+                self.setPlainText("\n".join(lines))
+                block = self.document().firstBlock()
+                index = 0
+                while block.isValid():
+                    number = numbers[index] if index < len(numbers) else None
+                    block.setUserData(C64BasicLineBlockData(number))
+                    block = block.next()
+                    index += 1
+                self.document().setModified(modified)
+            finally:
+                self._basic_line_update_guard = False
+
+            self._basic_reconcile_line_numbers()
+            self.update_line_number_area_width(0)
+            self.line_number_area.update()
+            self._update_current_line_highlight()
+
+        def _basic_block_line_number(self, block) -> Optional[int]:
+            data = block.userData() if block.isValid() else None
+            if isinstance(data, C64BasicLineBlockData):
+                return data.line_number
+            return None
+
+        def _basic_collect_lines_and_numbers(self):
+            lines = []
+            numbers = []
+            block = self.document().firstBlock()
+            while block.isValid():
+                lines.append(block.text())
+                numbers.append(self._basic_block_line_number(block))
+                block = block.next()
+            return lines, numbers
+
+        def basic_source_with_line_numbers(self, newline: str = "\n") -> str:
+            from c64basic.editor_model import serialize_numbered_basic_source
+
+            lines, numbers = self._basic_collect_lines_and_numbers()
+            return serialize_numbered_basic_source(
+                lines,
+                numbers,
+                newline=newline,
+            )
+
+        def renumber_basic_lines(self, preferred_step: int = 10):
+            """Stage ASM 58: BASIC-Gutter komplett neu nummerieren.
+
+            Der sichtbare Editor enthaelt weiterhin nur BASIC-Code. Die neue
+            Nummernfolge wird als QTextBlock-Metadaten gesetzt; direkte
+            GOTO/GOSUB/THEN/RESTORE-Ziele werden auf die neuen Nummern
+            umgeschrieben. Stage ASM 72 entfernt zusaetzlich ueberfluessige
+            Leerzeichen an Ausdrucksoperatoren. Strings sowie REM-/Apostroph-
+            Kommentare bleiben dabei unangetastet.
+            """
+            if not self._basic_line_number_mode:
+                raise ValueError("Der Editor befindet sich nicht im C64-BASIC-Modus.")
+
+            from c64basic.editor_model import renumber_basic_program
+
+            lines, numbers = self._basic_collect_lines_and_numbers()
+            new_lines, new_numbers, mapping = renumber_basic_program(
+                lines,
+                numbers,
+                preferred_step=preferred_step,
+                maximum=65535,
+                max_columns=self._basic_max_columns,
+                update_references=True,
+            )
+
+            cursor = self.textCursor()
+            cursor_block = cursor.blockNumber()
+            cursor_column = cursor.positionInBlock()
+            anchor_cursor = QTextCursor(self.document())
+            anchor_cursor.setPosition(cursor.anchor())
+            anchor_block = anchor_cursor.blockNumber()
+            anchor_column = anchor_cursor.positionInBlock()
+
+            self._basic_line_update_guard = True
+            try:
+                self.setPlainText("\n".join(new_lines))
+                block = self.document().firstBlock()
+                index = 0
+                while block.isValid():
+                    number = new_numbers[index] if index < len(new_numbers) else None
+                    block.setUserData(C64BasicLineBlockData(number))
+                    block = block.next()
+                    index += 1
+                self.document().setModified(True)
+            finally:
+                self._basic_line_update_guard = False
+
+            self._basic_overflow_blocks = ()
+            self._basic_first_overflow_block = -1
+            self.update_line_number_area_width(0)
+            self.line_number_area.update()
+            self._update_current_line_highlight()
+
+            # Cursor/Selektion moeglichst auf derselben physischen Zeile halten.
+            maximum_position = max(0, self.document().characterCount() - 1)
+            new_anchor_block = self.document().findBlockByNumber(
+                max(0, min(anchor_block, self.document().blockCount() - 1))
+            )
+            new_cursor_block = self.document().findBlockByNumber(
+                max(0, min(cursor_block, self.document().blockCount() - 1))
+            )
+            restored = QTextCursor(self.document())
+            anchor_position = min(
+                maximum_position,
+                new_anchor_block.position() + min(anchor_column, len(new_anchor_block.text())),
+            )
+            cursor_position = min(
+                maximum_position,
+                new_cursor_block.position() + min(cursor_column, len(new_cursor_block.text())),
+            )
+            restored.setPosition(anchor_position)
+            restored.setPosition(cursor_position, QTextCursor.KeepAnchor)
+            self.setTextCursor(restored)
+
+            return new_numbers, mapping
+
+        def basic_has_line_number_overflow(self) -> bool:
+            return self._basic_first_overflow_block >= 0
+
+        def _basic_split_overlong_blocks(self) -> None:
+            if not self._basic_line_number_mode:
+                return
+
+            width = max(1, int(self._basic_max_columns))
+            cursor_position = self.textCursor().position()
+            anchor_position = self.textCursor().anchor()
+
+            block = self.document().firstBlock()
+            while block.isValid():
+                if len(block.text()) <= width:
+                    block = block.next()
+                    continue
+
+                split_position = block.position() + width
+                edit = QTextCursor(self.document())
+                edit.setPosition(split_position)
+                edit.insertBlock()
+
+                if split_position <= cursor_position:
+                    cursor_position += 1
+                if split_position <= anchor_position:
+                    anchor_position += 1
+
+                # Continue with the newly-created continuation block.  If it is
+                # still longer than 80 columns, the loop splits it again.
+                block = self.document().findBlock(split_position + 1)
+
+            restored = QTextCursor(self.document())
+            maximum = max(0, self.document().characterCount() - 1)
+            restored.setPosition(max(0, min(anchor_position, maximum)))
+            restored.setPosition(
+                max(0, min(cursor_position, maximum)),
+                QTextCursor.KeepAnchor,
+            )
+            self.setTextCursor(restored)
+
+        def _basic_reconcile_line_numbers(self) -> None:
+            if not self._basic_line_number_mode:
+                return
+            from c64basic.editor_model import assign_missing_basic_numbers
+
+            blocks = []
+            numbers = []
+            block = self.document().firstBlock()
+            while block.isValid():
+                blocks.append(block)
+                numbers.append(self._basic_block_line_number(block))
+                block = block.next()
+
+            assigned = assign_missing_basic_numbers(numbers)
+            overflow_blocks = []
+            for index, (block, number) in enumerate(zip(blocks, assigned)):
+                data = block.userData()
+                if not isinstance(data, C64BasicLineBlockData):
+                    block.setUserData(C64BasicLineBlockData(number))
+                else:
+                    data.line_number = number
+                if number is None:
+                    overflow_blocks.append(index)
+
+            self._basic_overflow_blocks = tuple(overflow_blocks)
+            self._basic_first_overflow_block = (
+                overflow_blocks[0] if overflow_blocks else -1
+            )
+            self.update_line_number_area_width(0)
+            self.line_number_area.update()
+            self._update_current_line_highlight()
+
+        def _basic_document_changed(self) -> None:
+            if (
+                not self._basic_line_number_mode
+                or self._basic_line_update_guard
+            ):
+                return
+            self._basic_line_update_guard = True
+            try:
+                self._basic_split_overlong_blocks()
+                self._basic_reconcile_line_numbers()
+            finally:
+                self._basic_line_update_guard = False
 
         # -----------------------------------------------------------------------
         # Hebt die aktuelle Cursorzeile theme-abhaengig hervor.
@@ -21244,7 +22128,90 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 selection.format.setBackground(QColor("#FFF4B8"))
                 selection.format.setForeground(QColor("#000000"))
 
-            self.setExtraSelections([selection])
+            extra_selections = []
+            if self._basic_line_number_mode and self._basic_overflow_blocks:
+                overflow_set = set(self._basic_overflow_blocks)
+                for block_number in self._basic_overflow_blocks:
+                    overflow_block = self.document().findBlockByNumber(block_number)
+                    if not overflow_block.isValid():
+                        continue
+                    overflow = QTextEdit.ExtraSelection()
+                    overflow.cursor = QTextCursor(overflow_block)
+                    overflow.cursor.select(QTextCursor.BlockUnderCursor)
+                    overflow.format.setForeground(QColor("#FF4040"))
+                    extra_selections.append(overflow)
+                if self.textCursor().blockNumber() in overflow_set:
+                    selection.format.setForeground(QColor("#FF4040"))
+
+            extra_selections.append(selection)
+            self.setExtraSelections(extra_selections)
+
+        # -------------------------------------------------------------------
+        # Stage ASM 62: C64-Blockcursor. Weil der Cursor nur nach dem normalen
+        # QPlainTextEdit-Paint gezeichnet wird, muss kein darunterliegendes
+        # Zeichen gespeichert/restauriert werden. Beim nächsten Repaint malt
+        # Qt den Originaltext zuerst sauber neu und danach ggf. das Quadrat.
+        # -------------------------------------------------------------------
+        def _toggle_basic_block_cursor(self) -> None:
+            if (
+                not self._basic_line_number_mode
+                or not self.hasFocus()
+                or self.textCursor().hasSelection()
+            ):
+                self._basic_block_cursor_visible = False
+                self.viewport().update()
+                return
+            self._basic_block_cursor_visible = not self._basic_block_cursor_visible
+            self.viewport().update()
+
+        def _reset_basic_block_cursor_blink(self) -> None:
+            if not self._basic_line_number_mode:
+                return
+            self._basic_block_cursor_visible = True
+            if self.hasFocus():
+                self._basic_block_cursor_timer.start()
+            self.viewport().update()
+
+        def paintEvent(self, event) -> None:
+            super().paintEvent(event)
+            if (
+                not self._basic_line_number_mode
+                or not self._basic_block_cursor_visible
+                or not self.hasFocus()
+                or self.textCursor().hasSelection()
+            ):
+                return
+
+            cursor = self.textCursor()
+            rect = self.cursorRect(cursor)
+            metrics = self.fontMetrics()
+            cell_width = max(2, metrics.horizontalAdvance("M"))
+            cell_height = max(2, rect.height())
+            block_rect = QRect(rect.left(), rect.top(), cell_width, cell_height)
+            block_rect = block_rect.intersected(self.viewport().rect())
+            if block_rect.isEmpty():
+                return
+
+            painter = QPainter(self.viewport())
+            painter.setPen(Qt.NoPen)
+            # C64-nahe helle Cursorfläche auf dem navyfarbenen BASIC-Editor.
+            painter.setBrush(QColor(210, 220, 255))
+            painter.drawRect(block_rect)
+
+            # Befindet sich der Cursor auf einem vorhandenen Zeichen, dieses
+            # invers im Block nochmals zeichnen. Das Dokument bleibt unverändert.
+            block = cursor.block()
+            column = cursor.positionInBlock()
+            text = block.text() if block.isValid() else ""
+            if 0 <= column < len(text):
+                painter.setFont(self.font())
+                painter.setPen(QColor(0, 0, 128))
+                painter.drawText(
+                    block_rect,
+                    int(Qt.AlignLeft | Qt.AlignVCenter | Qt.TextSingleLine),
+                    text[column],
+                )
+            painter.end()
 
         def set_assembler_completion_enabled(self, enabled: bool) -> None:
             self._completion_enabled = bool(enabled) and not self.isReadOnly()
@@ -21945,6 +22912,111 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             cursor.insertText("    ")
             self.setTextCursor(cursor)
 
+        # -------------------------------------------------------------------
+        # Stage ASM 59: C64 BASIC arbeitet im Codebereich in Grossbuchstaben.
+        # Strings und REM-Kommentare behalten dagegen exakt die vom Benutzer
+        # eingegebene Gross-/Kleinschreibung. Ziffern und Shift-Sonderzeichen
+        # werden niemals veraendert.
+        # -------------------------------------------------------------------
+        def _basic_transform_inserted_text(self, text: str) -> str:
+            if not self._basic_line_number_mode:
+                return str(text or "")
+            from c64basic.editor_model import transform_basic_typed_text
+
+            cursor = self.textCursor()
+            prefix = cursor.block().text()[:cursor.positionInBlock()]
+            return transform_basic_typed_text(prefix, str(text or ""))
+
+        def insert_basic_keyboard_text(self, text: str) -> None:
+            if self.isReadOnly():
+                return
+            cursor = self.textCursor()
+            cursor.insertText(self._basic_transform_inserted_text(text))
+            self.setTextCursor(cursor)
+            self.ensureCursorVisible()
+
+        def _insert_basic_petscii_byte(self, byte_value: int) -> None:
+            if self.isReadOnly():
+                return
+            value = int(byte_value) & 0xFF
+            # Direct-PETSCII-PUA von C64 Pro Mono: U+E000..U+E0FF.
+            # Anders als die sichtbare Unicode-Näherung ist diese Darstellung
+            # eineindeutig und kann vom BASIC-Compiler exakt zurückkodiert werden.
+            glyph = chr(0xE000 + value)
+            cursor = self.textCursor()
+            cursor.insertText(glyph)
+            self.setTextCursor(cursor)
+            self.ensureCursorVisible()
+
+        def _open_basic_petscii_dialog(self) -> None:
+            if self.isReadOnly():
+                return
+            point_size = self.font().pointSize()
+            if point_size <= 0:
+                point_size = 11
+            dialog = PetsciiCharacterDialog(
+                self,
+                byte_index=-1,
+                current_value=-1,
+                font_family=self.font().family(),
+                point_size=point_size,
+                basic_insert_mode=True,
+            )
+            dialog.byteSelected.connect(self._insert_basic_petscii_byte)
+            dialog.exec_()
+
+        def basic_keyboard_special_key(self, key: str) -> None:
+            if self.isReadOnly():
+                return
+            name = str(key or "").strip().casefold()
+            if name == "petscii":
+                self._open_basic_petscii_dialog()
+                return
+            cursor = self.textCursor()
+            if name == "backspace":
+                if cursor.hasSelection():
+                    cursor.removeSelectedText()
+                else:
+                    cursor.deletePreviousChar()
+            elif name == "delete":
+                if cursor.hasSelection():
+                    cursor.removeSelectedText()
+                else:
+                    cursor.deleteChar()
+            elif name == "return":
+                cursor.insertBlock()
+            elif name == "home":
+                cursor.movePosition(QTextCursor.StartOfBlock)
+            elif name == "end":
+                cursor.movePosition(QTextCursor.EndOfBlock)
+            elif name == "left":
+                cursor.movePosition(QTextCursor.Left)
+            elif name == "right":
+                cursor.movePosition(QTextCursor.Right)
+            elif name == "up":
+                cursor.movePosition(QTextCursor.Up)
+            elif name == "down":
+                cursor.movePosition(QTextCursor.Down)
+            else:
+                return
+            self.setTextCursor(cursor)
+            self.ensureCursorVisible()
+
+        def insertFromMimeData(self, source) -> None:
+            if (
+                self._basic_line_number_mode
+                and not self.isReadOnly()
+                and source is not None
+                and source.hasText()
+            ):
+                cursor = self.textCursor()
+                cursor.insertText(
+                    self._basic_transform_inserted_text(source.text())
+                )
+                self.setTextCursor(cursor)
+                return
+            super().insertFromMimeData(source)
+
         def keyPressEvent(self, event) -> None:
             # Stage 166: explizite Windows-Shortcuts fuer Undo/Redo in allen
             # Code-Editoren. QPlainTextEdit besitzt zwar eigene Standard-
@@ -22005,6 +23077,36 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                     self._insert_four_spaces()
                 event.accept()
                 return
+
+            if self._basic_line_number_mode and not self.isReadOnly():
+                # Stage ASM 62: C64-DEL-Verhalten auch auf der Windows-Tastatur.
+                # Sowohl Backspace (Taste oberhalb RETURN) als auch Delete
+                # löschen im BASIC-Editor das Zeichen LINKS vom Cursor. Dadurch
+                # darf das von manchen Layouts gelieferte Steuer-/Ersatzzeichen
+                # niemals als sichtbares Kästchen in den Quelltext gelangen.
+                if event.key() in (Qt.Key_Backspace, Qt.Key_Delete):
+                    cursor = self.textCursor()
+                    if cursor.hasSelection():
+                        cursor.removeSelectedText()
+                    else:
+                        cursor.deletePreviousChar()
+                    self.setTextCursor(cursor)
+                    self.ensureCursorVisible()
+                    self._reset_basic_block_cursor_blink()
+                    event.accept()
+                    return
+
+                text = event.text()
+                shortcut_modifiers = modifiers & (
+                    Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier
+                )
+                if text and not shortcut_modifiers and text not in ("\r", "\n", "\t"):
+                    cursor = self.textCursor()
+                    cursor.insertText(self._basic_transform_inserted_text(text))
+                    self.setTextCursor(cursor)
+                    event.accept()
+                    return
+
             if self.completion_frame.isVisible():
                 if event.key() in (Qt.Key_Return, Qt.Key_Enter):
                     self._accept_completion()
@@ -22016,7 +23118,16 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                     return
             super().keyPressEvent(event)
 
+        def focusInEvent(self, event) -> None:
+            super().focusInEvent(event)
+            if self._basic_line_number_mode:
+                self._reset_basic_block_cursor_blink()
+
         def focusOutEvent(self, event) -> None:
+            if self._basic_line_number_mode:
+                self._basic_block_cursor_timer.stop()
+                self._basic_block_cursor_visible = False
+                self.viewport().update()
             self._hide_completion()
             self._instruction_help_hover_active = False
             self._instruction_help_anchor_rect = None
@@ -22237,6 +23348,17 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             return False
 
         def line_number_area_width(self) -> int:
+            if self._basic_line_number_mode:
+                gutter_font = self._basic_gutter_font or self.font()
+                metrics = QFontMetrics(gutter_font)
+                # C64 BASIC line numbers are deliberately capped at 65535.
+                # Reserve five digits permanently so the editor does not jump
+                # horizontally while line numbers grow.
+                return (
+                    self._marker_area_width()
+                    + 10
+                    + metrics.horizontalAdvance("9") * 5
+                )
             digits = max(1, len(str(max(1, self.blockCount()))))
             return (
                 self._marker_area_width()
@@ -22310,7 +23432,13 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 separator = QColor(184, 184, 184)
 
             painter.fillRect(event.rect(), background)
-            painter.setFont(self.font())
+            gutter_font = (
+                self._basic_gutter_font
+                if self._basic_line_number_mode and self._basic_gutter_font is not None
+                else self.font()
+            )
+            painter.setFont(gutter_font)
+            gutter_metrics = QFontMetrics(gutter_font)
 
             block = self.firstVisibleBlock()
             block_number = block.blockNumber()
@@ -22348,14 +23476,23 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                             marker_diameter,
                         )
                     painter.setBrush(Qt.NoBrush)
-                    painter.setPen(foreground)
+                    gutter_label = str(line_number)
+                    gutter_color = foreground
+                    if self._basic_line_number_mode:
+                        basic_number = self._basic_block_line_number(block)
+                        if basic_number is None:
+                            gutter_label = "-----"
+                            gutter_color = QColor("#FF4040")
+                        else:
+                            gutter_label = str(min(65535, int(basic_number)))
+                    painter.setPen(gutter_color)
                     painter.drawText(
                         marker_area_width,
                         top,
                         self.line_number_area.width() - marker_area_width - 5,
-                        self.fontMetrics().height(),
+                        gutter_metrics.height(),
                         Qt.AlignRight,
-                        str(line_number),
+                        gutter_label,
                     )
 
                 block = block.next()
@@ -24682,10 +25819,16 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             current_value: int,
             font_family: str,
             point_size: int,
+            basic_insert_mode: bool = False,
         ):
             super().__init__(parent)
             self.setObjectName("petscii_character_dialog")
-            self.setWindowTitle("PETSCII-Zeichen auswählen")
+            self._basic_insert_mode = bool(basic_insert_mode)
+            self.setWindowTitle(
+                "PETSCII-Grafikzeichen einfügen"
+                if self._basic_insert_mode
+                else "PETSCII-Zeichen auswählen"
+            )
             self.setModal(True)
             self.resize(720, 690)
 
@@ -24694,15 +25837,25 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             dialog_layout.setSpacing(8)
 
             heading = QLabel(
-                f"PETSCII-Zeichen für Byte an Offset ${byte_index & 0xFFFF:04X}",
+                (
+                    "PETSCII-Grafikzeichen für den C64 BASIC Editor"
+                    if self._basic_insert_mode
+                    else f"PETSCII-Zeichen für Byte an Offset ${byte_index & 0xFFFF:04X}"
+                ),
                 self,
             )
             heading.setObjectName("petscii_dialog_heading")
             dialog_layout.addWidget(heading)
 
             explanation = QLabel(
-                "Ein Klick ersetzt das Byte sofort in der Hex- und "
-                "Zeichenansicht. $00 ist NUL und daher kein Zeichenbutton.",
+                (
+                    "Ein Klick fügt das ausgewählte PETSCII-Byte an der "
+                    "aktuellen Cursorposition ein. Die Palette bleibt offen, "
+                    "damit mehrere Grafikzeichen nacheinander gewählt werden können."
+                    if self._basic_insert_mode
+                    else "Ein Klick ersetzt das Byte sofort in der Hex- und "
+                    "Zeichenansicht. $00 ist NUL und daher kein Zeichenbutton."
+                ),
                 self,
             )
             explanation.setWordWrap(True)
@@ -26115,6 +27268,199 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 return
             event.ignore()
 
+    class C64BasicOnScreenKeyboard(QWidget):
+        """Stage ASM 59: kompakte, mausbedienbare C64-Tastatur fuer BASIC."""
+
+        text_requested = pyqtSignal(str)
+        special_requested = pyqtSignal(str)
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.setObjectName("c64_basic_screen_keyboard")
+            self._shift = False
+            self._shift_buttons = []
+            self._character_buttons = []
+            self._keyboard_layout = "qwertz"
+            self._qwerty_y_button = None
+            self._qwerty_z_button = None
+            self.setMinimumHeight(165)
+            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+
+            root = QVBoxLayout(self)
+            root.setContentsMargins(6, 6, 6, 6)
+            root.setSpacing(4)
+
+            # label, normal, shifted, relative width
+            rows = (
+                (
+                    ("←", "←", "←", 1), ("1\n!", "1", "!", 1),
+                    ('2\n"', "2", '"', 1), ("3\n#", "3", "#", 1),
+                    ("4\n$", "4", "$", 1), ("5\n%", "5", "%", 1),
+                    ("6\n&", "6", "&", 1), ("7\n'", "7", "'", 1),
+                    ("8\n(", "8", "(", 1), ("9\n)", "9", ")", 1),
+                    ("0", "0", "0", 1), ("+", "+", "+", 1),
+                    ("-", "-", "-", 1), ("£", "£", "£", 1),
+                    ("HOME", None, "home", 2), ("DEL", None, "backspace", 2),
+                ),
+                (
+                    ("CTRL", None, "noop", 2),
+                    ("Q", "q", "Q", 1), ("W", "w", "W", 1),
+                    ("E", "e", "E", 1), ("R", "r", "R", 1),
+                    ("T", "t", "T", 1), ("Y", "y", "Y", 1),
+                    ("U", "u", "U", 1), ("I", "i", "I", 1),
+                    ("O", "o", "O", 1), ("P", "p", "P", 1),
+                    ("@", "@", "@", 1), ("*", "*", "*", 1),
+                    ("↑", "↑", "↑", 1), ("RESTORE", None, "noop", 2),
+                ),
+                (
+                    ("RUN/STOP", None, "noop", 2),
+                    ("SHIFT LOCK", None, "shift", 2),
+                    ("A", "a", "A", 1), ("S", "s", "S", 1),
+                    ("D", "d", "D", 1), ("F", "f", "F", 1),
+                    ("G", "g", "G", 1), ("H", "h", "H", 1),
+                    ("J", "j", "J", 1), ("K", "k", "K", 1),
+                    ("L", "l", "L", 1), (":", ":", ":", 1),
+                    (";", ";", ";", 1), ("=", "=", "=", 1),
+                    ("RETURN", None, "return", 2),
+                ),
+                (
+                    ("C=", None, "noop", 2),
+                    ("SHIFT", None, "shift", 2),
+                    ("Z", "z", "Z", 1), ("X", "x", "X", 1),
+                    ("C", "c", "C", 1), ("V", "v", "V", 1),
+                    ("B", "b", "B", 1), ("N", "n", "N", 1),
+                    ("M", "m", "M", 1), (",\n<", ",", "<", 1),
+                    (".\n>", ".", ">", 1), ("/\n?", "/", "?", 1),
+                    ("SHIFT", None, "shift", 2),
+                    ("◀", None, "left", 1), ("▶", None, "right", 1),
+                ),
+            )
+
+            for row_index, row in enumerate(rows):
+                line = QHBoxLayout()
+                line.setContentsMargins(0, 0, 0, 0)
+                line.setSpacing(3)
+                for key_index, (label, normal, shifted, width) in enumerate(row):
+                    button = QPushButton(str(label).replace("&", "&&"), self)
+                    button.setObjectName(
+                        f"c64_basic_keyboard_key_{row_index}_{key_index}"
+                    )
+                    button.setMinimumHeight(31)
+                    button.setFocusPolicy(Qt.NoFocus)
+                    line.addWidget(button, int(width))
+                    if normal is None:
+                        if shifted == "shift":
+                            button.setCheckable(True)
+                            self._shift_buttons.append(button)
+                            button.clicked.connect(self._toggle_shift)
+                        elif shifted != "noop":
+                            button.clicked.connect(
+                                lambda checked=False, value=shifted:
+                                self.special_requested.emit(value)
+                            )
+                    else:
+                        self._character_buttons.append((button, normal, shifted))
+                        if normal == "y":
+                            self._qwerty_y_button = button
+                        elif normal == "z":
+                            self._qwerty_z_button = button
+                        button.clicked.connect(
+                            lambda checked=False, n=normal, sh=shifted:
+                            self._emit_character(n, sh)
+                        )
+                root.addLayout(line)
+
+            bottom = QHBoxLayout()
+            bottom.setContentsMargins(0, 0, 0, 0)
+            bottom.setSpacing(3)
+            space = QPushButton("SPACE", self)
+            space.setObjectName("c64_basic_keyboard_space")
+            space.setMinimumHeight(31)
+            space.setFocusPolicy(Qt.NoFocus)
+            space.clicked.connect(
+                lambda checked=False: self.text_requested.emit(" ")
+            )
+            petscii = QPushButton("PETSCII", self)
+            petscii.setObjectName("c64_basic_keyboard_petscii")
+            petscii.setMinimumHeight(31)
+            petscii.setFocusPolicy(Qt.NoFocus)
+            petscii.setToolTip(
+                "PETSCII-Grafikzeichen aus C64 Pro Mono auswählen und "
+                "in den BASIC-Editor einfügen."
+            )
+            petscii.clicked.connect(
+                lambda checked=False: self.special_requested.emit("petscii")
+            )
+            bottom.addStretch(1)
+            bottom.addWidget(petscii, 3)
+            bottom.addWidget(space, 8)
+            bottom.addStretch(1)
+            root.addLayout(bottom)
+
+            self.setStyleSheet(
+                "QWidget#c64_basic_screen_keyboard{background:#403c45;}"
+                "QWidget#c64_basic_screen_keyboard QPushButton{"
+                "background:#2b2930;color:#f0e5cf;border:1px solid #736b78;"
+                "border-radius:3px;padding:2px 4px;}"
+                "QWidget#c64_basic_screen_keyboard QPushButton:hover{"
+                "background:#4d4854;color:#fff2a8;}"
+                "QWidget#c64_basic_screen_keyboard QPushButton:checked{"
+                "background:#756d82;color:#ffff66;border:2px solid #d3c6df;}"
+            )
+            self.set_keyboard_layout("qwertz")
+
+        def set_keyboard_layout(self, layout: str) -> None:
+            """Stage ASM 60: QWERTZ/QWERTY der Bildschirmtastatur umschalten."""
+            layout = _normalize_project_c64_keyboard_layout(layout)
+            self._keyboard_layout = layout
+            top_button = self._qwerty_y_button
+            bottom_button = self._qwerty_z_button
+            if top_button is None or bottom_button is None:
+                return
+
+            def configure(button, label: str, normal: str, shifted: str) -> None:
+                try:
+                    button.clicked.disconnect()
+                except (TypeError, RuntimeError):
+                    pass
+                button.setText(label)
+                button.clicked.connect(
+                    lambda checked=False, n=normal, sh=shifted:
+                    self._emit_character(n, sh)
+                )
+
+            if layout == "qwertz":
+                # Deutsche Bildschirmtastatur: obere Reihe ... T Z U ...,
+                # untere Reihe beginnt mit Y X C ...
+                configure(top_button, "Z", "z", "Z")
+                configure(bottom_button, "Y", "y", "Y")
+            else:
+                configure(top_button, "Y", "y", "Y")
+                configure(bottom_button, "Z", "z", "Z")
+
+        def keyboard_layout(self) -> str:
+            return str(self._keyboard_layout or "qwertz")
+
+        def set_keyboard_font(self, font: QFont) -> None:
+            value = QFont(font)
+            value.setFixedPitch(True)
+            value.setStyleHint(QFont.Monospace)
+            self.setFont(value)
+            for button in self.findChildren(QPushButton):
+                button.setFont(value)
+
+        def _toggle_shift(self, checked=False) -> None:
+            sender = self.sender()
+            wanted = bool(sender.isChecked()) if isinstance(sender, QPushButton) else not self._shift
+            self._shift = wanted
+            for button in self._shift_buttons:
+                old = button.blockSignals(True)
+                button.setChecked(wanted)
+                button.blockSignals(old)
+
+        def _emit_character(self, normal: str, shifted: str) -> None:
+            self.text_requested.emit(shifted if self._shift else normal)
+
     class DocumentEditor(QWidget):
         """Ein Dateidokument mit Rohdaten-, Hex- und Hinweisansicht."""
 
@@ -26130,8 +27476,19 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
         build_generated_requested = pyqtSignal(object)
         find_requested = pyqtSignal(object, object)
         find_next_requested = pyqtSignal(object, object)
+        # Stage ASM 58: C64-BASIC-Gutter vollstaendig neu nummerieren und
+        # die Quelldatei anschliessend mit den aktualisierten Nummern speichern.
+        basic_renumber_requested = pyqtSignal(object)
+        # Stage ASM 59: meldet das Ein-/Ausblenden der C64-Bildschirmtastatur
+        # an das Hauptfenster. Beim Einblenden wird dort das Dateisystem-Dock
+        # ausgeblendet.
+        basic_keyboard_visibility_changed = pyqtSignal(object, bool)
 
         BASIC_EXTENSIONS     = {".bas", ".basic"}
+        # Stage ASM 53: Der C64-BASIC-Quelltexteditor verwendet bevorzugt
+        # C64 Pro Mono. Die konkrete Familie wird beim Programmstart aus einer
+        # optional gebuendelten/installed Fontfamilie ermittelt.
+        BASIC_C64_FONT_FAMILY = "C64 Pro Mono"
         ASSEMBLER_EXTENSIONS = {".asm", ".s", ".a65", ".m68k", ".inc"}
         PASCAL_EXTENSIONS    = {".pas", ".pp"}
         C_EXTENSIONS         = {".c"}
@@ -26223,6 +27580,9 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             )
             fixed_font.setFixedPitch(True)
             fixed_font.setStyleHint(QFont.Monospace)
+            # Stage ASM 53: Die globale Editor-Schrift bleibt als Basis fuer
+            # Groesse/Weight erhalten. BASIC ersetzt lediglich die Familie.
+            self._base_editor_font = QFont(fixed_font)
 
             self.source_page = QWidget(self.views)
             source_layout = QVBoxLayout(self.source_page)
@@ -26360,6 +27720,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.raw_minimap = self.raw_editor_container.minimap
             self.raw_editor.setObjectName("raw_data_editor")
             self.raw_editor.setFont(fixed_font)
+            self._apply_source_editor_font()
             self.raw_editor.setLineWrapMode(QPlainTextEdit.NoWrap)
             self.raw_editor.assembler_help_requested.connect(
                 self._show_assembler_help
@@ -26379,9 +27740,104 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.raw_editor.breakpoints_changed.connect(
                 self._source_breakpoints_changed
             )
-            self.raw_editor.setPlainText(text)
+            if self.effective_suffix in self.BASIC_EXTENSIONS:
+                self.raw_editor.set_basic_editor_mode(
+                    True,
+                    initial_source=text,
+                )
+            else:
+                self.raw_editor.setPlainText(text)
             self.raw_editor.document().setModified(False)
-            source_layout.addWidget(self.raw_editor_container, 1)
+
+            # Stage ASM 59: BASIC-Editor und C64-Bildschirmtastatur teilen sich
+            # einen vertikalen Splitter. Bei anderen Sprachen bleibt der zweite
+            # Bereich unsichtbar.
+            self.basic_editor_splitter = QSplitter(Qt.Vertical, self.source_page)
+            self.basic_editor_splitter.setObjectName("basic_editor_splitter")
+            self.basic_editor_splitter.setChildrenCollapsible(False)
+            self.basic_editor_splitter.addWidget(self.raw_editor_container)
+            # Stage ASM 69: Die Bildschirmtastatur darf niemals die Breite
+            # des QMainWindow erzwingen. Sie sitzt deshalb in einer eigenen
+            # horizontal scrollbaren Host-Flaeche. Ist der Editor schmaler als
+            # die C64-Tastatur, scrollt nur die Tastatur statt das Hauptfenster
+            # programmatisch zu verbreitern.
+            self.basic_screen_keyboard_scroll = QScrollArea(
+                self.basic_editor_splitter
+            )
+            self.basic_screen_keyboard_scroll.setObjectName(
+                "basic_screen_keyboard_scroll"
+            )
+            self.basic_screen_keyboard_scroll.setFrameShape(QFrame.NoFrame)
+            self.basic_screen_keyboard_scroll.setWidgetResizable(False)
+            self.basic_screen_keyboard_scroll.setHorizontalScrollBarPolicy(
+                Qt.ScrollBarAsNeeded
+            )
+            self.basic_screen_keyboard_scroll.setVerticalScrollBarPolicy(
+                Qt.ScrollBarAlwaysOff
+            )
+            self.basic_screen_keyboard_scroll.setMinimumWidth(0)
+            self.basic_screen_keyboard_scroll.setSizePolicy(
+                QSizePolicy.Ignored, QSizePolicy.Preferred
+            )
+            self.basic_screen_keyboard = C64BasicOnScreenKeyboard()
+            self.basic_screen_keyboard.setObjectName("basic_screen_keyboard")
+            self.basic_screen_keyboard.set_keyboard_font(self.raw_editor.font())
+            self.basic_screen_keyboard.text_requested.connect(
+                self.raw_editor.insert_basic_keyboard_text
+            )
+            self.basic_screen_keyboard.special_requested.connect(
+                self.raw_editor.basic_keyboard_special_key
+            )
+            self.basic_screen_keyboard_scroll.setWidget(self.basic_screen_keyboard)
+            self.basic_screen_keyboard.adjustSize()
+            self.basic_editor_splitter.addWidget(self.basic_screen_keyboard_scroll)
+            self.basic_editor_splitter.setStretchFactor(0, 5)
+            self.basic_editor_splitter.setStretchFactor(1, 2)
+            self.basic_editor_splitter.setSizes([650, 220])
+            self._basic_keyboard_last_sizes = [650, 220]
+            self._basic_screen_keyboard_enabled = False
+            self.basic_screen_keyboard_scroll.hide()
+            source_layout.addWidget(self.basic_editor_splitter, 1)
+
+            # Stage ASM 58: C64-BASIC-Zeilennummern werden weiterhin nur im
+            # Gutter dargestellt. Der Button darunter ordnet alle Nummern neu
+            # (bevorzugt 10,20,30,...) und fordert danach das Speichern der
+            # nummerierten Quelldatei an.
+            self.basic_line_control_panel = QFrame(self.source_page)
+            self.basic_line_control_panel.setObjectName("basic_line_control_panel")
+            basic_line_control_layout = QHBoxLayout(self.basic_line_control_panel)
+            basic_line_control_layout.setContentsMargins(6, 4, 6, 4)
+            basic_line_control_layout.setSpacing(6)
+            self.basic_line_update_button = QPushButton(
+                "Aktualisieren", self.basic_line_control_panel
+            )
+            self.basic_line_update_button.setObjectName("basic_line_update_button")
+            self.basic_line_update_button.setToolTip(
+                "C64-BASIC-Zeilennummern im Gutter neu ordnen (bevorzugt 10, 20, 30, ...), "
+                "Ausdrucks-Leerzeichen kompakt formatieren und die Quelldatei anschliessend speichern."
+            )
+            self.basic_line_update_button.clicked.connect(
+                lambda checked=False: self.basic_renumber_requested.emit(self)
+            )
+            basic_line_control_layout.addWidget(self.basic_line_update_button)
+            self.basic_keyboard_toggle_button = QPushButton(
+                "Tastatur Einblenden", self.basic_line_control_panel
+            )
+            self.basic_keyboard_toggle_button.setObjectName(
+                "basic_keyboard_toggle_button"
+            )
+            self.basic_keyboard_toggle_button.setToolTip(
+                "C64-Bildschirmtastatur unter dem BASIC-Editor ein-/ausblenden"
+            )
+            self.basic_keyboard_toggle_button.clicked.connect(
+                lambda checked=False: self.toggle_basic_screen_keyboard()
+            )
+            basic_line_control_layout.addWidget(self.basic_keyboard_toggle_button)
+            basic_line_control_layout.addStretch(1)
+            source_layout.addWidget(self.basic_line_control_panel)
+            self.basic_line_control_panel.setVisible(
+                self.effective_suffix in self.BASIC_EXTENSIONS
+            )
 
             # Stage ASM 8: Overlay-Marker werden nur bei Textaenderungen neu
             # gesucht. Scrollen/Resize benutzen danach ausschließlich die
@@ -27372,6 +28828,64 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             if not self._c64_disassembly_running:
                 self.c64_disassembly_progress.hide()
 
+        def set_basic_screen_keyboard_visible(
+            self, visible: bool, *, notify: bool = True
+        ) -> None:
+            visible = bool(visible) and (
+                self.effective_suffix in self.BASIC_EXTENSIONS
+            )
+            keyboard = getattr(self, "basic_screen_keyboard", None)
+            keyboard_host = getattr(
+                self, "basic_screen_keyboard_scroll", keyboard
+            )
+            splitter = getattr(self, "basic_editor_splitter", None)
+            if keyboard is None or keyboard_host is None or splitter is None:
+                return
+            was_visible = bool(getattr(self, "_basic_screen_keyboard_enabled", False))
+            # Stage ASM 67: beim Einblenden muss das Hauptfenster den Layout-
+            # Snapshot wirklich VOR keyboard.show()/Splitter-Aenderung erhalten.
+            if notify and visible and not was_visible:
+                self.basic_keyboard_visibility_changed.emit(self, True)
+            if visible:
+                sizes = splitter.sizes()
+                if len(sizes) >= 2 and sizes[1] > 0:
+                    self._basic_keyboard_last_sizes = list(sizes[:2])
+                self._basic_screen_keyboard_enabled = True
+                keyboard.show()
+                keyboard.adjustSize()
+                keyboard_host.show()
+                restore = list(getattr(self, "_basic_keyboard_last_sizes", [650, 220]))
+                if len(restore) < 2 or restore[1] <= 0:
+                    restore = [650, 220]
+                splitter.setSizes(restore)
+                self.basic_keyboard_toggle_button.setText("Tastatur Ausblenden")
+            else:
+                sizes = splitter.sizes()
+                if len(sizes) >= 2 and sizes[1] > 0:
+                    self._basic_keyboard_last_sizes = list(sizes[:2])
+                self._basic_screen_keyboard_enabled = False
+                keyboard_host.hide()
+                self.basic_keyboard_toggle_button.setText("Tastatur Einblenden")
+                # Beim Ausblenden erst NACH keyboard.hide() restaurieren.
+                if notify and was_visible:
+                    self.basic_keyboard_visibility_changed.emit(self, False)
+
+        def set_basic_keyboard_layout(self, layout: str) -> None:
+            keyboard = getattr(self, "basic_screen_keyboard", None)
+            if keyboard is not None:
+                keyboard.set_keyboard_layout(layout)
+
+        def toggle_basic_screen_keyboard(self) -> None:
+            keyboard = getattr(self, "basic_screen_keyboard", None)
+            if keyboard is None:
+                return
+            self.set_basic_screen_keyboard_visible(
+                not bool(getattr(self, "_basic_screen_keyboard_enabled", False))
+            )
+
+        def basic_screen_keyboard_visible(self) -> bool:
+            return bool(getattr(self, "_basic_screen_keyboard_enabled", False))
+
         @property
         def display_name(self) -> str:
             if self.custom_display_name:
@@ -27388,6 +28902,38 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             if self.custom_display_name:
                 return Path(self.custom_display_name).suffix.casefold()
             return ""
+
+        def _apply_source_editor_font(self) -> None:
+            """Stage ASM 53: C64 Pro Mono ausschliesslich fuer BASIC.
+
+            Punktgroesse, Bold/Italic und weitere vom Benutzer gewaehlte
+            Editorattribute werden von der normalen Editorfont uebernommen.
+            Dadurch bleibt Zoom/Font-Konfiguration konsistent, waehrend nur
+            die Familie des BASIC-Quelltexts fest auf C64 Pro Mono steht.
+            """
+            editor = getattr(self, "raw_editor", None)
+            if editor is None:
+                return
+
+            base = QFont(getattr(self, "_base_editor_font", editor.font()))
+            if self.effective_suffix in self.BASIC_EXTENSIONS:
+                family = str(self.BASIC_C64_FONT_FAMILY or "").strip()
+                if family:
+                    basic_font = QFont(base)
+                    basic_font.setFamily(family)
+                    basic_font.setFixedPitch(True)
+                    basic_font.setStyleHint(QFont.Monospace)
+                    editor.setFont(basic_font)
+                    editor.set_basic_gutter_font(basic_font)
+                    keyboard = getattr(self, "basic_screen_keyboard", None)
+                    if keyboard is not None:
+                        keyboard.set_keyboard_font(basic_font)
+                    editor.update_line_number_area_width(0)
+                    return
+
+            editor.setFont(base)
+            editor.set_basic_gutter_font(base)
+            editor.update_line_number_area_width(0)
 
         def source_language(self) -> str:
             if self.language_override:
@@ -27543,16 +29089,50 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 or self.hex_editor.is_modified
             )
 
-        def text_for_saving(self) -> str:
+        def text_for_saving(self, target_suffix: Optional[str] = None) -> str:
+            suffix = (
+                str(target_suffix).casefold()
+                if target_suffix is not None
+                else self.effective_suffix
+            )
+            basic_target = suffix in self.BASIC_EXTENSIONS
+            if basic_target:
+                if self.raw_editor._basic_line_number_mode:
+                    return self.raw_editor.basic_source_with_line_numbers(
+                        newline=self.newline
+                    )
+                # Save-As from a normal text document to *.bas/*.basic must
+                # already write the same numbered representation that will be
+                # shown in the BASIC gutter immediately after the save.
+                from c64basic.editor_model import (
+                    assign_missing_basic_numbers,
+                    serialize_numbered_basic_source,
+                    split_numbered_basic_source,
+                    wrap_basic_lines,
+                )
+                lines, numbers = split_numbered_basic_source(
+                    self.raw_editor.toPlainText()
+                )
+                lines, numbers = wrap_basic_lines(lines, numbers, max_columns=80)
+                numbers = assign_missing_basic_numbers(numbers)
+                return serialize_numbered_basic_source(
+                    lines, numbers, newline=self.newline
+                )
+
             text = self.raw_editor.toPlainText()
             if self.newline != "\n":
                 text = text.replace("\n", self.newline)
             return text
 
-        def data_for_saving(self) -> bytes:
+        def basic_source_for_compiler(self) -> str:
+            if self.raw_editor._basic_line_number_mode:
+                return self.raw_editor.basic_source_with_line_numbers("\n")
+            return self.raw_editor.toPlainText()
+
+        def data_for_saving(self, target_suffix: Optional[str] = None) -> bytes:
             if self._data_source == "hex":
                 return self.hex_editor.data()
-            return self.text_for_saving().encode(self.encoding)
+            return self.text_for_saving(target_suffix).encode(self.encoding)
 
         def mark_saved(self) -> None:
             self.raw_editor.document().setModified(False)
@@ -27622,7 +29202,10 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 )
             try:
                 data = self.text_for_saving().encode(self.encoding)
-            except UnicodeError:
+            except (UnicodeError, ValueError):
+                # BASIC overflow lines are intentionally visible in red. Until
+                # they receive a valid <=65535 gutter number the Hex view cannot
+                # represent the save image, but editing must remain possible.
                 self._view_modification_changed(True)
                 return
 
@@ -27932,7 +29515,15 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
 
         def update_syntax_highlighting(self) -> None:
             suffix = self.effective_suffix
+            # Stage ASM 53: Dateiendungs-/Sprachwechsel (z. B. Speichern unter
+            # *.bas) aktualisiert auch die BASIC-spezifische C64-Pro-Mono-Font.
+            self._apply_source_editor_font()
             is_basic = suffix in self.BASIC_EXTENSIONS
+            self.raw_editor.set_basic_editor_mode(is_basic)
+            if hasattr(self, "basic_line_control_panel"):
+                self.basic_line_control_panel.setVisible(is_basic)
+            if not is_basic and hasattr(self, "basic_screen_keyboard"):
+                self.set_basic_screen_keyboard_visible(False, notify=False)
             # Stage 84: auch der im Rohdaten-Tab erzeugte C64-Disassembly-
             # Quelltext ist ein vollwertiger Assembler-Quelltext. Dadurch
             # erscheinen Assemble/Start direkt ueber dem Editor.
@@ -28367,8 +29958,11 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 )
 
         def set_editor_font(self, font: QFont) -> None:
+            # Stage ASM 53: Die globale Editorfont liefert weiterhin Groesse
+            # und Stil. Nur die Familie des BASIC-Quelltexts bleibt C64 Pro Mono.
+            self._base_editor_font = QFont(font)
+            self._apply_source_editor_font()
             for editor in (
-                self.raw_editor,
                 self.generated_assembly_editor,
                 self.hints_editor,
             ):
@@ -28415,6 +30009,10 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                         and code_suffix in self.ASSEMBLER_EXTENSIONS
                     )
                 )
+                basic_editor = (
+                    editor is self.raw_editor
+                    and code_suffix in self.BASIC_EXTENSIONS
+                )
                 editor_dark = enabled or navy_code_editor
                 palette = QPalette(QApplication.palette())
                 if markdown_editor:
@@ -28444,7 +30042,12 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                         QColor(255, 255, 0) if asm_editor else QColor(255, 255, 255),
                     )
                     palette.setColor(QPalette.Highlight, QColor(0, 90, 170))
-                    palette.setColor(QPalette.HighlightedText, QColor(255, 255, 255))
+                    # Stage ASM 55: selections in the C64 BASIC source editor
+                    # always render their glyphs in yellow.
+                    palette.setColor(
+                        QPalette.HighlightedText,
+                        QColor(255, 255, 0) if basic_editor else QColor(255, 255, 255),
+                    )
                     if hasattr(QPalette, "PlaceholderText"):
                         palette.setColor(
                             QPalette.PlaceholderText,
@@ -28456,7 +30059,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                     palette.setColor(QPalette.Highlight, QColor(0, 120, 215))
                     palette.setColor(
                         QPalette.HighlightedText,
-                        QColor(255, 255, 255),
+                        QColor(255, 255, 0) if basic_editor else QColor(255, 255, 255),
                     )
                     if hasattr(QPalette, "PlaceholderText"):
                         palette.setColor(
@@ -38482,6 +40085,724 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                 )
                 self.scene.setBackgroundBrush(QColor("#c8ced5"))
 
+    class DBaseLabelDesignerWidget(QWidget):
+        """Visueller dBase-Etiketten-Designer mit Formatbibliothek und Datenfeldern."""
+
+        # Stage ASM 73: erste feste Formatbibliothek nach den auf der
+        # Labelident-Formatübersicht aufgeführten gängigen Abmessungen.
+        LABEL_FORMATS = (
+            ("25 × 10 mm", 25.0, 10.0),
+            ("40 × 20 mm", 40.0, 20.0),
+            ("50 × 25 mm", 50.0, 25.0),
+            ("60 × 40 mm", 60.0, 40.0),
+            ("70 × 32 mm", 70.0, 32.0),
+            ("70 × 36 mm", 70.0, 36.0),
+            ("70 × 37 mm", 70.0, 37.0),
+            ("80 × 40 mm", 80.0, 40.0),
+            ("90 × 60 mm", 90.0, 60.0),
+            ("100 × 50 mm", 100.0, 50.0),
+            ("105 × 42 mm", 105.0, 42.0),
+            ("105 × 48 mm", 105.0, 48.0),
+            ("105 × 74 mm", 105.0, 74.0),
+            ("210 × 74 mm", 210.0, 74.0),
+        )
+        MM_TO_SCENE = 4.0
+        PROJECT_SUFFIX = ".d64label"
+        A4_WIDTH_MM = 210.0
+        A4_HEIGHT_MM = 297.0
+
+        def __init__(self, owner, parent=None):
+            super().__init__(parent)
+            self.owner = owner
+            self._dark_mode = False
+            self.layout_path: Optional[Path] = None
+            self.data_source_path: Optional[Path] = None
+            self.data_fields: List[str] = []
+            self.data_records: List[Dict[str, str]] = []
+            self.current_format = self.LABEL_FORMATS[3]
+            self.label_rect: Optional[QGraphicsRectItem] = None
+            self.format_caption: Optional[QGraphicsTextItem] = None
+            self._build_ui()
+            self._create_label(*self.current_format)
+
+        def _build_ui(self) -> None:
+            self.setObjectName("dbase_label_designer")
+            outer = QHBoxLayout(self)
+            outer.setContentsMargins(0, 0, 0, 0)
+            outer.setSpacing(0)
+
+            self.main_splitter = QSplitter(Qt.Horizontal, self)
+            self.main_splitter.setObjectName("dbase_label_main_splitter")
+            self.main_splitter.setChildrenCollapsible(False)
+            self.main_splitter.setHandleWidth(5)
+            outer.addWidget(self.main_splitter, 1)
+
+            tools_scroll = QScrollArea(self.main_splitter)
+            tools_scroll.setObjectName("dbase_label_tools_scroll")
+            tools_scroll.setWidgetResizable(True)
+            tools_scroll.setSizeAdjustPolicy(QAbstractScrollArea.AdjustIgnored)
+            tools_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            tools_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            tools_scroll.setMinimumWidth(280)
+            tools_scroll.setMaximumWidth(420)
+
+            tools = QWidget(tools_scroll)
+            tools.setObjectName("dbase_label_tools")
+            tl = QVBoxLayout(tools)
+            tl.setContentsMargins(7, 7, 7, 7)
+            tl.setSpacing(8)
+
+            # Format-GroupBox: links die Formatliste. Rechts bleibt
+            # "Hinzufügen" oben; die Datei-/Ausgabeaktionen sitzen bewusst
+            # rechts unten neben der Liste.
+            formats_group = QGroupBox("Etiketten-Formate", tools)
+            formats_group.setObjectName("dbase_label_formats_group")
+            fg = QHBoxLayout(formats_group)
+            self.format_list = QListWidget(formats_group)
+            self.format_list.setObjectName("dbase_label_format_list")
+
+            format_actions = QWidget(formats_group)
+            format_actions.setObjectName("dbase_label_format_actions")
+            fa = QVBoxLayout(format_actions)
+            fa.setContentsMargins(0, 0, 0, 0)
+            fa.setSpacing(5)
+
+            self.add_format_button = QPushButton("Hinzufügen", formats_group)
+            self.add_format_button.setObjectName("dbase_label_add_format_button")
+            self.load_layout_button = QPushButton("Laden", format_actions)
+            self.load_layout_button.setObjectName("dbase_label_load_button")
+            self.save_layout_button = QPushButton("Speichern", format_actions)
+            self.save_layout_button.setObjectName("dbase_label_save_button")
+            self.save_layout_as_button = QPushButton("Speichern unter ...", format_actions)
+            self.save_layout_as_button.setObjectName("dbase_label_save_as_button")
+            self.pdf_button = QPushButton("PDF", format_actions)
+            self.pdf_button.setObjectName("dbase_label_pdf_button")
+            self.print_button = QPushButton("Drucken", format_actions)
+            self.print_button.setObjectName("dbase_label_print_button")
+            for button in (
+                self.add_format_button, self.load_layout_button, self.save_layout_button,
+                self.save_layout_as_button, self.pdf_button, self.print_button,
+            ):
+                button.setMinimumWidth(112)
+                button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+
+            fa.addWidget(self.add_format_button)
+            fa.addStretch(1)
+            fa.addWidget(self.load_layout_button)
+            fa.addWidget(self.save_layout_button)
+            fa.addWidget(self.save_layout_as_button)
+            fa.addWidget(self.pdf_button)
+            fa.addWidget(self.print_button)
+
+            for label, width_mm, height_mm in self.LABEL_FORMATS:
+                item = QListWidgetItem(label)
+                item.setData(Qt.UserRole, (float(width_mm), float(height_mm)))
+                self.format_list.addItem(item)
+            self.format_list.setCurrentRow(3)
+            fg.addWidget(self.format_list, 1)
+            fg.addWidget(format_actions, 0)
+            tl.addWidget(formats_group)
+            self.add_format_button.clicked.connect(self.add_selected_format)
+            self.load_layout_button.clicked.connect(self.choose_layout_to_load)
+            self.save_layout_button.clicked.connect(self.save_layout)
+            self.save_layout_as_button.clicked.connect(self.save_layout_as)
+            self.pdf_button.clicked.connect(self.export_pdf)
+            self.print_button.clicked.connect(self.export_print_ready)
+            self.format_list.itemDoubleClicked.connect(lambda _item: self.add_selected_format())
+
+            # Unterhalb der Formate: zwei getrennte Boxen wie beim
+            # Bericht-Designer -- zuerst Tabelle/Query, danach deren Felder.
+            source_group = QGroupBox("Tabellen / SQL", tools)
+            source_group.setObjectName("dbase_label_source_group")
+            sg = QVBoxLayout(source_group)
+            source_row = QHBoxLayout()
+            self.source_button = QPushButton("…", source_group)
+            self.source_button.setObjectName("dbase_label_source_button")
+            self.source_button.setFixedWidth(34)
+            self.source_edit = QLineEdit(source_group)
+            self.source_edit.setObjectName("dbase_label_source_edit")
+            self.source_edit.setPlaceholderText("*.dbf oder *.d64sql")
+            source_row.addWidget(self.source_button)
+            source_row.addWidget(self.source_edit, 1)
+            sg.addLayout(source_row)
+            tl.addWidget(source_group)
+
+            fields_group = QGroupBox("Felder", tools)
+            fields_group.setObjectName("dbase_label_fields_group")
+            fl = QVBoxLayout(fields_group)
+            self.field_list = QListWidget(fields_group)
+            self.field_list.setObjectName("dbase_label_field_list")
+            self.field_list.setMinimumHeight(150)
+            fl.addWidget(self.field_list, 1)
+            self.add_field_button = QPushButton("Feld hinzufügen", fields_group)
+            self.add_field_button.setObjectName("dbase_label_add_field_button")
+            fl.addWidget(self.add_field_button)
+            tl.addWidget(fields_group, 1)
+            tl.addStretch(1)
+
+            self.source_button.clicked.connect(self.choose_data_source)
+            self.source_edit.editingFinished.connect(self._source_edit_finished)
+            self.add_field_button.clicked.connect(self.add_selected_field)
+            self.field_list.itemDoubleClicked.connect(lambda _item: self.add_selected_field())
+            tools_scroll.setWidget(tools)
+
+            designer = QWidget(self.main_splitter)
+            designer.setObjectName("dbase_label_designer_area")
+            dl = QVBoxLayout(designer)
+            dl.setContentsMargins(0, 0, 0, 0)
+            dl.setSpacing(0)
+            self.scene = QGraphicsScene(self)
+            self.view = QGraphicsView(self.scene, designer)
+            self.view.setObjectName("dbase_label_view")
+            self.view.setRenderHint(QPainter.Antialiasing, True)
+            self.view.setDragMode(QGraphicsView.RubberBandDrag)
+            self.view.setAlignment(Qt.AlignCenter)
+            dl.addWidget(self.view, 1)
+
+            self.main_splitter.addWidget(tools_scroll)
+            self.main_splitter.addWidget(designer)
+            self.main_splitter.setStretchFactor(0, 0)
+            self.main_splitter.setStretchFactor(1, 1)
+            self.main_splitter.setSizes([315, 900])
+
+        def add_selected_format(self) -> None:
+            item = self.format_list.currentItem()
+            if item is None:
+                return
+            data = item.data(Qt.UserRole)
+            try:
+                width_mm, height_mm = float(data[0]), float(data[1])
+            except Exception:
+                return
+            self._create_label(item.text(), width_mm, height_mm)
+
+        def _create_label(self, label: str, width_mm: float, height_mm: float) -> None:
+            # Bereits eingefügte Datenfelder überleben einen Formatwechsel.
+            old_fields = []
+            if self.label_rect is not None:
+                for child in list(self.label_rect.childItems()):
+                    if isinstance(child, QGraphicsTextItem):
+                        old_fields.append((child.toPlainText(), QPointF(child.pos())))
+
+            self.scene.clear()
+            self.label_rect = None
+            self.format_caption = None
+            self.current_format = (str(label), float(width_mm), float(height_mm))
+            width = max(1.0, float(width_mm) * self.MM_TO_SCENE)
+            height = max(1.0, float(height_mm) * self.MM_TO_SCENE)
+            margin = 45.0
+            self.scene.setSceneRect(
+                -margin, -margin,
+                width + margin * 2.0,
+                height + margin * 2.0 + 26.0,
+            )
+
+            self.label_rect = QGraphicsRectItem(0.0, 0.0, width, height)
+            self.label_rect.setPen(QPen(QColor("#202020"), 1.2))
+            self.label_rect.setBrush(QBrush(QColor("#ffffff")))
+            self.label_rect.setFlag(QGraphicsItem.ItemClipsChildrenToShape, True)
+            self.scene.addItem(self.label_rect)
+
+            self.format_caption = QGraphicsTextItem(f"{width_mm:g} × {height_mm:g} mm")
+            self.format_caption.setPos(0.0, height + 8.0)
+            self.scene.addItem(self.format_caption)
+
+            for text, pos in old_fields:
+                self._add_field_item(text, pos=pos)
+
+            QTimer.singleShot(0, self._fit_label_in_view)
+            self.set_dark_mode(self._dark_mode)
+
+        def _fit_label_in_view(self) -> None:
+            if self.label_rect is None:
+                return
+            rect = self.scene.sceneRect()
+            if rect.width() > 0 and rect.height() > 0:
+                self.view.fitInView(rect, Qt.KeepAspectRatio)
+
+        def resizeEvent(self, event) -> None:
+            super().resizeEvent(event)
+            QTimer.singleShot(0, self._fit_label_in_view)
+
+        def _add_field_item(self, field_name: str, pos: Optional[QPointF] = None) -> None:
+            if self.label_rect is None:
+                return
+            text = QGraphicsTextItem(str(field_name), self.label_rect)
+            text.setDefaultTextColor(QColor("#101010"))
+            text.setFont(QFont("Arial", 9))
+            text.setFlag(QGraphicsItem.ItemIsMovable, True)
+            text.setFlag(QGraphicsItem.ItemIsSelectable, True)
+            text.setFlag(QGraphicsItem.ItemIsFocusable, True)
+            text.setData(0, "dbase_label_field")
+            text.setData(1, str(field_name))
+            if pos is None:
+                offset = 8.0 + 18.0 * max(0, len(self.label_rect.childItems()) - 1)
+                pos = QPointF(8.0, offset)
+            br = self.label_rect.rect()
+            x = max(2.0, min(float(pos.x()), max(2.0, br.width() - 24.0)))
+            y = max(2.0, min(float(pos.y()), max(2.0, br.height() - 20.0)))
+            text.setPos(x, y)
+            text.setSelected(True)
+
+        def add_selected_field(self) -> None:
+            item = self.field_list.currentItem()
+            if item is None:
+                return
+            self._add_field_item(item.text())
+
+        def choose_data_source(self) -> None:
+            filename, _ = QFileDialog.getOpenFileName(
+                self,
+                "Tabelle / SQL-Datenquelle für Etiketten auswählen",
+                str(Path(getattr(self.owner, "current_directory", Path.cwd()))),
+                "dBase Daten (*.dbf *.d64sql);;DBF Tabellen (*.dbf);;SQL Builder (*.d64sql);;Alle Dateien (*)",
+            )
+            if filename:
+                self.set_data_source(Path(filename))
+
+        def _source_edit_finished(self) -> None:
+            value = self.source_edit.text().strip()
+            if value:
+                self.set_data_source(Path(value))
+
+        def _load_sql_records(self, path: Path) -> Tuple[List[str], List[Dict[str, str]]]:
+            payload = json.loads(Path(path).read_text(encoding="utf-8"))
+            sql = str(payload.get("sql", "") or "").strip()
+            if not sql:
+                raise D64ODBCError("Die SQL-Builder-Datei enthält keinen SQL-Ausdruck.")
+            local_error = None
+            try:
+                headers, data_rows = execute_d64sql_dbf_project(payload, sql=sql)
+                records: List[Dict[str, str]] = []
+                for values in data_rows:
+                    records.append({
+                        str(header): "" if index >= len(values) or values[index] is None else str(values[index])
+                        for index, header in enumerate(headers)
+                    })
+                return [str(value) for value in headers], records
+            except Exception as exc:
+                local_error = exc
+
+            sql_builder = getattr(self.owner, "dbase_sql_builder_widget", None)
+            connection = getattr(sql_builder, "_odbc_connection", None) if sql_builder is not None else None
+            if connection is None or not bool(getattr(connection, "is_open", False)):
+                raise D64ODBCError(
+                    "Die SQL-Datei konnte lokal nicht ausgewertet werden und es besteht keine aktive "
+                    f"ODBC-Verbindung.\n\nLokaler SQL-Parser: {local_error}"
+                )
+            result = connection.execute(sql, result_type="list", include_columns=True)
+            rows = list(result) if isinstance(result, list) else []
+            if not rows:
+                return [], []
+            headers = [str(value) for value in rows[0]]
+            records: List[Dict[str, str]] = []
+            for values in rows[1:]:
+                records.append({
+                    str(header): "" if index >= len(values) or values[index] is None else str(values[index])
+                    for index, header in enumerate(headers)
+                })
+            return headers, records
+
+        def _load_sql_fields(self, path: Path) -> List[str]:
+            fields, _records = self._load_sql_records(path)
+            return fields
+
+        def set_data_source(self, path: Path) -> None:
+            try:
+                path = Path(path).expanduser().resolve()
+            except OSError:
+                path = Path(path).expanduser()
+            try:
+                if path.suffix.casefold() == ".dbf":
+                    table = read_dbase_dbf(path)
+                    fields = [str(field.name) for field in table.fields]
+                    records = [
+                        {str(k): "" if v is None else str(v) for k, v in dict(values).items()}
+                        for deleted, values in table.records if not deleted
+                    ]
+                elif path.suffix.casefold() == ".d64sql":
+                    fields, records = self._load_sql_records(path)
+                else:
+                    raise ValueError("Unterstützt werden *.dbf und *.d64sql.")
+            except Exception as exc:
+                QMessageBox.warning(
+                    self,
+                    "Etiketten Designer",
+                    f"Datenquelle konnte nicht geladen werden:\n{path}\n\n{exc}",
+                )
+                return
+            self.data_source_path = path
+            self.data_fields = list(fields)
+            self.data_records = list(records)
+            self.source_edit.setText(str(path))
+            self.field_list.clear()
+            self.field_list.addItems(self.data_fields)
+
+        def _field_items(self) -> List[QGraphicsTextItem]:
+            if self.label_rect is None:
+                return []
+            return [
+                child for child in self.label_rect.childItems()
+                if isinstance(child, QGraphicsTextItem)
+                and str(child.data(0) or "") == "dbase_label_field"
+            ]
+
+        def _payload(self) -> Dict[str, object]:
+            label, width_mm, height_mm = self.current_format
+            fields = []
+            for item in self._field_items():
+                font = item.font()
+                color = item.defaultTextColor()
+                fields.append({
+                    "type": "field",
+                    "field": str(item.data(1) or item.toPlainText()),
+                    "text": item.toPlainText(),
+                    "x_mm": float(item.pos().x()) / self.MM_TO_SCENE,
+                    "y_mm": float(item.pos().y()) / self.MM_TO_SCENE,
+                    "font": {
+                        "family": font.family(),
+                        "point_size": float(font.pointSizeF() if font.pointSizeF() > 0 else 9.0),
+                        "bold": bool(font.bold()),
+                        "italic": bool(font.italic()),
+                        "underline": bool(font.underline()),
+                    },
+                    "color": color.name(),
+                })
+            return {
+                "format": "d64-label-designer",
+                "version": 1,
+                "data_source": str(self.data_source_path or self.source_edit.text().strip()),
+                "label": {
+                    "name": str(label),
+                    "width_mm": float(width_mm),
+                    "height_mm": float(height_mm),
+                },
+                "layout": {
+                    "main_splitter_sizes": [int(v) for v in self.main_splitter.sizes()],
+                },
+                "elements": fields,
+            }
+
+        def _write_layout(self, path: Path) -> bool:
+            try:
+                path = Path(path)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(
+                    json.dumps(self._payload(), ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            except Exception as exc:
+                QMessageBox.warning(self, "Etiketten Designer", f"Etikett konnte nicht gespeichert werden:\n{exc}")
+                return False
+            self.layout_path = path
+            # Stage ASM 76: gespeicherte Etikettenlayouts werden analog zu
+            # Berichten automatisch als Projektressource unter dBase -> Etiketten
+            # registriert. Doppelte Pfade werden von _add_project_dbase_entry
+            # bereits abgefangen.
+            try:
+                if hasattr(self.owner, "_register_label_in_project"):
+                    self.owner._register_label_in_project(path)
+            except Exception:
+                pass
+            try:
+                self.owner.statusBar().showMessage(f"Etikett gespeichert: {path.name}", 6000)
+            except Exception:
+                pass
+            return True
+
+        def save_layout(self) -> None:
+            if self.layout_path is None:
+                self.save_layout_as()
+                return
+            self._write_layout(self.layout_path)
+
+        def save_layout_as(self) -> None:
+            start = self.layout_path or (
+                Path(getattr(self.owner, "current_directory", Path.cwd())) / "Etikett_1.d64label"
+            )
+            filename, _ = QFileDialog.getSaveFileName(
+                self, "Etikett speichern unter", str(start),
+                "dBase Etiketten (*.d64label);;JSON (*.json);;Alle Dateien (*)",
+            )
+            if not filename:
+                return
+            path = Path(filename)
+            if not path.suffix:
+                path = path.with_suffix(self.PROJECT_SUFFIX)
+            self._write_layout(path)
+
+        def choose_layout_to_load(self) -> None:
+            start = self.layout_path or Path(getattr(self.owner, "current_directory", Path.cwd()))
+            filename, _ = QFileDialog.getOpenFileName(
+                self,
+                "Etikett laden",
+                str(start),
+                "dBase Etiketten (*.d64label);;JSON (*.json);;Alle Dateien (*)",
+            )
+            if not filename:
+                return
+            path = Path(filename)
+            if self.load_layout(path):
+                try:
+                    self.owner.statusBar().showMessage(f"Etikett geladen: {path.name}", 6000)
+                except Exception:
+                    pass
+
+        def load_layout(self, requested_path) -> bool:
+            path = Path(requested_path)
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                label_info = payload.get("label", {}) if isinstance(payload.get("label", {}), dict) else {}
+                width_mm = float(label_info.get("width_mm", 60.0))
+                height_mm = float(label_info.get("height_mm", 40.0))
+                name = str(label_info.get("name", f"{width_mm:g} × {height_mm:g} mm"))
+                self.scene.clear()
+                self.label_rect = None
+                self.format_caption = None
+                self._create_label(name, width_mm, height_mm)
+                # Stage ASM 75: ListBox und geladene Etikettengeometrie
+                # synchron halten. Bei benutzerdefinierten Formaten bleibt
+                # die bisherige Auswahl bestehen, solange kein exakter
+                # Bibliothekseintrag existiert.
+                for row in range(self.format_list.count()):
+                    fmt_item = self.format_list.item(row)
+                    fmt_data = fmt_item.data(Qt.UserRole)
+                    try:
+                        fmt_width = float(fmt_data[0])
+                        fmt_height = float(fmt_data[1])
+                    except Exception:
+                        continue
+                    if abs(fmt_width - width_mm) < 0.0001 and abs(fmt_height - height_mm) < 0.0001:
+                        self.format_list.setCurrentRow(row)
+                        break
+                source = str(payload.get("data_source", "") or "").strip()
+                if source:
+                    self.set_data_source(Path(source))
+                for entry in payload.get("elements", []):
+                    if not isinstance(entry, dict) or str(entry.get("type", "")) != "field":
+                        continue
+                    field = str(entry.get("field", entry.get("text", "")) or "")
+                    x = float(entry.get("x_mm", 2.0)) * self.MM_TO_SCENE
+                    y = float(entry.get("y_mm", 2.0)) * self.MM_TO_SCENE
+                    self._add_field_item(field, QPointF(x, y))
+                    item = self._field_items()[-1] if self._field_items() else None
+                    if item is not None:
+                        finfo = entry.get("font", {}) if isinstance(entry.get("font", {}), dict) else {}
+                        font = QFont(str(finfo.get("family", "Arial") or "Arial"))
+                        font.setPointSizeF(max(1.0, float(finfo.get("point_size", 9.0) or 9.0)))
+                        font.setBold(bool(finfo.get("bold", False)))
+                        font.setItalic(bool(finfo.get("italic", False)))
+                        font.setUnderline(bool(finfo.get("underline", False)))
+                        item.setFont(font)
+                        item.setDefaultTextColor(QColor(str(entry.get("color", "#101010") or "#101010")))
+                layout = payload.get("layout", {}) if isinstance(payload.get("layout", {}), dict) else {}
+                sizes = layout.get("main_splitter_sizes", [])
+                if isinstance(sizes, list) and len(sizes) >= 2:
+                    QTimer.singleShot(0, lambda values=[int(v) for v in sizes[:2]]: self.main_splitter.setSizes(values))
+            except Exception as exc:
+                QMessageBox.warning(self, "Etiketten Designer", f"Etikett konnte nicht geladen werden:\n{exc}")
+                return False
+            self.layout_path = path
+            return True
+
+        def _refresh_output_records(self) -> bool:
+            path = self.data_source_path
+            if path is None:
+                raw = self.source_edit.text().strip()
+                path = Path(raw) if raw else None
+            if path is None:
+                if self._field_items():
+                    QMessageBox.information(
+                        self, "Etiketten Designer",
+                        "Das Etikett enthält Datenfelder, aber es wurde keine Datenquelle ausgewählt.",
+                    )
+                    return False
+                self.data_records = [{}]
+                return True
+            try:
+                path = Path(path).expanduser()
+                if path.suffix.casefold() == ".dbf":
+                    table = read_dbase_dbf(path)
+                    fields = [str(field.name) for field in table.fields]
+                    records = [
+                        {str(k): "" if v is None else str(v) for k, v in dict(values).items()}
+                        for deleted, values in table.records if not deleted
+                    ]
+                elif path.suffix.casefold() == ".d64sql":
+                    fields, records = self._load_sql_records(path)
+                else:
+                    raise ValueError("Unterstützt werden *.dbf und *.d64sql.")
+            except Exception as exc:
+                QMessageBox.warning(
+                    self, "Etiketten Designer",
+                    f"Die Daten für PDF/Druck konnten nicht geladen werden:\n{path}\n\n{exc}",
+                )
+                return False
+            self.data_source_path = path
+            self.data_fields = list(fields)
+            self.data_records = list(records)
+            self.field_list.clear()
+            self.field_list.addItems(self.data_fields)
+            if self._field_items() and not self.data_records:
+                QMessageBox.information(
+                    self, "Etiketten Designer",
+                    "Die Datenquelle enthält keine auszugebenden Datensätze.",
+                )
+                return False
+            if not self.data_records:
+                self.data_records = [{}]
+            return True
+
+        @staticmethod
+        def _record_value(record: Dict[str, str], field_name: str) -> str:
+            if field_name in record:
+                return str(record.get(field_name, "") or "")
+            needle = str(field_name).casefold()
+            for key, value in record.items():
+                if str(key).casefold() == needle:
+                    return "" if value is None else str(value)
+            return ""
+
+        def _render_label_record(self, painter: QPainter, record: Dict[str, str],
+                                 origin_x_mm: float, origin_y_mm: float,
+                                 device_dpi: float) -> None:
+            px_per_mm = max(0.000001, float(device_dpi)) / 25.4
+            _name, width_mm, height_mm = self.current_format
+            for item in self._field_items():
+                field_name = str(item.data(1) or item.toPlainText())
+                text = self._record_value(record, field_name)
+                x_mm = float(origin_x_mm) + float(item.pos().x()) / self.MM_TO_SCENE
+                y_mm = float(origin_y_mm) + float(item.pos().y()) / self.MM_TO_SCENE
+                available_w_mm = max(0.5, float(origin_x_mm) + float(width_mm) - x_mm)
+                available_h_mm = max(0.5, float(origin_y_mm) + float(height_mm) - y_mm)
+                font = QFont(item.font())
+                painter.setFont(font)
+                painter.setPen(item.defaultTextColor())
+                painter.drawText(
+                    QRectF(
+                        x_mm * px_per_mm, y_mm * px_per_mm,
+                        available_w_mm * px_per_mm, available_h_mm * px_per_mm,
+                    ),
+                    Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap,
+                    text,
+                )
+
+        def _default_output_path(self, suffix: str) -> Path:
+            if self.layout_path is not None:
+                return self.layout_path.with_suffix(suffix)
+            return Path(getattr(self.owner, "current_directory", Path.cwd())) / ("Etiketten" + suffix)
+
+        def export_pdf(self) -> None:
+            if not self._refresh_output_records():
+                return
+            filename, _ = QFileDialog.getSaveFileName(
+                self, "Etiketten als PDF ausgeben",
+                str(self._default_output_path(".pdf")), "PDF (*.pdf)",
+            )
+            if not filename:
+                return
+            _name, width_mm, height_mm = self.current_format
+            printer = QPrinter(QPrinter.HighResolution)
+            printer.setResolution(300)
+            printer.setOutputFormat(QPrinter.PdfFormat)
+            printer.setOutputFileName(str(filename))
+            printer.setFullPage(True)
+            printer.setPaperSize(QSizeF(float(width_mm), float(height_mm)), QPrinter.Millimeter)
+            painter = QPainter(printer)
+            if not painter.isActive():
+                QMessageBox.warning(self, "Etiketten Designer", "PDF-Ausgabe konnte nicht gestartet werden.")
+                return
+            try:
+                for index, record in enumerate(self.data_records or [{}]):
+                    if index:
+                        printer.newPage()
+                    self._render_label_record(painter, record, 0.0, 0.0, printer.resolution())
+            finally:
+                painter.end()
+            try:
+                self.owner.statusBar().showMessage(f"Etiketten-PDF erstellt: {Path(filename).name}", 6000)
+            except Exception:
+                pass
+
+        def export_print_ready(self) -> None:
+            if not self._refresh_output_records():
+                return
+            default = self._default_output_path(".print.pdf")
+            filename, _ = QFileDialog.getSaveFileName(
+                self, "Druckfertiges Etiketten-Dokument erstellen",
+                str(default), "Druckfertiges PDF (*.pdf)",
+            )
+            if not filename:
+                return
+            _name, width_mm, height_mm = self.current_format
+            columns = max(1, int(self.A4_WIDTH_MM // float(width_mm)))
+            rows = max(1, int(self.A4_HEIGHT_MM // float(height_mm)))
+            labels_per_page = max(1, columns * rows)
+            grid_width = columns * float(width_mm)
+            grid_height = rows * float(height_mm)
+            start_x = max(0.0, (self.A4_WIDTH_MM - grid_width) / 2.0)
+            start_y = max(0.0, (self.A4_HEIGHT_MM - grid_height) / 2.0)
+
+            printer = QPrinter(QPrinter.HighResolution)
+            printer.setResolution(300)
+            printer.setOutputFormat(QPrinter.PdfFormat)
+            printer.setOutputFileName(str(filename))
+            printer.setFullPage(True)
+            printer.setPaperSize(QPrinter.A4)
+            painter = QPainter(printer)
+            if not painter.isActive():
+                QMessageBox.warning(self, "Etiketten Designer", "Druckfertige PDF-Ausgabe konnte nicht gestartet werden.")
+                return
+            try:
+                records = self.data_records or [{}]
+                for index, record in enumerate(records):
+                    slot = index % labels_per_page
+                    if index and slot == 0:
+                        printer.newPage()
+                    row = slot // columns
+                    column = slot % columns
+                    x_mm = start_x + column * float(width_mm)
+                    y_mm = start_y + row * float(height_mm)
+                    self._render_label_record(painter, record, x_mm, y_mm, printer.resolution())
+            finally:
+                painter.end()
+            try:
+                self.owner.statusBar().showMessage(
+                    f"Druckfertiges Etiketten-Dokument erstellt: {Path(filename).name}", 6000
+                )
+            except Exception:
+                pass
+
+        def set_dark_mode(self, enabled: bool) -> None:
+            self._dark_mode = bool(enabled)
+            if self._dark_mode:
+                self.setStyleSheet(
+                    "QWidget#dbase_label_designer{background:#050b18;color:#f2f5f8;}"
+                    "QWidget#dbase_label_tools,QGroupBox{background:#07162f;color:#f2f5f8;}"
+                    "QScrollArea#dbase_label_tools_scroll{background:#07162f;border:0;}"
+                    "QScrollArea#dbase_label_tools_scroll>QWidget>QWidget{background:#07162f;}"
+                    "QLineEdit,QListWidget{background:#020817;color:#ffe600;border:1px solid #245a9a;}"
+                    "QPushButton{background:#163b73;color:#fff;border:1px solid #3375bd;padding:4px 7px;}"
+                    "QPushButton:hover{background:#245a9a;}"
+                    "QGraphicsView#dbase_label_view{background:#1b2330;border:1px solid #245a9a;}"
+                )
+                self.scene.setBackgroundBrush(QColor("#1b2330"))
+                if self.format_caption is not None:
+                    self.format_caption.setDefaultTextColor(QColor("#f2f5f8"))
+            else:
+                self.setStyleSheet(
+                    "QWidget#dbase_label_designer{background:#eceff3;color:#111;}"
+                    "QWidget#dbase_label_tools,QGroupBox{background:#f7f8fa;color:#111;}"
+                    "QScrollArea#dbase_label_tools_scroll{background:#f7f8fa;border:0;}"
+                    "QScrollArea#dbase_label_tools_scroll>QWidget>QWidget{background:#f7f8fa;}"
+                    "QLineEdit,QListWidget{background:#fff;color:#111;border:1px solid #9aabba;}"
+                    "QPushButton{background:#e6edf5;color:#173a63;border:1px solid #9aabba;padding:4px 7px;}"
+                    "QGraphicsView#dbase_label_view{background:#c8ced5;border:1px solid #9aabba;}"
+                )
+                self.scene.setBackgroundBrush(QColor("#c8ced5"))
+                if self.format_caption is not None:
+                    self.format_caption.setDefaultTextColor(QColor("#111111"))
+
 
     class DBaseTableFieldGrid(QTableWidget):
         """Felddefinitionen einer DBF-Tabelle mit dBase-typischen Editoren."""
@@ -41977,6 +44298,245 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             QMessageBox.information(self, tr("Help"), "Hier könnte deine Hilfe stehen :)")
 
 
+    class DockSnapOverlay(QWidget):
+        """Stage ASM 67: kompakte 3-Zonen-Einrastvorschau.
+
+        Beim Ziehen von Projekt- oder Dateisystem-Dock werden exakt drei
+        Zielbereiche gezeigt: oben, unten und eine seitliche Zone. Die gesamte
+        Dreiergruppe kann links oder rechts neben dem Editor erscheinen.
+
+        Stage ASM 66: Einrast-Vorschau fuer Projekt- und Dateisystem-Dock
+        (in Stage 67 auf drei sichtbare Zielzonen reduziert).
+        Stage-66-Legacy-IDs (nur Dokumentation, nicht mehr als Zielzonen):
+        f"{side}:h:before", f"{side}:h:after",
+        f"{side}:v:before", f"{side}:v:after"
+        """
+
+        def __init__(self, host: QMainWindow):
+            super().__init__(host)
+            self.setObjectName("dock_snap_overlay")
+            self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            self.setAttribute(Qt.WA_NoSystemBackground, True)
+            self.setAttribute(Qt.WA_TranslucentBackground, True)
+            self._allowed_areas = Qt.NoDockWidgetArea
+            self._active_area = Qt.NoDockWidgetArea
+            self._active_target = ""
+            self._drag_dock = None
+            self._preview_area = Qt.LeftDockWidgetArea
+            self._dark_mode = bool(getattr(host, "dark_mode_enabled", False))
+            self.hide()
+
+        @property
+        def active_area(self):
+            return self._active_area
+
+        @property
+        def active_target(self) -> str:
+            return str(self._active_target or "")
+
+        def set_dark_mode(self, enabled: bool) -> None:
+            self._dark_mode = bool(enabled)
+            self.update()
+
+        @staticmethod
+        def _dock_caption(dock: QDockWidget) -> str:
+            if dock is None:
+                return "Dock"
+            if dock.objectName() == "filesystem_dock":
+                return "Dateisystem"
+            if dock.objectName() == "d64_content_dock":
+                return "Projekt"
+            return str(dock.windowTitle() or "Dock")
+
+        def _other_dock(self):
+            host = self.parentWidget()
+            if host is None or self._drag_dock is None:
+                return None
+            project = getattr(host, "right_dock", None)
+            filesystem = getattr(host, "left_dock", None)
+            if self._drag_dock is project:
+                return filesystem
+            if self._drag_dock is filesystem:
+                return project
+            return None
+
+        def _initial_preview_area(self):
+            host = self.parentWidget()
+            other = self._other_dock()
+            if host is not None and other is not None and not other.isFloating():
+                area = host.dockWidgetArea(other)
+                if area in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea):
+                    return area
+            if host is not None and self._drag_dock is not None:
+                area = host.dockWidgetArea(self._drag_dock)
+                if area in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea):
+                    return area
+            return Qt.LeftDockWidgetArea
+
+        def show_for_dock(self, dock: QDockWidget) -> None:
+            self._drag_dock = dock
+            self._allowed_areas = dock.allowedAreas()
+            self._active_area = Qt.NoDockWidgetArea
+            self._active_target = ""
+            self._preview_area = self._initial_preview_area()
+            host = self.parentWidget()
+            if host is not None:
+                self.setGeometry(host.rect())
+                self._dark_mode = bool(getattr(host, "dark_mode_enabled", self._dark_mode))
+            self.raise_()
+            self.show()
+            self.update()
+
+        def hide_overlay(self) -> None:
+            self._active_area = Qt.NoDockWidgetArea
+            self._active_target = ""
+            self._drag_dock = None
+            self.hide()
+
+        def _panel_rect(self, area):
+            full = self.rect()
+            if full.width() <= 0 or full.height() <= 0:
+                return QRect()
+            margin = 14
+            top = max(56, int(full.height() * 0.08))
+            bottom = max(28, int(full.height() * 0.08))
+            panel_h = max(260, full.height() - top - bottom)
+            panel_w = max(280, min(460, int(full.width() * 0.31)))
+            x = full.width() - margin - panel_w if area == Qt.RightDockWidgetArea else margin
+            return QRect(x, top, panel_w, panel_h)
+
+        def _side_position_and_order(self, area):
+            """Ein einziges seitliches Ziel je Dock/Seite."""
+            host = self.parentWidget()
+            filesystem = getattr(host, "left_dock", None) if host is not None else None
+            if self._drag_dock is filesystem:
+                return ("left", "before") if area == Qt.LeftDockWidgetArea else ("right", "after")
+            return ("right", "after") if area == Qt.LeftDockWidgetArea else ("left", "before")
+
+        def _zone_specs(self):
+            """target -> (rect, area, orientation, order, label)."""
+            specs = {}
+            area = self._preview_area
+            if area not in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea):
+                return specs
+            if not bool(self._allowed_areas & area):
+                return specs
+            panel = self._panel_rect(area)
+            if panel.isNull():
+                return specs
+            drag_name = self._dock_caption(self._drag_dock)
+            other_name = self._dock_caption(self._other_dock())
+            header_h = 32
+            gap = 8
+            inner = panel.adjusted(10, header_h + 10, -10, -10)
+            top_h = max(72, int(inner.height() * 0.28))
+            bottom_h = top_h
+            middle_y = inner.y() + top_h + gap
+            middle_h = max(72, inner.height() - top_h - bottom_h - (2 * gap))
+            top_rect = QRect(inner.x(), inner.y(), inner.width(), top_h)
+            bottom_rect = QRect(inner.x(), inner.bottom() - bottom_h + 1, inner.width(), bottom_h)
+            side_position, side_order = self._side_position_and_order(area)
+            side_w = max(120, int(inner.width() * 0.56))
+            side_x = inner.right() - side_w + 1 if side_position == "right" else inner.x()
+            side_rect = QRect(side_x, middle_y, side_w, middle_h)
+            side = "left" if area == Qt.LeftDockWidgetArea else "right"
+            specs[f"{side}:top"] = (top_rect, area, Qt.Vertical, "before", f"{drag_name} oben\n{other_name} unten")
+            specs[f"{side}:bottom"] = (bottom_rect, area, Qt.Vertical, "after", f"{other_name} oben\n{drag_name} unten")
+            side_label = f"{drag_name} | {other_name}" if side_order == "before" else f"{other_name} | {drag_name}"
+            specs[f"{side}:side"] = (side_rect, area, Qt.Horizontal, side_order, side_label)
+            return specs
+
+        def target_spec(self, target: str):
+            return self._zone_specs().get(str(target or ""))
+
+        def update_target(self, global_pos: QPoint):
+            host = self.parentWidget()
+            if host is None:
+                self._active_area = Qt.NoDockWidgetArea
+                self._active_target = ""
+                return self._active_area
+            self.setGeometry(host.rect())
+            local_pos = self.mapFromGlobal(global_pos)
+            wanted_area = Qt.LeftDockWidgetArea if local_pos.x() < max(1, self.width() // 2) else Qt.RightDockWidgetArea
+            if bool(self._allowed_areas & wanted_area) and wanted_area != self._preview_area:
+                self._preview_area = wanted_area
+                self._active_target = ""
+                self.update()
+            new_target = ""
+            new_area = Qt.NoDockWidgetArea
+            if self.rect().contains(local_pos):
+                for target, spec in self._zone_specs().items():
+                    rect, area, _orientation, _order, _label = spec
+                    if rect.contains(local_pos):
+                        new_target = target
+                        new_area = area
+                        break
+            if new_target != self._active_target:
+                self._active_target = new_target
+                self._active_area = new_area
+                self.update()
+            else:
+                self._active_area = new_area
+            return self._active_area
+
+        def paintEvent(self, event) -> None:
+            super().paintEvent(event)
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            if self._dark_mode:
+                panel_fill = QColor(28, 28, 28, 150)
+                normal_fill = QColor(38, 38, 38, 184)
+                active_fill = QColor(58, 58, 58, 220)
+                normal_border = QColor(118, 118, 118, 210)
+                active_border = QColor(225, 225, 225, 235)
+                text_color = QColor(245, 245, 245)
+            else:
+                panel_fill = QColor(242, 242, 242, 150)
+                normal_fill = QColor(226, 226, 226, 190)
+                active_fill = QColor(198, 198, 198, 225)
+                normal_border = QColor(105, 105, 105, 210)
+                active_border = QColor(35, 35, 35, 235)
+                text_color = QColor(25, 25, 25)
+            legacy_labels = {
+                Qt.LeftDockWidgetArea: "Links andocken",
+                Qt.RightDockWidgetArea: "Rechts andocken",
+            }
+            del legacy_labels
+            area = self._preview_area
+            panel = self._panel_rect(area)
+            if panel.isNull() or not bool(self._allowed_areas & area):
+                painter.end()
+                return
+            side_label = "LINKS VOM EDITOR" if area == Qt.LeftDockWidgetArea else "RECHTS VOM EDITOR"
+            painter.setPen(QPen(normal_border, 1.2))
+            painter.setBrush(panel_fill)
+            painter.drawRoundedRect(panel, 7, 7)
+            title_font = QFont(painter.font())
+            title_font.setBold(True)
+            painter.setFont(title_font)
+            painter.setPen(text_color)
+            painter.drawText(QRect(panel.x() + 8, panel.y() + 4, panel.width() - 16, 28), Qt.AlignCenter, side_label)
+            body_font = QFont(painter.font())
+            body_font.setBold(False)
+            painter.setFont(body_font)
+            for target, spec in self._zone_specs().items():
+                rect, _area, orientation, _order, label = spec
+                active = target == self._active_target
+                painter.setPen(QPen(active_border if active else normal_border, 2.2 if active else 1.2))
+                painter.setBrush(active_fill if active else normal_fill)
+                painter.drawRoundedRect(rect, 6, 6)
+                painter.setPen(text_color)
+                mode = "NEBENEINANDER" if orientation == Qt.Horizontal else "GESTAPELT"
+                if target.endswith(":top"):
+                    mode = "OBEN"
+                elif target.endswith(":bottom"):
+                    mode = "UNTEN"
+                elif target.endswith(":side"):
+                    mode = "SEITLICH"
+                painter.drawText(rect.adjusted(8, 8, -8, -8), Qt.AlignCenter | Qt.TextWordWrap, mode + "\n" + label)
+            painter.end()
+
+
     class DockTitleBar(QWidget):
         """Dunkle Dock-Leiste mit weißen Mini-Symbolen und Zusatzaktion."""
 
@@ -41990,8 +44550,16 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             super().__init__(dock)
             self.dock = dock
             self._drag_offset = None
+            # QDockWidget behaelt beim Floating seinen QMainWindow-Parent.
+            # Diesen Host speichern wir einmalig, weil dock.window() im
+            # Floating-Zustand das Dock selbst zurueckliefern kann.
+            parent = dock.parentWidget()
+            self._dock_host_window = parent if isinstance(parent, QMainWindow) else None
+            self._snap_drag_enabled = (dock.objectName() == "d64_content_dock")
+            if dock.objectName() == "filesystem_dock":
+                self._snap_drag_enabled = True
             self._dark_mode = bool(
-                getattr(dock.window(), "dark_mode_enabled", False)
+                getattr(self._dock_host_window or dock.window(), "dark_mode_enabled", False)
             )
             self.setObjectName("custom_dock_title_bar")
 
@@ -42086,6 +44654,12 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
         def mousePressEvent(self, event) -> None:
             if event.button() == Qt.LeftButton:
                 self._drag_offset = event.globalPos() - self.dock.frameGeometry().topLeft()
+                if (
+                    self._snap_drag_enabled
+                    and self._dock_host_window is not None
+                    and hasattr(self._dock_host_window, "_begin_project_dock_snap")
+                ):
+                    self._dock_host_window._begin_project_dock_snap(self.dock)
                 event.accept()
                 return
             super().mousePressEvent(event)
@@ -42098,12 +44672,36 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                 if not self.dock.isFloating():
                     self.dock.setFloating(True)
                 self.dock.move(event.globalPos() - self._drag_offset)
+                if (
+                    self._snap_drag_enabled
+                    and self._dock_host_window is not None
+                    and hasattr(self._dock_host_window, "_update_project_dock_snap")
+                ):
+                    self._dock_host_window._update_project_dock_snap(
+                        self.dock, event.globalPos()
+                    )
                 event.accept()
                 return
             super().mouseMoveEvent(event)
 
         def mouseReleaseEvent(self, event) -> None:
+            snapped = False
+            if (
+                self._drag_offset is not None
+                and event.button() == Qt.LeftButton
+                and self._snap_drag_enabled
+                and self._dock_host_window is not None
+                and hasattr(self._dock_host_window, "_finish_project_dock_snap")
+            ):
+                snapped = bool(
+                    self._dock_host_window._finish_project_dock_snap(
+                        self.dock, event.globalPos()
+                    )
+                )
             self._drag_offset = None
+            if snapped:
+                event.accept()
+                return
             super().mouseReleaseEvent(event)
 
         def mouseDoubleClickEvent(self, event) -> None:
@@ -52400,12 +54998,487 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self._notify()
 
 
+    class C64KeyboardLayoutDelegate(QStyledItemDelegate):
+        """Stage ASM 61: QWERTZ/QWERTY-Suffix im Popup fett zeichnen."""
+
+        def _parts(self, index):
+            text = str(index.data(Qt.DisplayRole) or "")
+            layout = _normalize_project_c64_keyboard_layout(index.data(Qt.UserRole))
+            suffix = "QWERTY" if layout == "qwerty" else "QWERTZ"
+            return text, suffix
+
+        def paint(self, painter, option, index) -> None:
+            opt = type(option)(option)
+            self.initStyleOption(opt, index)
+            left, suffix = self._parts(index)
+            opt.text = ""
+            style = opt.widget.style() if opt.widget is not None else QApplication.style()
+            style.drawControl(QStyle.CE_ItemViewItem, opt, painter, opt.widget)
+
+            rect = style.subElementRect(QStyle.SE_ItemViewItemText, opt, opt.widget)
+            rect.adjust(3, 0, -3, 0)
+            normal_font = QFont(opt.font)
+            normal_font.setBold(False)
+            bold_font = QFont(normal_font)
+            bold_font.setBold(True)
+            normal_text = f"{left}  --  "
+            normal_width = QFontMetrics(normal_font).horizontalAdvance(normal_text)
+
+            if opt.state & QStyle.State_Selected:
+                color = opt.palette.color(QPalette.HighlightedText)
+            else:
+                color = opt.palette.color(QPalette.Text)
+            painter.save()
+            painter.setPen(color)
+            painter.setFont(normal_font)
+            painter.drawText(rect, Qt.AlignVCenter | Qt.AlignLeft, normal_text)
+            painter.setFont(bold_font)
+            suffix_rect = QRect(rect)
+            suffix_rect.setLeft(rect.left() + normal_width)
+            painter.drawText(suffix_rect, Qt.AlignVCenter | Qt.AlignLeft, suffix)
+            painter.restore()
+
+        def sizeHint(self, option, index):
+            left, suffix = self._parts(index)
+            normal_font = QFont(option.font)
+            normal_font.setBold(False)
+            bold_font = QFont(normal_font)
+            bold_font.setBold(True)
+            width = (
+                QFontMetrics(normal_font).horizontalAdvance(f"{left}  --  ")
+                + QFontMetrics(bold_font).horizontalAdvance(suffix)
+                + 22
+            )
+            height = max(
+                QFontMetrics(normal_font).height(),
+                QFontMetrics(bold_font).height(),
+            ) + 8
+            return QSize(width, height)
+
+
+    class C64KeyboardLayoutComboBox(QComboBox):
+        """Stage ASM 61: ComboBox mit normalem Titel und fettem Layout-Suffix."""
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.setItemDelegate(C64KeyboardLayoutDelegate(self))
+            self.setMinimumContentsLength(28)
+            self.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+
+        def _current_parts(self):
+            left = str(self.currentText() or "")
+            layout = _normalize_project_c64_keyboard_layout(self.currentData())
+            return left, ("QWERTY" if layout == "qwerty" else "QWERTZ")
+
+        def paintEvent(self, _event) -> None:
+            painter = QStylePainter(self)
+            option = QStyleOptionComboBox()
+            self.initStyleOption(option)
+            # Den nativen Text unterdruecken; Rahmen/Pfeil bleiben nativ.
+            option.currentText = ""
+            painter.drawComplexControl(QStyle.CC_ComboBox, option)
+
+            rect = self.style().subControlRect(
+                QStyle.CC_ComboBox,
+                option,
+                QStyle.SC_ComboBoxEditField,
+                self,
+            )
+            rect.adjust(2, 0, -2, 0)
+            left, suffix = self._current_parts()
+            normal_font = QFont(self.font())
+            normal_font.setBold(False)
+            bold_font = QFont(normal_font)
+            bold_font.setBold(True)
+            normal_text = f"{left}  --  "
+            normal_width = QFontMetrics(normal_font).horizontalAdvance(normal_text)
+            color = self.palette().color(
+                QPalette.Active if self.isEnabled() else QPalette.Disabled,
+                QPalette.Text,
+            )
+
+            painter.save()
+            painter.setPen(color)
+            painter.setFont(normal_font)
+            painter.drawText(rect, Qt.AlignVCenter | Qt.AlignLeft, normal_text)
+            painter.setFont(bold_font)
+            suffix_rect = QRect(rect)
+            suffix_rect.setLeft(rect.left() + normal_width)
+            painter.drawText(suffix_rect, Qt.AlignVCenter | Qt.AlignLeft, suffix)
+            painter.restore()
+
+
+    class C64CompilerSettingsPage(QWidget):
+        """Stage ASM 48: C=64-Profilseite mit Compiler-Optimizerstrategie."""
+
+        STRATEGY_LABELS = (
+            ("direct", "Direct"),
+            ("inline_pointer", "Inline Pointer"),
+            ("string_thunk", "String Thunk"),
+            ("auto", "Auto"),
+        )
+
+        def __init__(self, owner, profile: str, parent=None):
+            super().__init__(parent)
+            self.owner = owner
+            self.profile = str(profile)
+            self._syncing = False
+
+            root = QVBoxLayout(self)
+            root.setContentsMargins(0, 0, 0, 0)
+            self.splitter = QSplitter(Qt.Horizontal, self)
+            root.addWidget(self.splitter, 1)
+
+            self.tree = QTreeWidget(self.splitter)
+            self.tree.setHeaderHidden(True)
+            self.tree.setMinimumWidth(220)
+            self.tree.setMaximumWidth(360)
+            self.tree.setSelectionMode(QAbstractItemView.SingleSelection)
+
+            self.environment_item = QTreeWidgetItem(self.tree, ["Umgebung"])
+            self.environment_item.setData(0, Qt.UserRole, "environment")
+            self.compiler_item = QTreeWidgetItem(self.tree, ["Compiler"])
+            self.compiler_item.setData(0, Qt.UserRole, "compiler")
+            self.compiler_input_item = QTreeWidgetItem(self.compiler_item, ["Eingabe-Verzeichnis"])
+            self.compiler_input_item.setData(0, Qt.UserRole, "compiler.input_directory")
+            self.compiler_output_item = QTreeWidgetItem(self.compiler_item, ["Ausgabe-Verzeichnis"])
+            self.compiler_output_item.setData(0, Qt.UserRole, "compiler.output_directory")
+            self.compiler_optimizer_item = QTreeWidgetItem(self.compiler_item, ["Optimizer"])
+            self.compiler_optimizer_item.setData(0, Qt.UserRole, "compiler.optimizer")
+            self.compiler_packer_item = QTreeWidgetItem(self.compiler_item, ["Image Packer"])
+            self.compiler_packer_item.setData(0, Qt.UserRole, "compiler.image_packer")
+            self.assembler_item = QTreeWidgetItem(self.tree, ["Assembler"])
+            self.assembler_item.setData(0, Qt.UserRole, "assembler")
+            self.linker_item = QTreeWidgetItem(self.tree, ["Linker"])
+            self.linker_item.setData(0, Qt.UserRole, "linker")
+            self.compiler_item.setExpanded(True)
+
+            self.stack = QStackedWidget(self.splitter)
+            self.pages = {}
+
+            def add_placeholder(key: str, title: str) -> None:
+                page = QWidget(self.stack)
+                layout = QVBoxLayout(page)
+                layout.setContentsMargins(14, 12, 14, 12)
+                label = QLabel(title, page)
+                label.setWordWrap(True)
+                layout.addWidget(label)
+                layout.addStretch(1)
+                self.stack.addWidget(page)
+                self.pages[key] = page
+
+            # Stage ASM 59: Umgebung besitzt jetzt eine echte Projektoption
+            # fuer die C64-Bildschirmtastatur.
+            self.environment_page = QWidget(self.stack)
+            environment_layout = QVBoxLayout(self.environment_page)
+            environment_layout.setContentsMargins(14, 12, 14, 12)
+            environment_layout.setSpacing(8)
+            self.environment_group = QGroupBox("Umgebung", self.environment_page)
+            environment_group_layout = QVBoxLayout(self.environment_group)
+            environment_group_layout.setContentsMargins(14, 16, 14, 14)
+            self.screen_keyboard_checkbox = QCheckBox(
+                "Bildschirmtastatur", self.environment_group
+            )
+            self.screen_keyboard_checkbox.setObjectName(
+                "c64_environment_screen_keyboard_checkbox"
+            )
+            self.screen_keyboard_checkbox.setToolTip(
+                "C64-Bildschirmtastatur unter dem BASIC-Editor standardmäßig einblenden"
+            )
+            environment_group_layout.addWidget(self.screen_keyboard_checkbox)
+
+            self.keyboard_layout_combo = C64KeyboardLayoutComboBox(self.environment_group)
+            self.keyboard_layout_combo.setObjectName(
+                "c64_environment_keyboard_layout_combo"
+            )
+            self.keyboard_layout_combo.addItem("Deutsche Belegung", "qwertz")
+            self.keyboard_layout_combo.addItem("Englische Belegung", "qwerty")
+            self.keyboard_layout_combo.setToolTip(
+                "Tastenanordnung der C64-Bildschirmtastatur: QWERTZ oder QWERTY"
+            )
+            environment_group_layout.addWidget(self.keyboard_layout_combo)
+
+            environment_hint = QLabel(
+                "Ist die Option aktiv, wird die C64-Tastatur unter BASIC-Editoren "
+                "eingeblendet. Beim Einblenden wird das Dateisystem-Dockingfenster ausgeblendet.",
+                self.environment_group,
+            )
+            environment_hint.setObjectName("c64_environment_screen_keyboard_hint")
+            environment_hint.setWordWrap(True)
+            environment_group_layout.addWidget(environment_hint)
+            environment_layout.addWidget(self.environment_group, 0, Qt.AlignTop)
+            environment_layout.addStretch(1)
+            self.stack.addWidget(self.environment_page)
+            self.pages["environment"] = self.environment_page
+
+            add_placeholder("compiler", "Wähle eine Compiler-Unteroption in der TreeList aus.")
+            add_placeholder("compiler.input_directory", f"C=64 Profil {self.profile}: Compiler Eingabe-Verzeichnis")
+            add_placeholder("compiler.output_directory", f"C=64 Profil {self.profile}: Compiler Ausgabe-Verzeichnis")
+
+            self.optimizer_page = QWidget(self.stack)
+            optimizer_layout = QVBoxLayout(self.optimizer_page)
+            optimizer_layout.setContentsMargins(14, 12, 14, 12)
+            optimizer_layout.setSpacing(8)
+            self.optimizer_group = QGroupBox("Optimizer", self.optimizer_page)
+            group_layout = QVBoxLayout(self.optimizer_group)
+            group_layout.setContentsMargins(14, 16, 14, 14)
+            group_layout.setSpacing(8)
+            self.optimizer_enabled_checkbox = QCheckBox("Enable Optimizer", self.optimizer_group)
+            group_layout.addWidget(self.optimizer_enabled_checkbox)
+            self.strategy_group = QButtonGroup(self.optimizer_group)
+            self.strategy_buttons = {}
+            for index, (strategy, label) in enumerate(self.STRATEGY_LABELS):
+                radio = QRadioButton(label, self.optimizer_group)
+                radio.setObjectName(f"c64_optimizer_{strategy}_radio")
+                self.strategy_group.addButton(radio, index)
+                self.strategy_buttons[strategy] = radio
+                group_layout.addWidget(radio)
+            auto_hint = QLabel(
+                "Auto: einmal verwendete Stringliterale -> Inline Pointer; "
+                "ab zwei Verwendungen -> String Thunk.",
+                self.optimizer_group,
+            )
+            auto_hint.setObjectName("c64_optimizer_auto_hint")
+            auto_hint.setWordWrap(True)
+            group_layout.addWidget(auto_hint)
+            optimizer_layout.addWidget(self.optimizer_group, 0, Qt.AlignTop)
+            optimizer_layout.addStretch(1)
+            self.stack.addWidget(self.optimizer_page)
+            self.pages["compiler.optimizer"] = self.optimizer_page
+
+            # Stage ASM 50: selbstentpackendes C64-PRG als finale Image-Stufe.
+            self.packer_page = QWidget(self.stack)
+            packer_layout = QVBoxLayout(self.packer_page)
+            packer_layout.setContentsMargins(14, 12, 14, 12)
+            packer_layout.setSpacing(8)
+            self.packer_group = QGroupBox("Image Packer", self.packer_page)
+            packer_group_layout = QVBoxLayout(self.packer_group)
+            packer_group_layout.setContentsMargins(14, 16, 14, 14)
+            packer_group_layout.setSpacing(8)
+            self.packer_enabled_checkbox = QCheckBox("Enable Image Packer", self.packer_group)
+            packer_group_layout.addWidget(self.packer_enabled_checkbox)
+
+            # Stage ASM 55: controls only whether the readable symbolic
+            # De-Cruncher source is appended to the generated Packed-ASM tab.
+            # The machine-code bytes required at runtime always remain in PRG.
+            self.packer_include_decruncher_source_checkbox = QCheckBox(
+                "De-Cruncher-Code in Packed-ASM übernehmen",
+                self.packer_group,
+            )
+            self.packer_include_decruncher_source_checkbox.setChecked(True)
+            self.packer_include_decruncher_source_checkbox.setToolTip(
+                "Checked: die lesbare symbolische De-Cruncher-Quelle wird im Packed-ASM-Editor angehängt.\n"
+                "Not checked: der Packed-ASM-Editor enthält nur den ausführbaren Wrapper/Bundle-Code.\n"
+                "Die benötigten De-Cruncher-Maschinencode-Bytes bleiben in beiden Fällen im PRG."
+            )
+            packer_group_layout.addWidget(self.packer_include_decruncher_source_checkbox)
+
+            self.packer_mode_group = QButtonGroup(self.packer_group)
+            self.packer_mode_buttons = {}
+            for _index, (_mode, _label) in enumerate((
+                ("none", "None"),
+                ("rle", "RLE"),
+                ("lz", "LZ"),
+                ("auto", "Auto"),
+            )):
+                _radio = QRadioButton(_label, self.packer_group)
+                _radio.setObjectName(f"c64_image_packer_{_mode}_radio")
+                self.packer_mode_group.addButton(_radio, _index)
+                self.packer_mode_buttons[_mode] = _radio
+                packer_group_layout.addWidget(_radio)
+
+            self.packer_search_groupbox = QGroupBox("Packsuche", self.packer_group)
+            _search_layout = QVBoxLayout(self.packer_search_groupbox)
+            self.packer_search_group = QButtonGroup(self.packer_search_groupbox)
+            self.packer_search_buttons = {}
+            for _index, (_search, _label) in enumerate((
+                ("fast", "Fast"),
+                ("balanced", "Balanced"),
+                ("maximum", "Maximum"),
+            )):
+                _radio = QRadioButton(_label, self.packer_search_groupbox)
+                _radio.setObjectName(f"c64_image_packer_search_{_search}_radio")
+                self.packer_search_group.addButton(_radio, _index)
+                self.packer_search_buttons[_search] = _radio
+                _search_layout.addWidget(_radio)
+            packer_group_layout.addWidget(self.packer_search_groupbox)
+
+            _packer_hint = QLabel(
+                "RLE/LZ sind erzwungene Modi: sie werden auch dann verwendet, wenn "
+                "das Ergebnis größer wird. Nur Auto darf bei fehlendem Größenvorteil "
+                "das ungepackte PRG beibehalten. Fast/Balanced/Maximum verändern "
+                "nur die Compiler-seitige LZ-Suche; der 6510-Decruncher bleibt gleich klein. "
+                "Die De-Cruncher-Code-Checkbox steuert nur die lesbare Quelle im Packed-ASM-Tab.",
+                self.packer_group,
+            )
+            _packer_hint.setObjectName("c64_image_packer_hint")
+            _packer_hint.setWordWrap(True)
+            packer_group_layout.addWidget(_packer_hint)
+            packer_layout.addWidget(self.packer_group, 0, Qt.AlignTop)
+            packer_layout.addStretch(1)
+            self.stack.addWidget(self.packer_page)
+            self.pages["compiler.image_packer"] = self.packer_page
+
+            add_placeholder("assembler", f"C=64 Profil {self.profile}: Assembler")
+            add_placeholder("linker", f"C=64 Profil {self.profile}: Linker")
+            self.splitter.setStretchFactor(0, 0)
+            self.splitter.setStretchFactor(1, 1)
+            self.splitter.setSizes([260, 760])
+
+            self.tree.currentItemChanged.connect(self._tree_changed)
+            self.screen_keyboard_checkbox.toggled.connect(self._environment_changed)
+            self.keyboard_layout_combo.currentIndexChanged.connect(self._environment_changed)
+            self.optimizer_enabled_checkbox.toggled.connect(self._optimizer_changed)
+            for radio in self.strategy_buttons.values():
+                radio.toggled.connect(self._optimizer_changed)
+            self.packer_enabled_checkbox.toggled.connect(self._packer_changed)
+            self.packer_include_decruncher_source_checkbox.toggled.connect(self._packer_changed)
+            for radio in self.packer_mode_buttons.values():
+                radio.toggled.connect(self._packer_changed)
+            for radio in self.packer_search_buttons.values():
+                radio.toggled.connect(self._packer_changed)
+            self.set_screen_keyboard(False, "qwertz")
+            self.set_optimizer(True, "direct")
+            self.set_packer(False, "none", "balanced", True)
+            self.tree.setCurrentItem(self.compiler_optimizer_item)
+
+        def _tree_changed(self, current, _previous=None) -> None:
+            if current is None:
+                return
+            key = str(current.data(0, Qt.UserRole) or "compiler")
+            self.stack.setCurrentWidget(self.pages.get(key, self.pages["compiler"]))
+
+        def screen_keyboard_enabled(self) -> bool:
+            return bool(self.screen_keyboard_checkbox.isChecked())
+
+        def keyboard_layout(self) -> str:
+            value = self.keyboard_layout_combo.currentData()
+            return _normalize_project_c64_keyboard_layout(value)
+
+        def set_screen_keyboard(self, enabled: bool, keyboard_layout: str = "qwertz") -> None:
+            keyboard_layout = _normalize_project_c64_keyboard_layout(keyboard_layout)
+            self._syncing = True
+            try:
+                self.screen_keyboard_checkbox.setChecked(bool(enabled))
+                index = self.keyboard_layout_combo.findData(keyboard_layout)
+                self.keyboard_layout_combo.setCurrentIndex(max(0, index))
+            finally:
+                self._syncing = False
+
+        def _environment_changed(self, _value=False) -> None:
+            if self._syncing:
+                return
+            callback = getattr(
+                self.owner, "set_project_c64_environment_settings", None
+            )
+            if callable(callback):
+                callback(
+                    self.profile,
+                    self.screen_keyboard_enabled(),
+                    self.keyboard_layout(),
+                )
+
+        def optimizer_enabled(self) -> bool:
+            return bool(self.optimizer_enabled_checkbox.isChecked())
+
+        def optimizer_strategy(self) -> str:
+            for strategy, radio in self.strategy_buttons.items():
+                if radio.isChecked():
+                    return strategy
+            return "direct"
+
+        def set_optimizer(self, enabled: bool, strategy: str) -> None:
+            strategy = _normalize_project_c64_optimizer_strategy(strategy)
+            self._syncing = True
+            try:
+                self.optimizer_enabled_checkbox.setChecked(bool(enabled))
+                self.strategy_buttons[strategy].setChecked(True)
+                for radio in self.strategy_buttons.values():
+                    radio.setEnabled(bool(enabled))
+            finally:
+                self._syncing = False
+
+        def _optimizer_changed(self, _checked=False) -> None:
+            enabled = self.optimizer_enabled()
+            for radio in self.strategy_buttons.values():
+                radio.setEnabled(enabled)
+            if self._syncing:
+                return
+            callback = getattr(self.owner, "set_project_c64_optimizer_settings", None)
+            if callable(callback):
+                callback(self.profile, enabled, self.optimizer_strategy())
+
+        def packer_enabled(self) -> bool:
+            return bool(self.packer_enabled_checkbox.isChecked())
+
+        def packer_mode(self) -> str:
+            for mode, radio in self.packer_mode_buttons.items():
+                if radio.isChecked():
+                    return mode
+            return "none"
+
+        def packer_search_mode(self) -> str:
+            for search, radio in self.packer_search_buttons.items():
+                if radio.isChecked():
+                    return search
+            return "balanced"
+
+        def packer_include_decruncher_source(self) -> bool:
+            return bool(self.packer_include_decruncher_source_checkbox.isChecked())
+
+        def set_packer(
+            self,
+            enabled: bool,
+            mode: str,
+            search: str,
+            include_decruncher_source: bool = True,
+        ) -> None:
+            mode = _normalize_project_c64_packer_mode(mode)
+            search = _normalize_project_c64_packer_search(search)
+            self._syncing = True
+            try:
+                self.packer_enabled_checkbox.setChecked(bool(enabled))
+                self.packer_mode_buttons[mode].setChecked(True)
+                self.packer_search_buttons[search].setChecked(True)
+                self.packer_include_decruncher_source_checkbox.setChecked(
+                    bool(include_decruncher_source)
+                )
+                self.packer_include_decruncher_source_checkbox.setEnabled(bool(enabled))
+                for radio in self.packer_mode_buttons.values():
+                    radio.setEnabled(bool(enabled))
+                # Packsuche hat nur für LZ/Auto Einfluss.
+                search_enabled = bool(enabled) and mode in {"lz", "auto"}
+                self.packer_search_groupbox.setEnabled(search_enabled)
+            finally:
+                self._syncing = False
+
+        def _packer_changed(self, _checked=False) -> None:
+            enabled = self.packer_enabled()
+            mode = self.packer_mode()
+            for radio in self.packer_mode_buttons.values():
+                radio.setEnabled(enabled)
+            self.packer_search_groupbox.setEnabled(enabled and mode in {"lz", "auto"})
+            self.packer_include_decruncher_source_checkbox.setEnabled(enabled)
+            if self._syncing:
+                return
+            callback = getattr(self.owner, "set_project_c64_packer_settings", None)
+            if callable(callback):
+                callback(
+                    self.profile,
+                    enabled,
+                    mode,
+                    self.packer_search_mode(),
+                    self.packer_include_decruncher_source(),
+                )
+
+
     class ProjectSettingsPanel(QWidget):
         """Stage 197: getrennte Windows-ABIs plus relative/absolute Pfadansicht."""
 
         def __init__(self, owner, parent=None):
             super().__init__(parent)
             self.owner = owner
+            self.setObjectName("project_settings_panel")
             root_layout = QVBoxLayout(self)
             root_layout.setContentsMargins(8, 8, 8, 8)
             root_layout.setSpacing(6)
@@ -52440,11 +55513,22 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 "pe64": self.windows_pe64_page,
             }
 
-            for page, title in ((self.amiga_tab, "AMIGA"), (self.c64_tab, "C= 64")):
-                layout = QVBoxLayout(page)
-                label = QLabel(f"{title}-Projekteinstellungen", page)
-                layout.addWidget(label)
-                layout.addStretch(1)
+            amiga_layout = QVBoxLayout(self.amiga_tab)
+            amiga_layout.addWidget(QLabel("AMIGA-Projekteinstellungen", self.amiga_tab))
+            amiga_layout.addStretch(1)
+
+            c64_layout = QVBoxLayout(self.c64_tab)
+            c64_layout.setContentsMargins(0, 0, 0, 0)
+            self.c64_arch_tabs = QTabWidget(self.c64_tab)
+            self.c64_arch_tabs.setObjectName("project_settings_c64_architecture_tabs")
+            c64_layout.addWidget(self.c64_arch_tabs, 1)
+            self.c64_pages = {}
+            for _profile in ("68000", "68020", "68030"):
+                _page = C64CompilerSettingsPage(owner, _profile, self.c64_arch_tabs)
+                self.c64_arch_tabs.addTab(_page, _profile)
+                self.c64_pages[_profile] = _page
+            self._syncing_c64_profile = False
+            self.c64_arch_tabs.currentChanged.connect(self._c64_profile_changed)
 
         @staticmethod
         def _target_key(target: str) -> str:
@@ -52488,6 +55572,94 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.page_for_target(target).set_relative_modes(
                 input_relative, output_relative
             )
+
+        def set_c64_screen_keyboard(
+            self, profile: str, enabled: bool, keyboard_layout: str = "qwertz"
+        ) -> None:
+            page = self.c64_pages.get(str(profile))
+            if page is not None:
+                page.set_screen_keyboard(enabled, keyboard_layout)
+
+        def c64_screen_keyboard(self, profile: str) -> bool:
+            page = self.c64_pages.get(str(profile))
+            if page is None:
+                return False
+            return page.screen_keyboard_enabled()
+
+        def c64_keyboard_layout(self, profile: str) -> str:
+            page = self.c64_pages.get(str(profile))
+            if page is None:
+                return "qwertz"
+            return page.keyboard_layout()
+
+        def set_dark_mode(self, enabled: bool) -> None:
+            # Stage ASM 60: GroupBox-Titel in den Projekteinstellungen muessen
+            # unabhängig von nativer Windows-Palette lesbar bleiben.
+            color = "#ffffff" if bool(enabled) else "#000000"
+            self.setStyleSheet(
+                "QWidget#project_settings_panel QGroupBox { color: " + color + "; }"
+                "QWidget#project_settings_panel QGroupBox::title { color: " + color + "; }"
+            )
+
+        def set_c64_optimizer(self, profile: str, enabled: bool, strategy: str) -> None:
+            profile = str(profile)
+            page = self.c64_pages.get(profile)
+            if page is not None:
+                page.set_optimizer(enabled, strategy)
+
+        def c64_optimizer(self, profile: str) -> Tuple[bool, str]:
+            profile = str(profile)
+            page = self.c64_pages.get(profile)
+            if page is None:
+                return True, "direct"
+            return page.optimizer_enabled(), page.optimizer_strategy()
+
+        def set_c64_packer(
+            self,
+            profile: str,
+            enabled: bool,
+            mode: str,
+            search: str,
+            include_decruncher_source: bool = True,
+        ) -> None:
+            profile = str(profile)
+            page = self.c64_pages.get(profile)
+            if page is not None:
+                page.set_packer(
+                    enabled, mode, search, include_decruncher_source
+                )
+
+        def c64_packer(self, profile: str) -> Tuple[bool, str, str, bool]:
+            profile = str(profile)
+            page = self.c64_pages.get(profile)
+            if page is None:
+                return False, "none", "balanced", True
+            return (
+                page.packer_enabled(),
+                page.packer_mode(),
+                page.packer_search_mode(),
+                page.packer_include_decruncher_source(),
+            )
+
+        def select_c64_profile(self, profile: str) -> None:
+            profile = str(profile)
+            if profile not in self.c64_pages:
+                profile = "68000"
+            self._syncing_c64_profile = True
+            try:
+                self.tabs.setCurrentWidget(self.c64_tab)
+                self.c64_arch_tabs.setCurrentWidget(self.c64_pages[profile])
+            finally:
+                self._syncing_c64_profile = False
+
+        def _c64_profile_changed(self, index: int) -> None:
+            if self._syncing_c64_profile:
+                return
+            widget = self.c64_arch_tabs.widget(index)
+            profile = str(getattr(widget, "profile", "68000"))
+            callback = getattr(self.owner, "set_project_c64_active_profile", None)
+            if callable(callback):
+                callback(profile)
 
         def select_windows_target(self, target: str) -> None:
             key = self._target_key(target)
@@ -52618,6 +55790,11 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.dbase_report_builder_widget = None
             self._dbase_report_workspace_active = False
             self._dbase_report_workspace_state = {}
+            # Stage ASM 73: visueller dBase Etiketten Designer.
+            self.dbase_label_designer_dock = None
+            self.dbase_label_designer_widget = None
+            self._dbase_label_workspace_active = False
+            self._dbase_label_workspace_state = {}
             self.settings_dock = None
             self.settings_panel = None
             self.project_settings_dock = None
@@ -52641,6 +55818,31 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.project_windows_workstation_mode: Dict[str, bool] = {
                 "pe32": False,
                 "pe64": False,
+            }
+            self.project_c64_active_profile = "68000"
+            self.project_c64_screen_keyboard: Dict[str, bool] = {
+                "68000": False, "68020": False, "68030": False,
+            }
+            self.project_c64_keyboard_layout: Dict[str, str] = {
+                "68000": "qwertz", "68020": "qwertz", "68030": "qwertz",
+            }
+            self.project_c64_optimizer_enabled: Dict[str, bool] = {
+                "68000": True, "68020": True, "68030": True,
+            }
+            self.project_c64_optimizer_strategy: Dict[str, str] = {
+                "68000": "direct", "68020": "direct", "68030": "direct",
+            }
+            self.project_c64_packer_enabled: Dict[str, bool] = {
+                "68000": False, "68020": False, "68030": False,
+            }
+            self.project_c64_packer_mode: Dict[str, str] = {
+                "68000": "none", "68020": "none", "68030": "none",
+            }
+            self.project_c64_packer_search: Dict[str, str] = {
+                "68000": "balanced", "68020": "balanced", "68030": "balanced",
+            }
+            self.project_c64_packer_include_decruncher_source: Dict[str, bool] = {
+                "68000": True, "68020": True, "68030": True,
             }
             self._project_settings_workspace_active = False
             self._project_settings_workspace_state = {}
@@ -52683,6 +55885,11 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
 
             self.current_project_path = None
             self.project_modified = False
+            # Stage ASM 70: projektspezifische Session-Geometrie/MRU.
+            self._last_opened_c64_basic_path = None
+            self._project_session_geometry_restore_target = {}
+            self._protocol_dock_last_height = 190
+            self._protocol_dock_last_width = 0
             self.project_root_items = {}
             self.project_prolog_knowledge_root = None
             self.prolog_knowledge_dialog = None
@@ -53852,6 +57059,13 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     "Neuen dBase Bericht mit Kopf-, Detail- und Fußbereichen öffnen",
                 )
             )
+            self.compact_new_actions["dbase"]["labels"] = (
+                self._make_compact_new_action(
+                    "Etiketten",
+                    self.show_dbase_label_designer,
+                    "dBase-Etiketten-Designer mit Formatbibliothek und Tabellen-/SQL-Feldern öffnen",
+                )
+            )
 
             # Die bisherigen Sprachaktionen werden nicht gelöscht.  Sie werden
             # als zielgebundene Proxy-Aktionen in die passenden neuen Untermenüs
@@ -53928,6 +57142,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     submenu.addAction(actions["table"])
                     submenu.addAction(actions["sql_builder"])
                     submenu.addAction(actions["report"])
+                    submenu.addAction(actions["labels"])
 
                 legacy_actions = self.compact_new_legacy_actions.get(
                     profile_key, ()
@@ -57687,6 +60902,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             for active_name, state_name in (
                 ("_dbase_sql_workspace_active", "_dbase_sql_workspace_state"),
                 ("_dbase_report_workspace_active", "_dbase_report_workspace_state"),
+                ("_dbase_label_workspace_active", "_dbase_label_workspace_state"),
                 ("_dbase_table_workspace_active", "_dbase_table_workspace_state"),
                 ("_dbase_form_workspace_active", "_dbase_form_workspace_state"),
                 ("_settings_workspace_active", "_settings_workspace_state"),
@@ -57947,6 +61163,110 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 return False
             self._register_report_in_project(path)
             self.statusBar().showMessage(f"Bericht geöffnet: {path.name}", 6000)
+            return True
+
+        # -------------------------------------------------------------------
+        # Stage ASM 73: dBase Etiketten Designer.
+        # -------------------------------------------------------------------
+        def _ensure_dbase_label_designer(self) -> None:
+            if self.dbase_label_designer_dock is not None:
+                return
+            panel = DBaseLabelDesignerWidget(self, self)
+            panel.set_dark_mode(self.dark_mode_enabled)
+            dock = QDockWidget("Etiketten Designer", self)
+            dock.setObjectName("dbase_label_designer_dock")
+            dock.setFeatures(self._dock_features())
+            dock.setAllowedAreas(
+                Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea
+                | Qt.TopDockWidgetArea | Qt.BottomDockWidgetArea
+            )
+            dock.setMinimumWidth(760)
+            dock.setMinimumHeight(460)
+            dock.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            dock.setWidget(panel)
+            dock.setTitleBarWidget(DockTitleBar(dock))
+            self.addDockWidget(Qt.LeftDockWidgetArea, dock)
+            self.dbase_label_designer_widget = panel
+            self.dbase_label_designer_dock = dock
+            self._assign_widget_property_ids(dock)
+            dock.visibilityChanged.connect(self._dbase_label_visibility_changed)
+            dock.hide()
+
+        def _enter_dbase_label_workspace(self) -> None:
+            if self._dbase_label_workspace_active:
+                return
+            central = self.centralWidget()
+            left = getattr(self, "left_dock", None)
+            self._dbase_label_workspace_state = {
+                "central": bool(central is not None and central.isVisible()),
+                "left": bool(left is not None and left.isVisible()),
+            }
+            self._dbase_label_workspace_active = True
+            if left is not None:
+                left.hide()
+            if central is not None:
+                central.hide()
+
+        def _restore_dbase_label_workspace(self) -> None:
+            if not self._dbase_label_workspace_active:
+                return
+            state = dict(self._dbase_label_workspace_state or {})
+            self._dbase_label_workspace_active = False
+            self._dbase_label_workspace_state = {}
+            central = self.centralWidget()
+            if central is not None and bool(state.get("central", True)):
+                central.show()
+            left = getattr(self, "left_dock", None)
+            if left is not None:
+                if bool(state.get("left", False)):
+                    left.show()
+                else:
+                    left.hide()
+
+        def _dbase_label_visibility_changed(self, visible: bool) -> None:
+            if self._dbase_label_workspace_active and not bool(visible):
+                QTimer.singleShot(0, self._restore_dbase_label_workspace)
+
+        def show_dbase_label_designer(self) -> None:
+            self._ensure_dbase_label_designer()
+            self._close_docks_except_project(self.dbase_label_designer_dock)
+            self._enter_dbase_label_workspace()
+            self.dbase_label_designer_widget.set_dark_mode(self.dark_mode_enabled)
+            self.dbase_label_designer_dock.show()
+            self.dbase_label_designer_dock.raise_()
+            self.resizeDocks([self.dbase_label_designer_dock], [100000], Qt.Horizontal)
+            self.resizeDocks([self.dbase_label_designer_dock], [100000], Qt.Vertical)
+            self.dbase_label_designer_widget.format_list.setFocus(Qt.OtherFocusReason)
+            self.statusBar().showMessage("dBase Etiketten Designer geöffnet")
+
+        # Stage ASM 76: Etikettenlayouts sind echte dBase-Projektressourcen.
+        def _register_label_in_project(self, path: Path) -> None:
+            try:
+                path = Path(path).expanduser().resolve()
+            except OSError:
+                path = Path(path).expanduser()
+            if path.suffix.casefold() != ".d64label":
+                return
+            self._ensure_project_for_new_document()
+            child = self._add_project_dbase_entry("labels", path, title=path.name)
+            if child is not None:
+                self.project_tree.setCurrentItem(child)
+                if self.current_project_path is not None:
+                    self.save_project()
+
+        def open_dbase_label_file(self, path: Path) -> bool:
+            path = Path(path)
+            if not path.is_file():
+                self.show_error("Etikett nicht gefunden", f"Datei nicht gefunden:\n{path}")
+                return False
+            self.show_dbase_label_designer()
+            if self.dbase_label_designer_widget is None:
+                return False
+            if not self.dbase_label_designer_widget.load_layout(path):
+                return False
+            self._register_label_in_project(path)
+            self._remember_recent_file(path)
+            self.statusBar().showMessage(f"Etikett geöffnet: {path.name}", 6000)
             return True
 
         # -------------------------------------------------------------------
@@ -58353,10 +61673,24 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             dock.setObjectName("project_settings_dock")
             dock.setFeatures(self._dock_features())
             dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
-            dock.setMinimumWidth(640)
-            dock.setMinimumHeight(420)
-            dock.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-            panel = ProjectSettingsPanel(self, dock)
+            # Stage ASM 61: Das Settings-Dock darf niemals eine vergroesserte
+            # Hauptfensterbreite erzwingen. Ein Scroll-Viewport entkoppelt die
+            # Mindestbreite des eigentlichen Settings-Panels vom QMainWindow.
+            dock.setMinimumWidth(260)
+            dock.setMinimumHeight(240)
+            dock.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+            scroll = QScrollArea(dock)
+            scroll.setObjectName("project_settings_scroll_area")
+            scroll.setWidgetResizable(True)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            scroll.setSizeAdjustPolicy(QAbstractScrollArea.AdjustIgnored)
+            scroll.setFrameShape(QFrame.NoFrame)
+            scroll.setMinimumSize(0, 0)
+            panel = ProjectSettingsPanel(self, scroll)
+            # Unterhalb dieser Groesse scrollt der Viewport, statt das
+            # Hauptfenster oder den Dock-Bereich breiter zu machen.
+            panel.setMinimumSize(760, 520)
             for _target in ("pe32", "pe64"):
                 _modes = self.project_windows_relative_paths.get(
                     _target, {"input": True, "output": True}
@@ -58382,7 +61716,28 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     _target,
                     self.project_windows_workstation_mode.get(_target, False),
                 )
-            dock.setWidget(panel)
+            for _profile in PROJECT_C64_OPTIMIZER_PROFILES:
+                panel.set_c64_screen_keyboard(
+                    _profile,
+                    self.project_c64_screen_keyboard.get(_profile, False),
+                    self.project_c64_keyboard_layout.get(_profile, "qwertz"),
+                )
+                panel.set_c64_optimizer(
+                    _profile,
+                    self.project_c64_optimizer_enabled.get(_profile, True),
+                    self.project_c64_optimizer_strategy.get(_profile, "direct"),
+                )
+                panel.set_c64_packer(
+                    _profile,
+                    self.project_c64_packer_enabled.get(_profile, False),
+                    self.project_c64_packer_mode.get(_profile, "none"),
+                    self.project_c64_packer_search.get(_profile, "balanced"),
+                    self.project_c64_packer_include_decruncher_source.get(_profile, True),
+                )
+            panel.select_c64_profile(self.project_c64_active_profile)
+            panel.set_dark_mode(self.application_dark_mode(self.dark_mode_enabled))
+            scroll.setWidget(panel)
+            dock.setWidget(scroll)
             dock.setTitleBarWidget(DockTitleBar(dock))
 
             # Stage 187: Das Projekt-Settings-Dock gehört zwischen das
@@ -58393,6 +61748,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 self.splitDockWidget(left, dock, Qt.Horizontal)
 
             self.project_settings_panel = panel
+            self.project_settings_scroll_area = scroll
             self.project_settings_dock = dock
             self._assign_widget_property_ids(dock)
             dock.visibilityChanged.connect(
@@ -58404,44 +61760,31 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             if self._project_settings_workspace_active:
                 return
 
-            if self._settings_workspace_active:
-                if self.settings_dock is not None:
-                    self.settings_dock.hide()
-                self._restore_settings_workspace()
-            if self._dbase_table_workspace_active:
-                if self.dbase_table_designer_dock is not None:
-                    self.dbase_table_designer_dock.hide()
-                self._restore_dbase_table_workspace()
-            if self._dbase_form_workspace_active:
-                if self.dbase_form_property_dock is not None:
-                    self.dbase_form_property_dock.hide()
-                if self.dbase_form_designer_dock is not None:
-                    self.dbase_form_designer_dock.hide()
-                self._restore_dbase_form_workspace()
-
             central = self.centralWidget()
-            left = getattr(self, "left_dock", None)
-            right = getattr(self, "right_dock", None)
-            bottom = getattr(self, "bottom_dock", None)
-            self._project_settings_workspace_state = {
+            keep = getattr(self, "project_settings_dock", None)
+            dock_states = []
+            for dock in self.findChildren(QDockWidget):
+                if dock is keep:
+                    continue
+                dock_states.append((dock, bool(dock.isVisible())))
+            state = {
                 "central": bool(central is not None and central.isVisible()),
-                "left": bool(left is not None and left.isVisible()),
-                "right": bool(right is not None and right.isVisible()),
-                "bottom": bool(bottom is not None and bottom.isVisible()),
+                "docks": dock_states,
             }
+
+            # Stage ASM 48: vor Projekt-Einstellungen wirklich alle Docks
+            # außer Projekt/Informationen schließen. Der vorhandene Stage-45-
+            # Helper blockiert dabei Restore-Callbacks anderer Workspaces.
+            self._close_docks_except_project(keep_dock=keep)
+            self._project_settings_workspace_state = state
             self._project_settings_workspace_active = True
 
-            # Die Mitte wird vollständig dem Projekt-Settings-Dock überlassen.
             if central is not None:
                 central.hide()
-            if bottom is not None and bottom.isVisible():
-                bottom.hide()
-            if left is not None:
-                left.show()
-                left.raise_()
-            if right is not None:
-                right.show()
-                right.raise_()
+            project_dock = getattr(self, "right_dock", None)
+            if project_dock is not None:
+                project_dock.show()
+                project_dock.raise_()
 
         def _restore_project_settings_workspace(self) -> None:
             if not self._project_settings_workspace_active:
@@ -58451,26 +61794,31 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             self._project_settings_workspace_state = {}
 
             central = self.centralWidget()
-            if central is not None and bool(state.get("central", True)):
-                central.show()
-            for name, attr in (
-                ("left", "left_dock"),
-                ("right", "right_dock"),
-                ("bottom", "bottom_dock"),
-            ):
-                dock = getattr(self, attr, None)
-                if dock is None:
+            if central is not None:
+                central.setVisible(bool(state.get("central", True)))
+
+            for dock, visible in state.get("docks", ()):
+                if dock is None or dock is getattr(self, "project_settings_dock", None):
                     continue
-                if bool(state.get(name, False)):
-                    dock.show()
-                else:
-                    dock.hide()
+                try:
+                    old_blocked = dock.blockSignals(True)
+                    dock.setVisible(bool(visible))
+                    dock.blockSignals(old_blocked)
+                except RuntimeError:
+                    pass
 
         def _project_settings_dock_visibility_changed(self, visible: bool) -> None:
             if self._project_settings_workspace_active and not bool(visible):
                 QTimer.singleShot(0, self._restore_project_settings_workspace)
 
         def show_project_settings_dock(self, _checked: bool = False) -> None:
+            # Stage ASM 61: Die aktuelle Hauptfensterbreite ist verbindlich.
+            # Projekt-Einstellungen muessen sich in diese Breite einpassen und
+            # bei Platzmangel horizontal/vertikal scrollen.
+            _window_width_before_project_settings = int(self.width())
+            _window_height_before_project_settings = int(self.height())
+            _window_was_maximized = bool(self.isMaximized())
+            _window_was_fullscreen = bool(self.isFullScreen())
             self._ensure_project_settings_dock()
             self._enter_project_settings_workspace()
             for _target in ("pe32", "pe64"):
@@ -58498,17 +61846,40 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     _target,
                     self.project_windows_workstation_mode.get(_target, False),
                 )
+            for _profile in PROJECT_C64_OPTIMIZER_PROFILES:
+                self.project_settings_panel.set_c64_screen_keyboard(
+                    _profile,
+                    self.project_c64_screen_keyboard.get(_profile, False),
+                    self.project_c64_keyboard_layout.get(_profile, "qwertz"),
+                )
+                self.project_settings_panel.set_c64_optimizer(
+                    _profile,
+                    self.project_c64_optimizer_enabled.get(_profile, True),
+                    self.project_c64_optimizer_strategy.get(_profile, "direct"),
+                )
+                self.project_settings_panel.set_c64_packer(
+                    _profile,
+                    self.project_c64_packer_enabled.get(_profile, False),
+                    self.project_c64_packer_mode.get(_profile, "none"),
+                    self.project_c64_packer_search.get(_profile, "balanced"),
+                    self.project_c64_packer_include_decruncher_source.get(_profile, True),
+                )
+            self.project_settings_panel.select_c64_profile(
+                self.project_c64_active_profile
+            )
             self.project_settings_dock.show()
             self.project_settings_dock.raise_()
 
             left = getattr(self, "left_dock", None)
             if left is not None:
-                left.show()
-                self.resizeDocks(
-                    [left, self.project_settings_dock],
-                    [320, 100000],
-                    Qt.Horizontal,
-                )
+                left.hide()
+            # QScrollArea uebernimmt Platzmangel; kein 100000-Pixel-Wunsch,
+            # der unter Windows eine neue Hauptfensterbreite provozieren kann.
+            self.resizeDocks(
+                [self.project_settings_dock],
+                [max(260, _window_width_before_project_settings)],
+                Qt.Horizontal,
+            )
             right = getattr(self, "right_dock", None)
             if right is not None:
                 right.show()
@@ -58523,16 +61894,38 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             _active_target = str(
                 getattr(current, "build_target", "pe32") or "pe32"
             ).casefold()
-            if _active_target not in {"pe32", "pe64"}:
-                _active_target = "pe32"
-            self.project_settings_panel.select_windows_target(_active_target)
-            _page = self.project_settings_panel.page_for_target(_active_target)
-            _page.tree.setCurrentItem(_page.compiler_input_directories_item)
-            _page.directory_edit.setFocus(Qt.OtherFocusReason)
-            self.statusBar().showMessage(
-                "Projekt-Einstellungen geöffnet: "
-                + ("Windows 64-Bit" if _active_target == "pe64" else "Windows 32-Bit")
-            )
+            if _active_target == "c64":
+                _profile = self.project_c64_active_profile
+                self.project_settings_panel.select_c64_profile(_profile)
+                _page = self.project_settings_panel.c64_pages[_profile]
+                _page.tree.setCurrentItem(_page.compiler_optimizer_item)
+                _page.optimizer_enabled_checkbox.setFocus(Qt.OtherFocusReason)
+                self.statusBar().showMessage(
+                    f"Projekt-Einstellungen geöffnet: C=64 / {_profile} / Optimizer"
+                )
+            else:
+                if _active_target not in {"pe32", "pe64"}:
+                    _active_target = "pe32"
+                self.project_settings_panel.select_windows_target(_active_target)
+                _page = self.project_settings_panel.page_for_target(_active_target)
+                _page.tree.setCurrentItem(_page.compiler_input_directories_item)
+                _page.directory_edit.setFocus(Qt.OtherFocusReason)
+                self.statusBar().showMessage(
+                    "Projekt-Einstellungen geöffnet: "
+                    + ("Windows 64-Bit" if _active_target == "pe64" else "Windows 32-Bit")
+                )
+
+            def _restore_project_settings_window_width() -> None:
+                if _window_was_maximized or _window_was_fullscreen:
+                    return
+                if self.width() != _window_width_before_project_settings:
+                    self.resize(
+                        _window_width_before_project_settings,
+                        _window_height_before_project_settings,
+                    )
+
+            _restore_project_settings_window_width()
+            QTimer.singleShot(0, _restore_project_settings_window_width)
 
         @staticmethod
         def _project_windows_target_key(target: str) -> str:
@@ -58582,6 +61975,751 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 return Path(relative_value).as_posix()
             except (OSError, RuntimeError, ValueError):
                 return absolute
+
+        def set_project_c64_environment_settings(
+            self,
+            profile: str,
+            screen_keyboard: bool,
+            keyboard_layout: str = "qwertz",
+            *,
+            mark_modified: bool = True,
+        ) -> None:
+            profile = str(profile or "68000").strip()
+            if profile not in PROJECT_C64_ENVIRONMENT_PROFILES:
+                profile = "68000"
+            screen_keyboard = bool(screen_keyboard)
+            keyboard_layout = _normalize_project_c64_keyboard_layout(keyboard_layout)
+            changed = (
+                bool(self.project_c64_screen_keyboard.get(profile, False)) != screen_keyboard
+                or _normalize_project_c64_keyboard_layout(
+                    self.project_c64_keyboard_layout.get(profile, "qwertz")
+                ) != keyboard_layout
+            )
+            self.project_c64_screen_keyboard[profile] = screen_keyboard
+            self.project_c64_keyboard_layout[profile] = keyboard_layout
+
+            panel = getattr(self, "project_settings_panel", None)
+            if panel is not None and hasattr(panel, "c64_pages"):
+                page = panel.c64_pages.get(profile)
+                if page is not None and (
+                    page.screen_keyboard_enabled() != screen_keyboard
+                    or page.keyboard_layout() != keyboard_layout
+                ):
+                    page.set_screen_keyboard(screen_keyboard, keyboard_layout)
+
+            if profile == str(getattr(self, "project_c64_active_profile", "68000")):
+                self._apply_project_c64_screen_keyboard_to_documents()
+
+            if changed and mark_modified:
+                self.set_project_modified(True)
+                if self.current_project_path is not None:
+                    self.save_project()
+
+        def set_project_c64_screen_keyboard_setting(
+            self,
+            profile: str,
+            enabled: bool,
+            *,
+            mark_modified: bool = True,
+        ) -> None:
+            profile = str(profile or "68000").strip()
+            if profile not in PROJECT_C64_ENVIRONMENT_PROFILES:
+                profile = "68000"
+            self.set_project_c64_environment_settings(
+                profile,
+                enabled,
+                self.project_c64_keyboard_layout.get(profile, "qwertz"),
+                mark_modified=mark_modified,
+            )
+
+        def set_project_c64_keyboard_layout_setting(
+            self,
+            profile: str,
+            keyboard_layout: str,
+            *,
+            mark_modified: bool = True,
+        ) -> None:
+            profile = str(profile or "68000").strip()
+            if profile not in PROJECT_C64_ENVIRONMENT_PROFILES:
+                profile = "68000"
+            self.set_project_c64_environment_settings(
+                profile,
+                self.project_c64_screen_keyboard.get(profile, False),
+                keyboard_layout,
+                mark_modified=mark_modified,
+            )
+
+        def _project_c64_screen_keyboard_configuration(self) -> Tuple[bool, str]:
+            profile = str(
+                getattr(self, "project_c64_active_profile", "68000") or "68000"
+            )
+            if profile not in PROJECT_C64_ENVIRONMENT_PROFILES:
+                profile = "68000"
+            return bool(self.project_c64_screen_keyboard.get(profile, False)), profile
+
+        def _project_c64_keyboard_layout_configuration(self) -> Tuple[str, str]:
+            profile = str(
+                getattr(self, "project_c64_active_profile", "68000") or "68000"
+            )
+            if profile not in PROJECT_C64_ENVIRONMENT_PROFILES:
+                profile = "68000"
+            return (
+                _normalize_project_c64_keyboard_layout(
+                    self.project_c64_keyboard_layout.get(profile, "qwertz")
+                ),
+                profile,
+            )
+
+        def _apply_project_c64_screen_keyboard_to_documents(self) -> None:
+            enabled, _profile = self._project_c64_screen_keyboard_configuration()
+            keyboard_layout, _layout_profile = (
+                self._project_c64_keyboard_layout_configuration()
+            )
+            tabs = getattr(self, "document_tabs", None)
+            if tabs is None:
+                return
+            for index in range(tabs.count()):
+                document = tabs.widget(index)
+                if not isinstance(document, DocumentEditor):
+                    continue
+                if document.source_language() != "basic":
+                    continue
+                document.set_basic_keyboard_layout(keyboard_layout)
+                document.set_basic_screen_keyboard_visible(enabled, notify=True)
+
+        def _infer_primary_side_dock_relationship(self) -> dict:
+            """Aktuelle Qt-Geometrie einmalig in eine Dockbeziehung uebersetzen.
+
+            Stage ASM 69 benutzt diese Heuristik nur noch als Fallback fuer alte
+            Projekte ohne ``PrimaryDockLayout``. Waehrend des Keyboard-Toggles
+            wird sie absichtlich NICHT mehr aufgerufen.
+            """
+            filesystem = getattr(self, "left_dock", None)
+            project = getattr(self, "right_dock", None)
+            result = {
+                "paired": False,
+                "area": int(Qt.NoDockWidgetArea),
+                "orientation": int(Qt.Vertical),
+                "first": "right_dock",
+                "second": "left_dock",
+                "sizes": [],
+                # Stage ASM 71: Breite des gesamten seitlichen Dockbereichs.
+                # Das ist die vom Benutzer verschiebbare Trennlinie zwischen
+                # Editor und Projekt/Dateisystem-Docks.
+                "area_width": 0,
+                "central_width": 0,
+                "separator_x": 0,
+            }
+            if filesystem is None or project is None:
+                return result
+            if filesystem.isFloating() or project.isFloating():
+                return result
+            fs_area = self.dockWidgetArea(filesystem)
+            pr_area = self.dockWidgetArea(project)
+            if fs_area != pr_area or fs_area not in (
+                Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea
+            ):
+                return result
+            if not filesystem.isVisible() or not project.isVisible():
+                return result
+
+            fs_rect = filesystem.geometry()
+            pr_rect = project.geometry()
+            fs_center = fs_rect.center()
+            pr_center = pr_rect.center()
+            dx = abs(fs_center.x() - pr_center.x())
+            dy = abs(fs_center.y() - pr_center.y())
+            orientation = Qt.Vertical if dy >= dx else Qt.Horizontal
+            if orientation == Qt.Vertical:
+                first_name, second_name = (
+                    ("left_dock", "right_dock")
+                    if fs_center.y() <= pr_center.y()
+                    else ("right_dock", "left_dock")
+                )
+                sizes = [
+                    int(getattr(self, first_name).height()),
+                    int(getattr(self, second_name).height()),
+                ]
+            else:
+                first_name, second_name = (
+                    ("left_dock", "right_dock")
+                    if fs_center.x() <= pr_center.x()
+                    else ("right_dock", "left_dock")
+                )
+                sizes = [
+                    int(getattr(self, first_name).width()),
+                    int(getattr(self, second_name).width()),
+                ]
+            _dock_union = fs_rect.united(pr_rect)
+            _central = self.centralWidget()
+            result.update({
+                "paired": True,
+                "area": int(fs_area),
+                "orientation": int(orientation),
+                "first": first_name,
+                "second": second_name,
+                "sizes": sizes,
+                "area_width": max(1, int(_dock_union.width())),
+                "central_width": (
+                    max(1, int(_central.width())) if _central is not None else 0
+                ),
+                "separator_x": int(
+                    _dock_union.right() if fs_area == Qt.LeftDockWidgetArea
+                    else _dock_union.left()
+                ),
+            })
+            return result
+
+        @staticmethod
+        def _copy_primary_side_dock_descriptor(descriptor: dict) -> dict:
+            if not isinstance(descriptor, dict):
+                return {}
+            return {
+                "paired": bool(descriptor.get("paired", False)),
+                "area": int(descriptor.get("area", int(Qt.NoDockWidgetArea)) or 0),
+                "orientation": int(
+                    descriptor.get("orientation", int(Qt.Vertical))
+                    or int(Qt.Vertical)
+                ),
+                "first": str(descriptor.get("first", "right_dock")),
+                "second": str(descriptor.get("second", "left_dock")),
+                "sizes": [
+                    max(1, int(value))
+                    for value in list(descriptor.get("sizes", ()))[:2]
+                ],
+                "area_width": max(
+                    0, int(descriptor.get("area_width", 0) or 0)
+                ),
+                "central_width": max(
+                    0, int(descriptor.get("central_width", 0) or 0)
+                ),
+                "separator_x": int(descriptor.get("separator_x", 0) or 0),
+            }
+
+        def _set_authoritative_primary_side_dock_layout(
+            self, descriptor: dict | None
+        ) -> None:
+            value = self._copy_primary_side_dock_descriptor(descriptor or {})
+            self._primary_side_dock_layout_descriptor = (
+                value if value.get("paired") else None
+            )
+
+        def _capture_primary_side_dock_relationship(self) -> dict:
+            """Autoritative Projekt/Dateisystem-Anordnung liefern.
+
+            Sie wird nur durch Benutzer-Snap bzw. Projektladen veraendert. Der
+            temporaere Bildschirmtastatur-Stack darf sie niemals neu bestimmen.
+            """
+            saved = getattr(self, "_primary_side_dock_layout_descriptor", None)
+            if isinstance(saved, dict) and saved.get("paired"):
+                # Stage ASM 70: Orientierung/Reihenfolge bleiben autoritativ,
+                # aber vom Benutzer veränderte Splittergrößen sind Geometrie
+                # und müssen beim Speichern den aktuellen Stand widerspiegeln.
+                value = self._copy_primary_side_dock_descriptor(saved)
+                if getattr(self, "_c64_keyboard_layout_snapshot", None) is None:
+                    first = getattr(self, value.get("first", ""), None)
+                    second = getattr(self, value.get("second", ""), None)
+                    if first is not None and second is not None:
+                        if int(value.get("orientation", int(Qt.Vertical))) == int(Qt.Horizontal):
+                            value["sizes"] = [max(1, first.width()), max(1, second.width())]
+                        else:
+                            value["sizes"] = [max(1, first.height()), max(1, second.height())]
+                        # Stage ASM 71: zusätzlich die Position des äußeren
+                        # QMainWindow-Dock-Separators gegenüber dem Editor sichern.
+                        _union = first.geometry().united(second.geometry())
+                        _central = self.centralWidget()
+                        value["area_width"] = max(1, int(_union.width()))
+                        value["central_width"] = (
+                            max(1, int(_central.width())) if _central is not None else 0
+                        )
+                        _area = int(value.get("area", 0) or 0)
+                        value["separator_x"] = int(
+                            _union.right()
+                            if _area == int(Qt.LeftDockWidgetArea)
+                            else _union.left()
+                        )
+                        self._set_authoritative_primary_side_dock_layout(value)
+                return value
+            inferred = self._infer_primary_side_dock_relationship()
+            if inferred.get("paired"):
+                self._set_authoritative_primary_side_dock_layout(inferred)
+            return inferred
+
+        def _apply_primary_side_dock_sizes(self, descriptor: dict) -> bool:
+            """Stage ASM 71: innere Dock-Splits UND Editor/Dock-Trennlinie setzen."""
+            if not isinstance(descriptor, dict) or not descriptor.get("paired"):
+                return False
+            first = getattr(self, str(descriptor.get("first", "")), None)
+            second = getattr(self, str(descriptor.get("second", "")), None)
+            if first is None or second is None:
+                return False
+            orientation = (
+                Qt.Horizontal
+                if int(descriptor.get("orientation", int(Qt.Vertical)))
+                == int(Qt.Horizontal)
+                else Qt.Vertical
+            )
+            sizes = [max(1, int(v)) for v in list(descriptor.get("sizes", ()))[:2]]
+            area_width = max(0, int(descriptor.get("area_width", 0) or 0))
+            try:
+                # Bei vertikal gestapelten Docks ist die horizontale Größe
+                # beider Docks die Position des Separators zum Zentraleditor.
+                if orientation == Qt.Vertical and area_width > 0:
+                    self.resizeDocks(
+                        [first, second], [area_width, area_width], Qt.Horizontal
+                    )
+                if len(sizes) == 2:
+                    self.resizeDocks([first, second], sizes, orientation)
+                return True
+            except Exception:
+                return False
+
+        def _restore_primary_side_dock_relationship(
+            self, descriptor: dict, *, update_authoritative: bool = False
+        ) -> bool:
+            if not isinstance(descriptor, dict) or not descriptor.get("paired"):
+                return False
+            _area_value = int(descriptor.get("area", 0) or 0)
+            if _area_value == int(Qt.LeftDockWidgetArea):
+                area = Qt.LeftDockWidgetArea
+            elif _area_value == int(Qt.RightDockWidgetArea):
+                area = Qt.RightDockWidgetArea
+            else:
+                area = Qt.NoDockWidgetArea
+            if area not in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea):
+                return False
+            first = getattr(self, str(descriptor.get("first", "")), None)
+            second = getattr(self, str(descriptor.get("second", "")), None)
+            if first is None or second is None:
+                return False
+            orientation = (
+                Qt.Horizontal
+                if int(descriptor.get("orientation", int(Qt.Vertical)))
+                == int(Qt.Horizontal)
+                else Qt.Vertical
+            )
+            # Stage ASM 69: Dock-Rekonstruktion darf die aeussere Fensterbreite
+            # nicht vergroessern. Der Wert wird vor dem Qt-Split gemerkt und
+            # nur dann zurueckgesetzt, falls Qt ihn eigenmaechtig vergroessert.
+            width_before = int(self.width())
+            self.addDockWidget(area, first)
+            first.setFloating(False)
+            first.show()
+            self.addDockWidget(area, second)
+            second.setFloating(False)
+            second.show()
+            self.splitDockWidget(first, second, orientation)
+            # Stage ASM 71: nicht nur den Split Projekt/Dateisystem, sondern
+            # auch die äußere Trennlinie zum Editor wiederherstellen.
+            self._apply_primary_side_dock_sizes(descriptor)
+            if int(self.width()) > width_before > 0:
+                self.resize(width_before, self.height())
+            if update_authoritative:
+                self._set_authoritative_primary_side_dock_layout(descriptor)
+            return True
+
+        def _capture_c64_keyboard_layout_snapshot(
+            self, document: DocumentEditor | None = None
+        ) -> None:
+            """Stage ASM 69: Zustand vor der Bildschirmtastatur sichern.
+
+            Die aeussere Fenstergeometrie wird nur dokumentiert; ein Toggle darf
+            sie nicht programmatisch vergroessern oder wiederherstellen.
+            """
+            if getattr(self, "_c64_keyboard_layout_snapshot", None) is not None:
+                return
+            primary_layout = self._capture_primary_side_dock_relationship()
+            snapshot = {
+                "geometry": bytes(self.saveGeometry()),
+                "window_width": int(self.width()),
+                "window_height": int(self.height()),
+                "state": bytes(self.saveState()),
+                "primary_layout": self._copy_primary_side_dock_descriptor(
+                    primary_layout
+                ),
+                "docks": {},
+            }
+            for name in ("left_dock", "right_dock"):
+                dock = getattr(self, name, None)
+                if dock is None:
+                    continue
+                _dock_geometry = dock.geometry()
+                snapshot["docks"][name] = {
+                    "visible": bool(dock.isVisible()),
+                    "floating": bool(dock.isFloating()),
+                    "area": int(self.dockWidgetArea(dock)),
+                    "x": int(_dock_geometry.x()),
+                    "y": int(_dock_geometry.y()),
+                    "width": int(dock.width()),
+                    "height": int(dock.height()),
+                    "geometry": bytes(dock.saveGeometry()),
+                }
+            self._c64_keyboard_layout_snapshot = snapshot
+            self._c64_keyboard_layout_owner = document
+            self.log(
+                "C64 Bildschirmtastatur: Docklayout zwischengespeichert "
+                "(Hauptfensterbreite bleibt unveraendert)"
+            )
+
+        def _stack_primary_docks_for_screen_keyboard(self, snapshot: dict) -> None:
+            """Bei sichtbarer Dateiansicht temporaer Projekt oben/Dateien unten.
+
+            Der autoritative Projektzustand wird dabei NICHT veraendert.
+            """
+            docks = snapshot.get("docks", {}) if isinstance(snapshot, dict) else {}
+            if not bool(docks.get("left_dock", {}).get("visible", False)):
+                return
+            project = getattr(self, "right_dock", None)
+            filesystem = getattr(self, "left_dock", None)
+            if project is None or filesystem is None:
+                return
+            descriptor = snapshot.get("primary_layout", {})
+            area = Qt.NoDockWidgetArea
+            if isinstance(descriptor, dict):
+                _area_value = int(descriptor.get("area", 0) or 0)
+                if _area_value == int(Qt.LeftDockWidgetArea):
+                    area = Qt.LeftDockWidgetArea
+                elif _area_value == int(Qt.RightDockWidgetArea):
+                    area = Qt.RightDockWidgetArea
+            if area not in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea):
+                for candidate in (project, filesystem):
+                    candidate_area = self.dockWidgetArea(candidate)
+                    if candidate_area in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea):
+                        area = candidate_area
+                        break
+            if area not in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea):
+                area = Qt.LeftDockWidgetArea
+
+            temporary = {
+                "paired": True,
+                "area": int(area),
+                "orientation": int(Qt.Vertical),
+                "first": "right_dock",
+                "second": "left_dock",
+                "sizes": [],
+                # Stage ASM 71: auch beim temporären Keyboard-Stack bleibt
+                # die Benutzerposition des Separators zum Editor unverändert.
+                "area_width": max(0, int(descriptor.get("area_width", 0) or 0))
+                if isinstance(descriptor, dict) else 0,
+                "central_width": max(0, int(descriptor.get("central_width", 0) or 0))
+                if isinstance(descriptor, dict) else 0,
+                "separator_x": int(descriptor.get("separator_x", 0) or 0)
+                if isinstance(descriptor, dict) else 0,
+            }
+            # Wenn vorher bereits vertikal gestapelt war, die vorhandenen
+            # Hoehen fuer den temporaeren Projekt-oben-Zustand uebernehmen.
+            if (
+                isinstance(descriptor, dict)
+                and descriptor.get("paired")
+                and int(descriptor.get("orientation", int(Qt.Vertical)))
+                == int(Qt.Vertical)
+            ):
+                old_sizes = list(descriptor.get("sizes", ()))[:2]
+                if len(old_sizes) == 2:
+                    if str(descriptor.get("first")) == "right_dock":
+                        temporary["sizes"] = [int(old_sizes[0]), int(old_sizes[1])]
+                    else:
+                        temporary["sizes"] = [int(old_sizes[1]), int(old_sizes[0])]
+
+            width_before = int(snapshot.get("window_width", self.width()) or self.width())
+            self._restore_primary_side_dock_relationship(
+                temporary, update_authoritative=False
+            )
+            if int(self.width()) > width_before > 0:
+                self.resize(width_before, self.height())
+            project.show()
+            filesystem.show()
+            self.log(
+                "C64 Bildschirmtastatur: Projekt temporaer ueber Dateisystem gestapelt"
+            )
+
+        def _restore_c64_keyboard_layout_snapshot(self) -> bool:
+            """Stage ASM 69: exakt den VOR-Tastatur-Dockzustand restaurieren.
+
+            Keine Geometrie-Heuristik und kein restoreGeometry(): dadurch bleiben
+            vertikale Stacks vertikal und die Fensterbreite kann nicht durch den
+            Toggle programmatisch wachsen.
+            """
+            snapshot = getattr(self, "_c64_keyboard_layout_snapshot", None)
+            if not snapshot:
+                return False
+            self._c64_keyboard_layout_snapshot = None
+            self._c64_keyboard_layout_owner = None
+            try:
+                width_before = int(self.width())
+                state = snapshot.get("state", b"")
+                if state:
+                    self.restoreState(QByteArray(state))
+
+                for name, info in snapshot.get("docks", {}).items():
+                    dock = getattr(self, name, None)
+                    if dock is None:
+                        continue
+                    if bool(info.get("floating", False)):
+                        dock_geometry = info.get("geometry", b"")
+                        if dock_geometry:
+                            dock.restoreGeometry(QByteArray(dock_geometry))
+                    dock.setVisible(bool(info.get("visible", False)))
+
+                # Ausschliesslich die vor dem Keyboard gespeicherte, autoritative
+                # Relation verwenden. Sie wird NICHT aus frischen Geometrien neu
+                # bestimmt. Nur ein Benutzer-Snap darf sie dauerhaft aendern.
+                primary_layout = self._copy_primary_side_dock_descriptor(
+                    snapshot.get("primary_layout", {})
+                )
+                if primary_layout.get("paired"):
+                    self._restore_primary_side_dock_relationship(
+                        primary_layout, update_authoritative=False
+                    )
+
+                # Weder restoreState() noch splitDockWidget() duerfen die von der
+                # Benutzerhand festgelegte aeussere Fensterbreite vergroessern.
+                if int(self.width()) > width_before > 0:
+                    self.resize(width_before, self.height())
+
+                if getattr(self, "document_tabs", None) is not None:
+                    self.document_tabs.updateGeometry()
+                QTimer.singleShot(0, self.updateGeometry)
+                self.log(
+                    "C64 Bildschirmtastatur: vorigen Dock-Stack wiederhergestellt "
+                    "(Fensterbreite unveraendert)"
+                )
+                return True
+            except Exception as exc:
+                self.log(
+                    f"C64 Bildschirmtastatur: Layout-Restore fehlgeschlagen: {exc}"
+                )
+                return False
+
+        def _c64_basic_keyboard_visibility_changed(
+            self, document: DocumentEditor, visible: bool
+        ) -> None:
+            # Stage ASM 68: Layout-Aenderungen gelten nur fuer den aktuell
+            # sichtbaren BASIC-Editor. Verdeckte Tabs duerfen die Hauptfenster-
+            # Docks nicht beeinflussen.
+            if bool(visible):
+                if document is not self.current_document():
+                    return
+                self._capture_c64_keyboard_layout_snapshot(document)
+                snapshot = getattr(self, "_c64_keyboard_layout_snapshot", None)
+                if isinstance(snapshot, dict):
+                    self._stack_primary_docks_for_screen_keyboard(snapshot)
+                return
+            owner = getattr(self, "_c64_keyboard_layout_owner", None)
+            if owner is not None and document is not owner:
+                return
+            self._restore_c64_keyboard_layout_snapshot()
+
+        def set_project_c64_active_profile(
+            self,
+            profile: str,
+            *,
+            mark_modified: bool = True,
+        ) -> None:
+            profile = str(profile or "68000").strip()
+            if profile not in PROJECT_C64_OPTIMIZER_PROFILES:
+                profile = "68000"
+            changed = str(getattr(self, "project_c64_active_profile", "68000")) != profile
+            self.project_c64_active_profile = profile
+            self._apply_project_c64_screen_keyboard_to_documents()
+            panel = getattr(self, "project_settings_panel", None)
+            if panel is not None and hasattr(panel, "c64_pages"):
+                current = panel.c64_arch_tabs.currentWidget()
+                if str(getattr(current, "profile", "")) != profile:
+                    panel.select_c64_profile(profile)
+            if changed and mark_modified:
+                self.set_project_modified(True)
+                if self.current_project_path is not None:
+                    self.save_project()
+
+        def set_project_c64_optimizer_settings(
+            self,
+            profile: str,
+            enabled: bool,
+            strategy: str,
+            *,
+            mark_modified: bool = True,
+        ) -> None:
+            profile = str(profile or "68000").strip()
+            if profile not in PROJECT_C64_OPTIMIZER_PROFILES:
+                profile = "68000"
+            strategy = _normalize_project_c64_optimizer_strategy(strategy)
+            enabled = bool(enabled)
+            old_enabled = bool(self.project_c64_optimizer_enabled.get(profile, True))
+            old_strategy = _normalize_project_c64_optimizer_strategy(
+                self.project_c64_optimizer_strategy.get(profile, "direct")
+            )
+            changed = old_enabled != enabled or old_strategy != strategy
+            self.project_c64_optimizer_enabled[profile] = enabled
+            self.project_c64_optimizer_strategy[profile] = strategy
+            panel = getattr(self, "project_settings_panel", None)
+            if panel is not None and hasattr(panel, "c64_pages"):
+                page = panel.c64_pages.get(profile)
+                if page is not None and (
+                    page.optimizer_enabled() != enabled
+                    or page.optimizer_strategy() != strategy
+                ):
+                    page.set_optimizer(enabled, strategy)
+            if changed and mark_modified:
+                self.set_project_modified(True)
+                if self.current_project_path is not None:
+                    self.save_project()
+
+        def _project_c64_optimizer_configuration(self) -> Tuple[bool, str, str]:
+            profile = str(getattr(self, "project_c64_active_profile", "68000") or "68000")
+            if profile not in PROJECT_C64_OPTIMIZER_PROFILES:
+                profile = "68000"
+            enabled = bool(self.project_c64_optimizer_enabled.get(profile, True))
+            strategy = _normalize_project_c64_optimizer_strategy(
+                self.project_c64_optimizer_strategy.get(profile, "direct")
+            )
+            return enabled, strategy, profile
+
+        def set_project_c64_packer_settings(
+            self,
+            profile: str,
+            enabled: bool,
+            mode: str,
+            search: str,
+            include_decruncher_source: bool = True,
+            *,
+            mark_modified: bool = True,
+        ) -> None:
+            profile = str(profile or "68000").strip()
+            if profile not in PROJECT_C64_PACKER_PROFILES:
+                profile = "68000"
+            enabled = bool(enabled)
+            mode = _normalize_project_c64_packer_mode(mode)
+            search = _normalize_project_c64_packer_search(search)
+            include_decruncher_source = bool(include_decruncher_source)
+            changed = (
+                bool(self.project_c64_packer_enabled.get(profile, False)) != enabled
+                or _normalize_project_c64_packer_mode(
+                    self.project_c64_packer_mode.get(profile, "none")
+                ) != mode
+                or _normalize_project_c64_packer_search(
+                    self.project_c64_packer_search.get(profile, "balanced")
+                ) != search
+                or bool(
+                    self.project_c64_packer_include_decruncher_source.get(profile, True)
+                ) != include_decruncher_source
+            )
+            self.project_c64_packer_enabled[profile] = enabled
+            self.project_c64_packer_mode[profile] = mode
+            self.project_c64_packer_search[profile] = search
+            self.project_c64_packer_include_decruncher_source[profile] = (
+                include_decruncher_source
+            )
+            panel = getattr(self, "project_settings_panel", None)
+            if panel is not None and hasattr(panel, "c64_pages"):
+                page = panel.c64_pages.get(profile)
+                if page is not None and (
+                    page.packer_enabled() != enabled
+                    or page.packer_mode() != mode
+                    or page.packer_search_mode() != search
+                    or page.packer_include_decruncher_source() != include_decruncher_source
+                ):
+                    page.set_packer(
+                        enabled, mode, search, include_decruncher_source
+                    )
+            if changed and mark_modified:
+                self.set_project_modified(True)
+                if self.current_project_path is not None:
+                    self.save_project()
+
+        def _project_c64_packer_configuration(self) -> Tuple[bool, str, str, bool, str]:
+            profile = str(getattr(self, "project_c64_active_profile", "68000") or "68000")
+            if profile not in PROJECT_C64_PACKER_PROFILES:
+                profile = "68000"
+            enabled = bool(self.project_c64_packer_enabled.get(profile, False))
+            mode = _normalize_project_c64_packer_mode(
+                self.project_c64_packer_mode.get(profile, "none")
+            )
+            search = _normalize_project_c64_packer_search(
+                self.project_c64_packer_search.get(profile, "balanced")
+            )
+            include_decruncher_source = bool(
+                self.project_c64_packer_include_decruncher_source.get(profile, True)
+            )
+            return enabled, mode, search, include_decruncher_source, profile
+
+        def _apply_c64_image_packer(self, program):
+            enabled, mode, search, include_decruncher_source, profile = (
+                self._project_c64_packer_configuration()
+            )
+            if not enabled or mode == "none":
+                return program, None
+            try:
+                from c64packer import C64PackerError, pack_c64_program
+                packed, stats = pack_c64_program(
+                    program,
+                    assemble_func=assemble_mos6510_source,
+                    mode=mode,
+                    search_mode=search,
+                    include_decruncher_source=include_decruncher_source,
+                )
+            except C64PackerError as exc:
+                raise AssemblerError(f"C64 Image Packer ({profile}/{mode}): {exc}") from exc
+            self.log(stats.message)
+            return packed, stats
+
+        def _open_c64_packed_assembly_editor(
+            self,
+            packer_stats,
+            output_path: Path,
+        ) -> Optional[DocumentEditor]:
+            """Stage 51: show the exact self-extracting image in a new ASM editor.
+
+            The text comes from c64packer and is guaranteed there to reassemble
+            byte-for-byte to the packed PRG.  The symbolic high-RAM decruncher
+            is appended as comments so inspecting it does not create sparse
+            high-memory bytes.  This special document is marked to bypass the
+            image-packer on a later Assemble click; otherwise the already
+            packed wrapper would be packed a second time.
+            """
+            if packer_stats is None:
+                return None
+            selected = str(
+                getattr(packer_stats, "selected_mode", "none") or "none"
+            ).casefold()
+            asm_source = str(getattr(packer_stats, "asm_source", "") or "")
+            if selected not in {"rle", "lz"} or not asm_source.strip():
+                return None
+
+            output_path = Path(output_path)
+            display_name = (
+                f"{output_path.stem}.D64PACK-{selected.upper()}.asm"
+            )
+            packed_document = self.new_document(
+                text=asm_source,
+                display_name=display_name,
+            )
+            packed_document.set_build_target("c64")
+            packed_document.d64pack_generated_source = True
+            packed_document.d64pack_output_path = Path(output_path).resolve()
+            packed_document.raw_editor.document().setModified(False)
+            packed_document.hints_editor.setPlainText(
+                "D64PACK-ASM des gepackten C64-Images\n"
+                "\n"
+                f"PRG          : {output_path}\n"
+                f"Packmodus    : {selected.upper()}\n"
+                f"Packsuche    : {getattr(packer_stats, 'search_mode', '')}\n"
+                f"Original     : {getattr(packer_stats, 'original_size', 0)} Bytes\n"
+                f"Gepackt      : {getattr(packer_stats, 'result_size', 0)} Bytes\n"
+                f"Stream       : {getattr(packer_stats, 'compressed_stream_size', 0)} Bytes\n"
+                f"Decruncher   : {getattr(packer_stats, 'decruncher_size', 0)} Bytes\n"
+                f"Decr.-Quelle : {'ja' if bool(getattr(packer_stats, 'include_decruncher_source', True)) else 'nein'}\n"
+                "\n"
+                "Dieser ASM-Tab repraesentiert das bereits gepackte Image.\n"
+                "Beim Assemblieren dieses Tabs wird der Image-Packer deshalb\n"
+                "nicht noch einmal auf das Ergebnis angewendet.\n"
+            )
+            packed_document.views.setCurrentWidget(packed_document.source_page)
+            packed_document.raw_editor.setFocus(Qt.OtherFocusReason)
+            self.statusBar().showMessage(
+                f"Gepackter ASM-Code geöffnet: {display_name}", 7000
+            )
+            return packed_document
 
         def set_project_windows_relative_paths(
             self,
@@ -59914,6 +64052,8 @@ border: 2px solid #2a69aa;
                     widget.set_dark_mode(enabled)
                 elif isinstance(widget, DBaseTableDesignerWidget):
                     widget.set_dark_mode(enabled)
+                elif isinstance(widget, DBaseLabelDesignerWidget):
+                    widget.set_dark_mode(enabled)
                 elif isinstance(widget, DBaseFormPropertyPanel):
                     widget.set_dark_mode(enabled)
                 elif isinstance(widget, MathematicsLearningDockWidget):
@@ -59924,6 +64064,12 @@ border: 2px solid #2a69aa;
                     widget.set_dark_mode(enabled)
                 elif isinstance(widget, DockTitleBar):
                     widget.set_dark_mode(enabled)
+                elif isinstance(widget, DockSnapOverlay):
+                    widget.set_dark_mode(enabled)
+
+            project_settings_panel = getattr(self, "project_settings_panel", None)
+            if project_settings_panel is not None:
+                project_settings_panel.set_dark_mode(enabled)
 
             # Stage 161: die WFM-Quellstruktur ist ein normales QTreeWidget
             # und besitzt deshalb einen eigenen Dark-/Light-Mode-Stil.
@@ -61102,6 +65248,8 @@ border: 2px solid #2a69aa;
                 self._apply_document_theme(existing)
                 existing.focus_preferred_editor()
                 self._remember_recent_file(path)
+                if existing.source_language() == "basic":
+                    self._last_opened_c64_basic_path = Path(path)
                 self.statusBar().showMessage(f"Bereits geöffnet: {path.name}")
                 return True
 
@@ -61153,6 +65301,8 @@ border: 2px solid #2a69aa;
                 language_override=language_override,
             )
             self._add_document_tab(document)
+            if document.source_language() == "basic":
+                self._last_opened_c64_basic_path = Path(path)
             document.focus_preferred_editor()
             if binary_disassembly_mode:
                 self._start_c64_document_disassembly(document, path)
@@ -61439,6 +65589,12 @@ border: 2px solid #2a69aa;
             document.find_next_requested.connect(
                 self.repeat_source_find
             )
+            document.basic_renumber_requested.connect(
+                self.renumber_c64_basic_document
+            )
+            document.basic_keyboard_visibility_changed.connect(
+                self._c64_basic_keyboard_visibility_changed
+            )
             # Stage 246: Projektmarker werden zuerst atomar in den Editor geladen,
             # danach synchronisieren weitere Gutter-Klicks zurück in den Baum.
             self._restore_project_markers_for_document(document)
@@ -61477,6 +65633,17 @@ border: 2px solid #2a69aa;
                 self._update_editor_status_panels
             )
             self.document_tabs.setCurrentWidget(document)
+            if document.source_language() == "basic":
+                _show_keyboard, _profile = (
+                    self._project_c64_screen_keyboard_configuration()
+                )
+                _keyboard_layout, _layout_profile = (
+                    self._project_c64_keyboard_layout_configuration()
+                )
+                document.set_basic_keyboard_layout(_keyboard_layout)
+                document.set_basic_screen_keyboard_visible(
+                    _show_keyboard, notify=True
+                )
             self._update_document_actions()
             self._update_document_tab(document)
             self._apply_document_theme(document)
@@ -61530,10 +65697,30 @@ border: 2px solid #2a69aa;
         def _current_document_changed(self, _index: int) -> None:
             self._update_document_actions()
             document = self.current_document()
+
+            # Stage ASM 68: Der temporaere Dockzustand gehoert ausschliesslich
+            # zum aktuell sichtbaren BASIC-Editor. Beim Tabwechsel oder wenn der
+            # letzte Editor geschlossen wird, zuerst den vorherigen Zustand
+            # zurueckholen. Ein neu aktiver BASIC-Tab mit sichtbarer Tastatur
+            # baut danach seinen eigenen temporaeren Stack auf.
+            _snapshot = getattr(self, "_c64_keyboard_layout_snapshot", None)
+            _owner = getattr(self, "_c64_keyboard_layout_owner", None)
+            if _snapshot is not None and document is not _owner:
+                self._restore_c64_keyboard_layout_snapshot()
+
             if document is None:
                 self.setWindowTitle("Qt5 D64- und Dateisystem-Explorer")
                 self._update_editor_status_panels()
                 return
+
+            if (
+                isinstance(document, DocumentEditor)
+                and document.is_basic_document
+                and document.basic_screen_keyboard_visible()
+                and getattr(self, "_c64_keyboard_layout_snapshot", None) is None
+            ):
+                self._c64_basic_keyboard_visibility_changed(document, True)
+
             self._update_document_tab(document)
             self._update_editor_status_panels()
 
@@ -61552,6 +65739,53 @@ border: 2px solid #2a69aa;
             self.save_as_action.setEnabled(has_document or has_form)
             self.close_document_action.setEnabled(has_document)
             self._update_edit_actions()
+
+        def renumber_c64_basic_document(self, document: DocumentEditor) -> None:
+            """Stage ASM 58: Gutter neu nummerieren und Quelle direkt speichern."""
+            if document is None or not document.is_basic_document:
+                return
+            self.document_tabs.setCurrentWidget(document)
+            try:
+                new_numbers, mapping = document.raw_editor.renumber_basic_lines(10)
+            except Exception as exc:
+                self.show_error(
+                    "BASIC-Zeilennummern",
+                    "Die C64-BASIC-Zeilennummern konnten nicht neu geordnet werden:\n\n"
+                    + str(exc),
+                )
+                return
+
+            document.invalidate_assembly_result("BASIC-Zeilennummern aktualisiert")
+            self._update_document_tab(document)
+            self._update_editor_status_panels()
+
+            # Der Benutzer hat explizit verlangt, dass Aktualisieren nicht nur
+            # den Gutter aendert, sondern auch die nummerierte Quelldatei. Bei
+            # einem noch unbenannten BASIC-Dokument wird deshalb derselbe
+            # Speichern-unter-Dialog wie bei Ctrl+S verwendet.
+            save_as = document.path is None
+            if not self._save_document(document, save_as=save_as):
+                self.statusBar().showMessage(
+                    "BASIC-Zeilennummern neu geordnet – Quelldatei noch nicht gespeichert"
+                )
+                return
+
+            if new_numbers:
+                step = new_numbers[0] if len(new_numbers) == 1 else (
+                    new_numbers[1] - new_numbers[0]
+                )
+                scheme = "10, 20, 30, ..." if step == 10 else f"Schrittweite {step}"
+            else:
+                scheme = "keine Zeilen"
+            changed_targets = sum(1 for old, new in mapping.items() if int(old) != int(new))
+            self.log(
+                f"C64 BASIC aktualisiert: {len(new_numbers)} Zeilen, {scheme}, "
+                f"{changed_targets} alte Zeilennummer(n) neu zugeordnet; "
+                "Ausdrucks-Leerzeichen kompakt formatiert."
+            )
+            self.statusBar().showMessage(
+                f"BASIC aktualisiert, Ausdrucke formatiert und gespeichert: {scheme}"
+            )
 
         def save_current_document(self) -> bool:
             if self._dbase_form_is_active():
@@ -61639,9 +65873,13 @@ border: 2px solid #2a69aa;
 
             try:
                 if save_disassembly_source:
-                    data = document.text_for_saving().encode("utf-8")
+                    data = document.text_for_saving(
+                        target.suffix.casefold()
+                    ).encode("utf-8")
                 else:
-                    data = document.data_for_saving()
+                    data = document.data_for_saving(
+                        target.suffix.casefold()
+                    )
                 target.parent.mkdir(parents=True, exist_ok=True)
                 file_descriptor, temporary_name = tempfile.mkstemp(
                     prefix=f".{target.name}.",
@@ -61660,7 +65898,7 @@ border: 2px solid #2a69aa;
                     except OSError:
                         pass
                     raise
-            except (OSError, UnicodeError) as exc:
+            except (OSError, UnicodeError, ValueError) as exc:
                 self.show_error(
                     "Datei konnte nicht gespeichert werden",
                     f"Die Datei wurde nicht gespeichert:\n{target}\n\n{exc}",
@@ -61670,6 +65908,8 @@ border: 2px solid #2a69aa;
 
             document.path = target.resolve()
             document.custom_display_name = None
+            if document.source_language() == "basic":
+                self._last_opened_c64_basic_path = Path(document.path)
             if save_disassembly_source:
                 # Aus der Binary-Ansicht wird nach dem Speichern eine normale
                 # ASM-Quelle. Hex-Editor und Rohdaten-Editor zeigen danach
@@ -61684,6 +65924,17 @@ border: 2px solid #2a69aa;
                 finally:
                     document._syncing_views = False
             document.update_syntax_highlighting()
+            if document.source_language() == "basic":
+                _show_keyboard, _profile = (
+                    self._project_c64_screen_keyboard_configuration()
+                )
+                _keyboard_layout, _layout_profile = (
+                    self._project_c64_keyboard_layout_configuration()
+                )
+                document.set_basic_keyboard_layout(_keyboard_layout)
+                document.set_basic_screen_keyboard_visible(
+                    _show_keyboard, notify=True
+                )
             self._apply_document_theme(document)
             if previous_path != document.path:
                 document.invalidate_assembly_result("Dateipfad geändert")
@@ -62040,16 +66291,28 @@ border: 2px solid #2a69aa;
             """C64 BASIC -> editierbarer MOS-6510-Assemblercode."""
             if document.build_target != "c64":
                 document.set_build_target("c64")
-            source = document.raw_editor.toPlainText()
             try:
                 from c64basic import C64BasicError, compile_basic_to_assembly
+                source = document.basic_source_for_compiler()
                 assembly_path = self._basic_assembly_output_path(document)
+                _optimizer_enabled, _optimizer_strategy, _optimizer_profile = (
+                    self._project_c64_optimizer_configuration()
+                )
                 generated = compile_basic_to_assembly(
                     source,
                     filename=str(document.path),
                     target="c64",
+                    optimizer_enabled=_optimizer_enabled,
+                    optimizer_strategy=_optimizer_strategy,
                 )
-            except (ImportError, C64BasicError) as exc:
+                self.statusBar().showMessage(
+                    "C64 BASIC Optimizer: "
+                    + (
+                        f"{_optimizer_profile} / {_optimizer_strategy}"
+                        if _optimizer_enabled else f"{_optimizer_profile} / deaktiviert"
+                    )
+                )
+            except (ImportError, C64BasicError, ValueError) as exc:
                 message = str(exc)
                 error_line = getattr(exc, "line", 0) or 0
                 document.show_assembly_error(
@@ -62833,6 +67096,7 @@ border: 2px solid #2a69aa;
                 self.show_error("Keine ASM-Daten", message)
                 return False
 
+            packer_stats = None
             try:
                 #from amiga500 import (
                 #    AmigaAssemblerError,
@@ -63000,6 +67264,8 @@ border: 2px solid #2a69aa;
                         assembly_source,
                         filename=assembly_path.name,
                     )
+                    if not bool(getattr(document, "d64pack_generated_source", False)):
+                        program, packer_stats = self._apply_c64_image_packer(program)
             except (AssemblerError, AmigaAssemblerError, PE32AssemblerError, PE64AssemblerError) as exc:
                 message = str(exc)
                 document.show_generated_assembly_error(
@@ -63060,6 +67326,14 @@ border: 2px solid #2a69aa;
                 open_assembly.mark_saved()
                 open_assembly.invalidate_assembly_result("Neu erzeugt")
                 self._update_document_tab(open_assembly)
+
+            if (
+                document.build_target not in {"amiga", "pe32", "pe64"}
+                and packer_stats is not None
+            ):
+                self._open_c64_packed_assembly_editor(
+                    packer_stats, output_path
+                )
 
             document.generated_assembly_path = Path(assembly_path).resolve()
             document.generated_assembly_editor.document().setModified(False)
@@ -63139,6 +67413,14 @@ border: 2px solid #2a69aa;
                     f"PRG-Größe    : {len(program.prg)} Bytes\n"
                     f"Instruktionen: {program.instruction_count}\n"
                     f"BASIC-Stub   : {'ja' if program.has_basic_stub else 'nein'}\n"
+                    + (
+                        f"Image-Packer : {packer_stats.selected_mode.upper()} / {packer_stats.search_mode}\n"
+                        f"Original     : {packer_stats.original_size} Bytes\n"
+                        f"Ersparnis    : {packer_stats.saved_bytes:+d} Bytes\n"
+                        f"Decruncher   : {packer_stats.decruncher_size} Bytes\n"
+                        if packer_stats is not None else
+                        "Image-Packer : deaktiviert\n"
+                    )
                 )
                 self.log(
                     "ASSEMBLE C64 ASM-TAB: "
@@ -63511,6 +67793,7 @@ border: 2px solid #2a69aa;
             source_digest = hashlib.sha256(
                 source.encode("utf-8")
             ).hexdigest()
+            packer_stats = None
             try:
                 #from amiga500 import (
                 #    AmigaAssemblerError,
@@ -63559,6 +67842,8 @@ border: 2px solid #2a69aa;
                         source,
                         filename=document.display_name,
                     )
+                    if not bool(getattr(document, "d64pack_generated_source", False)):
+                        program, packer_stats = self._apply_c64_image_packer(program)
                     program_data = program.prg
                 self._write_assembled_program(output_path, program_data)
             except (AssemblerError, AmigaAssemblerError, PE32AssemblerError, PE64AssemblerError) as exc:
@@ -63576,6 +67861,14 @@ border: 2px solid #2a69aa;
                 self.show_error("PRG konnte nicht gespeichert werden", message)
                 self.statusBar().showMessage("Assemblieren fehlgeschlagen")
                 return False
+
+            if (
+                document.build_target not in {"amiga", "pe32", "pe64"}
+                and packer_stats is not None
+            ):
+                self._open_c64_packed_assembly_editor(
+                    packer_stats, output_path
+                )
 
             document.set_assembly_result(
                 program,
@@ -63645,6 +67938,14 @@ border: 2px solid #2a69aa;
                     f"PRG-Größe    : {len(program.prg)} Bytes\n"
                     f"Instruktionen: {program.instruction_count}\n"
                     f"BASIC-Stub   : {'ja' if program.has_basic_stub else 'nein'}\n"
+                    + (
+                        f"Image-Packer : {packer_stats.selected_mode.upper()} / {packer_stats.search_mode}\n"
+                        f"Original     : {packer_stats.original_size} Bytes\n"
+                        f"Ersparnis    : {packer_stats.saved_bytes:+d} Bytes\n"
+                        f"Decruncher   : {packer_stats.decruncher_size} Bytes\n"
+                        if packer_stats is not None else
+                        "Image-Packer : deaktiviert\n"
+                    )
                 )
                 self.log(
                     "ASSEMBLE C64: "
@@ -64515,6 +68816,28 @@ border: 2px solid #2a69aa;
                 self.document_tabs.setCurrentWidget(document)
                 return False
 
+            # Stage ASM 68: Wird der aktive C64-BASIC-Editor geschlossen,
+            # waehrend sein Keyboard-Layout-Snapshot aktiv ist, muss zuerst
+            # die vorherige Projekt/Dateisystem-Anordnung restauriert werden.
+            # Sonst bleibt nach deleteLater() der temporaere Tastaturzustand
+            # (z.B. nur das Projekt-Dock) im Hauptfenster zurueck.
+            _keyboard_snapshot = getattr(
+                self, "_c64_keyboard_layout_snapshot", None
+            )
+            _keyboard_owner = getattr(
+                self, "_c64_keyboard_layout_owner", None
+            )
+            if (
+                isinstance(document, DocumentEditor)
+                and document.is_basic_document
+                and _keyboard_snapshot is not None
+                and (
+                    _keyboard_owner is document
+                    or document is self.current_document()
+                )
+            ):
+                self._restore_c64_keyboard_layout_snapshot()
+
             name = document.display_name
             if document.is_dbase_document and getattr(document, "dbase_process", None) is not None:
                 try:
@@ -64531,6 +68854,184 @@ border: 2px solid #2a69aa;
             self.log(f"Editor geschlossen: {name}")
             return True
 
+        def _ensure_dock_snap_overlay(self) -> DockSnapOverlay:
+            overlay = getattr(self, "_dock_snap_overlay", None)
+            if overlay is None:
+                overlay = DockSnapOverlay(self)
+                self._dock_snap_overlay = overlay
+            overlay.set_dark_mode(self.dark_mode_enabled)
+            return overlay
+
+        def _is_primary_side_dock(self, dock: QDockWidget) -> bool:
+            return dock in (
+                getattr(self, "left_dock", None),
+                getattr(self, "right_dock", None),
+            )
+
+        def _other_primary_side_dock(self, dock: QDockWidget):
+            if dock is getattr(self, "left_dock", None):
+                return getattr(self, "right_dock", None)
+            if dock is getattr(self, "right_dock", None):
+                return getattr(self, "left_dock", None)
+            return None
+
+        def _begin_project_dock_snap(self, dock: QDockWidget) -> None:
+            """Stage ASM 66: Overlay fuer Projekt UND Dateisystem anzeigen."""
+            if not self._is_primary_side_dock(dock):
+                return
+            overlay = self._ensure_dock_snap_overlay()
+            overlay.show_for_dock(dock)
+
+        def _update_project_dock_snap(
+            self,
+            dock: QDockWidget,
+            global_pos: QPoint,
+        ):
+            if not self._is_primary_side_dock(dock):
+                return Qt.NoDockWidgetArea
+            overlay = self._ensure_dock_snap_overlay()
+            if not overlay.isVisible():
+                overlay.show_for_dock(dock)
+            return overlay.update_target(global_pos)
+
+        def _apply_primary_side_dock_layout(
+            self,
+            dock: QDockWidget,
+            area,
+            orientation,
+            order: str,
+        ) -> bool:
+            """Projekt/Dateisystem links/rechts neben dem Editor anordnen.
+
+            ``orientation == Horizontal`` ergibt zwei Docks nebeneinander.
+            ``orientation == Vertical`` ergibt eine gemeinsame Seiten-Spalte.
+            In keinem Fall wird eines der beiden Fenster in Top/BottomArea gelegt;
+            damit kann das Dateisystem niemals die gesamte Fensterbreite belegen.
+            """
+            width_before = int(self.width())
+            other = self._other_primary_side_dock(dock)
+            if other is None:
+                # Stage-64-kompatibler Einzel-Dock-Fallback. Normalerweise sind
+                # in Stage 66 beide Primaer-Docks vorhanden.
+                self.addDockWidget(area, dock)
+                dock.setFloating(False)
+                dock.show()
+                return True
+            if area not in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea):
+                return False
+            if not bool(dock.allowedAreas() & area) or not bool(other.allowedAreas() & area):
+                return False
+
+            if str(order) == "before":
+                first, second = dock, other
+            else:
+                first, second = other, dock
+
+            # Erst das erste Fenster auf die gewuenschte Hauptseite setzen,
+            # danach das zweite relativ dazu splitten. splitDockWidget() ist
+            # genau fuer die verschachtelten QMainWindow-Dockbereiche gedacht.
+            self.addDockWidget(area, first)
+            first.setFloating(False)
+            first.show()
+            self.addDockWidget(area, second)
+            second.setFloating(False)
+            second.show()
+            self.splitDockWidget(first, second, orientation)
+
+            # Angenehme Ausgangsgroessen. Der Benutzer kann sie danach frei
+            # veraendern; Stage 65 speichert sie mit saveState().
+            try:
+                if orientation == Qt.Horizontal:
+                    self.resizeDocks([first, second], [340, 360], Qt.Horizontal)
+                else:
+                    available_h = max(260, self.height() - 180)
+                    self.resizeDocks(
+                        [first, second],
+                        [available_h // 2, available_h // 2],
+                        Qt.Vertical,
+                    )
+            except Exception:
+                pass
+
+            first.raise_()
+            second.raise_()
+            if getattr(self, "document_tabs", None) is not None:
+                self.document_tabs.updateGeometry()
+            self.updateGeometry()
+            if int(self.width()) > width_before > 0:
+                self.resize(width_before, self.height())
+            return True
+
+        def _finish_project_dock_snap(
+            self,
+            dock: QDockWidget,
+            global_pos: QPoint,
+        ) -> bool:
+            if not self._is_primary_side_dock(dock):
+                return False
+            overlay = self._ensure_dock_snap_overlay()
+            area = overlay.update_target(global_pos)
+            target = overlay.active_target
+            spec = overlay.target_spec(target)
+            overlay.hide_overlay()
+            if not spec:
+                return False
+            _rect, spec_area, orientation, order, _label = spec
+            if area != spec_area:
+                return False
+
+            if not self._apply_primary_side_dock_layout(
+                dock, spec_area, orientation, order
+            ):
+                return False
+
+            # Stage ASM 69: Nur dieser echte Benutzer-Snap veraendert den
+            # autoritativen Layoutzustand. Keyboard Ein/Aus darf ihn niemals
+            # ueberschreiben oder aus Geometrien neu ableiten.
+            other = self._other_primary_side_dock(dock)
+            if other is not None:
+                if str(order) == "before":
+                    first, second = dock, other
+                else:
+                    first, second = other, dock
+                first_name = (
+                    "left_dock"
+                    if first is getattr(self, "left_dock", None)
+                    else "right_dock"
+                )
+                second_name = (
+                    "left_dock"
+                    if second is getattr(self, "left_dock", None)
+                    else "right_dock"
+                )
+                if orientation == Qt.Horizontal:
+                    sizes = [max(1, first.width()), max(1, second.width())]
+                else:
+                    sizes = [max(1, first.height()), max(1, second.height())]
+                self._set_authoritative_primary_side_dock_layout({
+                    "paired": True,
+                    "area": int(spec_area),
+                    "orientation": int(orientation),
+                    "first": first_name,
+                    "second": second_name,
+                    "sizes": sizes,
+                })
+
+            side_text = "links" if spec_area == Qt.LeftDockWidgetArea else "rechts"
+            layout_text = "nebeneinander" if orientation == Qt.Horizontal else "gestapelt"
+            dock_text = (
+                "Dateisystem"
+                if dock is getattr(self, "left_dock", None)
+                else "Projekt / Informationen"
+            )
+            self.statusBar().showMessage(
+                f"{dock_text} {side_text} {layout_text} angedockt"
+            )
+            self.log(
+                f"DOCK-SNAP: {dock_text} {side_text}, {layout_text}, Reihenfolge={order}"
+            )
+            return True
+
         @staticmethod
         def _dock_features():
             return (
@@ -64543,7 +69044,9 @@ border: 2px solid #2a69aa;
             self.left_dock = QDockWidget("Dateisystem und Dateien", self)
             self.left_dock.setObjectName("filesystem_dock")
             self.left_dock.setFeatures(self._dock_features())
-            self.left_dock.setAllowedAreas(Qt.AllDockWidgetAreas)
+            self.left_dock.setAllowedAreas(
+                Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea
+            )
             self.left_dock.setMinimumWidth(320)
 
             container = QWidget(self.left_dock)
@@ -65052,6 +69555,65 @@ border: 2px solid #2a69aa;
                     ),
                     mark_modified=False,
                 )
+            _active_entries = values.get(PROJECT_C64_OPTIMIZER_ACTIVE_PROFILE_KEY, ())
+            _active_profile = (
+                str(_active_entries[0].get("value", "68000") or "68000")
+                if _active_entries else "68000"
+            )
+            self.set_project_c64_active_profile(
+                _active_profile, mark_modified=False
+            )
+            for _profile, _profile_settings in PROJECT_C64_ENVIRONMENT_PROFILES.items():
+                _screen_keyboard = _project_bool_entry(
+                    values, _profile_settings["screen_keyboard_key"], False
+                )
+                _layout_entries = values.get(_profile_settings["keyboard_layout_key"], ())
+                _keyboard_layout = _normalize_project_c64_keyboard_layout(
+                    _layout_entries[0].get("value", "qwertz")
+                    if _layout_entries else "qwertz"
+                )
+                self.set_project_c64_environment_settings(
+                    _profile, _screen_keyboard, _keyboard_layout, mark_modified=False
+                )
+            for _profile, _profile_settings in PROJECT_C64_OPTIMIZER_PROFILES.items():
+                _enabled = _project_bool_entry(
+                    values, _profile_settings["enabled_key"], True
+                )
+                _strategy_entries = values.get(_profile_settings["strategy_key"], ())
+                _strategy = (
+                    str(_strategy_entries[0].get("value", "direct") or "direct")
+                    if _strategy_entries else "direct"
+                )
+                self.set_project_c64_optimizer_settings(
+                    _profile, _enabled, _strategy, mark_modified=False
+                )
+            for _profile, _profile_settings in PROJECT_C64_PACKER_PROFILES.items():
+                _enabled = _project_bool_entry(
+                    values, _profile_settings["enabled_key"], False
+                )
+                _mode_entries = values.get(_profile_settings["mode_key"], ())
+                _mode = (
+                    str(_mode_entries[0].get("value", "none") or "none")
+                    if _mode_entries else "none"
+                )
+                _search_entries = values.get(_profile_settings["search_key"], ())
+                _search = (
+                    str(_search_entries[0].get("value", "balanced") or "balanced")
+                    if _search_entries else "balanced"
+                )
+                _include_decruncher_source = _project_bool_entry(
+                    values,
+                    _profile_settings["include_decruncher_source_key"],
+                    True,
+                )
+                self.set_project_c64_packer_settings(
+                    _profile,
+                    _enabled,
+                    _mode,
+                    _search,
+                    _include_decruncher_source,
+                    mark_modified=False,
+                )
             self.project_tree.blockSignals(True)
             self.project_tree.clear()
             self.project_root_items = {}
@@ -65124,7 +69686,7 @@ border: 2px solid #2a69aa;
                 if key == "dbase":
                     # Stage ASM 29: dBase-Dateien werden nicht mehr direkt
                     # unter dem Hauptknoten gemischt, sondern nach Ressourcentyp
-                    # in sieben geschützten Unterknoten organisiert.
+                    # in acht geschützten Unterknoten organisiert.
                     for _role, _role_title, _role_exts, _entry_key in PROJECT_DBASE_GROUPS:
                         _group = QTreeWidgetItem(root, [_role_title])
                         _group.setData(0, Qt.UserRole + 301, "dbase")
@@ -65685,6 +70247,200 @@ border: 2px solid #2a69aa;
                         else "false"
                     )
                 }]
+            entries[PROJECT_C64_OPTIMIZER_ACTIVE_PROFILE_KEY] = [{
+                "value": str(self.project_c64_active_profile or "68000")
+            }]
+            for _profile, _profile_settings in PROJECT_C64_ENVIRONMENT_PROFILES.items():
+                entries[_profile_settings["screen_keyboard_key"]] = [{
+                    "value": (
+                        "true"
+                        if bool(self.project_c64_screen_keyboard.get(_profile, False))
+                        else "false"
+                    )
+                }]
+                entries[_profile_settings["keyboard_layout_key"]] = [{
+                    "value": _normalize_project_c64_keyboard_layout(
+                        self.project_c64_keyboard_layout.get(_profile, "qwertz")
+                    )
+                }]
+            for _profile, _profile_settings in PROJECT_C64_OPTIMIZER_PROFILES.items():
+                entries[_profile_settings["enabled_key"]] = [{
+                    "value": (
+                        "true"
+                        if bool(self.project_c64_optimizer_enabled.get(_profile, True))
+                        else "false"
+                    )
+                }]
+                entries[_profile_settings["strategy_key"]] = [{
+                    "value": _normalize_project_c64_optimizer_strategy(
+                        self.project_c64_optimizer_strategy.get(_profile, "direct")
+                    )
+                }]
+            for _profile, _profile_settings in PROJECT_C64_PACKER_PROFILES.items():
+                entries[_profile_settings["enabled_key"]] = [{
+                    "value": (
+                        "true"
+                        if bool(self.project_c64_packer_enabled.get(_profile, False))
+                        else "false"
+                    )
+                }]
+                entries[_profile_settings["mode_key"]] = [{
+                    "value": _normalize_project_c64_packer_mode(
+                        self.project_c64_packer_mode.get(_profile, "none")
+                    )
+                }]
+                entries[_profile_settings["search_key"]] = [{
+                    "value": _normalize_project_c64_packer_search(
+                        self.project_c64_packer_search.get(_profile, "balanced")
+                    )
+                }]
+                entries[_profile_settings["include_decruncher_source_key"]] = [{
+                    "value": (
+                        "true"
+                        if bool(
+                            self.project_c64_packer_include_decruncher_source.get(
+                                _profile, True
+                            )
+                        )
+                        else "false"
+                    )
+                }]
+
+            # Stage ASM 67: offene C64-BASIC-Editoren als Dateireferenzen
+            # projektbezogen sichern. Nur gespeicherte Dateien werden aufgenommen;
+            # unbenannte Dokumente besitzen noch keine wiederherstellbare Referenz.
+            _active_document = self.current_document()
+            _open_c64_editors = []
+            for _tab_index in range(self.document_tabs.count()):
+                _document = self.document_tabs.widget(_tab_index)
+                if not isinstance(_document, DocumentEditor):
+                    continue
+                if _document.path is None:
+                    continue
+                if _document.effective_suffix not in DocumentEditor.BASIC_EXTENSIONS:
+                    continue
+                _splitter = getattr(_document, "basic_editor_splitter", None)
+                _splitter_sizes = list(_splitter.sizes()[:2]) if _splitter is not None else []
+                _last_sizes = list(
+                    getattr(_document, "_basic_keyboard_last_sizes", _splitter_sizes) or []
+                )[:2]
+                _keyboard = getattr(_document, "basic_screen_keyboard", None)
+                _keyboard_host = getattr(_document, "basic_screen_keyboard_scroll", None)
+                _entry = {
+                    "path": str(_document.path),
+                    "active": _document is _active_document,
+                    "keyboard_visible": bool(_document.basic_screen_keyboard_visible()),
+                    "splitter_sizes": [max(0, int(v)) for v in _splitter_sizes],
+                    "keyboard_last_sizes": [max(0, int(v)) for v in _last_sizes],
+                }
+                # Stage ASM 71: QSplitter.saveState() enthält zusätzlich zu
+                # sizes() auch den internen Splitterzustand. Das verhindert,
+                # dass Qt beim erneuten Anzeigen der ScrollArea eine andere
+                # Tastaturhöhe aus SizeHints ableitet.
+                if _splitter is not None:
+                    try:
+                        _entry["splitter_state"] = base64.b64encode(
+                            bytes(_splitter.saveState())
+                        ).decode("ascii")
+                    except Exception:
+                        _entry["splitter_state"] = ""
+                    _entry["splitter_handle_width"] = int(_splitter.handleWidth())
+                if _keyboard is not None:
+                    _entry["keyboard_width"] = int(_keyboard.width())
+                    _entry["keyboard_height"] = int(_keyboard.height())
+                if _keyboard_host is not None:
+                    _entry["keyboard_host_width"] = int(_keyboard_host.width())
+                    _entry["keyboard_host_height"] = int(_keyboard_host.height())
+                    _entry["keyboard_scroll_x"] = int(
+                        _keyboard_host.horizontalScrollBar().value()
+                    )
+                    _entry["keyboard_scroll_y"] = int(
+                        _keyboard_host.verticalScrollBar().value()
+                    )
+                _open_c64_editors.append(_entry)
+            entries[PROJECT_C64_OPEN_EDITORS_KEY] = _open_c64_editors
+
+            _last_basic = getattr(self, "_last_opened_c64_basic_path", None)
+            entries[PROJECT_C64_LAST_BASIC_FILE_KEY] = (
+                [{"path": str(_last_basic)}] if _last_basic else []
+            )
+
+            # Stage ASM 63: Der Pfad im Dateisystem-Dock ist current_directory;
+            # die sichtbare TreeList-Wurzel ist workspace_root. Beide Zustände
+            # gehören zum Projekt und werden getrennt gespeichert.
+            _working_directory = str(
+                getattr(self, "current_directory", "") or ""
+            ).strip()
+            _workspace_root = str(
+                getattr(self, "workspace_root", "") or ""
+            ).strip()
+            entries[PROJECT_WORKING_DIRECTORY_KEY] = (
+                [{"path": _working_directory}] if _working_directory else []
+            )
+            entries[PROJECT_WORKSPACE_ROOT_KEY] = (
+                [{"path": _workspace_root}] if _workspace_root else []
+            )
+
+            # Stage ASM 70: alle benutzerrelevanten Fenster-/Dockgeometrien
+            # explizit projektbezogen sichern. Die PrimaryDockLayout-Struktur
+            # bleibt für Anordnung/Orientierung weiterhin autoritativ.
+            _session_geometry = self._capture_project_session_geometry()
+            entries[PROJECT_SESSION_GEOMETRY_KEY] = (
+                [{"value": _session_geometry}] if _session_geometry else []
+            )
+
+            # Stage ASM 65: Beim Projekt-Speichern wird genau die aktuelle
+            # Anordnung der Anwendung festgehalten. QMainWindow.saveState()
+            # erfasst u.a. Projekt-Dock links/rechts, Dateisystem-Dock,
+            # Protokoll-Dock, Dockgrößen und Sichtbarkeit.
+            try:
+                # Solange die C64-Bildschirmtastatur sichtbar ist, ist das
+                # Dateisystem-Dock nur temporaer verborgen. Beim Projekt-Speichern
+                # darf deshalb nicht dieser Zwischenzustand als dauerhaftes Layout
+                # landen, sondern der unmittelbar davor gesicherte ViewState.
+                _keyboard_snapshot = getattr(
+                    self, "_c64_keyboard_layout_snapshot", None
+                )
+                _snapshot_state = (
+                    _keyboard_snapshot.get("state", b"")
+                    if isinstance(_keyboard_snapshot, dict)
+                    else b""
+                )
+                _state_bytes = bytes(_snapshot_state or self.saveState())
+                _state_b64 = base64.b64encode(_state_bytes).decode("ascii")
+            except Exception:
+                _state_b64 = ""
+            entries[PROJECT_VIEW_STATE_KEY] = (
+                [{"value": _state_b64}] if _state_b64 else []
+            )
+
+            # Stage ASM 69: dauerhafte Projekt-/Dateisystem-Dockbeziehung
+            # separat speichern. Wenn die Tastatur gerade offen ist, stammt
+            # diese Relation aus dem Vor-Tastatur-Snapshot bzw. aus dem letzten
+            # Benutzer-Snap und niemals aus dem temporaeren Projekt-oben-Stack.
+            _primary_layout = self._capture_primary_side_dock_relationship()
+            if not (
+                isinstance(_primary_layout, dict)
+                and _primary_layout.get("paired")
+            ):
+                _keyboard_snapshot = getattr(
+                    self, "_c64_keyboard_layout_snapshot", None
+                )
+                if isinstance(_keyboard_snapshot, dict):
+                    _primary_layout = _keyboard_snapshot.get(
+                        "primary_layout", {}
+                    )
+            if not (
+                isinstance(_primary_layout, dict)
+                and _primary_layout.get("paired")
+            ):
+                _primary_layout = self._capture_primary_side_dock_relationship()
+            entries[PROJECT_PRIMARY_DOCK_LAYOUT_KEY] = (
+                [{"value": self._copy_primary_side_dock_descriptor(_primary_layout)}]
+                if isinstance(_primary_layout, dict)
+                and _primary_layout.get("paired")
+                else []
+            )
             return entries
 
         def project_has_entries(self) -> bool:
@@ -65844,6 +70600,507 @@ border: 2px solid #2a69aa;
                 f"[{description}] -> {new_project_path}"
             )
 
+        def _capture_project_session_geometry(self) -> dict:
+            """Stage ASM 70: explizite Projekt-Geometrien erfassen.
+
+            Bei sichtbarer C64-Bildschirmtastatur stammen Projekt-/Dateisystem-
+            Dockwerte aus dem Vor-Tastatur-Snapshot, damit ein temporärer Stack
+            niemals als dauerhaftes Projektlayout gespeichert wird.
+            """
+            window_rect = self.geometry()
+            try:
+                _qt_geometry = base64.b64encode(bytes(self.saveGeometry())).decode("ascii")
+            except Exception:
+                _qt_geometry = ""
+            result = {
+                "MainWindow": {
+                    "x": int(window_rect.x()),
+                    "y": int(window_rect.y()),
+                    "width": int(self.width()),
+                    "height": int(self.height()),
+                    "maximized": bool(self.isMaximized()),
+                    "fullscreen": bool(self.isFullScreen()),
+                    "qt_geometry": _qt_geometry,
+                }
+            }
+            # Stage ASM 71: zentrale Editorfläche und die äußere Trennlinie
+            # zum Projekt-/Dateisystem-Dock explizit sichern. QMainWindow
+            # verwendet dafür intern Dock-Separatoren, keine öffentliche
+            # QSplitter-Instanz; deshalb ist die Dockbereichsbreite separat nötig.
+            _central = self.centralWidget()
+            if _central is not None:
+                _central_rect = _central.geometry()
+                result["CentralArea"] = {
+                    "x": int(_central_rect.x()),
+                    "y": int(_central_rect.y()),
+                    "width": max(1, int(_central.width())),
+                    "height": max(1, int(_central.height())),
+                }
+            _primary = self._capture_primary_side_dock_relationship()
+            if isinstance(_primary, dict) and _primary.get("paired"):
+                result["PrimaryDockArea"] = {
+                    "area": int(_primary.get("area", 0) or 0),
+                    "orientation": int(
+                        _primary.get("orientation", int(Qt.Vertical))
+                        or int(Qt.Vertical)
+                    ),
+                    "first": str(_primary.get("first", "right_dock")),
+                    "second": str(_primary.get("second", "left_dock")),
+                    "sizes": [
+                        max(1, int(v))
+                        for v in list(_primary.get("sizes", ()))[:2]
+                    ],
+                    "area_width": max(
+                        0, int(_primary.get("area_width", 0) or 0)
+                    ),
+                    "central_width": max(
+                        0, int(_primary.get("central_width", 0) or 0)
+                    ),
+                    "separator_x": int(_primary.get("separator_x", 0) or 0),
+                }
+            keyboard_snapshot = getattr(self, "_c64_keyboard_layout_snapshot", None)
+            snapshot_docks = (
+                keyboard_snapshot.get("docks", {})
+                if isinstance(keyboard_snapshot, dict) else {}
+            )
+
+            def dock_payload(name: str, dock) -> dict:
+                if dock is None:
+                    return {}
+                saved = snapshot_docks.get(name, {}) if name in {"left_dock", "right_dock"} else {}
+                if isinstance(saved, dict) and saved:
+                    return {
+                        "visible": bool(saved.get("visible", True)),
+                        "floating": bool(saved.get("floating", False)),
+                        "area": int(saved.get("area", int(self.dockWidgetArea(dock))) or 0),
+                        "x": int(saved.get("x", dock.x()) or 0),
+                        "y": int(saved.get("y", dock.y()) or 0),
+                        "width": max(1, int(saved.get("width", dock.width()) or dock.width())),
+                        "height": max(1, int(saved.get("height", dock.height()) or dock.height())),
+                    }
+                rect = dock.geometry()
+                width = max(1, int(dock.width()))
+                height = max(1, int(dock.height()))
+                if dock is getattr(self, "bottom_dock", None):
+                    if dock.isVisible():
+                        self._protocol_dock_last_width = width
+                        self._protocol_dock_last_height = height
+                    else:
+                        width = max(1, int(getattr(self, "_protocol_dock_last_width", width) or width))
+                        height = max(1, int(getattr(self, "_protocol_dock_last_height", height) or height))
+                return {
+                    "visible": bool(dock.isVisible()),
+                    "floating": bool(dock.isFloating()),
+                    "area": int(self.dockWidgetArea(dock)),
+                    "x": int(rect.x()),
+                    "y": int(rect.y()),
+                    "width": width,
+                    "height": height,
+                }
+
+            result["FileSystemDock"] = dock_payload("left_dock", getattr(self, "left_dock", None))
+            result["ProjectDock"] = dock_payload("right_dock", getattr(self, "right_dock", None))
+            result["ProtocolDock"] = dock_payload("bottom_dock", getattr(self, "bottom_dock", None))
+            return result
+
+        @staticmethod
+        def _project_geometry_payload(entries) -> dict:
+            values = entries.get(PROJECT_SESSION_GEOMETRY_KEY, ())
+            payload = values[0].get("value", {}) if values else {}
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except json.JSONDecodeError:
+                    payload = {}
+            return payload if isinstance(payload, dict) else {}
+
+        def _apply_saved_dock_geometry(self, dock, payload: dict) -> None:
+            if dock is None or not isinstance(payload, dict) or not payload:
+                return
+            floating = bool(payload.get("floating", False))
+            area_value = int(payload.get("area", int(Qt.NoDockWidgetArea)) or 0)
+            valid_areas = {
+                int(Qt.LeftDockWidgetArea): Qt.LeftDockWidgetArea,
+                int(Qt.RightDockWidgetArea): Qt.RightDockWidgetArea,
+                int(Qt.TopDockWidgetArea): Qt.TopDockWidgetArea,
+                int(Qt.BottomDockWidgetArea): Qt.BottomDockWidgetArea,
+            }
+            area = valid_areas.get(area_value, Qt.NoDockWidgetArea)
+            if dock in (getattr(self, "left_dock", None), getattr(self, "right_dock", None)):
+                if area not in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea):
+                    area = self.dockWidgetArea(dock)
+            if floating:
+                dock.setFloating(True)
+                x = int(payload.get("x", dock.x()) or 0)
+                y = int(payload.get("y", dock.y()) or 0)
+                width = max(1, int(payload.get("width", dock.width()) or dock.width()))
+                height = max(1, int(payload.get("height", dock.height()) or dock.height()))
+                dock.setGeometry(x, y, width, height)
+            elif area != Qt.NoDockWidgetArea:
+                if self.dockWidgetArea(dock) != area or dock.isFloating():
+                    self.addDockWidget(area, dock)
+                dock.setFloating(False)
+                # Projekt/Dateisystem werden in PrimaryDockLayout exakt gesplittet.
+                # Für das Protokoll ist Höhe/Breite hier explizit maßgeblich.
+                if dock is getattr(self, "bottom_dock", None):
+                    size = max(1, int(
+                        payload.get("height" if area in (Qt.TopDockWidgetArea, Qt.BottomDockWidgetArea) else "width", 1) or 1
+                    ))
+                    orientation = (
+                        Qt.Vertical if area in (Qt.TopDockWidgetArea, Qt.BottomDockWidgetArea)
+                        else Qt.Horizontal
+                    )
+                    try:
+                        self.resizeDocks([dock], [size], orientation)
+                    except Exception:
+                        pass
+            if dock is getattr(self, "bottom_dock", None):
+                self._protocol_dock_last_height = max(
+                    1, int(payload.get("height", dock.height()) or dock.height())
+                )
+                self._protocol_dock_last_width = max(
+                    1, int(payload.get("width", dock.width()) or dock.width())
+                )
+            dock.setVisible(bool(payload.get("visible", True)))
+
+        def _restore_project_session_geometry(self, entries) -> bool:
+            """Stage ASM 70: Hauptfenster-/Dockgeometrie aus dem Projekt laden."""
+            payload = self._project_geometry_payload(entries)
+            if not payload:
+                self._project_session_geometry_restore_target = {}
+                return False
+            self._project_session_geometry_restore_target = payload
+
+            main = payload.get("MainWindow", {})
+            if isinstance(main, dict) and main:
+                width = max(1, int(main.get("width", self.width()) or self.width()))
+                height = max(1, int(main.get("height", self.height()) or self.height()))
+                x = int(main.get("x", self.x()) or 0)
+                y = int(main.get("y", self.y()) or 0)
+                _qt_geometry = str(main.get("qt_geometry", "") or "").strip()
+                if _qt_geometry:
+                    try:
+                        _raw_geometry = base64.b64decode(
+                            _qt_geometry.encode("ascii"), validate=True
+                        )
+                        self.restoreGeometry(QByteArray(_raw_geometry))
+                    except Exception:
+                        pass
+                # Projektladen darf exakt die zuvor vom Benutzer gespeicherte
+                # Größe setzen; spätere Qt-Dock-/Keyboard-Pässe dürfen sie nicht
+                # eigenmächtig verbreitern.
+                if not bool(main.get("maximized", False)) and not bool(main.get("fullscreen", False)):
+                    self.setGeometry(x, y, width, height)
+
+            self._apply_saved_dock_geometry(
+                getattr(self, "left_dock", None), payload.get("FileSystemDock", {})
+            )
+            self._apply_saved_dock_geometry(
+                getattr(self, "right_dock", None), payload.get("ProjectDock", {})
+            )
+            self._apply_saved_dock_geometry(
+                getattr(self, "bottom_dock", None), payload.get("ProtocolDock", {})
+            )
+            # Stage ASM 71: ViewState/PrimaryDockLayout stellen die Topologie
+            # her; PrimaryDockArea setzt danach die tatsächliche Separatorposition
+            # zwischen Dockstapel und zentralem Editor zurück.
+            _dock_area = payload.get("PrimaryDockArea", {})
+            if isinstance(_dock_area, dict) and _dock_area:
+                _descriptor = self._capture_primary_side_dock_relationship()
+                if isinstance(_descriptor, dict) and _descriptor.get("paired"):
+                    for _name in ("area_width", "central_width", "separator_x"):
+                        if _name in _dock_area:
+                            _descriptor[_name] = _dock_area[_name]
+                    self._apply_primary_side_dock_sizes(_descriptor)
+                    self._set_authoritative_primary_side_dock_layout(_descriptor)
+            self.log("Projekt-Geometrien wiederhergestellt")
+            return True
+
+        def _enforce_project_session_geometry(self) -> None:
+            """Nach späten Qt-Layoutpässen die gespeicherte Fenstergröße fixieren."""
+            payload = getattr(self, "_project_session_geometry_restore_target", {})
+            main = payload.get("MainWindow", {}) if isinstance(payload, dict) else {}
+            if not isinstance(main, dict) or not main:
+                return
+            width = max(1, int(main.get("width", self.width()) or self.width()))
+            height = max(1, int(main.get("height", self.height()) or self.height()))
+            if self.width() != width or self.height() != height:
+                self.resize(width, height)
+            protocol = payload.get("ProtocolDock", {})
+            if isinstance(protocol, dict) and protocol:
+                self._apply_saved_dock_geometry(getattr(self, "bottom_dock", None), protocol)
+            _dock_area = payload.get("PrimaryDockArea", {})
+            if (
+                isinstance(_dock_area, dict)
+                and _dock_area
+                and getattr(self, "_c64_keyboard_layout_snapshot", None) is None
+            ):
+                _descriptor = self._capture_primary_side_dock_relationship()
+                if isinstance(_descriptor, dict) and _descriptor.get("paired"):
+                    for _name in ("area_width", "central_width", "separator_x"):
+                        if _name in _dock_area:
+                            _descriptor[_name] = _dock_area[_name]
+                    self._apply_primary_side_dock_sizes(_descriptor)
+
+        def _restore_project_view_state(self, entries) -> bool:
+            """Stage ASM 65: projektbezogenes Dock-/Editor-Layout laden."""
+            _values = entries.get(PROJECT_VIEW_STATE_KEY, ())
+            if not _values:
+                return False
+            _encoded = str(_values[0].get("value", "") or "").strip()
+            if not _encoded:
+                return False
+            try:
+                _raw = base64.b64decode(_encoded.encode("ascii"), validate=True)
+            except (ValueError, UnicodeError):
+                self.log("Projekt-Ansicht: ungültiger ViewState; Standardlayout bleibt aktiv")
+                return False
+            if not _raw:
+                return False
+            try:
+                _ok = bool(self.restoreState(QByteArray(_raw)))
+            except Exception as exc:
+                self.log(f"Projekt-Ansicht konnte nicht wiederhergestellt werden: {exc}")
+                return False
+            if not _ok:
+                self.log("Projekt-Ansicht: Qt konnte den gespeicherten ViewState nicht anwenden")
+                return False
+
+            # Stage ASM 66: Projekt- und Dateisystem-Dock duerfen nur links
+            # oder rechts vom Editor liegen. Ein alter ViewState, der eines der
+            # Fenster oben/unten abgelegt hat, wird deshalb sanft normalisiert.
+            for _dock, _fallback in (
+                (getattr(self, "left_dock", None), Qt.LeftDockWidgetArea),
+                (getattr(self, "right_dock", None), Qt.RightDockWidgetArea),
+            ):
+                if _dock is not None and not _dock.isFloating():
+                    _area = self.dockWidgetArea(_dock)
+                    if _area not in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea):
+                        self.addDockWidget(_fallback, _dock)
+
+            # Stage ASM 69: Qt-ViewState allein ist fuer einen spaeteren
+            # Keyboard-Toggle nicht autoritativ genug. Die explizit gespeicherte
+            # Split-/Stack-Beziehung wird nach restoreState() deterministisch
+            # angewendet und als einziger dauerhafter Layoutzustand gemerkt.
+            _layout_values = entries.get(PROJECT_PRIMARY_DOCK_LAYOUT_KEY, ())
+            _layout_descriptor = (
+                _layout_values[0].get("value", {}) if _layout_values else {}
+            )
+            if isinstance(_layout_descriptor, str):
+                try:
+                    _layout_descriptor = json.loads(_layout_descriptor)
+                except json.JSONDecodeError:
+                    _layout_descriptor = {}
+            if isinstance(_layout_descriptor, dict) and _layout_descriptor.get("paired"):
+                self._restore_primary_side_dock_relationship(
+                    _layout_descriptor, update_authoritative=True
+                )
+            else:
+                # Rueckwaertskompatibilitaet fuer Stage-65..68-Projekte: einmal
+                # nach einem Qt-Layout-Pass inferieren, danach wird nicht mehr
+                # geraten. Beim naechsten Speichern landet die Relation explizit
+                # in PrimaryDockLayout.
+                try:
+                    QApplication.processEvents()
+                except Exception:
+                    pass
+                _inferred_layout = self._infer_primary_side_dock_relationship()
+                if _inferred_layout.get("paired"):
+                    self._set_authoritative_primary_side_dock_layout(
+                        _inferred_layout
+                    )
+
+            # Die zentralen Dokument-Tabs sind kein Dock und bleiben daher
+            # automatisch im von den Docks freigelassenen Bereich.
+            if getattr(self, "document_tabs", None) is not None:
+                self.document_tabs.updateGeometry()
+            self.log("Projekt-Ansicht wiederhergestellt")
+            return True
+
+        def _apply_c64_basic_editor_session_geometry(
+            self, document: DocumentEditor, entry: dict
+        ) -> None:
+            """Stage ASM 71: exakten BASIC-Splitter-/ScrollArea-Zustand setzen."""
+            if not isinstance(document, DocumentEditor) or not isinstance(entry, dict):
+                return
+            splitter = getattr(document, "basic_editor_splitter", None)
+            host = getattr(document, "basic_screen_keyboard_scroll", None)
+            keyboard = getattr(document, "basic_screen_keyboard", None)
+
+            last_sizes = list(entry.get("keyboard_last_sizes", ()) or ())[:2]
+            host_height = max(0, int(entry.get("keyboard_host_height", 0) or 0))
+            if len(last_sizes) >= 2:
+                last_sizes = [max(0, int(last_sizes[0])), max(0, int(last_sizes[1]))]
+                # Die gespeicherte ScrollArea-Höhe ist für den sichtbaren
+                # Tastaturteil autoritativ. Sie darf nicht nur Metadatum sein.
+                if host_height > 0:
+                    last_sizes[1] = host_height
+                document._basic_keyboard_last_sizes = list(last_sizes)
+
+            if keyboard is not None:
+                width = max(1, int(entry.get("keyboard_width", keyboard.width()) or keyboard.width()))
+                height = max(1, int(entry.get("keyboard_height", keyboard.height()) or keyboard.height()))
+                keyboard.resize(width, height)
+
+            if splitter is not None:
+                try:
+                    handle_width = int(
+                        entry.get("splitter_handle_width", splitter.handleWidth())
+                        or splitter.handleWidth()
+                    )
+                    if handle_width > 0:
+                        splitter.setHandleWidth(handle_width)
+                except Exception:
+                    pass
+
+                # QSplitter.saveState zuerst; explizite Pixelgrößen danach.
+                # Letztere gewinnen und korrigieren SizeHint-Abweichungen der
+                # QScrollArea nach keyboard.adjustSize()/show().
+                state_text = str(entry.get("splitter_state", "") or "").strip()
+                if state_text and bool(entry.get("keyboard_visible", False)):
+                    try:
+                        raw = base64.b64decode(state_text.encode("ascii"), validate=True)
+                        splitter.restoreState(QByteArray(raw))
+                    except Exception:
+                        pass
+
+                splitter_sizes = list(entry.get("splitter_sizes", ()) or ())[:2]
+                if bool(entry.get("keyboard_visible", False)):
+                    if len(splitter_sizes) >= 2:
+                        exact_sizes = [
+                            max(1, int(splitter_sizes[0])),
+                            max(1, int(splitter_sizes[1])),
+                        ]
+                    elif len(last_sizes) >= 2:
+                        exact_sizes = [max(1, last_sizes[0]), max(1, last_sizes[1])]
+                    else:
+                        exact_sizes = []
+                    if len(exact_sizes) == 2:
+                        if host_height > 0:
+                            exact_sizes[1] = host_height
+                        splitter.setSizes(exact_sizes)
+
+            if host is not None:
+                # resize() ist bei einem QSplitter-Kind nur eine zusätzliche
+                # Geometriehilfe; die eigentliche Höhe kommt aus setSizes().
+                if host_height > 0 and bool(entry.get("keyboard_visible", False)):
+                    try:
+                        host.resize(max(1, host.width()), host_height)
+                    except Exception:
+                        pass
+                try:
+                    host.horizontalScrollBar().setValue(
+                        int(entry.get("keyboard_scroll_x", 0) or 0)
+                    )
+                    host.verticalScrollBar().setValue(
+                        int(entry.get("keyboard_scroll_y", 0) or 0)
+                    )
+                except Exception:
+                    pass
+
+        def _restore_project_c64_open_editors(self, entries) -> None:
+            """Stage ASM 71: C64-BASIC-Editor-Session inklusive exakter Layoutdaten."""
+            values = entries.get(PROJECT_C64_OPEN_EDITORS_KEY, ())
+            _last_values = entries.get(PROJECT_C64_LAST_BASIC_FILE_KEY, ())
+            _last_path = (
+                str(_last_values[0].get("path", "") or "").strip()
+                if _last_values else ""
+            )
+            if _last_path:
+                self._last_opened_c64_basic_path = Path(_last_path).expanduser()
+            if not values:
+                return
+
+            active_document = None
+            restored_entries = []
+            restored = 0
+
+            # open_document() wendet normalerweise die Profil-Vorgabe sofort an.
+            # Während Session-Restore würde das bei mehreren BASIC-Tabs bereits
+            # Zwischen-Snapshots erzeugen. Daher kurz deaktivieren und danach
+            # die pro Datei gespeicherte Sichtbarkeit deterministisch anwenden.
+            _default_keyboard_enabled, _keyboard_profile = (
+                self._project_c64_screen_keyboard_configuration()
+            )
+            self.project_c64_screen_keyboard[_keyboard_profile] = False
+            try:
+                for entry in values:
+                    path_value = str(entry.get("path", "") or "").strip()
+                    if not path_value:
+                        continue
+                    editor_path = Path(path_value).expanduser()
+                    if editor_path.suffix.casefold() not in DocumentEditor.BASIC_EXTENSIONS:
+                        continue
+                    if not editor_path.is_file():
+                        self.log(
+                            "C64 BASIC Editor-Session: Datei nicht gefunden: "
+                            f"{editor_path}"
+                        )
+                        continue
+                    if self.open_document(editor_path):
+                        restored += 1
+                        document = self._find_open_document(editor_path)
+                        if document is None:
+                            continue
+                        restored_entries.append((document, entry))
+                        if bool(entry.get("active", False)):
+                            active_document = document
+            finally:
+                self.project_c64_screen_keyboard[_keyboard_profile] = bool(
+                    _default_keyboard_enabled
+                )
+
+            # Layoutdaten erst anwenden, wenn alle Tabs existieren. So kann kein
+            # Zwischen-Tab die gespeicherte Hauptfenster-/Dockgeometrie verfälschen.
+            # Vor der Sichtbarkeit wird nur die zuletzt gültige Tastaturhöhe
+            # vorgemerkt, damit set_basic_screen_keyboard_visible() bereits mit
+            # den Projektwerten statt mit dem Default [650, 220] arbeitet.
+            for document, entry in restored_entries:
+                last_sizes = list(entry.get("keyboard_last_sizes", ()) or ())[:2]
+                host_height = max(0, int(entry.get("keyboard_host_height", 0) or 0))
+                if len(last_sizes) >= 2:
+                    last_sizes = [max(0, int(last_sizes[0])), max(0, int(last_sizes[1]))]
+                    if host_height > 0:
+                        last_sizes[1] = host_height
+                    document._basic_keyboard_last_sizes = last_sizes
+
+            if active_document is not None:
+                self.document_tabs.setCurrentWidget(active_document)
+                active_document.focus_preferred_editor()
+
+            # Sichtbarkeit zuletzt setzen, nachdem der aktive Tab feststeht.
+            # Nur der aktive Editor darf dabei das äußere Dock-Snapshot auslösen.
+            for document, entry in restored_entries:
+                visible = bool(entry.get("keyboard_visible", False))
+                document.set_basic_screen_keyboard_visible(
+                    visible, notify=(document is active_document)
+                )
+                self._apply_c64_basic_editor_session_geometry(document, entry)
+                # show()/adjustSize() und der TabWidget-Layoutpass können die
+                # QScrollArea unmittelbar danach noch einmal umrechnen. Deshalb
+                # wird derselbe gespeicherte Zustand nach dem Eventloop erneut
+                # autoritativ angewendet.
+                _entry_copy = dict(entry)
+                QTimer.singleShot(
+                    0,
+                    lambda d=document, e=_entry_copy:
+                        self._apply_c64_basic_editor_session_geometry(d, e),
+                )
+                QTimer.singleShot(
+                    75,
+                    lambda d=document, e=_entry_copy:
+                        self._apply_c64_basic_editor_session_geometry(d, e),
+                )
+
+            # open_document() aktualisiert die MRU während des Wiederherstellens;
+            # anschließend gilt wieder ausdrücklich der im Projekt gespeicherte Wert.
+            if _last_path:
+                self._last_opened_c64_basic_path = Path(_last_path).expanduser()
+            if restored:
+                self.log(
+                    f"C64 BASIC Editor-Session wiederhergestellt: {restored} Datei(en)"
+                )
+
         def load_project_file(
             self,
             path: Path,
@@ -65879,10 +71136,97 @@ border: 2px solid #2a69aa;
                 else "generic"
             )
             self.reset_project_tree(entries)
+
+            # Stage ASM 63: zuerst die gespeicherte Root-Wurzel der TreeList,
+            # danach das im Dateisystem-Dock angezeigte Arbeitsverzeichnis
+            # wiederherstellen. Beim Laden darf dies das Projekt weder als
+            # geändert markieren noch einen Autosave auslösen.
+            _workspace_entries = entries.get(PROJECT_WORKSPACE_ROOT_KEY, ())
+            _working_entries = entries.get(PROJECT_WORKING_DIRECTORY_KEY, ())
+            _workspace_value = (
+                str(_workspace_entries[0].get("path", "") or "").strip()
+                if _workspace_entries else ""
+            )
+            _working_value = (
+                str(_working_entries[0].get("path", "") or "").strip()
+                if _working_entries else ""
+            )
+
+            _workspace_restored = False
+            if _workspace_value:
+                _workspace_path = Path(_workspace_value).expanduser()
+                if _workspace_path.is_dir():
+                    self.set_workspace_root(
+                        _workspace_path,
+                        select=False,
+                        mark_project_modified=False,
+                        persist_project=False,
+                    )
+                    _workspace_restored = True
+                else:
+                    self.log(
+                        "Projekt-WorkspaceRoot nicht gefunden; "
+                        f"Dateisystem-TreeList bleibt unverändert: {_workspace_path}"
+                    )
+
+            if _working_value:
+                _working_path = Path(_working_value).expanduser()
+                if _working_path.is_dir():
+                    self.set_current_directory(
+                        _working_path,
+                        select_tree=True,
+                        mark_project_modified=False,
+                        persist_project=False,
+                    )
+                else:
+                    self.log(
+                        "Projekt-Arbeitsverzeichnis nicht gefunden; "
+                        f"aktuelles Verzeichnis bleibt unverändert: {_working_path}"
+                    )
+                    self.statusBar().showMessage(
+                        f"Projekt geladen, Arbeitsverzeichnis fehlt: {_working_path}",
+                        8000,
+                    )
+            elif _workspace_restored:
+                self.set_current_directory(
+                    Path(self.workspace_root),
+                    select_tree=True,
+                    mark_project_modified=False,
+                    persist_project=False,
+                )
             self.set_project_modified(False)
             self.right_panel_tabs.setCurrentWidget(self.project_tab)
-            self.right_dock.show()
-            self.right_dock.raise_()
+
+            # Stage ASM 65: Das gespeicherte Projektlayout wird NACH den
+            # Projekt-/Workspace-Daten angewendet und überschreibt damit den
+            # globalen QSettings-Fensterzustand. Fehlt ein Projekt-ViewState,
+            # bleibt das bisherige Verhalten (Projekt-Dock sichtbar) erhalten.
+            _view_restored = self._restore_project_view_state(entries)
+            _geometry_restored = self._restore_project_session_geometry(entries)
+            if not _view_restored:
+                if not _geometry_restored:
+                    self.right_dock.show()
+                    self.right_dock.raise_()
+            else:
+                # Sichtbare Docks nach restoreState() sicher neu layouten.
+                for _dock_name in ("left_dock", "right_dock", "bottom_dock"):
+                    _dock = getattr(self, _dock_name, None)
+                    if _dock is not None and _dock.isVisible():
+                        _dock.updateGeometry()
+                QTimer.singleShot(0, self.updateGeometry)
+
+            # Stage ASM 67: Erst nach Workspace und Dock-ViewState die beim
+            # letzten Projekt-Speichern offenen C64-BASIC-Dateien wieder öffnen.
+            # Ist die Bildschirmtastatur im Projektprofil standardmäßig aktiv,
+            # kann sie nun vom bereits restaurierten Layout einen temporären
+            # Snapshot nehmen und das Dateisystem-Dock ausblenden.
+            self._restore_project_c64_open_editors(entries)
+            if _geometry_restored:
+                # Qt kann nach Tab-/Splitteraufbau noch einen späten Layoutpass
+                # ausführen. Die gespeicherte Projektgröße bleibt autoritativ.
+                self._enforce_project_session_geometry()
+                QTimer.singleShot(0, self._enforce_project_session_geometry)
+
             self.statusBar().showMessage(f"Projekt geöffnet: {resolved.name}")
             self.log(f"Projekt geöffnet: {resolved}")
             self._remember_recent_project(resolved)
@@ -67198,10 +72542,16 @@ border: 2px solid #2a69aa;
                 self.save_project()
 
         def _show_project_dbase_group_menu(self, item: QTreeWidgetItem, position) -> None:
+            role = str(item.data(0, Qt.UserRole + 306) or "").casefold()
             menu = QMenu(self.project_tree)
-            add_action = menu.addAction("Hinzufügen …")
-            clear_action = menu.addAction("Einträge löschen")
-            clear_action.setEnabled(item.childCount() > 0)
+            # Stage ASM 76: Der Etikettenknoten verwendet die vom Benutzer
+            # gewünschte kurze Aktion "Hinzufügen". Die übrigen dBase-
+            # Ressourcenknoten behalten ihre bisherige Beschriftung.
+            add_action = menu.addAction("Hinzufügen" if role == "labels" else "Hinzufügen …")
+            clear_action = None
+            if role != "labels":
+                clear_action = menu.addAction("Einträge löschen")
+                clear_action.setEnabled(item.childCount() > 0)
             menu.addSeparator()
             toggle_action = menu.addAction(
                 "Knoten schließen" if item.isExpanded() else "Knoten öffnen"
@@ -67211,20 +72561,32 @@ border: 2px solid #2a69aa;
             )
             if selected is add_action:
                 self.add_project_dbase_entries(item)
-            elif selected is clear_action:
+            elif clear_action is not None and selected is clear_action:
                 self.clear_project_dbase_group(item)
             elif selected is toggle_action:
                 item.setExpanded(not item.isExpanded())
 
         def _show_project_dbase_file_menu(self, item: QTreeWidgetItem, position) -> None:
+            role = str(item.data(0, Qt.UserRole + 306) or "").casefold()
             menu = QMenu(self.project_tree)
             open_action = menu.addAction("Öffnen")
-            remove_action = menu.addAction("Aus Projekt entfernen")
+            add_action = None
+            if role == "labels":
+                # Auch auf einem Etiketten-Blatt kann direkt ein weiteres
+                # Etikett in denselben Knoten aufgenommen werden.
+                add_action = menu.addAction("Hinzufügen")
+                remove_action = menu.addAction("Entfernen")
+            else:
+                remove_action = menu.addAction("Aus Projekt entfernen")
             selected = menu.exec_(
                 self.project_tree.viewport().mapToGlobal(position)
             )
             if selected is open_action:
                 self.open_project_item(item)
+            elif add_action is not None and selected is add_action:
+                parent = item.parent()
+                if parent is not None:
+                    self.add_project_dbase_entries(parent)
             elif selected is remove_action:
                 self.delete_selected_project_leaves(preferred_item=item)
 
@@ -68354,6 +73716,8 @@ border: 2px solid #2a69aa;
                         self.statusBar().showMessage(
                             f"{path.name}: Bericht Builder geöffnet", 6000
                         )
+                elif role == "labels":
+                    self.open_dbase_label_file(path)
                 elif role == "objects":
                     # Objektdateien sind Linkerressourcen; Doppelklick zeigt
                     # die vorhandene Objekt-Information statt Binärtext.
@@ -68462,7 +73826,11 @@ border: 2px solid #2a69aa;
             self.right_dock = QDockWidget("Projekt / Informationen", self)
             self.right_dock.setObjectName("d64_content_dock")
             self.right_dock.setFeatures(self._dock_features())
-            self.right_dock.setAllowedAreas(Qt.AllDockWidgetAreas)
+            # Stage ASM 63: Projekt/Informationen darf ausschließlich an den
+            # beiden Seiten des Hauptfensters angedockt werden.
+            self.right_dock.setAllowedAreas(
+                Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea
+            )
             self.right_dock.setMinimumWidth(360)
 
             container = QWidget(self.right_dock)
@@ -68923,6 +74291,21 @@ border: 2px solid #2a69aa;
             return True
 
         def eventFilter(self, watched, event):
+            # Stage ASM 70: die letzte sichtbare Protokoll-Dockgröße behalten.
+            # Beim späteren Ausblenden darf Qt die gespeicherte Höhe nicht auf
+            # eine zusammengefallene/temporäre Hidden-Geometrie reduzieren.
+            if watched is getattr(self, "bottom_dock", None):
+                if event.type() == QEvent.Resize and watched.isVisible():
+                    self._protocol_dock_last_height = max(1, int(watched.height()))
+                    self._protocol_dock_last_width = max(1, int(watched.width()))
+                elif event.type() == QEvent.Hide:
+                    self._protocol_dock_last_height = max(
+                        1, int(getattr(self, "_protocol_dock_last_height", watched.height()))
+                    )
+                    self._protocol_dock_last_width = max(
+                        1, int(getattr(self, "_protocol_dock_last_width", watched.width()) or watched.width())
+                    )
+
             # Stage 240: fuer das frameless Hauptfenster werden Mausereignisse
             # global beobachtet. Dadurch funktioniert die Resize-Hit-Zone auch
             # dann, wenn DockWidgets, MenuWidget oder CentralWidget bis dicht
@@ -69257,31 +74640,79 @@ border: 2px solid #2a69aa;
             except ValueError:
                 return False
 
-        def set_workspace_root(self, path: Path, *, select: bool = True) -> None:
-            path = Path(path).expanduser().resolve()
-            if not path.is_dir():
-                self.show_error("Ungültiger Ordner", f"Der Ordner existiert nicht:\n{path}")
+        def _persist_project_workspace_state(self) -> None:
+            """Stage ASM 63: Workspaceänderungen sofort in *.pro sichern."""
+            if getattr(self, "current_project_path", None) is None:
                 return
+            # save_project() sammelt current_directory + workspace_root neu ein.
+            # Damit steht die Änderung unmittelbar in der Projektdatei und geht
+            # auch bei einem späteren Programmabbruch nicht verloren.
+            if not self.save_project():
+                self.set_project_modified(True)
 
-            self.workspace_root = path
-            root_index = self.file_system_model.setRootPath(str(path))
-            self.directory_tree.setRootIndex(root_index)
-            self.directory_tree.setCurrentIndex(root_index)
-            self.directory_tree.expand(root_index)
-            if select:
-                self.set_current_directory(path, select_tree=False)
-            self.log(f"Arbeitsverzeichnis gesetzt: {path}")
-
-        def set_current_directory(
-            self, path: Path, *, select_tree: bool = True
+        def set_workspace_root(
+            self,
+            path: Path,
+            *,
+            select: bool = True,
+            mark_project_modified: bool = True,
+            persist_project: bool = True,
         ) -> None:
             path = Path(path).expanduser().resolve()
             if not path.is_dir():
                 self.show_error("Ungültiger Ordner", f"Der Ordner existiert nicht:\n{path}")
                 return
 
+            _old_workspace_root = getattr(self, "workspace_root", None)
+            self.workspace_root = path
+            root_index = self.file_system_model.setRootPath(str(path))
+            self.directory_tree.setRootIndex(root_index)
+            self.directory_tree.setCurrentIndex(root_index)
+            self.directory_tree.expand(root_index)
+            if select:
+                self.set_current_directory(
+                    path,
+                    select_tree=False,
+                    mark_project_modified=False,
+                    persist_project=False,
+                )
+
+            _changed = (
+                _old_workspace_root is not None
+                and Path(_old_workspace_root) != path
+            )
+            if (
+                _changed
+                and mark_project_modified
+                and getattr(self, "current_project_path", None) is not None
+            ):
+                self.set_project_modified(True)
+                if persist_project:
+                    self._persist_project_workspace_state()
+            self.log(f"Arbeitsverzeichnis-Wurzel gesetzt: {path}")
+
+        def set_current_directory(
+            self,
+            path: Path,
+            *,
+            select_tree: bool = True,
+            mark_project_modified: bool = True,
+            persist_project: bool = True,
+        ) -> None:
+            path = Path(path).expanduser().resolve()
+            if not path.is_dir():
+                self.show_error("Ungültiger Ordner", f"Der Ordner existiert nicht:\n{path}")
+                return
+
+            _old_current_directory = getattr(self, "current_directory", None)
+
             if not self._path_is_within(path, self.workspace_root):
-                self.set_workspace_root(path, select=False)
+                self.set_workspace_root(
+                    path,
+                    select=False,
+                    mark_project_modified=False,
+                    persist_project=False,
+                )
 
             try:
                 os.chdir(path)
@@ -69298,6 +74729,19 @@ border: 2px solid #2a69aa;
                 self.select_tree_path(path)
             self.populate_file_list()
             self.statusBar().showMessage(f"Arbeitsverzeichnis: {path}")
+
+            _changed = (
+                _old_current_directory is not None
+                and Path(_old_current_directory) != path
+            )
+            if (
+                _changed
+                and mark_project_modified
+                and getattr(self, "current_project_path", None) is not None
+            ):
+                self.set_project_modified(True)
+                if persist_project:
+                    self._persist_project_workspace_state()
 
         def select_tree_path(self, path: Path) -> None:
             index = self.file_system_model.index(str(path))
@@ -69831,6 +75275,16 @@ border: 2px solid #2a69aa;
             if state is not None:
                 self.restoreState(state)
 
+            # Stage ASM 63: Alte gespeicherte Layouts dürfen das Projekt-Dock
+            # nicht oben/unten wiederherstellen. Links und rechts sind die
+            # einzigen gültigen Dockbereiche. Ein frei schwebendes Dock bleibt
+            # frei schwebend und kann anschließend an eine Seite gezogen werden.
+            _project_dock = getattr(self, "right_dock", None)
+            if _project_dock is not None and not _project_dock.isFloating():
+                _area = self.dockWidgetArea(_project_dock)
+                if _area not in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea):
+                    self.addDockWidget(Qt.RightDockWidgetArea, _project_dock)
+
             # Stage 148:
             # restoreGeometry() darf die in __init__ gesetzte Starthöhe nicht
             # wieder durch eine ältere, eventuell sehr große gespeicherte
@@ -69966,6 +75420,53 @@ border: 2px solid #2a69aa;
         return 1
 
     HexEditor.C64_FONT_FAMILY = c64_font_families[0]
+
+    # Stage ASM 53: BASIC soll C64 Pro Mono benutzen. Die Schrift darf entweder
+    # systemweit installiert sein oder optional neben d64_dism.py liegen.
+    # Fontdateien werden nicht vom Projekt selbst verteilt; vorhandene Dateien
+    # werden lediglich registriert.
+    basic_mono_family = ""
+    app_dir = Path(__file__).resolve().parent
+    for mono_filename in (
+        "C64ProMono.ttf",
+        "C64 Pro Mono.ttf",
+        "C64ProMono.otf",
+        "C64 Pro Mono.otf",
+    ):
+        mono_path = app_dir / mono_filename
+        if not mono_path.is_file():
+            continue
+        mono_id = QFontDatabase.addApplicationFont(str(mono_path))
+        if mono_id >= 0:
+            mono_families = QFontDatabase.applicationFontFamilies(mono_id)
+            if mono_families:
+                # Bevorzugt explizit eine Familie mit 'Mono'.
+                basic_mono_family = next(
+                    (name for name in mono_families if "mono" in name.casefold()),
+                    mono_families[0],
+                )
+                break
+
+    if not basic_mono_family:
+        installed_families = QFontDatabase().families()
+        by_casefold = {name.casefold(): name for name in installed_families}
+        for wanted in (
+            "C64 Pro Mono",
+            "C64Pro Mono",
+            "C64 Pro Mono Regular",
+            "C64ProMono",
+        ):
+            found = by_casefold.get(wanted.casefold())
+            if found:
+                basic_mono_family = found
+                break
+
+    if basic_mono_family:
+        DocumentEditor.BASIC_C64_FONT_FAMILY = basic_mono_family
+    else:
+        # C64Pro ist die sichere C64-nahe Fallback-Familie. Der BASIC-Editor
+        # bleibt damit benutzbar, falls C64 Pro Mono auf dem Zielsystem fehlt.
+        DocumentEditor.BASIC_C64_FONT_FAMILY = c64_font_families[0]
     # Das Hauptfenster wird vollständig konstruiert, bevor es sichtbar wird.
     # winId() erzwingt bei Bedarf die native Handle-Erzeugung. __main__.py kann
     # seinen Splash deshalb exakt nach show() und vorhandenem Handle schließen.
@@ -71183,6 +76684,7 @@ _ASSEMBLER_DIRECTIVE_ALIASES = {
     "text": "text",
     "ascii": "text",
     "fill": "fill",
+    "cbss": "cbss",
     "nostub": "nostub",
     "basic": "basic",
     "end": "empty",
@@ -71795,12 +77297,21 @@ def _assembler_directive_size(
                     statement.line,
                 )
         return len(arguments) * 2
-    if statement.kind == "fill":
-        if not 1 <= len(arguments) <= 2:
-            raise AssemblerError(
-                ".fill erwartet Anzahl und optional einen Bytewert.",
-                statement.line,
-            )
+    if statement.kind in {"fill", "cbss"}:
+        if statement.kind == "fill":
+            if not 1 <= len(arguments) <= 2:
+                raise AssemblerError(
+                    ".fill erwartet Anzahl und optional einen Bytewert.",
+                    statement.line,
+                )
+            description = ".fill"
+        else:
+            if len(arguments) != 1:
+                raise AssemblerError(
+                    ".cbss erwartet genau eine Byte-Anzahl.",
+                    statement.line,
+                )
+            description = ".cbss"
         count, unresolved = _evaluate_assembler_expression(
             arguments[0],
             symbols,
@@ -71810,12 +77321,12 @@ def _assembler_directive_size(
         if unresolved:
             names = ", ".join(sorted(unresolved, key=str.casefold))
             raise AssemblerError(
-                f"Die .fill-Anzahl muss bereits bekannt sein: {names}.",
+                f"Die {description}-Anzahl muss bereits bekannt sein: {names}.",
                 statement.line,
             )
         if not 0 <= count <= 0x10000:
             raise AssemblerError(
-                ".fill-Anzahl liegt außerhalb 0..65536.",
+                f"{description}-Anzahl liegt außerhalb 0..65536.",
                 statement.line,
             )
         return count
@@ -71903,7 +77414,7 @@ def _layout_assembler(
             if statement.operand:
                 raise AssemblerError(".basic hat keinen Operanden.", statement.line)
             basic_mode = True
-        elif statement.kind in {"byte", "word", "text", "fill"}:
+        elif statement.kind in {"byte", "word", "text", "fill", "cbss"}:
             size = _assembler_directive_size(
                 statement,
                 pc,
@@ -72013,7 +77524,28 @@ def assemble_mos6510_source(
             )
         memory[address] = value & 0xFF
 
+    # .cbss ist eine C64-spezifische Compiler-/Assembler-Konvention:
+    # Der Bereich erhält Adressen, erzeugt aber keine Bytes im PRG. Da ein
+    # C64-PRG physisch zusammenhängend geladen wird, darf nach dem ersten
+    # .cbss-Block kein weiterer Code bzw. keine weiteren geladenen Daten mehr
+    # folgen. Labels/Konstanten am Ende bleiben erlaubt.
+    seen_cbss = False
+    for item in layout.items:
+        kind = item.statement.kind
+        if kind == "cbss":
+            seen_cbss = True
+            continue
+        if seen_cbss and item.size and kind in {
+            "byte", "word", "text", "fill", "instruction"
+        }:
+            raise AssemblerError(
+                ".cbss muss am Ende des geladenen C64-Images liegen; "
+                "danach sind keine Programmdaten oder Instruktionen erlaubt.",
+                item.statement.line,
+            )
+
     entry_address: Optional[int] = None
+    cbss_ranges: List[Tuple[int, int, int]] = []
     for item in layout.items:
         statement = item.statement
         symbols = layout.symbols
@@ -72081,6 +77613,12 @@ def assemble_mos6510_source(
                 write_byte(address, value & 0xFF, statement.line)
                 write_byte(address + 1, value >> 8, statement.line)
                 address += 2
+            continue
+        if statement.kind == "cbss":
+            if item.size:
+                cbss_ranges.append(
+                    (item.address, item.address + item.size - 1, statement.line)
+                )
             continue
         if statement.kind == "fill":
             arguments = _split_assembler_arguments(
@@ -72158,6 +77696,25 @@ def assemble_mos6510_source(
     if not memory:
         raise AssemblerError("Der Quelltext erzeugt keine Programmdaten.")
 
+    # Ein CBSS-Bereich darf niemals bereits geladene Bytes überdecken. Das
+    # schützt auch handgeschriebenen ASM-Code mit rückwärts gesetztem .org.
+    for cbss_start, cbss_end, cbss_line in cbss_ranges:
+        if cbss_start < 0 or cbss_end > 0xFFFF:
+            raise AssemblerError(
+                ".cbss-Bereich liegt außerhalb $0000..$FFFF.",
+                cbss_line,
+            )
+        collision = next(
+            (address for address in memory if cbss_start <= address <= cbss_end),
+            None,
+        )
+        if collision is not None:
+            raise AssemblerError(
+                f".cbss-Bereich ${cbss_start:04X}-${cbss_end:04X} "
+                f"überschneidet geladene Programmdaten bei ${collision:04X}.",
+                cbss_line,
+            )
+
     # Zielmodule können einen exklusiven VIC-II-Speicherbereich markieren.
     # Das ist bei der C64-HiRes-Grafik notwendig: Programmcode oder statische
     # Daten im vom Zielmodul markierten VIC-II-Bankbereich würden beim Laden
@@ -72181,11 +77738,20 @@ def assemble_mos6510_source(
             address for address in memory
             if reserve_start <= address <= reserve_end
         ]
-        if collisions:
-            first = min(collisions)
-            last = max(collisions)
+        cbss_collisions = [
+            (start, end)
+            for start, end, _line in cbss_ranges
+            if start <= reserve_end and end >= reserve_start
+        ]
+        if collisions or cbss_collisions:
+            if collisions:
+                first = min(collisions)
+                last = max(collisions)
+            else:
+                first = max(reserve_start, cbss_collisions[0][0])
+                last = min(reserve_end, cbss_collisions[0][1])
             raise AssemblerError(
-                "Programmcode oder Daten überschneiden den reservierten "
+                "Programmcode, Daten oder C64-CBSS überschneiden den reservierten "
                 f"C64-Grafikspeicher ${reserve_start:04X}-${reserve_end:04X} "
                 f"bei ${first:04X}-${last:04X}."
             )
@@ -72385,6 +77951,21 @@ def parse_arguments(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
             "Windows-CUI-Programm, 'gui' ein Windows-GUI-Programm. "
             "LOGO verwendet im GUI-Modus zusätzlich seine 320x200-Grafikfläche."
         ),
+    )
+    parser.add_argument(
+        "--c64-packer",
+        choices=PROJECT_C64_PACKER_MODES,
+        default="none",
+        help=(
+            "C64-PRG Image Packer: none, rle, lz oder auto. "
+            "RLE/LZ werden explizit erzwungen; nur auto darf das Original beibehalten."
+        ),
+    )
+    parser.add_argument(
+        "--c64-pack-search",
+        choices=PROJECT_C64_PACKER_SEARCH_MODES,
+        default="balanced",
+        help="LZ-Packsuche im Compiler: fast, balanced oder maximum",
     )
     parser.add_argument(
         "--verbose", "--prolog-verbose",
@@ -73063,6 +78644,24 @@ def _compile_cli(args: argparse.Namespace) -> int:
         assembled = assemble_mos6510_source(
             generated.assembly, filename=assembly_path.name
         )
+        _cli_packer_mode = _normalize_project_c64_packer_mode(
+            getattr(args, "c64_packer", "none")
+        )
+        _cli_packer_search = _normalize_project_c64_packer_search(
+            getattr(args, "c64_pack_search", "balanced")
+        )
+        if _cli_packer_mode != "none":
+            from c64packer import C64PackerError, pack_c64_program
+            try:
+                assembled, _packer_stats = pack_c64_program(
+                    assembled,
+                    assemble_func=assemble_mos6510_source,
+                    mode=_cli_packer_mode,
+                    search_mode=_cli_packer_search,
+                )
+            except C64PackerError as exc:
+                raise ValueError(f"C64 Image Packer: {exc}") from exc
+            print(_packer_stats.message, file=sys.stderr)
         image = assembled.prg
         default_output = source_path.with_suffix(".prg")
 
