@@ -1,0 +1,16 @@
+// Stage 30: ODBC-DSN ueber DATABASE.alias
+_app.security = new Session()
+
+local db as Database
+db = new Database()
+db.session = _app.security
+
+db.path = ""
+db.databaseName = "MYDATABASE"
+db.userName = "dbuser"
+db.password = "dbpassword"
+db.alias = "MY_ODBC_DSN"
+
+db.active = true
+db.commit()
+db.active = false

@@ -55,3 +55,36 @@ Fuer eine direkte CHM-Context-Aufloesung kann das CHM-Projekt z.B. enthalten:
 
 Fehlt diese numerische Zuordnung, sucht der integrierte Viewer automatisch
 nach dem Text "relocation_bootstrap" im CHM-Keyword-Index bzw. Themenbaum.
+
+Stage ASM 79 - C64 BASIC F1-Hilfe
+=================================
+
+Im C64 BASIC Editor wird beim Druecken von F1 das BASIC-V2-Token unter dem
+Cursor bestimmt. Die numerische Hilfe-ID entspricht dem originalen Tokenbyte.
+Beispiele:
+
+    FOR    = $81 = 129
+    GOTO   = $89 = 137
+    PRINT  = $99 = 153
+    SYS    = $9E = 158
+    PEEK   = $C2 = 194
+    CHR$   = $C7 = 199
+
+Auf stdout wird die ermittelte ID mit Python print() ausgegeben, z.B.:
+
+    C64 BASIC Hilfe-ID: 153
+
+Eine CHM kann die ID direkt so zuordnen:
+
+    [MAP]
+    #define IDH_BASIC_PRINT 153
+    #define IDH_BASIC_FOR   129
+    #define IDH_BASIC_CHR   199
+
+    [ALIAS]
+    IDH_BASIC_PRINT=basic/PRINT.html
+    IDH_BASIC_FOR=basic/FOR.html
+    IDH_BASIC_CHR=basic/CHR$.html
+
+Fehlt die numerische MAP/ALIAS-Zuordnung, bleibt der bestehende Topic-/Keyword-
+Fallback ueber das BASIC-Wort unter dem Cursor aktiv.

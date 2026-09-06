@@ -1,0 +1,17 @@
+// Stage 30: SESSION + DATABASE
+_app.security = new Session()
+
+local db as Database
+db = new Database()
+db.session = _app.security
+
+// Lokale DBF/MDX/NDX/DBT-Wurzel
+db.path = "."
+db.databaseName = "DATA"
+db.userName = ""
+db.password = ""
+db.alias = ""
+
+db.open()
+db.commit()
+db.close()

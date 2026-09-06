@@ -121,6 +121,8 @@
 #  * Stage ASM 74: Etiketten-Layout Speichern/Speichern unter sowie Daten-PDF und druckfertige A4-PDF.
 #  * Stage ASM 75: Etiketten-Layout Laden-Button ueber Speichern; verwendet die bestehende load_layout()-Restore-Logik.
 #  * Stage ASM 76: dBase-Projektbaum mit Etiketten-Unterknoten unter Berichte, *.d64label-Hinzufuegen/Entfernen und Doppelklick-Laden.
+#  * Stage ASM 77: PyQt5-WYSIWYG-HTML-Editor als Docking-Fenster unter Werkzeuge -> HTML Editor.
+#  * Stage ASM 78: HTML-Editor-Tabellen mit horizontaler/vertikaler Maus-Skalierung und exakter Groesseneingabe.
 #  * Stage ASM 11: dBase SQL Builder mit verschiebbaren Tabellen-Proxies, feldgenauen orthogonalen Beziehungen,
 #  * Stage ASM 20: ODBC-Datenquellen/DSN-Auswahl (User/System, 32/64-Bit Fallback),
 #    Login/Test-Dialog und View-Datensatznavigator,
@@ -13693,6 +13695,107 @@ help_py = {
     "relocation_bootstrap": 22,
 }
 
+# ---------------------------------------------------------------------------
+# Stage ASM 79: F1-Kontexthilfe fuer den C64-BASIC-V2-Editor.
+#
+# Die numerische Hilfe-ID entspricht absichtlich dem originalen BASIC-V2-
+# Tokenbyte. Dadurch ist die Zuordnung stabil, dokumentierbar und kann in
+# help/c64.chm direkt ueber [MAP]/[ALIAS] verwendet werden. Beispiel:
+#
+#     PRINT  -> Token $99 -> Context-ID 153
+#     FOR    -> Token $81 -> Context-ID 129
+#     CHR$   -> Token $C7 -> Context-ID 199
+#
+# Unbekannte Bezeichner erhalten ID 0 und werden vom CHM-Viewer weiterhin
+# ueber den lesbaren Topic-/Keyword-Namen gesucht.
+# ---------------------------------------------------------------------------
+C64_BASIC_HELP_IDS = {
+    "+"         : 1000,
+    "-"         : 1000,
+    "*"         : 1000,
+    "/"         : 1000,
+    "^"         : 1000, 
+    ">"         : 1000,
+    "="         : 1000,
+    "<"         : 1000,
+    
+    "ABS"       : 1001,
+    "AND"       : 1002,
+    "ASC"       : 1003,
+    "ATN"       : 1004,
+    "CHR$"      : 1005,
+    "CLOSE"     : 1006,
+    "CLR"       : 1007,
+    "CMD"       : 1008,
+    "CONT"      : 1009,
+    "COS"       : 1010,
+    "DATA"      : 1011,
+    "DEF"       : 1012,
+    "DIM"       : 1013,
+    "END"       : 1014,
+    "EXP"       : 1015,
+    "FN"        : 1016,
+    "FOR"       : 1017,
+    "FRE"       : 1018,
+    "GET"       : 1019,
+    "GO"        : 1020,
+    "GOSUB"     : 1021,
+    "GOTO"      : 1022,
+    "IF"        : 1023,
+    "INPUT"     : 1024,
+    "INPUT#"    : 1025,
+    "INT"       : 1026,
+    "LEFT$"     : 1027,
+    "LEN"       : 1028,
+    "LET"       : 1029,
+    "LIST"      : 1030,
+    "LOAD"      : 1031,
+    "LOG"       : 1032,
+    "MID$"      : 1033,
+    "NEW"       : 1034,
+    "NEXT"      : 1035,
+    "NOT"       : 1036,
+    "ON"        : 1037,
+    "OPEN"      : 1038,
+    "OR"        : 1039,
+    
+    "PEEK"      : 1040,
+    "POKE"      : 1041,
+    "POS"       : 1042,
+    "PRINT"     : 1043,
+    "PRINT#"    : 1044,
+    "READ"      : 1045,
+    
+    "REM"       : 1046,
+    "RESTORE"   : 1047,
+    "RETURN"    : 1048,
+    "RIGHT$"    : 1049,
+    "RND"       : 1050,
+    "RUN"       : 1051,
+    "SAVE"      : 1052,
+    "SIN"       : 1053,
+    "STR$"      : 1054,
+    "SGN"       : 1055,
+    "SPC"       : 1056,
+    "SQR"       : 1057,
+    "STEP"      : 1058,
+    "STOP"      : 1059,
+    "SYS"       : 1060,
+    "TAB"       : 1061,
+    "TAN"       : 1062,
+    "THEN"      : 1063,
+    "TO"        : 1064,
+    "USR"       : 1065,
+    "VAL"       : 1066,
+    "VERIFY"    : 1067,
+    "WAIT"      : 1068,
+}
+
+# Kurze Eingabeform des PRINT-Befehls.
+C64_BASIC_HELP_ALIASES = {
+    "?": "PRINT",
+}
+
 
 def read_chm_context_map(root: Path) -> Dict[int, str]:
     """Liest numerische CHM-Context-IDs aus [MAP]/[ALIAS], soweit vorhanden.
@@ -16000,6 +16103,9 @@ def run_gui(
             QTextCharFormat,
             QTextCursor,
             QTextFormat,
+            QTextListFormat,
+            QTextLength,
+            QTextTableCellFormat,
         )
         from PyQt5.QtWidgets import (
             QAbstractScrollArea,
@@ -16968,6 +17074,17 @@ def run_gui(
         "mo:DocumentEditor.windows_graphics_combo": tr("mo:DocumentEditor.windows_graphics_combo"),
         "mo:doxygen_documentation_dock": tr("mo:doxygen_documentation_dock"),
         "mo:doxygen_documentation_tool": tr("mo:doxygen_documentation_tool"),
+        "mo:html_editor_dock": tr("mo:html_editor_dock"),
+        "mo:html_editor_widget": tr("mo:html_editor_widget"),
+        "mo:html_editor_menu_bar": tr("mo:html_editor_menu_bar"),
+        "mo:html_editor_toolbar": tr("mo:html_editor_toolbar"),
+        "mo:html_editor_toolbar_secondary": tr("mo:html_editor_toolbar_secondary"),
+        "mo:html_editor_text_edit": tr("mo:html_editor_text_edit"),
+        "mo:html_editor_format_combo": tr("mo:html_editor_format_combo"),
+        "mo:html_editor_status_widget": tr("mo:html_editor_status_widget"),
+        "mo:html_editor_status_left": tr("mo:html_editor_status_left"),
+        "mo:html_editor_status_right": tr("mo:html_editor_status_right"),
+        "mo:html_editor_table_resize_action": tr("mo:html_editor_table_resize_action"),
         "mo:ErrorMessage.btn_close": tr("mo:ErrorMessage.btn_close"),
         "mo:ErrorMessage.btn_delete_log": tr("mo:ErrorMessage.btn_delete_log"),
         "mo:ErrorMessage.text_edit": tr("mo:ErrorMessage.text_edit"),
@@ -17005,6 +17122,7 @@ def run_gui(
         "mo:ExplorerWindow.dism_vice_action": tr("mo:ExplorerWindow.dism_vice_action"),
         "mo:ExplorerWindow.document_tabs": tr("mo:ExplorerWindow.document_tabs"),
         "mo:ExplorerWindow.doxygen_action": tr("mo:ExplorerWindow.doxygen_action"),
+        "mo:ExplorerWindow.html_editor_action": tr("mo:ExplorerWindow.html_editor_action"),
         "mo:ExplorerWindow.file_info_tab": tr("mo:ExplorerWindow.file_info_tab"),
         "mo:ExplorerWindow.file_list": tr("mo:ExplorerWindow.file_list"),
         "mo:ExplorerWindow.file_size_status_label": tr("mo:ExplorerWindow.file_size_status_label"),
@@ -22760,6 +22878,38 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
         def set_lisp_help_enabled(self, enabled: bool) -> None:
             self._lisp_help_enabled = bool(enabled)
 
+        def _basic_help_word_at_cursor(self) -> str:
+            """Stage 79: BASIC-V2-Token unter dem Cursor inklusive $/#/Operator."""
+            cursor = self.textCursor()
+            line = cursor.block().text()
+            column = max(0, int(cursor.positionInBlock()))
+
+            # Laengere Operatoren zuerst; Namen duerfen die C64-BASIC-
+            # Suffixe '$' (Stringfunktion) und '#' (Dateikanal) enthalten.
+            token_pattern = re.compile(
+                r"(?i)(?:[A-Z][A-Z0-9]*(?:[$#])?|<>|<=|>=|[=+\-*/^<>?])"
+            )
+            matches = list(token_pattern.finditer(line))
+            for match in matches:
+                if match.start() <= column < match.end():
+                    return match.group(0).upper()
+            # Stage 82: Erst ALLE Treffer unter dem Cursor pruefen. Sonst
+            # gewinnt bei A$=CHR$(65) am C noch das links angrenzende '='.
+            for match in matches:
+                if column > 0 and match.start() <= column - 1 < match.end():
+                    return match.group(0).upper()
+
+            # Cursor direkt hinter einem Token bzw. auf der oeffnenden Klammer
+            # von TAB(...), SPC(...), LEFT$(...) usw.
+            prefix = line[:column]
+            tail = re.search(
+                r"(?i)([A-Z][A-Z0-9]*(?:[$#])?|[=+\-*/^<>?])\s*\(?\s*$",
+                prefix,
+            )
+            if tail is not None:
+                return tail.group(1).upper()
+            return ""
+
         def help_word_at_cursor(self) -> str:
             """Liefert Schluesselwort/Funktionsname am aktuellen Cursor.
 
@@ -22768,7 +22918,13 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             funktioniert F1 z. B. auf ``WriteLn(``, ``printf(`` oder
             ``CreateWindowExA(`` auch dann, wenn der Cursor bereits hinter dem
             Namen beziehungsweise auf der Klammer steht.
+
+            Stage 79 erweitert den C64-BASIC-Modus um Stringfunktionen wie
+            ``CHR$``/``LEFT$``, Kanalbefehle wie ``PRINT#`` sowie Operatoren.
             """
+            if self._basic_line_number_mode:
+                return self._basic_help_word_at_cursor()
+
             source = self.toPlainText()
             position = max(0, min(self.textCursor().position(), len(source)))
             identifier = re.compile(
@@ -22804,6 +22960,16 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             word = self.help_word_at_cursor()
             if not word and self._completion_context is not None:
                 word = self._completion_context[0].mnemonic
+
+            # Stage 81: Die C64-BASIC-Hilfe-ID direkt im F1-Keypfad auf
+            # stdout ausgeben. Dadurch ist die Konsolenausgabe unabhaengig
+            # von Qt-Signalen, MainWindow-Slots, CHM-Viewer und Protokoll-Dock.
+            if self._basic_line_number_mode:
+                topic = str(word or "").strip().upper()
+                topic = C64_BASIC_HELP_ALIASES.get(topic, topic)
+                context_id = int(C64_BASIC_HELP_IDS.get(topic, 0))
+                print(f"C64 BASIC Hilfe-ID: {context_id}", flush=True)
+
             self.context_help_requested.emit(word)
 
         def _update_completion_theme(self) -> None:
@@ -23017,6 +23183,19 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 return
             super().insertFromMimeData(source)
 
+        def event(self, event) -> bool:
+            # Stage 82: Der globale HelpContents-QAction-Shortcut wird VOR
+            # keyPressEvent ausgewertet. F1 fuer den fokussierten Editor
+            # reservieren, damit Worterkennung, print() und Hilfesignal laufen.
+            if (
+                event.type() == QEvent.ShortcutOverride
+                and event.key() == Qt.Key_F1
+                and event.modifiers() == Qt.NoModifier
+            ):
+                event.accept()
+                return True
+            return super().event(event)
+
         def keyPressEvent(self, event) -> None:
             # Stage 166: explizite Windows-Shortcuts fuer Undo/Redo in allen
             # Code-Editoren. QPlainTextEdit besitzt zwar eigene Standard-
@@ -23050,8 +23229,9 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 event.accept()
                 return
             if event.key() == Qt.Key_F1:
-                self.request_context_help()
                 event.accept()
+                if not event.isAutoRepeat():
+                    self.request_context_help()
                 return
             if event.key() == Qt.Key_F2:
                 self.build_requested.emit()
@@ -26722,10 +26902,23 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.viewport().update()
             self.dataChanged.emit()
 
+        def event(self, event) -> bool:
+            # Stage 82: Auch der Hex-Viewer muss F1 vor dem allgemeinen
+            # HelpContents-Shortcut beanspruchen, damit sein Bytekontext gilt.
+            if (
+                event.type() == QEvent.ShortcutOverride
+                and event.key() == Qt.Key_F1
+                and event.modifiers() == Qt.NoModifier
+            ):
+                event.accept()
+                return True
+            return super().event(event)
+
         def keyPressEvent(self, event) -> None:
             if event.key() == Qt.Key_F1:
-                self.contextHelpRequested.emit(max(0, int(self._cursor_index)))
                 event.accept()
+                if not event.isAutoRepeat():
+                    self.contextHelpRequested.emit(max(0, int(self._cursor_index)))
                 return
 
             if event.matches(QKeySequence.Copy):
@@ -29011,6 +29204,19 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.context_help_requested.emit(self, "c64", word)
 
         def _emit_context_help(self, view_kind: str, word: str) -> None:
+            # Stage ASM 79: C64 BASIC benutzt feste numerische CHM-Context-IDs.
+            # Die IDs entsprechen den originalen BASIC-V2-Tokenbytes. Die
+            # Python-Konsole hat die ID bereits in request_context_help()
+            # per print() erhalten. Die bestehende C64-CHM-Kette nutzt danach
+            # zuerst die ID und faellt bei fehlendem MAP/ALIAS auf das Wort
+            # unter dem Cursor zurueck.
+            if view_kind == "source" and self.effective_suffix in self.BASIC_EXTENSIONS:
+                topic = str(word or "").strip().upper()
+                topic = C64_BASIC_HELP_ALIASES.get(topic, topic)
+                context_id = int(C64_BASIC_HELP_IDS.get(topic, 0))
+                self.c64_help_topic_requested.emit(self, topic, context_id)
+                return
+
             # Ein geoeffnetes PRG zeigt im Rohdaten-Tab das C64-Disassembly.
             # F1 muss hier immer die feste help/c64.chm verwenden und darf
             # nicht auf die zuletzt geoeffnete allgemeine CHM zurueckfallen.
@@ -30923,7 +31129,7 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             else:
                 self.show_empty_page("Keine anzeigbare Hilfeseite gefunden.")
             self.update_navigation()
-            if self.pending_context_word:
+            if self.pending_context_word or self.pending_context_id:
                 QTimer.singleShot(
                     0,
                     lambda: self.open_context_topic(
@@ -30947,6 +31153,10 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
         def _select_context_local(self, local: str) -> bool:
             relative, fragment = clean_chm_local(local)
             if not relative:
+                return False
+            # Stage 82: Ein veralteter ID-Link darf nicht als erfolgreicher
+            # Sprung gelten; in diesem Fall bleibt die Wortsuche verfuegbar.
+            if resolve_chm_path(self.content_root, relative) is None:
                 return False
             wanted = relative.casefold()
             best_item = None
@@ -31024,14 +31234,17 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                         score += 50
                     if Path(local.split("#", 1)[0]).stem.casefold() == needle:
                         score += 80
-                    if language_name and language_name in local:
+                    # Stage 82: Die Sprache verfeinert nur einen Worttreffer.
+                    # Sonst wurde fuer unbekannte Woerter irgendeine Seite im
+                    # basic/-Ordner als vermeintliches Hilfethema geoeffnet.
+                    if score and language_name and language_name in local:
                         score += 20
                     if score > best_score and local:
                         best_item = item
                         best_score = score
                     iterator += 1
-                if best_score >= 100:
-                    break
+                # Auch den Themenbaum pruefen: Dort kann derselbe Begriff
+                # zur gewuenschten Sprache gehoeren (z.B. BASIC statt Pascal).
 
             if best_item is None or best_score <= 0:
                 self.status_bar.showMessage(
@@ -55667,6 +55880,1071 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.windows_arch_tabs.setCurrentWidget(self.windows_pages[key])
 
 
+    class HtmlEditorWidget(QWidget):
+        """Native PyQt5 WYSIWYG editor inspired by the visual pane of html5-editor.net."""
+
+        def __init__(self, owner, parent=None):
+            super().__init__(parent)
+            self.owner = owner
+            self._dark_mode = bool(getattr(owner, "dark_mode_enabled", False))
+            self.current_path: Optional[Path] = None
+            self._updating_format_controls = False
+            # Stage ASM 78: mouse driven table sizing.  QTextTable has no
+            # native resize handles, therefore the editor tracks the active
+            # table and treats its right/bottom edge as resize grips.
+            self._active_table = None
+            self._table_resize_mode = None
+            self._table_resize_table = None
+            self._table_resize_start_pos = None
+            self._table_resize_start_width = 0.0
+            self._table_resize_start_height = 0.0
+            self._table_resize_margin = 7
+            self._table_height_property = int(QTextFormat.UserProperty) + 7801
+            self.setObjectName("html_editor_widget")
+            self._build_ui()
+            self.new_document(force=True)
+            self.set_dark_mode(self._dark_mode)
+
+        def _make_action(
+            self,
+            text: str,
+            tooltip: str,
+            slot,
+            *,
+            checkable: bool = False,
+            shortcut=None,
+            object_name: str = "",
+        ):
+            action = QAction(text, self)
+            if object_name:
+                action.setObjectName(object_name)
+            action.setToolTip(tooltip)
+            action.setStatusTip(tooltip)
+            action.setCheckable(bool(checkable))
+            if shortcut:
+                action.setShortcut(shortcut)
+            action.triggered.connect(slot)
+            return action
+
+        def _build_ui(self) -> None:
+            outer = QVBoxLayout(self)
+            outer.setContentsMargins(0, 0, 0, 0)
+            outer.setSpacing(0)
+
+            # The reference visual editor exposes the familiar menu row
+            # File/Edit/Insert/View/Format/Table/Tools above two compact
+            # formatting rows.  We keep that hierarchy, but implement every
+            # command natively with Qt widgets/actions.
+            self.menu_bar = QMenuBar(self)
+            self.menu_bar.setObjectName("html_editor_menu_bar")
+            self.menu_bar.setNativeMenuBar(False)
+            outer.addWidget(self.menu_bar)
+
+            self.file_menu = self.menu_bar.addMenu("Datei")
+            self.edit_menu = self.menu_bar.addMenu("Bearbeiten")
+            self.insert_menu = self.menu_bar.addMenu("Einfügen")
+            self.view_menu = self.menu_bar.addMenu("Ansicht")
+            self.format_menu = self.menu_bar.addMenu("Format")
+            self.table_menu = self.menu_bar.addMenu("Tabelle")
+            self.tools_menu = self.menu_bar.addMenu("Werkzeuge")
+
+            self.new_action = self._make_action(
+                "Neu", "Neue HTML-Seite", self.new_document,
+                shortcut=QKeySequence.New, object_name="html_editor_new_action",
+            )
+            self.open_action = self._make_action(
+                "Öffnen ...", "HTML-Datei öffnen", self.open_document,
+                shortcut=QKeySequence.Open, object_name="html_editor_open_action",
+            )
+            self.save_action = self._make_action(
+                "Speichern", "HTML-Datei speichern", self.save_document,
+                shortcut=QKeySequence.Save, object_name="html_editor_save_action",
+            )
+            self.save_as_action = self._make_action(
+                "Speichern unter ...", "HTML-Datei unter neuem Namen speichern",
+                self.save_document_as, shortcut=QKeySequence.SaveAs,
+                object_name="html_editor_save_as_action",
+            )
+            self.print_action = self._make_action(
+                "Drucken ...", "HTML-Dokument drucken", self.print_document,
+                shortcut=QKeySequence.Print, object_name="html_editor_print_action",
+            )
+            for action in (self.new_action, self.open_action, self.save_action, self.save_as_action):
+                self.file_menu.addAction(action)
+            self.file_menu.addSeparator()
+            self.file_menu.addAction(self.print_action)
+
+            self.undo_action = self._make_action(
+                "Rückgängig", "Letzte Änderung rückgängig", lambda: self.editor.undo(),
+                shortcut=QKeySequence.Undo, object_name="html_editor_undo_action",
+            )
+            self.redo_action = self._make_action(
+                "Wiederherstellen", "Rückgängig gemachte Änderung wiederherstellen",
+                lambda: self.editor.redo(), shortcut=QKeySequence.Redo,
+                object_name="html_editor_redo_action",
+            )
+            self.cut_action = self._make_action(
+                "Ausschneiden", "Auswahl ausschneiden", lambda: self.editor.cut(),
+                shortcut=QKeySequence.Cut, object_name="html_editor_cut_action",
+            )
+            self.copy_action = self._make_action(
+                "Kopieren", "Auswahl kopieren", lambda: self.editor.copy(),
+                shortcut=QKeySequence.Copy, object_name="html_editor_copy_action",
+            )
+            self.paste_action = self._make_action(
+                "Einfügen", "Zwischenablage einfügen", lambda: self.editor.paste(),
+                shortcut=QKeySequence.Paste, object_name="html_editor_paste_action",
+            )
+            self.select_all_action = self._make_action(
+                "Alles auswählen", "Gesamten Inhalt auswählen", lambda: self.editor.selectAll(),
+                shortcut=QKeySequence.SelectAll, object_name="html_editor_select_all_action",
+            )
+            for action in (self.undo_action, self.redo_action):
+                self.edit_menu.addAction(action)
+            self.edit_menu.addSeparator()
+            for action in (self.cut_action, self.copy_action, self.paste_action, self.select_all_action):
+                self.edit_menu.addAction(action)
+
+            self.source_action = self._make_action(
+                "HTML-Quelltext ...", "HTML-Quelltext anzeigen und bearbeiten",
+                self.edit_source, object_name="html_editor_source_action",
+            )
+            self.preview_action = self._make_action(
+                "Vorschau ...", "HTML-Vorschau anzeigen", self.preview_document,
+                object_name="html_editor_preview_action",
+            )
+            self.view_menu.addAction(self.source_action)
+            self.view_menu.addAction(self.preview_action)
+
+            self.link_action = self._make_action(
+                "Link ...", "Link einfügen oder Auswahl verlinken", self.insert_link,
+                object_name="html_editor_link_action",
+            )
+            self.unlink_action = self._make_action(
+                "Link entfernen", "Linkformatierung der Auswahl entfernen", self.remove_link,
+                object_name="html_editor_unlink_action",
+            )
+            self.image_action = self._make_action(
+                "Bild ...", "Bilddatei einfügen", self.insert_image,
+                object_name="html_editor_image_action",
+            )
+            self.hr_action = self._make_action(
+                "Horizontale Linie", "Horizontale Trennlinie einfügen", self.insert_horizontal_rule,
+                object_name="html_editor_hr_action",
+            )
+            self.char_action = self._make_action(
+                "Sonderzeichen ...", "Sonderzeichen einfügen", self.insert_special_character,
+                object_name="html_editor_char_action",
+            )
+            self.table_insert_action = self._make_action(
+                "Tabelle einfügen ...", "Neue Tabelle einfügen", self.insert_table,
+                object_name="html_editor_table_insert_action",
+            )
+            self.table_resize_action = self._make_action(
+                "Größe ändern ...",
+                "Tabellenbreite und Tabellenhöhe exakt festlegen",
+                self.resize_current_table_dialog,
+                object_name="html_editor_table_resize_action",
+            )
+            for action in (
+                self.link_action, self.unlink_action, self.image_action,
+                self.hr_action, self.char_action, self.table_insert_action,
+            ):
+                self.insert_menu.addAction(action)
+
+            self.table_row_action = self._make_action(
+                "Zeile darunter einfügen", "Neue Tabellenzeile einfügen", self.table_append_row,
+                object_name="html_editor_table_row_action",
+            )
+            self.table_column_action = self._make_action(
+                "Spalte rechts einfügen", "Neue Tabellenspalte einfügen", self.table_append_column,
+                object_name="html_editor_table_column_action",
+            )
+            self.table_remove_row_action = self._make_action(
+                "Zeile löschen", "Aktuelle Tabellenzeile löschen", self.table_remove_row,
+                object_name="html_editor_table_remove_row_action",
+            )
+            self.table_remove_column_action = self._make_action(
+                "Spalte löschen", "Aktuelle Tabellenspalte löschen", self.table_remove_column,
+                object_name="html_editor_table_remove_column_action",
+            )
+            self.table_menu.addAction(self.table_insert_action)
+            self.table_menu.addAction(self.table_resize_action)
+            self.table_menu.addSeparator()
+            for action in (
+                self.table_row_action, self.table_column_action,
+                self.table_remove_row_action, self.table_remove_column_action,
+            ):
+                self.table_menu.addAction(action)
+
+            self.find_action = self._make_action(
+                "Suchen ...", "Text im Dokument suchen", self.find_text,
+                shortcut=QKeySequence.Find, object_name="html_editor_find_action",
+            )
+            self.replace_action = self._make_action(
+                "Suchen und Ersetzen ...", "Text im Dokument ersetzen", self.replace_text,
+                object_name="html_editor_replace_action",
+            )
+            self.tools_menu.addAction(self.find_action)
+            self.tools_menu.addAction(self.replace_action)
+            self.tools_menu.addSeparator()
+            self.tools_menu.addAction(self.source_action)
+
+            self.remove_format_action = self._make_action(
+                "Tx", "Formatierung der Auswahl entfernen", self.remove_formatting,
+                object_name="html_editor_remove_format_action",
+            )
+            self.bold_action = self._make_action(
+                "B", "Fett", self.toggle_bold, checkable=True,
+                shortcut=QKeySequence.Bold, object_name="html_editor_bold_action",
+            )
+            self.italic_action = self._make_action(
+                "I", "Kursiv", self.toggle_italic, checkable=True,
+                shortcut=QKeySequence.Italic, object_name="html_editor_italic_action",
+            )
+            self.underline_action = self._make_action(
+                "U", "Unterstrichen", self.toggle_underline, checkable=True,
+                shortcut=QKeySequence.Underline, object_name="html_editor_underline_action",
+            )
+            self.strike_action = self._make_action(
+                "S", "Durchgestrichen", self.toggle_strike, checkable=True,
+                object_name="html_editor_strike_action",
+            )
+            self.align_left_action = self._make_action(
+                "≡L", "Linksbündig", lambda: self.editor.setAlignment(Qt.AlignLeft),
+                object_name="html_editor_align_left_action",
+            )
+            self.align_center_action = self._make_action(
+                "≡C", "Zentriert", lambda: self.editor.setAlignment(Qt.AlignHCenter),
+                object_name="html_editor_align_center_action",
+            )
+            self.align_right_action = self._make_action(
+                "R≡", "Rechtsbündig", lambda: self.editor.setAlignment(Qt.AlignRight),
+                object_name="html_editor_align_right_action",
+            )
+            self.align_justify_action = self._make_action(
+                "≣", "Blocksatz", lambda: self.editor.setAlignment(Qt.AlignJustify),
+                object_name="html_editor_align_justify_action",
+            )
+            self.bullet_action = self._make_action(
+                "• Liste", "Aufzählungsliste", self.insert_bullet_list,
+                object_name="html_editor_bullet_action",
+            )
+            self.number_action = self._make_action(
+                "1. Liste", "Nummerierte Liste", self.insert_numbered_list,
+                object_name="html_editor_number_action",
+            )
+            self.outdent_action = self._make_action(
+                "←", "Einzug verkleinern", lambda: self.change_indent(-1),
+                object_name="html_editor_outdent_action",
+            )
+            self.indent_action = self._make_action(
+                "→", "Einzug vergrößern", lambda: self.change_indent(1),
+                object_name="html_editor_indent_action",
+            )
+            self.forecolor_action = self._make_action(
+                "A", "Textfarbe", self.choose_foreground_color,
+                object_name="html_editor_forecolor_action",
+            )
+            self.backcolor_action = self._make_action(
+                "▣", "Hintergrundfarbe", self.choose_background_color,
+                object_name="html_editor_backcolor_action",
+            )
+
+            self.toolbar = QToolBar(self)
+            self.toolbar.setObjectName("html_editor_toolbar")
+            self.toolbar.setMovable(False)
+            self.toolbar.setFloatable(False)
+            self.toolbar.setIconSize(QSize(18, 18))
+            self.toolbar.setToolButtonStyle(Qt.ToolButtonTextOnly)
+            outer.addWidget(self.toolbar)
+            self.toolbar.addAction(self.undo_action)
+            self.toolbar.addAction(self.redo_action)
+            self.toolbar.addSeparator()
+            self.toolbar.addAction(self.source_action)
+            self.toolbar.addAction(self.remove_format_action)
+            self.toolbar.addSeparator()
+
+            self.format_combo = QComboBox(self.toolbar)
+            self.format_combo.setObjectName("html_editor_format_combo")
+            self.format_combo.addItems((
+                "Formats", "Absatz", "Überschrift 1", "Überschrift 2",
+                "Überschrift 3", "Überschrift 4", "Überschrift 5",
+                "Überschrift 6", "Vorformatiert",
+            ))
+            self.format_combo.setCurrentIndex(0)
+            self.format_combo.currentTextChanged.connect(self.apply_block_format)
+            self.toolbar.addWidget(self.format_combo)
+            self.toolbar.addSeparator()
+            for action in (self.bold_action, self.italic_action, self.underline_action, self.strike_action):
+                self.toolbar.addAction(action)
+            self.toolbar.addSeparator()
+            for action in (
+                self.align_left_action, self.align_center_action,
+                self.align_right_action, self.align_justify_action,
+            ):
+                self.toolbar.addAction(action)
+
+            self.toolbar2 = QToolBar(self)
+            self.toolbar2.setObjectName("html_editor_toolbar_secondary")
+            self.toolbar2.setMovable(False)
+            self.toolbar2.setFloatable(False)
+            self.toolbar2.setIconSize(QSize(18, 18))
+            self.toolbar2.setToolButtonStyle(Qt.ToolButtonTextOnly)
+            outer.addWidget(self.toolbar2)
+            for action in (
+                self.bullet_action, self.number_action,
+                self.outdent_action, self.indent_action,
+            ):
+                self.toolbar2.addAction(action)
+            self.toolbar2.addSeparator()
+            for action in (
+                self.link_action, self.unlink_action, self.image_action,
+                self.print_action, self.preview_action,
+            ):
+                self.toolbar2.addAction(action)
+            self.toolbar2.addSeparator()
+            for action in (
+                self.forecolor_action, self.backcolor_action,
+                self.char_action, self.table_insert_action,
+            ):
+                self.toolbar2.addAction(action)
+
+            self.editor = QTextEdit(self)
+            self.editor.setObjectName("html_editor_text_edit")
+            self.editor.setAcceptRichText(True)
+            self.editor.setUndoRedoEnabled(True)
+            self.editor.setTabChangesFocus(False)
+            self.editor.setMinimumSize(480, 300)
+            self.editor.setFont(QFont("Arial", 11))
+            # Table resize grips need hover events even when no mouse button is
+            # pressed.  Filtering the viewport keeps normal QTextEdit editing
+            # behaviour untouched outside a grip.
+            self.editor.viewport().setMouseTracking(True)
+            self.editor.viewport().installEventFilter(self)
+            outer.addWidget(self.editor, 1)
+
+            self.status_widget = QWidget(self)
+            self.status_widget.setObjectName("html_editor_status_widget")
+            status_layout = QHBoxLayout(self.status_widget)
+            status_layout.setContentsMargins(7, 2, 7, 2)
+            status_layout.setSpacing(8)
+            self.status_left = QLabel("p", self.status_widget)
+            self.status_left.setObjectName("html_editor_status_left")
+            self.status_right = QLabel("Wörter: 0", self.status_widget)
+            self.status_right.setObjectName("html_editor_status_right")
+            status_layout.addWidget(self.status_left)
+            status_layout.addStretch(1)
+            status_layout.addWidget(self.status_right)
+            outer.addWidget(self.status_widget)
+
+            self.editor.textChanged.connect(self._update_status)
+            self.editor.cursorPositionChanged.connect(self._cursor_changed)
+            self.editor.document().modificationChanged.connect(self._sync_title)
+            self._update_status()
+
+            # Format menu mirrors the most useful controls from the toolbar.
+            for title in (
+                "Absatz", "Überschrift 1", "Überschrift 2",
+                "Überschrift 3", "Vorformatiert",
+            ):
+                action = self.format_menu.addAction(title)
+                action.triggered.connect(
+                    lambda checked=False, value=title: self.apply_block_format(value)
+                )
+            self.format_menu.addSeparator()
+            self.format_menu.addAction(self.remove_format_action)
+
+        def _sync_title(self, _modified=None) -> None:
+            dock = getattr(self.owner, "html_editor_dock", None)
+            if dock is None:
+                return
+            name = self.current_path.name if self.current_path else "Unbenannt.html"
+            marker = " *" if self.editor.document().isModified() else ""
+            dock.setWindowTitle(f"HTML Editor - {name}{marker}")
+            titlebar = dock.titleBarWidget()
+            if titlebar is not None:
+                try:
+                    titlebar.update()
+                except Exception:
+                    pass
+
+        def _update_status(self) -> None:
+            text = self.editor.toPlainText()
+            words = len(re.findall(r"\b\w+\b", text, flags=re.UNICODE))
+            self.status_right.setText(f"Wörter: {words}")
+            cursor = self.editor.textCursor()
+            fmt = cursor.charFormat()
+            size = fmt.fontPointSize()
+            if size > 0:
+                self.status_right.setToolTip(f"Schriftgröße: {size:g} pt")
+
+        def _cursor_changed(self) -> None:
+            cursor = self.editor.textCursor()
+            table = cursor.currentTable()
+            if table is not None:
+                self._active_table = table
+            block_text = cursor.block().text().strip()
+            self.status_left.setText("p" if block_text else "p")
+            fmt = cursor.charFormat()
+            old = self._updating_format_controls
+            self._updating_format_controls = True
+            try:
+                self.bold_action.setChecked(fmt.fontWeight() >= QFont.Bold)
+                self.italic_action.setChecked(fmt.fontItalic())
+                self.underline_action.setChecked(fmt.fontUnderline())
+                self.strike_action.setChecked(fmt.fontStrikeOut())
+            finally:
+                self._updating_format_controls = old
+
+        def _confirm_discard_changes(self) -> bool:
+            if not self.editor.document().isModified():
+                return True
+            answer = QMessageBox.question(
+                self,
+                "HTML Editor",
+                "Das HTML-Dokument wurde geändert. Änderungen verwerfen?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            return answer == QMessageBox.Yes
+
+        def new_document(self, checked=False, *, force: bool = False) -> None:
+            if not force and not self._confirm_discard_changes():
+                return
+            self.current_path = None
+            self.editor.setHtml(
+                "<h2>HTML Editor</h2>"
+                "<p>Hier können Sie Ihren <strong>HTML-Inhalt</strong> visuell bearbeiten.</p>"
+            )
+            self.editor.document().setModified(False)
+            self.editor.moveCursor(QTextCursor.End)
+            self._sync_title()
+
+        def open_document(self, checked=False) -> None:
+            if not self._confirm_discard_changes():
+                return
+            start = str(self.current_path.parent if self.current_path else getattr(self.owner, "current_directory", Path.cwd()))
+            filename, _ = QFileDialog.getOpenFileName(
+                self, "HTML-Datei öffnen", start,
+                "HTML-Dateien (*.html *.htm);;Textdateien (*.txt);;Alle Dateien (*)",
+            )
+            if not filename:
+                return
+            path = Path(filename)
+            try:
+                content = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                content = path.read_text(encoding="latin-1")
+            except Exception as exc:
+                QMessageBox.warning(self, "HTML Editor", f"Datei konnte nicht geöffnet werden:\n{exc}")
+                return
+            self.editor.setHtml(content)
+            self.current_path = path
+            self.editor.document().setModified(False)
+            self._sync_title()
+
+        def _body_html(self) -> str:
+            source = self.editor.document().toHtml()
+            match = re.search(r"<body[^>]*>(.*)</body>", source, flags=re.I | re.S)
+            return (match.group(1) if match else source).strip()
+
+        def save_document(self, checked=False) -> bool:
+            if self.current_path is None:
+                return self.save_document_as()
+            return self._write_html(self.current_path)
+
+        def save_document_as(self, checked=False) -> bool:
+            start = str(self.current_path or (Path(getattr(self.owner, "current_directory", Path.cwd())) / "document.html"))
+            filename, _ = QFileDialog.getSaveFileName(
+                self, "HTML speichern unter", start,
+                "HTML-Dateien (*.html *.htm);;Alle Dateien (*)",
+            )
+            if not filename:
+                return False
+            path = Path(filename)
+            if not path.suffix:
+                path = path.with_suffix(".html")
+            self.current_path = path
+            return self._write_html(path)
+
+        def _write_html(self, path: Path) -> bool:
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(self._body_html() + "\n", encoding="utf-8")
+            except Exception as exc:
+                QMessageBox.warning(self, "HTML Editor", f"HTML konnte nicht gespeichert werden:\n{exc}")
+                return False
+            self.current_path = path
+            self.editor.document().setModified(False)
+            self._sync_title()
+            try:
+                self.owner.statusBar().showMessage(f"HTML gespeichert: {path.name}", 5000)
+            except Exception:
+                pass
+            return True
+
+        def print_document(self, checked=False) -> None:
+            printer = QPrinter(QPrinter.HighResolution)
+            dialog = QPrintDialog(printer, self)
+            dialog.setWindowTitle("HTML drucken")
+            if dialog.exec_() != QDialog.Accepted:
+                return
+            self.editor.document().print_(printer)
+
+        def edit_source(self, checked=False) -> None:
+            dialog = QDialog(self)
+            dialog.setObjectName("html_editor_source_dialog")
+            dialog.setWindowTitle("HTML-Quelltext")
+            dialog.resize(820, 620)
+            layout = QVBoxLayout(dialog)
+            source_edit = QPlainTextEdit(dialog)
+            source_edit.setObjectName("html_editor_source_edit")
+            source_edit.setPlainText(self._body_html())
+            source_edit.setLineWrapMode(QPlainTextEdit.NoWrap)
+            source_edit.setFont(QFont("Consolas", 10))
+            layout.addWidget(source_edit, 1)
+            buttons = QHBoxLayout()
+            apply_button = QPushButton("Übernehmen", dialog)
+            close_button = QPushButton("Abbrechen", dialog)
+            buttons.addStretch(1)
+            buttons.addWidget(apply_button)
+            buttons.addWidget(close_button)
+            layout.addLayout(buttons)
+            apply_button.clicked.connect(dialog.accept)
+            close_button.clicked.connect(dialog.reject)
+            if dialog.exec_() == QDialog.Accepted:
+                self.editor.setHtml(source_edit.toPlainText())
+                self.editor.document().setModified(True)
+
+        def preview_document(self, checked=False) -> None:
+            dialog = QDialog(self)
+            dialog.setObjectName("html_editor_preview_dialog")
+            dialog.setWindowTitle("HTML-Vorschau")
+            dialog.resize(850, 650)
+            layout = QVBoxLayout(dialog)
+            browser = QTextBrowser(dialog)
+            browser.setOpenExternalLinks(True)
+            browser.setHtml(self._body_html())
+            layout.addWidget(browser, 1)
+            close_button = QPushButton("Schließen", dialog)
+            close_button.clicked.connect(dialog.accept)
+            layout.addWidget(close_button, 0, Qt.AlignRight)
+            dialog.exec_()
+
+        def remove_formatting(self, checked=False) -> None:
+            cursor = self.editor.textCursor()
+            if not cursor.hasSelection():
+                return
+            fmt = QTextCharFormat()
+            fmt.setFont(QFont("Arial", 11))
+            fmt.setForeground(QBrush(QColor("#000000")))
+            fmt.setBackground(QBrush(Qt.transparent))
+            fmt.setAnchor(False)
+            cursor.mergeCharFormat(fmt)
+
+        def toggle_bold(self, checked=False) -> None:
+            if self._updating_format_controls:
+                return
+            self.editor.setFontWeight(QFont.Bold if bool(checked) else QFont.Normal)
+
+        def toggle_italic(self, checked=False) -> None:
+            if not self._updating_format_controls:
+                self.editor.setFontItalic(bool(checked))
+
+        def toggle_underline(self, checked=False) -> None:
+            if not self._updating_format_controls:
+                self.editor.setFontUnderline(bool(checked))
+
+        def toggle_strike(self, checked=False) -> None:
+            if self._updating_format_controls:
+                return
+            fmt = QTextCharFormat()
+            fmt.setFontStrikeOut(bool(checked))
+            self.editor.textCursor().mergeCharFormat(fmt)
+            self.editor.mergeCurrentCharFormat(fmt)
+
+        def apply_block_format(self, value: str) -> None:
+            if self._updating_format_controls or not value or value == "Formats":
+                return
+            mapping = {
+                "Absatz": (11.0, False, False),
+                "Überschrift 1": (24.0, True, False),
+                "Überschrift 2": (20.0, True, False),
+                "Überschrift 3": (17.0, True, False),
+                "Überschrift 4": (15.0, True, False),
+                "Überschrift 5": (13.0, True, False),
+                "Überschrift 6": (11.0, True, False),
+                "Vorformatiert": (10.0, False, True),
+            }
+            point_size, bold, preformatted = mapping.get(value, (11.0, False, False))
+            cursor = self.editor.textCursor()
+            cursor.select(QTextCursor.BlockUnderCursor)
+            fmt = QTextCharFormat()
+            fmt.setFontPointSize(point_size)
+            fmt.setFontWeight(QFont.Bold if bold else QFont.Normal)
+            if preformatted:
+                fmt.setFontFamily("Consolas")
+            else:
+                fmt.setFontFamily("Arial")
+            cursor.mergeCharFormat(fmt)
+            self.editor.mergeCurrentCharFormat(fmt)
+            if self.format_combo.currentIndex() != 0:
+                old = self._updating_format_controls
+                self._updating_format_controls = True
+                self.format_combo.setCurrentIndex(0)
+                self._updating_format_controls = old
+
+        def insert_bullet_list(self, checked=False) -> None:
+            self.editor.textCursor().createList(QTextListFormat.ListDisc)
+
+        def insert_numbered_list(self, checked=False) -> None:
+            self.editor.textCursor().createList(QTextListFormat.ListDecimal)
+
+        def change_indent(self, delta: int) -> None:
+            cursor = self.editor.textCursor()
+            block_format = cursor.blockFormat()
+            block_format.setIndent(max(0, int(block_format.indent()) + int(delta)))
+            cursor.mergeBlockFormat(block_format)
+
+        def choose_foreground_color(self, checked=False) -> None:
+            color = QColorDialog.getColor(self.editor.textColor(), self, "Textfarbe")
+            if color.isValid():
+                self.editor.setTextColor(color)
+
+        def choose_background_color(self, checked=False) -> None:
+            color = QColorDialog.getColor(QColor("#ffff00"), self, "Hintergrundfarbe")
+            if color.isValid():
+                self.editor.setTextBackgroundColor(color)
+
+        def insert_link(self, checked=False) -> None:
+            cursor = self.editor.textCursor()
+            text = cursor.selectedText()
+            if not text:
+                text, ok = QInputDialog.getText(self, "Link einfügen", "Linktext:")
+                if not ok or not text:
+                    return
+            url, ok = QInputDialog.getText(self, "Link einfügen", "Adresse (URL):", text="https://")
+            if not ok or not url.strip():
+                return
+            fmt = QTextCharFormat()
+            fmt.setAnchor(True)
+            fmt.setAnchorHref(url.strip())
+            fmt.setFontUnderline(True)
+            fmt.setForeground(QBrush(QColor("#0645ad")))
+            if cursor.hasSelection():
+                cursor.mergeCharFormat(fmt)
+            else:
+                cursor.insertText(text, fmt)
+
+        def remove_link(self, checked=False) -> None:
+            cursor = self.editor.textCursor()
+            if not cursor.hasSelection():
+                cursor.select(QTextCursor.WordUnderCursor)
+            fmt = QTextCharFormat()
+            fmt.setAnchor(False)
+            fmt.setAnchorHref("")
+            fmt.setFontUnderline(False)
+            cursor.mergeCharFormat(fmt)
+
+        def insert_image(self, checked=False) -> None:
+            filename, _ = QFileDialog.getOpenFileName(
+                self, "Bild einfügen", str(getattr(self.owner, "current_directory", Path.cwd())),
+                "Bilder (*.png *.jpg *.jpeg *.gif *.bmp *.webp);;Alle Dateien (*)",
+            )
+            if not filename:
+                return
+            self.editor.textCursor().insertImage(QUrl.fromLocalFile(filename).toString())
+
+        def insert_horizontal_rule(self, checked=False) -> None:
+            cursor = self.editor.textCursor()
+            cursor.insertHtml("<hr>")
+            cursor.insertBlock()
+
+        def insert_special_character(self, checked=False) -> None:
+            chars = ["©", "®", "™", "€", "£", "¥", "§", "°", "±", "×", "÷", "→", "←", "•", "…", "♥"]
+            value, ok = QInputDialog.getItem(self, "Sonderzeichen", "Zeichen:", chars, 0, False)
+            if ok and value:
+                self.editor.insertPlainText(value)
+
+        def insert_table(self, checked=False) -> None:
+            rows, ok = QInputDialog.getInt(self, "Tabelle einfügen", "Zeilen:", 2, 1, 100, 1)
+            if not ok:
+                return
+            columns, ok = QInputDialog.getInt(self, "Tabelle einfügen", "Spalten:", 2, 1, 50, 1)
+            if not ok:
+                return
+
+            cursor = self.editor.textCursor()
+            table = cursor.insertTable(rows, columns)
+            self._active_table = table
+
+            # Give new tables an explicit pixel width from the beginning.
+            # This makes the right resize edge deterministic and causes Qt's
+            # HTML serializer to retain the width instead of recalculating it
+            # from the current dock width.
+            viewport_width = max(240, int(self.editor.viewport().width()) - 50)
+            default_width = float(min(640, viewport_width))
+            default_height = float(max(28 * rows, 56))
+            self._set_table_dimensions(table, default_width, default_height)
+            self.editor.document().setModified(True)
+
+        def _table_column_widths(self, table) -> list:
+            if table is None or table.columns() <= 0:
+                return []
+            fmt = table.format()
+            constraints = list(fmt.columnWidthConstraints() or [])
+            viewport_width = max(240.0, float(self.editor.viewport().width()) - 40.0)
+            widths = []
+            if len(constraints) == table.columns():
+                for length in constraints:
+                    try:
+                        value = float(length.value(viewport_width))
+                    except Exception:
+                        value = 0.0
+                    widths.append(value)
+            if len(widths) != table.columns() or sum(widths) <= 1.0:
+                per = max(60.0, min(180.0, viewport_width / max(1, table.columns())))
+                widths = [per] * table.columns()
+            return widths
+
+        def _table_width(self, table) -> float:
+            widths = self._table_column_widths(table)
+            return max(1.0, float(sum(widths))) if widths else 1.0
+
+        def _table_height(self, table) -> float:
+            if table is None:
+                return 1.0
+            try:
+                value = float(table.format().property(self._table_height_property) or 0.0)
+            except Exception:
+                value = 0.0
+            if value > 1.0:
+                return value
+
+            # Existing/imported HTML has no private Stage-78 property. Estimate
+            # its rendered height from the first/last cells, then remember it.
+            try:
+                first = table.cellAt(0, 0).firstCursorPosition()
+                last = table.cellAt(table.rows() - 1, table.columns() - 1).lastCursorPosition()
+                first_rect = self.editor.cursorRect(first)
+                last_rect = self.editor.cursorRect(last)
+                value = max(28.0 * table.rows(), float(last_rect.bottom() - first_rect.top() + 12))
+            except Exception:
+                value = max(28.0, 28.0 * max(1, table.rows()))
+            return value
+
+        def _set_table_width(self, table, width: float) -> None:
+            if table is None:
+                return
+            columns = max(1, int(table.columns()))
+            width = max(float(columns * 44), min(float(width), 5000.0))
+            old = self._table_column_widths(table)
+            old_total = max(1.0, float(sum(old)))
+            scaled = [max(32.0, width * (value / old_total)) for value in old]
+            scaled_total = sum(scaled)
+            if scaled_total > 0:
+                factor = width / scaled_total
+                scaled = [value * factor for value in scaled]
+
+            fmt = table.format()
+            fmt.setWidth(QTextLength(QTextLength.FixedLength, width))
+            fmt.setColumnWidthConstraints([
+                QTextLength(QTextLength.FixedLength, value) for value in scaled
+            ])
+            if float(fmt.border()) <= 0.0:
+                fmt.setBorder(1.0)
+            if float(fmt.cellPadding()) <= 0.0:
+                fmt.setCellPadding(4.0)
+            fmt.setCellSpacing(0.0)
+            table.setFormat(fmt)
+
+        def _set_table_height(self, table, height: float) -> None:
+            if table is None:
+                return
+            rows = max(1, int(table.rows()))
+            height = max(float(rows * 24), min(float(height), 5000.0))
+            row_height = height / rows
+
+            # QTextTable has width constraints but no row-height constraints.
+            # Per-cell top/bottom padding is therefore used as the native Qt5
+            # representation. QTextDocument::toHtml serializes this formatting,
+            # so vertical resizing survives save/open. Older Qt5 builds without
+            # per-side cell padding fall back to a fixed QTextBlock line height.
+            base_line = max(12.0, float(QFontMetrics(self.editor.font()).height()))
+            pad = max(1.0, (row_height - base_line) / 2.0)
+            for row in range(table.rows()):
+                for column in range(table.columns()):
+                    cell = table.cellAt(row, column)
+                    if not cell.isValid():
+                        continue
+                    cell_fmt = cell.format()
+                    if hasattr(cell_fmt, "setTopPadding") and hasattr(cell_fmt, "setBottomPadding"):
+                        try:
+                            cell_fmt.setTopPadding(pad)
+                            cell_fmt.setBottomPadding(pad)
+                            cell.setFormat(cell_fmt)
+                            continue
+                        except Exception:
+                            pass
+
+                    try:
+                        cursor = cell.firstCursorPosition()
+                        end_pos = cell.lastCursorPosition().position()
+                        while cursor.position() <= end_pos:
+                            block_fmt = cursor.blockFormat()
+                            block_fmt.setLineHeight(row_height, QTextBlockFormat.FixedHeight)
+                            cursor.setBlockFormat(block_fmt)
+                            block = cursor.block().next()
+                            if not block.isValid() or block.position() > end_pos:
+                                break
+                            cursor.setPosition(block.position())
+                    except Exception:
+                        pass
+
+            fmt = table.format()
+            fmt.setProperty(self._table_height_property, float(height))
+            table.setFormat(fmt)
+
+        def _set_table_dimensions(self, table, width: float = None, height: float = None) -> None:
+            if table is None:
+                return
+            if width is not None:
+                self._set_table_width(table, float(width))
+            if height is not None:
+                self._set_table_height(table, float(height))
+            self.editor.document().setModified(True)
+            self.editor.viewport().update()
+
+        def _table_visual_rect(self, table):
+            if table is None or table.rows() <= 0 or table.columns() <= 0:
+                return QRectF()
+            try:
+                first_cursor = table.cellAt(0, 0).firstCursorPosition()
+                first_rect = self.editor.cursorRect(first_cursor)
+                # cursorRect starts inside cell padding; shift back to the
+                # visible outer border by a small, deterministic amount.
+                x = float(first_rect.left()) - 5.0
+                y = float(first_rect.top()) - 5.0
+                return QRectF(x, y, self._table_width(table) + 10.0, self._table_height(table) + 10.0)
+            except Exception:
+                return QRectF()
+
+        def _table_resize_hit(self, pos):
+            cursor = self.editor.cursorForPosition(pos)
+            table = cursor.currentTable()
+            if table is not None:
+                self._active_table = table
+            elif self._active_table is not None:
+                table = self._active_table
+            if table is None:
+                return None, None
+
+            rect = self._table_visual_rect(table)
+            if rect.isNull():
+                return None, None
+            margin = float(self._table_resize_margin)
+            probe = QRectF(rect).adjusted(-margin, -margin, margin, margin)
+            if not probe.contains(QPointF(pos)):
+                return None, None
+
+            near_right = abs(float(pos.x()) - rect.right()) <= margin
+            near_bottom = abs(float(pos.y()) - rect.bottom()) <= margin
+            if near_right and near_bottom:
+                return table, "both"
+            if near_right:
+                return table, "horizontal"
+            if near_bottom:
+                return table, "vertical"
+            return None, None
+
+        def _set_table_resize_cursor(self, mode) -> None:
+            viewport = self.editor.viewport()
+            if mode == "horizontal":
+                viewport.setCursor(Qt.SizeHorCursor)
+            elif mode == "vertical":
+                viewport.setCursor(Qt.SizeVerCursor)
+            elif mode == "both":
+                viewport.setCursor(Qt.SizeFDiagCursor)
+            else:
+                viewport.unsetCursor()
+
+        def eventFilter(self, watched, event):
+            if watched is getattr(self.editor, "viewport", lambda: None)():
+                etype = event.type()
+                if etype == QEvent.MouseMove:
+                    if self._table_resize_mode and self._table_resize_table is not None:
+                        delta = event.pos() - self._table_resize_start_pos
+                        width = self._table_resize_start_width
+                        height = self._table_resize_start_height
+                        if self._table_resize_mode in ("horizontal", "both"):
+                            width += float(delta.x())
+                        else:
+                            width = None
+                        if self._table_resize_mode in ("vertical", "both"):
+                            height += float(delta.y())
+                        else:
+                            height = None
+                        self._set_table_dimensions(self._table_resize_table, width, height)
+                        self._set_table_resize_cursor(self._table_resize_mode)
+                        event.accept()
+                        return True
+
+                    table, mode = self._table_resize_hit(event.pos())
+                    self._set_table_resize_cursor(mode)
+
+                elif etype == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+                    table, mode = self._table_resize_hit(event.pos())
+                    if table is not None and mode is not None:
+                        self._table_resize_mode = mode
+                        self._table_resize_table = table
+                        self._table_resize_start_pos = QPoint(event.pos())
+                        self._table_resize_start_width = self._table_width(table)
+                        self._table_resize_start_height = self._table_height(table)
+                        self._set_table_resize_cursor(mode)
+                        event.accept()
+                        return True
+
+                elif etype == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton:
+                    if self._table_resize_mode:
+                        self._table_resize_mode = None
+                        self._table_resize_table = None
+                        self._table_resize_start_pos = None
+                        table, mode = self._table_resize_hit(event.pos())
+                        self._set_table_resize_cursor(mode)
+                        self.editor.document().setModified(True)
+                        event.accept()
+                        return True
+
+                elif etype == QEvent.Leave and not self._table_resize_mode:
+                    self._set_table_resize_cursor(None)
+
+            return super().eventFilter(watched, event)
+
+        def resize_current_table_dialog(self, checked=False) -> None:
+            cursor, table = self._current_table()
+            if table is None:
+                table = self._active_table
+            if table is None:
+                QMessageBox.information(
+                    self, "Tabellengröße",
+                    "Setzen Sie den Cursor zuerst in eine Tabelle."
+                )
+                return
+
+            current_width = int(round(self._table_width(table)))
+            current_height = int(round(self._table_height(table)))
+            width, ok = QInputDialog.getInt(
+                self, "Tabellengröße", "Breite in Pixel:",
+                current_width, max(80, table.columns() * 44), 5000, 1
+            )
+            if not ok:
+                return
+            height, ok = QInputDialog.getInt(
+                self, "Tabellengröße", "Höhe in Pixel:",
+                current_height, max(24, table.rows() * 24), 5000, 1
+            )
+            if not ok:
+                return
+            self._active_table = table
+            self._set_table_dimensions(table, float(width), float(height))
+            self.editor.setFocus(Qt.OtherFocusReason)
+
+        def _current_table(self):
+            cursor = self.editor.textCursor()
+            return cursor, cursor.currentTable()
+
+        def table_append_row(self, checked=False) -> None:
+            _cursor, table = self._current_table()
+            if table is not None:
+                table.appendRows(1)
+
+        def table_append_column(self, checked=False) -> None:
+            _cursor, table = self._current_table()
+            if table is not None:
+                table.appendColumns(1)
+
+        def table_remove_row(self, checked=False) -> None:
+            cursor, table = self._current_table()
+            if table is None or table.rows() <= 1:
+                return
+            cell = table.cellAt(cursor)
+            if cell.isValid():
+                table.removeRows(cell.row(), 1)
+
+        def table_remove_column(self, checked=False) -> None:
+            cursor, table = self._current_table()
+            if table is None or table.columns() <= 1:
+                return
+            cell = table.cellAt(cursor)
+            if cell.isValid():
+                table.removeColumns(cell.column(), 1)
+
+        def find_text(self, checked=False) -> None:
+            value, ok = QInputDialog.getText(self, "Suchen", "Text suchen:")
+            if not ok or not value:
+                return
+            if not self.editor.find(value):
+                cursor = self.editor.textCursor()
+                cursor.movePosition(QTextCursor.Start)
+                self.editor.setTextCursor(cursor)
+                if not self.editor.find(value):
+                    QMessageBox.information(self, "Suchen", f"'{value}' wurde nicht gefunden.")
+
+        def replace_text(self, checked=False) -> None:
+            find_value, ok = QInputDialog.getText(self, "Suchen und Ersetzen", "Suchen nach:")
+            if not ok or not find_value:
+                return
+            replace_value, ok = QInputDialog.getText(self, "Suchen und Ersetzen", "Ersetzen durch:")
+            if not ok:
+                return
+            answer = QMessageBox.question(
+                self, "Suchen und Ersetzen", "Alle Fundstellen ersetzen?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes,
+            )
+            document = self.editor.document()
+            cursor = QTextCursor(document)
+            replacements = 0
+            while True:
+                cursor = document.find(find_value, cursor)
+                if cursor.isNull():
+                    break
+                cursor.insertText(replace_value)
+                replacements += 1
+                if answer != QMessageBox.Yes:
+                    break
+            self.owner.statusBar().showMessage(f"HTML Editor: {replacements} Ersetzung(en)", 4000)
+
+        def set_dark_mode(self, enabled: bool) -> None:
+            self._dark_mode = bool(enabled)
+            # Keep the page itself white like the reference visual editor;
+            # only the surrounding chrome follows the application's theme.
+            if self._dark_mode:
+                self.setStyleSheet(
+                    "QWidget#html_editor_widget{background:#111722;color:#f2f5f8;}"
+                    "QMenuBar#html_editor_menu_bar{background:#1b2635;color:#f2f5f8;border-bottom:1px solid #3b4a5d;}"
+                    "QMenuBar#html_editor_menu_bar::item:selected{background:#34495e;}"
+                    "QToolBar#html_editor_toolbar,QToolBar#html_editor_toolbar_secondary{background:#222c39;border:0;border-bottom:1px solid #3b4a5d;spacing:2px;}"
+                    "QToolButton{background:#2b3746;color:#fff;border:1px solid #46566a;padding:3px 6px;}"
+                    "QToolButton:hover{background:#3b4a5d;}"
+                    "QComboBox#html_editor_format_combo{background:#f8f8f8;color:#111;border:1px solid #9aa4af;padding:3px 6px;}"
+                    "QTextEdit#html_editor_text_edit{background:#ffffff;color:#111111;border:1px solid #555f6d;padding:8px;}"
+                    "QWidget#html_editor_status_widget{background:#202a36;color:#cfd8e3;border-top:1px solid #3b4a5d;}"
+                )
+            else:
+                self.setStyleSheet(
+                    "QWidget#html_editor_widget{background:#eeeeee;color:#222;}"
+                    "QMenuBar#html_editor_menu_bar{background:#f5f5f5;color:#222;border-bottom:1px solid #c8c8c8;}"
+                    "QMenuBar#html_editor_menu_bar::item:selected{background:#e0e0e0;}"
+                    "QToolBar#html_editor_toolbar,QToolBar#html_editor_toolbar_secondary{background:#f4f4f4;border:0;border-bottom:1px solid #c8c8c8;spacing:2px;}"
+                    "QToolButton{background:#fafafa;color:#222;border:1px solid #c8c8c8;padding:3px 6px;}"
+                    "QToolButton:hover{background:#e8e8e8;}"
+                    "QComboBox#html_editor_format_combo{background:#ffffff;color:#111;border:1px solid #b8b8b8;padding:3px 6px;}"
+                    "QTextEdit#html_editor_text_edit{background:#ffffff;color:#111111;border:1px solid #b8b8b8;padding:8px;}"
+                    "QWidget#html_editor_status_widget{background:#f5f5f5;color:#555;border-top:1px solid #c8c8c8;}"
+                )
+
+
     class ExplorerWindow(QMainWindow):
         ORGANIZATION = "paule32"
         APPLICATION = "Qt5D64Explorer"
@@ -55795,6 +57073,13 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.dbase_label_designer_widget = None
             self._dbase_label_workspace_active = False
             self._dbase_label_workspace_state = {}
+            # Stage ASM 77: nativer PyQt5 HTML-WYSIWYG-Editor.
+            self.html_editor_dock = None
+            self.html_editor_widget = None
+            # Stage ASM 83: elektronischer Schaltungsbaukasten.
+            self.e_baukasten_dock = None
+            self.e_baukasten_widget = None
+            self._e_baukasten_workspace_active = False
             self.settings_dock = None
             self.settings_panel = None
             self.project_settings_dock = None
@@ -56479,6 +57764,13 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 lambda _checked=False: self.new_source_document("text")
             )
 
+            self.new_e_baukasten_action = QAction("E-Baukasten", self)
+            self.new_e_baukasten_action.setObjectName("new_e_baukasten_action")
+            self.new_e_baukasten_action.setStatusTip(
+                "Elektronischen Baukasten mit Schaltung, Simulation und Blaupause öffnen"
+            )
+            self.new_e_baukasten_action.triggered.connect(self.show_e_baukasten)
+
             self.new_basic_action = QAction("BASIC-Programm", self)
             self.new_basic_action.triggered.connect(
                 lambda _checked=False: self.new_source_document("basic")
@@ -56722,6 +58014,14 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 "Doxygen-Projekte, Dokumentation und Ausgabe im Docking-Fenster verwalten"
             )
             self.doxygen_action.triggered.connect(self.show_doxygen_dock)
+
+            # Stage ASM 77: visueller HTML-Editor im Docking-Fenster.
+            self.html_editor_action = QAction("HTML Editor", self)
+            self.html_editor_action.setObjectName("html_editor_action")
+            self.html_editor_action.setStatusTip(
+                "Visuellen WYSIWYG-HTML-Editor als Docking-Fenster öffnen"
+            )
+            self.html_editor_action.triggered.connect(self.show_html_editor_dock)
 
             self.math_learning_action = QAction("Mathematik-Arbeitsfläche …", self)
             self.math_learning_action.setStatusTip(
@@ -57160,6 +58460,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             menu.addAction(self.new_pixel_screen_action)
             menu.addSeparator()
             menu.addAction(self.new_text_file_action)
+            menu.addAction(self.new_e_baukasten_action)
             return menu
 
         def resource_dialog(self) -> None:
@@ -60894,7 +62195,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
         # SQL Builder und Bericht Builder schliessen vor dem Oeffnen alle
         # Docking-Fenster ausser dem Projekt-/Informations-Dock rechts.
         # -------------------------------------------------------------------
-        def _close_docks_except_project(self, keep_dock=None) -> None:
+        def _close_docks_except_project(self, keep_dock=None, keep_docks=()) -> None:
             project_dock = getattr(self, "right_dock", None)
 
             # Alte Workspace-Restore-Callbacks duerfen beim programmgesteuerten
@@ -60916,6 +62217,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             # Auch nicht-dBase-Arbeitsflaechen duerfen beim Schliessen keine
             # spaete Wiederherstellung anstossen.
             for flag_name in (
+                "_e_baukasten_workspace_active",
                 "_music_workspace_active",
                 "_math_learning_replaced_filesystem_dock",
                 "_localize_replaced_filesystem_dock",
@@ -60926,7 +62228,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     setattr(self, flag_name, False)
 
             for dock in self.findChildren(QDockWidget):
-                if dock is project_dock or dock is keep_dock:
+                if dock is project_dock or dock is keep_dock or dock in keep_docks:
                     continue
                 old_blocked = dock.blockSignals(True)
                 try:
@@ -60937,6 +62239,116 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             if project_dock is not None:
                 project_dock.show()
                 project_dock.raise_()
+
+        # -------------------------------------------------------------------
+        # Stage ASM 83: E-Baukasten. Implementierung im additiven Qt5-Modul;
+        # Einstieg, Menue, Dock-Lebensdauer und App-Theme bleiben hier.
+        # -------------------------------------------------------------------
+        def _ensure_e_baukasten(self) -> None:
+            if self.e_baukasten_dock is not None:
+                return
+            from e_baukasten import ElectronicsWorkbench
+            widget = ElectronicsWorkbench(self)
+            widget.set_dark_mode(self.dark_mode_enabled)
+            dock = QDockWidget("E-Baukasten", self)
+            dock.setObjectName("e_baukasten_dock")
+            dock.setFeatures(self._dock_features())
+            dock.setAllowedAreas(Qt.AllDockWidgetAreas)
+            dock.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            dock.setWidget(widget)
+            dock.setTitleBarWidget(DockTitleBar(dock))
+            # Liegen Dateisystem und Projekt zusammen auf einer Seite, kommt
+            # der Baukasten gegenueber dazu. Ihr Stapel wird nicht aufgeteilt.
+            areas = {self.dockWidgetArea(d) for d in (
+                getattr(self, "left_dock", None), getattr(self, "right_dock", None)
+            ) if d is not None and not d.isFloating()}
+            area = Qt.RightDockWidgetArea if areas == {Qt.LeftDockWidgetArea} else Qt.LeftDockWidgetArea
+            self.addDockWidget(area, dock)
+            if Qt.LeftDockWidgetArea in areas and Qt.RightDockWidgetArea in areas:
+                anchor = next((d for d in (self.left_dock, self.right_dock)
+                               if self.dockWidgetArea(d) == area), None)
+                if anchor is not None:
+                    self.splitDockWidget(anchor, dock, Qt.Horizontal)
+            self.e_baukasten_widget, self.e_baukasten_dock = widget, dock
+            self._assign_widget_property_ids(dock)
+            dock.visibilityChanged.connect(self._e_baukasten_visibility_changed)
+            dock.topLevelChanged.connect(self._e_baukasten_floating_changed)
+            dock.hide()
+
+        def show_e_baukasten(self, _checked=False) -> None:
+            central = self.centralWidget()
+            if central is not None:
+                central.hide()
+            self._ensure_e_baukasten()
+            keep = tuple(d for d in (getattr(self, "left_dock", None),
+                                     getattr(self, "bottom_dock", None)) if d is not None)
+            self._close_docks_except_project(self.e_baukasten_dock, keep_docks=keep)
+            for dock in keep:
+                dock.show()
+            self._e_baukasten_workspace_active = True
+            self.e_baukasten_widget.set_dark_mode(self.dark_mode_enabled)
+            self.e_baukasten_dock.setFloating(False)
+            self.e_baukasten_dock.show()
+            self.e_baukasten_dock.raise_()
+            if central is not None:
+                central.hide()
+            # Die vorhandene Fenstergroesse bleibt erhalten; das Dock erhaelt
+            # den frei gewordenen Platz der zentralen Dokumentflaeche.
+            self.resizeDocks([self.e_baukasten_dock], [max(200, self.width()-420)], Qt.Horizontal)
+            self.resizeDocks([self.e_baukasten_dock], [max(180, self.height()-200)], Qt.Vertical)
+            self.e_baukasten_widget.view.setFocus(Qt.OtherFocusReason)
+            self.statusBar().showMessage("E-Baukasten geöffnet", 4000)
+
+        def _e_baukasten_visibility_changed(self, visible: bool) -> None:
+            dock = self.e_baukasten_dock
+            if not visible and dock is not None and dock.isHidden() and self._e_baukasten_workspace_active:
+                self._e_baukasten_workspace_active = False
+                central = self.centralWidget()
+                if central is not None:
+                    central.show()
+
+        def _e_baukasten_floating_changed(self, floating: bool) -> None:
+            if self._e_baukasten_workspace_active:
+                central = self.centralWidget()
+                if central is not None:
+                    central.setVisible(bool(floating))
+
+        # -------------------------------------------------------------------
+        # Stage ASM 77: HTML5-editor.net inspirierter visueller HTML Editor.
+        # -------------------------------------------------------------------
+        def _ensure_html_editor_dock(self) -> None:
+            if self.html_editor_dock is not None:
+                return
+            widget = HtmlEditorWidget(self, self)
+            widget.set_dark_mode(self.dark_mode_enabled)
+            dock = QDockWidget("HTML Editor", self)
+            dock.setObjectName("html_editor_dock")
+            dock.setFeatures(self._dock_features())
+            dock.setAllowedAreas(
+                Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea
+                | Qt.TopDockWidgetArea | Qt.BottomDockWidgetArea
+            )
+            dock.setMinimumWidth(620)
+            dock.setMinimumHeight(420)
+            dock.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            dock.setWidget(widget)
+            dock.setTitleBarWidget(DockTitleBar(dock))
+            self.addDockWidget(Qt.LeftDockWidgetArea, dock)
+            self.html_editor_widget = widget
+            self.html_editor_dock = dock
+            self._assign_widget_property_ids(dock)
+            dock.hide()
+
+        def show_html_editor_dock(self) -> None:
+            self._ensure_html_editor_dock()
+            if self.html_editor_widget is not None:
+                self.html_editor_widget.set_dark_mode(self.dark_mode_enabled)
+            self.html_editor_dock.show()
+            self.html_editor_dock.raise_()
+            # Resize only the dock area; never resize the QMainWindow itself.
+            self.resizeDocks([self.html_editor_dock], [760], Qt.Horizontal)
+            self.html_editor_widget.editor.setFocus(Qt.OtherFocusReason)
+            self.statusBar().showMessage("HTML Editor geöffnet", 4000)
 
         # -------------------------------------------------------------------
         # Stage ASM 10: grafischer dBase SQL Builder.
@@ -63177,6 +64589,8 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             tools_menu.addAction(self.resource_action)
             tools_menu.addAction(self.localize_action)
             tools_menu.addAction(self.doxygen_action)
+            tools_menu.addSeparator()
+            tools_menu.addAction(self.html_editor_action)
 
             learning_menu = self.main_menu_bar.addMenu("&Lernen")
             # Direkte Lernwerkzeuge.
@@ -64071,6 +65485,10 @@ border: 2px solid #2a69aa;
             if project_settings_panel is not None:
                 project_settings_panel.set_dark_mode(enabled)
 
+            e_baukasten = getattr(self, "e_baukasten_widget", None)
+            if e_baukasten is not None:
+                e_baukasten.set_dark_mode(enabled)
+
             # Stage 161: die WFM-Quellstruktur ist ein normales QTreeWidget
             # und besitzt deshalb einen eigenen Dark-/Light-Mode-Stil.
             self._apply_dbase_form_source_outline_theme(enabled)
@@ -64094,6 +65512,8 @@ border: 2px solid #2a69aa;
                 self.dbase_sql_builder_widget.set_dark_mode(
                     self.dark_mode_enabled
                 )
+            if self.html_editor_widget is not None:
+                self.html_editor_widget.set_dark_mode(self.dark_mode_enabled)
 
             self.chm_viewer_action.setIcon(self._toolbar_symbol_icon("help"))
             self.zoom_in_action.setIcon(self._toolbar_symbol_icon("zoom_in"))
@@ -74362,7 +75782,9 @@ border: 2px solid #2a69aa;
                         self.compile_selected_project_sources()
                         event.accept()
                         return True
-                if event.key() == Qt.Key_F1:
+                if event.key() == Qt.Key_F1 and not isinstance(
+                    watched, (SourceTextEdit, HexEditor)
+                ):
                     # For now only log the ID. Do not consume F1 so the existing
                     # source-editor keyword help remains intact until CHM widget
                     # IDs are wired to concrete topics in a later stage.
@@ -74558,12 +75980,18 @@ border: 2px solid #2a69aa;
                 self.document_tabs.setCurrentWidget(document)
             topic = str(topic or "").strip()
             context_id = max(0, int(context_id or 0))
+
             self.statusBar().showMessage(
                 f"C64-Hilfe: {topic or '-'} / Context-ID {context_id}",
                 5000,
             )
+            context_language = (
+                "basic"
+                if getattr(document, "effective_suffix", "") in DocumentEditor.BASIC_EXTENSIONS
+                else "c64"
+            )
             self.show_chm_viewer(
-                context_language="c64",
+                context_language=context_language,
                 context_word=topic,
                 context_id=context_id,
                 fixed_chm=d64_resolve_runtime_resource("help/c64.chm"),
@@ -75349,6 +76777,11 @@ border: 2px solid #2a69aa;
                 if not self._confirm_project_replacement("Anwendung schließen"):
                     event.ignore()
                     return
+
+            e_baukasten = getattr(self, "e_baukasten_widget", None)
+            if e_baukasten is not None and not e_baukasten.confirm_discard():
+                event.ignore()
+                return
 
             documents = [
                 self.document_tabs.widget(index)

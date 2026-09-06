@@ -1,0 +1,111 @@
+{
+  "format": "d64-e-baukasten",
+  "version": 1,
+  "grid": 10,
+  "components": [
+    {
+      "id": "d8c04c39ffe14f089a67610c29bb2f92",
+      "kind": "battery",
+      "name": "B1",
+      "position": [
+        150.0,
+        220.0
+      ],
+      "angle": 90.0,
+      "value": 9.0
+    },
+    {
+      "id": "4e92009c4a384b83a2c9d767414a1f47",
+      "kind": "resistor",
+      "name": "R1",
+      "position": [
+        350.0,
+        100.0
+      ],
+      "angle": 0.0,
+      "value": 470
+    },
+    {
+      "id": "1b6188c0d3a9490884ca850dadbc2a43",
+      "kind": "led_red",
+      "name": "D1",
+      "position": [
+        550.0,
+        220.0
+      ],
+      "angle": 90.0,
+      "value": 2.0
+    }
+  ],
+  "nodes": {
+    "2416f1d4f606426083117cab6686bf15": [
+      150.0,
+      100.0
+    ],
+    "de3e6f556a1c4b35867699027828b975": [
+      550.0,
+      100.0
+    ],
+    "b4028bef9c2d43ceb63a82ddaf8aec46": [
+      550.0,
+      370.0
+    ],
+    "1fdde66fdd2342099f3e2c62b12c56c9": [
+      150.0,
+      370.0
+    ]
+  },
+  "wires": [
+    {
+      "id": "da223fb1436f462999373d5972291aed",
+      "anchors": [
+        {
+          "component": "d8c04c39ffe14f089a67610c29bb2f92",
+          "port": 0
+        },
+        {
+          "node": "2416f1d4f606426083117cab6686bf15"
+        },
+        {
+          "component": "4e92009c4a384b83a2c9d767414a1f47",
+          "port": 0
+        }
+      ]
+    },
+    {
+      "id": "efc06cce10b040c69b364241ccaa42b5",
+      "anchors": [
+        {
+          "component": "4e92009c4a384b83a2c9d767414a1f47",
+          "port": 1
+        },
+        {
+          "node": "de3e6f556a1c4b35867699027828b975"
+        },
+        {
+          "component": "1b6188c0d3a9490884ca850dadbc2a43",
+          "port": 0
+        }
+      ]
+    },
+    {
+      "id": "7c3e84fb512848cca07d1ed64ac5943b",
+      "anchors": [
+        {
+          "component": "1b6188c0d3a9490884ca850dadbc2a43",
+          "port": 1
+        },
+        {
+          "node": "b4028bef9c2d43ceb63a82ddaf8aec46"
+        },
+        {
+          "node": "1fdde66fdd2342099f3e2c62b12c56c9"
+        },
+        {
+          "component": "d8c04c39ffe14f089a67610c29bb2f92",
+          "port": 1
+        }
+      ]
+    }
+  ]
+}

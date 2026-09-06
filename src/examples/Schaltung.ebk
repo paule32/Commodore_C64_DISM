@@ -1,0 +1,90 @@
+{
+  "format": "d64-e-baukasten",
+  "version": 1,
+  "grid": 15,
+  "components": [
+    {
+      "id": "b68b08fe806841bfb02eb044fa2cde0f",
+      "kind": "battery",
+      "name": "B1",
+      "position": [
+        -810.0,
+        -915.0
+      ],
+      "angle": 0.0,
+      "value": 9.0
+    },
+    {
+      "id": "9c637268ab0b45a4a28a3d63d33609a1",
+      "kind": "led_blue",
+      "name": "D1",
+      "position": [
+        -735.0,
+        -675.0
+      ],
+      "angle": 0.0,
+      "value": 3.2
+    },
+    {
+      "id": "c9bd797ab1b2475fb2599667fe2bfda5",
+      "kind": "resistor",
+      "name": "R1",
+      "position": [
+        -645.0,
+        -855.0
+      ],
+      "angle": 90.0,
+      "value": 1000.0
+    }
+  ],
+  "nodes": {
+    "9e3f6425aea7476c995c52fd6511eeac": [
+      -645.0,
+      -675.0
+    ]
+  },
+  "wires": [
+    {
+      "id": "5a8d1987c1e84c729161099af0767476",
+      "anchors": [
+        {
+          "component": "c9bd797ab1b2475fb2599667fe2bfda5",
+          "port": 0
+        },
+        {
+          "component": "b68b08fe806841bfb02eb044fa2cde0f",
+          "port": 1
+        }
+      ]
+    },
+    {
+      "id": "d9275e6187004868898780e5d12b15a6",
+      "anchors": [
+        {
+          "component": "c9bd797ab1b2475fb2599667fe2bfda5",
+          "port": 1
+        },
+        {
+          "node": "9e3f6425aea7476c995c52fd6511eeac"
+        },
+        {
+          "component": "9c637268ab0b45a4a28a3d63d33609a1",
+          "port": 1
+        }
+      ]
+    },
+    {
+      "id": "b22162c179564e7aa2439b8e20365a91",
+      "anchors": [
+        {
+          "component": "9c637268ab0b45a4a28a3d63d33609a1",
+          "port": 0
+        },
+        {
+          "component": "b68b08fe806841bfb02eb044fa2cde0f",
+          "port": 0
+        }
+      ]
+    }
+  ]
+}
