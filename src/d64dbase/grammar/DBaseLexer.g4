@@ -76,6 +76,7 @@ LE        : '<=';
 GE        : '>=';
 EQEQ      : '==';
 NEANGLE   : '<>';
+NEBANG    : '!=';
 LT        : '<';
 GT        : '>';
 HASH      : '#';

@@ -34,7 +34,11 @@
         220.0
       ],
       "angle": 90.0,
-      "value": 2.0
+      "value": 2.0,
+      "params": {
+        "max_current": 0.02,
+        "max_reverse_voltage": 5.0
+      }
     }
   ],
   "nodes": {

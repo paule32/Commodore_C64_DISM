@@ -1,0 +1,135 @@
+{
+  "format": "d64-e-baukasten",
+  "version": 1,
+  "grid": 10,
+  "components": [
+    {
+      "id": "b3d",
+      "kind": "battery",
+      "name": "B1",
+      "position": [
+        120.0,
+        220.0
+      ],
+      "angle": 90.0,
+      "value": 9.0
+    },
+    {
+      "id": "t3d",
+      "kind": "button",
+      "name": "T1",
+      "position": [
+        280.0,
+        100.0
+      ],
+      "angle": 0.0,
+      "value": 0.0,
+      "params": {
+        "closed": 0.0
+      }
+    },
+    {
+      "id": "r3d",
+      "kind": "resistor",
+      "name": "R1",
+      "position": [
+        450.0,
+        100.0
+      ],
+      "angle": 0.0,
+      "value": 470.0
+    },
+    {
+      "id": "d3d",
+      "kind": "led_red",
+      "name": "D1",
+      "position": [
+        620.0,
+        220.0
+      ],
+      "angle": 90.0,
+      "value": 2.0,
+      "params": {
+        "max_current": 0.02,
+        "max_reverse_voltage": 5.0
+      }
+    }
+  ],
+  "nodes": {},
+  "wires": [
+    {
+      "id": "w1",
+      "anchors": [
+        {
+          "component": "b3d",
+          "port": 0
+        },
+        {
+          "component": "t3d",
+          "port": 0
+        }
+      ]
+    },
+    {
+      "id": "w2",
+      "anchors": [
+        {
+          "component": "t3d",
+          "port": 1
+        },
+        {
+          "component": "r3d",
+          "port": 0
+        }
+      ]
+    },
+    {
+      "id": "w3",
+      "anchors": [
+        {
+          "component": "r3d",
+          "port": 1
+        },
+        {
+          "component": "d3d",
+          "port": 0
+        }
+      ]
+    },
+    {
+      "id": "w4",
+      "anchors": [
+        {
+          "component": "d3d",
+          "port": 1
+        },
+        {
+          "component": "b3d",
+          "port": 1
+        }
+      ]
+    }
+  ],
+  "view3d": {
+    "placements": {
+      "t3d": [
+        300.0,
+        230.0
+      ],
+      "d3d": [
+        500.0,
+        230.0
+      ]
+    },
+    "zoom": 120,
+    "rotation": [
+      20,
+      -15,
+      0
+    ],
+    "splitter": [
+      620,
+      150
+    ]
+  }
+}

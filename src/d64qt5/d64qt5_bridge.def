@@ -1,4 +1,4 @@
-LIBRARY d64qt5
+LIBRARY libd64_qt5
 EXPORTS
     DBaseQtInitialize
     DBaseQtInitializeGui

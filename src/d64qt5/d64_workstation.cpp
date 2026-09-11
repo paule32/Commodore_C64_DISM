@@ -42,9 +42,11 @@ D64WorkstationBtxCallback g_btx_callback = nullptr;
 D64WorkstationCallback g_db_callback = nullptr;
 D64WorkstationCallback g_server_callback = nullptr;
 D64WorkstationServerClientCallback g_server_client_callback = nullptr;
+D64WorkstationThemeCallback g_theme_callback = nullptr;
+bool g_workstation_dark_mode = true;
 
 int g_server_client_count = 0;
-int g_bottom_hover_client = -2; // -2 none, -1 server, >=0 SRV-PC n
+int g_bottom_hover_client = -2; // -3 theme, -2 none, -1 server, >=0 SRV-PC n
 
 std::vector<DWORD> g_workstation_child_pids;
 
@@ -720,12 +722,87 @@ int bottom_client_slot_width()
     return 112;
 }
 
+RECT bottom_theme_rect(HWND hwnd)
+{
+    RECT rc = {0, 0, 0, WORKSTATION_BOTTOM_PANEL_HEIGHT};
+    if (hwnd)
+        GetClientRect(hwnd, &rc);
+    const int size = WORKSTATION_BOTTOM_PANEL_HEIGHT;
+    rc.left = rc.right > size ? rc.right - size : 0;
+    return rc;
+}
+
+void draw_theme_symbol(HDC dc, const RECT &rc, bool darkMode, bool hover)
+{
+    const COLORREF bg = hover
+        ? (darkMode ? RGB(72, 72, 72) : RGB(220, 220, 220))
+        : (darkMode ? RGB(36, 36, 36) : RGB(238, 238, 238));
+    HBRUSH back = CreateSolidBrush(bg);
+    FillRect(dc, &rc, back);
+    DeleteObject(back);
+
+    const int cx = (rc.left + rc.right) / 2;
+    const int cy = (rc.top + rc.bottom) / 2;
+    if (darkMode) {
+        // Aktiver Dark-Mode: Sonnensymbol (Schalter zeigt das Ziel Light-Mode).
+        const COLORREF sunColor = RGB(230, 184, 38);
+        HBRUSH sun = CreateSolidBrush(sunColor);
+        HPEN pen = CreatePen(PS_SOLID, 2, sunColor);
+        HGDIOBJ oldBrush = SelectObject(dc, sun);
+        HGDIOBJ oldPen = SelectObject(dc, pen);
+        Ellipse(dc, cx - 8, cy - 8, cx + 8, cy + 8);
+        for (int dx = -1; dx <= 1; ++dx) {
+            for (int dy = -1; dy <= 1; ++dy) {
+                if ((dx == 0 && dy == 0) || (dx != 0 && dy != 0))
+                    continue;
+                MoveToEx(dc, cx + dx * 13, cy + dy * 13, nullptr);
+                LineTo(dc, cx + dx * 19, cy + dy * 19);
+            }
+        }
+        MoveToEx(dc, cx - 12, cy - 12, nullptr); LineTo(dc, cx - 17, cy - 17);
+        MoveToEx(dc, cx + 12, cy - 12, nullptr); LineTo(dc, cx + 17, cy - 17);
+        MoveToEx(dc, cx - 12, cy + 12, nullptr); LineTo(dc, cx - 17, cy + 17);
+        MoveToEx(dc, cx + 12, cy + 12, nullptr); LineTo(dc, cx + 17, cy + 17);
+        SelectObject(dc, oldPen);
+        SelectObject(dc, oldBrush);
+        DeleteObject(pen);
+        DeleteObject(sun);
+    } else {
+        // Aktiver Light-Mode: Mondsymbol (Schalter zeigt das Ziel Dark-Mode).
+        const COLORREF moonColor = RGB(78, 88, 112);
+        HBRUSH moon = CreateSolidBrush(moonColor);
+        HPEN pen = CreatePen(PS_SOLID, 1, moonColor);
+        HGDIOBJ oldBrush = SelectObject(dc, moon);
+        HGDIOBJ oldPen = SelectObject(dc, pen);
+        Ellipse(dc, cx - 12, cy - 13, cx + 12, cy + 13);
+        SelectObject(dc, oldPen);
+        SelectObject(dc, oldBrush);
+        DeleteObject(pen);
+        DeleteObject(moon);
+
+        HBRUSH cut = CreateSolidBrush(bg);
+        HPEN cutPen = CreatePen(PS_SOLID, 1, bg);
+        oldBrush = SelectObject(dc, cut);
+        oldPen = SelectObject(dc, cutPen);
+        Ellipse(dc, cx - 4, cy - 16, cx + 16, cy + 8);
+        SelectObject(dc, oldPen);
+        SelectObject(dc, oldBrush);
+        DeleteObject(cutPen);
+        DeleteObject(cut);
+    }
+}
+
 int bottom_item_at(LPARAM lParam)
 {
     const LONG x = static_cast<SHORT>(LOWORD(lParam));
     const LONG y = static_cast<SHORT>(HIWORD(lParam));
     if (y < 0 || y >= WORKSTATION_BOTTOM_PANEL_HEIGHT)
         return -2;
+    if (g_bottom_panel_window) {
+        const RECT themeRect = bottom_theme_rect(g_bottom_panel_window);
+        if (point_in_rect(themeRect, x, y))
+            return -3; // Dark-/Light-Mode
+    }
     if (x >= 0 && x < WORKSTATION_PANEL_WIDTH)
         return -1; // SERVER
 
@@ -789,7 +866,12 @@ LRESULT CALLBACK workstation_bottom_panel_proc(HWND hwnd, UINT message, WPARAM w
         return 0;
     case WM_LBUTTONUP: {
         const int item = bottom_item_at(lParam);
-        if (item == -1) {
+        if (item == -3) {
+            g_workstation_dark_mode = !g_workstation_dark_mode;
+            if (g_theme_callback)
+                g_theme_callback(g_workstation_dark_mode);
+            InvalidateRect(hwnd, nullptr, FALSE);
+        } else if (item == -1) {
             if (g_server_callback)
                 g_server_callback();
         } else if (item >= 0 && g_server_client_callback) {
@@ -823,6 +905,12 @@ LRESULT CALLBACK workstation_bottom_panel_proc(HWND hwnd, UINT message, WPARAM w
             _snwprintf(label, 63, L"SRV-PC %d", i + 1);
             draw_bottom_button(dc, itemRect, label, g_bottom_hover_client == i, RGB(40, 75, 115));
         }
+
+        const RECT themeRect = bottom_theme_rect(hwnd);
+        draw_theme_symbol(
+            dc, themeRect, g_workstation_dark_mode,
+            g_bottom_hover_client == -3
+        );
         EndPaint(hwnd, &ps);
         return 0;
     }
@@ -1454,6 +1542,25 @@ void D64WorkstationSetServerClientCount(int count)
         InvalidateRect(g_bottom_panel_window, nullptr, FALSE);
 }
 
+void D64WorkstationSetThemeCallback(D64WorkstationThemeCallback callback)
+{
+    g_theme_callback = callback;
+}
+
+void D64WorkstationSetDarkMode(bool darkMode)
+{
+    g_workstation_dark_mode = darkMode;
+    if (g_bottom_panel_window && IsWindow(g_bottom_panel_window))
+        InvalidateRect(g_bottom_panel_window, nullptr, FALSE);
+    if (g_theme_callback)
+        g_theme_callback(g_workstation_dark_mode);
+}
+
+bool D64WorkstationDarkMode()
+{
+    return g_workstation_dark_mode;
+}
+
 bool D64WorkstationPrepare()
 {
     if (g_workstation_active)
@@ -1810,10 +1917,13 @@ void D64WorkstationFinalizeLeave()
     g_original_input_name[0] = L'\0';
     g_desktop_name[0] = L'\0';
     
-    g_main_window   = nullptr;
-    g_exit_callback = nullptr;
-    g_btx_callback  = nullptr;
-    g_db_callback   = nullptr;
+    g_main_window             = nullptr;
+    g_exit_callback           = nullptr;
+    g_btx_callback            = nullptr;
+    g_db_callback             = nullptr;
+    g_server_callback         = nullptr;
+    g_server_client_callback  = nullptr;
+    g_theme_callback          = nullptr;
     
     g_workstation_child_pids.clear();
     g_workstation_active  = false;
@@ -2135,6 +2245,9 @@ void D64WorkstationSetDbCallback(D64WorkstationCallback) {}
 void D64WorkstationSetServerCallback(D64WorkstationCallback) {}
 void D64WorkstationSetServerClientCallback(D64WorkstationServerClientCallback) {}
 void D64WorkstationSetServerClientCount(int) {}
+void D64WorkstationSetThemeCallback(D64WorkstationThemeCallback) {}
+void D64WorkstationSetDarkMode(bool) {}
+bool D64WorkstationDarkMode() { return true; }
 
 bool D64WorkstationPrepare() { return true; }
 bool D64WorkstationActivate(HWND) { return true; }

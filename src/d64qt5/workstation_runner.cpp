@@ -14,11 +14,31 @@
 #  include <windows.h>
 #endif
 
+#include <QApplication>
+#include <QDialog>
+#include <QEventLoop>
+#include <QFontDatabase>
+#include <QCloseEvent>
+#include <QCursor>
+#include <QLinearGradient>
+#include <QMouseEvent>
+#include <QPainter>
+#include <QStyle>
+#include <QPlainTextEdit>
+#include <QResizeEvent>
+#include <QShowEvent>
+#include <QScreen>
+#include <QScrollBar>
+#include <QTextCursor>
+#include <QTimer>
+#include <QVBoxLayout>
+
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <cwchar>
 #include <cwctype>
+#include <functional>
 #include <memory>
 #include <string>
 #include <thread>
@@ -30,13 +50,22 @@ constexpr wchar_t RUNNER_WINDOW_CLASS[] = L"D64WorkstationRunnerWindow";
 constexpr wchar_t RUNNER_WINDOW_TITLE[] = L"D64 Workstation Runner";
 constexpr wchar_t RUNNER_PIPE_NAME[] = L"\\\\.\\pipe\\dBase2Many.D64Workstation.Runner.v1";
 constexpr std::uint32_t RUNNER_PIPE_MAGIC = 0x31525744u; // "DWR1"
+constexpr std::uint32_t RUNNER_OUTPUT_MAGIC = 0x31574F44u; // "DOW1"
+constexpr std::uint32_t RUNNER_OUTPUT_NEWLINE = 0x00000001u;
+constexpr std::uint32_t RUNNER_LAUNCH_CONSOLE       = 0x00000001u;
+constexpr std::uint32_t RUNNER_LAUNCH_THEME_PRESENT = 0x00000002u;
+constexpr std::uint32_t RUNNER_LAUNCH_THEME_DARK    = 0x00000004u;
 constexpr UINT WM_RUNNER_LAUNCH = WM_APP + 0x321;
 constexpr UINT WM_RUNNER_EXIT   = WM_APP + 0x322;
+constexpr UINT WM_RUNNER_OUTPUT = WM_APP + 0x323;
 constexpr UINT_PTR RUNNER_TIMER = 0xD641;
 
 constexpr wchar_t D64_APP_WINDOW_PREFIX[] = L"dBase2Many.D64ApplicationWindow.";
 constexpr wchar_t WORKSTATION_PANEL_CLASS[] = L"D64WorkstationPanel";
 constexpr wchar_t WORKSTATION_BOTTOM_PANEL_CLASS[] = L"D64WorkstationBottomPanel";
+constexpr wchar_t WORKSTATION_TOOL_WINDOW_PROPERTY[] = L"D64Workstation.ToolWindow";
+constexpr char D64_LAZY_CONSOLE_MARKER[] = "D64DBASE_LAZY_CONSOLE_V1";
+constexpr char D64_WFM_QT_OUTPUT_MARKER[] = "D64DBASE_WFM_QT_OUTPUT_V1";
 
 constexpr int WORKSTATION_PANEL_WIDTH = 76;
 constexpr int WORKSTATION_DB_CLICK_TOP = 176;
@@ -53,15 +82,553 @@ struct LaunchRequest {
     std::wstring application;
     std::wstring workingDirectory;
     bool consoleMode = false;
+    int themeMode = -1; // -1 unveraendert, 0 light, 1 dark
+};
+
+struct OutputMessage {
+    std::string text;
+    bool newline = false;
+    DWORD processId = 0;
+};
+
+// Stage 129: Echte, transparente Maus-Handles fuer die acht sichtbaren
+// Resize-Stellen. Dadurch koennen Child-Widgets (z.B. QPlainTextEdit) die
+// Mausereignisse am Fensterrand nicht mehr verschlucken. Die Handles sind nur
+// beim aktiven Fenster sichtbar/bedienbar und tragen den passenden Cursor.
+class WorkstationResizeHandle final : public QWidget
+{
+public:
+    WorkstationResizeHandle(QWidget *host, int hitCode)
+        : QWidget(host), host_(host), hitCode_(hitCode)
+    {
+        // Stage 130: Die Catch-Zone ist ein echtes 5x5-Qt-Widget im
+        // Clientbereich. Mouse tracking sorgt fuer den passenden Cursor ohne
+        // gedrueckte Taste; der Drag selbst laeuft rein ueber Qt-Geometrie.
+        setMouseTracking(true);
+        setAttribute(Qt::WA_NoSystemBackground, true);
+        setAttribute(Qt::WA_TransparentForMouseEvents, false);
+        setAutoFillBackground(false);
+        setFocusPolicy(Qt::NoFocus);
+        setCursor(cursorForHitCode(hitCode_));
+        hide();
+    }
+
+protected:
+    void mousePressEvent(QMouseEvent *event) override
+    {
+        if (
+            event && event->button() == Qt::LeftButton && host_ &&
+            host_->isActiveWindow() && !host_->isMaximized()
+        ) {
+            resizing_ = true;
+            pressGlobal_ = event->globalPos();
+            startGeometry_ = host_->geometry();
+            grabMouse(QCursor(cursorForHitCode(hitCode_)));
+            event->accept();
+            return;
+        }
+        QWidget::mousePressEvent(event);
+    }
+
+    void mouseMoveEvent(QMouseEvent *event) override
+    {
+        if (resizing_ && event && host_) {
+            const QPoint delta = event->globalPos() - pressGlobal_;
+            QRect next = startGeometry_;
+
+            const int minWidth = qMax(80, qMax(host_->minimumWidth(), host_->minimumSizeHint().width()));
+            const int minHeight = qMax(60, qMax(host_->minimumHeight(), host_->minimumSizeHint().height()));
+
+            int left = startGeometry_.left();
+            int right = startGeometry_.right();
+            int top = startGeometry_.top();
+            int bottom = startGeometry_.bottom();
+
+            if (movesLeft())
+                left = qMin(startGeometry_.left() + delta.x(), right - minWidth + 1);
+            if (movesRight())
+                right = qMax(startGeometry_.right() + delta.x(), left + minWidth - 1);
+            if (movesTop())
+                top = qMin(startGeometry_.top() + delta.y(), bottom - minHeight + 1);
+            if (movesBottom())
+                bottom = qMax(startGeometry_.bottom() + delta.y(), top + minHeight - 1);
+
+            next.setCoords(left, top, right, bottom);
+            host_->setGeometry(next);
+            host_->update();
+            event->accept();
+            return;
+        }
+        QWidget::mouseMoveEvent(event);
+    }
+
+    void mouseReleaseEvent(QMouseEvent *event) override
+    {
+        if (resizing_ && event && event->button() == Qt::LeftButton) {
+            resizing_ = false;
+            releaseMouse();
+            event->accept();
+            return;
+        }
+        QWidget::mouseReleaseEvent(event);
+    }
+
+private:
+    bool movesLeft() const
+    {
+        return hitCode_ == HTLEFT || hitCode_ == HTTOPLEFT || hitCode_ == HTBOTTOMLEFT;
+    }
+    bool movesRight() const
+    {
+        return hitCode_ == HTRIGHT || hitCode_ == HTTOPRIGHT || hitCode_ == HTBOTTOMRIGHT;
+    }
+    bool movesTop() const
+    {
+        return hitCode_ == HTTOP || hitCode_ == HTTOPLEFT || hitCode_ == HTTOPRIGHT;
+    }
+    bool movesBottom() const
+    {
+        return hitCode_ == HTBOTTOM || hitCode_ == HTBOTTOMLEFT || hitCode_ == HTBOTTOMRIGHT;
+    }
+
+    static Qt::CursorShape cursorForHitCode(int hitCode)
+    {
+        switch (hitCode) {
+        case HTLEFT:
+        case HTRIGHT:
+            return Qt::SizeHorCursor;
+        case HTTOP:
+        case HTBOTTOM:
+            return Qt::SizeVerCursor;
+        case HTTOPLEFT:
+        case HTBOTTOMRIGHT:
+            return Qt::SizeFDiagCursor;
+        case HTTOPRIGHT:
+        case HTBOTTOMLEFT:
+            return Qt::SizeBDiagCursor;
+        default:
+            return Qt::ArrowCursor;
+        }
+    }
+
+    QWidget *host_ = nullptr;
+    int hitCode_ = HTNOWHERE;
+    bool resizing_ = false;
+    QPoint pressGlobal_;
+    QRect startGeometry_;
+};
+
+class WorkstationOutputDialog final : public QDialog
+{
+public:
+    explicit WorkstationOutputDialog(QWidget *parent = nullptr)
+        : QDialog(parent)
+    {
+        setMouseTracking(true);
+        setAttribute(Qt::WA_Hover, true);
+        setWindowFlags(
+            Qt::Window |
+            Qt::FramelessWindowHint |
+            Qt::WindowSystemMenuHint |
+            Qt::WindowMinMaxButtonsHint |
+            Qt::WindowStaysOnTopHint
+        );
+        createResizeHandles();
+        syncResizeHandles();
+    }
+
+    // Stage 128: Sichtbar bleibt der Resizer exakt 3 Pixel stark. Die
+    // Maus-Hit-Zone ist davon bewusst getrennt und groesser, damit die
+    // schlanken Linien auch bei hoher DPI-Skalierung sicher greifbar bleiben.
+    static constexpr int borderSize() { return 3; }
+    static constexpr int resizeHitSize() { return 10; }
+    static constexpr int resizeCatchSize() { return 5; }
+    static constexpr int resizeGripLength() { return 22; }
+    static constexpr int titleHeight() { return 32; }
+    static constexpr int buttonWidth() { return 46; }
+    static constexpr int clientInset() { return borderSize() + 1; }
+    static constexpr int clientTop() { return titleHeight() + clientInset(); }
+
+    QRect closeButtonRect() const
+    {
+        return QRect(width() - buttonWidth(), 0, buttonWidth(), titleHeight());
+    }
+    QRect maxButtonRect() const
+    {
+        return QRect(width() - 2 * buttonWidth(), 0, buttonWidth(), titleHeight());
+    }
+    QRect minButtonRect() const
+    {
+        return QRect(width() - 3 * buttonWidth(), 0, buttonWidth(), titleHeight());
+    }
+
+protected:
+#ifdef _WIN32
+    int resizeHitCode(const QPoint &p) const
+    {
+        // Stage 130: Nur acht echte 5x5-Catch-Zonen sind Resize-Bereiche.
+        // Dadurch bleibt die restliche Titelleiste normal verschiebbar.
+        if (isMaximized() || !isActiveWindow())
+            return HTNOWHERE;
+
+        const int s = resizeCatchSize();
+        const int cx = width() / 2;
+        const int cy = height() / 2;
+        const QRect topLeft(0, 0, s, s);
+        const QRect top(cx - s / 2, 0, s, s);
+        const QRect topRight(qMax(0, width() - s), 0, s, s);
+        const QRect left(0, cy - s / 2, s, s);
+        const QRect right(qMax(0, width() - s), cy - s / 2, s, s);
+        const QRect bottomLeft(0, qMax(0, height() - s), s, s);
+        const QRect bottom(cx - s / 2, qMax(0, height() - s), s, s);
+        const QRect bottomRight(qMax(0, width() - s), qMax(0, height() - s), s, s);
+
+        if (topLeft.contains(p)) return HTTOPLEFT;
+        if (top.contains(p)) return HTTOP;
+        if (topRight.contains(p)) return HTTOPRIGHT;
+        if (left.contains(p)) return HTLEFT;
+        if (right.contains(p)) return HTRIGHT;
+        if (bottomLeft.contains(p)) return HTBOTTOMLEFT;
+        if (bottom.contains(p)) return HTBOTTOM;
+        if (bottomRight.contains(p)) return HTBOTTOMRIGHT;
+        return HTNOWHERE;
+    }
+
+    void updateResizeCursor(const QPoint &p)
+    {
+        switch (resizeHitCode(p)) {
+        case HTLEFT:
+        case HTRIGHT:
+            setCursor(Qt::SizeHorCursor);
+            break;
+        case HTTOP:
+        case HTBOTTOM:
+            setCursor(Qt::SizeVerCursor);
+            break;
+        case HTTOPLEFT:
+        case HTBOTTOMRIGHT:
+            setCursor(Qt::SizeFDiagCursor);
+            break;
+        case HTTOPRIGHT:
+        case HTBOTTOMLEFT:
+            setCursor(Qt::SizeBDiagCursor);
+            break;
+        default:
+            unsetCursor();
+            break;
+        }
+    }
+
+    bool startSystemResizeAt(const QPoint &p)
+    {
+        const int hit = resizeHitCode(p);
+        if (hit == HTNOWHERE)
+            return false;
+        HWND hwnd = reinterpret_cast<HWND>(winId());
+        if (!hwnd || !IsWindow(hwnd))
+            return false;
+
+        // WM_NCHITTEST ist auf einigen Qt5/Windows-DPI-Konfigurationen nicht
+        // ausreichend verlaesslich. Der Mausklick auf eine Resize-Hot-Zone
+        // startet deshalb zusaetzlich explizit den nativen System-Resize.
+        ReleaseCapture();
+        SendMessageW(hwnd, WM_NCLBUTTONDOWN, static_cast<WPARAM>(hit), 0);
+        return true;
+    }
+
+    bool nativeEvent(const QByteArray &eventType, void *message, long *result) override
+    {
+        MSG *msg = static_cast<MSG *>(message);
+        if (msg && msg->message == WM_GETMINMAXINFO && msg->lParam) {
+            D64WorkstationConstrainMaximizeInfo(reinterpret_cast<void *>(msg->lParam));
+            if (result) *result = 0;
+            return true;
+        }
+        if (msg && msg->message == WM_MOVING && msg->lParam) {
+            D64WorkstationConstrainMovingRect(reinterpret_cast<RECT *>(msg->lParam));
+            if (result) *result = TRUE;
+            return true;
+        }
+        if (msg && msg->message == WM_NCHITTEST) {
+            // QCursor::pos() ist bereits in Qt-Global-Koordinaten und vermeidet
+            // die physisch/logisch-DPI-Mischung von LOWORD/HIWORD(lParam).
+            const QPoint p = mapFromGlobal(QCursor::pos());
+            // Stage 130: Die acht 5x5-Catch-Widgets muessen Client-Mausereignisse
+            // bekommen. Deshalb hier bewusst HTCLIENT statt HTLEFT/HTTOP/... .
+            if (resizeHitCode(p) != HTNOWHERE) {
+                if (result) *result = HTCLIENT;
+                return true;
+            }
+            if (closeButtonRect().contains(p) || maxButtonRect().contains(p) || minButtonRect().contains(p)) {
+                if (result) *result = HTCLIENT;
+                return true;
+            }
+            if (p.y() >= 0 && p.y() < titleHeight()) {
+                if (result) *result = HTCAPTION;
+                return true;
+            }
+        }
+        return QDialog::nativeEvent(eventType, message, result);
+    }
+#endif
+
+    void drawResizeChrome(QPainter &painter)
+    {
+        if (isMaximized())
+            return;
+
+        const int r = borderSize();
+        const QColor resizeLine(105, 105, 105);
+        painter.fillRect(QRect(0, 0, width(), r), resizeLine);
+        painter.fillRect(QRect(0, height() - r, width(), r), resizeLine);
+        painter.fillRect(QRect(0, r, r, qMax(0, height() - 2 * r)), resizeLine);
+        painter.fillRect(QRect(width() - r, r, r, qMax(0, height() - 2 * r)), resizeLine);
+
+        // Beim aktiven Fenster werden die acht Resize-Stellen als kurze,
+        // ausschliesslich 3 Pixel starke Liniensegmente hervorgehoben.
+        if (!isActiveWindow())
+            return;
+
+        const QColor activeLine(185, 185, 185);
+        const int len = qMin(resizeGripLength(), qMax(3, qMin(width(), height()) / 3));
+        const int cx = width() / 2;
+        const int cy = height() / 2;
+
+        // 1/2/3: oben links, oben Mitte, oben rechts.
+        painter.fillRect(QRect(0, 0, len, r), activeLine);
+        painter.fillRect(QRect(0, 0, r, len), activeLine);
+        painter.fillRect(QRect(cx - len / 2, 0, len, r), activeLine);
+        painter.fillRect(QRect(qMax(0, width() - len), 0, len, r), activeLine);
+        painter.fillRect(QRect(width() - r, 0, r, len), activeLine);
+
+        // 4/5: links/rechts Mitte.
+        painter.fillRect(QRect(0, cy - len / 2, r, len), activeLine);
+        painter.fillRect(QRect(width() - r, cy - len / 2, r, len), activeLine);
+
+        // 6/7/8: unten links, unten Mitte, unten rechts.
+        painter.fillRect(QRect(0, height() - r, len, r), activeLine);
+        painter.fillRect(QRect(0, qMax(0, height() - len), r, len), activeLine);
+        painter.fillRect(QRect(cx - len / 2, height() - r, len, r), activeLine);
+        painter.fillRect(QRect(qMax(0, width() - len), height() - r, len, r), activeLine);
+        painter.fillRect(QRect(width() - r, qMax(0, height() - len), r, len), activeLine);
+    }
+
+    void paintEvent(QPaintEvent *event) override
+    {
+        QDialog::paintEvent(event);
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing, false);
+
+        QLinearGradient gradient(0, 0, width(), 0);
+        gradient.setColorAt(0.0, QColor(68, 68, 68));
+        gradient.setColorAt(1.0, QColor(14, 14, 14));
+        painter.fillRect(QRect(0, 0, width(), titleHeight()), gradient);
+
+        const QRect minRect = minButtonRect();
+        const QRect maxRect = maxButtonRect();
+        const QRect closeRect = closeButtonRect();
+        if (hoverButton_ == 1) painter.fillRect(minRect, QColor(0, 90, 185));
+        if (hoverButton_ == 2) painter.fillRect(maxRect, QColor(0, 145, 70));
+        if (hoverButton_ == 3) painter.fillRect(closeRect, QColor(205, 35, 35));
+
+        QRect iconRect(8, 6, 20, 20);
+        painter.setPen(QPen(QColor(230, 230, 230), 1));
+        painter.setBrush(QColor(0, 115, 80));
+        painter.drawRoundedRect(iconRect, 3, 3);
+        QFont iconFont(QStringLiteral("Segoe UI"), 7, QFont::Bold);
+        painter.setFont(iconFont);
+        painter.setPen(Qt::white);
+        painter.drawText(iconRect, Qt::AlignCenter, QStringLiteral("db"));
+
+        painter.setFont(QFont(QStringLiteral("Segoe UI"), 9));
+        painter.setPen(QColor(235, 235, 235));
+        const QRect titleRect(34, 0, qMax(0, width() - 34 - 3 * buttonWidth()), titleHeight());
+        painter.drawText(titleRect, Qt::AlignVCenter | Qt::AlignLeft, windowTitle());
+
+        QFont glyph(QStringLiteral("Segoe MDL2 Assets"), 10);
+        painter.setFont(glyph);
+        painter.setPen(QColor(238, 238, 238));
+        painter.drawText(minRect, Qt::AlignCenter, QString(QChar(0xE921)));
+        painter.drawText(maxRect, Qt::AlignCenter, QString(QChar(isMaximized() ? 0xE923 : 0xE922)));
+        painter.drawText(closeRect, Qt::AlignCenter, QString(QChar(0xE8BB)));
+
+        drawResizeChrome(painter);
+    }
+
+    void resizeEvent(QResizeEvent *event) override
+    {
+        QDialog::resizeEvent(event);
+        syncResizeHandles();
+    }
+
+    void showEvent(QShowEvent *event) override
+    {
+        QDialog::showEvent(event);
+        syncResizeHandles();
+    }
+
+    void mouseMoveEvent(QMouseEvent *event) override
+    {
+        int hover = 0;
+        if (event) {
+#ifdef _WIN32
+            updateResizeCursor(event->pos());
+#endif
+            if (minButtonRect().contains(event->pos())) hover = 1;
+            else if (maxButtonRect().contains(event->pos())) hover = 2;
+            else if (closeButtonRect().contains(event->pos())) hover = 3;
+        }
+        if (hover != hoverButton_) {
+            hoverButton_ = hover;
+            update(QRect(width() - 3 * buttonWidth(), 0, 3 * buttonWidth(), titleHeight()));
+        }
+        QDialog::mouseMoveEvent(event);
+    }
+
+    void mousePressEvent(QMouseEvent *event) override
+    {
+#ifdef _WIN32
+        if (event && event->button() == Qt::LeftButton && startSystemResizeAt(event->pos())) {
+            event->accept();
+            return;
+        }
+#endif
+        QDialog::mousePressEvent(event);
+    }
+
+    void leaveEvent(QEvent *event) override
+    {
+        unsetCursor();
+        if (hoverButton_ != 0) {
+            hoverButton_ = 0;
+            update(QRect(width() - 3 * buttonWidth(), 0, 3 * buttonWidth(), titleHeight()));
+        }
+        QDialog::leaveEvent(event);
+    }
+
+    void mouseDoubleClickEvent(QMouseEvent *event) override
+    {
+        if (event && event->button() == Qt::LeftButton) {
+            const QPoint p = event->pos();
+            if (closeButtonRect().contains(p)) {
+                hide();
+                event->accept();
+                return;
+            }
+            if (minButtonRect().contains(p)) {
+                showMinimized();
+                event->accept();
+                return;
+            }
+            if (maxButtonRect().contains(p)) {
+                isMaximized() ? showNormal() : showMaximized();
+                event->accept();
+                return;
+            }
+        }
+        QDialog::mouseDoubleClickEvent(event);
+    }
+
+    void changeEvent(QEvent *event) override
+    {
+        QDialog::changeEvent(event);
+        if (event && (event->type() == QEvent::ActivationChange || event->type() == QEvent::WindowStateChange)) {
+            syncResizeHandles();
+            update();
+        }
+    }
+
+    void closeEvent(QCloseEvent *event) override
+    {
+        // Stage 128: Das Debug-/Print-Fenster gehoert zur Workstation. Ein X
+        // versteckt es nur temporaer; der bestehende 500-ms-Watchdog darf es
+        // beim naechsten Takt wieder aktivieren.
+        hide();
+        event->ignore();
+    }
+
+private:
+    enum ResizeHandleIndex {
+        HandleTopLeft = 0,
+        HandleTop,
+        HandleTopRight,
+        HandleLeft,
+        HandleRight,
+        HandleBottomLeft,
+        HandleBottom,
+        HandleBottomRight,
+        ResizeHandleCount
+    };
+
+    void createResizeHandles()
+    {
+#ifdef _WIN32
+        const int codes[ResizeHandleCount] = {
+            HTTOPLEFT, HTTOP, HTTOPRIGHT, HTLEFT,
+            HTRIGHT, HTBOTTOMLEFT, HTBOTTOM, HTBOTTOMRIGHT
+        };
+        for (int i = 0; i < ResizeHandleCount; ++i)
+            resizeHandles_[i] = new WorkstationResizeHandle(this, codes[i]);
+#endif
+    }
+
+    void syncResizeHandles()
+    {
+#ifdef _WIN32
+        const bool enabled = isVisible() && isActiveWindow() && !isMaximized();
+        const int s = resizeCatchSize();
+        const int cx = width() / 2;
+        const int cy = height() / 2;
+
+        const QRect rects[ResizeHandleCount] = {
+            QRect(0, 0, s, s),
+            QRect(cx - s / 2, 0, s, s),
+            QRect(qMax(0, width() - s), 0, s, s),
+            QRect(0, cy - s / 2, s, s),
+            QRect(qMax(0, width() - s), cy - s / 2, s, s),
+            QRect(0, qMax(0, height() - s), s, s),
+            QRect(cx - s / 2, qMax(0, height() - s), s, s),
+            QRect(qMax(0, width() - s), qMax(0, height() - s), s, s)
+        };
+
+        for (int i = 0; i < ResizeHandleCount; ++i) {
+            if (!resizeHandles_[i])
+                continue;
+            resizeHandles_[i]->setGeometry(rects[i]);
+            resizeHandles_[i]->setEnabled(enabled);
+            resizeHandles_[i]->setVisible(enabled);
+            if (enabled)
+                resizeHandles_[i]->raise();
+        }
+#endif
+    }
+
+    int hoverButton_ = 0;
+    WorkstationResizeHandle *resizeHandles_[ResizeHandleCount] = {};
 };
 
 struct ChildProcess {
     std::wstring canonicalPath;
     HANDLE process = nullptr;
     DWORD pid = 0;
+    // Stage 114: Das Console-HWND gehoert auf modernen Windows-Versionen
+    // dem Console Host und nicht zwingend der PID des Kindprozesses. Der
+    // Runner merkt es sich deshalb nach AttachConsole(pid) separat.
+    HWND consoleWindow = nullptr;
+
+    // Stage 115 TEST: Eine sichtbare dBase-Console wird temporaer modal
+    // behandelt. Das echte Console-HWND kennt keine Qt-Modality; deshalb
+    // werden die GUI-Top-Level-Fenster des Kindes deaktiviert und die
+    // Console TOPMOST gehalten. Schliessen der Console beendet bei der
+    // normalen Win32-Console den Testprozess; bei Verstecken/Verlust des
+    // Console-HWND werden die GUI-Fenster wieder aktiviert.
+    bool consoleModalTest = false;
+    std::vector<HWND> modalDisabledWindows;
 };
 
 HWND g_host_window = nullptr;
+WorkstationOutputDialog *g_output_dialog = nullptr;
+QPlainTextEdit *g_output_edit = nullptr;
 HHOOK g_mouse_hook = nullptr;
 HHOOK g_keyboard_hook = nullptr;
 HWND g_close_candidate = nullptr;
@@ -78,10 +645,236 @@ bool g_leave_started = false;
 LaunchRequest g_db_launch_request;
 bool g_has_db_launch_request = false;
 
+void apply_workstation_output_theme(bool darkMode)
+{
+    if (!g_output_dialog || !g_output_edit)
+        return;
+    if (darkMode) {
+        g_output_dialog->setStyleSheet(QStringLiteral(
+            "QDialog#d64WorkstationOutputDialog { background:#171717; }"
+            "QPlainTextEdit#d64WorkstationOutput {"
+            " background:#000000; color:#d2ca87; border:1px solid #555555;"
+            " selection-background-color:#5a5000; selection-color:#fff1a0; }"
+        ));
+    } else {
+        g_output_dialog->setStyleSheet(QStringLiteral(
+            "QDialog#d64WorkstationOutputDialog { background:#ececec; }"
+            "QPlainTextEdit#d64WorkstationOutput {"
+            " background:#ffffff; color:#202020; border:1px solid #8a8a8a;"
+            " selection-background-color:#3478c7; selection-color:#ffffff; }"
+        ));
+    }
+    g_output_dialog->update();
+    g_output_edit->viewport()->update();
+}
+
+void workstation_theme_changed(bool darkMode)
+{
+    apply_workstation_output_theme(darkMode);
+}
+
+void create_workstation_output_dialog()
+{
+    if (g_output_dialog && g_output_edit)
+        return;
+
+    // Stage 116 compatibility marker: g_output_dialog = new QDialog(nullptr);
+    g_output_dialog = new WorkstationOutputDialog(nullptr);
+    g_output_dialog->setObjectName(QStringLiteral("d64WorkstationOutputDialog"));
+    g_output_dialog->setWindowTitle(QStringLiteral("dBase Workstation Ausgabe"));
+    g_output_dialog->setModal(false);
+    g_output_dialog->setAttribute(Qt::WA_DeleteOnClose, false);
+    g_output_dialog->resize(680, 300);
+
+    auto *layout = new QVBoxLayout(g_output_dialog);
+    layout->setContentsMargins(
+        WorkstationOutputDialog::clientInset(),
+        WorkstationOutputDialog::clientTop(),
+        WorkstationOutputDialog::clientInset(),
+        WorkstationOutputDialog::clientInset()
+    );
+    layout->setSpacing(0);
+
+    g_output_edit = new QPlainTextEdit(g_output_dialog);
+    g_output_edit->setObjectName(QStringLiteral("d64WorkstationOutput"));
+    g_output_edit->setReadOnly(true);
+    g_output_edit->setPlaceholderText(
+        QStringLiteral("Workstation-Ausgabe bereit - Debug und Print erscheinen hier.")
+    );
+    g_output_edit->setLineWrapMode(QPlainTextEdit::NoWrap);
+    g_output_edit->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    g_output_edit->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    g_output_edit->document()->setMaximumBlockCount(500);
+    g_output_edit->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    layout->addWidget(g_output_edit, 1);
+    apply_workstation_output_theme(D64WorkstationDarkMode());
+
+    QRect workArea;
+    if (QScreen *screen = QApplication::primaryScreen())
+        workArea = screen->availableGeometry();
+    if (!workArea.isValid())
+        workArea = QRect(80, 40, 1024, 700);
+
+    workArea.adjust(
+        D64WorkstationLeftPanelWidth() + 8,
+        8,
+        -8,
+        -(D64WorkstationBottomPanelHeight() + 8)
+    );
+
+    const QSize size = g_output_dialog->size();
+    const int x = qMax(workArea.left(), workArea.right() - size.width() + 1);
+    const int y = qMax(workArea.top(), workArea.bottom() - size.height() + 1);
+    g_output_dialog->move(x, y);
+
+    // Stage 119: Der Ausgabedialog ist Bestandteil des Workstation-Runners
+    // selbst und muss bereits beim Runner-Start sichtbar sein. winId() wird
+    // absichtlich vor show() angefordert, damit das native HWND auf dem durch
+    // D64WorkstationPrepare() gebundenen D64Workstation-Desktop entsteht.
+    const HWND outputHwnd = reinterpret_cast<HWND>(g_output_dialog->winId());
+    if (outputHwnd) {
+        SetPropW(
+            outputHwnd,
+            WORKSTATION_TOOL_WINDOW_PROPERTY,
+            reinterpret_cast<HANDLE>(1)
+        );
+    }
+
+    g_output_dialog->show();
+    g_output_dialog->raise();
+
+    // Ein unmittelbar danach gestartetes Formular wird vom Runner bewusst in
+    // den Vordergrund geholt. Deshalb den nicht-modalen Ausgabedialog als
+    // TOPMOST-Workstation-Toolfenster halten; er bleibt bedienbar, blockiert
+    // die Anwendung aber nicht.
+    if (outputHwnd) {
+        ShowWindow(outputHwnd, SW_SHOWNORMAL);
+        SetWindowPos(
+            outputHwnd,
+            HWND_TOPMOST,
+            0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE
+        );
+    }
+}
+
+void ensure_workstation_output_dialog_on_screen()
+{
+    if (!g_output_dialog)
+        return;
+
+#ifdef _WIN32
+    const HWND outputHwnd = reinterpret_cast<HWND>(g_output_dialog->winId());
+    if (!outputHwnd || !IsWindow(outputHwnd))
+        return;
+
+    RECT rect{};
+    if (!GetWindowRect(outputHwnd, &rect))
+        return;
+
+    // Stage 122: Nach dem Start eines WFM-Formulars darf der zentrale
+    // Konsolenersatz nicht auf einem nicht mehr sichtbaren Monitor-/Desktop-
+    // Bereich verbleiben. Nur wenn das Fenster wirklich mit keinem Monitor
+    // ueberlappt, wird die vom Benutzer gewuenschte Fallback-Origin 10/10
+    // verwendet. Eine gueltige benutzerdefinierte Position bleibt erhalten.
+    const HMONITOR monitor = MonitorFromRect(&rect, MONITOR_DEFAULTTONULL);
+    if (!monitor) {
+        constexpr int fallbackX = 10;
+        constexpr int fallbackY = 10;
+        g_output_dialog->move(fallbackX, fallbackY);
+        SetWindowPos(
+            outputHwnd,
+            HWND_TOPMOST,
+            fallbackX, fallbackY,
+            0, 0,
+            SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE
+        );
+    }
+#else
+    bool visible = false;
+    const QRect dialogRect = g_output_dialog->frameGeometry();
+    for (QScreen *screen : QApplication::screens()) {
+        if (screen && screen->availableGeometry().intersects(dialogRect)) {
+            visible = true;
+            break;
+        }
+    }
+    if (!visible)
+        g_output_dialog->move(10, 10);
+#endif
+}
+
+void ensure_workstation_output_dialog_visible()
+{
+    create_workstation_output_dialog();
+    if (!g_output_dialog)
+        return;
+
+    if (g_output_dialog->isMinimized())
+        return;
+
+    if (!g_output_dialog->isVisible())
+        g_output_dialog->show();
+
+    ensure_workstation_output_dialog_on_screen();
+    g_output_dialog->raise();
+
+#ifdef _WIN32
+    const HWND outputHwnd = reinterpret_cast<HWND>(g_output_dialog->winId());
+    if (outputHwnd && IsWindow(outputHwnd)) {
+        if (!IsWindowVisible(outputHwnd))
+            ShowWindow(outputHwnd, SW_SHOWNORMAL);
+        SetWindowPos(
+            outputHwnd,
+            HWND_TOPMOST,
+            0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE
+        );
+    }
+#endif
+}
+
+void append_workstation_output(const OutputMessage &message)
+{
+    create_workstation_output_dialog();
+    if (!g_output_edit || !g_output_dialog)
+        return;
+
+    QScrollBar *scroll = g_output_edit->verticalScrollBar();
+    const bool followTail = !scroll || scroll->value() >= scroll->maximum() - 2;
+    const int oldValue = scroll ? scroll->value() : 0;
+
+    QTextCursor cursor = g_output_edit->textCursor();
+    cursor.movePosition(QTextCursor::End);
+    if (!message.text.empty())
+        cursor.insertText(QString::fromUtf8(message.text.data(), static_cast<int>(message.text.size())));
+    if (message.newline)
+        cursor.insertText(QStringLiteral("\n"));
+    g_output_edit->setTextCursor(cursor);
+
+    if (followTail) {
+        cursor.movePosition(QTextCursor::End);
+        g_output_edit->setTextCursor(cursor);
+        g_output_edit->ensureCursorVisible();
+    } else if (scroll) {
+        scroll->setValue(qMin(oldValue, scroll->maximum()));
+    }
+
+    ensure_workstation_output_dialog_visible();
+}
+
 UINT workstation_global_shutdown_message()
 {
     static const UINT message = RegisterWindowMessageW(
         L"dBase2Many.D64Workstation.GlobalShutdown"
+    );
+    return message;
+}
+
+UINT workstation_restore_application_message()
+{
+    static const UINT message = RegisterWindowMessageW(
+        L"dBase2Many.D64Workstation.RestoreApplication"
     );
     return message;
 }
@@ -247,6 +1040,73 @@ bool pe_uses_console_subsystem(const std::wstring &path)
     return console;
 }
 
+bool file_contains_marker(
+    const std::wstring &path,
+    const char *marker,
+    std::size_t markerLength)
+{
+    if (!marker || markerLength == 0)
+        return false;
+
+    HANDLE file = CreateFileW(
+        path.c_str(),
+        GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr
+    );
+    if (file == INVALID_HANDLE_VALUE)
+        return false;
+
+    LARGE_INTEGER size{};
+    if (!GetFileSizeEx(file, &size) ||
+        size.QuadPart <= 0 ||
+        size.QuadPart > (128ll * 1024ll * 1024ll)) {
+        CloseHandle(file);
+        return false;
+    }
+
+    std::vector<char> data(static_cast<std::size_t>(size.QuadPart));
+    DWORD total = 0;
+    while (total < data.size()) {
+        DWORD got = 0;
+        const DWORD chunk = static_cast<DWORD>(
+            std::min<std::size_t>(data.size() - total, 1024u * 1024u)
+        );
+        if (!ReadFile(file, data.data() + total, chunk, &got, nullptr) || !got)
+            break;
+        total += got;
+    }
+    CloseHandle(file);
+
+    if (total < markerLength)
+        return false;
+
+    const char *begin = data.data();
+    const char *end = begin + total;
+    return std::search(begin, end, marker, marker + markerLength) != end;
+}
+
+bool file_contains_lazy_console_marker(const std::wstring &path)
+{
+    return file_contains_marker(
+        path,
+        D64_LAZY_CONSOLE_MARKER,
+        sizeof(D64_LAZY_CONSOLE_MARKER) - 1
+    );
+}
+
+bool file_contains_wfm_qt_output_marker(const std::wstring &path)
+{
+    return file_contains_marker(
+        path,
+        D64_WFM_QT_OUTPUT_MARKER,
+        sizeof(D64_WFM_QT_OUTPUT_MARKER) - 1
+    );
+}
+
 void show_runner_usage()
 {
     MessageBoxW(
@@ -255,6 +1115,7 @@ void show_runner_usage()
         L"  d64_workstation_runner.exe <Anwendung.exe>\n"
         L"  d64_workstation_runner.exe --console <Anwendung.exe>\n"
         L"  d64_workstation_runner.exe --gui <Anwendung.exe>\n"
+        L"  d64_workstation_runner.exe --dark|--light <Anwendung.exe>\n"
         L"  d64_workstation_runner.exe --cwd <Verzeichnis> <Anwendung.exe>\n\n"
         L"Ohne --console/--gui wird das PE-Subsystem automatisch erkannt.\n"
         L"Ohne Anwendung bleibt der Runner als kompatibler Pipe-Host aktiv.",
@@ -298,6 +1159,14 @@ bool parse_runner_command_line(
         if (_wcsicmp(arg.c_str(), L"--gui") == 0) {
             request.consoleMode = false;
             modeSpecified = true;
+            continue;
+        }
+        if (_wcsicmp(arg.c_str(), L"--dark") == 0) {
+            request.themeMode = 1;
+            continue;
+        }
+        if (_wcsicmp(arg.c_str(), L"--light") == 0) {
+            request.themeMode = 0;
             continue;
         }
         if (_wcsicmp(arg.c_str(), L"--cwd") == 0) {
@@ -417,6 +1286,8 @@ bool is_candidate_application_window(HWND hwnd)
         return false;
     if (is_workstation_panel(hwnd))
         return false;
+    if (GetPropW(hwnd, WORKSTATION_TOOL_WINDOW_PROPERTY) != nullptr)
+        return false;
     if (!IsWindowVisible(hwnd))
         return false;
 
@@ -475,8 +1346,29 @@ void hide_application_window(HWND hwnd)
 {
     if (!is_candidate_application_window(hwnd))
         return;
+
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+
     remember_hidden_window(hwnd);
     ShowWindowAsync(hwnd, SW_HIDE);
+
+    // Stage 114: Wenn das Hauptfenster eines vom Runner gestarteten
+    // dBase-Programms ausgeblendet wird, muss dessen spaeter per
+    // AllocConsole erzeugte Console mit ausgeblendet werden. Das Console-
+    // Fenster laeuft typischerweise unter conhost.exe und kann deshalb nicht
+    // ueber die PID des Formularfensters gefunden werden.
+    if (pid) {
+        for (ChildProcess &child : g_children) {
+            if (child.pid != pid)
+                continue;
+            if (child.consoleWindow && IsWindow(child.consoleWindow)) {
+                remember_hidden_window(child.consoleWindow);
+                ShowWindowAsync(child.consoleWindow, SW_HIDE);
+            }
+            break;
+        }
+    }
 }
 
 struct RestoreMarkedContext {
@@ -500,8 +1392,15 @@ BOOL CALLBACK restore_marked_window(HWND hwnd, LPARAM parameter)
     if (!has_d64_application_marker(hwnd))
         return TRUE;
 
-    ShowWindowAsync(hwnd, SW_RESTORE);
-    ShowWindowAsync(hwnd, SW_SHOW);
+    // Stage 124: markierte d64qt5/WFM-Fenster niemals direkt per Win32
+    // einblenden. Der Zielprozess restauriert sich Qt-aware und erzwingt
+    // danach ein vollstaendiges Style-/Paint-Refresh.
+    PostMessageW(
+        hwnd,
+        workstation_restore_application_message(),
+        0,
+        0
+    );
     context->restored.push_back(hwnd);
     return TRUE;
 }
@@ -522,8 +1421,9 @@ void restore_hidden_windows()
     }
 
     // Wenn der Runner OWNER ist und spaeter eine d64qt5-Anwendung JOINED,
-    // liegt deren DB-Callback in einem anderen Prozess. Deshalb wird ihr
-    // markiertes Hauptfenster zusaetzlich direkt wieder sichtbar gemacht.
+    // liegt deren DB-Callback in einem anderen Prozess. Stage 124 delegiert
+    // das Wiederherstellen markierter Fenster deshalb per registrierter
+    // Nachricht an den Qt-Eventloop des Zielprozesses.
     const wchar_t *desktopName = D64WorkstationDesktopName();
     if (desktopName && *desktopName) {
         HDESK desktop = OpenDesktopW(
@@ -551,12 +1451,18 @@ void restore_hidden_windows()
         GetWindowThreadProcessId(last, &pid);
         if (pid)
             AllowSetForegroundWindow(pid);
-        SetWindowPos(
-            last, HWND_TOP, 0, 0, 0, 0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW
-        );
-        BringWindowToTop(last);
-        SetForegroundWindow(last);
+
+        // Stage 124: Ein markiertes d64qt5/WFM-Fenster wurde oben bereits
+        // per RestoreApplication-Nachricht an seinen eigenen Qt-Eventloop
+        // delegiert. SWP_SHOWWINDOW hier wuerde den Qt-Restore erneut umgehen.
+        if (!has_d64_application_marker(last)) {
+            SetWindowPos(
+                last, HWND_TOP, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW
+            );
+            BringWindowToTop(last);
+            SetForegroundWindow(last);
+        }
     }
 }
 
@@ -669,14 +1575,117 @@ void remove_keyboard_guard()
     g_keyboard_hook = nullptr;
 }
 
+
+bool switch_to_workstation_desktop();
+
+struct ConsoleModalWindowContext {
+    DWORD pid = 0;
+    std::vector<HWND> *disabled = nullptr;
+};
+
+BOOL CALLBACK disable_child_window_for_console_modal(HWND hwnd, LPARAM value)
+{
+    ConsoleModalWindowContext *ctx =
+        reinterpret_cast<ConsoleModalWindowContext *>(value);
+    if (!ctx || !ctx->disabled || !hwnd || !IsWindow(hwnd))
+        return TRUE;
+
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (pid != ctx->pid)
+        return TRUE;
+
+    const LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+    if ((style & WS_CHILD) != 0)
+        return TRUE;
+
+    if (IsWindowEnabled(hwnd)) {
+        EnableWindow(hwnd, FALSE);
+        ctx->disabled->push_back(hwnd);
+    }
+    return TRUE;
+}
+
+void end_console_modal_test(ChildProcess &child)
+{
+    if (!child.consoleModalTest && child.modalDisabledWindows.empty())
+        return;
+
+    for (HWND hwnd : child.modalDisabledWindows) {
+        if (hwnd && IsWindow(hwnd))
+            EnableWindow(hwnd, TRUE);
+    }
+    child.modalDisabledWindows.clear();
+
+    if (child.consoleWindow && IsWindow(child.consoleWindow)) {
+        SetWindowPos(
+            child.consoleWindow,
+            HWND_NOTOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
+        );
+    }
+    child.consoleModalTest = false;
+}
+
+void begin_console_modal_test(ChildProcess &child)
+{
+    if (child.consoleModalTest)
+        return;
+    if (!child.consoleWindow || !IsWindow(child.consoleWindow))
+        return;
+    if (!IsWindowVisible(child.consoleWindow))
+        return;
+
+    // Stage 115 TEST: Die Console bleibt als echtes Win32-Console-HWND
+    // bestehen, wird aber modal emuliert. Die Formulare des gestarteten
+    // Prozesses auf D64Workstation werden deaktiviert und die Console wird
+    // TOPMOST/Vordergrund. So laesst sich eindeutig erkennen, auf welchem
+    // Desktop der Console-Host das HWND erzeugt hat.
+    switch_to_workstation_desktop();
+
+    ConsoleModalWindowContext context;
+    context.pid = child.pid;
+    context.disabled = &child.modalDisabledWindows;
+    EnumWindows(
+        &disable_child_window_for_console_modal,
+        reinterpret_cast<LPARAM>(&context)
+    );
+
+    ShowWindowAsync(child.consoleWindow, SW_RESTORE);
+    ShowWindowAsync(child.consoleWindow, SW_SHOW);
+    SetWindowPos(
+        child.consoleWindow,
+        HWND_TOPMOST,
+        0,
+        0,
+        0,
+        0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW
+    );
+
+    DWORD consolePid = 0;
+    GetWindowThreadProcessId(child.consoleWindow, &consolePid);
+    if (consolePid)
+        AllowSetForegroundWindow(consolePid);
+    BringWindowToTop(child.consoleWindow);
+    SetForegroundWindow(child.consoleWindow);
+    child.consoleModalTest = true;
+}
+
 void cleanup_finished_children()
 {
     for (auto it = g_children.begin(); it != g_children.end();) {
         if (!it->process) {
+            end_console_modal_test(*it);
             it = g_children.erase(it);
             continue;
         }
         if (WaitForSingleObject(it->process, 0) == WAIT_OBJECT_0) {
+            end_console_modal_test(*it);
             CloseHandle(it->process);
             it = g_children.erase(it);
             continue;
@@ -699,6 +1708,7 @@ struct ActivateChildWindowContext
 {
     DWORD pid;
     HWND target;
+    HWND fallbackTarget;
 };
 
 BOOL CALLBACK activate_child_window_enum_proc(HWND hwnd, LPARAM value)
@@ -714,11 +1724,24 @@ BOOL CALLBACK activate_child_window_enum_proc(HWND hwnd, LPARAM value)
         return TRUE;
 
     const LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
-    if ((style & WS_CHILD) != 0)
+    const LONG_PTR exStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+    if ((style & WS_CHILD) != 0 || (exStyle & WS_EX_TOOLWINDOW) != 0)
+        return TRUE;
+    if (GetPropW(hwnd, WORKSTATION_TOOL_WINDOW_PROPERTY) != nullptr)
         return TRUE;
 
-    ctx->target = hwnd;
-    return FALSE;
+    // Stage 124: Ein von d64qt5 markiertes Hauptfenster ist fuer den
+    // DB-Relaunch immer die erste Wahl. Die WFM-Runtime soll ihr Fenster
+    // selbst im eigenen Qt-Eventloop wiederherstellen, statt dass der Runner
+    // es per ShowWindowAsync am Qt-Zustand vorbei sichtbar macht.
+    if (has_d64_application_marker(hwnd)) {
+        ctx->target = hwnd;
+        return FALSE;
+    }
+
+    if (!ctx->fallbackTarget)
+        ctx->fallbackTarget = hwnd;
+    return TRUE;
 }
 
 bool switch_to_workstation_desktop()
@@ -744,11 +1767,118 @@ bool switch_to_workstation_desktop()
     return ok != FALSE;
 }
 
+bool discover_child_console_window(ChildProcess &child, bool makeVisible = true)
+{
+    if (!child.process || !child.pid)
+        return false;
+    if (WaitForSingleObject(child.process, 0) == WAIT_OBJECT_0)
+        return false;
+
+    if (child.consoleWindow && IsWindow(child.consoleWindow)) {
+        if (makeVisible) {
+            ShowWindowAsync(child.consoleWindow, SW_RESTORE);
+            ShowWindowAsync(child.consoleWindow, SW_SHOW);
+        }
+        return true;
+    }
+
+    child.consoleWindow = nullptr;
+
+    /*
+     * Stage 114:
+     * GetConsoleWindow() im GUI-Runner liefert nicht die Console eines
+     * fremden Prozesses. Ausserdem gehoert das sichtbare Console-HWND unter
+     * modernen Windows-Versionen normalerweise conhost.exe und wird daher
+     * von EnumWindows(pid == child.pid) niemals gefunden.
+     *
+     * AttachConsole(child.pid) ist hier nur ein kurzer Discovery-Schritt:
+     * der Runner haengt sich an dieselbe Console, liest deren HWND mit
+     * GetConsoleWindow() und trennt sich sofort wieder. FreeConsole() wirkt
+     * dabei nur auf den Runner; das dBase-Kind bleibt an seiner Console.
+     */
+    if (GetConsoleWindow() != nullptr)
+        return false; // Runner besitzt unerwartet selbst eine Console.
+
+    if (!AttachConsole(child.pid))
+        return false; // Das Kind hat (noch) keine Console.
+
+    HWND consoleWindow = GetConsoleWindow();
+    FreeConsole();
+
+    if (!consoleWindow || !IsWindow(consoleWindow))
+        return false;
+
+    child.consoleWindow = consoleWindow;
+    switch_to_workstation_desktop();
+
+    if (!makeVisible) {
+        // Fuer dBase-GUI-Programme wird die Console bereits vom Runner auf
+        // dem richtigen Desktop erzeugt, bleibt aber bis zum ersten ?/??
+        // unsichtbar. Der generierte __dbase_console_ensure-Pfad zeigt genau
+        // dieses HWND spaeter mit ShowWindow(SW_SHOW) an.
+        ShowWindowAsync(consoleWindow, SW_HIDE);
+        return true;
+    }
+
+    ShowWindowAsync(consoleWindow, SW_RESTORE);
+    ShowWindowAsync(consoleWindow, SW_SHOW);
+
+    RECT rect = {};
+    if (GetWindowRect(consoleWindow, &rect)) {
+        D64WorkstationConstrainMovingRect(&rect);
+        SetWindowPos(
+            consoleWindow,
+            HWND_TOPMOST,
+            rect.left,
+            rect.top,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW
+        );
+    } else {
+        SetWindowPos(
+            consoleWindow,
+            HWND_TOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW
+        );
+    }
+
+    DWORD consolePid = 0;
+    GetWindowThreadProcessId(consoleWindow, &consolePid);
+    if (consolePid)
+        AllowSetForegroundWindow(consolePid);
+    BringWindowToTop(consoleWindow);
+    return true;
+}
+
+void discover_child_console_windows()
+{
+    cleanup_finished_children();
+    for (ChildProcess &child : g_children) {
+        if (!child.consoleWindow || !IsWindow(child.consoleWindow)) {
+            end_console_modal_test(child);
+            discover_child_console_window(child);
+        }
+
+        if (child.consoleWindow && IsWindow(child.consoleWindow)) {
+            if (IsWindowVisible(child.consoleWindow))
+                begin_console_modal_test(child);
+            else
+                end_console_modal_test(child);
+        }
+    }
+}
+
 bool activate_child_windows(DWORD pid)
 {
     ActivateChildWindowContext context = {};
     context.pid = pid;
     context.target = nullptr;
+    context.fallbackTarget = nullptr;
 
     /*
      * Der Runner-GUI-Thread wurde durch D64WorkstationPrepare() bereits an
@@ -761,6 +1891,8 @@ bool activate_child_windows(DWORD pid)
     );
 
     if (!context.target)
+        context.target = context.fallbackTarget;
+    if (!context.target)
         return false;
 
     /*
@@ -771,6 +1903,20 @@ bool activate_child_windows(DWORD pid)
      * stellvertretend.
      */
     switch_to_workstation_desktop();
+
+    if (has_d64_application_marker(context.target)) {
+        // Stage 124: Qt-aware Restore. Das versteckte WFM-Hauptfenster bleibt
+        // Eigentum seines Prozesses; dort werden show()/Style/Paint im
+        // laufenden Qt-Eventloop ausgefuehrt.
+        PostMessageW(
+            context.target,
+            workstation_restore_application_message(),
+            0,
+            0
+        );
+        AllowSetForegroundWindow(pid);
+        return true;
+    }
 
     ShowWindowAsync(context.target, SW_RESTORE);
     ShowWindowAsync(context.target, SW_SHOW);
@@ -810,7 +1956,10 @@ bool launch_program(const LaunchRequest &request)
     if (ChildProcess *existing = find_running_child(canonical)) {
         switch_to_workstation_desktop();
         activate_child_windows(existing->pid);
+        if (!existing->consoleWindow || !IsWindow(existing->consoleWindow))
+            discover_child_console_window(*existing);
         restore_hidden_windows();
+        ensure_workstation_output_dialog_visible();
         return true;
     }
 
@@ -824,17 +1973,68 @@ bool launch_program(const LaunchRequest &request)
     std::vector<wchar_t> command(commandLine.begin(), commandLine.end());
     command.push_back(L'\0');
 
+    // Stage 114: Native dBase-GUI-Programme tragen einen Marker im PE.
+    // Nur fuer diese Programme reserviert der Runner eine Console bereits
+    // beim CreateProcess auf dem expliziten Workstation-Desktop. Sie wird
+    // vor dem ersten Instruktionslauf versteckt und erst beim ersten ?/??
+    // vom generierten AllocConsole-/ShowWindow-Pfad sichtbar gemacht.
+    // Stage 116: WFM-GUIs mit Qt-Ausgabedialog tragen weiterhin den
+    // historischen Core-Marker im unbenutzten Basis-Shell. Der neue Marker
+    // hat Vorrang und verhindert CREATE_NEW_CONSOLE/Modal-Test vollstaendig.
+    // Stage 123: WFM nicht nur ueber den historischen Marker erkennen.
+    // Der interne PE-Writer kann unreferenzierte .data-Marker verwerfen;
+    // echte WFM-Programme lassen sich dagegen stabil an ihren Runtime-Imports
+    // DBaseQtInitializeGui + DBaseQtFormOpen erkennen. Genau dieser Fall
+    // tritt bei Form1.exe auf.
+    const bool wfmRuntimeImports =
+        file_contains_marker(
+            request.application,
+            "DBaseQtInitializeGui",
+            sizeof("DBaseQtInitializeGui") - 1
+        ) &&
+        file_contains_marker(
+            request.application,
+            "DBaseQtFormOpen",
+            sizeof("DBaseQtFormOpen") - 1
+        );
+    const bool wfmQtOutput =
+        !request.consoleMode &&
+        (file_contains_wfm_qt_output_marker(request.application) ||
+         wfmRuntimeImports);
+    const bool lazyDBaseConsole =
+        !request.consoleMode &&
+        !wfmQtOutput &&
+        file_contains_lazy_console_marker(request.application);
+
     STARTUPINFOW startup;
     ZeroMemory(&startup, sizeof(startup));
     startup.cb = sizeof(startup);
     startup.lpDesktop = const_cast<LPWSTR>(desktopSpec.c_str());
+    // Stage 113: STARTUPINFO gilt laut Win32 auch fuer eine Console, die das
+    // Kind spaeter per AllocConsole() erzeugt. Der Runner selbst ist
+    // unsichtbar; deshalb SW_SHOWNORMAL explizit vorgeben, damit eine lazy
+    // dBase-Console auf D64Workstation nicht mit einem versteckten Show-State
+    // startet.
+    startup.dwFlags |= STARTF_USESHOWWINDOW;
+    startup.wShowWindow = SW_SHOWNORMAL;
 
     PROCESS_INFORMATION processInfo;
     ZeroMemory(&processInfo, sizeof(processInfo));
 
     DWORD creationFlags = CREATE_UNICODE_ENVIRONMENT | CREATE_NEW_PROCESS_GROUP;
-    if (request.consoleMode)
+    if (request.consoleMode) {
         creationFlags |= CREATE_NEW_CONSOLE;
+    } else if (wfmQtOutput) {
+        // Stage 123: Die eigentliche WFM-GUI darf erst laufen, nachdem der
+        // zentrale Debug-/Print-Konsolenersatz sichtbar und gezeichnet ist.
+        creationFlags |= CREATE_SUSPENDED;
+    } else if (lazyDBaseConsole) {
+        // Die Console muss auf dem in startup.lpDesktop angegebenen
+        // D64Workstation-Desktop entstehen. CREATE_SUSPENDED verhindert ein
+        // Aufblitzen: Der Runner ermittelt/versteckt das Console-HWND, bevor
+        // irgendein dBase-/Qt-Code des Kindes ausgefuehrt wird.
+        creationFlags |= CREATE_NEW_CONSOLE | CREATE_SUSPENDED;
+    }
 
     const BOOL ok = CreateProcessW(
         request.application.c_str(),
@@ -853,13 +2053,57 @@ bool launch_program(const LaunchRequest &request)
     if (!ok)
         return false;
 
-    CloseHandle(processInfo.hThread);
-
     ChildProcess child;
     child.canonicalPath = canonical;
     child.process = processInfo.hProcess;
     child.pid = processInfo.dwProcessId;
     g_children.push_back(child);
+
+    if (wfmQtOutput) {
+        // Stage 123: Reihenfolge verbindlich erzwingen:
+        //   Workstation sichtbar -> Debugfenster sichtbar/gezeichnet ->
+        //   erst dann Form1-Hauptthread starten.
+        switch_to_workstation_desktop();
+        ensure_workstation_output_dialog_visible();
+        if (g_output_dialog) {
+            g_output_dialog->move(10, 10);
+#ifdef _WIN32
+            const HWND outputHwnd =
+                reinterpret_cast<HWND>(g_output_dialog->winId());
+            if (outputHwnd && IsWindow(outputHwnd)) {
+                ShowWindow(outputHwnd, SW_SHOWNORMAL);
+                SetWindowPos(
+                    outputHwnd,
+                    HWND_TOPMOST,
+                    10, 10,
+                    0, 0,
+                    SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE
+                );
+                RedrawWindow(
+                    outputHwnd, nullptr, nullptr,
+                    RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN
+                );
+                UpdateWindow(outputHwnd);
+            }
+#endif
+        }
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
+        ResumeThread(processInfo.hThread);
+    } else if (lazyDBaseConsole) {
+        ChildProcess &created = g_children.back();
+        // CREATE_NEW_CONSOLE wird durch CreateProcess angelegt, bevor der
+        // suspendierte Hauptthread dBase-Code ausfuehrt. Ein kurzer Retry
+        // deckt langsame Console-Host-Initialisierung ab.
+        const DWORD consoleDeadline = GetTickCount() + 1000;
+        while (!discover_child_console_window(created, false)) {
+            if (static_cast<LONG>(GetTickCount() - consoleDeadline) >= 0)
+                break;
+            Sleep(10);
+        }
+        ResumeThread(processInfo.hThread);
+    }
+
+    CloseHandle(processInfo.hThread);
 
     /*
      * Stage 254:
@@ -874,25 +2118,39 @@ bool launch_program(const LaunchRequest &request)
     if (!request.consoleMode) {
         switch_to_workstation_desktop();
 
-        /*
-         * WaitForInputIdle() kehrt bei normalen Win32-/Qt-GUI-Programmen
-         * zurueck, sobald deren Message Queue initialisiert wurde. Ein Fehler
-         * ist nicht fatal; danach wird trotzdem per HWND-Polling gesucht.
-         */
-        WaitForInputIdle(processInfo.hProcess, 1500);
+        if (!wfmQtOutput) {
+            /*
+             * Generische GUI-Programme weiterhin synchron suchen/aktivieren.
+             * WFM-Qt-Programme aktivieren ihr Formular selbst in
+             * DBaseQtFormOpen. Bei ihnen darf der Runner-GUI-Thread hier
+             * nicht blockieren, damit das zuvor gezeigte Debugfenster
+             * sichtbar und repaint-faehig bleibt.
+             */
+            WaitForInputIdle(processInfo.hProcess, 1500);
 
-        const DWORD deadline = GetTickCount() + 3000;
-        for (;;) {
-            if (WaitForSingleObject(processInfo.hProcess, 0) == WAIT_OBJECT_0)
-                break;
+            const DWORD deadline = GetTickCount() + 3000;
+            for (;;) {
+                if (WaitForSingleObject(processInfo.hProcess, 0) == WAIT_OBJECT_0)
+                    break;
 
-            if (activate_child_windows(processInfo.dwProcessId))
-                break;
+                if (activate_child_windows(processInfo.dwProcessId))
+                    break;
 
-            if (static_cast<LONG>(GetTickCount() - deadline) >= 0)
-                break;
+                if (static_cast<LONG>(GetTickCount() - deadline) >= 0)
+                    break;
 
-            Sleep(25);
+                Sleep(25);
+            }
+
+            // Der Konstruktor kann bereits vor DBaseQtFormOpen ein ?/??
+            // ausfuehren. In diesem Fall ist die Console schon vorhanden,
+            // wenn das Formular erstmals aktiviert wird.
+            if (!lazyDBaseConsole && !g_children.empty())
+                discover_child_console_window(g_children.back());
+        } else {
+            // Stage 123: WFM hat den Debugdialog bereits vor ResumeThread.
+            // Keine WaitForInputIdle-/HWND-Poll-Schleife im Qt-GUI-Thread.
+            ensure_workstation_output_dialog_visible();
         }
     } else {
         /*
@@ -902,6 +2160,11 @@ bool launch_program(const LaunchRequest &request)
         switch_to_workstation_desktop();
     }
 
+    // Stage 122: Das gerade aktivierte Kind darf den Konsolenersatz weder
+    // verdecken noch durch eine geaenderte Monitor-Geometrie ausserhalb des
+    // sichtbaren Bereichs zuruecklassen. Sofort pruefen; der 500-ms-Watchdog
+    // wiederholt dieselbe Sicherung anschliessend dauerhaft.
+    ensure_workstation_output_dialog_visible();
     return true;
 }
 
@@ -1062,7 +2325,12 @@ bool send_request_to_existing_runner(
 
     PipeHeader header{};
     header.magic = RUNNER_PIPE_MAGIC;
-    header.flags = request.consoleMode ? 1u : 0u;
+    header.flags = request.consoleMode ? RUNNER_LAUNCH_CONSOLE : 0u;
+    if (request.themeMode >= 0) {
+        header.flags |= RUNNER_LAUNCH_THEME_PRESENT;
+        if (request.themeMode != 0)
+            header.flags |= RUNNER_LAUNCH_THEME_DARK;
+    }
     header.pathBytes = static_cast<std::uint32_t>(pathBytes64);
     header.cwdBytes = static_cast<std::uint32_t>(cwdBytes64);
 
@@ -1082,6 +2350,45 @@ bool send_request_to_existing_runner(
         );
     }
 
+    FlushFileBuffers(pipe);
+    CloseHandle(pipe);
+    return ok;
+}
+
+bool request_existing_runner_output_window(DWORD timeoutMs)
+{
+    const DWORD started = GetTickCount();
+    HANDLE pipe = INVALID_HANDLE_VALUE;
+
+    for (;;) {
+        if (WaitNamedPipeW(RUNNER_PIPE_NAME, 200)) {
+            pipe = CreateFileW(
+                RUNNER_PIPE_NAME,
+                GENERIC_WRITE,
+                0,
+                nullptr,
+                OPEN_EXISTING,
+                0,
+                nullptr
+            );
+            if (pipe != INVALID_HANDLE_VALUE)
+                break;
+        }
+        if (static_cast<DWORD>(GetTickCount() - started) >= timeoutMs)
+            return false;
+        Sleep(50);
+    }
+
+    // Das Stage-116+-Protokoll kennt bereits leere Output-Nachrichten.
+    // Dadurch kann auch eine schon residente Runner-Instanz ihren
+    // QPlainTextEdit-Konsolenersatz sichtbar machen, ohne Text einzufuegen.
+    PipeHeader header{};
+    header.magic = RUNNER_OUTPUT_MAGIC;
+    header.flags = 0;
+    header.pathBytes = 0;
+    header.cwdBytes = GetCurrentProcessId();
+
+    const bool ok = write_exact(pipe, &header, sizeof(header));
     FlushFileBuffers(pipe);
     CloseHandle(pipe);
     return ok;
@@ -1134,39 +2441,65 @@ void pipe_server_loop()
         }
 
         PipeHeader header{};
-        if (read_exact(pipe, &header, sizeof(header)) &&
-            header.magic == RUNNER_PIPE_MAGIC &&
-            header.pathBytes > 0 &&
-            header.pathBytes <= 60 * 1024 &&
-            header.cwdBytes <= 60 * 1024 &&
-            (header.pathBytes % sizeof(wchar_t)) == 0 &&
-            (header.cwdBytes % sizeof(wchar_t)) == 0) {
+        if (read_exact(pipe, &header, sizeof(header))) {
+            if (header.magic == RUNNER_OUTPUT_MAGIC) {
+                // Stage 116: dBase-WFM-Ausgabe. Fuer dieses Protokoll ist
+                // pathBytes die UTF-8-Textlaenge und cwdBytes die Sender-PID.
+                if (header.pathBytes <= 1024u * 1024u) {
+                    std::vector<char> textBytes(header.pathBytes);
+                    const bool textOk = header.pathBytes == 0 ||
+                        read_exact(pipe, textBytes.data(), header.pathBytes);
+                    if (textOk && g_host_window) {
+                        std::unique_ptr<OutputMessage> output(new OutputMessage());
+                        if (!textBytes.empty())
+                            output->text.assign(textBytes.data(), textBytes.size());
+                        output->newline =
+                            (header.flags & RUNNER_OUTPUT_NEWLINE) != 0;
+                        output->processId = static_cast<DWORD>(header.cwdBytes);
+                        PostMessageW(
+                            g_host_window,
+                            WM_RUNNER_OUTPUT,
+                            0,
+                            reinterpret_cast<LPARAM>(output.release())
+                        );
+                    }
+                }
+            } else if (
+                header.magic == RUNNER_PIPE_MAGIC &&
+                header.pathBytes > 0 &&
+                header.pathBytes <= 60 * 1024 &&
+                header.cwdBytes <= 60 * 1024 &&
+                (header.pathBytes % sizeof(wchar_t)) == 0 &&
+                (header.cwdBytes % sizeof(wchar_t)) == 0
+            ) {
+                std::vector<BYTE> pathBytes(header.pathBytes);
+                std::vector<BYTE> cwdBytes(header.cwdBytes);
+                const bool pathOk = read_exact(pipe, pathBytes.data(), header.pathBytes);
+                const bool cwdOk = header.cwdBytes == 0 ||
+                    read_exact(pipe, cwdBytes.data(), header.cwdBytes);
 
-            std::vector<BYTE> pathBytes(header.pathBytes);
-            std::vector<BYTE> cwdBytes(header.cwdBytes);
-            const bool pathOk = read_exact(pipe, pathBytes.data(), header.pathBytes);
-            const bool cwdOk = header.cwdBytes == 0 ||
-                read_exact(pipe, cwdBytes.data(), header.cwdBytes);
-
-            if (pathOk && cwdOk && g_host_window) {
-                std::unique_ptr<LaunchRequest> request(new LaunchRequest());
-                request->application.assign(
-                    reinterpret_cast<const wchar_t *>(pathBytes.data()),
-                    header.pathBytes / sizeof(wchar_t)
-                );
-                if (header.cwdBytes) {
-                    request->workingDirectory.assign(
-                        reinterpret_cast<const wchar_t *>(cwdBytes.data()),
-                        header.cwdBytes / sizeof(wchar_t)
+                if (pathOk && cwdOk && g_host_window) {
+                    std::unique_ptr<LaunchRequest> request(new LaunchRequest());
+                    request->application.assign(
+                        reinterpret_cast<const wchar_t *>(pathBytes.data()),
+                        header.pathBytes / sizeof(wchar_t)
+                    );
+                    if (header.cwdBytes) {
+                        request->workingDirectory.assign(
+                            reinterpret_cast<const wchar_t *>(cwdBytes.data()),
+                            header.cwdBytes / sizeof(wchar_t)
+                        );
+                    }
+                    request->consoleMode = (header.flags & RUNNER_LAUNCH_CONSOLE) != 0;
+                    if ((header.flags & RUNNER_LAUNCH_THEME_PRESENT) != 0)
+                        request->themeMode = (header.flags & RUNNER_LAUNCH_THEME_DARK) != 0 ? 1 : 0;
+                    PostMessageW(
+                        g_host_window,
+                        WM_RUNNER_LAUNCH,
+                        0,
+                        reinterpret_cast<LPARAM>(request.release())
                     );
                 }
-                request->consoleMode = (header.flags & 1u) != 0;
-                PostMessageW(
-                    g_host_window,
-                    WM_RUNNER_LAUNCH,
-                    0,
-                    reinterpret_cast<LPARAM>(request.release())
-                );
             }
         }
 
@@ -1207,6 +2540,8 @@ void begin_leave_once()
     stop_pipe_server();
     remove_keyboard_guard();
     remove_mouse_guard();
+    if (g_output_dialog)
+        g_output_dialog->hide();
     terminate_children();
     D64WorkstationBeginLeave();
 }
@@ -1240,6 +2575,8 @@ void workstation_db_requested()
     // Stattdessen das vorhandene Hauptfenster wiederherstellen/aktivieren.
     if (ChildProcess *existing = find_running_child(canonical)) {
         activate_child_windows(existing->pid);
+        if (!existing->consoleWindow || !IsWindow(existing->consoleWindow))
+            discover_child_console_window(*existing);
         restore_hidden_windows();
         return;
     }
@@ -1273,6 +2610,8 @@ LRESULT CALLBACK runner_window_proc(
         std::unique_ptr<LaunchRequest> request(
             reinterpret_cast<LaunchRequest *>(lParam)
         );
+        if (request && request->themeMode >= 0)
+            D64WorkstationSetDarkMode(request->themeMode != 0);
         if (request && !launch_program(*request)) {
             MessageBoxW(
                 nullptr,
@@ -1286,12 +2625,29 @@ LRESULT CALLBACK runner_window_proc(
 
     case WM_RUNNER_EXIT:
         begin_leave_once();
-        PostQuitMessage(0);
+        QCoreApplication::quit();
         return 0;
 
+    case WM_RUNNER_OUTPUT: {
+        std::unique_ptr<OutputMessage> output(
+            reinterpret_cast<OutputMessage *>(lParam)
+        );
+        if (output)
+            append_workstation_output(*output);
+        return 0;
+    }
+
     case WM_TIMER:
-        if (wParam == RUNNER_TIMER)
+        if (wParam == RUNNER_TIMER) {
             cleanup_finished_children();
+            if (!g_leave_started)
+                ensure_workstation_output_dialog_visible();
+            // Stage 114: Eine lazy AllocConsole-Konsole kann erst lange nach
+            // dem ersten Formularfenster entstehen. Deshalb alle 500 ms neue
+            // Consolen der laufenden Kindprozesse entdecken und genau beim
+            // ersten Auftauchen sichtbar machen.
+            discover_child_console_windows();
+        }
         return 0;
 
     case WM_CLOSE:
@@ -1341,8 +2697,28 @@ HWND create_runner_window(HINSTANCE instance)
 
 } // namespace
 
-int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR commandLine, int)
+int main(int, char **)
 {
+    HINSTANCE instance = GetModuleHandleW(nullptr);
+
+    // Qt/qmake erwartet einen normalen main()-Einstieg. Fuer die bestehende
+    // Unicode-CLI-Logik wird der Teil hinter dem EXE-Namen aus der nativen
+    // Windows-Kommandozeile weiterhin als UTF-16 ausgewertet.
+    const wchar_t *fullCommandLine = GetCommandLineW();
+    const wchar_t *commandLine = fullCommandLine ? fullCommandLine : L"";
+    if (*commandLine == L'"') {
+        ++commandLine;
+        while (*commandLine && *commandLine != L'"')
+            ++commandLine;
+        if (*commandLine == L'"')
+            ++commandLine;
+    } else {
+        while (*commandLine && !std::iswspace(*commandLine))
+            ++commandLine;
+    }
+    while (*commandLine && std::iswspace(*commandLine))
+        ++commandLine;
+
     LaunchRequest startupRequest;
     bool hasStartupRequest = false;
     bool showHelp = false;
@@ -1365,12 +2741,29 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR commandLine, int)
         // new direct CLI syntax the short-lived second process forwards the
         // application to that Runner and exits immediately.
         if (error == ERROR_ALREADY_EXISTS && hasStartupRequest) {
-            return send_request_to_existing_runner(startupRequest, 5000)
-                ? 0
-                : 11;
+            const bool forwarded =
+                send_request_to_existing_runner(startupRequest, 5000);
+            if (forwarded)
+                request_existing_runner_output_window(1500);
+            return forwarded ? 0 : 11;
         }
         return error == ERROR_ALREADY_EXISTS ? 10 : 2;
     }
+
+    // Stage 116: QApplication wird erst NACH D64WorkstationPrepare() erzeugt.
+    // Dadurch gehoeren QDialog/QPlainTextEdit garantiert zum gebundenen
+    // D64Workstation-Desktop und koennen nicht auf dem Root-Desktop landen.
+    int qtArgc = 1;
+    char qtArg0[] = "d64_workstation_runner";
+    char *qtArgv[] = { qtArg0, nullptr };
+    QApplication qtApp(qtArgc, qtArgv);
+    qtApp.setQuitOnLastWindowClosed(false);
+
+    D64WorkstationSetThemeCallback(&workstation_theme_changed);
+    if (startupRequest.themeMode >= 0)
+        D64WorkstationSetDarkMode(startupRequest.themeMode != 0);
+    else
+        D64WorkstationSetDarkMode(true);
 
     if (!register_runner_class(instance)) {
         D64WorkstationBeginLeave();
@@ -1399,6 +2792,31 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR commandLine, int)
         D64WorkstationFinalizeLeave();
         return 5;
     }
+
+    // Stage 116: Der zentrale, nicht modale Qt5-Ausgabedialog wird genau
+    // jetzt geoeffnet: der Workstation-Desktop ist bereits sichtbar und der
+    // QApplication-GUI-Thread ist seit Prepare() an diesen Desktop gebunden.
+    create_workstation_output_dialog();
+    ensure_workstation_output_dialog_visible();
+    qtApp.processEvents(QEventLoop::AllEvents, 100);
+
+    // Stage 120: Der erste Show-Aufruf vor exec() reicht auf einigen
+    // Workstation-Desktop-Konfigurationen nicht aus. Nach Eintritt in den
+    // echten Qt-Eventloop wird der Dialog deshalb erneut sichtbar gemacht.
+    QTimer::singleShot(0, []() {
+        ensure_workstation_output_dialog_visible();
+    });
+
+    // Sichtbarkeits-Watchdog: Der Konsolenersatz gehoert fest zur Workstation.
+    // Falls ein gestartetes Formular oder ein Close/Hide-Ereignis ihn verdeckt
+    // bzw. versteckt, wird er wieder eingeblendet.
+    QTimer outputDialogWatchdog;
+    outputDialogWatchdog.setInterval(500);
+    QObject::connect(&outputDialogWatchdog, &QTimer::timeout, []() {
+        if (!g_leave_started)
+            ensure_workstation_output_dialog_visible();
+    });
+    outputDialogWatchdog.start();
 
     // The existing core guard keeps Win/Alt-Tab/etc. inside the Workstation.
     // Install our generic-app guard afterwards so Alt+F4 on a normal PE child
@@ -1433,13 +2851,19 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR commandLine, int)
         PostMessageW(g_host_window, WM_RUNNER_EXIT, 0, 0);
     }
 
-    MSG msg;
-    while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
-        TranslateMessage(&msg);
-        DispatchMessageW(&msg);
-    }
+    // Stage 116: QApplication verarbeitet sowohl die Qt5-Dialoge als auch
+    // die native Runner-HWND/WM_TIMER/WM_APP-Nachrichten.
+    const int qtLoopResult = qtApp.exec();
+    (void)qtLoopResult;
 
     begin_leave_once();
+    if (g_output_dialog) {
+        g_output_dialog->hide();
+        delete g_output_dialog;
+    }
+    g_output_dialog = nullptr;
+    g_output_edit = nullptr;
+
     if (g_host_window && IsWindow(g_host_window)) {
         KillTimer(g_host_window, RUNNER_TIMER);
         DestroyWindow(g_host_window);

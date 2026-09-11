@@ -1,0 +1,200 @@
+[OPTIONS]
+Compatibility=1.1 or later
+Compiled file=e_baukasten.chm
+Contents file=e_baukasten.hhc
+Index file=e_baukasten.hhk
+Default topic=index.html
+Display compile progress=No
+Language=0x407 German (Germany)
+Title=E-Baukasten-Hilfe
+
+[FILES]
+index.html
+e_baukasten.hhc
+e_baukasten.hhk
+components/npn.html
+components/opamp.html
+components/not.html
+components/and.html
+components/nand.html
+components/or.html
+components/nor.html
+components/xor.html
+components/xnor.html
+components/switch.html
+components/button.html
+components/battery.html
+components/dc.html
+components/current.html
+components/ground.html
+components/resistor.html
+components/pot.html
+components/diode.html
+components/led_red.html
+components/led_green.html
+components/led_blue.html
+components/capacitor.html
+components/elco.html
+components/lamp.html
+components/sevenseg.html
+components/ttl_74ls00.html
+components/ttl_74ls01.html
+components/ttl_74ls02.html
+components/ttl_74ls03.html
+components/ttl_74ls04.html
+components/ttl_74ls05.html
+components/ttl_7406_7416.html
+components/ttl_7407_7417.html
+components/ttl_74ls08.html
+components/ttl_74ls10.html
+components/ttl_74ls11.html
+components/ttl_74ls12.html
+components/ttl_74ls13.html
+components/ttl_74ls14.html
+components/ttl_74ls20.html
+components/ttl_74ls21.html
+components/ttl_74ls27.html
+components/ttl_74ls30.html
+components/ttl_74ls32.html
+components/ttl_74ls37.html
+components/ttl_74ls38.html
+components/ttl_74ls86.html
+components/ttl_74ls125.html
+components/ttl_74ls126.html
+
+components/cmos_4001.html
+components/cmos_4011.html
+components/cmos_4013.html
+components/cmos_4014.html
+components/cmos_4017.html
+components/cmos_4020.html
+components/cmos_4024.html
+components/cmos_4026.html
+components/cmos_4040.html
+components/meter.html
+components/clock.html
+
+[MAP]
+#define IDH_EB_NPN 41001
+#define IDH_EB_OPAMP 41002
+#define IDH_EB_NOT 41003
+#define IDH_EB_AND 41004
+#define IDH_EB_NAND 41005
+#define IDH_EB_OR 41006
+#define IDH_EB_NOR 41007
+#define IDH_EB_XOR 41008
+#define IDH_EB_XNOR 41009
+#define IDH_EB_SWITCH 41010
+#define IDH_EB_BUTTON 41011
+#define IDH_EB_BATTERY 41012
+#define IDH_EB_DC 41013
+#define IDH_EB_CURRENT 41014
+#define IDH_EB_GROUND 41015
+#define IDH_EB_RESISTOR 41016
+#define IDH_EB_POT 41017
+#define IDH_EB_DIODE 41018
+#define IDH_EB_LED_RED 41019
+#define IDH_EB_LED_GREEN 41020
+#define IDH_EB_LED_BLUE 41021
+#define IDH_EB_CAPACITOR 41022
+#define IDH_EB_ELCO 41023
+#define IDH_EB_LAMP 41024
+#define IDH_EB_SEVENSEG 41025
+#define IDH_EB_TTL_74LS00 41026
+#define IDH_EB_TTL_74LS01 41027
+#define IDH_EB_TTL_74LS02 41028
+#define IDH_EB_TTL_74LS03 41029
+#define IDH_EB_TTL_74LS04 41030
+#define IDH_EB_TTL_74LS05 41031
+#define IDH_EB_TTL_7406_7416 41032
+#define IDH_EB_TTL_7407_7417 41033
+#define IDH_EB_TTL_74LS08 41034
+#define IDH_EB_TTL_74LS10 41035
+#define IDH_EB_TTL_74LS11 41036
+#define IDH_EB_TTL_74LS12 41037
+#define IDH_EB_TTL_74LS13 41038
+#define IDH_EB_TTL_74LS14 41039
+#define IDH_EB_TTL_74LS20 41040
+#define IDH_EB_TTL_74LS21 41041
+#define IDH_EB_TTL_74LS27 41042
+#define IDH_EB_TTL_74LS30 41043
+#define IDH_EB_TTL_74LS32 41044
+#define IDH_EB_TTL_74LS37 41045
+#define IDH_EB_TTL_74LS38 41046
+#define IDH_EB_TTL_74LS86 41047
+#define IDH_EB_TTL_74LS125 41048
+#define IDH_EB_TTL_74LS126 41049
+
+#define IDH_EB_CMOS_4001 41050
+#define IDH_EB_CMOS_4011 41051
+#define IDH_EB_CMOS_4013 41052
+#define IDH_EB_CMOS_4014 41053
+#define IDH_EB_CMOS_4017 41054
+#define IDH_EB_CMOS_4020 41055
+#define IDH_EB_CMOS_4024 41056
+#define IDH_EB_CMOS_4026 41057
+#define IDH_EB_CMOS_4040 41058
+#define IDH_EB_METER 41059
+#define IDH_EB_CLOCK 41060
+
+[ALIAS]
+IDH_EB_NPN=components/npn.html
+IDH_EB_OPAMP=components/opamp.html
+IDH_EB_NOT=components/not.html
+IDH_EB_AND=components/and.html
+IDH_EB_NAND=components/nand.html
+IDH_EB_OR=components/or.html
+IDH_EB_NOR=components/nor.html
+IDH_EB_XOR=components/xor.html
+IDH_EB_XNOR=components/xnor.html
+IDH_EB_SWITCH=components/switch.html
+IDH_EB_BUTTON=components/button.html
+IDH_EB_BATTERY=components/battery.html
+IDH_EB_DC=components/dc.html
+IDH_EB_CURRENT=components/current.html
+IDH_EB_GROUND=components/ground.html
+IDH_EB_RESISTOR=components/resistor.html
+IDH_EB_POT=components/pot.html
+IDH_EB_DIODE=components/diode.html
+IDH_EB_LED_RED=components/led_red.html
+IDH_EB_LED_GREEN=components/led_green.html
+IDH_EB_LED_BLUE=components/led_blue.html
+IDH_EB_CAPACITOR=components/capacitor.html
+IDH_EB_ELCO=components/elco.html
+IDH_EB_LAMP=components/lamp.html
+IDH_EB_SEVENSEG=components/sevenseg.html
+IDH_EB_TTL_74LS00=components/ttl_74ls00.html
+IDH_EB_TTL_74LS01=components/ttl_74ls01.html
+IDH_EB_TTL_74LS02=components/ttl_74ls02.html
+IDH_EB_TTL_74LS03=components/ttl_74ls03.html
+IDH_EB_TTL_74LS04=components/ttl_74ls04.html
+IDH_EB_TTL_74LS05=components/ttl_74ls05.html
+IDH_EB_TTL_7406_7416=components/ttl_7406_7416.html
+IDH_EB_TTL_7407_7417=components/ttl_7407_7417.html
+IDH_EB_TTL_74LS08=components/ttl_74ls08.html
+IDH_EB_TTL_74LS10=components/ttl_74ls10.html
+IDH_EB_TTL_74LS11=components/ttl_74ls11.html
+IDH_EB_TTL_74LS12=components/ttl_74ls12.html
+IDH_EB_TTL_74LS13=components/ttl_74ls13.html
+IDH_EB_TTL_74LS14=components/ttl_74ls14.html
+IDH_EB_TTL_74LS20=components/ttl_74ls20.html
+IDH_EB_TTL_74LS21=components/ttl_74ls21.html
+IDH_EB_TTL_74LS27=components/ttl_74ls27.html
+IDH_EB_TTL_74LS30=components/ttl_74ls30.html
+IDH_EB_TTL_74LS32=components/ttl_74ls32.html
+IDH_EB_TTL_74LS37=components/ttl_74ls37.html
+IDH_EB_TTL_74LS38=components/ttl_74ls38.html
+IDH_EB_TTL_74LS86=components/ttl_74ls86.html
+IDH_EB_TTL_74LS125=components/ttl_74ls125.html
+IDH_EB_TTL_74LS126=components/ttl_74ls126.html
+IDH_EB_CMOS_4001=components/cmos_4001.html
+IDH_EB_CMOS_4011=components/cmos_4011.html
+IDH_EB_CMOS_4013=components/cmos_4013.html
+IDH_EB_CMOS_4014=components/cmos_4014.html
+IDH_EB_CMOS_4017=components/cmos_4017.html
+IDH_EB_CMOS_4020=components/cmos_4020.html
+IDH_EB_CMOS_4024=components/cmos_4024.html
+IDH_EB_CMOS_4026=components/cmos_4026.html
+IDH_EB_CMOS_4040=components/cmos_4040.html
+IDH_EB_METER=components/meter.html
+IDH_EB_CLOCK=components/clock.html

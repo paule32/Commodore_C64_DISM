@@ -10,12 +10,9 @@
 QT += core gui widgets
 
 TEMPLATE = lib
-DESTDIR  = .
 
 CONFIG  += dll release c++20
 CONFIG  -= app_bundle
-
-TARGET   = d64_qt5
 
 DEFINES += D64QT5_BRIDGE_EXPORTS
 SOURCES += d64qt5_bridge.cpp   \
@@ -24,8 +21,19 @@ SOURCES += d64qt5_bridge.cpp   \
 HEADERS += d64qt5_bridge.h \
            d64_workstation.h
 
-RUNTIME_IMPLIB = libd64_qt5.dll.a
-win32:DEF_FILE = d64qt5_bridge.def
+DEF_FILE = d64qt5_bridge.def
 
-win32:LIBS             += -luser32 -lgdi32 -ladvapi32 -lodbc32 -lws2_32
-win32:QMAKE_LFLAGS_DLL += "-Wl,--out-implib,$$RUNTIME_IMPLIB"
+win32 {
+    debug {
+        TARGET  = libd64_qt5d
+        DESTDIR = debug
+        RUNTIME_IMPLIB = d64_qt5d.dll.a
+    }
+    release {
+        TARGET  = libd64_qt5
+        DESTDIR = release
+        RUNTIME_IMPLIB = d64_qt5.dll.a
+    }
+    LIBS             += -luser32 -lgdi32 -ladvapi32 -lodbc32 -lws2_32
+    QMAKE_LFLAGS_DLL += "-Wl,--out-implib,$$RUNTIME_IMPLIB"
+}

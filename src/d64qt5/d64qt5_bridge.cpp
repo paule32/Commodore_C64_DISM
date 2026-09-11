@@ -31,6 +31,7 @@
 # include <QJsonObject>
 # include <QJsonValue>
 # include <QLineEdit>
+# include <QLinearGradient>
 # include <QLabel>
 # include <QComboBox>
 # include <QCheckBox>
@@ -56,10 +57,15 @@
 # include <QRegularExpression>
 # include <QRegion>
 # include <QCloseEvent>
+# include <QCursor>
+# include <QResizeEvent>
+# include <QShowEvent>
 # include <QScrollBar>
+# include <QScreen>
 # include <QSize>
 # include <QSizePolicy>
 # include <QStackedWidget>
+# include <QStyle>
 # include <QStatusBar>
 # include <QTabBar>
 # include <QTextCharFormat>
@@ -93,12 +99,31 @@
 #endif
 
 namespace {
+#ifdef _WIN32
+constexpr wchar_t D64_WORKSTATION_RUNNER_PIPE[] = L"\\\\.\\pipe\\dBase2Many.D64Workstation.Runner.v1";
+constexpr std::uint32_t D64_WORKSTATION_OUTPUT_MAGIC = 0x31574F44u; // "DOW1"
+constexpr std::uint32_t D64_WORKSTATION_OUTPUT_NEWLINE = 0x00000001u;
+struct D64WorkstationOutputHeader {
+    std::uint32_t magic;
+    std::uint32_t flags;
+    std::uint32_t textBytes;
+    std::uint32_t processId;
+};
+
+#endif
+
 QApplication *g_app = nullptr;
 QList<QWidget *> g_wfm_forms;
 
 bool g_owns_app                     = false;
 bool g_wfm_gui_mode                 = false;
-bool g_wfm_console_allocated        = false;
+
+// Stage 116: WFM-Ausgaben werden nicht mehr ueber AllocConsole geroutet.
+// Stattdessen besitzt jede laufende WFM-Anwendung ein nicht modales Qt5-
+// Ausgabefenster auf demselben D64Workstation-Desktop wie das Formular.
+QDialog         * g_wfm_output_dialog = nullptr;
+QPlainTextEdit  * g_wfm_output_edit   = nullptr;
+
 
 QMainWindow     * g_window          = nullptr;
 
@@ -269,7 +294,9 @@ void invalidate_runtime_sessions();
 void request_runtime_shutdown();
 
 void show_runtime_warning(const QString &message);
+#if 0
 void show_btx_dialog();
+#endif
 void workstation_exit_requested();
 void workstation_btx_requested();
 void workstation_db_requested();
@@ -288,6 +315,14 @@ UINT workstation_global_shutdown_message()
 {
     static const UINT message = RegisterWindowMessageW(
         L"dBase2Many.D64Workstation.GlobalShutdown"
+    );
+    return message;
+}
+
+UINT workstation_restore_application_message()
+{
+    static const UINT message = RegisterWindowMessageW(
+        L"dBase2Many.D64Workstation.RestoreApplication"
     );
     return message;
 }
@@ -340,6 +375,59 @@ void resume_application_window_input(QWidget *window)
     window->setProperty("dbaseInputSuspended", false);
 }
 
+void restore_application_window_qt(QWidget *window)
+{
+    if (!window || g_shutdown_requested)
+        return;
+
+    // Stage 124: Der DB-Relaunch einer noch laufenden WFM-Anwendung muss
+    // innerhalb ihres eigenen Qt-Eventloops erfolgen. Ein fremdes
+    // ShowWindowAsync() kann das native HWND sichtbar machen, ohne den
+    // kompletten Qt-Expose/Style/Paint-Zustand wiederherzustellen.
+    resume_application_window_input(window);
+
+    const QWidgetList children = window->findChildren<QWidget *>();
+    auto repolish = [](QWidget *widget) {
+        if (!widget)
+            return;
+        widget->setUpdatesEnabled(true);
+        if (widget->style()) {
+            widget->style()->unpolish(widget);
+            widget->style()->polish(widget);
+        }
+        widget->updateGeometry();
+        widget->update();
+    };
+
+    repolish(window);
+    for (QWidget *child : children)
+        repolish(child);
+
+    window->show();
+    window->raise();
+    window->activateWindow();
+
+    if (g_app) {
+        g_app->sendPostedEvents();
+        g_app->processEvents(QEventLoop::AllEvents);
+    }
+
+#ifdef _WIN32
+    if (window->winId()) {
+        HWND hwnd = reinterpret_cast<HWND>(window->winId());
+        RedrawWindow(
+            hwnd, nullptr, nullptr,
+            RDW_INVALIDATE | RDW_ERASE | RDW_FRAME |
+            RDW_ALLCHILDREN | RDW_UPDATENOW
+        );
+        UpdateWindow(hwnd);
+    }
+#endif
+
+    window->update();
+    window->repaint();
+}
+
 class DBaseMainWindow final : public QMainWindow
 {
 protected:
@@ -350,6 +438,16 @@ protected:
         if (msg && msg->message == workstation_global_shutdown_message()) {
             g_exit_authorized = true;
             request_runtime_shutdown();
+            if (result)
+                *result = 0;
+            return true;
+        }
+        if (msg && msg->message == workstation_restore_application_message()) {
+            QPointer<QWidget> self(this);
+            QTimer::singleShot(0, [self]() {
+                if (self)
+                    restore_application_window_qt(self.data());
+            });
             if (result)
                 *result = 0;
             return true;
@@ -411,10 +509,273 @@ protected:
     }
 };
 
+// Stage 129: Acht transparente Handle-Widgets liegen ueber dem eigentlichen
+// WFM-Clientbereich. So bleiben die Resize-Stellen auch dann bedienbar, wenn
+// Controls direkt bis an den Fensterrand reichen. Jedes Handle setzt seinen
+// eigenen Cursor und startet den passenden nativen Windows-Resize.
+class DBaseWfmResizeHandle final : public QWidget
+{
+public:
+    DBaseWfmResizeHandle(QWidget *host, int hitCode)
+        : QWidget(host), host_(host), hitCode_(hitCode)
+    {
+        // Stage 130: Die Catch-Zone ist ein echtes 5x5-Qt-Widget im
+        // Clientbereich. Mouse tracking sorgt fuer den passenden Cursor ohne
+        // gedrueckte Taste; der Drag selbst laeuft rein ueber Qt-Geometrie.
+        setMouseTracking(true);
+        setAttribute(Qt::WA_NoSystemBackground, true);
+        setAttribute(Qt::WA_TransparentForMouseEvents, false);
+        setAutoFillBackground(false);
+        setFocusPolicy(Qt::NoFocus);
+        setCursor(cursorForHitCode(hitCode_));
+        hide();
+    }
+
+protected:
+    void mousePressEvent(QMouseEvent *event) override
+    {
+        if (
+            event && event->button() == Qt::LeftButton && host_ &&
+            host_->isActiveWindow() && !host_->isMaximized()
+        ) {
+            resizing_ = true;
+            pressGlobal_ = event->globalPos();
+            startGeometry_ = host_->geometry();
+            grabMouse(QCursor(cursorForHitCode(hitCode_)));
+            event->accept();
+            return;
+        }
+        QWidget::mousePressEvent(event);
+    }
+
+    void mouseMoveEvent(QMouseEvent *event) override
+    {
+        if (resizing_ && event && host_) {
+            const QPoint delta = event->globalPos() - pressGlobal_;
+            QRect next = startGeometry_;
+
+            const int minWidth = qMax(80, qMax(host_->minimumWidth(), host_->minimumSizeHint().width()));
+            const int minHeight = qMax(60, qMax(host_->minimumHeight(), host_->minimumSizeHint().height()));
+
+            int left = startGeometry_.left();
+            int right = startGeometry_.right();
+            int top = startGeometry_.top();
+            int bottom = startGeometry_.bottom();
+
+            if (movesLeft())
+                left = qMin(startGeometry_.left() + delta.x(), right - minWidth + 1);
+            if (movesRight())
+                right = qMax(startGeometry_.right() + delta.x(), left + minWidth - 1);
+            if (movesTop())
+                top = qMin(startGeometry_.top() + delta.y(), bottom - minHeight + 1);
+            if (movesBottom())
+                bottom = qMax(startGeometry_.bottom() + delta.y(), top + minHeight - 1);
+
+            next.setCoords(left, top, right, bottom);
+            host_->setGeometry(next);
+            host_->update();
+            event->accept();
+            return;
+        }
+        QWidget::mouseMoveEvent(event);
+    }
+
+    void mouseReleaseEvent(QMouseEvent *event) override
+    {
+        if (resizing_ && event && event->button() == Qt::LeftButton) {
+            resizing_ = false;
+            releaseMouse();
+            event->accept();
+            return;
+        }
+        QWidget::mouseReleaseEvent(event);
+    }
+
+private:
+    bool movesLeft() const
+    {
+        return hitCode_ == HTLEFT || hitCode_ == HTTOPLEFT || hitCode_ == HTBOTTOMLEFT;
+    }
+    bool movesRight() const
+    {
+        return hitCode_ == HTRIGHT || hitCode_ == HTTOPRIGHT || hitCode_ == HTBOTTOMRIGHT;
+    }
+    bool movesTop() const
+    {
+        return hitCode_ == HTTOP || hitCode_ == HTTOPLEFT || hitCode_ == HTTOPRIGHT;
+    }
+    bool movesBottom() const
+    {
+        return hitCode_ == HTBOTTOM || hitCode_ == HTBOTTOMLEFT || hitCode_ == HTBOTTOMRIGHT;
+    }
+
+    static Qt::CursorShape cursorForHitCode(int hitCode)
+    {
+        switch (hitCode) {
+        case HTLEFT:
+        case HTRIGHT:
+            return Qt::SizeHorCursor;
+        case HTTOP:
+        case HTBOTTOM:
+            return Qt::SizeVerCursor;
+        case HTTOPLEFT:
+        case HTBOTTOMRIGHT:
+            return Qt::SizeFDiagCursor;
+        case HTTOPRIGHT:
+        case HTBOTTOMLEFT:
+            return Qt::SizeBDiagCursor;
+        default:
+            return Qt::ArrowCursor;
+        }
+    }
+
+    QWidget *host_ = nullptr;
+    int hitCode_ = HTNOWHERE;
+    bool resizing_ = false;
+    QPoint pressGlobal_;
+    QRect startGeometry_;
+};
+
 class DBaseWfmMainWindow final : public QMainWindow
 {
+public:
+    explicit DBaseWfmMainWindow(QWidget *parent = nullptr)
+        : QMainWindow(parent)
+    {
+        setWindowFlags(
+            Qt::Window |
+            Qt::FramelessWindowHint |
+            Qt::WindowSystemMenuHint |
+            Qt::WindowMinMaxButtonsHint
+        );
+        setMouseTracking(true);
+        setAttribute(Qt::WA_Hover, true);
+
+        // Stage 128: WFM-Koordinaten beziehen sich auf den echten Client-
+        // Bereich und nicht auf die linke obere Ecke des frameless Fensters.
+        // Controls mit Left=0/Top=0 beginnen deshalb erst hinter Rahmen und
+        // Titelzeile. Der Client-Container wird bei jedem Resize nachgefuehrt.
+        clientArea_ = new QWidget(this);
+        clientArea_->setObjectName(QStringLiteral("dbaseWfmClientArea"));
+        clientArea_->setMouseTracking(true);
+        clientArea_->show();
+        createResizeHandles();
+        syncClientGeometry();
+        syncResizeHandles();
+    }
+
+    // Sichtbare Resize-Linien bleiben exakt 3 Pixel. Die aktive Hit-Zone ist
+    // absichtlich groesser, damit sie mit der Maus sicher getroffen wird.
+    static constexpr int frameSize() { return 3; }
+    static constexpr int resizeHitSize() { return 10; }
+    static constexpr int resizeCatchSize() { return 5; }
+    static constexpr int resizeGripLength() { return 22; }
+    static constexpr int titleHeight() { return 34; }
+    static constexpr int buttonWidth() { return 46; }
+
+    // Ein Pixel Abstand trennt Client-Inhalt optisch vom gezeichneten Rahmen.
+    // Beispiel: 2 px Rahmen + 30 px Titel => Client-Ursprung x=3/y=33.
+    static constexpr int clientInset() { return frameSize() + 1; }
+    static constexpr int clientTop() { return titleHeight() + clientInset(); }
+
+    QWidget *clientArea() const
+    {
+        return clientArea_;
+    }
+
+    void setClientGeometry(int left, int top, int clientWidth, int clientHeight)
+    {
+        const int outerWidth = qMax(1, clientWidth) + 2 * clientInset();
+        const int outerHeight = qMax(1, clientHeight) + clientTop() + clientInset();
+        setGeometry(left, top, outerWidth, outerHeight);
+        syncClientGeometry();
+    }
+
 protected:
+    QRect closeButtonRect() const
+    {
+        return QRect(width() - buttonWidth(), 0, buttonWidth(), titleHeight());
+    }
+
+    QRect maxButtonRect() const
+    {
+        return QRect(width() - 2 * buttonWidth(), 0, buttonWidth(), titleHeight());
+    }
+
+    QRect minButtonRect() const
+    {
+        return QRect(width() - 3 * buttonWidth(), 0, buttonWidth(), titleHeight());
+    }
+
 #ifdef _WIN32
+    int resizeHitCode(const QPoint &p) const
+    {
+        // Stage 130: Acht 5x5-Pixel-Catch-Zonen im inneren Fensterrand.
+        if (isMaximized() || !isActiveWindow())
+            return HTNOWHERE;
+
+        const int s = resizeCatchSize();
+        const int cx = width() / 2;
+        const int cy = height() / 2;
+        const QRect topLeft(0, 0, s, s);
+        const QRect top(cx - s / 2, 0, s, s);
+        const QRect topRight(qMax(0, width() - s), 0, s, s);
+        const QRect left(0, cy - s / 2, s, s);
+        const QRect right(qMax(0, width() - s), cy - s / 2, s, s);
+        const QRect bottomLeft(0, qMax(0, height() - s), s, s);
+        const QRect bottom(cx - s / 2, qMax(0, height() - s), s, s);
+        const QRect bottomRight(qMax(0, width() - s), qMax(0, height() - s), s, s);
+
+        if (topLeft.contains(p)) return HTTOPLEFT;
+        if (top.contains(p)) return HTTOP;
+        if (topRight.contains(p)) return HTTOPRIGHT;
+        if (left.contains(p)) return HTLEFT;
+        if (right.contains(p)) return HTRIGHT;
+        if (bottomLeft.contains(p)) return HTBOTTOMLEFT;
+        if (bottom.contains(p)) return HTBOTTOM;
+        if (bottomRight.contains(p)) return HTBOTTOMRIGHT;
+        return HTNOWHERE;
+    }
+
+    void updateResizeCursor(const QPoint &p)
+    {
+        switch (resizeHitCode(p)) {
+        case HTLEFT:
+        case HTRIGHT:
+            setCursor(Qt::SizeHorCursor);
+            break;
+        case HTTOP:
+        case HTBOTTOM:
+            setCursor(Qt::SizeVerCursor);
+            break;
+        case HTTOPLEFT:
+        case HTBOTTOMRIGHT:
+            setCursor(Qt::SizeFDiagCursor);
+            break;
+        case HTTOPRIGHT:
+        case HTBOTTOMLEFT:
+            setCursor(Qt::SizeBDiagCursor);
+            break;
+        default:
+            unsetCursor();
+            break;
+        }
+    }
+
+    bool startSystemResizeAt(const QPoint &p)
+    {
+        const int hit = resizeHitCode(p);
+        if (hit == HTNOWHERE)
+            return false;
+        HWND hwnd = reinterpret_cast<HWND>(winId());
+        if (!hwnd || !IsWindow(hwnd))
+            return false;
+
+        ReleaseCapture();
+        SendMessageW(hwnd, WM_NCLBUTTONDOWN, static_cast<WPARAM>(hit), 0);
+        return true;
+    }
+
     bool nativeEvent(
         const QByteArray &eventType,
         void *message,
@@ -426,6 +787,16 @@ protected:
         if (msg && msg->message == workstation_global_shutdown_message()) {
             g_exit_authorized = true;
             request_runtime_shutdown();
+            if (result)
+                *result = 0;
+            return true;
+        }
+        if (msg && msg->message == workstation_restore_application_message()) {
+            QPointer<QWidget> self(this);
+            QTimer::singleShot(0, [self]() {
+                if (self)
+                    restore_application_window_qt(self.data());
+            });
             if (result)
                 *result = 0;
             return true;
@@ -448,9 +819,218 @@ protected:
             return true;
         }
 
+        if (msg && msg->message == WM_NCHITTEST) {
+            // QCursor::pos() vermeidet bei Windows-DPI-Skalierung die Mischung
+            // aus physischen lParam- und logischen Qt-Koordinaten.
+            const QPoint p = mapFromGlobal(QCursor::pos());
+            // Stage 130: Die Resize-Catch-Widgets liegen im Clientbereich und
+            // muessen den normalen Qt-Mausklick erhalten. Daher HTCLIENT.
+            if (resizeHitCode(p) != HTNOWHERE) {
+                if (result)
+                    *result = HTCLIENT;
+                return true;
+            }
+
+            if (
+                closeButtonRect().contains(p) ||
+                maxButtonRect().contains(p) ||
+                minButtonRect().contains(p)
+            ) {
+                if (result)
+                    *result = HTCLIENT;
+                return true;
+            }
+
+            if (p.y() >= 0 && p.y() < titleHeight()) {
+                if (result)
+                    *result = HTCAPTION;
+                return true;
+            }
+        }
+
         return QMainWindow::nativeEvent(eventType, message, result);
     }
 #endif
+
+    void drawResizeChrome(QPainter &painter)
+    {
+        if (isMaximized())
+            return;
+
+        const int r = frameSize();
+        const QColor resizeLine(105, 105, 105);
+        painter.fillRect(QRect(0, 0, width(), r), resizeLine);
+        painter.fillRect(QRect(0, height() - r, width(), r), resizeLine);
+        painter.fillRect(QRect(0, r, r, qMax(0, height() - 2 * r)), resizeLine);
+        painter.fillRect(QRect(width() - r, r, r, qMax(0, height() - 2 * r)), resizeLine);
+
+        // Acht klar erkennbare Resize-Stellen, aber weiterhin nur aus
+        // 3-Pixel-Linien aufgebaut: vier Ecken plus vier Kantenmitten.
+        if (!isActiveWindow())
+            return;
+
+        const QColor activeLine(185, 185, 185);
+        const int len = qMin(resizeGripLength(), qMax(3, qMin(width(), height()) / 3));
+        const int cx = width() / 2;
+        const int cy = height() / 2;
+
+        painter.fillRect(QRect(0, 0, len, r), activeLine);
+        painter.fillRect(QRect(0, 0, r, len), activeLine);
+        painter.fillRect(QRect(cx - len / 2, 0, len, r), activeLine);
+        painter.fillRect(QRect(qMax(0, width() - len), 0, len, r), activeLine);
+        painter.fillRect(QRect(width() - r, 0, r, len), activeLine);
+
+        painter.fillRect(QRect(0, cy - len / 2, r, len), activeLine);
+        painter.fillRect(QRect(width() - r, cy - len / 2, r, len), activeLine);
+
+        painter.fillRect(QRect(0, height() - r, len, r), activeLine);
+        painter.fillRect(QRect(0, qMax(0, height() - len), r, len), activeLine);
+        painter.fillRect(QRect(cx - len / 2, height() - r, len, r), activeLine);
+        painter.fillRect(QRect(qMax(0, width() - len), height() - r, len, r), activeLine);
+        painter.fillRect(QRect(width() - r, qMax(0, height() - len), r, len), activeLine);
+    }
+
+    void paintEvent(QPaintEvent *event) override
+    {
+        QMainWindow::paintEvent(event);
+
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing, false);
+
+        QLinearGradient titleGradient(0, 0, width(), 0);
+        titleGradient.setColorAt(0.0, QColor(70, 70, 70));
+        titleGradient.setColorAt(1.0, QColor(12, 12, 12));
+        painter.fillRect(QRect(0, 0, width(), titleHeight()), titleGradient);
+
+        const QRect minRect = minButtonRect();
+        const QRect maxRect = maxButtonRect();
+        const QRect closeRect = closeButtonRect();
+        if (hoverButton_ == 1)
+            painter.fillRect(minRect, QColor(0, 90, 185));
+        else if (hoverButton_ == 2)
+            painter.fillRect(maxRect, QColor(0, 145, 70));
+        else if (hoverButton_ == 3)
+            painter.fillRect(closeRect, QColor(205, 35, 35));
+
+        const QRect iconRect(8, 7, 20, 20);
+        painter.setPen(QPen(QColor(230, 230, 230), 1));
+        painter.setBrush(QColor(0, 115, 80));
+        painter.drawRoundedRect(iconRect, 3, 3);
+        painter.setFont(QFont(QStringLiteral("Segoe UI"), 7, QFont::Bold));
+        painter.setPen(Qt::white);
+        painter.drawText(iconRect, Qt::AlignCenter, QStringLiteral("db"));
+
+        painter.setFont(QFont(QStringLiteral("Segoe UI"), 9));
+        painter.setPen(QColor(238, 238, 238));
+        const QRect titleRect(
+            34,
+            0,
+            qMax(0, width() - 34 - 3 * buttonWidth()),
+            titleHeight()
+        );
+        painter.drawText(
+            titleRect,
+            Qt::AlignLeft | Qt::AlignVCenter,
+            windowTitle()
+        );
+
+        painter.setFont(QFont(QStringLiteral("Segoe MDL2 Assets"), 10));
+        painter.setPen(QColor(242, 242, 242));
+        painter.drawText(minRect, Qt::AlignCenter, QString(QChar(0xE921)));
+        painter.drawText(
+            maxRect,
+            Qt::AlignCenter,
+            QString(QChar(isMaximized() ? 0xE923 : 0xE922))
+        );
+        painter.drawText(closeRect, Qt::AlignCenter, QString(QChar(0xE8BB)));
+
+        drawResizeChrome(painter);
+    }
+
+    void resizeEvent(QResizeEvent *event) override
+    {
+        QMainWindow::resizeEvent(event);
+        syncClientGeometry();
+        syncResizeHandles();
+    }
+
+    void showEvent(QShowEvent *event) override
+    {
+        QMainWindow::showEvent(event);
+        syncResizeHandles();
+    }
+
+    void mouseMoveEvent(QMouseEvent *event) override
+    {
+        int hover = 0;
+        if (event) {
+#ifdef _WIN32
+            updateResizeCursor(event->pos());
+#endif
+            if (minButtonRect().contains(event->pos()))
+                hover = 1;
+            else if (maxButtonRect().contains(event->pos()))
+                hover = 2;
+            else if (closeButtonRect().contains(event->pos()))
+                hover = 3;
+        }
+        if (hoverButton_ != hover) {
+            hoverButton_ = hover;
+            update(QRect(
+                width() - 3 * buttonWidth(), 0,
+                3 * buttonWidth(), titleHeight()
+            ));
+        }
+        QMainWindow::mouseMoveEvent(event);
+    }
+
+    void mousePressEvent(QMouseEvent *event) override
+    {
+#ifdef _WIN32
+        if (event && event->button() == Qt::LeftButton && startSystemResizeAt(event->pos())) {
+            event->accept();
+            return;
+        }
+#endif
+        QMainWindow::mousePressEvent(event);
+    }
+
+    void leaveEvent(QEvent *event) override
+    {
+        unsetCursor();
+        if (hoverButton_ != 0) {
+            hoverButton_ = 0;
+            update(QRect(
+                width() - 3 * buttonWidth(), 0,
+                3 * buttonWidth(), titleHeight()
+            ));
+        }
+        QMainWindow::leaveEvent(event);
+    }
+
+    void mouseDoubleClickEvent(QMouseEvent *event) override
+    {
+        if (event && event->button() == Qt::LeftButton) {
+            const QPoint p = event->pos();
+            if (closeButtonRect().contains(p)) {
+                suspend_application_window_input(this);
+                hide();
+                event->accept();
+                return;
+            }
+            if (minButtonRect().contains(p)) {
+                showMinimized();
+                event->accept();
+                return;
+            }
+            if (maxButtonRect().contains(p)) {
+                isMaximized() ? showNormal() : showMaximized();
+                event->accept();
+                return;
+            }
+        }
+        QMainWindow::mouseDoubleClickEvent(event);
+    }
 
     void changeEvent(QEvent *event) override
     {
@@ -467,6 +1047,10 @@ protected:
             });
         }
 #endif
+        if (event && (event->type() == QEvent::ActivationChange || event->type() == QEvent::WindowStateChange)) {
+            syncResizeHandles();
+            update();
+        }
     }
 
     void closeEvent(QCloseEvent *event) override
@@ -477,14 +1061,85 @@ protected:
             return;
         }
 
-        // Normales WFM-Fenster-X: nur ausblenden. Der Prozess bleibt aktiv,
-        // bis der Benutzer die gesamte Workstation ueber deren EXIT-X beendet.
         suspend_application_window_input(this);
         hide();
         event->ignore();
     }
-};
 
+private:
+    enum ResizeHandleIndex {
+        HandleTopLeft = 0,
+        HandleTop,
+        HandleTopRight,
+        HandleLeft,
+        HandleRight,
+        HandleBottomLeft,
+        HandleBottom,
+        HandleBottomRight,
+        ResizeHandleCount
+    };
+
+    void createResizeHandles()
+    {
+#ifdef _WIN32
+        const int codes[ResizeHandleCount] = {
+            HTTOPLEFT, HTTOP, HTTOPRIGHT, HTLEFT,
+            HTRIGHT, HTBOTTOMLEFT, HTBOTTOM, HTBOTTOMRIGHT
+        };
+        for (int i = 0; i < ResizeHandleCount; ++i)
+            resizeHandles_[i] = new DBaseWfmResizeHandle(this, codes[i]);
+#endif
+    }
+
+    void syncResizeHandles()
+    {
+#ifdef _WIN32
+        const bool enabled = isVisible() && isActiveWindow() && !isMaximized();
+        const int s = resizeCatchSize();
+        const int cx = width() / 2;
+        const int cy = height() / 2;
+
+        const QRect rects[ResizeHandleCount] = {
+            QRect(0, 0, s, s),
+            QRect(cx - s / 2, 0, s, s),
+            QRect(qMax(0, width() - s), 0, s, s),
+            QRect(0, cy - s / 2, s, s),
+            QRect(qMax(0, width() - s), cy - s / 2, s, s),
+            QRect(0, qMax(0, height() - s), s, s),
+            QRect(cx - s / 2, qMax(0, height() - s), s, s),
+            QRect(qMax(0, width() - s), qMax(0, height() - s), s, s)
+        };
+
+        for (int i = 0; i < ResizeHandleCount; ++i) {
+            if (!resizeHandles_[i])
+                continue;
+            resizeHandles_[i]->setGeometry(rects[i]);
+            resizeHandles_[i]->setEnabled(enabled);
+            resizeHandles_[i]->setVisible(enabled);
+            if (enabled)
+                resizeHandles_[i]->raise();
+        }
+#endif
+    }
+
+    void syncClientGeometry()
+    {
+        if (!clientArea_)
+            return;
+        const int inset = clientInset();
+        const int top = clientTop();
+        clientArea_->setGeometry(
+            inset,
+            top,
+            qMax(1, width() - 2 * inset),
+            qMax(1, height() - top - inset)
+        );
+    }
+
+    QWidget *clientArea_ = nullptr;
+    int hoverButton_ = 0;
+    DBaseWfmResizeHandle *resizeHandles_[ResizeHandleCount] = {};
+};
 QString choose_menu_font_family()
 {
     QFontDatabase database;
@@ -5464,6 +6119,7 @@ void workstation_server_client_requested(int clientIndex)
 
 #endif // _WIN32
 
+#if 0
 void show_btx_dialog()
 {
     if (!g_window || g_shutdown_requested)
@@ -5488,6 +6144,7 @@ void show_btx_dialog()
     dialog->raise();
     dialog->activateWindow();
 }
+#endif
 
 bool confirm_runtime_exit()
 {
@@ -6642,6 +7299,13 @@ bool split_windows_login_name(
 
 } // namespace
 
+#ifdef _WIN32
+// Stage 121: Diese Deklaration muss im selben (globalen) Namespace wie die
+// Implementierung weiter unten stehen. Eine Deklaration im anonymen Namespace
+// erzeugt ein zweites Symbol und macht unqualifizierte Aufrufe mehrdeutig.
+static bool send_wfm_output_to_workstation(const QByteArray &utf8, bool newline);
+#endif
+
 extern "C" D64QT5_API int DBaseQtInitializeGui(const char *title)
 {
     Q_UNUSED(title)
@@ -6701,6 +7365,9 @@ extern "C" D64QT5_API int DBaseQtInitializeGui(const char *title)
     D64WorkstationSetServerClientCallback(&workstation_server_client_requested);
 #endif
 
+    // Stage 116: Die zentrale Workstation-Ausgabe wird vom Runner erzeugt.
+    // Ein lokaler Qt-Dialog dient nur als Fallback, falls die Anwendung ohne
+    // Workstation-Runner gestartet wurde.
     return 1;
 }
 
@@ -7017,12 +7684,26 @@ extern "C" D64QT5_API void DBaseQtSetDebugVisible(int visible)
 
 extern "C" D64QT5_API void DBaseQtAppendConsole(const char *text, int length)
 {
+#ifdef _WIN32
+    if (g_wfm_gui_mode && text && length > 0) {
+        const QByteArray utf8(text, length);
+        if (send_wfm_output_to_workstation(utf8, false))
+            return;
+    }
+#endif
     select_console();
     append_text(g_console, text, length);
 }
 
 extern "C" D64QT5_API void DBaseQtAppendDebug(const char *text, int length)
 {
+#ifdef _WIN32
+    if (g_wfm_gui_mode && text && length > 0) {
+        const QByteArray utf8(text, length);
+        if (send_wfm_output_to_workstation(utf8, false))
+            return;
+    }
+#endif
     install_debug_tab(true);
     append_text(g_debug, text, length);
 }
@@ -7923,66 +8604,212 @@ extern "C" D64QT5_API void DBaseQtTimerSetActive(
 }
 
 #ifdef _WIN32
-static bool ensure_wfm_console_visible()
+static bool write_workstation_pipe_exact(HANDLE pipe, const void *data, DWORD size)
 {
-    // Stage 134:
-    // Eine WFM-Anwendung ist eine GUI-EXE. Eine geerbte/unsichtbare
-    // Console oder ConPTY darf nicht als sichtbare WFM-Console gelten.
-    if (g_wfm_gui_mode && !g_wfm_console_allocated) {
-        // Loest nur DIESEN WFM-Prozess von einer evtl. geerbten Console.
-        FreeConsole();
-
-        if (!AllocConsole())
+    const BYTE *cursor = static_cast<const BYTE *>(data);
+    DWORD total = 0;
+    while (total < size) {
+        DWORD written = 0;
+        if (!WriteFile(pipe, cursor + total, size - total, &written, nullptr) || !written)
             return false;
-
-        g_wfm_console_allocated = true;
-        SetConsoleTitleW(L"dBase2Many WFM Console");
-        SetConsoleCP(CP_UTF8);
-        SetConsoleOutputCP(CP_UTF8);
-    } else if (!GetConsoleWindow()) {
-        if (!AllocConsole())
-            return false;
-
-        g_wfm_console_allocated = true;
-        SetConsoleTitleW(L"dBase2Many WFM Console");
-        SetConsoleCP(CP_UTF8);
-        SetConsoleOutputCP(CP_UTF8);
+        total += written;
     }
-
-    HWND consoleWindow = GetConsoleWindow();
-    if (!consoleWindow)
-        return false;
-
-    ShowWindow(consoleWindow, SW_RESTORE);
-    ShowWindow(consoleWindow, SW_SHOW);
-
-    RECT rect;
-    if (GetWindowRect(consoleWindow, &rect)) {
-        D64WorkstationConstrainMovingRect(&rect);
-        SetWindowPos(
-            consoleWindow,
-            HWND_TOP,
-            rect.left,
-            rect.top,
-            0,
-            0,
-            SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW
-        );
-    } else {
-        SetWindowPos(
-            consoleWindow,
-            HWND_TOP,
-            0,
-            0,
-            0,
-            0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW
-        );
-    }
-
     return true;
 }
+
+static bool send_wfm_output_to_workstation(const QByteArray &utf8, bool newline)
+{
+    // Stage 125:
+    // Jede ?/??-Ausgabe ist momentan eine eigene kurze Pipe-Verbindung. Der
+    // Runner schliesst nach einem Paket seine Pipe-Instanz und legt direkt
+    // danach die naechste an. Zwei unmittelbar aufeinander folgende PRINTs
+    // koennen deshalb genau zwischen DisconnectNamedPipe/CloseHandle und dem
+    // naechsten CreateNamedPipe landen. Windows meldet in diesem kleinen
+    // Zeitfenster je nach Timing ERROR_PIPE_BUSY *oder* ERROR_FILE_NOT_FOUND.
+    //
+    // Nicht auf den lokalen Qt-Fallback ausweichen, solange der Runner seine
+    // Pipe nur kurz neu aufbaut. Stattdessen bis zu zwei Sekunden erneut
+    // verbinden. Damit bleiben auch mehrere direkt folgende Zeilen garantiert
+    // im zentralen Workstation-Ausgabefenster und in ihrer Reihenfolge.
+    HANDLE pipe = INVALID_HANDLE_VALUE;
+    const ULONGLONG deadline = GetTickCount64() + 2000ULL;
+
+    for (;;) {
+        pipe = CreateFileW(
+            D64_WORKSTATION_RUNNER_PIPE,
+            GENERIC_WRITE,
+            0,
+            nullptr,
+            OPEN_EXISTING,
+            0,
+            nullptr
+        );
+        if (pipe != INVALID_HANDLE_VALUE)
+            break;
+
+        const DWORD error = GetLastError();
+        if (error != ERROR_PIPE_BUSY && error != ERROR_FILE_NOT_FOUND)
+            return false;
+        if (GetTickCount64() >= deadline)
+            return false;
+
+        if (error == ERROR_PIPE_BUSY) {
+            // WaitNamedPipe kann ebenfalls fehlschlagen, wenn der Runner die
+            // alte Instanz gerade geschlossen und die neue noch nicht erzeugt
+            // hat. Der Schleifendurchlauf probiert CreateFile deshalb in jedem
+            // Fall erneut.
+            WaitNamedPipeW(D64_WORKSTATION_RUNNER_PIPE, 250);
+        } else {
+            Sleep(10);
+        }
+    }
+
+    D64WorkstationOutputHeader header{};
+    header.magic = D64_WORKSTATION_OUTPUT_MAGIC;
+    header.flags = newline ? D64_WORKSTATION_OUTPUT_NEWLINE : 0u;
+    header.textBytes = static_cast<std::uint32_t>(utf8.size());
+    header.processId = GetCurrentProcessId();
+
+    bool ok = write_workstation_pipe_exact(pipe, &header, sizeof(header));
+    if (ok && !utf8.isEmpty()) {
+        ok = write_workstation_pipe_exact(
+            pipe,
+            utf8.constData(),
+            static_cast<DWORD>(utf8.size())
+        );
+    }
+    CloseHandle(pipe);
+    return ok;
+}
 #endif
+
+static void ensure_wfm_output_dialog()
+{
+    if (!g_app || !g_wfm_gui_mode || g_shutdown_requested)
+        return;
+    if (g_wfm_output_dialog && g_wfm_output_edit)
+        return;
+
+    g_wfm_output_dialog = new QDialog(nullptr);
+    g_wfm_output_dialog->setObjectName(QStringLiteral("dbaseWorkstationOutputDialog"));
+    g_wfm_output_dialog->setWindowTitle(QStringLiteral("dBase Ausgabe"));
+    g_wfm_output_dialog->setModal(false);
+    g_wfm_output_dialog->setAttribute(Qt::WA_DeleteOnClose, false);
+    g_wfm_output_dialog->setWindowFlags(
+        Qt::Window |
+        Qt::WindowTitleHint |
+        Qt::WindowSystemMenuHint |
+        Qt::WindowMinMaxButtonsHint |
+        Qt::WindowCloseButtonHint
+    );
+    g_wfm_output_dialog->resize(640, 300);
+
+    auto *layout = new QVBoxLayout(g_wfm_output_dialog);
+    layout->setContentsMargins(4, 4, 4, 4);
+    layout->setSpacing(0);
+
+    g_wfm_output_edit = new QPlainTextEdit(g_wfm_output_dialog);
+    g_wfm_output_edit->setObjectName(QStringLiteral("dbaseWorkstationOutput"));
+    g_wfm_output_edit->setReadOnly(true);
+    g_wfm_output_edit->setLineWrapMode(QPlainTextEdit::NoWrap);
+    g_wfm_output_edit->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    g_wfm_output_edit->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    g_wfm_output_edit->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    g_wfm_output_edit->document()->setMaximumBlockCount(500);
+    g_wfm_output_edit->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    layout->addWidget(g_wfm_output_edit, 1);
+}
+
+static void position_wfm_output_dialog(QWidget *reference)
+{
+    if (!g_wfm_output_dialog)
+        return;
+
+    QRect workArea;
+    if (QScreen *screen = QApplication::primaryScreen())
+        workArea = screen->availableGeometry();
+    if (!workArea.isValid())
+        workArea = QRect(80, 40, 1024, 700);
+
+#ifdef _WIN32
+    // Linkes und unteres Workstation-Panel nicht ueberdecken.
+    workArea.adjust(
+        D64WorkstationLeftPanelWidth() + 8,
+        8,
+        -8,
+        -(D64WorkstationBottomPanelHeight() + 8)
+    );
+#endif
+
+    const QSize size = g_wfm_output_dialog->size();
+    int x = workArea.right() - size.width() + 1;
+    int y = workArea.bottom() - size.height() + 1;
+
+    // Wenn rechts neben dem Formular genug Platz ist, den Dialog dort
+    // platzieren. Sonst bleibt er unten rechts im Workstation-Arbeitsbereich.
+    if (reference) {
+        const QRect formRect = reference->frameGeometry();
+        const int rightX = formRect.right() + 12;
+        if (rightX + size.width() <= workArea.right() + 1) {
+            x = rightX;
+            y = qBound(workArea.top(), formRect.top(), workArea.bottom() - size.height() + 1);
+        }
+    }
+
+    x = qMax(workArea.left(), x);
+    y = qMax(workArea.top(), y);
+    g_wfm_output_dialog->move(x, y);
+}
+
+static void show_wfm_output_dialog(QWidget *reference)
+{
+    ensure_wfm_output_dialog();
+    if (!g_wfm_output_dialog || g_shutdown_requested)
+        return;
+
+#ifdef _WIN32
+    // Vor dem ersten D64WorkstationActivate() darf das Dialog-HWND bereits
+    // existieren, aber noch nicht auf einem unsichtbaren Desktop gezeigt
+    // werden. Nach FormOpen ist D64WorkstationIsVisible() wahr.
+    if (!D64WorkstationIsVisible())
+        return;
+#endif
+
+    position_wfm_output_dialog(reference);
+    g_wfm_output_dialog->show();
+    g_wfm_output_dialog->raise();
+}
+
+static void append_wfm_output(const QString &value, bool newline)
+{
+    ensure_wfm_output_dialog();
+    if (!g_wfm_output_edit)
+        return;
+
+    QScrollBar *scroll = g_wfm_output_edit->verticalScrollBar();
+    const bool followTail = !scroll || scroll->value() >= scroll->maximum() - 2;
+    const int oldScrollValue = scroll ? scroll->value() : 0;
+
+    QTextCursor cursor = g_wfm_output_edit->textCursor();
+    cursor.movePosition(QTextCursor::End);
+    if (!value.isEmpty())
+        cursor.insertText(value);
+    if (newline)
+        cursor.insertText(QStringLiteral("\n"));
+    g_wfm_output_edit->setTextCursor(cursor);
+
+    if (followTail) {
+        cursor.movePosition(QTextCursor::End);
+        g_wfm_output_edit->setTextCursor(cursor);
+        g_wfm_output_edit->ensureCursorVisible();
+    } else if (scroll) {
+        // Scroll-Back respektieren: Wer mit dem Mausrad nach oben gegangen
+        // ist, wird durch neue Ausgabe nicht zwangsweise ans Ende gezogen.
+        scroll->setValue(qMin(oldScrollValue, scroll->maximum()));
+    }
+
+    show_wfm_output_dialog(nullptr);
+}
 
 extern "C" D64QT5_API void DBaseQtConsoleWrite(
     const char *text,
@@ -7991,65 +8818,29 @@ extern "C" D64QT5_API void DBaseQtConsoleWrite(
 {
     const QString value = wfm_text(text, textLength);
 
+    if (g_wfm_gui_mode) {
 #ifdef _WIN32
-    if (!ensure_wfm_console_visible())
-        return;
-
-    // Immer an die aktuell zugeordnete WFM-Console schreiben.
-    HANDLE output = CreateFileW(
-        L"CONOUT$",
-        GENERIC_READ | GENERIC_WRITE,
-        FILE_SHARE_READ | FILE_SHARE_WRITE,
-        nullptr,
-        OPEN_EXISTING,
-        0,
-        nullptr
-    );
-
-    bool closeOutput = true;
-    if (!output || output == INVALID_HANDLE_VALUE) {
-        output = GetStdHandle(STD_OUTPUT_HANDLE);
-        closeOutput = false;
-    }
-
-    if (output && output != INVALID_HANDLE_VALUE) {
-        QString rendered = value;
-        if (newline)
-            rendered += QStringLiteral("\r\n");
-
-        DWORD mode = 0;
-        if (GetConsoleMode(output, &mode)) {
-            const std::wstring wide = rendered.toStdWString();
-            DWORD written = 0;
-            WriteConsoleW(
-                output,
-                wide.data(),
-                static_cast<DWORD>(wide.size()),
-                &written,
-                nullptr
-            );
-        } else {
-            const QByteArray utf8 = rendered.toUtf8();
-            DWORD written = 0;
-            WriteFile(
-                output,
-                utf8.constData(),
-                static_cast<DWORD>(utf8.size()),
-                &written,
-                nullptr
-            );
-        }
-
-        if (closeOutput)
-            CloseHandle(output);
-    }
-#else
-    QByteArray utf8 = value.toUtf8();
-    if (newline)
-        utf8.append('\n');
-    fwrite(utf8.constData(), 1, static_cast<size_t>(utf8.size()), stdout);
-    fflush(stdout);
+        const QByteArray utf8 = value.toUtf8();
+        if (send_wfm_output_to_workstation(utf8, newline != 0))
+            return;
 #endif
+        // Fallback fuer direkten Start ausserhalb der Workstation: derselbe
+        // nicht modale Qt5/QPlainTextEdit-Dialog, aber lokal im WFM-Prozess.
+        append_wfm_output(value, newline != 0);
+        if (g_app)
+            g_app->processEvents(QEventLoop::ExcludeUserInputEvents);
+        return;
+    }
+
+    // Nicht-WFM-Runtime behaelt den vorhandenen internen Console-Tab.
+    if (g_console) {
+        const QByteArray bytes = value.toUtf8();
+        append_text(g_console, bytes.constData(), bytes.size());
+        if (newline) {
+            static const char lf[] = "\n";
+            append_text(g_console, lf, 1);
+        }
+    }
 }
 
 extern "C" D64QT5_API void *DBaseQtFormCreate(const char *className, int classNameLength)
@@ -8065,7 +8856,10 @@ extern "C" D64QT5_API void *DBaseQtFormCreate(const char *className, int classNa
             ? QStringLiteral("dBase Form")
             : form->objectName()
     );
-    form->setMinimumSize(1, 1);
+    form->setMinimumSize(
+        2 * DBaseWfmMainWindow::clientInset() + 32,
+        DBaseWfmMainWindow::clientTop() + DBaseWfmMainWindow::clientInset() + 24
+    );
     form->setProperty("dbaseBorderWidth", 0);
     form->setProperty("dbaseRadius", 0);
     g_wfm_forms.append(form);
@@ -8082,6 +8876,11 @@ extern "C" D64QT5_API void *DBaseQtControlCreateEx(
     QWidget *parent = wfm_widget(parentHandle);
     if (!parent || g_shutdown_requested)
         return nullptr;
+
+    // Direkte Kinder einer WFM-Hauptform verwenden Client-Koordinaten.
+    // Verschachtelte Controls bleiben unveraendert relativ zu ihrem Container.
+    if (DBaseWfmMainWindow *form = dynamic_cast<DBaseWfmMainWindow *>(parent))
+        parent = form->clientArea();
 
     const QString type =
         wfm_text(className, classNameLength).trimmed().toUpper();
@@ -8174,6 +8973,14 @@ extern "C" D64QT5_API void DBaseQtWidgetSetGeometry(void *handle, int left, int 
     QWidget *widget = wfm_widget(handle);
     if (!widget)
         return;
+
+    if (DBaseWfmMainWindow *form = dynamic_cast<DBaseWfmMainWindow *>(widget)) {
+        // WFM Width/Height beschreiben die Client-Flaeche. Rahmen und eigene
+        // Titelzeile werden zur aeusseren Fenstergeometrie addiert.
+        form->setClientGeometry(left, top, width, height);
+        return;
+    }
+
     widget->setGeometry(left, top, qMax(1, width), qMax(1, height));
 }
 
@@ -8480,6 +9287,16 @@ extern "C" D64QT5_API void DBaseQtShutdown(void)
     // die kommende TABLE-/DBF-Schicht benutzt denselben zentralen Hook.
     close_runtime_data_files();
 
+    // Stage 116: Der Workstation-Ausgabedialog ist ein eigenes Top-Level-
+    // Qt-Fenster und wird vor den WFM-Forms abgebaut.
+    if (g_wfm_output_dialog) {
+        g_wfm_output_dialog->hide();
+        g_wfm_output_dialog->close();
+        delete g_wfm_output_dialog;
+    }
+    g_wfm_output_dialog = nullptr;
+    g_wfm_output_edit = nullptr;
+
     // Stage 34: Top-Level-WFM-Forms besitzen keinen g_window-Parent und
     // werden deshalb explizit vor QApplication abgebaut.
     for (QWidget *form : g_wfm_forms) {
@@ -8565,14 +9382,6 @@ extern "C" D64QT5_API void DBaseQtShutdown(void)
     g_exit_authorized = false;
     g_exit_confirmation_open = false;
     g_wfm_gui_mode = false;
-
-#ifdef _WIN32
-    // Eine durch ?/?? in einer WFM-GUI dynamisch erzeugte Konsole gehört
-    // ebenfalls zur Session und wird beim Runtime-Abbau gelöst.
-    if (g_wfm_console_allocated && GetConsoleWindow())
-        FreeConsole();
-    g_wfm_console_allocated = false;
-#endif
 
     // Nach vollstaendigem Abbau darf ein Host die Bridge spaeter erneut
     // initialisieren. Bis hierhin bleibt g_shutdown_requested bewusst wahr,

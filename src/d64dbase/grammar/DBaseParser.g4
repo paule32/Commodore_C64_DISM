@@ -69,7 +69,7 @@ condition
     ;
 
 comparisonOperator
-    : LT | LE | EQEQ | GT | GE | NEANGLE | HASH
+    : LT | LE | EQUAL | EQEQ | GT | GE | NEANGLE | HASH | NEBANG
     ;
 
 statement

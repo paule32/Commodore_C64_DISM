@@ -1,6 +1,22 @@
 [Project]
 Format = dBase2Many Project
 Version = 2
+WorkingDirectory = examples/dbase
+WorkspaceRoot = ..
+ViewState = AAAA/wAAAAD9AAAAAwAAAAAAAAScAAACUfwCAAAADPwAAABtAAABKgAAAAAA/////AEAAAAD+wAAACoAcAByAG8AagBlAGMAdABfAHMAZQB0AHQAaQBuAGcAcwBfAGQAbwBjAGsAAAAAAgAABG0AAAAAAAAAAPsAAAAyAGQAYgBhAHMAZQBfAHQAYQBiAGwAZQBfAGQAZQBzAGkAZwBuAGUAcgBfAGQAbwBjAGsAAAABRgAAAoQAAAAAAAAAAPsAAAAqAGQAZQBzAGsAdABvAHAAXwBzAGUAdAB0AGkAbgBnAHMAXwBkAG8AYwBrAAAAAUYAAALxAAAAAAAAAAD7AAAAKgBwAHIAbwBsAG8AZwBfAGsAbgBvAHcAbABlAGQAZwBlAF8AZABvAGMAawEAAABtAAABmAAAAAAAAAAA+wAAACYAbABvAGMAYQBsAGkAegBlAF8AcABvAF8AbQBvAF8AZABvAGMAawAAAABtAAACYgAAAAAAAAAA+wAAADQAZABvAHgAeQBnAGUAbgBfAGQAbwBjAHUAbQBlAG4AdABhAHQAaQBvAG4AXwBkAG8AYwBrAAAAAG0AAAIqAAAAAAAAAAD7AAAAJgBtAHUAcwBpAGMAXwBrAGUAeQBiAG8AYQByAGQAXwBkAG8AYwBrAAAAAG0AAAMIAAAAAAAAAAD7AAAALABkAGIAYQBzAGUAXwBzAHEAbABfAGIAdQBpAGwAZABlAHIAXwBkAG8AYwBrAAAAAG0AAAKdAAAAAAAAAAD7AAAAMgBkAGIAYQBzAGUAXwByAGUAcABvAHIAdABfAGIAdQBpAGwAZABlAHIAXwBkAG8AYwBrAQAAAG0AAAIqAAAAAAAAAAD7AAAAMgBkAGIAYQBzAGUAXwBsAGEAYgBlAGwAXwBkAGUAcwBpAGcAbgBlAHIAXwBkAG8AYwBrAQAAAG0AAAIvAAAAAAAAAAD7AAAAIABoAHQAbQBsAF8AZQBkAGkAdABvAHIAXwBkAG8AYwBrAQAAAoEAAAGkAAAAAAAAAAD7AAAAJABtAGEAdABoAF8AbABlAGEAcgBuAGkAbgBnAF8AZABvAGMAawAAAABtAAAClQAAAAAAAAAA+wAAACAAZQBfAGIAYQB1AGsAYQBzAHQAZQBuAF8AZABvAGMAawEAAABtAAACKgAAAAAAAAAA/AAAAG0AAAJRAAAAAAD////8AQAAAAL7AAAAMABkAGIAYQBzAGUAXwBmAG8AcgBtAF8AcAByAG8AcABlAHIAdAB5AF8AZABvAGMAawEAAAACAAABMAAAAAAAAAAA+wAAADAAZABiAGEAcwBlAF8AZgBvAHIAbQBfAGQAZQBzAGkAZwBuAGUAcgBfAGQAbwBjAGsBAAABNgAAA2gAAAAAAAAAAAAAAAEAAAFoAAACUfwCAAAAA/sAAAAqAG0AdQBzAGkAYwBfAGkAbgBzAHQAcgB1AG0AZQBuAHQAXwBkAG8AYwBrAAAAAG0AAAMIAAAAAAAAAAD7AAAAIABkADYANABfAGMAbwBuAHQAZQBuAHQAXwBkAG8AYwBrAQAAAG0AAAElAAAA4gD////7AAAAHgBmAGkAbABlAHMAeQBzAHQAZQBtAF8AZABvAGMAawEAAAGWAAABKAAAASgA////AAAAAwAABJwAAAC+/AEAAAAB+wAAABAAbABvAGcAXwBkAG8AYwBrAAAAAAIAAAScAAAA4QD///8AAAMwAAACUQAAAAQAAAAEAAAACAAAAAj8AAAAAQAAAAIAAAABAAAAGABtAGEAaQBuAF8AdABvAG8AbABiAGEAcgEAAAAA/////wAAAAAAAAAA
+PrimaryDockLayout = {"paired":true,"area":2,"orientation":2,"first":"right_dock","second":"left_dock","sizes":[293,296],"area_width":360,"central_width":816,"separator_x":822}
+
+[Session.Geometry]
+Version = 2
+MainWindow = {"x":93,"y":79,"width":1184,"height":724,"maximized":false,"fullscreen":false,"qt_geometry":"AdnQywADAAAAAABdAAAATwAABPwAAAMiAAAAXQAAAE8AAAT8AAADIgAAAAAAAAAAB4AAAABdAAAATwAABPwAAAMi"}
+CentralArea = {"x":2,"y":109,"width":816,"height":593}
+PrimaryDockArea = {"area":2,"orientation":2,"first":"right_dock","second":"left_dock","sizes":[293,296],"area_width":360,"central_width":816,"separator_x":822}
+FileSystemDock = {"visible":true,"floating":false,"area":2,"x":822,"y":406,"width":360,"height":296}
+ProjectDock = {"visible":true,"floating":false,"area":2,"x":822,"y":109,"width":360,"height":293}
+ProtocolDock = {"visible":false,"floating":false,"area":8,"x":0,"y":0,"width":225,"height":190}
+
+[Session.C64.Editors]
+Title = Offene C64 BASIC Editoren
 
 [Category.c64]
 Title = Commodore C= 64
@@ -28,6 +44,9 @@ Title = LOGO-Programme
 
 [Category.dbase]
 Title = dBase-Programme
+
+[Category.circuits]
+Title = Schaltungen
 
 [Category.character_maps]
 Title = Character Map's
@@ -69,6 +88,9 @@ Item0001 = {"title":"sql_builder.d64sql","path":"examples/dbase/sql_builder.d64s
 [Category.dbase.reports]
 Title = Berichte
 Item0001 = {"title":"Bericht_1.d64report","path":"examples/dbase/Bericht_1.d64report"}
+
+[Category.dbase.labels]
+Title = Etiketten
 
 [Category.dbase.objects]
 Title = Objekt Dateien
@@ -138,4 +160,59 @@ WorkstationMode = false
 [Settings.Windows.64Bit.Linker]
 Title = Windows 64-Bit Linker
 LinkWithOrdinals = false
+
+[Settings.C64]
+Title = C=64 Projekteinstellungen
+ActiveProfile = 68000
+
+[Settings.C64.68000.Compiler.Optimizer]
+Title = C=64 68000 Compiler Optimizer
+Enabled = true
+Strategy = direct
+
+[Settings.C64.68020.Compiler.Optimizer]
+Title = C=64 68020 Compiler Optimizer
+Enabled = true
+Strategy = direct
+
+[Settings.C64.68030.Compiler.Optimizer]
+Title = C=64 68030 Compiler Optimizer
+Enabled = true
+Strategy = direct
+
+[Settings.C64.68000.Environment]
+Title = C=64 68000 Umgebung
+ScreenKeyboard = false
+KeyboardLayout = qwertz
+
+[Settings.C64.68020.Environment]
+Title = C=64 68020 Umgebung
+ScreenKeyboard = false
+KeyboardLayout = qwertz
+
+[Settings.C64.68030.Environment]
+Title = C=64 68030 Umgebung
+ScreenKeyboard = false
+KeyboardLayout = qwertz
+
+[Settings.C64.68000.Compiler.ImagePacker]
+Title = C=64 68000 Compiler Image Packer
+Enabled = false
+Mode = none
+Search = balanced
+IncludeDecruncherSource = true
+
+[Settings.C64.68020.Compiler.ImagePacker]
+Title = C=64 68020 Compiler Image Packer
+Enabled = false
+Mode = none
+Search = balanced
+IncludeDecruncherSource = true
+
+[Settings.C64.68030.Compiler.ImagePacker]
+Title = C=64 68030 Compiler Image Packer
+Enabled = false
+Mode = none
+Search = balanced
+IncludeDecruncherSource = true
 

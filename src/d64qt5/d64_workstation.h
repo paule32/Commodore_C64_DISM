@@ -46,6 +46,7 @@ struct RECT { long left; long top; long right; long bottom; };
 using D64WorkstationCallback = void (*)(void);
 using D64WorkstationBtxCallback = D64WorkstationCallback;
 using D64WorkstationServerClientCallback = void (*)(int clientIndex);
+using D64WorkstationThemeCallback = void (*)(bool darkMode);
 
 void D64WorkstationSetExitCallback(D64WorkstationCallback callback);
 void D64WorkstationSetBtxCallback(D64WorkstationBtxCallback callback);
@@ -53,6 +54,9 @@ void D64WorkstationSetDbCallback(D64WorkstationCallback callback);
 void D64WorkstationSetServerCallback(D64WorkstationCallback callback);
 void D64WorkstationSetServerClientCallback(D64WorkstationServerClientCallback callback);
 void D64WorkstationSetServerClientCount(int count);
+void D64WorkstationSetThemeCallback(D64WorkstationThemeCallback callback);
+void D64WorkstationSetDarkMode(bool darkMode);
+bool D64WorkstationDarkMode();
 
 bool D64WorkstationPrepare();
 bool D64WorkstationActivate(HWND mainWindow);

@@ -1,0 +1,158 @@
+{
+  "format": "d64-e-baukasten",
+  "version": 1,
+  "grid": 10,
+  "components": [
+    {
+      "id": "b1",
+      "kind": "battery",
+      "name": "B1",
+      "position": [
+        140.0,
+        220.0
+      ],
+      "angle": 90.0,
+      "value": 9.0
+    },
+    {
+      "id": "s1",
+      "kind": "switch",
+      "name": "S1",
+      "position": [
+        280.0,
+        100.0
+      ],
+      "angle": 0.0,
+      "value": 0.0,
+      "params": {
+        "closed": 1.0
+      }
+    },
+    {
+      "id": "r1",
+      "kind": "resistor",
+      "name": "R1",
+      "position": [
+        450.0,
+        100.0
+      ],
+      "angle": 0.0,
+      "value": 470.0
+    },
+    {
+      "id": "d1",
+      "kind": "led_red",
+      "name": "D1",
+      "position": [
+        620.0,
+        220.0
+      ],
+      "angle": 90.0,
+      "value": 2.0,
+      "params": {
+        "max_current": 0.02,
+        "max_reverse_voltage": 5.0
+      }
+    }
+  ],
+  "nodes": {
+    "n1": [
+      140.0,
+      100.0
+    ],
+    "n2": [
+      450.0,
+      220.0
+    ],
+    "n3": [
+      620.0,
+      100.0
+    ],
+    "n4": [
+      620.0,
+      370.0
+    ],
+    "n5": [
+      140.0,
+      370.0
+    ]
+  },
+  "wires": [
+    {
+      "id": "w1",
+      "anchors": [
+        {
+          "component": "b1",
+          "port": 0
+        },
+        {
+          "node": "n1"
+        },
+        {
+          "component": "s1",
+          "port": 0
+        }
+      ]
+    },
+    {
+      "id": "w2",
+      "anchors": [
+        {
+          "component": "s1",
+          "port": 1
+        },
+        {
+          "component": "r1",
+          "port": 0
+        }
+      ]
+    },
+    {
+      "id": "w3",
+      "anchors": [
+        {
+          "component": "r1",
+          "port": 1
+        },
+        {
+          "node": "n3"
+        },
+        {
+          "component": "d1",
+          "port": 0
+        }
+      ]
+    },
+    {
+      "id": "w4",
+      "anchors": [
+        {
+          "component": "d1",
+          "port": 1
+        },
+        {
+          "node": "n4"
+        },
+        {
+          "node": "n5"
+        },
+        {
+          "component": "b1",
+          "port": 1
+        }
+      ]
+    }
+  ],
+  "view3d": {
+    "placements": {
+      "s1": [
+        250.0,
+        210.0
+      ],
+      "d1": [
+        430.0,
+        250.0
+      ]
+    }
+  }
+}

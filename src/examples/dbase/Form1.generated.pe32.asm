@@ -1,41 +1,41 @@
 bits 32
 
-import DBaseQtInitialize, "d64qt5.dll", "DBaseQtInitialize"
-import DBaseQtShowWindow, "d64qt5.dll", "DBaseQtShowWindow"
-import DBaseQtProcessEvents, "d64qt5.dll", "DBaseQtProcessEvents"
-import DBaseQtSetDebugVisible, "d64qt5.dll", "DBaseQtSetDebugVisible"
-import DBaseQtAppendConsole, "d64qt5.dll", "DBaseQtAppendConsole"
-import DBaseQtAppendDebug, "d64qt5.dll", "DBaseQtAppendDebug"
-import DBaseQtSetOutputColor, "d64qt5.dll", "DBaseQtSetOutputColor"
-import DBaseQtClearScreen, "d64qt5.dll", "DBaseQtClearScreen"
-import DBaseQtClearScreenChar, "d64qt5.dll", "DBaseQtClearScreenChar"
-import DBaseQtClearScreenColor, "d64qt5.dll", "DBaseQtClearScreenColor"
-import DBaseQtSetBorderColor, "d64qt5.dll", "DBaseQtSetBorderColor"
-import DBaseQtMarkProgramFinished, "d64qt5.dll", "DBaseQtMarkProgramFinished"
-import DBaseQtExec, "d64qt5.dll", "DBaseQtExec"
-import DBaseQtShutdownRequested, "d64qt5.dll", "DBaseQtShutdownRequested"
-import DBaseQtShutdown, "d64qt5.dll", "DBaseQtShutdown"
-import DBaseQtMenuCreate, "d64qt5.dll", "DBaseQtMenuCreate"
-import DBaseQtMenuSetText, "d64qt5.dll", "DBaseQtMenuSetText"
-import DBaseQtMenuSetSeparator, "d64qt5.dll", "DBaseQtMenuSetSeparator"
-import DBaseQtMenuSetShortcut, "d64qt5.dll", "DBaseQtMenuSetShortcut"
-import DBaseQtMenuSetOnClick, "d64qt5.dll", "DBaseQtMenuSetOnClick"
-import DBaseQtEnsureDefaultMenu, "d64qt5.dll", "DBaseQtEnsureDefaultMenu"
-import DBaseQtSetColorNormal, "d64qt5.dll", "DBaseQtSetColorNormal"
-import DBaseQtSessionCreate, "d64qt5.dll", "DBaseQtSessionCreate"
-import DBaseQtGetLoginSession, "d64qt5.dll", "DBaseQtGetLoginSession"
-import DBaseQtSessionLogin, "d64qt5.dll", "DBaseQtSessionLogin"
-import DBaseQtDatabaseCreate, "d64qt5.dll", "DBaseQtDatabaseCreate"
-import DBaseQtDatabaseSetPath, "d64qt5.dll", "DBaseQtDatabaseSetPath"
-import DBaseQtDatabaseSetDatabaseName, "d64qt5.dll", "DBaseQtDatabaseSetDatabaseName"
-import DBaseQtDatabaseSetUserName, "d64qt5.dll", "DBaseQtDatabaseSetUserName"
-import DBaseQtDatabaseSetPassword, "d64qt5.dll", "DBaseQtDatabaseSetPassword"
-import DBaseQtDatabaseSetAlias, "d64qt5.dll", "DBaseQtDatabaseSetAlias"
-import DBaseQtDatabaseSetSession, "d64qt5.dll", "DBaseQtDatabaseSetSession"
-import DBaseQtDatabaseSetActive, "d64qt5.dll", "DBaseQtDatabaseSetActive"
-import DBaseQtDatabaseOpen, "d64qt5.dll", "DBaseQtDatabaseOpen"
-import DBaseQtDatabaseClose, "d64qt5.dll", "DBaseQtDatabaseClose"
-import DBaseQtDatabaseCommit, "d64qt5.dll", "DBaseQtDatabaseCommit"
+import DBaseQtInitialize, "libd64_qt5.dll", "DBaseQtInitialize"
+import DBaseQtShowWindow, "libd64_qt5.dll", "DBaseQtShowWindow"
+import DBaseQtProcessEvents, "libd64_qt5.dll", "DBaseQtProcessEvents"
+import DBaseQtSetDebugVisible, "libd64_qt5.dll", "DBaseQtSetDebugVisible"
+import DBaseQtAppendConsole, "libd64_qt5.dll", "DBaseQtAppendConsole"
+import DBaseQtAppendDebug, "libd64_qt5.dll", "DBaseQtAppendDebug"
+import DBaseQtSetOutputColor, "libd64_qt5.dll", "DBaseQtSetOutputColor"
+import DBaseQtClearScreen, "libd64_qt5.dll", "DBaseQtClearScreen"
+import DBaseQtClearScreenChar, "libd64_qt5.dll", "DBaseQtClearScreenChar"
+import DBaseQtClearScreenColor, "libd64_qt5.dll", "DBaseQtClearScreenColor"
+import DBaseQtSetBorderColor, "libd64_qt5.dll", "DBaseQtSetBorderColor"
+import DBaseQtMarkProgramFinished, "libd64_qt5.dll", "DBaseQtMarkProgramFinished"
+import DBaseQtExec, "libd64_qt5.dll", "DBaseQtExec"
+import DBaseQtShutdownRequested, "libd64_qt5.dll", "DBaseQtShutdownRequested"
+import DBaseQtShutdown, "libd64_qt5.dll", "DBaseQtShutdown"
+import DBaseQtMenuCreate, "libd64_qt5.dll", "DBaseQtMenuCreate"
+import DBaseQtMenuSetText, "libd64_qt5.dll", "DBaseQtMenuSetText"
+import DBaseQtMenuSetSeparator, "libd64_qt5.dll", "DBaseQtMenuSetSeparator"
+import DBaseQtMenuSetShortcut, "libd64_qt5.dll", "DBaseQtMenuSetShortcut"
+import DBaseQtMenuSetOnClick, "libd64_qt5.dll", "DBaseQtMenuSetOnClick"
+import DBaseQtEnsureDefaultMenu, "libd64_qt5.dll", "DBaseQtEnsureDefaultMenu"
+import DBaseQtSetColorNormal, "libd64_qt5.dll", "DBaseQtSetColorNormal"
+import DBaseQtSessionCreate, "libd64_qt5.dll", "DBaseQtSessionCreate"
+import DBaseQtGetLoginSession, "libd64_qt5.dll", "DBaseQtGetLoginSession"
+import DBaseQtSessionLogin, "libd64_qt5.dll", "DBaseQtSessionLogin"
+import DBaseQtDatabaseCreate, "libd64_qt5.dll", "DBaseQtDatabaseCreate"
+import DBaseQtDatabaseSetPath, "libd64_qt5.dll", "DBaseQtDatabaseSetPath"
+import DBaseQtDatabaseSetDatabaseName, "libd64_qt5.dll", "DBaseQtDatabaseSetDatabaseName"
+import DBaseQtDatabaseSetUserName, "libd64_qt5.dll", "DBaseQtDatabaseSetUserName"
+import DBaseQtDatabaseSetPassword, "libd64_qt5.dll", "DBaseQtDatabaseSetPassword"
+import DBaseQtDatabaseSetAlias, "libd64_qt5.dll", "DBaseQtDatabaseSetAlias"
+import DBaseQtDatabaseSetSession, "libd64_qt5.dll", "DBaseQtDatabaseSetSession"
+import DBaseQtDatabaseSetActive, "libd64_qt5.dll", "DBaseQtDatabaseSetActive"
+import DBaseQtDatabaseOpen, "libd64_qt5.dll", "DBaseQtDatabaseOpen"
+import DBaseQtDatabaseClose, "libd64_qt5.dll", "DBaseQtDatabaseClose"
+import DBaseQtDatabaseCommit, "libd64_qt5.dll", "DBaseQtDatabaseCommit"
 import __dbase_gcvt, "msvcrt.dll", "_gcvt"
 import __dbase_malloc, "msvcrt.dll", "malloc"
 import __dbase_memcpy, "msvcrt.dll", "memcpy"
@@ -43,9 +43,20 @@ import __dbase_memcmp, "msvcrt.dll", "memcmp"
 import ExitProcess, "kernel32.dll", "ExitProcess"
 import VirtualAlloc, "kernel32.dll", "VirtualAlloc"
 import VirtualFree, "kernel32.dll", "VirtualFree"
+import AllocConsole, "kernel32.dll", "AllocConsole"
+import FreeConsole, "kernel32.dll", "FreeConsole"
+import GetStdHandle, "kernel32.dll", "GetStdHandle"
+import CreateFileA, "kernel32.dll", "CreateFileA"
+import GetConsoleScreenBufferInfo, "kernel32.dll", "GetConsoleScreenBufferInfo"
+import SetConsoleScreenBufferSize, "kernel32.dll", "SetConsoleScreenBufferSize"
+import SetConsoleOutputCP, "kernel32.dll", "SetConsoleOutputCP"
+import SetConsoleTitleA, "kernel32.dll", "SetConsoleTitleA"
+import GetConsoleWindow, "kernel32.dll", "GetConsoleWindow"
+import ShowWindow, "user32.dll", "ShowWindow"
+import SetWindowPos, "user32.dll", "SetWindowPos"
+import SetForegroundWindow, "user32.dll", "SetForegroundWindow"
+import WriteFile, "kernel32.dll", "WriteFile"
 import DBaseQtInitializeGui, "libd64_qt5.dll", "DBaseQtInitializeGui"
-import DBaseQtExec, "libd64_qt5.dll", "DBaseQtExec"
-import DBaseQtShutdown, "libd64_qt5.dll", "DBaseQtShutdown"
 import DBaseQtFormCreate, "libd64_qt5.dll", "DBaseQtFormCreate"
 import DBaseQtControlCreateEx, "libd64_qt5.dll", "DBaseQtControlCreateEx"
 import DBaseQtWidgetSetGeometry, "libd64_qt5.dll", "DBaseQtWidgetSetGeometry"
@@ -56,8 +67,8 @@ import DBaseQtObjectBindEvent, "libd64_qt5.dll", "DBaseQtObjectBindEvent"
 import DBaseQtTimerCreate, "libd64_qt5.dll", "DBaseQtTimerCreate"
 import DBaseQtTimerSetInterval, "libd64_qt5.dll", "DBaseQtTimerSetInterval"
 import DBaseQtTimerSetActive, "libd64_qt5.dll", "DBaseQtTimerSetActive"
-import DBaseQtConsoleWrite, "libd64_qt5.dll", "DBaseQtConsoleWrite"
 import DBaseQtFormOpen, "libd64_qt5.dll", "DBaseQtFormOpen"
+import DBaseQtConsoleWrite, "libd64_qt5.dll", "DBaseQtConsoleWrite"
 global _start
 entry _start
 
@@ -93,6 +104,10 @@ __dbase_format_buffer_alloc_ok_3:
     call DBaseQtShutdownRequested
     test eax, eax
     jne __dbase_program_cleanup_1
+    push 0
+    push __dbase_text_2
+    call __dbase_console_write
+    add esp, 8
     call DBaseQtProcessEvents
     call DBaseQtShutdownRequested
     test eax, eax
@@ -102,6 +117,7 @@ __dbase_format_buffer_alloc_ok_3:
     mov dword ptr [__dbase_exit_code], eax
 __dbase_program_cleanup_1:
     call DBaseQtShutdown
+    call __dbase_console_shutdown
     mov eax, dword ptr [__dbase_format_buffer]
     test eax, eax
     je __dbase_format_buffer_free_done_4
@@ -114,12 +130,113 @@ __dbase_format_buffer_free_done_4:
     push dword ptr [__dbase_exit_code]
     call ExitProcess
 
+; Stage 109: lazy Win32 console for dBase ? / ??
+__dbase_console_ensure:
+    cmp dword ptr [__dbase_console_ready], 0
+    jne __dbase_console_ensure_done
+    call AllocConsole
+    push 0
+    push 0
+    push 3
+    push 0
+    push 3
+    push 3221225472
+    push __dbase_console_out_name
+    call CreateFileA
+    test eax, eax
+    je __dbase_console_handle_fallback
+    cmp eax, -1
+    je __dbase_console_handle_fallback
+    mov dword ptr [__dbase_console_handle], eax
+    jmp __dbase_console_handle_ready
+__dbase_console_handle_fallback:
+    push -11
+    call GetStdHandle
+    test eax, eax
+    je __dbase_console_ensure_done
+    cmp eax, -1
+    je __dbase_console_ensure_done
+    mov dword ptr [__dbase_console_handle], eax
+__dbase_console_handle_ready:
+    push 1252
+    call SetConsoleOutputCP
+    push __dbase_console_info
+    push dword ptr [__dbase_console_handle]
+    call GetConsoleScreenBufferInfo
+    test eax, eax
+    je __dbase_console_buffer_fallback
+    mov edx, dword ptr [__dbase_console_info]
+    and edx, 65535
+    or edx, 32768000
+    jmp __dbase_console_buffer_ready
+__dbase_console_buffer_fallback:
+    mov edx, 32768080
+__dbase_console_buffer_ready:
+    push edx
+    push dword ptr [__dbase_console_handle]
+    call SetConsoleScreenBufferSize
+    push __dbase_text_1
+    call SetConsoleTitleA
+    call GetConsoleWindow
+    test eax, eax
+    je __dbase_console_window_ready
+    mov dword ptr [__dbase_console_window], eax
+    push 5
+    push eax
+    call ShowWindow
+    push 67
+    push 0
+    push 0
+    push 0
+    push 0
+    push -1
+    push dword ptr [__dbase_console_window]
+    call SetWindowPos
+    push dword ptr [__dbase_console_window]
+    call SetForegroundWindow
+__dbase_console_window_ready:
+    mov dword ptr [__dbase_console_ready], 1
+__dbase_console_ensure_done:
+    ret
+
+__dbase_console_write:
+    push ebp
+    mov ebp, esp
+    call __dbase_console_ensure
+    cmp dword ptr [__dbase_console_ready], 0
+    je __dbase_console_write_done
+    cmp dword ptr [ebp+12], 0
+    je __dbase_console_write_done
+    push 0
+    push __dbase_console_written
+    push dword ptr [ebp+12]
+    push dword ptr [ebp+8]
+    push dword ptr [__dbase_console_handle]
+    call WriteFile
+__dbase_console_write_done:
+    mov esp, ebp
+    pop ebp
+    ret
+
+__dbase_console_shutdown:
+    cmp dword ptr [__dbase_console_ready], 0
+    je __dbase_console_shutdown_done
+    call FreeConsole
+    mov dword ptr [__dbase_console_handle], 0
+    mov dword ptr [__dbase_console_window], 0
+    mov dword ptr [__dbase_console_ready], 0
+__dbase_console_shutdown_done:
+    ret
+
 section .data
 
 __dbase_text_0:
     db 100, 66, 97, 115, 101, 32, 81, 116, 53, 32, 67, 111, 110, 115, 111, 108, 101, 32, 47, 32, 68, 69, 66, 85
     db 71, 0
 __dbase_text_1:
+    db 100, 66, 97, 115, 101, 32, 67, 111, 110, 115, 111, 108, 101, 32, 91, 77, 79, 68, 65, 76, 32, 84, 69, 83
+    db 84, 93, 0
+__dbase_text_2:
     db 0
 __dbase_temp_number:
     dd 0
@@ -131,12 +248,29 @@ __dbase_format_buffer:
     dd 0
 __dbase_exit_code:
     dd 0
+__dbase_console_ready:
+    dd 0
+__dbase_console_handle:
+    dd 0
+__dbase_console_window:
+    dd 0
+__dbase_console_written:
+    dd 0
+__dbase_console_number_len:
+    dd 0
+__dbase_console_info:
+    dd 0, 0, 0, 0, 0, 0, 0, 0
+__dbase_console_out_name:
+    db 67, 79, 78, 79, 85, 84, 36, 0
+__dbase_workstation_lazy_console_marker:
+    db 68, 54, 52, 68, 66, 65, 83, 69, 95, 76, 65, 90, 89, 95, 67, 79, 78, 83, 79, 76, 69, 95, 86, 49, 0
 
 ; Stage 127: eigener WFM-GUI-Programmeinstieg
 .section .text
 .entry __d64_wfm_entry
 __d64_wfm_entry:
-    push __dbase_wfm_text_143
+    mov eax, __dbase_wfm_qt_output_marker
+    push __dbase_wfm_text_145
     call DBaseQtInitializeGui
     add esp, 4
     push 5
@@ -669,10 +803,13 @@ __d64_wfm_entry:
     push dword ptr [__dbase_wfm_obj_THIS_PushButton1]
     call DBaseQtWidgetSetProperty
     add esp, 20
+    push 4
+    push 51
+    call __dbase_wfm_proc___init__
+    add esp, 8
     push dword ptr [__dbase_wfm_form]
     call DBaseQtFormOpen
     add esp, 4
-    call __dbase_wfm_proc___init__
     call __dbase_wfm_proc___main__
     call DBaseQtExec
     call __dbase_wfm_proc___del__
@@ -695,6 +832,22 @@ __dbase_wfm_proc___del__:
 ; WFM PROCEDURE/FUNCTION MASCHINENCODE: __init__
 ; ------------------------------------------------------------
 __dbase_wfm_proc___init__:
+    mov eax, dword ptr [esp+4]
+    mov dword ptr [__dbase_wfm_param___init___p1], eax
+    mov eax, dword ptr [esp+8]
+    mov dword ptr [__dbase_wfm_param___init___p2], eax
+    ; ? "p1 = " + p1
+    push 1
+    push 7
+    push __dbase_wfm_output_text_143
+    call DBaseQtConsoleWrite
+    add esp, 12
+    ; ?? "p2 = " + p2
+    push 0
+    push 6
+    push __dbase_wfm_output_text_144
+    call DBaseQtConsoleWrite
+    add esp, 12
     ret
 ; END WFM PROCEDURE/FUNCTION: __init__
 
@@ -711,6 +864,8 @@ __dbase_wfm_proc___main__:
 .section .data
 __dbase_wfm_form:
     dd 0
+__dbase_wfm_qt_output_marker:
+    db 68, 54, 52, 68, 66, 65, 83, 69, 95, 87, 70, 77, 95, 81, 84, 95, 79, 85, 84, 80, 85, 84, 95, 86, 49, 0
 __dbase_wfm_obj_THIS_PushButton1:
     dd 0
 __dbase_wfm_text_0:
@@ -999,5 +1154,15 @@ __dbase_wfm_text_141:
     db 70, 111, 110, 116, 70, 111, 114, 101, 103, 114, 111, 117, 110, 100, 92, 48
 __dbase_wfm_text_142:
     db 35, 101, 101, 101, 101, 101, 101, 92, 48
-__dbase_wfm_text_143:
+__dbase_wfm_text_145:
     db 70, 111, 114, 109, 49, 92, 48
+__dbase_wfm_output_text_143:
+    db 112, 49, 32, 61, 32, 53, 49
+__dbase_wfm_output_text_144:
+    db 112, 50, 32, 61, 32, 52
+
+; Stage 111: WFM runtime parameter slots
+__dbase_wfm_param___init___p1:
+    dd 0
+__dbase_wfm_param___init___p2:
+    dd 0

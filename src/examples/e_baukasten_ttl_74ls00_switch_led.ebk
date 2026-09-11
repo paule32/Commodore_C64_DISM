@@ -1,0 +1,205 @@
+{
+  "format": "d64-e-baukasten",
+  "version": 1,
+  "grid": 10,
+  "components": [
+    {
+      "id": "vcc",
+      "kind": "dc",
+      "name": "V1",
+      "position": [
+        100.0,
+        220.0
+      ],
+      "angle": 90.0,
+      "value": 5.0
+    },
+    {
+      "id": "gnd",
+      "kind": "ground",
+      "name": "GND1",
+      "position": [
+        100.0,
+        420.0
+      ],
+      "angle": 0.0,
+      "value": 0.0
+    },
+    {
+      "id": "sw",
+      "kind": "switch",
+      "name": "S1",
+      "position": [
+        300.0,
+        100.0
+      ],
+      "angle": 0.0,
+      "value": 0.0,
+      "params": {
+        "closed": 0.0
+      }
+    },
+    {
+      "id": "rpd",
+      "kind": "resistor",
+      "name": "RPD",
+      "position": [
+        300.0,
+        300.0
+      ],
+      "angle": 90.0,
+      "value": 10000.0
+    },
+    {
+      "id": "u1",
+      "kind": "ttl_74ls00",
+      "name": "U1",
+      "position": [
+        540.0,
+        220.0
+      ],
+      "angle": 0.0,
+      "value": 0.0
+    },
+    {
+      "id": "rl",
+      "kind": "resistor",
+      "name": "RLED",
+      "position": [
+        760.0,
+        180.0
+      ],
+      "angle": 0.0,
+      "value": 470.0
+    },
+    {
+      "id": "led",
+      "kind": "led_red",
+      "name": "D1",
+      "position": [
+        930.0,
+        220.0
+      ],
+      "angle": 90.0,
+      "value": 2.0,
+      "params": {
+        "max_current": 0.02,
+        "max_reverse_voltage": 5.0
+      }
+    }
+  ],
+  "nodes": {},
+  "wires": [
+    {
+      "id": "w_vcc",
+      "anchors": [
+        {
+          "component": "vcc",
+          "port": 0
+        },
+        {
+          "component": "u1",
+          "port": 13
+        },
+        {
+          "component": "u1",
+          "port": 1
+        },
+        {
+          "component": "sw",
+          "port": 0
+        }
+      ]
+    },
+    {
+      "id": "w_gnd",
+      "anchors": [
+        {
+          "component": "vcc",
+          "port": 1
+        },
+        {
+          "component": "gnd",
+          "port": 0
+        },
+        {
+          "component": "u1",
+          "port": 6
+        },
+        {
+          "component": "led",
+          "port": 1
+        },
+        {
+          "component": "rpd",
+          "port": 1
+        }
+      ]
+    },
+    {
+      "id": "w_input_a",
+      "anchors": [
+        {
+          "component": "sw",
+          "port": 1
+        },
+        {
+          "component": "u1",
+          "port": 0
+        },
+        {
+          "component": "rpd",
+          "port": 0
+        }
+      ]
+    },
+    {
+      "id": "w_output",
+      "anchors": [
+        {
+          "component": "u1",
+          "port": 2
+        },
+        {
+          "component": "rl",
+          "port": 0
+        }
+      ]
+    },
+    {
+      "id": "w_led",
+      "anchors": [
+        {
+          "component": "rl",
+          "port": 1
+        },
+        {
+          "component": "led",
+          "port": 0
+        }
+      ]
+    }
+  ],
+  "view3d": {
+    "placements": {
+      "sw": [
+        300.0,
+        220.0
+      ],
+      "led": [
+        500.0,
+        220.0
+      ]
+    },
+    "zoom": 100,
+    "rotation": [
+      0,
+      0,
+      0
+    ],
+    "splitter": [
+      620,
+      150
+    ]
+  }
+}

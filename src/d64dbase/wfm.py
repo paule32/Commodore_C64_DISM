@@ -115,6 +115,63 @@ def _wfm_normalize_path(path: str) -> str:
     return value
 
 
+def _wfm_parse_method_parameters(
+    text: str,
+    *,
+    filename: str,
+    line: int,
+) -> Tuple[str, ...]:
+    """Parse WFM method parameters including Stage-107 ``**args``.
+
+    The special mode is enabled *only* when the first declared parameter starts
+    with ``**``.  It then requires exactly one following normal parameter which
+    receives the argument count.  Without ``**`` the historical normal
+    parameter handling is unchanged.
+    """
+    parts = tuple(part.strip() for part in str(text or "").split(",") if part.strip())
+    if not parts:
+        return ()
+
+    first = parts[0]
+    if first.startswith("**"):
+        if re.fullmatch(r"\*\*[A-Za-z_]\w*", first) is None:
+            raise DBaseCompilerError(
+                "Nach '**' wird ein gueltiger Parametername erwartet.",
+                line=line, column=1, filename=filename,
+            )
+        if len(parts) != 2:
+            raise DBaseCompilerError(
+                "Ein variadischer WFM-Konstruktor erwartet genau '**args, argc'.",
+                line=line, column=1, filename=filename,
+            )
+        if re.fullmatch(r"[A-Za-z_]\w*", parts[1]) is None:
+            raise DBaseCompilerError(
+                "Nach dem variadischen Argument wird ein normaler argc-Parameter erwartet.",
+                line=line, column=1, filename=filename,
+            )
+        names = (first[2:], parts[1])
+        if names[0].casefold() == names[1].casefold():
+            raise DBaseCompilerError(
+                "Variadischer Argumentname und argc-Parameter muessen verschieden sein.",
+                line=line, column=1, filename=filename,
+            )
+        return parts
+
+    # No leading ** => entirely normal, positional argument handling.
+    for part in parts:
+        if re.fullmatch(r"[A-Za-z_]\w*", part) is None:
+            raise DBaseCompilerError(
+                f"Ungueltiger normaler WFM-Parameter '{part}'.",
+                line=line, column=1, filename=filename,
+            )
+    if len({part.casefold() for part in parts}) != len(parts):
+        raise DBaseCompilerError(
+            "Doppelte WFM-Parameter sind nicht erlaubt.",
+            line=line, column=1, filename=filename,
+        )
+    return parts
+
+
 def _wfm_split_args(text: str) -> List[str]:
     result: List[str] = []
     current: List[str] = []
@@ -420,10 +477,10 @@ def parse_dbase_wfm(source: str, *, filename: str = "<WFM>") -> DBaseWfmForm:
         )
         if method_match:
             method_order += 1
-            params = tuple(
-                p.strip()
-                for p in (method_match.group(3) or "").split(",")
-                if p.strip()
+            params = _wfm_parse_method_parameters(
+                method_match.group(3) or "",
+                filename=filename,
+                line=line_no,
             )
             current_method = DBaseWfmMethod(
                 name=method_match.group(2),

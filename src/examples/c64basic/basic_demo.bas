@@ -1,4 +1,6 @@
 10 REM Basic Programm
+15 LOAD SCREEN "text_screen.scr"
+17 LOAD SCREEN "pixel_screen.px16"
 20 PRINT "C64 BASIC COMPILER !!!"
 30 A=2+3*4
 40 PRINT  "A=";A

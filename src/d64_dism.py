@@ -84,6 +84,7 @@
 #  * Stage 164: DBF-Dateiöffnung, nicht-visuelle WFM-Properties/Table/SQL, Designer-TAB-Fokus und 4-Space-Indent.
 #  * Stage 166: Bearbeiten-Menü + Ctrl+Z/Ctrl+Y Undo/Redo und Copy/Paste/Cut für Texteditoren.
 #  * Stage 167: Ansicht->Sprache als 4-spaltiges Flaggen-/Radiobutton-Menü aus LANGUAGE_CODES.
+#  * Stage ASM 106: Hauptmenü Projekt mit Öffnen/Schließen und zentralem Save/Close-Dialog.
 #  * Stage 169: vollständige Stage-167-Basis bleibt erhalten; interner MSZIP-Packer für PE32 und PE32+/AMD64.
 #  * Stage 170: gepacktes Layout .text/.loader/.ztext/.idata und optionale lokale DLL-Ordinalimporte.
 #  * Stage 171: Pascal-UNITs als getrennte COFF32/COFF64-Objekte; zielabhängige Wiederverwendung beim EXE-Link.
@@ -203,8 +204,12 @@ import importlib
 import random
 
 from html.parser import HTMLParser
+from collections import defaultdict
 
+import copy
 import json
+import math
+import uuid
 import os
 import re
 import shutil
@@ -243,10 +248,13 @@ from typing      import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Un
 
 # ---------------------------------------------------------------------------
 # Stage ASM 18 (neu auf Basis ASM 17): ODBC-Datenbankzugriff.
+# Fehler beim Aufbau einer ODBC-Verbindung oder Ausfuehren von SQL.
 # ---------------------------------------------------------------------------
 class D64ODBCError(RuntimeError):
-    """Fehler beim Aufbau einer ODBC-Verbindung oder Ausfuehren von SQL."""
+    pass
 
+MIME_COMPONENT = "application/x-d64-electronics-component"
+CATEGORIES = ("Analog", "Digital", "TTL", "Quelle", "Widerstand", "Diode", "Kondensator", "Display", "CMOS") + ("Messgerät",)
 
 def _require_d64_pyodbc():
     if _d64_pyodbc is None:
@@ -256,28 +264,24 @@ def _require_d64_pyodbc():
         )
     return _d64_pyodbc
 
-
+# True, wenn das Python-Modul pyodbc erfolgreich geladen wurde.
 def odbc_python_binding_available() -> bool:
-    """True, wenn das Python-Modul pyodbc erfolgreich geladen wurde."""
     return _d64_pyodbc is not None
 
-
+# Liefert die auf dem System registrierten ODBC-Treiber.
 def odbc_available_drivers() -> List[str]:
-    """Liefert die auf dem System registrierten ODBC-Treiber."""
     module = _require_d64_pyodbc()
     try:
         return [str(name) for name in module.drivers()]
     except Exception as exc:
         raise D64ODBCError(f"ODBC-Treiber konnten nicht gelesen werden: {exc}") from exc
 
-
+# Bitness des aktuell laufenden Python-/PyInstaller-Prozesses.
 def odbc_process_bitness() -> int:
-    """Bitness des aktuell laufenden Python-/PyInstaller-Prozesses."""
     return int(struct.calcsize("P") * 8)
 
-
+# Liest installierte Windows-ODBC-Treibernamen getrennt nach 32/64 Bit.
 def _odbc_registry_installed_drivers_by_bitness() -> Dict[int, set]:
-    """Liest installierte Windows-ODBC-Treibernamen getrennt nach 32/64 Bit."""
     result: Dict[int, set] = {32: set(), 64: set()}
     if os.name != "nt":
         return result
@@ -323,19 +327,16 @@ def _odbc_registry_installed_drivers_by_bitness() -> Dict[int, set]:
             winreg.CloseKey(key)
     return result
 
-
+# Liest Windows-ODBC-DSNs und ordnet sie einer echten Treiber-Bitness zu.
+#
+# Benutzer-DSNs sind auf 64-Bit-Windows ein Sonderfall: Windows kann denselben
+# Benutzer-DSN in beiden ODBC-Administratoren anzeigen. Darum darf die Bitness
+# bei HKCU *nicht* aus KEY_WOW64_32KEY/64KEY abgeleitet werden. Stattdessen
+# wird der im DSN eingetragene Treiber gegen ODBCINST.INI der 32-/64-Bit-
+# Treiberregistrierung aufgeloest.
+#
+# Rueckgabe: "[(dsn, driver, bitness, scope), ...]".
 def _odbc_registry_data_sources_detailed() -> List[Tuple[str, str, int, str]]:
-    """
-    Liest Windows-ODBC-DSNs und ordnet sie einer echten Treiber-Bitness zu.
-
-    Benutzer-DSNs sind auf 64-Bit-Windows ein Sonderfall: Windows kann denselben
-    Benutzer-DSN in beiden ODBC-Administratoren anzeigen. Darum darf die Bitness
-    bei HKCU *nicht* aus KEY_WOW64_32KEY/64KEY abgeleitet werden. Stattdessen
-    wird der im DSN eingetragene Treiber gegen ODBCINST.INI der 32-/64-Bit-
-    Treiberregistrierung aufgeloest.
-
-    Rueckgabe: ``[(dsn, driver, bitness, scope), ...]``.
-    """
     if os.name != "nt":
         return []
     try:
@@ -419,13 +420,12 @@ def _odbc_registry_data_sources_detailed() -> List[Tuple[str, str, int, str]]:
 
     return sorted(rows.values(), key=lambda x: (x[0].casefold(), x[2], x[3]))
 
+# Liest die wichtigsten Registry-Werte eines Windows-ODBC-DSN.
+#
+#   Die Funktion dient nur der Diagnose/Anzeige im SQL Builder. Fuer dBase ist
+#   insbesondere DBQ/DefaultDir interessant, da dieser Pfad das Verzeichnis
+#   der DBF-Dateien bezeichnet.
 def odbc_registry_dsn_details(dsn_name: str, bitness: int = 0, scope: str = "") -> Dict[str, str]:
-    """Liest die wichtigsten Registry-Werte eines Windows-ODBC-DSN.
-
-    Die Funktion dient nur der Diagnose/Anzeige im SQL Builder. Fuer dBase ist
-    insbesondere DBQ/DefaultDir interessant, da dieser Pfad das Verzeichnis
-    der DBF-Dateien bezeichnet.
-    """
     result: Dict[str, str] = {
         "dsn": str(dsn_name or "").strip(),
         "scope": str(scope or "").strip(),
@@ -596,21 +596,17 @@ def _odbc_powershell_for_bitness(target_bitness: int) -> Path:
         + ", ".join(str(p) for p in candidates)
     )
 
-
+# Bitness-Bridge fuer ODBC.
+#
+# Eine 64-Bit-Anwendung kann keine 32-Bit-ODBC-DLL in denselben Prozess
+# laden. Deshalb wird fuer eine abweichende DSN-Bitness ein Windows-
+# PowerShell-Prozess der Ziel-Bitness gestartet. Dieser benutzt
+# System.Data.Odbc und damit die passende native ODBC-Treiberwelt.
+#
+# Die Verbindung wird bei ``open()`` getestet. SQL-Aufrufe werden bewusst
+# als einzelne Helper-Aufrufe ausgefuehrt; Benutzername/Passwort werden nur
+# ueber stdin uebergeben und nicht auf der Kommandozeile sichtbar gemacht.
 class D64ODBCPowerShellBridgeConnection:
-    """
-    Bitness-Bridge fuer ODBC.
-
-    Eine 64-Bit-Anwendung kann keine 32-Bit-ODBC-DLL in denselben Prozess
-    laden. Deshalb wird fuer eine abweichende DSN-Bitness ein Windows-
-    PowerShell-Prozess der Ziel-Bitness gestartet. Dieser benutzt
-    System.Data.Odbc und damit die passende native ODBC-Treiberwelt.
-
-    Die Verbindung wird bei ``open()`` getestet. SQL-Aufrufe werden bewusst
-    als einzelne Helper-Aufrufe ausgefuehrt; Benutzername/Passwort werden nur
-    ueber stdin uebergeben und nicht auf der Kommandozeile sichtbar gemacht.
-    """
-
     def __init__(
         self,
         connection_string: str,
@@ -4571,6 +4567,7 @@ PE32_DEFAULT_IMPORTS: Dict[str, Tuple[str, str]] = {
     "setconsolewindowinfo": ("kernel32.dll", "SetConsoleWindowInfo"),
     "getconsolescreenbufferinfo": ("kernel32.dll", "GetConsoleScreenBufferInfo"),
     "setconsolecursorposition": ("kernel32.dll", "SetConsoleCursorPosition"),
+    "getconsolewindow": ("kernel32.dll", "GetConsoleWindow"),
     "getconsolemode": ("kernel32.dll", "GetConsoleMode"),
     "setconsolemode": ("kernel32.dll", "SetConsoleMode"),
     "writefile": ("kernel32.dll", "WriteFile"),
@@ -4596,6 +4593,8 @@ PE32_DEFAULT_IMPORTS: Dict[str, Tuple[str, str]] = {
     "defwindowproca": ("user32.dll", "DefWindowProcA"),
     "destroywindow": ("user32.dll", "DestroyWindow"),
     "showwindow": ("user32.dll", "ShowWindow"),
+    "setwindowpos": ("user32.dll", "SetWindowPos"),
+    "setforegroundwindow": ("user32.dll", "SetForegroundWindow"),
     "updatewindow": ("user32.dll", "UpdateWindow"),
     "peekmessagea": ("user32.dll", "PeekMessageA"),
     "translatemessage": ("user32.dll", "TranslateMessage"),
@@ -7245,14 +7244,15 @@ def parse_coff64_archive(data: bytes) -> Tuple[Tuple[str, bytes], ...]:
 PE64_IMPORT_SIGNATURES: Dict[str, Tuple[int, bool]] = {
     "exitprocess":(1,False), "allocconsole":(0,False), "getstdhandle":(1,False),
     "setconsolescreenbuffersize":(2,False), "setconsolewindowinfo":(3,False),
-    "getconsolemode":(2,False), "setconsolemode":(2,False), "writefile":(5,False),
+    "getconsolewindow":(0,False), "getconsolemode":(2,False), "setconsolemode":(2,False), "writefile":(5,False),
     "readfile":(5,False), "createfilea":(7,False), "lstrlena":(1,False),
     "getmodulehandlea":(1,False), "getprocaddress":(2,False), "loadlibrarya":(1,False),
     "getcommandlinea":(0,False), "getprocessheap":(0,False), "heapalloc":(3,False),
     "heapfree":(3,False), "virtualalloc":(4,False), "virtualfree":(3,False),
     "sleep":(1,False), "wsprintfa":(3,True),
     "registerclassexa":(1,False), "createwindowexa":(12,False), "defwindowproca":(4,False),
-    "destroywindow":(1,False), "showwindow":(2,False), "updatewindow":(1,False),
+    "destroywindow":(1,False), "showwindow":(2,False), "setwindowpos":(7,False),
+    "setforegroundwindow":(1,False), "updatewindow":(1,False),
     "peekmessagea":(5,False), "translatemessage":(1,False), "dispatchmessagea":(1,False),
     "loadcursora":(2,False), "postquitmessage":(1,False), "getclientrect":(2,False),
     "messageboxa":(4,False), "d2d1createfactory":(3,False), "direct3dcreate9":(1,False),
@@ -13104,6 +13104,8 @@ C64_TEXT_SCREEN_COLUMNS = 40
 C64_TEXT_SCREEN_ROWS = 25
 C64_TEXT_SCREEN_CELL_COUNT = C64_TEXT_SCREEN_COLUMNS * C64_TEXT_SCREEN_ROWS
 C64_TEXT_SCREEN_FILE_SIZE = C64_TEXT_SCREEN_CELL_COUNT * 2
+C64_TEXT_SCREEN_JSON_FORMAT = "d64-c64-text-screen"
+C64_TEXT_SCREEN_JSON_VERSION = 1
 
 C64_PIXEL_SCREEN_WIDTH = 320
 C64_PIXEL_SCREEN_HEIGHT = 200
@@ -13146,7 +13148,134 @@ def decode_c64_text_screen_data(data: bytes) -> Tuple[bytearray, bytearray]:
         )
     raise ValueError(
         "Eine Bildschirmseite muss 1000 Bytes (nur Zeichen) oder "
-        "2000 Bytes (Zeichen und Farben) enthalten."
+        "2000 Bytes (1000 Zeichen + 1000 Zellfarben) enthalten."
+    )
+
+
+def encode_c64_text_screen_json(
+    characters: Sequence[int],
+    colors: Sequence[int],
+) -> str:
+    """Verlustfreies Arbeitsformat des Screen-Designers.
+
+    Jede der 40x25 Zellen besitzt *ihr eigenes* Zeichen und *ihre eigene*
+    C64-Farbe.  Die explizite ``cells``-Struktur verhindert, dass Farben
+    versehentlich zeilenweise oder global interpretiert werden.
+    """
+    chars, cols = normalize_c64_text_screen_data(characters, colors)
+    rows = []
+    for y in range(C64_TEXT_SCREEN_ROWS):
+        row = []
+        base = y * C64_TEXT_SCREEN_COLUMNS
+        for x in range(C64_TEXT_SCREEN_COLUMNS):
+            offset = base + x
+            row.append({
+                "character": int(chars[offset]),
+                "color": int(cols[offset]) & 0x0F,
+            })
+        rows.append(row)
+    payload = {
+        "format": C64_TEXT_SCREEN_JSON_FORMAT,
+        "version": C64_TEXT_SCREEN_JSON_VERSION,
+        "columns": C64_TEXT_SCREEN_COLUMNS,
+        "rows": C64_TEXT_SCREEN_ROWS,
+        "cells": rows,
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+
+
+def decode_c64_text_screen_json(
+    source: Union[str, bytes, bytearray, Dict[str, Any]],
+) -> Tuple[bytearray, bytearray]:
+    if isinstance(source, dict):
+        payload = source
+    else:
+        if isinstance(source, (bytes, bytearray)):
+            text = bytes(source).decode("utf-8-sig")
+        else:
+            text = str(source)
+        payload = json.loads(text)
+    if not isinstance(payload, dict):
+        raise ValueError("Das Screen-JSON muss ein Objekt enthalten.")
+
+    columns = int(payload.get("columns", C64_TEXT_SCREEN_COLUMNS))
+    rows_count = int(payload.get("rows", C64_TEXT_SCREEN_ROWS))
+    if columns != C64_TEXT_SCREEN_COLUMNS or rows_count != C64_TEXT_SCREEN_ROWS:
+        raise ValueError("Das Screen-JSON muss exakt 40 x 25 Zellen enthalten.")
+
+    cells = payload.get("cells")
+    if cells is not None:
+        if not isinstance(cells, list) or len(cells) != C64_TEXT_SCREEN_ROWS:
+            raise ValueError("Das Screen-JSON benötigt genau 25 Zellzeilen.")
+        chars = bytearray()
+        cols = bytearray()
+        for y, row in enumerate(cells):
+            if not isinstance(row, list) or len(row) != C64_TEXT_SCREEN_COLUMNS:
+                raise ValueError(
+                    f"Screen-JSON: Zeile {y} benötigt genau 40 Zellen."
+                )
+            for x, cell in enumerate(row):
+                if isinstance(cell, dict):
+                    character = cell.get("character", cell.get("char", 32))
+                    color = cell.get("color", 1)
+                elif isinstance(cell, (list, tuple)) and len(cell) >= 2:
+                    character, color = cell[0], cell[1]
+                else:
+                    raise ValueError(
+                        f"Screen-JSON: Zelle {x},{y} benötigt character und color."
+                    )
+                chars.append(int(character) & 0xFF)
+                cols.append(int(color) & 0x0F)
+        return normalize_c64_text_screen_data(chars, cols)
+
+    # Rückwärts-/Importkompatibilität: auch zwei flache Arrays akzeptieren.
+    characters = payload.get("characters")
+    colors = payload.get("colors")
+    if characters is None or colors is None:
+        raise ValueError(
+            "Das Screen-JSON enthält weder 'cells' noch 'characters'/'colors'."
+        )
+    return normalize_c64_text_screen_data(characters, colors)
+
+
+def load_c64_text_screen_file(path: Union[str, Path]) -> Tuple[bytearray, bytearray]:
+    source_path = Path(path)
+    data = source_path.read_bytes()
+    if source_path.suffix.casefold() == ".json" or data.lstrip().startswith(b"{"):
+        return decode_c64_text_screen_json(data)
+    return decode_c64_text_screen_data(data)
+
+
+def save_c64_text_screen_file(
+    path: Union[str, Path],
+    characters: Sequence[int],
+    colors: Sequence[int],
+) -> int:
+    target = Path(path)
+    if target.suffix.casefold() == ".json":
+        text = encode_c64_text_screen_json(characters, colors)
+        target.write_text(text, encoding="utf-8", newline="\n")
+        return len(text.encode("utf-8"))
+    data = encode_c64_text_screen_data(characters, colors)
+    target.write_bytes(data)
+    return len(data)
+
+
+def is_c64_text_screen_json_file(path: Union[str, Path]) -> bool:
+    candidate = Path(path)
+    if candidate.suffix.casefold() != ".json":
+        return False
+    if candidate.name.casefold().endswith((".screen.json", ".scr.json")):
+        return True
+    try:
+        payload = json.loads(candidate.read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
+        return False
+    return bool(
+        isinstance(payload, dict)
+        and payload.get("format") == C64_TEXT_SCREEN_JSON_FORMAT
+        and int(payload.get("columns", 0)) == C64_TEXT_SCREEN_COLUMNS
+        and int(payload.get("rows", 0)) == C64_TEXT_SCREEN_ROWS
     )
 
 
@@ -14236,9 +14365,11 @@ PROJECT_CATEGORIES: Tuple[Tuple[str, str, Tuple[str, ...]], ...] = (
     ("prolog", "PROLOG-Programme", (".pl", ".prolog")),
     ("logo", "LOGO-Programme", (".logo", ".lgo")),
     ("dbase", "dBase-Programme", (".dbase", ".dbp")),
+    # Stage ASM 100: gespeicherte E-Baukasten-Schaltungen als eigener Hauptknoten.
+    ("circuits", "Schaltungen", (".ebk",)),
     ("character_maps", "Character Map's", (".chr", ".charset")),
     ("palettes", "Paletten", (".pal", ".palette")),
-    ("char_screens", "Char Screen's", (".scr", ".screen")),
+    ("char_screens", "Char Screen's", (".scr", ".screen", ".scr.json", ".screen.json")),
     ("pixel_screens", "Pixel Screen's", (".px16", ".pixel", ".pix")),
     ("text_files", "Textdateien", (".txt", ".text", ".log", ".md", ".markdown")),
     ("sid_files", "SID's", (".sid",)),
@@ -14756,7 +14887,13 @@ def empty_project_entries() -> Dict[str, List[Dict[str, str]]]:
 
 
 def project_category_for_path(path: Path) -> str:
-    suffix = Path(path).suffix.casefold()
+    candidate = Path(path)
+    name = candidate.name.casefold()
+    # Compound-Endungen bleiben eindeutig Screen-Projekte, ohne sämtliche
+    # gewöhnlichen *.json-Dateien der Screen-Kategorie zuzuordnen.
+    if name.endswith((".screen.json", ".scr.json")):
+        return "char_screens"
+    suffix = candidate.suffix.casefold()
     for key, _title, extensions in PROJECT_CATEGORIES:
         if suffix in extensions:
             return key
@@ -16075,6 +16212,7 @@ def run_gui(
             QCloseEvent,
             QColor,
             QCursor,
+            QDrag,
             QDesktopServices,
             QFont,
             QFontDatabase,
@@ -16098,6 +16236,7 @@ def run_gui(
             QPolygonF,
             QRegion,
             QSyntaxHighlighter,
+            QTransform,
             QTextBlockFormat,
             QTextBlockUserData,
             QTextCharFormat,
@@ -16109,7 +16248,9 @@ def run_gui(
         )
         from PyQt5.QtWidgets import (
             QAbstractScrollArea,
+            QDoubleSpinBox,
             QAction,
+            QActionGroup,
             QApplication,
             QAbstractItemView,
             QButtonGroup,
@@ -16133,6 +16274,7 @@ def run_gui(
             QGraphicsScene,
             QGraphicsTextItem,
             QGraphicsView,
+            QFormLayout,
             QGridLayout,
             QGroupBox,
             QHeaderView,
@@ -16374,7 +16516,6 @@ def run_gui(
             "error": str(e),
         }
 
-
     # ---------------------------------------------------------------------------
     # locales (gnu gettext) support ...
     # Loads GNU gettext .mo files from a zip and provides tr().
@@ -16542,6 +16683,4703 @@ def run_gui(
     # ---- Standard-Locale beim Start setzen ----
     #I18N.set_zip(Path(__file__).parent / "data/locales.zip"); I18N.load_mo("de"  ) # Deutsch als Default
     #QCSS.set_zip(Path(__file__).parent / "data/styles.zip" ); QCSS.load_mo("dark") # dark mode style
+
+    def spec(category, title, symbol, prefix, ports, details, value=0.0, unit="", color="", params=None):
+        return dict(category=category, title=title, symbol=symbol, prefix=prefix,
+                    ports=ports, details=details, value=value, unit=unit, color=color,
+                    params=copy.deepcopy(params or {}))
+
+    TWO = (("1", -40, 0), ("2", 40, 0))
+    POLAR = (("+", -40, 0), ("−", 40, 0))
+    CATALOG = {
+        "npn": spec("Analog", "NPN-Transistor", "npn", "Q",
+            (("B", -40, 0), ("C", 20, -40), ("E", 20, 40)), "B: Basis · C: Kollektor · E: Emitter."),
+        "opamp": spec("Analog", "Operationsverstärker", "opamp", "U",
+            (("+", -40, -20), ("−", -40, 20), ("OUT", 40, 0)), "Signalanschlüsse eines idealisierten Operationsverstärkers."),
+        "not": spec("Digital", "NOT", "not", "U",
+            (("A", -40, 0), ("C", 40, 0)), "NOT: Ausgang C ist die Negation von A."),
+        "and": spec("Digital", "AND", "and", "U",
+            (("A", -40, -20), ("B", -40, 20), ("C", 40, 0)), "AND: C ist 1, wenn A und B beide 1 sind."),
+        "nand": spec("Digital", "NAND", "nand", "U",
+            (("A", -40, -20), ("B", -40, 20), ("C", 40, 0)), "NAND: Negiertes AND; C ist nur bei A=1 und B=1 gleich 0."),
+        "or": spec("Digital", "OR", "or", "U",
+            (("A", -40, -20), ("B", -40, 20), ("C", 40, 0)), "OR: C ist 1, wenn mindestens ein Eingang 1 ist."),
+        "nor": spec("Digital", "NOR", "nor", "U",
+            (("A", -40, -20), ("B", -40, 20), ("C", 40, 0)), "NOR: Negiertes OR; C ist nur bei A=0 und B=0 gleich 1."),
+        "xor": spec("Digital", "XOR", "xor", "U",
+            (("A", -40, -20), ("B", -40, 20), ("C", 40, 0)), "XOR: C ist 1, wenn A und B verschieden sind."),
+        "xnor": spec("Digital", "XNOR", "xnor", "U",
+            (("A", -40, -20), ("B", -40, 20), ("C", 40, 0)), "XNOR: C ist 1, wenn A und B gleich sind."),
+        "switch": spec("Digital", "Schalter", "switch", "S", TWO, "Zweipoliger Schalter als Schaltungselement. In der 3D-Szene anklickbar; geschlossen = Strom kann fließen.", params={"closed": 0.0}),
+        "button": spec("Digital", "Taster", "button", "T", TWO, "Zweipoliger Taster für den Baukasten. In der 3D-Szene anklickbar; gedrückt/geschlossen lässt Strom fließen.", params={"closed": 0.0}),
+        "battery": spec("Quelle", "Batterie", "battery", "B", POLAR,
+            "Gleichspannungsquelle. Für den Baukasten sind 1,6 V und 9 V direkt auswählbar; Polarität an + und − beachten.", 9, "V"),
+        "dc": spec("Quelle", "Gleichspannung", "dc", "V", POLAR, "Ideale Gleichspannungsquelle.", 5, "V"),
+        "current": spec("Quelle", "Gleichstromquelle", "current", "I", POLAR, "Ideale Gleichstromquelle.", 0.02, "A"),
+        "ground": spec("Quelle", "Masse / Bezugspotential", "ground", "GND", (("0", 0, -40),), "Bezugspotential der Schaltung."),
+        "clock": spec(
+            "Quelle", "Taktquelle", "clock", "CLK", (("OUT", -40, 0), ("GND", 40, 0)),
+            "Digitale Rechteck-Taktquelle fuer die CMOS-Transientensimulation. Frequenz, Tastverhaeltnis, Phase und HIGH-Spannung sind einstellbar.",
+            1.0, "Hz", params={"duty": 0.5, "phase": 0.0, "high_voltage": 5.0}
+        ),
+        "resistor": spec("Widerstand", "Widerstand", "resistor", "R", TWO, "Widerstandswert in Ohm. Im Datenbereich veränderbar.", 1000, "Ω"),
+        "pot": spec("Widerstand", "Potentiometer", "pot", "P",
+            (("1", -40, 0), ("2", 40, 0), ("W", 0, -40)), "W: Schleifer; 1 und 2: Widerstandsbahn.", 10000, "Ω"),
+        "diode": spec("Diode", "Diode", "diode", "D", (("A", -40, 0), ("K", 40, 0)), "A: Anode · K: Kathode. Der Balken markiert die Kathode."),
+        "led_red": spec("Diode", "LED rot", "led", "D", (("A", -40, 0), ("K", 40, 0)),
+            "Rote Leuchtdiode; für einen realen Aufbau einen Vorwiderstand vorsehen.", 2, "V", "#ee5858",
+            {"max_current": 0.020, "max_reverse_voltage": 5.0}),
+        "led_green": spec("Diode", "LED grün", "led", "D", (("A", -40, 0), ("K", 40, 0)),
+            "Grüne Leuchtdiode mit Anode und Kathode.", 2.2, "V", "#54c77a",
+            {"max_current": 0.020, "max_reverse_voltage": 5.0}),
+        "led_blue": spec("Diode", "LED blau", "led", "D", (("A", -40, 0), ("K", 40, 0)),
+            "Blaue Leuchtdiode mit Anode und Kathode.", 3.2, "V", "#579aff",
+            {"max_current": 0.020, "max_reverse_voltage": 5.0}),
+        "capacitor": spec("Kondensator", "Kondensator", "capacitor", "C", TWO, "Ungepolter Kondensator. Kapazität in µF.", 0.1, "µF"),
+        "elco": spec("Kondensator", "Elektrolytkondensator", "elco", "C", POLAR, "Gepolter Kondensator. Pluspol beachten.", 100, "µF"),
+        "lamp": spec("Display", "Signallampe", "lamp", "H", TWO, "Zweipolige Signallampe.", 6, "V"),
+        "sevenseg": spec("Display", "7-Segment-Anzeige", "sevenseg", "DIS",
+            tuple((c, -40, -30 + i * 10) for i, c in enumerate("abcdefg")) + (("COM", 40, 0),),
+            "Einzelanschlüsse a bis g und gemeinsamer Anschluss COM."),
+        "meter": spec(
+            "Messgerät", "Messgerät / Oszilloskop", "meter", "M",
+            (("CH1", -40, 0), ("COM", 40, 0)),
+            "Hochohmiges Zweipunkt-Messgerät. CH1 und COM werden wie normale Ports verdrahtet; "
+            "ein Anschluss kann direkt auf eine vorhandene Leitung gesetzt werden. Bei jedem Simulationsstart "
+            "werden Spannung beziehungsweise Logikpegel erfasst und im Messdialog als Verlauf angezeigt."
+        ),
+    }
+
+    # -----------------------------------------------------------------------
+    # Stage ASM 95: 74xx/74LS TTL-Bausteine fuer den E-Baukasten.
+    # Die Pinbelegung wird als PDIP-14 (Top View) modelliert. NC-Pins werden
+    # am Gehaeuse gezeichnet, sind aber absichtlich keine elektrischen Ports.
+    # -----------------------------------------------------------------------
+    def _ttl_pin_position(pin_number):
+        pin_number = int(pin_number)
+        # PDIP-14, Top View: Pins 1..7 links von oben nach unten,
+        # Pins 14..8 rechts von oben nach unten.
+        y_values = (-42, -28, -14, 0, 14, 28, 42)
+        if 1 <= pin_number <= 7:
+            return -78, y_values[pin_number - 1]
+        if 8 <= pin_number <= 14:
+            return 78, y_values[14 - pin_number]
+        raise ValueError("TTL-DIP14-Pin außerhalb 1..14")
+
+    def _ttl_ports(pin_map):
+        ports = []
+        for pin in range(1, 15):
+            name = str(pin_map.get(pin, "NC"))
+            if name.upper() == "NC":
+                continue
+            x, y = _ttl_pin_position(pin)
+            ports.append((f"{pin}:{name}", x, y))
+        return tuple(ports)
+
+    TTL_PINOUT_QUAD_STD = {
+        1:"1A", 2:"1B", 3:"1Y", 4:"2A", 5:"2B", 6:"2Y", 7:"GND",
+        8:"3Y", 9:"3B", 10:"3A", 11:"4Y", 12:"4B", 13:"4A", 14:"VCC",
+    }
+    # 74LS01 und 74LS02 benutzen die Ausgabe-vorne-Pinbelegung.
+    TTL_PINOUT_QUAD_OUT_FIRST = {
+        1:"1Y", 2:"1A", 3:"1B", 4:"2Y", 5:"2A", 6:"2B", 7:"GND",
+        8:"3A", 9:"3B", 10:"3Y", 11:"4A", 12:"4B", 13:"4Y", 14:"VCC",
+    }
+    TTL_PINOUT_HEX = {
+        1:"1A", 2:"1Y", 3:"2A", 4:"2Y", 5:"3A", 6:"3Y", 7:"GND",
+        8:"4Y", 9:"4A", 10:"5Y", 11:"5A", 12:"6Y", 13:"6A", 14:"VCC",
+    }
+    TTL_PINOUT_TRIPLE3 = {
+        1:"1A", 2:"1B", 3:"2A", 4:"2B", 5:"2C", 6:"2Y", 7:"GND",
+        8:"3Y", 9:"3A", 10:"3B", 11:"3C", 12:"1Y", 13:"1C", 14:"VCC",
+    }
+    TTL_PINOUT_DUAL4 = {
+        1:"1A", 2:"1B", 3:"NC", 4:"1C", 5:"1D", 6:"1Y", 7:"GND",
+        8:"2Y", 9:"2A", 10:"2B", 11:"NC", 12:"2C", 13:"2D", 14:"VCC",
+    }
+    TTL_PINOUT_8_NAND = {
+        1:"A", 2:"B", 3:"C", 4:"D", 5:"E", 6:"F", 7:"GND",
+        8:"Y", 9:"NC", 10:"NC", 11:"G", 12:"H", 13:"NC", 14:"VCC",
+    }
+    TTL_PINOUT_TRISTATE = {
+        1:"1OE", 2:"1A", 3:"1Y", 4:"2OE", 5:"2A", 6:"2Y", 7:"GND",
+        8:"3Y", 9:"3A", 10:"3OE", 11:"4Y", 12:"4A", 13:"4OE", 14:"VCC",
+    }
+
+    def _ttl_device(title, function, pins, *, gate="", channels=0, inputs=0,
+                    output_type="Push-Pull", notes=""):
+        pin_text = " · ".join(f"{pin}={pins.get(pin, 'NC')}" for pin in range(1, 15))
+        details = (
+            f"{title}: {function}. PDIP-14, Draufsicht. "
+            f"Ausgang: {output_type}. Pinbelegung: {pin_text}."
+        )
+        if notes:
+            details += " " + notes
+        return {
+            "title": title,
+            "function": function,
+            "pins": dict(pins),
+            "gate": gate,
+            "channels": int(channels),
+            "inputs": int(inputs),
+            "output_type": output_type,
+            "notes": notes,
+            "details": details,
+        }
+
+    TTL_DEVICE_SPECS = {
+        "ttl_74ls00": _ttl_device("74LS00", "vier 2-Eingang-NAND-Gatter", TTL_PINOUT_QUAD_STD,
+            gate="NAND", channels=4, inputs=2),
+        "ttl_74ls01": _ttl_device("74LS01", "vier 2-Eingang-NAND-Gatter", TTL_PINOUT_QUAD_OUT_FIRST,
+            gate="NAND", channels=4, inputs=2, output_type="Open Collector",
+            notes="Open-Collector-Ausgänge benötigen einen externen Pull-Up-Widerstand."),
+        "ttl_74ls02": _ttl_device("74LS02", "vier 2-Eingang-NOR-Gatter", TTL_PINOUT_QUAD_OUT_FIRST,
+            gate="NOR", channels=4, inputs=2),
+        "ttl_74ls03": _ttl_device("74LS03", "vier 2-Eingang-NAND-Gatter", TTL_PINOUT_QUAD_STD,
+            gate="NAND", channels=4, inputs=2, output_type="Open Collector",
+            notes="Open-Collector-Ausgänge benötigen einen externen Pull-Up-Widerstand."),
+        "ttl_74ls04": _ttl_device("74LS04", "sechs Inverter (NOT)", TTL_PINOUT_HEX,
+            gate="NOT", channels=6, inputs=1),
+        "ttl_74ls05": _ttl_device("74LS05", "sechs Inverter (NOT)", TTL_PINOUT_HEX,
+            gate="NOT", channels=6, inputs=1, output_type="Open Collector",
+            notes="Open-Collector-Ausgänge benötigen einen externen Pull-Up-Widerstand."),
+        "ttl_7406_7416": _ttl_device("7406 - 7416", "sechs invertierende Puffer/Treiber", TTL_PINOUT_HEX,
+            gate="NOT", channels=6, inputs=1, output_type="Open Collector, Hochvolt",
+            notes="7406: Ausgang bis 30 V; 7416: Ausgang bis 15 V. Beide sind invertierend."),
+        "ttl_7407_7417": _ttl_device("7407 - 7417", "sechs nichtinvertierende Puffer/Treiber", TTL_PINOUT_HEX,
+            gate="BUFFER", channels=6, inputs=1, output_type="Open Collector, Hochvolt",
+            notes="7407: Ausgang bis 30 V; 7417: Ausgang bis 15 V. Beide sind nichtinvertierend."),
+        "ttl_74ls08": _ttl_device("74LS08", "vier 2-Eingang-AND-Gatter", TTL_PINOUT_QUAD_STD,
+            gate="AND", channels=4, inputs=2),
+        "ttl_74ls10": _ttl_device("74LS10", "drei 3-Eingang-NAND-Gatter", TTL_PINOUT_TRIPLE3,
+            gate="NAND", channels=3, inputs=3),
+        "ttl_74ls11": _ttl_device("74LS11", "drei 3-Eingang-AND-Gatter", TTL_PINOUT_TRIPLE3,
+            gate="AND", channels=3, inputs=3),
+        "ttl_74ls12": _ttl_device("74LS12", "drei 3-Eingang-NAND-Gatter", TTL_PINOUT_TRIPLE3,
+            gate="NAND", channels=3, inputs=3, output_type="Open Collector",
+            notes="Open-Collector-Ausgänge benötigen einen externen Pull-Up-Widerstand."),
+        "ttl_74ls13": _ttl_device("74LS13", "zwei 4-Eingang-NAND-Schmitt-Trigger", TTL_PINOUT_DUAL4,
+            gate="NAND", channels=2, inputs=4, notes="Schmitt-Trigger-Eingänge."),
+        "ttl_74ls14": _ttl_device("74LS14", "sechs Schmitt-Trigger-Inverter", TTL_PINOUT_HEX,
+            gate="NOT", channels=6, inputs=1, notes="Schmitt-Trigger-Eingänge."),
+        "ttl_74ls20": _ttl_device("74LS20", "zwei 4-Eingang-NAND-Gatter", TTL_PINOUT_DUAL4,
+            gate="NAND", channels=2, inputs=4),
+        "ttl_74ls21": _ttl_device("74LS21", "zwei 4-Eingang-AND-Gatter", TTL_PINOUT_DUAL4,
+            gate="AND", channels=2, inputs=4),
+        "ttl_74ls27": _ttl_device("74LS27", "drei 3-Eingang-NOR-Gatter", TTL_PINOUT_TRIPLE3,
+            gate="NOR", channels=3, inputs=3),
+        "ttl_74ls30": _ttl_device("74LS30", "ein 8-Eingang-NAND-Gatter", TTL_PINOUT_8_NAND,
+            gate="NAND", channels=1, inputs=8),
+        "ttl_74ls32": _ttl_device("74LS32", "vier 2-Eingang-OR-Gatter", TTL_PINOUT_QUAD_STD,
+            gate="OR", channels=4, inputs=2),
+        "ttl_74ls37": _ttl_device("74LS37", "vier 2-Eingang-NAND-Puffer", TTL_PINOUT_QUAD_STD,
+            gate="NAND", channels=4, inputs=2, output_type="Push-Pull, hoher Treiberstrom"),
+        "ttl_74ls38": _ttl_device("74LS38", "vier 2-Eingang-NAND-Puffer", TTL_PINOUT_QUAD_STD,
+            gate="NAND", channels=4, inputs=2, output_type="Open Collector, hoher Treiberstrom",
+            notes="Open-Collector-Ausgänge benötigen einen externen Pull-Up-Widerstand."),
+        "ttl_74ls86": _ttl_device("74LS86", "vier 2-Eingang-XOR-Gatter", TTL_PINOUT_QUAD_STD,
+            gate="XOR", channels=4, inputs=2),
+        "ttl_74ls125": _ttl_device("74LS125", "vier nichtinvertierende 3-State-Puffer", TTL_PINOUT_TRISTATE,
+            gate="BUFFER", channels=4, inputs=1, output_type="3-State",
+            notes="OE ist aktiv LOW: OE=0 schaltet den zugehörigen Ausgang frei; OE=1 ergibt High-Z."),
+        "ttl_74ls126": _ttl_device("74LS126", "vier nichtinvertierende 3-State-Puffer", TTL_PINOUT_TRISTATE,
+            gate="BUFFER", channels=4, inputs=1, output_type="3-State",
+            notes="OE ist aktiv HIGH: OE=1 schaltet den zugehörigen Ausgang frei; OE=0 ergibt High-Z."),
+    }
+    TTL_IC_KINDS = frozenset(TTL_DEVICE_SPECS)
+
+    for _ttl_kind, _ttl in TTL_DEVICE_SPECS.items():
+        CATALOG[_ttl_kind] = spec(
+            "TTL", _ttl["title"], "ttl_ic", "U",
+            _ttl_ports(_ttl["pins"]), _ttl["details"]
+        )
+
+    # -----------------------------------------------------------------------
+    # Stage ASM 99: CMOS-4000-Serie fuer den E-Baukasten.
+    # Darstellung und Funktionsauswahl orientieren sich an der zuletzt
+    # verwendeten CMOS-Referenzgrafik: orange DIP-Draufsicht mit sichtbarer
+    # interner Logik und externen Port-/Pin-Verbindungen.
+    # -----------------------------------------------------------------------
+    def _cmos_pin_position(pin_number, pin_count):
+        pin_number = int(pin_number)
+        pin_count = int(pin_count)
+        if pin_count not in (14, 16):
+            raise ValueError("CMOS-DIP muss 14 oder 16 Pins besitzen")
+        half = pin_count // 2
+        y_values = (
+            (-42, -28, -14, 0, 14, 28, 42)
+            if pin_count == 14
+            else (-49, -35, -21, -7, 7, 21, 35, 49)
+        )
+        if 1 <= pin_number <= half:
+            return -82, y_values[pin_number - 1]
+        if half < pin_number <= pin_count:
+            return 82, y_values[pin_count - pin_number]
+        raise ValueError(f"CMOS-DIP{pin_count}-Pin ausserhalb 1..{pin_count}")
+
+    def _cmos_ports(pin_map, pin_count):
+        ports = []
+        for pin in range(1, int(pin_count) + 1):
+            name = str(pin_map.get(pin, "NC"))
+            if name.upper() == "NC":
+                continue
+            x, y = _cmos_pin_position(pin, pin_count)
+            ports.append((f"{pin}:{name}", x, y))
+        return tuple(ports)
+
+    CMOS_PINOUT_4001_4011 = {
+        1:"1A", 2:"1B", 3:"1Y", 4:"2Y", 5:"2A", 6:"2B", 7:"VSS",
+        8:"3A", 9:"3B", 10:"3Y", 11:"4Y", 12:"4A", 13:"4B", 14:"VDD",
+    }
+    CMOS_PINOUT_4013 = {
+        1:"1Q", 2:"1/Q", 3:"1CLK", 4:"1RESET", 5:"1D", 6:"1SET", 7:"VSS",
+        8:"2SET", 9:"2D", 10:"2RESET", 11:"2CLK", 12:"2/Q", 13:"2Q", 14:"VDD",
+    }
+    # 4014: Bezeichnungen gemaess der im Projekt verwendeten Referenzgrafik.
+    CMOS_PINOUT_4014 = {
+        1:"P8", 2:"Q6", 3:"Q8", 4:"P4", 5:"P3", 6:"P2", 7:"P1", 8:"VSS",
+        9:"P/S", 10:"CLK", 11:"SER", 12:"Q7", 13:"P5", 14:"P6", 15:"P7", 16:"VDD",
+    }
+    CMOS_PINOUT_4017 = {
+        1:"Q5", 2:"Q1", 3:"Q0", 4:"Q2", 5:"Q6", 6:"Q7", 7:"Q3", 8:"VSS",
+        9:"Q8", 10:"Q4", 11:"Q9", 12:"CO", 13:"CLK INH", 14:"CLK", 15:"RESET", 16:"VDD",
+    }
+    CMOS_PINOUT_4020 = {
+        1:"Q12", 2:"Q13", 3:"Q14", 4:"Q6", 5:"Q5", 6:"Q7", 7:"Q4", 8:"VSS",
+        9:"Q1", 10:"CLK", 11:"RESET", 12:"Q9", 13:"Q8", 14:"Q10", 15:"Q11", 16:"VDD",
+    }
+    CMOS_PINOUT_4024 = {
+        1:"CLK", 2:"RESET", 3:"Q7", 4:"Q6", 5:"Q5", 6:"Q4", 7:"VSS",
+        8:"NC", 9:"Q3", 10:"NC", 11:"Q2", 12:"Q1", 13:"NC", 14:"VDD",
+    }
+    CMOS_PINOUT_4026 = {
+        1:"CLK", 2:"CLK INH", 3:"DISP EN IN", 4:"DISP EN OUT", 5:"CO", 6:"f", 7:"g", 8:"VSS",
+        9:"d", 10:"a", 11:"e", 12:"b", 13:"c", 14:"UNGATED C", 15:"RESET", 16:"VDD",
+    }
+    CMOS_PINOUT_4040 = {
+        1:"Q12", 2:"Q6", 3:"Q5", 4:"Q7", 5:"Q4", 6:"Q3", 7:"Q2", 8:"VSS",
+        9:"Q1", 10:"CLK", 11:"RESET", 12:"Q9", 13:"Q8", 14:"Q10", 15:"Q11", 16:"VDD",
+    }
+
+    def _cmos_device(title, function, pins, pin_count, *, internal="", notes=""):
+        pin_text = " · ".join(
+            f"{pin}={pins.get(pin, 'NC')}" for pin in range(1, int(pin_count) + 1)
+        )
+        details = (
+            f"{title}: {function}. CMOS 4000-Serie, PDIP-{pin_count}, Draufsicht. "
+            f"Versorgung ueber VDD/VSS. Pinbelegung: {pin_text}."
+        )
+        if notes:
+            details += " " + notes
+        return {
+            "title": str(title),
+            "function": str(function),
+            "pins": dict(pins),
+            "pin_count": int(pin_count),
+            "internal": str(internal),
+            "notes": str(notes),
+            "details": details,
+        }
+
+    CMOS_DEVICE_SPECS = {
+        "cmos_4001": _cmos_device(
+            "4001", "vier 2-Eingang-NOR-Gatter", CMOS_PINOUT_4001_4011, 14,
+            internal="quad_nor",
+        ),
+        "cmos_4011": _cmos_device(
+            "4011", "vier 2-Eingang-NAND-Gatter", CMOS_PINOUT_4001_4011, 14,
+            internal="quad_nand",
+        ),
+        "cmos_4013": _cmos_device(
+            "4013", "zwei D-Flip-Flops mit Set/Reset", CMOS_PINOUT_4013, 14,
+            internal="dual_dff",
+        ),
+        "cmos_4014": _cmos_device(
+            "4014", "8-Bit statisches Schieberegister", CMOS_PINOUT_4014, 16,
+            internal="shift8",
+        ),
+        "cmos_4017": _cmos_device(
+            "4017", "Dekadenzaehler / Johnson-Zaehler", CMOS_PINOUT_4017, 16,
+            internal="decade",
+        ),
+        "cmos_4020": _cmos_device(
+            "4020", "14-stufiger binaerer Ripple-Zaehler", CMOS_PINOUT_4020, 16,
+            internal="ripple14",
+        ),
+        "cmos_4024": _cmos_device(
+            "4024", "7-stufiger binaerer Ripple-Zaehler", CMOS_PINOUT_4024, 14,
+            internal="ripple7",
+        ),
+        "cmos_4026": _cmos_device(
+            "4026", "Dekadenzaehler mit 7-Segment-Treiber", CMOS_PINOUT_4026, 16,
+            internal="display_counter",
+        ),
+        "cmos_4040": _cmos_device(
+            "4040", "12-stufiger binaerer Ripple-Zaehler", CMOS_PINOUT_4040, 16,
+            internal="ripple12",
+        ),
+    }
+    CMOS_IC_KINDS = frozenset(CMOS_DEVICE_SPECS)
+
+    for _cmos_kind, _cmos in CMOS_DEVICE_SPECS.items():
+        CATALOG[_cmos_kind] = spec(
+            "CMOS", _cmos["title"], "cmos_ic", "U",
+            _cmos_ports(_cmos["pins"], _cmos["pin_count"]), _cmos["details"]
+        )
+
+    # Stage ASM 98: Stabile Typ-ID -> numerische CHM-Hilfe-ID.
+    # Die IDs gehoeren zum Komponententyp und nicht zu einer einzelnen
+    # Instanz in der Szene. Zehn Widerstaende verwenden daher z.B. immer
+    # denselben Komponenten-/Hilfeeintrag. Neue Typen nur am Ende anhaengen,
+    # damit bestehende IDs stabil bleiben.
+    E_BAUKASTEN_COMPONENT_HELP_ORDER = (
+        "npn", "opamp",
+        "not", "and", "nand", "or", "nor", "xor", "xnor",
+        "switch", "button",
+        "battery", "dc", "current", "ground",
+        "resistor", "pot",
+        "diode", "led_red", "led_green", "led_blue",
+        "capacitor", "elco", "lamp", "sevenseg",
+        "ttl_74ls00", "ttl_74ls01", "ttl_74ls02", "ttl_74ls03",
+        "ttl_74ls04", "ttl_74ls05", "ttl_7406_7416", "ttl_7407_7417",
+        "ttl_74ls08", "ttl_74ls10", "ttl_74ls11", "ttl_74ls12",
+        "ttl_74ls13", "ttl_74ls14", "ttl_74ls20", "ttl_74ls21",
+        "ttl_74ls27", "ttl_74ls30", "ttl_74ls32", "ttl_74ls37",
+        "ttl_74ls38", "ttl_74ls86", "ttl_74ls125", "ttl_74ls126",
+        "cmos_4001", "cmos_4011", "cmos_4013", "cmos_4014", "cmos_4017",
+        "cmos_4020", "cmos_4024", "cmos_4026", "cmos_4040",
+        "meter",
+        "clock",
+    )
+    E_BAUKASTEN_COMPONENT_HELP_MAP = {
+        kind: {
+            "component_id": 1000 + index,
+            "help_id": 41000 + index,
+        }
+        for index, kind in enumerate(E_BAUKASTEN_COMPONENT_HELP_ORDER, 1)
+    }
+
+    def e_baukasten_component_help_record(kind):
+        return E_BAUKASTEN_COMPONENT_HELP_MAP.get(str(kind or ""), {})
+
+    def e_baukasten_tooltip_html(kind, width=None):
+        definition = CATALOG.get(kind, {})
+        title = html.escape(str(definition.get("title", kind or "Komponente")))
+        details = html.escape(str(definition.get("details", "")))
+        if width is None:
+            window = QApplication.activeWindow()
+            if window is not None:
+                try:
+                    width = min(420, max(120, int(window.width() / 4)))
+                except RuntimeError:
+                    width = 300
+            else:
+                width = 300
+        width = max(80, int(width))
+        return (
+            f'<table width="{width}" cellspacing="0" cellpadding="0">'
+            f'<tr><td style="white-space:normal;"><b>{title}</b><br>{details}'
+            f'</td></tr></table>'
+        )
+
+    def uid():
+        return uuid.uuid4().hex
+
+    def point(value):
+        return QPointF(float(value[0]), float(value[1]))
+
+    def xy(value):
+        return [float(value.x()), float(value.y())]
+
+    def distance(a, b):
+        return math.hypot(a.x() - b.x(), a.y() - b.y())
+
+    def same(a, b):
+        return distance(a, b) < 0.001
+
+    def project_segment(p, a, b):
+        dx, dy = b.x() - a.x(), b.y() - a.y()
+        square = dx * dx + dy * dy
+        t = max(0.0, min(1.0, ((p.x()-a.x())*dx + (p.y()-a.y())*dy) / square)) if square else 0
+        return QPointF(a.x()+t*dx, a.y()+t*dy)
+
+    # Schnittpunkt orthogonaler Segmente, inklusive T-Abzweigungen.
+    def intersection(a, b, c, d):
+        ah, ch = abs(a.y()-b.y()) < .001, abs(c.y()-d.y()) < .001
+        if ah == ch:
+            return None
+        h1, h2, v1, v2 = (a, b, c, d) if ah else (c, d, a, b)
+        x, y = v1.x(), h1.y()
+        if (min(h1.x(), h2.x())-.001 <= x <= max(h1.x(), h2.x())+.001 and
+                min(v1.y(), v2.y())-.001 <= y <= max(v1.y(), v2.y())+.001):
+            return QPointF(x, y)
+        return None
+        
+    def numeric_param(value, default=0.0):
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return float(default)
+        return value if math.isfinite(value) else float(default)
+
+
+    def component_param_bool(component, key, default=False):
+        fallback = 1.0 if default else 0.0
+        return numeric_param(component.params.get(key, fallback), fallback) >= 0.5
+
+
+    class ComponentItem(QGraphicsItem):
+        def __init__(self, kind, name, component_id=None):
+            super().__init__()
+            self.kind, self.name, self.uid = kind, name, component_id or uid()
+            self.angle = 0.0
+            self.value = float(CATALOG[kind]["value"])
+            self.params = copy.deepcopy(CATALOG[kind].get("params", {}))
+            self.setFlags(
+                self.ItemIsMovable | self.ItemIsSelectable | self.ItemIsFocusable
+                | self.ItemSendsGeometryChanges
+            )
+            self.setAcceptHoverEvents(True)
+            self.setZValue(10)
+            self._refresh_tooltip()
+
+        def boundingRect(self):
+            k = self.scale_factor()
+            if self.kind in TTL_IC_KINDS:
+                return QRectF(-132*k, -82*k, 264*k, 164*k)
+            if self.kind in CMOS_IC_KINDS:
+                pin_count = int(CMOS_DEVICE_SPECS[self.kind]["pin_count"])
+                half_h = 94 if pin_count == 16 else 84
+                return QRectF(-138*k, -half_h*k, 276*k, 2*half_h*k)
+            if self.vertical_label():
+                return QRectF(-68*k, -68*k, 121*k+90, 136*k)
+            return QRectF(-68*k, -68*k, 136*k, 136*k+30)
+
+        def vertical_label(self):
+            return abs(math.sin(math.radians(self.angle))) > .707
+
+        def scale_factor(self):
+            return self.scene().grid / 10.0 if self.scene() else 1.0
+
+        def _tooltip_width(self):
+            scene = self.scene()
+            if scene is not None:
+                views = scene.views()
+                if views:
+                    try:
+                        main_width = max(1, int(views[0].window().width()))
+                        return min(420, max(120, main_width // 4))
+                    except RuntimeError:
+                        pass
+            return 300
+
+        def _refresh_tooltip(self):
+            self.setToolTip(e_baukasten_tooltip_html(self.kind, self._tooltip_width()))
+
+        def hoverEnterEvent(self, event):
+            # Tooltips werden erst beim Hover an die aktuelle Hauptfensterbreite
+            # angepasst. So bleibt die Breite auch nach einem Resize hoechstens
+            # etwa ein Viertel der Anwendung und der Text wird mehrzeilig.
+            self._refresh_tooltip()
+            super().hoverEnterEvent(event)
+
+        def mousePressEvent(self, event):
+            self.setFocus(Qt.MouseFocusReason)
+            super().mousePressEvent(event)
+
+        def shape(self):
+            path = QPainterPath()
+            k = self.scale_factor()
+            if self.kind in TTL_IC_KINDS:
+                path.addRoundedRect(QRectF(-58*k, -50*k, 116*k, 100*k), 5*k, 5*k)
+            elif self.kind in CMOS_IC_KINDS:
+                pin_count = int(CMOS_DEVICE_SPECS[self.kind]["pin_count"])
+                body_h = 120 if pin_count == 16 else 104
+                path.addRoundedRect(QRectF(-62*k, -(body_h/2)*k, 124*k, body_h*k), 4*k, 4*k)
+            else:
+                path.addRect(QRectF(-34*k, -34*k, 68*k, 68*k))
+            for i in range(len(CATALOG[self.kind]["ports"])):
+                path.addEllipse(self.port_local(i), 7, 7)
+            return path
+
+        def raw_port(self, index):
+            _, x, y = CATALOG[self.kind]["ports"][index]
+            k = self.scale_factor()
+            return QTransform().rotate(self.angle).map(QPointF(x*k, y*k))
+
+        def port_local(self, index):
+            scene = self.scene()
+            if scene is None:
+                return self.raw_port(index)
+            # Auch bei freien Winkeln (insbesondere 260 Grad) keine zwei Pins
+            # auf denselben Rasterpunkt legen. Anschlussfahnen zeigen den Versatz.
+            used = set()
+            for i in range(index+1):
+                raw = self.raw_port(i)
+                candidate = scene.snap(raw)
+                if tuple(xy(candidate)) in used:
+                    options = [candidate+QPointF(dx*scene.grid,dy*scene.grid)
+                               for dx in (-1,0,1) for dy in (-1,0,1)]
+                    candidate = min((p for p in options if tuple(xy(p)) not in used),
+                                    key=lambda p: distance(p, raw))
+                used.add(tuple(xy(candidate)))
+            return candidate
+
+        def port_position(self, index):
+            return self.mapToScene(self.port_local(index))
+
+        def rotate_by(self, angle):
+            self.prepareGeometryChange()
+            self.angle = (self.angle + angle) % 360
+            self.update()
+            if self.scene():
+                self.scene().refresh_wires()
+                self.scene().modified.emit()
+
+        def itemChange(self, change, value):
+            scene = self.scene()
+            if change == self.ItemPositionChange and scene:
+                return scene.snap(value)
+            if change == self.ItemPositionHasChanged and scene:
+                scene.refresh_wires()
+                scene.modified.emit()
+            return super().itemChange(change, value)
+
+        def paint(self, painter, option, widget=None):
+            scene = self.scene()
+            ink = QColor(scene.ink if scene else "#20343c")
+            k = self.scale_factor()
+            painter.setRenderHint(QPainter.Antialiasing)
+            if self.isSelected():
+                painter.setBrush(QColor(53, 141, 198, 35))
+                painter.setPen(QPen(QColor("#55b8e8"), 1, Qt.DashLine))
+                painter.drawRoundedRect(QRectF(-56*k, -56*k, 112*k, 116*k), 5, 5)
+            painter.setPen(QPen(ink, 2))
+            painter.setBrush(Qt.NoBrush)
+            for i in range(len(CATALOG[self.kind]["ports"])):
+                painter.drawLine(self.raw_port(i), self.port_local(i))
+            painter.save()
+            painter.rotate(self.angle)
+            painter.scale(k, k)
+            self.draw_symbol(painter, ink)
+            painter.restore()
+            painter.setFont(QFont("Sans Serif", 8))
+            for i, (label, _, _) in enumerate(CATALOG[self.kind]["ports"]):
+                pos = self.port_local(i)
+                port_pen = QColor(scene.wire_color if scene else "#28784c")
+                port_brush = QColor(scene.background if scene else "white")
+                if scene is not None and scene.dark:
+                    port_pen = port_pen.lighter(126)
+                    port_brush = port_brush.lighter(118)
+                logic_state = scene.logic_port_states.get((self.uid, i)) if scene is not None else None
+                if logic_state == 1:
+                    port_brush = QColor("#ffd84d")
+                elif logic_state == 0:
+                    port_brush = QColor("#58a6ff")
+                elif logic_state == "X":
+                    port_brush = QColor("#ff647c")
+                elif logic_state == "Z":
+                    port_brush = QColor("#a6adb4")
+                painter.setPen(QPen(port_pen, 1.6))
+                painter.setBrush(port_brush)
+                painter.drawEllipse(pos, 4, 4)
+                painter.setPen(ink)
+                if self.kind in TTL_IC_KINDS or self.kind in CMOS_IC_KINDS:
+                    painter.setFont(QFont("Sans Serif", 6, QFont.Bold))
+                    if pos.x() < 0:
+                        rect = QRectF(pos.x()-68, pos.y()-8, 60, 16)
+                        painter.drawText(rect, Qt.AlignRight | Qt.AlignVCenter, label)
+                    else:
+                        rect = QRectF(pos.x()+8, pos.y()-8, 60, 16)
+                        painter.drawText(rect, Qt.AlignLeft | Qt.AlignVCenter, label)
+                else:
+                    painter.setFont(QFont("Sans Serif", 8))
+                    painter.drawText(pos + QPointF(6, -6), label)
+            painter.setPen(ink)
+            painter.setFont(QFont("Sans Serif", 8))
+            if self.kind in TTL_IC_KINDS:
+                label_rect = QRectF(-90*k, 56*k, 180*k, 18)
+                alignment = Qt.AlignCenter
+            elif self.kind in CMOS_IC_KINDS:
+                pin_count = int(CMOS_DEVICE_SPECS[self.kind]["pin_count"])
+                label_y = 67*k if pin_count == 16 else 59*k
+                label_rect = QRectF(-96*k, label_y, 192*k, 18)
+                alignment = Qt.AlignCenter
+            else:
+                label_rect = QRectF(53*k,-15,90,15) if self.vertical_label() else QRectF(-67*k,53*k,134*k,15)
+                alignment = Qt.AlignLeft if self.vertical_label() else Qt.AlignCenter
+            painter.drawText(label_rect, alignment, self.name)
+            unit = CATALOG[self.kind]["unit"]
+            if unit:
+                painter.drawText(label_rect.translated(0,15), alignment, f"{self.value:g} {unit}")
+
+        def draw_symbol(self, p, ink):
+            symbol = CATALOG[self.kind]["symbol"]
+            line = lambda x1, y1, x2, y2: p.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+            if symbol == "ttl_ic":
+                device = TTL_DEVICE_SPECS.get(self.kind, {})
+                scene = self.scene()
+                dark = bool(scene is not None and scene.dark)
+                body = QColor("#22292f" if dark else "#35383b")
+                edge = QColor("#93a9b3" if dark else "#1b2328")
+                pin = QColor("#cbd8de" if dark else "#67747a")
+                label_color = QColor("#f4df71" if dark else "#f3f4df")
+                p.setPen(QPen(edge, 1.5))
+                p.setBrush(body)
+                p.drawRoundedRect(QRectF(-58, -50, 116, 100), 6, 6)
+                # DIP-Kerbe und Pin-1-Markierung.
+                p.setBrush(QColor(scene.background if scene else "#f6f8f5"))
+                p.drawArc(QRectF(-12, -56, 24, 16), 0, -180 * 16)
+                p.setPen(Qt.NoPen)
+                p.setBrush(QColor("#dce6ea" if dark else "#111111"))
+                p.drawEllipse(QPointF(-42, -36), 3.2, 3.2)
+                p.setPen(QPen(pin, 2.0))
+                # Alle 14 physischen Beinchen, inklusive NC.
+                for pin_number in range(1, 15):
+                    px, py = _ttl_pin_position(pin_number)
+                    inside_x = -58 if px < 0 else 58
+                    outside_x = -72 if px < 0 else 72
+                    p.drawLine(QPointF(inside_x, py), QPointF(outside_x, py))
+                p.setPen(label_color)
+                p.setFont(QFont("Sans Serif", 10, QFont.Bold))
+                p.drawText(QRectF(-52, -20, 104, 22), Qt.AlignCenter, device.get("title", CATALOG[self.kind]["title"]))
+                p.setFont(QFont("Sans Serif", 6, QFont.Bold))
+                p.setPen(QColor("#b8ced7" if dark else "#dfe7e9"))
+                function = str(device.get("function", "TTL-IC"))
+                p.drawText(QRectF(-50, 4, 100, 26), Qt.AlignCenter | Qt.TextWordWrap, function)
+                return
+            if symbol == "cmos_ic":
+                device = CMOS_DEVICE_SPECS.get(self.kind, {})
+                pin_count = int(device.get("pin_count", 14))
+                internal = str(device.get("internal", ""))
+                scene = self.scene()
+                dark = bool(scene is not None and scene.dark)
+                body_h = 120 if pin_count == 16 else 104
+                top = -body_h / 2.0
+                body = QColor("#e99b58" if dark else "#f0a45f")
+                edge = QColor("#f4c184" if dark else "#573719")
+                internal_ink = QColor("#1b252b" if dark else "#20262a")
+                pin_color = QColor("#d7e0e4" if dark else "#5f6c72")
+                text_color = QColor("#14191c")
+
+                p.setPen(QPen(edge, 1.5))
+                p.setBrush(body)
+                p.drawRoundedRect(QRectF(-62, top, 124, body_h), 3, 3)
+                # DIP-Kerbe oben und Pin-1-Punkt.
+                p.setBrush(QColor(scene.background if scene else "#ffffff"))
+                p.drawArc(QRectF(-11, top-6, 22, 14), 0, -180 * 16)
+                p.setPen(Qt.NoPen)
+                p.setBrush(QColor("#5b351c"))
+                p.drawEllipse(QPointF(-47, top+12), 2.8, 2.8)
+
+                # Alle physischen Beinchen zeichnen; NC bleibt nur optisch.
+                p.setPen(QPen(pin_color, 1.8))
+                for pin_number in range(1, pin_count + 1):
+                    px, py = _cmos_pin_position(pin_number, pin_count)
+                    inside_x = -62 if px < 0 else 62
+                    outside_x = -76 if px < 0 else 76
+                    p.drawLine(QPointF(inside_x, py), QPointF(outside_x, py))
+
+                p.setPen(QPen(internal_ink, 1.15))
+                p.setBrush(QColor(255, 244, 221, 210))
+
+                def tiny_gate(cx, cy, label, invert=False):
+                    rect = QRectF(cx-16, cy-9, 28, 18)
+                    p.drawRoundedRect(rect, 4, 4)
+                    p.setFont(QFont("Sans Serif", 5, QFont.Bold))
+                    p.setPen(internal_ink)
+                    p.drawText(rect, Qt.AlignCenter, label)
+                    if invert:
+                        p.setBrush(body)
+                        p.drawEllipse(QPointF(cx+16, cy), 3, 3)
+                        p.setBrush(QColor(255, 244, 221, 210))
+
+                if internal in {"quad_nor", "quad_nand"}:
+                    label = "NOR" if internal == "quad_nor" else "NAND"
+                    for cx, cy in ((-21,-27),(21,-27),(-21,8),(21,8)):
+                        tiny_gate(cx, cy, label, True)
+                    p.setPen(QPen(internal_ink, .9))
+                    p.drawLine(QPointF(-54,-27), QPointF(-37,-27))
+                    p.drawLine(QPointF(37,-27), QPointF(54,-27))
+                    p.drawLine(QPointF(-54,8), QPointF(-37,8))
+                    p.drawLine(QPointF(37,8), QPointF(54,8))
+                elif internal == "dual_dff":
+                    for cy in (-26, 19):
+                        rect = QRectF(-27, cy-15, 54, 30)
+                        p.drawRect(rect)
+                        p.setFont(QFont("Sans Serif", 6, QFont.Bold))
+                        p.drawText(QRectF(-24, cy-11, 20, 18), Qt.AlignCenter, "D")
+                        p.drawText(QRectF(5, cy-11, 18, 18), Qt.AlignCenter, "Q")
+                        p.setFont(QFont("Sans Serif", 4, QFont.Bold))
+                        p.drawText(QRectF(-22, cy+2, 18, 10), Qt.AlignCenter, "S")
+                        p.drawText(QRectF(5, cy+2, 18, 10), Qt.AlignCenter, "R")
+                elif internal == "shift8":
+                    for idx in range(8):
+                        row, col = divmod(idx, 2)
+                        cx = -18 if col == 0 else 18
+                        cy = -39 + row * 21
+                        rect = QRectF(cx-14, cy-7, 28, 14)
+                        p.drawRect(rect)
+                        p.setFont(QFont("Sans Serif", 4, QFont.Bold))
+                        p.drawText(rect, Qt.AlignCenter, "D  Q")
+                        if idx < 6:
+                            p.drawLine(QPointF(cx, cy+7), QPointF(cx, cy+12))
+                elif internal == "decade":
+                    rect = QRectF(-34, -31, 68, 62)
+                    p.drawRect(rect)
+                    p.setFont(QFont("Sans Serif", 8, QFont.Bold))
+                    p.drawText(rect, Qt.AlignCenter, "÷10\nJOHNSON")
+                    for y in (-24,-16,-8,0,8,16,24):
+                        p.drawLine(QPointF(-52,y), QPointF(-34,y))
+                        p.drawLine(QPointF(34,y), QPointF(52,y))
+                elif internal.startswith("ripple"):
+                    stages = int(internal.replace("ripple", "") or 0)
+                    p.setFont(QFont("Sans Serif", 5, QFont.Bold))
+                    ys = (-38,-20,-2,24,42)
+                    for index, cy in enumerate(ys):
+                        rect = QRectF(-18, cy-7, 36, 14)
+                        p.drawRect(rect)
+                        p.drawText(rect, Qt.AlignCenter, "÷2")
+                        if index < len(ys)-1:
+                            p.drawLine(QPointF(0,cy+7), QPointF(0,ys[index+1]-7))
+                    p.setFont(QFont("Sans Serif", 4, QFont.Bold))
+                    p.drawText(QRectF(20,-10,34,20), Qt.AlignCenter, f"{stages} STG")
+                elif internal == "display_counter":
+                    left_rect = QRectF(-47, -30, 38, 60)
+                    right_rect = QRectF(9, -30, 38, 60)
+                    p.drawRect(left_rect); p.drawRect(right_rect)
+                    p.setFont(QFont("Sans Serif", 5, QFont.Bold))
+                    p.drawText(left_rect, Qt.AlignCenter, "DECADE\nCOUNT")
+                    p.drawText(right_rect, Qt.AlignCenter, "7-SEG\nDRIVER")
+                    for y in (-20,-10,0,10,20):
+                        p.drawLine(QPointF(-9,y), QPointF(9,y))
+
+                p.setPen(text_color)
+                p.setFont(QFont("Sans Serif", 10, QFont.Bold))
+                p.drawText(QRectF(-52, top+body_h-24, 104, 18), Qt.AlignCenter,
+                           device.get("title", CATALOG[self.kind]["title"]))
+                return
+            if symbol == "meter":
+                scene = self.scene()
+                dark = bool(scene is not None and scene.dark)
+                case = QColor("#28343c" if dark else "#dce5e8")
+                edge = QColor("#8ba6b3" if dark else "#52666f")
+                screen = QColor("#071b22" if dark else "#13272d")
+                trace = QColor("#65f2a2")
+                p.setPen(QPen(edge, 1.6))
+                p.setBrush(case)
+                p.drawRoundedRect(QRectF(-31, -29, 62, 58), 7, 7)
+                p.setBrush(screen)
+                p.drawRoundedRect(QRectF(-23, -18, 46, 29), 3, 3)
+                p.setPen(QPen(QColor("#31505b"), .8))
+                for gx in (-12, 0, 12):
+                    p.drawLine(QPointF(gx, -16), QPointF(gx, 9))
+                for gy in (-8, 0, 8):
+                    p.drawLine(QPointF(-21, gy), QPointF(21, gy))
+                wave = QPainterPath(QPointF(-20, 1))
+                for x, y in ((-15,-4),(-10,-8),(-5,-3),(0,3),(5,8),(10,4),(15,-3),(20,-6)):
+                    wave.lineTo(QPointF(x, y))
+                p.setPen(QPen(trace, 1.8))
+                p.drawPath(wave)
+                p.setPen(QColor("#f3df72" if dark else "#26343a"))
+                p.setFont(QFont("Sans Serif", 6, QFont.Bold))
+                p.drawText(QRectF(-27, 14, 54, 11), Qt.AlignCenter, "CH1 / COM")
+                line(-40, 0, -31, 0); line(31, 0, 40, 0)
+                return
+            if symbol == "clock":
+                scene = self.scene()
+                dark = bool(scene is not None and scene.dark)
+                case = QColor("#273741" if dark else "#dce7ec")
+                screen = QColor("#07191f" if dark else "#17313a")
+                edge = QColor("#8fb5c4" if dark else "#506b76")
+                trace = QColor("#68f2a4")
+                p.setPen(QPen(edge, 1.5))
+                p.setBrush(case)
+                p.drawRoundedRect(QRectF(-31, -27, 62, 54), 7, 7)
+                p.setBrush(screen)
+                p.drawRoundedRect(QRectF(-23, -16, 46, 26), 3, 3)
+                p.setPen(QPen(trace, 1.8))
+                wave = QPainterPath(QPointF(-20, 4))
+                wave.lineTo(-15, 4); wave.lineTo(-15, -8); wave.lineTo(-3, -8)
+                wave.lineTo(-3, 4); wave.lineTo(9, 4); wave.lineTo(9, -8)
+                wave.lineTo(20, -8)
+                p.drawPath(wave)
+                p.setPen(QColor("#f4df72" if dark else "#26343a"))
+                p.setFont(QFont("Sans Serif", 6, QFont.Bold))
+                p.drawText(QRectF(-28, 12, 56, 11), Qt.AlignCenter, "CLOCK")
+                line(-40, 0, -31, 0); line(31, 0, 40, 0)
+                return
+            if symbol == "ground":
+                line(0, -40, 0, 0)
+                for y, width in ((0, 22), (8, 14), (16, 6)):
+                    line(-width, y, width, y)
+                return
+            if symbol in {"and", "nand", "or", "nor", "xor", "xnor", "opamp"}:
+                line(-40, -20, -22, -20); line(-40, 20, -22, 20)
+                output_x = 22
+                if symbol == "opamp":
+                    p.drawPolygon(QPolygonF([QPointF(-22, -30), QPointF(22, 0), QPointF(-22, 30)]))
+                    line(22, 0, 40, 0)
+                    return
+                p.drawRect(QRectF(-22, -30, 44, 60))
+                gate_text = {
+                    "and": "AND", "nand": "NAND", "or": "OR", "nor": "NOR",
+                    "xor": "XOR", "xnor": "XNOR",
+                }[symbol]
+                p.setFont(QFont("Sans Serif", 7, QFont.Bold))
+                p.drawText(QRectF(-20, -20, 40, 40), Qt.AlignCenter, gate_text)
+                if symbol in {"nand", "nor", "xnor"}:
+                    p.setBrush(Qt.NoBrush)
+                    p.drawEllipse(QPointF(27, 0), 5, 5)
+                    output_x = 32
+                line(output_x, 0, 40, 0)
+                return
+            if symbol == "npn":
+                line(-40, 0, -8, 0); line(-8, -20, -8, 20)
+                line(-8, -10, 20, -25); line(20, -25, 20, -40)
+                line(-8, 10, 20, 25); line(20, 25, 20, 40)
+                line(20, 25, 8, 23); line(20, 25, 14, 14)
+                return
+            if symbol == "sevenseg":
+                p.drawRect(QRectF(-23, -38, 46, 76))
+                for i in range(7):
+                    line(-40, -30+i*10, -23, -30+i*10)
+                line(23, 0, 40, 0)
+                p.setPen(QPen(QColor("#df6262"), 3))
+                for a,b,c,d in ((-10,-23,10,-23),(-10,0,10,0),(-10,23,10,23),
+                                (-12,-21,-12,-2),(12,-21,12,-2),(-12,2,-12,21),(12,2,12,21)):
+                    line(a,b,c,d)
+                return
+            line(-40, 0, -22, 0); line(22, 0, 40, 0)
+            if symbol in {"resistor", "pot"}:
+                p.drawRect(QRectF(-22, -9, 44, 18))
+                if symbol == "pot":
+                    line(0,-40,0,-10); line(0,-10,-5,-18); line(0,-10,5,-18)
+            elif symbol in {"diode", "led"}:
+                p.setBrush(QColor(CATALOG[self.kind]["color"]) if symbol == "led" else Qt.NoBrush)
+                p.drawPolygon(QPolygonF([QPointF(-22,-13),QPointF(-22,13),QPointF(18,0)]))
+                line(18,-15,18,15); line(18,0,22,0)
+                if symbol == "led":
+                    for x in (-6, 8):
+                        line(x,-18,x+10,-28); line(x+10,-28,x+5,-27); line(x+10,-28,x+9,-23)
+            elif symbol in {"capacitor", "elco"}:
+                line(-22,0,-5,0); line(5,0,22,0); line(-5,-18,-5,18); line(5,-18,5,18)
+                if symbol == "elco":
+                    p.drawText(QPointF(-20,-19), "+")
+            elif symbol == "battery":
+                line(-22,0,-5,0); line(6,0,22,0); line(-5,-22,-5,22); line(6,-12,6,12)
+            elif symbol in {"dc", "current", "lamp"}:
+                p.drawEllipse(QRectF(-22,-22,44,44))
+                if symbol == "dc":
+                    p.drawText(QRectF(-20,-16,40,32), Qt.AlignCenter, "+ −")
+                elif symbol == "current":
+                    line(-12,0,12,0); line(12,0,5,-6); line(12,0,5,6)
+                else:
+                    line(-15,-15,15,15); line(-15,15,15,-15)
+            elif symbol in {"switch", "button"}:
+                line(-22,0,18,-17)
+                p.drawEllipse(QPointF(-22,0), 3,3); p.drawEllipse(QPointF(22,0),3,3)
+                if symbol == "button":
+                    line(0,-30,0,-12); line(-8,-30,8,-30)
+            elif symbol == "not":
+                p.drawPolygon(QPolygonF([QPointF(-22,-20),QPointF(-22,20),QPointF(15,0)]))
+                p.drawEllipse(QPointF(19,0),4,4)
+
+
+    class WireItem(QGraphicsPathItem):
+        def __init__(self, anchors, wire_id=None):
+            super().__init__()
+            self.uid = wire_id or uid()
+            self.anchors = copy.deepcopy(anchors)
+            self.segments = []
+            self.setFlag(self.ItemIsSelectable)
+            self.setZValue(0)
+
+        def shape(self):
+            stroker = QPainterPathStroker()
+            stroker.setWidth(10)
+            return stroker.createStroke(self.path())
+
+        def update_path(self):
+            scene = self.scene()
+            if not scene:
+                return
+            points = [scene.anchor_position(a) for a in self.anchors]
+            self.segments = []
+            path = QPainterPath(points[0])
+            for interval, (start, end) in enumerate(zip(points, points[1:])):
+                # Orthogonale Fuehrung; gemeinsame Knoten/Benutzerknicke bleiben
+                # feste Wegpunkte, waehrend die Port-Endpunkte mitwandern.
+                elbow = QPointF(end.x(), start.y())
+                for a, b in ((start, elbow), (elbow, end)):
+                    if not same(a, b):
+                        path.lineTo(b)
+                        self.segments.append((a, b, interval))
+            self.setPath(path)
+            self.setPen(QPen(QColor(scene.wire_color), 2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+
+        def paint(self, painter, option, widget=None):
+            painter.setRenderHint(QPainter.Antialiasing)
+            painter.setPen(QPen(QColor("#62bce8") if self.isSelected() else QColor(self.scene().wire_color),
+                                3 if self.isSelected() else 2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            painter.drawPath(self.path())
+
+
+    class BuildBoxComponentItem(QGraphicsItem):
+        def __init__(self, descriptor):
+            super().__init__()
+            self.descriptor = copy.deepcopy(descriptor)
+            self.source_id = descriptor.get("source_id")
+            self.kind = descriptor.get("kind", "")
+            self.name = descriptor.get("name", "")
+            self.state = copy.deepcopy(descriptor.get("state", {}))
+            self._press_scene_pos = None
+            self.setFlags(self.ItemIsMovable | self.ItemIsSelectable | self.ItemSendsGeometryChanges)
+            self.setZValue(80)
+            self.setToolTip(self.name)
+
+        def boundingRect(self):
+            return QRectF(-46, -38, 92, 86)
+
+        def shape(self):
+            path = QPainterPath()
+            path.addRoundedRect(QRectF(-34, -28, 68, 56), 8, 8)
+            if self.kind.startswith("led_") or self.kind == "lamp":
+                path.addEllipse(QRectF(-18, -18, 36, 36))
+            elif self.kind in ("switch", "button"):
+                path.addRoundedRect(QRectF(-20, -14, 40, 28), 6, 6)
+            return path
+
+        def visual_state(self):
+            return copy.deepcopy(self.state)
+
+        def set_visual_state(self, state):
+            self.state = copy.deepcopy(state or {})
+            self.update()
+            self.setToolTip(self.state.get("tooltip", self.name))
+
+        def itemChange(self, change, value):
+            if change == self.ItemPositionChange and self.scene():
+                rect = self.scene().surface_rect.adjusted(28, 24, -28, -24)
+                x = min(max(value.x(), rect.left()), rect.right())
+                y = min(max(value.y(), rect.top()), rect.bottom())
+                return QPointF(x, y)
+            if change == self.ItemPositionHasChanged and self.scene():
+                self.setZValue(80 + self.y() * 0.01)
+                self.scene().item_position_changed(self)
+            return super().itemChange(change, value)
+
+        def mousePressEvent(self, event):
+            if event.button() == Qt.LeftButton:
+                self._press_scene_pos = QPointF(event.scenePos())
+            super().mousePressEvent(event)
+
+        def mouseReleaseEvent(self, event):
+            press = self._press_scene_pos
+            self._press_scene_pos = None
+            super().mouseReleaseEvent(event)
+            if self.kind not in ("switch", "button") or event.button() != Qt.LeftButton or press is None:
+                return
+            # Ein kurzer Klick schaltet. Eine Mausbewegung bleibt dagegen eine
+            # reine Positionsaenderung des sichtbaren Bauteils.
+            if distance(press, event.scenePos()) <= 5.0 and self.scene():
+                self.scene().request_control_toggle(self)
+
+        def _led_color(self):
+            return QColor(CATALOG.get(self.kind, {}).get("color") or "#cfd5d7")
+
+        def _generic_bezel(self, painter, top, border):
+            painter.setPen(QPen(border, 1.4))
+            painter.setBrush(top)
+            painter.drawRoundedRect(QRectF(-30, -24, 60, 48), 8, 8)
+
+        def paint(self, painter, option, widget=None):
+            scene = self.scene()
+            painter.setRenderHint(QPainter.Antialiasing)
+            if self.isSelected():
+                painter.setPen(QPen(QColor("#55b8e8"), 1, Qt.DashLine))
+                painter.setBrush(QColor(53, 141, 198, 35))
+                painter.drawRoundedRect(self.boundingRect().adjusted(3, 3, -3, -3), 8, 8)
+            top = QColor(scene.top_plate_color if scene else "#d8e0e2")
+            border = QColor(scene.edge_color if scene else "#53666d")
+            text_color = QColor(scene.text_color if scene else "#1e2d34")
+            active = bool(self.state.get("active"))
+            if self.kind.startswith("led_"):
+                base = self._led_color()
+                bezel = QColor(border)
+                painter.setPen(QPen(bezel, 1.5))
+                painter.setBrush(QColor(top))
+                painter.drawEllipse(QRectF(-21, -21, 42, 42))
+                painter.setPen(QPen(QColor("#24414c"), 1.2))
+                painter.setBrush(base.lighter(165 if active else 118))
+                painter.drawEllipse(QRectF(-13, -13, 26, 26))
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(QColor(255, 255, 255, 110 if active else 65))
+                painter.drawEllipse(QRectF(-7, -10, 9, 7))
+                if active:
+                    glow = QColor(base)
+                    glow.setAlpha(90)
+                    painter.setBrush(glow)
+                    painter.drawEllipse(QRectF(-26, -26, 52, 52))
+                    painter.setBrush(QColor(base).lighter(170))
+                    painter.drawEllipse(QRectF(-10, -10, 20, 20))
+            elif self.kind in ("switch", "button"):
+                self._generic_bezel(painter, top, border)
+                painter.setPen(QPen(border, 1.2))
+                if self.kind == "button":
+                    painter.setBrush(QColor("#748991") if active else QColor("#d7dddd"))
+                    radius = 11 if active else 13
+                    painter.drawEllipse(QPointF(0, 0), radius, radius)
+                    painter.setBrush(QColor("#50656d") if active else QColor("#f4f6f5"))
+                    painter.drawEllipse(QPointF(0, -2 if not active else 1), 7, 7)
+                else:
+                    painter.setBrush(QColor("#8da0a7") if active else QColor("#d2d7d9"))
+                    painter.drawRoundedRect(QRectF(-16, -10, 32, 20), 6, 6)
+                    painter.setBrush(QColor("#5f7680") if active else QColor("#f3f5f4"))
+                    offset = 6 if active else -6
+                    painter.drawEllipse(QPointF(offset, 0), 9, 9)
+            elif self.kind == "lamp":
+                painter.setPen(QPen(border, 1.4))
+                painter.setBrush(QColor(top))
+                painter.drawEllipse(QRectF(-21, -21, 42, 42))
+                bulb = QColor("#ffdf70" if active else "#d8d0b0")
+                painter.setBrush(bulb)
+                painter.drawEllipse(QRectF(-11, -11, 22, 22))
+            else:
+                self._generic_bezel(painter, top, border)
+                painter.setPen(QPen(border, 1))
+                painter.drawLine(-12, 0, 12, 0)
+                painter.drawLine(0, -12, 0, 12)
+            painter.setPen(text_color)
+            painter.setFont(QFont("Sans Serif", 8))
+            painter.drawText(QRectF(-44, 30, 88, 16), Qt.AlignCenter, self.name)
+            status = self.state.get("status_text")
+            if status:
+                painter.setFont(QFont("Sans Serif", 7))
+                painter.drawText(QRectF(-44, 45, 88, 14), Qt.AlignCenter, status)
+
+
+    class BuildBoxScene(QGraphicsScene):
+        modified = pyqtSignal()
+        control_toggled = pyqtSignal(str, bool)
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.setSceneRect(-200, -140, 1200, 900)
+            self.surface_rect = QRectF(100, 100, 700, 440)
+            self.box_depth = 130
+            self.dark = False
+            self.loading = False
+            self.placements = {}
+            self.items_by_source = {}
+            self.set_theme(False)
+
+        def set_theme(self, dark):
+            self.dark = bool(dark)
+            if dark:
+                self.top_plate_color = "#38474f"
+                self.side_plate_color = "#2b363b"
+                self.front_plate_color = "#253036"
+                self.edge_color = "#7f959f"
+                self.text_color = "#edf3f6"
+                self.background_color = "#1a2328"
+            else:
+                self.top_plate_color = "#dce5e2"
+                self.side_plate_color = "#bec9c5"
+                self.front_plate_color = "#cbd6d1"
+                self.edge_color = "#607078"
+                self.text_color = "#1f2f36"
+                self.background_color = "#f3f6f3"
+            self.setBackgroundBrush(QColor(self.background_color))
+            self.update()
+
+        def drawBackground(self, painter, rect):
+            super().drawBackground(painter, rect)
+            painter.setRenderHint(QPainter.Antialiasing)
+            top = self.surface_rect
+            depth = self.box_depth
+            shift = QPointF(70, 42)
+            front = QPolygonF([
+                top.bottomLeft(),
+                top.bottomRight(),
+                top.bottomRight() + QPointF(0, depth),
+                top.bottomLeft() + QPointF(0, depth),
+            ])
+            side = QPolygonF([
+                top.topRight(),
+                top.bottomRight(),
+                top.bottomRight() + QPointF(0, depth),
+                top.topRight() + QPointF(0, depth),
+            ])
+            top_face = QPolygonF([
+                top.topLeft() + shift,
+                top.topRight() + shift,
+                top.bottomRight() + shift,
+                top.bottomLeft() + shift,
+            ])
+            shadow = QRectF(top.left() + 45, top.bottom() + depth + 20, top.width() + 90, 34)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(0, 0, 0, 22 if not self.dark else 40))
+            painter.drawEllipse(shadow)
+            painter.setPen(QPen(QColor(self.edge_color), 1.4))
+            painter.setBrush(QColor(self.front_plate_color))
+            painter.drawPolygon(front)
+            painter.setBrush(QColor(self.side_plate_color))
+            painter.drawPolygon(side)
+            painter.setBrush(QColor(self.top_plate_color))
+            painter.drawPolygon(top_face)
+            painter.drawRect(top)
+            painter.setPen(QPen(QColor(self.edge_color), 1.0, Qt.DashLine))
+            for x in range(0, int(top.width()) + 1, 70):
+                painter.drawLine(top.topLeft() + QPointF(x, 0), top.bottomLeft() + QPointF(x, 0))
+            for y in range(0, int(top.height()) + 1, 70):
+                painter.drawLine(top.topLeft() + QPointF(0, y), top.topRight() + QPointF(0, y))
+            painter.setPen(QPen(QColor(self.text_color), 1.2))
+            painter.setFont(QFont("Sans Serif", 11, QFont.Bold))
+            painter.drawText(QRectF(top.left(), top.top() - 46, top.width(), 20), Qt.AlignLeft | Qt.AlignVCenter,
+                             "3D-Simulationstest · sichtbare Komponenten auf der Oberseite")
+            painter.setFont(QFont("Sans Serif", 8))
+            painter.drawText(QRectF(top.left(), top.bottom() + depth + 8, top.width(), 36), Qt.AlignLeft | Qt.AlignTop,
+                             "Interne Verdrahtung bleibt im Kasten verborgen. Verschiebbare Komponenten liegen auf der Schutzplatte.")
+
+        def item_position_changed(self, item):
+            self.placements[item.source_id] = [float(item.x()), float(item.y())]
+            if not self.loading:
+                self.modified.emit()
+
+        def request_control_toggle(self, item):
+            if item.kind not in ("switch", "button") or not item.source_id:
+                return
+            new_state = not bool(item.state.get("active"))
+            item.state["active"] = new_state
+            if item.kind == "button":
+                item.state["status_text"] = "gedrückt" if new_state else "frei"
+            else:
+                item.state["status_text"] = "geschlossen" if new_state else "offen"
+            item.update()
+            self.control_toggled.emit(item.source_id, new_state)
+
+        def serialize_placements(self):
+            return {key: list(value) for key, value in self.placements.items()}
+
+        def restore_placements(self, placements):
+            self.placements = {}
+            if not isinstance(placements, dict):
+                return
+            for key, value in placements.items():
+                if isinstance(key, str) and isinstance(value, (list, tuple)) and len(value) == 2:
+                    try:
+                        self.placements[key] = [float(value[0]), float(value[1])]
+                    except (TypeError, ValueError):
+                        continue
+
+        def build_descriptors(self, circuit_scene, simulation_report=None):
+            descriptors = []
+            port_map = None
+            try:
+                port_map, _net_ports = circuit_scene.electrical_net_map()
+            except Exception:
+                port_map = None
+            led_state_map = {}
+            switch_state_map = {}
+            if simulation_report:
+                for entry in simulation_report.get("components", []):
+                    component = entry.get("component")
+                    if component is None:
+                        continue
+                    if entry.get("kind") == "led":
+                        active = entry.get("current", 0.0) > 1e-6 and entry.get("status") in ("EIN", "ÜBERLAST")
+                        led_state_map[component.uid] = {
+                            "active": bool(active),
+                            "current": entry.get("current", 0.0),
+                            "status_text": entry.get("status", ""),
+                            "tooltip": f"{component.name}: {entry.get('status', 'Unbekannt')} · {entry.get('current', 0.0)*1000:.2f} mA",
+                        }
+            for component in circuit_scene.components.values():
+                kind = component.kind
+                if kind.startswith("led_"):
+                    state = led_state_map.get(component.uid, {"active": False, "status_text": "AUS", "tooltip": component.name})
+                elif kind in ("switch", "button"):
+                    closed = component_param_bool(component, "closed", False)
+                    if kind == "button":
+                        status_text = "gedrückt" if closed else "frei"
+                    else:
+                        status_text = "geschlossen" if closed else "offen"
+                    state = {
+                        "active": closed,
+                        "status_text": status_text,
+                        "tooltip": f"{component.name}: {status_text}",
+                    }
+                    switch_state_map[component.uid] = closed
+                elif kind == "lamp":
+                    active = False
+                    if port_map is not None:
+                        a = port_map.get((component.uid, 0))
+                        b = port_map.get((component.uid, 1))
+                        active = a is not None and b is not None and a != b
+                    state = {
+                        "active": active,
+                        "status_text": "sichtbar",
+                        "tooltip": component.name,
+                    }
+                else:
+                    continue
+                descriptors.append({
+                    "source_id": component.uid,
+                    "kind": kind,
+                    "name": component.name,
+                    "source_position": [float(component.x()), float(component.y())],
+                    "state": state,
+                })
+            if not descriptors:
+                for component in circuit_scene.components.values():
+                    descriptors.append({
+                        "source_id": component.uid,
+                        "kind": component.kind,
+                        "name": component.name,
+                        "source_position": [float(component.x()), float(component.y())],
+                        "state": {"active": False, "status_text": "Modul", "tooltip": component.name},
+                    })
+                    break
+            return descriptors
+
+        def _default_position(self, descriptor, index, count):
+            sx, sy = descriptor.get("source_position", [0.0, 0.0])
+            left, top = self.surface_rect.left() + 55, self.surface_rect.top() + 55
+            width, height = self.surface_rect.width() - 110, self.surface_rect.height() - 110
+            if count <= 1:
+                x = left + width / 2
+                y = top + height / 2
+            else:
+                min_x, max_x = -1000.0, 1000.0
+                min_y, max_y = -1000.0, 1000.0
+                x = left + ((sx - min_x) / (max_x - min_x)) * width
+                y = top + ((sy - min_y) / (max_y - min_y)) * height
+                x += (index % 4) * 8
+                y += (index // 4) * 6
+            return [float(x), float(y)]
+
+        def populate_from_circuit(self, circuit_scene, simulation_report=None, placements=None):
+            self.loading = True
+            try:
+                self.clear()
+                self.items_by_source = {}
+                if placements is not None:
+                    self.restore_placements(placements)
+                descriptors = self.build_descriptors(circuit_scene, simulation_report)
+                used = set()
+                for index, descriptor in enumerate(descriptors):
+                    source_id = descriptor["source_id"]
+                    item = BuildBoxComponentItem(descriptor)
+                    self.addItem(item)
+                    position = self.placements.get(source_id) or self._default_position(descriptor, index, len(descriptors))
+                    x, y = position
+                    rect = self.surface_rect.adjusted(28, 24, -28, -24)
+                    x = min(max(float(x), rect.left()), rect.right())
+                    y = min(max(float(y), rect.top()), rect.bottom())
+                    item.setPos(QPointF(x, y))
+                    item.set_visual_state(descriptor.get("state", {}))
+                    self.items_by_source[source_id] = item
+                    used.add(source_id)
+                    self.placements[source_id] = [float(x), float(y)]
+                self.placements = {key: value for key, value in self.placements.items() if key in used}
+            finally:
+                self.loading = False
+
+        def state_summary(self):
+            if not self.items_by_source:
+                return "Keine sichtbaren Bauteile für die 3D-Szene vorhanden."
+            parts = []
+            for item in self.items_by_source.values():
+                state = item.visual_state()
+                if item.kind.startswith("led_"):
+                    parts.append(f"{item.name}: {'leuchtet' if state.get('active') else 'aus'}")
+                elif item.kind in ("switch", "button"):
+                    parts.append(f"{item.name}: {state.get('status_text', '')}")
+                else:
+                    parts.append(item.name)
+            return " · ".join(parts)
+
+
+    class CircuitScene(QGraphicsScene):
+        modified = pyqtSignal()
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.components, self.wires, self.nodes = {}, {}, {}
+            self.grid = 10
+            self.dark = False
+            self.blueprint = False
+            self.loading = False
+            self._crossings = []
+            self.logic_port_states = {}
+            self.setSceneRect(-1000, -1000, 4000, 3000)
+            self.set_theme(False)
+
+        def set_theme(self, dark, blueprint=False):
+            self.dark, self.blueprint = bool(dark), bool(blueprint)
+            self.background = "#153553" if blueprint else ("#182126" if dark else "#f6f8f5")
+            self.ink = "#edf8ff" if blueprint else ("#dae5e8" if dark else "#24373d")
+            self.wire_color = "#a9d8f0" if blueprint else ("#36835b" if dark else "#236b46")
+            self.grid_color = "#284a64" if blueprint else ("#2c3a40" if dark else "#dce4df")
+            self.setBackgroundBrush(QColor(self.background))
+            for wire in self.wires.values():
+                wire.update_path()
+            self.update()
+
+        def snap(self, p):
+            return QPointF(round(p.x()/self.grid)*self.grid, round(p.y()/self.grid)*self.grid)
+
+        def set_grid(self, size):
+            size = int(size)
+            if size not in tuple(range(5, 51, 5)):
+                raise ValueError("Raster muss zwischen 5 und 50 Pixeln in 5-Pixel-Schritten liegen.")
+            for component in self.components.values():
+                component.prepareGeometryChange()
+            self.grid = size
+            for component in self.components.values():
+                component.setPos(self.snap(component.pos()))
+                component.update()
+            for key, position in self.nodes.items():
+                self.nodes[key] = xy(self.snap(point(position)))
+            self.refresh_wires()
+            self.modified.emit()
+
+        def drawBackground(self, painter, rect):
+            super().drawBackground(painter, rect)
+            # Bei starkem Herauszoomen nur ein groebes Unterraster zeichnen.
+            step = self.grid
+            scale = max(.01, abs(painter.transform().m11()))
+            while step * scale < 7:
+                step *= 2
+            painter.setPen(QPen(QColor(self.grid_color), 1))
+            points = []
+            for x in range(math.floor(rect.left()/step)*step, math.ceil(rect.right())+1, step):
+                for y in range(math.floor(rect.top()/step)*step, math.ceil(rect.bottom())+1, step):
+                    points.append(QPointF(x, y))
+            if points:
+                painter.drawPoints(QPolygonF(points))
+
+        def add_component(self, kind, position, name=None, component_id=None):
+            if kind not in CATALOG:
+                raise ValueError("Unbekannte Komponente")
+            if not name:
+                prefix = CATALOG[kind]["prefix"]
+                names = {c.name for c in self.components.values()}
+                number = 1
+                while f"{prefix}{number}" in names:
+                    number += 1
+                name = f"{prefix}{number}"
+            item = ComponentItem(kind, name, component_id)
+            self.components[item.uid] = item
+            self.addItem(item)
+            item.setPos(self.snap(position))
+            self.clearSelection()
+            item.setSelected(True)
+            if not self.loading:
+                self.modified.emit()
+            return item
+
+        def new_node(self, position):
+            key = uid()
+            self.nodes[key] = xy(self.snap(position))
+            return {"node": key}
+
+        def anchor_position(self, anchor):
+            if "component" in anchor:
+                return self.components[anchor["component"]].port_position(anchor["port"])
+            return point(self.nodes[anchor["node"]])
+
+        @staticmethod
+        def anchor_key(anchor):
+            return ("port", anchor["component"], anchor["port"]) if "component" in anchor else ("node", anchor["node"])
+
+        def port_at(self, pos, tolerance=8):
+            nearest, best = None, tolerance
+            for component in self.components.values():
+                for i in range(len(CATALOG[component.kind]["ports"])):
+                    d = distance(pos, component.port_position(i))
+                    if d <= best:
+                        nearest, best = {"component": component.uid, "port": i}, d
+            return nearest
+
+        def wire_at(self, pos, tolerance=6):
+            best = None
+            for wire in self.wires.values():
+                for a, b, interval in wire.segments:
+                    projected = project_segment(pos, a, b)
+                    d = distance(pos, projected)
+                    if d <= tolerance and (best is None or d < best[0]):
+                        best = (d, wire, projected, interval)
+            return best
+
+        def insert_anchor(self, wire, position, anchor=None):
+            """Fuegt einen topologischen Knoten in den getroffenen Pfadabschnitt."""
+            for index, existing in enumerate(wire.anchors):
+                if same(self.anchor_position(existing), position):
+                    if anchor is not None and existing != anchor:
+                        wire.anchors[index] = copy.deepcopy(anchor)
+                    return copy.deepcopy(wire.anchors[index])
+            nearest = min(wire.segments, key=lambda s: distance(position, project_segment(position, s[0], s[1])))
+            inserted = copy.deepcopy(anchor) if anchor is not None else self.new_node(position)
+            wire.anchors.insert(nearest[2]+1, inserted)
+            wire.update_path()
+            return copy.deepcopy(inserted)
+
+        def contact_at(self, position, tolerance=8):
+            port = self.port_at(position, tolerance)
+            if port:
+                return port
+            hit = self.wire_at(position, tolerance)
+            if hit:
+                anchor = self.insert_anchor(hit[1], self.snap(hit[2]))
+                self.refresh_wires()
+                return anchor
+            return self.new_node(position)
+
+        def add_wire(self, anchors, wire_id=None):
+            if len(anchors) < 2:
+                raise ValueError("Eine Leitung braucht mindestens zwei Endpunkte.")
+            if all(same(self.anchor_position(anchors[0]), self.anchor_position(a)) for a in anchors[1:]):
+                raise ValueError("Leitung ohne Länge")
+            wire = WireItem(anchors, wire_id)
+            self.wires[wire.uid] = wire
+            self.addItem(wire)
+            wire.update_path()
+            self.refresh_wires()
+            if not self.loading:
+                self.modified.emit()
+            return wire
+
+        def refresh_wires(self):
+            if self.loading:
+                return
+            for wire in self.wires.values():
+                wire.update_path()
+            self._crossings = self.compute_crossings()
+            self.update()
+
+        def compute_crossings(self):
+            crossings = {}
+            wires = list(self.wires.values())
+            for i, first in enumerate(wires):
+                for second in wires[i+1:]:
+                    if not first.sceneBoundingRect().intersects(second.sceneBoundingRect()):
+                        continue
+                    for a, b, _ in first.segments:
+                        for c, d, _ in second.segments:
+                            pos = intersection(a, b, c, d)
+                            if pos is None:
+                                continue
+                            key = (round(pos.x(), 4), round(pos.y(), 4))
+                            entry = crossings.setdefault(key, {"position": pos, "wires": set()})
+                            entry["wires"].update((first.uid, second.uid))
+            for entry in crossings.values():
+                keys = []
+                for wire_id in entry["wires"]:
+                    keys.append({self.anchor_key(a) for a in self.wires[wire_id].anchors
+                                 if same(self.anchor_position(a), entry["position"])})
+                # Mindestens zwei Leitungen benutzen denselben echten Anschluss.
+                shared = set()
+                seen = set()
+                for group in keys:
+                    shared.update(seen & group)
+                    seen.update(group)
+                entry["shared"] = bool(shared)
+                entry["joined"] = bool(set.intersection(*keys)) if keys else False
+            return list(crossings.values())
+
+        def crossing_at(self, position, tolerance=8):
+            matches = [c for c in self._crossings if distance(c["position"], position) <= tolerance]
+            return min(matches, key=lambda c: distance(c["position"], position), default=None)
+
+        def join_crossing(self, crossing):
+            position = crossing["position"]
+            # Bereits geteilte Ports/Knoten erhalten ihre Identitaet.
+            anchor = self.port_at(position, .1)
+            if anchor is None:
+                anchor = next((copy.deepcopy(a) for w in crossing["wires"]
+                               for a in self.wires[w].anchors
+                               if same(self.anchor_position(a), position)), None)
+            anchor = anchor or self.new_node(position)
+            for wire_id in crossing["wires"]:
+                self.insert_anchor(self.wires[wire_id], position, anchor)
+            self.refresh_wires()
+            self.modified.emit()
+
+        def unjoin_crossing(self, crossing):
+            position = crossing["position"]
+            for wire_id in crossing["wires"]:
+                wire = self.wires[wire_id]
+                private = self.new_node(position)
+                self.insert_anchor(wire, position, private)
+            self.refresh_wires()
+            self.modified.emit()
+
+        def drawForeground(self, painter, rect):
+            painter.setRenderHint(QPainter.Antialiasing)
+            for crossing in self._crossings:
+                p = crossing["position"]
+                if not rect.contains(p):
+                    continue
+                color = QColor(self.wire_color)
+                if crossing["joined"]:
+                    painter.setPen(Qt.NoPen)
+                    painter.setBrush(color)
+                    painter.drawEllipse(p, 4, 4)
+                else:
+                    # Ein Bogen ueber der horizontalen Leitung zeigt die Trennung.
+                    painter.setBrush(Qt.NoBrush)
+                    painter.setPen(QPen(QColor(self.background), 5))
+                    painter.drawLine(p+QPointF(-6,0), p+QPointF(6,0))
+                    painter.setPen(QPen(color, 2))
+                    painter.drawLine(p+QPointF(0,-5), p+QPointF(0,5))
+                    bridge = QPainterPath(p+QPointF(-6,0))
+                    bridge.cubicTo(p+QPointF(-6,-9), p+QPointF(6,-9), p+QPointF(6,0))
+                    painter.setPen(QPen(QColor(self.background), 5))
+                    painter.drawPath(bridge)
+                    painter.setPen(QPen(color, 2))
+                    painter.drawPath(bridge)
+
+        def remove_wire(self, wire):
+            if wire.uid in self.wires:
+                del self.wires[wire.uid]
+                self.removeItem(wire)
+                self.refresh_wires()
+                self.modified.emit()
+
+        def remove_component(self, component):
+            for wire in list(self.wires.values()):
+                if any(a.get("component") == component.uid for a in wire.anchors):
+                    self.remove_wire(wire)
+            self.components.pop(component.uid, None)
+            self.removeItem(component)
+            self.refresh_wires()
+            self.modified.emit()
+
+        def network_report(self):
+            """Netze folgen Anker-Identitaeten, niemals bloss Bildschirmkreuzungen."""
+            parent = {}
+            def find(key):
+                parent.setdefault(key, key)
+                if parent[key] != key:
+                    parent[key] = find(parent[key])
+                return parent[key]
+            for wire in self.wires.values():
+                keys = [self.anchor_key(a) for a in wire.anchors]
+                for key in keys[1:]:
+                    parent[find(key)] = find(keys[0])
+            nets = defaultdict(list)
+            for wire in self.wires.values():
+                nets[find(self.anchor_key(wire.anchors[0]))].append(wire.uid)
+            connected = {self.anchor_key(a) for w in self.wires.values() for a in w.anchors}
+            loose = []
+            for c in self.components.values():
+                for index, (name, _, _) in enumerate(CATALOG[c.kind]["ports"]):
+                    if ("port", c.uid, index) not in connected:
+                        loose.append(f"{c.name}.{name}")
+            return list(nets.values()), loose
+
+        def electrical_net_map(self):
+            """Liefert fuer jeden Bauteil-Port sein echtes elektrisches Netz.
+
+            Nicht zusammengefuehrte Bildschirmkreuzungen tauchen hier absichtlich
+            nicht als Verbindung auf. Unverdrahtete Ports bilden jeweils ein
+            eigenes, isoliertes Netz.
+            """
+            parent = {}
+
+            def find(key):
+                parent.setdefault(key, key)
+                if parent[key] != key:
+                    parent[key] = find(parent[key])
+                return parent[key]
+
+            def union(a, b):
+                ra, rb = find(a), find(b)
+                if ra != rb:
+                    parent[rb] = ra
+
+            for component in self.components.values():
+                for index in range(len(CATALOG[component.kind]["ports"])):
+                    find(("port", component.uid, index))
+            for node_id in self.nodes:
+                find(("node", node_id))
+            for wire in self.wires.values():
+                keys = [self.anchor_key(anchor) for anchor in wire.anchors]
+                if not keys:
+                    continue
+                for key in keys[1:]:
+                    union(keys[0], key)
+
+            port_map = {}
+            net_ports = defaultdict(list)
+            for component in self.components.values():
+                for index, (label, _, _) in enumerate(CATALOG[component.kind]["ports"]):
+                    key = ("port", component.uid, index)
+                    root = find(key)
+                    port_map[(component.uid, index)] = root
+                    net_ports[root].append((component, index, label))
+            return port_map, net_ports
+
+        def is_switch_closed(self, component):
+            return component.kind in ("switch", "button") and component_param_bool(component, "closed", False)
+
+        def _two_terminal_graph(self, port_map, kinds=None, exclude_ids=None):
+            graph = defaultdict(list)
+            exclude_ids = set(exclude_ids or ())
+            for component in self.components.values():
+                if component.uid in exclude_ids:
+                    continue
+                if len(CATALOG[component.kind]["ports"]) != 2:
+                    continue
+                if kinds is not None and component.kind not in kinds:
+                    continue
+                if component.kind in ("switch", "button") and not self.is_switch_closed(component):
+                    continue
+                n0 = port_map[(component.uid, 0)]
+                n1 = port_map[(component.uid, 1)]
+                graph[n0].append((n1, component, 0, 1))
+                graph[n1].append((n0, component, 1, 0))
+            return graph
+
+        @staticmethod
+        def _find_component_paths(graph, start, target, max_paths=64, max_depth=64):
+            paths = []
+
+            def walk(net, used_components, path):
+                if len(paths) >= max_paths or len(path) >= max_depth:
+                    return
+                if net == target:
+                    paths.append(list(path))
+                    return
+                for other, component, from_port, to_port in graph.get(net, ()):
+                    if component.uid in used_components:
+                        continue
+                    used_components.add(component.uid)
+                    path.append((component, from_port, to_port))
+                    walk(other, used_components, path)
+                    path.pop()
+                    used_components.remove(component.uid)
+
+            walk(start, set(), [])
+            return paths
+
+        def topology_check(self):
+            """Simulationsart 1: Verdrahtung und typische Kurzschlussfehler."""
+            nets, loose = self.network_report()
+            port_map, _ = self.electrical_net_map()
+            errors, warnings, info = [], [], []
+            sources = [c for c in self.components.values() if c.kind in ("battery", "dc")]
+
+            if not self.components:
+                warnings.append("Die Schaltung enthält noch keine Komponenten.")
+            if not self.wires:
+                warnings.append("Es sind noch keine Leitungen gesetzt.")
+
+            # Ein zweipoliges Bauteil darf nicht mit beiden Pins am selben Drahtnetz
+            # liegen. Bei einer Spannungsquelle ist dies ein direkter Kurzschluss.
+            for component in self.components.values():
+                if len(CATALOG[component.kind]["ports"]) != 2:
+                    continue
+                n0 = port_map[(component.uid, 0)]
+                n1 = port_map[(component.uid, 1)]
+                if n0 != n1:
+                    continue
+                if component.kind in ("battery", "dc"):
+                    errors.append(
+                        f"{component.name}: Plus und Minus liegen im selben Netz – direkter Kurzschluss der Spannungsquelle."
+                    )
+                elif component.kind == "resistor":
+                    warnings.append(f"{component.name}: beide Widerstandsanschlüsse liegen im selben Netz; der Widerstand ist überbrückt.")
+                elif component.kind.startswith("led_"):
+                    warnings.append(f"{component.name}: Anode und Kathode liegen im selben Netz; die LED ist kurzgeschlossen/überbrückt.")
+                else:
+                    warnings.append(f"{component.name}: beide Anschlüsse liegen im selben Netz.")
+
+            # Parallel geschaltete ideale Spannungsquellen mit abweichenden Werten
+            # sind widersprüchlich und bei realen Quellen gefährlich.
+            for index, first in enumerate(sources):
+                fpos, fneg = port_map[(first.uid, 0)], port_map[(first.uid, 1)]
+                for second in sources[index + 1:]:
+                    spos, sneg = port_map[(second.uid, 0)], port_map[(second.uid, 1)]
+                    if fpos == spos and fneg == sneg and abs(first.value - second.value) > 1e-9:
+                        errors.append(
+                            f"{first.name}/{second.name}: unterschiedliche Spannungsquellen ({first.value:g} V / {second.value:g} V) liegen parallel."
+                        )
+                    elif fpos == sneg and fneg == spos:
+                        errors.append(f"{first.name}/{second.name}: Spannungsquellen sind gegeneinander gepolt parallel verbunden.")
+
+            # Fuer die Sicherheitspruefung interessieren geschlossene Lastpfade.
+            # Eine LED ohne strombegrenzenden Widerstand ist kein idealer Draht-
+            # Kurzschluss, wird aber als gefaehrlicher Aufbau markiert.
+            path_kinds = {"resistor", "led_red", "led_green", "led_blue", "diode", "lamp", "switch", "button"}
+            for source in sources:
+                pos = port_map[(source.uid, 0)]
+                neg = port_map[(source.uid, 1)]
+                if pos == neg:
+                    continue
+                graph = self._two_terminal_graph(port_map, path_kinds, {source.uid})
+                paths = self._find_component_paths(graph, pos, neg)
+                if not paths:
+                    warnings.append(f"{source.name}: kein geschlossener Laststromkreis zwischen + und − gefunden.")
+                    continue
+                for path_no, path in enumerate(paths, 1):
+                    resistors = [c for c, _, _ in path if c.kind == "resistor"]
+                    leds = [c for c, _, _ in path if c.kind.startswith("led_")]
+                    resistance = sum(max(0.0, c.value) for c in resistors)
+                    chain = " → ".join(c.name for c, _, _ in path) or "direkte Leitung"
+                    if resistors and resistance <= 1e-12:
+                        errors.append(f"{source.name}: Kurzschlusspfad über {chain}; Gesamtwiderstand ist 0 Ω.")
+                    elif leds and resistance <= 1e-12:
+                        warnings.append(
+                            f"{source.name}: LED-Pfad {chain} besitzt keinen Vorwiderstand; Überstrom ist sehr wahrscheinlich."
+                        )
+                    elif resistance > 0:
+                        info.append(f"{source.name}: Lastpfad {path_no} über {chain}, mindestens {resistance:g} Ω Strombegrenzung.")
+
+            switches = [c for c in self.components.values() if c.kind in ("switch", "button")]
+            for switch in switches:
+                info.append(f"{switch.name}: {'geschlossen' if self.is_switch_closed(switch) else 'offen'}.")
+
+            if loose:
+                warnings.append("Offene Ports: " + ", ".join(loose))
+            unjoined = sum(1 for crossing in self._crossings if not crossing.get("joined"))
+            if unjoined:
+                info.append(f"{unjoined} geometrische Leitungskreuzung(en) sind absichtlich nicht elektrisch verbunden.")
+
+            return {
+                "errors": errors, "warnings": warnings, "info": info,
+                "nets": nets, "loose": loose, "port_map": port_map,
+            }
+
+        @staticmethod
+        def _ttl_gate_eval(gate, values):
+            gate = str(gate or "").upper()
+            vals = list(values)
+            known = [v for v in vals if v in (0, 1)]
+            if gate == "NOT":
+                return (1 - vals[0]) if vals and vals[0] in (0, 1) else "X"
+            if gate == "BUFFER":
+                return vals[0] if vals and vals[0] in (0, 1) else "X"
+            if gate in ("AND", "NAND"):
+                if 0 in vals:
+                    out = 0
+                elif vals and all(v == 1 for v in vals):
+                    out = 1
+                else:
+                    return "X"
+                return 1 - out if gate == "NAND" else out
+            if gate in ("OR", "NOR"):
+                if 1 in vals:
+                    out = 1
+                elif vals and all(v == 0 for v in vals):
+                    out = 0
+                else:
+                    return "X"
+                return 1 - out if gate == "NOR" else out
+            if gate in ("XOR", "XNOR"):
+                if not vals or any(v not in (0, 1) for v in vals):
+                    return "X"
+                out = sum(vals) & 1
+                return 1 - out if gate == "XNOR" else out
+            return "X"
+
+        def ttl_logic_simulation(self):
+            """Kombinatorische TTL-Simulation für 74LS/74xx, Gatter, Schalter und Pull-ups.
+
+            Signale: 0, 1, X (unbestimmt/Konflikt) und Z (hochohmig). Push-Pull,
+            Open-Collector und 3-State-Ausgänge werden getrennt aufgelöst.
+            """
+            errors, warnings, info = [], [], []
+            # Eigene Netzbildung: geschlossene Schalter/Taster verbinden zwei Netze.
+            parent = {}
+            def find(key):
+                parent.setdefault(key, key)
+                if parent[key] != key:
+                    parent[key] = find(parent[key])
+                return parent[key]
+            def union(a, b):
+                ra, rb = find(a), find(b)
+                if ra != rb:
+                    parent[rb] = ra
+            for c in self.components.values():
+                for i in range(len(CATALOG[c.kind]["ports"])):
+                    find(("port", c.uid, i))
+            for node_id in self.nodes:
+                find(("node", node_id))
+            for wire in self.wires.values():
+                keys = [self.anchor_key(a) for a in wire.anchors]
+                for key in keys[1:]:
+                    union(keys[0], key)
+            for c in self.components.values():
+                if c.kind in ("switch", "button") and self.is_switch_closed(c):
+                    union(("port", c.uid, 0), ("port", c.uid, 1))
+            port_net = {(c.uid, i): find(("port", c.uid, i))
+                        for c in self.components.values()
+                        for i in range(len(CATALOG[c.kind]["ports"]))}
+
+            def resolve(drivers):
+                strong = {v for v, strength, _ in drivers if strength == "strong" and v in (0, 1)}
+                strong_x = any(v == "X" and strength == "strong" for v, strength, _ in drivers)
+                if len(strong) > 1 or strong_x:
+                    return "X"
+                if len(strong) == 1:
+                    return next(iter(strong))
+                weak = {v for v, strength, _ in drivers if strength == "weak" and v in (0, 1)}
+                weak_x = any(v == "X" and strength == "weak" for v, strength, _ in drivers)
+                if len(weak) > 1 or weak_x:
+                    return "X"
+                if len(weak) == 1:
+                    return next(iter(weak))
+                return "Z"
+
+            base = defaultdict(list)
+            voltage = {}
+            # Quellen/GND werden als Logikpegel-Rails benutzt.
+            for c in self.components.values():
+                if c.kind == "ground":
+                    n = port_net[(c.uid, 0)]
+                    base[n].append((0, "strong", c.name))
+                    voltage[n] = 0.0
+                elif c.kind in ("battery", "dc"):
+                    pn, nn = port_net[(c.uid, 0)], port_net[(c.uid, 1)]
+                    base[pn].append((1, "strong", c.name + ".+"))
+                    base[nn].append((0, "strong", c.name + ".−"))
+                    voltage[pn], voltage[nn] = float(c.value), 0.0
+
+            base_state = {n: resolve(ds) for n, ds in base.items()}
+            # Widerstand an einer Rail = schwacher Pull-up/Pull-down.
+            for c in self.components.values():
+                if c.kind != "resistor" or len(CATALOG[c.kind]["ports"]) != 2:
+                    continue
+                a, b = port_net[(c.uid, 0)], port_net[(c.uid, 1)]
+                sa, sb = base_state.get(a, "Z"), base_state.get(b, "Z")
+                if sa in (0, 1) and b != a:
+                    base[b].append((sa, "weak", c.name))
+                if sb in (0, 1) and a != b:
+                    base[a].append((sb, "weak", c.name))
+
+            def pin_port_index(kind, pin):
+                prefix = str(pin) + ":"
+                for i, (label, _x, _y) in enumerate(CATALOG[kind]["ports"]):
+                    if str(label).startswith(prefix):
+                        return i
+                return None
+
+            def channels_for(kind):
+                spec = TTL_DEVICE_SPECS[kind]
+                channels = defaultdict(lambda: {"inputs": [], "output": None, "oe": None})
+                for pin, signal in spec["pins"].items():
+                    signal = str(signal).upper()
+                    if signal in ("VCC", "GND", "NC"):
+                        continue
+                    m = re.match(r"^(\d+)(OE|[A-H]|Y)$", signal)
+                    if m:
+                        ch, role = int(m.group(1)), m.group(2)
+                    else:
+                        ch, role = 1, signal
+                    if role == "Y":
+                        channels[ch]["output"] = pin
+                    elif role == "OE":
+                        channels[ch]["oe"] = pin
+                    else:
+                        channels[ch]["inputs"].append((role, pin))
+                for data in channels.values():
+                    data["inputs"].sort(key=lambda pair: pair[0])
+                return dict(channels)
+
+            device_channels = {c.uid: channels_for(c.kind) for c in self.components.values() if c.kind in TTL_IC_KINDS}
+            dynamic = defaultdict(list)
+            states = {n: resolve(ds) for n, ds in base.items()}
+            device_results = []
+            max_iter = 64
+            for iteration in range(max_iter):
+                drivers = defaultdict(list)
+                for n, ds in base.items():
+                    drivers[n].extend(ds)
+                # Widerstände übertragen einen vorhandenen digitalen Pegel als schwachen Treiber.
+                # Damit funktionieren Pull-ups ebenso wie LED-Vorwiderstände an TTL-Ausgängen.
+                for resistor in (c for c in self.components.values() if c.kind == "resistor"):
+                    a = port_net[(resistor.uid, 0)]
+                    b = port_net[(resistor.uid, 1)]
+                    sa, sb = states.get(a, "Z"), states.get(b, "Z")
+                    if sa in (0, 1) and a != b:
+                        drivers[b].append((sa, "weak", resistor.name))
+                    if sb in (0, 1) and a != b:
+                        drivers[a].append((sb, "weak", resistor.name))
+                current_device_results = []
+
+                # Einzelgatter aus dem Digital-Tab ebenfalls propagieren.
+                for c in self.components.values():
+                    if c.kind not in LOGIC_GATE_KINDS:
+                        continue
+                    ports = CATALOG[c.kind]["ports"]
+                    out_index = len(ports) - 1
+                    inputs = [states.get(port_net[(c.uid, i)], "Z") for i in range(out_index)]
+                    gate = c.kind.upper()
+                    out = self._ttl_gate_eval(gate, inputs)
+                    drivers[port_net[(c.uid, out_index)]].append((out, "strong", c.name))
+
+                for c in self.components.values():
+                    if c.kind not in TTL_IC_KINDS:
+                        continue
+                    spec = TTL_DEVICE_SPECS[c.kind]
+                    pin_map = spec["pins"]
+                    vcc_pin = next((p for p, n in pin_map.items() if str(n).upper() == "VCC"), None)
+                    gnd_pin = next((p for p, n in pin_map.items() if str(n).upper() == "GND"), None)
+                    vcc_i = pin_port_index(c.kind, vcc_pin) if vcc_pin else None
+                    gnd_i = pin_port_index(c.kind, gnd_pin) if gnd_pin else None
+                    vcc_state = states.get(port_net[(c.uid, vcc_i)], "Z") if vcc_i is not None else "X"
+                    gnd_state = states.get(port_net[(c.uid, gnd_i)], "Z") if gnd_i is not None else "X"
+                    powered = (vcc_state == 1 and gnd_state == 0)
+                    vcc_net = port_net[(c.uid, vcc_i)] if vcc_i is not None else None
+                    if powered and vcc_net in voltage and not (4.5 <= voltage[vcc_net] <= 5.5):
+                        powered = False
+                    for ch, data in sorted(device_channels[c.uid].items()):
+                        in_states = []
+                        in_names = []
+                        for role, pin in data["inputs"]:
+                            idx = pin_port_index(c.kind, pin)
+                            value = states.get(port_net[(c.uid, idx)], "Z") if idx is not None else "X"
+                            in_states.append(value)
+                            in_names.append(role)
+                        logical = self._ttl_gate_eval(spec["gate"], in_states) if powered else "X"
+                        enabled = True
+                        oe_value = None
+                        if data["oe"] is not None:
+                            oi = pin_port_index(c.kind, data["oe"])
+                            oe_value = states.get(port_net[(c.uid, oi)], "Z") if oi is not None else "X"
+                            if c.kind == "ttl_74ls125":
+                                enabled = oe_value == 0
+                            elif c.kind == "ttl_74ls126":
+                                enabled = oe_value == 1
+                            else:
+                                enabled = oe_value in (0, 1)
+                        drive = logical
+                        output_type = spec["output_type"].lower()
+                        if "3-state" in output_type and not enabled:
+                            drive = "Z"
+                        elif "open collector" in output_type:
+                            if logical == 0:
+                                drive = 0
+                            elif logical == 1:
+                                drive = "Z"
+                            else:
+                                drive = "X"
+                        out_pin = data["output"]
+                        out_i = pin_port_index(c.kind, out_pin) if out_pin is not None else None
+                        if out_i is not None and drive in (0, 1, "X"):
+                            drivers[port_net[(c.uid, out_i)]].append((drive, "strong", f"{c.name}.{ch}Y"))
+                        current_device_results.append({
+                            "component": c, "channel": ch, "inputs": list(zip(in_names, in_states)),
+                            "output": logical, "drive": drive, "enabled": enabled,
+                            "oe": oe_value, "powered": powered,
+                            "output_pin": out_pin,
+                            "output_net": port_net[(c.uid, out_i)] if out_i is not None else None,
+                        })
+
+                new_states = {}
+                all_nets = set(states) | set(drivers) | set(port_net.values())
+                for n in all_nets:
+                    new_states[n] = resolve(drivers.get(n, ()))
+                if new_states == states:
+                    device_results = current_device_results
+                    break
+                states = new_states
+                device_results = current_device_results
+            else:
+                warnings.append("TTL-Simulation erreichte nach 64 Iterationen keinen stabilen Zustand (mögliche Rückkopplung).")
+
+            for item in device_results:
+                item["resolved"] = states.get(item.get("output_net"), "Z")
+
+            # Diagnose: Versorgung, floating Inputs, Konflikte.
+            warned_power = set()
+            for item in device_results:
+                c = item["component"]
+                if not item["powered"] and c.uid not in warned_power:
+                    warnings.append(f"{c.name}: TTL-Versorgung ungültig oder fehlt; VCC muss ca. 5 V / HIGH und GND LOW sein.")
+                    warned_power.add(c.uid)
+                for role, value in item["inputs"]:
+                    if value == "Z":
+                        warnings.append(f"{c.name} Kanal {item['channel']} Eingang {role}: offen (Z); Ausgang wird unbestimmt.")
+            conflict_nets = [n for n, v in states.items() if v == "X"]
+            if conflict_nets:
+                warnings.append(f"{len(conflict_nets)} Netz(e) sind unbestimmt oder haben gegensätzliche Treiber (X).")
+
+            indicators = []
+            for c in self.components.values():
+                if c.kind.startswith("led_"):
+                    a, k = states.get(port_net[(c.uid, 0)], "Z"), states.get(port_net[(c.uid, 1)], "Z")
+                    on = (a == 1 and k == 0)
+                    indicators.append({"component": c, "on": on, "anode": a, "cathode": k})
+
+            # Wiederholte Floating-Hinweise aus mehreren Iterationen/Kanälen zusammenfassen.
+            warnings = list(dict.fromkeys(warnings))
+            errors = list(dict.fromkeys(errors))
+            info = list(dict.fromkeys(info))
+            self.logic_port_states = {(c.uid, i): states.get(port_net[(c.uid, i)], "Z")
+                                      for c in self.components.values()
+                                      for i in range(len(CATALOG[c.kind]["ports"]))}
+            self.update()
+            return {
+                "errors": errors, "warnings": warnings, "info": info,
+                "states": states, "port_net": port_net,
+                "devices": device_results, "indicators": indicators,
+                "iterations": iteration + 1,
+            }
+
+        @staticmethod
+        def _solve_linear_system(matrix, vector):
+            """Kleine Gauss-Jordan-Loesung ohne zusaetzliche Python-Pakete."""
+            n = len(vector)
+            a = [list(map(float, matrix[row])) + [float(vector[row])] for row in range(n)]
+            for column in range(n):
+                pivot = max(range(column, n), key=lambda row: abs(a[row][column]))
+                if abs(a[pivot][column]) < 1e-12:
+                    raise ValueError("Das Gleichungssystem ist singulär; die Schaltung enthält ein schwebendes oder widersprüchliches Netz.")
+                if pivot != column:
+                    a[column], a[pivot] = a[pivot], a[column]
+                divisor = a[column][column]
+                for j in range(column, n + 1):
+                    a[column][j] /= divisor
+                for row in range(n):
+                    if row == column:
+                        continue
+                    factor = a[row][column]
+                    if abs(factor) < 1e-18:
+                        continue
+                    for j in range(column, n + 1):
+                        a[row][j] -= factor * a[column][j]
+            return [a[row][n] for row in range(n)]
+
+        def dc_value_simulation(self):
+            """Simulationsart 2: erste DC-MNA fuer Batterie/DC, R und LED.
+
+            LEDs werden stueckweise linearisiert: gesperrt mit sehr grossem
+            Widerstand, leitend mit Flussspannung + 1 Ohm dynamischem Widerstand.
+            Dadurch lassen sich auch einfache Parallelzweige ohne NumPy berechnen.
+            """
+            topology = self.topology_check()
+            result = {
+                "errors": list(topology["errors"]), "warnings": list(topology["warnings"]),
+                "info": list(topology["info"]),
+                "components": [], "source_current": None, "source": None,
+                # Stage ASM 100: Messgeräte lesen ihre hochohmigen Ports aus
+                # derselben Netz-/Knotenspannungsabbildung, ohne den Stromkreis
+                # selbst zu beeinflussen.
+                "port_map": dict(topology.get("port_map", {})),
+                "node_voltages": {},
+            }
+            if topology["errors"]:
+                result["warnings"].append("Wertesimulation wegen Verdrahtungsfehlern nicht gestartet.")
+                return result
+
+            sources = [c for c in self.components.values() if c.kind in ("battery", "dc")]
+            if not sources:
+                result["errors"].append("Keine Batterie/Gleichspannungsquelle vorhanden.")
+                return result
+            if len(sources) != 1:
+                result["errors"].append("Die erste Wertesimulation unterstützt genau eine Batterie/Gleichspannungsquelle pro Berechnung.")
+                return result
+            source = sources[0]
+            result["source"] = source
+            port_map = topology["port_map"]
+            pnet, nnet = port_map[(source.uid, 0)], port_map[(source.uid, 1)]
+            if pnet == nnet:
+                result["errors"].append(f"{source.name}: direkter Kurzschluss; Berechnung abgebrochen.")
+                return result
+
+            supported_passives = {"resistor", "led_red", "led_green", "led_blue", "switch", "button"}
+            passives = [c for c in self.components.values() if c.kind in supported_passives]
+            graph = self._two_terminal_graph(port_map, supported_passives)
+
+            # Beide Quellenklemmen sind Startpunkte; von dort alle durch R/LED
+            # erreichbaren Netze einsammeln. Vollstaendig getrennte Bauteile werden
+            # nicht in die Matrix aufgenommen und verursachen keine Singularitaet.
+            active_nets = {pnet, nnet}
+            queue = [pnet, nnet]
+            while queue:
+                net = queue.pop()
+                for other, _component, _from_port, _to_port in graph.get(net, ()):
+                    if other not in active_nets:
+                        active_nets.add(other)
+                        queue.append(other)
+            active_passives = [c for c in passives
+                               if port_map[(c.uid, 0)] in active_nets and port_map[(c.uid, 1)] in active_nets]
+
+            unsupported = []
+            for component in self.components.values():
+                if component is source or component in active_passives:
+                    continue
+                if component.kind in ("ground", "meter"):
+                    continue
+                ports = CATALOG[component.kind]["ports"]
+                if any(port_map.get((component.uid, i)) in active_nets for i in range(len(ports))):
+                    unsupported.append(component.name)
+            if unsupported:
+                result["warnings"].append(
+                    "In dieser Wertesimulation nicht ausgewertete Bauteile am aktiven Netz: " + ", ".join(sorted(unsupported))
+                )
+
+            for resistor in (c for c in active_passives if c.kind == "resistor"):
+                if resistor.value <= 0:
+                    result["errors"].append(f"{resistor.name}: Widerstand muss größer als 0 Ω sein.")
+            if result["errors"]:
+                return result
+
+            # Referenz ist der Minuspol. Alle anderen aktiven Netze erhalten eine
+            # Knotenspannungsvariable; zusaetzlich kommt der Quellenstrom hinzu.
+            nodes = [net for net in active_nets if net != nnet]
+            node_index = {net: i for i, net in enumerate(nodes)}
+            source_index = len(nodes)
+            size = len(nodes) + 1
+            led_states = {c.uid: False for c in active_passives if c.kind.startswith("led_")}
+            r_on, r_off = 1.0, 1.0e9
+            solution = None
+
+            def add_conductance(a, b, g, rhs_offset=0.0):
+                ia, ib = node_index.get(a), node_index.get(b)
+                if ia is not None:
+                    matrix[ia][ia] += g
+                    if ib is not None:
+                        matrix[ia][ib] -= g
+                    vector[ia] += rhs_offset
+                if ib is not None:
+                    matrix[ib][ib] += g
+                    if ia is not None:
+                        matrix[ib][ia] -= g
+                    vector[ib] -= rhs_offset
+
+            previous_signatures = set()
+            for _iteration in range(24):
+                matrix = [[0.0] * size for _ in range(size)]
+                vector = [0.0] * size
+                for component in active_passives:
+                    a = port_map[(component.uid, 0)]
+                    b = port_map[(component.uid, 1)]
+                    if component.kind == "resistor":
+                        add_conductance(a, b, 1.0 / component.value)
+                    elif component.kind in ("switch", "button"):
+                        if self.is_switch_closed(component):
+                            add_conductance(a, b, 1.0 / 0.05)
+                    else:
+                        on = led_states[component.uid]
+                        resistance = r_on if on else r_off
+                        vf = max(0.0, component.value) if on else 0.0
+                        add_conductance(a, b, 1.0 / resistance, vf / resistance)
+
+                ip, inn = node_index.get(pnet), node_index.get(nnet)
+                if ip is not None:
+                    matrix[ip][source_index] += 1.0
+                    matrix[source_index][ip] += 1.0
+                if inn is not None:
+                    matrix[inn][source_index] -= 1.0
+                    matrix[source_index][inn] -= 1.0
+                vector[source_index] = float(source.value)
+                try:
+                    solution = self._solve_linear_system(matrix, vector)
+                except ValueError as exc:
+                    result["errors"].append(str(exc))
+                    return result
+
+                def voltage(net):
+                    return 0.0 if net == nnet else solution[node_index[net]]
+
+                changed = False
+                for led in (c for c in active_passives if c.kind.startswith("led_")):
+                    va = voltage(port_map[(led.uid, 0)])
+                    vk = voltage(port_map[(led.uid, 1)])
+                    vd = va - vk
+                    old = led_states[led.uid]
+                    if old:
+                        current = (vd - max(0.0, led.value)) / r_on
+                        new = current >= -1e-9 and vd >= max(0.0, led.value) - 0.05
+                    else:
+                        new = vd > max(0.0, led.value) + 1e-6
+                    if new != old:
+                        led_states[led.uid] = new
+                        changed = True
+                signature = tuple(sorted(led_states.items()))
+                if not changed:
+                    break
+                if signature in previous_signatures:
+                    result["warnings"].append("LED-Arbeitspunkt oszilliert im Näherungsmodell; letzter stabiler Näherungswert wird verwendet.")
+                    break
+                previous_signatures.add(signature)
+
+            if solution is None:
+                result["errors"].append("Keine DC-Lösung gefunden.")
+                return result
+
+            def voltage(net):
+                return 0.0 if net == nnet else solution[node_index[net]]
+
+            result["source_current"] = float(solution[source_index])
+            result["node_voltages"] = {net: float(voltage(net)) for net in active_nets}
+            for component in active_passives:
+                a = port_map[(component.uid, 0)]
+                b = port_map[(component.uid, 1)]
+                va, vb = voltage(a), voltage(b)
+                if component.kind == "resistor":
+                    current = (va - vb) / component.value
+                    result["components"].append({
+                        "component": component, "kind": "resistor", "voltage": va - vb,
+                        "current": current, "power": current * current * component.value,
+                    })
+                elif component.kind in ("switch", "button"):
+                    closed = self.is_switch_closed(component)
+                    current = (va - vb) / 0.05 if closed else 0.0
+                    result["components"].append({
+                        "component": component, "kind": "switch", "voltage": va - vb,
+                        "current": current, "status": "geschlossen" if closed else "offen",
+                    })
+                else:
+                    vd = va - vb
+                    on = led_states[component.uid]
+                    current = max(0.0, (vd - max(0.0, component.value)) / r_on) if on else 0.0
+                    max_current = max(0.0, float(component.params.get("max_current", 0.020)))
+                    max_reverse = max(0.0, float(component.params.get("max_reverse_voltage", 5.0)))
+                    reverse = max(0.0, -vd)
+                    status = "EIN" if on and current > 1e-6 else "AUS"
+                    if current > max_current + 1e-9:
+                        status = "ÜBERLAST"
+                        result["errors"].append(
+                            f"{component.name}: LED-Strom {current*1000:.2f} mA überschreitet das Limit {max_current*1000:.2f} mA."
+                        )
+                    if reverse > max_reverse + 1e-9:
+                        status = "SPERRSPANNUNG ZU HOCH"
+                        result["errors"].append(
+                            f"{component.name}: Sperrspannung {reverse:.3f} V überschreitet das Limit {max_reverse:.3f} V."
+                        )
+                    result["components"].append({
+                        "component": component, "kind": "led", "voltage": vd,
+                        "current": current, "reverse_voltage": reverse, "status": status,
+                        "max_current": max_current, "max_reverse_voltage": max_reverse,
+                    })
+            if abs(result["source_current"]) < 1e-9:
+                result["warnings"].append("Die Quelle liefert praktisch keinen Strom; der Stromkreis ist offen oder alle LEDs sperren.")
+            return result
+
+        def cmos_transient_simulation(self, duration_ms=2000.0, time_step_ms=10.0):
+            """Diskrete CMOS-Zeitbereichssimulation fuer die Stage-99-4000-Serie.
+
+            Das Modell ist eine digitale Transientensimulation, keine analoge SPICE-
+            Integration. Es wertet Rechteck-Taktquellen, kombinatorische CMOS-Gatter
+            und die gespeicherten Zustandsautomaten der Zaehler/Flip-Flops pro
+            Zeitschritt aus. Messgeraete erhalten echte Zeitstempel in Millisekunden.
+            """
+            errors, warnings, info = [], [], []
+            try:
+                duration_ms = float(duration_ms)
+                time_step_ms = float(time_step_ms)
+            except (TypeError, ValueError):
+                duration_ms, time_step_ms = 2000.0, 10.0
+            duration_ms = max(1.0, min(60000.0, duration_ms))
+            time_step_ms = max(0.05, min(1000.0, time_step_ms))
+            max_samples = 5000
+            sample_count = int(math.floor(duration_ms / time_step_ms)) + 1
+            if sample_count > max_samples:
+                time_step_ms = duration_ms / float(max_samples - 1)
+                sample_count = max_samples
+                warnings.append(
+                    f"Zeitschritt automatisch auf {time_step_ms:.6g} ms vergroessert, "
+                    f"damit maximal {max_samples} Samples erzeugt werden."
+                )
+
+            # Elektrische Netze, geschlossene Schalter/Taster verbinden ihre Ports.
+            parent = {}
+            def find(key):
+                parent.setdefault(key, key)
+                if parent[key] != key:
+                    parent[key] = find(parent[key])
+                return parent[key]
+            def union(a, b):
+                ra, rb = find(a), find(b)
+                if ra != rb:
+                    parent[rb] = ra
+            for component in self.components.values():
+                for index in range(len(CATALOG[component.kind]["ports"])):
+                    find(("port", component.uid, index))
+            for node_id in self.nodes:
+                find(("node", node_id))
+            for wire in self.wires.values():
+                keys = [self.anchor_key(anchor) for anchor in wire.anchors]
+                if keys:
+                    for key in keys[1:]:
+                        union(keys[0], key)
+            for component in self.components.values():
+                if component.kind in ("switch", "button") and self.is_switch_closed(component):
+                    union(("port", component.uid, 0), ("port", component.uid, 1))
+            port_net = {
+                (component.uid, index): find(("port", component.uid, index))
+                for component in self.components.values()
+                for index in range(len(CATALOG[component.kind]["ports"]))
+            }
+
+            def resolve(drivers):
+                strong = {v for v, strength, _name in drivers if strength == "strong" and v in (0, 1)}
+                if any(v == "X" and strength == "strong" for v, strength, _name in drivers) or len(strong) > 1:
+                    return "X"
+                if len(strong) == 1:
+                    return next(iter(strong))
+                weak = {v for v, strength, _name in drivers if strength == "weak" and v in (0, 1)}
+                if any(v == "X" and strength == "weak" for v, strength, _name in drivers) or len(weak) > 1:
+                    return "X"
+                if len(weak) == 1:
+                    return next(iter(weak))
+                return "Z"
+
+            def port_index_for_signal(component, signal):
+                wanted = str(signal).strip().upper()
+                for index, (label, _x, _y) in enumerate(CATALOG[component.kind]["ports"]):
+                    text = str(label)
+                    if ":" in text:
+                        text = text.split(":", 1)[1]
+                    if text.strip().upper() == wanted:
+                        return index
+                return None
+
+            def net_for_signal(component, signal):
+                index = port_index_for_signal(component, signal)
+                return None if index is None else port_net.get((component.uid, index))
+
+            def state_for_signal(component, signal, states, default="Z"):
+                net = net_for_signal(component, signal)
+                return default if net is None else states.get(net, default)
+
+            def drive_signal(drivers, component, signal, value, strength="strong"):
+                net = net_for_signal(component, signal)
+                if net is not None:
+                    drivers[net].append((value, strength, component.name + "." + str(signal)))
+
+            # Eine digitale 1 wird fuer Messungen auf die erste vorhandene
+            # Versorgungsspannung abgebildet; ohne Versorgung gelten 5 V.
+            supply_values = [
+                abs(float(c.value)) for c in self.components.values()
+                if c.kind in ("battery", "dc") and math.isfinite(float(c.value)) and abs(float(c.value)) > 1e-9
+            ]
+            clock_values = [
+                float(c.params.get("high_voltage", 5.0)) for c in self.components.values()
+                if c.kind == "clock"
+            ]
+            default_high_voltage = supply_values[0] if supply_values else (clock_values[0] if clock_values else 5.0)
+            default_high_voltage = max(1.0, min(15.0, float(default_high_voltage)))
+
+            clock_components = [c for c in self.components.values() if c.kind == "clock"]
+            if not clock_components:
+                warnings.append("Keine Taktquelle vorhanden; sequentielle CMOS-Bausteine bleiben ohne externe Flanke in ihrem Initialzustand.")
+            else:
+                fastest = max(max(0.001, float(c.value)) for c in clock_components)
+                half_period_ms = 500.0 / fastest
+                if time_step_ms > half_period_ms:
+                    warnings.append(
+                        f"Zeitschritt {time_step_ms:g} ms ist groesser als die halbe Periode der schnellsten Taktquelle "
+                        f"({half_period_ms:g} ms); Flanken koennen uebersprungen werden."
+                    )
+
+            def clock_level(component, time_ms):
+                frequency = max(0.001, min(1_000_000.0, float(component.value)))
+                duty = max(0.01, min(0.99, float(component.params.get("duty", 0.5))))
+                phase = float(component.params.get("phase", 0.0)) % 360.0
+                period_ms = 1000.0 / frequency
+                phase_ms = period_ms * phase / 360.0
+                position = ((float(time_ms) + phase_ms) % period_ms) / period_ms
+                return 1 if position < duty else 0
+
+            # Persistente Zustandsautomaten nur fuer diesen Simulationslauf.
+            seq = {}
+            for component in self.components.values():
+                if component.kind == "cmos_4013":
+                    seq[component.uid] = {"q": [0, 0], "prev": [None, None]}
+                elif component.kind == "cmos_4014":
+                    seq[component.uid] = {"bits": [0] * 8, "prev": None}
+                elif component.kind == "cmos_4017":
+                    seq[component.uid] = {"count": 0, "prev": None}
+                elif component.kind == "cmos_4020":
+                    seq[component.uid] = {"count": 0, "prev": None, "bits": 14}
+                elif component.kind == "cmos_4024":
+                    seq[component.uid] = {"count": 0, "prev": None, "bits": 7}
+                elif component.kind == "cmos_4026":
+                    seq[component.uid] = {"count": 0, "prev": None}
+                elif component.kind == "cmos_4040":
+                    seq[component.uid] = {"count": 0, "prev": None, "bits": 12}
+
+            def is_powered(component, states):
+                vdd = state_for_signal(component, "VDD", states)
+                vss = state_for_signal(component, "VSS", states)
+                return vdd == 1 and vss == 0
+
+            segment_table = {
+                0: "abcdef", 1: "bc", 2: "abdeg", 3: "abcdg", 4: "bcfg",
+                5: "acdfg", 6: "acdefg", 7: "abc", 8: "abcdefg", 9: "abcdfg",
+            }
+
+            def add_sequential_outputs(drivers, states):
+                for component in self.components.values():
+                    if component.kind not in seq:
+                        continue
+                    powered = is_powered(component, states)
+                    invalid = "X" if not powered else None
+                    data = seq[component.uid]
+                    if component.kind == "cmos_4013":
+                        for channel in (1, 2):
+                            q = invalid if invalid is not None else data["q"][channel - 1]
+                            drive_signal(drivers, component, f"{channel}Q", q)
+                            drive_signal(drivers, component, f"{channel}/Q", "X" if q not in (0, 1) else 1 - q)
+                    elif component.kind == "cmos_4014":
+                        bits = data["bits"]
+                        for signal, bit_index in (("Q6", 5), ("Q7", 6), ("Q8", 7)):
+                            drive_signal(drivers, component, signal, invalid if invalid is not None else bits[bit_index])
+                    elif component.kind == "cmos_4017":
+                        count = int(data["count"]) % 10
+                        for q in range(10):
+                            drive_signal(drivers, component, f"Q{q}", invalid if invalid is not None else int(q == count))
+                        drive_signal(drivers, component, "CO", invalid if invalid is not None else int(count < 5))
+                    elif component.kind in ("cmos_4020", "cmos_4024", "cmos_4040"):
+                        count = int(data["count"])
+                        bits = int(data["bits"])
+                        for q in range(1, bits + 1):
+                            if port_index_for_signal(component, f"Q{q}") is not None:
+                                drive_signal(drivers, component, f"Q{q}", invalid if invalid is not None else ((count >> (q - 1)) & 1))
+                    elif component.kind == "cmos_4026":
+                        count = int(data["count"]) % 10
+                        enable = state_for_signal(component, "DISP EN IN", states, 1)
+                        active_segments = segment_table.get(count, "") if enable == 1 else ""
+                        for segment in "abcdefg":
+                            drive_signal(drivers, component, segment, invalid if invalid is not None else int(segment in active_segments))
+                        drive_signal(drivers, component, "UNGATED C", invalid if invalid is not None else int("c" in segment_table.get(count, "")))
+                        drive_signal(drivers, component, "DISP EN OUT", invalid if invalid is not None else (enable if enable in (0, 1) else "X"))
+                        drive_signal(drivers, component, "CO", invalid if invalid is not None else int(count < 5))
+
+            def solve_states(time_ms, seq_state):
+                # seq_state ist absichtlich ueber Closure dasselbe dict; Parameter
+                # dokumentiert nur, dass die Ausgaenge vom aktuellen Automatenzustand abhaengen.
+                states = {}
+                for _iteration in range(32):
+                    drivers = defaultdict(list)
+                    # Statische Versorgung und Masse.
+                    for component in self.components.values():
+                        if component.kind == "ground":
+                            drivers[port_net[(component.uid, 0)]].append((0, "strong", component.name))
+                        elif component.kind in ("battery", "dc"):
+                            drivers[port_net[(component.uid, 0)]].append((1, "strong", component.name + ".+"))
+                            drivers[port_net[(component.uid, 1)]].append((0, "strong", component.name + ".-"))
+                        elif component.kind == "clock":
+                            drivers[port_net[(component.uid, 0)]].append((clock_level(component, time_ms), "strong", component.name + ".OUT"))
+                            drivers[port_net[(component.uid, 1)]].append((0, "strong", component.name + ".GND"))
+
+                    # Widerstaende wirken in der digitalen Simulation als schwache
+                    # Pull-Up/Pull-Down-Verbindung von einem bereits bekannten Pegel.
+                    for resistor in (c for c in self.components.values() if c.kind == "resistor"):
+                        a = port_net[(resistor.uid, 0)]
+                        b = port_net[(resistor.uid, 1)]
+                        sa, sb = states.get(a, "Z"), states.get(b, "Z")
+                        if sa in (0, 1) and a != b:
+                            drivers[b].append((sa, "weak", resistor.name))
+                        if sb in (0, 1) and a != b:
+                            drivers[a].append((sb, "weak", resistor.name))
+
+                    # Elementare Gatter aus dem Digital-Tab.
+                    for component in self.components.values():
+                        if component.kind not in LOGIC_GATE_KINDS:
+                            continue
+                        ports = CATALOG[component.kind]["ports"]
+                        output_index = len(ports) - 1
+                        inputs = [states.get(port_net[(component.uid, i)], "Z") for i in range(output_index)]
+                        out = self._ttl_gate_eval(component.kind.upper(), inputs)
+                        drivers[port_net[(component.uid, output_index)]].append((out, "strong", component.name))
+
+                    # CMOS 4001 / 4011 sind rein kombinatorisch.
+                    for component in self.components.values():
+                        if component.kind not in ("cmos_4001", "cmos_4011"):
+                            continue
+                        powered = is_powered(component, states)
+                        gate = "NOR" if component.kind == "cmos_4001" else "NAND"
+                        for channel in range(1, 5):
+                            a = state_for_signal(component, f"{channel}A", states)
+                            b = state_for_signal(component, f"{channel}B", states)
+                            out = self._ttl_gate_eval(gate, [a, b]) if powered else "X"
+                            drive_signal(drivers, component, f"{channel}Y", out)
+
+                    add_sequential_outputs(drivers, states)
+                    new_states = {net: resolve(ds) for net, ds in drivers.items()}
+                    # Alle existierenden Netze ohne Treiber explizit als Z behandeln.
+                    for net in port_net.values():
+                        new_states.setdefault(net, "Z")
+                    if new_states == states:
+                        return new_states
+                    states = new_states
+                return states
+
+            def update_sequential(component, states):
+                data = seq.get(component.uid)
+                if data is None:
+                    return
+                if not is_powered(component, states):
+                    return
+                if component.kind == "cmos_4013":
+                    for channel in (1, 2):
+                        reset = state_for_signal(component, f"{channel}RESET", states)
+                        set_value = state_for_signal(component, f"{channel}SET", states)
+                        clock = state_for_signal(component, f"{channel}CLK", states)
+                        index = channel - 1
+                        if reset == 1 and set_value == 1:
+                            data["q"][index] = "X"
+                        elif reset == 1:
+                            data["q"][index] = 0
+                        elif set_value == 1:
+                            data["q"][index] = 1
+                        elif data["prev"][index] == 0 and clock == 1:
+                            d = state_for_signal(component, f"{channel}D", states)
+                            data["q"][index] = d if d in (0, 1) else "X"
+                        if clock in (0, 1):
+                            data["prev"][index] = clock
+                elif component.kind == "cmos_4014":
+                    reset = 0  # 4014 besitzt in der verwendeten Pinbelegung keinen separaten Reset-Port.
+                    clock = state_for_signal(component, "CLK", states)
+                    if data["prev"] == 0 and clock == 1 and not reset:
+                        parallel = state_for_signal(component, "P/S", states)
+                        if parallel == 1:
+                            data["bits"] = [
+                                state_for_signal(component, f"P{i}", states)
+                                if state_for_signal(component, f"P{i}", states) in (0, 1) else "X"
+                                for i in range(1, 9)
+                            ]
+                        else:
+                            serial = state_for_signal(component, "SER", states)
+                            serial = serial if serial in (0, 1) else "X"
+                            data["bits"] = [serial] + list(data["bits"][:-1])
+                    if clock in (0, 1):
+                        data["prev"] = clock
+                elif component.kind == "cmos_4017":
+                    reset = state_for_signal(component, "RESET", states)
+                    clock = state_for_signal(component, "CLK", states)
+                    inhibit = state_for_signal(component, "CLK INH", states, 0)
+                    if reset == 1:
+                        data["count"] = 0
+                    elif data["prev"] == 0 and clock == 1 and inhibit == 0:
+                        data["count"] = (int(data["count"]) + 1) % 10
+                    if clock in (0, 1):
+                        data["prev"] = clock
+                elif component.kind in ("cmos_4020", "cmos_4024", "cmos_4040"):
+                    reset = state_for_signal(component, "RESET", states)
+                    clock = state_for_signal(component, "CLK", states)
+                    if reset == 1:
+                        data["count"] = 0
+                    # CD4020/4024/4040: Zaehlen an der fallenden Taktflanke.
+                    elif data["prev"] == 1 and clock == 0:
+                        data["count"] = (int(data["count"]) + 1) % (1 << int(data["bits"]))
+                    if clock in (0, 1):
+                        data["prev"] = clock
+                elif component.kind == "cmos_4026":
+                    reset = state_for_signal(component, "RESET", states)
+                    clock = state_for_signal(component, "CLK", states)
+                    inhibit = state_for_signal(component, "CLK INH", states, 0)
+                    if reset == 1:
+                        data["count"] = 0
+                    elif data["prev"] == 0 and clock == 1 and inhibit == 0:
+                        data["count"] = (int(data["count"]) + 1) % 10
+                    if clock in (0, 1):
+                        data["prev"] = clock
+
+            meters = [c for c in self.components.values() if c.kind == "meter"]
+            meter_traces = {meter.uid: [] for meter in meters}
+            final_states = {}
+            times = []
+            for sample_index in range(sample_count):
+                time_ms = min(duration_ms, sample_index * time_step_ms)
+                states_before = solve_states(time_ms, seq)
+                # Beim ersten Sample nur den aktuellen Taktpegel als prev merken;
+                # so wird t=0 nicht als kuenstliche Flanke interpretiert.
+                if sample_index == 0:
+                    for component in self.components.values():
+                        data = seq.get(component.uid)
+                        if data is None:
+                            continue
+                        if component.kind == "cmos_4013":
+                            for channel in (1, 2):
+                                clk = state_for_signal(component, f"{channel}CLK", states_before)
+                                if clk in (0, 1): data["prev"][channel-1] = clk
+                        elif component.kind in ("cmos_4014", "cmos_4017", "cmos_4020", "cmos_4024", "cmos_4026", "cmos_4040"):
+                            clk = state_for_signal(component, "CLK", states_before)
+                            if clk in (0, 1): data["prev"] = clk
+                    # Asynchrone Set/Reset-Eingaenge trotzdem schon bei t=0 anwenden.
+                    for component in self.components.values():
+                        if component.kind == "cmos_4013":
+                            update_sequential(component, states_before)
+                        elif component.kind in ("cmos_4017", "cmos_4020", "cmos_4024", "cmos_4026", "cmos_4040"):
+                            if state_for_signal(component, "RESET", states_before) == 1:
+                                update_sequential(component, states_before)
+                else:
+                    for component in self.components.values():
+                        if component.uid in seq:
+                            update_sequential(component, states_before)
+                final_states = solve_states(time_ms, seq)
+                times.append(time_ms)
+
+                for meter in meters:
+                    ch1_net = port_net.get((meter.uid, 0))
+                    com_net = port_net.get((meter.uid, 1))
+                    ch1 = final_states.get(ch1_net, "Z") if ch1_net is not None else "Z"
+                    com = final_states.get(com_net, "Z") if com_net is not None else "Z"
+                    va = default_high_voltage if ch1 == 1 else (0.0 if ch1 == 0 else None)
+                    vb = default_high_voltage if com == 1 else (0.0 if com == 0 else None)
+                    voltage = (va - vb) if va is not None and vb is not None else None
+                    meter_traces[meter.uid].append({
+                        "sample": sample_index + 1,
+                        "time_ms": float(time_ms),
+                        "voltage": voltage,
+                        "logic_ch1": ch1,
+                        "logic_com": com,
+                    })
+
+            # Letzten Pegel direkt an den Ports farblich sichtbar machen.
+            self.logic_port_states = {
+                (component.uid, index): final_states.get(port_net[(component.uid, index)], "Z")
+                for component in self.components.values()
+                for index in range(len(CATALOG[component.kind]["ports"]))
+            }
+            self.update()
+
+            device_results = []
+            for component in self.components.values():
+                if component.kind not in CMOS_IC_KINDS:
+                    continue
+                data = seq.get(component.uid)
+                if component.kind in ("cmos_4001", "cmos_4011"):
+                    summary = "kombinatorisch"
+                elif component.kind == "cmos_4013":
+                    summary = "Q1={} · Q2={}".format(data["q"][0], data["q"][1])
+                elif component.kind == "cmos_4014":
+                    summary = "Register=" + "".join(str(bit) for bit in reversed(data["bits"]))
+                else:
+                    summary = f"Zaehlerstand={int(data['count'])}" if data is not None and "count" in data else "—"
+                powered = is_powered(component, final_states)
+                if not powered:
+                    warnings.append(f"{component.name} ({CATALOG[component.kind]['title']}): VDD/VSS nicht gueltig versorgt.")
+                device_results.append({"component": component, "summary": summary, "powered": powered})
+
+            meter_records = []
+            for meter in meters:
+                samples = meter_traces.get(meter.uid, [])
+                last = samples[-1] if samples else {}
+                meter_records.append({
+                    "uid": meter.uid,
+                    "name": meter.name,
+                    "voltage": last.get("voltage"),
+                    "logic_ch1": last.get("logic_ch1", "Z"),
+                    "logic_com": last.get("logic_com", "Z"),
+                    "source": "CMOS-Transienten-Simulation",
+                    "samples": samples,
+                })
+
+            info.append(
+                f"{sample_count} Zeitschritte von 0 bis {duration_ms:g} ms mit dt={time_step_ms:.6g} ms berechnet."
+            )
+            return {
+                "errors": errors,
+                "warnings": warnings,
+                "info": info,
+                "duration_ms": duration_ms,
+                "time_step_ms": time_step_ms,
+                "sample_count": sample_count,
+                "times_ms": times,
+                "port_net": port_net,
+                "states": final_states,
+                "devices": device_results,
+                "meters": meter_records,
+                "high_voltage": default_high_voltage,
+            }
+
+
+        def to_data(self):
+            used = {a["node"] for w in self.wires.values() for a in w.anchors if "node" in a}
+            return {
+                "format": "d64-e-baukasten", "version": 1, "grid": self.grid,
+                "components": [dict(id=c.uid, kind=c.kind, name=c.name, position=xy(c.pos()),
+                                    angle=c.angle, value=c.value,
+                                    **({"params": copy.deepcopy(c.params)} if c.params else {}))
+                               for c in self.components.values()],
+                "nodes": {n: p for n, p in self.nodes.items() if n in used},
+                "wires": [dict(id=w.uid, anchors=copy.deepcopy(w.anchors)) for w in self.wires.values()],
+            }
+
+        @staticmethod
+        def validate_data(data):
+            if not isinstance(data, dict) or data.get("format") != "d64-e-baukasten" or data.get("version") != 1:
+                raise ValueError("Keine unterstützte E-Baukasten-Datei.")
+            if data.get("grid") not in tuple(range(5, 51, 5)):
+                raise ValueError("Ungültiges Raster.")
+            components, wires, nodes = data.get("components"), data.get("wires"), data.get("nodes")
+            if not isinstance(components, list) or not isinstance(wires, list) or not isinstance(nodes, dict):
+                raise ValueError("Ungültige Schaltungsdaten.")
+            if len(components)>2000 or len(wires)>4000 or len(nodes)>20000:
+                raise ValueError("Die Schaltung ist für diese Editorstufe zu groß.")
+            def number(n):
+                return isinstance(n,(float,int)) and not isinstance(n,bool) and math.isfinite(n) and abs(n)<=1e12
+            def position(p):
+                return isinstance(p,list) and len(p)==2 and all(number(n) and abs(n)<=100000 for n in p)
+            ids = {}
+            for c in components:
+                if not isinstance(c,dict) or c.get("kind") not in CATALOG or not isinstance(c.get("id"),str):
+                    raise ValueError("Ungültige Komponente.")
+                if c["id"] in ids or not position(c.get("position")) or not number(c.get("angle")) or not number(c.get("value")):
+                    raise ValueError("Ungültige Komponentenposition oder Werte.")
+                if not isinstance(c.get("name"),str) or len(c["name"])>80:
+                    raise ValueError("Ungültiger Komponentenname.")
+                params = c.get("params", {})
+                if not isinstance(params, dict) or len(params) > 32:
+                    raise ValueError("Ungültige Komponentenparameter.")
+                for key, value in params.items():
+                    if not isinstance(key, str) or len(key) > 80 or not number(value):
+                        raise ValueError("Ungültige Komponentenparameter.")
+                ids[c["id"]] = c
+            if any(not isinstance(n,str) or not position(p) for n,p in nodes.items()):
+                raise ValueError("Ungültige Verbindungspunkte.")
+            seen = set()
+            for w in wires:
+                if not isinstance(w,dict) or not isinstance(w.get("id"),str) or w["id"] in seen:
+                    raise ValueError("Ungültige Leitung.")
+                seen.add(w["id"])
+                anchors=w.get("anchors")
+                if not isinstance(anchors,list) or not 2<=len(anchors)<=200:
+                    raise ValueError("Ungültiger Leitungspfad.")
+                for a in anchors:
+                    if not isinstance(a,dict):
+                        raise ValueError("Ungültiger Leitungsanschluss.")
+                    if set(a)=={"node"} and isinstance(a["node"],str) and a["node"] in nodes:
+                        continue
+                    if (set(a)=={"component","port"} and isinstance(a["component"],str)
+                        and a["component"] in ids and type(a["port"]) is int
+                        and 0<=a["port"]<len(CATALOG[ids[a["component"]]["kind"]]["ports"])):
+                        continue
+                    raise ValueError("Leitung verweist auf einen fehlenden Anschluss.")
+
+        def load_data(self, data):
+            self.validate_data(data)  # Erst pruefen, dann den vorhandenen Entwurf ersetzen.
+            self.loading = True
+            try:
+                self.clear()
+                self.components, self.wires, self.nodes = {}, {}, copy.deepcopy(data["nodes"])
+                self.grid = int(data["grid"])
+                for c in data["components"]:
+                    item = self.add_component(c["kind"], point(c["position"]), c["name"], c["id"])
+                    item.angle, item.value = float(c["angle"])%360, float(c["value"])
+                    item.params.update({k: float(v) for k, v in c.get("params", {}).items()})
+                for w in data["wires"]:
+                    wire = WireItem(w["anchors"], w["id"])
+                    self.wires[wire.uid] = wire
+                    self.addItem(wire)
+                self.clearSelection()
+            finally:
+                self.loading = False
+            self.refresh_wires()
+            self.modified.emit()
+
+
+
+    class ComponentList(QListWidget):
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.setDragEnabled(True)
+            self.setDragDropMode(QAbstractItemView.DragOnly)
+            self.setSelectionMode(QAbstractItemView.SingleSelection)
+            self.setIconSize(QSize(48, 40))
+            self.setSpacing(4)
+
+        def startDrag(self, supported_actions):
+            item = self.currentItem()
+            if item is None:
+                return
+            kind = item.data(Qt.UserRole)
+            if not isinstance(kind, str) or kind not in CATALOG:
+                return
+            mime = QMimeData()
+            mime.setData(MIME_COMPONENT, kind.encode("utf-8"))
+            drag = QDrag(self)
+            drag.setMimeData(mime)
+            drag.setPixmap(item.icon().pixmap(48,40))
+            drag.exec_(Qt.CopyAction)
+
+        def contextMenuEvent(self, event):
+            item = self.itemAt(event.pos())
+            if item is None:
+                return super().contextMenuEvent(event)
+            kind = item.data(Qt.UserRole)
+            if kind not in LOGIC_GATE_KINDS:
+                return super().contextMenuEvent(event)
+            dark_mode = self.palette().color(QPalette.Base).lightness() < 128
+            menu = GateContextMenu(kind, dark_mode, self)
+            truth_action = menu.addAction("Wahrheits-Tabelle")
+            menu.set_truth_action(truth_action)
+            help_action = menu.addAction("Hilfe")
+            help_action.triggered.connect(
+                lambda checked=False, k=kind: QMessageBox.information(
+                    self,
+                    f"Hilfe · {CATALOG[k]['title']}",
+                    CATALOG[k]["details"] +
+                    ("\n\nBei NOT wird B in der A/B/C-Wahrheitstabelle als Don't-Care-Eingang geführt; C hängt nur von A ab."
+                     if k == "not" else "\n\nC ist der logische Ausgang aus A und B.")
+                )
+            )
+            menu.exec_(event.globalPos())
+            event.accept()
+
+
+    LOGIC_GATE_KINDS = {"not", "and", "nand", "or", "nor", "xor", "xnor"}
+
+    def logic_gate_truth_rows(kind):
+        rows = []
+        for a in (0, 1):
+            for b in (0, 1):
+                if kind == "not":
+                    c = 0 if a else 1
+                elif kind == "and":
+                    c = int(bool(a and b))
+                elif kind == "nand":
+                    c = int(not (a and b))
+                elif kind == "or":
+                    c = int(bool(a or b))
+                elif kind == "nor":
+                    c = int(not (a or b))
+                elif kind == "xor":
+                    c = int(bool(a) != bool(b))
+                elif kind == "xnor":
+                    c = int(bool(a) == bool(b))
+                else:
+                    c = 0
+                rows.append((a, b, c))
+        return rows
+
+
+    class GateTruthTableWidget(QWidget):
+        """Kurzlebiges QPainter-Popup rechts neben dem Gatter-Kontextmenü."""
+        def __init__(self, gate_kind, dark_mode=False, parent=None):
+            super().__init__(parent, Qt.ToolTip | Qt.FramelessWindowHint)
+            self.gate_kind = gate_kind
+            self.dark_mode = bool(dark_mode)
+            self.rows = logic_gate_truth_rows(gate_kind)
+            self.cell_w = 54
+            self.header_h = 30
+            self.row_h = 25
+            self.margin = 8
+            width = self.margin * 2 + self.cell_w * 3
+            height = self.margin * 2 + self.header_h + self.row_h * len(self.rows)
+            self.setFixedSize(width, height)
+            self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+            self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
+        def paintEvent(self, event):
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.TextAntialiasing)
+            navy = QColor("#071d3b") if self.dark_mode else QColor("#dbe7f5")
+            yellow = QColor("#ffe45c") if self.dark_mode else QColor("#5f4900")
+            black = QColor("#000000")
+            white = QColor("#ffffff")
+            painter.fillRect(self.rect(), navy)
+
+            x0 = self.margin
+            y0 = self.margin
+            table_w = self.cell_w * 3
+            table_h = self.header_h + self.row_h * len(self.rows)
+
+            painter.fillRect(QRect(x0, y0, table_w, self.header_h), navy)
+            body_y = y0 + self.header_h
+            painter.fillRect(QRect(x0, body_y, table_w, table_h - self.header_h), white)
+
+            header_font = QFont(painter.font())
+            header_font.setBold(True)
+            painter.setFont(header_font)
+            painter.setPen(yellow)
+            for col, label in enumerate(("A", "B", "C")):
+                rect = QRect(x0 + col * self.cell_w, y0, self.cell_w, self.header_h)
+                painter.drawText(rect, Qt.AlignCenter, label)
+
+            body_font = QFont(painter.font())
+            body_font.setBold(False)
+            painter.setFont(body_font)
+            painter.setPen(black)
+            for row_index, row in enumerate(self.rows):
+                top = body_y + row_index * self.row_h
+                for col, value in enumerate(row):
+                    rect = QRect(x0 + col * self.cell_w, top, self.cell_w, self.row_h)
+                    painter.drawText(rect, Qt.AlignCenter, str(value))
+
+            # Zelllinien: links 2 px, rechts 1 px; Header/Body-Trennung 2 px.
+            painter.setPen(QPen(black, 1))
+            painter.drawLine(x0, y0, x0 + table_w, y0)
+            painter.drawLine(x0 + table_w, y0, x0 + table_w, y0 + table_h)
+            painter.drawLine(x0, y0 + table_h, x0 + table_w, y0 + table_h)
+            for col in (1, 2):
+                x = x0 + col * self.cell_w
+                painter.drawLine(x, y0, x, y0 + table_h)
+            for row_index in range(1, len(self.rows)):
+                y = body_y + row_index * self.row_h
+                painter.drawLine(x0, y, x0 + table_w, y)
+            painter.setPen(QPen(black, 2))
+            painter.drawLine(x0, y0, x0, y0 + table_h)
+            painter.drawLine(x0, body_y, x0 + table_w, body_y)
+            painter.end()
+
+
+    class GateContextMenu(QMenu):
+        def __init__(self, gate_kind, dark_mode=False, parent=None):
+            super().__init__(parent)
+            self.gate_kind = gate_kind
+            self.dark_mode = bool(dark_mode)
+            self.truth_action = None
+            self.truth_popup = None
+
+        def set_truth_action(self, action):
+            self.truth_action = action
+
+        def _show_truth_popup(self, action):
+            if action is not self.truth_action:
+                return
+            self._hide_truth_popup()
+            self.truth_popup = GateTruthTableWidget(self.gate_kind, self.dark_mode)
+            action_rect = self.actionGeometry(action)
+            global_pos = self.mapToGlobal(QPoint(self.width() + 4, max(0, action_rect.top())))
+            self.truth_popup.move(global_pos)
+            self.truth_popup.show()
+            self.truth_popup.raise_()
+
+        def _hide_truth_popup(self):
+            popup = self.truth_popup
+            self.truth_popup = None
+            if popup is not None:
+                popup.hide()
+                popup.deleteLater()
+
+        def mousePressEvent(self, event):
+            action = self.actionAt(event.pos())
+            if event.button() == Qt.LeftButton and action is self.truth_action:
+                self._show_truth_popup(action)
+            else:
+                self._hide_truth_popup()
+            super().mousePressEvent(event)
+
+        def mouseReleaseEvent(self, event):
+            self._hide_truth_popup()
+            super().mouseReleaseEvent(event)
+
+        def hideEvent(self, event):
+            self._hide_truth_popup()
+            super().hideEvent(event)
+
+
+    class CircuitView(QGraphicsView):
+        message = pyqtSignal(str)
+        mode_changed = pyqtSignal(str)
+        component_help_requested = pyqtSignal(str)
+
+        def __init__(self, scene, parent=None):
+            super().__init__(scene, parent)
+            self.mode = "mouse"
+            self.pending_kind = None
+            self.pending_anchors = []
+            self.preview = None
+            self.setAcceptDrops(True)
+            self.setMouseTracking(True)
+            self.setFocusPolicy(Qt.StrongFocus)
+            self.setRenderHints(QPainter.Antialiasing | QPainter.TextAntialiasing)
+            self.setViewportUpdateMode(QGraphicsView.FullViewportUpdate)
+            self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+            self.setDragMode(QGraphicsView.RubberBandDrag)
+            self.setMinimumSize(180, 180)
+            self.centerOn(300, 200)
+
+        def tolerance(self):
+            return 8 / max(.25, self.transform().m11())
+
+        def set_mode(self, mode):
+            self.cancel_drawing()
+            self.mode = mode
+            self.pending_kind = None
+            self.setDragMode(QGraphicsView.RubberBandDrag if mode == "mouse" else QGraphicsView.NoDrag)
+            self.viewport().setCursor(Qt.ArrowCursor if mode == "mouse" else Qt.CrossCursor)
+            self.mode_changed.emit(mode)
+
+        def arm_component(self, kind):
+            self.set_mode("place")
+            self.pending_kind = kind
+            self.message.emit(f"{CATALOG[kind]['title']}: auf die Schaltung klicken oder aus der Liste ziehen. ESC bricht ab.")
+
+        @staticmethod
+        def dragged_kind(event):
+            if not event.mimeData().hasFormat(MIME_COMPONENT):
+                return None
+            try:
+                kind = bytes(event.mimeData().data(MIME_COMPONENT)).decode("utf-8")
+            except (UnicodeError, ValueError):
+                return None
+            return kind if kind in CATALOG else None
+
+        def dragEnterEvent(self, event):
+            if self.dragged_kind(event):
+                event.acceptProposedAction()
+            else:
+                event.ignore()
+
+        def dragMoveEvent(self, event):
+            self.dragEnterEvent(event)
+
+        def dropEvent(self, event):
+            kind = self.dragged_kind(event)
+            if kind:
+                self.scene().add_component(kind, self.mapToScene(event.pos()))
+                self.set_mode("mouse")
+                self.setFocus(Qt.MouseFocusReason)
+                self.message.emit("Komponente platziert. Ports verbinden: Werkzeug Leitung wählen.")
+                event.acceptProposedAction()
+            else:
+                event.ignore()
+
+        def cancel_drawing(self):
+            self.pending_anchors = []
+            if self.preview is not None:
+                self.scene().removeItem(self.preview)
+                self.preview = None
+
+        def update_preview(self, pos):
+            if not self.pending_anchors:
+                return
+            positions = [self.scene().anchor_position(a) for a in self.pending_anchors]
+            positions.append(self.scene().snap(pos))
+            path = QPainterPath(positions[0])
+            for a,b in zip(positions,positions[1:]):
+                path.lineTo(QPointF(b.x(),a.y()))
+                path.lineTo(b)
+            if self.preview is None:
+                self.preview = self.scene().addPath(path, QPen(QColor("#54b9df"),2,Qt.DashLine))
+                self.preview.setZValue(30)
+            else:
+                self.preview.setPath(path)
+
+        def finish_wire(self, position):
+            scene = self.scene()
+            anchor = scene.contact_at(position, self.tolerance())
+            if not self.pending_anchors or not same(scene.anchor_position(self.pending_anchors[-1]), scene.anchor_position(anchor)):
+                self.pending_anchors.append(anchor)
+            anchors = self.pending_anchors
+            self.cancel_drawing()
+            try:
+                scene.add_wire(anchors)
+            except ValueError as exc:
+                self.message.emit(str(exc))
+                return
+            self.message.emit("Leitung verbunden. Weitere Leitung: auf einen Port klicken. ESC bricht ab.")
+
+        def mousePressEvent(self, event):
+            if event.button() != Qt.LeftButton:
+                return super().mousePressEvent(event)
+            pos = self.mapToScene(event.pos())
+            scene = self.scene()
+            if self.mode == "place" and self.pending_kind:
+                scene.add_component(self.pending_kind, pos)
+                self.set_mode("mouse")
+                self.message.emit("Komponente platziert.")
+                event.accept()
+                return
+            if self.mode == "bridge":
+                crossing = scene.crossing_at(pos, self.tolerance())
+                if crossing:
+                    scene.unjoin_crossing(crossing)
+                    self.message.emit("Überbrückung: diese Leitungen sind hier getrennt.")
+                else:
+                    self.message.emit("Auf eine Leitungskreuzung klicken.")
+                event.accept()
+                return
+            if self.mode == "wire":
+                if not self.pending_anchors:
+                    self.pending_anchors = [scene.contact_at(pos, self.tolerance())]
+                    self.message.emit("Zielport wählen. Leere Stelle: Knick setzen; Doppelklick: freies Ende; ESC: abbrechen.")
+                elif scene.port_at(pos, self.tolerance()) or scene.wire_at(pos, self.tolerance()):
+                    self.finish_wire(pos)
+                else:
+                    snap = scene.snap(pos)
+                    if not same(scene.anchor_position(self.pending_anchors[-1]),snap):
+                        self.pending_anchors.append(scene.new_node(snap))
+                self.update_preview(pos)
+                event.accept()
+                return
+            super().mousePressEvent(event)
+
+        def mouseDoubleClickEvent(self, event):
+            if self.mode == "wire" and self.pending_anchors and event.button() == Qt.LeftButton:
+                self.finish_wire(self.mapToScene(event.pos()))
+                event.accept()
+                return
+            super().mouseDoubleClickEvent(event)
+
+        def mouseMoveEvent(self, event):
+            self.update_preview(self.mapToScene(event.pos()))
+            super().mouseMoveEvent(event)
+
+        def focused_component(self):
+            item = self.scene().focusItem()
+            if isinstance(item, ComponentItem):
+                return item
+            return next(
+                (candidate for candidate in self.scene().selectedItems()
+                 if isinstance(candidate, ComponentItem)),
+                None,
+            )
+
+        def request_component_help(self, component):
+            if not isinstance(component, ComponentItem):
+                return
+            if component.kind not in E_BAUKASTEN_COMPONENT_HELP_MAP:
+                self.message.emit(f"Keine Hilfe-ID fuer {component.name} hinterlegt.")
+                return
+            component.setFocus(Qt.OtherFocusReason)
+            self.component_help_requested.emit(component.kind)
+
+        def _reserve_component_f1(self, event):
+            if (
+                event.type() == QEvent.ShortcutOverride
+                and event.key() == Qt.Key_F1
+                and event.modifiers() == Qt.NoModifier
+                and self.focused_component() is not None
+            ):
+                event.accept()
+                return True
+            return False
+
+        def event(self, event):
+            # QGraphicsView kann ShortcutOverride je nach Qt/Plattform selbst
+            # oder ueber seinen Viewport erhalten. Beide Wege reservieren F1.
+            if self._reserve_component_f1(event):
+                return True
+            return super().event(event)
+
+        def viewportEvent(self, event):
+            if self._reserve_component_f1(event):
+                return True
+            return super().viewportEvent(event)
+
+        def keyPressEvent(self, event):
+            if event.key() == Qt.Key_F1 and event.modifiers() == Qt.NoModifier:
+                component = self.focused_component()
+                if component is not None:
+                    event.accept()
+                    if not event.isAutoRepeat():
+                        self.request_component_help(component)
+                    return
+            if event.key() == Qt.Key_Escape:
+                self.set_mode("mouse")
+                self.message.emit("Aktion abgebrochen. Mausmodus aktiv.")
+                event.accept()
+                return
+            if event.key() == Qt.Key_Delete:
+                self.cancel_drawing()
+                selected = list(self.scene().selectedItems())
+                for item in selected:
+                    if isinstance(item, WireItem) and item.uid in self.scene().wires:
+                        self.scene().remove_wire(item)
+                for item in selected:
+                    if isinstance(item, ComponentItem) and item.uid in self.scene().components:
+                        self.scene().remove_component(item)
+                event.accept()
+                return
+            super().keyPressEvent(event)
+
+        def wheelEvent(self, event):
+            if event.modifiers() & Qt.ControlModifier:
+                factor = 1.15 if event.angleDelta().y()>0 else 1/1.15
+                if .25 <= self.transform().m11()*factor <= 4:
+                    self.scale(factor,factor)
+                event.accept()
+            else:
+                super().wheelEvent(event)
+
+        def contextMenuEvent(self, event):
+            scene = self.scene()
+            pos = self.mapToScene(event.pos())
+            component = next((item for item in self.items(event.pos()) if isinstance(item, ComponentItem)), None)
+            is_gate = bool(component is not None and component.kind in LOGIC_GATE_KINDS)
+            menu = GateContextMenu(component.kind, scene.dark, self) if is_gate else QMenu(self)
+            if component:
+                scene.clearSelection()
+                component.setSelected(True)
+                component.setFocus(Qt.MouseFocusReason)
+
+                # Stage 98: Hilfe ist fuer jede elektronische Komponente immer
+                # der erste Menueintrag, direkt gefolgt von einem Separator.
+                help_action = menu.addAction("Hilfe")
+                help_action.triggered.connect(
+                    lambda checked=False, c=component: self.request_component_help(c)
+                )
+                menu.addSeparator()
+
+                if is_gate:
+                    truth_action = menu.addAction("Wahrheits-Tabelle")
+                    menu.set_truth_action(truth_action)
+                    menu.addSeparator()
+                for angle in (90, 180, 260):
+                    action = menu.addAction(f"Um {angle}° drehen")
+                    action.triggered.connect(lambda checked=False,a=angle: component.rotate_by(a))
+                menu.addSeparator()
+                menu.addAction("Komponente löschen", lambda: scene.remove_component(component))
+            else:
+                crossing = scene.crossing_at(pos, self.tolerance())
+                hit = scene.wire_at(pos, self.tolerance())
+                if not crossing and not hit:
+                    return
+                chosen = next((w for w in scene.selectedItems() if isinstance(w,WireItem)
+                               and crossing and w.uid in crossing["wires"]), None)
+                wire = chosen or (hit[1] if hit else scene.wires[next(iter(crossing["wires"]))])
+                scene.clearSelection()
+                wire.setSelected(True)
+                separate = menu.addAction("Zusammenführung aufheben")
+                separate.setEnabled(bool(crossing and crossing["shared"]))
+                join = menu.addAction("Zusammenführen")
+                join.setEnabled(bool(crossing and not crossing["joined"]))
+                if crossing:
+                    separate.triggered.connect(lambda: scene.unjoin_crossing(crossing))
+                    join.triggered.connect(lambda: scene.join_crossing(crossing))
+                menu.addSeparator()
+                menu.addAction("Leitung löschen", lambda: scene.remove_wire(wire))
+                menu.addAction("Hilfe", lambda: QMessageBox.information(self, "Leitungen und Kreuzungen",
+                    "Punkt: Leitungen sind hier verbunden.\nBogen: Leitungen überkreuzen sich ohne Verbindung.\n\n"
+                    "Zusammenführen erzeugt einen gemeinsamen Verbindungspunkt. Dieser bleibt beim Verschieben "
+                    "der Bauteile erhalten. Zusammenführung aufheben trennt die Leitungen an diesem Punkt.\n\n"
+                    "Im Werkzeug Leitung: Port anklicken, Knicke setzen, Zielport anklicken. "
+                    "Ein Klick auf eine bestehende Leitung erzeugt einen Abzweig."))
+            menu.exec_(event.globalPos())
+            event.accept()
+
+
+    class MeasurementTraceWidget(QWidget):
+        """Kleine QPainter-Oszilloskopanzeige fuer Messwerte je Simulationslauf."""
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.samples = []
+            self.dark = False
+            self.setMinimumSize(560, 260)
+            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        def set_dark_mode(self, enabled):
+            self.dark = bool(enabled)
+            self.update()
+
+        def set_samples(self, samples):
+            self.samples = list(samples or [])[-240:]
+            self.update()
+
+        def paintEvent(self, event):
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            rect = QRectF(self.rect()).adjusted(12, 12, -12, -12)
+            background = QColor("#07151d" if self.dark else "#101f25")
+            grid = QColor("#24424f" if self.dark else "#31515d")
+            frame = QColor("#7da3b3" if self.dark else "#66818b")
+            trace = QColor("#62f49b")
+            text = QColor("#eef7fa" if self.dark else "#eaf4f7")
+            painter.fillRect(self.rect(), QColor("#11191e" if self.dark else "#e8eef0"))
+            painter.setPen(QPen(frame, 1.2))
+            painter.setBrush(background)
+            painter.drawRoundedRect(rect, 5, 5)
+
+            plot = rect.adjusted(46, 20, -18, -34)
+            painter.setPen(QPen(grid, 1))
+            for i in range(11):
+                x = plot.left() + plot.width() * i / 10.0
+                painter.drawLine(QPointF(x, plot.top()), QPointF(x, plot.bottom()))
+            for i in range(7):
+                y = plot.top() + plot.height() * i / 6.0
+                painter.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y))
+
+            numeric = [float(item.get("voltage")) for item in self.samples
+                       if isinstance(item.get("voltage"), (int, float)) and math.isfinite(float(item.get("voltage")))]
+            if numeric:
+                lo, hi = min(numeric), max(numeric)
+                if abs(hi - lo) < 1e-9:
+                    pad = max(1.0, abs(hi) * .25, .5)
+                    lo -= pad; hi += pad
+                else:
+                    pad = (hi - lo) * .15
+                    lo -= pad; hi += pad
+                painter.setPen(QPen(trace, 2.0))
+                path = QPainterPath()
+                first = True
+                timed = [item for item in self.samples if isinstance(item.get("time_ms"), (int, float))]
+                use_time = len(timed) == len(self.samples) and len(self.samples) > 1
+                if use_time:
+                    t0 = float(self.samples[0].get("time_ms", 0.0))
+                    t1 = float(self.samples[-1].get("time_ms", t0 + 1.0))
+                    span = max(1e-12, t1 - t0)
+                else:
+                    total = max(1, len(self.samples) - 1)
+                for index, item in enumerate(self.samples):
+                    value = item.get("voltage")
+                    if not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+                        first = True
+                        continue
+                    if use_time:
+                        x = plot.left() + plot.width() * (float(item.get("time_ms", t0)) - t0) / span
+                    else:
+                        x = plot.left() + plot.width() * index / total
+                    y = plot.bottom() - (float(value) - lo) / (hi - lo) * plot.height()
+                    if first:
+                        path.moveTo(x, y); first = False
+                    else:
+                        path.lineTo(x, y)
+                painter.drawPath(path)
+                painter.setPen(text)
+                painter.setFont(QFont("Consolas", 8))
+                painter.drawText(QRectF(rect.left()+4, plot.top()-8, 40, 20), Qt.AlignRight | Qt.AlignVCenter, f"{hi:.3g} V")
+                painter.drawText(QRectF(rect.left()+4, plot.bottom()-10, 40, 20), Qt.AlignRight | Qt.AlignVCenter, f"{lo:.3g} V")
+            else:
+                painter.setPen(text)
+                painter.setFont(QFont("Sans Serif", 10))
+                painter.drawText(plot, Qt.AlignCenter, "Noch keine numerischen Messwerte")
+
+            painter.setPen(text)
+            painter.setFont(QFont("Sans Serif", 8))
+            has_time = bool(self.samples) and all(isinstance(item.get("time_ms"), (int, float)) for item in self.samples)
+            if has_time:
+                t0 = float(self.samples[0].get("time_ms", 0.0))
+                t1 = float(self.samples[-1].get("time_ms", t0))
+                axis_text = f"Zeit [ms] · {t0:.6g} … {t1:.6g}"
+            else:
+                axis_text = "Zeitbasis: aufeinanderfolgende Simulationsläufe"
+            painter.drawText(QRectF(plot.left(), plot.bottom()+8, plot.width(), 22),
+                             Qt.AlignCenter, axis_text)
+            painter.end()
+
+
+    class MeasurementDialog(QDialog):
+        """Eigenes Messfenster fuer alle auf der Schaltung platzierten Messgeraete."""
+        def __init__(self, workbench):
+            super().__init__(workbench.window())
+            self.workbench = workbench
+            self.records = []
+            self.setWindowTitle("E-Baukasten · Messgerät / Oszilloskop")
+            self.setModal(False)
+            self.resize(760, 520)
+            layout = QVBoxLayout(self)
+            top = QHBoxLayout()
+            top.addWidget(QLabel("Messgerät:"))
+            self.device_combo = QComboBox(self)
+            self.device_combo.currentIndexChanged.connect(self._selection_changed)
+            top.addWidget(self.device_combo, 1)
+            self.refresh_button = QPushButton("Neu messen", self)
+            self.refresh_button.clicked.connect(lambda: self.workbench.capture_measurements(open_dialog=False))
+            top.addWidget(self.refresh_button)
+            layout.addLayout(top)
+
+            values = QGridLayout()
+            self.voltage_label = QLabel("—")
+            self.logic_label = QLabel("—")
+            self.min_label = QLabel("—")
+            self.max_label = QLabel("—")
+            self.pp_label = QLabel("—")
+            self.source_label = QLabel("—")
+            for row, (caption, widget) in enumerate((
+                ("CH1 − COM:", self.voltage_label),
+                ("Logikpegel:", self.logic_label),
+                ("Minimum:", self.min_label),
+                ("Maximum:", self.max_label),
+                ("Spitze-Spitze:", self.pp_label),
+                ("Messquelle:", self.source_label),
+            )):
+                label = QLabel(caption)
+                font = label.font(); font.setBold(True); label.setFont(font)
+                values.addWidget(label, row, 0)
+                values.addWidget(widget, row, 1)
+            layout.addLayout(values)
+
+            self.trace = MeasurementTraceWidget(self)
+            layout.addWidget(self.trace, 1)
+            hint = QLabel(
+                "Das Messgeraet ist hochohmig und beeinflusst die Schaltung nicht. "
+                "Bei der CMOS-Transientensimulation zeigt die Kurve eine echte Zeitachse in Millisekunden; "
+                "bei DC/TTL bleiben einzelne Simulationsstarts als Messpunkte erhalten."
+            )
+            hint.setWordWrap(True)
+            layout.addWidget(hint)
+
+        def set_dark_mode(self, enabled):
+            self.trace.set_dark_mode(enabled)
+
+        def update_measurements(self, records):
+            current_uid = self.device_combo.currentData()
+            self.records = list(records or [])
+            self.device_combo.blockSignals(True)
+            self.device_combo.clear()
+            for record in self.records:
+                self.device_combo.addItem(str(record.get("name", "Messgerät")), record.get("uid"))
+            if current_uid is not None:
+                idx = self.device_combo.findData(current_uid)
+                if idx >= 0:
+                    self.device_combo.setCurrentIndex(idx)
+            self.device_combo.blockSignals(False)
+            self._selection_changed(self.device_combo.currentIndex())
+
+        def _selection_changed(self, index):
+            if index < 0 or index >= len(self.records):
+                self.voltage_label.setText("—")
+                self.logic_label.setText("—")
+                self.min_label.setText("—")
+                self.max_label.setText("—")
+                self.pp_label.setText("—")
+                self.source_label.setText("—")
+                self.trace.set_samples([])
+                return
+            record = self.records[index]
+            samples = list(record.get("samples", []))
+            voltage = record.get("voltage")
+            self.voltage_label.setText("—" if voltage is None else f"{float(voltage):.6g} V")
+            self.logic_label.setText(
+                f"CH1={record.get('logic_ch1', '—')} · COM={record.get('logic_com', '—')}"
+            )
+            numeric = [float(sample["voltage"]) for sample in samples
+                       if isinstance(sample.get("voltage"), (int, float)) and math.isfinite(float(sample["voltage"]))]
+            if numeric:
+                lo, hi = min(numeric), max(numeric)
+                self.min_label.setText(f"{lo:.6g} V")
+                self.max_label.setText(f"{hi:.6g} V")
+                self.pp_label.setText(f"{(hi-lo):.6g} V")
+            else:
+                self.min_label.setText("—"); self.max_label.setText("—"); self.pp_label.setText("—")
+            self.source_label.setText(str(record.get("source", "unbekannt")))
+            self.trace.set_samples(samples)
+
+
+    class ElectronicsWorkbench(QWidget):
+        """Einbettbarer Inhalt des E-Baukasten-Docking-Fensters."""
+        status_message = pyqtSignal(str)
+        component_help_requested = pyqtSignal(str)
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.setObjectName("e_baukasten_widget")
+            self.current_path = None
+            self.dirty = False
+            self.current_component = None
+            self.dark = False
+            # Stage ASM 100: Messwerte bleiben pro Messgeraet als Verlauf ueber
+            # aufeinanderfolgende Simulationsstarts erhalten.
+            self.measurement_history = {}
+            self.measurement_dialog = None
+            self.scene = CircuitScene(self)
+            self.tabs = QTabWidget(self)
+            self.tabs.setObjectName("e_baukasten_tabs")
+            self.circuit_page = QWidget()
+            self.tabs.addTab(self.circuit_page, "Schaltung")
+            self.simulation_page = QWidget()
+            self.tabs.addTab(self.simulation_page, "Simulation")
+            self.blueprint_page = QWidget()
+            self.tabs.addTab(self.blueprint_page, "Blaupause")
+            root = QVBoxLayout(self)
+            root.setContentsMargins(4,4,4,4)
+            root.addWidget(self.tabs)
+            self.splitter = QSplitter(Qt.Horizontal)
+            self.splitter.setObjectName("e_baukasten_horizontal_splitter")
+            self.splitter.setChildrenCollapsible(False)
+            page_layout = QVBoxLayout(self.circuit_page)
+            page_layout.setContentsMargins(0,4,0,0)
+            page_layout.addWidget(self.splitter)
+
+            sidebar = QWidget()
+            sidebar.setMinimumWidth(190)
+            left = QVBoxLayout(sidebar)
+            left.setContentsMargins(0,0,0,0)
+            self.side_splitter = QSplitter(Qt.Vertical)
+            self.side_splitter.setChildrenCollapsible(False)
+            left.addWidget(self.side_splitter)
+            self.category_tabs = QTabWidget()
+            self.category_tabs.setObjectName("e_baukasten_component_tabs")
+            self.category_tabs.setTabPosition(QTabWidget.West)
+            self.category_tabs.setUsesScrollButtons(True)
+            self.category_tabs.setMinimumHeight(190)
+            self.lists = {}
+            for category in CATEGORIES:
+                listing = ComponentList()
+                listing.setObjectName("e_baukasten_list_" + category.lower())
+                if category == "Digital":
+                    self._add_component_group_header(listing, "Logik - Gatter")
+                    for kind in ("not", "and", "nand", "or", "nor", "xor", "xnor"):
+                        definition = CATALOG[kind]
+                        item = QListWidgetItem(definition["title"])
+                        item.setData(Qt.UserRole, kind)
+                        item.setSizeHint(QSize(190,52))
+                        item.setToolTip(e_baukasten_tooltip_html(kind))
+                        listing.addItem(item)
+                    self._add_component_group_header(listing, "Schalter / Taster")
+                    for kind in ("switch", "button"):
+                        definition = CATALOG[kind]
+                        item = QListWidgetItem(definition["title"])
+                        item.setData(Qt.UserRole, kind)
+                        item.setSizeHint(QSize(190,52))
+                        item.setToolTip(e_baukasten_tooltip_html(kind))
+                        listing.addItem(item)
+                else:
+                    for kind, definition in CATALOG.items():
+                        if definition["category"] != category:
+                            continue
+                        item = QListWidgetItem(definition["title"])
+                        item.setData(Qt.UserRole,kind)
+                        item.setSizeHint(QSize(190,52))
+                        item.setToolTip(e_baukasten_tooltip_html(kind))
+                        listing.addItem(item)
+                listing.itemClicked.connect(self.pick_component)
+                self.category_tabs.addTab(listing,category)
+                self.lists[category] = listing
+            self.side_splitter.addWidget(self.category_tabs)
+
+            self.properties_scroll = QScrollArea()
+            self.properties_scroll.setObjectName("e_baukasten_properties_scroll")
+            self.properties_scroll.setWidgetResizable(True)
+            self.properties_scroll.setMinimumHeight(120)
+            properties = QWidget()
+            properties_layout = QVBoxLayout(properties)
+            properties_layout.setContentsMargins(4,4,4,4)
+            self.data_group = QGroupBox("Daten")
+            self.data_form = QFormLayout(self.data_group)
+            self.data_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+            self.data_form.setRowWrapPolicy(QFormLayout.WrapLongRows)
+            self.details_group = QGroupBox("Details")
+            self.details_label = QLabel("Komponente aus der Liste wählen oder in der Schaltung markieren.")
+            self.details_label.setWordWrap(True)
+            self.details_label.setTextFormat(Qt.PlainText)
+            details_layout = QVBoxLayout(self.details_group)
+            details_layout.addWidget(self.details_label)
+            properties_layout.addWidget(self.data_group)
+            properties_layout.addWidget(self.details_group)
+            properties_layout.addStretch()
+            self.properties_scroll.setWidget(properties)
+            self.side_splitter.addWidget(self.properties_scroll)
+            self.side_splitter.setSizes([340,260])
+            self.splitter.addWidget(sidebar)
+
+            right = QWidget()
+            right_layout = QVBoxLayout(right)
+            right_layout.setContentsMargins(0,0,0,0)
+            self.toolbar = QToolBar("E-Baukasten")
+            self.toolbar.setObjectName("e_baukasten_toolbar")
+            self.toolbar.setIconSize(QSize(18,18))
+            self.toolbar.setToolButtonStyle(Qt.ToolButtonTextOnly)
+            self.toolbar.setMovable(False)
+            self.toolbar.setFloatable(False)
+            self.toolbar.setContentsMargins(0, 0, 0, 0)
+            self.toolbar.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed)
+            self.view = CircuitView(self.scene)
+            self.view.setObjectName("e_baukasten_circuit_view")
+            self.tools = QActionGroup(self)
+            self.tools.setExclusive(True)
+            self.mode_actions = {}
+            for label,mode in (("Maus","mouse"),("Leitung","wire"),("Überbrücken","bridge")):
+                action = self.toolbar.addAction(label)
+                action.setCheckable(True)
+                action.setData(mode)
+                self.tools.addAction(action)
+                self.mode_actions[mode] = action
+                action.triggered.connect(lambda checked=False,m=mode: self.view.set_mode(m))
+            self.mode_actions["mouse"].setChecked(True)
+            self.view.mode_changed.connect(lambda mode: self.mode_actions.get(mode,self.mode_actions["mouse"]).setChecked(True))
+            self.toolbar.addSeparator()
+            self.start_action = self.toolbar.addAction("Start", self.start_simulation)
+            self.start_action.setToolTip("Gewählte Simulationsart starten und den Simulation-Tab öffnen")
+            # Stage ASM 92: Raster/Zoom/X/Y/Z werden ausschliesslich über
+            # normale QAction-Untermenüs im Hauptmenü Ansicht gesteuert.
+            # Keine freien QSpinBox-Widgets mehr oberhalb des TabWidgets.
+            self._grid_value = int(self.scene.grid)
+            self._buildbox_zoom_percent = 100
+            self._buildbox_rotation_x = 0
+            self._buildbox_rotation_y = 0
+            self._buildbox_rotation_z = 0
+            self.toolbar.addSeparator()
+            self.toolbar.addAction("Einpassen", self.fit_circuit)
+            self.toolbar.addSeparator()
+            # Stage 87: Die Werkzeugleiste wird vom Host in die Dock-Titelleiste
+            # eingehängt. Im Schaltungsbereich bleibt nur die GraphicsScene.
+            right_layout.addWidget(self.view,1)
+            self.view.message.connect(self.status_message.emit)
+            self.view.component_help_requested.connect(self.component_help_requested.emit)
+            self.splitter.addWidget(right)
+            self.splitter.setStretchFactor(0,0)
+            self.splitter.setStretchFactor(1,1)
+            self.splitter.setSizes([290,900])
+
+            simulation_layout = QVBoxLayout(self.simulation_page)
+            simulation_layout.setContentsMargins(4,4,4,4)
+            self.simulation_modes = QTabWidget()
+            self.simulation_modes.setObjectName("e_baukasten_simulation_modes")
+            simulation_layout.addWidget(self.simulation_modes)
+
+            self.topology_page = QWidget()
+            topology_layout = QVBoxLayout(self.topology_page)
+            topology_text = QLabel(
+                "Simulationsart 1 prüft ausschließlich die Verdrahtung: echte Netze, offene Anschlüsse, "
+                "direkte Kurzschlüsse und gefährliche LED-Pfade ohne Vorwiderstand."
+            )
+            topology_text.setWordWrap(True)
+            topology_layout.addWidget(topology_text)
+            topology_button = QPushButton("Verdrahtung prüfen")
+            topology_button.setObjectName("e_baukasten_topology_start")
+            topology_button.clicked.connect(self.start_check)
+            topology_layout.addWidget(topology_button, 0, Qt.AlignLeft)
+            self.simulation_output = QPlainTextEdit()
+            self.simulation_output.setObjectName("e_baukasten_topology_output")
+            self.simulation_output.setReadOnly(True)
+            self.simulation_output.setPlainText(
+                "Mit „Verdrahtung prüfen“ oder Start die Schaltung auf Anschluss- und Kurzschlussfehler prüfen."
+            )
+            topology_layout.addWidget(self.simulation_output, 1)
+            self.simulation_modes.addTab(self.topology_page, "1 · Verdrahtung / Kurzschluss")
+
+            self.values_page = QWidget()
+            values_layout = QVBoxLayout(self.values_page)
+            values_text = QLabel(
+                "Simulationsart 2 berechnet eine erste DC-Schaltung mit genau einer Batterie/Gleichspannungsquelle, "
+                "Widerständen und LEDs. Batterie: 1,6 V oder 9 V sind direkt als Preset auswählbar."
+            )
+            values_text.setWordWrap(True)
+            values_layout.addWidget(values_text)
+            values_button = QPushButton("Werte berechnen")
+            values_button.setObjectName("e_baukasten_values_start")
+            values_button.clicked.connect(self.start_value_simulation)
+            values_layout.addWidget(values_button, 0, Qt.AlignLeft)
+            self.value_simulation_output = QPlainTextEdit()
+            self.value_simulation_output.setObjectName("e_baukasten_values_output")
+            self.value_simulation_output.setReadOnly(True)
+            self.value_simulation_output.setPlainText(
+                "Werte der Batterie, Widerstände und LEDs in der Schaltung einstellen und anschließend berechnen."
+            )
+            values_layout.addWidget(self.value_simulation_output, 1)
+            self.simulation_modes.addTab(self.values_page, "2 · Elektrische Werte")
+
+            self.ttl_page = QWidget()
+            ttl_layout = QVBoxLayout(self.ttl_page)
+            ttl_text = QLabel(
+                "Simulationsart 3 berechnet digitale TTL-Pegel für die 74LS/74xx-Bausteine. "
+                "Unterstützt werden Push-Pull, Open-Collector, Pull-Up-Widerstände, 3-State-Ausgänge, "
+                "Schalter/Taster sowie einfache Logikgatter. Signale: 0, 1, X und Z."
+            )
+            ttl_text.setWordWrap(True)
+            ttl_layout.addWidget(ttl_text)
+            ttl_button = QPushButton("TTL-Logik berechnen")
+            ttl_button.setObjectName("e_baukasten_ttl_start")
+            ttl_button.clicked.connect(self.start_ttl_simulation)
+            ttl_layout.addWidget(ttl_button, 0, Qt.AlignLeft)
+            self.ttl_simulation_output = QPlainTextEdit()
+            self.ttl_simulation_output.setObjectName("e_baukasten_ttl_output")
+            self.ttl_simulation_output.setReadOnly(True)
+            self.ttl_simulation_output.setPlainText(
+                "74LS/74xx-Schaltung verdrahten, Versorgung mit ca. 5 V anschließen und TTL-Logik berechnen."
+            )
+            ttl_layout.addWidget(self.ttl_simulation_output, 1)
+            self.simulation_modes.addTab(self.ttl_page, "3 · TTL Logik")
+
+            self.cmos_transient_page = QWidget()
+            transient_layout = QVBoxLayout(self.cmos_transient_page)
+            transient_text = QLabel(
+                "Simulationsart 4 berechnet den zeitlichen Verlauf der CMOS-4000-Serie. "
+                "Taktquellen erzeugen Rechtecksignale; Flip-Flops, Schieberegister, Zaehler und 7-Segment-Ausgaenge "
+                "werden flankenweise fortgeschrieben. Das Messgeraet erhaelt dabei eine echte Zeitachse in Millisekunden."
+            )
+            transient_text.setWordWrap(True)
+            transient_layout.addWidget(transient_text)
+            transient_controls = QHBoxLayout()
+            transient_controls.addWidget(QLabel("Dauer:"))
+            self.transient_duration_spin = QDoubleSpinBox()
+            self.transient_duration_spin.setObjectName("e_baukasten_cmos_duration")
+            self.transient_duration_spin.setRange(1.0, 60000.0)
+            self.transient_duration_spin.setDecimals(1)
+            self.transient_duration_spin.setValue(2000.0)
+            self.transient_duration_spin.setSuffix(" ms")
+            transient_controls.addWidget(self.transient_duration_spin)
+            transient_controls.addWidget(QLabel("Zeitschritt:"))
+            self.transient_step_spin = QDoubleSpinBox()
+            self.transient_step_spin.setObjectName("e_baukasten_cmos_step")
+            self.transient_step_spin.setRange(0.05, 1000.0)
+            self.transient_step_spin.setDecimals(3)
+            self.transient_step_spin.setValue(10.0)
+            self.transient_step_spin.setSuffix(" ms")
+            transient_controls.addWidget(self.transient_step_spin)
+            transient_button = QPushButton("CMOS-Zeitverlauf berechnen")
+            transient_button.setObjectName("e_baukasten_cmos_transient_start")
+            transient_button.clicked.connect(self.start_cmos_transient_simulation)
+            transient_controls.addWidget(transient_button)
+            transient_controls.addStretch(1)
+            transient_layout.addLayout(transient_controls)
+            self.cmos_transient_output = QPlainTextEdit()
+            self.cmos_transient_output.setObjectName("e_baukasten_cmos_transient_output")
+            self.cmos_transient_output.setReadOnly(True)
+            self.cmos_transient_output.setPlainText(
+                "CMOS-Schaltung mit VDD/VSS und einer Taktquelle verdrahten. Danach Dauer und Zeitschritt einstellen und starten."
+            )
+            transient_layout.addWidget(self.cmos_transient_output, 1)
+            self.simulation_modes.addTab(self.cmos_transient_page, "4 · CMOS Transient")
+
+            self.surface_page = QWidget()
+            surface_layout = QVBoxLayout(self.surface_page)
+            surface_text = QLabel(
+                "Simulations-Test 3 zeigt sichtbare Bauteile auf einer 3D-Oberfläche. "
+                "Die Verdrahtung bleibt im Kasten verborgen; LEDs leuchten abhängig vom berechneten Stromfluss. "
+                "Schalter/Taster können direkt in der 3D-Szene angeklickt werden und starten danach automatisch eine Neuberechnung."
+            )
+            surface_text.setWordWrap(True)
+            surface_layout.addWidget(surface_text)
+            surface_button_row = QHBoxLayout()
+            self.surface_start_button = QPushButton("3D-Szene erzeugen / aktualisieren")
+            self.surface_start_button.setObjectName("e_baukasten_surface3d_start")
+            self.surface_start_button.clicked.connect(self.start_surface_simulation)
+            surface_button_row.addWidget(self.surface_start_button)
+            self.surface_fit_button = QPushButton("Einpassen")
+            self.surface_fit_button.clicked.connect(self.fit_buildbox_scene)
+            surface_button_row.addWidget(self.surface_fit_button)
+            surface_button_row.addStretch(1)
+            surface_layout.addLayout(surface_button_row)
+            self.buildbox_scene = BuildBoxScene(self)
+            self.buildbox_view = QGraphicsView(self.buildbox_scene)
+            self.buildbox_view.setObjectName("e_baukasten_buildbox_view")
+            self.buildbox_view.setRenderHints(QPainter.Antialiasing | QPainter.TextAntialiasing)
+            self.buildbox_view.setDragMode(QGraphicsView.RubberBandDrag)
+            self.buildbox_output = QPlainTextEdit()
+            self.buildbox_output.setObjectName("e_baukasten_surface3d_output")
+            self.buildbox_output.setReadOnly(True)
+            self.buildbox_output.setPlainText(
+                "Mit „3D-Szene erzeugen / aktualisieren“ die sichtbaren Bauteile als 3D-Simulationstest anzeigen."
+            )
+            self.buildbox_splitter = QSplitter(Qt.Vertical)
+            self.buildbox_splitter.setObjectName("e_baukasten_3d_vertical_splitter")
+            self.buildbox_splitter.setChildrenCollapsible(False)
+            self.buildbox_splitter.addWidget(self.buildbox_view)
+            self.buildbox_splitter.addWidget(self.buildbox_output)
+            self.buildbox_splitter.setStretchFactor(0, 1)
+            self.buildbox_splitter.setStretchFactor(1, 0)
+            self.buildbox_splitter.setSizes([620, 150])
+            surface_layout.addWidget(self.buildbox_splitter, 1)
+            # Stage ASM 88: 3D-Simulation als dritte Simulationsart innerhalb
+            # des Haupt-Tabs "Simulation".
+            self.simulation_modes.addTab(self.surface_page, "5 · 3D Simulation")
+
+            self.blueprint_scene = CircuitScene(self)
+            self.blueprint_view = QGraphicsView(self.blueprint_scene)
+            self.blueprint_view.setInteractive(False)
+            self.blueprint_view.setRenderHints(QPainter.Antialiasing | QPainter.TextAntialiasing)
+            blueprint_layout = QVBoxLayout(self.blueprint_page)
+            blueprint_layout.addWidget(QLabel("Blaupause · aktuelle Schaltung als schreibgeschützte Übersicht"))
+            blueprint_layout.addWidget(self.blueprint_view)
+            self.tabs.currentChanged.connect(self.tab_changed)
+            self.simulation_modes.currentChanged.connect(self.simulation_mode_changed)
+            self.scene.selectionChanged.connect(self.selection_changed)
+            self.scene.modified.connect(self.on_modified)
+            self.buildbox_scene.modified.connect(self.on_buildbox_modified)
+            self.buildbox_scene.control_toggled.connect(self.on_buildbox_control_toggled)
+            self.show_properties(None)
+            self.set_dark_mode(False)
+            self.buildbox_scene.populate_from_circuit(self.scene, None, {})
+            self.fit_buildbox_scene()
+
+        @staticmethod
+        def _add_component_group_header(listing, text):
+            item = QListWidgetItem(str(text))
+            item.setData(Qt.UserRole, None)
+            item.setFlags(item.flags() & ~Qt.ItemIsSelectable & ~Qt.ItemIsDragEnabled)
+            item.setBackground(QBrush(QColor("#173a5e")))
+            item.setForeground(QBrush(QColor("#ffe45c")))
+            font = item.font()
+            font.setBold(True)
+            item.setFont(font)
+            item.setSizeHint(QSize(190, 30))
+            item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            listing.addItem(item)
+            return item
+
+        def icon_for(self, kind):
+            pixmap = QPixmap(64,48)
+            pixmap.fill(Qt.transparent)
+            painter = QPainter(pixmap)
+            painter.setRenderHint(QPainter.Antialiasing)
+            painter.translate(32,24)
+            if kind in TTL_IC_KINDS:
+                painter.scale(.42,.36)
+            elif kind in CMOS_IC_KINDS:
+                painter.scale(.36,.32)
+            else:
+                painter.scale(.65,.55)
+            painter.setPen(QPen(QColor(self.scene.ink),2.2))
+            painter.setBrush(Qt.NoBrush)
+            ComponentItem(kind, "").draw_symbol(painter,QColor(self.scene.ink))
+            painter.end()
+            return QIcon(pixmap)
+
+        def set_dark_mode(self, enabled):
+            self.dark = bool(enabled)
+            self.scene.set_theme(enabled)
+            self.blueprint_scene.set_theme(enabled,True)
+            if hasattr(self, "buildbox_scene"):
+                self.buildbox_scene.set_theme(enabled)
+            if getattr(self, "measurement_dialog", None) is not None:
+                self.measurement_dialog.set_dark_mode(enabled)
+            background, foreground, border = (("#202a30","#e0e8ec","#46555e") if enabled
+                                              else ("#f5f7f3","#25343b","#bcc9c1"))
+            palette = QPalette(self.palette())
+            for role in (QPalette.Window,QPalette.Base,QPalette.Button):
+                palette.setColor(role,QColor(background))
+            for role in (QPalette.WindowText,QPalette.Text,QPalette.ButtonText):
+                palette.setColor(role,QColor(foreground))
+            palette.setColor(QPalette.Highlight,QColor("#315c72"))
+            palette.setColor(QPalette.HighlightedText,Qt.white)
+            self.setPalette(palette)
+            self.setAutoFillBackground(True)
+            self.setStyleSheet(
+                f"QWidget#e_baukasten_widget {{ background: {background}; color: {foreground}; }}"
+                f"QWidget#e_baukasten_widget QWidget {{ background-color: {background}; color: {foreground}; }}"
+                f"QWidget#e_baukasten_widget QGroupBox {{ border: 1px solid {border}; margin-top: 12px; padding-top: 8px; }}"
+                f"QWidget#e_baukasten_widget QGroupBox::title {{ color: {foreground}; subcontrol-origin: margin; left: 8px; }}"
+                f"QWidget#e_baukasten_widget QTabWidget::pane {{ border: 1px solid {border}; }}"
+                f"QWidget#e_baukasten_widget QTabBar::tab {{ background: {background}; color: {foreground}; padding: 6px; border: 1px solid {border}; }}"
+                "QWidget#e_baukasten_widget QTabBar::tab:selected { background: #315c72; color: white; }"
+                f"QWidget#e_baukasten_widget QToolButton {{ color: {foreground}; padding: 4px; }}"
+                "QWidget#e_baukasten_widget QToolButton:checked { background: #315c72; color: white; }"
+                f"QWidget#e_baukasten_widget QLineEdit, QWidget#e_baukasten_widget QAbstractSpinBox {{ border: 1px solid {border}; padding: 3px; }}"
+                f"QWidget#e_baukasten_widget QListWidget {{ background: {background}; color: {foreground}; }}"
+                "QWidget#e_baukasten_widget QListWidget::item:selected { background: #315c72; color: white; }"
+            )
+            for listing in self.lists.values():
+                for i in range(listing.count()):
+                    item = listing.item(i)
+                    kind = item.data(Qt.UserRole)
+                    if isinstance(kind, str) and kind in CATALOG:
+                        item.setIcon(self.icon_for(kind))
+
+        def pick_component(self, item):
+            kind = item.data(Qt.UserRole)
+            if not isinstance(kind, str) or kind not in CATALOG:
+                return
+            self.view.arm_component(kind)
+            self.scene.clearSelection()
+            self.show_properties(None, kind)
+
+        def selection_changed(self):
+            component = next((item for item in self.scene.selectedItems() if isinstance(item,ComponentItem)),None)
+            self.show_properties(component)
+
+        def show_properties(self, component, catalog_kind=None):
+            self.current_component = component
+            while self.data_form.count():
+                item = self.data_form.takeAt(0)
+                if item.widget():
+                    item.widget().hide()
+                    item.widget().deleteLater()
+            self.value_editor = None
+            self.battery_preset_editor = None
+            if component is None:
+                self.data_form.addRow(QLabel("Zum Ändern eine platzierte Komponente markieren."))
+                self.details_label.setText(CATALOG[catalog_kind]["details"] if catalog_kind else
+                    "Komponente aus der Liste wählen oder in der Schaltung markieren.")
+                return
+            definition = CATALOG[component.kind]
+            name = QLineEdit(component.name)
+            name.setMaxLength(80)
+            name.editingFinished.connect(lambda: self.update_name(component,name.text()))
+            self.data_form.addRow("Name",name)
+            if definition["unit"]:
+                value = QDoubleSpinBox()
+                value.setRange(-1e9 if definition["category"] == "Quelle" else 0, 1e9)
+                value.setDecimals(6)
+                value.setSuffix(" " + definition["unit"])
+                value.setValue(component.value)
+                value.setKeyboardTracking(False)
+                value.valueChanged.connect(lambda v: self.update_value(component,v))
+                self.value_editor = value
+                label = {"Ω":"Widerstand","V":"Spannung","A":"Strom","µF":"Kapazität","Hz":"Frequenz"}[definition["unit"]]
+                if definition["symbol"] == "led":
+                    label = "Flussspannung"
+                self.data_form.addRow(label,value)
+            if component.kind == "battery":
+                preset = QComboBox()
+                preset.setObjectName("e_baukasten_battery_preset")
+                preset.addItem("1,6 V", 1.6)
+                preset.addItem("9 V", 9.0)
+                preset.addItem("Benutzerdefiniert", None)
+                if abs(component.value - 1.6) < 1e-9:
+                    preset.setCurrentIndex(0)
+                elif abs(component.value - 9.0) < 1e-9:
+                    preset.setCurrentIndex(1)
+                else:
+                    preset.setCurrentIndex(2)
+                preset.currentIndexChanged.connect(
+                    lambda _index, c=component, box=preset: self.apply_battery_preset(c, box)
+                )
+                self.battery_preset_editor = preset
+                self.data_form.addRow("Batterietyp", preset)
+            if definition["symbol"] == "led":
+                max_current = QDoubleSpinBox()
+                max_current.setRange(0.1, 1000.0)
+                max_current.setDecimals(3)
+                max_current.setSuffix(" mA")
+                max_current.setValue(float(component.params.get("max_current", 0.020)) * 1000.0)
+                max_current.setKeyboardTracking(False)
+                max_current.valueChanged.connect(
+                    lambda v, c=component: self.update_param(c, "max_current", float(v) / 1000.0)
+                )
+                self.data_form.addRow("Max. LED-Strom", max_current)
+
+                reverse = QDoubleSpinBox()
+                reverse.setRange(0.0, 1000.0)
+                reverse.setDecimals(3)
+                reverse.setSuffix(" V")
+                reverse.setValue(float(component.params.get("max_reverse_voltage", 5.0)))
+                reverse.setKeyboardTracking(False)
+                reverse.valueChanged.connect(
+                    lambda v, c=component: self.update_param(c, "max_reverse_voltage", float(v))
+                )
+                self.data_form.addRow("Max. Sperrspannung", reverse)
+            if component.kind == "clock":
+                duty = QDoubleSpinBox()
+                duty.setRange(1.0, 99.0)
+                duty.setDecimals(1)
+                duty.setSuffix(" %")
+                duty.setValue(float(component.params.get("duty", 0.5)) * 100.0)
+                duty.setKeyboardTracking(False)
+                duty.valueChanged.connect(
+                    lambda v, c=component: self.update_param(c, "duty", float(v) / 100.0)
+                )
+                self.data_form.addRow("Tastverhaeltnis", duty)
+
+                phase = QDoubleSpinBox()
+                phase.setRange(0.0, 359.9)
+                phase.setDecimals(1)
+                phase.setSuffix(" Grad")
+                phase.setValue(float(component.params.get("phase", 0.0)))
+                phase.setKeyboardTracking(False)
+                phase.valueChanged.connect(
+                    lambda v, c=component: self.update_param(c, "phase", float(v))
+                )
+                self.data_form.addRow("Phase", phase)
+
+                high = QDoubleSpinBox()
+                high.setRange(1.0, 15.0)
+                high.setDecimals(2)
+                high.setSuffix(" V")
+                high.setValue(float(component.params.get("high_voltage", 5.0)))
+                high.setKeyboardTracking(False)
+                high.valueChanged.connect(
+                    lambda v, c=component: self.update_param(c, "high_voltage", float(v))
+                )
+                self.data_form.addRow("HIGH-Spannung", high)
+
+            if component.kind in ("switch", "button"):
+                closed = QComboBox()
+                closed.setObjectName("e_baukasten_switch_state")
+                if component.kind == "button":
+                    closed.addItem("frei", 0.0)
+                    closed.addItem("gedrückt", 1.0)
+                else:
+                    closed.addItem("offen", 0.0)
+                    closed.addItem("geschlossen", 1.0)
+                closed.setCurrentIndex(1 if self.scene.is_switch_closed(component) else 0)
+                closed.currentIndexChanged.connect(
+                    lambda _index, c=component, box=closed: self.update_param(c, "closed", float(box.currentData()))
+                )
+                self.data_form.addRow("Schaltzustand", closed)
+            self.angle_label = QLabel(f"{component.angle:g}°")
+            self.position_label = QLabel(f"{component.x():g} / {component.y():g}")
+            self.data_form.addRow("Drehung",self.angle_label)
+            self.data_form.addRow("X / Y",self.position_label)
+            self.details_label.setText(definition["title"] + "\n\n" + definition["details"] +
+                "\n\nPorts: " + ", ".join(p[0] for p in definition["ports"]))
+
+        def update_name(self, component, name):
+            if component.uid in self.scene.components and name.strip():
+                component.name = name.strip()
+                component.update()
+                self.scene.modified.emit()
+
+        def update_value(self, component, value):
+            if component.uid in self.scene.components:
+                component.value = float(value)
+                if component.kind == "battery" and self.battery_preset_editor is not None:
+                    index = 0 if abs(component.value - 1.6) < 1e-9 else (1 if abs(component.value - 9.0) < 1e-9 else 2)
+                    old = self.battery_preset_editor.blockSignals(True)
+                    self.battery_preset_editor.setCurrentIndex(index)
+                    self.battery_preset_editor.blockSignals(old)
+                component.update()
+                self.scene.modified.emit()
+
+        def update_param(self, component, key, value):
+            if component.uid in self.scene.components:
+                component.params[str(key)] = float(value)
+                component.update()
+                self.scene.modified.emit()
+
+        def apply_battery_preset(self, component, combo):
+            value = combo.currentData()
+            if value is None or component.uid not in self.scene.components:
+                return
+            component.value = float(value)
+            if self.value_editor is not None:
+                old = self.value_editor.blockSignals(True)
+                self.value_editor.setValue(component.value)
+                self.value_editor.blockSignals(old)
+            component.update()
+            self.scene.modified.emit()
+
+        def on_modified(self):
+            if self.scene.loading:
+                return
+            self.dirty = True
+            if self.scene.logic_port_states:
+                self.scene.logic_port_states = {}
+                self.scene.update()
+            component = self.current_component
+            if component and component.uid in self.scene.components:
+                self.angle_label.setText(f"{component.angle:g}°")
+                self.position_label.setText(f"{component.x():g} / {component.y():g}")
+            if self.tabs.currentIndex() == 1:
+                self.simulation_output.setPlainText("Die Schaltung wurde geändert. Simulationsart 1 erneut starten.")
+                self.value_simulation_output.setPlainText("Die Schaltung wurde geändert. Simulationsart 2 erneut starten.")
+                if hasattr(self, "ttl_simulation_output"):
+                    self.ttl_simulation_output.setPlainText("Die Schaltung wurde geändert. TTL-Logiksimulation erneut starten.")
+                if hasattr(self, "cmos_transient_output"):
+                    self.cmos_transient_output.setPlainText("Die Schaltung wurde geaendert. CMOS-Transientensimulation erneut starten.")
+                if hasattr(self, "buildbox_output"):
+                    self.buildbox_output.setPlainText(
+                        "Die Schaltung wurde geändert. 3D-Simulationstest erneut aktualisieren."
+                    )
+            if self.tabs.currentIndex() == 2:
+                self.refresh_blueprint()
+
+        def on_buildbox_modified(self):
+            if self.scene.loading:
+                return
+            self.dirty = True
+
+        def on_buildbox_control_toggled(self, source_id, closed):
+            component = self.scene.components.get(source_id)
+            if component is None or component.kind not in ("switch", "button"):
+                return
+            component.params["closed"] = 1.0 if closed else 0.0
+            component.update()
+            self.scene.modified.emit()
+            # Nicht synchron waehrend mouseReleaseEvent die 3D-Szene leeren:
+            # QTimer fuehrt die Neuberechnung direkt im naechsten Eventloop-Takt aus.
+            QTimer.singleShot(0, self.start_surface_simulation)
+            if component.kind == "button":
+                state_text = "gedrückt" if closed else "frei"
+            else:
+                state_text = "geschlossen" if closed else "offen"
+            self.status_message.emit(
+                f"{component.name}: {state_text} · 3D-Simulation wird automatisch neu berechnet."
+            )
+
+        def _ensure_measurement_dialog(self):
+            dialog = getattr(self, "measurement_dialog", None)
+            if dialog is None:
+                dialog = MeasurementDialog(self)
+                dialog.set_dark_mode(self.dark)
+                self.measurement_dialog = dialog
+            return dialog
+
+        @staticmethod
+        def _logic_voltage(state):
+            if state == 1:
+                return 5.0
+            if state == 0:
+                return 0.0
+            return None
+
+        def capture_transient_measurements(self, transient_report, open_dialog=True):
+            records = list((transient_report or {}).get("meters", []))
+            self.measurement_history = {
+                record.get("uid"): list(record.get("samples", []))[-5000:]
+                for record in records if record.get("uid") is not None
+            }
+            dialog = self._ensure_measurement_dialog()
+            dialog.update_measurements(records)
+            if open_dialog and records:
+                dialog.show()
+                dialog.raise_()
+                dialog.activateWindow()
+            self.status_message.emit(
+                f"CMOS-Zeitmessung aktualisiert: {len(records)} Messgeraet(e) · "
+                f"{(transient_report or {}).get('sample_count', 0)} Zeitschritte."
+            )
+            return records
+
+        def capture_measurements(self, dc_report=None, ttl_report=None, open_dialog=True):
+            meters = [c for c in self.scene.components.values() if c.kind == "meter"]
+            if not meters:
+                dialog = getattr(self, "measurement_dialog", None)
+                if dialog is not None:
+                    dialog.update_measurements([])
+                return []
+
+            if dc_report is None:
+                dc_report = self.scene.dc_value_simulation()
+            logic_relevant = any(
+                c.kind in TTL_IC_KINDS or c.kind in LOGIC_GATE_KINDS
+                for c in self.scene.components.values()
+            )
+            if ttl_report is None and logic_relevant:
+                ttl_report = self.scene.ttl_logic_simulation()
+
+            records = []
+            dc_port_map = (dc_report or {}).get("port_map", {})
+            node_voltages = (dc_report or {}).get("node_voltages", {})
+            ttl_port_map = (ttl_report or {}).get("port_net", {})
+            ttl_states = (ttl_report or {}).get("states", {})
+
+            active_uids = {meter.uid for meter in meters}
+            self.measurement_history = {
+                uid: samples for uid, samples in self.measurement_history.items()
+                if uid in active_uids
+            }
+
+            for meter in meters:
+                voltage = None
+                source = "keine auswertbare Quelle"
+                net_ch1 = dc_port_map.get((meter.uid, 0))
+                net_com = dc_port_map.get((meter.uid, 1))
+                if net_ch1 in node_voltages and net_com in node_voltages:
+                    voltage = float(node_voltages[net_ch1]) - float(node_voltages[net_com])
+                    source = "DC-Knotenspannung"
+
+                logic_ch1 = "—"
+                logic_com = "—"
+                if ttl_report is not None:
+                    tnet_ch1 = ttl_port_map.get((meter.uid, 0))
+                    tnet_com = ttl_port_map.get((meter.uid, 1))
+                    logic_ch1 = ttl_states.get(tnet_ch1, "Z") if tnet_ch1 is not None else "Z"
+                    logic_com = ttl_states.get(tnet_com, "Z") if tnet_com is not None else "Z"
+                    if voltage is None:
+                        va = self._logic_voltage(logic_ch1)
+                        vb = self._logic_voltage(logic_com)
+                        if va is not None and vb is not None:
+                            voltage = va - vb
+                            source = "TTL-Pegel (0/5 V)"
+
+                history = self.measurement_history.setdefault(meter.uid, [])
+                history.append({
+                    "sample": len(history) + 1,
+                    "voltage": voltage,
+                    "logic_ch1": logic_ch1,
+                    "logic_com": logic_com,
+                })
+                if len(history) > 240:
+                    del history[:-240]
+
+                records.append({
+                    "uid": meter.uid,
+                    "name": meter.name,
+                    "voltage": voltage,
+                    "logic_ch1": logic_ch1,
+                    "logic_com": logic_com,
+                    "source": source,
+                    "samples": list(history),
+                })
+
+            dialog = self._ensure_measurement_dialog()
+            dialog.update_measurements(records)
+            if open_dialog:
+                dialog.show()
+                dialog.raise_()
+                dialog.activateWindow()
+            self.status_message.emit(
+                f"Messung aktualisiert: {len(records)} Messgeraet(e) · Messfenster {'geoeffnet' if open_dialog else 'aktualisiert'}."
+            )
+            return records
+
+        def fit_circuit(self):
+            if self.scene.components or self.scene.wires:
+                self.view.fitInView(self.scene.itemsBoundingRect().adjusted(-60,-60,60,60),Qt.KeepAspectRatio)
+            else:
+                self.view.resetTransform()
+                self.view.centerOn(300,200)
+
+        def start_simulation(self):
+            index = self.simulation_modes.currentIndex()
+            if index == 0:
+                self.start_check()
+            elif index == 1:
+                self.start_value_simulation()
+            elif index == 2:
+                self.start_ttl_simulation()
+            elif index == 3:
+                self.start_cmos_transient_simulation()
+            else:
+                self.start_surface_simulation()
+
+        def start_check(self):
+            report = self.scene.topology_check()
+            nets, loose = report["nets"], report["loose"]
+            state = "FEHLER" if report["errors"] else ("WARNUNG" if report["warnings"] else "OK")
+            lines = ["Simulationsart 1 – Verdrahtungs-/Kurzschlussprüfung", "",
+                     f"ERGEBNIS: {state}", "",
+                     f"Komponenten: {len(self.scene.components)}", f"Leitungen: {len(self.scene.wires)}",
+                     f"Netze: {len(nets)}", f"Offene Ports: {len(loose)}", ""]
+            for index, net in enumerate(nets,1):
+                ports = set()
+                for wire_id in net:
+                    for a in self.scene.wires[wire_id].anchors:
+                        if "component" in a:
+                            c = self.scene.components[a["component"]]
+                            ports.add(c.name + "." + CATALOG[c.kind]["ports"][a["port"]][0])
+                lines.append(f"Netz {index}: " + (", ".join(sorted(ports)) or "freie Leitung"))
+            if report["errors"]:
+                lines.extend(["", "FEHLER:"] + ["[FEHLER] " + text for text in report["errors"]])
+            if report["warnings"]:
+                lines.extend(["", "WARNUNGEN:"] + ["[WARNUNG] " + text for text in report["warnings"]])
+            if report["info"]:
+                lines.extend(["", "HINWEISE:"] + ["[INFO] " + text for text in report["info"]])
+            lines.extend(["", "Diese Simulationsart bewertet nur die Verdrahtung und typische Kurzschluss-/Überstromrisiken."])
+            self.simulation_output.setPlainText("\n".join(lines))
+            self.simulation_modes.setCurrentIndex(0)
+            self.tabs.setCurrentWidget(self.simulation_page)
+            self.capture_measurements(open_dialog=True)
+
+        @staticmethod
+        def _format_current(value):
+            value = abs(float(value))
+            if value < 0.001:
+                return f"{value*1_000_000:.3f} µA"
+            if value < 1.0:
+                return f"{value*1000:.3f} mA"
+            return f"{value:.6g} A"
+
+        def start_value_simulation(self):
+            report = self.scene.dc_value_simulation()
+            lines = ["Simulationsart 2 – DC-Wertesimulation", ""]
+            source = report.get("source")
+            if source is not None:
+                source_kind = "Batterie" if source.kind == "battery" else "Gleichspannungsquelle"
+                lines.append(f"Quelle: {source.name} ({source_kind}) = {source.value:g} V")
+                if source.kind == "battery" and not (abs(source.value-1.6)<1e-9 or abs(source.value-9.0)<1e-9):
+                    lines.append("Hinweis: Batterie verwendet einen benutzerdefinierten Spannungswert.")
+                if report.get("source_current") is not None:
+                    lines.append(f"Quellenstrom: {self._format_current(report['source_current'])}")
+                lines.append("")
+
+            for item in report.get("components", []):
+                component = item["component"]
+                if item["kind"] == "resistor":
+                    lines.append(
+                        f"{component.name} · Widerstand {component.value:g} Ω: "
+                        f"U = {abs(item['voltage']):.6g} V, I = {self._format_current(item['current'])}, "
+                        f"P = {item['power']:.6g} W"
+                    )
+                elif item["kind"] == "switch":
+                    lines.append(
+                        f"{component.name} · {CATALOG[component.kind]['title']}: {item['status']} · "
+                        f"U = {abs(item['voltage']):.6g} V, I = {self._format_current(item['current'])}"
+                    )
+                else:
+                    lines.append(
+                        f"{component.name} · {CATALOG[component.kind]['title']}: {item['status']} · "
+                        f"Vf = {component.value:g} V, U(A-K) = {item['voltage']:.6g} V, "
+                        f"I = {self._format_current(item['current'])}, Limit = {item['max_current']*1000:.3f} mA, "
+                        f"Sperr-Limit = {item['max_reverse_voltage']:.3f} V"
+                    )
+
+            if report["errors"]:
+                lines.extend(["", "FEHLER / GRENZWERTÜBERSCHREITUNGEN:"] +
+                             ["[FEHLER] " + text for text in report["errors"]])
+            if report["warnings"]:
+                lines.extend(["", "WARNUNGEN:"] + ["[WARNUNG] " + text for text in report["warnings"]])
+            if report["info"]:
+                lines.extend(["", "HINWEISE:"] + ["[INFO] " + text for text in report["info"]])
+            if not report["errors"]:
+                lines.extend(["", "ERGEBNIS: Berechnung abgeschlossen."])
+            lines.extend(["", "Modellgrenze: DC, genau eine Spannungsquelle; berechnet werden Widerstände und LEDs. "
+                          "LEDs verwenden ein stückweise lineares Näherungsmodell."])
+            self.value_simulation_output.setPlainText("\n".join(lines))
+            self.simulation_modes.setCurrentIndex(1)
+            self.tabs.setCurrentWidget(self.simulation_page)
+            self.capture_measurements(dc_report=report, open_dialog=True)
+
+        def start_ttl_simulation(self):
+            report = self.scene.ttl_logic_simulation()
+            lines = ["Simulationsart 3 – TTL-Logiksimulation", "",
+                     f"Iterationen bis stabil: {report.get('iterations', 0)}", "",
+                     "Pegel: 0 = LOW · 1 = HIGH · X = unbestimmt/Konflikt · Z = hochohmig", ""]
+            devices = report.get("devices", [])
+            if devices:
+                lines.append("74LS/74xx-Kanäle:")
+                for item in devices:
+                    c = item["component"]
+                    inputs = ", ".join(f"{name}={value}" for name, value in item["inputs"])
+                    extra = ""
+                    if item.get("oe") is not None:
+                        extra = f", OE={item['oe']} ({'aktiv' if item['enabled'] else 'High-Z'})"
+                    lines.append(
+                        f"{c.name} {CATALOG[c.kind]['title']} · Gatter {item['channel']}: "
+                        f"{inputs}{extra} → Y={item['output']} · Treiber={item['drive']} · Netz={item.get('resolved', 'Z')}"
+                    )
+            else:
+                lines.append("Keine 74LS/74xx-Bausteine in der Schaltung gefunden.")
+
+            indicators = report.get("indicators", [])
+            if indicators:
+                lines.extend(["", "LED-Indikatoren:"])
+                for item in indicators:
+                    c = item["component"]
+                    lines.append(
+                        f"{c.name}: {'EIN' if item['on'] else 'AUS'} · A={item['anode']} · K={item['cathode']}"
+                    )
+            if report.get("errors"):
+                lines.extend(["", "FEHLER:"] + ["[FEHLER] " + text for text in report["errors"]])
+            if report.get("warnings"):
+                lines.extend(["", "WARNUNGEN:"] + ["[WARNUNG] " + text for text in report["warnings"]])
+            if report.get("info"):
+                lines.extend(["", "HINWEISE:"] + ["[INFO] " + text for text in report["info"]])
+            lines.extend(["", "Hinweis: TTL-Versorgung wird mit ca. 5 V erwartet. Offene TTL-Eingänge werden bewusst als Z/X behandelt, damit Verdrahtungsfehler sichtbar bleiben."])
+            self.ttl_simulation_output.setPlainText("\n".join(lines))
+            self.simulation_modes.setCurrentIndex(2)
+            self.tabs.setCurrentWidget(self.simulation_page)
+            self.capture_measurements(ttl_report=report, open_dialog=True)
+            self.status_message.emit("TTL-Logiksimulation aktualisiert.")
+
+        def start_cmos_transient_simulation(self):
+            duration = float(self.transient_duration_spin.value())
+            step = float(self.transient_step_spin.value())
+            report = self.scene.cmos_transient_simulation(duration, step)
+            lines = [
+                "Simulationsart 4 – CMOS-Transientensimulation", "",
+                f"Dauer: {report.get('duration_ms', duration):.6g} ms",
+                f"Zeitschritt: {report.get('time_step_ms', step):.6g} ms",
+                f"Samples: {report.get('sample_count', 0)}",
+                "",
+                "Taktquellen:",
+            ]
+            clocks = [c for c in self.scene.components.values() if c.kind == "clock"]
+            if clocks:
+                for clock in clocks:
+                    lines.append(
+                        f"- {clock.name}: {clock.value:g} Hz · Duty={float(clock.params.get('duty', .5))*100:.1f} % · "
+                        f"Phase={float(clock.params.get('phase', 0.0)):.1f} Grad · HIGH={float(clock.params.get('high_voltage', 5.0)):.3g} V"
+                    )
+            else:
+                lines.append("- keine Taktquelle")
+
+            lines.extend(["", "CMOS-Endzustaende:"])
+            devices = report.get("devices", [])
+            if devices:
+                for item in devices:
+                    component = item["component"]
+                    power = "versorgt" if item.get("powered") else "NICHT VERSORGT"
+                    lines.append(
+                        f"- {component.name} · {CATALOG[component.kind]['title']}: {item.get('summary', '—')} · {power}"
+                    )
+            else:
+                lines.append("- keine CMOS-Komponenten vorhanden")
+
+            if report.get("errors"):
+                lines.extend(["", "FEHLER:"] + ["[FEHLER] " + text for text in report["errors"]])
+            if report.get("warnings"):
+                lines.extend(["", "WARNUNGEN:"] + ["[WARNUNG] " + text for text in report["warnings"]])
+            if report.get("info"):
+                lines.extend(["", "HINWEISE:"] + ["[INFO] " + text for text in report["info"]])
+            lines.extend([
+                "",
+                "Modellgrenze: digitale Zeitbereichssimulation mit idealen Logikpegeln. "
+                "Analoge Anstiegszeiten, Propagation Delay und SPICE-Bauteilmodelle werden in dieser Stufe noch nicht integriert."
+            ])
+            self.cmos_transient_output.setPlainText("\n".join(lines))
+            self.simulation_modes.setCurrentIndex(3)
+            self.tabs.setCurrentWidget(self.simulation_page)
+            self.capture_transient_measurements(report, open_dialog=True)
+            self.status_message.emit(
+                f"CMOS-Transientensimulation abgeschlossen: {report.get('sample_count', 0)} Samples / {report.get('duration_ms', duration):g} ms."
+            )
+
+        def _buildbox_tilt_transform(self):
+            """Orthographische Projektion der Oberflaeche fuer X/Y/Z-Drehung.
+
+            QGraphicsView ist weiterhin Qt5/QGraphicsView; X/Y werden deshalb als
+            affine Projektion einer in 3D gedrehten Ebene abgebildet. Z bleibt eine
+            echte Drehung in der Zeichenebene. Dadurch bleiben Items selektierbar
+            und verschiebbar, obwohl die Baukastenoberflaeche raeumlich gekippt ist.
+            """
+            rx = math.radians(float(self._buildbox_rotation_x))
+            ry = math.radians(float(self._buildbox_rotation_y))
+            rz = math.radians(float(self._buildbox_rotation_z))
+            sx, cx = math.sin(rx), math.cos(rx)
+            sy, cy = math.sin(ry), math.cos(ry)
+            sz, cz = math.sin(rz), math.cos(rz)
+            a = cz * cy
+            b = cz * sy * sx - sz * cx
+            c = sz * cy
+            d = sz * sy * sx + cz * cx
+            center = self.buildbox_scene.surface_rect.center()
+            dx = center.x() - (a * center.x() + b * center.y())
+            dy = center.y() - (c * center.x() + d * center.y())
+            return QTransform(a, c, b, d, dx, dy)
+
+        def apply_buildbox_view_transform(self):
+            if not hasattr(self, "buildbox_view"):
+                return
+            base = getattr(self, "_buildbox_fit_transform", None)
+            if base is None:
+                return
+            self.buildbox_view.setTransform(QTransform(base))
+            self.buildbox_view.setTransform(self._buildbox_tilt_transform(), True)
+            zoom = max(100, min(240, int(self._buildbox_zoom_percent))) / 100.0
+            if abs(zoom - 1.0) > 1e-12:
+                self.buildbox_view.scale(zoom, zoom)
+            self.buildbox_view.centerOn(self.buildbox_scene.surface_rect.center())
+
+        def set_buildbox_zoom(self, value):
+            value = max(100, min(240, int(value)))
+            self._buildbox_zoom_percent = value
+            self.apply_buildbox_view_transform()
+            self.status_message.emit(f"3D-Zoom: {value} %")
+
+        def set_buildbox_rotation(self, axis, value):
+            value = max(0, min(90, int(value)))
+            if axis == "x":
+                self._buildbox_rotation_x = value
+            elif axis == "y":
+                self._buildbox_rotation_y = value
+            elif axis == "z":
+                self._buildbox_rotation_z = value
+            else:
+                raise ValueError("Unbekannte 3D-Achse")
+            self.apply_buildbox_view_transform()
+            self.status_message.emit(
+                f"3D-Drehung: X={self._buildbox_rotation_x}° · "
+                f"Y={self._buildbox_rotation_y}° · Z={self._buildbox_rotation_z}°"
+            )
+
+        def set_grid_value(self, value):
+            value = int(value)
+            if value not in tuple(range(5, 51, 5)):
+                raise ValueError("Raster muss zwischen 5 und 50 Pixeln liegen.")
+            self._grid_value = value
+            if self.scene.grid != value:
+                self.view.cancel_drawing()
+                self.scene.set_grid(value)
+            self.status_message.emit(f"Raster: {value} Pixel")
+
+        def fit_buildbox_scene(self, preserve_zoom=False):
+            if not hasattr(self, "buildbox_scene"):
+                return
+            zoom = int(self._buildbox_zoom_percent) if preserve_zoom else 100
+            bounds = self.buildbox_scene.itemsBoundingRect().united(self.buildbox_scene.surface_rect).adjusted(-70, -70, 120, 160)
+            if not bounds.isEmpty():
+                self.buildbox_view.resetTransform()
+                self.buildbox_view.fitInView(bounds, Qt.KeepAspectRatio)
+                self._buildbox_fit_transform = QTransform(self.buildbox_view.transform())
+                self._buildbox_zoom_percent = zoom
+                self.apply_buildbox_view_transform()
+            if not preserve_zoom:
+                self.status_message.emit("3D-Szene eingepasst · Zoom 100 %")
+
+        def start_surface_simulation(self):
+            value_report = self.scene.dc_value_simulation()
+            topology_report = self.scene.topology_check()
+            ttl_report = self.scene.ttl_logic_simulation() if any(c.kind in TTL_IC_KINDS for c in self.scene.components.values()) else None
+            if ttl_report is not None:
+                ttl_components = []
+                for indicator in ttl_report.get("indicators", []):
+                    ttl_components.append({
+                        "component": indicator["component"], "kind": "led",
+                        "current": 0.001 if indicator["on"] else 0.0,
+                        "status": "EIN" if indicator["on"] else "AUS",
+                    })
+                chosen_report = {"components": ttl_components}
+            else:
+                chosen_report = value_report if value_report.get("source") is not None else topology_report
+            placements = self.buildbox_scene.serialize_placements() if hasattr(self, "buildbox_scene") else {}
+            self.buildbox_scene.populate_from_circuit(self.scene, chosen_report, placements)
+            self.fit_buildbox_scene(preserve_zoom=True)
+
+            led_lines = []
+            if ttl_report is not None:
+                for indicator in ttl_report.get("indicators", []):
+                    component = indicator["component"]
+                    led_lines.append(
+                        f"{component.name}: {'EIN' if indicator['on'] else 'AUS'} · "
+                        f"A={indicator['anode']} · K={indicator['cathode']}"
+                    )
+            elif value_report.get("components"):
+                for entry in value_report["components"]:
+                    component = entry.get("component")
+                    if component is None:
+                        continue
+                    if entry.get("kind") == "led":
+                        led_lines.append(
+                            f"{component.name}: {entry.get('status', 'Unbekannt')} · I = {self._format_current(entry.get('current', 0.0))}"
+                        )
+                    elif entry.get("kind") == "switch":
+                        led_lines.append(
+                            f"{component.name}: {entry.get('status', '')}"
+                        )
+            if not led_lines:
+                led_lines.append("Keine LED-/Schalterdaten vorhanden; sichtbare Komponenten wurden nur geometrisch übernommen.")
+            summary = [
+                "Simulations-Test 3 – 3D-Szene", "",
+                "Die interne Verdrahtung bleibt im Kasten verborgen.",
+                "Sichtbar sind nur die Bauteile auf der Schutzplatte; sie können dort per Maus verschoben werden.",
+                "",
+                "Zustände:",
+            ] + ["- " + line for line in led_lines]
+            if ttl_report is not None and ttl_report.get("warnings"):
+                summary.extend(["", "Hinweis: TTL-Logiksimulation meldet Warnungen:"])
+                summary.extend("[WARNUNG] " + text for text in ttl_report["warnings"])
+            elif value_report.get("errors"):
+                summary.extend(["", "Hinweis: elektrische Werteberechnung meldet Fehler / Grenzwerte:"])
+                summary.extend("[FEHLER] " + text for text in value_report["errors"])
+            elif topology_report.get("warnings"):
+                summary.extend(["", "Hinweis: Verdrahtungsprüfung meldet Warnungen:"])
+                summary.extend("[WARNUNG] " + text for text in topology_report["warnings"])
+            summary.extend(["", self.buildbox_scene.state_summary()])
+            self.buildbox_output.setPlainText("\n".join(summary))
+            self.simulation_modes.setCurrentIndex(4)
+            self.tabs.setCurrentWidget(self.simulation_page)
+            self.capture_measurements(dc_report=value_report, ttl_report=ttl_report, open_dialog=True)
+            self.status_message.emit("3D-Simulation aktualisiert: sichtbare Komponenten liegen auf der Baukasten-Oberfläche.")
+
+        def simulation_mode_changed(self, index):
+            if index == 4:
+                QTimer.singleShot(0, self.start_surface_simulation)
+
+        def tab_changed(self, index):
+            if index != 0:
+                self.view.cancel_drawing()
+            if index == 2:
+                self.refresh_blueprint()
+
+        def refresh_blueprint(self):
+            self.blueprint_scene.load_data(self.scene.to_data())
+            self.blueprint_scene.set_theme(self.dark,True)
+            bounds = self.blueprint_scene.itemsBoundingRect()
+            if not bounds.isEmpty():
+                self.blueprint_view.fitInView(bounds.adjusted(-50,-50,50,50),Qt.KeepAspectRatio)
+
+        def project_data(self):
+            data = self.scene.to_data()
+            if hasattr(self, "buildbox_scene"):
+                data["view3d"] = {
+                    "placements": self.buildbox_scene.serialize_placements(),
+                    "zoom": int(self._buildbox_zoom_percent),
+                    "rotation": [
+                        int(self._buildbox_rotation_x),
+                        int(self._buildbox_rotation_y),
+                        int(self._buildbox_rotation_z),
+                    ],
+                    "splitter": [int(value) for value in self.buildbox_splitter.sizes()],
+                }
+            return data
+
+        def save_to_path(self, path):
+            target = Path(path)
+            text = json.dumps(self.project_data(),ensure_ascii=False,indent=2)
+            temporary = target.with_name(target.name+".tmp-"+uid())
+            try:
+                temporary.write_text(text,encoding="utf-8")
+                temporary.replace(target)
+            finally:
+                if temporary.exists():
+                    temporary.unlink()
+            self.current_path, self.dirty = target, False
+            owner = self.window()
+            if owner is not None and hasattr(owner, "register_project_circuit"):
+                try:
+                    owner.register_project_circuit(target)
+                except Exception:
+                    # Das Speichern der Schaltung selbst darf nicht fehlschlagen,
+                    # nur weil aktuell kein beschreibbares Projekt aktiv ist.
+                    pass
+            self.status_message.emit(f"Gespeichert: {target.name}")
+
+        def save_file(self, save_as=False):
+            path = self.current_path
+            if save_as or path is None:
+                filename,_ = QFileDialog.getSaveFileName(self,"E-Baukasten speichern",
+                    str(path or "Schaltung.ebk"),"E-Baukasten (*.ebk)")
+                if not filename:
+                    return False
+                path = Path(filename)
+                if not path.suffix:
+                    path = path.with_suffix(".ebk")
+            try:
+                self.save_to_path(path)
+            except OSError as exc:
+                QMessageBox.warning(self,"Speichern fehlgeschlagen",str(exc))
+                return False
+            return True
+
+        def load_from_path(self, path):
+            path = Path(path)
+            if path.stat().st_size > 10*1024*1024:
+                raise ValueError("Die E-Baukasten-Datei ist zu groß.")
+            data = json.loads(path.read_text(encoding="utf-8"))
+            self.scene.validate_data(data)
+            self.view.cancel_drawing()
+            self.current_component = None
+            self.scene.load_data(data)
+            self.measurement_history = {}
+            if getattr(self, "measurement_dialog", None) is not None:
+                self.measurement_dialog.update_measurements([])
+            placements = {}
+            view3d = data.get("view3d") if isinstance(data.get("view3d"), dict) else {}
+            placements = view3d.get("placements", {})
+            if hasattr(self, "buildbox_scene"):
+                rotation = view3d.get("rotation", [0, 0, 0])
+                if not isinstance(rotation, (list, tuple)) or len(rotation) != 3:
+                    rotation = [0, 0, 0]
+                allowed_degrees = tuple(range(0, 91, 15))
+                normalized_rotation = []
+                for value in rotation:
+                    try:
+                        raw_value = int(value)
+                    except (TypeError, ValueError):
+                        raw_value = 0
+                    normalized_rotation.append(
+                        min(allowed_degrees, key=lambda candidate: abs(candidate - raw_value))
+                    )
+                self._buildbox_rotation_x, self._buildbox_rotation_y, self._buildbox_rotation_z = normalized_rotation
+                try:
+                    raw_zoom = int(view3d.get("zoom", 100))
+                except (TypeError, ValueError):
+                    raw_zoom = 100
+                allowed_zoom = tuple(range(100, 241, 20))
+                self._buildbox_zoom_percent = min(
+                    allowed_zoom, key=lambda candidate: abs(candidate - raw_zoom)
+                )
+                splitter = view3d.get("splitter")
+                if isinstance(splitter, (list, tuple)) and len(splitter) == 2:
+                    try:
+                        self.buildbox_splitter.setSizes([max(1, int(splitter[0])), max(1, int(splitter[1]))])
+                    except (TypeError, ValueError):
+                        pass
+                self.buildbox_scene.restore_placements(placements)
+                self.buildbox_scene.populate_from_circuit(self.scene, None, self.buildbox_scene.serialize_placements())
+                self.fit_buildbox_scene(preserve_zoom=True)
+            self._grid_value = int(self.scene.grid)
+            self.current_path, self.dirty = path, False
+            self.tabs.setCurrentIndex(0)
+            self.show_properties(None)
+            self.fit_circuit()
+            self.status_message.emit(f"Geöffnet: {path.name}")
+
+        def confirm_discard(self):
+            if not self.dirty:
+                return True
+            answer = QMessageBox.question(self,"E-Baukasten", "Änderungen an der Schaltung speichern?",
+                QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,QMessageBox.Save)
+            if answer == QMessageBox.Cancel:
+                return False
+            return self.save_file() if answer == QMessageBox.Save else True
+
+        def load_file(self):
+            if not self.confirm_discard():
+                return
+            filename,_ = QFileDialog.getOpenFileName(self,"E-Baukasten öffnen","","E-Baukasten (*.ebk)")
+            if not filename:
+                return
+            try:
+                self.load_from_path(filename)
+            except (OSError,ValueError,TypeError,KeyError) as exc:
+                QMessageBox.warning(self,"Schaltung konnte nicht geladen werden",str(exc))
+
 
     # -----------------------------------------------------------------------
     # Stage 159: dedicated gettext catalog for component-name markers.
@@ -24999,6 +29837,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self._colors = bytearray([1] * C64_TEXT_SCREEN_CELL_COUNT)
             self._brush_character = 65
             self._brush_color = 1
+            self._color_only = False
             self._cursor_x = 0
             self._cursor_y = 0
             self._drawing = False
@@ -25023,6 +29862,19 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
         def set_brush(self, character: int, color: int) -> None:
             self._brush_character = int(character) & 0xFF
             self._brush_color = int(color) & 0x0F
+
+        def set_color_only(self, enabled: bool) -> None:
+            self._color_only = bool(enabled)
+
+        def apply_color_to_current_cell(self, color: int) -> None:
+            offset = self._offset(self._cursor_x, self._cursor_y)
+            value = int(color) & 0x0F
+            if self._colors[offset] == value:
+                return
+            self._colors[offset] = value
+            self.screenChanged.emit()
+            self._emit_cursor()
+            self.update()
 
         def clear_screen(self, character: int = 32, color: int = 1) -> None:
             self._characters[:] = bytes([int(character) & 0xFF]) * C64_TEXT_SCREEN_CELL_COUNT
@@ -25073,8 +29925,17 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
 
         def _paint_cell(self, x: int, y: int, erase: bool = False) -> None:
             offset = self._offset(x, y)
-            character = 32 if erase else self._brush_character
-            color = 0 if erase else self._brush_color
+            if erase:
+                character = 32
+                color = 0
+            elif self._color_only:
+                # Stage 131: Farbe ist eine Eigenschaft *dieser Zelle*.
+                # Im Farbmodus bleibt das bereits gesetzte Zeichen erhalten.
+                character = self._characters[offset]
+                color = self._brush_color
+            else:
+                character = self._brush_character
+                color = self._brush_color
             changed = (
                 self._characters[offset] != character
                 or self._colors[offset] != color
@@ -25272,6 +30133,18 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 self.color_combo.addItem(QIcon(pixmap), f"{index:02d} – {name}", index)
             self.color_combo.setCurrentIndex(1)
             color_layout.addWidget(self.color_combo)
+            self.color_only_checkbox = QCheckBox(
+                "Nur Farbe zeichnen (Zeichen beibehalten)", color_box
+            )
+            self.color_only_checkbox.setToolTip(
+                "Jede Zelle besitzt eine eigene Farbe. In diesem Modus wird nur "
+                "die Farbe der angeklickten Zelle geändert."
+            )
+            color_layout.addWidget(self.color_only_checkbox)
+            self.apply_cell_color_button = QPushButton(
+                "Farbe auf aktuelle Zelle", color_box
+            )
+            color_layout.addWidget(self.apply_cell_color_button)
             controls_layout.addWidget(color_box)
 
             operation_box = QGroupBox("Bildschirmseite", controls)
@@ -25281,6 +30154,14 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             operation_layout.addWidget(self.clear_button)
             operation_layout.addWidget(self.fill_button)
             controls_layout.addWidget(operation_box)
+
+            conversion_box = QGroupBox("Konvertieren / Export", controls)
+            conversion_layout = QHBoxLayout(conversion_box)
+            self.export_screen_button = QPushButton("Als C64 Screen …", conversion_box)
+            self.export_json_button = QPushButton("Als JSON …", conversion_box)
+            conversion_layout.addWidget(self.export_screen_button)
+            conversion_layout.addWidget(self.export_json_button)
+            controls_layout.addWidget(conversion_box)
 
             self.output_format_box = QGroupBox("Ausgabe Format", controls)
             output_layout = QVBoxLayout(self.output_format_box)
@@ -25314,6 +30195,10 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.close_button.clicked.connect(self.close)
             self.character_list.itemSelectionChanged.connect(self._character_changed)
             self.color_combo.currentIndexChanged.connect(self._brush_changed)
+            self.color_only_checkbox.toggled.connect(self.canvas.set_color_only)
+            self.apply_cell_color_button.clicked.connect(self._apply_current_cell_color)
+            self.export_screen_button.clicked.connect(self.export_c64_screen)
+            self.export_json_button.clicked.connect(self.export_json)
             self.clear_button.clicked.connect(lambda: self.canvas.clear_screen(32, 1))
             self.fill_button.clicked.connect(self._fill_screen)
             self.canvas.screenChanged.connect(lambda: self._set_modified(True))
@@ -25338,6 +30223,9 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.status_label.setText(
                 f"Position {x:02d},{y:02d} – Zeichen ${character:02X} – Farbe {color}"
             )
+
+        def _apply_current_cell_color(self) -> None:
+            self.canvas.apply_color_to_current_cell(self.color_combo.currentIndex())
 
         def _fill_screen(self) -> None:
             item = self.character_list.currentItem()
@@ -25386,7 +30274,9 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 self,
                 "C64-Bildschirmseite laden",
                 str(self.current_path.parent if self.current_path else self.initial_directory),
-                "C64-Bildschirmseiten (*.scr *.screen);;Binärdateien (*.bin);;Alle Dateien (*)",
+                "C64-Screen + JSON (*.scr *.screen *.bin *.json);;"
+                "C64-Screen (*.scr *.screen *.bin);;"
+                "Screen-Projekt JSON (*.json);;Alle Dateien (*)",
             )
             if filename:
                 self.load_file(Path(filename), already_confirmed=True)
@@ -25395,15 +30285,19 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             if not already_confirmed and not self._confirm_discard():
                 return False
             try:
-                chars, colors = decode_c64_text_screen_data(Path(path).read_bytes())
-            except (OSError, ValueError) as exc:
+                chars, colors = load_c64_text_screen_file(path)
+            except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
                 QMessageBox.critical(self, "Bildschirmseite konnte nicht geladen werden", str(exc))
                 return False
             self.current_path = Path(path).resolve()
             self.initial_directory = self.current_path.parent
             self.canvas.set_screen(chars, colors)
             self.path_label.setText(str(self.current_path))
-            self.status_label.setText(f"Bildschirmseite geladen: {self.current_path.name}")
+            file_kind = "JSON-Projekt" if self.current_path.suffix.casefold() == ".json" else "C64-Screen"
+            self.status_label.setText(
+                f"{file_kind} geladen: {self.current_path.name} – "
+                "jede Zelle mit eigener Farbe"
+            )
             self._set_modified(False)
             return True
 
@@ -25411,34 +30305,103 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             if self.current_path is None:
                 return self.save_as()
             try:
-                self.current_path.write_bytes(
-                    encode_c64_text_screen_data(self.canvas.characters(), self.canvas.colors())
+                byte_count = save_c64_text_screen_file(
+                    self.current_path,
+                    self.canvas.characters(),
+                    self.canvas.colors(),
                 )
-            except (OSError, ValueError) as exc:
+            except (OSError, ValueError, TypeError) as exc:
                 QMessageBox.critical(self, "Speichern fehlgeschlagen", str(exc))
                 return False
             self.path_label.setText(str(self.current_path))
+            file_kind = "JSON-Projekt" if self.current_path.suffix.casefold() == ".json" else "C64-Screen"
+            detail = (
+                f"{byte_count} Bytes"
+                if self.current_path.suffix.casefold() != ".json"
+                else "40 x 25 Zellen mit Zeichen + Farbe"
+            )
             self.status_label.setText(
-                f"Bildschirmseite gespeichert: {self.current_path.name} – 2000 Bytes"
+                f"{file_kind} gespeichert: {self.current_path.name} – {detail}"
             )
             self._set_modified(False)
             return True
 
         def save_as(self) -> bool:
-            filename, _selected = QFileDialog.getSaveFileName(
+            filename, selected_filter = QFileDialog.getSaveFileName(
                 self,
                 "C64-Bildschirmseite speichern",
                 str(self.current_path or self.initial_directory / "text_screen.scr"),
-                "C64-Bildschirmseite (*.scr);;Binärdatei (*.bin);;Alle Dateien (*)",
+                "C64-Screen (*.scr *.screen);;"
+                "Screen-Projekt JSON (*.json);;Binärdatei (*.bin);;Alle Dateien (*)",
+            )
+            if not filename:
+                return False
+            target = Path(filename)
+            if not target.suffix:
+                target = (
+                    Path(str(target) + ".screen.json")
+                    if "JSON" in selected_filter
+                    else target.with_suffix(".scr")
+                )
+            self.current_path = target.resolve()
+            self.initial_directory = self.current_path.parent
+            return self.save()
+
+        def export_c64_screen(self) -> bool:
+            filename, _selected = QFileDialog.getSaveFileName(
+                self,
+                "Als C64-Screen speichern",
+                str(self.initial_directory / "text_screen.scr"),
+                "C64-Screen (*.scr *.screen);;Binärdatei (*.bin);;Alle Dateien (*)",
             )
             if not filename:
                 return False
             target = Path(filename)
             if not target.suffix:
                 target = target.with_suffix(".scr")
-            self.current_path = target.resolve()
-            self.initial_directory = self.current_path.parent
-            return self.save()
+            try:
+                target.write_bytes(
+                    encode_c64_text_screen_data(
+                        self.canvas.characters(), self.canvas.colors()
+                    )
+                )
+            except (OSError, ValueError) as exc:
+                QMessageBox.critical(self, "C64-Screen Export fehlgeschlagen", str(exc))
+                return False
+            self.initial_directory = target.parent
+            self.status_label.setText(
+                f"C64-Screen exportiert: {target.name} – 1000 Zeichen + 1000 Zellfarben"
+            )
+            return True
+
+        def export_json(self) -> bool:
+            filename, _selected = QFileDialog.getSaveFileName(
+                self,
+                "Als Screen-Projekt JSON speichern",
+                str(self.initial_directory / "text_screen.screen.json"),
+                "Screen-Projekt JSON (*.json);;Alle Dateien (*)",
+            )
+            if not filename:
+                return False
+            target = Path(filename)
+            if target.suffix.casefold() != ".json":
+                target = target.with_suffix(target.suffix + ".json" if target.suffix else ".json")
+            try:
+                target.write_text(
+                    encode_c64_text_screen_json(
+                        self.canvas.characters(), self.canvas.colors()
+                    ),
+                    encoding="utf-8",
+                    newline="\n",
+                )
+            except (OSError, ValueError, TypeError) as exc:
+                QMessageBox.critical(self, "JSON-Export fehlgeschlagen", str(exc))
+                return False
+            self.initial_directory = target.parent
+            self.status_label.setText(
+                f"JSON exportiert: {target.name} – 40 x 25 individuelle Zellfarben"
+            )
+            return True
 
         def _selected_output_format(self) -> str:
             for name, radio in self.output_format_buttons.items():
@@ -31119,6 +36082,66 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                 "Schlüsselwörter geladen",
                 6000,
             )
+
+            first_item = self.first_local_item(self.topics_tab.tree)
+            if first_item is not None:
+                self.topics_tab.tree.setCurrentItem(first_item)
+                self.topics_tab.tree.scrollToItem(first_item)
+            elif self.home_local:
+                self.load_local(self.home_local)
+            else:
+                self.show_empty_page("Keine anzeigbare Hilfeseite gefunden.")
+            self.update_navigation()
+            if self.pending_context_word or self.pending_context_id:
+                QTimer.singleShot(
+                    0,
+                    lambda: self.open_context_topic(
+                        self.pending_context_language,
+                        self.pending_context_word,
+                        self.pending_context_id,
+                    ),
+                )
+            return True
+
+        def open_help_directory(self, directory: str, *, display_name: str = "Hilfe") -> bool:
+            """Oeffnet einen mitgelieferten CHM-Quellbaum direkt im CHM-Viewer.
+
+            Dadurch bleibt die numerische [MAP]/[ALIAS]-Navigation auch dann
+            verfuegbar, wenn auf dem Zielsystem noch keine e_baukasten.chm
+            kompiliert wurde. Eine vorhandene CHM-Datei hat weiterhin Vorrang.
+            """
+            root = Path(directory).expanduser().resolve()
+            if not root.is_dir():
+                QMessageBox.warning(self, "CHM Viewer", f"Hilfe-Verzeichnis nicht gefunden:\n{root}")
+                return False
+            try:
+                topics, keywords, home_local = self.read_metadata(root)
+                context_id_map = read_chm_context_map(root)
+            except Exception as exc:
+                QMessageBox.critical(self, "CHM Viewer", str(exc))
+                return False
+
+            old_temporary = self.temporary
+            self.web_view.setUrl(QUrl("about:blank"))
+            QApplication.processEvents()
+            self.temporary = None
+            self.content_root = root
+            project = find_chm_file_by_suffix(root, ".hhp")
+            self.chm_path = project if project is not None else root / "index.html"
+            self.home_local = home_local
+            self.context_id_map = dict(context_id_map)
+            if old_temporary is not None:
+                try:
+                    old_temporary.cleanup()
+                except OSError:
+                    pass
+
+            self.populate_tree(self.topics_tab.tree, topics)
+            self.populate_tree(self.keywords_tab.tree, keywords)
+            self.load_favorites()
+            self.tabs.setCurrentWidget(self.topics_tab)
+            self.file_status.setText(str(root))
+            self.setWindowTitle(f"{display_name} – CHM Viewer")
 
             first_item = self.first_local_item(self.topics_tab.tree)
             if first_item is not None:
@@ -44759,6 +49782,7 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             *,
             extra_text: str = "",
             extra_callback=None,
+            extra_widget=None,
         ):
             super().__init__(dock)
             self.dock = dock
@@ -44782,7 +49806,14 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             self.title_label = QLabel(dock.windowTitle(), self)
             self.title_label.setObjectName("custom_dock_title_label")
             layout.addWidget(self.title_label)
-            layout.addStretch(1)
+
+            self.extra_widget = extra_widget
+            if self.extra_widget is not None:
+                self.extra_widget.setParent(self)
+                self.extra_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+                layout.addWidget(self.extra_widget, 1)
+            else:
+                layout.addStretch(1)
 
             self.extra_button = None
             if extra_text and extra_callback is not None:
@@ -52709,6 +57740,501 @@ QPushButton {{ min-height: 28px; padding: 4px 12px; }}'''
             )
 
 
+    class VolumeFactWidget(QWidget):
+        """Zeichnet Volumenformeln mit einfacher räumlicher 3D-Ansicht."""
+
+        FACTS = {
+            "volume_cube": {
+                "title": "Würfel",
+                "formula": "V = a³",
+                "legend": (("V", "Volumen"), ("a", "Seitenlänge")),
+                "drawer": "cube",
+                "color": "#cfe0f5",
+            },
+            "volume_rectangular": {
+                "title": "Rechteck",
+                "formula": "V = l · b · h",
+                "legend": (("V", "Volumen"), ("l", "Länge"), ("b", "Breite"), ("h", "Höhe")),
+                "drawer": "rectangular",
+                "color": "#dbe9c8",
+            },
+            "volume_cylinder": {
+                "title": "Zylinder",
+                "formula": "V = π · r² · h",
+                "legend": (("V", "Volumen"), ("r", "Radius"), ("h", "Höhe")),
+                "drawer": "cylinder",
+                "color": "#d7c6ea",
+            },
+            "volume_sphere": {
+                "title": "Kugel",
+                "formula": "V = 4/3 · π · r³",
+                "legend": (("V", "Volumen"), ("r", "Radius")),
+                "drawer": "sphere",
+                "color": "#f5be77",
+            },
+            "volume_hemisphere": {
+                "title": "Kugelschnitt",
+                "formula": "V = 2/3 · π · r³",
+                "legend": (("V", "Volumen"), ("r", "Radius")),
+                "drawer": "hemisphere",
+                "color": "#8fc0f6",
+            },
+            "volume_ellipsoid": {
+                "title": "Ellipse",
+                "formula": "V = 4/3 · π · a · b · c",
+                "legend": (("V", "Volumen"), ("a", "Halbachse X"), ("b", "Halbachse Y"), ("c", "Halbachse Z")),
+                "drawer": "ellipsoid",
+                "color": "#c0d8ef",
+            },
+            "volume_cone": {
+                "title": "Kegel",
+                "formula": "V = 1/3 · π · r² · h",
+                "legend": (("V", "Volumen"), ("r", "Radius der Grundfläche"), ("h", "Höhe")),
+                "drawer": "cone",
+                "color": "#bfe7df",
+            },
+            "volume_frustum": {
+                "title": "Kegelstumpf",
+                "formula": "V = 1/3 · π · h · (R² + Rr + r²)",
+                "legend": (("V", "Volumen"), ("R", "großer Radius"), ("r", "kleiner Radius"), ("h", "Höhe")),
+                "drawer": "frustum",
+                "color": "#e7c58c",
+            },
+            "volume_square_pyramid": {
+                "title": "Quadratische Pyramide",
+                "formula": "V = 1/3 · a² · h",
+                "legend": (("V", "Volumen"), ("a", "Seitenlänge der Grundfläche"), ("h", "Höhe")),
+                "drawer": "square_pyramid",
+                "color": "#efbfd6",
+            },
+            "volume_rectangular_pyramid": {
+                "title": "Rechteckige Pyramide",
+                "formula": "V = 1/3 · l · b · h",
+                "legend": (("V", "Volumen"), ("l", "Länge"), ("b", "Breite"), ("h", "Höhe")),
+                "drawer": "rectangular_pyramid",
+                "color": "#cfe7b7",
+            },
+            "volume_triangular_prism": {
+                "title": "Dreieckiges Prisma",
+                "formula": "V = 1/2 · b · h · l",
+                "legend": (("V", "Volumen"), ("b", "Grundseite"), ("h", "Dreieckshöhe"), ("l", "Prismenlänge")),
+                "drawer": "triangular_prism",
+                "color": "#f0c6cb",
+            },
+        }
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self._dark_mode = True
+            self._fact_key = "volume_cube"
+            self._title = self.FACTS[self._fact_key]["title"]
+            self.setMinimumSize(820, 520)
+            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        def set_dark_mode(self, enabled: bool) -> None:
+            self._dark_mode = bool(enabled)
+            self.update()
+
+        def activate_fact(self, fact_key: str, title: str = '') -> None:
+            if fact_key in self.FACTS:
+                self._fact_key = fact_key
+            self._title = title or self.FACTS[self._fact_key]["title"]
+            self.update()
+
+        def _palette(self):
+            if self._dark_mode:
+                return {
+                    "bg1": QColor("#071420"),
+                    "bg2": QColor("#12314a"),
+                    "panel": QColor("#0c1f31"),
+                    "panel_text": QColor("#edf5ff"),
+                    "accent": QColor("#ffe567"),
+                    "line": QColor("#d8e9f7"),
+                    "hidden": QColor("#a6bfd3"),
+                    "formula_bg": QColor("#13324e"),
+                    "legend_bg": QColor("#0f2941"),
+                    "shadow": QColor(0, 0, 0, 58),
+                    "guide": QColor("#d9e8f7"),
+                    "reference": QColor("#142635"),
+                }
+            return {
+                "bg1": QColor("#f5f7fb"),
+                "bg2": QColor("#d8e3ef"),
+                "panel": QColor("#ffffff"),
+                "panel_text": QColor("#1d2a33"),
+                "accent": QColor("#173b73"),
+                "line": QColor("#31444f"),
+                "hidden": QColor("#7b93a7"),
+                "formula_bg": QColor("#eef4fb"),
+                "legend_bg": QColor("#f7fafc"),
+                "shadow": QColor(0, 0, 0, 32),
+                "guide": QColor("#405a6c"),
+                "reference": QColor("#657887"),
+            }
+
+        @staticmethod
+        def _mix(color_value, factor=100):
+            color = QColor(color_value)
+            return color.lighter(int(factor))
+
+        def _draw_panel(self, painter, rect: QRectF, colors, spec):
+            painter.save()
+            painter.setPen(QPen(colors["line"], 1.2))
+            painter.setBrush(colors["panel"])
+            painter.drawRoundedRect(rect, 14, 14)
+
+            title_font = QFont("Sans Serif", 16, QFont.Bold)
+            painter.setFont(title_font)
+            painter.setPen(colors["accent"])
+            painter.drawText(QRectF(rect.left() + 18, rect.top() + 14, rect.width() - 30, 32), Qt.AlignLeft | Qt.AlignVCenter, self._title)
+
+            formula_rect = QRectF(rect.left() + 18, rect.top() + 58, rect.width() - 36, 58)
+            painter.setPen(QPen(colors["line"], 1.0))
+            painter.setBrush(colors["formula_bg"])
+            painter.drawRoundedRect(formula_rect, 10, 10)
+            painter.setPen(colors["panel_text"])
+            painter.setFont(QFont("Times New Roman", 18, QFont.Bold))
+            painter.drawText(formula_rect, Qt.AlignCenter, spec["formula"])
+
+            legend_top = formula_rect.bottom() + 18
+            painter.setFont(QFont("Sans Serif", 10, QFont.Bold))
+            painter.setPen(colors["accent"])
+            painter.drawText(QRectF(rect.left() + 18, legend_top, rect.width() - 36, 24), Qt.AlignLeft | Qt.AlignVCenter, "Legende")
+
+            item_top = legend_top + 28
+            painter.setFont(QFont("Sans Serif", 10))
+            for index, (symbol, label) in enumerate(spec["legend"]):
+                row = QRectF(rect.left() + 18, item_top + (index * 28), rect.width() - 36, 24)
+                painter.setPen(QPen(colors["line"], 0.8))
+                painter.setBrush(colors["legend_bg"])
+                painter.drawRoundedRect(row, 6, 6)
+                painter.setPen(colors["accent"])
+                painter.setFont(QFont("Sans Serif", 10, QFont.Bold))
+                painter.drawText(QRectF(row.left() + 8, row.top(), 34, row.height()), Qt.AlignLeft | Qt.AlignVCenter, symbol)
+                painter.setPen(colors["panel_text"])
+                painter.setFont(QFont("Sans Serif", 10))
+                painter.drawText(QRectF(row.left() + 38, row.top(), row.width() - 46, row.height()), Qt.AlignLeft | Qt.AlignVCenter, label)
+            painter.restore()
+
+        def _shape_fill(self, spec):
+            base = QColor(spec["color"])
+            return base
+
+        def _draw_shadow(self, painter, bounds: QRectF, colors):
+            painter.save()
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(colors["shadow"])
+            shadow = QRectF(bounds.left() + bounds.width() * 0.18, bounds.bottom() - 26, bounds.width() * 0.54, 28)
+            painter.drawEllipse(shadow)
+            painter.restore()
+
+        def _draw_arrow_head(self, painter, tip: QPointF, direction: QPointF, color: QColor):
+            length = math.hypot(direction.x(), direction.y())
+            if length <= 1e-6:
+                return
+            ux, uy = direction.x() / length, direction.y() / length
+            side = 6.0
+            back = QPointF(tip.x() - ux * 10.0, tip.y() - uy * 10.0)
+            left = QPointF(back.x() + (-uy) * side, back.y() + ux * side)
+            right = QPointF(back.x() - (-uy) * side, back.y() - ux * side)
+            painter.save()
+            painter.setPen(QPen(color, 1.2))
+            painter.setBrush(color)
+            painter.drawPolygon(QPolygonF([tip, left, right]))
+            painter.restore()
+
+        def _draw_dimension(self, painter, a: QPointF, b: QPointF, label: str, colors, text_offset=QPointF(0, 0)):
+            painter.save()
+            painter.setPen(QPen(colors["guide"], 1.2))
+            painter.drawLine(a, b)
+            self._draw_arrow_head(painter, a, QPointF(a.x() - b.x(), a.y() - b.y()), colors["guide"])
+            self._draw_arrow_head(painter, b, QPointF(b.x() - a.x(), b.y() - a.y()), colors["guide"])
+            mid = QPointF((a.x() + b.x()) / 2.0 + text_offset.x(), (a.y() + b.y()) / 2.0 + text_offset.y())
+            label_rect = QRectF(mid.x() - 20, mid.y() - 12, 40, 24)
+            painter.setPen(colors["accent"])
+            painter.setFont(QFont("Sans Serif", 10, QFont.Bold))
+            painter.drawText(label_rect, Qt.AlignCenter, label)
+            painter.restore()
+
+        def _poly_from(self, points):
+            return QPolygonF([QPointF(float(x), float(y)) for x, y in points])
+
+        def _fill_poly(self, painter, points, fill: QColor, outline: QColor):
+            poly = self._poly_from(points)
+            painter.setPen(QPen(outline, 1.4))
+            painter.setBrush(fill)
+            painter.drawPolygon(poly)
+            return poly
+
+        def _draw_hidden(self, painter, a: QPointF, b: QPointF, colors):
+            painter.save()
+            painter.setPen(QPen(colors["hidden"], 1.2, Qt.DashLine))
+            painter.drawLine(a, b)
+            painter.restore()
+
+        def _draw_cube(self, painter, rect, colors, spec):
+            base = self._shape_fill(spec)
+            x, y, s = rect.left() + 95, rect.top() + 130, min(rect.width(), rect.height()) * 0.32
+            dx, dy = s * 0.28, -s * 0.22
+            front = [(x, y), (x + s, y), (x + s, y + s), (x, y + s)]
+            back = [(x + dx, y + dy), (x + s + dx, y + dy), (x + s + dx, y + s + dy), (x + dx, y + s + dy)]
+            self._draw_shadow(painter, rect, colors)
+            self._fill_poly(painter, back, self._mix(base, 108), colors["line"])
+            self._fill_poly(painter, [(x + s, y), (x + s + dx, y + dy), (x + s + dx, y + s + dy), (x + s, y + s)], self._mix(base, 92), colors["line"])
+            self._fill_poly(painter, front, self._mix(base, 118), colors["line"])
+            for pa, pb in zip(front, back):
+                painter.setPen(QPen(colors["line"], 1.2))
+                painter.drawLine(QPointF(*pa), QPointF(*pb))
+            self._draw_hidden(painter, QPointF(x, y), QPointF(x + dx, y + dy), colors)
+            self._draw_hidden(painter, QPointF(x, y), QPointF(x, y + s), colors)
+            self._draw_dimension(painter, QPointF(x, y + s + 26), QPointF(x + s, y + s + 26), "a", colors, QPointF(0, -2))
+            self._draw_dimension(painter, QPointF(x + s + dx + 18, y + dy), QPointF(x + s + dx + 18, y + s + dy), "a", colors, QPointF(10, 0))
+            self._draw_dimension(painter, QPointF(x + s + 12, y + s + 12), QPointF(x + s + dx + 12, y + s + dy + 12), "a", colors, QPointF(2, -8))
+
+        def _draw_rectangular(self, painter, rect, colors, spec):
+            base = self._shape_fill(spec)
+            x, y = rect.left() + 82, rect.top() + 120
+            w, h = rect.width() * 0.36, rect.height() * 0.34
+            dx, dy = w * 0.24, -h * 0.20
+            front = [(x, y), (x + w, y), (x + w, y + h), (x, y + h)]
+            back = [(x + dx, y + dy), (x + w + dx, y + dy), (x + w + dx, y + h + dy), (x + dx, y + h + dy)]
+            self._draw_shadow(painter, rect, colors)
+            self._fill_poly(painter, back, self._mix(base, 106), colors["line"])
+            self._fill_poly(painter, [(x + w, y), (x + w + dx, y + dy), (x + w + dx, y + h + dy), (x + w, y + h)], self._mix(base, 92), colors["line"])
+            self._fill_poly(painter, front, self._mix(base, 114), colors["line"])
+            for pa, pb in zip(front, back):
+                painter.setPen(QPen(colors["line"], 1.2))
+                painter.drawLine(QPointF(*pa), QPointF(*pb))
+            self._draw_hidden(painter, QPointF(x, y), QPointF(x + dx, y + dy), colors)
+            self._draw_dimension(painter, QPointF(x, y + h + 26), QPointF(x + w, y + h + 26), "l", colors)
+            self._draw_dimension(painter, QPointF(x + w + dx + 18, y + dy), QPointF(x + w + dx + 18, y + h + dy), "h", colors, QPointF(10, 0))
+            self._draw_dimension(painter, QPointF(x + w + 8, y + h + 8), QPointF(x + w + dx + 8, y + h + dy + 8), "b", colors, QPointF(0, -10))
+
+        def _draw_cylinder(self, painter, rect, colors, spec):
+            base = self._shape_fill(spec)
+            cx = rect.center().x() + 12
+            top = rect.top() + 106
+            w = rect.width() * 0.34
+            h = rect.height() * 0.42
+            ellipse_h = 24
+            left = cx - w / 2
+            right = cx + w / 2
+            self._draw_shadow(painter, rect, colors)
+            painter.setPen(QPen(colors["line"], 1.4))
+            painter.setBrush(self._mix(base, 110))
+            painter.drawEllipse(QRectF(left, top, w, ellipse_h))
+            painter.setBrush(self._mix(base, 96))
+            painter.drawRect(QRectF(left, top + ellipse_h / 2, w, h - ellipse_h))
+            painter.setBrush(self._mix(base, 102))
+            painter.drawEllipse(QRectF(left, top + h - ellipse_h, w, ellipse_h))
+            self._draw_hidden(painter, QPointF(left, top + h - ellipse_h / 2), QPointF(right, top + h - ellipse_h / 2), colors)
+            painter.drawLine(QPointF(left, top + ellipse_h / 2), QPointF(left, top + h - ellipse_h / 2))
+            painter.drawLine(QPointF(right, top + ellipse_h / 2), QPointF(right, top + h - ellipse_h / 2))
+            self._draw_dimension(painter, QPointF(right + 28, top + 2), QPointF(right + 28, top + h - 2), "h", colors, QPointF(10, 0))
+            center_top = QPointF(cx, top + ellipse_h / 2)
+            self._draw_dimension(painter, center_top, QPointF(right, top + ellipse_h / 2), "r", colors, QPointF(0, -12))
+
+        def _draw_sphere(self, painter, rect, colors, spec):
+            base = self._shape_fill(spec)
+            radius = min(rect.width(), rect.height()) * 0.20
+            center = QPointF(rect.center().x() + 20, rect.center().y() + 18)
+            self._draw_shadow(painter, rect, colors)
+            gradient = QRadialGradient(center + QPointF(-radius * 0.25, -radius * 0.28), radius * 1.1)
+            gradient.setColorAt(0.0, self._mix(base, 132))
+            gradient.setColorAt(1.0, self._mix(base, 82))
+            painter.setPen(QPen(colors["line"], 1.4))
+            painter.setBrush(gradient)
+            painter.drawEllipse(center, radius, radius)
+            painter.setBrush(Qt.NoBrush)
+            painter.drawEllipse(QRectF(center.x() - radius, center.y() - radius * 0.28, radius * 2, radius * 0.56))
+            self._draw_hidden(painter, QPointF(center.x() - radius, center.y()), QPointF(center.x() + radius, center.y()), colors)
+            # Bezugslinie innerhalb der Kugel: im Dark-Mode bewusst dunkel.
+            # Die eigentlichen Maßlinien/Pfeile benutzen weiterhin colors["guide"].
+            painter.setPen(QPen(colors["reference"], 1.2))
+            painter.drawLine(center, QPointF(center.x() + radius * 0.72, center.y() - radius * 0.18))
+            painter.setPen(colors["accent"])
+            painter.setFont(QFont("Sans Serif", 10, QFont.Bold))
+            painter.drawText(QRectF(center.x() + radius * 0.28, center.y() - radius * 0.44, 28, 20), Qt.AlignCenter, "r")
+
+        def _draw_hemisphere(self, painter, rect, colors, spec):
+            base = self._shape_fill(spec)
+            cx = rect.center().x() + 24
+            top = rect.top() + 150
+            w = rect.width() * 0.36
+            ellipse_h = 24
+            left = cx - w / 2
+            right = cx + w / 2
+            self._draw_shadow(painter, rect, colors)
+            painter.setPen(QPen(colors["line"], 1.4))
+            painter.setBrush(self._mix(base, 118))
+            painter.drawEllipse(QRectF(left, top, w, ellipse_h))
+            path = QPainterPath(QPointF(left, top + ellipse_h / 2))
+            path.arcTo(QRectF(left, top - w / 2, w, w), 180, -180)
+            path.lineTo(QPointF(right, top + ellipse_h / 2))
+            painter.setBrush(self._mix(base, 96))
+            painter.drawPath(path)
+            self._draw_hidden(painter, QPointF(left, top + ellipse_h / 2), QPointF(right, top + ellipse_h / 2), colors)
+            self._draw_dimension(painter, QPointF(cx, top + ellipse_h / 2), QPointF(right, top + ellipse_h / 2), "r", colors, QPointF(0, -12))
+
+        def _draw_ellipsoid(self, painter, rect, colors, spec):
+            base = self._shape_fill(spec)
+            center = QPointF(rect.center().x() + 16, rect.center().y() + 12)
+            rx = rect.width() * 0.18
+            ry = rect.height() * 0.23
+            self._draw_shadow(painter, rect, colors)
+            gradient = QRadialGradient(center + QPointF(-rx * 0.3, -ry * 0.35), max(rx, ry) * 1.3)
+            gradient.setColorAt(0.0, self._mix(base, 130))
+            gradient.setColorAt(1.0, self._mix(base, 84))
+            painter.setPen(QPen(colors["line"], 1.4))
+            painter.setBrush(gradient)
+            painter.drawEllipse(QRectF(center.x() - rx, center.y() - ry, rx * 2, ry * 2))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawEllipse(QRectF(center.x() - rx, center.y() - ry * 0.22, rx * 2, ry * 0.44))
+            self._draw_hidden(painter, QPointF(center.x() - rx, center.y()), QPointF(center.x() + rx, center.y()), colors)
+            self._draw_dimension(painter, center, QPointF(center.x() + rx, center.y()), "a", colors, QPointF(0, -12))
+            self._draw_dimension(painter, center, QPointF(center.x(), center.y() - ry), "b", colors, QPointF(12, 0))
+            self._draw_dimension(painter, QPointF(center.x() - rx * 0.62, center.y() + ry * 0.35), QPointF(center.x() + rx * 0.12, center.y() - ry * 0.35), "c", colors, QPointF(0, -8))
+
+        def _draw_cone(self, painter, rect, colors, spec):
+            base = self._shape_fill(spec)
+            cx = rect.center().x() + 24
+            top_y = rect.top() + 88
+            base_y = rect.top() + 266
+            rx = rect.width() * 0.16
+            self._draw_shadow(painter, rect, colors)
+            painter.setPen(QPen(colors["line"], 1.4))
+            painter.setBrush(self._mix(base, 116))
+            painter.drawPolygon(QPolygonF([QPointF(cx, top_y), QPointF(cx - rx, base_y), QPointF(cx + rx, base_y)]))
+            painter.setBrush(self._mix(base, 98))
+            painter.drawEllipse(QRectF(cx - rx, base_y - 12, rx * 2, 24))
+            self._draw_hidden(painter, QPointF(cx - rx, base_y), QPointF(cx + rx, base_y), colors)
+            self._draw_dimension(painter, QPointF(cx + rx + 28, top_y), QPointF(cx + rx + 28, base_y), "h", colors, QPointF(10, 0))
+            self._draw_dimension(painter, QPointF(cx, base_y), QPointF(cx + rx, base_y), "r", colors, QPointF(0, -12))
+
+        def _draw_frustum(self, painter, rect, colors, spec):
+            base = self._shape_fill(spec)
+            cx = rect.center().x() + 24
+            top_y = rect.top() + 110
+            base_y = rect.top() + 260
+            top_rx = rect.width() * 0.11
+            base_rx = rect.width() * 0.17
+            self._draw_shadow(painter, rect, colors)
+            painter.setPen(QPen(colors["line"], 1.4))
+            painter.setBrush(self._mix(base, 112))
+            body = QPolygonF([QPointF(cx - top_rx, top_y), QPointF(cx + top_rx, top_y), QPointF(cx + base_rx, base_y), QPointF(cx - base_rx, base_y)])
+            painter.drawPolygon(body)
+            painter.setBrush(self._mix(base, 124))
+            painter.drawEllipse(QRectF(cx - top_rx, top_y - 10, top_rx * 2, 20))
+            painter.setBrush(self._mix(base, 98))
+            painter.drawEllipse(QRectF(cx - base_rx, base_y - 13, base_rx * 2, 26))
+            self._draw_hidden(painter, QPointF(cx - base_rx, base_y), QPointF(cx + base_rx, base_y), colors)
+            self._draw_dimension(painter, QPointF(cx + base_rx + 28, top_y), QPointF(cx + base_rx + 28, base_y), "h", colors, QPointF(10, 0))
+            self._draw_dimension(painter, QPointF(cx, top_y), QPointF(cx + top_rx, top_y), "r", colors, QPointF(0, -12))
+            self._draw_dimension(painter, QPointF(cx, base_y), QPointF(cx + base_rx, base_y), "R", colors, QPointF(0, 14))
+
+        def _draw_square_pyramid(self, painter, rect, colors, spec):
+            base = self._shape_fill(spec)
+            cx = rect.center().x() + 12
+            base_y = rect.top() + 250
+            side = rect.width() * 0.20
+            depth_x, depth_y = side * 0.42, -side * 0.22
+            apex = QPointF(cx, rect.top() + 82)
+            p1 = QPointF(cx - side / 2, base_y)
+            p2 = QPointF(cx + side / 2, base_y)
+            p3 = QPointF(cx + side / 2 + depth_x, base_y + depth_y)
+            p4 = QPointF(cx - side / 2 + depth_x, base_y + depth_y)
+            self._draw_shadow(painter, rect, colors)
+            self._fill_poly(painter, [(apex.x(), apex.y()), (p2.x(), p2.y()), (p3.x(), p3.y())], self._mix(base, 92), colors["line"])
+            self._fill_poly(painter, [(apex.x(), apex.y()), (p1.x(), p1.y()), (p2.x(), p2.y())], self._mix(base, 112), colors["line"])
+            self._fill_poly(painter, [(apex.x(), apex.y()), (p4.x(), p4.y()), (p1.x(), p1.y())], self._mix(base, 122), colors["line"])
+            self._draw_hidden(painter, apex, p4, colors)
+            self._draw_hidden(painter, p4, p3, colors)
+            painter.setPen(QPen(colors["line"], 1.3))
+            painter.drawLine(p2, p3)
+            painter.drawLine(p1, p2)
+            painter.drawLine(p1, p4)
+            self._draw_dimension(painter, QPointF(p1.x(), base_y + 28), QPointF(p2.x(), base_y + 28), "a", colors)
+            self._draw_dimension(painter, QPointF(p3.x() + 24, apex.y()), QPointF(p3.x() + 24, base_y + depth_y), "h", colors, QPointF(10, 0))
+
+        def _draw_rectangular_pyramid(self, painter, rect, colors, spec):
+            base = self._shape_fill(spec)
+            cx = rect.center().x() + 22
+            base_y = rect.top() + 252
+            w = rect.width() * 0.28
+            d = rect.width() * 0.13
+            dx, dy = d, -d * 0.55
+            apex = QPointF(cx + 2, rect.top() + 84)
+            p1 = QPointF(cx - w / 2, base_y)
+            p2 = QPointF(cx + w / 2, base_y)
+            p3 = QPointF(cx + w / 2 + dx, base_y + dy)
+            p4 = QPointF(cx - w / 2 + dx, base_y + dy)
+            self._draw_shadow(painter, rect, colors)
+            self._fill_poly(painter, [(apex.x(), apex.y()), (p2.x(), p2.y()), (p3.x(), p3.y())], self._mix(base, 94), colors["line"])
+            self._fill_poly(painter, [(apex.x(), apex.y()), (p1.x(), p1.y()), (p2.x(), p2.y())], self._mix(base, 114), colors["line"])
+            self._fill_poly(painter, [(apex.x(), apex.y()), (p4.x(), p4.y()), (p1.x(), p1.y())], self._mix(base, 122), colors["line"])
+            self._draw_hidden(painter, apex, p4, colors)
+            self._draw_hidden(painter, p4, p3, colors)
+            painter.setPen(QPen(colors["line"], 1.3))
+            painter.drawLine(p2, p3)
+            painter.drawLine(p1, p2)
+            painter.drawLine(p1, p4)
+            self._draw_dimension(painter, QPointF(p1.x(), base_y + 28), QPointF(p2.x(), base_y + 28), "l", colors)
+            self._draw_dimension(painter, QPointF(p2.x() + 10, base_y + 8), QPointF(p3.x() + 10, base_y + dy + 8), "b", colors, QPointF(0, -10))
+            self._draw_dimension(painter, QPointF(p3.x() + 24, apex.y()), QPointF(p3.x() + 24, base_y + dy), "h", colors, QPointF(10, 0))
+
+        def _draw_triangular_prism(self, painter, rect, colors, spec):
+            base = self._shape_fill(spec)
+            left = rect.left() + 96
+            base_y = rect.top() + 252
+            tri_w = rect.width() * 0.22
+            tri_h = rect.height() * 0.26
+            dx, dy = tri_w * 0.95, -tri_h * 0.18
+            a = QPointF(left, base_y)
+            b = QPointF(left + tri_w, base_y)
+            c = QPointF(left + tri_w * 0.30, base_y - tri_h)
+            a2, b2, c2 = a + QPointF(dx, dy), b + QPointF(dx, dy), c + QPointF(dx, dy)
+            self._draw_shadow(painter, rect, colors)
+            self._fill_poly(painter, [(a.x(), a.y()), (b.x(), b.y()), (c.x(), c.y())], self._mix(base, 116), colors["line"])
+            self._fill_poly(painter, [(a2.x(), a2.y()), (b2.x(), b2.y()), (c2.x(), c2.y())], self._mix(base, 96), colors["line"])
+            self._fill_poly(painter, [(b.x(), b.y()), (b2.x(), b2.y()), (c2.x(), c2.y()), (c.x(), c.y())], self._mix(base, 88), colors["line"])
+            self._fill_poly(painter, [(a.x(), a.y()), (a2.x(), a2.y()), (c2.x(), c2.y()), (c.x(), c.y())], self._mix(base, 126), colors["line"])
+            self._draw_hidden(painter, a, a2, colors)
+            self._draw_hidden(painter, a2, b2, colors)
+            painter.setPen(QPen(colors["line"], 1.3))
+            painter.drawLine(a, b)
+            painter.drawLine(a, c)
+            painter.drawLine(b, c)
+            painter.drawLine(b, b2)
+            painter.drawLine(c, c2)
+            self._draw_dimension(painter, QPointF(a.x(), base_y + 28), QPointF(b.x(), base_y + 28), "b", colors)
+            self._draw_dimension(painter, QPointF(left - 26, base_y), QPointF(left - 26, c.y()), "h", colors, QPointF(10, 0))
+            self._draw_dimension(painter, QPointF(b.x() + 12, base_y + 6), QPointF(b2.x() + 12, b2.y() + 6), "l", colors, QPointF(0, -10))
+
+        def _draw_shape(self, painter, rect: QRectF, colors, spec):
+            drawer = spec["drawer"]
+            method = getattr(self, f"_draw_{drawer}", None)
+            if callable(method):
+                method(painter, rect, colors, spec)
+
+        def paintEvent(self, _event) -> None:
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            painter.setRenderHint(QPainter.TextAntialiasing, True)
+            colors = self._palette()
+            gradient = QLinearGradient(0, 0, 0, self.height())
+            gradient.setColorAt(0.0, colors["bg1"])
+            gradient.setColorAt(1.0, colors["bg2"])
+            painter.fillRect(self.rect(), gradient)
+
+            spec = self.FACTS.get(self._fact_key, self.FACTS["volume_cube"])
+            margin = 18.0
+            info_rect = QRectF(margin, margin, min(300.0, self.width() * 0.33), self.height() - margin * 2)
+            draw_rect = QRectF(info_rect.right() + 18, margin, self.width() - info_rect.width() - margin * 3, self.height() - margin * 2)
+            self._draw_panel(painter, info_rect, colors, spec)
+            self._draw_shape(painter, draw_rect, colors, spec)
+            painter.end()
+
+
     class MathematicsLearningDockWidget(QWidget):
         """Lern-Workspace mit linksseitigen Tabs und rechts eingebetteter Szene."""
 
@@ -52848,6 +58374,8 @@ QPushButton {{ min-height: 28px; padding: 4px 12px; }}'''
             self.content_stack.addWidget(self.pascal_triangle_widget)
             self.fibonacci_spiral_widget = FibonacciSpiralFactWidget(self.content_stack)
             self.content_stack.addWidget(self.fibonacci_spiral_widget)
+            self.volume_fact_widget = VolumeFactWidget(self.content_stack)
+            self.content_stack.addWidget(self.volume_fact_widget)
             self.numbers_wall_widget = NumberPyramidTrainerWidget(self.content_stack)
             self.content_stack.addWidget(self.numbers_wall_widget)
             self.arithmetic_widget = ArithmeticTrainerWidget(self.content_stack)
@@ -52873,6 +58401,33 @@ QPushButton {{ min-height: 28px; padding: 4px 12px; }}'''
         def _populate_facts_tree(self) -> None:
             self.facts_tree.clear()
             self._fact_items = {}
+
+            volume = QTreeWidgetItem(['Volumen'])
+            volume_font = volume.font(0)
+            volume_font.setBold(True)
+            volume.setFont(0, volume_font)
+            volume.setFlags(volume.flags() & ~Qt.ItemIsSelectable)
+            self.facts_tree.addTopLevelItem(volume)
+
+            volume_entries = [
+                ('volume_cube', 'Würfel'),
+                ('volume_rectangular', 'Rechteck'),
+                ('volume_cylinder', 'Zylinder'),
+                ('volume_sphere', 'Kugel'),
+                ('volume_hemisphere', 'Kugelschnitt'),
+                ('volume_ellipsoid', 'Ellipse'),
+                ('volume_cone', 'Kegel'),
+                ('volume_frustum', 'Kegelstumpf'),
+                ('volume_square_pyramid', 'Quadratische Pyramide'),
+                ('volume_rectangular_pyramid', 'Rechteckige Pyramide'),
+                ('volume_triangular_prism', 'Dreieckiges Prisma'),
+            ]
+            for key, title in volume_entries:
+                item = QTreeWidgetItem([title])
+                item.setData(0, Qt.UserRole, key)
+                volume.addChild(item)
+                self._fact_items[key] = item
+            volume.setExpanded(True)
 
             cantor = QTreeWidgetItem(['Cantor'])
             cantor_font = cantor.font(0)
@@ -52900,7 +58455,7 @@ QPushButton {{ min-height: 28px; padding: 4px 12px; }}'''
             self._fact_items['cantor_diagonal_argument'] = diagonal
             self._fact_items['pascal_triangle'] = pascal
             self._fact_items['fibonacci_spiral'] = fibonacci
-            self.facts_tree.setCurrentItem(diagonal)
+            self.facts_tree.setCurrentItem(self._fact_items['volume_cube'])
 
         def _populate_games_tree(self) -> None:
             self.games_tree.clear()
@@ -53016,6 +58571,7 @@ QStackedWidget#learning_content_stack {{
             self.cantor_diagonal_widget.set_dark_mode(enabled)
             self.pascal_triangle_widget.set_dark_mode(enabled)
             self.fibonacci_spiral_widget.set_dark_mode(enabled)
+            self.volume_fact_widget.set_dark_mode(enabled)
             self.numbers_wall_widget.set_dark_mode(enabled)
             self.arithmetic_widget.set_dark_mode(enabled)
             self.sudoku_widget.set_dark_mode(enabled)
@@ -53068,6 +58624,10 @@ QStackedWidget#learning_content_stack {{
                 self.fibonacci_spiral_widget.index_spin.setFocus(
                     Qt.OtherFocusReason
                 )
+            elif fact_key.startswith('volume_'):
+                self.content_stack.setCurrentWidget(self.volume_fact_widget)
+                self.volume_fact_widget.activate_fact(fact_key, title)
+                self.volume_fact_widget.setFocus(Qt.OtherFocusReason)
 
         def _handle_game_double_click(self, item: QTreeWidgetItem, _column: int) -> None:
             if item is None:
@@ -57006,7 +62566,7 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             "TXT": {".txt", ".text", ".log", ".md", ".markdown"},
             "CHR": {".chr", ".charset"},
             "PAL": {".pal", ".palette"},
-            "SCREEN": {".scr", ".screen"},
+            "SCREEN": {".scr", ".screen", ".scr.json", ".screen.json"},
             "PIXEL": {".px16", ".pixel", ".pix"},
             "ALLE": None,
         }
@@ -57076,10 +62636,22 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             # Stage ASM 77: nativer PyQt5 HTML-WYSIWYG-Editor.
             self.html_editor_dock = None
             self.html_editor_widget = None
-            # Stage ASM 83: elektronischer Schaltungsbaukasten.
+            # Stage ASM 91: elektronischer Schaltungsbaukasten.
             self.e_baukasten_dock = None
             self.e_baukasten_widget = None
             self._e_baukasten_workspace_active = False
+            self.e_baukasten_zoom_menu = None
+            self.e_baukasten_xpos_menu = None
+            self.e_baukasten_ypos_menu = None
+            self.e_baukasten_zpos_menu = None
+            self.e_baukasten_zoom_actions = {}
+            self.e_baukasten_xpos_actions = {}
+            self.e_baukasten_ypos_actions = {}
+            self.e_baukasten_zpos_actions = {}
+            self.e_baukasten_zoom_group = None
+            self.e_baukasten_xpos_group = None
+            self.e_baukasten_ypos_group = None
+            self.e_baukasten_zpos_group = None
             self.settings_dock = None
             self.settings_panel = None
             self.project_settings_dock = None
@@ -57194,6 +62766,8 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self._music_workspace_hidden_docks = []
             self._music_workspace_replaced_central_widget = False
             self._music_workspace_active = False
+            self._math_learning_workspace_active = False
+            self._math_learning_hidden_docks = []
             self._math_learning_replaced_filesystem_dock = False
             self._math_learning_replaced_central_widget = False
             self._localize_replaced_filesystem_dock = False
@@ -57753,6 +63327,27 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             # Kompatibilitaetsalias fuer Code, der den bisherigen Namen nutzt.
             self.new_project_action = self.new_windows_project_action
 
+            # Stage ASM 106: eigenstaendiges Hauptmenue "Projekt".
+            # Die Aktionen verwenden die bereits vorhandene Projektverwaltung;
+            # es wird bewusst kein zweiter Open-/Save-Pfad eingefuehrt.
+            self.project_open_action = QAction("Projekt öffnen", self)
+            self.project_open_action.setObjectName("project_open_action")
+            self.project_open_action.setStatusTip(
+                "Eine vorhandene dBase2Many-Projektdatei (*.pro) öffnen"
+            )
+            self.project_open_action.triggered.connect(
+                self.open_project_from_main_menu
+            )
+
+            self.project_close_action = QAction("Projekt schließen", self)
+            self.project_close_action.setObjectName("project_close_action")
+            self.project_close_action.setStatusTip(
+                "Das aktuelle Projekt schließen und alle Docking-Fenster schließen"
+            )
+            self.project_close_action.triggered.connect(
+                self.close_project_from_main_menu
+            )
+
             self.new_file_action = QAction(
                 self.style().standardIcon(QStyle.SP_FileIcon),
                 "Textdatei",
@@ -58023,9 +63618,9 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             )
             self.html_editor_action.triggered.connect(self.show_html_editor_dock)
 
-            self.math_learning_action = QAction("Mathematik-Arbeitsfläche …", self)
+            self.math_learning_action = QAction("Arbeitsfläche", self)
             self.math_learning_action.setStatusTip(
-                "Das Mathematik-Dock mit Zahlenmauer-Spielen im freien Arbeitsbereich öffnen"
+                "Den Mathematik-Arbeitsbereich im freien Dock-Bereich öffnen"
             )
             self.math_learning_action.triggered.connect(self.show_math_learning_dock)
 
@@ -58469,53 +64064,76 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             return
             
 
-        def _math_learning_dock_visibility_changed(self, visible: bool) -> None:
-            """Blendet Dateisystem + zentrale Dokumentfläche zugunsten des Mathematik-Docks aus."""
-            if visible:
-                for dock_name in (
-                    'prolog_knowledge_dock',
-                    'localize_dock',
-                    'doxygen_dock',
-                ):
-                    candidate = getattr(self, dock_name, None)
-                    if (
-                        candidate is not None
-                        and candidate is not self.math_learning_dock
-                        and candidate.isVisible()
-                    ):
-                        candidate.hide()
+        def _restore_math_learning_workspace(self) -> None:
+            if not getattr(self, '_math_learning_workspace_active', False):
+                return
+            self._math_learning_workspace_active = False
 
-                if hasattr(self, 'left_dock') and self.left_dock.isVisible():
-                    self._math_learning_replaced_filesystem_dock = True
-                    self.left_dock.hide()
-
+            if self._math_learning_replaced_central_widget:
                 central = self.centralWidget()
-                if central is not None and central.isVisible():
-                    self._math_learning_replaced_central_widget = True
-                    central.hide()
+                if central is not None:
+                    central.show()
+            self._math_learning_replaced_central_widget = False
+            self._math_learning_replaced_filesystem_dock = False
 
+            saved = list(getattr(self, '_math_learning_hidden_docks', []))
+            self._math_learning_hidden_docks = []
+            for candidate in saved:
+                try:
+                    if candidate is not None:
+                        candidate.show()
+                except RuntimeError:
+                    pass
+
+        def _prepare_math_learning_workspace(self, math_dock) -> None:
+            if getattr(self, '_math_learning_workspace_active', False):
+                return
+
+            keep = {math_dock, getattr(self, 'bottom_dock', None)}
+            self._math_learning_hidden_docks = []
+            for candidate in self.findChildren(QDockWidget):
+                if candidate in keep:
+                    continue
+                if candidate is not None and candidate.isVisible():
+                    self._math_learning_hidden_docks.append(candidate)
+
+            left = getattr(self, 'left_dock', None)
+            self._math_learning_replaced_filesystem_dock = bool(
+                left is not None and left in self._math_learning_hidden_docks
+            )
+
+            for candidate in list(self._math_learning_hidden_docks):
+                try:
+                    candidate.hide()
+                except RuntimeError:
+                    pass
+
+            central = self.centralWidget()
+            self._math_learning_replaced_central_widget = bool(
+                central is not None and central.isVisible()
+            )
+            if self._math_learning_replaced_central_widget:
+                central.hide()
+
+            bottom = getattr(self, 'bottom_dock', None)
+            if bottom is not None:
+                bottom.show()
+                bottom.raise_()
+
+            self._math_learning_workspace_active = True
+
+        def _math_learning_dock_visibility_changed(self, visible: bool) -> None:
+            """Mathematik nutzt die komplette freie Arbeitsfläche; nur das Protokoll bleibt sichtbar."""
+            dock = getattr(self, 'math_learning_dock', None)
+            if dock is None:
+                return
+            if visible:
+                self._prepare_math_learning_workspace(dock)
                 self._enforce_math_learning_height_limit()
-                QTimer.singleShot(
-                    0,
-                    self._enforce_math_learning_height_limit,
-                )
-                QTimer.singleShot(
-                    0,
-                    self._expand_math_learning_dock,
-                )
+                QTimer.singleShot(0, self._enforce_math_learning_height_limit)
+                QTimer.singleShot(0, self._expand_math_learning_dock)
             else:
-                if (
-                    self._math_learning_replaced_filesystem_dock
-                    and hasattr(self, 'left_dock')
-                ):
-                    self.left_dock.show()
-                self._math_learning_replaced_filesystem_dock = False
-
-                if self._math_learning_replaced_central_widget:
-                    central = self.centralWidget()
-                    if central is not None:
-                        central.show()
-                self._math_learning_replaced_central_widget = False
+                self._restore_math_learning_workspace()
 
         def _math_learning_dock_top_level_changed(self, floating: bool) -> None:
             """Stage 151: Floating-Dock bleibt normal mit der Maus resizbar."""
@@ -58692,10 +64310,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
         ) -> None:
             dock, widget = self._ensure_math_learning_dock()
 
-            if hasattr(self, 'left_dock'):
-                if self.left_dock.isVisible():
-                    self._math_learning_replaced_filesystem_dock = True
-                self.left_dock.hide()
+            self._prepare_math_learning_workspace(dock)
 
             # Stage 149: bereits VOR show() die maximale Fensterhöhe
             # erzwingen, damit Qt beim Einblenden des großen Dock-Inhalts
@@ -59710,21 +65325,59 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             # Compilerzustände/Signale werden weiterhin wiederverwendet.
             build_document.hide()
 
-            # Stage 158: Source-Outline links neben dem Quellcode-Editor.
-            source_layout.removeWidget(build_document.raw_editor_container)
+            # Stage 158/105: Source-Outline links neben dem Quellcode-Editor.
+            #
+            # Der allgemeine DocumentEditor bettet den Raw-Editor normalerweise
+            # in basic_editor_splitter ein. Fuer WFM ist dieser BASIC-Splitter
+            # jedoch nicht sichtbar/benoetigt. Bleibt er im source_page-Layout,
+            # behaelt er trotzdem seinen Stretch-Faktor und reserviert einen
+            # grossen leeren Bereich oberhalb bzw. neben der eigentlichen
+            # Quellcodeansicht. Deshalb wird die WFM-Seite hier auf genau EINEN
+            # fuellenden Splitter reduziert: Quellstruktur | Editor.
+            source_layout.setContentsMargins(0, 0, 0, 0)
+            source_layout.setSpacing(0)
+
+            # Raw-Editor zuerst aus dem BASIC-Splitter loesen, danach den nicht
+            # benoetigten Splitter vollstaendig aus dem sichtbaren Layout nehmen.
+            build_document.raw_editor_container.setParent(source_page)
+            source_layout.removeWidget(build_document.basic_editor_splitter)
+            build_document.basic_editor_splitter.hide()
+            build_document.basic_editor_splitter.setParent(build_document)
+
+            # Das BASIC-Zeilen-/Tastaturpanel ist fuer .wfm ebenfalls irrelevant.
+            # Auch ein spaeteres setVisible() des DocumentEditor darf im
+            # Formular-Quellcode-Tab keinen Platz mehr beanspruchen.
+            source_layout.removeWidget(build_document.basic_line_control_panel)
+            build_document.basic_line_control_panel.hide()
+            build_document.basic_line_control_panel.setParent(build_document)
+
+            source_page.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
             source_splitter = QSplitter(Qt.Horizontal, source_page)
             source_splitter.setObjectName("dbase_form_source_splitter")
+            source_splitter.setChildrenCollapsible(False)
+            source_splitter.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
             source_outline = QTreeWidget(source_splitter)
             source_outline.setObjectName("dbase_form_source_outline")
             source_outline.setHeaderLabel("Quellstruktur")
             source_outline.setMinimumWidth(180)
             source_outline.setMaximumWidth(340)
+            source_outline.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
             source_outline.setRootIsDecorated(True)
+
+            build_document.raw_editor_container.setSizePolicy(
+                QSizePolicy.Expanding, QSizePolicy.Expanding
+            )
+
             source_splitter.addWidget(source_outline)
             source_splitter.addWidget(build_document.raw_editor_container)
             source_splitter.setStretchFactor(0, 0)
             source_splitter.setStretchFactor(1, 1)
             source_splitter.setSizes((230, 900))
+
+            # Einziger sichtbarer Inhalt des Quellcode-Tabs. Stretch 1 sorgt
+            # dafuer, dass die komplette freie Tab-Flaeche genutzt wird.
             source_layout.addWidget(source_splitter, 1)
 
             designer_host = QWidget(designer_dock)
@@ -60435,8 +66088,8 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 "DBaseQtTimerCreate",
                 "DBaseQtTimerSetInterval",
                 "DBaseQtTimerSetActive",
-                "DBaseQtConsoleWrite",
                 "DBaseQtFormOpen",
+                "DBaseQtConsoleWrite",
             )
 
             # Stage 158: den neuen NonVisual-Export nur dann importieren,
@@ -60500,6 +66153,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 assembly = "".join(asm_lines)
 
             labels = []
+            console_labels = []
             label_count = 0
 
             def text_label(value):
@@ -60509,6 +66163,20 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 label_count += 1
                 labels.append((label, value_text))
                 return label, len(value_text.encode("utf-8"))
+
+            def console_text_label(value):
+                """Stage 116: UTF-8-Puffer fuer den Qt5-Ausgabedialog.
+
+                DBaseQtConsoleWrite dekodiert mit QString::fromUtf8(). Damit
+                bleiben Umlaute/Sonderzeichen identisch zu den uebrigen
+                WFM-Strings und es ist kein AllocConsole-Codepfad noetig.
+                """
+                nonlocal label_count
+                payload = str(value).encode("utf-8")
+                label = f"__dbase_wfm_output_text_{label_count}"
+                label_count += 1
+                console_labels.append((label, payload))
+                return label, len(payload)
 
             def slot_for(path):
                 safe = re.sub(
@@ -60526,11 +66194,145 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 safe = re.sub(r"[^A-Za-z0-9_]", "_", str(name or ""))
                 return "__dbase_wfm_proc_" + safe
 
+            def parameter_slot(procedure, parameter):
+                proc_safe = re.sub(r"[^A-Za-z0-9_]", "_", str(procedure or ""))
+                param_safe = re.sub(r"[^A-Za-z0-9_]", "_", str(parameter or ""))
+                return f"__dbase_wfm_param_{proc_safe}_{param_safe}"
+
+            runtime_parameter_slots = []
+
             method_map = {
                 str(getattr(method, "name", "")).casefold(): method
                 for method in list(getattr(model, "methods", []) or [])
                 if str(getattr(method, "name", "")).strip()
             }
+
+            def wfm_method_parameters(method):
+                return tuple(
+                    str(value).strip()
+                    for value in tuple(getattr(method, "parameters", ()) or ())
+                    if str(value).strip()
+                )
+
+            def wfm_variadic_parameter_info(method):
+                parameters = wfm_method_parameters(method)
+                if not parameters or not parameters[0].startswith("**"):
+                    return None
+                if (
+                    len(parameters) != 2
+                    or re.fullmatch(r"\*\*[A-Za-z_]\w*", parameters[0]) is None
+                    or re.fullmatch(r"[A-Za-z_]\w*", parameters[1]) is None
+                ):
+                    raise AssemblerError(
+                        f"{filename}: variadische WFM-Parameter erwarten "
+                        "die Form procedure __init__(**args, argc)"
+                    )
+                return parameters[0][2:], parameters[1]
+
+            constructor_args = tuple(getattr(model, "constructor_args", ()) or ())
+            constructor_arg_records = []
+            constructor_args_label = "__dbase_wfm_ctor_args"
+            constructor_args_built = False
+
+            def ensure_constructor_args_table():
+                nonlocal constructor_args_built
+                if constructor_args_built:
+                    return constructor_args_label, len(constructor_args)
+                constructor_args_built = True
+                for index, value in enumerate(constructor_args):
+                    if isinstance(value, bool):
+                        constructor_arg_records.append((index, 3, int(value), None, 0))
+                    elif isinstance(value, (int, float)) and not isinstance(value, bool):
+                        bits = struct.unpack("<Q", struct.pack("<d", float(value)))[0]
+                        constructor_arg_records.append((index, 1, bits, None, 0))
+                    else:
+                        text_value = str(value)
+                        text_arg_label, text_arg_len = text_label(text_value)
+                        constructor_arg_records.append(
+                            (index, 2, 0, text_arg_label, text_arg_len)
+                        )
+                return constructor_args_label, len(constructor_args)
+
+            def constructor_scalar_operand(value):
+                if isinstance(value, bool):
+                    return str(1 if value else 0)
+                if isinstance(value, int):
+                    return str(value)
+                if isinstance(value, float):
+                    if float(value).is_integer():
+                        return str(int(value))
+                    raise AssemblerError(
+                        f"{filename}: normale WFM-Konstruktorparameter koennen "
+                        "derzeit keine Gleitkommazahl direkt per ABI uebergeben: "
+                        f"{value}"
+                    )
+                label, _length = text_label(str(value))
+                return label
+
+            def lifecycle_init_call_lines():
+                method = method_map.get("__init__")
+                if method is None:
+                    return []
+                parameters = wfm_method_parameters(method)
+                variadic = wfm_variadic_parameter_info(method)
+                target_label = procedure_label("__init__")
+
+                if variadic is not None:
+                    args_label, argc_value = ensure_constructor_args_table()
+                    if is64:
+                        return [
+                            f"    mov rcx, {args_label}",
+                            f"    mov edx, {argc_value}",
+                            "    sub rsp, 40",
+                            f"    call {target_label}",
+                            "    add rsp, 40",
+                        ]
+                    return [
+                        f"    push {argc_value}",
+                        f"    push {args_label}",
+                        f"    call {target_label}",
+                        "    add esp, 8",
+                    ]
+
+                # Historical parameterless __init__ remains source-compatible.
+                if not parameters:
+                    if is64:
+                        return [
+                            "    sub rsp, 40",
+                            f"    call {target_label}",
+                            "    add rsp, 40",
+                        ]
+                    return [f"    call {target_label}"]
+
+                # Without a leading ** the old/normal positional semantics apply.
+                if len(parameters) != len(constructor_args):
+                    raise AssemblerError(
+                        f"{filename}: procedure __init__ erwartet "
+                        f"{len(parameters)} normale Parameter, NEW {model.class_name}(...) "
+                        f"liefert aber {len(constructor_args)} Argumente."
+                    )
+                operands = [constructor_scalar_operand(value) for value in constructor_args]
+                if not is64:
+                    result = [f"    push {operand}" for operand in reversed(operands)]
+                    result.append(f"    call {target_label}")
+                    if operands:
+                        result.append(f"    add esp, {len(operands) * 4}")
+                    return result
+
+                registers = ("rcx", "rdx", "r8", "r9")
+                stack_count = max(0, len(operands) - 4)
+                reserve = 32 + stack_count * 8
+                if reserve % 16 != 8:
+                    reserve += 8
+                result = [f"    sub rsp, {reserve}"]
+                for stack_index, operand in enumerate(operands[4:]):
+                    result.append(
+                        f"    mov qword ptr [rsp+{32 + stack_index * 8}], {operand}"
+                    )
+                for register, operand in zip(registers, operands[:4]):
+                    result.append(f"    mov {register}, {operand}")
+                result.extend([f"    call {target_label}", f"    add rsp, {reserve}"])
+                return result
             # Stage 133:
             # WFM-PROCEDURE/FUNCTION-Code wird ausschliesslich als
             # ausfuehrbarer Code in .text emittiert. Es wird KEINE Kopie des
@@ -60868,22 +66670,37 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 ).items():
                     emit_event_binding(slot, event_name, procedure)
 
-            if is64:
-                lines.extend([
-                    f"    mov rcx, qword ptr [{form_slot}]",
-                    "    sub rsp, 40",
-                    "    call DBaseQtFormOpen",
-                    "    add rsp, 40",
-                ])
-            else:
-                lines.extend([
-                    f"    push dword ptr [{form_slot}]",
-                    "    call DBaseQtFormOpen",
-                    "    add esp, 4",
-                ])
+            # Stage 111: DBaseQtFormOpen darf den Konstruktor nicht mehr
+            # vorwegnehmen. Der Form-/Control-Baum wird zuerst vollstaendig
+            # erzeugt; __init__ wird danach mit den Argumenten aus NEW ...
+            # aufgerufen und erst anschliessend wird das Formular sichtbar.
 
-            def render_program_literal(expression):
+            def render_program_literal(expression, *, method=None):
                 text = str(expression or "").strip()
+
+                # Stage 107: Python-like variadic constructor access.  The
+                # capture is 0-based and supports Python-style negative indexes.
+                variadic = wfm_variadic_parameter_info(method) if method is not None else None
+                if variadic is not None:
+                    args_name, argc_name = variadic
+                    if text.casefold() == argc_name.casefold():
+                        return str(len(constructor_args))
+                    if text.casefold() == args_name.casefold():
+                        return "(" + ", ".join(str(value) for value in constructor_args) + ")"
+                    match = re.fullmatch(
+                        rf"(?i){re.escape(args_name)}\s*\[\s*([+-]?\d+)\s*\]",
+                        text,
+                    )
+                    if match is not None:
+                        index = int(match.group(1), 10)
+                        resolved = index if index >= 0 else len(constructor_args) + index
+                        if resolved < 0 or resolved >= len(constructor_args):
+                            raise AssemblerError(
+                                f"{filename}: {args_name}[{index}] liegt ausserhalb "
+                                f"der {len(constructor_args)} Konstruktorargumente."
+                            )
+                        return str(constructor_args[resolved])
+
                 if (
                     len(text) >= 2
                     and text[0] == text[-1]
@@ -60895,7 +66712,234 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     return text
                 if text.casefold() in {".t.", ".f.", "true", "false"}:
                     return text
+
+                # Stage 108: WFM-Ausgaben duerfen nun echte dBase-Ausdruecke
+                # verwenden, sofern deren Werte fuer den Konstruktor bereits
+                # bekannt sind.  Das behebt u.a.:
+                #     ? "p1 = " + p1
+                # sowie bei variadischem __init__:
+                #     ? "argc = " + argc
+                #     ? "arg0 = " + args[0]
+                #
+                # Die Auswertung erfolgt absichtlich mit dem vorhandenen
+                # dBase-Ausdrucksparser/-Evaluator statt mit Python-eval().
+                # Damit bleiben dBase-Typ- und Verkettungsregeln erhalten.
+                if method is not None:
+                    try:
+                        from d64dbase.compiler import (
+                            DBasePrintStatement,
+                            DBaseValue,
+                            _evaluate_dbase_expression,
+                            _format_dbase_value,
+                            parse_dbase_statements,
+                        )
+
+                        def value_for_argument(value):
+                            if isinstance(value, bool):
+                                return DBaseValue("number", 1 if value else 0)
+                            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                                return DBaseValue("number", value)
+                            return DBaseValue("string", str(value))
+
+                        scope = {}
+                        rewritten = text
+                        method_name = str(getattr(method, "name", "") or "").casefold()
+                        parameters = wfm_method_parameters(method)
+
+                        # Normale Konstruktorparameter sind positionsgebunden.
+                        # Nur __init__ kann diese Werte schon beim WFM-Codegen
+                        # sicher aus NEW Form1(...) beziehen.
+                        if method_name == "__init__" and variadic is None:
+                            if len(parameters) == len(constructor_args):
+                                for parameter, value in zip(parameters, constructor_args):
+                                    scope[parameter] = value_for_argument(value)
+
+                        if method_name == "__init__" and variadic is not None:
+                            args_name, argc_name = variadic
+                            scope[argc_name] = DBaseValue("number", len(constructor_args))
+                            scope[args_name] = DBaseValue(
+                                "string",
+                                "(" + ", ".join(str(value) for value in constructor_args) + ")",
+                            )
+
+                            # Der allgemeine dBase-Ausdrucksparser kennt noch
+                            # keinen []-Indexoperator.  args[n] wird deshalb nur
+                            # ausserhalb von Stringliteralen in temporaere
+                            # Identifier umgeschrieben und ueber den Scope
+                            # aufgeloest.
+                            pattern = re.compile(
+                                rf"(?i)\b{re.escape(args_name)}\s*\[\s*([+-]?\d+)\s*\]"
+                            )
+                            parts = []
+                            pos = 0
+                            while pos < len(rewritten):
+                                ch = rewritten[pos]
+                                if ch in {'"', "'"}:
+                                    quote = ch
+                                    begin = pos
+                                    pos += 1
+                                    while pos < len(rewritten):
+                                        if rewritten[pos] == quote:
+                                            if pos + 1 < len(rewritten) and rewritten[pos + 1] == quote:
+                                                pos += 2
+                                                continue
+                                            pos += 1
+                                            break
+                                        pos += 1
+                                    parts.append(rewritten[begin:pos])
+                                    continue
+
+                                match = pattern.match(rewritten, pos)
+                                if match is not None:
+                                    index = int(match.group(1), 10)
+                                    resolved = index if index >= 0 else len(constructor_args) + index
+                                    if resolved < 0 or resolved >= len(constructor_args):
+                                        raise AssemblerError(
+                                            f"{filename}: {args_name}[{index}] liegt ausserhalb "
+                                            f"der {len(constructor_args)} Konstruktorargumente."
+                                        )
+                                    temp_name = f"__wfm_ctor_arg_{resolved}"
+                                    scope[temp_name] = value_for_argument(constructor_args[resolved])
+                                    parts.append(temp_name)
+                                    pos = match.end()
+                                    continue
+
+                                parts.append(ch)
+                                pos += 1
+                            rewritten = "".join(parts)
+
+                        if scope:
+                            parsed = parse_dbase_statements(
+                                "? " + rewritten,
+                                filename=filename,
+                                target=target,
+                            )
+                            if len(parsed) == 1 and isinstance(parsed[0], DBasePrintStatement):
+                                value = _evaluate_dbase_expression(
+                                    parsed[0].expression,
+                                    filename=filename,
+                                    variables=scope,
+                                )
+                                return _format_dbase_value(value)
+                    except AssemblerError:
+                        raise
+                    except Exception:
+                        # Nicht-konstante WFM-Laufzeitausdruecke werden wie
+                        # bisher vom Event-Assembler als nicht unterstuetzt
+                        # gemeldet.  Bestehende Fehlersemantik bleibt erhalten.
+                        pass
+
                 return None
+
+            # Stage 112: WFM-Prozeduren duerfen Formular-/Control-Eigenschaften
+            # zur Laufzeit aendern. Fuer die Geometrie wird bewusst der bereits
+            # vorhandene DBaseQtWidgetSetGeometry-Export verwendet, damit keine
+            # neue d64_qt5.dll erforderlich ist.
+            object_slots = {
+                "this": form_slot,
+                str(model.class_name).casefold(): form_slot,
+            }
+            base_geometry = {
+                form_slot: [
+                    self._dbase_wfm_int(form_props, "Left", 200),
+                    self._dbase_wfm_int(form_props, "Top", 200),
+                    self._dbase_wfm_int(form_props, "Width", 400),
+                    self._dbase_wfm_int(form_props, "Height", 400),
+                ]
+            }
+
+            # Control-Pfade sind im WFM typischerweise THIS.Button1. Neben dem
+            # vollstaendigen Pfad wird der kurze Name registriert, sofern er
+            # eindeutig ist.
+            short_slot_candidates = {}
+            for control in list(getattr(model, "controls", []) or []):
+                control_slot = slot_for(control.path)
+                control_path = str(control.path or "").strip()
+                normalized = re.sub(r"\s+", "", control_path).casefold()
+                object_slots[normalized] = control_slot
+                if normalized.startswith("this."):
+                    object_slots[normalized[5:]] = control_slot
+                short_name = normalized.rsplit(".", 1)[-1]
+                short_slot_candidates.setdefault(short_name, set()).add(control_slot)
+                props = dict(getattr(control, "properties", {}) or {})
+                base_geometry[control_slot] = [
+                    self._dbase_wfm_int(props, "Left", 0),
+                    self._dbase_wfm_int(props, "Top", 0),
+                    self._dbase_wfm_int(props, "Width", 120),
+                    self._dbase_wfm_int(props, "Height", 30),
+                ]
+            for short_name, slots in short_slot_candidates.items():
+                if len(slots) == 1:
+                    object_slots[short_name] = next(iter(slots))
+
+            def resolve_wfm_object_slot(name):
+                key = re.sub(r"\s+", "", str(name or "")).casefold()
+                return object_slots.get(key)
+
+            def callback_literal(expression, method):
+                value = render_program_literal(expression, method=method)
+                if value is None:
+                    return None
+                return str(value)
+
+            def callback_integer(expression, method):
+                value = callback_literal(expression, method)
+                if value is None:
+                    return None
+                try:
+                    number = float(value.strip())
+                except (TypeError, ValueError):
+                    return None
+                if not number.is_integer():
+                    return None
+                return int(number)
+
+            def emit_callback_geometry(out, slot, geometry):
+                left, top, width, height = [int(value) for value in geometry]
+                if is64:
+                    # Der Callback-Prolog reserviert bereits 40 Bytes Shadow
+                    # Space. Der 5. Parameter liegt daher direkt bei [rsp+32].
+                    out.extend([
+                        f"    mov rcx, qword ptr [{slot}]",
+                        f"    mov edx, {left}",
+                        f"    mov r8d, {top}",
+                        f"    mov r9d, {width}",
+                        f"    mov dword ptr [rsp+32], {height}",
+                        "    call DBaseQtWidgetSetGeometry",
+                    ])
+                else:
+                    out.extend([
+                        f"    push {height}",
+                        f"    push {width}",
+                        f"    push {top}",
+                        f"    push {left}",
+                        f"    push dword ptr [{slot}]",
+                        "    call DBaseQtWidgetSetGeometry",
+                        "    add esp, 20",
+                    ])
+
+            def emit_callback_property(out, slot, name, value):
+                name_label, name_len = text_label(name)
+                value_label, value_len = text_label(value)
+                if is64:
+                    out.extend([
+                        f"    mov rcx, qword ptr [{slot}]",
+                        f"    mov rdx, {name_label}",
+                        f"    mov r8d, {name_len}",
+                        f"    mov r9, {value_label}",
+                        f"    mov dword ptr [rsp+32], {value_len}",
+                        "    call DBaseQtWidgetSetProperty",
+                    ])
+                else:
+                    out.extend([
+                        f"    push {value_len}",
+                        f"    push {value_label}",
+                        f"    push {name_len}",
+                        f"    push {name_label}",
+                        f"    push dword ptr [{slot}]",
+                        "    call DBaseQtWidgetSetProperty",
+                        "    add esp, 20",
+                    ])
 
             callback_lines = []
             for procedure in sorted(
@@ -60918,14 +66962,59 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     label + ":",
                 ])
 
+                variadic_info = wfm_variadic_parameter_info(method)
+                method_parameters = wfm_method_parameters(method)
+                callback_stack_size = 40
                 if is64:
-                    callback_lines.extend([
-                        "    sub rsp, 40",
-                        "    mov qword ptr [rsp+32], rcx",
-                    ])
+                    if variadic_info is not None:
+                        callback_stack_size = 56
+                        callback_lines.extend([
+                            "    sub rsp, 56",
+                            "    mov qword ptr [rsp+32], rcx    ; **args vector",
+                            "    mov dword ptr [rsp+40], edx   ; argc",
+                        ])
+                    else:
+                        callback_lines.append("    sub rsp, 40")
+                        # Stage 111: normale WFM-Parameter werden beim echten
+                        # Aufruf aus dem Microsoft-x64-ABI in stabile Slots
+                        # uebernommen. Damit sind p1/p2 echte Laufzeitparameter.
+                        abi_regs = ("rcx", "rdx", "r8", "r9")
+                        for parameter_index, parameter in enumerate(method_parameters):
+                            slot_name = parameter_slot(procedure, parameter)
+                            runtime_parameter_slots.append(slot_name)
+                            if parameter_index < 4:
+                                callback_lines.append(
+                                    f"    mov qword ptr [{slot_name}], {abi_regs[parameter_index]}"
+                                )
+                            else:
+                                # Nach sub rsp,40 liegt das erste Stackargument
+                                # bei [rsp+50h] (Ruecksprungadresse + Shadow Space).
+                                src_off = 0x50 + (parameter_index - 4) * 8
+                                callback_lines.extend([
+                                    f"    mov rax, qword ptr [rsp+{src_off}]",
+                                    f"    mov qword ptr [{slot_name}], rax",
+                                ])
+                else:
+                    # Stage 111: Win32-cdecl Parameter liegen beim Eintritt ab
+                    # [esp+4]. Vor jeglichem weiteren push/call werden sie in
+                    # eigene Slots kopiert.
+                    for parameter_index, parameter in enumerate(method_parameters):
+                        slot_name = parameter_slot(procedure, parameter)
+                        runtime_parameter_slots.append(slot_name)
+                        callback_lines.extend([
+                            f"    mov eax, dword ptr [esp+{4 + parameter_index * 4}]",
+                            f"    mov dword ptr [{slot_name}], eax",
+                        ])
 
                 body_lines = list(getattr(method, "body", []) or [])
                 in_block_comment = False
+                # Jede Prozedur startet mit der im WFM definierten Geometrie.
+                # Mehrere Zuweisungen innerhalb derselben Prozedur bauen
+                # nacheinander aufeinander auf, z.B. width=100; height=200.
+                callback_geometry = {
+                    slot: list(values)
+                    for slot, values in base_geometry.items()
+                }
 
                 for body_index, raw_line in enumerate(body_lines):
                     statement = str(raw_line).strip()
@@ -60941,6 +67030,64 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                             in_block_comment = True
                         continue
                     if statement.startswith("//") or statement.startswith("**"):
+                        continue
+
+                    # Stage 112: Property-Zuweisungen im Event-/Konstruktor-
+                    # Assembler. THIS und der Klassenname bezeichnen dasselbe
+                    # Formularobjekt. Geometrie wird ueber SetGeometry gesetzt;
+                    # andere konstante Eigenschaften ueber SetProperty.
+                    property_match = re.match(
+                        r"(?i)^([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)"
+                        r"\.([A-Za-z_]\w*)\s*=\s*(.+)$",
+                        statement,
+                    )
+                    if property_match:
+                        object_name = property_match.group(1)
+                        property_name = property_match.group(2)
+                        expression = property_match.group(3).strip()
+                        object_slot = resolve_wfm_object_slot(object_name)
+                        if object_slot is None:
+                            raise AssemblerError(
+                                f"{filename}: WFM-Prozedur {procedure}: "
+                                f"unbekanntes Formular/Control in Zuweisung: "
+                                f"{object_name}"
+                            )
+
+                        property_key = property_name.casefold()
+                        if property_key in {"left", "top", "width", "height"}:
+                            value = callback_integer(expression, method)
+                            if value is None:
+                                raise AssemblerError(
+                                    f"{filename}: WFM-Prozedur {procedure}: "
+                                    f"Geometrieausdruck fuer {property_name} "
+                                    "muss derzeit einen ganzzahligen Wert "
+                                    f"liefern: {expression}"
+                                )
+                            geometry = callback_geometry.setdefault(
+                                object_slot, [0, 0, 120, 30]
+                            )
+                            geometry_index = {
+                                "left": 0, "top": 1, "width": 2, "height": 3
+                            }[property_key]
+                            geometry[geometry_index] = value
+                            callback_lines.append(f"    ; {statement}")
+                            emit_callback_geometry(
+                                callback_lines, object_slot, geometry
+                            )
+                            continue
+
+                        value = callback_literal(expression, method)
+                        if value is None:
+                            raise AssemblerError(
+                                f"{filename}: WFM-Prozedur {procedure}: "
+                                f"Ausdruck fuer Eigenschaft {property_name} "
+                                "wird im Event-Code noch nicht unterstuetzt: "
+                                + expression
+                            )
+                        callback_lines.append(f"    ; {statement}")
+                        emit_callback_property(
+                            callback_lines, object_slot, property_name, value
+                        )
                         continue
 
                     return_match = re.match(
@@ -60978,7 +67125,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                         statement,
                     )
                     if print_match:
-                        literal = render_program_literal(print_match.group(2))
+                        literal = render_program_literal(print_match.group(2), method=method)
                         if literal is None:
                             raise AssemblerError(
                                 f"{filename}: WFM-Prozedur {procedure}: "
@@ -60986,24 +67133,36 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                                 "wird im Event-Code noch nicht unterstützt: "
                                 + print_match.group(2)
                             )
-                        out_label, out_len = text_label(literal)
-                        newline_flag = 0 if print_match.group(1) == "??" else 1
+                        out_label, out_len = console_text_label(literal)
+                        newline = print_match.group(1) != "??"
                         callback_lines.append(f"    ; {statement}")
-                        if is64:
-                            callback_lines.extend([
-                                f"    mov rcx, {out_label}",
-                                f"    mov edx, {out_len}",
-                                f"    mov r8d, {newline_flag}",
-                                "    call DBaseQtConsoleWrite",
-                            ])
-                        else:
-                            callback_lines.extend([
-                                f"    push {newline_flag}",
-                                f"    push {out_len}",
-                                f"    push {out_label}",
-                                "    call DBaseQtConsoleWrite",
-                                "    add esp, 12",
-                            ])
+
+                        def emit_console_buffer(label_name, byte_length, add_newline):
+                            # Stage 116: WFM-Ausgabe direkt an die Qt5-Runtime.
+                            # Die Runtime besitzt einen nicht modalen
+                            # QPlainTextEdit-Dialog auf dem Workstation-Desktop.
+                            if is64:
+                                callback_lines.extend([
+                                    f"    mov rcx, {label_name}",
+                                    f"    mov edx, {byte_length}",
+                                    f"    mov r8d, {1 if add_newline else 0}",
+                                    "    sub rsp, 40",
+                                    "    call DBaseQtConsoleWrite",
+                                    "    add rsp, 40",
+                                ])
+                            else:
+                                callback_lines.extend([
+                                    f"    push {1 if add_newline else 0}",
+                                    f"    push {byte_length}",
+                                    f"    push {label_name}",
+                                    "    call DBaseQtConsoleWrite",
+                                    "    add esp, 12",
+                                ])
+
+                        # Auch ?? "" wird an die Runtime gemeldet. Der Dialog
+                        # ist bereits beim WFM-Start erzeugt; ?/?? schreiben
+                        # nur noch in dessen QPlainTextEdit.
+                        emit_console_buffer(out_label, out_len, newline)
                         continue
 
                     # Stage 135: Win32 Beep(freq,duration).
@@ -61098,7 +67257,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
 
                 if is64:
                     callback_lines.extend([
-                        "    add rsp, 40",
+                        f"    add rsp, {callback_stack_size}",
                         "    ret",
                     ])
                 else:
@@ -61123,6 +67282,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             del unused_title_len
 
             entry_label = "__d64_wfm_entry"
+            init_call_lines = lifecycle_init_call_lines()
 
             if is64:
                 lifecycle = "\n".join([
@@ -61131,17 +67291,20 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     ".section .text",
                     f".entry {entry_label}",
                     f"{entry_label}:",
+                    # Stage 123: den WFM-Erkennungsmarker auch aus .text
+                    # referenzieren, damit ein PE-Writer unreferenzierte
+                    # .data-Symbole nicht still entfernen kann.
+                    "    mov rax, __dbase_wfm_qt_output_marker",
                     f"    mov rcx, {title_label}",
                     "    sub rsp, 40",
                     "    call DBaseQtInitializeGui",
                     "    add rsp, 40",
                     body.rstrip("\n"),
-                    (
-                        "    sub rsp, 40\n    call "
-                        + procedure_label("__init__")
-                        + "\n    add rsp, 40"
-                        if "__init__".casefold() in method_map else ""
-                    ),
+                    *init_call_lines,
+                    f"    mov rcx, qword ptr [{form_slot}]",
+                    "    sub rsp, 40",
+                    "    call DBaseQtFormOpen",
+                    "    add rsp, 40",
                     (
                         "    sub rsp, 40\n    call "
                         + procedure_label("__main__")
@@ -61171,14 +67334,16 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     ".section .text",
                     f".entry {entry_label}",
                     f"{entry_label}:",
+                    # Stage 123: siehe PE64-Pfad oben.
+                    "    mov eax, __dbase_wfm_qt_output_marker",
                     f"    push {title_label}",
                     "    call DBaseQtInitializeGui",
                     "    add esp, 4",
                     body.rstrip("\n"),
-                    (
-                        "    call " + procedure_label("__init__")
-                        if "__init__".casefold() in method_map else ""
-                    ),
+                    *init_call_lines,
+                    f"    push dword ptr [{form_slot}]",
+                    "    call DBaseQtFormOpen",
+                    "    add esp, 4",
                     (
                         "    call " + procedure_label("__main__")
                         if "__main__".casefold() in method_map else ""
@@ -61213,6 +67378,10 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 ".section .data",
                 f"{form_slot}:",
                 "    dq 0" if is64 else "    dd 0",
+                # Stage 116: Der Runner darf fuer diese WFM-GUI trotz des
+                # historischen Core-Markers KEINE Win32-Console vorreservieren.
+                "__dbase_wfm_qt_output_marker:",
+                "    db 68, 54, 52, 68, 66, 65, 83, 69, 95, 87, 70, 77, 95, 81, 84, 95, 79, 85, 84, 80, 85, 84, 95, 86, 49, 0",
             ]
             for control in model.controls:
                 data_lines.extend([
@@ -61224,6 +67393,48 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     f"{label}:",
                     f"    db {self._dbase_wfm_asm_bytes(value)}",
                 ])
+            for label, payload in console_labels:
+                data_lines.extend([
+                    f"{label}:",
+                    "    db " + (
+                        ", ".join(str(byte) for byte in payload)
+                        if payload else "0"
+                    ),
+                ])
+
+            if runtime_parameter_slots:
+                data_lines.extend([
+                    "",
+                    "; Stage 111: WFM runtime parameter slots",
+                ])
+                for slot_name in dict.fromkeys(runtime_parameter_slots):
+                    data_lines.extend([
+                        f"{slot_name}:",
+                        "    dq 0" if is64 else "    dd 0",
+                    ])
+
+            if constructor_args_built:
+                data_lines.extend([
+                    "",
+                    "; Stage 107: Python-like **args constructor capture",
+                    f"{constructor_args_label}:",
+                ])
+                for index, type_code, number_bits, text_arg_label, text_arg_len in constructor_arg_records:
+                    low = int(number_bits) & 0xFFFFFFFF
+                    high = (int(number_bits) >> 32) & 0xFFFFFFFF
+                    data_lines.extend([
+                        f"    ; args[{index}]",
+                        f"    dd {type_code}",
+                        f"    dd {low}, {high}",
+                        (
+                            f"    dq {text_arg_label}"
+                            if is64 and text_arg_label
+                            else ("    dq 0" if is64 else (
+                                f"    dd {text_arg_label}" if text_arg_label else "    dd 0"
+                            ))
+                        ),
+                        f"    dd {int(text_arg_len)}",
+                    ])
 
             assembly = assembly.rstrip() + "\n" + "\n".join(data_lines) + "\n"
 
@@ -61240,6 +67451,11 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 "Stage 133: alle WFM-Methoden erhalten Code-Labels fuer direkte Event-/Hilfsaufrufe.",
                 "Stage 135: Beep(freq,duration) wird als kernel32-Aufruf in .text kompiliert.",
                 "Stage 132/133/135: nicht unterstuetzte Event-Statements erzeugen einen Compilerfehler statt stiller ASM-Kommentare.",
+                "Stage 108: WFM-? und ?? unterstuetzen konstante dBase-Ausdruecke mit Konstruktorparametern/args/argc.",
+                "Stage 116: WFM-? und ?? schreiben ohne AllocConsole in einen nicht modalen Qt5-Ausgabedialog mit QPlainTextEdit auf dem Workstation-Desktop.",
+                "Stage 116: Der Qt5-Ausgabedialog besitzt 500 Textbloecke Scroll-Back; ? erzeugt eine neue Zeile, ?? schreibt ohne Zeilenumbruch.",
+                "Stage 111: __init__ wird nach Form-/Control-Erzeugung, aber vor DBaseQtFormOpen aufgerufen.",
+                "Stage 111: NEW-Argumente werden vor dem __init__-Aufruf nach PE32-cdecl bzw. PE32+-ABI gesetzt; normale Parameter werden im Prozedur-Prolog in Runtime-Slots uebernommen.",
             )
             return replace(
                 base,
@@ -62148,14 +68364,18 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 lines.append("")
                 emitted.add(name.casefold())
 
-            for kind, name, ret in (
-                ("procedure", "__init__", ""),
-                ("procedure", "__del__", ""),
-                ("function", "__main__", "0"),
+            for kind, name, ret, default_parameters in (
+                ("procedure", "__init__", "", ("**args", "argc")),
+                ("procedure", "__del__", "", ()),
+                ("function", "__main__", "0", ()),
             ):
                 if name.casefold() in emitted:
                     continue
-                lines.append(f"    {kind} {name}")
+                parameter_text = (
+                    "(" + ", ".join(default_parameters) + ")"
+                    if default_parameters else ""
+                )
+                lines.append(f"    {kind} {name}{parameter_text}")
                 lines.append("        return" + ((" " + ret) if ret else ""))
                 lines.append("")
 
@@ -62219,6 +68439,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             for flag_name in (
                 "_e_baukasten_workspace_active",
                 "_music_workspace_active",
+                "_math_learning_workspace_active",
                 "_math_learning_replaced_filesystem_dock",
                 "_localize_replaced_filesystem_dock",
                 "_knowledge_replaced_filesystem_dock",
@@ -62241,22 +68462,172 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 project_dock.raise_()
 
         # -------------------------------------------------------------------
-        # Stage ASM 83: E-Baukasten. Implementierung im additiven Qt5-Modul;
-        # Einstieg, Menue, Dock-Lebensdauer und App-Theme bleiben hier.
+        # Stage ASM 92: E-Baukasten. Ansicht-Steuerungen benutzen
+        # ausschliesslich normale QAction-Eintraege. QWidgetAction/QSpinBox in
+        # QMenu wird nicht verwendet. Die internen SpinBoxen bleiben nur als
+        # Zustands-/Kompatibilitaetsobjekte fuer Simulation und Dateiformat.
         # -------------------------------------------------------------------
+        def _set_e_baukasten_view_controls_enabled(self, enabled: bool) -> None:
+            for menu in (
+                getattr(self, "e_baukasten_zoom_menu", None),
+                getattr(self, "e_baukasten_xpos_menu", None),
+                getattr(self, "e_baukasten_ypos_menu", None),
+                getattr(self, "e_baukasten_zpos_menu", None),
+                getattr(self, "e_baukasten_raster_menu", None),
+            ):
+                if menu is not None:
+                    menu.setEnabled(bool(enabled))
+
+        @staticmethod
+        def _nearest_e_baukasten_menu_value(value, allowed_values):
+            values = tuple(int(v) for v in allowed_values)
+            if not values:
+                return int(value)
+            return min(values, key=lambda candidate: abs(candidate - int(value)))
+
+        def _sync_e_baukasten_view_control_checks(self) -> None:
+            widget = getattr(self, "e_baukasten_widget", None)
+            if widget is None:
+                return
+            specs = (
+                (getattr(self, "e_baukasten_zoom_actions", {}), widget._buildbox_zoom_percent),
+                (getattr(self, "e_baukasten_xpos_actions", {}), widget._buildbox_rotation_x),
+                (getattr(self, "e_baukasten_ypos_actions", {}), widget._buildbox_rotation_y),
+                (getattr(self, "e_baukasten_zpos_actions", {}), widget._buildbox_rotation_z),
+                (getattr(self, "e_baukasten_raster_actions", {}), widget.scene.grid),
+            )
+            for actions, current in specs:
+                if not actions:
+                    continue
+                nearest = self._nearest_e_baukasten_menu_value(current, actions.keys())
+                for value, action in actions.items():
+                    blocked = action.blockSignals(True)
+                    action.setChecked(int(value) == int(nearest))
+                    action.blockSignals(blocked)
+
+        def _bind_e_baukasten_view_controls(self, widget) -> None:
+            bindings = (
+                (getattr(self, "e_baukasten_zoom_actions", {}), lambda value: widget.set_buildbox_zoom(value)),
+                (getattr(self, "e_baukasten_xpos_actions", {}), lambda value: widget.set_buildbox_rotation("x", value)),
+                (getattr(self, "e_baukasten_ypos_actions", {}), lambda value: widget.set_buildbox_rotation("y", value)),
+                (getattr(self, "e_baukasten_zpos_actions", {}), lambda value: widget.set_buildbox_rotation("z", value)),
+                (getattr(self, "e_baukasten_raster_actions", {}), lambda value: widget.set_grid_value(value)),
+            )
+            for actions, setter in bindings:
+                for value, action in actions.items():
+                    try:
+                        action.triggered.disconnect()
+                    except (TypeError, RuntimeError):
+                        pass
+                    action.triggered.connect(
+                        lambda checked=False, v=int(value), target=setter: target(v)
+                    )
+            self._sync_e_baukasten_view_control_checks()
+            self._set_e_baukasten_view_controls_enabled(False)
+
+        def show_e_baukasten_component_help(self, kind: str) -> None:
+            kind = str(kind or "")
+            record = e_baukasten_component_help_record(kind)
+            definition = CATALOG.get(kind)
+            if not record or definition is None:
+                self.statusBar().showMessage("Keine E-Baukasten-Hilfe-ID fuer diese Komponente.", 5000)
+                return
+
+            component_id = int(record["component_id"])
+            help_id = int(record["help_id"])
+            title = str(definition.get("title", kind))
+            print(
+                f"E-Baukasten Hilfe: Komponenten-ID {component_id}, Hilfe-ID {help_id}, {title}",
+                flush=True,
+            )
+            self.statusBar().showMessage(
+                f"E-Baukasten-Hilfe: {title} · Komponenten-ID {component_id} · Hilfe-ID {help_id}",
+                5000,
+            )
+
+            compiled = d64_resolve_runtime_resource("help/e_baukasten.chm")
+            source_dir = d64_resolve_runtime_resource("help/e_baukasten")
+            if compiled.is_file():
+                self.show_chm_viewer(
+                    context_language="e_baukasten",
+                    context_word=title,
+                    context_id=help_id,
+                    fixed_chm=compiled,
+                )
+            else:
+                self.show_chm_viewer(
+                    context_language="e_baukasten",
+                    context_word=title,
+                    context_id=help_id,
+                    fixed_help_directory=source_dir,
+                )
+
+        def register_project_circuit(self, path) -> Optional[QTreeWidgetItem]:
+            """Fuegt eine gespeicherte *.ebk einmalig unter Projekt -> Schaltungen ein."""
+            root = getattr(self, "project_root_items", {}).get("circuits")
+            if root is None:
+                return None
+            target = Path(path).expanduser()
+            try:
+                target = target.resolve()
+            except OSError:
+                target = target.absolute()
+            for index in range(root.childCount()):
+                child = root.child(index)
+                existing = str(child.data(0, Qt.UserRole + 302) or "").strip()
+                if not existing:
+                    continue
+                try:
+                    same_path = Path(existing).expanduser().resolve() == target
+                except OSError:
+                    same_path = Path(existing).expanduser().absolute() == target
+                if same_path:
+                    return child
+            child = self._add_project_entry("circuits", target, title=target.name)
+            if child is not None:
+                root.setExpanded(True)
+                self.set_project_modified(True)
+                if self.current_project_path is not None:
+                    self.save_project()
+            return child
+
+        def open_project_circuit(self, path) -> bool:
+            target = Path(path).expanduser()
+            if not target.is_file():
+                self.show_error("Schaltung nicht gefunden", f"E-Baukasten-Datei nicht gefunden:\n{target}")
+                return False
+            self._ensure_e_baukasten()
+            if not self.e_baukasten_widget.confirm_discard():
+                return False
+            self.show_e_baukasten()
+            try:
+                self.e_baukasten_widget.load_from_path(target)
+            except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+                self.show_error("Schaltung konnte nicht geladen werden", str(exc))
+                return False
+            self.e_baukasten_dock.show()
+            self.e_baukasten_dock.raise_()
+            self.e_baukasten_widget.tabs.setCurrentIndex(0)
+            self.e_baukasten_widget.view.setFocus(Qt.OtherFocusReason)
+            self.statusBar().showMessage(f"Schaltung geladen: {target.name}", 6000)
+            return True
+
         def _ensure_e_baukasten(self) -> None:
             if self.e_baukasten_dock is not None:
                 return
-            from e_baukasten import ElectronicsWorkbench
+            #from e_baukasten import ElectronicsWorkbench as EBaukastenWorkbench
             widget = ElectronicsWorkbench(self)
             widget.set_dark_mode(self.dark_mode_enabled)
+            widget.status_message.connect(lambda text: self.statusBar().showMessage(text))
+            widget.component_help_requested.connect(self.show_e_baukasten_component_help)
+            self._bind_e_baukasten_view_controls(widget)
             dock = QDockWidget("E-Baukasten", self)
             dock.setObjectName("e_baukasten_dock")
             dock.setFeatures(self._dock_features())
             dock.setAllowedAreas(Qt.AllDockWidgetAreas)
             dock.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
             dock.setWidget(widget)
-            dock.setTitleBarWidget(DockTitleBar(dock))
+            dock.setTitleBarWidget(DockTitleBar(dock, extra_widget=widget.toolbar))
             # Liegen Dateisystem und Projekt zusammen auf einer Seite, kommt
             # der Baukasten gegenueber dazu. Ihr Stapel wird nicht aufgeteilt.
             areas = {self.dockWidgetArea(d) for d in (
@@ -62286,6 +68657,8 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             for dock in keep:
                 dock.show()
             self._e_baukasten_workspace_active = True
+            self._set_e_baukasten_view_controls_enabled(True)
+            self._update_document_actions()
             self.e_baukasten_widget.set_dark_mode(self.dark_mode_enabled)
             self.e_baukasten_dock.setFloating(False)
             self.e_baukasten_dock.show()
@@ -62297,21 +68670,43 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             self.resizeDocks([self.e_baukasten_dock], [max(200, self.width()-420)], Qt.Horizontal)
             self.resizeDocks([self.e_baukasten_dock], [max(180, self.height()-200)], Qt.Vertical)
             self.e_baukasten_widget.view.setFocus(Qt.OtherFocusReason)
-            self.statusBar().showMessage("E-Baukasten geöffnet", 4000)
+            self.statusBar().showMessage(
+                "Komponente anklicken und platzieren oder per Drag & Drop in die Schaltung ziehen."
+            )
 
         def _e_baukasten_visibility_changed(self, visible: bool) -> None:
             dock = self.e_baukasten_dock
             if not visible and dock is not None and dock.isHidden() and self._e_baukasten_workspace_active:
                 self._e_baukasten_workspace_active = False
+                self._set_e_baukasten_view_controls_enabled(False)
+                self._update_document_actions()
                 central = self.centralWidget()
                 if central is not None:
                     central.show()
+
+        def _fill_e_baukasten_free_space(self) -> None:
+            dock = getattr(self, "e_baukasten_dock", None)
+            if dock is None or dock.isFloating() or dock.isHidden():
+                return
+            central = self.centralWidget()
+            if central is not None:
+                central.hide()
+            dock.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            dock.show()
+            dock.raise_()
+            # Nach dem erneuten Andocken den Baukasten maximal in den noch
+            # freien Dock-Bereich ausdehnen. Projekt/Dateisystem/Protokoll
+            # behalten dabei ihren eigenen reservierten Bereich.
+            self.resizeDocks([dock], [max(400, self.width() - 120)], Qt.Horizontal)
+            self.resizeDocks([dock], [max(300, self.height() - 100)], Qt.Vertical)
 
         def _e_baukasten_floating_changed(self, floating: bool) -> None:
             if self._e_baukasten_workspace_active:
                 central = self.centralWidget()
                 if central is not None:
                     central.setVisible(bool(floating))
+                if not floating:
+                    QTimer.singleShot(0, self._fill_e_baukasten_free_space)
 
         # -------------------------------------------------------------------
         # Stage ASM 77: HTML5-editor.net inspirierter visueller HTML Editor.
@@ -64550,6 +70945,89 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             self.view_settings_menu.setObjectName("view_settings_menu")
             self.view_settings_menu.addAction(self.settings_action)
             self.view_settings_menu.addAction(self.project_settings_action)
+
+            # Stage ASM 92: Baukasten-Steuerungen als normale QAction-
+            # Untermenues. QMenu enthaelt bewusst keine QWidgetAction/SpinBox.
+            self.view_menu.addSeparator()
+            self.e_baukasten_zoom_menu = self.view_menu.addMenu("Zoom")
+            self.e_baukasten_xpos_menu = self.view_menu.addMenu("XPos")
+            self.e_baukasten_ypos_menu = self.view_menu.addMenu("YPos")
+            self.e_baukasten_zpos_menu = self.view_menu.addMenu("ZPos")
+            self.e_baukasten_raster_menu = self.view_menu.addMenu("Raster")
+            self.e_baukasten_zoom_menu.setObjectName("e_baukasten_view_zoom_menu")
+            self.e_baukasten_xpos_menu.setObjectName("e_baukasten_view_xpos_menu")
+            self.e_baukasten_ypos_menu.setObjectName("e_baukasten_view_ypos_menu")
+            self.e_baukasten_zpos_menu.setObjectName("e_baukasten_view_zpos_menu")
+            self.e_baukasten_raster_menu.setObjectName("e_baukasten_view_raster_menu")
+
+            self.e_baukasten_zoom_actions = {}
+            self.e_baukasten_zoom_group = QActionGroup(self)
+            self.e_baukasten_zoom_group.setExclusive(True)
+            for value in range(100, 241, 20):
+                action = QAction(f"{value} %", self.e_baukasten_zoom_menu)
+                action.setCheckable(True)
+                action.setData(value)
+                action.setObjectName(f"e_baukasten_zoom_{value}")
+                self.e_baukasten_zoom_group.addAction(action)
+                self.e_baukasten_zoom_menu.addAction(action)
+                self.e_baukasten_zoom_actions[value] = action
+            self.e_baukasten_zoom_actions[100].setChecked(True)
+
+            def _make_e_baukasten_degree_menu(menu, prefix):
+                actions = {}
+                group = QActionGroup(self)
+                group.setExclusive(True)
+                for value in range(0, 91, 15):
+                    action = QAction(f"{value} Grad", menu)
+                    action.setCheckable(True)
+                    action.setData(value)
+                    action.setObjectName(f"e_baukasten_{prefix}_{value}")
+                    group.addAction(action)
+                    menu.addAction(action)
+                    actions[value] = action
+                actions[0].setChecked(True)
+                return group, actions
+
+            self.e_baukasten_xpos_group, self.e_baukasten_xpos_actions = _make_e_baukasten_degree_menu(
+                self.e_baukasten_xpos_menu, "xpos"
+            )
+            self.e_baukasten_ypos_group, self.e_baukasten_ypos_actions = _make_e_baukasten_degree_menu(
+                self.e_baukasten_ypos_menu, "ypos"
+            )
+            self.e_baukasten_zpos_group, self.e_baukasten_zpos_actions = _make_e_baukasten_degree_menu(
+                self.e_baukasten_zpos_menu, "zpos"
+            )
+
+            self.e_baukasten_raster_actions = {}
+            self.e_baukasten_raster_group = QActionGroup(self)
+            self.e_baukasten_raster_group.setExclusive(True)
+            for value in range(5, 51, 5):
+                action = QAction(f"{value} Pixel", self.e_baukasten_raster_menu)
+                action.setCheckable(True)
+                action.setData(value)
+                action.setObjectName(f"e_baukasten_raster_{value}")
+                self.e_baukasten_raster_group.addAction(action)
+                self.e_baukasten_raster_menu.addAction(action)
+                self.e_baukasten_raster_actions[value] = action
+            self.e_baukasten_raster_actions[10].setChecked(True)
+
+            for menu in (
+                self.e_baukasten_zoom_menu,
+                self.e_baukasten_xpos_menu,
+                self.e_baukasten_ypos_menu,
+                self.e_baukasten_zpos_menu,
+                self.e_baukasten_raster_menu,
+            ):
+                menu.aboutToShow.connect(self._sync_e_baukasten_view_control_checks)
+                menu.setEnabled(False)
+
+            # Stage ASM 106: "Projekt" steht unmittelbar rechts neben
+            # "Ansicht" und damit vor Favoriten/DISM/Werkzeuge.
+            self.project_menu = self.main_menu_bar.addMenu("&Projekt")
+            self.project_menu.setObjectName("project_menu")
+            self.project_menu.addAction(self.project_open_action)
+            self.project_menu.addAction(self.project_close_action)
+
             self.favorites_menu = self.main_menu_bar.addMenu("&Favoriten")
             self._refresh_favorites_menu()
             self.dism_menu = self.main_menu_bar.addMenu("&DISM")
@@ -66560,6 +73038,10 @@ border: 2px solid #2a69aa;
                 self.save_project()
 
         def open_document_dialog(self) -> None:
+            if self._e_baukasten_is_active():
+                self.e_baukasten_widget.load_file()
+                self._update_document_actions()
+                return
             dialog = ProjectOpenFileDialog(
                 self,
                 initial_directory=self.current_directory,
@@ -66646,7 +73128,10 @@ border: 2px solid #2a69aa;
                 self._remember_recent_file(path)
                 return True
 
-            if path.suffix.lower() in {".scr", ".screen"}:
+            if (
+                path.suffix.lower() in {".scr", ".screen"}
+                or is_c64_text_screen_json_file(path)
+            ):
                 self.show_text_screen_editor(initial_path=path)
                 self._remember_recent_file(path)
                 return True
@@ -67144,6 +73629,13 @@ border: 2px solid #2a69aa;
             self._update_document_tab(document)
             self._update_editor_status_panels()
 
+        def _e_baukasten_is_active(self) -> bool:
+            return bool(
+                self._e_baukasten_workspace_active
+                and self.e_baukasten_widget is not None
+                and self.e_baukasten_dock is not None
+            )
+
         def _dbase_form_is_active(self) -> bool:
             return bool(
                 self._dbase_form_workspace_active
@@ -67155,8 +73647,9 @@ border: 2px solid #2a69aa;
         def _update_document_actions(self) -> None:
             has_document = self.current_document() is not None
             has_form = self._dbase_form_is_active()
-            self.save_file_action.setEnabled(has_document or has_form)
-            self.save_as_action.setEnabled(has_document or has_form)
+            has_e_baukasten = self._e_baukasten_is_active()
+            self.save_file_action.setEnabled(has_document or has_form or has_e_baukasten)
+            self.save_as_action.setEnabled(has_document or has_form or has_e_baukasten)
             self.close_document_action.setEnabled(has_document)
             self._update_edit_actions()
 
@@ -67208,6 +73701,8 @@ border: 2px solid #2a69aa;
             )
 
         def save_current_document(self) -> bool:
+            if self._e_baukasten_is_active():
+                return bool(self.e_baukasten_widget.save_file(False))
             if self._dbase_form_is_active():
                 return self.save_dbase_form(save_as=False)
             document = self.current_document()
@@ -67216,6 +73711,8 @@ border: 2px solid #2a69aa;
             return self._save_document(document, save_as=False)
 
         def save_current_document_as(self) -> bool:
+            if self._e_baukasten_is_active():
+                return bool(self.e_baukasten_widget.save_file(True))
             if self._dbase_form_is_active():
                 return self.save_dbase_form(save_as=True)
             document = self.current_document()
@@ -67604,6 +74101,17 @@ border: 2px solid #2a69aa;
             target_name = document._build_target_name()
             warnings = tuple(getattr(generated, "warnings", ()) or ())
             notes = tuple(getattr(generated, "notes", ()) or ())
+
+            # Stage 104: dBase-Praeprozessor-Diagnosen nicht nur im Hinweise-
+            # Editor, sondern ausdruecklich auch im Haupt-Protokoll ausgeben.
+            if document.is_dbase_document:
+                frontend = getattr(generated, "frontend", None)
+                if frontend is not None:
+                    for item in tuple(getattr(frontend, "preprocessor_infos", ()) or ()):
+                        self.log(f"dBase #info: {item}")
+                    for item in tuple(getattr(frontend, "preprocessor_warnings", ()) or ()):
+                        self.log(f"dBase #warning: {item}")
+
             diagnostic_lines = []
             if notes:
                 diagnostic_lines.append("Hinweise:")
@@ -69539,17 +76047,17 @@ border: 2px solid #2a69aa;
                     "bleibt erhalten:\n" + str(output_path),
                 )
                 return False
+            # Stage 110: Keine DEVNULL-Standardhandles und kein CREATE_NO_WINDOW.
+            # Die GUI bleibt wegen PE-Subsystem=WINDOWS weiterhin ohne Console
+            # sichtbar. Beim ersten dBase ?/?? darf AllocConsole jedoch echte
+            # Console-Handles erzeugen. Die native Runtime oeffnet zusaetzlich
+            # CONOUT$ explizit und ist dadurch auch bei externen Launchern robust.
             options = {
                 "cwd": str(output_path.parent),
-                "stdin": subprocess.DEVNULL,
-                "stdout": subprocess.DEVNULL,
-                "stderr": subprocess.DEVNULL,
             }
             flags = 0
             if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
                 flags |= subprocess.CREATE_NEW_PROCESS_GROUP
-            if hasattr(subprocess, "CREATE_NO_WINDOW"):
-                flags |= subprocess.CREATE_NO_WINDOW
             if flags:
                 options["creationflags"] = flags
             try:
@@ -69761,6 +76269,9 @@ border: 2px solid #2a69aa;
                     exe_bytes = exe.encode("utf-16-le")
                     cwd_bytes = cwd.encode("utf-16-le")
                     flags = 1 if console_mode else 0
+                    flags |= 0x00000002  # Runner-Theme ist explizit gesetzt
+                    if self.dark_mode_enabled:
+                        flags |= 0x00000004  # Dark-Mode
                     payload = (
                         struct.pack(
                             "<IIII",
@@ -69803,7 +76314,13 @@ border: 2px solid #2a69aa;
             try:
                 output_path = Path(output_path).resolve()
                 mode_switch = "--console" if console_mode else "--gui"
-                command = [str(runner), mode_switch, str(output_path)]
+                theme_switch = "--dark" if self.dark_mode_enabled else "--light"
+                command = [
+                    str(runner),
+                    mode_switch,
+                    theme_switch,
+                    str(output_path),
+                ]
                 options = {
                     "cwd": str(runner.parent),
                     "stdin": subprocess.DEVNULL,
@@ -69894,6 +76411,7 @@ border: 2px solid #2a69aa;
             self.log(
                 "WORKSTATION RUNNER DIRECT START: "
                 f"{runner} {'--console' if console_mode else '--gui'} "
+                f"{'--dark' if self.dark_mode_enabled else '--light'} "
                 f"{output_path}"
             )
             self.statusBar().showMessage(message, 7000)
@@ -71918,6 +78436,195 @@ border: 2px solid #2a69aa;
                         index,
                         "Projekt *" if self.project_modified else "Projekt",
                     )
+
+        def _project_close_has_unsaved_data(self) -> bool:
+            """Stage ASM 106: geaenderte Daten fuer den Projektabschluss erkennen."""
+            if bool(getattr(self, "project_modified", False)):
+                return True
+
+            if bool(getattr(self, "dbase_form_modified", False)):
+                return True
+
+            e_baukasten = getattr(self, "e_baukasten_widget", None)
+            if e_baukasten is not None and bool(getattr(e_baukasten, "dirty", False)):
+                return True
+
+            html_editor = getattr(self, "html_editor_widget", None)
+            if html_editor is not None:
+                try:
+                    if html_editor.editor.document().isModified():
+                        return True
+                except (AttributeError, RuntimeError):
+                    pass
+
+            document_tabs = getattr(self, "document_tabs", None)
+            if document_tabs is not None:
+                for index in range(document_tabs.count()):
+                    document = document_tabs.widget(index)
+                    if isinstance(document, DocumentEditor) and document.is_modified:
+                        return True
+
+            return False
+
+        def _save_project_close_changes(self) -> bool:
+            """Speichert alle erkennbar geaenderten Inhalte vor Projekt schließen.
+
+            Jeder Teil liefert False zurueck, wenn der Benutzer einen notwendigen
+            Speichern-unter-Dialog abbricht oder der Schreibvorgang fehlschlaegt.
+            In diesem Fall bleibt das Projekt vollstaendig geoeffnet.
+            """
+            # Der Formular-Designer ist ein projektbezogenes Dock und besitzt
+            # eine eigene Modified-Kennung.
+            if bool(getattr(self, "dbase_form_modified", False)):
+                if not self.save_dbase_form(save_as=False):
+                    return False
+
+            # E-Baukasten-Schaltungen werden unabhaengig von der *.pro-Datei
+            # gespeichert. Erst danach darf der Projektbaum gesichert werden.
+            e_baukasten = getattr(self, "e_baukasten_widget", None)
+            if e_baukasten is not None and bool(getattr(e_baukasten, "dirty", False)):
+                if not bool(e_baukasten.save_file(False)):
+                    return False
+
+            # Der HTML-Editor hat ebenfalls eine eigene Dokument-Modified-Flag.
+            html_editor = getattr(self, "html_editor_widget", None)
+            if html_editor is not None:
+                try:
+                    html_modified = bool(html_editor.editor.document().isModified())
+                except (AttributeError, RuntimeError):
+                    html_modified = False
+                if html_modified and not bool(html_editor.save_document()):
+                    return False
+
+            # Auch geaenderte normale Projekt-/Quelltext-Tabs werden bei \"Ja\"
+            # gespeichert. Untitled-Dateien duerfen dazu ihren vorhandenen
+            # Speichern-unter-Dialog oeffnen.
+            document_tabs = getattr(self, "document_tabs", None)
+            if document_tabs is not None:
+                documents = [
+                    document_tabs.widget(index)
+                    for index in range(document_tabs.count())
+                ]
+                for document in documents:
+                    if not isinstance(document, DocumentEditor):
+                        continue
+                    if not document.is_modified:
+                        continue
+                    if not self._save_document(document, save_as=False):
+                        return False
+
+            # Die Projektdatei wird zuletzt geschrieben, damit neu gespeicherte
+            # Ressourcen/Pfade bereits im Projektbaum enthalten sind. Wichtig:
+            # dies geschieht VOR dem Ausblenden der Docks, sonst wuerde der
+            # kuenstliche \"alles geschlossen\"-Zustand persistiert.
+            if (
+                self.current_project_path is not None
+                or self.project_modified
+                or self.project_has_entries()
+            ):
+                if not bool(self.save_project()):
+                    return False
+
+            return True
+
+        def _close_all_project_docks(self) -> None:
+            """Stage ASM 106: alle QDockWidgets schließen, ohne Restore-Echos."""
+            # Der vorhandene zentrale Helfer deaktiviert zuerst die Workspace-
+            # Restore-Callbacks und blendet alle Docks ausser dem Projekt-Dock
+            # signalgeschuetzt aus.
+            self._close_docks_except_project()
+
+            # Danach auch das Projekt-/Informations-Dock selbst schließen.
+            project_dock = getattr(self, "right_dock", None)
+            if project_dock is not None:
+                old_blocked = project_dock.blockSignals(True)
+                try:
+                    project_dock.close()
+                finally:
+                    project_dock.blockSignals(old_blocked)
+
+            # Falls spaeter weitere DockWidgets hinzukommen, werden auch diese
+            # sicher geschlossen. Bereits unsichtbare Docks bleiben unberuehrt.
+            for dock in self.findChildren(QDockWidget):
+                if dock is project_dock:
+                    continue
+                old_blocked = dock.blockSignals(True)
+                try:
+                    dock.close()
+                finally:
+                    dock.blockSignals(old_blocked)
+
+        def _reset_closed_project_state(self) -> None:
+            """Projektbindung entfernen; Workspace und offene Editor-Tabs bleiben."""
+            self.current_project_path = None
+            self.current_project_kind = "generic"
+            if hasattr(self, "project_path_edit"):
+                self.project_path_edit.clear()
+            self.reset_project_tree()
+            self.set_project_modified(False)
+
+        def _ask_project_close_save(self) -> str:
+            """Liefert 'yes', 'no' oder 'cancel' mit expliziten deutschen Buttons."""
+            box = QMessageBox(self)
+            box.setWindowTitle("Projekt schließen")
+            box.setIcon(QMessageBox.Question)
+            box.setText(
+                "Das Projekt enthält geänderte Daten.\n\n"
+                "Sollen die Änderungen vor dem Schließen gespeichert werden?"
+            )
+            yes_button = box.addButton("Ja", QMessageBox.AcceptRole)
+            no_button = box.addButton("Nein", QMessageBox.DestructiveRole)
+            cancel_button = box.addButton("Abbrechen", QMessageBox.RejectRole)
+            box.setDefaultButton(yes_button)
+            self._apply_message_box_theme(box)
+            box.exec_()
+            clicked = box.clickedButton()
+            if clicked is yes_button:
+                return "yes"
+            if clicked is no_button:
+                return "no"
+            return "cancel"
+
+        def close_project_from_main_menu(self, _checked: bool = False) -> bool:
+            """Stage ASM 106: aktuelles Projekt mit Ja/Nein/Abbrechen schließen."""
+            has_project = bool(
+                self.current_project_path is not None
+                or self.project_modified
+                or self.project_has_entries()
+            )
+            if not has_project:
+                self.statusBar().showMessage("Kein Projekt geöffnet", 4000)
+                return True
+
+            # Die vom Benutzer gewuenschte Ja/Nein/Abbrechen-Abfrage wird
+            # bei jedem expliziten Projektabschluss gezeigt. "Ja" sichert
+            # alle erkennbar geaenderten Inhalte und anschliessend die *.pro;
+            # "Nein" schliesst ohne zusaetzlichen Schreibvorgang.
+            decision = self._ask_project_close_save()
+            if decision == "cancel":
+                self.statusBar().showMessage("Projekt schließen abgebrochen", 4000)
+                return False
+            if decision == "yes" and not self._save_project_close_changes():
+                self.statusBar().showMessage(
+                    "Projekt schließen abgebrochen: Speichern nicht abgeschlossen",
+                    6000,
+                )
+                return False
+
+            project_name = (
+                self.current_project_path.name
+                if self.current_project_path is not None
+                else "Projekt"
+            )
+            self._close_all_project_docks()
+            self._reset_closed_project_state()
+            self.statusBar().showMessage(f"Projekt geschlossen: {project_name}")
+            self.log(f"Projekt geschlossen: {project_name}")
+            return True
+
+        def open_project_from_main_menu(self, _checked: bool = False) -> None:
+            """Stage ASM 106: Hauptmenü Projekt -> Projekt öffnen."""
+            self.choose_project_file()
 
         def choose_project_file(self) -> None:
             start_directory = (
@@ -75230,6 +81937,9 @@ border: 2px solid #2a69aa;
             category_key = str(
                 item.data(0, Qt.UserRole + 301) or ""
             ).casefold()
+            if category_key == "circuits" or path.suffix.casefold() == ".ebk":
+                self.open_project_circuit(path)
+                return
             # Stage 256: .prg ist auch im Commodore-C64-Projektzweig ein
             # Binärprogramm. open_document() erzeugt daraus das Disassembly
             # für den Rohdaten-Tab und legt die unveränderten Bytes in den
@@ -75614,6 +82324,32 @@ border: 2px solid #2a69aa;
             parent_name = parent.__class__.__name__ if parent is not None else "Root"
             return f"mo:{parent_name}.{class_name}[{ordinal}]"
 
+        @staticmethod
+        def _qt_ascii_property_name(marker: str) -> str:
+            """Return an ASCII-only dynamic QObject property name.
+
+            PyQt5 converts the *property name* of QObject.setProperty() through
+            an ASCII path.  Widget/object names may legitimately contain
+            Unicode (for example "E-Baukasten" or translated labels), which
+            previously raised UnicodeEncodeError while opening the E-Baukasten.
+
+            The original marker is still stored as the value of ``mo:marker``;
+            only the additional marker-as-property-key variant is normalized.
+            A short hash suffix keeps the name stable and collision resistant.
+            """
+            marker = str(marker or "")
+            try:
+                marker.encode("ascii")
+                return marker
+            except UnicodeEncodeError:
+                pass
+
+            ascii_base = marker.encode("ascii", "ignore").decode("ascii")
+            ascii_base = re.sub(r"[^A-Za-z0-9_.:\[\]-]+", "_", ascii_base)
+            ascii_base = ascii_base.strip("_") or "mo:unicode"
+            digest = hashlib.sha1(marker.encode("utf-8")).hexdigest()[:10]
+            return f"{ascii_base}__u{digest}"
+
         def _assign_mo_component_property(self, component, fallback_id: str = "") -> Optional[str]:
             marker = self._mo_component_marker(component, fallback_id)
             if not marker:
@@ -75629,12 +82365,17 @@ border: 2px solid #2a69aa;
             if not translated:
                 translated = marker[3:]
 
+            # Qt/PyQt dynamic property names must remain ASCII-safe.  Keep the
+            # real Unicode marker as data, but normalize the marker when it is
+            # used as a property *name*.
+            property_marker = self._qt_ascii_property_name(marker)
+
             # Both interpretations requested by the specification are exposed:
             #   property "mo:name" -> translated component name
             #   property "mo:<unique-name>" -> same translated component name
             component.setProperty("mo:marker", marker)
             component.setProperty("mo:name", translated)
-            component.setProperty(marker, translated)
+            component.setProperty(property_marker, translated)
             return marker
 
         def _assign_widget_property_id(self, widget) -> Optional[str]:
@@ -76253,7 +82994,13 @@ border: 2px solid #2a69aa;
 
             if extensions is None:
                 return paths
-            return [path for path in paths if path.suffix.lower() in extensions]
+            # Auch zusammengesetzte Endungen wie *.screen.json werden dadurch
+            # im passenden Filter angezeigt, ohne sämtliche JSON-Dateien zu
+            # Screen-Dateien zu erklären.
+            return [
+                path for path in paths
+                if any(path.name.casefold().endswith(ext.casefold()) for ext in extensions)
+            ]
 
         def populate_file_list(self) -> None:
             self.file_list.clear()
@@ -76601,6 +83348,7 @@ border: 2px solid #2a69aa;
             context_word: str = "",
             context_id: int = 0,
             fixed_chm: Optional[Path] = None,
+            fixed_help_directory: Optional[Path] = None,
         ) -> None:
             if not QT_WEBENGINE_AVAILABLE:
                 self._show_message_box(
@@ -76648,6 +83396,12 @@ border: 2px solid #2a69aa;
                     )
                     return
 
+            resolved_help_directory = None
+            if fixed_help_directory is not None:
+                candidate = Path(fixed_help_directory).expanduser().resolve()
+                if candidate.is_dir():
+                    resolved_help_directory = candidate
+
             # Unmittelbar vor dem Oeffnen wird die tatsaechlich aktive
             # Anwendungspalette abgefragt. Das ist verlaesslicher als ein
             # moeglicherweise noch nicht synchronisiertes Umschalt-Flag.
@@ -76669,9 +83423,14 @@ border: 2px solid #2a69aa;
             )
 
             if resolved_fixed_chm is not None:
-                # Die feste C64-Hilfe darf die zuletzt manuell gewaehlte
+                # Eine feste Kontexthilfe darf die zuletzt manuell gewaehlte
                 # allgemeine CHM nicht ueberschreiben.
                 dialog.open_chm(str(resolved_fixed_chm), remember_last=False)
+            elif resolved_help_directory is not None:
+                dialog.open_help_directory(
+                    str(resolved_help_directory),
+                    display_name="E-Baukasten-Hilfe",
+                )
             else:
                 last_file = str(
                     self.settings.value("chm/last_file", "") or ""

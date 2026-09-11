@@ -8,7 +8,7 @@ PrimaryDockLayout = {"paired":true,"area":2,"orientation":2,"first":"right_dock"
 
 [Session.Geometry]
 Version = 2
-MainWindow = {"x":274,"y":123,"width":1133,"height":805,"maximized":false,"fullscreen":false,"qt_geometry":"AdnQywADAAAAAAESAAAAewAABX4AAAOfAAABEgAAAHsAAAV+AAADnwAAAAAAAAAAB4AAAAESAAAAewAABX4AAAOf"}
+MainWindow = {"x":72,"y":95,"width":1133,"height":805,"maximized":false,"fullscreen":false,"qt_geometry":"AdnQywADAAAAAABIAAAAXwAABLQAAAODAAAASAAAAF8AAAS0AAADgwAAAAAAAAAAB4AAAABIAAAAXwAABLQAAAOD"}
 CentralArea = {"x":2,"y":109,"width":765,"height":559}
 PrimaryDockArea = {"area":2,"orientation":2,"first":"right_dock","second":"left_dock","sizes":[257,298],"area_width":360,"central_width":765,"separator_x":771}
 FileSystemDock = {"visible":true,"floating":false,"area":2,"x":771,"y":370,"width":360,"height":298}
@@ -52,6 +52,9 @@ Title = LOGO-Programme
 [Category.dbase]
 Title = dBase-Programme
 
+[Category.circuits]
+Title = Schaltungen
+
 [Category.character_maps]
 Title = Character Map's
 
@@ -60,9 +63,11 @@ Title = Paletten
 
 [Category.char_screens]
 Title = Char Screen's
+Item0001 = {"title":"text_screen.scr","path":"text_screen.scr"}
 
 [Category.pixel_screens]
 Title = Pixel Screen's
+Item0001 = {"title":"pixel_screen.px16","path":"pixel_screen.px16"}
 
 [Category.text_files]
 Title = Textdateien

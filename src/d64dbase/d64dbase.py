@@ -340,6 +340,32 @@ class _DBaseAnalysis:
 
 _LINE_MARKERS = ("//", "**", "&&")
 
+
+def _is_dbase_variadic_parameter_marker(text: str, index: int) -> bool:
+    """True for the special first routine parameter marker ``**name``.
+
+    dBase traditionally accepts ``**`` as a line-comment marker.  Stage 107
+    additionally uses ``**name`` immediately after the opening parenthesis of
+    PROCEDURE/FUNCTION as an explicit variadic-argument marker.  Only this
+    syntactic position is exempt from comment scanning; ordinary ``**``
+    comments keep their historic behaviour.
+    """
+    source = str(text or "")
+    pos = int(index)
+    if pos < 0 or not source.startswith("**", pos):
+        return False
+    after = pos + 2
+    if after >= len(source) or not (source[after].isalpha() or source[after] == "_"):
+        return False
+
+    line_start = max(source.rfind("\n", 0, pos), source.rfind("\r", 0, pos)) + 1
+    prefix = source[line_start:pos]
+    return bool(re.search(
+        r"(?i)\b(?:procedure|function)\s+[A-Za-z_]\w*\s*\(\s*$",
+        prefix,
+    ))
+
+
 _TARGET_ALIASES = {
     "pe32": "pe32",
     "win32": "pe32",
@@ -538,6 +564,10 @@ def scan_dbase_comments(
                 candidate
                 for candidate in _LINE_MARKERS
                 if text.startswith(candidate, index)
+                and not (
+                    candidate == "**"
+                    and _is_dbase_variadic_parameter_marker(text, index)
+                )
             ),
             None,
         )
@@ -672,6 +702,16 @@ def _macro_condition_scalar(name: str, macros: Mapping[str, DBaseMacro]) -> obje
     return 1
 
 
+_DBASE_PREDEFINED_MACRO_NAMES = frozenset({
+    "__file__", "__line__", "__date__", "__time__",
+})
+
+
+def _is_dbase_macro_defined(name: str, macros: Mapping[str, DBaseMacro]) -> bool:
+    key = str(name or "").casefold()
+    return key in macros or key in _DBASE_PREDEFINED_MACRO_NAMES
+
+
 def _condition_to_python(
     expression: str,
     macros: Mapping[str, DBaseMacro],
@@ -681,26 +721,53 @@ def _condition_to_python(
     compile_date: str,
     compile_time: str,
 ) -> str:
+    """Uebersetzt einen C/C++-artigen Praeprozessor-Ausdruck nach Python.
+
+    ``defined(NAME)`` und ``defined NAME`` liefern strikt 1/0. Danach werden
+    Objekt- und Funktionsmakros expandiert. Noch unbekannte Bezeichner haben
+    wie beim C-Praeprozessor den Wert 0.
+    """
     text = str(expression or "")
 
     def replace_defined(match: re.Match[str]) -> str:
-        # Erweiterte dBase-Semantik: defined(foo) liefert bei einem numerischen
-        # Objektmakro dessen Wert. Damit ist '#if defined(foo) >= 5' fuer
-        # '#define foo 5' sinnvoll. Bei nichtnumerischen Makros ist der Wert 1,
-        # bei nicht definierten Makros 0.
-        value = _macro_condition_scalar(match.group(1), macros)
-        return repr(value)
+        name = match.group(1) or match.group(2) or ""
+        return "1" if _is_dbase_macro_defined(name, macros) else "0"
 
     text = re.sub(
-        r"\bdefined\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)",
+        r"\bdefined\s*(?:\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)|([A-Za-z_][A-Za-z0-9_]*))",
         replace_defined,
         text,
         flags=re.IGNORECASE,
     )
+
+    # Makros in Bedingungen genauso wie im normalen Quelltext expandieren.
+    text, _ = _expand_dbase_macro_text(
+        text,
+        macros,
+        filename=filename,
+        line=line,
+        compile_date=compile_date,
+        compile_time=compile_time,
+    )
+
+    # dBase-/C-kompatible Schreibweisen normalisieren.
+    text = re.sub(
+        r"(?<![A-Za-z0-9_])\$([0-9A-Fa-f]+)",
+        lambda m: str(int(m.group(1), 16)),
+        text,
+    )
+    text = re.sub(
+        r"(?<![A-Za-z0-9_])([0-9][0-9A-Fa-f]*)[hH]\b",
+        lambda m: str(int(m.group(1), 16)),
+        text,
+    )
+    text = text.replace("<>", "!=")
+    text = re.sub(r"(?<![<>=!])=(?!=)", "==", text)
     text = text.replace("&&", " and ").replace("||", " or ")
     text = re.sub(r"!(?!=)", " not ", text)
 
-    # Identifikatoren ausserhalb von Stringliteralen durch Makrowerte ersetzen.
+    # Identifikatoren ausserhalb von Strings: Python-Schluesselwoerter bzw.
+    # boolesche Literale behalten, alles andere wird zu 0.
     result: list[str] = []
     i = 0
     while i < len(text):
@@ -719,22 +786,26 @@ def _condition_to_python(
             result.append(text[i:j])
             i = j
             continue
+
+        # Kein Identifier-Match mitten in einer Zahl wie 0x10.
+        if i > 0 and (text[i - 1].isalnum() or text[i - 1] == "_"):
+            result.append(ch)
+            i += 1
+            continue
+
         m = re.match(r"[A-Za-z_][A-Za-z0-9_]*", text[i:])
         if m:
             word = m.group(0)
             low = word.casefold()
-            if low in {"and", "or", "not", "true", "false"}:
-                result.append({"true": "True", "false": "False"}.get(low, low))
-            elif low == "__line__":
-                result.append(repr(int(line)))
-            elif low == "__file__":
-                result.append(repr(str(filename)))
-            elif low == "__date__":
-                result.append(repr(str(compile_date)))
-            elif low == "__time__":
-                result.append(repr(str(compile_time)))
+            if low in {"and", "or", "not"}:
+                result.append(low)
+            elif low == "true":
+                result.append("True")
+            elif low == "false":
+                result.append("False")
             else:
-                result.append(repr(_macro_condition_scalar(word, macros)))
+                # Nach Makroexpansion noch unbekannte Namen entsprechen 0.
+                result.append("0")
             i += len(word)
             continue
         result.append(ch)
@@ -778,6 +849,7 @@ def _safe_eval_macro_condition(
             if isinstance(node.op, ast.Not): return not bool(value)
             if isinstance(node.op, ast.UAdd): return +value
             if isinstance(node.op, ast.USub): return -value
+            if isinstance(node.op, ast.Invert): return ~int(value)
         if isinstance(node, ast.BoolOp):
             values = [bool(ev(item)) for item in node.values]
             if isinstance(node.op, ast.And): return all(values)
@@ -790,6 +862,11 @@ def _safe_eval_macro_condition(
             if isinstance(node.op, ast.Div): return left / right
             if isinstance(node.op, ast.FloorDiv): return left // right
             if isinstance(node.op, ast.Mod): return left % right
+            if isinstance(node.op, ast.BitAnd): return int(left) & int(right)
+            if isinstance(node.op, ast.BitOr): return int(left) | int(right)
+            if isinstance(node.op, ast.BitXor): return int(left) ^ int(right)
+            if isinstance(node.op, ast.LShift): return int(left) << int(right)
+            if isinstance(node.op, ast.RShift): return int(left) >> int(right)
         if isinstance(node, ast.Compare):
             left = ev(node.left)
             for op, comparator in zip(node.ops, node.comparators):
@@ -808,7 +885,7 @@ def _safe_eval_macro_condition(
 
     try:
         return bool(ev(tree))
-    except (ValueError, TypeError, ZeroDivisionError):
+    except (ValueError, TypeError, ZeroDivisionError, OverflowError):
         raise DBaseCompilerError(
             f"Nicht unterstuetzter Makro-Ausdruck: {expression}",
             line=line,
@@ -952,7 +1029,14 @@ def _expand_dbase_macro_text(
             out.append(text[i:end + 2])
             i = end + 2
             continue
-        if text.startswith("//", i) or text.startswith("**", i) or text.startswith("&&", i):
+        if (
+            text.startswith("//", i)
+            or text.startswith("&&", i)
+            or (
+                text.startswith("**", i)
+                and not _is_dbase_variadic_parameter_marker(text, i)
+            )
+        ):
             out.append(text[i:])
             break
         ch = text[i]
@@ -1024,9 +1108,62 @@ def _expand_dbase_macro_text(
 @dataclass
 class _DBaseConditionalFrame:
     parent_active: bool
-    condition_true: bool
-    else_seen: bool
-    macros_before: Dict[str, DBaseMacro]
+    branch_taken: bool
+    else_seen: bool = False
+
+
+def _resolve_include_path(raw: str, *, filename: str, line: int) -> Path:
+    value = str(raw or "").strip()
+    match = re.fullmatch(r'"([^"]+)"', value)
+    if match is None:
+        raise DBaseCompilerError(
+            '#include erwartet einen Pfad in doppelten Anfuehrungszeichen, z. B. #include "lib/common.prg".',
+            line=line,
+            column=1,
+            filename=filename,
+        )
+    include_name = os.path.expandvars(os.path.expanduser(match.group(1)))
+    path = Path(include_name)
+    source_path = Path(filename)
+    if not path.is_absolute():
+        base = source_path.parent if filename and not str(filename).startswith("<") else Path.cwd()
+        path = base / path
+    try:
+        path = path.resolve()
+    except OSError:
+        path = path.absolute()
+    if not path.is_file():
+        raise DBaseCompilerError(
+            f'#include-Datei nicht gefunden: {path}',
+            line=line,
+            column=1,
+            filename=filename,
+        )
+    return path
+
+
+def _read_dbase_include(path: Path, *, filename: str, line: int) -> str:
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        raise DBaseCompilerError(
+            f'#include-Datei konnte nicht gelesen werden: {path}: {exc}',
+            line=line,
+            column=1,
+            filename=filename,
+        ) from None
+    try:
+        return data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        try:
+            return data.decode("cp1252")
+        except UnicodeDecodeError as exc:
+            raise DBaseCompilerError(
+                f'#include-Datei ist weder UTF-8 noch Windows-1252: {path}',
+                line=line,
+                column=1,
+                filename=filename,
+            ) from exc
 
 
 def _resolve_pragma_link_path(raw: str, *, filename: str, line: int) -> DBasePragmaLink:
@@ -1050,24 +1187,60 @@ def _resolve_pragma_link_path(raw: str, *, filename: str, line: int) -> DBasePra
     return DBasePragmaLink(str(path), raw, line, 1)
 
 
-def _preprocess_dbase_macros(source: str, *, filename: str) -> Tuple[str, Tuple[DBaseMacro, ...], Tuple[DBasePragmaLink, ...], Tuple[str, ...], Tuple[str, ...]]:
-    # Kommentare werden nur fuer die Direktiverkennung positionsstabil maskiert;
-    # der ausgegebene aktive Code behaelt Kommentare bei, damit die bestehende
-    # dBase-Kommentarlogik inklusive mehrzeiliger Blockkommentare unveraendert bleibt.
+def _preprocess_dbase_macros(
+    source: str,
+    *,
+    filename: str,
+    _macros: Optional[Dict[str, DBaseMacro]] = None,
+    _links: Optional[list[DBasePragmaLink]] = None,
+    _warnings: Optional[list[str]] = None,
+    _infos: Optional[list[str]] = None,
+    _include_stack: Optional[Tuple[Path, ...]] = None,
+    _compile_date: str = "",
+    _compile_time: str = "",
+) -> Tuple[str, Tuple[DBaseMacro, ...], Tuple[DBasePragmaLink, ...], Tuple[str, ...], Tuple[str, ...]]:
+    """C/C++-artiger dBase-Praeprozessor mit rekursiven Includes."""
     masked = strip_dbase_comments(source, filename=filename)
     original_lines = source.splitlines(keepends=True)
     masked_lines = masked.splitlines(keepends=True)
-    macros: Dict[str, DBaseMacro] = {}
-    links: list[DBasePragmaLink] = []
-    warnings: list[str] = []
-    infos: list[str] = []
+
+    macros = _macros if _macros is not None else {}
+    links = _links if _links is not None else []
+    warnings = _warnings if _warnings is not None else []
+    infos = _infos if _infos is not None else []
+    include_stack = tuple(_include_stack or ())
+
+    if not _compile_date or not _compile_time:
+        compile_now = datetime.now()
+        compile_date = f"{compile_now:%b} {compile_now.day:2d} {compile_now:%Y}"
+        compile_time = compile_now.strftime("%H:%M:%S")
+    else:
+        compile_date = _compile_date
+        compile_time = _compile_time
+
+    # Hauptdatei in den Include-Stack aufnehmen, damit direkte/indirekte
+    # Selbst-Includes sauber erkannt werden.
+    if not include_stack and filename and not str(filename).startswith("<"):
+        try:
+            root_path = Path(filename).resolve()
+            include_stack = (root_path,)
+        except OSError:
+            pass
+
     stack: list[_DBaseConditionalFrame] = []
     output: list[str] = []
     active = True
     block_state = False
-    compile_now = datetime.now()
-    compile_date = f"{compile_now:%b} {compile_now.day:2d} {compile_now:%Y}"
-    compile_time = compile_now.strftime("%H:%M:%S")
+
+    def evaluate_condition(expr: str, line_no: int) -> bool:
+        return _safe_eval_macro_condition(
+            expr,
+            macros,
+            filename=filename,
+            line=line_no,
+            compile_date=compile_date,
+            compile_time=compile_time,
+        )
 
     for line_no, (orig_line, masked_line) in enumerate(zip(original_lines, masked_lines), 1):
         body = masked_line.rstrip("\r\n")
@@ -1078,110 +1251,198 @@ def _preprocess_dbase_macros(source: str, *, filename: str) -> Tuple[str, Tuple[
             m = re.match(r"([A-Za-z_][A-Za-z0-9_]*)\b(.*)$", payload)
             keyword = m.group(1).casefold() if m else ""
             rest = m.group(2).strip() if m else ""
+
             if keyword in {"if", "ifdef", "ifndef"}:
                 parent = active
+                condition = False
                 if parent:
                     if keyword == "ifdef":
-                        first = re.match(r"([A-Za-z_][A-Za-z0-9_]*)", rest)
-                        if first is None:
-                            raise DBaseCompilerError("#ifdef erwartet ein Makro.", line=line_no, column=1, filename=filename)
-                        key = first.group(1).casefold()
-                        condition = key in macros
-                        if condition and rest.strip().casefold() != key:
-                            condition = _safe_eval_macro_condition(
-                                rest, macros, filename=filename, line=line_no,
-                                compile_date=compile_date, compile_time=compile_time,
+                        if not _IDENTIFIER_RE.fullmatch(rest):
+                            raise DBaseCompilerError(
+                                "#ifdef erwartet genau einen Makronamen.",
+                                line=line_no, column=1, filename=filename,
                             )
+                        condition = _is_dbase_macro_defined(rest, macros)
                     elif keyword == "ifndef":
-                        first = re.match(r"([A-Za-z_][A-Za-z0-9_]*)", rest)
-                        if first is None:
-                            raise DBaseCompilerError("#ifndef erwartet ein Makro.", line=line_no, column=1, filename=filename)
-                        key = first.group(1).casefold()
-                        if rest.strip().casefold() == key:
-                            condition = key not in macros
-                        else:
-                            condition = not _safe_eval_macro_condition(
-                                rest, macros, filename=filename, line=line_no,
-                                compile_date=compile_date, compile_time=compile_time,
+                        if not _IDENTIFIER_RE.fullmatch(rest):
+                            raise DBaseCompilerError(
+                                "#ifndef erwartet genau einen Makronamen.",
+                                line=line_no, column=1, filename=filename,
                             )
+                        condition = not _is_dbase_macro_defined(rest, macros)
                     else:
-                        condition = _safe_eval_macro_condition(
-                                rest, macros, filename=filename, line=line_no,
-                                compile_date=compile_date, compile_time=compile_time,
-                            )
-                else:
-                    condition = False
-                stack.append(_DBaseConditionalFrame(parent, bool(condition), False, dict(macros)))
+                        condition = evaluate_condition(rest, line_no)
+                stack.append(_DBaseConditionalFrame(parent, bool(condition)))
                 active = parent and bool(condition)
-            elif keyword == "else":
+
+            elif keyword == "elif":
                 if not stack:
-                    raise DBaseCompilerError(f"#{keyword} ohne passendes #if/#ifdef/#ifndef.", line=line_no, column=1, filename=filename)
+                    raise DBaseCompilerError(
+                        "#elif ohne passendes #if/#ifdef/#ifndef.",
+                        line=line_no, column=1, filename=filename,
+                    )
                 frame = stack[-1]
                 if frame.else_seen:
-                    raise DBaseCompilerError("Mehrfaches #else im selben Makro-Scope.", line=line_no, column=1, filename=filename)
+                    raise DBaseCompilerError(
+                        "#elif nach #else ist nicht erlaubt.",
+                        line=line_no, column=1, filename=filename,
+                    )
+                condition = False
+                if frame.parent_active and not frame.branch_taken:
+                    condition = evaluate_condition(rest, line_no)
+                active = frame.parent_active and (not frame.branch_taken) and bool(condition)
+                if active:
+                    frame.branch_taken = True
+
+            elif keyword == "else":
+                if not stack:
+                    raise DBaseCompilerError(
+                        "#else ohne passendes #if/#ifdef/#ifndef.",
+                        line=line_no, column=1, filename=filename,
+                    )
+                frame = stack[-1]
+                if frame.else_seen:
+                    raise DBaseCompilerError(
+                        "Mehrfaches #else im selben Praeprozessor-Block.",
+                        line=line_no, column=1, filename=filename,
+                    )
                 frame.else_seen = True
-                macros.clear(); macros.update(frame.macros_before)
-                active = frame.parent_active and not frame.condition_true
+                active = frame.parent_active and not frame.branch_taken
+                if active:
+                    frame.branch_taken = True
+
             elif keyword == "endif":
                 if not stack:
-                    raise DBaseCompilerError("#endif ohne passendes #if/#ifdef/#ifndef.", line=line_no, column=1, filename=filename)
+                    raise DBaseCompilerError(
+                        "#endif ohne passendes #if/#ifdef/#ifndef.",
+                        line=line_no, column=1, filename=filename,
+                    )
                 frame = stack.pop()
-                macros.clear(); macros.update(frame.macros_before)
                 active = frame.parent_active
+
+            # Alle weiteren Direktiven werden in einem inaktiven Zweig wie
+            # beim C-Praeprozessor ignoriert. Damit kann #if 0 auch absichtlich
+            # unkompilierbaren oder unvollstaendigen dBase-Code kapseln.
+            elif not active:
+                pass
+
             elif keyword == "define":
-                if active:
-                    dm = re.match(r"([A-Za-z_][A-Za-z0-9_]*)(\(([^)]*)\))?(?:\s+(.*))?$", rest)
-                    if dm is None:
-                        raise DBaseCompilerError("Ungueltiges #define.", line=line_no, column=1, filename=filename)
-                    name = dm.group(1)
-                    params_text = dm.group(3)
-                    value = dm.group(4) if dm.group(4) is not None else "1"
-                    params: Optional[Tuple[str, ...]] = None
-                    if dm.group(2) is not None:
-                        params_list = [] if not params_text.strip() else [item.strip() for item in params_text.split(",")]
-                        if any(not _IDENTIFIER_RE.fullmatch(item) for item in params_list):
-                            raise DBaseCompilerError("Ungueltige Parameterliste in #define.", line=line_no, column=1, filename=filename)
-                        if len({item.casefold() for item in params_list}) != len(params_list):
-                            raise DBaseCompilerError("Doppelte Makroparameter sind nicht erlaubt.", line=line_no, column=1, filename=filename)
-                        params = tuple(params_list)
-                    macros[name.casefold()] = DBaseMacro(name, params, value, line_no, 1)
+                dm = re.match(r"([A-Za-z_][A-Za-z0-9_]*)(\(([^)]*)\))?(?:\s+(.*))?$", rest)
+                if dm is None:
+                    raise DBaseCompilerError("Ungueltiges #define.", line=line_no, column=1, filename=filename)
+                name = dm.group(1)
+                params_text = dm.group(3)
+                value = dm.group(4) if dm.group(4) is not None else "1"
+                params: Optional[Tuple[str, ...]] = None
+                if dm.group(2) is not None:
+                    params_list = [] if not params_text.strip() else [item.strip() for item in params_text.split(",")]
+                    if any(not _IDENTIFIER_RE.fullmatch(item) for item in params_list):
+                        raise DBaseCompilerError("Ungueltige Parameterliste in #define.", line=line_no, column=1, filename=filename)
+                    if len({item.casefold() for item in params_list}) != len(params_list):
+                        raise DBaseCompilerError("Doppelte Makroparameter sind nicht erlaubt.", line=line_no, column=1, filename=filename)
+                    params = tuple(params_list)
+                macros[name.casefold()] = DBaseMacro(name, params, value, line_no, 1)
+
+            elif keyword == "undef":
+                if not _IDENTIFIER_RE.fullmatch(rest):
+                    raise DBaseCompilerError(
+                        "#undef erwartet genau einen Makronamen.",
+                        line=line_no, column=1, filename=filename,
+                    )
+                macros.pop(rest.casefold(), None)
+
+            elif keyword == "include":
+                include_path = _resolve_include_path(rest, filename=filename, line=line_no)
+                if len(include_stack) >= 64:
+                    raise DBaseCompilerError(
+                        "Maximale #include-Verschachtelung (64) ueberschritten.",
+                        line=line_no, column=1, filename=filename,
+                    )
+                if include_path in include_stack:
+                    chain = " -> ".join(str(p) for p in include_stack + (include_path,))
+                    raise DBaseCompilerError(
+                        f"Rekursives #include erkannt: {chain}",
+                        line=line_no, column=1, filename=filename,
+                    )
+                include_source = _read_dbase_include(include_path, filename=filename, line=line_no)
+                included, _, _, _, _ = _preprocess_dbase_macros(
+                    include_source,
+                    filename=str(include_path),
+                    _macros=macros,
+                    _links=links,
+                    _warnings=warnings,
+                    _infos=infos,
+                    _include_stack=include_stack + (include_path,),
+                    _compile_date=compile_date,
+                    _compile_time=compile_time,
+                )
+                # Direktivenzeile selbst bleibt als Leerzeile fuer moeglichst
+                # stabile Zeilennummern; danach folgt der eingebundene Text.
+                output.append(_blank_directive_line(orig_line))
+                output.append(included)
+                if included and not included.endswith(("\n", "\r")) and orig_line.endswith(("\n", "\r")):
+                    output.append("\n")
+                continue
+
             elif keyword in {"error", "warning", "info"}:
-                if active:
-                    message_text = rest.strip()
-                    if not message_text:
-                        message_text = f"#{keyword}"
-                    if keyword == "error":
-                        raise DBaseCompilerError(
-                            message_text, line=line_no, column=1, filename=filename
-                        )
-                    location = f"{filename}:{line_no}: {message_text}"
-                    if keyword == "warning":
-                        warnings.append(location)
-                    else:
-                        infos.append(location)
+                message_text = rest.strip() or f"#{keyword}"
+                expanded_message, _ = _expand_dbase_macro_text(
+                    message_text,
+                    macros,
+                    filename=filename,
+                    line=line_no,
+                    compile_date=compile_date,
+                    compile_time=compile_time,
+                )
+                expanded_message = expanded_message.strip()
+                location = f"{filename}:{line_no}: #{keyword}: {expanded_message}"
+                if keyword == "error":
+                    raise DBaseCompilerError(
+                        f"#error: {expanded_message}",
+                        line=line_no, column=1, filename=filename,
+                    )
+                if keyword == "warning":
+                    warnings.append(location)
+                else:
+                    infos.append(location)
+
             elif keyword == "pragma":
-                if active:
-                    pm = re.match(r"link\b(.*)$", rest, flags=re.IGNORECASE)
-                    if pm is None:
-                        raise DBaseCompilerError("Derzeit wird nur #pragma link unterstuetzt.", line=line_no, column=1, filename=filename)
-                    links.append(_resolve_pragma_link_path(pm.group(1).strip(), filename=filename, line=line_no))
+                pm = re.match(r"link\b(.*)$", rest, flags=re.IGNORECASE)
+                if pm is None:
+                    raise DBaseCompilerError("Derzeit wird nur #pragma link unterstuetzt.", line=line_no, column=1, filename=filename)
+                links.append(_resolve_pragma_link_path(pm.group(1).strip(), filename=filename, line=line_no))
+
             elif keyword:
-                raise DBaseCompilerError(f"Unbekannte Praeprozessor-Anweisung #{keyword}.", line=line_no, column=1, filename=filename)
+                raise DBaseCompilerError(
+                    f"Unbekannte Praeprozessor-Anweisung #{keyword}.",
+                    line=line_no, column=1, filename=filename,
+                )
+
             output.append(_blank_directive_line(orig_line))
             continue
 
         if not active:
             output.append(_blank_directive_line(orig_line))
             continue
+
         expanded, block_state = _expand_dbase_macro_text(
-            orig_line, macros, in_block_comment=block_state,
-            filename=filename, line=line_no,
-            compile_date=compile_date, compile_time=compile_time,
+            orig_line,
+            macros,
+            in_block_comment=block_state,
+            filename=filename,
+            line=line_no,
+            compile_date=compile_date,
+            compile_time=compile_time,
         )
         output.append(expanded)
 
     if stack:
-        raise DBaseCompilerError("Fehlendes #endif am Dateiende.", line=len(original_lines) or 1, column=1, filename=filename)
+        raise DBaseCompilerError(
+            "Fehlendes #endif am Dateiende.",
+            line=len(original_lines) or 1,
+            column=1,
+            filename=filename,
+        )
     return "".join(output), tuple(macros.values()), tuple(links), tuple(warnings), tuple(infos)
 
 
@@ -1382,6 +1643,7 @@ def _tokenize_dbase_statement(
             (">=", "GE"),
             ("==", "EQEQ"),
             ("<>", "NEANGLE"),
+            ("!=", "NEBANG"),
         )
         matched_comparison = False
         for raw_cmp, cmp_kind in comparison_tokens:
@@ -1898,15 +2160,19 @@ _REMOVED_ROUTINE_END_KEYWORDS = {
     "endproc", "endprocedure", "endfunc", "endfunction", "endunction",
 }
 _IF_STOP_KEYWORDS = {"elseif", "else", "endif"}
-_COMPARISON_TOKEN_KINDS = {"LT", "LE", "EQEQ", "GT", "GE", "NEANGLE", "NEHASH"}
+_COMPARISON_TOKEN_KINDS = {
+    "LT", "LE", "EQUAL", "EQEQ", "GT", "GE", "NEANGLE", "NEHASH", "NEBANG"
+}
 _COMPARISON_OPERATOR_MAP = {
     "LT": "<",
     "LE": "<=",
+    "EQUAL": "==",
     "EQEQ": "==",
     "GT": ">",
     "GE": ">=",
     "NEANGLE": "!=",
     "NEHASH": "!=",
+    "NEBANG": "!=",
 }
 
 
@@ -1976,17 +2242,8 @@ def _parse_dbase_condition(
             comparison_token = token
 
     if comparison_token is None:
-        # Ein einzelnes '=' soll nicht stillschweigend als '==' gelten.
-        equal = next((token for token in body if token.kind == "EQUAL"), None)
-        if equal is not None:
-            raise DBaseCompilerError(
-                "In IF-Bedingungen ist '==' der Gleichheitsoperator; einzelnes '=' ist nur fuer Zuweisungen erlaubt.",
-                line=equal.line,
-                column=equal.column,
-                filename=filename,
-            )
         raise DBaseCompilerError(
-            "IF/ELSEIF erwartet einen Vergleichsoperator: <, <=, ==, >, >=, <> oder #.",
+            "IF/ELSEIF erwartet einen Vergleichsoperator: <, <=, =, ==, >, >=, <>, # oder !=.",
             line=first.line,
             column=first.column,
             filename=filename,
@@ -3810,7 +4067,39 @@ class _DBaseCodeGenerator:
         self.emit("    test eax, eax")
         self.emit(f"    jne {self.program_cleanup_label}")
 
+    def emit_native_console_write(self, pointer: str, length: str | int, *, pointer_is_memory: bool = False) -> None:
+        """Schreibt einen Bytepuffer in das lazy erzeugte Win32-Konsolenfenster.
+
+        ``__dbase_console_write`` ruft beim ersten Zugriff selbst
+        ``AllocConsole`` auf. Dadurch erscheint die Konsole erst dann, wenn
+        ein ausgefuehrtes ?/??-Statement den CONSOLE-Kanal wirklich benutzt.
+        """
+        if self.is64:
+            if pointer_is_memory:
+                self.emit(f"    mov rcx, qword ptr [{pointer}]")
+            else:
+                self.emit(f"    mov rcx, {pointer}")
+            if isinstance(length, int):
+                self.emit(f"    mov edx, {int(length)}")
+            else:
+                self.emit(f"    mov edx, dword ptr [{length}]")
+            self.emit_internal_call("__dbase_console_write")
+        else:
+            if isinstance(length, int):
+                self.emit(f"    push {int(length)}")
+            else:
+                self.emit(f"    push dword ptr [{length}]")
+            if pointer_is_memory:
+                self.emit(f"    push dword ptr [{pointer}]")
+            else:
+                self.emit(f"    push {pointer}")
+            self.emit("    call __dbase_console_write")
+            self.emit("    add esp, 8")
+
     def emit_write_static(self, label: str, length: int, target: str) -> None:
+        if target == "console":
+            self.emit_native_console_write(label, int(length))
+            return
         if length <= 0:
             return
         function = self._qt_writer_name(target)
@@ -3827,6 +4116,11 @@ class _DBaseCodeGenerator:
             self.emit("    add esp, 8")
 
     def emit_write_variable_text(self, var_label: str, target: str) -> None:
+        if target == "console":
+            self.emit_native_console_write(
+                f"{var_label}_ptr", f"{var_label}_len", pointer_is_memory=True
+            )
+            return
         function = self._qt_writer_name(target)
         if self.is64:
             self.emit(f"    mov rcx, qword ptr [{var_label}_ptr]")
@@ -3876,6 +4170,14 @@ class _DBaseCodeGenerator:
 
     def emit_write_number_from_st0(self, target: str) -> None:
         self.emit_format_number_from_st0()
+        if target == "console":
+            self.emit("    mov dword ptr [__dbase_console_number_len], edx")
+            self.emit_native_console_write(
+                "__dbase_format_buffer",
+                "__dbase_console_number_len",
+                pointer_is_memory=True,
+            )
+            return
         function = self._qt_writer_name(target)
         if self.is64:
             self.emit("    mov rcx, qword ptr [__dbase_format_buffer]")
@@ -4385,6 +4687,262 @@ class _DBaseCodeGenerator:
             "    dd 0",
         ])
 
+    def emit_native_console_runtime(self, title_label: str) -> None:
+        """Emittiert die lazy AllocConsole-/WriteFile-Laufzeit.
+
+        Der Screen-Buffer wird auf 500 Zeilen gesetzt. Die aktuelle Breite
+        bleibt erhalten, damit das Console-Host-Fenster keine unnoetige
+        horizontale Scrollbar bekommt. Die normale Windows-Konsole liefert
+        damit Scroll-Back per Mausrad und scrollt bei fortlaufender Ausgabe
+        automatisch am unteren Rand weiter.
+        """
+        self.emit()
+        self.emit("; Stage 109: lazy Win32 console for dBase ? / ??")
+        self.emit("__dbase_console_ensure:")
+        self.emit("    cmp dword ptr [__dbase_console_ready], 0")
+        self.emit("    jne __dbase_console_ensure_done")
+
+        # Stage 114: Vor AllocConsole wird bewusst NICHT mehr FreeConsole()
+        # aufgerufen. Auf dem privaten D64Workstation-Desktop kann ein
+        # vorschnelles Abtrennen die vom Console Host gerade aufgebaute
+        # Zuordnung unguenstig beeinflussen. Falls bereits eine Console
+        # existiert, darf AllocConsole() fehlschlagen; CONOUT$ wird danach
+        # trotzdem explizit geoeffnet und verwendet.
+        if self.is64:
+            self.emit("    sub rsp, 40")
+            self.emit("    call AllocConsole")
+            self.emit("    add rsp, 40")
+
+            # CreateFileA("CONOUT$", GENERIC_READ|GENERIC_WRITE,
+            #             FILE_SHARE_READ|FILE_SHARE_WRITE, NULL,
+            #             OPEN_EXISTING, 0, NULL)
+            self.emit("    sub rsp, 56")
+            self.emit("    mov rcx, __dbase_console_out_name")
+            self.emit("    mov edx, 3221225472")
+            self.emit("    mov r8d, 3")
+            self.emit("    xor r9d, r9d")
+            self.emit("    mov qword ptr [rsp+32], 3")
+            self.emit("    mov qword ptr [rsp+40], 0")
+            self.emit("    mov qword ptr [rsp+48], 0")
+            self.emit("    call CreateFileA")
+            self.emit("    add rsp, 56")
+            self.emit("    test rax, rax")
+            self.emit("    je __dbase_console_handle_fallback")
+            self.emit("    cmp rax, -1")
+            self.emit("    je __dbase_console_handle_fallback")
+            self.emit("    mov qword ptr [__dbase_console_handle], rax")
+            self.emit("    jmp __dbase_console_handle_ready")
+            self.emit("__dbase_console_handle_fallback:")
+            self.emit("    mov ecx, -11")          # STD_OUTPUT_HANDLE
+            self.emit("    sub rsp, 40")
+            self.emit("    call GetStdHandle")
+            self.emit("    add rsp, 40")
+            self.emit("    test rax, rax")
+            self.emit("    je __dbase_console_ensure_done")
+            self.emit("    cmp rax, -1")
+            self.emit("    je __dbase_console_ensure_done")
+            self.emit("    mov qword ptr [__dbase_console_handle], rax")
+            self.emit("__dbase_console_handle_ready:")
+
+            self.emit("    mov ecx, 1252")
+            self.emit("    sub rsp, 40")
+            self.emit("    call SetConsoleOutputCP")
+            self.emit("    add rsp, 40")
+
+            self.emit("    mov rcx, qword ptr [__dbase_console_handle]")
+            self.emit("    mov rdx, __dbase_console_info")
+            self.emit("    sub rsp, 40")
+            self.emit("    call GetConsoleScreenBufferInfo")
+            self.emit("    add rsp, 40")
+            self.emit("    test eax, eax")
+            self.emit("    je __dbase_console_buffer_fallback")
+            self.emit("    mov edx, dword ptr [__dbase_console_info]")
+            self.emit("    and edx, 65535")
+            self.emit("    or edx, 32768000")      # Y=500, X=current width
+            self.emit("    jmp __dbase_console_buffer_ready")
+            self.emit("__dbase_console_buffer_fallback:")
+            self.emit("    mov edx, 32768080")     # COORD(80, 500)
+            self.emit("__dbase_console_buffer_ready:")
+            self.emit("    mov rcx, qword ptr [__dbase_console_handle]")
+            self.emit("    sub rsp, 40")
+            self.emit("    call SetConsoleScreenBufferSize")
+            self.emit("    add rsp, 40")
+
+            self.emit(f"    mov rcx, {title_label}")
+            self.emit("    sub rsp, 40")
+            self.emit("    call SetConsoleTitleA")
+            self.emit("    add rsp, 40")
+
+            # Stage 113: Auf D64Workstation wird die GUI auf einem eigenen
+            # Desktop gestartet. Eine lazy AllocConsole-Konsole kann dort
+            # hinter dem Formular erzeugt werden. GetConsoleWindow +
+            # ShowWindow/SetWindowPos macht sie explizit sichtbar und holt
+            # sie einmal nach vorn, ohne sie dauerhaft TOPMOST zu machen.
+            self.emit("    sub rsp, 40")
+            self.emit("    call GetConsoleWindow")
+            self.emit("    add rsp, 40")
+            self.emit("    test rax, rax")
+            self.emit("    je __dbase_console_window_ready")
+            self.emit("    mov qword ptr [__dbase_console_window], rax")
+            self.emit("    mov rcx, rax")
+            self.emit("    mov edx, 5")             # SW_SHOW
+            self.emit("    sub rsp, 40")
+            self.emit("    call ShowWindow")
+            self.emit("    add rsp, 40")
+            self.emit("    mov rcx, qword ptr [__dbase_console_window]")
+            # Stage 115 TEST: Console effektiv modal/TOPMOST halten.
+            self.emit("    mov rdx, -1")            # HWND_TOPMOST
+            self.emit("    xor r8d, r8d")
+            self.emit("    xor r9d, r9d")
+            self.emit("    sub rsp, 56")
+            self.emit("    mov qword ptr [rsp+32], 0")
+            self.emit("    mov qword ptr [rsp+40], 0")
+            self.emit("    mov dword ptr [rsp+48], 67")  # SWP_NOSIZE|NOMOVE|SHOWWINDOW
+            self.emit("    call SetWindowPos")
+            self.emit("    add rsp, 56")
+            self.emit("    mov rcx, qword ptr [__dbase_console_window]")
+            self.emit("    sub rsp, 40")
+            self.emit("    call SetForegroundWindow")
+            self.emit("    add rsp, 40")
+            self.emit("__dbase_console_window_ready:")
+        else:
+            self.emit("    call AllocConsole")
+
+            # Explizites CONOUT$ verhindert unsichtbare Ausgabe auf NUL,
+            # wenn STARTF_USESTDHANDLES beim Prozessstart gesetzt war.
+            self.emit("    push 0")
+            self.emit("    push 0")
+            self.emit("    push 3")                 # OPEN_EXISTING
+            self.emit("    push 0")
+            self.emit("    push 3")                 # FILE_SHARE_READ|WRITE
+            self.emit("    push 3221225472")        # GENERIC_READ|WRITE
+            self.emit("    push __dbase_console_out_name")
+            self.emit("    call CreateFileA")
+            self.emit("    test eax, eax")
+            self.emit("    je __dbase_console_handle_fallback")
+            self.emit("    cmp eax, -1")
+            self.emit("    je __dbase_console_handle_fallback")
+            self.emit("    mov dword ptr [__dbase_console_handle], eax")
+            self.emit("    jmp __dbase_console_handle_ready")
+            self.emit("__dbase_console_handle_fallback:")
+            self.emit("    push -11")              # STD_OUTPUT_HANDLE
+            self.emit("    call GetStdHandle")
+            self.emit("    test eax, eax")
+            self.emit("    je __dbase_console_ensure_done")
+            self.emit("    cmp eax, -1")
+            self.emit("    je __dbase_console_ensure_done")
+            self.emit("    mov dword ptr [__dbase_console_handle], eax")
+            self.emit("__dbase_console_handle_ready:")
+
+            self.emit("    push 1252")
+            self.emit("    call SetConsoleOutputCP")
+
+            self.emit("    push __dbase_console_info")
+            self.emit("    push dword ptr [__dbase_console_handle]")
+            self.emit("    call GetConsoleScreenBufferInfo")
+            self.emit("    test eax, eax")
+            self.emit("    je __dbase_console_buffer_fallback")
+            self.emit("    mov edx, dword ptr [__dbase_console_info]")
+            self.emit("    and edx, 65535")
+            self.emit("    or edx, 32768000")
+            self.emit("    jmp __dbase_console_buffer_ready")
+            self.emit("__dbase_console_buffer_fallback:")
+            self.emit("    mov edx, 32768080")
+            self.emit("__dbase_console_buffer_ready:")
+            self.emit("    push edx")
+            self.emit("    push dword ptr [__dbase_console_handle]")
+            self.emit("    call SetConsoleScreenBufferSize")
+
+            self.emit(f"    push {title_label}")
+            self.emit("    call SetConsoleTitleA")
+
+            # Stage 113: Console-Fenster auf dem Workstation-Desktop
+            # explizit sichtbar machen und einmal nach vorn holen.
+            self.emit("    call GetConsoleWindow")
+            self.emit("    test eax, eax")
+            self.emit("    je __dbase_console_window_ready")
+            self.emit("    mov dword ptr [__dbase_console_window], eax")
+            self.emit("    push 5")                 # SW_SHOW
+            self.emit("    push eax")
+            self.emit("    call ShowWindow")
+            self.emit("    push 67")                # SWP_NOSIZE|NOMOVE|SHOWWINDOW
+            self.emit("    push 0")                 # cy
+            self.emit("    push 0")                 # cx
+            self.emit("    push 0")                 # y
+            self.emit("    push 0")                 # x
+            # Stage 115 TEST: Console effektiv modal/TOPMOST halten.
+            self.emit("    push -1")                # HWND_TOPMOST
+            self.emit("    push dword ptr [__dbase_console_window]")
+            self.emit("    call SetWindowPos")
+            self.emit("    push dword ptr [__dbase_console_window]")
+            self.emit("    call SetForegroundWindow")
+            self.emit("__dbase_console_window_ready:")
+
+        self.emit("    mov dword ptr [__dbase_console_ready], 1")
+        self.emit("__dbase_console_ensure_done:")
+        self.emit("    ret")
+
+        self.emit()
+        self.emit("__dbase_console_write:")
+        if self.is64:
+            # Entry: RCX=buffer, EDX=length. 56 bytes halten Shadow Space,
+            # den 5. WriteFile-Parameter und unsere beiden lokalen Werte.
+            self.emit("    sub rsp, 56")
+            self.emit("    mov qword ptr [rsp+40], rcx")
+            self.emit("    mov dword ptr [rsp+48], edx")
+            self.emit("    call __dbase_console_ensure")
+            self.emit("    cmp dword ptr [__dbase_console_ready], 0")
+            self.emit("    je __dbase_console_write_done")
+            self.emit("    cmp dword ptr [rsp+48], 0")
+            self.emit("    je __dbase_console_write_done")
+            self.emit("    mov rcx, qword ptr [__dbase_console_handle]")
+            self.emit("    mov rdx, qword ptr [rsp+40]")
+            self.emit("    mov r8d, dword ptr [rsp+48]")
+            self.emit("    mov r9, __dbase_console_written")
+            self.emit("    mov qword ptr [rsp+32], 0")
+            self.emit("    call WriteFile")
+            self.emit("__dbase_console_write_done:")
+            self.emit("    add rsp, 56")
+            self.emit("    ret")
+        else:
+            self.emit("    push ebp")
+            self.emit("    mov ebp, esp")
+            self.emit("    call __dbase_console_ensure")
+            self.emit("    cmp dword ptr [__dbase_console_ready], 0")
+            self.emit("    je __dbase_console_write_done")
+            self.emit("    cmp dword ptr [ebp+12], 0")
+            self.emit("    je __dbase_console_write_done")
+            self.emit("    push 0")
+            self.emit("    push __dbase_console_written")
+            self.emit("    push dword ptr [ebp+12]")
+            self.emit("    push dword ptr [ebp+8]")
+            self.emit("    push dword ptr [__dbase_console_handle]")
+            self.emit("    call WriteFile")
+            self.emit("__dbase_console_write_done:")
+            self.emit("    mov esp, ebp")
+            self.emit("    pop ebp")
+            self.emit("    ret")
+
+        self.emit()
+        self.emit("__dbase_console_shutdown:")
+        self.emit("    cmp dword ptr [__dbase_console_ready], 0")
+        self.emit("    je __dbase_console_shutdown_done")
+        if self.is64:
+            self.emit("    sub rsp, 40")
+            self.emit("    call FreeConsole")
+            self.emit("    add rsp, 40")
+            self.emit("    mov qword ptr [__dbase_console_handle], 0")
+        else:
+            self.emit("    call FreeConsole")
+            self.emit("    mov dword ptr [__dbase_console_handle], 0")
+        if self.is64:
+            self.emit("    mov qword ptr [__dbase_console_window], 0")
+        else:
+            self.emit("    mov dword ptr [__dbase_console_window], 0")
+        self.emit("    mov dword ptr [__dbase_console_ready], 0")
+        self.emit("__dbase_console_shutdown_done:")
+        self.emit("    ret")
+
     def build(self) -> str:
         self.emit("bits 64" if self.is64 else "bits 32")
         self.emit()
@@ -4417,6 +4975,23 @@ class _DBaseCodeGenerator:
         self.emit('import ExitProcess, "kernel32.dll", "ExitProcess"')
         self.emit('import VirtualAlloc, "kernel32.dll", "VirtualAlloc"')
         self.emit('import VirtualFree, "kernel32.dll", "VirtualFree"')
+        # Stage 109: echte, lazy Win32-Konsole fuer ? / ??.
+        self.emit('import AllocConsole, "kernel32.dll", "AllocConsole"')
+        self.emit('import FreeConsole, "kernel32.dll", "FreeConsole"')
+        self.emit('import GetStdHandle, "kernel32.dll", "GetStdHandle"')
+        self.emit('import CreateFileA, "kernel32.dll", "CreateFileA"')
+        self.emit('import GetConsoleScreenBufferInfo, "kernel32.dll", "GetConsoleScreenBufferInfo"')
+        self.emit('import SetConsoleScreenBufferSize, "kernel32.dll", "SetConsoleScreenBufferSize"')
+        self.emit('import SetConsoleOutputCP, "kernel32.dll", "SetConsoleOutputCP"')
+        self.emit('import SetConsoleTitleA, "kernel32.dll", "SetConsoleTitleA"')
+        # Stage 113: AllocConsole kann auf dem separaten Workstation-Desktop
+        # hinter dem Formular liegen. Das Console-HWND wird deshalb explizit
+        # sichtbar gemacht und einmal nach vorn geholt.
+        self.emit('import GetConsoleWindow, "kernel32.dll", "GetConsoleWindow"')
+        self.emit('import ShowWindow, "user32.dll", "ShowWindow"')
+        self.emit('import SetWindowPos, "user32.dll", "SetWindowPos"')
+        self.emit('import SetForegroundWindow, "user32.dll", "SetForegroundWindow"')
+        self.emit('import WriteFile, "kernel32.dll", "WriteFile"')
         for function in self.analysis.external_functions:
             self.emit(f"extern {function}")
         self.emit("global _start")
@@ -4428,6 +5003,7 @@ class _DBaseCodeGenerator:
 
         self.program_cleanup_label = self.new_label("program_cleanup")
         title_label, _ = self.text_literal("dBase Qt5 Console / DEBUG")
+        console_title_label, _ = self.text_literal("dBase Console [MODAL TEST]")
         if self.is64:
             self.emit(f"    mov rcx, {title_label}")
             self.emit("    sub rsp, 40")
@@ -4508,6 +5084,7 @@ class _DBaseCodeGenerator:
         # und der VirtualAlloc-Puffer garantiert ueber denselben Pfad abgebaut.
         self.emit(f"{self.program_cleanup_label}:")
         self.emit_qt_call0("DBaseQtShutdown")
+        self.emit_internal_call("__dbase_console_shutdown")
 
         # Den per VirtualAlloc reservierten Formatpuffer wieder freigeben.
         if self.is64:
@@ -4548,12 +5125,14 @@ class _DBaseCodeGenerator:
         for instance in self.analysis.routine_instances:
             self.emit_routine_instance(instance)
 
+        self.emit_native_console_runtime(console_title_label)
+
         self.data_lines = ["", "section .data", ""]
         for raw, label in self.double_literals.items():
             low, high = struct.unpack("<II", raw)
             self.data_lines.extend([f"{label}:", f"    dd {low}, {high}"])
         for payload, label in self.string_literals.items():
-            nul = label == title_label
+            nul = label in {title_label, console_title_label}
             self.data_lines.extend(_db_lines(label, payload, nul_terminate=nul))
         self.data_lines.extend([
             "__dbase_temp_number:",
@@ -4566,6 +5145,25 @@ class _DBaseCodeGenerator:
             "    dd 0, 0" if self.is64 else "    dd 0",
             "__dbase_exit_code:",
             "    dd 0",
+            "__dbase_console_ready:",
+            "    dd 0",
+            "__dbase_console_handle:",
+            "    dd 0, 0" if self.is64 else "    dd 0",
+            "__dbase_console_window:",
+            "    dd 0, 0" if self.is64 else "    dd 0",
+            "__dbase_console_written:",
+            "    dd 0",
+            "__dbase_console_number_len:",
+            "    dd 0",
+            "__dbase_console_info:",
+            "    dd 0, 0, 0, 0, 0, 0, 0, 0",
+            "__dbase_console_out_name:",
+            "    db 67, 79, 78, 79, 85, 84, 36, 0",  # CONOUT$\0
+            # Stage 114: Der Workstation-Runner erkennt damit native dBase-
+            # GUI-Programme, fuer die er vor dem Resume eine versteckte
+            # Console auf dem D64Workstation-Desktop vorreservieren soll.
+            "__dbase_workstation_lazy_console_marker:",
+            "    db 68, 54, 52, 68, 66, 65, 83, 69, 95, 76, 65, 90, 89, 95, 67, 79, 78, 83, 79, 76, 69, 95, 86, 49, 0",
         ])
 
         all_slots: list[str] = []
@@ -4644,10 +5242,10 @@ def compile_dbase_to_assembly(
     - arithmetische + - * / Ausdruecke und String-Konkatenation
     - PROCEDURE/FUNCTION mit beliebig vielen Parametern und nativen Member-Aufrufen
     - PROCEDURE endet ausschliesslich mit RETURN; FUNCTION mit RETURN <expr>
-    - verschachtelte IF/ELSEIF/ELSE/ENDIF-Bloecke mit < <= == > >= <> und #
+    - verschachtelte IF/ELSEIF/ELSE/ENDIF-Bloecke mit < <= = == > >= <> # und !=
     - polymorphe FUNCTION-Spezialisierung nach Parameter-Typen (Zahl/String/Char)
     - no-arg Funktionsaufrufe als externe numerische Symbole
-    - C-artige Makros: #define/#if/#ifdef/#ifndef/#else/#endif, ## und #pragma link
+    - C-artige Makros: #define/#undef/#if/#ifdef/#ifndef/#elif/#else/#endif/#include, ## und #pragma link
     - #error/#warning/#info sowie __FILE__/__LINE__/__DATE__/__TIME__
     - Qt5-GUI mit Tabs "Konsole" und "DEBUG" ueber d64qt5.dll
     - SET FORMAT TO SCREEN als kompatibler Debug-Ausgabekanal
@@ -4700,9 +5298,10 @@ def compile_dbase_to_assembly(
         target=frontend.target,
         windows_application_mode=mode,
         notes=(
-            f"dBase-Ausbaustufe 10: verschachtelte Bedingungen fuer {target_label}.",
+            f"dBase-Ausbaustufe 12: dBase-Makros, Includes und Bedingungen fuer {target_label}.",
             "#define unterstuetzt Objekt- und Funktionsmakros; ## verkettet Tokens.",
-            "#if/#ifdef/#ifndef sind verschachtelbar und scoped; ausschliesslich #else ist gueltig.",
+            "#if/#ifdef/#ifndef/#elif/#else/#endif sind C/C++-artig verschachtelbar; defined(NAME) und defined NAME werden unterstuetzt.",
+            "#include \"path/to/file\" bindet dBase-Quelltext relativ zur aktuellen Quelldatei ein; Include-Guards funktionieren ueber #define/#ifndef.",
             "#if 0 ... #endif kann beliebig grosse dBase-Codebereiche vom Compile ausschliessen.",
             "#error bricht den Compiler ab; #warning und #info erscheinen in den Diagnosen.",
             "Vordefiniert: __FILE__, __LINE__, __DATE__ und __TIME__.",
@@ -4710,7 +5309,8 @@ def compile_dbase_to_assembly(
             "Variablen koennen Zahl/Hex, Char und String aufnehmen; Zuweisungen erzeugen echte Speicher-Slots.",
             "PROCEDURE endet ausschliesslich mit RETURN ohne Wert; FUNCTION ausschliesslich mit RETURN <expr>.",
             "ENDPROC/ENDPROCEDURE/ENDFUNC/ENDFUNCTION sind nicht mehr Bestandteil der dBase-Syntax.",
-            "IF/ELSEIF/ELSE/ENDIF ist beliebig verschachtelbar; Operatoren: <, <=, ==, >, >=, <> und # (ungleich).",
+            "IF/ELSEIF/ELSE/ENDIF ist beliebig verschachtelbar; Operatoren: <, <=, =, ==, >, >=, <>, # und !=.",
+            "Innerhalb einer IF-Bedingung bedeutet '=' Gleichheit; ausserhalb bleibt '=' der Zuweisungsoperator.",
             "Numerische/Hex/Float-Werte werden numerisch, String/Char-Werte lexikographisch verglichen.",
             "Member-Parameterlisten sind nicht kuenstlich begrenzt; Aufrufe werden in Value-Slots uebergeben.",
             "FUNCTION-Instanzen werden anhand der verwendeten Parameter-Typen spezialisiert und koennen Zahl, String oder Char liefern.",

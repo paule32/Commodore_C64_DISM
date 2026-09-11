@@ -1,0 +1,62 @@
+<!DOCTYPE HTML PUBLIC "-//IETF//DTD HTML//EN"><HTML><BODY><UL>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="NPN-Transistor"><param name="Local" value="components/npn.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="Operationsverstärker"><param name="Local" value="components/opamp.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="NOT"><param name="Local" value="components/not.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="AND"><param name="Local" value="components/and.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="NAND"><param name="Local" value="components/nand.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="OR"><param name="Local" value="components/or.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="NOR"><param name="Local" value="components/nor.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="XOR"><param name="Local" value="components/xor.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="XNOR"><param name="Local" value="components/xnor.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="Schalter"><param name="Local" value="components/switch.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="Taster"><param name="Local" value="components/button.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="Batterie"><param name="Local" value="components/battery.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="Gleichspannung"><param name="Local" value="components/dc.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="Gleichstromquelle"><param name="Local" value="components/current.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="Masse / Bezugspotential"><param name="Local" value="components/ground.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="Widerstand"><param name="Local" value="components/resistor.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="Potentiometer"><param name="Local" value="components/pot.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="Diode"><param name="Local" value="components/diode.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="LED rot"><param name="Local" value="components/led_red.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="LED grün"><param name="Local" value="components/led_green.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="LED blau"><param name="Local" value="components/led_blue.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="Kondensator"><param name="Local" value="components/capacitor.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="Elektrolytkondensator"><param name="Local" value="components/elco.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="Signallampe"><param name="Local" value="components/lamp.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="7-Segment-Anzeige"><param name="Local" value="components/sevenseg.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="74LS00"><param name="Local" value="components/ttl_74ls00.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="74LS01"><param name="Local" value="components/ttl_74ls01.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="74LS02"><param name="Local" value="components/ttl_74ls02.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="74LS03"><param name="Local" value="components/ttl_74ls03.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="74LS04"><param name="Local" value="components/ttl_74ls04.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="74LS05"><param name="Local" value="components/ttl_74ls05.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="7406 - 7416"><param name="Local" value="components/ttl_7406_7416.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="7407 - 7417"><param name="Local" value="components/ttl_7407_7417.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="74LS08"><param name="Local" value="components/ttl_74ls08.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="74LS10"><param name="Local" value="components/ttl_74ls10.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="74LS11"><param name="Local" value="components/ttl_74ls11.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="74LS12"><param name="Local" value="components/ttl_74ls12.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="74LS13"><param name="Local" value="components/ttl_74ls13.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="74LS14"><param name="Local" value="components/ttl_74ls14.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="74LS20"><param name="Local" value="components/ttl_74ls20.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="74LS21"><param name="Local" value="components/ttl_74ls21.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="74LS27"><param name="Local" value="components/ttl_74ls27.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="74LS30"><param name="Local" value="components/ttl_74ls30.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="74LS32"><param name="Local" value="components/ttl_74ls32.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="74LS37"><param name="Local" value="components/ttl_74ls37.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="74LS38"><param name="Local" value="components/ttl_74ls38.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="74LS86"><param name="Local" value="components/ttl_74ls86.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="74LS125"><param name="Local" value="components/ttl_74ls125.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="74LS126"><param name="Local" value="components/ttl_74ls126.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="4001"><param name="Local" value="components/cmos_4001.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="4011"><param name="Local" value="components/cmos_4011.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="4013"><param name="Local" value="components/cmos_4013.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="4014"><param name="Local" value="components/cmos_4014.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="4017"><param name="Local" value="components/cmos_4017.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="4020"><param name="Local" value="components/cmos_4020.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="4024"><param name="Local" value="components/cmos_4024.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="4026"><param name="Local" value="components/cmos_4026.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="4040"><param name="Local" value="components/cmos_4040.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="Messgerät / Oszilloskop"><param name="Local" value="components/meter.html"></OBJECT>
+<LI><OBJECT type="text/sitemap"><param name="Name" value="Taktquelle"><param name="Local" value="components/clock.html"></OBJECT>
+</UL></BODY></HTML>

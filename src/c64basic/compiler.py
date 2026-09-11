@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, localcontext
+import json
 import math
+from pathlib import Path
 import re
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -469,6 +471,190 @@ def _looks_like_string_expression(text: str) -> bool:
     return bool(re.search(r"[A-Za-z_][A-Za-z0-9_]*\$", stripped))
 
 
+_C64_SCREEN_COLUMNS = 40
+_C64_SCREEN_ROWS = 25
+_C64_SCREEN_CELLS = _C64_SCREEN_COLUMNS * _C64_SCREEN_ROWS
+_C64_PIXEL_WIDTH = 320
+_C64_PIXEL_HEIGHT = 200
+_C64_PIXEL_COUNT = _C64_PIXEL_WIDTH * _C64_PIXEL_HEIGHT
+_C64_PIXEL_PACKED_SIZE = _C64_PIXEL_COUNT // 2
+_C64_HIRES_BITMAP_SIZE = 8000
+_C64_HIRES_SCREEN_SIZE = 1000
+_C64_PIXEL_EXTENSIONS = {".px16", ".pixel", ".pix"}
+
+# Dieselbe 16-Farben-Palette wie im Screen-Designer. Sie wird nur dann
+# benötigt, wenn eine frei gezeichnete 16-Farben-Zelle auf die zwei Farben
+# reduziert werden muss, die der echte 320x200-HiRes-Modus pro 8x8-Zelle
+# darstellen kann.
+_C64_PALETTE_RGB = (
+    (0x00, 0x00, 0x00), (0xFF, 0xFF, 0xFF), (0x88, 0x39, 0x32),
+    (0x67, 0xB6, 0xBD), (0x8B, 0x3F, 0x96), (0x55, 0xA0, 0x49),
+    (0x40, 0x31, 0x8D), (0xBF, 0xCE, 0x72), (0x8B, 0x54, 0x29),
+    (0x57, 0x42, 0x00), (0xB8, 0x69, 0x62), (0x50, 0x50, 0x50),
+    (0x78, 0x78, 0x78), (0x94, 0xE0, 0x89), (0x78, 0x69, 0xC4),
+    (0x9F, 0x9F, 0x9F),
+)
+
+
+def _petscii_to_screen_code(value: int) -> int:
+    """PETSCII-Byte in den direkt nach Screen-RAM schreibbaren Code wandeln.
+
+    Der Screen-Designer speichert absichtlich PETSCII, damit seine Zeichenwahl
+    verlustfrei erhalten bleibt. Erst der BASIC-Compiler wandelt beim Einbetten
+    in VIC-II-Screencodes um (z. B. PETSCII 'A' $41 -> Screen-Code $01).
+    """
+    value = int(value) & 0xFF
+    if value == 0xFF:
+        return 0x5E
+    if value < 0x20:
+        return value ^ 0x80
+    if value < 0x60:
+        return value & 0x3F
+    if value < 0x80:
+        return value & 0x5F
+    if value < 0xA0:
+        return value | 0x40
+    if value < 0xC0:
+        return value ^ 0xC0
+    return value ^ 0x80
+
+
+def _normalize_screen_resource(
+    characters: Sequence[int], colors: Optional[Sequence[int]] = None
+) -> Tuple[bytes, bytes]:
+    chars = bytes(int(value) & 0xFF for value in characters)
+    if len(chars) != _C64_SCREEN_CELLS:
+        raise ValueError("C64-Screen benötigt genau 1000 Zeichenbytes.")
+    if colors is None:
+        cols = bytes([1] * _C64_SCREEN_CELLS)
+    else:
+        cols = bytes(int(value) & 0x0F for value in colors)
+    if len(cols) != _C64_SCREEN_CELLS:
+        raise ValueError("C64-Screen benötigt genau 1000 Farbbytes.")
+    return chars, cols
+
+
+def _decode_screen_resource_bytes(data: bytes) -> Tuple[bytes, bytes]:
+    payload = bytes(data)
+    if len(payload) == _C64_SCREEN_CELLS:
+        return _normalize_screen_resource(payload, None)
+    if len(payload) == _C64_SCREEN_CELLS * 2:
+        return _normalize_screen_resource(
+            payload[:_C64_SCREEN_CELLS], payload[_C64_SCREEN_CELLS:]
+        )
+    raise ValueError(
+        "C64-Screen muss 1000 Bytes (nur Zeichen) oder 2000 Bytes "
+        "(1000 Zeichen + 1000 Zellfarben) enthalten."
+    )
+
+
+def _decode_pixel_screen_resource_bytes(data: bytes) -> bytes:
+    """Stage-131-Pixeldatei (32000 Bytes, zwei 4-Bit-Pixel je Byte) entpacken."""
+    payload = bytes(data)
+    if len(payload) != _C64_PIXEL_PACKED_SIZE:
+        raise ValueError(
+            "C64-Pixelscreen muss genau 32000 Bytes enthalten "
+            "(320x200, zwei 4-Bit-Farbpixel pro Byte)."
+        )
+    pixels = bytearray(_C64_PIXEL_COUNT)
+    target = 0
+    for value in payload:
+        pixels[target] = (value >> 4) & 0x0F
+        pixels[target + 1] = value & 0x0F
+        target += 2
+    return bytes(pixels)
+
+
+def _palette_distance(left: int, right: int) -> int:
+    lr, lg, lb = _C64_PALETTE_RGB[int(left) & 0x0F]
+    rr, rg, rb = _C64_PALETTE_RGB[int(right) & 0x0F]
+    return (lr - rr) ** 2 + (lg - rg) ** 2 + (lb - rb) ** 2
+
+
+def _convert_pixel_screen_to_hires(pixels: Sequence[int]) -> Tuple[bytes, bytes, int]:
+    """320x200/16-Farbindex-Bild in echtes VIC-II-HiRes umsetzen.
+
+    Im Standard-Bitmapmodus besitzt jede 8x8-Zelle genau zwei Farben.
+    Zellen mit mehr als zwei Farben werden deterministisch auf die zwei am
+    häufigsten verwendeten Farben reduziert; weitere Farben werden auf die
+    jeweils nähere der beiden C64-Palettenfarben abgebildet.
+    """
+    source = bytes(int(value) & 0x0F for value in pixels)
+    if len(source) != _C64_PIXEL_COUNT:
+        raise ValueError("C64-Pixelscreen benötigt genau 320x200 Farbpixel.")
+
+    bitmap = bytearray(_C64_HIRES_BITMAP_SIZE)
+    screen = bytearray(_C64_HIRES_SCREEN_SIZE)
+    reduced_cells = 0
+
+    for cell_y in range(25):
+        for cell_x in range(40):
+            counts = [0] * 16
+            for row in range(8):
+                start = (cell_y * 8 + row) * 320 + cell_x * 8
+                for color in source[start:start + 8]:
+                    counts[color] += 1
+            used = [color for color, count in enumerate(counts) if count]
+            ranked = sorted(used, key=lambda color: (-counts[color], color))
+            color0 = ranked[0] if ranked else 0
+            color1 = ranked[1] if len(ranked) > 1 else color0
+            if len(ranked) > 2:
+                reduced_cells += 1
+
+            cell_index = cell_y * 40 + cell_x
+            screen[cell_index] = ((color1 & 0x0F) << 4) | (color0 & 0x0F)
+            for row in range(8):
+                start = (cell_y * 8 + row) * 320 + cell_x * 8
+                value = 0
+                for color in source[start:start + 8]:
+                    if color == color1:
+                        bit = 1
+                    elif color == color0:
+                        bit = 0
+                    else:
+                        bit = int(
+                            _palette_distance(color, color1)
+                            < _palette_distance(color, color0)
+                        )
+                    value = ((value << 1) | bit) & 0xFF
+                # VIC-II-Bitmaplayout: 40 Zellen * 8 Rasterzeilen je Zellzeile.
+                bitmap[cell_y * 320 + cell_x * 8 + row] = value
+
+    return bytes(bitmap), bytes(screen), reduced_cells
+
+
+def _decode_screen_resource_json(data: bytes) -> Tuple[bytes, bytes]:
+    payload = json.loads(bytes(data).decode("utf-8-sig"))
+    if not isinstance(payload, dict):
+        raise ValueError("Screen-JSON muss ein Objekt enthalten.")
+    if int(payload.get("columns", 40)) != 40 or int(payload.get("rows", 25)) != 25:
+        raise ValueError("Screen-JSON muss exakt 40 x 25 Zellen enthalten.")
+    cells = payload.get("cells")
+    if cells is not None:
+        if not isinstance(cells, list) or len(cells) != 25:
+            raise ValueError("Screen-JSON benötigt genau 25 Zellzeilen.")
+        chars: List[int] = []
+        cols: List[int] = []
+        for y, row in enumerate(cells):
+            if not isinstance(row, list) or len(row) != 40:
+                raise ValueError(f"Screen-JSON: Zeile {y} benötigt 40 Zellen.")
+            for x, cell in enumerate(row):
+                if isinstance(cell, dict):
+                    chars.append(int(cell.get("character", cell.get("char", 32))) & 0xFF)
+                    cols.append(int(cell.get("color", 1)) & 0x0F)
+                elif isinstance(cell, (list, tuple)) and len(cell) >= 2:
+                    chars.append(int(cell[0]) & 0xFF)
+                    cols.append(int(cell[1]) & 0x0F)
+                else:
+                    raise ValueError(
+                        f"Screen-JSON: Zelle {x},{y} benötigt character und color."
+                    )
+        return _normalize_screen_resource(chars, cols)
+    if "characters" in payload and "colors" in payload:
+        return _normalize_screen_resource(payload["characters"], payload["colors"])
+    raise ValueError("Screen-JSON enthält keine Zell-/Farbwerte.")
+
+
 class _BasicCompiler:
     AUTO_PRINT_LITERAL_MARKER = ";@BASIC_AUTO_PRINT_LITERAL "
 
@@ -501,6 +687,14 @@ class _BasicCompiler:
         self.warnings: List[str] = []
         self.data_by_line: List[Tuple[int, List[str]]] = []
         self.data_line_labels: Dict[int, str] = {}
+        # Stage 131/132: compile-time C64-Screen-Ressourcen. Textscreens
+        # enthalten 1000 Screencodes + 1000 Zellfarben; Pixelscreens werden
+        # beim Kompilieren in 8000 HiRes-Bitmapbytes + 1000 Screen-Farbbytes
+        # umgesetzt und schalten LOAD SCREEN automatisch in 320x200-HiRes.
+        self.screen_resources: Dict[str, Tuple[str, str, bytes, bytes]] = {}
+        self.screen_resource_order: List[str] = []
+        self.screen_runtime_needed = False
+        self.pixel_screen_runtime_needed = False
         self.total_array_bytes = 0
         self.optimizer_enabled = bool(optimizer_enabled)
         self.optimizer_strategy = normalize_print_strategy(optimizer_strategy)
@@ -1455,6 +1649,98 @@ class _BasicCompiler:
         self.emit("    tax")
         self.emit("    jsr $FFC9")
 
+    def _screen_resource_path(self, name: str) -> Path:
+        candidate = Path(name).expanduser()
+        if candidate.is_absolute():
+            return candidate.resolve()
+        source_name = str(self.filename or "").strip()
+        if source_name and not (source_name.startswith("<") and source_name.endswith(">")):
+            try:
+                base = Path(source_name).expanduser().resolve().parent
+            except OSError:
+                base = Path(source_name).expanduser().parent
+        else:
+            base = Path.cwd()
+        return (base / candidate).resolve()
+
+    def add_screen_resource(self, file_name: str, line: int) -> Tuple[str, str, bytes, bytes]:
+        path = self._screen_resource_path(file_name)
+        key = str(path).casefold()
+        existing = self.screen_resources.get(key)
+        if existing is not None:
+            return existing
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            raise C64BasicError(
+                f"Screen-Datei konnte nicht gelesen werden: {path}: {exc}", line
+            ) from exc
+        try:
+            suffix = path.suffix.casefold()
+            if suffix in _C64_PIXEL_EXTENSIONS or len(data) == _C64_PIXEL_PACKED_SIZE:
+                pixels = _decode_pixel_screen_resource_bytes(data)
+                bitmap, screen, reduced_cells = _convert_pixel_screen_to_hires(pixels)
+                kind = "bitmap"
+                primary, secondary = bitmap, screen
+                if reduced_cells:
+                    self.warnings.append(
+                        f"{path.name}: {reduced_cells} 8x8-Zelle(n) enthielten mehr als "
+                        "zwei Farben und wurden für 320x200-HiRes auf je zwei Farben reduziert."
+                    )
+            elif suffix == ".json" or data.lstrip().startswith(b"{"):
+                chars, colors = _decode_screen_resource_json(data)
+                kind = "text"
+                primary = bytes(_petscii_to_screen_code(value) for value in chars)
+                secondary = colors
+            else:
+                chars, colors = _decode_screen_resource_bytes(data)
+                kind = "text"
+                primary = bytes(_petscii_to_screen_code(value) for value in chars)
+                secondary = colors
+        except (UnicodeError, ValueError, json.JSONDecodeError) as exc:
+            raise C64BasicError(
+                f"Ungültige Screen-Datei {path.name}: {exc}", line
+            ) from exc
+
+        label = self.new_label("screen_resource")
+        resource = (kind, label, primary, secondary)
+        self.screen_resources[key] = resource
+        self.screen_resource_order.append(key)
+        return resource
+
+    def compile_load_screen(self, tail: str, line: int) -> None:
+        match = re.fullmatch(r'\s*"((?:""|[^"])*)"\s*', tail, flags=re.S)
+        if match is None:
+            raise C64BasicError(
+                'LOAD SCREEN erwartet einen konstanten Dateinamen, z. B. LOAD SCREEN "intro.scr" oder "bild.px16".',
+                line,
+            )
+        file_name = match.group(1).replace('""', '"')
+        kind, label, _primary, _secondary = self.add_screen_resource(file_name, line)
+        if kind == "bitmap":
+            self.pixel_screen_runtime_needed = True
+            self.emit(f"    lda #<{label}_bitmap")
+            self.emit("    sta $FB")
+            self.emit(f"    lda #>{label}_bitmap")
+            self.emit("    sta $FC")
+            self.emit(f"    lda #<{label}_screen")
+            self.emit("    sta $FD")
+            self.emit(f"    lda #>{label}_screen")
+            self.emit("    sta $FE")
+            self.emit("    jsr __basic_load_hires_screen_resource")
+            return
+
+        self.screen_runtime_needed = True
+        self.emit(f"    lda #<{label}_characters")
+        self.emit("    sta $FB")
+        self.emit(f"    lda #>{label}_characters")
+        self.emit("    sta $FC")
+        self.emit(f"    lda #<{label}_colors")
+        self.emit("    sta $FD")
+        self.emit(f"    lda #>{label}_colors")
+        self.emit("    sta $FE")
+        self.emit("    jsr __basic_load_screen_resource")
+
     def compile_statement(self, statement: str, line: int) -> None:
         statement = statement.strip()
         if not statement:
@@ -1487,6 +1773,12 @@ class _BasicCompiler:
             keyword, tail = match.group(1).upper(), match.group(2).strip()
 
         if keyword == "REM" or statement.startswith("'"):
+            return
+        if keyword in {"LOADSCREEN", "SCREENLOAD"}:
+            self.compile_load_screen(tail, line)
+            return
+        if keyword == "LOAD" and re.match(r"(?is)^SCREEN\b", tail):
+            self.compile_load_screen(re.sub(r"(?is)^SCREEN\b", "", tail, count=1).strip(), line)
             return
         if keyword == "PRINT":
             self.compile_print(tail, line)
@@ -2113,6 +2405,131 @@ class _BasicCompiler:
         self.emit("__basic_sys_indirect:")
         self.emit("    jmp ($FB)")
         self.emit("")
+        if self.screen_runtime_needed:
+            self.emit("; LOAD SCREEN: 1000 Zeichen nach $0400, 1000 Zellfarben nach $D800")
+            self.emit("; Quelle Zeichen=$FB/$FC, Farben=$FD/$FE")
+            self.emit("__basic_load_screen_resource:")
+            self.emit("    lda #$00")
+            self.emit("    sta $F7")
+            self.emit("    sta $F9")
+            self.emit("    lda #$04")
+            self.emit("    sta $F8")
+            self.emit("    lda #$D8")
+            self.emit("    sta $FA")
+            self.emit("    ldx #$03")
+            self.emit("__basic_load_screen_page:")
+            self.emit("    ldy #$00")
+            self.emit("__basic_load_screen_page_loop:")
+            self.emit("    lda ($FB),y")
+            self.emit("    sta ($F7),y")
+            self.emit("    lda ($FD),y")
+            self.emit("    and #$0F")
+            self.emit("    sta ($F9),y")
+            self.emit("    iny")
+            self.emit("    bne __basic_load_screen_page_loop")
+            self.emit("    inc $FC")
+            self.emit("    inc $FE")
+            self.emit("    inc $F8")
+            self.emit("    inc $FA")
+            self.emit("    dex")
+            self.emit("    bne __basic_load_screen_page")
+            self.emit("    ldy #$00")
+            self.emit("__basic_load_screen_remainder:")
+            self.emit("    lda ($FB),y")
+            self.emit("    sta ($F7),y")
+            self.emit("    lda ($FD),y")
+            self.emit("    and #$0F")
+            self.emit("    sta ($F9),y")
+            self.emit("    iny")
+            self.emit("    cpy #$E8")
+            self.emit("    bne __basic_load_screen_remainder")
+            # LOAD SCREEN eines Textscreens stellt auch den normalen VIC-II-
+            # Textmodus wieder her. Dadurch kann nach einem Pixelscreen ohne
+            # Zusatzbefehl wieder ein 40x25-Screen angezeigt werden.
+            self.emit("    lda $DD00")
+            self.emit("    and #$FC")
+            self.emit("    ora #$03")
+            self.emit("    sta $DD00")
+            self.emit("    lda #$14")
+            self.emit("    sta $D018")
+            self.emit("    lda $D011")
+            self.emit("    and #$DF")
+            self.emit("    sta $D011")
+            self.emit("    lda $D016")
+            self.emit("    and #$EF")
+            self.emit("    sta $D016")
+            self.emit("    rts")
+            self.emit("")
+        if self.pixel_screen_runtime_needed:
+            self.emit("; LOAD SCREEN Pixelscreen: 8000 Bitmapbytes -> $E000, 1000 Farbzellen -> $C400")
+            self.emit("; VIC-II Bank 3 ($C000-$FFFF), Bitmap $E000, Screen $C400, echtes 320x200 HiRes")
+            self.emit("__basic_load_hires_screen_resource:")
+            # 8000 Bytes = 31 volle Seiten + $40 Bytes. Quelle $FB/$FC.
+            self.emit("    lda #$00")
+            self.emit("    sta $F7")
+            self.emit("    lda #$E0")
+            self.emit("    sta $F8")
+            self.emit("    ldx #$1F")
+            self.emit("__basic_load_hires_bitmap_page:")
+            self.emit("    ldy #$00")
+            self.emit("__basic_load_hires_bitmap_page_loop:")
+            self.emit("    lda ($FB),y")
+            self.emit("    sta ($F7),y")
+            self.emit("    iny")
+            self.emit("    bne __basic_load_hires_bitmap_page_loop")
+            self.emit("    inc $FC")
+            self.emit("    inc $F8")
+            self.emit("    dex")
+            self.emit("    bne __basic_load_hires_bitmap_page")
+            self.emit("    ldy #$00")
+            self.emit("__basic_load_hires_bitmap_tail:")
+            self.emit("    cpy #$40")
+            self.emit("    beq __basic_load_hires_bitmap_done")
+            self.emit("    lda ($FB),y")
+            self.emit("    sta ($F7),y")
+            self.emit("    iny")
+            self.emit("    bne __basic_load_hires_bitmap_tail")
+            self.emit("__basic_load_hires_bitmap_done:")
+            # 1000 Bytes Screenattribute nach $C400. Quelle $FD/$FE.
+            self.emit("    lda #$00")
+            self.emit("    sta $F7")
+            self.emit("    lda #$C4")
+            self.emit("    sta $F8")
+            self.emit("    ldx #$03")
+            self.emit("__basic_load_hires_screen_page:")
+            self.emit("    ldy #$00")
+            self.emit("__basic_load_hires_screen_page_loop:")
+            self.emit("    lda ($FD),y")
+            self.emit("    sta ($F7),y")
+            self.emit("    iny")
+            self.emit("    bne __basic_load_hires_screen_page_loop")
+            self.emit("    inc $FE")
+            self.emit("    inc $F8")
+            self.emit("    dex")
+            self.emit("    bne __basic_load_hires_screen_page")
+            self.emit("    ldy #$00")
+            self.emit("__basic_load_hires_screen_tail:")
+            self.emit("    lda ($FD),y")
+            self.emit("    sta ($F7),y")
+            self.emit("    iny")
+            self.emit("    cpy #$E8")
+            self.emit("    bne __basic_load_hires_screen_tail")
+            # VIC-Bank 3 wählen, ohne die übrigen CIA2-Bits anzutasten.
+            self.emit("    lda $DD00")
+            self.emit("    and #$FC")
+            self.emit("    sta $DD00")
+            # Screenoffset $0400 + Bitmapoffset $2000 innerhalb Bank 3.
+            self.emit("    lda #$18")
+            self.emit("    sta $D018")
+            # Bitmapmodus an, Multicolor aus => 320x200 HiRes.
+            self.emit("    lda $D011")
+            self.emit("    ora #$20")
+            self.emit("    sta $D011")
+            self.emit("    lda $D016")
+            self.emit("    and #$EF")
+            self.emit("    sta $D016")
+            self.emit("    rts")
+            self.emit("")
         self.emit("__basic_bad_subscript:")
         self.emit("    lda #<__basic_error_bad_subscript")
         self.emit("    ldy #>__basic_error_bad_subscript")
@@ -2178,6 +2595,32 @@ class _BasicCompiler:
         self.emit("__basic_data_end: .byte $FF")
         self.emit('__basic_error_bad_subscript: .byte "?BAD SUBSCRIPT ERROR", $0D, $00')
         self.emit('__basic_error_out_of_data: .byte "?OUT OF DATA ERROR", $0D, $00')
+
+        if self.screen_resource_order:
+            self.emit("")
+            self.emit("; ---- Eingebettete C64-Screen-Ressourcen ---------------------------")
+            for key in self.screen_resource_order:
+                kind, label, primary, secondary = self.screen_resources[key]
+                if kind == "bitmap":
+                    self.emit("; 320x200 HiRes: 8000 Bitmapbytes + 1000 Screen-Farbbytes")
+                    self.emit(f"{label}_bitmap:")
+                    for start in range(0, len(primary), 20):
+                        values = ", ".join(f"${value:02X}" for value in primary[start:start + 20])
+                        self.emit(f"    .byte {values}")
+                    self.emit(f"{label}_screen:")
+                    for start in range(0, len(secondary), 20):
+                        values = ", ".join(f"${value:02X}" for value in secondary[start:start + 20])
+                        self.emit(f"    .byte {values}")
+                else:
+                    self.emit("; Text: 1000 VIC-II-Screencodes + 1000 individuelle Farbbytes")
+                    self.emit(f"{label}_characters:")
+                    for start in range(0, len(primary), 20):
+                        values = ", ".join(f"${value:02X}" for value in primary[start:start + 20])
+                        self.emit(f"    .byte {values}")
+                    self.emit(f"{label}_colors:")
+                    for start in range(0, len(secondary), 20):
+                        values = ", ".join(f"${value & 0x0F:02X}" for value in secondary[start:start + 20])
+                        self.emit(f"    .byte {values}")
 
         self.emit("")
         self.emit("; ---- Ende des physisch im PRG gespeicherten Images ----------------")
@@ -2282,6 +2725,7 @@ class _BasicCompiler:
             "Strings verwenden 256-Byte-ShortString-Slots: 1 Längenbyte (0..255) plus bis zu 255 Zeichen.",
             "Nullinitialisierte Variablen, Arrays und Runtime-Puffer liegen im C64-CBSS hinter dem PRG und werden beim Start per 6510-Schleife gelöscht.",
             "OPEN/CLOSE/CMD/PRINT#/INPUT#/GET# verwenden die C64-KERNAL-Sprungtabelle.",
+            "LOAD SCREEN erkennt Textscreens und 320x200-Pixelscreens automatisch. Text wird nach $0400/$D800 geladen; *.px16/*.pixel/*.pix wird in VIC-II-HiRes umgesetzt, nach $E000/$C400 geladen und schaltet den 320x200-Bitmapmodus ein.",
             (
                 "Optimizer: "
                 + ("aktiv" if self.optimizer_enabled else "deaktiviert")

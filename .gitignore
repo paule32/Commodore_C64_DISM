@@ -101,3 +101,4 @@ src/runtime/win32/libasmjit.32.dll.a
 src/runtime/win32/libcrypto.a
 src/runtime/win32/libd64_runtime.dll.a
 src/Dalek_Attack/packed.zip
+src/d64qt5/release/liblibd64_qt5.a
