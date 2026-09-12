@@ -12,6 +12,7 @@ ROOT = Path(SPECPATH).resolve()
 datas = []
 for source, target in (
     (ROOT / "help", "help"),
+    (ROOT / "locales" / "de" / "LC_MESSAGES", "locales/de/LC_MESSAGES"),
     (ROOT / "examples", "examples"),
     (ROOT / "runtime" / "graphics", "runtime/graphics"),
     (ROOT / "runtime" / "pascal" / "test", "runtime/pascal/test"),
