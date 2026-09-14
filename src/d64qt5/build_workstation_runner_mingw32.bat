@@ -1,9 +1,11 @@
 @echo off
 setlocal
+cd /d "%~dp0"
+
 
 rem ---------------------------------------------------------------------------
 rem File:   build_workstation_runner_mingw32.bat
-rem Stage:  116
+rem Stage:  118
 rem Zweck:  Qt5-Workstation-Runner + zentraler QPlainTextEdit-Ausgabedialog.
 rem ---------------------------------------------------------------------------
 
@@ -32,13 +34,38 @@ if not exist workstation_runner.pro (
     exit /b 1
 )
 
-if not exist build-mingw32 mkdir build-mingw32
+rem Stage 117: immer einen frischen qmake-Build erzeugen. Der Runner war vor
+rem Stage 116 eine reine Win32-Anwendung; ein altes Makefile kompiliert ihn
+rem sonst ohne QtWidgets-Includepfade und fuehrt zu "QApplication: No such file".
+if exist build-mingw32 rmdir /s /q build-mingw32
+if errorlevel 1 (
+    echo FEHLER: build-mingw32 konnte nicht entfernt werden.
+    exit /b 1
+)
+mkdir build-mingw32
+if errorlevel 1 exit /b 1
+
+echo Qt/qmake:
+qmake -query QT_VERSION
+if errorlevel 1 exit /b 1
+qmake -query QT_INSTALL_HEADERS
+if errorlevel 1 exit /b 1
 
 pushd build-mingw32
 
-echo [1/2] qmake...
-qmake ..\workstation_runner.pro CONFIG+=release
+echo [1/2] qmake Qt5 Widgets Projekt...
+qmake ..\workstation_runner.pro CONFIG+=release -spec win32-g++
 if errorlevel 1 (
+    popd
+    exit /b 1
+)
+
+rem Sicherheitspruefung: Das frisch erzeugte Makefile muss QtWidgets enthalten.
+findstr /I /C:"QtWidgets" Makefile.Release >nul 2>nul
+if errorlevel 1 findstr /I /C:"QtWidgets" Makefile >nul 2>nul
+if errorlevel 1 (
+    echo FEHLER: qmake hat keine QtWidgets-Includepfade erzeugt.
+    echo Bitte eine Qt5-MinGW-qmake.exe im PATH verwenden.
     popd
     exit /b 1
 )

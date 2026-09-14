@@ -3855,11 +3855,16 @@ class _DBaseCodeGenerator:
         *,
         target: str,
         filename: str,
+        workstation_mode: bool = False,
+        debug_theme: str = "default",
     ) -> None:
         self.statements = statements
         self.analysis = analysis
         self.target = target
         self.filename = filename
+        self.workstation_mode = bool(workstation_mode)
+        _debug_theme = str(debug_theme or "default").strip().casefold()
+        self.debug_theme = _debug_theme if _debug_theme in {"default", "light", "dark"} else "default"
         self.is64 = target == "pe64"
         self.lines: list[str] = []
         self.data_lines: list[str] = []
@@ -4951,6 +4956,8 @@ class _DBaseCodeGenerator:
         self.emit("bits 64" if self.is64 else "bits 32")
         self.emit()
         for symbol in (
+            "DBaseQtSetWorkstationMode",
+            "DBaseQtSetDebugTheme",
             "DBaseQtInitialize",
             "DBaseQtShowWindow",
             "DBaseQtProcessEvents",
@@ -5008,12 +5015,28 @@ class _DBaseCodeGenerator:
         self.program_cleanup_label = self.new_label("program_cleanup")
         title_label, _ = self.text_literal("dBase Qt5 Console / DEBUG")
         console_title_label, _ = self.text_literal("dBase Console [MODAL TEST]")
+        # Stage 142: Workstation Mode ist Teil des erzeugten Windows-Programms.
+        # Das Profil wird durch das aktuell gewählte PE32/PE32+-Ziel bestimmt.
         if self.is64:
+            self.emit(f"    mov ecx, {1 if self.workstation_mode else 0}")
+            self.emit("    sub rsp, 40")
+            self.emit("    call DBaseQtSetWorkstationMode")
+            self.emit("    add rsp, 40")
+            self.emit(f"    mov ecx, {0 if self.debug_theme == 'default' else 1 if self.debug_theme == 'light' else 2}")
+            self.emit("    sub rsp, 40")
+            self.emit("    call DBaseQtSetDebugTheme")
+            self.emit("    add rsp, 40")
             self.emit(f"    mov rcx, {title_label}")
             self.emit("    sub rsp, 40")
             self.emit("    call DBaseQtInitialize")
             self.emit("    add rsp, 40")
         else:
+            self.emit(f"    push {1 if self.workstation_mode else 0}")
+            self.emit("    call DBaseQtSetWorkstationMode")
+            self.emit("    add esp, 4")
+            self.emit(f"    push {0 if self.debug_theme == 'default' else 1 if self.debug_theme == 'light' else 2}")
+            self.emit("    call DBaseQtSetDebugTheme")
+            self.emit("    add esp, 4")
             self.emit(f"    push {title_label}")
             self.emit("    call DBaseQtInitialize")
             self.emit("    add esp, 4")
@@ -5237,6 +5260,8 @@ def compile_dbase_to_assembly(
     filename: str = "<dBase>",
     target: str = "pe32",
     windows_application_mode: str = "Console",
+    workstation_mode: bool = False,
+    debug_theme: str = "default",
 ) -> DBaseCompileResult:
     """Kompiliert dBase mit Qt5-GUI, Membern und verschachtelten Bedingungen.
 
@@ -5277,6 +5302,8 @@ def compile_dbase_to_assembly(
         analysis,
         target=frontend.target,
         filename=filename,
+        workstation_mode=workstation_mode,
+        debug_theme=debug_theme,
     ).build()
     target_label = (
         "Windows PE32+ (AMD64)"
@@ -7148,12 +7175,16 @@ def compile_dbase_to_assembly(
     filename: str = "<dBase>",
     target: str = "pe32",
     windows_application_mode: str = "Console",
+    workstation_mode: bool = False,
+    debug_theme: str = "default",
 ) -> DBaseCompileResult:
     result = _stage12_compile_dbase_to_assembly(
         source,
         filename=filename,
         target=target,
         windows_application_mode=windows_application_mode,
+        workstation_mode=workstation_mode,
+        debug_theme=debug_theme,
     )
     stage13_notes = (
         "dBase-Ausbaustufe 13: globales APPLICATION-Objekt _app und eingebaute MENU-Klasse.",

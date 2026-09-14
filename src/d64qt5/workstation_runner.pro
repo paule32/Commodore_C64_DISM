@@ -22,4 +22,4 @@ SOURCES += workstation_runner.cpp \
 
 HEADERS += d64_workstation.h
 
-win32:LIBS += -luser32 -lgdi32
+win32:LIBS += -luser32 -lgdi32 -lshell32

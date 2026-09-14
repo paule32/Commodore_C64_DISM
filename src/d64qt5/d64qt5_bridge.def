@@ -1,5 +1,6 @@
 LIBRARY libd64_qt5
 EXPORTS
+    DBaseQtSetWorkstationMode
     DBaseQtInitialize
     DBaseQtInitializeGui
     DBaseQtShowWindow
@@ -55,3 +56,4 @@ EXPORTS
     DBaseQtExec
     DBaseQtShutdownRequested
     DBaseQtShutdown
+    DBaseQtSetDebugTheme

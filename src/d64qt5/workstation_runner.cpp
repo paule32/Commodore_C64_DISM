@@ -12,6 +12,7 @@
 #ifdef _WIN32
 #  define WIN32_LEAN_AND_MEAN
 #  include <windows.h>
+#  include <shellapi.h>
 #endif
 
 #include <QApplication>
@@ -52,9 +53,15 @@ constexpr wchar_t RUNNER_PIPE_NAME[] = L"\\\\.\\pipe\\dBase2Many.D64Workstation.
 constexpr std::uint32_t RUNNER_PIPE_MAGIC = 0x31525744u; // "DWR1"
 constexpr std::uint32_t RUNNER_OUTPUT_MAGIC = 0x31574F44u; // "DOW1"
 constexpr std::uint32_t RUNNER_OUTPUT_NEWLINE = 0x00000001u;
-constexpr std::uint32_t RUNNER_LAUNCH_CONSOLE       = 0x00000001u;
-constexpr std::uint32_t RUNNER_LAUNCH_THEME_PRESENT = 0x00000002u;
-constexpr std::uint32_t RUNNER_LAUNCH_THEME_DARK    = 0x00000004u;
+constexpr std::uint32_t RUNNER_LAUNCH_CONSOLE             = 0x00000001u;
+constexpr std::uint32_t RUNNER_LAUNCH_THEME_PRESENT       = 0x00000002u;
+constexpr std::uint32_t RUNNER_LAUNCH_THEME_DARK          = 0x00000004u;
+constexpr std::uint32_t RUNNER_LAUNCH_DEBUG_THEME_PRESENT = 0x00000008u;
+constexpr std::uint32_t RUNNER_LAUNCH_DEBUG_THEME_LIGHT   = 0x00000010u;
+constexpr std::uint32_t RUNNER_LAUNCH_DEBUG_THEME_DARK    = 0x00000020u;
+constexpr std::uint32_t RUNNER_OUTPUT_THEME_PRESENT       = 0x00000002u;
+constexpr std::uint32_t RUNNER_OUTPUT_THEME_LIGHT         = 0x00000004u;
+constexpr std::uint32_t RUNNER_OUTPUT_THEME_DARK          = 0x00000008u;
 constexpr UINT WM_RUNNER_LAUNCH = WM_APP + 0x321;
 constexpr UINT WM_RUNNER_EXIT   = WM_APP + 0x322;
 constexpr UINT WM_RUNNER_OUTPUT = WM_APP + 0x323;
@@ -82,13 +89,15 @@ struct LaunchRequest {
     std::wstring application;
     std::wstring workingDirectory;
     bool consoleMode = false;
-    int themeMode = -1; // -1 unveraendert, 0 light, 1 dark
+    int themeMode = -1;      // Workstation-Chrome: -1 unveraendert, 0 light, 1 dark
+    int debugThemeMode = -1; // Debugfenster: -1 unveraendert, 0 default, 1 light, 2 dark
 };
 
 struct OutputMessage {
     std::string text;
     bool newline = false;
     DWORD processId = 0;
+    int debugThemeMode = -1;
 };
 
 // Stage 129: Echte, transparente Maus-Handles fuer die acht sichtbaren
@@ -637,6 +646,8 @@ std::vector<ChildProcess> g_children;
 std::thread g_pipe_thread;
 std::atomic<bool> g_pipe_stop{false};
 bool g_leave_started = false;
+// Stage 144: 0=default (Workstation-Theme folgen), 1=light, 2=dark.
+int g_output_debug_theme_mode = 0;
 
 // Der DB-Button repraesentiert das zuletzt an den Runner uebergebene
 // Hauptprogramm. Dadurch kann das Programm nach einem normalen Schliessen
@@ -668,9 +679,23 @@ void apply_workstation_output_theme(bool darkMode)
     g_output_edit->viewport()->update();
 }
 
+void apply_workstation_output_debug_theme(int mode)
+{
+    if (mode >= 0 && mode <= 2)
+        g_output_debug_theme_mode = mode;
+
+    if (g_output_debug_theme_mode == 1)
+        apply_workstation_output_theme(false);
+    else if (g_output_debug_theme_mode == 2)
+        apply_workstation_output_theme(true);
+    else
+        apply_workstation_output_theme(D64WorkstationDarkMode());
+}
+
 void workstation_theme_changed(bool darkMode)
 {
-    apply_workstation_output_theme(darkMode);
+    Q_UNUSED(darkMode)
+    apply_workstation_output_debug_theme(g_output_debug_theme_mode);
 }
 
 void create_workstation_output_dialog()
@@ -707,7 +732,7 @@ void create_workstation_output_dialog()
     g_output_edit->document()->setMaximumBlockCount(500);
     g_output_edit->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     layout->addWidget(g_output_edit, 1);
-    apply_workstation_output_theme(D64WorkstationDarkMode());
+    apply_workstation_output_debug_theme(g_output_debug_theme_mode);
 
     QRect workArea;
     if (QScreen *screen = QApplication::primaryScreen())
@@ -840,6 +865,9 @@ void append_workstation_output(const OutputMessage &message)
     if (!g_output_edit || !g_output_dialog)
         return;
 
+    if (message.debugThemeMode >= 0)
+        apply_workstation_output_debug_theme(message.debugThemeMode);
+
     QScrollBar *scroll = g_output_edit->verticalScrollBar();
     const bool followTail = !scroll || scroll->value() >= scroll->maximum() - 2;
     const int oldValue = scroll ? scroll->value() : 0;
@@ -906,35 +934,25 @@ std::wstring normalize_path(const std::wstring &path)
 }
 
 
-std::vector<std::wstring> split_runner_command_line(const wchar_t *text)
+std::vector<std::wstring> process_runner_arguments()
 {
+    // Stage 148: Nicht selbst versuchen, die Windows-Kommandozeile zu
+    // zerlegen. Python subprocess.list2cmdline/CreateProcess und Windows
+    // besitzen definierte Quote-/Backslash-Regeln, die der bisherige
+    // Minimalparser nicht vollstaendig nachgebildet hat. CommandLineToArgvW
+    // verwendet die native Windows-Auswertung und liefert exakt die
+    // Argumentgrenzen des gestarteten Prozesses. argv[0] ist der Runner
+    // selbst und wird hier bewusst nicht zurueckgegeben.
     std::vector<std::wstring> args;
-    if (!text)
+    int argc = 0;
+    LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (!argv)
         return args;
 
-    const wchar_t *cursor = text;
-    while (*cursor) {
-        while (*cursor && std::iswspace(*cursor))
-            ++cursor;
-        if (!*cursor)
-            break;
+    for (int i = 1; i < argc; ++i)
+        args.emplace_back(argv[i] ? argv[i] : L"");
 
-        std::wstring value;
-        bool quoted = false;
-        while (*cursor) {
-            if (*cursor == L'"') {
-                quoted = !quoted;
-                ++cursor;
-                continue;
-            }
-            if (!quoted && std::iswspace(*cursor))
-                break;
-            value.push_back(*cursor++);
-        }
-        args.push_back(value);
-        while (*cursor && std::iswspace(*cursor))
-            ++cursor;
-    }
+    LocalFree(argv);
     return args;
 }
 
@@ -1107,6 +1125,66 @@ bool file_contains_wfm_qt_output_marker(const std::wstring &path)
     );
 }
 
+std::wstring runner_module_directory()
+{
+    wchar_t path[32768] = {0};
+    const DWORD length = GetModuleFileNameW(
+        nullptr, path, static_cast<DWORD>(sizeof(path) / sizeof(path[0]))
+    );
+    if (!length || length >= (sizeof(path) / sizeof(path[0])))
+        return std::wstring();
+    std::wstring value(path, length);
+    const std::wstring::size_type slash = value.find_last_of(L"\\/");
+    return slash == std::wstring::npos ? std::wstring() : value.substr(0, slash);
+}
+
+void log_runner_argument_error(
+    const std::vector<std::wstring> &args,
+    const std::wstring &error
+)
+{
+    // Stage 148: Ein fehlerhafter automatischer Start darf den Benutzer nicht
+    // mit der allgemeinen Usage-MessageBox unterbrechen. Die komplette
+    // Diagnose bleibt stattdessen neben dem Runner erhalten.
+    std::wstring directory = runner_module_directory();
+    std::wstring path = directory.empty()
+        ? L"d64_workstation_runner_error.log"
+        : directory + L"\\d64_workstation_runner_error.log";
+
+    HANDLE file = CreateFileW(
+        path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+        nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr
+    );
+    if (file == INVALID_HANDLE_VALUE)
+        return;
+
+    std::wstring text = L"\r\n--- D64 Workstation Runner Argument Error ---\r\n";
+    text += L"Reason: " + error + L"\r\n";
+    text += L"CommandLine: ";
+    const wchar_t *commandLine = GetCommandLineW();
+    text += commandLine ? commandLine : L"";
+    text += L"\r\nArguments:";
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        text += L"\r\n  [" + std::to_wstring(i) + L"] = <" + args[i] + L">";
+    }
+    text += L"\r\n";
+
+    const int utf8Length = WideCharToMultiByte(
+        CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()),
+        nullptr, 0, nullptr, nullptr
+    );
+    if (utf8Length > 0) {
+        std::vector<char> utf8(static_cast<std::size_t>(utf8Length));
+        WideCharToMultiByte(
+            CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()),
+            utf8.data(), utf8Length, nullptr, nullptr
+        );
+        DWORD written = 0;
+        WriteFile(file, utf8.data(), static_cast<DWORD>(utf8.size()), &written, nullptr);
+    }
+    CloseHandle(file);
+}
+
 void show_runner_usage()
 {
     MessageBoxW(
@@ -1116,6 +1194,7 @@ void show_runner_usage()
         L"  d64_workstation_runner.exe --console <Anwendung.exe>\n"
         L"  d64_workstation_runner.exe --gui <Anwendung.exe>\n"
         L"  d64_workstation_runner.exe --dark|--light <Anwendung.exe>\n"
+        L"  d64_workstation_runner.exe --debug-theme default|light|dark <Anwendung.exe>\n"
         L"  d64_workstation_runner.exe --cwd <Verzeichnis> <Anwendung.exe>\n\n"
         L"Ohne --console/--gui wird das PE-Subsystem automatisch erkannt.\n"
         L"Ohne Anwendung bleibt der Runner als kompatibler Pipe-Host aktiv.",
@@ -1124,18 +1203,19 @@ void show_runner_usage()
     );
 }
 
-bool parse_runner_command_line(
-    const wchar_t *commandLine,
+bool parse_runner_arguments(
+    const std::vector<std::wstring> &args,
     LaunchRequest &request,
     bool &hasRequest,
-    bool &showHelp
+    bool &showHelp,
+    std::wstring &error
 )
 {
     hasRequest = false;
     showHelp = false;
+    error.clear();
     request = LaunchRequest();
 
-    const std::vector<std::wstring> args = split_runner_command_line(commandLine);
     if (args.empty())
         return true;
 
@@ -1169,25 +1249,53 @@ bool parse_runner_command_line(
             request.themeMode = 0;
             continue;
         }
-        if (_wcsicmp(arg.c_str(), L"--cwd") == 0) {
-            if (i + 1 >= args.size())
+        if (_wcsicmp(arg.c_str(), L"--debug-theme") == 0) {
+            if (i + 1 >= args.size()) {
+                error = L"Nach --debug-theme fehlt der Wert default, light oder dark.";
                 return false;
+            }
+            const std::wstring value = args[++i];
+            if (_wcsicmp(value.c_str(), L"default") == 0)
+                request.debugThemeMode = 0;
+            else if (_wcsicmp(value.c_str(), L"light") == 0)
+                request.debugThemeMode = 1;
+            else if (_wcsicmp(value.c_str(), L"dark") == 0)
+                request.debugThemeMode = 2;
+            else {
+                error = L"Ungueltiger Wert fuer --debug-theme: " + value;
+                return false;
+            }
+            continue;
+        }
+        if (_wcsicmp(arg.c_str(), L"--cwd") == 0) {
+            if (i + 1 >= args.size()) {
+                error = L"Nach --cwd fehlt das Arbeitsverzeichnis.";
+                return false;
+            }
             workingDirectory = args[++i];
             continue;
         }
-        if (arg.size() >= 2 && arg[0] == L'-')
+        if (arg.size() >= 2 && arg[0] == L'-') {
+            error = L"Unbekannte Runner-Option: " + arg;
             return false;
-        if (!application.empty())
+        }
+        if (!application.empty()) {
+            error = L"Mehr als eine Anwendung wurde uebergeben: " + arg;
             return false;
+        }
         application = arg;
     }
 
-    if (application.empty())
+    if (application.empty()) {
+        error = L"Es wurde eine Runner-Option, aber keine Anwendung.exe uebergeben.";
         return false;
+    }
 
     application = absolute_path(application);
-    if (!regular_file_exists(application))
+    if (!regular_file_exists(application)) {
+        error = L"Die uebergebene Anwendung existiert nicht: " + application;
         return false;
+    }
 
     if (workingDirectory.empty())
         workingDirectory = parent_directory(application);
@@ -2331,6 +2439,13 @@ bool send_request_to_existing_runner(
         if (request.themeMode != 0)
             header.flags |= RUNNER_LAUNCH_THEME_DARK;
     }
+    if (request.debugThemeMode >= 0) {
+        header.flags |= RUNNER_LAUNCH_DEBUG_THEME_PRESENT;
+        if (request.debugThemeMode == 1)
+            header.flags |= RUNNER_LAUNCH_DEBUG_THEME_LIGHT;
+        else if (request.debugThemeMode == 2)
+            header.flags |= RUNNER_LAUNCH_DEBUG_THEME_DARK;
+    }
     header.pathBytes = static_cast<std::uint32_t>(pathBytes64);
     header.cwdBytes = static_cast<std::uint32_t>(cwdBytes64);
 
@@ -2456,6 +2571,14 @@ void pipe_server_loop()
                         output->newline =
                             (header.flags & RUNNER_OUTPUT_NEWLINE) != 0;
                         output->processId = static_cast<DWORD>(header.cwdBytes);
+                        if ((header.flags & RUNNER_OUTPUT_THEME_PRESENT) != 0) {
+                            if ((header.flags & RUNNER_OUTPUT_THEME_DARK) != 0)
+                                output->debugThemeMode = 2;
+                            else if ((header.flags & RUNNER_OUTPUT_THEME_LIGHT) != 0)
+                                output->debugThemeMode = 1;
+                            else
+                                output->debugThemeMode = 0;
+                        }
                         PostMessageW(
                             g_host_window,
                             WM_RUNNER_OUTPUT,
@@ -2493,6 +2616,14 @@ void pipe_server_loop()
                     request->consoleMode = (header.flags & RUNNER_LAUNCH_CONSOLE) != 0;
                     if ((header.flags & RUNNER_LAUNCH_THEME_PRESENT) != 0)
                         request->themeMode = (header.flags & RUNNER_LAUNCH_THEME_DARK) != 0 ? 1 : 0;
+                    if ((header.flags & RUNNER_LAUNCH_DEBUG_THEME_PRESENT) != 0) {
+                        if ((header.flags & RUNNER_LAUNCH_DEBUG_THEME_DARK) != 0)
+                            request->debugThemeMode = 2;
+                        else if ((header.flags & RUNNER_LAUNCH_DEBUG_THEME_LIGHT) != 0)
+                            request->debugThemeMode = 1;
+                        else
+                            request->debugThemeMode = 0;
+                    }
                     PostMessageW(
                         g_host_window,
                         WM_RUNNER_LAUNCH,
@@ -2612,6 +2743,8 @@ LRESULT CALLBACK runner_window_proc(
         );
         if (request && request->themeMode >= 0)
             D64WorkstationSetDarkMode(request->themeMode != 0);
+        if (request && request->debugThemeMode >= 0)
+            apply_workstation_output_debug_theme(request->debugThemeMode);
         if (request && !launch_program(*request)) {
             MessageBoxW(
                 nullptr,
@@ -2701,33 +2834,22 @@ int main(int, char **)
 {
     HINSTANCE instance = GetModuleHandleW(nullptr);
 
-    // Qt/qmake erwartet einen normalen main()-Einstieg. Fuer die bestehende
-    // Unicode-CLI-Logik wird der Teil hinter dem EXE-Namen aus der nativen
-    // Windows-Kommandozeile weiterhin als UTF-16 ausgewertet.
-    const wchar_t *fullCommandLine = GetCommandLineW();
-    const wchar_t *commandLine = fullCommandLine ? fullCommandLine : L"";
-    if (*commandLine == L'"') {
-        ++commandLine;
-        while (*commandLine && *commandLine != L'"')
-            ++commandLine;
-        if (*commandLine == L'"')
-            ++commandLine;
-    } else {
-        while (*commandLine && !std::iswspace(*commandLine))
-            ++commandLine;
-    }
-    while (*commandLine && std::iswspace(*commandLine))
-        ++commandLine;
+    // Stage 148: Die Argumente werden nativ durch CommandLineToArgvW
+    // getrennt. Damit stimmen Python subprocess.Popen([...]) und Runner auch
+    // bei Leerzeichen, Quotes und Backslashes exakt ueberein.
+    const std::vector<std::wstring> runnerArgs = process_runner_arguments();
 
     LaunchRequest startupRequest;
     bool hasStartupRequest = false;
     bool showHelp = false;
-    if (!parse_runner_command_line(
-            commandLine,
+    std::wstring parseError;
+    if (!parse_runner_arguments(
+            runnerArgs,
             startupRequest,
             hasStartupRequest,
-            showHelp)) {
-        show_runner_usage();
+            showHelp,
+            parseError)) {
+        log_runner_argument_error(runnerArgs, parseError);
         return 20;
     }
     if (showHelp) {
@@ -2762,6 +2884,8 @@ int main(int, char **)
     D64WorkstationSetThemeCallback(&workstation_theme_changed);
     if (startupRequest.themeMode >= 0)
         D64WorkstationSetDarkMode(startupRequest.themeMode != 0);
+    if (startupRequest.debugThemeMode >= 0)
+        g_output_debug_theme_mode = startupRequest.debugThemeMode;
     else
         D64WorkstationSetDarkMode(true);
 

@@ -4,16 +4,32 @@
 #     py -m PyInstaller --clean --noconfirm d64_dism.spec
 
 from pathlib import Path
+import shutil
 
 ROOT = Path(SPECPATH).resolve()
+BUNDLE_NAME = "d64_dism"
 
-# Keep user/project data in their natural paths. If help/c64.chm is present
-# before the build it is copied to help/c64.chm inside the onedir bundle.
+# PyInstaller 6 stores normal datas/binaries inside the onedir contents
+# directory ("_internal" by default). The following user-facing resources
+# must stay next to d64_dism.exe instead, so they are intentionally NOT added
+# to Analysis(datas=...). They are copied to the bundle root after COLLECT.
+external_root_items = (
+    (ROOT / "start.exe", "start.exe"),
+    (ROOT / "help", "help"),
+    (ROOT / "locales", "locales"),
+    (ROOT / "examples", "examples"),
+)
+
+for source, _target in external_root_items:
+    if not source.exists():
+        raise FileNotFoundError(
+            f"Required external bundle item is missing: {source}"
+        )
+
+# Remaining bundled resources are PyInstaller-managed and therefore live
+# below _internal in an onedir build.
 datas = []
 for source, target in (
-    (ROOT / "help", "help"),
-    (ROOT / "locales" / "de" / "LC_MESSAGES", "locales/de/LC_MESSAGES"),
-    (ROOT / "examples", "examples"),
     (ROOT / "runtime" / "graphics", "runtime/graphics"),
     (ROOT / "runtime" / "pascal" / "test", "runtime/pascal/test"),
     (ROOT / "c64c" / "include", "c64c/include"),
@@ -88,7 +104,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="d64_dism",
+    name=BUNDLE_NAME,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -110,5 +126,30 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=["Qt*.dll", "*QtWebEngineProcess.exe", "PyQt5\\*.pyd"],
-    name="d64_dism",
+    name=BUNDLE_NAME,
 )
+
+# PyInstaller 6 deliberately places Analysis datas in the contents directory
+# (_internal by default). These four items are meant to be user-visible and
+# editable next to d64_dism.exe, so mirror them into the outer onedir folder
+# only after COLLECT has finished creating the bundle.
+bundle_root = Path(DISTPATH).resolve() / BUNDLE_NAME
+
+
+def _copy_external_root_item(source: Path, relative_target: str) -> None:
+    target = bundle_root / relative_target
+
+    if source.is_dir():
+        # Mirror exactly; remove stale files from an older build first.
+        if target.exists():
+            shutil.rmtree(target)
+        shutil.copytree(source, target)
+        return
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, target)
+
+
+for source, relative_target in external_root_items:
+    _copy_external_root_item(source, relative_target)
+

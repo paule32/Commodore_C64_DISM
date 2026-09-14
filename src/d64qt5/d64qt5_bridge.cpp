@@ -98,11 +98,19 @@
 #  include <sqlext.h>
 #endif
 
+// Stage 145: genau eine Forward-Declaration im globalen Dateiscope.
+// Sowohl Helfer im anonymen Namespace als auch die exportierten Runtime-
+// Funktionen verwenden damit dieselbe spaetere globale static-Definition.
+static void destroy_wfm_output_dialog();
+
 namespace {
 #ifdef _WIN32
 constexpr wchar_t D64_WORKSTATION_RUNNER_PIPE[] = L"\\\\.\\pipe\\dBase2Many.D64Workstation.Runner.v1";
 constexpr std::uint32_t D64_WORKSTATION_OUTPUT_MAGIC = 0x31574F44u; // "DOW1"
-constexpr std::uint32_t D64_WORKSTATION_OUTPUT_NEWLINE = 0x00000001u;
+constexpr std::uint32_t D64_WORKSTATION_OUTPUT_NEWLINE       = 0x00000001u;
+constexpr std::uint32_t D64_WORKSTATION_OUTPUT_THEME_PRESENT = 0x00000002u;
+constexpr std::uint32_t D64_WORKSTATION_OUTPUT_THEME_LIGHT   = 0x00000004u;
+constexpr std::uint32_t D64_WORKSTATION_OUTPUT_THEME_DARK    = 0x00000008u;
 struct D64WorkstationOutputHeader {
     std::uint32_t magic;
     std::uint32_t flags;
@@ -117,13 +125,16 @@ QList<QWidget *> g_wfm_forms;
 
 bool g_owns_app                     = false;
 bool g_wfm_gui_mode                 = false;
+bool g_workstation_mode_enabled     = false;
+// Stage 144: 0=default, 1=light, 2=dark. Wird vom generierten PE-Code
+// vor DBaseQtInitialize()/DBaseQtInitializeGui() gesetzt.
+int  g_debug_theme_mode             = 0;
 
 // Stage 116: WFM-Ausgaben werden nicht mehr ueber AllocConsole geroutet.
 // Stattdessen besitzt jede laufende WFM-Anwendung ein nicht modales Qt5-
 // Ausgabefenster auf demselben D64Workstation-Desktop wie das Formular.
 QDialog         * g_wfm_output_dialog = nullptr;
 QPlainTextEdit  * g_wfm_output_edit   = nullptr;
-
 
 QMainWindow     * g_window          = nullptr;
 
@@ -452,7 +463,7 @@ protected:
                 *result = 0;
             return true;
         }
-        if (msg && msg->message == WM_GETMINMAXINFO && msg->lParam) {
+        if (g_workstation_mode_enabled && msg && msg->message == WM_GETMINMAXINFO && msg->lParam) {
             D64WorkstationConstrainMaximizeInfo(
                 reinterpret_cast<void *>(msg->lParam)
             );
@@ -460,7 +471,7 @@ protected:
                 *result = 0;
             return true;
         }
-        if (msg && msg->message == WM_MOVING && msg->lParam) {
+        if (g_workstation_mode_enabled && msg && msg->message == WM_MOVING && msg->lParam) {
             RECT *rect = reinterpret_cast<RECT *>(msg->lParam);
             D64WorkstationConstrainMovingRect(rect);
             if (result)
@@ -475,7 +486,7 @@ protected:
     {
         QMainWindow::changeEvent(event);
 #ifdef _WIN32
-        if (event && event->type() == QEvent::WindowStateChange && isMinimized()) {
+        if (g_workstation_mode_enabled && event && event->type() == QEvent::WindowStateChange && isMinimized()) {
             QPointer<DBaseMainWindow> self(this);
             QTimer::singleShot(0, [self]() {
                 if (!self || !self->winId())
@@ -496,12 +507,24 @@ protected:
             return;
         }
 
-        // Stage 128:
-        // Das X eines Console-/GUI-Anwendungsfensters beendet niemals die
-        // Runtime und niemals die Workstation. OWNER und JOINED verhalten sich
-        // identisch: Fenster/Dialoge werden verborgen, Keyboard-/Mouse-Grabs
-        // sowie der Fokus werden geloest. Dadurch erzeugt ein verborgenes
-        // Fenster keine versteckten Tastatureingaben.
+#ifdef _WIN32
+        // Stage 143:
+        // Ausserhalb der Workstation ist das Qt-Hauptfenster die Anwendung
+        // selbst. Ein Klick auf X muss deshalb die Runtime geordnet verlassen;
+        // DBaseQtShutdown() beendet den Prozess anschliessend explizit per
+        // Win32 ExitProcess().
+        if (!g_workstation_mode_enabled) {
+            request_runtime_shutdown();
+            event->accept();
+            QMainWindow::closeEvent(event);
+            return;
+        }
+#endif
+
+        // Workstation Mode:
+        // Das X entfernt die Anwendung nur von der sichtbaren Ebene. Der
+        // Prozess bleibt resident und kann von der Workstation wiederhergestellt
+        // werden.
         hide_owner_application_windows();
         suspend_application_window_input(this);
         hide();
@@ -802,7 +825,7 @@ protected:
             return true;
         }
 
-        if (msg && msg->message == WM_GETMINMAXINFO && msg->lParam) {
+        if (g_workstation_mode_enabled && msg && msg->message == WM_GETMINMAXINFO && msg->lParam) {
             D64WorkstationConstrainMaximizeInfo(
                 reinterpret_cast<void *>(msg->lParam)
             );
@@ -811,7 +834,7 @@ protected:
             return true;
         }
 
-        if (msg && msg->message == WM_MOVING && msg->lParam) {
+        if (g_workstation_mode_enabled && msg && msg->message == WM_MOVING && msg->lParam) {
             RECT *rect = reinterpret_cast<RECT *>(msg->lParam);
             D64WorkstationConstrainMovingRect(rect);
             if (result)
@@ -1013,8 +1036,20 @@ protected:
         if (event && event->button() == Qt::LeftButton) {
             const QPoint p = event->pos();
             if (closeButtonRect().contains(p)) {
-                suspend_application_window_input(this);
-                hide();
+#ifdef _WIN32
+                // Stage 144: Doppelklick auf das benutzerdefinierte X muss
+                // dieselbe Semantik wie closeEvent() besitzen. Außerhalb der
+                // Workstation wird wirklich geschlossen; in der Workstation
+                // bleibt die Anwendung resident und wird nur ausgeblendet.
+                if (!g_workstation_mode_enabled) {
+                    close();
+                } else {
+                    suspend_application_window_input(this);
+                    hide();
+                }
+#else
+                close();
+#endif
                 event->accept();
                 return;
             }
@@ -1036,7 +1071,7 @@ protected:
     {
         QMainWindow::changeEvent(event);
 #ifdef _WIN32
-        if (event && event->type() == QEvent::WindowStateChange && isMinimized()) {
+        if (g_workstation_mode_enabled && event && event->type() == QEvent::WindowStateChange && isMinimized()) {
             QPointer<DBaseWfmMainWindow> self(this);
             QTimer::singleShot(0, [self]() {
                 if (!self || !self->winId())
@@ -1060,6 +1095,18 @@ protected:
             QMainWindow::closeEvent(event);
             return;
         }
+
+#ifdef _WIN32
+        // Stage 143: Ein normales WFM-Fenster darf nur im Workstation Mode
+        // resident/verborgen bleiben. Beim direkten EXE-Start beendet X die
+        // Qt-Ereignisschleife; DBaseQtShutdown() fuehrt danach ExitProcess aus.
+        if (!g_workstation_mode_enabled) {
+            request_runtime_shutdown();
+            event->accept();
+            QMainWindow::closeEvent(event);
+            return;
+        }
+#endif
 
         suspend_application_window_input(this);
         hide();
@@ -6640,6 +6687,12 @@ void restore_owner_application_windows()
 
 void close_runtime_application_windows()
 {
+    // Stage 144: Das lokale WFM-Debug-/Ausgabefenster ist ein parentloses
+    // Top-Level-QDialog. Beim Schliessen der Hauptanwendung wird es nicht nur
+    // versteckt, sondern sofort zerstoert und alle globalen Referenzen werden
+    // entfernt. Damit kann es die Runtime-Lebensdauer nicht verlaengern.
+    destroy_wfm_output_dialog();
+
     // Fokussierte/modale Qt-Dialoge zuerst explizit rejecten. hide() ist
     // zusaetzlich absichtlich gesetzt: selbst ein Dialog mit eigenem
     // closeEvent(), das close() ignoriert, darf nach Application-Close nicht
@@ -7306,6 +7359,28 @@ bool split_windows_login_name(
 static bool send_wfm_output_to_workstation(const QByteArray &utf8, bool newline);
 #endif
 
+// Stage 143: WFM-Debug/Output kann im direkten Modus als lokales Qt-Fenster
+// erscheinen. Die Implementierungen stehen weiter unten bei der WFM-Pipe.
+static void show_wfm_output_dialog(QWidget *reference);
+static void append_wfm_output(const QString &value, bool newline);
+static void apply_wfm_debug_theme();
+
+extern "C" D64QT5_API void DBaseQtSetWorkstationMode(int enabled)
+{
+    // Stage 142: Die generierte Anwendung entscheidet explizit, ob die
+    // d64qt5-Runtime den privaten D64Workstation-Desktop vorbereiten darf.
+    // Der Aufruf erfolgt vor DBaseQtInitialize/DBaseQtInitializeGui.
+    g_workstation_mode_enabled = enabled != 0;
+}
+
+extern "C" D64QT5_API void DBaseQtSetDebugTheme(int themeMode)
+{
+    // Stage 144: Theme fuer das Debug-/Ausgabefenster. Unbekannte Werte
+    // fallen absichtlich auf das bisherige/default Verhalten zurueck.
+    g_debug_theme_mode = (themeMode == 1 || themeMode == 2) ? themeMode : 0;
+    apply_wfm_debug_theme();
+}
+
 extern "C" D64QT5_API int DBaseQtInitializeGui(const char *title)
 {
     Q_UNUSED(title)
@@ -7323,7 +7398,7 @@ extern "C" D64QT5_API int DBaseQtInitializeGui(const char *title)
         qobject_cast<QApplication *>(QCoreApplication::instance());
 
 #ifdef _WIN32
-    if (!existing && !D64WorkstationIsActive()) {
+    if (g_workstation_mode_enabled && !existing && !D64WorkstationIsActive()) {
         if (!D64WorkstationPrepare())
             return 0;
     }
@@ -7345,8 +7420,10 @@ extern "C" D64QT5_API int DBaseQtInitializeGui(const char *title)
 
     if (!g_app) {
 #ifdef _WIN32
-        D64WorkstationBeginLeave();
-        D64WorkstationFinalizeLeave();
+        if (g_workstation_mode_enabled) {
+            D64WorkstationBeginLeave();
+            D64WorkstationFinalizeLeave();
+        }
 #endif
         return 0;
     }
@@ -7358,11 +7435,13 @@ extern "C" D64QT5_API int DBaseQtInitializeGui(const char *title)
     g_exit_confirmation_open = false;
 
 #ifdef _WIN32
-    D64WorkstationSetExitCallback(&workstation_exit_requested);
-    D64WorkstationSetBtxCallback(&workstation_btx_requested);
-    D64WorkstationSetDbCallback(&workstation_db_requested);
-    D64WorkstationSetServerCallback(&workstation_server_requested);
-    D64WorkstationSetServerClientCallback(&workstation_server_client_requested);
+    if (g_workstation_mode_enabled) {
+        D64WorkstationSetExitCallback(&workstation_exit_requested);
+        D64WorkstationSetBtxCallback(&workstation_btx_requested);
+        D64WorkstationSetDbCallback(&workstation_db_requested);
+        D64WorkstationSetServerCallback(&workstation_server_requested);
+        D64WorkstationSetServerClientCallback(&workstation_server_client_requested);
+    }
 #endif
 
     // Stage 116: Die zentrale Workstation-Ausgabe wird vom Runner erzeugt.
@@ -7386,7 +7465,7 @@ extern "C" D64QT5_API int DBaseQtInitialize(const char *title)
     // den Windows-globalen Singleton: erste Instanz = OWNER, weitere Prozesse
     // = JOINED auf demselben Desktop. Sichtbar geschaltet wird nur der OWNER
     // in DBaseQtShowWindow(), nachdem ein natives Hauptfenster existiert.
-    if (!existing && !D64WorkstationIsActive()) {
+    if (g_workstation_mode_enabled && !existing && !D64WorkstationIsActive()) {
         if (!D64WorkstationPrepare())
             return 0;
     }
@@ -7407,8 +7486,10 @@ extern "C" D64QT5_API int DBaseQtInitialize(const char *title)
 
     if (!g_app) {
 #ifdef _WIN32
-        D64WorkstationBeginLeave();
-        D64WorkstationFinalizeLeave();
+        if (g_workstation_mode_enabled) {
+            D64WorkstationBeginLeave();
+            D64WorkstationFinalizeLeave();
+        }
 #endif
         return 0;
     }
@@ -7421,11 +7502,13 @@ extern "C" D64QT5_API int DBaseQtInitialize(const char *title)
     g_exit_confirmation_open = false;
 
 #ifdef _WIN32
-    D64WorkstationSetExitCallback(&workstation_exit_requested);
-    D64WorkstationSetBtxCallback(&workstation_btx_requested);
-    D64WorkstationSetDbCallback(&workstation_db_requested);
-    D64WorkstationSetServerCallback(&workstation_server_requested);
-    D64WorkstationSetServerClientCallback(&workstation_server_client_requested);
+    if (g_workstation_mode_enabled) {
+        D64WorkstationSetExitCallback(&workstation_exit_requested);
+        D64WorkstationSetBtxCallback(&workstation_btx_requested);
+        D64WorkstationSetDbCallback(&workstation_db_requested);
+        D64WorkstationSetServerCallback(&workstation_server_requested);
+        D64WorkstationSetServerClientCallback(&workstation_server_client_requested);
+    }
 #endif
 
     g_window = new DBaseMainWindow();
@@ -7625,7 +7708,7 @@ extern "C" D64QT5_API void DBaseQtShowWindow(void)
 #ifdef _WIN32
     // JOINED liegt bereits auf dem sichtbaren Workstation-Desktop. Den ersten
     // Frame deshalb offscreen komplett layouten, dann nur einmal real zeigen.
-    if (D64WorkstationJoinedExisting()) {
+    if (g_workstation_mode_enabled && D64WorkstationJoinedExisting()) {
         g_window->setAttribute(Qt::WA_DontShowOnScreen, true);
         g_window->show();
         enforce_console_80x25_grid();
@@ -7647,7 +7730,7 @@ extern "C" D64QT5_API void DBaseQtShowWindow(void)
 #ifdef _WIN32
     if (!g_window->isVisible())
         g_window->show();
-    if (D64WorkstationIsActive()) {
+    if (g_workstation_mode_enabled && D64WorkstationIsActive()) {
         if (!D64WorkstationActivate(workstation_hwnd)) {
             request_runtime_shutdown();
             return;
@@ -7660,7 +7743,7 @@ extern "C" D64QT5_API void DBaseQtShowWindow(void)
     if (g_app)
         g_app->processEvents();
 #ifdef _WIN32
-    if (D64WorkstationIsVisible())
+    if (g_workstation_mode_enabled && D64WorkstationIsVisible())
         D64WorkstationInstallKeyboardGuard(workstation_hwnd);
 #endif
 }
@@ -7673,6 +7756,29 @@ extern "C" D64QT5_API void DBaseQtProcessEvents(void)
 
 extern "C" D64QT5_API void DBaseQtSetDebugVisible(int visible)
 {
+    // Stage 143: DBaseQtInitializeGui() besitzt absichtlich kein verstecktes
+    // Console-Hauptfenster. Im direkten Nicht-Workstation-Modus ist deshalb
+    // der lokale WFM-Ausgabe-/Debugdialog die sichtbare DEBUG-Oberflaeche.
+    if (g_wfm_gui_mode) {
+        g_debug_visible = visible != 0;
+#ifdef _WIN32
+        if (!g_workstation_mode_enabled) {
+            if (visible)
+                show_wfm_output_dialog(nullptr);
+            else if (g_wfm_output_dialog)
+                g_wfm_output_dialog->hide();
+        }
+#else
+        if (visible)
+            show_wfm_output_dialog(nullptr);
+        else if (g_wfm_output_dialog)
+            g_wfm_output_dialog->hide();
+#endif
+        if (g_app)
+            g_app->processEvents();
+        return;
+    }
+
     if (visible)
         install_debug_tab(true);
     else
@@ -7697,13 +7803,24 @@ extern "C" D64QT5_API void DBaseQtAppendConsole(const char *text, int length)
 
 extern "C" D64QT5_API void DBaseQtAppendDebug(const char *text, int length)
 {
-#ifdef _WIN32
     if (g_wfm_gui_mode && text && length > 0) {
         const QByteArray utf8(text, length);
-        if (send_wfm_output_to_workstation(utf8, false))
-            return;
-    }
+#ifdef _WIN32
+        // Nur eine tatsaechlich als Workstation kompilierte Anwendung darf
+        // DEBUG-Ausgabe an den Runner schicken. Eine direkt gestartete EXE
+        // bleibt auch dann lokal, wenn zufaellig eine Workstation-Pipe existiert.
+        if (g_workstation_mode_enabled) {
+            if (send_wfm_output_to_workstation(utf8, false))
+                return;
+        }
 #endif
+        g_debug_visible = true;
+        append_wfm_output(QString::fromUtf8(utf8), false);
+        if (g_app)
+            g_app->processEvents(QEventLoop::ExcludeUserInputEvents);
+        return;
+    }
+
     install_debug_tab(true);
     append_text(g_debug, text, length);
 }
@@ -8667,6 +8784,14 @@ static bool send_wfm_output_to_workstation(const QByteArray &utf8, bool newline)
     D64WorkstationOutputHeader header{};
     header.magic = D64_WORKSTATION_OUTPUT_MAGIC;
     header.flags = newline ? D64_WORKSTATION_OUTPUT_NEWLINE : 0u;
+    // Stage 144: Das in die EXE eingebettete Debug-Theme reist mit jeder
+    // Workstation-Ausgabe zum Runner. Damit funktioniert die Einstellung auch
+    // dann, wenn die EXE ausserhalb von d64_dism gestartet wird.
+    header.flags |= D64_WORKSTATION_OUTPUT_THEME_PRESENT;
+    if (g_debug_theme_mode == 1)
+        header.flags |= D64_WORKSTATION_OUTPUT_THEME_LIGHT;
+    else if (g_debug_theme_mode == 2)
+        header.flags |= D64_WORKSTATION_OUTPUT_THEME_DARK;
     header.textBytes = static_cast<std::uint32_t>(utf8.size());
     header.processId = GetCurrentProcessId();
 
@@ -8682,6 +8807,52 @@ static bool send_wfm_output_to_workstation(const QByteArray &utf8, bool newline)
     return ok;
 }
 #endif
+
+static void apply_wfm_debug_theme()
+{
+    if (!g_wfm_output_dialog)
+        return;
+
+    if (g_debug_theme_mode == 2) {
+        g_wfm_output_dialog->setStyleSheet(QStringLiteral(
+            "QDialog#dbaseWorkstationOutputDialog{background:#171717;color:#ededed;}"
+            "QPlainTextEdit#dbaseWorkstationOutput{"
+            "background:#0f0f0f;color:#ededed;border:1px solid #555555;"
+            "selection-background-color:#35546f;selection-color:#ffffff;}"
+        ));
+    } else if (g_debug_theme_mode == 1) {
+        g_wfm_output_dialog->setStyleSheet(QStringLiteral(
+            "QDialog#dbaseWorkstationOutputDialog{background:#ececec;color:#111111;}"
+            "QPlainTextEdit#dbaseWorkstationOutput{"
+            "background:#ffffff;color:#111111;border:1px solid #b0b0b0;"
+            "selection-background-color:#cfe4f7;selection-color:#000000;}"
+        ));
+    } else {
+        // Default = Qt-/Systemdarstellung wie vor Stage 144.
+        g_wfm_output_dialog->setStyleSheet(QString());
+    }
+
+    g_wfm_output_dialog->update();
+    if (g_wfm_output_edit)
+        g_wfm_output_edit->viewport()->update();
+}
+
+static void destroy_wfm_output_dialog()
+{
+    // Zeiger zuerst loesen, damit close()/Signale waehrend des Abbaus keine
+    // bereits sterbende Debug-Instanz mehr als gueltig ansehen koennen.
+    QDialog *dialog = g_wfm_output_dialog;
+    g_wfm_output_dialog = nullptr;
+    g_wfm_output_edit = nullptr;
+    g_debug_visible = false;
+
+    if (!dialog)
+        return;
+
+    dialog->hide();
+    dialog->close();
+    delete dialog;
+}
 
 static void ensure_wfm_output_dialog()
 {
@@ -8718,6 +8889,7 @@ static void ensure_wfm_output_dialog()
     g_wfm_output_edit->document()->setMaximumBlockCount(500);
     g_wfm_output_edit->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     layout->addWidget(g_wfm_output_edit, 1);
+    apply_wfm_debug_theme();
 }
 
 static void position_wfm_output_dialog(QWidget *reference)
@@ -8732,13 +8904,16 @@ static void position_wfm_output_dialog(QWidget *reference)
         workArea = QRect(80, 40, 1024, 700);
 
 #ifdef _WIN32
-    // Linkes und unteres Workstation-Panel nicht ueberdecken.
-    workArea.adjust(
-        D64WorkstationLeftPanelWidth() + 8,
-        8,
-        -8,
-        -(D64WorkstationBottomPanelHeight() + 8)
-    );
+    // Nur im echten Workstation Mode muessen die Workstation-Panels
+    // ausgespart werden. Beim direkten EXE-Start gilt der normale Desktop.
+    if (g_workstation_mode_enabled) {
+        workArea.adjust(
+            D64WorkstationLeftPanelWidth() + 8,
+            8,
+            -8,
+            -(D64WorkstationBottomPanelHeight() + 8)
+        );
+    }
 #endif
 
     const QSize size = g_wfm_output_dialog->size();
@@ -8768,10 +8943,11 @@ static void show_wfm_output_dialog(QWidget *reference)
         return;
 
 #ifdef _WIN32
-    // Vor dem ersten D64WorkstationActivate() darf das Dialog-HWND bereits
-    // existieren, aber noch nicht auf einem unsichtbaren Desktop gezeigt
-    // werden. Nach FormOpen ist D64WorkstationIsVisible() wahr.
-    if (!D64WorkstationIsVisible())
+    // Im Workstation Mode darf der Dialog erst sichtbar werden, nachdem der
+    // private Desktop aktiviert wurde. Beim direkten Nicht-Workstation-Start
+    // gibt es dagegen absichtlich keinen D64Workstation-Desktop; der lokale
+    // Debug-/Ausgabedialog muss dort sofort normal angezeigt werden duerfen.
+    if (g_workstation_mode_enabled && !D64WorkstationIsVisible())
         return;
 #endif
 
@@ -8820,9 +8996,11 @@ extern "C" D64QT5_API void DBaseQtConsoleWrite(
 
     if (g_wfm_gui_mode) {
 #ifdef _WIN32
-        const QByteArray utf8 = value.toUtf8();
-        if (send_wfm_output_to_workstation(utf8, newline != 0))
-            return;
+        if (g_workstation_mode_enabled) {
+            const QByteArray utf8 = value.toUtf8();
+            if (send_wfm_output_to_workstation(utf8, newline != 0))
+                return;
+        }
 #endif
         // Fallback fuer direkten Start ausserhalb der Workstation: derselbe
         // nicht modale Qt5/QPlainTextEdit-Dialog, aber lokal im WFM-Prozess.
@@ -9213,7 +9391,7 @@ extern "C" D64QT5_API void DBaseQtFormOpen(void *handle)
         g_app->processEvents(QEventLoop::ExcludeUserInputEvents);
 
     HWND formHwnd = reinterpret_cast<HWND>(form->winId());
-    if (D64WorkstationIsActive()) {
+    if (g_workstation_mode_enabled && D64WorkstationIsActive()) {
         if (!D64WorkstationActivate(formHwnd)) {
             form->hide();
             return;
@@ -9231,7 +9409,7 @@ extern "C" D64QT5_API void DBaseQtFormOpen(void *handle)
         g_app->processEvents();
 
 #ifdef _WIN32
-    if (D64WorkstationIsVisible())
+    if (g_workstation_mode_enabled && D64WorkstationIsVisible())
         D64WorkstationInstallKeyboardGuard(formHwnd);
 #endif
 }
@@ -9265,12 +9443,13 @@ extern "C" D64QT5_API int DBaseQtShutdownRequested(void)
 extern "C" D64QT5_API void DBaseQtShutdown(void)
 {
 #ifdef _WIN32
-    // Stage 129:
-    // Nur der globale Workstation-EXIT setzt g_exit_authorized. Ein normales
-    // X eines Console-/WFM-Fensters tut das nicht und bleibt deshalb weiterhin
-    // ein reines Hide. Den Zustand VOR dem Cleanup sichern, weil die globalen
-    // Flags am Ende der Runtime zurueckgesetzt werden.
-    const bool terminateProcessAfterWorkstationExit = g_exit_authorized;
+    // Stage 143:
+    // Direkter Nicht-Workstation-Start: Nach dem geordneten Qt-/Runtime-Cleanup
+    // wird der Prozess immer explizit per Win32 ExitProcess beendet.
+    // Workstation Mode: Ein normales Fenster-X bleibt ein Hide; nur der
+    // globale Workstation-EXIT beendet dort den Prozess.
+    const bool terminateProcessAfterShutdown =
+        !g_workstation_mode_enabled || g_exit_authorized;
 #endif
 
     // Auch ein expliziter Runtime-Shutdown benutzt denselben zentralen
@@ -9287,15 +9466,10 @@ extern "C" D64QT5_API void DBaseQtShutdown(void)
     // die kommende TABLE-/DBF-Schicht benutzt denselben zentralen Hook.
     close_runtime_data_files();
 
-    // Stage 116: Der Workstation-Ausgabedialog ist ein eigenes Top-Level-
-    // Qt-Fenster und wird vor den WFM-Forms abgebaut.
-    if (g_wfm_output_dialog) {
-        g_wfm_output_dialog->hide();
-        g_wfm_output_dialog->close();
-        delete g_wfm_output_dialog;
-    }
-    g_wfm_output_dialog = nullptr;
-    g_wfm_output_edit = nullptr;
+    // Stage 144: idempotent; beim Hauptfenster-Close wurde der Dialog bereits
+    // in close_runtime_application_windows() zerstoert. Expliziter Shutdown
+    // benutzt denselben Helfer.
+    destroy_wfm_output_dialog();
 
     // Stage 34: Top-Level-WFM-Forms besitzen keinen g_window-Parent und
     // werden deshalb explizit vor QApplication abgebaut.
@@ -9370,18 +9544,21 @@ extern "C" D64QT5_API void DBaseQtShutdown(void)
 #ifdef _WIN32
     // Panel-Callback zuerst loesen; danach sind alle d64qt5-Fenster und Hooks
     // weg und der GUI-Thread darf auf den Originaldesktop zurueck.
-    D64WorkstationSetExitCallback(nullptr);
-    D64WorkstationSetBtxCallback(nullptr);
-    D64WorkstationSetDbCallback(nullptr);
-    D64WorkstationSetServerCallback(nullptr);
-    D64WorkstationSetServerClientCallback(nullptr);
-    D64WorkstationSetServerClientCount(0);
-    D64WorkstationFinalizeLeave();
+    if (g_workstation_mode_enabled) {
+        D64WorkstationSetExitCallback(nullptr);
+        D64WorkstationSetBtxCallback(nullptr);
+        D64WorkstationSetDbCallback(nullptr);
+        D64WorkstationSetServerCallback(nullptr);
+        D64WorkstationSetServerClientCallback(nullptr);
+        D64WorkstationSetServerClientCount(0);
+        D64WorkstationFinalizeLeave();
+    }
 #endif
 
     g_exit_authorized = false;
     g_exit_confirmation_open = false;
     g_wfm_gui_mode = false;
+    g_debug_theme_mode = 0;
 
     // Nach vollstaendigem Abbau darf ein Host die Bridge spaeter erneut
     // initialisieren. Bis hierhin bleibt g_shutdown_requested bewusst wahr,
@@ -9389,19 +9566,11 @@ extern "C" D64QT5_API void DBaseQtShutdown(void)
     g_shutdown_in_progress = false;
 
 #ifdef _WIN32
-    // Stage 129:
-    // Der globale Workstation-EXIT bedeutet "gesamte Session beenden".
-    // D64WorkstationFinalizeLeave() hat zu diesem Zeitpunkt bereits Panels,
-    // Desktop-Handles, Mutexe und alle Runtime-Ressourcen freigegeben.
-    //
     // ExitProcess ist absichtlich die ALLERLETZTE Operation:
-    // - beendet den Owner-Prozess selbst,
-    // - beendet saemtliche noch lebenden Threads dieses Prozesses,
-    // - verhindert unsichtbare Restprozesse, die EXE/OBJ/DLL-Dateien sperren.
-    //
-    // Normales Fenster-X erreicht diesen Pfad nicht mit
-    // terminateProcessAfterWorkstationExit=true.
-    if (terminateProcessAfterWorkstationExit)
+    // - Nicht-Workstation: normales X beendet die gestartete EXE wirklich.
+    // - Workstation: normales X versteckt nur; globaler EXIT beendet die EXE.
+    // - alle Qt-/DB-/Workstation-Ressourcen sind vorher bereits freigegeben.
+    if (terminateProcessAfterShutdown)
         ExitProcess(0);
 #endif
 }

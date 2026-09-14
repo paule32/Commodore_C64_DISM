@@ -217,6 +217,9 @@ import subprocess
 import struct
 import sys
 import tempfile
+import threading
+import traceback
+import faulthandler
 
 import locale
 import gettext
@@ -745,7 +748,7 @@ I18N = TranslationManager()
 def tr(msgid: str) -> str:
     return I18N.tr(msgid)
 
-class _DoxygenMessageBoxProxy:
+class _DoxygenMessageBoxProxy(_DOXYGEN_QMESSAGEBOX_CLASS):
     NoIcon = _DOXYGEN_QMESSAGEBOX_CLASS.NoIcon
     Information = _DOXYGEN_QMESSAGEBOX_CLASS.Information
     Warning = _DOXYGEN_QMESSAGEBOX_CLASS.Warning
@@ -801,6 +804,423 @@ class _DoxygenMessageBoxProxy:
         )
 
 QMessageBox = _DoxygenMessageBoxProxy
+
+# ---------------------------------------------------------------------------
+# Stage 138: global exception/crash handling for the Qt5 GUI.
+# ---------------------------------------------------------------------------
+_GLOBAL_EXCEPTION_DISPATCHER = None
+_GLOBAL_EXCEPTION_DIALOG_ACTIVE = False
+_GLOBAL_FAULT_LOG_STREAM = None
+_ORIGINAL_SYS_EXCEPTHOOK = sys.excepthook
+_ORIGINAL_THREADING_EXCEPTHOOK = getattr(threading, "excepthook", None)
+_ORIGINAL_UNRAISABLEHOOK = getattr(sys, "unraisablehook", None)
+
+# Stage 139: interner Anwendungs-Watchdog + Heartbeat fuer den externen
+# Win32-Launcher. Der GUI-Thread schreibt den Heartbeat. Ein separater
+# Python-Thread beobachtet diesen Zeitstempel und kann dadurch einen blockierten
+# Qt-Eventloop erkennen, ohne selbst Qt-Widgets aufzurufen.
+_INTERNAL_APPLICATION_WATCHDOG = None
+
+
+def _watchdog_atomic_write(path: Path, text: str) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(path.name + f".{os.getpid()}.tmp")
+        temporary.write_text(str(text), encoding="utf-8", errors="replace")
+        os.replace(str(temporary), str(path))
+    except Exception:
+        pass
+
+
+def _watchdog_directory() -> Path:
+    configured = str(os.environ.get("D64_WATCHDOG_DIR", "")).strip()
+    if configured:
+        return Path(configured).expanduser()
+    return Path(tempfile.gettempdir()) / f"d64_dism_watchdog_{os.getpid()}"
+
+
+class _InternalApplicationWatchdog(QObject):
+    HEARTBEAT_INTERVAL_MS = 1000
+    GUI_STALL_SECONDS = 15.0
+
+    def __init__(self, application, host=None):
+        super().__init__(host if isinstance(host, QObject) else None)
+        self.application = application
+        self.host = host
+        self.directory = _watchdog_directory()
+        self.token = str(os.environ.get("D64_WATCHDOG_TOKEN", "")).strip()
+        self.heartbeat_path = self.directory / "heartbeat.txt"
+        self.status_path = self.directory / "status.txt"
+        self.pid_path = self.directory / "app.pid"
+        self.exception_path = self.directory / "exception.txt"
+        self._last_gui_pulse = time.monotonic()
+        self._stall_reported = False
+        self._clean_shutdown = False
+        self._stop_event = threading.Event()
+        self._timer = QTimer(self)
+        self._timer.setInterval(self.HEARTBEAT_INTERVAL_MS)
+        self._timer.timeout.connect(self._pulse)
+        self._thread = threading.Thread(
+            target=self._monitor_loop,
+            name="d64-internal-watchdog",
+            daemon=True,
+        )
+
+    def start(self):
+        try:
+            self.directory.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        _watchdog_atomic_write(self.pid_path, f"{os.getpid()}\n")
+        self._write_status("starting")
+        self._pulse()
+        self._timer.start()
+        try:
+            self.application.aboutToQuit.connect(self.mark_clean_shutdown)
+        except Exception:
+            pass
+        if not self._thread.is_alive():
+            self._thread.start()
+        return self
+
+    def _write_status(self, state: str, extra: str = ""):
+        lines = [
+            f"state={state}",
+            f"pid={os.getpid()}",
+            f"time={dt.datetime.now().isoformat(sep=' ', timespec='seconds')}",
+        ]
+        if self.token:
+            lines.append(f"token={self.token}")
+        if extra:
+            lines.append(str(extra).rstrip())
+        _watchdog_atomic_write(self.status_path, "\n".join(lines) + "\n")
+
+    def _pulse(self):
+        self._last_gui_pulse = time.monotonic()
+        stamp = dt.datetime.now().isoformat(sep=" ", timespec="milliseconds")
+        _watchdog_atomic_write(
+            self.heartbeat_path,
+            f"token={self.token}\npid={os.getpid()}\ntime={stamp}\n",
+        )
+        if self._stall_reported:
+            self._stall_reported = False
+            self._write_status("running", "recovered_from_gui_stall=1")
+        elif not self._clean_shutdown:
+            self._write_status("running")
+
+    def _monitor_loop(self):
+        while not self._stop_event.wait(1.0):
+            if self._clean_shutdown:
+                return
+            age = time.monotonic() - self._last_gui_pulse
+            if age < self.GUI_STALL_SECONDS or self._stall_reported:
+                continue
+            self._stall_reported = True
+            details = (
+                "Interner Watchdog: Der Qt-GUI-Thread hat seit "
+                f"{age:.1f} Sekunden keinen Heartbeat mehr geliefert."
+            )
+            self._write_status("gui_stall", f"age_seconds={age:.1f}")
+            _append_global_crash_log(details)
+
+    def mark_exception(self, summary: str, details: str = ""):
+        self._write_status("python_exception", f"summary={summary}")
+        _watchdog_atomic_write(
+            self.exception_path,
+            f"{summary}\n\n{details}".rstrip() + "\n",
+        )
+
+    def mark_clean_shutdown(self):
+        if self._clean_shutdown:
+            return
+        self._clean_shutdown = True
+        self._stop_event.set()
+        try:
+            self._timer.stop()
+        except Exception:
+            pass
+        self._write_status("clean", "exit_code=0")
+
+
+def start_internal_application_watchdog(application, host=None):
+    global _INTERNAL_APPLICATION_WATCHDOG
+    if _INTERNAL_APPLICATION_WATCHDOG is None:
+        _INTERNAL_APPLICATION_WATCHDOG = _InternalApplicationWatchdog(application, host)
+        _INTERNAL_APPLICATION_WATCHDOG.start()
+    else:
+        _INTERNAL_APPLICATION_WATCHDOG.host = host
+    return _INTERNAL_APPLICATION_WATCHDOG
+
+
+def _global_crash_log_path() -> Path:
+    """Return a writable crash-log path, preferring the application folder."""
+    candidates = [
+        Path(__file__).resolve().with_name("d64_dism_crash.log"),
+        Path(tempfile.gettempdir()) / "d64_dism_crash.log",
+    ]
+    for candidate in candidates:
+        try:
+            candidate.parent.mkdir(parents=True, exist_ok=True)
+            with candidate.open("a", encoding="utf-8"):
+                pass
+            return candidate
+        except OSError:
+            continue
+    return Path("d64_dism_crash.log")
+
+
+def _append_global_crash_log(text: str) -> Path:
+    path = _global_crash_log_path()
+    try:
+        with path.open("a", encoding="utf-8", errors="replace") as stream:
+            stream.write("\n" + "=" * 78 + "\n")
+            stream.write(dt.datetime.now().isoformat(sep=" ", timespec="seconds") + "\n")
+            stream.write(text.rstrip() + "\n")
+    except Exception:
+        pass
+    return path
+
+
+class GlobalExceptionDialog(QDialog):
+    """Modal dialog used for uncaught Python exceptions in the GUI."""
+
+    def __init__(self, parent, title: str, summary: str, details: str, log_path: Path):
+        super().__init__(parent)
+        self.setObjectName("global_exception_dialog")
+        self.setWindowTitle(title or "Anwendungsfehler")
+        self.setModal(True)
+        self.resize(820, 560)
+        if parent is not None:
+            try:
+                self.setWindowIcon(parent.windowIcon())
+            except Exception:
+                pass
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(8)
+
+        headline = QLabel("Ein unerwarteter Fehler ist aufgetreten.", self)
+        font = headline.font()
+        font.setBold(True)
+        headline.setFont(font)
+        root.addWidget(headline)
+
+        summary_label = QLabel(str(summary), self)
+        summary_label.setWordWrap(True)
+        summary_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        root.addWidget(summary_label)
+
+        self.details_edit = QPlainTextEdit(self)
+        self.details_edit.setReadOnly(True)
+        self.details_edit.setPlainText(str(details))
+        self.details_edit.setLineWrapMode(QPlainTextEdit.NoWrap)
+        fixed_font = QFontDatabase.systemFont(QFontDatabase.FixedFont)
+        self.details_edit.setFont(fixed_font)
+        root.addWidget(self.details_edit, 1)
+
+        log_label = QLabel(f"Crash-Log: {log_path}", self)
+        log_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        root.addWidget(log_label)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        copy_button = QPushButton("Kopieren", self)
+        save_button = QPushButton("Speichern unter ...", self)
+        close_button = QPushButton("Schließen", self)
+        close_button.setDefault(True)
+        buttons.addWidget(copy_button)
+        buttons.addWidget(save_button)
+        buttons.addWidget(close_button)
+        root.addLayout(buttons)
+
+        copy_button.clicked.connect(self._copy_details)
+        save_button.clicked.connect(self._save_details)
+        close_button.clicked.connect(self.accept)
+
+        dark = _doxygen_messagebox_dark(parent)
+        if dark:
+            self.setStyleSheet("""
+QDialog#global_exception_dialog { background:#202630; color:#ffffff; }
+QDialog#global_exception_dialog QLabel { color:#ffffff; background:transparent; }
+QDialog#global_exception_dialog QPlainTextEdit {
+    background:#111820; color:#f0f6fc; border:1px solid #596779;
+    selection-background-color:#264f78;
+}
+QDialog#global_exception_dialog QPushButton {
+    min-width:86px; color:#ffffff; background:#343e4d;
+    border:1px solid #596779; border-radius:3px; padding:5px 10px;
+}
+QDialog#global_exception_dialog QPushButton:hover { background:#414d5f; border-color:#7fa7d8; }
+QDialog#global_exception_dialog QPushButton:pressed { background:#27313e; }
+""")
+        else:
+            self.setStyleSheet("""
+QDialog#global_exception_dialog { background:#f0f0f0; color:#000000; }
+QDialog#global_exception_dialog QLabel { color:#000000; background:transparent; }
+QDialog#global_exception_dialog QPlainTextEdit {
+    background:#ffffff; color:#000000; border:1px solid #9b9b9b;
+    selection-background-color:#cfe8ff;
+}
+QDialog#global_exception_dialog QPushButton {
+    min-width:86px; color:#000000; background:#f5f5f5;
+    border:1px solid #9b9b9b; border-radius:3px; padding:5px 10px;
+}
+QDialog#global_exception_dialog QPushButton:hover { background:#e4f1fb; border-color:#5b9bd5; }
+QDialog#global_exception_dialog QPushButton:pressed { background:#d5e8f6; }
+""")
+
+    def _copy_details(self):
+        QApplication.clipboard().setText(self.details_edit.toPlainText())
+
+    def _save_details(self):
+        filename, _ = QFileDialog.getSaveFileName(
+            self,
+            "Fehlerbericht speichern",
+            "d64_dism_error.txt",
+            "Textdateien (*.txt);;Alle Dateien (*.*)",
+        )
+        if not filename:
+            return
+        try:
+            Path(filename).write_text(self.details_edit.toPlainText(), encoding="utf-8")
+        except Exception as exc:
+            _DOXYGEN_QMESSAGEBOX_CLASS.warning(
+                self,
+                "Fehlerbericht",
+                f"Die Datei konnte nicht gespeichert werden:\n\n{exc}",
+            )
+
+
+class _GlobalExceptionDispatcher(QObject):
+    exception_raised = pyqtSignal(str, str, str, str)
+
+    def __init__(self, host=None):
+        super().__init__()
+        self.host = host
+        self.exception_raised.connect(self._show_exception_dialog)
+
+    def set_host(self, host):
+        self.host = host
+
+    def report(self, exc_type, exc_value, exc_tb, context: str = ""):
+        if exc_type in (KeyboardInterrupt, SystemExit):
+            _ORIGINAL_SYS_EXCEPTHOOK(exc_type, exc_value, exc_tb)
+            return
+        try:
+            formatted = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+        except Exception:
+            formatted = f"{exc_type.__name__}: {exc_value}"
+        if context:
+            formatted = f"Kontext: {context}\n\n{formatted}"
+        summary = f"{getattr(exc_type, '__name__', 'Exception')}: {exc_value}"
+        log_path = _append_global_crash_log(formatted)
+        if _INTERNAL_APPLICATION_WATCHDOG is not None:
+            try:
+                _INTERNAL_APPLICATION_WATCHDOG.mark_exception(summary, formatted)
+            except Exception:
+                pass
+        try:
+            print(formatted, file=sys.stderr, flush=True)
+        except Exception:
+            pass
+        self.exception_raised.emit("Anwendungsfehler", summary, formatted, str(log_path))
+
+    def report_text(self, title: str, summary: str, details: str):
+        log_path = _append_global_crash_log(details)
+        if _INTERNAL_APPLICATION_WATCHDOG is not None:
+            try:
+                _INTERNAL_APPLICATION_WATCHDOG.mark_exception(summary, details)
+            except Exception:
+                pass
+        self.exception_raised.emit(title, summary, details, str(log_path))
+
+    def _show_exception_dialog(self, title: str, summary: str, details: str, log_path: str):
+        global _GLOBAL_EXCEPTION_DIALOG_ACTIVE
+        if _GLOBAL_EXCEPTION_DIALOG_ACTIVE:
+            return
+        app = QApplication.instance()
+        if app is None:
+            return
+        parent = self.host
+        if parent is None or not isinstance(parent, QWidget):
+            parent = app.activeWindow()
+        _GLOBAL_EXCEPTION_DIALOG_ACTIVE = True
+        try:
+            dialog = GlobalExceptionDialog(parent, title, summary, details, Path(log_path))
+            dialog.exec_()
+        finally:
+            _GLOBAL_EXCEPTION_DIALOG_ACTIVE = False
+
+
+def install_global_exception_handler(host=None):
+    """Install global Python/Qt-friendly exception hooks and faulthandler."""
+    global _GLOBAL_EXCEPTION_DISPATCHER, _GLOBAL_FAULT_LOG_STREAM
+    if _GLOBAL_EXCEPTION_DISPATCHER is None:
+        _GLOBAL_EXCEPTION_DISPATCHER = _GlobalExceptionDispatcher(host)
+    else:
+        _GLOBAL_EXCEPTION_DISPATCHER.set_host(host)
+
+    def _sys_hook(exc_type, exc_value, exc_tb):
+        _GLOBAL_EXCEPTION_DISPATCHER.report(exc_type, exc_value, exc_tb, "GUI / sys.excepthook")
+
+    sys.excepthook = _sys_hook
+
+    if hasattr(threading, "excepthook"):
+        def _thread_hook(args):
+            thread_name = getattr(getattr(args, "thread", None), "name", "unbekannt")
+            _GLOBAL_EXCEPTION_DISPATCHER.report(
+                args.exc_type,
+                args.exc_value,
+                args.exc_traceback,
+                f"Python-Thread: {thread_name}",
+            )
+        threading.excepthook = _thread_hook
+
+    if hasattr(sys, "unraisablehook"):
+        def _unraisable_hook(args):
+            exc_type = args.exc_type or RuntimeError
+            exc_value = args.exc_value or RuntimeError("Unraisable exception")
+            _GLOBAL_EXCEPTION_DISPATCHER.report(
+                exc_type,
+                exc_value,
+                args.exc_traceback,
+                f"Unraisable object: {getattr(args, 'object', None)!r}",
+            )
+        sys.unraisablehook = _unraisable_hook
+
+    if _GLOBAL_FAULT_LOG_STREAM is None:
+        try:
+            fault_path = _global_crash_log_path()
+            _GLOBAL_FAULT_LOG_STREAM = fault_path.open("a", encoding="utf-8")
+            faulthandler.enable(file=_GLOBAL_FAULT_LOG_STREAM, all_threads=True)
+        except Exception:
+            _GLOBAL_FAULT_LOG_STREAM = None
+
+    return _GLOBAL_EXCEPTION_DISPATCHER
+
+
+def _theme_original_about_qt_dialog(parent=None):
+    """Apply the current app theme to Qt's own QMessageBox.aboutQt dialog."""
+    app = QApplication.instance()
+    if app is None:
+        return
+    for widget in app.topLevelWidgets():
+        if not isinstance(widget, _DOXYGEN_QMESSAGEBOX_CLASS):
+            continue
+        title = str(widget.windowTitle() or "").casefold()
+        if "qt" not in title:
+            continue
+        try:
+            _doxygen_apply_messagebox_theme(widget, parent)
+            widget.setAttribute(Qt.WA_StyledBackground, True)
+            widget.setAutoFillBackground(True)
+            for child in widget.findChildren(QWidget):
+                child.setPalette(widget.palette())
+                child.update()
+            widget.update()
+        except Exception:
+            pass
 
 # ---------------------------------------------------------------------------
 # \brief global definition to write the css styles for dark mode html
@@ -23388,6 +23808,11 @@ PROJECT_WINDOWS_PE32_LINK_WITH_ORDINALS_KEY = "__windows_pe32_link_with_ordinals
 PROJECT_WINDOWS_PE64_LINK_WITH_ORDINALS_KEY = "__windows_pe64_link_with_ordinals__"
 PROJECT_WINDOWS_PE32_WORKSTATION_MODE_KEY = "__windows_pe32_workstation_mode__"
 PROJECT_WINDOWS_PE64_WORKSTATION_MODE_KEY = "__windows_pe64_workstation_mode__"
+# Stage 144: Debug-Fenster-Theme getrennt fuer normalen Start und Workstation.
+PROJECT_WINDOWS_PE32_DEBUG_THEME_NORMAL_KEY = "__windows_pe32_debug_theme_normal__"
+PROJECT_WINDOWS_PE32_DEBUG_THEME_WORKSTATION_KEY = "__windows_pe32_debug_theme_workstation__"
+PROJECT_WINDOWS_PE64_DEBUG_THEME_NORMAL_KEY = "__windows_pe64_debug_theme_normal__"
+PROJECT_WINDOWS_PE64_DEBUG_THEME_WORKSTATION_KEY = "__windows_pe64_debug_theme_workstation__"
 PROJECT_WINDOWS_TARGET_SETTINGS = {
     "pe32": {
         "input_key": PROJECT_WINDOWS_PE32_LINK_SEARCH_PATHS_KEY,
@@ -23396,6 +23821,8 @@ PROJECT_WINDOWS_TARGET_SETTINGS = {
         "output_relative_key": PROJECT_WINDOWS_PE32_OUTPUT_RELATIVE_PATHS_KEY,
         "link_with_ordinals_key": PROJECT_WINDOWS_PE32_LINK_WITH_ORDINALS_KEY,
         "workstation_mode_key": PROJECT_WINDOWS_PE32_WORKSTATION_MODE_KEY,
+        "debug_theme_normal_key": PROJECT_WINDOWS_PE32_DEBUG_THEME_NORMAL_KEY,
+        "debug_theme_workstation_key": PROJECT_WINDOWS_PE32_DEBUG_THEME_WORKSTATION_KEY,
         "environment_section": "Settings.Windows.32Bit.Environment",
         "input_section": "Settings.Windows.32Bit.Compiler.InputDirectories",
         "output_section": "Settings.Windows.32Bit.Compiler.OutputDirectory",
@@ -23409,6 +23836,8 @@ PROJECT_WINDOWS_TARGET_SETTINGS = {
         "output_relative_key": PROJECT_WINDOWS_PE64_OUTPUT_RELATIVE_PATHS_KEY,
         "link_with_ordinals_key": PROJECT_WINDOWS_PE64_LINK_WITH_ORDINALS_KEY,
         "workstation_mode_key": PROJECT_WINDOWS_PE64_WORKSTATION_MODE_KEY,
+        "debug_theme_normal_key": PROJECT_WINDOWS_PE64_DEBUG_THEME_NORMAL_KEY,
+        "debug_theme_workstation_key": PROJECT_WINDOWS_PE64_DEBUG_THEME_WORKSTATION_KEY,
         "environment_section": "Settings.Windows.64Bit.Environment",
         "input_section": "Settings.Windows.64Bit.Compiler.InputDirectories",
         "output_section": "Settings.Windows.64Bit.Compiler.OutputDirectory",
@@ -23474,6 +23903,75 @@ PROJECT_C64_ENVIRONMENT_PROFILES = {
     for profile in ("68000", "68020", "68030")
 }
 PROJECT_C64_KEYBOARD_LAYOUTS = ("qwertz", "qwerty")
+
+# Stage ASM 133: Sprachausgabe je C64-Architekturprofil. Die Werte werden
+# projektbezogen gespeichert und bilden zugleich die Konfiguration fuer die
+# spaetere BASIC-SPEAK-Runtime.
+PROJECT_C64_SPEECH_PROFILES = {
+    profile: {
+        "mode_key": f"__c64_{profile}_speech_mode__",
+        "sample_rate_key": f"__c64_{profile}_speech_sample_rate__",
+        "quality_key": f"__c64_{profile}_speech_quality__",
+        "vice_interface_key": f"__c64_{profile}_speech_vice_interface__",
+        "host_key": f"__c64_{profile}_speech_host__",
+        "port_key": f"__c64_{profile}_speech_port__",
+        "section": f"Settings.C64.{profile}.Environment.SpeechOutput",
+    }
+    for profile in ("68000", "68020", "68030")
+}
+PROJECT_C64_SPEECH_MODES = ("internal_samples", "internal_phoneme", "vice_streaming")
+PROJECT_C64_SPEECH_SAMPLE_RATES = (4000, 8000)
+PROJECT_C64_SPEECH_QUALITIES = (4, 8)
+PROJECT_C64_SPEECH_VICE_INTERFACES = ("turbo232", "acia")
+
+
+def _normalize_project_c64_speech_mode(value: str) -> str:
+    text = str(value or "internal_samples").strip().casefold().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "samples": "internal_samples", "intern_samples": "internal_samples",
+        "internal/sample": "internal_samples",
+        "phoneme": "internal_phoneme", "phonemes": "internal_phoneme",
+        "phonemsynthese": "internal_phoneme", "intern_phonemsynthese": "internal_phoneme",
+        "vice": "vice_streaming", "streaming": "vice_streaming", "vice_stream": "vice_streaming",
+    }
+    text = aliases.get(text, text)
+    return text if text in PROJECT_C64_SPEECH_MODES else "internal_samples"
+
+
+def _normalize_project_c64_speech_sample_rate(value) -> int:
+    try:
+        number = int(str(value).replace(".", "").replace(" Hz", "").strip())
+    except (TypeError, ValueError):
+        number = 8000
+    return number if number in PROJECT_C64_SPEECH_SAMPLE_RATES else 8000
+
+
+def _normalize_project_c64_speech_quality(value) -> int:
+    try:
+        number = int(str(value).replace(" Bit", "").strip())
+    except (TypeError, ValueError):
+        number = 4
+    return number if number in PROJECT_C64_SPEECH_QUALITIES else 4
+
+
+def _normalize_project_c64_speech_vice_interface(value: str) -> str:
+    text = str(value or "turbo232").strip().casefold().replace("-", "")
+    aliases = {"turbo": "turbo232", "swiftlink": "turbo232", "6551": "acia"}
+    text = aliases.get(text, text)
+    return text if text in PROJECT_C64_SPEECH_VICE_INTERFACES else "turbo232"
+
+
+def _normalize_project_c64_speech_host(value: str) -> str:
+    text = str(value or "localhost").strip()
+    return text or "localhost"
+
+
+def _normalize_project_c64_speech_port(value) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        number = 6464
+    return max(1, min(65535, number))
 
 
 def _normalize_project_c64_keyboard_layout(value: str) -> str:
@@ -23673,6 +24171,8 @@ def empty_project_entries() -> Dict[str, List[Dict[str, str]]]:
         entries[_settings["output_relative_key"]] = [{"value": "true"}]
         entries[_settings["link_with_ordinals_key"]] = [{"value": "false"}]
         entries[_settings["workstation_mode_key"]] = [{"value": "false"}]
+        entries[_settings["debug_theme_normal_key"]] = [{"value": "default"}]
+        entries[_settings["debug_theme_workstation_key"]] = [{"value": "default"}]
     entries[PROJECT_C64_OPTIMIZER_ACTIVE_PROFILE_KEY] = [{"value": "68000"}]
     for _profile_settings in PROJECT_C64_OPTIMIZER_PROFILES.values():
         entries[_profile_settings["enabled_key"]] = [{"value": "true"}]
@@ -23687,6 +24187,13 @@ def empty_project_entries() -> Dict[str, List[Dict[str, str]]]:
     for _profile_settings in PROJECT_C64_ENVIRONMENT_PROFILES.values():
         entries[_profile_settings["screen_keyboard_key"]] = [{"value": "false"}]
         entries[_profile_settings["keyboard_layout_key"]] = [{"value": "qwertz"}]
+    for _profile_settings in PROJECT_C64_SPEECH_PROFILES.values():
+        entries[_profile_settings["mode_key"]] = [{"value": "internal_samples"}]
+        entries[_profile_settings["sample_rate_key"]] = [{"value": "8000"}]
+        entries[_profile_settings["quality_key"]] = [{"value": "4"}]
+        entries[_profile_settings["vice_interface_key"]] = [{"value": "turbo232"}]
+        entries[_profile_settings["host_key"]] = [{"value": "localhost"}]
+        entries[_profile_settings["port_key"]] = [{"value": "6464"}]
     return entries
 
 
@@ -23746,6 +24253,16 @@ def _project_bool_entry(
         return bool(default)
     raw = str(values[0].get("value", "true" if default else "false")).strip().casefold()
     return raw not in {"0", "false", "no", "off", "absolute", "absolute paths", "absolute pfade"}
+
+
+def _normalize_project_windows_debug_theme(value: object) -> str:
+    """Stage 144: kanonische Theme-Werte fuer das Runtime-Debug-Fenster."""
+    text = str(value or "default").strip().casefold()
+    if text in {"light", "light theme", "hell"}:
+        return "light"
+    if text in {"dark", "dark theme", "dunkel"}:
+        return "dark"
+    return "default"
 
 
 def _parse_project_bool(value: str, default: bool = True) -> bool:
@@ -24080,9 +24597,25 @@ def format_project_ini(
         _workstation_mode = _project_bool_entry(
             entries, _settings["workstation_mode_key"], False
         )
+        _debug_theme_normal_entries = entries.get(
+            _settings["debug_theme_normal_key"], ()
+        )
+        _debug_theme_workstation_entries = entries.get(
+            _settings["debug_theme_workstation_key"], ()
+        )
+        _debug_theme_normal = _normalize_project_windows_debug_theme(
+            _debug_theme_normal_entries[0].get("value", "default")
+            if _debug_theme_normal_entries else "default"
+        )
+        _debug_theme_workstation = _normalize_project_windows_debug_theme(
+            _debug_theme_workstation_entries[0].get("value", "default")
+            if _debug_theme_workstation_entries else "default"
+        )
         parser[_settings["environment_section"]] = {
             "Title": f"Windows {_settings['title']} Umgebung",
             "WorkstationMode": "true" if _workstation_mode else "false",
+            "DebugThemeNormal": _debug_theme_normal,
+            "DebugThemeWorkstation": _debug_theme_workstation,
         }
 
         _link_with_ordinals = _project_bool_entry(
@@ -24132,6 +24665,27 @@ def format_project_ini(
             "Title": f"C=64 {_profile} Umgebung",
             "ScreenKeyboard": "true" if _screen_keyboard else "false",
             "KeyboardLayout": _keyboard_layout,
+        }
+
+    # Stage ASM 133: Sprachausgabe pro C64-Profil speichern.
+    for _profile, _profile_settings in globals().get("PROJECT_C64_SPEECH_PROFILES", {}).items():
+        def _speech_entry(key, fallback):
+            values = entries.get(_profile_settings[key], ())
+            return values[0].get("value", fallback) if values else fallback
+        _mode = _normalize_project_c64_speech_mode(_speech_entry("mode_key", "internal_samples"))
+        _rate = _normalize_project_c64_speech_sample_rate(_speech_entry("sample_rate_key", "8000"))
+        _quality = _normalize_project_c64_speech_quality(_speech_entry("quality_key", "4"))
+        _interface = _normalize_project_c64_speech_vice_interface(_speech_entry("vice_interface_key", "turbo232"))
+        _host = _normalize_project_c64_speech_host(_speech_entry("host_key", "localhost"))
+        _port = _normalize_project_c64_speech_port(_speech_entry("port_key", "6464"))
+        parser[_profile_settings["section"]] = {
+            "Title": f"C=64 {_profile} Sprachausgabe",
+            "Mode": _mode,
+            "SampleRate": str(_rate),
+            "Quality": str(_quality),
+            "VICEInterface": _interface,
+            "Host": _host,
+            "Port": str(_port),
         }
 
     # Stage ASM 50: Image-Packer je C64-Profil speichern.
@@ -24551,6 +25105,24 @@ def parse_project_ini(text: str, project_path: Path) -> Dict[str, List[Dict[str,
             entries[_settings["workstation_mode_key"]] = [{
                 "value": "true" if _workstation_mode else "false"
             }]
+            entries[_settings["debug_theme_normal_key"]] = [{
+                "value": _normalize_project_windows_debug_theme(
+                    parser.get(
+                        _environment_section,
+                        "DebugThemeNormal",
+                        fallback="default",
+                    )
+                )
+            }]
+            entries[_settings["debug_theme_workstation_key"]] = [{
+                "value": _normalize_project_windows_debug_theme(
+                    parser.get(
+                        _environment_section,
+                        "DebugThemeWorkstation",
+                        fallback="default",
+                    )
+                )
+            }]
         if parser.has_section(_linker_section):
             _link_with_ordinals = _parse_project_bool(
                 parser.get(
@@ -24603,6 +25175,30 @@ def parse_project_ini(text: str, project_path: Path) -> Dict[str, List[Dict[str,
         }]
         entries[_profile_settings["keyboard_layout_key"]] = [{
             "value": _keyboard_layout
+        }]
+
+    # Stage ASM 133: Sprachausgabe laden.
+    for _profile, _profile_settings in globals().get("PROJECT_C64_SPEECH_PROFILES", {}).items():
+        _section = _profile_settings["section"]
+        if not parser.has_section(_section):
+            continue
+        entries[_profile_settings["mode_key"]] = [{
+            "value": _normalize_project_c64_speech_mode(parser.get(_section, "Mode", fallback="internal_samples"))
+        }]
+        entries[_profile_settings["sample_rate_key"]] = [{
+            "value": str(_normalize_project_c64_speech_sample_rate(parser.get(_section, "SampleRate", fallback="8000")))
+        }]
+        entries[_profile_settings["quality_key"]] = [{
+            "value": str(_normalize_project_c64_speech_quality(parser.get(_section, "Quality", fallback="4")))
+        }]
+        entries[_profile_settings["vice_interface_key"]] = [{
+            "value": _normalize_project_c64_speech_vice_interface(parser.get(_section, "VICEInterface", fallback="turbo232"))
+        }]
+        entries[_profile_settings["host_key"]] = [{
+            "value": _normalize_project_c64_speech_host(parser.get(_section, "Host", fallback="localhost"))
+        }]
+        entries[_profile_settings["port_key"]] = [{
+            "value": str(_normalize_project_c64_speech_port(parser.get(_section, "Port", fallback="6464")))
         }]
 
     # Stage ASM 50: C64 Image-Packer laden.
@@ -68771,6 +69367,56 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             )
             environment_hint.setWordWrap(True)
             environment_layout.addWidget(environment_hint)
+
+            # Stage 144: Ein gemeinsamer Aussehen-Block mit zwei voneinander
+            # unabhaengigen Radio-Gruppen. Die Auswahl gilt fuer das Debug-/
+            # Ausgabefenster des normalen Starts bzw. des Workstation Starts.
+            self.appearance_group = QGroupBox("Aussehen", self.environment_page)
+            self.appearance_group.setObjectName(
+                f"project_windows_{target_tag}_debug_appearance"
+            )
+            appearance_layout = QGridLayout(self.appearance_group)
+            appearance_layout.setContentsMargins(12, 16, 12, 10)
+            appearance_layout.setHorizontalSpacing(36)
+            appearance_layout.setVerticalSpacing(5)
+
+            normal_heading = QLabel("Normaler Start", self.appearance_group)
+            workstation_heading = QLabel("Workstation Start", self.appearance_group)
+            # Stage 146: Spaltenueberschriften links ueber der jeweiligen Auswahl.
+            normal_heading.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            workstation_heading.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            appearance_layout.addWidget(normal_heading, 0, 0)
+            appearance_layout.addWidget(workstation_heading, 0, 1)
+
+            self.debug_theme_normal_group = QButtonGroup(self.appearance_group)
+            self.debug_theme_normal_group.setExclusive(True)
+            self.debug_theme_workstation_group = QButtonGroup(self.appearance_group)
+            self.debug_theme_workstation_group.setExclusive(True)
+            self.debug_theme_normal_buttons = {}
+            self.debug_theme_workstation_buttons = {}
+            for row, (theme_key, caption) in enumerate((
+                ("light", "light Theme"),
+                ("dark", "dark Theme"),
+                ("default", "default"),
+            ), start=1):
+                normal_button = QRadioButton(caption, self.appearance_group)
+                normal_button.setObjectName(
+                    f"project_windows_{target_tag}_debug_theme_normal_{theme_key}"
+                )
+                workstation_button = QRadioButton(caption, self.appearance_group)
+                workstation_button.setObjectName(
+                    f"project_windows_{target_tag}_debug_theme_workstation_{theme_key}"
+                )
+                self.debug_theme_normal_group.addButton(normal_button)
+                self.debug_theme_workstation_group.addButton(workstation_button)
+                self.debug_theme_normal_buttons[theme_key] = normal_button
+                self.debug_theme_workstation_buttons[theme_key] = workstation_button
+                appearance_layout.addWidget(normal_button, row, 0)
+                appearance_layout.addWidget(workstation_button, row, 1)
+
+            self.debug_theme_normal_buttons["default"].setChecked(True)
+            self.debug_theme_workstation_buttons["default"].setChecked(True)
+            environment_layout.addWidget(self.appearance_group)
             environment_layout.addStretch(1)
             self.stack.addWidget(self.environment_page)
 
@@ -68934,6 +69580,18 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.workstation_mode_checkbox.toggled.connect(
                 self._workstation_mode_toggled
             )
+            for _theme_key, _button in self.debug_theme_normal_buttons.items():
+                _button.toggled.connect(
+                    lambda checked, key=_theme_key: self._debug_theme_toggled(
+                        "normal", key, checked
+                    )
+                )
+            for _theme_key, _button in self.debug_theme_workstation_buttons.items():
+                _button.toggled.connect(
+                    lambda checked, key=_theme_key: self._debug_theme_toggled(
+                        "workstation", key, checked
+                    )
+                )
             self.tree.setCurrentItem(self.compiler_input_directories_item)
             self._tree_changed(self.compiler_input_directories_item, None)
 
@@ -69044,6 +69702,27 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             finally:
                 self._syncing = False
 
+        def debug_theme(self, launch_mode: str = "normal") -> str:
+            buttons = (
+                self.debug_theme_workstation_buttons
+                if str(launch_mode).casefold() == "workstation"
+                else self.debug_theme_normal_buttons
+            )
+            for key, button in buttons.items():
+                if button.isChecked():
+                    return key
+            return "default"
+
+        def set_debug_themes(self, normal: str, workstation: str) -> None:
+            self._syncing = True
+            try:
+                normal_key = _normalize_project_windows_debug_theme(normal)
+                workstation_key = _normalize_project_windows_debug_theme(workstation)
+                self.debug_theme_normal_buttons[normal_key].setChecked(True)
+                self.debug_theme_workstation_buttons[workstation_key].setChecked(True)
+            finally:
+                self._syncing = False
+
         def set_relative_modes(self, input_relative: bool, output_relative: bool) -> None:
             self._syncing = True
             try:
@@ -69105,6 +69784,22 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             )
             if callback is not None:
                 callback(self.target, bool(checked), mark_modified=True)
+
+        def _debug_theme_toggled(
+            self, launch_mode: str, theme_key: str, checked: bool
+        ) -> None:
+            if self._syncing or not checked:
+                return
+            callback = getattr(
+                self.owner, "set_project_windows_debug_theme", None
+            )
+            if callback is not None:
+                callback(
+                    self.target,
+                    launch_mode,
+                    _normalize_project_windows_debug_theme(theme_key),
+                    mark_modified=True,
+                )
 
         def _input_relative_toggled(self, checked: bool) -> None:
             if self._syncing:
@@ -69392,6 +70087,9 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
 
             self.environment_item = QTreeWidgetItem(self.tree, ["Umgebung"])
             self.environment_item.setData(0, Qt.UserRole, "environment")
+            self.speech_item = QTreeWidgetItem(self.environment_item, ["Sprachausgabe:"])
+            self.speech_item.setData(0, Qt.UserRole, "environment.speech")
+            self.environment_item.setExpanded(True)
             self.compiler_item = QTreeWidgetItem(self.tree, ["Compiler"])
             self.compiler_item.setData(0, Qt.UserRole, "compiler")
             self.compiler_input_item = QTreeWidgetItem(self.compiler_item, ["Eingabe-Verzeichnis"])
@@ -69465,6 +70163,101 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             environment_layout.addStretch(1)
             self.stack.addWidget(self.environment_page)
             self.pages["environment"] = self.environment_page
+
+            # Stage ASM 133: Umgebung -> Sprachausgabe. Die ScrollArea haelt die
+            # komplette Seite auch bei kleinen Dock-/Fensterhoehen bedienbar.
+            self.speech_page = QWidget(self.stack)
+            _speech_outer = QVBoxLayout(self.speech_page)
+            _speech_outer.setContentsMargins(0, 0, 0, 0)
+            self.speech_scroll = QScrollArea(self.speech_page)
+            self.speech_scroll.setObjectName("c64_speech_scroll_area")
+            self.speech_scroll.setWidgetResizable(True)
+            self.speech_scroll.setFrameShape(QFrame.NoFrame)
+            self.speech_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.speech_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            _speech_outer.addWidget(self.speech_scroll, 1)
+            self.speech_content = QWidget(self.speech_scroll)
+            _speech_layout = QVBoxLayout(self.speech_content)
+            _speech_layout.setContentsMargins(14, 12, 14, 12)
+            _speech_layout.setSpacing(10)
+
+            self.speech_general_group = QGroupBox("Allgemein", self.speech_content)
+            _general_layout = QVBoxLayout(self.speech_general_group)
+            self.speech_mode_group = QButtonGroup(self.speech_general_group)
+            self.speech_mode_buttons = {}
+            for _index, (_mode, _label) in enumerate((
+                ("internal_samples", "Intern / Samples"),
+                ("internal_phoneme", "Intern / Phonemsynthese"),
+                ("vice_streaming", "VICE Streaming"),
+            )):
+                _radio = QRadioButton(_label, self.speech_general_group)
+                _radio.setObjectName(f"c64_speech_{_mode}_radio")
+                self.speech_mode_group.addButton(_radio, _index)
+                self.speech_mode_buttons[_mode] = _radio
+                _general_layout.addWidget(_radio)
+            _speech_layout.addWidget(self.speech_general_group)
+
+            self.speech_rate_group = QGroupBox("Sample Rate", self.speech_content)
+            _rate_layout = QVBoxLayout(self.speech_rate_group)
+            self.speech_rate_label = QLabel("Sample Rate:", self.speech_rate_group)
+            _rate_layout.addWidget(self.speech_rate_label)
+            self.speech_rate_combo = QComboBox(self.speech_rate_group)
+            self.speech_rate_combo.setObjectName("c64_speech_sample_rate_combo")
+            self.speech_rate_combo.addItem("4.000 Hz", 4000)
+            self.speech_rate_combo.addItem("8.000 Hz", 8000)
+            _rate_layout.addWidget(self.speech_rate_combo)
+            _speech_layout.addWidget(self.speech_rate_group)
+
+            self.speech_quality_group = QGroupBox("Qualität", self.speech_content)
+            _quality_layout = QVBoxLayout(self.speech_quality_group)
+            self.speech_quality_label = QLabel("Qualität:", self.speech_quality_group)
+            _quality_layout.addWidget(self.speech_quality_label)
+            self.speech_quality_combo = QComboBox(self.speech_quality_group)
+            self.speech_quality_combo.setObjectName("c64_speech_quality_combo")
+            self.speech_quality_combo.addItem("4 Bit", 4)
+            self.speech_quality_combo.addItem("8 Bit", 8)
+            _quality_layout.addWidget(self.speech_quality_combo)
+            _speech_layout.addWidget(self.speech_quality_group)
+
+            self.speech_vice_group = QGroupBox("VICE Interface", self.speech_content)
+            _vice_layout = QVBoxLayout(self.speech_vice_group)
+            self.speech_vice_label = QLabel("VICE Interface:", self.speech_vice_group)
+            _vice_layout.addWidget(self.speech_vice_label)
+            self.speech_vice_interface_group = QButtonGroup(self.speech_vice_group)
+            self.speech_vice_interface_buttons = {}
+            for _index, (_interface, _label) in enumerate((("turbo232", "Turbo232"), ("acia", "ACIA"))):
+                _radio = QRadioButton(_label, self.speech_vice_group)
+                _radio.setObjectName(f"c64_speech_vice_{_interface}_radio")
+                self.speech_vice_interface_group.addButton(_radio, _index)
+                self.speech_vice_interface_buttons[_interface] = _radio
+                _vice_layout.addWidget(_radio)
+            _speech_layout.addWidget(self.speech_vice_group)
+
+            self.speech_host_group = QGroupBox("Host", self.speech_content)
+            _host_layout = QVBoxLayout(self.speech_host_group)
+            self.speech_host_label = QLabel("Host:", self.speech_host_group)
+            _host_layout.addWidget(self.speech_host_label)
+            self.speech_host_combo = QComboBox(self.speech_host_group)
+            self.speech_host_combo.setObjectName("c64_speech_host_combo")
+            self.speech_host_combo.setEditable(True)
+            self.speech_host_combo.setInsertPolicy(QComboBox.NoInsert)
+            self.speech_host_combo.addItem("localhost")
+            self.speech_host_combo.setCurrentText("localhost")
+            if self.speech_host_combo.lineEdit() is not None:
+                self.speech_host_combo.lineEdit().setPlaceholderText("localhost oder Host-/Internet-Adresse")
+            _host_layout.addWidget(self.speech_host_combo)
+            self.speech_port_label = QLabel("Port:", self.speech_host_group)
+            _host_layout.addWidget(self.speech_port_label)
+            self.speech_port_spin = QSpinBox(self.speech_host_group)
+            self.speech_port_spin.setObjectName("c64_speech_port_spin")
+            self.speech_port_spin.setRange(1, 65535)
+            self.speech_port_spin.setValue(6464)
+            _host_layout.addWidget(self.speech_port_spin)
+            _speech_layout.addWidget(self.speech_host_group)
+            _speech_layout.addStretch(1)
+            self.speech_scroll.setWidget(self.speech_content)
+            self.stack.addWidget(self.speech_page)
+            self.pages["environment.speech"] = self.speech_page
 
             add_placeholder("compiler", "Wähle eine Compiler-Unteroption in der TreeList aus.")
             add_placeholder("compiler.input_directory", f"C=64 Profil {self.profile}: Compiler Eingabe-Verzeichnis")
@@ -69583,6 +70376,14 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.tree.currentItemChanged.connect(self._tree_changed)
             self.screen_keyboard_checkbox.toggled.connect(self._environment_changed)
             self.keyboard_layout_combo.currentIndexChanged.connect(self._environment_changed)
+            for radio in self.speech_mode_buttons.values():
+                radio.toggled.connect(self._speech_changed)
+            self.speech_rate_combo.currentIndexChanged.connect(self._speech_changed)
+            self.speech_quality_combo.currentIndexChanged.connect(self._speech_changed)
+            for radio in self.speech_vice_interface_buttons.values():
+                radio.toggled.connect(self._speech_changed)
+            self.speech_host_combo.currentTextChanged.connect(self._speech_changed)
+            self.speech_port_spin.valueChanged.connect(self._speech_changed)
             self.optimizer_enabled_checkbox.toggled.connect(self._optimizer_changed)
             for radio in self.strategy_buttons.values():
                 radio.toggled.connect(self._optimizer_changed)
@@ -69593,6 +70394,7 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             for radio in self.packer_search_buttons.values():
                 radio.toggled.connect(self._packer_changed)
             self.set_screen_keyboard(False, "qwertz")
+            self.set_speech_settings("internal_samples", 8000, 4, "turbo232", "localhost", 6464)
             self.set_optimizer(True, "direct")
             self.set_packer(False, "none", "balanced", True)
             self.tree.setCurrentItem(self.compiler_optimizer_item)
@@ -69631,6 +70433,73 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                     self.profile,
                     self.screen_keyboard_enabled(),
                     self.keyboard_layout(),
+                )
+
+        def speech_mode(self) -> str:
+            for mode, radio in self.speech_mode_buttons.items():
+                if radio.isChecked():
+                    return mode
+            return "internal_samples"
+
+        def speech_sample_rate(self) -> int:
+            return _normalize_project_c64_speech_sample_rate(self.speech_rate_combo.currentData())
+
+        def speech_quality(self) -> int:
+            return _normalize_project_c64_speech_quality(self.speech_quality_combo.currentData())
+
+        def speech_vice_interface(self) -> str:
+            for interface, radio in self.speech_vice_interface_buttons.items():
+                if radio.isChecked():
+                    return interface
+            return "turbo232"
+
+        def speech_host(self) -> str:
+            return _normalize_project_c64_speech_host(self.speech_host_combo.currentText())
+
+        def speech_port(self) -> int:
+            return _normalize_project_c64_speech_port(self.speech_port_spin.value())
+
+        def set_speech_settings(
+            self,
+            mode: str,
+            sample_rate: int,
+            quality: int,
+            vice_interface: str,
+            host: str,
+            port: int,
+        ) -> None:
+            mode = _normalize_project_c64_speech_mode(mode)
+            sample_rate = _normalize_project_c64_speech_sample_rate(sample_rate)
+            quality = _normalize_project_c64_speech_quality(quality)
+            vice_interface = _normalize_project_c64_speech_vice_interface(vice_interface)
+            host = _normalize_project_c64_speech_host(host)
+            port = _normalize_project_c64_speech_port(port)
+            self._syncing = True
+            try:
+                self.speech_mode_buttons[mode].setChecked(True)
+                rate_index = self.speech_rate_combo.findData(sample_rate)
+                self.speech_rate_combo.setCurrentIndex(max(0, rate_index))
+                quality_index = self.speech_quality_combo.findData(quality)
+                self.speech_quality_combo.setCurrentIndex(max(0, quality_index))
+                self.speech_vice_interface_buttons[vice_interface].setChecked(True)
+                self.speech_host_combo.setCurrentText(host)
+                self.speech_port_spin.setValue(port)
+            finally:
+                self._syncing = False
+
+        def _speech_changed(self, _value=None) -> None:
+            if self._syncing:
+                return
+            callback = getattr(self.owner, "set_project_c64_speech_settings", None)
+            if callable(callback):
+                callback(
+                    self.profile,
+                    self.speech_mode(),
+                    self.speech_sample_rate(),
+                    self.speech_quality(),
+                    self.speech_vice_interface(),
+                    self.speech_host(),
+                    self.speech_port(),
                 )
 
         def optimizer_enabled(self) -> bool:
@@ -69818,6 +70687,14 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
         def set_workstation_mode(self, target: str, enabled: bool) -> None:
             self.page_for_target(target).set_workstation_mode(enabled)
 
+        def debug_theme(self, target: str = "pe32", launch_mode: str = "normal") -> str:
+            return self.page_for_target(target).debug_theme(launch_mode)
+
+        def set_debug_themes(
+            self, target: str, normal: str, workstation: str
+        ) -> None:
+            self.page_for_target(target).set_debug_themes(normal, workstation)
+
         def set_relative_modes(
             self,
             target: str,
@@ -69846,6 +70723,23 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             if page is None:
                 return "qwertz"
             return page.keyboard_layout()
+
+        def set_c64_speech_settings(
+            self, profile: str, mode: str, sample_rate: int, quality: int,
+            vice_interface: str, host: str, port: int,
+        ) -> None:
+            page = self.c64_pages.get(str(profile))
+            if page is not None:
+                page.set_speech_settings(mode, sample_rate, quality, vice_interface, host, port)
+
+        def c64_speech_settings(self, profile: str):
+            page = self.c64_pages.get(str(profile))
+            if page is None:
+                return ("internal_samples", 8000, 4, "turbo232", "localhost", 6464)
+            return (
+                page.speech_mode(), page.speech_sample_rate(), page.speech_quality(),
+                page.speech_vice_interface(), page.speech_host(), page.speech_port(),
+            )
 
         def set_dark_mode(self, enabled: bool) -> None:
             # Stage ASM 60: GroupBox-Titel in den Projekteinstellungen muessen
@@ -70987,6 +71881,100 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 )
 
 
+    class FramelessMainResizeOverlay(QFrame):
+        """Topmost mouse catcher for the frameless main-window resize frame.
+
+        Stage 134 deliberately uses real child widgets instead of relying only
+        on the QApplication event filter.  A dock, editor viewport or other
+        child widget can therefore never steal a press which lands on one of
+        the resize overlays.
+        """
+
+        _CURSORS = {
+            "n": Qt.SizeVerCursor,
+            "s": Qt.SizeVerCursor,
+            "w": Qt.SizeHorCursor,
+            "e": Qt.SizeHorCursor,
+            "nw": Qt.SizeFDiagCursor,
+            "se": Qt.SizeFDiagCursor,
+            "ne": Qt.SizeBDiagCursor,
+            "sw": Qt.SizeBDiagCursor,
+        }
+
+        def __init__(self, owner, role: str, visible_handle: bool = False):
+            super().__init__(owner)
+            self.owner = owner
+            self.role = str(role or "")
+            self.visible_handle = bool(visible_handle)
+            self.setObjectName(
+                "frameless_resize_handle_" + self.role
+                if self.visible_handle
+                else "frameless_resize_edge_" + self.role
+            )
+            self.setFocusPolicy(Qt.NoFocus)
+            self.setMouseTracking(True)
+            self.setCursor(self._CURSORS.get(self.role, Qt.ArrowCursor))
+            self.setAttribute(Qt.WA_StyledBackground, self.visible_handle)
+            if self.visible_handle:
+                self.setStyleSheet(
+                    "QFrame{"
+                    f"background:{owner.FRAMELESS_BORDER_COLOR};"
+                    "border:1px solid #2E7D32;"
+                    "padding:0px;margin:0px;"
+                    "}"
+                )
+            else:
+                # The edge widget only catches the mouse.  The actual 3-px
+                # line is painted by ExplorerWindow.paintEvent().
+                self.setStyleSheet("QFrame{background:transparent;border:0px;}")
+            self.show()
+
+        def mousePressEvent(self, event) -> None:
+            if event.button() == Qt.LeftButton:
+                try:
+                    global_pos = event.globalPos()
+                except AttributeError:
+                    global_pos = QCursor.pos()
+                if self.owner._begin_overlay_frameless_resize(
+                    self.role, global_pos
+                ):
+                    try:
+                        self.grabMouse()
+                    except RuntimeError:
+                        pass
+                    event.accept()
+                    return
+            super().mousePressEvent(event)
+
+        def mouseMoveEvent(self, event) -> None:
+            if self.owner._frameless_resize_active:
+                try:
+                    global_pos = event.globalPos()
+                except AttributeError:
+                    global_pos = QCursor.pos()
+                self.owner._update_manual_frameless_resize(global_pos)
+                event.accept()
+                return
+            super().mouseMoveEvent(event)
+
+        def mouseReleaseEvent(self, event) -> None:
+            if (
+                event.button() == Qt.LeftButton
+                and self.owner._frameless_resize_active
+            ):
+                self.owner._finish_manual_frameless_resize()
+                try:
+                    if QWidget.mouseGrabber() is self:
+                        self.releaseMouse()
+                except RuntimeError:
+                    pass
+                self.owner._schedule_raise_frameless_resize_overlays()
+                event.accept()
+                return
+            super().mouseReleaseEvent(event)
+
+
+
     class ExplorerWindow(QMainWindow):
         ORGANIZATION = "paule32"
         APPLICATION = "Qt5D64Explorer"
@@ -71003,14 +71991,14 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
         GREEN_BEIGE_GREEN = "#2E7D32"
         GREEN_BEIGE_BEIGE = "#F5F0E6"
         GREEN_BEIGE_GOLD = "#D0A65F"
-        # Stage 77: sichtbarer Fensterrand und grosszuegigere native
-        # Resize-Hit-Zone werden getrennt behandelt. So bleibt der Rand
-        # optisch exakt 2 px breit, waehrend die Kanten/Ecken mit der Maus
-        # weiterhin komfortabel getroffen werden koennen.
-        FRAMELESS_VISIBLE_BORDER = 2
+        # Stage 134: sichtbarer 3-px-Fensterrand und echte Overlay-Catcher.
+        # Vier Randstreifen machen den kompletten Rahmen resizebar; acht
+        # 5x5-Griffe (Ecken + Kantenmitten) liegen dauerhaft darueber.
+        FRAMELESS_VISIBLE_BORDER = 3
+        FRAMELESS_RESIZE_HANDLE = 5
         FRAMELESS_BORDER_COLOR = "#F5F0E6"
         FRAMELESS_TOP_CORNER_RADIUS = 2
-        FRAMELESS_RESIZE_BORDER = 7
+        FRAMELESS_RESIZE_BORDER = 3
         EDITOR_EXTENSIONS = {
             ".asm", ".s", ".a65", ".m68k", ".inc",
             ".pas", ".pp",
@@ -71158,12 +72146,34 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 "pe32": False,
                 "pe64": False,
             }
+            self.project_windows_debug_themes: Dict[str, Dict[str, str]] = {
+                "pe32": {"normal": "default", "workstation": "default"},
+                "pe64": {"normal": "default", "workstation": "default"},
+            }
             self.project_c64_active_profile = "68000"
             self.project_c64_screen_keyboard: Dict[str, bool] = {
                 "68000": False, "68020": False, "68030": False,
             }
             self.project_c64_keyboard_layout: Dict[str, str] = {
                 "68000": "qwertz", "68020": "qwertz", "68030": "qwertz",
+            }
+            self.project_c64_speech_mode: Dict[str, str] = {
+                "68000": "internal_samples", "68020": "internal_samples", "68030": "internal_samples",
+            }
+            self.project_c64_speech_sample_rate: Dict[str, int] = {
+                "68000": 8000, "68020": 8000, "68030": 8000,
+            }
+            self.project_c64_speech_quality: Dict[str, int] = {
+                "68000": 4, "68020": 4, "68030": 4,
+            }
+            self.project_c64_speech_vice_interface: Dict[str, str] = {
+                "68000": "turbo232", "68020": "turbo232", "68030": "turbo232",
+            }
+            self.project_c64_speech_host: Dict[str, str] = {
+                "68000": "localhost", "68020": "localhost", "68030": "localhost",
+            }
+            self.project_c64_speech_port: Dict[str, int] = {
+                "68000": 6464, "68020": 6464, "68030": 6464,
             }
             self.project_c64_optimizer_enabled: Dict[str, bool] = {
                 "68000": True, "68020": True, "68030": True,
@@ -71297,6 +72307,11 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self._frameless_resize_role = ""
             self._frameless_resize_start_global = QPoint()
             self._frameless_resize_start_geometry = QRect()
+            # Stage 134: echte Overlay-Catcher fuer den 3-px-Rahmen.
+            self._frameless_edge_overlays = {}
+            self._frameless_handle_overlays = {}
+            self._frameless_overlay_raise_pending = False
+            self._frameless_overlay_raising = False
             # Stage 148: Die gewünschte sichtbare Starthöhe ist 800 px.
             self.resize(1360, self.DEFAULT_WINDOW_HEIGHT)
             self.setMaximumHeight(self.MAX_WINDOW_HEIGHT)
@@ -71316,6 +72331,8 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self._create_right_dock()
             self._create_bottom_dock()
             self._create_status_panels()
+            if sys.platform == "win32":
+                self._create_frameless_resize_overlays()
 
             # Stage 130: kein Light-Mode-Start/Flicker. Die gespeicherte
             # Light-Palette bleibt als Rückschaltziel erhalten.
@@ -71491,6 +72508,124 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     menu.setObjectName("green_beige_popup_menu")
                 menu.setStyleSheet(stylesheet)
 
+        def _create_frameless_resize_overlays(self) -> None:
+            """Create 3-px edge catchers plus eight 5x5 resize handles."""
+            if sys.platform != "win32":
+                return
+            if self._frameless_edge_overlays or self._frameless_handle_overlays:
+                self._layout_frameless_resize_overlays()
+                return
+
+            for role in ("n", "e", "s", "w"):
+                self._frameless_edge_overlays[role] = FramelessMainResizeOverlay(
+                    self, role, False
+                )
+            # Eight designer-style points: four corners plus four edge centres.
+            for role in ("nw", "n", "ne", "e", "se", "s", "sw", "w"):
+                self._frameless_handle_overlays[role] = FramelessMainResizeOverlay(
+                    self, role, True
+                )
+            self._layout_frameless_resize_overlays()
+            self._raise_frameless_resize_overlays()
+
+        def _frameless_resize_overlay_widgets(self):
+            return tuple(self._frameless_edge_overlays.values()) + tuple(
+                self._frameless_handle_overlays.values()
+            )
+
+        def _layout_frameless_resize_overlays(self) -> None:
+            if sys.platform != "win32":
+                return
+            overlays = self._frameless_resize_overlay_widgets()
+            if not overlays:
+                return
+
+            enabled = not self.isMaximized() and not self.isFullScreen()
+            width = max(0, int(self.width()))
+            height = max(0, int(self.height()))
+            border = max(1, int(self.FRAMELESS_VISIBLE_BORDER))
+            handle = max(5, int(self.FRAMELESS_RESIZE_HANDLE))
+
+            for widget in overlays:
+                widget.setVisible(enabled)
+            if not enabled or width <= 0 or height <= 0:
+                return
+
+            # Entire visible 3-px frame is a resize catcher.
+            edge_geometry = {
+                "n": (0, 0, width, border),
+                "s": (0, max(0, height - border), width, border),
+                "w": (0, 0, border, height),
+                "e": (max(0, width - border), 0, border, height),
+            }
+            for role, geometry in edge_geometry.items():
+                widget = self._frameless_edge_overlays.get(role)
+                if widget is not None:
+                    widget.setGeometry(*geometry)
+
+            max_x = max(0, width - handle)
+            max_y = max(0, height - handle)
+            middle_x = max(0, (width - handle) // 2)
+            middle_y = max(0, (height - handle) // 2)
+            handle_geometry = {
+                "nw": (0, 0, handle, handle),
+                "n": (middle_x, 0, handle, handle),
+                "ne": (max_x, 0, handle, handle),
+                "e": (max_x, middle_y, handle, handle),
+                "se": (max_x, max_y, handle, handle),
+                "s": (middle_x, max_y, handle, handle),
+                "sw": (0, max_y, handle, handle),
+                "w": (0, middle_y, handle, handle),
+            }
+            for role, geometry in handle_geometry.items():
+                widget = self._frameless_handle_overlays.get(role)
+                if widget is not None:
+                    widget.setGeometry(*geometry)
+
+            self._schedule_raise_frameless_resize_overlays()
+
+        def _raise_frameless_resize_overlays(self) -> None:
+            """Keep resize catchers above docks, editors and menu/title chrome."""
+            if self._frameless_overlay_raising:
+                return
+            self._frameless_overlay_raise_pending = False
+            self._frameless_overlay_raising = True
+            try:
+                # Edge strips first, then the 5x5 handles so corner/centre roles
+                # always win where the widgets overlap.
+                for widget in self._frameless_edge_overlays.values():
+                    if widget.isVisible():
+                        widget.raise_()
+                for widget in self._frameless_handle_overlays.values():
+                    if widget.isVisible():
+                        widget.raise_()
+            finally:
+                self._frameless_overlay_raising = False
+
+        def _schedule_raise_frameless_resize_overlays(self) -> None:
+            if sys.platform != "win32" or self._frameless_overlay_raise_pending:
+                return
+            if not self._frameless_resize_overlay_widgets():
+                return
+            self._frameless_overlay_raise_pending = True
+            QTimer.singleShot(0, self._raise_frameless_resize_overlays)
+
+        def _begin_overlay_frameless_resize(self, role: str, global_pos) -> bool:
+            """Begin deterministic Qt geometry resize from an overlay widget."""
+            role = str(role or "")
+            if (
+                sys.platform != "win32"
+                or self.isMaximized()
+                or self.isFullScreen()
+                or role not in {"n", "e", "s", "w", "nw", "ne", "se", "sw"}
+            ):
+                return False
+            self._frameless_resize_active = True
+            self._frameless_resize_role = role
+            self._frameless_resize_start_global = QPoint(global_pos)
+            self._frameless_resize_start_geometry = QRect(self.geometry())
+            return True
+
         def _update_frameless_corner_mask(self) -> None:
             """Clip the actual native window shape at the two top corners."""
             if sys.platform != "win32":
@@ -71530,9 +72665,21 @@ QMenu#green_beige_popup_menu::indicator:checked {{
         def resizeEvent(self, event) -> None:
             super().resizeEvent(event)
             self._update_frameless_corner_mask()
+            self._layout_frameless_resize_overlays()
+
+        def showEvent(self, event) -> None:
+            super().showEvent(event)
+            self._layout_frameless_resize_overlays()
+            self._schedule_raise_frameless_resize_overlays()
+
+        def changeEvent(self, event) -> None:
+            super().changeEvent(event)
+            if event.type() in (QEvent.WindowStateChange, QEvent.ActivationChange):
+                self._layout_frameless_resize_overlays()
+                self._schedule_raise_frameless_resize_overlays()
 
         def paintEvent(self, event) -> None:
-            """Paint the beige resize frame with 2 px rounded top corners."""
+            """Paint the beige resize frame with a visible 3-px outline."""
             super().paintEvent(event)
             if sys.platform != "win32":
                 return
@@ -71712,9 +72859,14 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             self._frameless_resize_active = False
             self._frameless_resize_role = ""
             try:
-                self.releaseMouse()
+                grabber = QWidget.mouseGrabber()
+                overlays = self._frameless_resize_overlay_widgets()
+                if grabber is self or grabber in overlays:
+                    grabber.releaseMouse()
             except RuntimeError:
                 pass
+            self._layout_frameless_resize_overlays()
+            self._schedule_raise_frameless_resize_overlays()
             return True
 
         def nativeEvent(self, event_type, message):
@@ -71992,6 +73144,14 @@ QMenu#green_beige_popup_menu::indicator:checked {{
 
             self.about_action = QAction("Über ...", self)
             self.about_action.triggered.connect(self.show_about_dialog)
+
+            # Stage 137: Originalen Qt5-Über-Dialog direkt aus dem Hilfe-Menü
+            # erreichbar machen. QMessageBox.aboutQt(...) zeigt den von Qt
+            # bereitgestellten modalen Dialog mit Versions-/Lizenzhinweisen.
+            self.about_qt_action = QAction("Über Qt5 ...", self)
+            self.about_qt_action.setObjectName("about_qt5_action")
+            self.about_qt_action.setStatusTip("Informationen über die verwendete Qt5-Version anzeigen")
+            self.about_qt_action.triggered.connect(self.show_about_qt_dialog)
 
             # Stage 185: dieselbe Desktop-Settings-Logik wird nur an eine neue
             # Menüposition verschoben: Ansicht -> Einstellungen -> Desktop.
@@ -74526,6 +75686,8 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             *,
             filename: str,
             target: str,
+            workstation_mode: bool = False,
+            debug_theme: str = "default",
         ):
             """Kompiliert WFM/OOP additiv auf Basis der vorhandenen dBase-Runtime.
 
@@ -74553,10 +75715,14 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 filename=filename,
                 target=target,
                 windows_application_mode="GUI",
+                workstation_mode=bool(workstation_mode),
+                debug_theme=_normalize_project_windows_debug_theme(debug_theme),
             )
             is64 = str(target).casefold() in {"pe64", "win64", "pe32+", "x64"}
             ptr = "qword" if is64 else "dword"
             imports = (
+                "DBaseQtSetWorkstationMode",
+                "DBaseQtSetDebugTheme",
                 "DBaseQtInitializeGui",
                 "DBaseQtExec",
                 "DBaseQtShutdown",
@@ -75765,6 +76931,9 @@ QMenu#green_beige_popup_menu::indicator:checked {{
 
             entry_label = "__d64_wfm_entry"
             init_call_lines = lifecycle_init_call_lines()
+            debug_theme_mode = {"default": 0, "light": 1, "dark": 2}.get(
+                _normalize_project_windows_debug_theme(debug_theme), 0
+            )
 
             if is64:
                 lifecycle = "\n".join([
@@ -75777,6 +76946,14 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     # referenzieren, damit ein PE-Writer unreferenzierte
                     # .data-Symbole nicht still entfernen kann.
                     "    mov rax, __dbase_wfm_qt_output_marker",
+                    f"    mov ecx, {1 if workstation_mode else 0}",
+                    "    sub rsp, 40",
+                    "    call DBaseQtSetWorkstationMode",
+                    "    add rsp, 40",
+                    f"    mov ecx, {debug_theme_mode}",
+                    "    sub rsp, 40",
+                    "    call DBaseQtSetDebugTheme",
+                    "    add rsp, 40",
                     f"    mov rcx, {title_label}",
                     "    sub rsp, 40",
                     "    call DBaseQtInitializeGui",
@@ -75805,8 +76982,9 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     "    sub rsp, 40",
                     "    call DBaseQtShutdown",
                     "    add rsp, 40",
-                    "    xor eax, eax",
-                    "    ret",
+                    "    xor ecx, ecx",
+                    "    sub rsp, 40",
+                    "    call ExitProcess",
                     "",
                 ]) + "\n"
             else:
@@ -75818,6 +76996,12 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     f"{entry_label}:",
                     # Stage 123: siehe PE64-Pfad oben.
                     "    mov eax, __dbase_wfm_qt_output_marker",
+                    f"    push {1 if workstation_mode else 0}",
+                    "    call DBaseQtSetWorkstationMode",
+                    "    add esp, 4",
+                    f"    push {debug_theme_mode}",
+                    "    call DBaseQtSetDebugTheme",
+                    "    add esp, 4",
                     f"    push {title_label}",
                     "    call DBaseQtInitializeGui",
                     "    add esp, 4",
@@ -75836,8 +77020,8 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                         if "__del__".casefold() in method_map else ""
                     ),
                     "    call DBaseQtShutdown",
-                    "    xor eax, eax",
-                    "    ret",
+                    "    push 0",
+                    "    call ExitProcess",
                     "",
                 ]) + "\n"
 
@@ -75977,6 +77161,11 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     source,
                     filename=str(document.path),
                     target=target,
+                    workstation_mode=self._project_windows_workstation_mode_for_target(target),
+                    debug_theme=self._project_windows_debug_theme_for_target(
+                        target,
+                        workstation=self._project_windows_workstation_mode_for_target(target),
+                    ),
                 )
             except (ImportError, DBaseCompilerError, AssemblerError, ValueError) as exc:
                 message = str(exc)
@@ -78005,11 +79194,28 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     _target,
                     self.project_windows_workstation_mode.get(_target, False),
                 )
+                _debug_themes = self.project_windows_debug_themes.get(
+                    _target, {"normal": "default", "workstation": "default"}
+                )
+                panel.set_debug_themes(
+                    _target,
+                    _debug_themes.get("normal", "default"),
+                    _debug_themes.get("workstation", "default"),
+                )
             for _profile in PROJECT_C64_OPTIMIZER_PROFILES:
                 panel.set_c64_screen_keyboard(
                     _profile,
                     self.project_c64_screen_keyboard.get(_profile, False),
                     self.project_c64_keyboard_layout.get(_profile, "qwertz"),
+                )
+                panel.set_c64_speech_settings(
+                    _profile,
+                    self.project_c64_speech_mode.get(_profile, "internal_samples"),
+                    self.project_c64_speech_sample_rate.get(_profile, 8000),
+                    self.project_c64_speech_quality.get(_profile, 4),
+                    self.project_c64_speech_vice_interface.get(_profile, "turbo232"),
+                    self.project_c64_speech_host.get(_profile, "localhost"),
+                    self.project_c64_speech_port.get(_profile, 6464),
                 )
                 panel.set_c64_optimizer(
                     _profile,
@@ -78097,6 +79303,13 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     pass
 
         def _project_settings_dock_visibility_changed(self, visible: bool) -> None:
+            # Stage ASM 133: auch das Schliessen/Ausblenden der Projekteinstellungen
+            # ist ein Persistenzpunkt. Laufende Aenderungen speichern ohnehin sofort.
+            if not bool(visible) and self.current_project_path is not None:
+                try:
+                    self.save_project()
+                except Exception as exc:
+                    self.log(f"Projekt-Einstellungen konnten beim Schließen nicht gespeichert werden: {exc}")
             if self._project_settings_workspace_active and not bool(visible):
                 QTimer.singleShot(0, self._restore_project_settings_workspace)
 
@@ -78135,11 +79348,28 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     _target,
                     self.project_windows_workstation_mode.get(_target, False),
                 )
+                _debug_themes = self.project_windows_debug_themes.get(
+                    _target, {"normal": "default", "workstation": "default"}
+                )
+                self.project_settings_panel.set_debug_themes(
+                    _target,
+                    _debug_themes.get("normal", "default"),
+                    _debug_themes.get("workstation", "default"),
+                )
             for _profile in PROJECT_C64_OPTIMIZER_PROFILES:
                 self.project_settings_panel.set_c64_screen_keyboard(
                     _profile,
                     self.project_c64_screen_keyboard.get(_profile, False),
                     self.project_c64_keyboard_layout.get(_profile, "qwertz"),
+                )
+                self.project_settings_panel.set_c64_speech_settings(
+                    _profile,
+                    self.project_c64_speech_mode.get(_profile, "internal_samples"),
+                    self.project_c64_speech_sample_rate.get(_profile, 8000),
+                    self.project_c64_speech_quality.get(_profile, 4),
+                    self.project_c64_speech_vice_interface.get(_profile, "turbo232"),
+                    self.project_c64_speech_host.get(_profile, "localhost"),
+                    self.project_c64_speech_port.get(_profile, 6464),
                 )
                 self.project_settings_panel.set_c64_optimizer(
                     _profile,
@@ -78221,6 +79451,48 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             return "pe64" if str(target).strip().casefold() in {
                 "pe64", "win64", "windows-pe64", "windows pe32+"
             } else "pe32"
+
+        def _project_windows_debug_theme_for_target(
+            self, target: str, *, workstation: bool
+        ) -> str:
+            target_key = self._project_windows_target_key(target)
+            modes = self.project_windows_debug_themes.get(
+                target_key, {"normal": "default", "workstation": "default"}
+            )
+            launch_key = "workstation" if workstation else "normal"
+            return _normalize_project_windows_debug_theme(
+                modes.get(launch_key, "default")
+            )
+
+        def _project_windows_workstation_mode_for_target(self, target: str) -> bool:
+            """Liefert Workstation Mode fuer genau die gewaehlte PE-Architektur.
+
+            Windows PE32 verwendet ausschliesslich das 32-Bit-Profil,
+            Windows PE32+ ausschliesslich das 64-Bit-Profil. Damit bestimmen
+            die Ziel-ComboBoxen ueber document.build_target gleichzeitig,
+            welche Workstation-Mode-Checkbox fuer Compile/Assemble/Start gilt.
+
+            Stage 147: Wenn das Projekt-Einstellungsfenster bereits existiert,
+            ist der aktuell sichtbare Checkbox-Zustand die massgebliche Quelle.
+            Dadurch kann ein alter Cache-Wert niemals einen Workstation-Start
+            ausloesen, obwohl die 32-/64-Bit-Checkbox sichtbar deaktiviert ist.
+            """
+            target_key = self._project_windows_target_key(target)
+            value = bool(self.project_windows_workstation_mode.get(target_key, False))
+
+            panel = getattr(self, "project_settings_panel", None)
+            if panel is not None:
+                try:
+                    live_value = bool(panel.workstation_mode(target_key))
+                except Exception:
+                    live_value = value
+                else:
+                    # Nur den Laufzeit-Cache angleichen; das ist keine
+                    # Benutzer-Aenderung und darf das Projekt nicht markieren.
+                    self.project_windows_workstation_mode[target_key] = live_value
+                    value = live_value
+
+            return value
 
         def _project_windows_base_directory(self) -> Path:
             if self.current_project_path is not None:
@@ -78799,6 +80071,69 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 return
             self._restore_c64_keyboard_layout_snapshot()
 
+        def set_project_c64_speech_settings(
+            self,
+            profile: str,
+            mode: str,
+            sample_rate: int,
+            quality: int,
+            vice_interface: str,
+            host: str,
+            port: int,
+            *,
+            mark_modified: bool = True,
+        ) -> None:
+            profile = str(profile or "68000").strip()
+            if profile not in PROJECT_C64_SPEECH_PROFILES:
+                profile = "68000"
+            mode = _normalize_project_c64_speech_mode(mode)
+            sample_rate = _normalize_project_c64_speech_sample_rate(sample_rate)
+            quality = _normalize_project_c64_speech_quality(quality)
+            vice_interface = _normalize_project_c64_speech_vice_interface(vice_interface)
+            host = _normalize_project_c64_speech_host(host)
+            port = _normalize_project_c64_speech_port(port)
+            changed = (
+                _normalize_project_c64_speech_mode(self.project_c64_speech_mode.get(profile, "internal_samples")) != mode
+                or _normalize_project_c64_speech_sample_rate(self.project_c64_speech_sample_rate.get(profile, 8000)) != sample_rate
+                or _normalize_project_c64_speech_quality(self.project_c64_speech_quality.get(profile, 4)) != quality
+                or _normalize_project_c64_speech_vice_interface(self.project_c64_speech_vice_interface.get(profile, "turbo232")) != vice_interface
+                or _normalize_project_c64_speech_host(self.project_c64_speech_host.get(profile, "localhost")) != host
+                or _normalize_project_c64_speech_port(self.project_c64_speech_port.get(profile, 6464)) != port
+            )
+            self.project_c64_speech_mode[profile] = mode
+            self.project_c64_speech_sample_rate[profile] = sample_rate
+            self.project_c64_speech_quality[profile] = quality
+            self.project_c64_speech_vice_interface[profile] = vice_interface
+            self.project_c64_speech_host[profile] = host
+            self.project_c64_speech_port[profile] = port
+            panel = getattr(self, "project_settings_panel", None)
+            if panel is not None and hasattr(panel, "c64_pages"):
+                page = panel.c64_pages.get(profile)
+                if page is not None:
+                    current = (page.speech_mode(), page.speech_sample_rate(), page.speech_quality(),
+                               page.speech_vice_interface(), page.speech_host(), page.speech_port())
+                    wanted = (mode, sample_rate, quality, vice_interface, host, port)
+                    if current != wanted:
+                        page.set_speech_settings(*wanted)
+            if changed and mark_modified:
+                self.set_project_modified(True)
+                if self.current_project_path is not None:
+                    self.save_project()
+
+        def _project_c64_speech_configuration(self):
+            profile = str(getattr(self, "project_c64_active_profile", "68000") or "68000")
+            if profile not in PROJECT_C64_SPEECH_PROFILES:
+                profile = "68000"
+            return (
+                _normalize_project_c64_speech_mode(self.project_c64_speech_mode.get(profile, "internal_samples")),
+                _normalize_project_c64_speech_sample_rate(self.project_c64_speech_sample_rate.get(profile, 8000)),
+                _normalize_project_c64_speech_quality(self.project_c64_speech_quality.get(profile, 4)),
+                _normalize_project_c64_speech_vice_interface(self.project_c64_speech_vice_interface.get(profile, "turbo232")),
+                _normalize_project_c64_speech_host(self.project_c64_speech_host.get(profile, "localhost")),
+                _normalize_project_c64_speech_port(self.project_c64_speech_port.get(profile, 6464)),
+                profile,
+            )
+
         def set_project_c64_active_profile(
             self,
             profile: str,
@@ -79086,6 +80421,97 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 and panel.workstation_mode(target_key) != value
             ):
                 panel.set_workstation_mode(target_key, value)
+            if changed:
+                # Stage 142: Workstation Mode wird nun auch in den dBase/WFM-
+                # Assemblercode geschrieben. Ein vorhandenes EXE derselben
+                # Architektur darf deshalb nicht still mit dem alten Modus
+                # weiterverwendet werden.
+                for index in range(self.document_tabs.count()):
+                    document = self.document_tabs.widget(index)
+                    try:
+                        if (
+                            isinstance(document, DocumentEditor)
+                            and document.is_dbase_document
+                            and self._project_windows_target_key(document.build_target) == target_key
+                        ):
+                            document.invalidate_assembly_result("Workstation Mode geändert")
+                    except Exception:
+                        pass
+                form_document = getattr(self, "dbase_form_build_document", None)
+                if (
+                    isinstance(form_document, DocumentEditor)
+                    and self._project_windows_target_key(form_document.build_target) == target_key
+                ):
+                    form_document.invalidate_assembly_result("Workstation Mode geändert")
+                    if self.dbase_form_start_button is not None:
+                        self.dbase_form_start_button.setEnabled(False)
+                    if self.dbase_form_build_status is not None:
+                        self.dbase_form_build_status.setText(
+                            "Workstation Mode geändert – neu kompilieren/assemblieren"
+                        )
+            if changed and mark_modified:
+                self.set_project_modified(True)
+                if self.current_project_path is not None:
+                    self.save_project()
+
+        def set_project_windows_debug_theme(
+            self,
+            target: str,
+            launch_mode: str,
+            theme: str,
+            *,
+            mark_modified: bool = True,
+        ) -> None:
+            target_key = self._project_windows_target_key(target)
+            launch_key = (
+                "workstation"
+                if str(launch_mode).casefold() == "workstation"
+                else "normal"
+            )
+            value = _normalize_project_windows_debug_theme(theme)
+            modes = self.project_windows_debug_themes.setdefault(
+                target_key, {"normal": "default", "workstation": "default"}
+            )
+            changed = modes.get(launch_key, "default") != value
+            modes[launch_key] = value
+
+            panel = getattr(self, "project_settings_panel", None)
+            if panel is not None:
+                page = panel.page_for_target(target_key)
+                if page.debug_theme(launch_key) != value:
+                    page.set_debug_themes(
+                        modes.get("normal", "default"),
+                        modes.get("workstation", "default"),
+                    )
+
+            if changed:
+                # Das Theme wird in den dBase/WFM-Assemblercode eingebettet,
+                # damit auch eine ausserhalb der IDE gestartete EXE dieselbe
+                # Debug-Darstellung verwendet.
+                for index in range(self.document_tabs.count()):
+                    document = self.document_tabs.widget(index)
+                    try:
+                        if (
+                            isinstance(document, DocumentEditor)
+                            and document.is_dbase_document
+                            and self._project_windows_target_key(document.build_target) == target_key
+                        ):
+                            document.invalidate_assembly_result("Debug-Theme geändert")
+                    except Exception:
+                        pass
+                form_document = getattr(self, "dbase_form_build_document", None)
+                if (
+                    isinstance(form_document, DocumentEditor)
+                    and self._project_windows_target_key(form_document.build_target) == target_key
+                ):
+                    form_document.invalidate_assembly_result("Debug-Theme geändert")
+                    if self.dbase_form_start_button is not None:
+                        self.dbase_form_start_button.setEnabled(False)
+                    if self.dbase_form_build_status is not None:
+                        self.dbase_form_build_status.setText(
+                            "Debug-Theme geändert – neu kompilieren/assemblieren"
+                        )
+
             if changed and mark_modified:
                 self.set_project_modified(True)
                 if self.current_project_path is not None:
@@ -79567,6 +80993,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             help_menu.addAction(self.chm_viewer_action)
             help_menu.addSeparator()
             help_menu.addAction(self.about_action)
+            help_menu.addAction(self.about_qt_action)
 
             # Stage 75: popup menus inherit the same Green-&-Beige palette.
             self._sync_green_beige_menu_objects()
@@ -83332,6 +84759,15 @@ border: 2px solid #2a69aa;
                     filename=str(document.path),
                     target=document.build_target,
                     windows_application_mode=document.windows_application_mode,
+                    workstation_mode=self._project_windows_workstation_mode_for_target(
+                        document.build_target
+                    ),
+                    debug_theme=self._project_windows_debug_theme_for_target(
+                        document.build_target,
+                        workstation=self._project_windows_workstation_mode_for_target(
+                            document.build_target
+                        ),
+                    ),
                 )
             except (ImportError, DBaseCompilerError, AssemblerError) as exc:
                 message = str(exc)
@@ -84683,6 +86119,7 @@ border: 2px solid #2a69aa;
             output_path: Path,
             *,
             console_mode: bool,
+            debug_theme: str = "default",
             timeout_ms: int = 200,
         ) -> bool:
             """Uebergibt eine fertige PE-EXE an den laufenden Runner."""
@@ -84754,6 +86191,12 @@ border: 2px solid #2a69aa;
                     flags |= 0x00000002  # Runner-Theme ist explizit gesetzt
                     if self.dark_mode_enabled:
                         flags |= 0x00000004  # Dark-Mode
+                    flags |= 0x00000008  # Debug-Theme ist explizit gesetzt
+                    _debug_theme = _normalize_project_windows_debug_theme(debug_theme)
+                    if _debug_theme == "light":
+                        flags |= 0x00000010
+                    elif _debug_theme == "dark":
+                        flags |= 0x00000020
                     payload = (
                         struct.pack(
                             "<IIII",
@@ -84786,6 +86229,7 @@ border: 2px solid #2a69aa;
             output_path: Path,
             *,
             console_mode: bool,
+            debug_theme: str = "default",
         ) -> bool:
             """Startet Runner + Anwendung direkt; kein Compiler/Make-Aufruf.
 
@@ -84797,18 +86241,28 @@ border: 2px solid #2a69aa;
                 output_path = Path(output_path).resolve()
                 mode_switch = "--console" if console_mode else "--gui"
                 theme_switch = "--dark" if self.dark_mode_enabled else "--light"
+                debug_theme = _normalize_project_windows_debug_theme(debug_theme)
                 command = [
                     str(runner),
                     mode_switch,
                     theme_switch,
+                    "--debug-theme",
+                    debug_theme,
                     str(output_path),
                 ]
+                runner_env = os.environ.copy()
+                runner_env["D64_WORKSTATION_RUNNER_PARENT"] = "d64_dism"
                 options = {
                     "cwd": str(runner.parent),
                     "stdin": subprocess.DEVNULL,
                     "stdout": subprocess.DEVNULL,
                     "stderr": subprocess.DEVNULL,
+                    "env": runner_env,
                 }
+                self.log(
+                    "WORKSTATION RUNNER POPEN: "
+                    + subprocess.list2cmdline(command)
+                )
                 creationflags = 0
                 if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
                     creationflags |= subprocess.CREATE_NEW_PROCESS_GROUP
@@ -84835,7 +86289,9 @@ border: 2px solid #2a69aa;
             self,
             output_path: Path,
             *,
+            target: str,
             console_mode: bool,
+            debug_theme: str = "default",
         ) -> bool:
             """Startet PE32/PE32+ direkt ueber den Workstation Runner.
 
@@ -84849,6 +86305,19 @@ border: 2px solid #2a69aa;
                 self.show_error(
                     "Workstation Mode",
                     "Workstation Mode steht nur unter Windows zur Verfügung.",
+                )
+                return False
+
+            # Stage 148: Defense in depth. Selbst wenn ein spaeterer/neuer
+            # Startpfad diese Funktion versehentlich direkt aufruft, darf der
+            # Runner nur bei der aktuell wirksamen PE32/PE32+-Checkbox erzeugt
+            # werden. Damit existiert direkt vor subprocess.Popen() nochmals
+            # eine verbindliche Workstation-Mode-Schranke.
+            target_key = self._project_windows_target_key(target)
+            if not self._project_windows_workstation_mode_for_target(target_key):
+                self.log(
+                    "WORKSTATION RUNNER SUPPRESSED: "
+                    f"target={target_key}, checkbox=False, output={output_path}"
                 )
                 return False
 
@@ -84876,6 +86345,7 @@ border: 2px solid #2a69aa;
                 runner,
                 output_path,
                 console_mode=console_mode,
+                debug_theme=debug_theme,
             ):
                 return False
 
@@ -84894,6 +86364,7 @@ border: 2px solid #2a69aa;
                 "WORKSTATION RUNNER DIRECT START: "
                 f"{runner} {'--console' if console_mode else '--gui'} "
                 f"{'--dark' if self.dark_mode_enabled else '--light'} "
+                f"--debug-theme {_normalize_project_windows_debug_theme(debug_theme)} "
                 f"{output_path}"
             )
             self.statusBar().showMessage(message, 7000)
@@ -84912,12 +86383,30 @@ border: 2px solid #2a69aa;
                 target_key = self._project_windows_target_key(
                     document.build_target
                 )
-                workstation_mode = bool(
-                    self.project_windows_workstation_mode.get(
-                        target_key, False
-                    )
+                # Stage 147: Start verwendet exakt dieselbe effektive
+                # Architektur-/Checkbox-Abfrage wie Compile und Assemble.
+                # Insbesondere darf ein alter Dictionary-Wert den Runner
+                # nicht starten, wenn die sichtbare Checkbox False ist.
+                workstation_mode = self._project_windows_workstation_mode_for_target(
+                    document.build_target
                 )
                 if document.is_dbase_document:
+                    # Stage 141: Auch dBase/WFM respektiert jetzt die
+                    # projektspezifische Checkbox "Workstation Mode".
+                    # Aktiv  -> Start ueber den Workstation Runner.
+                    # Inaktiv -> bisheriger direkter Qt5-GUI-Start; dadurch
+                    # bleiben GUI und ggf. vom Programm erzeugtes Debug-
+                    # Fenster unveraendert erhalten, nur der Runner wird
+                    # nicht gestartet.
+                    if workstation_mode:
+                        return self._launch_via_workstation_runner(
+                            output_path,
+                            target=document.build_target,
+                            console_mode=False,
+                            debug_theme=self._project_windows_debug_theme_for_target(
+                                target_key, workstation=True
+                            ),
+                        )
                     return self._launch_dbase_qt5_gui(document, output_path)
                 target_label = "PE64" if document.build_target == "pe64" else "PE32"
                 if os.name != "nt":
@@ -84957,7 +86446,11 @@ border: 2px solid #2a69aa;
                 if workstation_mode:
                     return self._launch_via_workstation_runner(
                         output_path,
+                        target=document.build_target,
                         console_mode=console_mode,
+                        debug_theme=self._project_windows_debug_theme_for_target(
+                            target_key, workstation=True
+                        ),
                     )
                 options = {"cwd": str(output_path.parent)}
                 if not console_mode:
@@ -85975,6 +87468,30 @@ border: 2px solid #2a69aa;
                     ),
                     mark_modified=False,
                 )
+                _normal_theme_entries = values.get(
+                    _settings["debug_theme_normal_key"], ()
+                )
+                _workstation_theme_entries = values.get(
+                    _settings["debug_theme_workstation_key"], ()
+                )
+                self.set_project_windows_debug_theme(
+                    _target,
+                    "normal",
+                    (
+                        _normal_theme_entries[0].get("value", "default")
+                        if _normal_theme_entries else "default"
+                    ),
+                    mark_modified=False,
+                )
+                self.set_project_windows_debug_theme(
+                    _target,
+                    "workstation",
+                    (
+                        _workstation_theme_entries[0].get("value", "default")
+                        if _workstation_theme_entries else "default"
+                    ),
+                    mark_modified=False,
+                )
             _active_entries = values.get(PROJECT_C64_OPTIMIZER_ACTIVE_PROFILE_KEY, ())
             _active_profile = (
                 str(_active_entries[0].get("value", "68000") or "68000")
@@ -85994,6 +87511,20 @@ border: 2px solid #2a69aa;
                 )
                 self.set_project_c64_environment_settings(
                     _profile, _screen_keyboard, _keyboard_layout, mark_modified=False
+                )
+            for _profile, _profile_settings in PROJECT_C64_SPEECH_PROFILES.items():
+                def _value(key, fallback):
+                    _values = values.get(_profile_settings[key], ())
+                    return _values[0].get("value", fallback) if _values else fallback
+                self.set_project_c64_speech_settings(
+                    _profile,
+                    _value("mode_key", "internal_samples"),
+                    _value("sample_rate_key", "8000"),
+                    _value("quality_key", "4"),
+                    _value("vice_interface_key", "turbo232"),
+                    _value("host_key", "localhost"),
+                    _value("port_key", "6464"),
+                    mark_modified=False,
                 )
             for _profile, _profile_settings in PROJECT_C64_OPTIMIZER_PROFILES.items():
                 _enabled = _project_bool_entry(
@@ -86667,6 +88198,19 @@ border: 2px solid #2a69aa;
                         else "false"
                     )
                 }]
+                _debug_themes = self.project_windows_debug_themes.get(
+                    _target, {"normal": "default", "workstation": "default"}
+                )
+                entries[_settings["debug_theme_normal_key"]] = [{
+                    "value": _normalize_project_windows_debug_theme(
+                        _debug_themes.get("normal", "default")
+                    )
+                }]
+                entries[_settings["debug_theme_workstation_key"]] = [{
+                    "value": _normalize_project_windows_debug_theme(
+                        _debug_themes.get("workstation", "default")
+                    )
+                }]
             entries[PROJECT_C64_OPTIMIZER_ACTIVE_PROFILE_KEY] = [{
                 "value": str(self.project_c64_active_profile or "68000")
             }]
@@ -86683,6 +88227,13 @@ border: 2px solid #2a69aa;
                         self.project_c64_keyboard_layout.get(_profile, "qwertz")
                     )
                 }]
+            for _profile, _profile_settings in PROJECT_C64_SPEECH_PROFILES.items():
+                entries[_profile_settings["mode_key"]] = [{"value": _normalize_project_c64_speech_mode(self.project_c64_speech_mode.get(_profile, "internal_samples"))}]
+                entries[_profile_settings["sample_rate_key"]] = [{"value": str(_normalize_project_c64_speech_sample_rate(self.project_c64_speech_sample_rate.get(_profile, 8000)))}]
+                entries[_profile_settings["quality_key"]] = [{"value": str(_normalize_project_c64_speech_quality(self.project_c64_speech_quality.get(_profile, 4)))}]
+                entries[_profile_settings["vice_interface_key"]] = [{"value": _normalize_project_c64_speech_vice_interface(self.project_c64_speech_vice_interface.get(_profile, "turbo232"))}]
+                entries[_profile_settings["host_key"]] = [{"value": _normalize_project_c64_speech_host(self.project_c64_speech_host.get(_profile, "localhost"))}]
+                entries[_profile_settings["port_key"]] = [{"value": str(_normalize_project_c64_speech_port(self.project_c64_speech_port.get(_profile, 6464)))}]
             for _profile, _profile_settings in PROJECT_C64_OPTIMIZER_PROFILES.items():
                 entries[_profile_settings["enabled_key"]] = [{
                     "value": (
@@ -90960,8 +92511,23 @@ border: 2px solid #2a69aa;
                     belongs_to_main_window = False
                 if belongs_to_main_window:
                     event_type = event.type()
+                    overlay_widgets = self._frameless_resize_overlay_widgets()
+                    is_resize_overlay = watched in overlay_widgets
                     if (
-                        event_type == QEvent.MouseButtonPress
+                        not is_resize_overlay
+                        and event_type in (
+                            QEvent.Show,
+                            QEvent.ParentChange,
+                            QEvent.ChildAdded,
+                            QEvent.LayoutRequest,
+                            QEvent.ZOrderChange,
+                            QEvent.WindowActivate,
+                        )
+                    ):
+                        self._schedule_raise_frameless_resize_overlays()
+                    if (
+                        not is_resize_overlay
+                        and event_type == QEvent.MouseButtonPress
                         and event.button() == Qt.LeftButton
                     ):
                         try:
@@ -90971,7 +92537,11 @@ border: 2px solid #2a69aa;
                         if global_pos is not None and self._begin_frameless_resize(global_pos):
                             event.accept()
                             return True
-                    elif event_type == QEvent.MouseMove and self._frameless_resize_active:
+                    elif (
+                        not is_resize_overlay
+                        and event_type == QEvent.MouseMove
+                        and self._frameless_resize_active
+                    ):
                         try:
                             global_pos = event.globalPos()
                         except AttributeError:
@@ -90981,7 +92551,8 @@ border: 2px solid #2a69aa;
                             event.accept()
                             return True
                     elif (
-                        event_type == QEvent.MouseButtonRelease
+                        not is_resize_overlay
+                        and event_type == QEvent.MouseButtonRelease
                         and event.button() == Qt.LeftButton
                         and self._frameless_resize_active
                     ):
@@ -91934,6 +93505,15 @@ border: 2px solid #2a69aa;
                 rich_text=True,
             )
 
+        def show_about_qt_dialog(self) -> None:
+            """Zeigt den originalen modalen Qt5-Dialog im aktuellen Theme."""
+            # aboutQt() erzeugt seinen QMessageBox intern. Timer laufen bereits
+            # im verschachtelten modalen Eventloop und können den originalen
+            # Qt-Dialog deshalb unmittelbar nach seiner Erzeugung thematisieren.
+            for delay in (0, 25, 100):
+                QTimer.singleShot(delay, lambda parent=self: _theme_original_about_qt_dialog(parent))
+            _DOXYGEN_QMESSAGEBOX_CLASS.aboutQt(self, "Über Qt5")
+
         def _restore_window_state(self) -> None:
             geometry = self.settings.value("window/geometry")
             state = self.settings.value("window/state")
@@ -92067,6 +93647,11 @@ border: 2px solid #2a69aa;
     if app is None:
         # Die Stage-258-Qt-Attribute wurden bereits vor QtWebEngine gesetzt.
         app = QApplication(sys.argv)
+    # Stage 138: globale Exception-Hooks so früh wie möglich nach vorhandener
+    # QApplication aktivieren. Der Host wird nach Erzeugung des Hauptfensters
+    # noch einmal gesetzt, damit der Fehlerdialog sauber modal dazu erscheint.
+    install_global_exception_handler(None)
+
     app.setOrganizationName(ExplorerWindow.ORGANIZATION)
     app.setApplicationName(ExplorerWindow.APPLICATION)
     app.setApplicationDisplayName("Qt5 D64-Explorer")
@@ -92145,6 +93730,10 @@ border: 2px solid #2a69aa;
     # winId() erzwingt bei Bedarf die native Handle-Erzeugung. __main__.py kann
     # seinen Splash deshalb exakt nach show() und vorhandenem Handle schließen.
     window = ExplorerWindow(initial_directory)
+    install_global_exception_handler(window)
+    # Stage 139: Der GUI-Thread pulst den Heartbeat. Der externe Launcher
+    # beobachtet dieselben Dateien ohne Abhaengigkeit von Python oder Qt.
+    start_internal_application_watchdog(app, window)
     window.winId()
     window.show()
     app.processEvents()

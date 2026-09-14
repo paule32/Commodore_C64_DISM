@@ -1,5 +1,7 @@
 bits 32
 
+import DBaseQtSetWorkstationMode, "libd64_qt5.dll", "DBaseQtSetWorkstationMode"
+import DBaseQtSetDebugTheme, "libd64_qt5.dll", "DBaseQtSetDebugTheme"
 import DBaseQtInitialize, "libd64_qt5.dll", "DBaseQtInitialize"
 import DBaseQtShowWindow, "libd64_qt5.dll", "DBaseQtShowWindow"
 import DBaseQtProcessEvents, "libd64_qt5.dll", "DBaseQtProcessEvents"
@@ -75,6 +77,12 @@ entry _start
 section .text
 
 _start:
+    push 0
+    call DBaseQtSetWorkstationMode
+    add esp, 4
+    push 2
+    call DBaseQtSetDebugTheme
+    add esp, 4
     push __dbase_text_0
     call DBaseQtInitialize
     add esp, 4
@@ -270,6 +278,12 @@ __dbase_workstation_lazy_console_marker:
 .entry __d64_wfm_entry
 __d64_wfm_entry:
     mov eax, __dbase_wfm_qt_output_marker
+    push 0
+    call DBaseQtSetWorkstationMode
+    add esp, 4
+    push 2
+    call DBaseQtSetDebugTheme
+    add esp, 4
     push __dbase_wfm_text_145
     call DBaseQtInitializeGui
     add esp, 4
@@ -814,8 +828,8 @@ __d64_wfm_entry:
     call DBaseQtExec
     call __dbase_wfm_proc___del__
     call DBaseQtShutdown
-    xor eax, eax
-    ret
+    push 0
+    call ExitProcess
 
 ; Stage 133: WFM Event-/Methoden-Code
 .section .text
@@ -842,8 +856,8 @@ __dbase_wfm_proc___init__:
     push __dbase_wfm_output_text_143
     call DBaseQtConsoleWrite
     add esp, 12
-    ; ?? "p2 = " + p2
-    push 0
+    ; ? "p2 = " + p2
+    push 1
     push 6
     push __dbase_wfm_output_text_144
     call DBaseQtConsoleWrite

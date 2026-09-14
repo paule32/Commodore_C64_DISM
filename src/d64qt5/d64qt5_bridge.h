@@ -20,6 +20,8 @@ extern "C" {
  * PE32:  cdecl / Argumente auf dem Stack, Caller raeumt auf.
  * PE32+: Windows-x64-ABI (RCX/RDX/R8/R9 + Shadow Space).
  */
+D64QT5_API void DBaseQtSetWorkstationMode(int enabled);
+D64QT5_API void DBaseQtSetDebugTheme(int themeMode);
 D64QT5_API int  DBaseQtInitialize(const char *title);
 D64QT5_API int  DBaseQtInitializeGui(const char *title);
 D64QT5_API void DBaseQtShowWindow(void);

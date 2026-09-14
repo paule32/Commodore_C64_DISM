@@ -1,5 +1,7 @@
 @echo off
 setlocal
+cd /d "%~dp0"
+
 
 where qmake >nul 2>nul
 if errorlevel 1 (
@@ -12,6 +14,10 @@ if errorlevel 1 (
     echo FEHLER: mingw32-make wurde nicht im PATH gefunden.
     exit /b 1
 )
+
+rem Stage 118: den geaenderten Bridge-Quelltext sicher neu kompilieren.
+if exist release\d64qt5_bridge.o del /f /q release\d64qt5_bridge.o
+if exist debug\d64qt5_bridge.o del /f /q debug\d64qt5_bridge.o
 
 echo [1/3] qmake...
 qmake d64qt5_bridge.pro CONFIG+=release
