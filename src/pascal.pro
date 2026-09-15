@@ -104,17 +104,40 @@ Item0008 = {"title":"System.Strings.pas","path":"../../../runtime/pascal/system/
 Item0009 = {"title":"System.SysUtils.pas","path":"../../../runtime/pascal/system/System.SysUtils.pas"}
 Item0010 = {"title":"System.Types.pas","path":"../../../runtime/pascal/system/System.Types.pas"}
 
+[Category.pascal.pe32.tables]
+Title = Windows PE32 Tabellen
+Item0001 = {"title":"data1.dbf","path":"examples/dbase/data1.dbf"}
+Item0002 = {"title":"data2.dbf","path":"examples/dbase/data2.dbf"}
+
+[Category.pascal.pe64.tables]
+Title = Windows PE32+ Tabellen
+
+[Debug.Breakpoints]
+Title = Break points
+
+[Debug.Bookmarks]
+Title = Bookmarks
+
 [Settings.Windows.32Bit.Compiler.InputDirectories]
 Title = Windows 32-Bit Compiler Eingabe-Verzeichnis
 RelativePaths = true
 Path0001 = ../../../runtime/pascal/system
 Path0002 = ../../../runtime/pascal/win32
 Path0003 = ../../../runtime/pascal/vcl
+Path0004 = ../../../runtime/pascal
 
 [Settings.Windows.32Bit.Compiler.OutputDirectory]
 Title = Windows 32-Bit Compiler Ausgabe-Verzeichnis
 RelativePaths = true
 Path = runtime/pascal/pe32
+
+[Settings.Windows.32Bit.Environment]
+Title = Windows 32-Bit Umgebung
+WorkstationMode = true
+
+[Settings.Windows.32Bit.Linker]
+Title = Windows 32-Bit Linker
+LinkWithOrdinals = false
 
 [Settings.Windows.64Bit.Compiler.InputDirectories]
 Title = Windows 64-Bit Compiler Eingabe-Verzeichnis
@@ -128,4 +151,12 @@ Path0004 = ../../../runtime/pascal/vcl
 Title = Windows 64-Bit Compiler Ausgabe-Verzeichnis
 RelativePaths = true
 Path = runtime/pascal/pe64
+
+[Settings.Windows.64Bit.Environment]
+Title = Windows 64-Bit Umgebung
+WorkstationMode = false
+
+[Settings.Windows.64Bit.Linker]
+Title = Windows 64-Bit Linker
+LinkWithOrdinals = false
 

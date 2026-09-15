@@ -1,0 +1,12 @@
+LANGUAGE 0x0007, 0x01
+
+#pragma code_page(65001)
+
+#define IDS_HELLO   1000
+#define IDS_GOODBYE 1001
+
+STRINGTABLE
+BEGIN
+  IDS_HELLO,   "Moin"
+  IDS_GOODBYE, "Tschüß"
+END

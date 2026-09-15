@@ -63,6 +63,10 @@ parties of Software Provider.
 I will give my best to not remove seals by, and with other Software.
 
 
+Preview - Resource-Editor / Compiler
+![Preview](img/screen0019.png)
+
+
 Preview - E-Baukasten
 ![Preview](img/screen0018.png)
 

@@ -102,3 +102,5 @@ src/runtime/win32/libcrypto.a
 src/runtime/win32/libd64_runtime.dll.a
 src/Dalek_Attack/packed.zip
 src/d64qt5/release/liblibd64_qt5.a
+src/examples/dbase/resource_res32.obj
+src/examples/dbase/resource_res64.obj

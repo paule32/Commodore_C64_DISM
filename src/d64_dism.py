@@ -21,6 +21,8 @@
 #  * integrierte 6510-/680x0-Assembler mit C64-PRG-/Amiga-Hunk-Ausgabe
 #  * Amiga-CPU-Profile mk68000..mk68060 und optionale 68881/68882-FPU
 #  * integrierter IA-32-/PE32-Assembler mit Microsoft-COFF32-Objekten
+#  * interner Windows RC/RES-Compiler mit Microsoft-COFF32/COFF64-Resource-Objekten und Resourcen-Editor
+#  * Stage 151: Resourcen-Editor als Vollflaechen-Dock, Hauptmenue-Kontext, Dark-Mode, Mini-Map und RC-Highlighting
 #  * integrierter COFF32-.a-Archivierer und PE32-Linker samt DLL-Imports/-Exports
 #  * Windows-Grafikziel fuer 320x200 ueber Direct2D oder Direct3D
 #  * C64-BASIC-Compiler sowie Compiler fuer Pascal, C, LISP, PROLOG, LOGO und dBase
@@ -12334,83 +12336,83 @@ C64_CHARACTER_PALETTE: Tuple[Tuple[str, str], ...] = (
 )
 
 LANGUAGE_CODES = [
-    ("ENU", "English (USA)" , "enu"),
-    ("ENG", "English"       , "eng"),
-    ("DEU", "German"        , "deu"),
-    ("FRA", "French"        , "fra"),
-    ("ESP", "Spanish"       , "esp"),
-    ("ITA", "Italian"       , "ita"),
-    ("NLD", "Dutch"         , "nld"),
+    ("ENU", "English (USA)" , "enu", 0x0409),
+    ("ENG", "English"       , "eng", 0x0809),
+    ("DEU", "German"        , "deu", 0x0407),
+    ("FRA", "French"        , "fra", 0x040C),
+    ("ESP", "Spanish"       , "esp", 0x0C0A),
+    ("ITA", "Italian"       , "ita", 0x0410),
+    ("NLD", "Dutch"         , "nld", 0x0413),
     
-    ("PTB", "Portuguese (Brazil)", "ptb"),
+    ("PTB", "Portuguese (Brazil)", "ptb", 0x0416),
     
-    ("POR", "Portuguese"    , "por"),
-    ("PLK", "Polish"        , "plk"),
-    ("RUS", "Russian"       , "rus"),
+    ("POR", "Portuguese"    , "por", 0x0816),
+    ("PLK", "Polish"        , "plk", 0x0415),
+    ("RUS", "Russian"       , "rus", 0x0419),
 
-    ("AFR", "Afrikaans"     , "afr"),
-    ("ALB", "Albanian"      , "alb"),
-    ("ARA", "Arabic"        , "ara"),
-    ("ARM", "Armenian"      , "arm"),
-    ("AZE", "Azerbaijani"   , "aze"),
-    ("BAQ", "Basque"        , "baq"),
-    ("BEL", "Belarusian"    , "bel"),
-    ("BEN", "Bengali"       , "ben"),
-    ("BOS", "Bosnian"       , "bos"),
-    ("BGR", "Bulgarian"     , "bgr"),
-    ("CAT", "Catalan"       , "cat"),
+    ("AFR", "Afrikaans"     , "afr", 0x0436),
+    ("ALB", "Albanian"      , "alb", 0x041C),
+    ("ARA", "Arabic"        , "ara", 0x0401),
+    ("ARM", "Armenian"      , "arm", 0x042B),
+    ("AZE", "Azerbaijani"   , "aze", 0x042C),
+    ("BAQ", "Basque"        , "baq", 0x042D),
+    ("BEL", "Belarusian"    , "bel", 0x0423),
+    ("BEN", "Bengali"       , "ben", 0x0445),
+    ("BOS", "Bosnian"       , "bos", 0x141A),
+    ("BGR", "Bulgarian"     , "bgr", 0x0402),
+    ("CAT", "Catalan"       , "cat", 0x0403),
     
-    ("CHS", "Chinese (Simplified)" , "chs"),
-    ("CHT", "Chinese (Traditional)", "cht"),
+    ("CHS", "Chinese (Simplified)" , "chs", 0x0804),
+    ("CHT", "Chinese (Traditional)", "cht", 0x0404),
     
-    ("HRV", "Croatian"      , "hrv"),
-    ("CSY", "Czech"         , "csy"),
-    ("DAN", "Danish"        , "dan"),
-    ("ETI", "Estonian"      , "eti"),
-    ("FIN", "Finnish"       , "fin"),
-    ("GLC", "Galician"      , "glc"),
-    ("GEO", "Georgian"      , "geo"),
-    ("ELL", "Greek"         , "ell"),
-    ("HEB", "Hebrew"        , "heb"),
-    ("HIN", "Hindi"         , "hin"),
-    ("HUN", "Hungarian"     , "hun"),
-    ("ISL", "Icelandic"     , "isl"),
-    ("IND", "Indonesian"    , "ind"),
-    ("GLE", "Irish"         , "gle"),
-    ("JPN", "Japanese"      , "jpn"),
-    ("KAN", "Kannada"       , "kan"),
-    ("KAZ", "Kazakh"        , "kaz"),
-    ("KOR", "Korean"        , "kor"),
-    ("LVI", "Latvian"       , "lvi"),
-    ("LTH", "Lithuanian"    , "lth"),
-    ("MKD", "Macedonian"    , "mkd"),
-    ("MSL", "Malay"         , "msl"),
-    ("MAL", "Malayalam"     , "mal"),
-    ("MAR", "Marathi"       , "mar"),
-    ("MON", "Mongolian"     , "mon"),
-    ("NEP", "Nepali"        , "nep"),
-    ("NOR", "Norwegian"     , "nor"),
+    ("HRV", "Croatian"      , "hrv", 0x041A),
+    ("CSY", "Czech"         , "csy", 0x0405),
+    ("DAN", "Danish"        , "dan", 0x0406),
+    ("ETI", "Estonian"      , "eti", 0x0425),
+    ("FIN", "Finnish"       , "fin", 0x040B),
+    ("GLC", "Galician"      , "glc", 0x0456),
+    ("GEO", "Georgian"      , "geo", 0x0437),
+    ("ELL", "Greek"         , "ell", 0x0408),
+    ("HEB", "Hebrew"        , "heb", 0x040D),
+    ("HIN", "Hindi"         , "hin", 0x0439),
+    ("HUN", "Hungarian"     , "hun", 0x040E),
+    ("ISL", "Icelandic"     , "isl", 0x040F),
+    ("IND", "Indonesian"    , "ind", 0x0421),
+    ("GLE", "Irish"         , "gle", 0x083C),
+    ("JPN", "Japanese"      , "jpn", 0x0411),
+    ("KAN", "Kannada"       , "kan", 0x044B),
+    ("KAZ", "Kazakh"        , "kaz", 0x043F),
+    ("KOR", "Korean"        , "kor", 0x0412),
+    ("LVI", "Latvian"       , "lvi", 0x0426),
+    ("LTH", "Lithuanian"    , "lth", 0x0427),
+    ("MKD", "Macedonian"    , "mkd", 0x042F),
+    ("MSL", "Malay"         , "msl", 0x043E),
+    ("MAL", "Malayalam"     , "mal", 0x044C),
+    ("MAR", "Marathi"       , "mar", 0x044E),
+    ("MON", "Mongolian"     , "mon", 0x0450),
+    ("NEP", "Nepali"        , "nep", 0x0461),
+    ("NOR", "Norwegian"     , "nor", 0x0414),
     
-    ("NOB", "Norwegian Bokmål" , "nob"),
-    ("NNO", "Norwegian Nynorsk", "nno"),
+    ("NOB", "Norwegian Bokmål" , "nob", 0x0414),
+    ("NNO", "Norwegian Nynorsk", "nno", 0x0814),
     
-    ("FAR", "Persian"       , "far"),
-    ("ROM", "Romanian"      , "rom"),
-    ("SRB", "Serbian"       , "srb"),
+    ("FAR", "Persian"       , "far", 0x0429),
+    ("ROM", "Romanian"      , "rom", 0x0418),
+    ("SRB", "Serbian"       , "srb", 0x0C1A),
     
-    ("SRL", "Serbian (Latin)", "srl"),
+    ("SRL", "Serbian (Latin)", "srl", 0x081A),
     
-    ("SKY", "Slovak"        , "sky"),
-    ("SLV", "Slovenian"     , "slv"),
-    ("SVE", "Swedish"       , "sve"),
-    ("SWA", "Swahili"       , "swa"),
-    ("TAM", "Tamil"         , "tam"),
-    ("TEL", "Telugu"        , "tel"),
-    ("THA", "Thai"          , "tha"),
-    ("TRK", "Turkish"       , "trk"),
-    ("UKR", "Ukrainian"     , "ukr"),
-    ("URD", "Urdu"          , "urd"),
-    ("VIT", "Vietnamese"    , "vit"),
+    ("SKY", "Slovak"        , "sky", 0x041B),
+    ("SLV", "Slovenian"     , "slv", 0x0424),
+    ("SVE", "Swedish"       , "sve", 0x041D),
+    ("SWA", "Swahili"       , "swa", 0x0441),
+    ("TAM", "Tamil"         , "tam", 0x0449),
+    ("TEL", "Telugu"        , "tel", 0x044A),
+    ("THA", "Thai"          , "tha", 0x041E),
+    ("TRK", "Turkish"       , "trk", 0x041F),
+    ("UKR", "Ukrainian"     , "ukr", 0x0422),
+    ("URD", "Urdu"          , "urd", 0x0420),
+    ("VIT", "Vietnamese"    , "vit", 0x042A),
 ]
 
 
@@ -23717,6 +23719,28 @@ PROJECT_PASCAL_TABLE_SECTIONS: Dict[str, str] = {
     "pe64": "Category.pascal.pe64.tables",
 }
 
+# Stage 150: Microsoft-Windows-Ressourcen sind fuer alle Windows-faehigen
+# Sprachzweige zielgebunden. Die Dateien bleiben .rc/.res-Projektressourcen;
+# der interne Compiler kann daraus standardkonforme COFF32-/COFF64-Objekte
+# mit .rsrc$01/.rsrc$02 erzeugen.
+PROJECT_WINDOWS_RESOURCE_LANGUAGES: Tuple[str, ...] = (
+    "basic", "assembler", "pascal", "c", "lisp", "prolog", "dbase",
+)
+PROJECT_WINDOWS_RESOURCE_EXTENSIONS: Tuple[str, ...] = (".rc", ".res")
+PROJECT_NODE_WINDOWS_TARGET = "windows_target"
+PROJECT_NODE_RESOURCE_ROOT = "windows_resource_root"
+PROJECT_NODE_RESOURCE_FILE = "windows_resource_file"
+PROJECT_WINDOWS_RESOURCE_ENTRY_KEYS: Dict[Tuple[str, str], str] = {
+    (language, target): f"__{language}_{target}_resources__"
+    for language in PROJECT_WINDOWS_RESOURCE_LANGUAGES
+    for target in ("pe32", "pe64")
+}
+PROJECT_WINDOWS_RESOURCE_SECTIONS: Dict[Tuple[str, str], str] = {
+    (language, target): f"Category.{language}.{target}.resources"
+    for language in PROJECT_WINDOWS_RESOURCE_LANGUAGES
+    for target in ("pe32", "pe64")
+}
+
 
 def _project_document_output_path(document, filename: str) -> Path:
     """Resolve a generated file without depending on the GUI class name."""
@@ -23813,6 +23837,16 @@ PROJECT_WINDOWS_PE32_DEBUG_THEME_NORMAL_KEY = "__windows_pe32_debug_theme_normal
 PROJECT_WINDOWS_PE32_DEBUG_THEME_WORKSTATION_KEY = "__windows_pe32_debug_theme_workstation__"
 PROJECT_WINDOWS_PE64_DEBUG_THEME_NORMAL_KEY = "__windows_pe64_debug_theme_normal__"
 PROJECT_WINDOWS_PE64_DEBUG_THEME_WORKSTATION_KEY = "__windows_pe64_debug_theme_workstation__"
+from windows_manifest import normalize_manifest_settings
+from windows_resource import (
+    ResourceCompilerError as WindowsResourceCompilerError,
+    compile_rc as compile_windows_rc,
+    read_res as read_windows_res,
+    save_res as save_windows_res,
+    save_resource_coff as save_windows_resource_coff,
+)
+from windows_resource_editor import WindowsResourceEditorWidget
+
 PROJECT_WINDOWS_TARGET_SETTINGS = {
     "pe32": {
         "input_key": PROJECT_WINDOWS_PE32_LINK_SEARCH_PATHS_KEY,
@@ -23827,6 +23861,8 @@ PROJECT_WINDOWS_TARGET_SETTINGS = {
         "input_section": "Settings.Windows.32Bit.Compiler.InputDirectories",
         "output_section": "Settings.Windows.32Bit.Compiler.OutputDirectory",
         "linker_section": "Settings.Windows.32Bit.Linker",
+        "manifest_key": "__windows_pe32_manifest__",
+        "manifest_section": "Settings.Windows.32Bit.Linker.Manifest",
         "title": "32-Bit",
     },
     "pe64": {
@@ -23842,6 +23878,8 @@ PROJECT_WINDOWS_TARGET_SETTINGS = {
         "input_section": "Settings.Windows.64Bit.Compiler.InputDirectories",
         "output_section": "Settings.Windows.64Bit.Compiler.OutputDirectory",
         "linker_section": "Settings.Windows.64Bit.Linker",
+        "manifest_key": "__windows_pe64_manifest__",
+        "manifest_section": "Settings.Windows.64Bit.Linker.Manifest",
         "title": "64-Bit",
     },
 }
@@ -24163,6 +24201,9 @@ def empty_project_entries() -> Dict[str, List[Dict[str, str]]]:
         entries[_special_key] = []
     for _special_key in PROJECT_PASCAL_TABLE_ENTRY_KEYS.values():
         entries[_special_key] = []
+    # Stage 150: getrennte Resource-Listen pro Sprache und Windows-Ziel.
+    for _resource_key in PROJECT_WINDOWS_RESOURCE_ENTRY_KEYS.values():
+        entries[_resource_key] = []
     for _settings in PROJECT_WINDOWS_TARGET_SETTINGS.values():
         entries[_settings["input_key"]] = []
         entries[_settings["output_key"]] = []
@@ -24173,6 +24214,7 @@ def empty_project_entries() -> Dict[str, List[Dict[str, str]]]:
         entries[_settings["workstation_mode_key"]] = [{"value": "false"}]
         entries[_settings["debug_theme_normal_key"]] = [{"value": "default"}]
         entries[_settings["debug_theme_workstation_key"]] = [{"value": "default"}]
+        entries[_settings["manifest_key"]] = [normalize_manifest_settings()]
     entries[PROJECT_C64_OPTIMIZER_ACTIVE_PROFILE_KEY] = [{"value": "68000"}]
     for _profile_settings in PROJECT_C64_OPTIMIZER_PROFILES.values():
         entries[_profile_settings["enabled_key"]] = [{"value": "true"}]
@@ -24525,6 +24567,27 @@ def format_project_ini(
                 _payload, ensure_ascii=False, separators=(",", ":")
             )
 
+    # Stage 150: Resourcen pro Sprache und Architektur persistieren.
+    for (_language, _target), _entry_key in PROJECT_WINDOWS_RESOURCE_ENTRY_KEYS.items():
+        _section = PROJECT_WINDOWS_RESOURCE_SECTIONS[(_language, _target)]
+        parser[_section] = {
+            "Title": (
+                PROJECT_CATEGORY_TITLES.get(_language, _language)
+                + (" Windows PE32 Resourcen" if _target == "pe32" else " Windows PE32+ Resourcen")
+            )
+        }
+        for _index, _entry in enumerate(entries.get(_entry_key, ()), 1):
+            _path_value = str(_entry.get("path", "")).strip()
+            if not _path_value:
+                continue
+            _payload = {
+                "title": str(_entry.get("title", "") or Path(_path_value).name),
+                "path": _project_storage_path(_path_value, project_path),
+            }
+            parser[_section][f"Item{_index:04d}"] = json.dumps(
+                _payload, ensure_ascii=False, separators=(",", ":")
+            )
+
     # Stage 246: Breakpoints/Bookmarks werden pro Quelldatei gespeichert.
     # Die Blätter selbst sind reine 1-basierte Zeilennummern.
     for _marker_kind, (_entry_key, _section) in PROJECT_MARKER_SECTIONS.items():
@@ -24624,6 +24687,14 @@ def format_project_ini(
         parser[_settings["linker_section"]] = {
             "Title": f"Windows {_settings['title']} Linker",
             "LinkWithOrdinals": "true" if _link_with_ordinals else "false",
+        }
+
+        # Stage 149: preserve editable manifest data per architecture.
+        _manifest_entries = entries.get(_settings["manifest_key"], ())
+        parser[_settings["manifest_section"]] = {
+            "Data": json.dumps(normalize_manifest_settings(
+                _manifest_entries[0] if _manifest_entries else None
+            ), ensure_ascii=False),
         }
 
     # Stage ASM 48: C=64 Optimizerprofile speichern.
@@ -24858,6 +24929,30 @@ def parse_project_ini(text: str, project_path: Path) -> Dict[str, List[Dict[str,
         if _entry_key == "dbase":
             continue
         _section = PROJECT_DBASE_SECTIONS[_entry_key]
+        if not parser.has_section(_section):
+            continue
+        _values = sorted(
+            ((name, value) for name, value in parser.items(_section)
+             if name.casefold().startswith("item")),
+            key=lambda pair: pair[0].casefold(),
+        )
+        for _name, _value in _values:
+            try:
+                _payload = json.loads(_value)
+            except json.JSONDecodeError:
+                _payload = {"path": _value, "title": Path(_value).name}
+            _path_value = str(_payload.get("path", "")).strip()
+            if not _path_value:
+                continue
+            _loaded_path = _project_loaded_path(_path_value, Path(project_path))
+            entries[_entry_key].append({
+                "title": str(_payload.get("title", "") or Path(_loaded_path).name),
+                "path": _loaded_path,
+            })
+
+    # Stage 150: zielgebundene RC/RES-Dateien laden.
+    for (_language, _target), _entry_key in PROJECT_WINDOWS_RESOURCE_ENTRY_KEYS.items():
+        _section = PROJECT_WINDOWS_RESOURCE_SECTIONS[(_language, _target)]
         if not parser.has_section(_section):
             continue
         _values = sorted(
@@ -25135,6 +25230,13 @@ def parse_project_ini(text: str, project_path: Path) -> Dict[str, List[Dict[str,
             entries[_settings["link_with_ordinals_key"]] = [{
                 "value": "true" if _link_with_ordinals else "false"
             }]
+
+        _manifest_json = parser.get(_settings["manifest_section"], "Data", fallback="{}")
+        try:
+            _manifest_data = json.loads(_manifest_json)
+        except (ValueError, TypeError):
+            _manifest_data = {}
+        entries[_settings["manifest_key"]] = [normalize_manifest_settings(_manifest_data)]
 
     # Stage ASM 48: C=64 Optimizerprofile laden.
     if parser.has_section("Settings.C64"):
@@ -32540,7 +32642,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             src_lay.setSpacing(4)
             dst_lay.setSpacing(4)
             
-            for code, title, flag_path in LANGUAGE_CODES:
+            for code, title, flag_path, _lang_id in LANGUAGE_CODES:
                 row_src = LanguageRadioFlag(code + " ", title, flag_path, self.gb_source)
                 self.src_group.addButton(row_src.radio)
                 self.src_radios[code] = row_src.radio
@@ -69288,6 +69390,8 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 )
 
 
+    from windows_manifest_settings import WindowsManifestSettingsPage
+
     class WindowsCompilerDirectorySettingsPage(QWidget):
         """Stage 197: architekturspezifische Pfade mit relativer/absoluter Ansicht."""
 
@@ -69330,6 +69434,9 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.compiler_output_directory_item.setData(
                 0, Qt.UserRole, "compiler.output_directory"
             )
+            self.manifest_item = QTreeWidgetItem(self.nodes["linker"], ["Manifest"])
+            self.manifest_item.setData(0, Qt.UserRole, "linker.manifest")
+            self.nodes["linker"].setExpanded(True)
             self.compiler_directories_item = self.compiler_input_directories_item
             self.nodes["compiler"].setExpanded(True)
 
@@ -69559,6 +69666,12 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             linker_layout.addStretch(1)
             self.stack.addWidget(self.linker_page)
 
+            self.manifest_page = WindowsManifestSettingsPage(self.stack)
+            self.manifest_page.setObjectName(f"project_windows_{target_tag}_manifest")
+            self.manifest_page.settingsChanged.connect(self._manifest_changed)
+            self.stack.addWidget(self.manifest_page)
+
+
             self.splitter.setStretchFactor(0, 0)
             self.splitter.setStretchFactor(1, 1)
 
@@ -69605,9 +69718,16 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 page = self.output_directory_page
             elif key == "linker":
                 page = self.linker_page
+            elif key == "linker.manifest":
+                page = self.manifest_page
             else:
                 page = self.placeholder
             self.stack.setCurrentWidget(page)
+
+        def _manifest_changed(self, value) -> None:
+            callback = getattr(self.owner, "set_project_windows_manifest", None)
+            if callback is not None:
+                callback(self.target, value, mark_modified=True)
 
         def _absolute_path(self, value: Path | str) -> str:
             callback = getattr(self.owner, "_project_windows_absolute_directory", None)
@@ -72049,7 +72169,7 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.ui_language_code = str(
                 self.settings.value("view/language_code", "DEU") or "DEU"
             ).strip().upper()
-            if self.ui_language_code not in {code for code, _title, _flag in LANGUAGE_CODES}:
+            if self.ui_language_code not in {code for code, _title, _flag, _lang_id in LANGUAGE_CODES}:
                 self.ui_language_code = "DEU"
             self.language_menu = None
             self.language_menu_action = None
@@ -72145,6 +72265,10 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.project_windows_workstation_mode: Dict[str, bool] = {
                 "pe32": False,
                 "pe64": False,
+            }
+            self.project_windows_manifests = {
+                "pe32": normalize_manifest_settings(),
+                "pe64": normalize_manifest_settings(),
             }
             self.project_windows_debug_themes: Dict[str, Dict[str, str]] = {
                 "pe32": {"normal": "default", "workstation": "default"},
@@ -72249,6 +72373,12 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.doxygen_dock = None
             self.math_learning_dock = None
             self.math_learning_widget = None
+            # Stage 151: Windows-Resourcen-Editor als eigene Vollflaechen-Arbeitsflaeche.
+            self.windows_resource_editor_dock = None
+            self.windows_resource_editor_widget = None
+            self._windows_resource_editor_workspace_active = False
+            self._windows_resource_editor_hidden_docks = []
+            self._windows_resource_editor_replaced_central_widget = False
             # Stage 263/264: Musik-Lernarbeitsfläche unter Lernen -> Keyboard.
             self.music_keyboard_dock = None
             self.music_keyboard_widget = None
@@ -73566,6 +73696,22 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     ),
                 }
 
+            # Stage 151: Windows PE32/PE32+ erhalten ein eigenes Resourcen-Projekt.
+            self.compact_new_actions["windows_pe32"]["resource_project"] = (
+                self._make_compact_new_action(
+                    "Resourcen Projekt",
+                    lambda: self.new_windows_resource_project("pe32"),
+                    "Neues Windows-PE32-Resourcen-Projekt im Resourcen-Editor anlegen",
+                )
+            )
+            self.compact_new_actions["windows_pe64"]["resource_project"] = (
+                self._make_compact_new_action(
+                    "Resourcen Projekt",
+                    lambda: self.new_windows_resource_project("pe64"),
+                    "Neues Windows-PE32+-Resourcen-Projekt im Resourcen-Editor anlegen",
+                )
+            )
+
             # Stage 84: dBase bekommt unterhalb von "Programm" einen eigenen
             # visuellen Formulardesigner.
             self.compact_new_actions["dbase"]["form"] = (
@@ -73688,6 +73834,9 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     submenu.addSeparator()
                     for action in legacy_actions:
                         submenu.addAction(action)
+                if profile_key in {"windows_pe32", "windows_pe64"}:
+                    submenu.addSeparator()
+                    submenu.addAction(actions["resource_project"])
                 self.compact_new_menus[profile_key] = submenu
 
             # Alle übrigen bisherigen Einträge bleiben auf derselben Ebene.
@@ -79202,6 +79351,9 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     _debug_themes.get("normal", "default"),
                     _debug_themes.get("workstation", "default"),
                 )
+                panel.page_for_target(_target).manifest_page.set_settings(
+                    self.project_windows_manifests.get(_target)
+                )
             for _profile in PROJECT_C64_OPTIMIZER_PROFILES:
                 panel.set_c64_screen_keyboard(
                     _profile,
@@ -79355,6 +79507,9 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     _target,
                     _debug_themes.get("normal", "default"),
                     _debug_themes.get("workstation", "default"),
+                )
+                self.project_settings_panel.page_for_target(_target).manifest_page.set_settings(
+                    self.project_windows_manifests.get(_target)
                 )
             for _profile in PROJECT_C64_OPTIMIZER_PROFILES:
                 self.project_settings_panel.set_c64_screen_keyboard(
@@ -80454,6 +80609,19 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 if self.current_project_path is not None:
                     self.save_project()
 
+        def set_project_windows_manifest(self, target, value, *, mark_modified=True):
+            target_key = self._project_windows_target_key(target)
+            data = normalize_manifest_settings(value)
+            changed = self.project_windows_manifests.get(target_key) != data
+            self.project_windows_manifests[target_key] = data
+            panel = getattr(self, "project_settings_panel", None)
+            if panel is not None:
+                page = panel.page_for_target(target_key).manifest_page
+                if page.settings() != data:
+                    page.set_settings(data)
+            if changed and mark_modified:
+                self.set_project_modified(True)
+
         def set_project_windows_debug_theme(
             self,
             target: str,
@@ -80758,7 +80926,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             # entstehen 17 Zeilen mit jeweils vier Spalten. Die Reihenfolge
             # bleibt exakt die Reihenfolge der Konstantenliste.
             column_count = 4
-            for index, (code, title, flag_path) in enumerate(LANGUAGE_CODES):
+            for index, (code, title, flag_path, _lang_id) in enumerate(LANGUAGE_CODES):
                 row = index // column_count
                 column = index % column_count
                 entry = LanguageMenuChoice(
@@ -81876,6 +82044,10 @@ border: 2px solid #2a69aa;
             if e_baukasten is not None:
                 e_baukasten.set_dark_mode(enabled)
 
+            resource_editor = getattr(self, "windows_resource_editor_widget", None)
+            if resource_editor is not None:
+                resource_editor.set_dark_mode(enabled)
+
             # Stage 161: die WFM-Quellstruktur ist ein normales QTreeWidget
             # und besitzt deshalb einen eigenen Dark-/Light-Mode-Stil.
             self._apply_dbase_form_source_outline_theme(enabled)
@@ -82947,6 +83119,10 @@ border: 2px solid #2a69aa;
                 self.save_project()
 
         def open_document_dialog(self) -> None:
+            if self._windows_resource_editor_is_active():
+                self.windows_resource_editor_widget.choose_open()
+                self._update_document_actions()
+                return
             if self._e_baukasten_is_active():
                 self.e_baukasten_widget.load_file()
                 self._update_document_actions()
@@ -83553,12 +83729,27 @@ border: 2px solid #2a69aa;
                 and self.dbase_form_designer_dock.isVisible()
             )
 
+        def _windows_resource_editor_is_active(self) -> bool:
+            dock = getattr(self, "windows_resource_editor_dock", None)
+            editor = getattr(self, "windows_resource_editor_widget", None)
+            return bool(
+                getattr(self, "_windows_resource_editor_workspace_active", False)
+                and dock is not None
+                and editor is not None
+                and dock.isVisible()
+            )
+
         def _update_document_actions(self) -> None:
             has_document = self.current_document() is not None
             has_form = self._dbase_form_is_active()
             has_e_baukasten = self._e_baukasten_is_active()
-            self.save_file_action.setEnabled(has_document or has_form or has_e_baukasten)
-            self.save_as_action.setEnabled(has_document or has_form or has_e_baukasten)
+            has_resource_editor = self._windows_resource_editor_is_active()
+            self.save_file_action.setEnabled(
+                has_document or has_form or has_e_baukasten or has_resource_editor
+            )
+            self.save_as_action.setEnabled(
+                has_document or has_form or has_e_baukasten or has_resource_editor
+            )
             self.close_document_action.setEnabled(has_document)
             self._update_edit_actions()
 
@@ -83610,6 +83801,8 @@ border: 2px solid #2a69aa;
             )
 
         def save_current_document(self) -> bool:
+            if self._windows_resource_editor_is_active():
+                return bool(self.windows_resource_editor_widget.save())
             if self._e_baukasten_is_active():
                 return bool(self.e_baukasten_widget.save_file(False))
             if self._dbase_form_is_active():
@@ -83620,6 +83813,8 @@ border: 2px solid #2a69aa;
             return self._save_document(document, save_as=False)
 
         def save_current_document_as(self) -> bool:
+            if self._windows_resource_editor_is_active():
+                return bool(self.windows_resource_editor_widget.save_as())
             if self._e_baukasten_is_active():
                 return bool(self.e_baukasten_widget.save_file(True))
             if self._dbase_form_is_active():
@@ -87468,6 +87663,11 @@ border: 2px solid #2a69aa;
                     ),
                     mark_modified=False,
                 )
+                _manifest_entries = values.get(_settings["manifest_key"], ())
+                self.set_project_windows_manifest(
+                    _target, _manifest_entries[0] if _manifest_entries else None,
+                    mark_modified=False,
+                )
                 _normal_theme_entries = values.get(
                     _settings["debug_theme_normal_key"], ()
                 )
@@ -87574,6 +87774,9 @@ border: 2px solid #2a69aa;
             self.project_pascal_target_nodes = {}
             self.project_pascal_group_nodes = {}
             self.project_pascal_table_nodes = {}
+            # Stage 150: (Sprache, Ziel) -> Windows-Ziel/Resourcen-Knoten.
+            self.project_windows_target_nodes = {}
+            self.project_resource_nodes = {}
             self.project_dbase_group_nodes = {}
             self.project_pascal_unit_namespace_nodes = {}
             self._project_pascal_entry_sequence = {}
@@ -87731,6 +87934,52 @@ border: 2px solid #2a69aa;
                         _table_group.setExpanded(True)
                         _target_item.setExpanded(True)
 
+                # Stage 150: Windows PE32/PE32+ -> Resourcen fuer BASIC,
+                # Assembler, Pascal, C, LISP, PROLOG und dBase. Pascal besitzt
+                # seine Zielknoten bereits; die anderen Sprachen bekommen hier
+                # dieselbe geschuetzte Zielhierarchie.
+                if key in PROJECT_WINDOWS_RESOURCE_LANGUAGES:
+                    for _resource_target, _resource_target_title in (
+                        ("pe32", "Windows PE32"),
+                        ("pe64", "Windows PE32+"),
+                    ):
+                        if key == "pascal":
+                            _resource_target_item = self.project_pascal_target_nodes[_resource_target]
+                        else:
+                            _resource_target_item = QTreeWidgetItem(root, [_resource_target_title])
+                            _resource_target_item.setData(0, Qt.UserRole + 301, key)
+                            _resource_target_item.setData(0, Qt.UserRole + 303, PROJECT_NODE_WINDOWS_TARGET)
+                            _resource_target_item.setData(0, Qt.UserRole + 305, _resource_target)
+                            _resource_target_item.setIcon(0, folder_icon)
+                            _resource_target_item.setToolTip(
+                                0, _resource_target_title + "-Ressourcen fuer " + title
+                            )
+                        self.project_windows_target_nodes[(key, _resource_target)] = _resource_target_item
+
+                        _resource_root = QTreeWidgetItem(_resource_target_item, ["Resourcen"])
+                        _resource_root.setData(0, Qt.UserRole + 301, key)
+                        _resource_root.setData(0, Qt.UserRole + 303, PROJECT_NODE_RESOURCE_ROOT)
+                        _resource_root.setData(0, Qt.UserRole + 305, _resource_target)
+                        _resource_root.setData(0, Qt.UserRole + 306, "resources")
+                        _resource_root.setIcon(0, folder_icon)
+                        _resource_root.setToolTip(
+                            0,
+                            "Windows Resource Compiler: *.rc / *.res; "
+                            "Doppelklick oeffnet den Resourcen-Editor",
+                        )
+                        self.project_resource_nodes[(key, _resource_target)] = _resource_root
+                        _entry_key = PROJECT_WINDOWS_RESOURCE_ENTRY_KEYS[(key, _resource_target)]
+                        for _entry in values.get(_entry_key, ()):
+                            _path_text = str(_entry.get("path", "")).strip()
+                            if _path_text:
+                                self._add_project_resource_entry(
+                                    key, _resource_target, Path(_path_text),
+                                    title=str(_entry.get("title", "")),
+                                    mark_modified=False,
+                                )
+                        _resource_root.setExpanded(True)
+                        _resource_target_item.setExpanded(True)
+
                 if key == "prolog":
                     knowledge_root = QTreeWidgetItem(root, ["Wissen-Datenbanken"])
                     knowledge_root.setData(0, Qt.UserRole + 301, "prolog")
@@ -87787,6 +88036,46 @@ border: 2px solid #2a69aa;
                 self.project_archive_root.setExpanded(True)
             self.project_tree.blockSignals(False)
             self._restore_project_markers_for_open_documents()
+
+        def _add_project_resource_entry(
+            self,
+            language: str,
+            target: str,
+            path: Path,
+            *,
+            title: str = "",
+            mark_modified: bool = True,
+        ) -> Optional[QTreeWidgetItem]:
+            """Stage 150: RC/RES-Blatt unter dem passenden Resourcen-Knoten."""
+            language = str(language).casefold()
+            target = "pe64" if str(target).casefold() in {"pe64", "x64", "pe32+"} else "pe32"
+            root = getattr(self, "project_resource_nodes", {}).get((language, target))
+            if root is None:
+                return None
+            try:
+                resolved = Path(path).expanduser().resolve()
+            except OSError:
+                resolved = Path(path).expanduser()
+            if resolved.suffix.casefold() not in PROJECT_WINDOWS_RESOURCE_EXTENSIONS:
+                return None
+            path_text = str(resolved)
+            for index in range(root.childCount()):
+                child = root.child(index)
+                if str(child.data(0, Qt.UserRole + 302) or "").casefold() == path_text.casefold():
+                    self.project_tree.setCurrentItem(child)
+                    return child
+            child = QTreeWidgetItem(root, [title.strip() or resolved.name])
+            child.setData(0, Qt.UserRole + 301, language)
+            child.setData(0, Qt.UserRole + 302, path_text)
+            child.setData(0, Qt.UserRole + 303, PROJECT_NODE_RESOURCE_FILE)
+            child.setData(0, Qt.UserRole + 305, target)
+            child.setData(0, Qt.UserRole + 306, "resources")
+            child.setToolTip(0, path_text)
+            child.setIcon(0, self.icon_provider.icon(QFileInfo(path_text)))
+            root.setExpanded(True)
+            if mark_modified:
+                self.set_project_modified(True)
+            return child
 
         def _add_project_entry(
             self,
@@ -88152,6 +88441,22 @@ border: 2px solid #2a69aa;
                             "path": _path_value,
                         })
 
+            # Stage 150: RC/RES-Blätter aus allen zielgebundenen Resourcen-Knoten.
+            for (_language, _target), _entry_key in PROJECT_WINDOWS_RESOURCE_ENTRY_KEYS.items():
+                _group = getattr(self, "project_resource_nodes", {}).get((_language, _target))
+                if _group is None:
+                    continue
+                for _index in range(_group.childCount()):
+                    _child = _group.child(_index)
+                    if self._project_item_kind(_child) != PROJECT_NODE_RESOURCE_FILE:
+                        continue
+                    _path_value = str(_child.data(0, Qt.UserRole + 302) or "").strip()
+                    if _path_value:
+                        entries[_entry_key].append({
+                            "title": _child.text(0),
+                            "path": _path_value,
+                        })
+
             entries[PROJECT_BREAKPOINTS_KEY] = self._project_marker_entries("breakpoint")
             entries[PROJECT_BOOKMARKS_KEY] = self._project_marker_entries("bookmark")
 
@@ -88211,6 +88516,9 @@ border: 2px solid #2a69aa;
                         _debug_themes.get("workstation", "default")
                     )
                 }]
+                entries[_settings["manifest_key"]] = [normalize_manifest_settings(
+                    self.project_windows_manifests.get(_target)
+                )]
             entries[PROJECT_C64_OPTIMIZER_ACTIVE_PROFILE_KEY] = [{
                 "value": str(self.project_c64_active_profile or "68000")
             }]
@@ -88446,6 +88754,10 @@ border: 2px solid #2a69aa;
                 or any(
                     bool(entries.get(_key))
                     for _key in PROJECT_DBASE_ENTRY_KEYS
+                )
+                or any(
+                    bool(entries.get(_key))
+                    for _key in PROJECT_WINDOWS_RESOURCE_ENTRY_KEYS.values()
                 )
                 or any(
                     bool(entries.get(_settings["input_key"]))
@@ -90750,6 +91062,452 @@ border: 2px solid #2a69aa;
             elif selected is remove_action:
                 self.delete_selected_project_leaves(preferred_item=item)
 
+        def _restore_windows_resource_editor_workspace(self) -> None:
+            if not getattr(self, "_windows_resource_editor_workspace_active", False):
+                return
+            self._windows_resource_editor_workspace_active = False
+
+            if getattr(self, "_windows_resource_editor_replaced_central_widget", False):
+                central = self.centralWidget()
+                if central is not None:
+                    central.show()
+            self._windows_resource_editor_replaced_central_widget = False
+
+            saved = list(getattr(self, "_windows_resource_editor_hidden_docks", []))
+            self._windows_resource_editor_hidden_docks = []
+            for candidate in saved:
+                try:
+                    if candidate is not None:
+                        candidate.show()
+                except RuntimeError:
+                    pass
+
+        def _prepare_windows_resource_editor_workspace(self, resource_dock) -> None:
+            if getattr(self, "_windows_resource_editor_workspace_active", False):
+                return
+
+            keep = {resource_dock, getattr(self, "bottom_dock", None)}
+            self._windows_resource_editor_hidden_docks = []
+            for candidate in self.findChildren(QDockWidget):
+                if candidate in keep:
+                    continue
+                if candidate is not None and candidate.isVisible():
+                    self._windows_resource_editor_hidden_docks.append(candidate)
+
+            for candidate in list(self._windows_resource_editor_hidden_docks):
+                try:
+                    candidate.hide()
+                except RuntimeError:
+                    pass
+
+            central = self.centralWidget()
+            self._windows_resource_editor_replaced_central_widget = bool(
+                central is not None and central.isVisible()
+            )
+            if self._windows_resource_editor_replaced_central_widget:
+                central.hide()
+
+            bottom = getattr(self, "bottom_dock", None)
+            if bottom is not None:
+                bottom.show()
+                bottom.raise_()
+
+            self._windows_resource_editor_workspace_active = True
+
+        def _expand_windows_resource_editor_dock(self) -> None:
+            dock = getattr(self, "windows_resource_editor_dock", None)
+            if dock is None or not dock.isVisible() or dock.isFloating():
+                return
+            try:
+                area = self.dockWidgetArea(dock)
+                if area in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea):
+                    self.resizeDocks(
+                        [dock], [max(480, self.width() - 24)], Qt.Horizontal
+                    )
+                else:
+                    bottom = getattr(self, "bottom_dock", None)
+                    protocol_height = (
+                        bottom.height() if bottom is not None and bottom.isVisible() else 0
+                    )
+                    self.resizeDocks(
+                        [dock],
+                        [max(320, self.height() - protocol_height - 24)],
+                        Qt.Vertical,
+                    )
+            except RuntimeError:
+                pass
+
+        def _windows_resource_editor_visibility_changed(self, visible: bool) -> None:
+            dock = getattr(self, "windows_resource_editor_dock", None)
+            editor = getattr(self, "windows_resource_editor_widget", None)
+            if dock is None:
+                return
+            if visible:
+                self._prepare_windows_resource_editor_workspace(dock)
+                if editor is not None:
+                    editor.set_dark_mode(self.dark_mode_enabled)
+                QTimer.singleShot(0, self._expand_windows_resource_editor_dock)
+            else:
+                self._restore_windows_resource_editor_workspace()
+            self._update_document_actions()
+
+        def _windows_resource_editor_dock_location_changed(self, _area) -> None:
+            if self._windows_resource_editor_is_active():
+                QTimer.singleShot(0, self._expand_windows_resource_editor_dock)
+
+        def _ensure_windows_resource_editor_dock(self):
+            """Stage 151: vollflaechig dockbarer Windows-Resourcen-Editor."""
+            dock = getattr(self, "windows_resource_editor_dock", None)
+            editor = getattr(self, "windows_resource_editor_widget", None)
+            if dock is not None and editor is not None:
+                return dock, editor
+
+            dock = QDockWidget("Resourcen-Editor", self)
+            dock.setObjectName("windows_resource_editor_dock")
+            dock.setAllowedAreas(
+                Qt.LeftDockWidgetArea
+                | Qt.RightDockWidgetArea
+                | Qt.TopDockWidgetArea
+                | Qt.BottomDockWidgetArea
+            )
+            dock.setFeatures(
+                QDockWidget.DockWidgetClosable
+                | QDockWidget.DockWidgetMovable
+                | QDockWidget.DockWidgetFloatable
+            )
+            dock.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            editor = WindowsResourceEditorWidget(dock, language_codes=LANGUAGE_CODES)
+            editor.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            editor.set_dark_mode(self.dark_mode_enabled)
+            editor.status_message.connect(
+                lambda text: self.statusBar().showMessage(str(text), 7000)
+            )
+            dock.setWidget(editor)
+            self.windows_resource_editor_dock = dock
+            self.windows_resource_editor_widget = editor
+            self.addDockWidget(Qt.RightDockWidgetArea, dock)
+            dock.visibilityChanged.connect(
+                self._windows_resource_editor_visibility_changed
+            )
+            dock.dockLocationChanged.connect(
+                self._windows_resource_editor_dock_location_changed
+            )
+            dock.hide()
+            return dock, editor
+
+        def new_windows_resource_project(self, target: str = "pe32") -> None:
+            dock, editor = self._ensure_windows_resource_editor_dock()
+            if not editor.new_rc(target=target):
+                return
+            if dock.isFloating():
+                dock.setFloating(False)
+            dock.show()
+            dock.raise_()
+            editor.source_edit.setFocus(Qt.OtherFocusReason)
+            QTimer.singleShot(0, self._expand_windows_resource_editor_dock)
+            self._update_document_actions()
+
+        def show_windows_resource_editor(
+            self,
+            path: Optional[Path] = None,
+            *,
+            target: str = "pe32",
+        ) -> None:
+            dock, editor = self._ensure_windows_resource_editor_dock()
+            editor.set_target(target)
+            if dock.isFloating():
+                dock.setFloating(False)
+            dock.show()
+            dock.raise_()
+            if path is not None:
+                editor.open_path(Path(path), target=target)
+            editor.source_edit.setFocus(Qt.OtherFocusReason)
+            QTimer.singleShot(0, self._expand_windows_resource_editor_dock)
+            self._update_document_actions()
+
+        def _project_resource_context(self, item: QTreeWidgetItem):
+            language = str(item.data(0, Qt.UserRole + 301) or "").casefold()
+            target = str(item.data(0, Qt.UserRole + 305) or "pe32").casefold()
+            if target not in {"pe32", "pe64"}:
+                target = "pe32"
+            if self._project_item_kind(item) == PROJECT_NODE_RESOURCE_FILE:
+                root = item.parent()
+            elif self._project_item_kind(item) == PROJECT_NODE_RESOURCE_ROOT:
+                root = item
+            else:
+                root = None
+            return language, target, root
+
+        def _resource_project_file_dialog(
+            self, title: str, initial: str, name_filter: str, *,
+            save: bool = False, multiple: bool = False,
+        ):
+            """Stage 152: resource-project file chooser that always follows app theme."""
+            initial_path = Path(str(initial)).expanduser()
+            dialog_directory = initial_path.parent if save else initial_path
+            dialog = QFileDialog(self, title, str(dialog_directory), name_filter)
+            dialog.setOption(QFileDialog.DontUseNativeDialog, True)
+            dialog.setViewMode(QFileDialog.Detail)
+            dialog.setAcceptMode(
+                QFileDialog.AcceptSave if save else QFileDialog.AcceptOpen
+            )
+            if save:
+                dialog.setFileMode(QFileDialog.AnyFile)
+                dialog.selectFile(initial_path.name)
+                dialog.setOption(QFileDialog.DontConfirmOverwrite, False)
+            elif multiple:
+                dialog.setFileMode(QFileDialog.ExistingFiles)
+            else:
+                dialog.setFileMode(QFileDialog.ExistingFile)
+            if self.dark_mode_enabled:
+                dialog.setPalette(self._dark_application_palette())
+                dialog.setStyleSheet("""
+QFileDialog { background-color:#202630; color:#ffffff; }
+QFileDialog QLabel, QFileDialog QCheckBox { color:#ffffff; background:transparent; }
+QFileDialog QLineEdit, QFileDialog QComboBox, QFileDialog QListView,
+QFileDialog QTreeView {
+    color:#f4f4f4; background:#171c24; alternate-background-color:#202732;
+    selection-background-color:#315a82; selection-color:#ffffff;
+    border:1px solid #536172;
+}
+QFileDialog QHeaderView::section {
+    color:#ffffff; background:#303844; border:0;
+    border-right:1px solid #536172; border-bottom:1px solid #536172;
+    padding:4px 6px; font-weight:bold;
+}
+QFileDialog QPushButton, QFileDialog QToolButton {
+    color:#ffffff; background:#343e4d; border:1px solid #596779;
+    border-radius:3px; padding:5px 9px;
+}
+QFileDialog QPushButton:hover, QFileDialog QToolButton:hover {
+    background:#414d5f; border-color:#718198;
+}
+QFileDialog QComboBox QAbstractItemView {
+    color:#f4f4f4; background:#202630; selection-background-color:#315a82;
+    selection-color:#ffffff; border:1px solid #536172;
+}
+""")
+            else:
+                dialog.setPalette(self.light_application_palette)
+            if dialog.exec_() != QFileDialog.Accepted:
+                return [] if multiple else ""
+            files = dialog.selectedFiles()
+            if multiple:
+                return list(files)
+            return files[0] if files else ""
+
+        def add_project_resource_files(self, root: QTreeWidgetItem) -> None:
+            if self._project_item_kind(root) != PROJECT_NODE_RESOURCE_ROOT:
+                return
+            language, target, _ = self._project_resource_context(root)
+            initial = str(
+                self.current_project_path.parent
+                if self.current_project_path is not None
+                else self.current_directory
+            )
+            filenames = self._resource_project_file_dialog(
+                "Windows-Resourcen hinzufügen",
+                initial,
+                "Windows Resource Dateien (*.rc *.res);;RC Dateien (*.rc);;RES Dateien (*.res)",
+                multiple=True,
+            )
+            added = 0
+            for filename in filenames:
+                path = Path(filename)
+                if self._add_project_resource_entry(
+                    language, target, path, title=path.name
+                ) is not None:
+                    added += 1
+            if added and self.current_project_path is not None:
+                self.save_project()
+            if added:
+                root.setExpanded(True)
+                self.statusBar().showMessage(
+                    f"{added} Resourcen-Datei(en) hinzugefügt", 6000
+                )
+
+        def new_project_resource_file(self, root: QTreeWidgetItem) -> None:
+            if self._project_item_kind(root) != PROJECT_NODE_RESOURCE_ROOT:
+                return
+            language, target, _ = self._project_resource_context(root)
+            initial_dir = (
+                self.current_project_path.parent
+                if self.current_project_path is not None
+                else Path(self.current_directory)
+            )
+            filename = self._resource_project_file_dialog(
+                "Neue RC-Datei",
+                str(Path(initial_dir) / "resource.rc"),
+                "RC Dateien (*.rc)",
+                save=True,
+            )
+            if not filename:
+                return
+            path = Path(filename)
+            if path.suffix.casefold() != ".rc":
+                path = path.with_suffix(".rc")
+            if path.exists():
+                answer = self._show_message_box(
+                    QMessageBox.Question,
+                    "RC-Datei überschreiben",
+                    f"Die Datei existiert bereits:\n{path}\n\nÜberschreiben?",
+                    buttons=QMessageBox.Yes | QMessageBox.No,
+                    default_button=QMessageBox.No,
+                )
+                if answer != QMessageBox.Yes:
+                    return
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                "#define IDS_APP_TITLE 100\n\n"
+                "LANGUAGE LANG_GERMAN, SUBLANG_GERMAN\n\n"
+                "STRINGTABLE\n"
+                "BEGIN\n"
+                "    IDS_APP_TITLE \"Anwendung\"\n"
+                "END\n",
+                encoding="utf-8",
+            )
+            item = self._add_project_resource_entry(
+                language, target, path, title=path.name
+            )
+            if item is not None:
+                self.project_tree.setCurrentItem(item)
+                if self.current_project_path is not None:
+                    self.save_project()
+                self.show_windows_resource_editor(path, target=target)
+
+        def remove_project_resource_file(self, item: QTreeWidgetItem) -> None:
+            if self._project_item_kind(item) != PROJECT_NODE_RESOURCE_FILE:
+                return
+            parent = item.parent()
+            if parent is None:
+                return
+            answer = self._show_message_box(
+                QMessageBox.Question,
+                "Resourcen-Datei entfernen",
+                f"'{item.text(0)}' aus dem Projekt entfernen?\n\n"
+                "Die Datei auf dem Datenträger bleibt erhalten.",
+                buttons=QMessageBox.Yes | QMessageBox.No,
+                default_button=QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
+            parent.takeChild(parent.indexOfChild(item))
+            self.set_project_modified(True)
+            if self.current_project_path is not None:
+                self.save_project()
+
+        def clear_project_resource_files(self, root: QTreeWidgetItem) -> None:
+            if self._project_item_kind(root) != PROJECT_NODE_RESOURCE_ROOT:
+                return
+            count = root.childCount()
+            if count <= 0:
+                return
+            answer = self._show_message_box(
+                QMessageBox.Question,
+                "Resourcen entfernen",
+                f"Alle {count} Resourcen-Datei-Referenzen aus dem Projekt entfernen?\n\n"
+                "Die Dateien auf dem Datenträger bleiben erhalten.",
+                buttons=QMessageBox.Yes | QMessageBox.No,
+                default_button=QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
+            while root.childCount():
+                root.takeChild(0)
+            self.set_project_modified(True)
+            if self.current_project_path is not None:
+                self.save_project()
+
+        def compile_project_resource_file(
+            self,
+            item: QTreeWidgetItem,
+            *,
+            output_kind: str,
+        ) -> None:
+            if self._project_item_kind(item) != PROJECT_NODE_RESOURCE_FILE:
+                return
+            path_text = str(item.data(0, Qt.UserRole + 302) or "").strip()
+            target = str(item.data(0, Qt.UserRole + 305) or "pe32").casefold()
+            if not path_text:
+                return
+            path = Path(path_text)
+            if not path.is_file():
+                self.show_error(
+                    "Resource Compiler",
+                    f"Datei nicht gefunden:\n{path}",
+                )
+                return
+            try:
+                if path.suffix.casefold() == ".rc":
+                    compilation = compile_windows_rc(
+                        path, include_dirs=[path.parent]
+                    )
+                    entries = compilation.entries
+                elif path.suffix.casefold() == ".res":
+                    entries = read_windows_res(path)
+                else:
+                    raise WindowsResourceCompilerError(
+                        "Nur .rc und .res werden unterstützt"
+                    )
+                if output_kind == "res":
+                    if path.suffix.casefold() == ".res":
+                        output = path
+                    else:
+                        output = path.with_suffix(".res")
+                    save_windows_res(output, entries)
+                else:
+                    machine = "x64" if target == "pe64" else "x86"
+                    suffix = "_pe64.obj" if target == "pe64" else "_pe32.obj"
+                    output = path.with_name(path.stem + suffix)
+                    save_windows_resource_coff(output, entries, machine=machine)
+                self.statusBar().showMessage(
+                    f"Resource Compiler: {output.name} erzeugt", 8000
+                )
+            except Exception as exc:
+                self.show_error("Resource Compiler", str(exc))
+
+        def _show_project_resource_root_menu(
+            self, item: QTreeWidgetItem, position
+        ) -> None:
+            menu = QMenu(self.project_tree)
+            open_action = menu.addAction("Resourcen-Editor öffnen")
+            menu.addSeparator()
+            new_action = menu.addAction("Neue RC-Datei …")
+            add_action = menu.addAction("Hinzufügen …")
+            clear_action = menu.addAction("Alle Referenzen entfernen")
+            clear_action.setEnabled(item.childCount() > 0)
+            selected = menu.exec_(self.project_tree.viewport().mapToGlobal(position))
+            if selected is open_action:
+                _language, target, _root = self._project_resource_context(item)
+                self.show_windows_resource_editor(target=target)
+            elif selected is new_action:
+                self.new_project_resource_file(item)
+            elif selected is add_action:
+                self.add_project_resource_files(item)
+            elif selected is clear_action:
+                self.clear_project_resource_files(item)
+
+        def _show_project_resource_file_menu(
+            self, item: QTreeWidgetItem, position
+        ) -> None:
+            menu = QMenu(self.project_tree)
+            open_action = menu.addAction("Im Resourcen-Editor öffnen")
+            res_action = menu.addAction("RC → RES kompilieren")
+            obj_action = menu.addAction("COFF-Objekt für Projektziel schreiben")
+            menu.addSeparator()
+            remove_action = menu.addAction("Aus Projekt entfernen")
+            if Path(str(item.data(0, Qt.UserRole + 302) or "")).suffix.casefold() == ".res":
+                res_action.setEnabled(False)
+            selected = menu.exec_(self.project_tree.viewport().mapToGlobal(position))
+            if selected is open_action:
+                self.open_project_item(item)
+            elif selected is res_action:
+                self.compile_project_resource_file(item, output_kind="res")
+            elif selected is obj_action:
+                self.compile_project_resource_file(item, output_kind="coff")
+            elif selected is remove_action:
+                self.remove_project_resource_file(item)
+
         def show_project_context_menu(self, position) -> None:
             item = self.project_tree.itemAt(position)
             if item is None:
@@ -90807,6 +91565,21 @@ border: 2px solid #2a69aa;
                 )
                 if selected is toggle_action:
                     item.setExpanded(not item.isExpanded())
+                return
+            if kind == PROJECT_NODE_WINDOWS_TARGET:
+                menu = QMenu(self.project_tree)
+                toggle_action = menu.addAction(
+                    "Knoten schließen" if item.isExpanded() else "Knoten öffnen"
+                )
+                selected = menu.exec_(self.project_tree.viewport().mapToGlobal(position))
+                if selected is toggle_action:
+                    item.setExpanded(not item.isExpanded())
+                return
+            if kind == PROJECT_NODE_RESOURCE_ROOT:
+                self._show_project_resource_root_menu(item, position)
+                return
+            if kind == PROJECT_NODE_RESOURCE_FILE:
+                self._show_project_resource_file_menu(item, position)
                 return
             if kind == PROJECT_NODE_PASCAL_TARGET:
                 self._show_project_pascal_target_menu(item, position)
@@ -90889,6 +91662,8 @@ border: 2px solid #2a69aa;
                     PROJECT_NODE_PROLOG_KNOWLEDGE_ROOT,
                     PROJECT_NODE_PASCAL_TARGET,
                     PROJECT_NODE_PASCAL_TABLE_ROOT,
+                    PROJECT_NODE_WINDOWS_TARGET,
+                    PROJECT_NODE_RESOURCE_ROOT,
                 }
             )
             clear_action.setEnabled(removable_count > 0)
@@ -91822,6 +92597,28 @@ border: 2px solid #2a69aa;
                 return
             if kind in {PROJECT_NODE_MARKER_ROOT, PROJECT_NODE_MARKER_FILE}:
                 item.setExpanded(not item.isExpanded())
+                return
+            if kind == PROJECT_NODE_WINDOWS_TARGET:
+                item.setExpanded(not item.isExpanded())
+                return
+            if kind == PROJECT_NODE_RESOURCE_ROOT:
+                target = str(item.data(0, Qt.UserRole + 305) or "pe32").casefold()
+                self.show_windows_resource_editor(target=target)
+                item.setExpanded(True)
+                return
+            if kind == PROJECT_NODE_RESOURCE_FILE:
+                path_value = str(item.data(0, Qt.UserRole + 302) or "").strip()
+                target = str(item.data(0, Qt.UserRole + 305) or "pe32").casefold()
+                if not path_value:
+                    return
+                path = Path(path_value)
+                if not path.is_file():
+                    self.show_error(
+                        "Resourcen-Datei nicht gefunden",
+                        f"Datei nicht gefunden:\n{path}",
+                    )
+                    return
+                self.show_windows_resource_editor(path, target=target)
                 return
             if kind in {
                 PROJECT_NODE_PASCAL_TARGET,

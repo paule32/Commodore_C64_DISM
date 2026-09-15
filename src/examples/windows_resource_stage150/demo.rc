@@ -1,0 +1,66 @@
+#include <windows.h>
+#include "resource.h"
+
+LANGUAGE LANG_GERMAN, SUBLANG_GERMAN
+
+STRINGTABLE
+BEGIN
+    IDS_APP_TITLE "d64_dism Resource Compiler"
+END
+
+IDR_RAWDATA RCDATA
+BEGIN
+    0x1234, 42L, "Stage 150", L"Unicode"
+END
+
+IDM_MAIN MENU
+BEGIN
+    POPUP "Datei"
+    BEGIN
+        MENUITEM "Beenden", IDM_EXIT
+    END
+END
+
+IDR_ACCEL ACCELERATORS
+BEGIN
+    "Q", IDM_EXIT, VIRTKEY, CONTROL
+END
+
+IDR_TOOLBAR TOOLBAR 16, 15
+BEGIN
+    BUTTON IDM_EXIT
+    SEPARATOR
+END
+
+IDD_MAIN DIALOGEX 0, 0, 190, 82
+STYLE WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_SETFONT
+CAPTION "Resource Compiler"
+FONT 9, "Segoe UI", 400, 0, 1
+BEGIN
+    LTEXT "Interner RC/RES/COFF Compiler", IDC_HELLO, 8, 10, 170, 12
+    DEFPUSHBUTTON "OK", IDOK, 132, 58, 50, 14
+END
+
+IDR_VERSION VERSIONINFO
+FILEVERSION 1,0,0,0
+PRODUCTVERSION 1,0,0,0
+FILEFLAGSMASK 0x3fL
+FILEFLAGS 0
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+FILESUBTYPE 0
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040704B0"
+        BEGIN
+            VALUE "CompanyName", "dBase2Many"
+            VALUE "FileDescription", "Stage 150 Resource Compiler Example"
+            VALUE "FileVersion", "1.0.0.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0407, 1200
+    END
+END
