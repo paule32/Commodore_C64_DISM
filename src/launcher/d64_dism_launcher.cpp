@@ -7,6 +7,8 @@
 #include <iomanip>
 #include <algorithm>
 #include <cwctype>
+#include <cstdint>
+#include <cwchar>
 
 namespace {
 
@@ -14,6 +16,32 @@ const DWORD kPollMs = 500;
 const ULONGLONG kStartupGraceMs = 30000;
 const ULONGLONG kHeartbeatStaleMs = 15000;
 const DWORD kUserTerminateCode = 0xE0000001u;
+const wchar_t *kLauncherMutexName = L"Global\\d64_dism.start.launcher.v1";
+const DWORD kLaunchGuardVersion = 0x00010001u;
+
+class ScopedHandle {
+public:
+    ScopedHandle() : handle_(nullptr) {}
+    explicit ScopedHandle(HANDLE handle) : handle_(handle) {}
+    ~ScopedHandle() { reset(); }
+    ScopedHandle(const ScopedHandle &) = delete;
+    ScopedHandle &operator=(const ScopedHandle &) = delete;
+    HANDLE get() const { return handle_; }
+    HANDLE release() { HANDLE h = handle_; handle_ = nullptr; return h; }
+    void reset(HANDLE handle = nullptr) {
+        if (handle_ && handle_ != INVALID_HANDLE_VALUE) CloseHandle(handle_);
+        handle_ = handle;
+    }
+    explicit operator bool() const { return handle_ && handle_ != INVALID_HANDLE_VALUE; }
+private:
+    HANDLE handle_;
+};
+
+struct LaunchGuardBlock {
+    DWORD version;
+    DWORD launcherPid;
+    wchar_t token[128];
+};
 
 std::wstring module_path() {
     std::vector<wchar_t> buffer(32768, L'\0');
@@ -179,6 +207,46 @@ std::wstring make_token() {
     QueryPerformanceCounter(&counter);
     std::wostringstream out;
     out << GetCurrentProcessId() << L"-" << GetTickCount64() << L"-" << counter.QuadPart;
+    return out.str();
+}
+
+bool create_launch_guard(const std::wstring &token, ScopedHandle &mapping, std::wstring &error) {
+    SECURITY_ATTRIBUTES sa{};
+    sa.nLength = sizeof(sa);
+    sa.bInheritHandle = TRUE;
+
+    HANDLE raw = CreateFileMappingW(
+        INVALID_HANDLE_VALUE, &sa, PAGE_READWRITE, 0,
+        static_cast<DWORD>(sizeof(LaunchGuardBlock)), nullptr
+    );
+    if (!raw) {
+        error = L"Der Launcher-Startschutz konnte nicht angelegt werden. Win32-Fehler: "
+              + std::to_wstring(GetLastError());
+        return false;
+    }
+    mapping.reset(raw);
+
+    auto *view = static_cast<LaunchGuardBlock *>(MapViewOfFile(
+        mapping.get(), FILE_MAP_WRITE, 0, 0, sizeof(LaunchGuardBlock)
+    ));
+    if (!view) {
+        error = L"Der Launcher-Startschutz konnte nicht beschrieben werden. Win32-Fehler: "
+              + std::to_wstring(GetLastError());
+        mapping.reset();
+        return false;
+    }
+    ZeroMemory(view, sizeof(*view));
+    view->version = kLaunchGuardVersion;
+    view->launcherPid = GetCurrentProcessId();
+    wcsncpy(view->token, token.c_str(), (sizeof(view->token) / sizeof(view->token[0])) - 1);
+    view->token[(sizeof(view->token) / sizeof(view->token[0])) - 1] = L'\0';
+    UnmapViewOfFile(view);
+    return true;
+}
+
+std::wstring handle_as_decimal(HANDLE handle) {
+    std::wostringstream out;
+    out << static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(handle));
     return out.str();
 }
 
@@ -355,6 +423,30 @@ void show_crash_dialog(DWORD exitCode, const std::wstring &status,
 } // namespace
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
+    // Stage 155: genau eine start.exe-Instanz auf dem gesamten Windows-System.
+    // Der Global\-Namespace gilt auch über Terminal-Services-Sessions hinweg.
+    SECURITY_ATTRIBUTES mutexSa{};
+    mutexSa.nLength = sizeof(mutexSa);
+    mutexSa.bInheritHandle = TRUE;
+    ScopedHandle launcherMutex(CreateMutexW(&mutexSa, FALSE, kLauncherMutexName));
+    if (!launcherMutex) {
+        std::wostringstream msg;
+        msg << L"Der globale Launcher-Mutex konnte nicht erzeugt werden.\n\nWin32-Fehler: "
+            << GetLastError();
+        show_start_error(msg.str());
+        return 10;
+    }
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        MessageBoxW(
+            nullptr,
+            L"d64_dism wurde bereits über start.exe gestartet.\n"
+            L"Eine zweite Launcher-Instanz ist nicht zulässig.",
+            L"d64_dism Launcher",
+            MB_OK | MB_ICONINFORMATION | MB_TOPMOST | MB_SETFOREGROUND
+        );
+        return 11;
+    }
+
     int argc = 0;
     LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     if (!argv) {
@@ -382,10 +474,20 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
     std::wstring watchdogDir = make_watchdog_dir();
     std::wstring token = make_token();
     std::wstring parentPid = std::to_wstring(GetCurrentProcessId());
+    ScopedHandle launchGuard;
+    if (!create_launch_guard(token, launchGuard, error)) {
+        show_start_error(error);
+        LocalFree(argv);
+        cleanup_watchdog_dir(watchdogDir);
+        return 12;
+    }
+    std::wstring guardHandle = handle_as_decimal(launchGuard.get());
     SetEnvironmentVariableW(L"D64_WATCHDOG_DIR", watchdogDir.c_str());
     SetEnvironmentVariableW(L"D64_WATCHDOG_TOKEN", token.c_str());
     SetEnvironmentVariableW(L"D64_LAUNCHER_PID", parentPid.c_str());
     SetEnvironmentVariableW(L"D64_LAUNCHED_BY_WATCHDOG", L"1");
+    SetEnvironmentVariableW(L"D64_LAUNCH_GUARD_HANDLE", guardHandle.c_str());
+    SetEnvironmentVariableW(L"D64_LAUNCH_GUARD_TOKEN", token.c_str());
 
     std::wstring commandLine = build_command_line(target, options);
     LocalFree(argv);
@@ -396,7 +498,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
     si.cb = sizeof(si);
     PROCESS_INFORMATION pi{};
     DWORD creationFlags = CREATE_UNICODE_ENVIRONMENT;
-    BOOL inheritHandles = FALSE;
+    // Stage 155: der anonyme Launch-Guard-Handle muss an d64_dism.exe vererbt werden.
+    BOOL inheritHandles = TRUE;
     ChildIoHandles childIo;
 
     // Stage 140: Der Launcher und ein eventuell gestartetes python.exe bleiben

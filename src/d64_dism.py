@@ -823,6 +823,105 @@ _ORIGINAL_UNRAISABLEHOOK = getattr(sys, "unraisablehook", None)
 # Qt-Eventloop erkennen, ohne selbst Qt-Widgets aufzurufen.
 _INTERNAL_APPLICATION_WATCHDOG = None
 
+# Stage 155: d64_dism.exe accepts a GUI/CLI launch only from start.exe.
+# The launcher creates an inheritable anonymous file mapping and places a
+# random token plus its PID inside that memory.  A directly started frozen EXE
+# does not own that handle and therefore fails this check.  Running the Python
+# source remains possible for development/tests.
+_D64_LAUNCH_GUARD_VERSION = 0x00010001
+
+
+class _D64LaunchGuardBlock(ctypes.Structure):
+    _fields_ = [
+        ("version", wintypes.DWORD),
+        ("launcher_pid", wintypes.DWORD),
+        ("token", ctypes.c_wchar * 128),
+    ]
+
+
+def _show_launcher_guard_error(message: str) -> None:
+    if os.name == "nt":
+        try:
+            ctypes.windll.user32.MessageBoxW(
+                None,
+                str(message),
+                "d64_dism - Startschutz",
+                0x00000010 | 0x00040000,  # MB_ICONERROR | MB_TOPMOST
+            )
+            return
+        except Exception:
+            pass
+    print(message, file=sys.stderr)
+
+
+def _validate_frozen_launcher_guard() -> bool:
+    """Return True when a frozen Windows EXE inherited start.exe's guard."""
+    if os.name != "nt" or not bool(getattr(sys, "frozen", False)):
+        return True
+
+    handle_text = str(os.environ.get("D64_LAUNCH_GUARD_HANDLE", "")).strip()
+    expected_token = str(os.environ.get("D64_LAUNCH_GUARD_TOKEN", "")).strip()
+    expected_pid = str(os.environ.get("D64_LAUNCHER_PID", "")).strip()
+    watchdog_flag = str(os.environ.get("D64_LAUNCHED_BY_WATCHDOG", "")).strip()
+    if not handle_text or not expected_token or not expected_pid or watchdog_flag != "1":
+        _show_launcher_guard_error(
+            "d64_dism.exe darf nur über start.exe gestartet werden.\n\n"
+            "Bitte beenden Sie diesen Startversuch und verwenden Sie den Launcher."
+        )
+        return False
+
+    try:
+        raw_handle = int(handle_text, 10)
+        expected_pid_int = int(expected_pid, 10)
+    except ValueError:
+        _show_launcher_guard_error("Ungültige Launcher-Startdaten. Bitte start.exe verwenden.")
+        return False
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.MapViewOfFile.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, ctypes.c_size_t]
+    kernel32.MapViewOfFile.restype = ctypes.c_void_p
+    kernel32.UnmapViewOfFile.argtypes = [ctypes.c_void_p]
+    kernel32.UnmapViewOfFile.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    # FILE_MAP_READ = 0x0004.  The numeric HANDLE value is meaningful in the
+    # child only because CreateProcessW inherited the launcher mapping handle.
+    view = kernel32.MapViewOfFile(
+        wintypes.HANDLE(raw_handle), 0x0004, 0, 0, ctypes.sizeof(_D64LaunchGuardBlock)
+    )
+    if not view:
+        _show_launcher_guard_error(
+            "Der Launcher-Startschlüssel ist nicht verfügbar.\n"
+            "d64_dism.exe darf nur über start.exe gestartet werden."
+        )
+        return False
+
+    try:
+        block = _D64LaunchGuardBlock.from_address(view)
+        valid = (
+            int(block.version) == _D64_LAUNCH_GUARD_VERSION
+            and int(block.launcher_pid) == expected_pid_int
+            and str(block.token) == expected_token
+        )
+    finally:
+        kernel32.UnmapViewOfFile(view)
+        # The child does not need its copy after validation; start.exe keeps
+        # the original mapping alive for the entire application lifetime.
+        kernel32.CloseHandle(wintypes.HANDLE(raw_handle))
+
+    if not valid:
+        _show_launcher_guard_error(
+            "Der Launcher-Startschlüssel ist ungültig.\n"
+            "d64_dism.exe darf nur über start.exe gestartet werden."
+        )
+        return False
+
+    # Do not leave a reusable inherited handle value in the environment.
+    os.environ.pop("D64_LAUNCH_GUARD_HANDLE", None)
+    os.environ.pop("D64_LAUNCH_GUARD_TOKEN", None)
+    return True
+
 
 def _watchdog_atomic_write(path: Path, text: str) -> None:
     try:
@@ -72376,6 +72475,13 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             # Stage 151: Windows-Resourcen-Editor als eigene Vollflaechen-Arbeitsflaeche.
             self.windows_resource_editor_dock = None
             self.windows_resource_editor_widget = None
+            # Stage 155: separate Server-Arbeitsfenster unter Hauptmenü Server.
+            self.bind9_server_dock = None
+            self.bind9_server_widget = None
+            self.openssl_server_dock = None
+            self.openssl_server_widget = None
+            self.apache_server_dock = None
+            self.apache_server_widget = None
             self._windows_resource_editor_workspace_active = False
             self._windows_resource_editor_hidden_docks = []
             self._windows_resource_editor_replaced_central_widget = False
@@ -73368,6 +73474,28 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             self.resource_action = QAction("Resource Builder", self)
             self.resource_action.setStatusTip("Create resource files for your Application.")
             self.resource_action.triggered.connect(self.resource_dialog)
+
+            # Stage 155: Server-Werkzeuge als eigene Docking-Fenster.
+            self.bind9_server_action = QAction("DNS/DynDNS BIND9", self)
+            self.bind9_server_action.setObjectName("bind9_server_action")
+            self.bind9_server_action.setStatusTip(
+                "BIND9 DNS- und DynDNS-Konfiguration im Docking-Fenster verwalten"
+            )
+            self.bind9_server_action.triggered.connect(self.show_bind9_server_dock)
+
+            self.openssl_server_action = QAction("OpenSSL", self)
+            self.openssl_server_action.setObjectName("openssl_server_action")
+            self.openssl_server_action.setStatusTip(
+                "OpenSSL-CA und Zertifikate im Docking-Fenster verwalten"
+            )
+            self.openssl_server_action.triggered.connect(self.show_openssl_server_dock)
+
+            self.apache_server_action = QAction("Apache", self)
+            self.apache_server_action.setObjectName("apache_server_action")
+            self.apache_server_action.setStatusTip(
+                "Apache HTTP Server im Docking-Fenster verwalten"
+            )
+            self.apache_server_action.triggered.connect(self.show_apache_server_dock)
             
             self.localize_action = QAction("Localize PO->Mo ...", self)
             self.localize_action.setStatusTip("Übersetzungen für internationale Anwendungen")
@@ -78529,6 +78657,82 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     QTimer.singleShot(0, self._fill_e_baukasten_free_space)
 
         # -------------------------------------------------------------------
+        # Stage 155: BIND9 / OpenSSL / Apache Server-Docking-Fenster.
+        # -------------------------------------------------------------------
+        def _ensure_server_dock(self, kind: str):
+            kind = str(kind).strip().casefold()
+            mapping = {
+                "bind9": (
+                    "bind9_server_dock", "bind9_server_widget",
+                    "DNS/DynDNS BIND9", "bind9_server_dock", "Bind9ServerPanel",
+                ),
+                "openssl": (
+                    "openssl_server_dock", "openssl_server_widget",
+                    "OpenSSL", "openssl_server_dock", "OpenSSLServerPanel",
+                ),
+                "apache": (
+                    "apache_server_dock", "apache_server_widget",
+                    "Apache", "apache_server_dock", "ApacheServerPanel",
+                ),
+            }
+            if kind not in mapping:
+                raise ValueError(f"Unbekannter Server-Dock-Typ: {kind}")
+            dock_attr, widget_attr, title, object_name, class_name = mapping[kind]
+            existing = getattr(self, dock_attr, None)
+            if existing is not None:
+                return existing
+
+            from server_tools import Bind9ServerPanel, OpenSSLServerPanel, ApacheServerPanel
+            panel_class = {
+                "Bind9ServerPanel": Bind9ServerPanel,
+                "OpenSSLServerPanel": OpenSSLServerPanel,
+                "ApacheServerPanel": ApacheServerPanel,
+            }[class_name]
+            widget = panel_class(self, self.settings, self)
+            widget.set_dark_mode(self.dark_mode_enabled)
+
+            dock = QDockWidget(title, self)
+            dock.setObjectName(object_name)
+            dock.setFeatures(self._dock_features())
+            dock.setAllowedAreas(
+                Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea
+                | Qt.TopDockWidgetArea | Qt.BottomDockWidgetArea
+            )
+            dock.setMinimumWidth(520)
+            dock.setMinimumHeight(360)
+            dock.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            dock.setWidget(widget)
+            dock.setTitleBarWidget(DockTitleBar(dock))
+            self.addDockWidget(Qt.RightDockWidgetArea, dock)
+            setattr(self, dock_attr, dock)
+            setattr(self, widget_attr, widget)
+            self._assign_widget_property_ids(dock)
+            dock.hide()
+            return dock
+
+        def _show_server_dock(self, kind: str) -> None:
+            dock = self._ensure_server_dock(kind)
+            widget = dock.widget()
+            if hasattr(widget, "set_dark_mode"):
+                widget.set_dark_mode(self.dark_mode_enabled)
+            if dock.isFloating():
+                dock.show()
+            else:
+                dock.show()
+                dock.raise_()
+                self.resizeDocks([dock], [max(560, min(900, self.width() // 2))], Qt.Horizontal)
+            self.statusBar().showMessage(f"{dock.windowTitle()} geöffnet", 4000)
+
+        def show_bind9_server_dock(self, _checked: bool = False) -> None:
+            self._show_server_dock("bind9")
+
+        def show_openssl_server_dock(self, _checked: bool = False) -> None:
+            self._show_server_dock("openssl")
+
+        def show_apache_server_dock(self, _checked: bool = False) -> None:
+            self._show_server_dock("apache")
+
+        # -------------------------------------------------------------------
         # Stage ASM 77: HTML5-editor.net inspirierter visueller HTML Editor.
         # -------------------------------------------------------------------
         def _ensure_html_editor_dock(self) -> None:
@@ -81104,6 +81308,13 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             self.project_menu.addAction(self.project_open_action)
             self.project_menu.addAction(self.project_close_action)
 
+            # Stage 155: native Server-Verwaltung als eigener Hauptmenüpunkt.
+            self.server_menu = self.main_menu_bar.addMenu("&Server")
+            self.server_menu.setObjectName("server_menu")
+            self.server_menu.addAction(self.bind9_server_action)
+            self.server_menu.addAction(self.openssl_server_action)
+            self.server_menu.addAction(self.apache_server_action)
+
             self.favorites_menu = self.main_menu_bar.addMenu("&Favoriten")
             self._refresh_favorites_menu()
             self.dism_menu = self.main_menu_bar.addMenu("&DISM")
@@ -82047,6 +82258,16 @@ border: 2px solid #2a69aa;
             resource_editor = getattr(self, "windows_resource_editor_widget", None)
             if resource_editor is not None:
                 resource_editor.set_dark_mode(enabled)
+
+            # Stage 155: Server-Docks bleiben beim globalen Theme-Wechsel synchron.
+            for server_widget_name in (
+                "bind9_server_widget",
+                "openssl_server_widget",
+                "apache_server_widget",
+            ):
+                server_widget = getattr(self, server_widget_name, None)
+                if server_widget is not None and hasattr(server_widget, "set_dark_mode"):
+                    server_widget.set_dark_mode(enabled)
 
             # Stage 161: die WFM-Quellstruktur ist ein normales QTreeWidget
             # und besitzt deshalb einen eigenen Dark-/Light-Mode-Stil.
@@ -97755,6 +97976,8 @@ def main(
     application=None,
     window_shown_callback=None,
 ) -> int:
+    if not _validate_frozen_launcher_guard():
+        return 13
     args = parse_arguments(argv)
     if args.compact_pe32 is not None:
         if args.directory is not None:

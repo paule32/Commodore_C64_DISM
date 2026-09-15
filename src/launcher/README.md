@@ -1,4 +1,4 @@
-# d64_dism Launcher / externer Watchdog (Stage 140)
+# d64_dism Launcher / externer Watchdog (Stage 155)
 
 Der Launcher ist absichtlich reines Win32-C++ und benutzt weder Qt noch Python.
 Er startet `d64_dism.exe` bzw. als Fallback `python.exe d64_dism.py`, ueberwacht
@@ -15,7 +15,7 @@ werden nach `d64_dism_console.log` neben der Anwendung geschrieben.
 Soll die Konsolenausgabe sichtbar sein:
 
 ```text
-d64_dism_launcher.exe --console
+start.exe --console
 ```
 
 Der Launcher versucht zuerst, sich an die Konsole der aufrufenden Shell
@@ -46,14 +46,14 @@ werden. Der Launcher selbst wird mit `-mwindows` als Windows-GUI-Anwendung gebau
 
 ## Start
 
-Liegt `d64_dism_launcher.exe` neben `d64_dism.exe`, wird die EXE gestartet.
+Liegt `start.exe` neben `d64_dism.exe`, wird die EXE gestartet.
 Andernfalls wird `d64_dism.py` ueber `D64_PYTHON`, `python.exe` oder `py.exe`
 gestartet.
 
 Explizites Ziel:
 
 ```text
-d64_dism_launcher.exe --app T:\Pfad\d64_dism.py [--console] [--] [weitere Argumente]
+start.exe --app T:\Pfad\d64_dism.py [--console] [--] [weitere Argumente]
 ```
 
 Der Launcher setzt fuer das Child temporaer:
@@ -62,6 +62,14 @@ Der Launcher setzt fuer das Child temporaer:
 - `D64_WATCHDOG_TOKEN`
 - `D64_LAUNCHER_PID`
 - `D64_LAUNCHED_BY_WATCHDOG=1`
+- `D64_LAUNCH_GUARD_HANDLE`
+- `D64_LAUNCH_GUARD_TOKEN`
+
+Stage 155 haelt zusaetzlich `Global\d64_dism.start.launcher.v1` als benannten
+Windows-Mutex offen. Solange `start.exe` laeuft, beendet sich jede zweite
+Launcher-Instanz sofort. Fuer eine gepackte `d64_dism.exe` erzeugt `start.exe`
+außerdem ein anonymes, vererbbares Memory-Mapping. Die EXE prueft dessen Token
+beim Start; ein normaler Direktstart der EXE wird abgewiesen.
 
 Der Qt-GUI-Thread aktualisiert `heartbeat.txt` jede Sekunde. Bleibt der
 Heartbeat >15 Sekunden stehen, bietet der Launcher nativ Abbrechen,
