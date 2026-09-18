@@ -67,6 +67,10 @@ Preview - Resource-Editor / Compiler
 ![Preview](img/screen0019.png)
 
 
+Preview - Prime Solver
+![Preview](img/screen0020.png)
+
+
 Preview - E-Baukasten
 ![Preview](img/screen0018.png)
 

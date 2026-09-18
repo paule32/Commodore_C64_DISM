@@ -22,6 +22,8 @@
 #  * Amiga-CPU-Profile mk68000..mk68060 und optionale 68881/68882-FPU
 #  * integrierter IA-32-/PE32-Assembler mit Microsoft-COFF32-Objekten
 #  * interner Windows RC/RES-Compiler mit Microsoft-COFF32/COFF64-Resource-Objekten und Resourcen-Editor
+#  * Stage ASM 156: Mathematik -> Fakten -> Zahlen -> Primzahlen mit Prime-Constellation-Filtern und Log-Rotation.
+#  * Stage ASM 160: Prime-Solver um 8192 Bit und 16284 Bit erweitert.
 #  * Stage 151: Resourcen-Editor als Vollflaechen-Dock, Hauptmenue-Kontext, Dark-Mode, Mini-Map und RC-Highlighting
 #  * integrierter COFF32-.a-Archivierer und PE32-Linker samt DLL-Imports/-Exports
 #  * Windows-Grafikziel fuer 320x200 ueber Direct2D oder Direct3D
@@ -113,9 +115,9 @@
 #    Pascal-Runtimeblöcke besitzen keine COFF-/PE-Rohdaten mehr.
 #  * Stage 239: deutsche Qt-Standard-Kontextmenüs in DBF-Grid-Editoren;
 #    Undo/Redo/Cut/Copy/Paste/Delete/Select All werden übersetzt, Shortcuts bleiben.
-#  * Stage 236: Pascal PE32/PE32+ Projektzweig „Tabellen“ mit DBF-Hinzufügen,
+#  * Stage 236: Pascal PE32/PE32+ Projektzweig "Tabellen" mit DBF-Hinzufügen,
 #    Projektpersistenz und Doppelklick in Tabellen-Designer/-Editor.
-#  * Stage 255: Projekt-Hauptknoten „Commodore C= 64“ direkt unter Bookmarks.
+#  * Stage 255: Projekt-Hauptknoten "Commodore C= 64" direkt unter Bookmarks.
 #  * Stage ASM 30: dBase-Bericht-Builder mit Kopf/Detail/Fuss, PDF/Druck und Projektknoten Berichte.
 #  * Stage ASM 32: Report-PDF-Fontskalierung korrigiert; 10 pt bleiben physische 10 pt.
 #  * Stage ASM 29: dBase-Projektbaum mit Programme/Formulare/Tabellen/Abfragen/Objekt-/Archiv-Dateien.
@@ -162,7 +164,7 @@
 #
 #  * PROLOG Wissen-Browser Stage 71: Stage-70 Multi-Scroll bleibt erhalten;
 #    Alternativen-ComboBox als Viewport-Overlay exakt unter dem Parent-Button,
-#    Dropdown beim ▼-Klick sofort geöffnet, lokaler Button "Prüfen +" darunter.
+#    Dropdown beim Klick sofort geöffnet, lokaler Button "Prüfen +" darunter.
 #    Layout-Verhalten orientiert sich am hochgeladenen Stage-62-Referenzstand.
 #  * PROLOG Wissen-Browser Stage 70: festes Overlay-Panel unter dem Parent-Button
 #  * Stage 69: sichtbare Alternativen-ComboBox durch explizite FlowLayout-Hoehe
@@ -197,6 +199,7 @@ import argparse
 import ast
 import base64
 import configparser
+import concurrent.futures
 import ctypes
 from ctypes import wintypes
 import hashlib
@@ -204,6 +207,7 @@ import html
 import inspect
 import importlib
 import random
+import secrets
 
 from html.parser import HTMLParser
 from collections import defaultdict
@@ -227,7 +231,7 @@ import locale
 import gettext
 
 import time
-import datetime as dt
+import datetime  as dt
 import zlib      as _d64info_zlib
 import base64    as _d64info_base64
 
@@ -535,6 +539,92 @@ DOC_ICON_COLORS = {
     "check-24.svg": "#3fb950",
     "bug-24.svg"  : "#f85149",
     "clock-24.svg": "#d2a8ff",
+}
+
+# ---------------------------------------------------------------------------
+# ISO-3166-1 Alpha-2 country codes used by X.509/OpenSSL C=.
+# The display names are deliberately German because the surrounding UI
+# is German.
+# ---------------------------------------------------------------------------
+CA_COUNTRY_CODES = [
+    ("AT", "Österreich"), ("AU", "Australien"), ("BE", "Belgien"),
+    ("BR", "Brasilien"), ("CA", "Kanada"), ("CH", "Schweiz"),
+    ("CN", "China"), ("CZ", "Tschechien"), ("DE", "Deutschland"),
+    ("DK", "Dänemark"), ("EE", "Estland"), ("ES", "Spanien"),
+    ("FI", "Finnland"), ("FR", "Frankreich"), ("GB", "Vereinigtes Königreich"),
+    ("GR", "Griechenland"), ("HK", "Hongkong"), ("HR", "Kroatien"),
+    ("HU", "Ungarn"), ("IE", "Irland"), ("IL", "Israel"),
+    ("IN", "Indien"), ("IS", "Island"), ("IT", "Italien"),
+    ("JP", "Japan"), ("KR", "Südkorea"), ("LI", "Liechtenstein"),
+    ("LT", "Litauen"), ("LU", "Luxemburg"), ("LV", "Lettland"),
+    ("MX", "Mexiko"), ("NL", "Niederlande"), ("NO", "Norwegen"),
+    ("NZ", "Neuseeland"), ("PL", "Polen"), ("PT", "Portugal"),
+    ("RO", "Rumänien"), ("SE", "Schweden"), ("SG", "Singapur"),
+    ("SI", "Slowenien"), ("SK", "Slowakei"), ("TR", "Türkei"),
+    ("TW", "Taiwan"), ("UA", "Ukraine"), ("US", "Vereinigte Staaten"),
+    ("ZA", "Südafrika"),
+]
+
+# Country-dependent State/Province/Canton lists.  The tuple value is
+# (short code, X.509 display value).  X.509 ST= receives the display value.
+CA_SUBDIVISIONS = {
+    "DE": [
+        ("BW", "Baden-Württemberg"), ("BY", "Bayern"), ("BE", "Berlin"),
+        ("BB", "Brandenburg"), ("HB", "Bremen"), ("HH", "Hamburg"),
+        ("HE", "Hessen"), ("MV", "Mecklenburg-Vorpommern"),
+        ("NI", "Niedersachsen"), ("NW", "Nordrhein-Westfalen"),
+        ("RP", "Rheinland-Pfalz"), ("SL", "Saarland"), ("SN", "Sachsen"),
+        ("ST", "Sachsen-Anhalt"), ("SH", "Schleswig-Holstein"),
+        ("TH", "Thüringen"),
+    ],
+    "AT": [
+        ("1", "Burgenland"), ("2", "Kärnten"), ("3", "Niederösterreich"),
+        ("4", "Oberösterreich"), ("5", "Salzburg"), ("6", "Steiermark"),
+        ("7", "Tirol"), ("8", "Vorarlberg"), ("9", "Wien"),
+    ],
+    "CH": [
+        ("AG", "Aargau"), ("AI", "Appenzell Innerrhoden"),
+        ("AR", "Appenzell Ausserrhoden"), ("BE", "Bern"),
+        ("BL", "Basel-Landschaft"), ("BS", "Basel-Stadt"),
+        ("FR", "Freiburg"), ("GE", "Genf"), ("GL", "Glarus"),
+        ("GR", "Graubünden"), ("JU", "Jura"), ("LU", "Luzern"),
+        ("NE", "Neuenburg"), ("NW", "Nidwalden"), ("OW", "Obwalden"),
+        ("SG", "St. Gallen"), ("SH", "Schaffhausen"), ("SO", "Solothurn"),
+        ("SZ", "Schwyz"), ("TG", "Thurgau"), ("TI", "Tessin"),
+        ("UR", "Uri"), ("VD", "Waadt"), ("VS", "Wallis"),
+        ("ZG", "Zug"), ("ZH", "Zürich"),
+    ],
+    "US": [
+        ("AL", "Alabama"), ("AK", "Alaska"), ("AZ", "Arizona"), ("AR", "Arkansas"),
+        ("CA", "California"), ("CO", "Colorado"), ("CT", "Connecticut"),
+        ("DE", "Delaware"), ("DC", "District of Columbia"), ("FL", "Florida"),
+        ("GA", "Georgia"), ("HI", "Hawaii"), ("ID", "Idaho"), ("IL", "Illinois"),
+        ("IN", "Indiana"), ("IA", "Iowa"), ("KS", "Kansas"), ("KY", "Kentucky"),
+        ("LA", "Louisiana"), ("ME", "Maine"), ("MD", "Maryland"),
+        ("MA", "Massachusetts"), ("MI", "Michigan"), ("MN", "Minnesota"),
+        ("MS", "Mississippi"), ("MO", "Missouri"), ("MT", "Montana"),
+        ("NE", "Nebraska"), ("NV", "Nevada"), ("NH", "New Hampshire"),
+        ("NJ", "New Jersey"), ("NM", "New Mexico"), ("NY", "New York"),
+        ("NC", "North Carolina"), ("ND", "North Dakota"), ("OH", "Ohio"),
+        ("OK", "Oklahoma"), ("OR", "Oregon"), ("PA", "Pennsylvania"),
+        ("RI", "Rhode Island"), ("SC", "South Carolina"), ("SD", "South Dakota"),
+        ("TN", "Tennessee"), ("TX", "Texas"), ("UT", "Utah"), ("VT", "Vermont"),
+        ("VA", "Virginia"), ("WA", "Washington"), ("WV", "West Virginia"),
+        ("WI", "Wisconsin"), ("WY", "Wyoming"),
+    ],
+    "CA": [
+        ("AB", "Alberta"), ("BC", "British Columbia"), ("MB", "Manitoba"),
+        ("NB", "New Brunswick"), ("NL", "Newfoundland and Labrador"),
+        ("NS", "Nova Scotia"), ("NT", "Northwest Territories"), ("NU", "Nunavut"),
+        ("ON", "Ontario"), ("PE", "Prince Edward Island"), ("QC", "Quebec"),
+        ("SK", "Saskatchewan"), ("YT", "Yukon"),
+    ],
+    "AU": [
+        ("ACT", "Australian Capital Territory"), ("NSW", "New South Wales"),
+        ("NT", "Northern Territory"), ("QLD", "Queensland"),
+        ("SA", "South Australia"), ("TAS", "Tasmania"),
+        ("VIC", "Victoria"), ("WA", "Western Australia"),
+    ],
 }
 
 def install_doxygen_messagebox_theme(host=None):
@@ -1322,6 +1412,1331 @@ def _theme_original_about_qt_dialog(parent=None):
             widget.update()
         except Exception:
             pass
+
+# ---------------------------------------------------------------------------
+# Server Hauptmenü ...
+# ---------------------------------------------------------------------------
+def _quote_display(value: str) -> str:
+    if not value:
+        return '""'
+    return f'"{value}"' if any(ch.isspace() for ch in value) else value
+
+
+class ServerPanelBase(QWidget):
+    """Common themed process runner and persistent field helpers."""
+
+    settings_prefix = "server/base"
+
+    def __init__(self, host, settings: QSettings, parent=None):
+        super().__init__(parent)
+        self.host = host
+        self.settings = settings
+        self._dark_mode = bool(getattr(host, "dark_mode_enabled", True))
+        self._process: Optional[QProcess] = None
+        self._output = QPlainTextEdit(self)
+        self._output.setReadOnly(True)
+        fixed = QFont("Consolas")
+        fixed.setStyleHint(QFont.Monospace)
+        self._output.setFont(fixed)
+
+    def _key(self, name: str) -> str:
+        return f"{self.settings_prefix}/{name}"
+
+    def _load_text(self, name: str, default: str = "") -> str:
+        return str(self.settings.value(self._key(name), default) or default)
+
+    def _store_text(self, name: str, value: str) -> None:
+        self.settings.setValue(self._key(name), value)
+        self.settings.sync()
+
+    def _bound_line_edit(self, name: str, default: str = "") -> QLineEdit:
+        edit = QLineEdit(self._load_text(name, default), self)
+        edit.editingFinished.connect(
+            lambda e=edit, n=name: self._store_text(n, e.text().strip())
+        )
+        return edit
+
+    def _file_row(self, name: str, default: str = "", file_filter: str = "Alle Dateien (*)"):
+        edit = self._bound_line_edit(name, default)
+        button = QPushButton("…", self)
+        button.setFixedWidth(34)
+        button.clicked.connect(lambda: self._choose_file(edit, name, file_filter))
+        row = QWidget(self)
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        layout.addWidget(edit, 1)
+        layout.addWidget(button)
+        return row, edit
+
+    def _directory_row(self, name: str, default: str = ""):
+        edit = self._bound_line_edit(name, default)
+        button = QPushButton("…", self)
+        button.setFixedWidth(34)
+        button.clicked.connect(lambda: self._choose_directory(edit, name))
+        row = QWidget(self)
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        layout.addWidget(edit, 1)
+        layout.addWidget(button)
+        return row, edit
+
+    def _new_file_dialog(self, title: str) -> QFileDialog:
+        dialog = QFileDialog(self, title)
+        dialog.setOption(QFileDialog.DontUseNativeDialog, True)
+        dialog.setFileMode(QFileDialog.ExistingFile)
+        dialog.setPalette(self.palette())
+        return dialog
+
+    def _choose_file(self, edit: QLineEdit, setting_name: str, file_filter: str) -> None:
+        dialog = self._new_file_dialog("Datei auswählen")
+        dialog.setNameFilter(file_filter)
+        current = edit.text().strip()
+        if current:
+            current_path = Path(current)
+            if current_path.parent.exists():
+                dialog.setDirectory(str(current_path.parent))
+                dialog.selectFile(current_path.name)
+        if dialog.exec_() != QFileDialog.Accepted:
+            return
+        files = dialog.selectedFiles()
+        if not files:
+            return
+        edit.setText(files[0])
+        self._store_text(setting_name, files[0])
+
+    def _choose_directory(self, edit: QLineEdit, setting_name: str) -> None:
+        dialog = QFileDialog(self, "Verzeichnis auswählen")
+        dialog.setOption(QFileDialog.DontUseNativeDialog, True)
+        dialog.setFileMode(QFileDialog.Directory)
+        dialog.setOption(QFileDialog.ShowDirsOnly, True)
+        current = edit.text().strip()
+        if current and Path(current).exists():
+            dialog.setDirectory(current)
+        if dialog.exec_() != QFileDialog.Accepted:
+            return
+        files = dialog.selectedFiles()
+        if not files:
+            return
+        edit.setText(files[0])
+        self._store_text(setting_name, files[0])
+
+    def append_output(self, text: str) -> None:
+        if not text:
+            return
+        self._output.appendPlainText(text.rstrip())
+        bar = self._output.verticalScrollBar()
+        bar.setValue(bar.maximum())
+
+    def run_program(self, program: str, arguments: list[str], cwd: str = "") -> None:
+        program = str(program or "").strip()
+        if not program:
+            self._message("Programm fehlt", "Bitte zuerst den Programmpfad einstellen.", QMessageBox.Warning)
+            return
+        if self._process is not None and self._process.state() != QProcess.NotRunning:
+            self._message("Prozess läuft", "Es läuft bereits ein Server-Werkzeug.", QMessageBox.Information)
+            return
+        self.append_output("> " + " ".join([_quote_display(program)] + [_quote_display(a) for a in arguments]))
+        proc = QProcess(self)
+        proc.setProcessChannelMode(QProcess.MergedChannels)
+        if cwd:
+            proc.setWorkingDirectory(cwd)
+        proc.readyReadStandardOutput.connect(lambda p=proc: self._read_process_output(p))
+        proc.finished.connect(lambda code, status, p=proc: self._process_finished(p, code, status))
+        proc.errorOccurred.connect(lambda error, p=proc: self._process_error(p, error))
+        self._process = proc
+        proc.start(program, arguments)
+
+    def _read_process_output(self, proc: QProcess) -> None:
+        data = bytes(proc.readAllStandardOutput()).decode("utf-8", errors="replace")
+        self.append_output(data)
+
+    def _process_finished(self, proc: QProcess, code: int, status) -> None:
+        self._read_process_output(proc)
+        self.append_output(f"[Exit {code}]")
+        if self._process is proc:
+            self._process = None
+        proc.deleteLater()
+
+    def _process_error(self, proc: QProcess, error) -> None:
+        self.append_output(f"[QProcess-Fehler {int(error)}] {proc.errorString()}")
+
+    def _message(self, title: str, text: str, icon=QMessageBox.Information) -> None:
+        if hasattr(self.host, "_show_message_box"):
+            self.host._show_message_box(icon, title, text)
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle(title)
+        box.setText(text)
+        box.setIcon(icon)
+        box.setStandardButtons(QMessageBox.Ok)
+        box.exec_()
+
+    def set_dark_mode(self, dark: bool) -> None:
+        self._dark_mode = bool(dark)
+        if self._dark_mode:
+            self.setStyleSheet("""
+QWidget { color: #f0f0f0; background: #202020; }
+QGroupBox { border: 1px solid #505050; border-radius: 4px; margin-top: 10px; padding-top: 8px; font-weight: bold; }
+QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; }
+QLineEdit, QPlainTextEdit, QComboBox, QSpinBox { background: #151515; color: #f4f4f4; border: 1px solid #565656; selection-background-color: #365f85; }
+QPushButton { background: #303030; color: #ffffff; border: 1px solid #595959; border-radius: 3px; padding: 5px 9px; }
+QPushButton:hover { background: #3c3c3c; }
+QTabWidget::pane { border: 1px solid #4b4b4b; }
+QTabBar::tab { background: #292929; color: #e8e8e8; border: 1px solid #484848; padding: 6px 10px; }
+QTabBar::tab:selected { background: #3a3a3a; color: #ffffff; }
+QScrollArea { border: 0; }
+""")
+        else:
+            self.setStyleSheet("""
+QWidget { color: #111111; background: #f3f3f3; }
+QGroupBox { border: 1px solid #b7b7b7; border-radius: 4px; margin-top: 10px; padding-top: 8px; font-weight: bold; }
+QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; }
+QLineEdit, QPlainTextEdit, QComboBox, QSpinBox { background: #ffffff; color: #111111; border: 1px solid #a8a8a8; selection-background-color: #cfe6ff; }
+QPushButton { background: #f7f7f7; color: #111111; border: 1px solid #a9a9a9; border-radius: 3px; padding: 5px 9px; }
+QPushButton:hover { background: #e9f2fb; }
+QTabWidget::pane { border: 1px solid #b7b7b7; }
+QTabBar::tab { background: #e7e7e7; color: #111111; border: 1px solid #b9b9b9; padding: 6px 10px; }
+QTabBar::tab:selected { background: #ffffff; }
+QScrollArea { border: 0; }
+""")
+
+# ---------------------------------------------------------------------------
+# Stage-155 regression markers; die genannten Seiten liegen ab Stage 157
+# als Untertabs innerhalb des Haupttabs "Setup":
+# tabs.addTab(dns, "DNS")
+# tabs.addTab(ddns, "DynDNS")
+# tabs.addTab(ca_scroll, "Client Authority CA")
+# tabs.addTab(cert_page, "Zertifikate")
+# ---------------------------------------------------------------------------
+class Bind9ServerPanel(ServerPanelBase):
+    settings_prefix = "server/bind9"
+
+    def __init__(self, host, settings: QSettings, parent=None):
+        super().__init__(host, settings, parent)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(8, 8, 8, 8)
+
+        # Stage 157: alle Server-Werkzeuge besitzen dieselben beiden Haupttabs.
+        tabs = QTabWidget(self)
+        self.main_tabs = tabs
+        root.addWidget(tabs, 1)
+
+        # ---------------------------------------------------------------
+        # Setup: Laufzeit-/DNS-/DynDNS-Konfiguration.
+        # ---------------------------------------------------------------
+        setup_page = QWidget(tabs)
+        setup_layout = QVBoxLayout(setup_page)
+        setup_layout.setContentsMargins(6, 6, 6, 6)
+
+        setup_scroll = QScrollArea(setup_page)
+        setup_scroll.setWidgetResizable(True)
+        setup_body = QWidget(setup_scroll)
+        setup_body_layout = QVBoxLayout(setup_body)
+
+        # Die bisherigen DNS/DynDNS-Ansichten bleiben als Untergliederung
+        # des neuen Haupttabs "Setup" erhalten.
+        setup_sections = QTabWidget(setup_body)
+
+        dns = QWidget(setup_sections)
+        dns_layout = QVBoxLayout(dns)
+        config = QGroupBox("DNS-Konfiguration", dns)
+        form = QFormLayout(config)
+        conf_row, self.conf_edit = self._file_row(
+            "named_conf", "", "BIND Konfiguration (*.conf);;Alle Dateien (*)"
+        )
+        zones_row, self.zones_edit = self._directory_row("zone_dir", "")
+        form.addRow("named.conf", conf_row)
+        form.addRow("Zonen-Verzeichnis", zones_row)
+        dns_layout.addWidget(config)
+
+        buttons = QHBoxLayout()
+        for text, callback in (
+            ("Konfiguration prüfen", self._check_config),
+            ("Status", self._status),
+            ("Reload", self._reload),
+        ):
+            button = QPushButton(text, dns)
+            button.clicked.connect(callback)
+            buttons.addWidget(button)
+        buttons.addStretch(1)
+        dns_layout.addLayout(buttons)
+        dns_layout.addStretch(1)
+        setup_sections.addTab(dns, "DNS")
+
+        ddns = QWidget(setup_sections)
+        ddns_layout = QVBoxLayout(ddns)
+        ddns_group = QGroupBox("Dynamische DNS-Aktualisierung", ddns)
+        ddns_form = QFormLayout(ddns_group)
+        key_row, self.tsig_key_edit = self._file_row(
+            "tsig_key", "", "TSIG Key (*.key *.private);;Alle Dateien (*)"
+        )
+        self.ddns_server_edit = self._bound_line_edit("ddns_server", "127.0.0.1")
+        self.ddns_zone_edit = self._bound_line_edit("ddns_zone", "local")
+        self.ddns_host_edit = self._bound_line_edit("ddns_host", "host.local")
+        self.ddns_address_edit = self._bound_line_edit("ddns_address", "127.0.0.1")
+        ddns_form.addRow("TSIG-Key", key_row)
+        ddns_form.addRow("DNS-Server", self.ddns_server_edit)
+        ddns_form.addRow("Zone", self.ddns_zone_edit)
+        ddns_form.addRow("Hostname", self.ddns_host_edit)
+        ddns_form.addRow("Adresse", self.ddns_address_edit)
+        ddns_layout.addWidget(ddns_group)
+        hint = QLabel(
+            "Hier werden Zone, Zielhost und TSIG-Daten für spätere nsupdate-Aufrufe "
+            "verwaltet. Die Programmpfade selbst liegen im Tab Installation.", ddns
+        )
+        hint.setWordWrap(True)
+        ddns_layout.addWidget(hint)
+        ddns_layout.addStretch(1)
+        setup_sections.addTab(ddns, "DynDNS")
+
+        setup_body_layout.addWidget(setup_sections, 1)
+        setup_body_layout.addWidget(QLabel("Ausgabe", setup_body))
+        setup_body_layout.addWidget(self._output, 1)
+        setup_scroll.setWidget(setup_body)
+        setup_layout.addWidget(setup_scroll, 1)
+        tabs.addTab(setup_page, "Setup")
+
+        # ---------------------------------------------------------------
+        # Installation: alle BIND9-Programm-/Installationspfade.
+        # ---------------------------------------------------------------
+        install_scroll = QScrollArea(tabs)
+        install_scroll.setWidgetResizable(True)
+        install_page = QWidget(install_scroll)
+        install_layout = QVBoxLayout(install_page)
+
+        install_group = QGroupBox("BIND9 Installation", install_page)
+        install_form = QFormLayout(install_group)
+        install_dir_row, self.install_dir_edit = self._directory_row("install_dir", "")
+        named_row, self.named_edit = self._file_row(
+            "named", "named.exe", "BIND named (named.exe);;Programme (*.exe);;Alle Dateien (*)"
+        )
+        rndc_row, self.rndc_edit = self._file_row(
+            "rndc", "rndc.exe", "BIND rndc (rndc.exe);;Programme (*.exe);;Alle Dateien (*)"
+        )
+        nsupdate_row, self.nsupdate_edit = self._file_row(
+            "nsupdate", "nsupdate.exe", "BIND nsupdate (nsupdate.exe);;Programme (*.exe);;Alle Dateien (*)"
+        )
+        installer_row, self.installer_edit = self._file_row(
+            "installer", "", "Installer/Archiv-Helfer (*.exe *.msi);;Alle Dateien (*)"
+        )
+        install_form.addRow("Installationsverzeichnis", install_dir_row)
+        install_form.addRow("named.exe", named_row)
+        install_form.addRow("rndc.exe", rndc_row)
+        install_form.addRow("nsupdate.exe", nsupdate_row)
+        install_form.addRow("Installer", installer_row)
+        install_layout.addWidget(install_group)
+
+        install_buttons = QHBoxLayout()
+        auto_paths = QPushButton("Programmpfade übernehmen", install_page)
+        auto_paths.clicked.connect(self._apply_install_directory)
+        install_buttons.addWidget(auto_paths)
+        version = QPushButton("Version prüfen", install_page)
+        version.clicked.connect(self._show_version)
+        install_buttons.addWidget(version)
+        run_installer = QPushButton("Installer starten", install_page)
+        run_installer.clicked.connect(self._run_installer)
+        install_buttons.addWidget(run_installer)
+        install_buttons.addStretch(1)
+        install_layout.addLayout(install_buttons)
+
+        install_hint = QLabel(
+            "Der Editor bündelt hier nur Installation, Pfade und Prüfung. "
+            "BIND9 selbst wird nicht mit d64_dism ausgeliefert.", install_page
+        )
+        install_hint.setWordWrap(True)
+        install_layout.addWidget(install_hint)
+        install_layout.addStretch(1)
+        install_scroll.setWidget(install_page)
+        tabs.addTab(install_scroll, "Installation")
+        self.set_dark_mode(self._dark_mode)
+
+    def _store_path_edit(self, name: str, edit: QLineEdit, value: Path) -> None:
+        text = str(value)
+        edit.setText(text)
+        self._store_text(name, text)
+
+    def _apply_install_directory(self):
+        base_text = self.install_dir_edit.text().strip()
+        if not base_text:
+            self._message("BIND9 Installation", "Bitte zuerst ein Installationsverzeichnis auswählen.", QMessageBox.Warning)
+            return
+        base = Path(base_text)
+        binary_dir = base / "bin"
+        if not binary_dir.exists():
+            binary_dir = base
+        self._store_path_edit("named", self.named_edit, binary_dir / "named.exe")
+        self._store_path_edit("rndc", self.rndc_edit, binary_dir / "rndc.exe")
+        self._store_path_edit("nsupdate", self.nsupdate_edit, binary_dir / "nsupdate.exe")
+        self.append_output(f"BIND9 Programmpfade übernommen: {binary_dir}")
+
+    def _run_installer(self):
+        installer = self.installer_edit.text().strip()
+        if not installer:
+            self._message("BIND9 Installation", "Bitte zuerst einen Installer auswählen.", QMessageBox.Warning)
+            return
+        self.run_program(installer, [])
+
+    def _show_version(self):
+        self.run_program(self.named_edit.text(), ["-v"])
+
+    def _check_config(self):
+        named = self.named_edit.text().strip()
+        check = str(Path(named).with_name("named-checkconf.exe")) if named else "named-checkconf.exe"
+        args = [self.conf_edit.text().strip()] if self.conf_edit.text().strip() else []
+        self.run_program(check, args)
+
+    def _status(self):
+        self.run_program(self.rndc_edit.text(), ["status"])
+
+    def _reload(self):
+        self.run_program(self.rndc_edit.text(), ["reload"])
+
+
+class OpenSSLServerPanel(ServerPanelBase):
+    settings_prefix = "server/openssl"
+
+    def __init__(self, host, settings: QSettings, parent=None):
+        super().__init__(host, settings, parent)
+        self._ca_session_passwords: dict[str, str] = {}
+        root = QVBoxLayout(self)
+        root.setContentsMargins(8, 8, 8, 8)
+
+        tabs = QTabWidget(self)
+        self.main_tabs = tabs
+        root.addWidget(tabs, 1)
+
+        # ---------------------------------------------------------------
+        # Setup: CA und Zertifikate. Programminstallation steht getrennt.
+        # ---------------------------------------------------------------
+        setup_page = QWidget(tabs)
+        setup_layout = QVBoxLayout(setup_page)
+        setup_layout.setContentsMargins(6, 6, 6, 6)
+
+        setup_sections = QTabWidget(setup_page)
+        setup_layout.addWidget(setup_sections, 1)
+
+        ca_scroll = QScrollArea(setup_sections)
+        ca_scroll.setWidgetResizable(True)
+        ca_page = QWidget(ca_scroll)
+        ca_layout = QVBoxLayout(ca_page)
+        identity = QGroupBox("Client Authority CA", ca_page)
+        form = QFormLayout(identity)
+        ca_dir_row, self.ca_dir_edit = self._directory_row("ca_directory", "")
+        self.fqdn_edit = self._bound_line_edit("fqdn", "ca.local")
+        self.cn_edit = self._bound_line_edit("common_name", "d64 Development Root CA")
+        self.org_edit = self._bound_line_edit("organization", "d64 Development")
+        self.ou_edit = self._bound_line_edit("organizational_unit", "Development")
+        self.country_combo = QComboBox(identity)
+        self.country_combo.setObjectName("opensslCaCountryCombo")
+        for code, name in CA_COUNTRY_CODES:
+            self.country_combo.addItem(f"{code} – {name}", code)
+        saved_country = self._load_text("country", "DE").strip().upper()
+        country_index = self.country_combo.findData(saved_country)
+        self.country_combo.setCurrentIndex(country_index if country_index >= 0 else self.country_combo.findData("DE"))
+        # Compatibility aliases: older code used *_edit names.
+        self.country_edit = self.country_combo
+
+        self.state_combo = QComboBox(identity)
+        self.state_combo.setObjectName("opensslCaStateCombo")
+        self.state_edit = self.state_combo
+
+        # Locality is split into postal code (max. 11) + place (max. 21).
+        old_locality = self._load_text("locality", "").strip()
+        saved_postal = self._load_text("postal_code", "").strip()
+        saved_place = self._load_text("locality_name", "").strip()
+        if not saved_postal and not saved_place and old_locality:
+            first, sep, rest = old_locality.partition(" ")
+            if sep and len(first) <= 11:
+                saved_postal, saved_place = first, rest
+            else:
+                saved_place = old_locality
+        self.postal_code_edit = QLineEdit(saved_postal[:11], identity)
+        self.postal_code_edit.setObjectName("opensslCaPostalCodeEdit")
+        self.postal_code_edit.setMaxLength(11)
+        self.postal_code_edit.setPlaceholderText("PLZ")
+        self.locality_name_edit = QLineEdit(saved_place[:21], identity)
+        self.locality_name_edit.setObjectName("opensslCaLocalityEdit")
+        self.locality_name_edit.setMaxLength(21)
+        self.locality_name_edit.setPlaceholderText("Ort")
+        # Compatibility alias for callers that only need the locality widget.
+        self.locality_edit = self.locality_name_edit
+        locality_row = QWidget(identity)
+        locality_layout = QHBoxLayout(locality_row)
+        locality_layout.setContentsMargins(0, 0, 0, 0)
+        locality_layout.setSpacing(6)
+        fm = QFontMetrics(self.postal_code_edit.font())
+        self.postal_code_edit.setMinimumWidth(fm.horizontalAdvance("M" * 11) + 20)
+        fm_place = QFontMetrics(self.locality_name_edit.font())
+        self.locality_name_edit.setMinimumWidth(fm_place.horizontalAdvance("M" * 21) + 20)
+        locality_layout.addWidget(self.postal_code_edit, 11)
+        locality_layout.addWidget(self.locality_name_edit, 21)
+
+        self.country_combo.currentIndexChanged.connect(self._on_ca_country_changed)
+        self.state_combo.currentTextChanged.connect(lambda _value: self._store_text("state", self._state_value()))
+        self.postal_code_edit.editingFinished.connect(self._store_ca_locality)
+        self.locality_name_edit.editingFinished.connect(self._store_ca_locality)
+        self._populate_ca_states(self._country_code(), self._load_text("state", ""))
+
+        self.email_edit = self._bound_line_edit("email", "")
+        self.ca_password_edit = QLineEdit(identity)
+        self.ca_password_edit.setEchoMode(QLineEdit.Password)
+        self.ca_password_edit.setPlaceholderText("Passwort für ca.key.pem und CA-Export")
+        self.days_spin = QSpinBox(identity)
+        self.days_spin.setRange(1, 36500)
+        self.days_spin.setValue(int(self.settings.value(self._key("ca_days"), 3650) or 3650))
+        self.days_spin.valueChanged.connect(lambda v: self.settings.setValue(self._key("ca_days"), int(v)))
+        self.bits_combo = QComboBox(identity)
+        self.bits_combo.addItems(["2048", "3072", "4096"])
+        self.bits_combo.setCurrentText(self._load_text("key_bits", "4096"))
+        self.bits_combo.currentTextChanged.connect(lambda value: self._store_text("key_bits", value))
+        form.addRow("CA-Verzeichnis", ca_dir_row)
+        form.addRow("FQDN", self.fqdn_edit)
+        form.addRow("Common Name / Aussteller", self.cn_edit)
+        form.addRow("Organisation", self.org_edit)
+        form.addRow("Organisationseinheit", self.ou_edit)
+        form.addRow("Land", self.country_combo)
+        form.addRow("Bundesland / Kanton / Bundesstaat", self.state_combo)
+        form.addRow("PLZ / Ort", locality_row)
+        form.addRow("E-Mail", self.email_edit)
+        form.addRow("CA-Passwort", self.ca_password_edit)
+        form.addRow("Gültigkeit (Tage)", self.days_spin)
+        form.addRow("RSA-Schlüssel", self.bits_combo)
+        ca_layout.addWidget(identity)
+
+        ca_actions = QGroupBox("CA-Aktionen", ca_page)
+        ca_buttons = QHBoxLayout(ca_actions)
+        init_button = QPushButton("CA-Verzeichnis anlegen", ca_actions)
+        init_button.clicked.connect(self._initialize_ca_directory)
+        ca_buttons.addWidget(init_button)
+        root_button = QPushButton("Root-CA erzeugen", ca_actions)
+        root_button.clicked.connect(self._create_root_ca)
+        ca_buttons.addWidget(root_button)
+        crl_button = QPushButton("CRL anzeigen", ca_actions)
+        crl_button.clicked.connect(self._show_crl)
+        ca_buttons.addWidget(crl_button)
+        ca_buttons.addStretch(1)
+        ca_layout.addWidget(ca_actions)
+
+        managed_group = QGroupBox("Erstellte und verfügbare CAs", ca_page)
+        managed_layout = QHBoxLayout(managed_group)
+        self.ca_tabs = QTabWidget(managed_group)
+        self.ca_tabs.currentChanged.connect(self._on_ca_tab_changed)
+        managed_layout.addWidget(self.ca_tabs, 1)
+        ca_manage_buttons = QVBoxLayout()
+        self.ca_lock_button = QPushButton("Sperren", managed_group)
+        self.ca_delete_button = QPushButton("Löschen", managed_group)
+        self.ca_export_button = QPushButton("Exportieren", managed_group)
+        self.ca_import_button = QPushButton("Importieren", managed_group)
+        self.ca_lock_button.clicked.connect(self._lock_selected_ca)
+        self.ca_delete_button.clicked.connect(self._delete_selected_ca)
+        self.ca_export_button.clicked.connect(self._export_selected_ca)
+        self.ca_import_button.clicked.connect(self._import_ca)
+        for button in (self.ca_lock_button, self.ca_delete_button, self.ca_export_button, self.ca_import_button):
+            ca_manage_buttons.addWidget(button)
+        ca_manage_buttons.addStretch(1)
+        managed_layout.addLayout(ca_manage_buttons)
+        ca_layout.addWidget(managed_group, 1)
+
+        requests = QGroupBox("Client-Anfragen / Zertifikatsanfragen", ca_page)
+        request_layout = QVBoxLayout(requests)
+        request_hint = QLabel(
+            "Signieren, Ablehnen, Sperren, frühzeitiger Ablauf und Erneuern werden "
+            "über den OpenSSL-CA-Index verwaltet. Die Request-Tabelle kann in einer "
+            "folgenden CA-Ausbaustufe ergänzt werden.", requests
+        )
+        request_hint.setWordWrap(True)
+        request_layout.addWidget(request_hint)
+        ca_layout.addWidget(requests)
+        ca_layout.addStretch(1)
+        ca_scroll.setWidget(ca_page)
+        # Stage-157 compatibility marker: setup_sections.addTab(ca_scroll, "Client Authority CA")
+        setup_sections.addTab(ca_scroll, "CA")
+
+        cert_page = QWidget(setup_sections)
+        cert_layout = QVBoxLayout(cert_page)
+        cert_group = QGroupBox("Zertifikate", cert_page)
+        cert_form = QFormLayout(cert_group)
+        cert_row, self.cert_edit = self._file_row("certificate", "", "Zertifikate (*.crt *.cer *.pem);;Alle Dateien (*)")
+        csr_row, self.csr_edit = self._file_row("csr", "", "Certificate Requests (*.csr *.req *.pem);;Alle Dateien (*)")
+        cert_form.addRow("Zertifikat", cert_row)
+        cert_form.addRow("CSR", csr_row)
+        cert_layout.addWidget(cert_group)
+        cert_buttons = QHBoxLayout()
+        inspect = QPushButton("Zertifikat anzeigen", cert_page)
+        inspect.clicked.connect(self._inspect_certificate)
+        cert_buttons.addWidget(inspect)
+        inspect_csr = QPushButton("CSR anzeigen", cert_page)
+        inspect_csr.clicked.connect(self._inspect_csr)
+        cert_buttons.addWidget(inspect_csr)
+        cert_buttons.addStretch(1)
+        cert_layout.addLayout(cert_buttons)
+        cert_layout.addWidget(self._output, 1)
+        setup_sections.addTab(cert_page, "Zertifikate")
+        tabs.addTab(setup_page, "Setup")
+
+        # ---------------------------------------------------------------
+        # Installation: OpenSSL-Binary, Installation und Basiskonfiguration.
+        # ---------------------------------------------------------------
+        install_scroll = QScrollArea(tabs)
+        install_scroll.setWidgetResizable(True)
+        install_page = QWidget(install_scroll)
+        install_layout = QVBoxLayout(install_page)
+
+        install_group = QGroupBox("OpenSSL Installation", install_page)
+        install_form = QFormLayout(install_group)
+        install_dir_row, self.install_dir_edit = self._directory_row("install_dir", "")
+        openssl_row, self.openssl_edit = self._file_row(
+            "openssl", "openssl.exe", "OpenSSL (openssl.exe);;Programme (*.exe);;Alle Dateien (*)"
+        )
+        openssl_conf_row, self.openssl_conf_edit = self._file_row(
+            "openssl_conf", "", "OpenSSL Konfiguration (*.cnf *.conf);;Alle Dateien (*)"
+        )
+        installer_row, self.installer_edit = self._file_row(
+            "installer", "", "OpenSSL Installer (*.exe *.msi);;Alle Dateien (*)"
+        )
+        install_form.addRow("Installationsverzeichnis", install_dir_row)
+        install_form.addRow("openssl.exe", openssl_row)
+        install_form.addRow("openssl.cnf", openssl_conf_row)
+        install_form.addRow("Installer", installer_row)
+        install_layout.addWidget(install_group)
+
+        install_buttons = QHBoxLayout()
+        auto_paths = QPushButton("Programmpfade übernehmen", install_page)
+        auto_paths.clicked.connect(self._apply_install_directory)
+        install_buttons.addWidget(auto_paths)
+        version = QPushButton("Version prüfen", install_page)
+        version.clicked.connect(lambda: self.run_program(self.openssl_edit.text(), ["version", "-a"]))
+        install_buttons.addWidget(version)
+        run_installer = QPushButton("Installer starten", install_page)
+        run_installer.clicked.connect(self._run_installer)
+        install_buttons.addWidget(run_installer)
+        install_buttons.addStretch(1)
+        install_layout.addLayout(install_buttons)
+
+        install_hint = QLabel(
+            "OpenSSL wird nicht mit d64_dism ausgeliefert. Nach der Installation "
+            "kann das Installationsverzeichnis gewählt und der Programmpfad automatisch "
+            "übernommen werden.", install_page
+        )
+        install_hint.setWordWrap(True)
+        install_layout.addWidget(install_hint)
+        install_layout.addStretch(1)
+        install_scroll.setWidget(install_page)
+        tabs.addTab(install_scroll, "Installation")
+        self.set_dark_mode(self._dark_mode)
+        self._refresh_ca_tabs()
+
+    def _store_path_edit(self, name: str, edit: QLineEdit, value: Path) -> None:
+        text = str(value)
+        edit.setText(text)
+        self._store_text(name, text)
+
+    def _apply_install_directory(self):
+        base_text = self.install_dir_edit.text().strip()
+        if not base_text:
+            self._message("OpenSSL Installation", "Bitte zuerst ein Installationsverzeichnis auswählen.", QMessageBox.Warning)
+            return
+        base = Path(base_text)
+        binary_dir = base / "bin"
+        if not binary_dir.exists():
+            binary_dir = base
+        self._store_path_edit("openssl", self.openssl_edit, binary_dir / "openssl.exe")
+        conf_candidates = [base / "ssl" / "openssl.cnf", base / "bin" / "openssl.cnf", base / "openssl.cnf"]
+        conf = next((candidate for candidate in conf_candidates if candidate.exists()), conf_candidates[0])
+        self._store_path_edit("openssl_conf", self.openssl_conf_edit, conf)
+        self.append_output(f"OpenSSL Programmpfade übernommen: {binary_dir}")
+
+    def _run_installer(self):
+        installer = self.installer_edit.text().strip()
+        if not installer:
+            self._message("OpenSSL Installation", "Bitte zuerst einen Installer auswählen.", QMessageBox.Warning)
+            return
+        self.run_program(installer, [])
+
+    def _country_code(self) -> str:
+        return str(self.country_combo.currentData() or "").strip().upper()
+
+    def _state_value(self) -> str:
+        data = self.state_combo.currentData()
+        return str(data if data not in (None, "") else self.state_combo.currentText()).strip()
+
+    def _locality_parts(self) -> tuple[str, str]:
+        postal = self.postal_code_edit.text().strip()[:11]
+        place = self.locality_name_edit.text().strip()[:21]
+        # The displayed/stored combined location must never exceed 32 characters.
+        # When both fields are present one separator character is included.
+        if postal and place:
+            allowed_place = max(0, 32 - len(postal) - 1)
+            place = place[:allowed_place]
+        return postal, place
+
+    def _locality_value(self) -> str:
+        postal, place = self._locality_parts()
+        return " ".join(part for part in (postal, place) if part)[:32]
+
+    def _store_ca_locality(self) -> None:
+        postal, place = self._locality_parts()
+        # Reflect a possible 32-character normalization back into the UI.
+        if self.postal_code_edit.text().strip() != postal:
+            self.postal_code_edit.setText(postal)
+        if self.locality_name_edit.text().strip() != place:
+            self.locality_name_edit.setText(place)
+        self._store_text("postal_code", postal)
+        self._store_text("locality_name", place)
+        self._store_text("locality", self._locality_value())
+
+    def _populate_ca_states(self, country_code: str, selected: Optional[str] = None) -> None:
+        selected = self.state_combo.currentText().strip() if selected is None else selected.strip()
+        entries = CA_SUBDIVISIONS.get(country_code, [])
+        self.state_combo.blockSignals(True)
+        self.state_combo.clear()
+        if entries:
+            self.state_combo.setEditable(False)
+            self.state_combo.addItem("", "")
+            for code, name in entries:
+                self.state_combo.addItem(f"{code} – {name}", name)
+            idx = -1
+            if selected:
+                for i in range(self.state_combo.count()):
+                    if self.state_combo.itemData(i) == selected or self.state_combo.itemText(i) == selected:
+                        idx = i
+                        break
+                if idx < 0:
+                    for i in range(self.state_combo.count()):
+                        if self.state_combo.itemText(i).endswith(" – " + selected):
+                            idx = i
+                            break
+            self.state_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        else:
+            # Not every country has a meaningful fixed State/Province catalogue.
+            # Keep ST= available without pretending that a partial list is complete.
+            self.state_combo.setEditable(True)
+            if selected:
+                self.state_combo.addItem(selected, selected)
+                self.state_combo.setCurrentText(selected)
+        self.state_combo.blockSignals(False)
+
+    def _on_ca_country_changed(self, _index: int) -> None:
+        code = self._country_code()
+        self._store_text("country", code)
+        self._populate_ca_states(code, "")
+        self._store_text("state", self._state_value())
+
+    def _subject(self) -> str:
+        postal, place = self._locality_parts()
+        values = (
+            ("C", self._country_code()),
+            ("ST", self._state_value()),
+            ("postalCode", postal),
+            ("L", place),
+            ("O", self.org_edit.text().strip()),
+            ("OU", self.ou_edit.text().strip()),
+            ("CN", self.cn_edit.text().strip()),
+            ("emailAddress", self.email_edit.text().strip()),
+        )
+        parts = []
+        for key, value in values:
+            if value:
+                parts.append(f"/{key}={value.replace('/', '_')}")
+        return "".join(parts)
+
+    def _initialize_ca_directory(self):
+        base_text = self.ca_dir_edit.text().strip()
+        if not base_text:
+            self._message("CA-Verzeichnis", "Bitte zuerst ein CA-Verzeichnis auswählen.", QMessageBox.Warning)
+            return
+        base = Path(base_text)
+        try:
+            for child in ("certs", "crl", "newcerts", "private", "csr"):
+                (base / child).mkdir(parents=True, exist_ok=True)
+            (base / "index.txt").touch(exist_ok=True)
+            if not (base / "serial").exists():
+                (base / "serial").write_text("1000\n", encoding="ascii")
+            if not (base / "crlnumber").exists():
+                (base / "crlnumber").write_text("1000\n", encoding="ascii")
+            self.append_output(f"CA-Verzeichnis vorbereitet: {base}")
+        except Exception as exc:
+            self._message("CA-Verzeichnis", str(exc), QMessageBox.Critical)
+
+    def _openssl_sync(self, args: list[str], password: str = "") -> tuple[bool, bytes, bytes]:
+        program = self.openssl_edit.text().strip() or "openssl.exe"
+        env = os.environ.copy()
+        if password:
+            env["D64_CA_PASSWORD"] = password
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        try:
+            result = subprocess.run(
+                [program] + list(args),
+                input=None,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+                creationflags=flags,
+                check=False,
+            )
+            return result.returncode == 0, result.stdout, result.stderr
+        except Exception as exc:
+            return False, b"", str(exc).encode("utf-8", errors="replace")
+
+    def _ca_password(self, title: str = "CA-Passwort") -> str:
+        password = self.ca_password_edit.text()
+        if password:
+            return password
+        value, ok = QInputDialog.getText(self, title, "Passwort für ca.key.pem:", QLineEdit.Password)
+        return value if ok else ""
+
+    def _ca_metadata(self, base: Path, status: str = "aktiv") -> dict:
+        return {
+            "fqdn": self.fqdn_edit.text().strip(),
+            "common_name": self.cn_edit.text().strip(),
+            "organization": self.org_edit.text().strip(),
+            "organizational_unit": self.ou_edit.text().strip(),
+            "country": self._country_code(),
+            "state": self._state_value(),
+            "postal_code": self._locality_parts()[0],
+            "locality_name": self._locality_parts()[1],
+            "locality": self._locality_value(),
+            "email": self.email_edit.text().strip(),
+            "days": int(self.days_spin.value()),
+            "key_bits": int(self.bits_combo.currentText()),
+            "ca_directory": str(base),
+            "certificate": str(base / "certs" / "ca.cert.pem"),
+            "private_key": str(base / "private" / "ca.key.pem"),
+            "status": status,
+            "updated_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
+        }
+
+    @staticmethod
+    def _backup_files(base: Path) -> dict:
+        files = {}
+        for rel in (
+            "certs/ca.cert.pem", "private/ca.key.pem", "index.txt", "serial",
+            "crlnumber", "crl/ca.crl.pem", "openssl.cnf"
+        ):
+            path = base / rel
+            if path.is_file():
+                files[rel] = base64.b64encode(path.read_bytes()).decode("ascii")
+        return files
+
+    def _encrypt_ca_payload(self, payload: dict, password: str) -> dict:
+        raw = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+        program = self.openssl_edit.text().strip() or "openssl.exe"
+        env = os.environ.copy()
+        env["D64_CA_JSON_PASS"] = password
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        result = subprocess.run(
+            [program, "enc", "-aes-256-cbc", "-pbkdf2", "-iter", "200000",
+             "-md", "sha256", "-salt", "-pass", "env:D64_CA_JSON_PASS"],
+            input=raw, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=env, creationflags=flags, check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.decode("utf-8", errors="replace").strip() or "OpenSSL-Verschlüsselung fehlgeschlagen")
+        return {
+            "format": "d64-ca-backup",
+            "version": 1,
+            "cipher": "AES-256-CBC",
+            "kdf": "PBKDF2-HMAC-SHA256",
+            "iterations": 200000,
+            "payload": base64.b64encode(result.stdout).decode("ascii"),
+        }
+
+    def _decrypt_ca_payload(self, container: dict, password: str) -> dict:
+        if container.get("format") != "d64-ca-backup":
+            raise RuntimeError("Unbekanntes CA-Backup-Format")
+        encrypted = base64.b64decode(container.get("payload", ""))
+        program = self.openssl_edit.text().strip() or "openssl.exe"
+        env = os.environ.copy()
+        env["D64_CA_JSON_PASS"] = password
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        result = subprocess.run(
+            [program, "enc", "-d", "-aes-256-cbc", "-pbkdf2", "-iter", "200000",
+             "-md", "sha256", "-pass", "env:D64_CA_JSON_PASS"],
+            input=encrypted, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=env, creationflags=flags, check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError("CA-Datei konnte nicht entschlüsselt werden. Passwort prüfen.")
+        return json.loads(result.stdout.decode("utf-8"))
+
+    def _ca_registry(self) -> list[str]:
+        raw = self.settings.value(self._key("ca_registry"), "[]") or "[]"
+        try:
+            values = json.loads(str(raw))
+            return [str(Path(v)) for v in values if v]
+        except Exception:
+            return []
+
+    def _set_ca_registry(self, values: list[str]) -> None:
+        unique = []
+        for value in values:
+            value = str(Path(value))
+            if value not in unique:
+                unique.append(value)
+        self.settings.setValue(self._key("ca_registry"), json.dumps(unique, ensure_ascii=False))
+        self.settings.sync()
+
+    def _register_ca(self, base: Path) -> None:
+        values = self._ca_registry()
+        if str(base) not in values:
+            values.append(str(base))
+            self._set_ca_registry(values)
+
+    def _metadata_path(self, base: Path) -> Path:
+        return base / "ca.info.json"
+
+    def _write_encrypted_metadata(self, base: Path, metadata: dict, password: str, include_files: bool = False, target: Path | None = None) -> None:
+        payload = {"ca": metadata}
+        if include_files:
+            payload["files"] = self._backup_files(base)
+        container = self._encrypt_ca_payload(payload, password)
+        (target or self._metadata_path(base)).write_text(json.dumps(container, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _read_encrypted_metadata(self, path: Path, password: str) -> dict:
+        return self._decrypt_ca_payload(json.loads(path.read_text(encoding="utf-8")), password)
+
+    def _refresh_ca_tabs(self) -> None:
+        if not hasattr(self, "ca_tabs"):
+            return
+        self.ca_tabs.blockSignals(True)
+        self.ca_tabs.clear()
+        for base_text in self._ca_registry():
+            base = Path(base_text)
+            page = QWidget(self.ca_tabs)
+            layout = QFormLayout(page)
+            page.setProperty("ca_directory", str(base))
+            fields = {}
+            rows = (
+                ("Common Name", "common_name"),
+                ("FQDN", "fqdn"),
+                ("Organisation", "organization"),
+                ("Organisationseinheit", "organizational_unit"),
+                ("Land", "country"),
+                ("Bundesland", "state"),
+                ("Ort", "locality"),
+                ("E-Mail", "email"),
+                ("Gültigkeit (Tage)", "days"),
+                ("RSA-Schlüssel", "key_bits"),
+                ("Status", "status"),
+                ("Verzeichnis", "ca_directory"),
+                ("Zertifikat", "certificate"),
+                ("Private Key", "private_key"),
+                ("Aktualisiert", "updated_utc"),
+            )
+            for label, key in rows:
+                field = QLineEdit(page)
+                field.setReadOnly(True)
+                field.setText("verschlüsselt" if key not in {"ca_directory", "status"} else (str(base) if key == "ca_directory" else "gesperrt" if (base / ".d64_ca_locked").exists() else "verfügbar"))
+                layout.addRow(label, field)
+                fields[key] = field
+            page._ca_fields = fields
+            self.ca_tabs.addTab(page, base.name or "CA")
+        self.ca_tabs.blockSignals(False)
+        enabled = self.ca_tabs.count() > 0
+        for button in (self.ca_lock_button, self.ca_delete_button, self.ca_export_button):
+            button.setEnabled(enabled)
+        if enabled:
+            self._on_ca_tab_changed(self.ca_tabs.currentIndex())
+
+    def _populate_ca_page(self, page: QWidget, metadata: dict) -> None:
+        fields = getattr(page, "_ca_fields", {})
+        for key, field in fields.items():
+            value = metadata.get(key, "")
+            field.setText(str(value))
+        base = Path(str(page.property("ca_directory") or ""))
+        if (base / ".d64_ca_locked").exists() and "status" in fields:
+            fields["status"].setText("gesperrt")
+
+    def _on_ca_tab_changed(self, index: int) -> None:
+        if index < 0 or not hasattr(self, "ca_tabs"):
+            return
+        page = self.ca_tabs.widget(index)
+        if page is None:
+            return
+        base = Path(str(page.property("ca_directory") or ""))
+        info = self._metadata_path(base)
+        if not info.exists():
+            return
+        password = self._ca_session_passwords.get(str(base), "")
+        if not password and self.ca_dir_edit.text().strip() == str(base):
+            password = self.ca_password_edit.text()
+        if not password:
+            password, ok = QInputDialog.getText(self, "CA Informationen", f"Passwort für {base.name or base}:", QLineEdit.Password)
+            if not ok or not password:
+                return
+        try:
+            payload = self._read_encrypted_metadata(info, password)
+            metadata = dict(payload.get("ca", {}))
+            self._ca_session_passwords[str(base)] = password
+            self._populate_ca_page(page, metadata)
+        except Exception as exc:
+            self._message("CA Informationen", str(exc), QMessageBox.Warning)
+
+    def _selected_ca_base(self) -> Path | None:
+        page = self.ca_tabs.currentWidget() if hasattr(self, "ca_tabs") else None
+        if page is None:
+            return None
+        value = page.property("ca_directory")
+        return Path(str(value)) if value else None
+
+    def _create_root_ca(self):
+        base_text = self.ca_dir_edit.text().strip()
+        if not base_text:
+            self._message("Root-CA", "Bitte zuerst ein CA-Verzeichnis auswählen.", QMessageBox.Warning)
+            return
+        password = self._ca_password("Neue CA")
+        if not password:
+            self._message("Root-CA", "Für eine neue CA ist ein Passwort erforderlich.", QMessageBox.Warning)
+            return
+        base = Path(base_text)
+        self._initialize_ca_directory()
+        key = base / "private" / "ca.key.pem"
+        cert = base / "certs" / "ca.cert.pem"
+        args = [
+            "req", "-x509", "-new",
+            "-newkey", f"rsa:{self.bits_combo.currentText()}",
+            "-sha256", "-days", str(self.days_spin.value()),
+            "-keyout", str(key), "-out", str(cert),
+            "-passout", "env:D64_CA_PASSWORD", "-subj", self._subject(),
+        ]
+        conf = self.openssl_conf_edit.text().strip()
+        if conf:
+            args += ["-config", conf]
+        ok, out, err = self._openssl_sync(args, password)
+        if not ok:
+            self._message("Root-CA", err.decode("utf-8", errors="replace") or "Root-CA konnte nicht erzeugt werden.", QMessageBox.Critical)
+            return
+        metadata = self._ca_metadata(base, "aktiv")
+        try:
+            self._write_encrypted_metadata(base, metadata, password)
+            self._ca_session_passwords[str(base)] = password
+            self._register_ca(base)
+            self._refresh_ca_tabs()
+            self.append_output(f"Root-CA erzeugt und registriert: {base}")
+        except Exception as exc:
+            self._message("CA-Metadaten", str(exc), QMessageBox.Critical)
+
+    def _lock_selected_ca(self):
+        base = self._selected_ca_base()
+        if base is None:
+            return
+        password = self._ca_password("CA sperren")
+        if not password:
+            return
+        try:
+            payload = self._read_encrypted_metadata(self._metadata_path(base), password)
+            payload["ca"]["status"] = "gesperrt"
+            payload["ca"]["updated_utc"] = dt.datetime.now(dt.timezone.utc).isoformat()
+            self._write_encrypted_metadata(base, payload["ca"], password)
+            (base / ".d64_ca_locked").write_text("locked\n", encoding="ascii")
+            self._refresh_ca_tabs()
+            self.append_output(f"CA lokal gesperrt: {base}")
+        except Exception as exc:
+            self._message("CA sperren", str(exc), QMessageBox.Critical)
+
+    def _delete_selected_ca(self):
+        base = self._selected_ca_base()
+        if base is None:
+            return
+        password = self._ca_password("CA löschen")
+        if not password:
+            return
+        try:
+            self._read_encrypted_metadata(self._metadata_path(base), password)
+        except Exception as exc:
+            self._message("CA löschen", str(exc), QMessageBox.Critical)
+            return
+        answer = QMessageBox.warning(
+            self, "CA löschen",
+            f"Die CA und ihr gesamtes Verzeichnis wirklich löschen?\n\n{base}",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        import shutil
+        try:
+            shutil.rmtree(base)
+            self._set_ca_registry([v for v in self._ca_registry() if Path(v) != base])
+            self._refresh_ca_tabs()
+            self.append_output(f"CA gelöscht: {base}")
+        except Exception as exc:
+            self._message("CA löschen", str(exc), QMessageBox.Critical)
+
+    def _export_selected_ca(self):
+        base = self._selected_ca_base()
+        if base is None:
+            return
+        password = self._ca_password("CA exportieren")
+        if not password:
+            return
+        try:
+            payload = self._read_encrypted_metadata(self._metadata_path(base), password)
+        except Exception as exc:
+            self._message("CA exportieren", str(exc), QMessageBox.Critical)
+            return
+        dialog = QFileDialog(self, "CA exportieren")
+        dialog.setOption(QFileDialog.DontUseNativeDialog, True)
+        dialog.setAcceptMode(QFileDialog.AcceptSave)
+        dialog.setNameFilter("d64 CA Backup (*.json);;JSON (*.json)")
+        dialog.selectFile((base.name or "ca") + ".ca.json")
+        if not dialog.exec_() or not dialog.selectedFiles():
+            return
+        target = Path(dialog.selectedFiles()[0])
+        if target.suffix.lower() != ".json":
+            target = target.with_suffix(".json")
+        try:
+            self._write_encrypted_metadata(base, payload["ca"], password, include_files=True, target=target)
+            self.append_output(f"CA exportiert: {target}")
+        except Exception as exc:
+            self._message("CA exportieren", str(exc), QMessageBox.Critical)
+
+    def _import_ca(self):
+        dialog = QFileDialog(self, "CA importieren")
+        dialog.setOption(QFileDialog.DontUseNativeDialog, True)
+        dialog.setFileMode(QFileDialog.ExistingFile)
+        dialog.setNameFilter("d64 CA Backup (*.json);;JSON (*.json)")
+        if not dialog.exec_() or not dialog.selectedFiles():
+            return
+        source = Path(dialog.selectedFiles()[0])
+        password, ok = QInputDialog.getText(self, "CA importieren", "Passwort der CA:", QLineEdit.Password)
+        if not ok or not password:
+            return
+        try:
+            payload = self._read_encrypted_metadata(source, password)
+        except Exception as exc:
+            self._message("CA importieren", str(exc), QMessageBox.Critical)
+            return
+        directory = QFileDialog.getExistingDirectory(self, "Zielverzeichnis der CA", "", QFileDialog.ShowDirsOnly | QFileDialog.DontUseNativeDialog)
+        if not directory:
+            return
+        base = Path(directory)
+        try:
+            base.mkdir(parents=True, exist_ok=True)
+            for rel, encoded in payload.get("files", {}).items():
+                if rel not in {"certs/ca.cert.pem", "private/ca.key.pem", "index.txt", "serial", "crlnumber", "crl/ca.crl.pem", "openssl.cnf"}:
+                    continue
+                target = base / rel
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(base64.b64decode(encoded))
+            metadata = dict(payload.get("ca", {}))
+            metadata["ca_directory"] = str(base)
+            metadata["certificate"] = str(base / "certs" / "ca.cert.pem")
+            metadata["private_key"] = str(base / "private" / "ca.key.pem")
+            self._write_encrypted_metadata(base, metadata, password)
+            self._ca_session_passwords[str(base)] = password
+            self._register_ca(base)
+            self.ca_dir_edit.setText(str(base))
+            self._store_text("ca_directory", str(base))
+            self.ca_password_edit.setText(password)
+            self._refresh_ca_tabs()
+            self.append_output(f"CA importiert: {base}")
+        except Exception as exc:
+            self._message("CA importieren", str(exc), QMessageBox.Critical)
+
+    def _show_crl(self):
+        base_text = self.ca_dir_edit.text().strip()
+        if not base_text:
+            self._message("CRL", "Bitte zuerst ein CA-Verzeichnis auswählen.", QMessageBox.Warning)
+            return
+        base = Path(base_text)
+        crl = base / "crl" / "ca.crl.pem"
+        if not crl.exists():
+            self._message("CRL", "Noch keine CRL-Datei vorhanden.", QMessageBox.Information)
+            return
+        self.run_program(self.openssl_edit.text(), ["crl", "-in", str(crl), "-text", "-noout"], str(base))
+
+    def _inspect_certificate(self):
+        path = self.cert_edit.text().strip()
+        if path:
+            self.run_program(self.openssl_edit.text(), ["x509", "-in", path, "-text", "-noout"])
+
+    def _inspect_csr(self):
+        path = self.csr_edit.text().strip()
+        if path:
+            self.run_program(self.openssl_edit.text(), ["req", "-in", path, "-text", "-noout"])
+
+
+class ApacheServerPanel(ServerPanelBase):
+    settings_prefix = "server/apache"
+
+    def __init__(self, host, settings: QSettings, parent=None):
+        super().__init__(host, settings, parent)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(8, 8, 8, 8)
+
+        tabs = QTabWidget(self)
+        self.main_tabs = tabs
+        root.addWidget(tabs, 1)
+
+        # ---------------------------------------------------------------
+        # Setup: Webserver-Konfiguration und laufender Dienst.
+        # ---------------------------------------------------------------
+        setup_scroll = QScrollArea(tabs)
+        setup_scroll.setWidgetResizable(True)
+        setup_page = QWidget(setup_scroll)
+        setup_layout = QVBoxLayout(setup_page)
+
+        config = QGroupBox("Apache HTTP Server - Setup", setup_page)
+        form = QFormLayout(config)
+        conf_row, self.conf_edit = self._file_row("httpd_conf", "", "Apache Konfiguration (*.conf);;Alle Dateien (*)")
+        root_row, self.document_root_edit = self._directory_row("document_root", "")
+        self.service_edit = self._bound_line_edit("service_name", "Apache2.4")
+        form.addRow("httpd.conf", conf_row)
+        form.addRow("DocumentRoot", root_row)
+        form.addRow("Windows-Dienst", self.service_edit)
+        setup_layout.addWidget(config)
+
+        buttons = QHBoxLayout()
+        for text, callback in (
+            ("Konfiguration prüfen", self._config_test),
+            ("Start", self._start),
+            ("Stop", self._stop),
+            ("Restart", self._restart),
+        ):
+            button = QPushButton(text, setup_page)
+            button.clicked.connect(callback)
+            buttons.addWidget(button)
+        buttons.addStretch(1)
+        setup_layout.addLayout(buttons)
+        hint = QLabel(
+            "Start/Stop/Restart verwenden Apaches native -k-Steuerung. Falls Apache "
+            "als Windows-Dienst installiert ist, wird der eingestellte Dienstname mit -n übergeben.", setup_page
+        )
+        hint.setWordWrap(True)
+        setup_layout.addWidget(hint)
+        setup_layout.addWidget(QLabel("Ausgabe", setup_page))
+        setup_layout.addWidget(self._output, 1)
+        setup_scroll.setWidget(setup_page)
+        tabs.addTab(setup_scroll, "Setup")
+
+        # ---------------------------------------------------------------
+        # Installation: Binary/Installer, Installationspfad und Dienstanlage.
+        # ---------------------------------------------------------------
+        install_scroll = QScrollArea(tabs)
+        install_scroll.setWidgetResizable(True)
+        install_page = QWidget(install_scroll)
+        install_layout = QVBoxLayout(install_page)
+
+        install_group = QGroupBox("Apache Installation", install_page)
+        install_form = QFormLayout(install_group)
+        install_dir_row, self.install_dir_edit = self._directory_row("install_dir", "")
+        httpd_row, self.httpd_edit = self._file_row(
+            "httpd", "httpd.exe", "Apache httpd (httpd.exe);;Programme (*.exe);;Alle Dateien (*)"
+        )
+        installer_row, self.installer_edit = self._file_row(
+            "installer", "", "Apache Installer (*.exe *.msi);;Alle Dateien (*)"
+        )
+        install_form.addRow("Installationsverzeichnis", install_dir_row)
+        install_form.addRow("httpd.exe", httpd_row)
+        install_form.addRow("Installer", installer_row)
+        install_layout.addWidget(install_group)
+
+        install_buttons = QHBoxLayout()
+        auto_paths = QPushButton("Programmpfade übernehmen", install_page)
+        auto_paths.clicked.connect(self._apply_install_directory)
+        install_buttons.addWidget(auto_paths)
+        version = QPushButton("Version prüfen", install_page)
+        version.clicked.connect(self._version)
+        install_buttons.addWidget(version)
+        run_installer = QPushButton("Installer starten", install_page)
+        run_installer.clicked.connect(self._run_installer)
+        install_buttons.addWidget(run_installer)
+        install_buttons.addStretch(1)
+        install_layout.addLayout(install_buttons)
+
+        service_group = QGroupBox("Windows-Dienst installieren", install_page)
+        service_buttons = QHBoxLayout(service_group)
+        install_service = QPushButton("Dienst installieren", service_group)
+        install_service.clicked.connect(self._install_service)
+        service_buttons.addWidget(install_service)
+        uninstall_service = QPushButton("Dienst entfernen", service_group)
+        uninstall_service.clicked.connect(self._uninstall_service)
+        service_buttons.addWidget(uninstall_service)
+        service_buttons.addStretch(1)
+        install_layout.addWidget(service_group)
+
+        install_hint = QLabel(
+            "Apache wird nicht mit d64_dism ausgeliefert. Nach der Installation können "
+            "Programmpfad, Standard-Konfiguration und DocumentRoot aus dem Installationsverzeichnis übernommen werden.", install_page
+        )
+        install_hint.setWordWrap(True)
+        install_layout.addWidget(install_hint)
+        install_layout.addStretch(1)
+        install_scroll.setWidget(install_page)
+        tabs.addTab(install_scroll, "Installation")
+        self.set_dark_mode(self._dark_mode)
+
+    def _store_path_edit(self, name: str, edit: QLineEdit, value: Path) -> None:
+        text = str(value)
+        edit.setText(text)
+        self._store_text(name, text)
+
+    def _apply_install_directory(self):
+        base_text = self.install_dir_edit.text().strip()
+        if not base_text:
+            self._message("Apache Installation", "Bitte zuerst ein Installationsverzeichnis auswählen.", QMessageBox.Warning)
+            return
+        base = Path(base_text)
+        self._store_path_edit("httpd", self.httpd_edit, base / "bin" / "httpd.exe")
+        self._store_path_edit("httpd_conf", self.conf_edit, base / "conf" / "httpd.conf")
+        self._store_path_edit("document_root", self.document_root_edit, base / "htdocs")
+        self.append_output(f"Apache Programmpfade übernommen: {base}")
+
+    def _run_installer(self):
+        installer = self.installer_edit.text().strip()
+        if not installer:
+            self._message("Apache Installation", "Bitte zuerst einen Installer auswählen.", QMessageBox.Warning)
+            return
+        self.run_program(installer, [])
+
+    def _base_args(self) -> list[str]:
+        args = []
+        conf = self.conf_edit.text().strip()
+        if conf:
+            args += ["-f", conf]
+        return args
+
+    def _service_args(self, verb: str) -> list[str]:
+        args = self._base_args() + ["-k", verb]
+        service = self.service_edit.text().strip()
+        if service:
+            args += ["-n", service]
+        return args
+
+    def _version(self):
+        self.run_program(self.httpd_edit.text(), ["-V"])
+
+    def _config_test(self):
+        self.run_program(self.httpd_edit.text(), self._base_args() + ["-t"])
+
+    def _start(self):
+        self.run_program(self.httpd_edit.text(), self._service_args("start"))
+
+    def _stop(self):
+        self.run_program(self.httpd_edit.text(), self._service_args("stop"))
+
+    def _restart(self):
+        self.run_program(self.httpd_edit.text(), self._service_args("restart"))
+
+    def _install_service(self):
+        args = self._base_args() + ["-k", "install"]
+        service = self.service_edit.text().strip()
+        if service:
+            args += ["-n", service]
+        self.run_program(self.httpd_edit.text(), args)
+
+    def _uninstall_service(self):
+        args = ["-k", "uninstall"]
+        service = self.service_edit.text().strip()
+        if service:
+            args += ["-n", service]
+        self.run_program(self.httpd_edit.text(), args)
+
+# ---------------------------------------------------------------------------
+# END of Hauptmenü: Server
+# ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
 # \brief global definition to write the css styles for dark mode html
@@ -67514,6 +68929,659 @@ QPushButton {{ min-height: 28px; padding: 4px 12px; }}'''
             painter.end()
 
 
+    class PrimeSearchThread(QThread):
+        """Stage ASM 156: parallele Suche nach Primzahlen und Primzahl-Konstellationen."""
+
+        result_found = pyqtSignal(str, object)
+        status_message = pyqtSignal(str)
+        stats_changed = pyqtSignal(object)
+        log_reset = pyqtSignal(str)
+        search_error = pyqtSignal(str)
+
+        # Minimale/kurze admissible prime k-tuple patterns.
+        PATTERNS = {
+            'twins': (
+                (0, 2),
+            ),
+            'triplets': (
+                (0, 2, 6),
+                (0, 4, 6),
+            ),
+            'quadruplets': (
+                (0, 2, 6, 8),
+            ),
+            'quintuplets': (
+                (0, 2, 6, 8, 12),
+                (0, 4, 6, 10, 12),
+            ),
+            'sextuplets': (
+                (0, 4, 6, 10, 12, 16),
+            ),
+            'septuplets': (
+                (0, 2, 6, 8, 12, 18, 20),
+                (0, 2, 8, 12, 14, 18, 20),
+            ),
+            'octuplets': (
+                (0, 2, 6, 8, 12, 18, 20, 26),
+                (0, 2, 6, 12, 14, 20, 24, 26),
+                (0, 6, 8, 14, 18, 20, 24, 26),
+            ),
+        }
+
+        DISPLAY_NAMES = {
+            'prime': 'Primzahl',
+            'twins': 'Zwilling',
+            'triplets': 'Trilling',
+            'quadruplets': 'Vierling',
+            'quintuplets': 'Fünfling',
+            'sextuplets': 'Sechsling',
+            'septuplets': 'Siebenling',
+            'octuplets': 'Achtling',
+        }
+
+        # Eine Primtabelle bis 10^11 wäre nicht sinnvoll materialisierbar.
+        # Diese Obergrenze schützt den Start der Suche; höhere UI-Werte bleiben
+        # als konfigurierte Obergrenze erhalten und werden im Status ausgewiesen.
+        ACTIVE_SIEVE_HARD_LIMIT = 5_000_000
+
+        def __init__(
+            self,
+            *,
+            bit_length: int,
+            thread_count: int,
+            pre_sieve_limit: int,
+            enabled_kinds,
+            log_path: str,
+            log_limit_mb: int,
+            parent=None,
+        ):
+            super().__init__(parent)
+            self.bit_length = max(16, int(bit_length))
+            self.thread_count = max(1, min(32, int(thread_count)))
+            self.pre_sieve_limit = max(1000, int(pre_sieve_limit))
+            self.enabled_kinds = tuple(str(k) for k in enabled_kinds)
+            self.log_path = str(log_path or '').strip()
+            self.log_limit_mb = max(1, int(log_limit_mb))
+            self._stop_event = threading.Event()
+            self._small_primes = ()
+            self._effective_sieve_limit = 0
+            self._gmpy2 = None
+            try:
+                import gmpy2
+                self._gmpy2 = gmpy2
+            except Exception:
+                self._gmpy2 = None
+
+        def request_stop(self) -> None:
+            self._stop_event.set()
+
+        @staticmethod
+        def _sieve_primes(limit: int):
+            limit = max(2, int(limit))
+            sieve = bytearray(b'\x01') * (limit + 1)
+            sieve[0:2] = b'\x00\x00'
+            upper = int(math.isqrt(limit))
+            for p in range(2, upper + 1):
+                if sieve[p]:
+                    start = p * p
+                    count = ((limit - start) // p) + 1
+                    sieve[start:limit + 1:p] = b'\x00' * count
+            return tuple(i for i in range(2, limit + 1) if sieve[i])
+
+        def _passes_sieve(self, base: int, offsets) -> bool:
+            for divisor in self._small_primes:
+                for offset in offsets:
+                    value = base + offset
+                    if value != divisor and value % divisor == 0:
+                        return False
+            return True
+
+        @staticmethod
+        def _miller_rabin(value: int, rounds: int = 20) -> bool:
+            if value < 2:
+                return False
+            small = (2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37)
+            for p in small:
+                if value == p:
+                    return True
+                if value % p == 0:
+                    return False
+
+            d = value - 1
+            s = 0
+            while (d & 1) == 0:
+                s += 1
+                d >>= 1
+
+            # Deterministische, reproduzierbare Basen. Für >64 Bit ist dies
+            # ein starker Probable-Prime-Test; mit gmpy2 wird dessen Test benutzt.
+            seed_bases = (
+                2, 3, 5, 7, 11, 13, 17, 19, 23, 29,
+                31, 37, 41, 43, 47, 53, 59, 61, 67, 71,
+                73, 79, 83, 89, 97, 101, 103, 107, 109, 113,
+            )
+            for a in seed_bases[:max(1, int(rounds))]:
+                if a >= value - 1:
+                    continue
+                x = pow(a, d, value)
+                if x == 1 or x == value - 1:
+                    continue
+                for _ in range(s - 1):
+                    x = pow(x, 2, value)
+                    if x == value - 1:
+                        break
+                else:
+                    return False
+            return True
+
+        def _is_prime(self, value: int) -> bool:
+            if self._gmpy2 is not None:
+                try:
+                    return bool(self._gmpy2.is_prime(value, 25))
+                except TypeError:
+                    return bool(self._gmpy2.is_prime(value))
+            return self._miller_rabin(value, 24)
+
+        def _analyze_candidate(self, base: int):
+            if self._stop_event.is_set():
+                return []
+            if not self._passes_sieve(base, (0,)):
+                return []
+            if not self._is_prime(base):
+                return []
+
+            found = []
+            if 'prime' in self.enabled_kinds:
+                found.append(('prime', (base,)))
+
+            for kind in self.enabled_kinds:
+                if kind == 'prime':
+                    continue
+                for offsets in self.PATTERNS.get(kind, ()):
+                    if self._stop_event.is_set():
+                        return found
+                    if not self._passes_sieve(base, offsets):
+                        continue
+                    values = [base]
+                    ok = True
+                    for offset in offsets[1:]:
+                        value = base + offset
+                        if not self._is_prime(value):
+                            ok = False
+                            break
+                        values.append(value)
+                    if ok:
+                        found.append((kind, tuple(values)))
+            return found
+
+        def _write_log_record(self, kind: str, values) -> None:
+            if not self.log_path:
+                return
+            try:
+                path = Path(self.log_path).expanduser()
+                path.parent.mkdir(parents=True, exist_ok=True)
+                stamp = dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                label = self.DISPLAY_NAMES.get(kind, kind)
+                payload = ', '.join(str(v) for v in values)
+                line = f'[{stamp}] {label}: {payload}\n'
+                encoded_size = len(line.encode('utf-8'))
+                limit_bytes = self.log_limit_mb * 1_000_000
+
+                current_size = 0
+                try:
+                    current_size = path.stat().st_size
+                except FileNotFoundError:
+                    pass
+
+                if current_size and current_size + encoded_size > limit_bytes:
+                    try:
+                        path.unlink()
+                    except FileNotFoundError:
+                        pass
+                    self.log_reset.emit(str(path))
+
+                with path.open('a', encoding='utf-8', newline='') as handle:
+                    handle.write(line)
+            except Exception as exc:
+                self.search_error.emit(
+                    f'Prime-Log konnte nicht geschrieben werden: {exc}'
+                )
+
+        def run(self) -> None:
+            try:
+                self._effective_sieve_limit = min(
+                    self.pre_sieve_limit,
+                    self.ACTIVE_SIEVE_HARD_LIMIT,
+                )
+                self.status_message.emit(
+                    f'Vorsieb wird bis {self._effective_sieve_limit:,} aufgebaut …'
+                    .replace(',', '.')
+                )
+                self._small_primes = self._sieve_primes(
+                    self._effective_sieve_limit
+                )
+
+                backend = 'gmpy2/GMP' if self._gmpy2 is not None else 'Python Miller-Rabin'
+                if self.pre_sieve_limit > self._effective_sieve_limit:
+                    sieve_note = (
+                        f'aktive Vorsieb-Tabelle bis {self._effective_sieve_limit:,}; '
+                        f'konfiguriert {self.pre_sieve_limit:,}'
+                    ).replace(',', '.')
+                else:
+                    sieve_note = (
+                        f'Vorsieb bis {self._effective_sieve_limit:,}'
+                    ).replace(',', '.')
+                self.status_message.emit(
+                    f'Suche läuft: {backend}, {self.thread_count} Threads, {sieve_note}.'
+                )
+
+                start = secrets.randbits(self.bit_length)
+                start |= (1 << (self.bit_length - 1))
+                start |= 1
+                next_candidate = start
+                checked = 0
+                found_total = 0
+                kind_counts = {key: 0 for key in self.DISPLAY_NAMES}
+                last_stats = time.monotonic()
+                batch_size = max(self.thread_count, 4)
+
+                with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=self.thread_count,
+                    thread_name_prefix='prime-solver',
+                ) as pool:
+                    while not self._stop_event.is_set():
+                        candidates = [
+                            next_candidate + (2 * index)
+                            for index in range(batch_size)
+                        ]
+                        next_candidate += 2 * batch_size
+                        futures = [
+                            pool.submit(self._analyze_candidate, candidate)
+                            for candidate in candidates
+                        ]
+
+                        for future in futures:
+                            if self._stop_event.is_set():
+                                break
+                            checked += 1
+                            try:
+                                results = future.result()
+                            except Exception as exc:
+                                self.search_error.emit(
+                                    f'Fehler beim Primzahltest: {exc}'
+                                )
+                                continue
+                            for kind, values in results:
+                                found_total += 1
+                                kind_counts[kind] = kind_counts.get(kind, 0) + 1
+                                self._write_log_record(kind, values)
+                                self.result_found.emit(
+                                    kind,
+                                    tuple(str(v) for v in values),
+                                )
+
+                            now = time.monotonic()
+                            if now - last_stats >= 0.35:
+                                self.stats_changed.emit({
+                                    'checked': checked,
+                                    'found': found_total,
+                                    'counts': dict(kind_counts),
+                                    'current': str(next_candidate),
+                                })
+                                last_stats = now
+
+                self.stats_changed.emit({
+                    'checked': checked,
+                    'found': found_total,
+                    'counts': dict(kind_counts),
+                    'current': str(next_candidate),
+                })
+                self.status_message.emit('Suche angehalten.')
+            except Exception as exc:
+                self.search_error.emit(f'Prime-Solver: {exc}')
+                self.status_message.emit('Suche wegen eines Fehlers beendet.')
+
+
+    class PrimeSolverFactWidget(QWidget):
+        BIT_LENGTHS = (16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16284)
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self._dark_mode = True
+            self._worker = None
+            self._prime_reset_limit = 1000
+            self._pattern_lists = {}
+            self._filter_checks = {}
+
+            root = QVBoxLayout(self)
+            root.setContentsMargins(12, 10, 12, 10)
+            root.setSpacing(8)
+
+            title = QLabel('Primzahlen / Prime-Constellations', self)
+            font = title.font()
+            font.setPointSize(max(font.pointSize() + 3, 13))
+            font.setBold(True)
+            title.setFont(font)
+            root.addWidget(title)
+
+            info = QLabel(
+                'Sucht Primzahlen von 16 bis 16284 Bit und filtert optional '
+                'Zwillinge bis Achtlinge. Kandidaten werden zuerst modular '
+                'vorgesiebt und danach mit GMP/gmpy2 oder Miller-Rabin geprüft.',
+                self,
+            )
+            info.setWordWrap(True)
+            root.addWidget(info)
+
+            settings_box = QGroupBox('Suche', self)
+            settings = QGridLayout(settings_box)
+            settings.setColumnStretch(1, 1)
+
+            settings.addWidget(QLabel('Bitlänge:', settings_box), 0, 0)
+            self.bit_length_combo = QComboBox(settings_box)
+            for bits in self.BIT_LENGTHS:
+                self.bit_length_combo.addItem(f'{bits} Bit', bits)
+            self.bit_length_combo.setCurrentIndex(
+                self.bit_length_combo.findData(4096)
+            )
+            settings.addWidget(self.bit_length_combo, 0, 1)
+
+            settings.addWidget(QLabel('Threads:', settings_box), 0, 2)
+            self.threads_spin = QSpinBox(settings_box)
+            self.threads_spin.setRange(1, 32)
+            self.threads_spin.setValue(min(8, max(1, os.cpu_count() or 1)))
+            settings.addWidget(self.threads_spin, 0, 3)
+
+            settings.addWidget(QLabel('Vorsieb bis:', settings_box), 1, 0)
+            self.pre_sieve_spin = QDoubleSpinBox(settings_box)
+            self.pre_sieve_spin.setDecimals(0)
+            self.pre_sieve_spin.setRange(1000.0, 100000000000.0)
+            self.pre_sieve_spin.setSingleStep(1000.0)
+            self.pre_sieve_spin.setValue(100000.0)
+            self.pre_sieve_spin.setToolTip(
+                'Konfigurationsbereich 1.000 bis 100.000.000.000. '
+                'Die aktive Primteiler-Tabelle wird zum Schutz vor extremem '
+                'Speicher-/Startaufwand intern begrenzt; anschließend übernimmt '
+                'der Probable-Prime-Test.'
+            )
+            settings.addWidget(self.pre_sieve_spin, 1, 1, 1, 3)
+            root.addWidget(settings_box)
+
+            filter_box = QGroupBox('Filter', self)
+            filter_layout = QGridLayout(filter_box)
+            filter_defs = (
+                ('prime', 'Einzelprimzahlen', True),
+                ('twins', 'Zwillinge', True),
+                ('triplets', 'Trillinge', True),
+                ('quadruplets', 'Vierlinge', True),
+                ('quintuplets', 'Fünflinge', False),
+                ('sextuplets', 'Sechslinge', False),
+                ('septuplets', 'Siebenlinge', False),
+                ('octuplets', 'Achtlinge', False),
+            )
+            for index, (key, label, checked) in enumerate(filter_defs):
+                box = QCheckBox(label, filter_box)
+                box.setChecked(checked)
+                self._filter_checks[key] = box
+                filter_layout.addWidget(box, index // 4, index % 4)
+            root.addWidget(filter_box)
+
+            log_box = QGroupBox('Aufzeichnung', self)
+            log_layout = QGridLayout(log_box)
+            log_layout.setColumnStretch(1, 1)
+            log_layout.addWidget(QLabel('Primes', log_box), 0, 0)
+            self.log_path_edit = QLineEdit(log_box)
+            self.log_path_edit.setText(
+                str(Path.cwd() / 'primes.log')
+            )
+            log_layout.addWidget(self.log_path_edit, 0, 1)
+            self.log_browse_button = QPushButton('…', log_box)
+            self.log_browse_button.setFixedWidth(34)
+            self.log_browse_button.setToolTip('Ausgabedatei für gefundene Primzahlen wählen')
+            self.log_browse_button.clicked.connect(self._choose_log_path)
+            log_layout.addWidget(self.log_browse_button, 0, 2)
+
+            log_layout.addWidget(QLabel('Log-Größe:', log_box), 1, 0)
+            self.log_size_spin = QSpinBox(log_box)
+            self.log_size_spin.setRange(1, 1_000_000)
+            self.log_size_spin.setValue(500)
+            self.log_size_spin.setSuffix(' MB')
+            self.log_size_spin.setToolTip(
+                'Maximale Dateigröße in Megabyte. 1000 MB entsprechen 1 GB. '
+                'Beim Erreichen der Grenze wird die Datei gelöscht und neu begonnen.'
+            )
+            log_layout.addWidget(self.log_size_spin, 1, 1, 1, 2)
+            root.addWidget(log_box)
+
+            button_row = QHBoxLayout()
+            self.start_button = QPushButton('Suche starten', self)
+            self.stop_button = QPushButton('Stop', self)
+            self.stop_button.setEnabled(False)
+            self.start_button.clicked.connect(self.start_search)
+            self.stop_button.clicked.connect(self.stop_search)
+            button_row.addWidget(self.start_button)
+            button_row.addWidget(self.stop_button)
+            button_row.addStretch(1)
+            root.addLayout(button_row)
+
+            self.status_label = QLabel('Bereit.', self)
+            self.status_label.setWordWrap(True)
+            root.addWidget(self.status_label)
+            self.stats_label = QLabel(
+                'Geprüft: 0 · Treffer: 0 · Zwillinge: 0 · Siebenlinge: 0 · Achtlinge: 0',
+                self,
+            )
+            self.stats_label.setWordWrap(True)
+            root.addWidget(self.stats_label)
+
+            result_splitter = QSplitter(Qt.Vertical, self)
+            result_splitter.setChildrenCollapsible(False)
+            root.addWidget(result_splitter, 1)
+
+            prime_box = QGroupBox('Gefundene Primzahlen', result_splitter)
+            prime_layout = QVBoxLayout(prime_box)
+            self.prime_list = QListWidget(prime_box)
+            self.prime_list.setObjectName('prime_solver_prime_list')
+            prime_layout.addWidget(self.prime_list)
+            result_splitter.addWidget(prime_box)
+
+            tuples_box = QGroupBox('Prime-Constellations', result_splitter)
+            tuples_layout = QGridLayout(tuples_box)
+            tuple_defs = (
+                ('triplets', 'Trillinge'),
+                ('quadruplets', 'Vierlinge'),
+                ('quintuplets', 'Fünflinge'),
+                ('sextuplets', 'Sechslinge'),
+            )
+            for index, (key, title_text) in enumerate(tuple_defs):
+                cell = QWidget(tuples_box)
+                cell_layout = QVBoxLayout(cell)
+                cell_layout.setContentsMargins(0, 0, 0, 0)
+                label = QLabel(title_text, cell)
+                label_font = label.font()
+                label_font.setBold(True)
+                label.setFont(label_font)
+                list_widget = QListWidget(cell)
+                list_widget.setObjectName(f'prime_solver_{key}_list')
+                self._pattern_lists[key] = list_widget
+                cell_layout.addWidget(label)
+                cell_layout.addWidget(list_widget, 1)
+                tuples_layout.addWidget(cell, index // 2, index % 2)
+            result_splitter.addWidget(tuples_box)
+            result_splitter.setStretchFactor(0, 3)
+            result_splitter.setStretchFactor(1, 2)
+            result_splitter.setSizes([320, 260])
+
+            self.set_dark_mode(True)
+            app = QApplication.instance()
+            if app is not None:
+                app.aboutToQuit.connect(self.shutdown)
+
+        def activate_fact(self, _fact_key: str = '', _title: str = '') -> None:
+            self.bit_length_combo.setFocus(Qt.OtherFocusReason)
+
+        def set_dark_mode(self, enabled: bool) -> None:
+            self._dark_mode = bool(enabled)
+            if self._dark_mode:
+                bg, fg, panel, border, selection = (
+                    '#10151c', '#f0f6fc', '#151d27', '#34495d', '#17324a'
+                )
+            else:
+                bg, fg, panel, border, selection = (
+                    '#f6f1e6', '#1b1b1b', '#fffaf0', '#c7bca6', '#d8ecff'
+                )
+            self.setStyleSheet(
+                f"""PrimeSolverFactWidget {{ background: {bg}; color: {fg}; }}
+QGroupBox {{ background: {panel}; color: {fg}; border: 1px solid {border}; border-radius: 4px; margin-top: 8px; padding-top: 6px; }}
+QGroupBox::title {{ subcontrol-origin: margin; left: 8px; padding: 0 4px; }}
+QListWidget {{ background: {bg}; color: {fg}; border: 1px solid {border}; }}
+QListWidget::item:selected {{ background: {selection}; }}
+QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {{ background: {bg}; color: {fg}; border: 1px solid {border}; min-height: 24px; }}
+QPushButton {{ min-height: 26px; }}"""
+            )
+
+        def _choose_log_path(self) -> None:
+            current = self.log_path_edit.text().strip()
+            if not current:
+                current = str(Path.cwd() / 'primes.log')
+            filename, _selected = QFileDialog.getSaveFileName(
+                self,
+                'Prime-Ausgabedatei festlegen',
+                current,
+                'Prime-Log (*.log *.txt);;Alle Dateien (*.*)',
+            )
+            if filename:
+                self.log_path_edit.setText(filename)
+
+        def _selected_filters(self):
+            return [
+                key for key, box in self._filter_checks.items()
+                if box.isChecked()
+            ]
+
+        def _set_controls_running(self, running: bool) -> None:
+            self.start_button.setEnabled(not running)
+            self.stop_button.setEnabled(running)
+            self.bit_length_combo.setEnabled(not running)
+            self.threads_spin.setEnabled(not running)
+            self.pre_sieve_spin.setEnabled(not running)
+            self.log_path_edit.setEnabled(not running)
+            self.log_browse_button.setEnabled(not running)
+            self.log_size_spin.setEnabled(not running)
+            for box in self._filter_checks.values():
+                box.setEnabled(not running)
+
+        def start_search(self) -> None:
+            if self._worker is not None and self._worker.isRunning():
+                return
+            filters = self._selected_filters()
+            if not filters:
+                QMessageBox.information(
+                    self,
+                    'Primzahlen',
+                    'Bitte mindestens einen Filter auswählen.',
+                )
+                return
+
+            bit_length = int(self.bit_length_combo.currentData())
+            self._worker = PrimeSearchThread(
+                bit_length=bit_length,
+                thread_count=self.threads_spin.value(),
+                pre_sieve_limit=int(self.pre_sieve_spin.value()),
+                enabled_kinds=filters,
+                log_path=self.log_path_edit.text().strip(),
+                log_limit_mb=self.log_size_spin.value(),
+                parent=self,
+            )
+            self._worker.result_found.connect(self._on_result_found)
+            self._worker.status_message.connect(self.status_label.setText)
+            self._worker.stats_changed.connect(self._on_stats_changed)
+            self._worker.log_reset.connect(self._on_log_reset)
+            self._worker.search_error.connect(self._on_search_error)
+            self._worker.finished.connect(self._on_worker_finished)
+            self._set_controls_running(True)
+            self.status_label.setText('Prime-Solver wird gestartet ...')
+            self._worker.start()
+
+        def stop_search(self) -> None:
+            worker = self._worker
+            if worker is None:
+                return
+            worker.request_stop()
+            self.stop_button.setEnabled(False)
+            self.status_label.setText('Suche wird angehalten …')
+
+        def _append_prime(self, value: str) -> None:
+            # Erster Puffer: 1000 Treffer. Danach werden jeweils 500 neue
+            # Treffer gesammelt und vor dem nächsten Block zurückgesetzt.
+            if self.prime_list.count() >= self._prime_reset_limit:
+                self.prime_list.clear()
+                self._prime_reset_limit = 500
+            self.prime_list.addItem(value)
+            self.prime_list.scrollToBottom()
+
+        def _append_pattern(self, kind: str, values) -> None:
+            widget = self._pattern_lists.get(kind)
+            if widget is None:
+                return
+            if widget.count() >= 200:
+                widget.clear()
+            widget.addItem('  '.join(values))
+            widget.scrollToBottom()
+
+        def _on_result_found(self, kind: str, values) -> None:
+            values = tuple(str(v) for v in values)
+            if kind == 'prime' and values:
+                self._append_prime(values[0])
+            elif kind in self._pattern_lists:
+                self._append_pattern(kind, values)
+
+        def _on_stats_changed(self, stats) -> None:
+            stats = dict(stats or {})
+            counts = dict(stats.get('counts') or {})
+            self.stats_label.setText(
+                'Geprüft: {checked:,} · Treffer: {found:,} · '
+                'Zwillinge: {twins:,} · Trillinge: {triplets:,} · '
+                'Vierlinge: {quadruplets:,} · Fünflinge: {quintuplets:,} · '
+                'Sechslinge: {sextuplets:,} · Siebenlinge: {septuplets:,} · '
+                'Achtlinge: {octuplets:,}'.format(
+                    checked=int(stats.get('checked', 0)),
+                    found=int(stats.get('found', 0)),
+                    twins=int(counts.get('twins', 0)),
+                    triplets=int(counts.get('triplets', 0)),
+                    quadruplets=int(counts.get('quadruplets', 0)),
+                    quintuplets=int(counts.get('quintuplets', 0)),
+                    sextuplets=int(counts.get('sextuplets', 0)),
+                    septuplets=int(counts.get('septuplets', 0)),
+                    octuplets=int(counts.get('octuplets', 0)),
+                ).replace(',', '.')
+            )
+
+        def _on_log_reset(self, path: str) -> None:
+            QMessageBox.information(
+                self,
+                'Prime-Log-Größe erreicht',
+                'Die festgelegte Dateigrenze wurde erreicht.\n\n'
+                f'Die Datei wurde zurückgesetzt:\n{path}\n\n'
+                'Die Aufzeichnung der gefundenen Primzahlen wird fortgesetzt.',
+            )
+
+        def _on_search_error(self, message: str) -> None:
+            self.status_label.setText(str(message))
+
+        def _on_worker_finished(self) -> None:
+            worker = self._worker
+            self._set_controls_running(False)
+            self._worker = None
+            if worker is not None:
+                worker.deleteLater()
+
+        def shutdown(self) -> None:
+            worker = self._worker
+            if worker is not None and worker.isRunning():
+                worker.request_stop()
+                worker.wait(5000)
+
     class MathematicsLearningDockWidget(QWidget):
         """Lern-Workspace mit linksseitigen Tabs und rechts eingebetteter Szene."""
 
@@ -67602,6 +69670,11 @@ QPushButton {{ min-height: 28px; padding: 4px 12px; }}'''
                 'in den Pastellfarben der Referenz gezeichnet. Darunter zeigt ein Pascal-Dreieck '
                 'mit dezenten Diagonalstrichen die flachen Diagonalsummen als Fibonacci-Zahlen. '
                 'Eine SpinBox von 1 bis 1000 berechnet F(n) per Binetscher Formel.</p>'
+                '<h3>Primzahlen</h3>'
+                '<p>Unter Fakten → Zahlen → Primzahlen steht ein 16- bis 16284-Bit-Prime-Solver '
+                'mit modularer Vorsiebung, parallelen Tests und Filtern für Zwillinge bis Achtlinge '
+                'zur Verfügung. Gefundene Werte können zusätzlich in eine größenbegrenzte Logdatei '
+                'geschrieben werden.</p>'
                 '<h3>Zahlenmauer</h3>'
                 '<p>Jeder obere Stein ist die Summe seiner beiden Nachbarn darunter.</p>'
                 '<p><b>Beispiel:</b> 12 + 5 = 17, 5 + 22 = 27, 22 + 31 = 43.</p>'
@@ -67655,6 +69728,8 @@ QPushButton {{ min-height: 28px; padding: 4px 12px; }}'''
             self.content_stack.addWidget(self.fibonacci_spiral_widget)
             self.volume_fact_widget = VolumeFactWidget(self.content_stack)
             self.content_stack.addWidget(self.volume_fact_widget)
+            self.prime_solver_widget = PrimeSolverFactWidget(self.content_stack)
+            self.content_stack.addWidget(self.prime_solver_widget)
             self.numbers_wall_widget = NumberPyramidTrainerWidget(self.content_stack)
             self.content_stack.addWidget(self.numbers_wall_widget)
             self.arithmetic_widget = ArithmeticTrainerWidget(self.content_stack)
@@ -67707,6 +69782,19 @@ QPushButton {{ min-height: 28px; padding: 4px 12px; }}'''
                 volume.addChild(item)
                 self._fact_items[key] = item
             volume.setExpanded(True)
+
+            zahlen = QTreeWidgetItem(['Zahlen'])
+            zahlen_font = zahlen.font(0)
+            zahlen_font.setBold(True)
+            zahlen.setFont(0, zahlen_font)
+            zahlen.setFlags(zahlen.flags() & ~Qt.ItemIsSelectable)
+            self.facts_tree.addTopLevelItem(zahlen)
+
+            primzahlen = QTreeWidgetItem(['Primzahlen'])
+            primzahlen.setData(0, Qt.UserRole, 'prime_numbers')
+            zahlen.addChild(primzahlen)
+            zahlen.setExpanded(True)
+            self._fact_items['prime_numbers'] = primzahlen
 
             cantor = QTreeWidgetItem(['Cantor'])
             cantor_font = cantor.font(0)
@@ -67851,6 +69939,7 @@ QStackedWidget#learning_content_stack {{
             self.pascal_triangle_widget.set_dark_mode(enabled)
             self.fibonacci_spiral_widget.set_dark_mode(enabled)
             self.volume_fact_widget.set_dark_mode(enabled)
+            self.prime_solver_widget.set_dark_mode(enabled)
             self.numbers_wall_widget.set_dark_mode(enabled)
             self.arithmetic_widget.set_dark_mode(enabled)
             self.sudoku_widget.set_dark_mode(enabled)
@@ -67903,6 +69992,9 @@ QStackedWidget#learning_content_stack {{
                 self.fibonacci_spiral_widget.index_spin.setFocus(
                     Qt.OtherFocusReason
                 )
+            elif fact_key == 'prime_numbers':
+                self.content_stack.setCurrentWidget(self.prime_solver_widget)
+                self.prime_solver_widget.activate_fact(fact_key, title)
             elif fact_key.startswith('volume_'):
                 self.content_stack.setCurrentWidget(self.volume_fact_widget)
                 self.volume_fact_widget.activate_fact(fact_key, title)
@@ -72482,6 +74574,11 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.openssl_server_widget = None
             self.apache_server_dock = None
             self.apache_server_widget = None
+            # Stage 157: gemeinsamer Vollflaechen-Workspace fuer Server-Docks.
+            self._server_workspace_active = False
+            self._server_workspace_dock = None
+            self._server_workspace_hidden_docks = []
+            self._server_workspace_replaced_central_widget = False
             self._windows_resource_editor_workspace_active = False
             self._windows_resource_editor_hidden_docks = []
             self._windows_resource_editor_replaced_central_widget = False
@@ -78657,8 +80754,165 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     QTimer.singleShot(0, self._fill_e_baukasten_free_space)
 
         # -------------------------------------------------------------------
-        # Stage 155: BIND9 / OpenSSL / Apache Server-Docking-Fenster.
+        # Stage 155/157: BIND9 / OpenSSL / Apache Server-Docking-Fenster.
+        # Stage 157 macht diese Werkzeuge zu exklusiven Vollflaechen-Workspaces:
+        # alle Docks ausser Protokoll werden temporaer verborgen; das Central
+        # Widget wird nur dann wiederhergestellt, wenn es vorher sichtbar war.
         # -------------------------------------------------------------------
+        def _server_dock_from_kind(self, kind: str):
+            kind = str(kind).strip().casefold()
+            attr = {
+                "bind9": "bind9_server_dock",
+                "openssl": "openssl_server_dock",
+                "apache": "apache_server_dock",
+            }.get(kind)
+            return getattr(self, attr, None) if attr else None
+
+        def _restore_server_workspace(self) -> None:
+            if not getattr(self, "_server_workspace_active", False):
+                return
+
+            self._server_workspace_active = False
+            self._server_workspace_dock = None
+
+            if getattr(self, "_server_workspace_replaced_central_widget", False):
+                central = self.centralWidget()
+                if central is not None:
+                    central.show()
+            self._server_workspace_replaced_central_widget = False
+
+            saved = list(getattr(self, "_server_workspace_hidden_docks", []))
+            self._server_workspace_hidden_docks = []
+            for candidate in saved:
+                try:
+                    if candidate is None:
+                        continue
+                    old_blocked = candidate.blockSignals(True)
+                    try:
+                        candidate.show()
+                    finally:
+                        candidate.blockSignals(old_blocked)
+                except RuntimeError:
+                    pass
+
+            bottom = getattr(self, "bottom_dock", None)
+            if bottom is not None:
+                bottom.show()
+                bottom.raise_()
+
+        def _prepare_server_workspace(self, server_dock) -> None:
+            if server_dock is None:
+                return
+
+            # Wechsel zwischen DNS/OpenSSL/Apache: den gemerkten Ausgangszustand
+            # beibehalten und nur das aktive Server-Dock austauschen.
+            if getattr(self, "_server_workspace_active", False):
+                current = getattr(self, "_server_workspace_dock", None)
+                if current is server_dock:
+                    return
+                if current is not None:
+                    try:
+                        old_blocked = current.blockSignals(True)
+                        try:
+                            current.hide()
+                        finally:
+                            current.blockSignals(old_blocked)
+                    except RuntimeError:
+                        pass
+                self._server_workspace_dock = server_dock
+                return
+
+            keep = {server_dock, getattr(self, "bottom_dock", None)}
+            self._server_workspace_hidden_docks = []
+            for candidate in self.findChildren(QDockWidget):
+                if candidate in keep:
+                    continue
+                if candidate is not None and candidate.isVisible():
+                    self._server_workspace_hidden_docks.append(candidate)
+
+            # Andere Workspace-Callbacks duerfen beim programmgesteuerten
+            # Ausblenden nicht ihre eigenen Restore-Routinen ausloesen.
+            for candidate in list(self._server_workspace_hidden_docks):
+                try:
+                    old_blocked = candidate.blockSignals(True)
+                    try:
+                        candidate.hide()
+                    finally:
+                        candidate.blockSignals(old_blocked)
+                except RuntimeError:
+                    pass
+
+            central = self.centralWidget()
+            self._server_workspace_replaced_central_widget = bool(
+                central is not None and central.isVisible()
+            )
+            if self._server_workspace_replaced_central_widget:
+                central.hide()
+
+            bottom = getattr(self, "bottom_dock", None)
+            if bottom is not None:
+                bottom.show()
+                bottom.raise_()
+
+            self._server_workspace_dock = server_dock
+            self._server_workspace_active = True
+
+        def _expand_server_dock(self, dock) -> None:
+            if dock is None or not dock.isVisible() or dock.isFloating():
+                return
+            try:
+                area = self.dockWidgetArea(dock)
+                if area in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea):
+                    self.resizeDocks(
+                        [dock], [max(520, self.width() - 24)], Qt.Horizontal
+                    )
+                else:
+                    bottom = getattr(self, "bottom_dock", None)
+                    protocol_height = (
+                        bottom.height()
+                        if bottom is not None and bottom.isVisible()
+                        else 0
+                    )
+                    self.resizeDocks(
+                        [dock],
+                        [max(360, self.height() - protocol_height - 24)],
+                        Qt.Vertical,
+                    )
+            except RuntimeError:
+                pass
+
+        def _server_dock_visibility_changed(self, kind: str, visible: bool) -> None:
+            dock = self._server_dock_from_kind(kind)
+            if dock is None:
+                return
+            if visible:
+                self._prepare_server_workspace(dock)
+                widget = dock.widget()
+                if widget is not None and hasattr(widget, "set_dark_mode"):
+                    widget.set_dark_mode(self.dark_mode_enabled)
+                QTimer.singleShot(0, lambda d=dock: self._expand_server_dock(d))
+            elif (
+                getattr(self, "_server_workspace_active", False)
+                and getattr(self, "_server_workspace_dock", None) is dock
+            ):
+                self._restore_server_workspace()
+
+        def _server_dock_location_changed(self, kind: str, _area) -> None:
+            dock = self._server_dock_from_kind(kind)
+            if (
+                dock is not None
+                and getattr(self, "_server_workspace_active", False)
+                and getattr(self, "_server_workspace_dock", None) is dock
+            ):
+                QTimer.singleShot(0, lambda d=dock: self._expand_server_dock(d))
+
+        def _server_dock_top_level_changed(self, kind: str, floating: bool) -> None:
+            dock = self._server_dock_from_kind(kind)
+            if dock is None:
+                return
+            if not floating and getattr(self, "_server_workspace_dock", None) is dock:
+                QTimer.singleShot(0, lambda d=dock: self._expand_server_dock(d))
+
         def _ensure_server_dock(self, kind: str):
             kind = str(kind).strip().casefold()
             mapping = {
@@ -78682,7 +80936,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             if existing is not None:
                 return existing
 
-            from server_tools import Bind9ServerPanel, OpenSSLServerPanel, ApacheServerPanel
+            
             panel_class = {
                 "Bind9ServerPanel": Bind9ServerPanel,
                 "OpenSSLServerPanel": OpenSSLServerPanel,
@@ -78707,6 +80961,15 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             setattr(self, dock_attr, dock)
             setattr(self, widget_attr, widget)
             self._assign_widget_property_ids(dock)
+            dock.visibilityChanged.connect(
+                lambda visible, k=kind: self._server_dock_visibility_changed(k, visible)
+            )
+            dock.dockLocationChanged.connect(
+                lambda area, k=kind: self._server_dock_location_changed(k, area)
+            )
+            dock.topLevelChanged.connect(
+                lambda floating, k=kind: self._server_dock_top_level_changed(k, floating)
+            )
             dock.hide()
             return dock
 
@@ -78715,12 +80978,13 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             widget = dock.widget()
             if hasattr(widget, "set_dark_mode"):
                 widget.set_dark_mode(self.dark_mode_enabled)
+
+            self._prepare_server_workspace(dock)
             if dock.isFloating():
-                dock.show()
-            else:
-                dock.show()
-                dock.raise_()
-                self.resizeDocks([dock], [max(560, min(900, self.width() // 2))], Qt.Horizontal)
+                dock.setFloating(False)
+            dock.show()
+            dock.raise_()
+            QTimer.singleShot(0, lambda d=dock: self._expand_server_dock(d))
             self.statusBar().showMessage(f"{dock.windowTitle()} geöffnet", 4000)
 
         def show_bind9_server_dock(self, _checked: bool = False) -> None:
