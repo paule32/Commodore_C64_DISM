@@ -1,0 +1,166 @@
+{
+  "format": "d64-e-baukasten",
+  "version": 1,
+  "grid": 10,
+  "components": [
+    {
+      "id": "3b82fe040d3b41f9a613f8539cc84de0",
+      "kind": "battery",
+      "name": "B1",
+      "position": [
+        -740.0,
+        -650.0
+      ],
+      "angle": 0.0,
+      "value": 9.0
+    },
+    {
+      "id": "0e7a15d1f7da405990cce2c1c1656456",
+      "kind": "resistor",
+      "name": "R1",
+      "position": [
+        -740.0,
+        -810.0
+      ],
+      "angle": 0.0,
+      "value": 1000.0
+    },
+    {
+      "id": "c56553f1b9eb49bfa7260ee8a5382654",
+      "kind": "switch",
+      "name": "S1",
+      "position": [
+        -610.0,
+        -810.0
+      ],
+      "angle": 0.0,
+      "value": 0.0,
+      "params": {
+        "closed": 1.0
+      }
+    },
+    {
+      "id": "e79e5b9ea69f4cf1b1ac31f8d2dd93cf",
+      "kind": "switch",
+      "name": "S2",
+      "position": [
+        -480.0,
+        -810.0
+      ],
+      "angle": 0.0,
+      "value": 0.0,
+      "params": {
+        "closed": 1.0
+      }
+    },
+    {
+      "id": "1c8a8418713f4934aca91d446e2dfe80",
+      "kind": "led_red",
+      "name": "D1",
+      "position": [
+        -560.0,
+        -650.0
+      ],
+      "angle": 180.0,
+      "value": 2.0,
+      "params": {
+        "max_current": 0.02,
+        "max_reverse_voltage": 5.0
+      }
+    }
+  ],
+  "nodes": {},
+  "wires": [
+    {
+      "id": "450f1a8a66dc42b6a66af11f73aa18cf",
+      "anchors": [
+        {
+          "component": "0e7a15d1f7da405990cce2c1c1656456",
+          "port": 1
+        },
+        {
+          "component": "c56553f1b9eb49bfa7260ee8a5382654",
+          "port": 0
+        }
+      ]
+    },
+    {
+      "id": "8ef519c951ab41bc8bc6621a5390cd03",
+      "anchors": [
+        {
+          "component": "c56553f1b9eb49bfa7260ee8a5382654",
+          "port": 1
+        },
+        {
+          "component": "e79e5b9ea69f4cf1b1ac31f8d2dd93cf",
+          "port": 0
+        }
+      ]
+    },
+    {
+      "id": "d56536db2bb44a30a5a2e6621b24f83e",
+      "anchors": [
+        {
+          "component": "0e7a15d1f7da405990cce2c1c1656456",
+          "port": 0
+        },
+        {
+          "component": "3b82fe040d3b41f9a613f8539cc84de0",
+          "port": 0
+        }
+      ]
+    },
+    {
+      "id": "da83b8451591432fb477d65f7e97883e",
+      "anchors": [
+        {
+          "component": "3b82fe040d3b41f9a613f8539cc84de0",
+          "port": 1
+        },
+        {
+          "component": "1c8a8418713f4934aca91d446e2dfe80",
+          "port": 1
+        }
+      ]
+    },
+    {
+      "id": "70635ceb87c14c38a8423469a3695aec",
+      "anchors": [
+        {
+          "component": "1c8a8418713f4934aca91d446e2dfe80",
+          "port": 0
+        },
+        {
+          "component": "e79e5b9ea69f4cf1b1ac31f8d2dd93cf",
+          "port": 1
+        }
+      ]
+    }
+  ],
+  "view3d": {
+    "placements": {
+      "c56553f1b9eb49bfa7260ee8a5382654": [
+        270.05,
+        186.35
+      ],
+      "e79e5b9ea69f4cf1b1ac31f8d2dd93cf": [
+        391.8607508532423,
+        222.93703071672354
+      ],
+      "1c8a8418713f4934aca91d446e2dfe80": [
+        287.07986348122864,
+        343.09129692832767
+      ]
+    },
+    "zoom": 100,
+    "rotation": [
+      0,
+      0,
+      0
+    ],
+    "splitter": [
+      299,
+      174
+    ]
+  }
+}
