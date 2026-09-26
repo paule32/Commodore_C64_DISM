@@ -7,6 +7,9 @@
 #endif
 # include "d64_workstation.h"
 
+# include <cstdint>
+# include <cstring>
+
 # include <QApplication>
 # include <QAction>
 # include <QAbstractButton>
@@ -90,6 +93,9 @@
 # include <algorithm>
 # include <cstdint>
 # include <functional>
+
+# include "d64_dbase_runtime.hpp"
+# include "d64_runtime_abi.hpp"
 
 #ifdef _WIN32
 #  define WIN32_LEAN_AND_MEAN
@@ -9038,6 +9044,9 @@ extern "C" D64QT5_API void *DBaseQtFormCreate(const char *className, int classNa
         2 * DBaseWfmMainWindow::clientInset() + 32,
         DBaseWfmMainWindow::clientTop() + DBaseWfmMainWindow::clientInset() + 24
     );
+    // Stage 217: documented WFM constructor defaults. The compiler may omit
+    // an identical SetGeometry call when Default-Property-Elision is enabled.
+    form->setClientGeometry(200, 200, 400, 400);
     form->setProperty("dbaseBorderWidth", 0);
     form->setProperty("dbaseRadius", 0);
     g_wfm_forms.append(form);
@@ -9125,6 +9134,9 @@ extern "C" D64QT5_API void *DBaseQtControlCreateEx(
         // sichtbarer QWidget-Platzhalter erhalten, statt den Formaufbau abzubrechen.
         widget = new QWidget(parent);
     }
+    // Stage 217: common WFM control geometry default. This is part of the
+    // runtime ABI so the compiler can safely elide (0,0,120,30).
+    widget->setGeometry(0, 0, 120, 30);
     widget->setProperty("dbaseBorderWidth", 0);
     widget->setProperty("dbaseRadius", 0);
     widget->show();
@@ -9309,6 +9321,44 @@ extern "C" D64QT5_API void DBaseQtWidgetSetProperty(
     wfm_apply_widget_style(widget);
 }
 
+
+#pragma pack(push, 1)
+struct DBaseQtPropertyBatchEntry
+{
+    std::uint32_t valueLength;
+    const char *value;
+    std::uint32_t nameLength;
+    const char *name;
+};
+#pragma pack(pop)
+
+static_assert(sizeof(DBaseQtPropertyBatchEntry) ==
+              (sizeof(void *) == 8 ? 24u : 16u),
+              "Unexpected packed property record size");
+
+extern "C" D64QT5_API void DBaseQtWidgetSetProperties(
+    void *handle,
+    const void *records,
+    int count)
+{
+    if (!handle || !records || count <= 0)
+        return;
+
+    const DBaseQtPropertyBatchEntry *items =
+        static_cast<const DBaseQtPropertyBatchEntry *>(records);
+    for (int index = 0; index < count; ++index) {
+        const DBaseQtPropertyBatchEntry &item = items[index];
+        DBaseQtWidgetSetProperty(
+            handle,
+            item.name,
+            static_cast<int>(item.nameLength),
+            item.value,
+            static_cast<int>(item.valueLength));
+    }
+}
+
+// Stage 224: compact property records are decoded inside generated images;
+// the runtime keeps the stable @51/@64 ABI and needs no extra packed export.
 extern "C" D64QT5_API void DBaseQtWidgetSetBackColor(void *handle, const char *text, int length)
 {
     QWidget *widget = wfm_widget(handle);

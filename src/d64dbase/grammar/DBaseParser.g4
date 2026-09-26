@@ -159,7 +159,9 @@ unaryExpression
     ;
 
 primaryExpression
-    : NUMBER
+    : DOLLAR LPAREN expression COMMA expression (COMMA expression)? RPAREN
+    | BANG LPAREN expression RPAREN
+    | NUMBER
     | HEX_NUMBER
     | STRING_DOUBLE
     | STRING_SINGLE

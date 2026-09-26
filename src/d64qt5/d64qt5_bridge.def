@@ -1,59 +1,66 @@
 LIBRARY libd64_qt5
 EXPORTS
-    DBaseQtSetWorkstationMode
-    DBaseQtInitialize
-    DBaseQtInitializeGui
-    DBaseQtShowWindow
-    DBaseQtProcessEvents
-    DBaseQtSetDebugVisible
-    DBaseQtAppendConsole
-    DBaseQtAppendDebug
-    DBaseQtSetColorNormal
-    DBaseQtSetOutputColor
-    DBaseQtClearScreen
-    DBaseQtClearScreenChar
-    DBaseQtClearScreenColor
-    DBaseQtSetBorderColor
-    DBaseQtSessionCreate
-    DBaseQtGetLoginSession
-    DBaseQtSessionLogin
-    DBaseQtDatabaseCreate
-    DBaseQtDatabaseSetPath
-    DBaseQtDatabaseSetDatabaseName
-    DBaseQtDatabaseSetUserName
-    DBaseQtDatabaseSetPassword
-    DBaseQtDatabaseSetAlias
-    DBaseQtDatabaseSetSession
-    DBaseQtDatabaseSetActive
-    DBaseQtDatabaseOpen
-    DBaseQtDatabaseClose
-    DBaseQtDatabaseCommit
-    DBaseQtEnsureDefaultMenu
-    DBaseQtMenuCreate
-    DBaseQtMenuSetText
-    DBaseQtMenuSetSeparator
-    DBaseQtMenuSetShortcut
-    DBaseQtMenuSetOnClick
-    DBaseQtFormCreate
-    DBaseQtControlCreate
-    DBaseQtControlCreateEx
-    DBaseQtObjectBindEvent
-    DBaseQtNonVisualCreate
-    DBaseQtTimerCreate
-    DBaseQtTimerSetInterval
-    DBaseQtTimerSetActive
-    DBaseQtConsoleWrite
-    DBaseQtWidgetSetGeometry
-    DBaseQtWidgetSetText
-    DBaseQtWidgetSetProperty
-    DBaseQtWidgetSetBackColor
-    DBaseQtWidgetSetBorderColor
-    DBaseQtWidgetSetBorderWidth
-    DBaseQtWidgetSetRadius
-    DBaseQtWidgetSetFont
-    DBaseQtFormOpen
-    DBaseQtMarkProgramFinished
-    DBaseQtExec
-    DBaseQtShutdownRequested
-    DBaseQtShutdown
-    DBaseQtSetDebugTheme
+    DBaseGetRuntimeContext @1
+    DBaseGetUpperTable @2
+    DBaseGetLowerTable @3
+    DBaseUpperBuffer @4
+    DBaseLowerBuffer @5
+    DBaseQtSetWorkstationMode @6
+    DBaseQtInitialize @7
+    DBaseQtInitializeGui @8
+    DBaseQtShowWindow @9
+    DBaseQtProcessEvents @10
+    DBaseQtSetDebugVisible @11
+    DBaseQtAppendConsole @12
+    DBaseQtAppendDebug @13
+    DBaseQtSetColorNormal @14
+    DBaseQtSetOutputColor @15
+    DBaseQtClearScreen @16
+    DBaseQtClearScreenChar @17
+    DBaseQtClearScreenColor @18
+    DBaseQtSetBorderColor @19
+    DBaseQtSessionCreate @20
+    DBaseQtGetLoginSession @21
+    DBaseQtSessionLogin @22
+    DBaseQtDatabaseCreate @23
+    DBaseQtDatabaseSetPath @24
+    DBaseQtDatabaseSetDatabaseName @25
+    DBaseQtDatabaseSetUserName @26
+    DBaseQtDatabaseSetPassword @27
+    DBaseQtDatabaseSetAlias @28
+    DBaseQtDatabaseSetSession @29
+    DBaseQtDatabaseSetActive @30
+    DBaseQtDatabaseOpen @31
+    DBaseQtDatabaseClose @32
+    DBaseQtDatabaseCommit @33
+    DBaseQtEnsureDefaultMenu @34
+    DBaseQtMenuCreate @35
+    DBaseQtMenuSetText @36
+    DBaseQtMenuSetSeparator @37
+    DBaseQtMenuSetShortcut @38
+    DBaseQtMenuSetOnClick @39
+    DBaseQtFormCreate @40
+    DBaseQtControlCreate @41
+    DBaseQtControlCreateEx @42
+    DBaseQtObjectBindEvent @43
+    DBaseQtNonVisualCreate @44
+    DBaseQtTimerCreate @45
+    DBaseQtTimerSetInterval @46
+    DBaseQtTimerSetActive @47
+    DBaseQtConsoleWrite @48
+    DBaseQtWidgetSetGeometry @49
+    DBaseQtWidgetSetText @50
+    DBaseQtWidgetSetProperty @51
+    DBaseQtWidgetSetBackColor @52
+    DBaseQtWidgetSetBorderColor @53
+    DBaseQtWidgetSetBorderWidth @54
+    DBaseQtWidgetSetRadius @55
+    DBaseQtWidgetSetFont @56
+    DBaseQtFormOpen @57
+    DBaseQtMarkProgramFinished @58
+    DBaseQtExec @59
+    DBaseQtShutdownRequested @60
+    DBaseQtShutdown @61
+    DBaseQtSetDebugTheme @62
+    D64GetRuntimeAbiInfo @63
+    DBaseQtWidgetSetProperties @64

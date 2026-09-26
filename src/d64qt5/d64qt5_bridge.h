@@ -20,6 +20,40 @@ extern "C" {
  * PE32:  cdecl / Argumente auf dem Stack, Caller raeumt auf.
  * PE32+: Windows-x64-ABI (RCX/RDX/R8/R9 + Shadow Space).
  */
+/* Stage 213: loader/runtime ABI identity. This export is always resolved by name. */
+#pragma pack(push, 1)
+typedef struct D64RuntimeAbiInfo {
+    unsigned int structSize;
+    unsigned short abiMajor;
+    unsigned short abiMinor;
+    unsigned int ordinalMapVersion;
+    unsigned int loaderMinVersion;
+    unsigned char ordinalMapHash[32];
+    char runtimeName[32];
+} D64RuntimeAbiInfo;
+#pragma pack(pop)
+
+D64QT5_API const D64RuntimeAbiInfo *D64GetRuntimeAbiInfo(void);
+
+/* Stage 208/209: immutable lookup tables remain private inside the DLL. */
+typedef struct DBaseRuntimeContext {
+    unsigned int abiVersion;
+    const unsigned char *upperTable;
+    const unsigned char *lowerTable;
+    unsigned int upperTableSize;
+    unsigned int lowerTableSize;
+} DBaseRuntimeContext;
+
+D64QT5_API const DBaseRuntimeContext *DBaseGetRuntimeContext(void);
+D64QT5_API const unsigned char *DBaseGetUpperTable(void);
+D64QT5_API const unsigned char *DBaseGetLowerTable(void);
+D64QT5_API unsigned int DBaseUpperBuffer(
+    unsigned char *destination, unsigned int destinationCapacity,
+    const unsigned char *source, unsigned int sourceLength);
+D64QT5_API unsigned int DBaseLowerBuffer(
+    unsigned char *destination, unsigned int destinationCapacity,
+    const unsigned char *source, unsigned int sourceLength);
+
 D64QT5_API void DBaseQtSetWorkstationMode(int enabled);
 D64QT5_API void DBaseQtSetDebugTheme(int themeMode);
 D64QT5_API int  DBaseQtInitialize(const char *title);
@@ -83,6 +117,7 @@ D64QT5_API void DBaseQtConsoleWrite(
 D64QT5_API void DBaseQtWidgetSetGeometry(void *handle, int left, int top, int width, int height);
 D64QT5_API void DBaseQtWidgetSetText(void *handle, const char *text, int length);
 D64QT5_API void DBaseQtWidgetSetProperty(void *handle, const char *name, int nameLength, const char *value, int valueLength);
+D64QT5_API void DBaseQtWidgetSetProperties(void *handle, const void *records, int count);
 D64QT5_API void DBaseQtWidgetSetBackColor(void *handle, const char *text, int length);
 D64QT5_API void DBaseQtWidgetSetBorderColor(void *handle, const char *text, int length);
 D64QT5_API void DBaseQtWidgetSetBorderWidth(void *handle, int width);

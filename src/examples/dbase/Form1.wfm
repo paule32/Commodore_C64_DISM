@@ -1,5 +1,5 @@
 ** END HEADER -- do not remove this line
-// Generated on 11.09.2026
+// Generated on 25.09.2026
 //
 PARAMETER bmodal
 LOCAL B
@@ -166,6 +166,7 @@ CLASS Form1 OF FORM
                 Color = "#55ff7f"
             ENDWITH
         ENDWITH
+        OnClick = CLASS::PushButton1_onClick
     ENDWITH
 
     procedure __init__(p1, p2)
@@ -178,5 +179,17 @@ CLASS Form1 OF FORM
 
     function __main__
         return 7
+
+    procedure PushButton1_onClick(Sender)
+        STORE 101.42 TO Ausdruck
+        Ausdruck = 101.42
+        ? Ausdruck
+        STORE INT(Ausdruck) TO Ausdruck
+        ? Ausdruck
+        ? "1: " + 101.42
+        ? "2: " + INT(101.42)
+        ? "3: " + Ausdruck
+        ? !("Das ist Gut")
+        return
 
 ENDCLASS

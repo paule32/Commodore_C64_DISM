@@ -77,6 +77,8 @@ GE        : '>=';
 EQEQ      : '==';
 NEANGLE   : '<>';
 NEBANG    : '!=';
+BANG      : '!';
+DOLLAR    : '$';
 LT        : '<';
 GT        : '>';
 HASH      : '#';

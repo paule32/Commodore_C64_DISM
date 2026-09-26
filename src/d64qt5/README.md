@@ -218,3 +218,41 @@ TCheckBox-Zustand und TComboBox-Text laufen als kleine Property-RPCs; die
 Anwendungsvorlage wird garantiert vorher gesendet. Passworttexte bleiben
 maskiert. Protokollversion: Remote v5, Terminal `D64TERM/1` v1. Keine Pixel-
 oder Screenshot-Uebertragung und kein globales `SendInput()`.
+
+## Stage 213 - Runtime-ABI und stabile Ordinal-Versionierung
+
+Stage 213 macht Ordinal-Imports versionssicher. `d64qt5_bridge.def` besitzt ab
+jetzt fuer alle Exporte explizite, stabile Ordinale. Vor jedem Windows-Build
+wird `generate_runtime_abi.py` ausgefuehrt. Das Skript erzeugt
+`d64_runtime_abi.inc` mit:
+
+- Runtime ABI Major/Minor,
+- Ordinal-Map-Version,
+- minimaler Loader-Version,
+- Runtime-Namen `libd64_qt5.dll`,
+- SHA-256 der vollstaendigen kanonischen `Ordinal:Exportname`-Tabelle.
+
+Die DLL exportiert `D64GetRuntimeAbiInfo` immer unter ihrem Namen. Der gepackte
+D64I-v2-Loader ruft diese Funktion deshalb **vor** der Aufloesung ordinaler
+Programmimporte per Name auf und prueft Runtime-Name, ABI-Version,
+Ordinal-Map-Version, minimale Loader-Version und optional den 32-Byte-Hash.
+Ein veralteter oder anders belegter Ordinal-Export kann dadurch nicht bereits
+fuer die Kompatibilitaetspruefung benutzt werden.
+
+Ordinal-Importeintraege in D64I v2 koennen zusaetzlich den urspruenglichen
+Exportnamen behalten. In den Projekt-Einstellungen kann deshalb fuer einen
+Versions-/Hash-Konflikt zwischen `Programmstart abbrechen` und
+`auf Namensimport zurueckfallen` gewaehlt werden.
+
+Wichtig: Eine DLL aus Stage 212 oder frueher besitzt den neuen ABI-Export nicht.
+Nach dem Update muss die Runtime neu gebaut werden:
+
+```bat
+cd d64qt5
+build_d64qt5_mingw32.bat
+```
+
+Der Build regeneriert den Ordinal-Hash automatisch. Werden Exporte oder deren
+Ordinale geaendert, soll zusaetzlich `ORDINAL_MAP_VERSION` in
+`generate_runtime_abi.py` erhoeht werden. Auch wenn dies vergessen wird, erkennt
+der SHA-256-Vergleich die veraenderte Exportbelegung.

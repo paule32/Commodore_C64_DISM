@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation, localcontext
+from decimal import Decimal, InvalidOperation, ROUND_DOWN, localcontext
 from datetime import datetime
 from pathlib import Path
 import ast
@@ -1733,6 +1733,8 @@ def _tokenize_dbase_statement(
             "<": "LT",
             ">": "GT",
             "#": "NEHASH",
+            "!": "BANG",
+            "$": "DOLLAR",
         }
         kind = punctuation.get(char)
         if kind is not None:
@@ -1816,6 +1818,65 @@ class _DBaseExpressionParser:
                 expression = self.parse_expression()
             self._expect_eof()
             return DBaseReturnStatement(
+                expression=expression,
+                line=first.line,
+                column=first.column,
+            )
+
+        # dBase STORE <Ausdruck> TO <SpeicherVariable>. Intern wird STORE auf
+        # denselben Zuweisungsknoten wie ``name = expression`` abgebildet.
+        # Damit bleiben Typanalyse, Speicherverwaltung, IF-Sichtbarkeit und
+        # Codeerzeugung an genau einer Stelle implementiert.
+        if first.kind == "IDENT" and str(first.value).casefold() == "store":
+            self.index += 1
+            if self.current.kind == "EOF":
+                raise DBaseCompilerError(
+                    "Nach STORE wird ein Ausdruck erwartet.",
+                    line=first.line,
+                    column=first.column,
+                    filename=self.filename,
+                )
+            expression = self.parse_expression()
+            self._expect_keyword("to", "Nach STORE <Ausdruck> wird TO erwartet.")
+            target = self.current
+            if target.kind != "IDENT":
+                raise DBaseCompilerError(
+                    "Nach STORE <Ausdruck> TO wird ein Variablenname erwartet.",
+                    line=target.line,
+                    column=target.column,
+                    filename=self.filename,
+                )
+            target_name = str(target.value)
+            if target_name.casefold() in {
+                "and", "case", "class", "do", "else", "endcase",
+                "endclass", "endif", "endproc", "endprocedure", "exit",
+                "false", "for", "function", "if", "local", "not", "null",
+                "off", "on", "or", "parameters", "private", "procedure",
+                "public", "return", "set", "store", "this", "to", "true",
+                "while",
+            }:
+                raise DBaseCompilerError(
+                    "Reserviertes dBase-Schluesselwort ist als "
+                    f"STORE-Ziel nicht erlaubt: {target_name}",
+                    line=target.line,
+                    column=target.column,
+                    filename=self.filename,
+                )
+            if (
+                isinstance(expression, DBaseIdentifierExpression)
+                and expression.name.casefold() == target_name.casefold()
+            ):
+                raise DBaseCompilerError(
+                    "Identische/zirkulaere STORE-Zuweisung ist nicht erlaubt: "
+                    f"{target_name} TO {target_name}",
+                    line=first.line,
+                    column=first.column,
+                    filename=self.filename,
+                )
+            self.index += 1
+            self._expect_eof()
+            return DBaseAssignmentStatement(
+                name=target_name,
                 expression=expression,
                 line=first.line,
                 column=first.column,
@@ -2050,6 +2111,22 @@ class _DBaseExpressionParser:
 
     def parse_primary(self) -> DBaseExpression:
         token = self.current
+        if self.take("DOLLAR") is not None:
+            self.expect("LPAREN", "$(...) erwartet eine oeffnende Klammer.")
+            arguments = [self.parse_expression()]
+            self.expect("COMMA", "$(...) erwartet String und Anfangsposition.")
+            arguments.append(self.parse_expression())
+            if self.take("COMMA") is not None:
+                arguments.append(self.parse_expression())
+            self.expect("RPAREN", "$(...) erwartet zwei oder drei Parameter.")
+            return DBaseCallExpression(line=token.line, column=token.column,
+                                       name="$", arguments=tuple(arguments))
+        if self.take("BANG") is not None:
+            self.expect("LPAREN", "!(...) erwartet eine oeffnende Klammer.")
+            argument = self.parse_expression()
+            self.expect("RPAREN", "!(...) erwartet genau einen String und eine schliessende Klammer.")
+            return DBaseCallExpression(line=token.line, column=token.column,
+                                       name="!", arguments=(argument,))
         if self.take("NUMBER") is not None:
             return DBaseLiteralExpression(
                 line=token.line,
@@ -2786,6 +2863,76 @@ class _DBaseProgramAnalyzer:
             )
 
         elif isinstance(expression, DBaseCallExpression):
+            if expression.name == "$":
+                operands = [self.analyze_expression(arg, symbols=symbols,
+                    expression_info=expression_info, call_bindings=call_bindings)
+                    for arg in expression.arguments]
+                if operands[0].kind not in {"string", "char"} or any(
+                        arg.kind != "number" for arg in operands[1:]):
+                    raise DBaseCompilerError("$(...) erwartet einen String und numerische Position/Laenge.",
+                        line=expression.line, column=expression.column, filename=self.filename)
+                from .string_substring import substring
+                constant = None
+                if all(arg.constant_value is not None for arg in operands):
+                    constant = DBaseValue("string", substring(
+                        *[arg.constant_value.value for arg in operands]))
+                info = _DBaseExpressionInfo(kind="string", constant_value=constant,
+                    dynamic=any(arg.dynamic for arg in operands))
+                expression_info[expression] = info
+                return info
+            if expression.name == "!":
+                operand = self.analyze_expression(expression.arguments[0], symbols=symbols,
+                    expression_info=expression_info, call_bindings=call_bindings)
+                if operand.kind not in {"string", "char"}:
+                    raise DBaseCompilerError("!(...) erwartet einen String.",
+                        line=expression.line, column=expression.column, filename=self.filename)
+                from .string_upper import upper_string
+                constant = None if operand.constant_value is None else DBaseValue(
+                    "string", upper_string(str(operand.constant_value.value)))
+                info = _DBaseExpressionInfo(kind="string", constant_value=constant,
+                                            dynamic=operand.dynamic)
+                expression_info[expression] = info
+                return info
+            # INT(<numeric>) ist ein eingebauter dBase-Ausdruck. Er entfernt
+            # den Nachkommateil (Abrunden Richtung 0), liefert aber weiterhin
+            # einen numerischen dBase-Wert. Beispiele: INT(101.42)=101 und
+            # INT(-101.42)=-101.
+            if expression.name.casefold() == "int":
+                if len(expression.arguments) != 1:
+                    raise DBaseCompilerError(
+                        "INT(...) erwartet genau einen numerischen Ausdruck.",
+                        line=expression.line,
+                        column=expression.column,
+                        filename=self.filename,
+                    )
+                operand = self.analyze_expression(
+                    expression.arguments[0],
+                    symbols=symbols,
+                    expression_info=expression_info,
+                    call_bindings=call_bindings,
+                )
+                if operand.kind != "number":
+                    raise DBaseCompilerError(
+                        "INT(...) erwartet einen numerischen Wert.",
+                        line=expression.arguments[0].line,
+                        column=expression.arguments[0].column,
+                        filename=self.filename,
+                    )
+                constant = None
+                if operand.constant_value is not None:
+                    number = Decimal(operand.constant_value.value)
+                    constant = DBaseValue(
+                        "number",
+                        number.to_integral_value(rounding=ROUND_DOWN),
+                    )
+                info = _DBaseExpressionInfo(
+                    kind="number",
+                    constant_value=constant,
+                    dynamic=operand.dynamic,
+                )
+                expression_info[expression] = info
+                return info
+
             argument_info = tuple(
                 self.analyze_expression(
                     argument,
@@ -3585,6 +3732,48 @@ def _evaluate_dbase_expression(
             )
         return value
     if isinstance(expression, DBaseCallExpression):
+        if expression.name == "$":
+            operands = [_evaluate_dbase_expression(arg, filename=filename,
+                variables=env, call_resolver=call_resolver) for arg in expression.arguments]
+            if operands[0].kind not in {"string", "char"} or any(
+                    arg.kind != "number" for arg in operands[1:]):
+                raise DBaseCompilerError("$(...) erwartet einen String und numerische Position/Laenge.",
+                    line=expression.line, column=expression.column, filename=filename)
+            from .string_substring import substring
+            return DBaseValue("string", substring(*[arg.value for arg in operands]))
+        if expression.name == "!":
+            operand = _evaluate_dbase_expression(expression.arguments[0], filename=filename,
+                variables=env, call_resolver=call_resolver)
+            if operand.kind not in {"string", "char"}:
+                raise DBaseCompilerError("!(...) erwartet einen String.",
+                    line=expression.line, column=expression.column, filename=filename)
+            from .string_upper import upper_string
+            return DBaseValue("string", upper_string(str(operand.value)))
+        if expression.name.casefold() == "int":
+            if len(expression.arguments) != 1:
+                raise DBaseCompilerError(
+                    "INT(...) erwartet genau einen numerischen Ausdruck.",
+                    line=expression.line,
+                    column=expression.column,
+                    filename=filename,
+                )
+            operand = _evaluate_dbase_expression(
+                expression.arguments[0],
+                filename=filename,
+                variables=env,
+                call_resolver=call_resolver,
+            )
+            if operand.kind != "number":
+                raise DBaseCompilerError(
+                    "INT(...) erwartet einen numerischen Wert.",
+                    line=expression.arguments[0].line,
+                    column=expression.arguments[0].column,
+                    filename=filename,
+                )
+            return DBaseValue(
+                "number",
+                Decimal(operand.value).to_integral_value(rounding=ROUND_DOWN),
+            )
         if call_resolver is not None:
             return call_resolver(expression, env)
         raise DBaseCompilerError(
@@ -3874,6 +4063,11 @@ class _DBaseCodeGenerator:
         self.output_target = "console"
         self.current_expression_info: Mapping[DBaseExpression, _DBaseExpressionInfo] = analysis.expression_info
         self.current_call_bindings: Mapping[DBaseCallExpression, _DBaseCallBinding] = analysis.call_bindings
+        # Stage 208/209: nur Programme mit !() benoetigen den DLL-Upper-Export.
+        self.uses_upper_runtime = any(
+            isinstance(expression, DBaseCallExpression) and expression.name == "!"
+            for expression in self.current_expression_info
+        )
         self.current_instance: Optional[_DBaseRoutineInstance] = None
         self.extra_storage_slots: list[str] = []
         # Stage 29: Top-Level-Abbruchziel, wenn die Qt-Runtime durch das
@@ -4005,6 +4199,21 @@ class _DBaseCodeGenerator:
             return
 
         if isinstance(expression, DBaseCallExpression):
+            if expression.name.casefold() == "int":
+                # Operand nach ST0 laden und mit temporaer gesetztem x87-RC
+                # (11b = truncate toward zero) runden. Danach den ursprueng-
+                # lichen Control-Word-Zustand wiederherstellen. FRNDINT laesst
+                # das Ergebnis als Double in ST0, sodass INT nahtlos in allen
+                # numerischen Ausdruecken weiterverwendet werden kann.
+                self.emit_numeric_expression(expression.arguments[0])
+                self.emit("    fnstcw word ptr [__dbase_int_cw]")
+                self.emit("    movzx eax, word ptr [__dbase_int_cw]")
+                self.emit("    or eax, 3072")
+                self.emit("    mov word ptr [__dbase_int_cw_trunc], ax")
+                self.emit("    fldcw word ptr [__dbase_int_cw_trunc]")
+                self.emit("    frndint")
+                self.emit("    fldcw word ptr [__dbase_int_cw]")
+                return
             binding = self.emit_user_call(expression)
             if binding.kind == "external":
                 if self.is64:
@@ -4315,6 +4524,28 @@ class _DBaseCodeGenerator:
             return
 
         if isinstance(expression, DBaseCallExpression):
+            if expression.name == "$":
+                from .string_substring import emit_substring_copy
+                slots = []
+                for arg in expression.arguments:
+                    slot = self.new_storage_slot("substring_arg")
+                    self.emit_store_expression_to_slot(arg, slot)
+                    slots.append(slot)
+                for line in emit_substring_copy(slots[0], slots[1],
+                        slots[2] if len(slots) == 3 else None, destination,
+                        self.is64, self.new_label("substring"), _TYPE_STRING):
+                    self.emit(line)
+                return
+            if expression.name == "!":
+                from .string_upper import emit_upper_copy
+                source = self.new_storage_slot("upper_source")
+                self.emit_store_expression_to_slot(expression.arguments[0], source)
+                for line in emit_upper_copy(
+                    source, destination, self.is64,
+                    self.new_label("upper"), _TYPE_STRING
+                ):
+                    self.emit(line)
+                return
             binding = self.emit_user_call(expression)
             if binding.kind == "external":
                 raise AssertionError("Externe Calls sind derzeit numerisch")
@@ -4364,6 +4595,11 @@ class _DBaseCodeGenerator:
             return
 
         if isinstance(expression, DBaseCallExpression):
+            if expression.name in {"!", "$"}:
+                slot = self.new_storage_slot("upper_print")
+                self.emit_store_expression_to_slot(expression, slot)
+                self.emit_write_variable_text(slot, target)
+                return
             binding = self.emit_user_call(expression)
             if binding.kind == "external":
                 raise AssertionError("Externe Stringfunktion nicht deklariert")
@@ -4685,15 +4921,18 @@ class _DBaseCodeGenerator:
             self.current_instance = previous_instance
 
     def _emit_value_slot_data(self, label: str) -> None:
-        self.data_lines.extend([
+        # Stage 223: zero-initialized runtime slots belong to .bss.  The PE
+        # loader provides them as zero-filled virtual memory, so they consume
+        # no bytes in the executable image.
+        self.bss_lines.extend([
             f"{label}_type:",
-            "    dd 0",
+            "    resd 1",
             f"{label}_num:",
-            "    dd 0, 0",
+            "    resq 1",
             f"{label}_ptr:",
-            "    dd 0, 0" if self.is64 else "    dd 0",
+            "    resq 1" if self.is64 else "    resd 1",
             f"{label}_len:",
-            "    dd 0",
+            "    resd 1",
         ])
 
     def emit_native_console_runtime(self, title_label: str) -> None:
@@ -4981,6 +5220,9 @@ class _DBaseCodeGenerator:
         # vorkommt.
         self.emit('import __dbase_gcvt, "msvcrt.dll", "_gcvt"')
         self.emit('import __dbase_malloc, "msvcrt.dll", "malloc"')
+        # Stage 208/209: !() fuehrt die Unicode-Konvertierung in der Runtime-DLL aus.
+        if self.uses_upper_runtime:
+            self.emit('import __dbase_upper_buffer, "libd64_qt5.dll", "DBaseUpperBuffer"')
         self.emit('import __dbase_memcpy, "msvcrt.dll", "memcpy"')
         self.emit('import __dbase_memcmp, "msvcrt.dll", "memcmp"')
         self.emit('import ExitProcess, "kernel32.dll", "ExitProcess"')
@@ -5160,32 +5402,16 @@ class _DBaseCodeGenerator:
         for raw, label in self.double_literals.items():
             low, high = struct.unpack("<II", raw)
             self.data_lines.extend([f"{label}:", f"    dd {low}, {high}"])
+        empty_string_bss: list[str] = []
         for payload, label in self.string_literals.items():
+            # Stage 223: an empty string only needs one zero byte in memory.
+            # Put that byte into .bss instead of spending a raw DATA byte.
+            if not payload:
+                empty_string_bss.append(label)
+                continue
             nul = label in {title_label, console_title_label}
             self.data_lines.extend(_db_lines(label, payload, nul_terminate=nul))
         self.data_lines.extend([
-            "__dbase_temp_number:",
-            "    dd 0",
-            "__dbase_temp_number_hi:",
-            "    dd 0",
-            "__dbase_call_number:",
-            "    dd 0, 0",
-            "__dbase_format_buffer:",
-            "    dd 0, 0" if self.is64 else "    dd 0",
-            "__dbase_exit_code:",
-            "    dd 0",
-            "__dbase_console_ready:",
-            "    dd 0",
-            "__dbase_console_handle:",
-            "    dd 0, 0" if self.is64 else "    dd 0",
-            "__dbase_console_window:",
-            "    dd 0, 0" if self.is64 else "    dd 0",
-            "__dbase_console_written:",
-            "    dd 0",
-            "__dbase_console_number_len:",
-            "    dd 0",
-            "__dbase_console_info:",
-            "    dd 0, 0, 0, 0, 0, 0, 0, 0",
             "__dbase_console_out_name:",
             "    db 67, 79, 78, 79, 85, 84, 36, 0",  # CONOUT$\0
             # Stage 114: Der Workstation-Runner erkennt damit native dBase-
@@ -5195,6 +5421,27 @@ class _DBaseCodeGenerator:
             "    db 68, 54, 52, 68, 66, 65, 83, 69, 95, 76, 65, 90, 89, 95, 67, 79, 78, 83, 79, 76, 69, 95, 86, 49, 0",
         ])
 
+        # Stage 223: initialized-zero runtime storage is emitted as .bss so it
+        # contributes VirtualSize but no SizeOfRawData to the PE image.
+        self.bss_lines = [
+            "", "section .bss", "",
+            "__dbase_temp_number:", "    resd 1",
+            "__dbase_temp_number_hi:", "    resd 1",
+            "__dbase_int_cw:", "    resw 1",
+            "__dbase_int_cw_trunc:", "    resw 1",
+            "__dbase_call_number:", "    resq 1",
+            "__dbase_format_buffer:", "    resq 1" if self.is64 else "    resd 1",
+            "__dbase_exit_code:", "    resd 1",
+            "__dbase_console_ready:", "    resd 1",
+            "__dbase_console_handle:", "    resq 1" if self.is64 else "    resd 1",
+            "__dbase_console_window:", "    resq 1" if self.is64 else "    resd 1",
+            "__dbase_console_written:", "    resd 1",
+            "__dbase_console_number_len:", "    resd 1",
+            "__dbase_console_info:", "    resd 8",
+        ]
+        for label in empty_string_bss:
+            self.bss_lines.extend([f"{label}:", "    resb 1"])
+
         all_slots: list[str] = []
         all_slots.extend(variable.label for variable in self.analysis.variables)
         all_slots.extend(self.analysis.storage_slots)
@@ -5202,7 +5449,7 @@ class _DBaseCodeGenerator:
         for label in dict.fromkeys(all_slots):
             self._emit_value_slot_data(label)
 
-        return "\n".join(self.lines + self.data_lines).rstrip() + "\n"
+        return "\n".join(self.lines + self.data_lines + self.bss_lines).rstrip() + "\n"
 
 def _emit_dbase_output_program(
     target: str,

@@ -4676,15 +4676,18 @@ class _DBaseCodeGenerator:
             self.current_instance = previous_instance
 
     def _emit_value_slot_data(self, label: str) -> None:
-        self.data_lines.extend([
+        # Stage 223: zero-initialized runtime slots belong to .bss.  The PE
+        # loader provides them as zero-filled virtual memory, so they consume
+        # no bytes in the executable image.
+        self.bss_lines.extend([
             f"{label}_type:",
-            "    dd 0",
+            "    resd 1",
             f"{label}_num:",
-            "    dd 0, 0",
+            "    resq 1",
             f"{label}_ptr:",
-            "    dd 0, 0" if self.is64 else "    dd 0",
+            "    resq 1" if self.is64 else "    resd 1",
             f"{label}_len:",
-            "    dd 0",
+            "    resd 1",
         ])
 
     def emit_native_console_runtime(self, title_label: str) -> None:
@@ -5131,32 +5134,16 @@ class _DBaseCodeGenerator:
         for raw, label in self.double_literals.items():
             low, high = struct.unpack("<II", raw)
             self.data_lines.extend([f"{label}:", f"    dd {low}, {high}"])
+        empty_string_bss: list[str] = []
         for payload, label in self.string_literals.items():
+            # Stage 223: an empty string only needs one zero byte in memory.
+            # Put that byte into .bss instead of spending a raw DATA byte.
+            if not payload:
+                empty_string_bss.append(label)
+                continue
             nul = label in {title_label, console_title_label}
             self.data_lines.extend(_db_lines(label, payload, nul_terminate=nul))
         self.data_lines.extend([
-            "__dbase_temp_number:",
-            "    dd 0",
-            "__dbase_temp_number_hi:",
-            "    dd 0",
-            "__dbase_call_number:",
-            "    dd 0, 0",
-            "__dbase_format_buffer:",
-            "    dd 0, 0" if self.is64 else "    dd 0",
-            "__dbase_exit_code:",
-            "    dd 0",
-            "__dbase_console_ready:",
-            "    dd 0",
-            "__dbase_console_handle:",
-            "    dd 0, 0" if self.is64 else "    dd 0",
-            "__dbase_console_window:",
-            "    dd 0, 0" if self.is64 else "    dd 0",
-            "__dbase_console_written:",
-            "    dd 0",
-            "__dbase_console_number_len:",
-            "    dd 0",
-            "__dbase_console_info:",
-            "    dd 0, 0, 0, 0, 0, 0, 0, 0",
             "__dbase_console_out_name:",
             "    db 67, 79, 78, 79, 85, 84, 36, 0",  # CONOUT$\0
             # Stage 114: Der Workstation-Runner erkennt damit native dBase-
@@ -5166,6 +5153,23 @@ class _DBaseCodeGenerator:
             "    db 68, 54, 52, 68, 66, 65, 83, 69, 95, 76, 65, 90, 89, 95, 67, 79, 78, 83, 79, 76, 69, 95, 86, 49, 0",
         ])
 
+        self.bss_lines = [
+            "", "section .bss", "",
+            "__dbase_temp_number:", "    resd 1",
+            "__dbase_temp_number_hi:", "    resd 1",
+            "__dbase_call_number:", "    resq 1",
+            "__dbase_format_buffer:", "    resq 1" if self.is64 else "    resd 1",
+            "__dbase_exit_code:", "    resd 1",
+            "__dbase_console_ready:", "    resd 1",
+            "__dbase_console_handle:", "    resq 1" if self.is64 else "    resd 1",
+            "__dbase_console_window:", "    resq 1" if self.is64 else "    resd 1",
+            "__dbase_console_written:", "    resd 1",
+            "__dbase_console_number_len:", "    resd 1",
+            "__dbase_console_info:", "    resd 8",
+        ]
+        for label in empty_string_bss:
+            self.bss_lines.extend([f"{label}:", "    resb 1"])
+
         all_slots: list[str] = []
         all_slots.extend(variable.label for variable in self.analysis.variables)
         all_slots.extend(self.analysis.storage_slots)
@@ -5173,7 +5177,7 @@ class _DBaseCodeGenerator:
         for label in dict.fromkeys(all_slots):
             self._emit_value_slot_data(label)
 
-        return "\n".join(self.lines + self.data_lines).rstrip() + "\n"
+        return "\n".join(self.lines + self.data_lines + self.bss_lines).rstrip() + "\n"
 
 def _emit_dbase_output_program(
     target: str,

@@ -24,6 +24,7 @@
 #  * interner Windows RC/RES-Compiler mit Microsoft-COFF32/COFF64-Resource-Objekten und Resourcen-Editor
 #  * Stage ASM 156: Mathematik -> Fakten -> Zahlen -> Primzahlen mit Prime-Constellation-Filtern und Log-Rotation.
 #  * Stage ASM 160: Prime-Solver um 8192 Bit und 16284 Bit erweitert.
+#  * Stage ASM 185: Prime-Solver mit frei wählbarer Startzahl und Laufzeit-Timer.
 #  * Stage 151: Resourcen-Editor als Vollflaechen-Dock, Hauptmenue-Kontext, Dark-Mode, Mini-Map und RC-Highlighting
 #  * integrierter COFF32-.a-Archivierer und PE32-Linker samt DLL-Imports/-Exports
 #  * Windows-Grafikziel fuer 320x200 ueber Direct2D oder Direct3D
@@ -32,7 +33,7 @@
 #  * native LISP-/PROLOG->Windows-PE32/PE32+-Assemblergeneratoren mit internem Linker
 #  * PROLOG-Laufzeit mit Listen, Choice Points, Trail, Unifikation, assert/retract und REPL
 #  * PROLOG Wissen-Datenbank-Browser mit Projekt-Tree, Faktenbaum und Level-Entscheidungen
-#  * PROLOG Wissen-Browser Stage 61: Parent-▼ öffnet pfadgebundene Alternativen in der ComboBox
+#  * PROLOG Wissen-Browser Stage 61: Parent- öffnet pfadgebundene Alternativen in der ComboBox
 #    Legacy-Testmarker (Stage 61): self.alternative_combo.showPopup()
 #  * PROLOG Wissen-Browser Stage 62: ComboBox unter Parent, Level-Duplikatschutz und Faktenfilter
 #  * PROLOG Wissen-Browser Stage 63: bereits verwendete Pfadwerte aus Alternativen entfernen
@@ -94,6 +95,24 @@
 #  * Stage 171: Pascal-UNITs als getrennte COFF32/COFF64-Objekte; zielabhängige Wiederverwendung beim EXE-Link.
 #  * Stage 172: PE32-Packed-Image-Compactor; .ztext wird platzsparend in .loader eingebettet.
 #  * Stage 173: konservativer PE32-Compactor; .ztext-Sectionheader/RVAs bleiben vollständig erhalten.
+#  * Stage 210: Projektoptionen fuer D64I-Import-Packer, Groessenwaechter und Mindest-Ersparnis.
+#  * Stage 211: PEB/LDR-Resolver kann die Bootstrap-IAT vollständig entfernen.
+#  * Stage 212: Projekt-/Informationen-Dock seitlich auf maximal 1/4 der Hauptfensterbreite begrenzt.
+#  * Stage 213: Loader-/Runtime-ABI- und Ordinal-Map-Versionierung fuer D64I v2.
+#  * Stage 214: Linker->Optimierung in eine ScrollArea mit Mindestbreite eingebettet.
+#  * Stage 215: Ordinal-Rewriter akzeptiert die erweiterten Stage-213-Importmetadaten.
+#  * Stage 216: PE32-Header auf 64-Byte-DOS-Header minimiert; gepackter Loader physisch vor .idata.
+#  * Stage 217: WFM-Default-Property-Elision, leere Standardstrings und Dead-Property-Imports.
+#  * Stage 218: Cut Multiple Codes bündelt Property-Setter in kompakte DATA-Tabellen.
+#  * Stage 219: Exact Runtime bindet D64I v3 optional an den SHA-256 der kompletten Runtime-DLL.
+#  * Stage 220: PE32 Raw-Section-Fusion entfernt interne FileAlignment-Leerbloecke.
+#  * Stage 221: waehbares physisches Image-Layout Loader+DATA+CODE / Loader+CODE+DATA.
+#  * Stage 222: Windows-IAT bleibt bei konventionellen Importen initialisiert und raw vorhanden.
+#  * Stage 223: Zero-Storage nach .bss, 1-Byte-Property-Laengen, String-Interning und engere Loader/D64Z-Fusion.
+#  * Stage 224: Packed-Property-Decoder lokal in der EXE/DLL; kein neuer Qt5-Runtime-Export erforderlich.
+#  * Stage 225: PE32-.bss-RVA-Planung an den tatsaechlichen Import-Packer-Pfad gebunden; keine falschen BSS-Absolutadressen mehr.
+#  * Stage 226: Linker -> Optionen: PE-Packing pro PE32/PE32+ schaltbar; neue Projekte standardmaessig ungepackt.
+#  * Stage 227: Linker -> Signierung mit Authenticode/SignTool; OpenSSL-CA-Workflow fuer Personal/Web/Server/Code-Signing.
 #  * Stage 174: Pascal-Projektziele Windows PE32/PE32+ mit Module/Units, EXE/DLL-Build und Start.
 #  * Stage 175: Pascal-ANTLR-Parser-Synchronisierung für CLASS virtual/override und COFF32-UNIT-Build.
 #  * Stage 176: Pascal-Kommentare + {$define/ifdef/ifndef/if/elseif/else/endif}-Vorverarbeitung für UNIT/COFF32.
@@ -196,6 +215,7 @@
 from __future__ import annotations
 
 import argparse
+import calendar
 import ast
 import base64
 import configparser
@@ -315,6 +335,7 @@ try:
         QRectF,
         QSettings,
         QProcess,
+        QRegularExpression,
         QSortFilterProxyModel,
         QSize,
         QSizeF,
@@ -341,6 +362,7 @@ try:
         QImage,
         QDoubleValidator,
         QIntValidator,
+        QRegularExpressionValidator,
         QKeySequence,
         QGradient,
         QLinearGradient,
@@ -581,6 +603,28 @@ IDENTITY_DEFAULTS = {
     "publicKeyToken"        : "",
 }
 
+SIGNING_DEFAULTS = {
+    "enabled"               : False,
+    "sign_exe"              : True,
+    "sign_dll"              : True,
+    "certificate_source"    : "openssl_ca",  # openssl_ca | pfx | store
+    "openssl_certificate"   : "",
+    "openssl_private_key"   : "",
+    "pfx_file"              : "",
+    "store_location"        : "CurrentUser",     # CurrentUser | LocalMachine
+    "store_name"            : "My",
+    "thumbprint"            : "",
+    "file_digest"           : "SHA256",
+    "timestamp_enabled"     : True,
+    "timestamp_url"         : "http://timestamp.digicert.com",
+    "timestamp_digest"      : "SHA256",
+    "description"           : "",
+    "description_url"       : "",
+    "signtool_path"         : "",
+    "verify_after_sign"     : True,
+    "fail_build_on_error"   : True,
+}
+
 GUID_PATTERN = r"\{[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\}"
 
 # ---------------------------------------------------------------------------
@@ -605,7 +649,8 @@ OPENSSL_INSTALLER_DOWNLOADS = [
 # require cookie/browser interaction before the actual archive can be fetched.
 # Keep all concrete package URLs derived from one base address so a future
 # mirror move only needs one change.
-APACHE_DOWNLOAD_BASE_URL = "https://kallup.net/downloads/apache/"
+# ---------------------------------------------------------------------------
+APACHE_DOWNLOAD_BASE_URL   = "https://kallup.net/downloads/apache/"
 APACHE_INSTALLER_DOWNLOADS = [
     (
         "Apache HTTP Server 2.4.68 - Win64 VS18",
@@ -622,21 +667,51 @@ APACHE_INSTALLER_DOWNLOADS = [
 # is German.
 # ---------------------------------------------------------------------------
 CA_COUNTRY_CODES = [
-    ("AT", "Österreich"), ("AU", "Australien"), ("BE", "Belgien"),
-    ("BR", "Brasilien"), ("CA", "Kanada"), ("CH", "Schweiz"),
-    ("CN", "China"), ("CZ", "Tschechien"), ("DE", "Deutschland"),
-    ("DK", "Dänemark"), ("EE", "Estland"), ("ES", "Spanien"),
-    ("FI", "Finnland"), ("FR", "Frankreich"), ("GB", "Vereinigtes Königreich"),
-    ("GR", "Griechenland"), ("HK", "Hongkong"), ("HR", "Kroatien"),
-    ("HU", "Ungarn"), ("IE", "Irland"), ("IL", "Israel"),
-    ("IN", "Indien"), ("IS", "Island"), ("IT", "Italien"),
-    ("JP", "Japan"), ("KR", "Südkorea"), ("LI", "Liechtenstein"),
-    ("LT", "Litauen"), ("LU", "Luxemburg"), ("LV", "Lettland"),
-    ("MX", "Mexiko"), ("NL", "Niederlande"), ("NO", "Norwegen"),
-    ("NZ", "Neuseeland"), ("PL", "Polen"), ("PT", "Portugal"),
-    ("RO", "Rumänien"), ("SE", "Schweden"), ("SG", "Singapur"),
-    ("SI", "Slowenien"), ("SK", "Slowakei"), ("TR", "Türkei"),
-    ("TW", "Taiwan"), ("UA", "Ukraine"), ("US", "Vereinigte Staaten"),
+    ("AT", "Österreich"),
+    ("AU", "Australien"),
+    ("BE", "Belgien"),
+    ("BR", "Brasilien"),
+    ("CA", "Kanada"),
+    ("CH", "Schweiz"),
+    ("CN", "China"),
+    ("CZ", "Tschechien"),
+    ("DE", "Deutschland"),
+    ("DK", "Dänemark"),
+    ("EE", "Estland"),
+    ("ES", "Spanien"),
+    ("FI", "Finnland"),
+    ("FR", "Frankreich"),
+    ("GB", "Vereinigtes Königreich"),
+    ("GR", "Griechenland"),
+    ("HK", "Hongkong"),
+    ("HR", "Kroatien"),
+    ("HU", "Ungarn"),
+    ("IE", "Irland"),
+    ("IL", "Israel"),
+    ("IN", "Indien"),
+    ("IS", "Island"),
+    ("IT", "Italien"),
+    ("JP", "Japan"),
+    ("KR", "Südkorea"),
+    ("LI", "Liechtenstein"),
+    ("LT", "Litauen"),
+    ("LU", "Luxemburg"),
+    ("LV", "Lettland"),
+    ("MX", "Mexiko"),
+    ("NL", "Niederlande"),
+    ("NO", "Norwegen"),
+    ("NZ", "Neuseeland"),
+    ("PL", "Polen"),
+    ("PT", "Portugal"),
+    ("RO", "Rumänien"),
+    ("SE", "Schweden"),
+    ("SG", "Singapur"),
+    ("SI", "Slowenien"),
+    ("SK", "Slowakei"),
+    ("TR", "Türkei"),
+    ("TW", "Taiwan"),
+    ("UA", "Ukraine"),
+    ("US", "Vereinigte Staaten"),
     ("ZA", "Südafrika"),
 ]
 
@@ -646,61 +721,139 @@ CA_COUNTRY_CODES = [
 # ---------------------------------------------------------------------------
 CA_SUBDIVISIONS = {
     "DE": [
-        ("BW", "Baden-Württemberg"), ("BY", "Bayern"), ("BE", "Berlin"),
-        ("BB", "Brandenburg"), ("HB", "Bremen"), ("HH", "Hamburg"),
-        ("HE", "Hessen"), ("MV", "Mecklenburg-Vorpommern"),
-        ("NI", "Niedersachsen"), ("NW", "Nordrhein-Westfalen"),
-        ("RP", "Rheinland-Pfalz"), ("SL", "Saarland"), ("SN", "Sachsen"),
-        ("ST", "Sachsen-Anhalt"), ("SH", "Schleswig-Holstein"),
+        ("BW", "Baden-Württemberg"),
+        ("BY", "Bayern"),
+        ("BE", "Berlin"),
+        ("BB", "Brandenburg"),
+        ("HB", "Bremen"),
+        ("HH", "Hamburg"),
+        ("HE", "Hessen"),
+        ("MV", "Mecklenburg-Vorpommern"),
+        ("NI", "Niedersachsen"),
+        ("NW", "Nordrhein-Westfalen"),
+        ("RP", "Rheinland-Pfalz"),
+        ("SL", "Saarland"),
+        ("SN", "Sachsen"),
+        ("ST", "Sachsen-Anhalt"),
+        ("SH", "Schleswig-Holstein"),
         ("TH", "Thüringen"),
     ],
     "AT": [
-        ("1", "Burgenland"), ("2", "Kärnten"), ("3", "Niederösterreich"),
-        ("4", "Oberösterreich"), ("5", "Salzburg"), ("6", "Steiermark"),
-        ("7", "Tirol"), ("8", "Vorarlberg"), ("9", "Wien"),
+        ("1", "Burgenland"),
+        ("2", "Kärnten"),
+        ("3", "Niederösterreich"),
+        ("4", "Oberösterreich"),
+        ("5", "Salzburg"),
+        ("6", "Steiermark"),
+        ("7", "Tirol"),
+        ("8", "Vorarlberg"),
+        ("9", "Wien"),
     ],
     "CH": [
-        ("AG", "Aargau"), ("AI", "Appenzell Innerrhoden"),
-        ("AR", "Appenzell Ausserrhoden"), ("BE", "Bern"),
-        ("BL", "Basel-Landschaft"), ("BS", "Basel-Stadt"),
-        ("FR", "Freiburg"), ("GE", "Genf"), ("GL", "Glarus"),
-        ("GR", "Graubünden"), ("JU", "Jura"), ("LU", "Luzern"),
-        ("NE", "Neuenburg"), ("NW", "Nidwalden"), ("OW", "Obwalden"),
-        ("SG", "St. Gallen"), ("SH", "Schaffhausen"), ("SO", "Solothurn"),
-        ("SZ", "Schwyz"), ("TG", "Thurgau"), ("TI", "Tessin"),
-        ("UR", "Uri"), ("VD", "Waadt"), ("VS", "Wallis"),
-        ("ZG", "Zug"), ("ZH", "Zürich"),
+        ("AG", "Aargau"),
+        ("AI", "Appenzell Innerrhoden"),
+        ("AR", "Appenzell Ausserrhoden"),
+        ("BE", "Bern"),
+        ("BL", "Basel-Landschaft"),
+        ("BS", "Basel-Stadt"),
+        ("FR", "Freiburg"),
+        ("GE", "Genf"),
+        ("GL", "Glarus"),
+        ("GR", "Graubünden"),
+        ("JU", "Jura"),
+        ("LU", "Luzern"),
+        ("NE", "Neuenburg"),
+        ("NW", "Nidwalden"),
+        ("OW", "Obwalden"),
+        ("SG", "St. Gallen"),
+        ("SH", "Schaffhausen"),
+        ("SO", "Solothurn"),
+        ("SZ", "Schwyz"),
+        ("TG", "Thurgau"),
+        ("TI", "Tessin"),
+        ("UR", "Uri"),
+        ("VD", "Waadt"),
+        ("VS", "Wallis"),
+        ("ZG", "Zug"),
+        ("ZH", "Zürich"),
     ],
     "US": [
-        ("AL", "Alabama"), ("AK", "Alaska"), ("AZ", "Arizona"), ("AR", "Arkansas"),
-        ("CA", "California"), ("CO", "Colorado"), ("CT", "Connecticut"),
-        ("DE", "Delaware"), ("DC", "District of Columbia"), ("FL", "Florida"),
-        ("GA", "Georgia"), ("HI", "Hawaii"), ("ID", "Idaho"), ("IL", "Illinois"),
-        ("IN", "Indiana"), ("IA", "Iowa"), ("KS", "Kansas"), ("KY", "Kentucky"),
-        ("LA", "Louisiana"), ("ME", "Maine"), ("MD", "Maryland"),
-        ("MA", "Massachusetts"), ("MI", "Michigan"), ("MN", "Minnesota"),
-        ("MS", "Mississippi"), ("MO", "Missouri"), ("MT", "Montana"),
-        ("NE", "Nebraska"), ("NV", "Nevada"), ("NH", "New Hampshire"),
-        ("NJ", "New Jersey"), ("NM", "New Mexico"), ("NY", "New York"),
-        ("NC", "North Carolina"), ("ND", "North Dakota"), ("OH", "Ohio"),
-        ("OK", "Oklahoma"), ("OR", "Oregon"), ("PA", "Pennsylvania"),
-        ("RI", "Rhode Island"), ("SC", "South Carolina"), ("SD", "South Dakota"),
-        ("TN", "Tennessee"), ("TX", "Texas"), ("UT", "Utah"), ("VT", "Vermont"),
-        ("VA", "Virginia"), ("WA", "Washington"), ("WV", "West Virginia"),
-        ("WI", "Wisconsin"), ("WY", "Wyoming"),
+        ("AL", "Alabama"),
+        ("AK", "Alaska"),
+        ("AZ", "Arizona"),
+        ("AR", "Arkansas"),
+        ("CA", "California"),
+        ("CO", "Colorado"),
+        ("CT", "Connecticut"),
+        ("DE", "Delaware"),
+        ("DC", "District of Columbia"),
+        ("FL", "Florida"),
+        ("GA", "Georgia"),
+        ("HI", "Hawaii"),
+        ("ID", "Idaho"),
+        ("IL", "Illinois"),
+        ("IN", "Indiana"),
+        ("IA", "Iowa"),
+        ("KS", "Kansas"),
+        ("KY", "Kentucky"),
+        ("LA", "Louisiana"),
+        ("ME", "Maine"),
+        ("MD", "Maryland"),
+        ("MA", "Massachusetts"),
+        ("MI", "Michigan"),
+        ("MN", "Minnesota"),
+        ("MS", "Mississippi"),
+        ("MO", "Missouri"),
+        ("MT", "Montana"),
+        ("NE", "Nebraska"),
+        ("NV", "Nevada"),
+        ("NH", "New Hampshire"),
+        ("NJ", "New Jersey"),
+        ("NM", "New Mexico"),
+        ("NY", "New York"),
+        ("NC", "North Carolina"),
+        ("ND", "North Dakota"),
+        ("OH", "Ohio"),
+        ("OK", "Oklahoma"),
+        ("OR", "Oregon"),
+        ("PA", "Pennsylvania"),
+        ("RI", "Rhode Island"),
+        ("SC", "South Carolina"),
+        ("SD", "South Dakota"),
+        ("TN", "Tennessee"),
+        ("TX", "Texas"),
+        ("UT", "Utah"),
+        ("VT", "Vermont"),
+        ("VA", "Virginia"),
+        ("WA", "Washington"),
+        ("WV", "West Virginia"),
+        ("WI", "Wisconsin"),
+        ("WY", "Wyoming"),
     ],
     "CA": [
-        ("AB", "Alberta"), ("BC", "British Columbia"), ("MB", "Manitoba"),
-        ("NB", "New Brunswick"), ("NL", "Newfoundland and Labrador"),
-        ("NS", "Nova Scotia"), ("NT", "Northwest Territories"), ("NU", "Nunavut"),
-        ("ON", "Ontario"), ("PE", "Prince Edward Island"), ("QC", "Quebec"),
-        ("SK", "Saskatchewan"), ("YT", "Yukon"),
+        ("AB", "Alberta"),
+        ("BC", "British Columbia"),
+        ("MB", "Manitoba"),
+        ("NB", "New Brunswick"),
+        ("NL", "Newfoundland and Labrador"),
+        ("NS", "Nova Scotia"),
+        ("NT", "Northwest Territories"),
+        ("NU", "Nunavut"),
+        ("ON", "Ontario"),
+        ("PE", "Prince Edward Island"),
+        ("QC", "Quebec"),
+        ("SK", "Saskatchewan"),
+        ("YT", "Yukon"),
     ],
     "AU": [
-        ("ACT", "Australian Capital Territory"), ("NSW", "New South Wales"),
-        ("NT", "Northern Territory"), ("QLD", "Queensland"),
-        ("SA", "South Australia"), ("TAS", "Tasmania"),
-        ("VIC", "Victoria"), ("WA", "Western Australia"),
+        ("ACT", "Australian Capital Territory"),
+        ("NSW", "New South Wales"),
+        ("NT", "Northern Territory"),
+        ("QLD", "Queensland"),
+        ("SA", "South Australia"),
+        ("TAS", "Tasmania"),
+        ("VIC", "Victoria"),
+        ("WA", "Western Australia"),
     ],
 }
 
@@ -1018,6 +1171,25 @@ RC_CONSTANTS: Dict[str, int] = {
 
 ResourceId = Union[int, str]
 
+_CONTROL_DEFAULTS = {
+    "LTEXT"             : (0x82, 0x50000000 | 0x00000000),
+    "CTEXT"             : (0x82, 0x50000000 | 0x00000001),
+    "RTEXT"             : (0x82, 0x50000000 | 0x00000002),
+    "ICON"              : (0x82, 0x50000000 | 0x00000003),
+    "PUSHBUTTON"        : (0x80, 0x50010000 | 0x00000000),
+    "DEFPUSHBUTTON"     : (0x80, 0x50010000 | 0x00000001),
+    "CHECKBOX"          : (0x80, 0x50010000 | 0x00000002),
+    "AUTOCHECKBOX"      : (0x80, 0x50010000 | 0x00000003),
+    "RADIOBUTTON"       : (0x80, 0x50010000 | 0x00000004),
+    "AUTORADIOBUTTON"   : (0x80, 0x50010000 | 0x00000009),
+    "GROUPBOX"          : (0x80, 0x50000000 | 0x00000007),
+    
+    "EDITTEXT"          : (0x81, 0x50810000),
+    "LISTBOX"           : (0x83, 0x50810001),
+    "COMBOBOX"          : (0x85, 0x50210000),
+    "SCROLLBAR"         : (0x84, 0x50000000),
+}
+
 # ---------------------------------------------------------------------------
 # Projektdateien (*.pro): INI-basierte Sammlung der zum Projekt gehoerenden
 # Quellen und Medien. Die sichtbaren Kategorien sind feste Root-Knoten und
@@ -1025,25 +1197,24 @@ ResourceId = Union[int, str]
 # ---------------------------------------------------------------------------
 PROJECT_CATEGORIES: Tuple[Tuple[str, str, Tuple[str, ...]], ...] = (
     # Stage 255: erster normaler Hauptknoten -> direkt unter Bookmarks.
-    ("c64", "Commodore C= 64", (".prg",)),
-    ("basic", "BASIC - Programme", (".bas", ".basic")),
-    ("assembler", "Assembler-Programme", (".asm", ".s", ".a65", ".m68k", ".inc")),
-    ("pascal", "Pascal-Programme", (".pas", ".pp")),
-    ("c", "C-Programme", (".c", ".h")),
-    ("lisp", "LISP-Programme", (".lisp", ".lsp")),
-    ("prolog", "PROLOG-Programme", (".pl", ".prolog")),
-    ("logo", "LOGO-Programme", (".logo", ".lgo")),
-    ("dbase", "dBase-Programme", (".dbase", ".dbp")),
-    # Stage ASM 100: gespeicherte E-Baukasten-Schaltungen als eigener Hauptknoten.
-    ("circuits", "Schaltungen", (".ebk",)),
-    ("character_maps", "Character Map's", (".chr", ".charset")),
-    ("palettes", "Paletten", (".pal", ".palette")),
-    ("char_screens", "Char Screen's", (".scr", ".screen", ".scr.json", ".screen.json")),
-    ("pixel_screens", "Pixel Screen's", (".px16", ".pixel", ".pix")),
-    ("text_files", "Textdateien", (".txt", ".text", ".log", ".md", ".markdown")),
-    ("sid_files", "SID's", (".sid",)),
-    ("images", "Bilder", (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".iff", ".ilbm")),
-    ("other", "Sonstiges", ()),
+    ("c64"              , "Commodore C= 64", (".prg",)),
+    ("basic"            , "BASIC - Programme", (".bas", ".basic")),
+    ("assembler"        , "Assembler-Programme", (".asm", ".s", ".a65", ".m68k", ".inc")),
+    ("pascal"           , "Pascal-Programme", (".pas", ".pp")),
+    ("c"                , "C-Programme", (".c", ".h")),
+    ("lisp"             , "LISP-Programme", (".lisp", ".lsp")),
+    ("prolog"           , "PROLOG-Programme", (".pl", ".prolog")),
+    ("logo"             , "LOGO-Programme", (".logo", ".lgo")),
+    ("dbase"            , "dBase-Programme", (".dbase", ".dbp")),
+    ("circuits"         , "Schaltungen", (".ebk",)),
+    ("character_maps"   , "Character Map's", (".chr", ".charset")),
+    ("palettes"         , "Paletten", (".pal", ".palette")),
+    ("char_screens"     , "Char Screen's", (".scr", ".screen", ".scr.json", ".screen.json")),
+    ("pixel_screens"    , "Pixel Screen's", (".px16", ".pixel", ".pix")),
+    ("text_files"       , "Textdateien", (".txt", ".text", ".log", ".md", ".markdown")),
+    ("sid_files"        , "SID's", (".sid",)),
+    ("images"           , "Bilder", (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".iff", ".ilbm")),
+    ("other"            , "Sonstiges", ()),
 )
 
 PROJECT_CATEGORY_TITLES             : Dict[str, str]             = { key:  title      for key,  title, _extensions in PROJECT_CATEGORIES }
@@ -1052,6 +1223,153 @@ PROJECT_CATEGORY_DEFAULT_EXTENSIONS : Dict[str, str]             = {
     key: (extensions[0] if extensions else ".dat")
     for key, _title, extensions in PROJECT_CATEGORIES
 }
+
+# ---------------------------------------------------------------------------
+# COFF resource object writer
+# ---------------------------------------------------------------------------
+IMAGE_FILE_MACHINE_I386         = 0x014C
+IMAGE_FILE_MACHINE_AMD64        = 0x8664
+IMAGE_REL_I386_DIR32NB          = 0x0007
+IMAGE_REL_AMD64_ADDR32NB        = 0x0003
+IMAGE_SCN_CNT_INITIALIZED_DATA  = 0x00000040
+IMAGE_SCN_ALIGN_4BYTES          = 0x00300000
+IMAGE_SCN_MEM_READ              = 0x40000000
+
+# ---------------------------------------------------------------------------
+# Code signing ...
+# ---------------------------------------------------------------------------
+def normalize_signing_settings(value=None) -> dict:
+    src = value if isinstance(value, Mapping) else {}
+    out = dict(SIGNING_DEFAULTS)
+    for key in out:
+        if key in src:
+            out[key] = src[key]
+    for key in (
+        "enabled", "sign_exe", "sign_dll", "timestamp_enabled",
+        "verify_after_sign", "fail_build_on_error",
+    ):
+        out[key] = bool(out[key])
+    source = str(out["certificate_source"] or "openssl_ca").strip().casefold()
+    if source not in {"openssl_ca", "pfx", "store"}:
+        source = "openssl_ca"
+    out["certificate_source"] = source
+    location = str(out["store_location"] or "CurrentUser").strip()
+    out["store_location"] = "LocalMachine" if location.casefold() == "localmachine" else "CurrentUser"
+    out["store_name"] = str(out["store_name"] or "My").strip() or "My"
+    for key in (
+        "openssl_certificate", "openssl_private_key", "pfx_file", "thumbprint",
+        "timestamp_url", "description", "description_url", "signtool_path",
+    ):
+        out[key] = str(out[key] or "").strip()
+    for key in ("file_digest", "timestamp_digest"):
+        digest = str(out[key] or "SHA256").strip().upper()
+        if digest not in {"SHA256", "SHA384", "SHA512"}:
+            digest = "SHA256"
+        out[key] = digest
+    out["thumbprint"] = "".join(ch for ch in out["thumbprint"] if ch.isalnum()).upper()
+    return out
+
+
+def find_signtool(configured: str = "") -> str:
+    configured = str(configured or "").strip()
+    if configured and Path(configured).is_file():
+        return str(Path(configured))
+    found = shutil.which("signtool.exe") or shutil.which("signtool")
+    if found:
+        return found
+    roots = []
+    for env_name in ("ProgramFiles(x86)", "ProgramFiles"):
+        base = os.environ.get(env_name, "")
+        if base:
+            roots.append(Path(base) / "Windows Kits" / "10" / "bin")
+    candidates = []
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for candidate in root.glob("*/x64/signtool.exe"):
+            candidates.append(candidate)
+        for candidate in root.glob("*/x86/signtool.exe"):
+            candidates.append(candidate)
+    if candidates:
+        # Newest Windows SDK version sorts last lexically for current SDK naming.
+        candidates.sort(key=lambda p: str(p).casefold(), reverse=True)
+        return str(candidates[0])
+    return ""
+
+
+def build_sign_command(settings: Mapping, target: str, *, pfx_password: str = "") -> list[str]:
+    cfg = normalize_signing_settings(settings)
+    tool = find_signtool(cfg["signtool_path"])
+    if not tool:
+        raise RuntimeError("signtool.exe wurde nicht gefunden. Bitte im Linker->Signierung Panel einstellen.")
+    target_path = Path(target)
+    if not target_path.is_file():
+        raise RuntimeError(f"Zu signierende Datei wurde nicht gefunden: {target_path}")
+
+    args = [tool, "sign", "/fd", cfg["file_digest"]]
+    source = cfg["certificate_source"]
+    if source in {"openssl_ca", "pfx"}:
+        pfx = cfg["pfx_file"]
+        if not pfx:
+            raise RuntimeError("Für die Authenticode-Signierung ist keine PFX/PKCS#12-Datei ausgewählt.")
+        if not Path(pfx).is_file():
+            raise RuntimeError(f"PFX/PKCS#12-Datei wurde nicht gefunden: {pfx}")
+        args += ["/f", pfx]
+        if pfx_password:
+            args += ["/p", pfx_password]
+    elif source == "store":
+        if not cfg["thumbprint"]:
+            raise RuntimeError("Für den Windows-Zertifikatsspeicher fehlt der Zertifikat-Thumbprint.")
+        args += ["/s", cfg["store_name"], "/sha1", cfg["thumbprint"]]
+        if cfg["store_location"] == "LocalMachine":
+            args.append("/sm")
+
+    if cfg["description"]:
+        args += ["/d", cfg["description"]]
+    if cfg["description_url"]:
+        args += ["/du", cfg["description_url"]]
+    if cfg["timestamp_enabled"]:
+        if not cfg["timestamp_url"]:
+            raise RuntimeError("Zeitstempel ist aktiviert, aber keine Timestamp-URL wurde angegeben.")
+        args += ["/tr", cfg["timestamp_url"], "/td", cfg["timestamp_digest"]]
+    args.append(str(target_path))
+    return args
+
+
+def build_verify_command(settings: Mapping, target: str) -> list[str]:
+    cfg = normalize_signing_settings(settings)
+    tool = find_signtool(cfg["signtool_path"])
+    if not tool:
+        raise RuntimeError("signtool.exe wurde nicht gefunden.")
+    return [tool, "verify", "/pa", "/v", str(Path(target))]
+
+
+def run_command(args: Sequence[str], *, timeout: int = 120) -> tuple[bool, str]:
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        result = subprocess.run(
+            list(args), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace",
+            creationflags=flags, timeout=timeout, check=False,
+        )
+    except Exception as exc:
+        return False, str(exc)
+    return result.returncode == 0, result.stdout or ""
+
+
+def sign_file(settings: Mapping, target: str, *, pfx_password: str = "") -> tuple[bool, str]:
+    cfg = normalize_signing_settings(settings)
+    command = build_sign_command(cfg, target, pfx_password=pfx_password)
+    ok, output = run_command(command)
+    if not ok:
+        return False, output
+    if cfg["verify_after_sign"]:
+        verify = build_verify_command(cfg, target)
+        verified, verify_output = run_command(verify)
+        output = (output.rstrip() + "\n" + verify_output.rstrip()).strip()
+        if not verified:
+            return False, output
+    return True, output
 
 
 class ResourceCompilerError(Exception):
@@ -1224,15 +1542,6 @@ def save_res(path: Union[str, os.PathLike], entries: Iterable[ResourceEntry]) ->
 # ---------------------------------------------------------------------------
 # COFF resource object writer
 # ---------------------------------------------------------------------------
-IMAGE_FILE_MACHINE_I386         = 0x014C
-IMAGE_FILE_MACHINE_AMD64        = 0x8664
-IMAGE_REL_I386_DIR32NB          = 0x0007
-IMAGE_REL_AMD64_ADDR32NB        = 0x0003
-IMAGE_SCN_CNT_INITIALIZED_DATA  = 0x00000040
-IMAGE_SCN_ALIGN_4BYTES          = 0x00300000
-IMAGE_SCN_MEM_READ              = 0x40000000
-
-
 def _resource_sort_key(value: ResourceId):
     return (0, str(value).casefold(), str(value)) if isinstance(value, str) else (1, int(value), "")
 
@@ -1808,26 +2117,6 @@ def _pack_menuex(items: list, help_id: int=0) -> bytes:
             if popup:
                 out.extend(struct.pack("<I",int(item.get("help",0))&0xFFFFFFFF)); rec(item.get("children",[]))
     rec(items); return bytes(out)
-
-
-_CONTROL_DEFAULTS = {
-    "LTEXT"             : (0x82, 0x50000000 | 0x00000000),
-    "CTEXT"             : (0x82, 0x50000000 | 0x00000001),
-    "RTEXT"             : (0x82, 0x50000000 | 0x00000002),
-    "ICON"              : (0x82, 0x50000000 | 0x00000003),
-    "PUSHBUTTON"        : (0x80, 0x50010000 | 0x00000000),
-    "DEFPUSHBUTTON"     : (0x80, 0x50010000 | 0x00000001),
-    "CHECKBOX"          : (0x80, 0x50010000 | 0x00000002),
-    "AUTOCHECKBOX"      : (0x80, 0x50010000 | 0x00000003),
-    "RADIOBUTTON"       : (0x80, 0x50010000 | 0x00000004),
-    "AUTORADIOBUTTON"   : (0x80, 0x50010000 | 0x00000009),
-    "GROUPBOX"          : (0x80, 0x50000000 | 0x00000007),
-    
-    "EDITTEXT"          : (0x81, 0x50810000),
-    "LISTBOX"           : (0x83, 0x50810001),
-    "COMBOBOX"          : (0x85, 0x50210000),
-    "SCROLLBAR"         : (0x84, 0x50000000),
-}
 
 
 def _pack_dialog(info: dict, extended: bool) -> bytes:
@@ -2446,26 +2735,28 @@ def apply_resource_dialog_theme(dialog, dark_mode: bool):
     base = app.palette() if app is not None else dialog.palette()
     palette = QPalette(base)
     if dark_mode:
-        palette.setColor(QPalette.Window, QColor('#202630'))
-        palette.setColor(QPalette.WindowText, QColor('#ffffff'))
-        palette.setColor(QPalette.Base, QColor('#171c24'))
-        palette.setColor(QPalette.AlternateBase, QColor('#202732'))
-        palette.setColor(QPalette.Text, QColor('#f4f4f4'))
-        palette.setColor(QPalette.Button, QColor('#343e4d'))
-        palette.setColor(QPalette.ButtonText, QColor('#ffffff'))
-        palette.setColor(QPalette.Highlight, QColor('#315a82'))
-        palette.setColor(QPalette.HighlightedText, QColor('#ffffff'))
+        palette.setColor(QPalette.Window,           QColor('#202630'))
+        palette.setColor(QPalette.WindowText,       QColor('#ffffff'))
+        palette.setColor(QPalette.Base,             QColor('#171c24'))
+        palette.setColor(QPalette.AlternateBase,    QColor('#202732'))
+        palette.setColor(QPalette.Text,             QColor('#f4f4f4'))
+        palette.setColor(QPalette.Button,           QColor('#343e4d'))
+        palette.setColor(QPalette.ButtonText,       QColor('#ffffff'))
+        palette.setColor(QPalette.Highlight,        QColor('#315a82'))
+        palette.setColor(QPalette.HighlightedText,  QColor('#ffffff'))
     else:
-        palette.setColor(QPalette.Window, QColor('#f0f0f0'))
-        palette.setColor(QPalette.WindowText, QColor('#000000'))
-        palette.setColor(QPalette.Base, QColor('#ffffff'))
-        palette.setColor(QPalette.Text, QColor('#000000'))
-        palette.setColor(QPalette.Button, QColor('#f5f5f5'))
-        palette.setColor(QPalette.ButtonText, QColor('#000000'))
-    dialog.setAttribute(Qt.WA_StyledBackground, True)
+        palette.setColor(QPalette.Window,           QColor('#f0f0f0'))
+        palette.setColor(QPalette.WindowText,       QColor('#000000'))
+        palette.setColor(QPalette.Base,             QColor('#ffffff'))
+        palette.setColor(QPalette.Text,             QColor('#000000'))
+        palette.setColor(QPalette.Button,           QColor('#f5f5f5'))
+        palette.setColor(QPalette.ButtonText,       QColor('#000000'))
+        
+    dialog.setAttribute(Qt.WA_StyledBackground,     True)
     dialog.setAutoFillBackground(True)
     dialog.setPalette(palette)
     dialog.setStyleSheet(resource_dialog_stylesheet(dark_mode))
+    
     for child in dialog.findChildren(QWidget):
         child.setPalette(palette)
     return dialog
@@ -4174,9 +4465,28 @@ class _GlobalExceptionDispatcher(QObject):
             _ORIGINAL_SYS_EXCEPTHOOK(exc_type, exc_value, exc_tb)
             return
         try:
-            formatted = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
-        except Exception:
-            formatted = f"{exc_type.__name__}: {exc_value}"
+            if exc_tb is not None:
+                formatted = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+            else:
+                # Stage 190: Bei manchen Qt/SIP-Fehlern erreicht sys.excepthook
+                # den Dispatcher ohne ursprüngliches Traceback. Das wird jetzt
+                # ausdrücklich dokumentiert; zusätzlich sichern wir den aktuellen
+                # Hook-Stack sowie Exception-Typ/-repr für die Diagnose.
+                exception_only = "".join(traceback.format_exception_only(exc_type, exc_value))
+                hook_stack = "".join(traceback.format_stack(limit=40))
+                formatted = (
+                    exception_only.rstrip()
+                    + "\n\n[Stage 190 Diagnose] Ursprüngliches Traceback: nicht verfügbar (exc_tb is None).\n"
+                    + f"Exception-Modul: {getattr(exc_type, '__module__', '')}\n"
+                    + f"Exception-repr: {exc_value!r}\n\n"
+                    + "Aktueller Python-Stack im Exception-Hook:\n"
+                    + hook_stack
+                )
+        except Exception as format_exc:
+            formatted = (
+                f"{getattr(exc_type, '__name__', 'Exception')}: {exc_value}\n\n"
+                f"Traceback-Formatierung fehlgeschlagen: {format_exc!r}"
+            )
         if context:
             formatted = f"Kontext: {context}\n\n{formatted}"
         summary = f"{getattr(exc_type, '__name__', 'Exception')}: {exc_value}"
@@ -4865,16 +5175,26 @@ class OpenSSLServerPanel(ServerPanelBase):
         )
         cert_layout.addWidget(self.user_certificate_tabs)
 
-        issued_group = QGroupBox("Ausgestellte Benutzer-Zertifikate", cert_page)
+        issued_group = QGroupBox("Ausgestellte CA-Zertifikate", cert_page)
         issued_group.setObjectName("opensslIssuedUserCertificatesGroup")
+        self.issued_user_certificates_group = issued_group
         issued_layout = QVBoxLayout(issued_group)
         issued_layout.setContentsMargins(6, 6, 6, 6)
         self.issued_user_certificate_tabs = QTabWidget(issued_group)
         self.issued_user_certificate_tabs.setObjectName("opensslIssuedUserCertificateTabs")
         self.issued_user_certificate_tabs.setMovable(True)
-        self.issued_user_certificate_tabs.setMinimumHeight(260)
+        # Stage 229: Ausgestellte Zertifikate besitzen viele schreibgeschützte
+        # Detailzeilen. Die bisherige Mindesthöhe von 260 px quetschte z.B.
+        # den Tab "Jens Kallup" so stark zusammen, dass Pfade und Subject-
+        # Informationen kaum lesbar waren. Die äußere Zertifikate-ScrollArea
+        # übernimmt das Scrollen; der Untertab darf deshalb genügend Höhe
+        # entsprechend seinem Inhalt anfordern.
+        self.issued_user_certificate_tabs.setMinimumHeight(500)
+        self.issued_user_certificate_tabs.currentChanged.connect(
+            lambda _index: self._update_issued_user_certificate_tabs_height()
+        )
         issued_layout.addWidget(self.issued_user_certificate_tabs, 1)
-        issued_group.setMinimumHeight(310)
+        issued_group.setMinimumHeight(550)
         cert_layout.addWidget(issued_group)
 
         self._output.setMinimumHeight(180)
@@ -5219,6 +5539,34 @@ subjectKeyIdentifier   = hash
 authorityKeyIdentifier = keyid:always,issuer
 basicConstraints       = critical,CA:true
 keyUsage               = critical,digitalSignature,cRLSign,keyCertSign
+
+[ personal_cert ]
+basicConstraints       = critical,CA:false
+subjectKeyIdentifier   = hash
+authorityKeyIdentifier = keyid,issuer
+keyUsage               = critical,digitalSignature,keyEncipherment
+extendedKeyUsage       = clientAuth,emailProtection
+
+[ web_cert ]
+basicConstraints       = critical,CA:false
+subjectKeyIdentifier   = hash
+authorityKeyIdentifier = keyid,issuer
+keyUsage               = critical,digitalSignature,keyEncipherment
+extendedKeyUsage       = serverAuth,clientAuth
+
+[ server_cert ]
+basicConstraints       = critical,CA:false
+subjectKeyIdentifier   = hash
+authorityKeyIdentifier = keyid,issuer
+keyUsage               = critical,digitalSignature,keyEncipherment
+extendedKeyUsage       = serverAuth
+
+[ code_signing_cert ]
+basicConstraints       = critical,CA:false
+subjectKeyIdentifier   = hash
+authorityKeyIdentifier = keyid,issuer
+keyUsage               = critical,digitalSignature
+extendedKeyUsage       = codeSigning
 """
 
     def _ensure_ca_openssl_config(self, base: Path, force: bool = False) -> Path:
@@ -6220,7 +6568,10 @@ keyUsage               = critical,digitalSignature,cRLSign,keyCertSign
     # ------------------------------------------------------------------
     def _default_user_certificate_record(self, index: int = 1) -> dict:
         return {
-            "title": f"Benutzer {index}",
+            "title": f"Zertifikat {index}",
+            "certificate_type": "Personal",
+            "request_status": "neu",
+            "status": "neu",
             "ca_directory": "",
             "common_name": "",
             "email": "",
@@ -6231,6 +6582,11 @@ keyUsage               = critical,digitalSignature,cRLSign,keyCertSign
             "postal_code": "",
             "locality": "",
             "days": 365,
+            "validity_months": 12,
+            "validity_weeks": 0,
+            "validity_days": 0,
+            "validity_hours": 0,
+            "validity_minutes": 0,
             "key_bits": "2048",
             "digest": "sha256",
             "usage_preset": "Client-Authentifizierung",
@@ -6243,6 +6599,7 @@ keyUsage               = critical,digitalSignature,cRLSign,keyCertSign
             "private_key": "",
             "csr": "",
             "certificate": "",
+            "pfx": "",
         }
 
     def _user_certificate_records(self) -> list[dict]:
@@ -6339,6 +6696,11 @@ keyUsage               = critical,digitalSignature,cRLSign,keyCertSign
                 "certificate": cert_text,
                 "csr": str(profile.get("csr", "") or ""),
                 "private_key": str(profile.get("private_key", "") or ""),
+                "pfx": str(profile.get("pfx", "") or ""),
+                "certificate_type": str(profile.get("certificate_type", "Personal") or "Personal"),
+                "usage_preset": str(profile.get("usage_preset", "") or ""),
+                "extended_key_usage": str(profile.get("extended_key_usage", "") or ""),
+                "status": str(profile.get("status", "ausgestellt") or "ausgestellt"),
                 "issued_at": issued_at,
             })
             known.add(key)
@@ -6362,6 +6724,11 @@ keyUsage               = critical,digitalSignature,cRLSign,keyCertSign
             "certificate": cert_text,
             "csr": str(record.get("csr", "") or ""),
             "private_key": str(record.get("private_key", "") or ""),
+            "pfx": str(record.get("pfx", "") or ""),
+            "certificate_type": str(record.get("certificate_type", "Personal") or "Personal"),
+            "usage_preset": str(record.get("usage_preset", "") or ""),
+            "extended_key_usage": str(record.get("extended_key_usage", "") or ""),
+            "status": "ausgestellt",
             "issued_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         }
 
@@ -6403,6 +6770,40 @@ keyUsage               = critical,digitalSignature,cRLSign,keyCertSign
         if select_index >= 0:
             self.issued_user_certificate_tabs.setCurrentIndex(select_index)
 
+        self._update_issued_user_certificate_tabs_height()
+
+    def _update_issued_user_certificate_tabs_height(self) -> None:
+        """Mehr vertikalen Raum für die Detailansicht ausgestellter Zertifikate."""
+        tabs = getattr(self, "issued_user_certificate_tabs", None)
+        if tabs is None:
+            return
+
+        # Auch ohne Einträge soll der Bereich nicht auf die alte, gequetschte
+        # Höhe zurückfallen. Sobald ein Tab vorhanden ist, richtet sich die
+        # Mindesthöhe nach dessen tatsächlichem Formularinhalt.
+        minimum_tabs_height = 500
+        minimum_group_height = 550
+
+        if tabs.count() > 0:
+            page = tabs.currentWidget()
+            if page is not None:
+                page.adjustSize()
+                hint = page.sizeHint().height()
+                tab_bar_height = tabs.tabBar().sizeHint().height()
+                minimum_tabs_height = max(
+                    minimum_tabs_height,
+                    hint + tab_bar_height + 28,
+                )
+                minimum_group_height = max(
+                    minimum_group_height,
+                    minimum_tabs_height + 46,
+                )
+
+        tabs.setMinimumHeight(minimum_tabs_height)
+        group = getattr(self, "issued_user_certificates_group", None)
+        if group is not None:
+            group.setMinimumHeight(minimum_group_height)
+
     def _create_issued_user_certificate_page(self, record: dict) -> QWidget:
         page = QWidget(self.issued_user_certificate_tabs)
         page._issued_certificate_record = dict(record)
@@ -6421,6 +6822,8 @@ keyUsage               = critical,digitalSignature,cRLSign,keyCertSign
         if issued_at:
             issued_at = issued_at.replace("T", " ").replace("+00:00", " UTC")
 
+        form.addRow("Zertifikatstyp", ro(record.get("certificate_type", "Personal")))
+        form.addRow("Status / Vertrauen", ro(record.get("status", "ausgestellt")))
         form.addRow("Common Name / Benutzer", ro(record.get("common_name", "")))
         form.addRow("E-Mail", ro(record.get("email", "")))
         form.addRow("Organisation", ro(record.get("organization", "")))
@@ -6430,16 +6833,22 @@ keyUsage               = critical,digitalSignature,cRLSign,keyCertSign
         form.addRow("Zertifikat", ro(certificate))
         form.addRow("CSR", ro(record.get("csr", "")))
         form.addRow("Private Key", ro(record.get("private_key", "")))
+        form.addRow("PFX / PKCS#12", ro(record.get("pfx", "")))
         outer.addLayout(form)
 
         buttons = QHBoxLayout()
         inspect_button = QPushButton("Zertifikat anzeigen", page)
         inspect_button.setObjectName("opensslIssuedCertificateInspectButton")
-        # Absichtlich an die konkrete Tab-Seite gebunden, nicht an einen Index.
         inspect_button.clicked.connect(
             lambda _checked=False, p=page: self._inspect_issued_user_certificate_page(p)
         )
         buttons.addWidget(inspect_button)
+        revoke = QPushButton("Vertrauen zurücknehmen", page)
+        revoke.setEnabled(str(record.get("status", "ausgestellt")).casefold() not in {"widerrufen", "revoked"})
+        revoke.clicked.connect(
+            lambda _checked=False, p=page: self._revoke_issued_user_certificate_page(p)
+        )
+        buttons.addWidget(revoke)
         buttons.addStretch(1)
         outer.addLayout(buttons)
 
@@ -6473,7 +6882,7 @@ keyUsage               = critical,digitalSignature,cRLSign,keyCertSign
             return
         if not Path(path).is_file():
             self._message(
-                "Benutzer-Zertifikat",
+                "CA-Zertifikat",
                 "Die Zertifikatsdatei ist nicht mehr verfügbar.\n\n" + path,
                 QMessageBox.Warning,
             )
@@ -6529,10 +6938,13 @@ keyUsage               = critical,digitalSignature,cRLSign,keyCertSign
         body = page
         body_layout = outer
 
-        subject_group = QGroupBox("Benutzer / Subject", body)
+        subject_group = QGroupBox("Zertifikat / Subject", body)
         subject_form = QFormLayout(subject_group)
 
-        title_edit = QLineEdit(str(record.get("title", "Benutzer")), subject_group)
+        certificate_type = QComboBox(subject_group)
+        certificate_type.addItems(["Personal", "Web", "Server", "Code-Signing"])
+        certificate_type.setCurrentText(str(record.get("certificate_type", "Personal") or "Personal"))
+        title_edit = QLineEdit(str(record.get("title", "Zertifikat")), subject_group)
         title_edit.setObjectName("opensslUserCertificateTitleEdit")
         cn_edit = QLineEdit(str(record.get("common_name", "")), subject_group)
         cn_edit.setObjectName("opensslUserCertificateCommonNameEdit")
@@ -6565,6 +6977,7 @@ keyUsage               = critical,digitalSignature,cRLSign,keyCertSign
         san_edit = QLineEdit(str(record.get("subject_alt_name", "")), subject_group)
         san_edit.setPlaceholderText("z.B. email:max@example.de, DNS:pc01.local, URI:https://...")
 
+        subject_form.addRow("Zertifikatstyp", certificate_type)
         subject_form.addRow("Untertab / Bezeichnung", title_edit)
         subject_form.addRow("Common Name / Benutzer", cn_edit)
         subject_form.addRow("E-Mail", email_edit)
@@ -6582,9 +6995,25 @@ keyUsage               = critical,digitalSignature,cRLSign,keyCertSign
         ca_combo.setObjectName("opensslUserCertificateCaCombo")
         self._populate_user_certificate_ca_combo(ca_combo, str(record.get("ca_directory", "")))
 
-        days_spin = QSpinBox(issuer_group)
-        days_spin.setRange(1, 36500)
-        days_spin.setValue(int(record.get("days", 365) or 365))
+        validity_row = QWidget(issuer_group)
+        validity_layout = QHBoxLayout(validity_row)
+        validity_layout.setContentsMargins(0, 0, 0, 0)
+        validity_layout.setSpacing(5)
+        def _validity_spin(name, maximum, fallback=0):
+            spin = QSpinBox(validity_row); spin.setRange(0, maximum)
+            try: spin.setValue(int(record.get(name, fallback) or 0))
+            except Exception: spin.setValue(int(fallback))
+            return spin
+        # Alte Stage-162-Datensätze mit nur "days" werden als Tage migriert.
+        has_new_validity = any(k in record for k in ("validity_months", "validity_weeks", "validity_days", "validity_hours", "validity_minutes"))
+        months_spin = _validity_spin("validity_months", 120, 12 if has_new_validity else 0)
+        weeks_spin = _validity_spin("validity_weeks", 520, 0)
+        days_spin = _validity_spin("validity_days", 36500, 0 if has_new_validity else int(record.get("days", 365) or 365))
+        hours_spin = _validity_spin("validity_hours", 23, 0)
+        minutes_spin = _validity_spin("validity_minutes", 59, 0)
+        for label, spin in (("Mon.", months_spin), ("Wo.", weeks_spin), ("Tage", days_spin), ("Std.", hours_spin), ("Min.", minutes_spin)):
+            validity_layout.addWidget(QLabel(label, validity_row)); validity_layout.addWidget(spin)
+        validity_layout.addStretch(1)
         key_bits = QComboBox(issuer_group)
         key_bits.addItems(["2048", "3072", "4096"])
         key_bits.setCurrentText(str(record.get("key_bits", "2048")))
@@ -6597,6 +7026,9 @@ keyUsage               = critical,digitalSignature,cRLSign,keyCertSign
             "Client-Authentifizierung",
             "E-Mail-Signatur",
             "Client + E-Mail",
+            "Web/TLS",
+            "Server-Authentifizierung",
+            "Code-Signierung",
             "Benutzerdefiniert",
         ])
         usage_combo.setCurrentText(str(record.get("usage_preset", "Client-Authentifizierung")))
@@ -6609,9 +7041,13 @@ keyUsage               = critical,digitalSignature,cRLSign,keyCertSign
         key_password = QLineEdit(issuer_group)
         key_password.setEchoMode(QLineEdit.Password)
         key_password.setPlaceholderText("wird nicht gespeichert")
+        pfx_password = QLineEdit(issuer_group)
+        pfx_password.setEchoMode(QLineEdit.Password)
+        pfx_password.setPlaceholderText("PKCS#12-Passwort; wird nicht gespeichert")
+        status_label = QLabel(str(record.get("request_status", "neu") or "neu"), issuer_group)
 
         issuer_form.addRow("Ausstellende CA", ca_combo)
-        issuer_form.addRow("Gültigkeit (Tage)", days_spin)
+        issuer_form.addRow("Gültigkeit", validity_row)
         issuer_form.addRow("RSA-Schlüssel", key_bits)
         issuer_form.addRow("Signatur-Hash", digest_combo)
         issuer_form.addRow("Verwendungsprofil", usage_combo)
@@ -6619,6 +7055,8 @@ keyUsage               = critical,digitalSignature,cRLSign,keyCertSign
         issuer_form.addRow("Extended Key Usage", eku_edit)
         issuer_form.addRow("Private Key", encrypt_key)
         issuer_form.addRow("Key-Passwort", key_password)
+        issuer_form.addRow("PFX-Passwort", pfx_password)
+        issuer_form.addRow("Antragsstatus", status_label)
         body_layout.addWidget(issuer_group)
 
         output_group = QGroupBox("Ausgabedateien", body)
@@ -6637,7 +7075,8 @@ keyUsage               = critical,digitalSignature,cRLSign,keyCertSign
         private_key_edit = QLineEdit(str(record.get("private_key", "")), output_group)
         csr_edit = QLineEdit(str(record.get("csr", "")), output_group)
         certificate_edit = QLineEdit(str(record.get("certificate", "")), output_group)
-        for field in (private_key_edit, csr_edit, certificate_edit):
+        pfx_edit = QLineEdit(str(record.get("pfx", "")), output_group)
+        for field in (private_key_edit, csr_edit, certificate_edit, pfx_edit):
             field.setReadOnly(True)
 
         output_form.addRow("Ausgabeverzeichnis", output_dir_row)
@@ -6645,10 +7084,19 @@ keyUsage               = critical,digitalSignature,cRLSign,keyCertSign
         output_form.addRow("Private Key", private_key_edit)
         output_form.addRow("CSR", csr_edit)
         output_form.addRow("Zertifikat", certificate_edit)
+        output_form.addRow("PFX / PKCS#12", pfx_edit)
         body_layout.addWidget(output_group)
 
         buttons = QHBoxLayout()
-        issue_button = QPushButton("Zertifikat ausstellen", page)
+        submit_button = QPushButton("Bei CA einreichen", page)
+        submit_button.setObjectName("opensslSubmitCertificateRequestButton")
+        submit_button.clicked.connect(lambda _checked=False, p=page: self._submit_user_certificate_request(p))
+        buttons.addWidget(submit_button)
+        verify_button = QPushButton("Bei CA prüfen", page)
+        verify_button.setObjectName("opensslVerifyCertificateRequestButton")
+        verify_button.clicked.connect(lambda _checked=False, p=page: self._verify_user_certificate_request(p, interactive=True))
+        buttons.addWidget(verify_button)
+        issue_button = QPushButton("Vertrauenswürdig ausstellen", page)
         issue_button.setObjectName("opensslIssueUserCertificateButton")
         issue_button.clicked.connect(lambda _checked=False, p=page: self._issue_user_certificate(p))
         buttons.addWidget(issue_button)
@@ -6662,6 +7110,7 @@ keyUsage               = critical,digitalSignature,cRLSign,keyCertSign
         outer.addLayout(buttons)
 
         page._cert_fields = {
+            "certificate_type": certificate_type,
             "title": title_edit,
             "ca_directory": ca_combo,
             "common_name": cn_edit,
@@ -6673,7 +7122,11 @@ keyUsage               = critical,digitalSignature,cRLSign,keyCertSign
             "postal_code": postal_edit,
             "locality": locality_edit,
             "subject_alt_name": san_edit,
-            "days": days_spin,
+            "validity_months": months_spin,
+            "validity_weeks": weeks_spin,
+            "validity_days": days_spin,
+            "validity_hours": hours_spin,
+            "validity_minutes": minutes_spin,
             "key_bits": key_bits,
             "digest": digest_combo,
             "usage_preset": usage_combo,
@@ -6681,11 +7134,14 @@ keyUsage               = critical,digitalSignature,cRLSign,keyCertSign
             "extended_key_usage": eku_edit,
             "encrypt_private_key": encrypt_key,
             "key_password": key_password,
+            "pfx_password": pfx_password,
+            "request_status": status_label,
             "output_directory": output_dir_edit,
             "file_base": file_base_edit,
             "private_key": private_key_edit,
             "csr": csr_edit,
             "certificate": certificate_edit,
+            "pfx": pfx_edit,
         }
 
         title_edit.editingFinished.connect(lambda p=page: self._user_certificate_title_changed(p))
@@ -6693,15 +7149,17 @@ keyUsage               = critical,digitalSignature,cRLSign,keyCertSign
         output_dir_edit.editingFinished.connect(lambda p=page: self._user_certificate_paths_changed(p))
         file_base_edit.editingFinished.connect(lambda p=page: self._user_certificate_paths_changed(p))
         usage_combo.currentTextChanged.connect(lambda value, p=page: self._apply_user_certificate_usage_preset(p, value))
+        certificate_type.currentTextChanged.connect(lambda value, p=page: self._apply_certificate_type_preset(p, value))
 
         for edit in (cn_edit, email_edit, org_edit, ou_edit, state_edit, postal_edit, locality_edit, san_edit, key_usage_edit, eku_edit):
             edit.editingFinished.connect(self._save_user_certificate_tabs)
-        for combo in (ca_combo, country_combo, key_bits, digest_combo):
+        for combo in (ca_combo, country_combo, key_bits, digest_combo, certificate_type):
             combo.currentIndexChanged.connect(self._save_user_certificate_tabs)
-        days_spin.valueChanged.connect(self._save_user_certificate_tabs)
+        for spin in (months_spin, weeks_spin, days_spin, hours_spin, minutes_spin):
+            spin.valueChanged.connect(self._save_user_certificate_tabs)
         encrypt_key.toggled.connect(self._save_user_certificate_tabs)
 
-        tab_title = title_edit.text().strip() or cn_edit.text().strip() or "Benutzer-Zertifikat"
+        tab_title = title_edit.text().strip() or cn_edit.text().strip() or "CA-Zertifikat"
         self.user_certificate_tabs.addTab(page, tab_title)
         if not private_key_edit.text().strip() and output_dir_edit.text().strip():
             self._update_user_certificate_paths(page)
@@ -6755,6 +7213,7 @@ keyUsage               = critical,digitalSignature,cRLSign,keyCertSign
         ca_combo = fields.get("ca_directory")
         country_combo = fields.get("country")
         return {
+            "certificate_type": fields["certificate_type"].currentText() if fields.get("certificate_type") is not None else "Personal",
             "title": text("title"),
             "ca_directory": str(ca_combo.currentData() or "") if ca_combo is not None else "",
             "common_name": text("common_name"),
@@ -6765,7 +7224,14 @@ keyUsage               = critical,digitalSignature,cRLSign,keyCertSign
             "state": text("state"),
             "postal_code": text("postal_code")[:11],
             "locality": text("locality")[:32],
-            "days": int(fields["days"].value()) if fields.get("days") is not None else 365,
+            "days": int(fields["validity_days"].value()) if fields.get("validity_days") is not None else 0,
+            "validity_months": int(fields["validity_months"].value()) if fields.get("validity_months") is not None else 0,
+            "validity_weeks": int(fields["validity_weeks"].value()) if fields.get("validity_weeks") is not None else 0,
+            "validity_days": int(fields["validity_days"].value()) if fields.get("validity_days") is not None else 0,
+            "validity_hours": int(fields["validity_hours"].value()) if fields.get("validity_hours") is not None else 0,
+            "validity_minutes": int(fields["validity_minutes"].value()) if fields.get("validity_minutes") is not None else 0,
+            "request_status": fields["request_status"].text().strip() if fields.get("request_status") is not None else "neu",
+            "status": "ausgestellt" if text("certificate") else "neu",
             "key_bits": fields["key_bits"].currentText() if fields.get("key_bits") is not None else "2048",
             "digest": fields["digest"].currentText() if fields.get("digest") is not None else "sha256",
             "usage_preset": fields["usage_preset"].currentText() if fields.get("usage_preset") is not None else "Client-Authentifizierung",
@@ -6779,6 +7245,7 @@ keyUsage               = critical,digitalSignature,cRLSign,keyCertSign
             "private_key": text("private_key"),
             "csr": text("csr"),
             "certificate": text("certificate"),
+            "pfx": text("pfx"),
         }
 
     def _user_certificate_title_changed(self, page: QWidget) -> None:
@@ -6788,7 +7255,7 @@ keyUsage               = critical,digitalSignature,cRLSign,keyCertSign
             title = fields["common_name"].text().strip()
         index = self.user_certificate_tabs.indexOf(page)
         if index >= 0:
-            self.user_certificate_tabs.setTabText(index, title or "Benutzer-Zertifikat")
+            self.user_certificate_tabs.setTabText(index, title or "CA-Zertifikat")
         self._save_user_certificate_tabs()
 
     @staticmethod
@@ -6809,6 +7276,8 @@ keyUsage               = critical,digitalSignature,cRLSign,keyCertSign
         fields["private_key"].setText(str(base / f"{file_base}.key.pem"))
         fields["csr"].setText(str(base / f"{file_base}.csr.pem"))
         fields["certificate"].setText(str(base / f"{file_base}.cert.pem"))
+        if fields.get("pfx") is not None:
+            fields["pfx"].setText(str(base / f"{file_base}.pfx"))
 
     def _user_certificate_paths_changed(self, page: QWidget) -> None:
         self._update_user_certificate_paths(page)
@@ -6819,7 +7288,7 @@ keyUsage               = critical,digitalSignature,cRLSign,keyCertSign
         current = fields.get("output_directory").text().strip() if fields.get("output_directory") is not None else ""
         directory = QFileDialog.getExistingDirectory(
             self,
-            "Ausgabeverzeichnis für Benutzer-Zertifikat",
+            "Ausgabeverzeichnis für CA-Zertifikat",
             current,
             QFileDialog.ShowDirsOnly | QFileDialog.DontUseNativeDialog,
         )
@@ -6833,12 +7302,28 @@ keyUsage               = critical,digitalSignature,cRLSign,keyCertSign
             "Client-Authentifizierung": ("digitalSignature, keyEncipherment", "clientAuth"),
             "E-Mail-Signatur": ("digitalSignature, nonRepudiation, keyEncipherment", "emailProtection"),
             "Client + E-Mail": ("digitalSignature, keyEncipherment", "clientAuth, emailProtection"),
+            "Web/TLS": ("digitalSignature, keyEncipherment", "serverAuth, clientAuth"),
+            "Server-Authentifizierung": ("digitalSignature, keyEncipherment", "serverAuth"),
+            "Code-Signierung": ("digitalSignature", "codeSigning"),
         }
         if preset in values:
             key_usage, eku = values[preset]
             fields["key_usage"].setText(key_usage)
             fields["extended_key_usage"].setText(eku)
         self._save_user_certificate_tabs()
+
+    def _apply_certificate_type_preset(self, page: QWidget, certificate_type: str) -> None:
+        fields = getattr(page, "_cert_fields", {})
+        preset = {
+            "Personal": "Client + E-Mail",
+            "Web": "Web/TLS",
+            "Server": "Server-Authentifizierung",
+            "Code-Signing": "Code-Signierung",
+        }.get(str(certificate_type), "Benutzerdefiniert")
+        combo = fields.get("usage_preset")
+        if combo is not None and preset != "Benutzerdefiniert":
+            combo.setCurrentText(preset)
+        self._apply_user_certificate_usage_preset(page, preset)
 
     @staticmethod
     def _normalize_user_certificate_san(value: str, email: str = "") -> str:
@@ -6887,134 +7372,217 @@ keyUsage               = critical,digitalSignature,cRLSign,keyCertSign
         except Exception as exc:
             return False, b"", str(exc).encode("utf-8", errors="replace")
 
-    def _issue_user_certificate(self, page: QWidget) -> None:
+    def _certificate_validity_window(self, page: QWidget) -> tuple[dt.datetime, dt.datetime]:
+        fields = getattr(page, "_cert_fields", {})
+        now = dt.datetime.now(dt.timezone.utc).replace(second=0, microsecond=0)
+        months = int(fields["validity_months"].value())
+        weeks = int(fields["validity_weeks"].value())
+        days = int(fields["validity_days"].value())
+        hours = int(fields["validity_hours"].value())
+        minutes = int(fields["validity_minutes"].value())
+        if not any((months, weeks, days, hours, minutes)):
+            raise ValueError("Die Zertifikatsgültigkeit muss größer als 0 Minuten sein.")
+        year = now.year + (now.month - 1 + months) // 12
+        month = (now.month - 1 + months) % 12 + 1
+        day = min(now.day, calendar.monthrange(year, month)[1])
+        end = now.replace(year=year, month=month, day=day)
+        end += dt.timedelta(weeks=weeks, days=days, hours=hours, minutes=minutes)
+        return now - dt.timedelta(minutes=1), end
+
+    def _certificate_profile_section(self, page: QWidget) -> str:
+        fields = getattr(page, "_cert_fields", {})
+        value = fields["certificate_type"].currentText() if fields.get("certificate_type") is not None else "Personal"
+        return {
+            "Personal": "personal_cert", "Web": "web_cert", "Server": "server_cert", "Code-Signing": "code_signing_cert"
+        }.get(value, "personal_cert")
+
+    def _request_ca_and_paths(self, page: QWidget):
         fields = getattr(page, "_cert_fields", {})
         common_name = fields["common_name"].text().strip()
         if not common_name:
-            self._message("Benutzer-Zertifikat", "Bitte einen Common Name / Benutzer angeben.", QMessageBox.Warning)
-            return
-
+            raise ValueError("Bitte einen Common Name / Benutzer angeben.")
         ca_text = str(fields["ca_directory"].currentData() or "").strip()
         if not ca_text:
-            self._message("Benutzer-Zertifikat", "Bitte eine ausstellende CA auswählen.", QMessageBox.Warning)
-            return
+            raise ValueError("Bitte eine ausstellende CA auswählen.")
         ca_base = Path(ca_text)
         if (ca_base / ".d64_ca_locked").exists():
-            self._message("Benutzer-Zertifikat", "Die ausgewählte CA ist lokal gesperrt.", QMessageBox.Warning)
-            return
-        ca_cert = ca_base / "certs" / "ca.cert.pem"
-        ca_key = ca_base / "private" / "ca.key.pem"
-        if not ca_cert.is_file() or not ca_key.is_file():
-            self._message("Benutzer-Zertifikat", "CA-Zertifikat oder privater CA-Schlüssel fehlt.", QMessageBox.Critical)
-            return
-
+            raise ValueError("Die ausgewählte CA ist lokal gesperrt.")
+        if not (ca_base / "certs" / "ca.cert.pem").is_file() or not (ca_base / "private" / "ca.key.pem").is_file():
+            raise ValueError("CA-Zertifikat oder privater CA-Schlüssel fehlt.")
         output_dir = fields["output_directory"].text().strip()
         if not output_dir:
-            self._message("Benutzer-Zertifikat", "Bitte ein Ausgabeverzeichnis auswählen.", QMessageBox.Warning)
-            return
+            raise ValueError("Bitte ein Ausgabeverzeichnis auswählen.")
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         self._update_user_certificate_paths(page)
-        key_path = Path(fields["private_key"].text())
-        csr_path = Path(fields["csr"].text())
-        cert_path = Path(fields["certificate"].text())
+        return fields, ca_base, Path(fields["private_key"].text()), Path(fields["csr"].text()), Path(fields["certificate"].text()), Path(fields["pfx"].text())
 
-        ca_password = self._ca_session_passwords.get(str(ca_base), "")
-        if not ca_password and self.ca_dir_edit.text().strip() == str(ca_base):
-            ca_password = self.ca_password_edit.text()
-        if not ca_password:
-            ca_password, ok = QInputDialog.getText(
-                self, "Benutzer-Zertifikat", f"Passwort der CA {ca_base.name or ca_base}:", QLineEdit.Password
-            )
-            if not ok or not ca_password:
-                return
+    def _ca_password_for_base(self, ca_base: Path, title: str) -> str:
+        password = self._ca_session_passwords.get(str(ca_base), "")
+        if not password and self.ca_dir_edit.text().strip() == str(ca_base):
+            password = self.ca_password_edit.text()
+        if not password:
+            password, ok = QInputDialog.getText(self, title, f"Passwort der CA {ca_base.name or ca_base}:", QLineEdit.Password)
+            if not ok or not password:
+                return ""
+        self._read_encrypted_metadata(self._metadata_path(ca_base), password)
+        self._ca_session_passwords[str(ca_base)] = password
+        return password
+
+    def _submit_user_certificate_request(self, page: QWidget) -> bool:
         try:
-            self._read_encrypted_metadata(self._metadata_path(ca_base), ca_password)
-            self._ca_session_passwords[str(ca_base)] = ca_password
+            fields, ca_base, key_path, csr_path, _cert_path, _pfx_path = self._request_ca_and_paths(page)
         except Exception as exc:
-            self._message("Benutzer-Zertifikat", str(exc), QMessageBox.Critical)
-            return
-
+            self._message("Zertifikatsantrag", str(exc), QMessageBox.Warning); return False
         encrypt_key = fields["encrypt_private_key"].isChecked()
         key_password = fields["key_password"].text()
         if encrypt_key and not key_password:
-            self._message(
-                "Benutzer-Zertifikat",
-                "Für den verschlüsselten privaten Benutzerschlüssel ist ein Key-Passwort erforderlich.",
-                QMessageBox.Warning,
-            )
-            return
-
-        env = {"D64_CA_PASSWORD": ca_password}
-        if key_password:
-            env["D64_CERT_KEY_PASSWORD"] = key_password
-
+            self._message("Zertifikatsantrag", "Für den verschlüsselten privaten Schlüssel ist ein Key-Passwort erforderlich.", QMessageBox.Warning); return False
+        env = {}
+        if key_password: env["D64_CERT_KEY_PASSWORD"] = key_password
         key_args = ["genrsa"]
-        if encrypt_key:
-            key_args += ["-aes256", "-passout", "env:D64_CERT_KEY_PASSWORD"]
+        if encrypt_key: key_args += ["-aes256", "-passout", "env:D64_CERT_KEY_PASSWORD"]
         key_args += ["-out", str(key_path), fields["key_bits"].currentText()]
-        ok, out, err = self._openssl_sync_env(key_args, env)
+        ok, _out, err = self._openssl_sync_env(key_args, env)
         if not ok:
-            self._message("Benutzer-Zertifikat", err.decode("utf-8", errors="replace") or "Privater Schlüssel konnte nicht erzeugt werden.", QMessageBox.Critical)
-            return
-
-        subject = self._user_certificate_subject(page)
+            self._message("Zertifikatsantrag", err.decode("utf-8", errors="replace") or "Privater Schlüssel konnte nicht erzeugt werden.", QMessageBox.Critical); return False
         csr_args = ["req", "-new", "-key", str(key_path)]
-        if encrypt_key:
-            csr_args += ["-passin", "env:D64_CERT_KEY_PASSWORD"]
-        csr_args += ["-out", str(csr_path), "-subj", subject]
-        ok, out, err = self._openssl_sync_env(csr_args, env)
-        if not ok:
-            self._message("Benutzer-Zertifikat", err.decode("utf-8", errors="replace") or "CSR konnte nicht erzeugt werden.", QMessageBox.Critical)
-            return
-
-        key_usage = fields["key_usage"].text().strip()
-        eku = fields["extended_key_usage"].text().strip()
+        if encrypt_key: csr_args += ["-passin", "env:D64_CERT_KEY_PASSWORD"]
+        csr_args += ["-out", str(csr_path), "-subj", self._user_certificate_subject(page)]
         san = self._normalize_user_certificate_san(fields["subject_alt_name"].text(), fields["email"].text().strip())
-        ext_path = Path(output_dir) / ("." + self._safe_user_certificate_file_base(fields["file_base"].text()) + ".extensions.cnf")
-        ext_lines = [
-            "[user_certificate]",
-            "basicConstraints=critical,CA:FALSE",
-            "subjectKeyIdentifier=hash",
-            "authorityKeyIdentifier=keyid,issuer",
-        ]
-        if key_usage:
-            ext_lines.append("keyUsage=critical," + key_usage)
-        if eku:
-            ext_lines.append("extendedKeyUsage=" + eku)
         if san:
-            ext_lines.append("subjectAltName=" + san)
-        ext_path.write_text("\\n".join(ext_lines) + "\\n", encoding="utf-8")
+            csr_args += ["-addext", "subjectAltName=" + san]
+        ok, _out, err = self._openssl_sync_env(csr_args, env)
+        if not ok:
+            self._message("Zertifikatsantrag", err.decode("utf-8", errors="replace") or "CSR konnte nicht erzeugt werden.", QMessageBox.Critical); return False
+        fields["request_status"].setText("eingereicht")
+        self._save_user_certificate_tabs()
+        self.append_output(f"Zertifikatsantrag bei CA eingereicht: {csr_path}")
+        return True
 
+    def _verify_user_certificate_request(self, page: QWidget, interactive: bool = False) -> bool:
+        fields = getattr(page, "_cert_fields", {})
+        csr_path = Path(fields["csr"].text().strip()) if fields.get("csr") is not None else Path()
+        if not csr_path.is_file():
+            if interactive: self._message("CA-Prüfung", "Kein CSR vorhanden. Bitte zuerst bei der CA einreichen.", QMessageBox.Warning)
+            return False
+        ok, out, err = self._openssl_sync_env(["req", "-in", str(csr_path), "-noout", "-verify"])
+        if ok:
+            fields["request_status"].setText("geprüft")
+            self._save_user_certificate_tabs()
+            self.append_output(f"CSR durch CA geprüft: {csr_path}")
+            if interactive: self._message("CA-Prüfung", "CSR-Signatur ist gültig. Der Antrag kann ausgestellt werden.", QMessageBox.Information)
+            return True
+        if interactive: self._message("CA-Prüfung", (err or out).decode("utf-8", errors="replace") or "CSR-Prüfung fehlgeschlagen.", QMessageBox.Critical)
+        return False
+
+    def _issue_user_certificate(self, page: QWidget) -> None:
+        try:
+            fields, ca_base, key_path, csr_path, cert_path, pfx_path = self._request_ca_and_paths(page)
+        except Exception as exc:
+            self._message("Zertifikat ausstellen", str(exc), QMessageBox.Warning); return
+        if not csr_path.is_file():
+            self._message("Zertifikat ausstellen", "Der Antrag wurde noch nicht eingereicht.", QMessageBox.Warning); return
+        if fields["request_status"].text().strip().casefold() != "geprüft":
+            self._message("Zertifikat ausstellen", "Der CSR muss zuerst mit 'Bei CA prüfen' erfolgreich geprüft werden.", QMessageBox.Warning); return
+        try:
+            start, end = self._certificate_validity_window(page)
+        except Exception as exc:
+            self._message("Zertifikat ausstellen", str(exc), QMessageBox.Warning); return
+        pfx_password = fields["pfx_password"].text()
+        if not pfx_password:
+            pfx_password, ok = QInputDialog.getText(
+                self, "PFX / PKCS#12", "Passwort für die PFX/PKCS#12-Datei:", QLineEdit.Password
+            )
+            if not ok or not pfx_password:
+                return
+            fields["pfx_password"].setText(pfx_password)
+        key_password = fields["key_password"].text()
+        if fields["encrypt_private_key"].isChecked() and not key_password:
+            key_password, ok = QInputDialog.getText(
+                self, "Privater Schlüssel", "Passwort des privaten Zertifikatsschlüssels:", QLineEdit.Password
+            )
+            if not ok or not key_password:
+                return
+            fields["key_password"].setText(key_password)
+        try:
+            ca_password = self._ca_password_for_base(ca_base, "Zertifikat ausstellen")
+        except Exception as exc:
+            self._message("Zertifikat ausstellen", str(exc), QMessageBox.Critical); return
+        if not ca_password: return
+        try:
+            conf = self._ensure_ca_openssl_config(ca_base, force=True)
+        except Exception as exc:
+            self._message("Zertifikat ausstellen", str(exc), QMessageBox.Critical); return
         digest = fields["digest"].currentText().strip() or "sha256"
+        env = {"D64_CA_PASSWORD": ca_password}
         sign_args = [
-            "x509", "-req", "-in", str(csr_path),
-            "-CA", str(ca_cert), "-CAkey", str(ca_key),
-            "-passin", "env:D64_CA_PASSWORD",
-            "-CAserial", str(ca_base / "ca.srl"), "-CAcreateserial",
-            "-out", str(cert_path), "-days", str(fields["days"].value()),
-            f"-{digest}", "-extfile", str(ext_path), "-extensions", "user_certificate",
+            "ca", "-batch", "-config", str(conf), "-in", str(csr_path), "-out", str(cert_path),
+            "-extensions", self._certificate_profile_section(page), "-md", digest,
+            "-startdate", start.strftime("%y%m%d%H%M%SZ"), "-enddate", end.strftime("%y%m%d%H%M%SZ"),
+            "-passin", "env:D64_CA_PASSWORD", "-notext",
         ]
+        # Per-Antrag angepasste KU/EKU/SAN über eine temporäre Extension-Datei.
+        ext_path = Path(fields["output_directory"].text()) / ("." + self._safe_user_certificate_file_base(fields["file_base"].text()) + ".extensions.cnf")
+        ext_lines = [f"[{self._certificate_profile_section(page)}]", "basicConstraints=critical,CA:FALSE", "subjectKeyIdentifier=hash", "authorityKeyIdentifier=keyid,issuer"]
+        key_usage = fields["key_usage"].text().strip(); eku = fields["extended_key_usage"].text().strip(); san = self._normalize_user_certificate_san(fields["subject_alt_name"].text(), fields["email"].text().strip())
+        if key_usage: ext_lines.append("keyUsage=critical," + key_usage)
+        if eku: ext_lines.append("extendedKeyUsage=" + eku)
+        if san: ext_lines.append("subjectAltName=" + san)
+        ext_path.write_text("\n".join(ext_lines)+"\n", encoding="utf-8")
+        sign_args += ["-extfile", str(ext_path)]
         try:
             ok, out, err = self._openssl_sync_env(sign_args, env)
         finally:
-            try:
-                ext_path.unlink()
-            except OSError:
-                pass
+            try: ext_path.unlink()
+            except OSError: pass
         if not ok:
-            self._message("Benutzer-Zertifikat", err.decode("utf-8", errors="replace") or "Zertifikat konnte nicht signiert werden.", QMessageBox.Critical)
-            return
+            self._message("Zertifikat ausstellen", (err or out).decode("utf-8", errors="replace") or "CA-Ausstellung fehlgeschlagen.", QMessageBox.Critical); return
 
-        self._save_user_certificate_tabs()
-        self._register_issued_user_certificate(page)
-        self.append_output(f"Benutzer-Zertifikat ausgestellt: {cert_path}")
-        self.append_output(f"CSR: {csr_path}")
-        self.append_output(f"Private Key: {key_path}")
-        self._message(
-            "Benutzer-Zertifikat",
-            "Zertifikat wurde erfolgreich ausgestellt.\\n\\n" + str(cert_path),
-            QMessageBox.Information,
-        )
+        # Authenticode und Windows-Import verwenden PKCS#12. Passwort bleibt nur im UI/Prozess.
+        env["D64_PFX_PASSWORD"] = pfx_password
+        if key_password: env["D64_CERT_KEY_PASSWORD"] = key_password
+        pfx_args = ["pkcs12", "-export", "-out", str(pfx_path), "-inkey", str(key_path), "-in", str(cert_path), "-certfile", str(ca_base / "certs" / "ca.cert.pem"), "-passout", "env:D64_PFX_PASSWORD"]
+        if fields["encrypt_private_key"].isChecked(): pfx_args += ["-passin", "env:D64_CERT_KEY_PASSWORD"]
+        ok, out, err = self._openssl_sync_env(pfx_args, env)
+        if not ok:
+            self._message("PFX exportieren", (err or out).decode("utf-8", errors="replace") or "PKCS#12 konnte nicht erzeugt werden.", QMessageBox.Critical); return
+        fields["request_status"].setText("ausgestellt / vertrauenswürdig")
+        self._save_user_certificate_tabs(); self._register_issued_user_certificate(page)
+        self.append_output(f"CA-Zertifikat vertrauenswürdig ausgestellt: {cert_path}")
+        self.append_output(f"PFX/PKCS#12: {pfx_path}")
+        self._message("Zertifikat ausstellen", "Zertifikat wurde durch die CA ausgestellt und als PKCS#12 exportiert.\n\n" + str(cert_path), QMessageBox.Information)
+
+    def _revoke_issued_user_certificate_page(self, page: QWidget) -> None:
+        record = dict(getattr(page, "_issued_certificate_record", {}) or {})
+        cert_text = str(record.get("certificate", "") or "").strip()
+        ca_text = str(record.get("ca_directory", "") or "").strip()
+        cert_path = Path(cert_text) if cert_text else Path()
+        ca_base = Path(ca_text) if ca_text else Path()
+        if not cert_text or not ca_text or not cert_path.is_file():
+            self._message("Vertrauen zurücknehmen", "Zertifikat oder CA-Verzeichnis fehlt.", QMessageBox.Warning); return
+        answer = QMessageBox.question(self, "Vertrauen zurücknehmen", f"Zertifikat wirklich widerrufen?\n\n{cert_path}", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if answer != QMessageBox.Yes: return
+        try:
+            ca_password = self._ca_password_for_base(ca_base, "Vertrauen zurücknehmen")
+            if not ca_password: return
+            conf = self._ensure_ca_openssl_config(ca_base, force=True)
+        except Exception as exc:
+            self._message("Vertrauen zurücknehmen", str(exc), QMessageBox.Critical); return
+        env={"D64_CA_PASSWORD":ca_password}
+        ok,out,err=self._openssl_sync_env(["ca","-config",str(conf),"-revoke",str(cert_path),"-passin","env:D64_CA_PASSWORD"],env)
+        if not ok:
+            self._message("Vertrauen zurücknehmen",(err or out).decode("utf-8",errors="replace") or "Widerruf fehlgeschlagen.",QMessageBox.Critical); return
+        crl=ca_base/"crl"/"ca.crl.pem"
+        ok2,out2,err2=self._openssl_sync_env(["ca","-config",str(conf),"-gencrl","-out",str(crl),"-passin","env:D64_CA_PASSWORD"],env)
+        records=self._issued_user_certificate_records(); wanted=self._certificate_path_key(str(cert_path))
+        for item in records:
+            if self._certificate_path_key(item.get("certificate",""))==wanted:
+                item["status"]="widerrufen"; item["revoked_at"]=dt.datetime.now(dt.timezone.utc).isoformat()
+        self._save_issued_user_certificate_records(records); self._refresh_issued_user_certificate_tabs(select_certificate=str(cert_path))
+        self.append_output(f"Zertifikat widerrufen: {cert_path}")
+        if ok2: self.append_output(f"CRL aktualisiert: {crl}")
+        else: self.append_output("CRL-Aktualisierung fehlgeschlagen: "+(err2 or out2).decode("utf-8",errors="replace"))
+        self._message("Vertrauen zurücknehmen","Zertifikat wurde in der CA widerrufen. Die CRL wurde aktualisiert." if ok2 else "Zertifikat wurde widerrufen; CRL-Aktualisierung ist fehlgeschlagen.",QMessageBox.Information if ok2 else QMessageBox.Warning)
 
     def _inspect_user_certificate_page(self, page: QWidget) -> None:
         fields = getattr(page, "_cert_fields", {})
@@ -7193,7 +7761,7 @@ class ApacheDownloadThread(QThread):
 
 
 # Stage 178: lightweight Apache configuration editor with line-number gutter
-# and a synchronized minimap.  It deliberately lives in server_tools.py so the
+# and a synchronized minimap.  It is embedded in d64_dism.py so the
 # server dock also works when this module is used outside the monolithic build.
 class ApacheConfigLineNumberArea(QWidget):
     def __init__(self, editor):
@@ -7532,7 +8100,7 @@ class ApacheServerPanel(ServerPanelBase):
         """Create the same editor/gutter/minimap container used by Pascal.
 
         In the monolithic d64_dism GUI the host exposes the run_gui-local
-        SourceEditorWithMiniMap class through a factory.  server_tools.py keeps
+        SourceEditorWithMiniMap class through a factory.  The embedded server code keeps
         the old Stage-178 editor only as a compatibility fallback for hosts
         which do not provide that shared editor factory.
         """
@@ -19526,6 +20094,7 @@ PE32_DLL_IMAGE_BASE = 0x10000000
 PE32_SECTION_RVA = 0x00001000
 PE32_FILE_ALIGNMENT = 0x200
 PE32_SECTION_ALIGNMENT = 0x1000
+PE32_DOS_HEADER_SIZE = 0x40  # Stage216: PE-Signatur direkt hinter IMAGE_DOS_HEADER
 
 
 class PE32AssemblerError(Exception):
@@ -19629,6 +20198,59 @@ _X86_JCC = {
 def _align_up(value: int, alignment: int) -> int:
     alignment = max(1, int(alignment))
     return (int(value) + alignment - 1) & ~(alignment - 1)
+
+
+# Stage 221: physical PE image layout policy. Section-table/RVA order stays
+# untouched; only PointerToRawData / embedded loader payload order changes.
+PE_IMAGE_LAYOUT_LOADER_DATA_CODE = "loader_data_code"
+PE_IMAGE_LAYOUT_LOADER_CODE_DATA = "loader_code_data"
+PE_IMAGE_LAYOUT_DEFAULT = PE_IMAGE_LAYOUT_LOADER_DATA_CODE
+PE_IMAGE_LAYOUT_CHOICES = (
+    ("Loader + DATA + CODE", PE_IMAGE_LAYOUT_LOADER_DATA_CODE),
+    ("Loader + CODE + DATA", PE_IMAGE_LAYOUT_LOADER_CODE_DATA),
+)
+
+
+def _normalize_pe_image_layout_order(value) -> str:
+    text = str(value or "").strip().casefold().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "loader_data_code": PE_IMAGE_LAYOUT_LOADER_DATA_CODE,
+        "loader+data+code": PE_IMAGE_LAYOUT_LOADER_DATA_CODE,
+        "data_code": PE_IMAGE_LAYOUT_LOADER_DATA_CODE,
+        "loader_code_data": PE_IMAGE_LAYOUT_LOADER_CODE_DATA,
+        "loader+code+data": PE_IMAGE_LAYOUT_LOADER_CODE_DATA,
+        "code_data": PE_IMAGE_LAYOUT_LOADER_CODE_DATA,
+    }
+    return aliases.get(text, PE_IMAGE_LAYOUT_DEFAULT)
+
+
+def _pe_physical_layout_sort_key(name, layout_order, original_index=0):
+    """Sort raw PE blocks without changing their virtual section order."""
+    raw_name = bytes(name or b"").split(b"\0", 1)[0].lower()
+    layout = _normalize_pe_image_layout_order(layout_order)
+    if raw_name == b".loader":
+        group = 0
+    else:
+        code_names = {b".text", b".ztext", b".code"}
+        data_names = {
+            b".data", b".rdata", b".idata", b".edata", b".rsrc",
+            b".reloc", b".tls", b".pdata", b".xdata",
+        }
+        if layout == PE_IMAGE_LAYOUT_LOADER_CODE_DATA:
+            if raw_name in code_names:
+                group = 1
+            elif raw_name in data_names:
+                group = 2
+            else:
+                group = 3
+        else:
+            if raw_name in data_names:
+                group = 1
+            elif raw_name in code_names:
+                group = 2
+            else:
+                group = 3
+    return (group, int(original_index))
 
 
 def _x86_strip_comment(line: str) -> str:
@@ -20044,12 +20666,15 @@ def _parse_pe32_source_lines(
         if mnemonic in {"shl", "sal", "shr", "sar"} and len(operands) == 2 and _x86_is_rm32(operands[0], line):
             return 1 + _x86_rm_length(operands[0], line) + (0 if operands[1].casefold() == "cl" else 1)
         # Minimal x87 subset used by the native PROLOG floating-point runtime.
-        if mnemonic in {"fld", "fild", "fstp"} and len(operands) == 1:
+        if mnemonic in {"fld", "fild", "fstp", "fistp"} and len(operands) == 1:
             if operands[0].casefold() == "st0" and mnemonic == "fstp":
                 return 2
             if _x86_memory_operand(operands[0], line) is not None:
                 return 1 + _x86_rm_length(operands[0], line)
-        if mnemonic in {"faddp", "fsubp", "fmulp", "fdivp", "fchs", "fldz", "fucomip"}:
+        if mnemonic in {"fnstcw", "fldcw"} and len(operands) == 1:
+            if _x86_memory_operand(operands[0], line) is not None:
+                return 1 + _x86_rm_length(operands[0], line)
+        if mnemonic in {"faddp", "fsubp", "fmulp", "fdivp", "fchs", "fldz", "fucomip", "frndint"}:
             return 2
         raise PE32AssemblerError(f"PE32-Assemblerbefehl nicht unterstützt: {text}", line)
 
@@ -20204,6 +20829,16 @@ def _parse_pe32_source_lines(
             offsets[current_section] += 4 * len(_x86_split_operands(args))
             lines.append((line_number, text, current_section))
             continue
+        # Stage 200: 64-Bit-Datendirektiven auch im PE32-Assembler.
+        # dBase-Zahlen werden als IEEE-754-Double in 8-Byte-Slots gehalten;
+        # deshalb ist DQ auch bei einem 32-Bit-Programm eine gueltige
+        # Datendirektive (nicht zu verwechseln mit einem 64-Bit-Befehl).
+        if directive in {"dq", "qword", "quad"}:
+            if current_section == ".bss":
+                raise PE32AssemblerError("Initialisierte Daten sind in .bss nicht erlaubt.", line_number)
+            offsets[current_section] += 8 * len(_x86_split_operands(args))
+            lines.append((line_number, text, current_section))
+            continue
         if current_section != ".text":
             raise PE32AssemblerError(
                 f"Ausführbarer IA-32-Befehl ist in {current_section} nicht erlaubt: {text}",
@@ -20323,6 +20958,18 @@ def assemble_pe32_object_source(
                 else:
                     output.extend(struct.pack("<I", value & 0xFFFFFFFF))
             continue
+        if directive in {"dq", "qword", "quad"}:
+            for token in _x86_split_operands(args):
+                value = _x86_parse_int(token)
+                if value is None:
+                    # PE32-Adressen sind 32 Bit breit. Bei einem symbolischen
+                    # DQ-Wert wird daher das Low-DWORD relocatiert und das
+                    # High-DWORD auf Null gesetzt.
+                    emit_symbol32(token, IMAGE_REL_I386_DIR32)
+                    output.extend(b"\x00\x00\x00\x00")
+                else:
+                    output.extend(struct.pack("<Q", value & 0xFFFFFFFFFFFFFFFF))
+            continue
         if section != ".text":
             raise PE32AssemblerError(
                 f"Ausführbarer IA-32-Befehl ist in {section} nicht erlaubt: {text}",
@@ -20335,14 +20982,19 @@ def assemble_pe32_object_source(
         instruction_count += 1
 
         # Minimal x87 subset for native PROLOG IEEE-754 Double arithmetic.
-        if mnemonic in {"fld", "fild", "fstp"} and len(operands) == 1:
+        if mnemonic in {"fld", "fild", "fstp", "fistp"} and len(operands) == 1:
             op = operands[0].strip()
             if mnemonic == "fstp" and op.casefold() == "st0":
                 output.extend((0xDD, 0xD8))
                 continue
             mem = _x86_memory_operand(op, line_number)
             if mem is not None:
-                if mnemonic == "fild":
+                if mnemonic == "fistp":
+                    if mem["size"] not in {"dword", "qword"}:
+                        raise PE32AssemblerError("FISTP erwartet DWORD/QWORD-Speicher.", line_number)
+                    output.append(0xDB if mem["size"] == "dword" else 0xDF)
+                    emit_rm_operand(3 if mem["size"] == "dword" else 7, op, line_number)
+                elif mnemonic == "fild":
                     if mem["size"] not in {"dword", "qword"}:
                         raise PE32AssemblerError("FILD erwartet DWORD/QWORD-Speicher.", line_number)
                     output.append(0xDB if mem["size"] == "dword" else 0xDF)
@@ -20356,12 +21008,22 @@ def assemble_pe32_object_source(
                         raise PE32AssemblerError("FSTP erwartet QWORD-Speicher für Double.", line_number)
                     output.append(0xDD); emit_rm_operand(3, op, line_number)
                 continue
+        if mnemonic in {"fnstcw", "fldcw"} and len(operands) == 1:
+            mem = _x86_memory_operand(operands[0], line_number)
+            if mem is None or mem["size"] != "word":
+                raise PE32AssemblerError(
+                    f"{mnemonic.upper()} erwartet WORD-Speicher.", line_number
+                )
+            output.append(0xD9)
+            emit_rm_operand(7 if mnemonic == "fnstcw" else 5, operands[0], line_number)
+            continue
         if mnemonic == "faddp": output.extend((0xDE,0xC1)); continue
         if mnemonic == "fmulp": output.extend((0xDE,0xC9)); continue
         if mnemonic == "fsubp": output.extend((0xDE,0xE9)); continue
         if mnemonic == "fdivp": output.extend((0xDE,0xF9)); continue
         if mnemonic == "fchs": output.extend((0xD9,0xE0)); continue
         if mnemonic == "fldz": output.extend((0xD9,0xEE)); continue
+        if mnemonic == "frndint": output.extend((0xD9,0xFC)); continue
         if mnemonic == "fucomip":
             if operands and [x.casefold().replace(" ","") for x in operands] != ["st0","st1"]:
                 raise PE32AssemblerError("FUCOMIP unterstützt nur ST0, ST1.", line_number)
@@ -20665,9 +21327,9 @@ def _pe32_apply_single_object_relocations(obj: PE32ObjectProgram) -> Tuple[bytes
 
 def build_pe32_executable(code: bytes, entry_offset: int = 0, *, gui: bool = False) -> bytes:
     code = bytes(code)
-    dos = bytearray(0x80)
+    dos = bytearray(PE32_DOS_HEADER_SIZE)
     dos[0:2] = b"MZ"
-    struct.pack_into("<I", dos, 0x3C, 0x80)
+    struct.pack_into("<I", dos, 0x3C, PE32_DOS_HEADER_SIZE)
     pe = bytearray()
     pe.extend(b"PE\0\0")
     pe.extend(struct.pack(
@@ -21090,31 +21752,41 @@ def build_pe32_image_with_imports_exports(
     if reloc: sections.append((b".reloc\0\0", reloc, reloc_rva, 0x42000040, len(reloc)))
 
     number_of_sections = len(sections)
-    headers_unaligned = 0x80 + 4 + 20 + 0xE0 + number_of_sections * 40
+    headers_unaligned = PE32_DOS_HEADER_SIZE + 4 + 20 + 0xE0 + number_of_sections * 40
     size_of_headers = _align_up(headers_unaligned, PE32_FILE_ALIGNMENT)
 
     raw_layout: List[Tuple[bytes, bytes, int, int, int, int, int]] = []
-    raw_pointer = size_of_headers
     size_of_code = 0
     size_of_initialized_data = 0
-    for name, data, rva, characteristics, virtual_size in sections:
+    _layout_order = _pe_import_packer_settings("pe32").get(
+        "layout_order", PE_IMAGE_LAYOUT_DEFAULT
+    )
+    _raw_specs = []
+    for _index, (name, data, rva, characteristics, virtual_size) in enumerate(sections):
         raw_size = _align_up(len(data), PE32_FILE_ALIGNMENT) if data else 0
-        section_raw_pointer = raw_pointer if raw_size else 0
-        raw_layout.append((
-            name, data, rva, characteristics, section_raw_pointer,
-            raw_size, virtual_size,
-        ))
-        raw_pointer += raw_size
+        _raw_specs.append([
+            name, data, rva, characteristics, 0, raw_size, virtual_size, _index
+        ])
         if name.startswith(b".text"):
             size_of_code += raw_size
         else:
             size_of_initialized_data += raw_size
+    raw_pointer = size_of_headers
+    for _spec in sorted(
+        (item for item in _raw_specs if item[5]),
+        key=lambda item: _pe_physical_layout_sort_key(
+            item[0], _layout_order, item[7]
+        ),
+    ):
+        _spec[4] = raw_pointer
+        raw_pointer += int(_spec[5])
+    raw_layout = [tuple(item[:7]) for item in _raw_specs]
 
     size_of_image = _align_up(next_rva, PE32_SECTION_ALIGNMENT)
 
-    dos = bytearray(0x80)
+    dos = bytearray(PE32_DOS_HEADER_SIZE)
     dos[0:2] = b"MZ"
-    struct.pack_into("<I", dos, 0x3C, 0x80)
+    struct.pack_into("<I", dos, 0x3C, PE32_DOS_HEADER_SIZE)
     pe = bytearray(b"PE\0\0")
     characteristics = 0x0102 | (0x2000 if dll else 0)
     pe.extend(struct.pack(
@@ -21178,10 +21850,13 @@ def build_pe32_image_with_imports_exports(
 
     headers = bytes(dos) + bytes(pe)
     headers += bytes(size_of_headers - len(headers))
-    image = bytearray(headers)
-    for _name, data, _rva, _chars, _raw_pointer, raw_size, _virtual_size in raw_layout:
-        image.extend(data)
-        image.extend(bytes(raw_size - len(data)))
+    image = bytearray(raw_pointer)
+    image[:len(headers)] = headers
+    for _name, data, _rva, _chars, section_raw_pointer, raw_size, _virtual_size in raw_layout:
+        if not raw_size:
+            continue
+        start = int(section_raw_pointer)
+        image[start:start + len(data)] = data
     return bytes(image), bytes(text)
 
 
@@ -21312,10 +21987,12 @@ def _pe32_build_d64z_payload(
 
 
 class _PE32LoaderBuilder:
-    def __init__(self) -> None:
+    def __init__(self, loader_va: int = 0) -> None:
+        self.loader_va = int(loader_va)
         self.code = bytearray()
         self.labels: Dict[str, int] = {}
         self.fixups: List[Tuple[int, str]] = []
+        self.abs32_fixups: List[Tuple[int, str]] = []
 
     def emit(self, data: bytes) -> None:
         self.code.extend(data)
@@ -21332,12 +22009,234 @@ class _PE32LoaderBuilder:
         self.code.extend(b"\x00\x00\x00\x00")
         self.fixups.append((pos, str(label)))
 
+    def jmp(self, label: str) -> None:
+        self.code.extend(b"\xE9")
+        pos = len(self.code)
+        self.code.extend(b"\x00\x00\x00\x00")
+        self.fixups.append((pos, str(label)))
+
+    def call(self, label: str) -> None:
+        self.code.extend(b"\xE8")
+        pos = len(self.code)
+        self.code.extend(b"\x00\x00\x00\x00")
+        self.fixups.append((pos, str(label)))
+
+    def abs32_label(self, label: str) -> None:
+        pos = len(self.code)
+        self.code.extend(b"\x00\x00\x00\x00")
+        self.abs32_fixups.append((pos, str(label)))
+
+    def push_label_va(self, label: str) -> None:
+        self.code.extend(b"\x68")
+        self.abs32_label(label)
+
+    def mov_eax_label_va(self, label: str) -> None:
+        self.code.extend(b"\xB8")
+        self.abs32_label(label)
+
     def finish(self) -> bytes:
         for pos, label in self.fixups:
             if label not in self.labels:
                 raise PE32AssemblerError(f"PE32-Loaderlabel fehlt: {label}")
             struct.pack_into("<i", self.code, pos, self.labels[label] - (pos + 4))
+        for pos, label in self.abs32_fixups:
+            if label not in self.labels:
+                raise PE32AssemblerError(f"PE32-Loaderdatenlabel fehlt: {label}")
+            struct.pack_into(
+                "<I", self.code, pos,
+                (self.loader_va + self.labels[label]) & 0xFFFFFFFF,
+            )
         return bytes(self.code)
+
+
+# Stage 211: importloser PEB/LDR-Bootstrap für gepackte Images.
+_PEB_BOOTSTRAP_STRINGS = (
+    "LdrGetProcedureAddress",
+    "LoadLibraryA",
+    "GetProcAddress",
+    "VirtualProtect",
+    "FlushInstructionCache",
+    "ExitProcess",
+    "cabinet.dll",
+    "CreateDecompressor",
+    "Decompress",
+    "CloseDecompressor",
+)
+
+
+_PEB_EXACT_RUNTIME_STRINGS = (
+    "GetModuleFileNameA",
+    "CreateFileA",
+    "ReadFile",
+    "CloseHandle",
+    "advapi32.dll",
+    "CryptAcquireContextA",
+    "CryptCreateHash",
+    "CryptHashData",
+    "CryptGetHashParam",
+    "CryptDestroyHash",
+    "CryptReleaseContext",
+)
+
+
+def _peb_label_for_string(value: str) -> str:
+    return "peb_str_" + re.sub(r"[^a-z0-9]+", "_", str(value).casefold()).strip("_")
+
+
+def _emit_pe32_peb_support_prefix(
+    b: _PE32LoaderBuilder, *, exact_runtime: bool = False
+) -> None:
+    """Emitter für Export-Resolver + konstante API-Namen vor dem Hauptloader."""
+    b.jmp("peb_main")
+    b.label("peb_resolve_export")
+    # cdecl helper: [ebp+8]=module base, [ebp+12]=ASCII export name.
+    b.emit(b"\x55\x8B\xEC\x53\x56\x57")
+    b.emit(b"\x8B\x5D\x08\x8B\x43\x3C\x01\xD8")
+    b.emit(b"\x8B\x40\x78\x85\xC0")
+    b.jcc(0x84, "peb_rex_fail")
+    b.emit(b"\x01\xD8\x8B\x48\x18\x8B\x50\x20\x01\xDA")
+    b.label("peb_rex_loop")
+    b.emit(b"\x85\xC9")
+    b.jcc(0x84, "peb_rex_fail")
+    b.emit(b"\x49\x8B\x04\x8A\x01\xD8\x8B\x75\x0C\x89\xC7")
+    b.label("peb_rex_cmp")
+    b.emit(b"\x8A\x07\x3A\x06")
+    b.jcc(0x85, "peb_rex_loop")
+    b.emit(b"\x84\xC0")
+    b.jcc(0x84, "peb_rex_match")
+    b.emit(b"\x47\x46")
+    b.jmp("peb_rex_cmp")
+    b.label("peb_rex_match")
+    b.emit(b"\x8B\x43\x3C\x01\xD8\x8B\x40\x78\x01\xD8")
+    b.emit(b"\x8B\x50\x24\x01\xDA\x0F\xB7\x0C\x4A")
+    b.emit(b"\x8B\x50\x1C\x01\xDA\x8B\x04\x8A\x01\xD8")
+    b.jmp("peb_rex_done")
+    b.label("peb_rex_fail")
+    b.emit(b"\x31\xC0")
+    b.label("peb_rex_done")
+    b.emit(b"\x5F\x5E\x5B\x8B\xE5\x5D\xC3")
+
+    for text in _PEB_BOOTSTRAP_STRINGS + (
+        _PEB_EXACT_RUNTIME_STRINGS if exact_runtime else ()
+    ):
+        b.label(_peb_label_for_string(text))
+        b.emit(text.encode("ascii") + b"\0")
+    b.label("peb_main")
+
+
+def _emit_pe32_peb_bootstrap(
+    b: _PE32LoaderBuilder, *, exact_runtime: bool = False
+) -> None:
+    """PEB -> NTDLL/KERNEL32 -> LdrGetProcedureAddress -> Loader-APIs."""
+    # Locals used by Stage 211:
+    # -30 ntdll, -34 kernel32, -38 LdrGetProcedureAddress,
+    # -3C LoadLibraryA, -40 GetProcAddress, -44 VirtualProtect,
+    # -48 FlushInstructionCache, -4C ExitProcess,
+    # -50 CreateDecompressor, -54 Decompress, -58 CloseDecompressor,
+    # -5C cabinet.dll. ANSI_STRING scratch is -68..-61.
+    b.emit(b"\x31\xC0\x89\x45\xD0\x89\x45\xCC")
+    # eax = PEB; eax = PEB->Ldr; edx = &InMemoryOrderModuleList; esi = Flink.
+    b.emit(b"\x64\xA1\x30\x00\x00\x00\x8B\x40\x0C\x8D\x50\x14\x8B\x32")
+    b.label("peb_module_loop")
+    b.emit(b"\x39\xD6")
+    b.jcc(0x84, "peb_early_fail")
+    b.emit(b"\x8B\x7E\x28\x85\xFF")
+    b.jcc(0x84, "peb_module_next")
+    # case-insensitive UTF-16 prefix check for NTDL / KERN.
+    b.emit(b"\x8B\x07\x0D\x20\x00\x20\x00\x3D\x6E\x00\x74\x00")
+    b.jcc(0x85, "peb_check_kernel")
+    b.emit(b"\x8B\x47\x04\x0D\x20\x00\x20\x00\x3D\x64\x00\x6C\x00")
+    b.jcc(0x85, "peb_check_kernel")
+    b.emit(b"\x8B\x46\x10\x89\x45\xD0")
+    b.label("peb_check_kernel")
+    b.emit(b"\x8B\x07\x0D\x20\x00\x20\x00\x3D\x6B\x00\x65\x00")
+    b.jcc(0x85, "peb_module_have")
+    b.emit(b"\x8B\x47\x04\x0D\x20\x00\x20\x00\x3D\x72\x00\x6E\x00")
+    b.jcc(0x85, "peb_module_have")
+    b.emit(b"\x8B\x46\x10\x89\x45\xCC")
+    b.label("peb_module_have")
+    b.emit(b"\x83\x7D\xD0\x00")
+    b.jcc(0x84, "peb_module_next")
+    b.emit(b"\x83\x7D\xCC\x00")
+    b.jcc(0x85, "peb_modules_done")
+    b.label("peb_module_next")
+    b.emit(b"\x8B\x36")
+    b.jmp("peb_module_loop")
+    b.label("peb_modules_done")
+
+    # Resolve LdrGetProcedureAddress directly from NTDLL export directory.
+    b.push_label_va(_peb_label_for_string("LdrGetProcedureAddress"))
+    b.emit(b"\xFF\x75\xD0")
+    b.call("peb_resolve_export")
+    b.emit(b"\x83\xC4\x08\x85\xC0")
+    b.jcc(0x84, "peb_early_fail")
+    b.emit(b"\x89\x45\xC8")
+
+    def ldr_get(name: str, target_disp: int) -> None:
+        encoded = name.encode("ascii")
+        b.emit(b"\x66\xC7\x45\x98")
+        b.emit(struct.pack("<H", len(encoded)))
+        b.emit(b"\x66\xC7\x45\x9A")
+        b.emit(struct.pack("<H", len(encoded) + 1))
+        b.mov_eax_label_va(_peb_label_for_string(name))
+        b.emit(b"\x89\x45\x9C\x8D\x45\x98")
+        b.emit(b"\x8D\x55" + bytes((target_disp & 0xFF,)))
+        b.emit(b"\x52\x6A\x00\x50\xFF\x75\xCC\xFF\x55\xC8")
+        b.emit(b"\x85\xC0")
+        b.jcc(0x88, "peb_early_fail")  # NT_SUCCESS(status)
+
+    ldr_get("LoadLibraryA", -0x3C)
+    ldr_get("GetProcAddress", -0x40)
+
+    def getproc(module_disp: int, name: str, target_disp: int) -> None:
+        b.push_label_va(_peb_label_for_string(name))
+        b.emit(b"\xFF\x75" + bytes((module_disp & 0xFF,)))
+        b.emit(b"\xFF\x55\xC0\x85\xC0")
+        b.jcc(0x84, "peb_early_fail")
+        b.emit(b"\x89\x45" + bytes((target_disp & 0xFF,)))
+
+    getproc(-0x34, "VirtualProtect", -0x44)
+    getproc(-0x34, "FlushInstructionCache", -0x48)
+    getproc(-0x34, "ExitProcess", -0x4C)
+
+    # cabinet = LoadLibraryA("cabinet.dll")
+    b.push_label_va(_peb_label_for_string("cabinet.dll"))
+    b.emit(b"\xFF\x55\xC4\x85\xC0")
+    b.jcc(0x84, "peb_early_fail")
+    b.emit(b"\x89\x45\xA4")
+    getproc(-0x5C, "CreateDecompressor", -0x50)
+    getproc(-0x5C, "Decompress", -0x54)
+    getproc(-0x5C, "CloseDecompressor", -0x58)
+
+    if exact_runtime:
+        def getproc32(module_disp: int, name: str, target_disp: int) -> None:
+            b.push_label_va(_peb_label_for_string(name))
+            b.emit(b"\xFF\xB5" + struct.pack("<i", int(module_disp)))
+            b.emit(b"\xFF\x55\xC0\x85\xC0")
+            b.jcc(0x84, "peb_early_fail")
+            b.emit(b"\x89\x85" + struct.pack("<i", int(target_disp)))
+
+        getproc32(-0x34, "GetModuleFileNameA", -0x80)
+        getproc32(-0x34, "CreateFileA", -0x84)
+        getproc32(-0x34, "ReadFile", -0x88)
+        getproc32(-0x34, "CloseHandle", -0x8C)
+
+        b.push_label_va(_peb_label_for_string("advapi32.dll"))
+        b.emit(b"\xFF\x55\xC4\x85\xC0")
+        b.jcc(0x84, "peb_early_fail")
+        b.emit(b"\x89\x85" + struct.pack("<i", -0x90))
+        getproc32(-0x90, "CryptAcquireContextA", -0x94)
+        getproc32(-0x90, "CryptCreateHash", -0x98)
+        getproc32(-0x90, "CryptHashData", -0x9C)
+        getproc32(-0x90, "CryptGetHashParam", -0xA0)
+        getproc32(-0x90, "CryptDestroyHash", -0xA4)
+        getproc32(-0x90, "CryptReleaseContext", -0xA8)
+
+    b.jmp("peb_bootstrap_done")
+    b.label("peb_early_fail")
+    b.emit(b"\xCC\xEB\xFD")  # no imported ExitProcess exists yet
+    b.label("peb_bootstrap_done")
+
 
 
 def _build_pe32_mszip_loader(
@@ -21349,8 +22248,19 @@ def _build_pe32_mszip_loader(
     packed_size: int,
     original_entry_rva: int,
     iat_rvas: Dict[str, int],
+    d64i_rva: int = 0,
+    loader_rva: int = 0,
+    peb_resolver: bool = False,
+    compatibility: Optional[Dict[str, object]] = None,
 ) -> bytes:
-    missing = [name for name in PE32_MSZIP_LOADER_IMPORTS if name not in iat_rvas]
+    compatibility_values = dict(compatibility or _pe_import_packer_settings("pe32"))
+    exact_runtime = bool(compatibility_values.get("exact_runtime_check", False))
+    required = (() if bool(peb_resolver) else (
+        _pe_d64i_bootstrap_imports(exact_runtime)
+        if int(d64i_rva)
+        else PE32_MSZIP_LOADER_IMPORTS
+    ))
+    missing = [name for name in required if name not in iat_rvas]
     if missing:
         raise PE32AssemblerError(
             "PE32-MSZIP-Loader: IAT-Einträge fehlen: " + ", ".join(missing)
@@ -21359,27 +22269,71 @@ def _build_pe32_mszip_loader(
     def iat_va(name: str) -> int:
         return int(image_base) + int(iat_rvas[name])
 
+    _peb_exact_slots32 = {
+        "__d64_loader_GetModuleFileNameA": -0x80,
+        "__d64_loader_CreateFileA": -0x84,
+        "__d64_loader_ReadFile": -0x88,
+        "__d64_loader_CloseHandle": -0x8C,
+        "__d64_loader_CryptAcquireContextA": -0x94,
+        "__d64_loader_CryptCreateHash": -0x98,
+        "__d64_loader_CryptHashData": -0x9C,
+        "__d64_loader_CryptGetHashParam": -0xA0,
+        "__d64_loader_CryptDestroyHash": -0xA4,
+        "__d64_loader_CryptReleaseContext": -0xA8,
+    }
+
+    def call_exact_api(symbol: str) -> None:
+        if peb_resolver:
+            b.emit(b"\xFF\x95" + struct.pack("<i", _peb_exact_slots32[symbol]))
+        else:
+            b.emit(b"\xFF\x15")
+            b.u32(iat_va(symbol))
+
     text_va = int(image_base) + int(text_rva)
     packed_va = int(image_base) + int(ztext_rva) + PE32_D64Z_HEADER_SIZE
     oep_va = int(image_base) + int(original_entry_rva)
-    b = _PE32LoaderBuilder()
+    d64i_va = int(image_base) + int(d64i_rva) if int(d64i_rva) else 0
+    d64i_magic = struct.unpack("<I", PE_D64I_MAGIC)[0]
+    b = _PE32LoaderBuilder(int(image_base) + int(loader_rva))
+    if peb_resolver:
+        _emit_pe32_peb_support_prefix(b, exact_runtime=exact_runtime)
 
-    # EBP-04 handle, EBP-08 written, EBP-0C oldProtect, EBP-10 tempProtect
-    b.emit(b"\x55\x8B\xEC\x83\xEC\x10")
+    # EBP-04 handle, EBP-08 written, EBP-0C oldProtect, EBP-10 tempProtect.
+    # Stage 209 adds EBP-14 module, EBP-18 dllRemaining,
+    # EBP-1C importRemaining, EBP-20 currentImport and preserves the x86
+    # non-volatile registers at EBP-24/-28/-2C before tail-jumping to OEP.
+    # Stage 213 reserves EBP-6C for the per-DLL name-fallback state.
+    b.emit(b"\x55\x8B\xEC")
+    if exact_runtime:
+        b.emit(b"\x81\xEC")
+        b.u32(0x540)
+    else:
+        b.emit(b"\x83\xEC\x78")
+    b.emit(b"\x89\x5D\xDC\x89\x75\xD8\x89\x7D\xD4")
+    if peb_resolver:
+        _emit_pe32_peb_bootstrap(b, exact_runtime=exact_runtime)
 
     # CreateDecompressor(MSZIP, NULL, &handle)
-    b.emit(b"\x8D\x45\xFC\x50\x6A\x00\x6A\x02\xFF\x15")
-    b.u32(iat_va("__d64_loader_CreateDecompressor"))
+    b.emit(b"\x8D\x45\xFC\x50\x6A\x00\x6A\x02")
+    if peb_resolver:
+        b.emit(b"\xFF\x55\xB0")
+    else:
+        b.emit(b"\xFF\x15")
+        b.u32(iat_va("__d64_loader_CreateDecompressor"))
     b.emit(b"\x85\xC0")
     b.jcc(0x84, "fail")
 
-    # VirtualProtect(.text, size, PAGE_EXECUTE_READWRITE, &oldProtect)
+    # VirtualProtect(.text, full decompressed D64Z image,
+    # PAGE_EXECUTE_READWRITE, &oldProtect)
     b.emit(b"\x8D\x45\xF4\x50\x6A\x40\x68")
     b.u32(text_size)
     b.emit(b"\x68")
     b.u32(text_va)
-    b.emit(b"\xFF\x15")
-    b.u32(iat_va("__d64_loader_VirtualProtect"))
+    if peb_resolver:
+        b.emit(b"\xFF\x55\xBC")
+    else:
+        b.emit(b"\xFF\x15")
+        b.u32(iat_va("__d64_loader_VirtualProtect"))
     b.emit(b"\x85\xC0")
     b.jcc(0x84, "fail")
 
@@ -21392,8 +22346,12 @@ def _build_pe32_mszip_loader(
     b.u32(packed_size)
     b.emit(b"\x68")
     b.u32(packed_va)
-    b.emit(b"\xFF\x75\xFC\xFF\x15")
-    b.u32(iat_va("__d64_loader_Decompress"))
+    b.emit(b"\xFF\x75\xFC")
+    if peb_resolver:
+        b.emit(b"\xFF\x55\xAC")
+    else:
+        b.emit(b"\xFF\x15")
+        b.u32(iat_va("__d64_loader_Decompress"))
     b.emit(b"\x85\xC0")
     b.jcc(0x84, "fail")
 
@@ -21401,26 +22359,303 @@ def _build_pe32_mszip_loader(
     b.u32(text_size)
     b.jcc(0x85, "fail")
 
-    b.emit(b"\xFF\x75\xFC\xFF\x15")
-    b.u32(iat_va("__d64_loader_CloseDecompressor"))
+    b.emit(b"\xFF\x75\xFC")
+    if peb_resolver:
+        b.emit(b"\xFF\x55\xA8")
+    else:
+        b.emit(b"\xFF\x15")
+        b.u32(iat_va("__d64_loader_CloseDecompressor"))
 
-    # FlushInstructionCache((HANDLE)-1, .text, size)
+    if int(d64i_rva):
+        # ------------------------------------------------------------------
+        # D64I v3 resolver: Stage-213 ABI/ordinal checks plus Stage-219 Exact Runtime.
+        # ESI = D64I base, EDI = current DLL record, EBX = current import.
+        # EBP-6C is non-zero when this DLL must resolve ordinals by fallback
+        # export name after a compatibility mismatch.
+        # ------------------------------------------------------------------
+        b.emit(b"\xBE")
+        b.u32(d64i_va)
+
+        b.emit(b"\x81\x3E")
+        b.u32(d64i_magic)
+        b.jcc(0x85, "fail")
+        b.emit(b"\x66\x83\x7E\x04")
+        b.emit(bytes((PE_D64I_VERSION & 0xFF,)))
+        b.jcc(0x85, "fail")
+        b.emit(b"\x66\x83\x7E\x06\x04")
+        b.jcc(0x85, "fail")
+
+        # dllRemaining = header.dllCount; first DLL record follows 32-byte hdr.
+        b.emit(b"\x8B\x46\x08\x89\x45\xE8\x8D\x7E")
+        b.emit(bytes((PE_D64I_HEADER.size & 0xFF,)))
+
+        b.label("d64i_dll_loop")
+        b.emit(b"\x83\x7D\xE8\x00")
+        b.jcc(0x84, "d64i_done")
+
+        # module = LoadLibraryA(metadata + dllNameOffset)
+        b.emit(b"\x8B\x07\x01\xF0\x50")
+        if peb_resolver:
+            b.emit(b"\xFF\x55\xC4")
+        else:
+            b.emit(b"\xFF\x15")
+            b.u32(iat_va("__d64_loader_LoadLibraryA"))
+        b.emit(b"\x85\xC0")
+        b.jcc(0x84, "fail")
+        b.emit(b"\x89\x45\xEC")
+        b.emit(b"\xC7\x45\x94\x00\x00\x00\x00")  # fallback-name = false
+
+        if exact_runtime:
+            # Stage 219 Exact Runtime: hash the exact on-disk DLL bytes with
+            # CryptoAPI SHA-256 and compare them with the 32-byte digest stored in
+            # the D64I DLL record. A mismatch is always fatal; name fallback is
+            # intentionally not accepted for an explicitly exact runtime.
+            b.emit(b"\xF7\x47\x0C")
+            b.u32(PE_D64I_DLL_CHECK_EXACT)
+            b.jcc(0x84, "d64i_exact_done")
+    
+            # GetModuleFileNameA(module, path[520], 520)
+            b.emit(b"\x68")
+            b.u32(520)
+            b.emit(b"\x8D\x85" + struct.pack("<i", -0x520) + b"\x50")
+            b.emit(b"\xFF\x75\xEC")
+            call_exact_api("__d64_loader_GetModuleFileNameA")
+            b.emit(b"\x85\xC0")
+            b.jcc(0x84, "fail")
+            b.emit(b"\x3D")
+            b.u32(520)
+            b.jcc(0x83, "fail")  # >= capacity means truncation
+    
+            # CreateFileA(path, GENERIC_READ, share R/W/delete, ..., OPEN_EXISTING)
+            b.emit(b"\x6A\x00\x68")
+            b.u32(0x80)
+            b.emit(b"\x6A\x03\x6A\x00\x6A\x07\x68")
+            b.u32(0x80000000)
+            b.emit(b"\x8D\x85" + struct.pack("<i", -0x520) + b"\x50")
+            call_exact_api("__d64_loader_CreateFileA")
+            b.emit(b"\x83\xF8\xFF")
+            b.jcc(0x84, "fail")
+            b.emit(b"\x89\x85" + struct.pack("<i", -0xB0))
+    
+            # CryptAcquireContextA(..., PROV_RSA_AES, CRYPT_VERIFYCONTEXT)
+            for disp in (-0xB4, -0xB8):
+                b.emit(b"\xC7\x85" + struct.pack("<i", disp))
+                b.u32(0)
+            b.emit(b"\x68")
+            b.u32(0xF0000000)
+            b.emit(b"\x6A\x18\x6A\x00\x6A\x00")
+            b.emit(b"\x8D\x85" + struct.pack("<i", -0xB4) + b"\x50")
+            call_exact_api("__d64_loader_CryptAcquireContextA")
+            b.emit(b"\x85\xC0")
+            b.jcc(0x84, "fail")
+    
+            # CryptCreateHash(provider, CALG_SHA_256, 0, 0, &hash)
+            b.emit(b"\x8D\x85" + struct.pack("<i", -0xB8) + b"\x50")
+            b.emit(b"\x6A\x00\x6A\x00\x68")
+            b.u32(0x0000800C)
+            b.emit(b"\xFF\xB5" + struct.pack("<i", -0xB4))
+            call_exact_api("__d64_loader_CryptCreateHash")
+            b.emit(b"\x85\xC0")
+            b.jcc(0x84, "fail")
+    
+            b.label("d64i_exact_read")
+            # ReadFile(file, buffer[512], 512, &bytesRead, NULL)
+            b.emit(b"\x6A\x00")
+            b.emit(b"\x8D\x85" + struct.pack("<i", -0xBC) + b"\x50")
+            b.emit(b"\x68")
+            b.u32(512)
+            b.emit(b"\x8D\x85" + struct.pack("<i", -0x300) + b"\x50")
+            b.emit(b"\xFF\xB5" + struct.pack("<i", -0xB0))
+            call_exact_api("__d64_loader_ReadFile")
+            b.emit(b"\x85\xC0")
+            b.jcc(0x84, "fail")
+            b.emit(b"\x8B\x85" + struct.pack("<i", -0xBC) + b"\x85\xC0")
+            b.jcc(0x84, "d64i_exact_eof")
+    
+            # CryptHashData(hash, buffer, bytesRead, 0)
+            b.emit(b"\x6A\x00\x50")
+            b.emit(b"\x8D\x85" + struct.pack("<i", -0x300) + b"\x50")
+            b.emit(b"\xFF\xB5" + struct.pack("<i", -0xB8))
+            call_exact_api("__d64_loader_CryptHashData")
+            b.emit(b"\x85\xC0")
+            b.jcc(0x84, "fail")
+            b.jmp("d64i_exact_read")
+    
+            b.label("d64i_exact_eof")
+            b.emit(b"\xFF\xB5" + struct.pack("<i", -0xB0))
+            call_exact_api("__d64_loader_CloseHandle")
+    
+            # CryptGetHashParam(hash, HP_HASHVAL, digest, &32, 0)
+            b.emit(b"\xC7\x85" + struct.pack("<i", -0xC0))
+            b.u32(32)
+            b.emit(b"\x6A\x00")
+            b.emit(b"\x8D\x85" + struct.pack("<i", -0xC0) + b"\x50")
+            b.emit(b"\x8D\x85" + struct.pack("<i", -0xE0) + b"\x50")
+            b.emit(b"\x6A\x02")
+            b.emit(b"\xFF\xB5" + struct.pack("<i", -0xB8))
+            call_exact_api("__d64_loader_CryptGetHashParam")
+            b.emit(b"\x85\xC0")
+            b.jcc(0x84, "fail")
+    
+            b.emit(b"\xFF\xB5" + struct.pack("<i", -0xB8))
+            call_exact_api("__d64_loader_CryptDestroyHash")
+            b.emit(b"\x6A\x00\xFF\xB5" + struct.pack("<i", -0xB4))
+            call_exact_api("__d64_loader_CryptReleaseContext")
+    
+            for offset in range(0, 32, 4):
+                b.emit(b"\x8B\x85" + struct.pack("<i", -0xE0 + offset))
+                b.emit(b"\x3B\x87" + struct.pack("<i", 60 + offset))
+                b.jcc(0x85, "fail")
+            b.label("d64i_exact_done")
+
+        # Compatibility is queried only for D64-managed DLL records carrying
+        # CHECK_RUNTIME and/or CHECK_HASH.
+        b.emit(b"\xF7\x47\x0C")
+        b.u32(PE_D64I_DLL_CHECK_RUNTIME | PE_D64I_DLL_CHECK_HASH)
+        b.jcc(0x84, "d64i_compat_done")
+        # eax = metadata + abiQueryNameOffset
+        b.emit(b"\x8B\x47\x18\x85\xC0")
+        b.jcc(0x84, "d64i_compat_mismatch")
+        b.emit(b"\x01\xF0\x50\xFF\x75\xEC")
+        if peb_resolver:
+            b.emit(b"\xFF\x55\xC0")
+        else:
+            b.emit(b"\xFF\x15")
+            b.u32(iat_va("__d64_loader_GetProcAddress"))
+        b.emit(b"\x85\xC0")
+        b.jcc(0x84, "d64i_compat_mismatch")
+        b.emit(b"\xFF\xD0\x85\xC0")  # D64GetRuntimeAbiInfo()
+        b.jcc(0x84, "d64i_compat_mismatch")
+        b.emit(b"\x83\x38")
+        b.emit(bytes((PE_D64_RUNTIME_ABI_INFO_SIZE & 0xFF,)))
+        b.jcc(0x82, "d64i_compat_mismatch")
+
+        # Runtime identity: D64RuntimeAbiInfo.runtimeName must match the DLL
+        # name stored in this D64I record. The ABI query itself was resolved
+        # by name, so a stale ordinal table cannot spoof this check.
+        b.emit(b"\x89\x45\x90")  # [ebp-70] = D64RuntimeAbiInfo*
+        b.emit(b"\x8D\x48\x30")  # ecx = &runtimeName[0]
+        b.emit(b"\x8B\x17\x01\xF2")  # edx = metadata + dllNameOffset
+        b.label("d64i_runtime_name_loop")
+        b.emit(b"\x8A\x01\x3A\x02")  # al = *ecx; cmp al,*edx
+        b.jcc(0x85, "d64i_compat_mismatch")
+        b.emit(b"\x84\xC0")
+        b.jcc(0x84, "d64i_runtime_name_ok")
+        b.emit(b"\x41\x42")
+        b.jmp("d64i_runtime_name_loop")
+        b.label("d64i_runtime_name_ok")
+        b.emit(b"\x8B\x45\x90")  # restore D64RuntimeAbiInfo*
+
+        # Version checks can be switched off independently from the map hash.
+        b.emit(b"\xF7\x47\x0C")
+        b.u32(PE_D64I_DLL_CHECK_RUNTIME)
+        b.jcc(0x84, "d64i_compat_hash")
+        b.emit(b"\x0F\xB7\x48\x04\x66\x3B\x4F\x10")
+        b.jcc(0x85, "d64i_compat_mismatch")
+        b.emit(b"\x0F\xB7\x48\x06\x66\x3B\x4F\x12")
+        b.jcc(0x82, "d64i_compat_mismatch")
+        b.emit(b"\x8B\x48\x08\x3B\x4F\x14")
+        b.jcc(0x85, "d64i_compat_mismatch")
+        b.emit(b"\x8B\x48\x0C\x81\xF9")
+        b.u32(PE_D64_LOADER_VERSION_PACKED)
+        b.jcc(0x87, "d64i_compat_mismatch")
+
+        b.label("d64i_compat_hash")
+        b.emit(b"\xF7\x47\x0C")
+        b.u32(PE_D64I_DLL_CHECK_HASH)
+        b.jcc(0x84, "d64i_compat_done")
+        for offset in range(0, 32, 4):
+            b.emit(b"\x8B\x48" + bytes((16 + offset,)))
+            b.emit(b"\x3B\x4F" + bytes((28 + offset,)))
+            b.jcc(0x85, "d64i_compat_mismatch")
+        b.jmp("d64i_compat_done")
+
+        b.label("d64i_compat_mismatch")
+        b.emit(b"\xF7\x47\x0C")
+        b.u32(PE_D64I_DLL_FALLBACK_NAME)
+        b.jcc(0x84, "fail")
+        b.emit(b"\xC7\x45\x94\x01\x00\x00\x00")
+        b.label("d64i_compat_done")
+
+        # currentImport = metadata + firstImportOffset; count from record.
+        b.emit(b"\x8B\x47\x04\x01\xF0\x89\x45\xE0")
+        b.emit(b"\x8B\x47\x08\x89\x45\xE4")
+
+        b.label("d64i_import_loop")
+        b.emit(b"\x83\x7D\xE4\x00")
+        b.jcc(0x84, "d64i_next_dll")
+
+        b.emit(b"\x8B\x5D\xE0\x8B\x43\x04")
+        b.emit(b"\xA9")
+        b.u32(PE_D64I_ORDINAL_FLAG)
+        b.jcc(0x84, "d64i_name")
+        # On mismatch, use the retained fallback export name.
+        b.emit(b"\x83\x7D\x94\x00")
+        b.jcc(0x84, "d64i_ordinal")
+        b.emit(b"\x8B\x43\x08\x85\xC0")
+        b.jcc(0x84, "fail")
+        b.emit(b"\x01\xF0")
+        b.jmp("d64i_getproc")
+
+        b.label("d64i_ordinal")
+        b.emit(b"\x25\xFF\xFF\x00\x00")
+        b.jmp("d64i_getproc")
+
+        b.label("d64i_name")
+        b.emit(b"\x01\xF0")
+
+        b.label("d64i_getproc")
+        b.emit(b"\x50\xFF\x75\xEC")
+        if peb_resolver:
+            b.emit(b"\xFF\x55\xC0")
+        else:
+            b.emit(b"\xFF\x15")
+            b.u32(iat_va("__d64_loader_GetProcAddress"))
+        b.emit(b"\x85\xC0")
+        b.jcc(0x84, "fail")
+
+        b.emit(b"\x8B\x5D\xE0\x8B\x13\x81\xC2")
+        b.u32(int(image_base))
+        b.emit(b"\x89\x02")
+
+        b.emit(b"\x83\xC3")
+        b.emit(bytes((PE_D64I_IMPORT_RECORD.size & 0xFF,)))
+        b.emit(b"\x89\x5D\xE0\xFF\x4D\xE4")
+        b.jmp("d64i_import_loop")
+
+        b.label("d64i_next_dll")
+        b.emit(b"\x83\xC7")
+        b.emit(bytes((PE_D64I_DLL_RECORD.size & 0xFF,)))
+        b.emit(b"\xFF\x4D\xE8")
+        b.jmp("d64i_dll_loop")
+
+        b.label("d64i_done")
+
+    # FlushInstructionCache((HANDLE)-1, .text, full decompressed size)
     b.emit(b"\x68")
     b.u32(text_size)
     b.emit(b"\x68")
     b.u32(text_va)
-    b.emit(b"\x6A\xFF\xFF\x15")
-    b.u32(iat_va("__d64_loader_FlushInstructionCache"))
+    b.emit(b"\x6A\xFF")
+    if peb_resolver:
+        b.emit(b"\xFF\x55\xB8")
+    else:
+        b.emit(b"\xFF\x15")
+        b.u32(iat_va("__d64_loader_FlushInstructionCache"))
 
-    # Alten Seitenschutz wiederherstellen.
+    # Restore original page protection.
     b.emit(b"\x8D\x45\xF0\x50\xFF\x75\xF4\x68")
     b.u32(text_size)
     b.emit(b"\x68")
     b.u32(text_va)
-    b.emit(b"\xFF\x15")
-    b.u32(iat_va("__d64_loader_VirtualProtect"))
+    if peb_resolver:
+        b.emit(b"\xFF\x55\xBC")
+    else:
+        b.emit(b"\xFF\x15")
+        b.u32(iat_va("__d64_loader_VirtualProtect"))
 
-    # Originalen EntryPoint anspringen.
+    # Restore non-volatile registers, stack and jump to original entrypoint.
+    b.emit(b"\x8B\x5D\xDC\x8B\x75\xD8\x8B\x7D\xD4")
     b.emit(b"\x8B\xE5\x5D\xB8")
     b.u32(oep_va)
     b.emit(b"\xFF\xE0")
@@ -21428,9 +22663,14 @@ def _build_pe32_mszip_loader(
     b.label("fail")
     b.emit(b"\x68")
     b.u32(0xD6400001)
-    b.emit(b"\xFF\x15")
-    b.u32(iat_va("__d64_loader_ExitProcess"))
+    if peb_resolver:
+        b.emit(b"\xFF\x55\xB4")
+    else:
+        b.emit(b"\xFF\x15")
+        b.u32(iat_va("__d64_loader_ExitProcess"))
     b.emit(b"\xCC")
+    # Raw, scan-friendly loader identity. It is intentionally outside D64Z.
+    b.emit(_d64l_info_block(compatibility_values))
     return b.finish()
 
 
@@ -21649,7 +22889,7 @@ def build_pe32_image_with_imports_exports(
 ) -> Tuple[bytes, bytes]:
     """Stage-169-Wrapper: vollständigen Stage-167-PE32-Writer optional packen."""
     if compress_text_mszip is None:
-        compress_text_mszip = PE32_TEXT_COMPRESSION_MSZIP_DEFAULT
+        compress_text_mszip = _pe_packing_enabled("pe32")
 
     pack_text = (
         bool(compress_text_mszip)
@@ -22396,8 +23636,18 @@ def link_coff32_objects(
         )
 
     text_rva = PE32_SECTION_RVA
+    # Stage 225: Die BSS-Relocations muessen gegen exakt dasselbe virtuelle
+    # Layout gerechnet werden, das der spaetere Writer wirklich ausgibt.
+    # Stage 223 hatte hier allein aus aktivierter MSZIP-Kompression auf das
+    # Stage-209/D64I-Layout geschlossen. Wenn der Import-Packer im Projekt
+    # deaktiviert war, schrieb der Stage-169-Basispfad .bss jedoch direkt
+    # hinter .text. Dadurch zeigten alle absoluten BSS-Referenzen auf eine
+    # spaetere, nicht gemappte RVA (bei Form1 z.B. geplant ~0x8000, real
+    # 0x3000) und der erste Handle-Store konnte vor FormOpen abstuerzen.
+    _pe32_link_packer = _pe_import_packer_settings("pe32")
     packed_layout = bool(
-        PE32_TEXT_COMPRESSION_MSZIP_DEFAULT
+        _pe_packing_enabled("pe32")
+        and bool(_pe32_link_packer.get("enabled", True))
         and not effective_dll
         and code
     )
@@ -23098,12 +24348,16 @@ def _encode_pe64_instruction(text: str, line: int, offset: int, *, relocs: Optio
         if value is None or not 0<=value<=0xFFFF: raise PE64AssemblerError("RET erwartet eine 16-Bit-Stackweite.",line)
         return b"\xC2"+struct.pack("<H",value)
     # Minimal x87/SSE2 subset used by the native PROLOG Double runtime.
-    if mnemonic in {"fld","fild","fstp"} and len(ops)==1:
+    if mnemonic in {"fld","fild","fstp","fistp"} and len(ops)==1:
         op=ops[0].strip()
         if mnemonic=="fstp" and op.casefold()=="st0": return b"\xDD\xD8"
         mem=_x64_memory_operand(op,line)
         if mem is not None:
-            if mnemonic=="fild":
+            if mnemonic=="fistp":
+                if mem["size"] not in {"dword","qword"}: raise PE64AssemblerError("FISTP erwartet DWORD/QWORD-Speicher.",line)
+                opcode=b"\xDB" if mem["size"]=="dword" else b"\xDF"
+                group=3 if mem["size"]=="dword" else 7
+            elif mnemonic=="fild":
                 if mem["size"] not in {"dword","qword"}: raise PE64AssemblerError("FILD erwartet DWORD/QWORD-Speicher.",line)
                 opcode=b"\xDB" if mem["size"]=="dword" else b"\xDF"
                 group=0 if mem["size"]=="dword" else 5
@@ -23114,12 +24368,19 @@ def _encode_pe64_instruction(text: str, line: int, offset: int, *, relocs: Optio
                 if mem["size"]!="qword": raise PE64AssemblerError("FSTP erwartet QWORD-Speicher für Double.",line)
                 opcode=b"\xDD"; group=3
             _x64_append_rm(out,opcode,group,op,line,relocs=relocs,base_offset=offset); return bytes(out)
+    if mnemonic in {"fnstcw","fldcw"} and len(ops)==1:
+        mem=_x64_memory_operand(ops[0],line)
+        if mem is None or mem["size"]!="word":
+            raise PE64AssemblerError(f"{mnemonic.upper()} erwartet WORD-Speicher.",line)
+        _x64_append_rm(out,b"\xD9",7 if mnemonic=="fnstcw" else 5,ops[0],line,relocs=relocs,base_offset=offset)
+        return bytes(out)
     if mnemonic=="faddp": return b"\xDE\xC1"
     if mnemonic=="fmulp": return b"\xDE\xC9"
     if mnemonic=="fsubp": return b"\xDE\xE9"
     if mnemonic=="fdivp": return b"\xDE\xF9"
     if mnemonic=="fchs": return b"\xD9\xE0"
     if mnemonic=="fldz": return b"\xD9\xEE"
+    if mnemonic=="frndint": return b"\xD9\xFC"
     if mnemonic=="fucomip":
         if ops and [x.casefold().replace(" ","") for x in ops] != ["st0","st1"]: raise PE64AssemblerError("FUCOMIP unterstützt nur ST0, ST1.",line)
         return b"\xDF\xE9"
@@ -24160,25 +25421,33 @@ def build_pe64_image_with_imports_exports(
     headers_unaligned = dos_size + 4 + 20 + optional_size + 40 * len(sections)
     headers_size = _align_up(headers_unaligned, PE64_FILE_ALIGNMENT)
 
-    raw_ptr = headers_size
     layout = []
     code_size = 0
     initialized_size = 0
-    for sec in sections:
+    _layout_order = _pe_import_packer_settings("pe64").get(
+        "layout_order", PE_IMAGE_LAYOUT_DEFAULT
+    )
+    for _index, sec in enumerate(sections):
         if sec["raw"] and sec["data"]:
             raw_size = _align_up(len(sec["data"]), PE64_FILE_ALIGNMENT)
-            rptr = raw_ptr
-            raw_ptr += raw_size
         else:
             raw_size = 0
-            rptr = 0
         item = dict(sec)
-        item.update(raw_ptr=rptr, raw_size=raw_size)
+        item.update(raw_ptr=0, raw_size=raw_size, _physical_index=_index)
         layout.append(item)
         if sec["name"].startswith(b".text"):
             code_size += raw_size
         elif sec["raw"]:
             initialized_size += raw_size
+    raw_ptr = headers_size
+    for item in sorted(
+        (entry for entry in layout if int(entry["raw_size"]) > 0),
+        key=lambda entry: _pe_physical_layout_sort_key(
+            entry["name"], _layout_order, entry["_physical_index"]
+        ),
+    ):
+        item["raw_ptr"] = raw_ptr
+        raw_ptr += int(item["raw_size"])
 
     image_size = _align_up(next_rva, PE64_SECTION_ALIGNMENT)
 
@@ -24263,6 +25532,7 @@ class _PE64LoaderBuilder:
         self.labels: Dict[str, int] = {}
         self.local_fixups: List[Tuple[int, str]] = []
         self.rva_fixups: List[Tuple[int, int]] = []
+        self.local_rip_fixups: List[Tuple[int, str]] = []
 
     def emit(self, data: bytes) -> None:
         self.code.extend(data)
@@ -24284,6 +25554,27 @@ class _PE64LoaderBuilder:
         pos = len(self.code)
         self.code.extend(b"\x00\x00\x00\x00")
         self.local_fixups.append((pos, str(label)))
+
+    def jmp(self, label: str) -> None:
+        self.code.extend(b"\xE9")
+        pos = len(self.code)
+        self.code.extend(b"\x00\x00\x00\x00")
+        self.local_fixups.append((pos, str(label)))
+
+    def call(self, label: str) -> None:
+        self.code.extend(b"\xE8")
+        pos = len(self.code)
+        self.code.extend(b"\x00\x00\x00\x00")
+        self.local_fixups.append((pos, str(label)))
+
+    def local_rip32(self, prefix: bytes, label: str) -> None:
+        self.code.extend(prefix)
+        pos = len(self.code)
+        self.code.extend(b"\x00\x00\x00\x00")
+        self.local_rip_fixups.append((pos, str(label)))
+
+    def call_local_ptr(self, label: str) -> None:
+        self.local_rip32(b"\xFF\x15", label)
 
     def rip32(self, prefix: bytes, target_rva: int) -> None:
         self.code.extend(prefix)
@@ -24314,7 +25605,171 @@ class _PE64LoaderBuilder:
                     "PE64-Loader: RIP-relatives Ziel außerhalb des 32-Bit-Bereichs."
                 )
             struct.pack_into("<i", self.code, pos, disp)
+        for pos, label in self.local_rip_fixups:
+            if label not in self.labels:
+                raise PE64AssemblerError(f"PE64-Loaderdatenlabel fehlt: {label}")
+            disp = self.labels[label] - (pos + 4)
+            if not -(1 << 31) <= disp < (1 << 31):
+                raise PE64AssemblerError("PE64-Loader: lokales RIP-Ziel außerhalb REL32.")
+            struct.pack_into("<i", self.code, pos, disp)
         return bytes(self.code)
+
+
+
+def _emit_pe64_peb_support_prefix(
+    b: _PE64LoaderBuilder, *, exact_runtime: bool = False
+) -> None:
+    b.jmp("peb_main")
+    b.label("peb_resolve_export")
+    # RCX=module base, RDX=ASCII export name. Uses volatile regs only.
+    b.emit(b"\x49\x89\xCA\x49\x89\xD3")
+    b.emit(b"\x41\x8B\x42\x3C\x4C\x01\xD0")
+    b.emit(b"\x8B\x80\x88\x00\x00\x00\x85\xC0")
+    b.jcc(0x84, "peb64_rex_fail")
+    b.emit(b"\x4C\x01\xD0\x8B\x48\x18\x8B\x50\x20\x4C\x01\xD2")
+    b.label("peb64_rex_loop")
+    b.emit(b"\x85\xC9")
+    b.jcc(0x84, "peb64_rex_fail")
+    b.emit(b"\xFF\xC9\x8B\x04\x8A\x4C\x01\xD0\x49\x89\xC0\x4D\x89\xD9")
+    b.label("peb64_rex_cmp")
+    b.emit(b"\x41\x8A\x00\x41\x3A\x01")
+    b.jcc(0x85, "peb64_rex_loop")
+    b.emit(b"\x84\xC0")
+    b.jcc(0x84, "peb64_rex_match")
+    b.emit(b"\x49\xFF\xC0\x49\xFF\xC1")
+    b.jmp("peb64_rex_cmp")
+    b.label("peb64_rex_match")
+    b.emit(b"\x41\x8B\x42\x3C\x4C\x01\xD0")
+    b.emit(b"\x8B\x80\x88\x00\x00\x00\x4C\x01\xD0")
+    b.emit(b"\x8B\x50\x24\x4C\x01\xD2\x0F\xB7\x0C\x4A")
+    b.emit(b"\x8B\x50\x1C\x4C\x01\xD2\x8B\x04\x8A\x4C\x01\xD0\xC3")
+    b.label("peb64_rex_fail")
+    b.emit(b"\x31\xC0\xC3")
+
+    for text in _PEB_BOOTSTRAP_STRINGS + (
+        _PEB_EXACT_RUNTIME_STRINGS if exact_runtime else ()
+    ):
+        b.label(_peb_label_for_string(text))
+        b.emit(text.encode("ascii") + b"\0")
+    slots = [
+        "LoadLibraryA", "GetProcAddress", "VirtualProtect",
+        "FlushInstructionCache", "ExitProcess", "CreateDecompressor",
+        "Decompress", "CloseDecompressor",
+    ]
+    if exact_runtime:
+        slots.extend([
+            "GetModuleFileNameA", "CreateFileA", "ReadFile", "CloseHandle",
+            "CryptAcquireContextA", "CryptCreateHash", "CryptHashData",
+            "CryptGetHashParam", "CryptDestroyHash", "CryptReleaseContext",
+        ])
+    for slot in slots:
+        b.label("peb_slot_" + slot)
+        b.emit(b"\0" * 8)
+    b.label("peb_main")
+
+
+def _emit_pe64_peb_bootstrap(
+    b: _PE64LoaderBuilder, *, exact_runtime: bool = False
+) -> None:
+    # r12 = ntdll base, r13 = kernel32 base, r14 = LdrGetProcedureAddress.
+    b.emit(b"\x45\x31\xE4\x45\x31\xED")
+    b.emit(b"\x65\x48\x8B\x04\x25\x60\x00\x00\x00")
+    b.emit(b"\x48\x8B\x40\x18\x48\x8D\x50\x20\x48\x8B\x32")
+    b.label("peb64_module_loop")
+    b.emit(b"\x48\x39\xD6")
+    b.jcc(0x84, "peb64_early_fail")
+    b.emit(b"\x48\x8B\x7E\x58\x48\x85\xFF")
+    b.jcc(0x84, "peb64_module_next")
+    b.emit(b"\x8B\x07\x0D\x20\x00\x20\x00\x3D\x6E\x00\x74\x00")
+    b.jcc(0x85, "peb64_check_kernel")
+    b.emit(b"\x8B\x47\x04\x0D\x20\x00\x20\x00\x3D\x64\x00\x6C\x00")
+    b.jcc(0x85, "peb64_check_kernel")
+    b.emit(b"\x4C\x8B\x66\x20")
+    b.label("peb64_check_kernel")
+    b.emit(b"\x8B\x07\x0D\x20\x00\x20\x00\x3D\x6B\x00\x65\x00")
+    b.jcc(0x85, "peb64_module_have")
+    b.emit(b"\x8B\x47\x04\x0D\x20\x00\x20\x00\x3D\x72\x00\x6E\x00")
+    b.jcc(0x85, "peb64_module_have")
+    b.emit(b"\x4C\x8B\x6E\x20")
+    b.label("peb64_module_have")
+    b.emit(b"\x4D\x85\xE4")
+    b.jcc(0x84, "peb64_module_next")
+    b.emit(b"\x4D\x85\xED")
+    b.jcc(0x85, "peb64_modules_done")
+    b.label("peb64_module_next")
+    b.emit(b"\x48\x8B\x36")
+    b.jmp("peb64_module_loop")
+    b.label("peb64_modules_done")
+
+    # LdrGetProcedureAddress from NTDLL export table.
+    b.emit(b"\x4C\x89\xE1")
+    b.local_rip32(b"\x48\x8D\x15", _peb_label_for_string("LdrGetProcedureAddress"))
+    b.call("peb_resolve_export")
+    b.emit(b"\x48\x85\xC0")
+    b.jcc(0x84, "peb64_early_fail")
+    b.emit(b"\x49\x89\xC6")
+
+    def ldr_get(name: str, slot: str) -> None:
+        encoded = name.encode("ascii")
+        # ANSI_STRING at [rbp-70h], safely above the 32-byte shadow area.
+        b.emit(b"\x66\xC7\x45\x90")
+        b.emit(struct.pack("<H", len(encoded)))
+        b.emit(b"\x66\xC7\x45\x92")
+        b.emit(struct.pack("<H", len(encoded) + 1))
+        b.local_rip32(b"\x48\x8D\x05", _peb_label_for_string(name))
+        b.emit(b"\x48\x89\x45\x98")
+        b.emit(b"\x4C\x89\xE9\x48\x8D\x55\x90\x45\x31\xC0")
+        b.local_rip32(b"\x4C\x8D\x0D", "peb_slot_" + slot)
+        b.emit(b"\x41\xFF\xD6\x85\xC0")
+        b.jcc(0x88, "peb64_early_fail")
+
+    ldr_get("LoadLibraryA", "LoadLibraryA")
+    ldr_get("GetProcAddress", "GetProcAddress")
+
+    def getproc(module_reg_prefix: bytes, name: str, slot: str) -> None:
+        b.emit(module_reg_prefix)
+        b.local_rip32(b"\x48\x8D\x15", _peb_label_for_string(name))
+        b.call_local_ptr("peb_slot_GetProcAddress")
+        b.emit(b"\x48\x85\xC0")
+        b.jcc(0x84, "peb64_early_fail")
+        b.local_rip32(b"\x48\x89\x05", "peb_slot_" + slot)
+
+    # mov rcx,r13
+    getproc(b"\x4C\x89\xE9", "VirtualProtect", "VirtualProtect")
+    getproc(b"\x4C\x89\xE9", "FlushInstructionCache", "FlushInstructionCache")
+    getproc(b"\x4C\x89\xE9", "ExitProcess", "ExitProcess")
+
+    # cabinet = LoadLibraryA("cabinet.dll"), keep module in RBX.
+    b.local_rip32(b"\x48\x8D\x0D", _peb_label_for_string("cabinet.dll"))
+    b.call_local_ptr("peb_slot_LoadLibraryA")
+    b.emit(b"\x48\x85\xC0")
+    b.jcc(0x84, "peb64_early_fail")
+    b.emit(b"\x48\x89\xC3")
+    getproc(b"\x48\x89\xD9", "CreateDecompressor", "CreateDecompressor")
+    getproc(b"\x48\x89\xD9", "Decompress", "Decompress")
+    getproc(b"\x48\x89\xD9", "CloseDecompressor", "CloseDecompressor")
+
+    if exact_runtime:
+        getproc(b"\x4C\x89\xE9", "GetModuleFileNameA", "GetModuleFileNameA")
+        getproc(b"\x4C\x89\xE9", "CreateFileA", "CreateFileA")
+        getproc(b"\x4C\x89\xE9", "ReadFile", "ReadFile")
+        getproc(b"\x4C\x89\xE9", "CloseHandle", "CloseHandle")
+        b.local_rip32(b"\x48\x8D\x0D", _peb_label_for_string("advapi32.dll"))
+        b.call_local_ptr("peb_slot_LoadLibraryA")
+        b.emit(b"\x48\x85\xC0")
+        b.jcc(0x84, "peb64_early_fail")
+        b.emit(b"\x48\x89\xC3")
+        getproc(b"\x48\x89\xD9", "CryptAcquireContextA", "CryptAcquireContextA")
+        getproc(b"\x48\x89\xD9", "CryptCreateHash", "CryptCreateHash")
+        getproc(b"\x48\x89\xD9", "CryptHashData", "CryptHashData")
+        getproc(b"\x48\x89\xD9", "CryptGetHashParam", "CryptGetHashParam")
+        getproc(b"\x48\x89\xD9", "CryptDestroyHash", "CryptDestroyHash")
+        getproc(b"\x48\x89\xD9", "CryptReleaseContext", "CryptReleaseContext")
+
+    b.jmp("peb64_bootstrap_done")
+    b.label("peb64_early_fail")
+    b.emit(b"\xCC\xEB\xFD")
+    b.label("peb64_bootstrap_done")
 
 
 def _build_pe64_mszip_loader(
@@ -24326,8 +25781,19 @@ def _build_pe64_mszip_loader(
     packed_size: int,
     original_entry_rva: int,
     iat_rvas: Dict[str, int],
+    d64i_rva: int = 0,
+    image_base: int = PE64_IMAGE_BASE,
+    peb_resolver: bool = False,
+    compatibility: Optional[Dict[str, object]] = None,
 ) -> bytes:
-    missing = [name for name in PE64_MSZIP_LOADER_IMPORTS if name not in iat_rvas]
+    compatibility_values = dict(compatibility or _pe_import_packer_settings("pe64"))
+    exact_runtime = bool(compatibility_values.get("exact_runtime_check", False))
+    required = (() if bool(peb_resolver) else (
+        _pe_d64i_bootstrap_imports(exact_runtime)
+        if int(d64i_rva)
+        else PE64_MSZIP_LOADER_IMPORTS
+    ))
+    missing = [name for name in required if name not in iat_rvas]
     if missing:
         raise PE64AssemblerError(
             "PE32+-MSZIP-Loader: IAT-Einträge fehlen: " + ", ".join(missing)
@@ -24341,29 +25807,52 @@ def _build_pe64_mszip_loader(
         raise PE64AssemblerError("PE32+-MSZIP-Loader: .text/.ztext ist größer als 4 GiB.")
 
     packed_rva = int(ztext_rva) + PE32_D64Z_HEADER_SIZE
+    d64i_magic = struct.unpack("<I", PE_D64I_MAGIC)[0]
     b = _PE64LoaderBuilder(loader_rva)
+    if peb_resolver:
+        _emit_pe64_peb_support_prefix(b, exact_runtime=exact_runtime)
+
+    def call_api(symbol: str) -> None:
+        if peb_resolver:
+            api_name = str(symbol).replace("__d64_loader_", "")
+            b.call_local_ptr("peb_slot_" + api_name)
+        else:
+            b.call_iat(iat_rvas[symbol])
 
     # Win64 ABI: 32 Byte Shadow Space, Argumente 1..4 in RCX/RDX/R8/R9.
-    # Lokale Variablen: handle, oldProtect, written, tempProtect.
-    b.emit(b"\x55\x48\x89\xE5\x48\x83\xEC\x60")
+    # Stage 209 reserves additional locals for the D64I import resolver and
+    # preserves RBX/RSI/RDI, which are non-volatile in the Windows x64 ABI.
+    if peb_resolver:
+        # Preserve R12-R15 used by the PEB bootstrap. Four pushes keep the
+        # existing Win64 stack alignment unchanged.
+        b.emit(b"\x41\x54\x41\x55\x41\x56\x41\x57")
+    # Stage 213 reserves [rbp-A0] for per-DLL name-fallback state.
+    # Stage 219 reserves a larger frame only when Exact Runtime needs path and
+    # streaming hash buffers.
+    b.emit(b"\x55\x48\x89\xE5\x48\x81\xEC")
+    b.u32(0x640 if exact_runtime else 0xB0)
+    b.emit(b"\x48\x89\x5D\xB8\x48\x89\x75\xB0\x48\x89\x7D\xA8")
+    if peb_resolver:
+        _emit_pe64_peb_bootstrap(b, exact_runtime=exact_runtime)
 
     # CreateDecompressor(MSZIP, NULL, &handle)
     b.emit(b"\xB9")
     b.u32(PE32_COMPRESS_ALGORITHM_MSZIP)
     b.emit(b"\x31\xD2")
     b.emit(b"\x4C\x8D\x45\xF8")
-    b.call_iat(iat_rvas["__d64_loader_CreateDecompressor"])
+    call_api("__d64_loader_CreateDecompressor")
     b.emit(b"\x85\xC0")
     b.jcc(0x84, "fail")
 
-    # VirtualProtect(.text, text_size, PAGE_EXECUTE_READWRITE, &oldProtect)
+    # VirtualProtect(.text, full decompressed D64Z image,
+    # PAGE_EXECUTE_READWRITE, &oldProtect)
     b.rip32(b"\x48\x8D\x0D", text_rva)
     b.emit(b"\xBA")
     b.u32(text_size)
     b.emit(b"\x41\xB8")
     b.u32(0x40)
     b.emit(b"\x4C\x8D\x4D\xF0")
-    b.call_iat(iat_rvas["__d64_loader_VirtualProtect"])
+    call_api("__d64_loader_VirtualProtect")
     b.emit(b"\x85\xC0")
     b.jcc(0x84, "fail")
 
@@ -24378,7 +25867,7 @@ def _build_pe64_mszip_loader(
     b.emit(b"\x48\x89\x44\x24\x20")
     b.emit(b"\x48\x8D\x45\xE8")
     b.emit(b"\x48\x89\x44\x24\x28")
-    b.call_iat(iat_rvas["__d64_loader_Decompress"])
+    call_api("__d64_loader_Decompress")
     b.emit(b"\x85\xC0")
     b.jcc(0x84, "fail")
 
@@ -24390,32 +25879,273 @@ def _build_pe64_mszip_loader(
 
     # CloseDecompressor(handle)
     b.emit(b"\x48\x8B\x4D\xF8")
-    b.call_iat(iat_rvas["__d64_loader_CloseDecompressor"])
+    call_api("__d64_loader_CloseDecompressor")
 
-    # FlushInstructionCache((HANDLE)-1, .text, text_size)
+    if int(d64i_rva):
+        # RSI = D64I v3 metadata (inside decompressed .text scratch tail).
+        b.rip32(b"\x48\x8D\x35", int(d64i_rva))
+
+        b.emit(b"\x81\x3E")
+        b.u32(d64i_magic)
+        b.jcc(0x85, "fail")
+        b.emit(b"\x66\x83\x7E\x04")
+        b.emit(bytes((PE_D64I_VERSION & 0xFF,)))
+        b.jcc(0x85, "fail")
+        b.emit(b"\x66\x83\x7E\x06\x08")
+        b.jcc(0x85, "fail")
+
+        # dllRemaining = header.dllCount; first DLL record after 32-byte header.
+        b.emit(b"\x8B\x46\x08\x48\x89\x45\xD0")
+        b.emit(b"\x48\x8D\x7E" + bytes((PE_D64I_HEADER.size & 0xFF,)))
+
+        b.label("d64i_dll_loop")
+        b.emit(b"\x48\x83\x7D\xD0\x00")
+        b.jcc(0x84, "d64i_done")
+
+        b.emit(b"\x8B\x07\x48\x01\xF0\x48\x89\xC1")
+        call_api("__d64_loader_LoadLibraryA")
+        b.emit(b"\x48\x85\xC0")
+        b.jcc(0x84, "fail")
+        b.emit(b"\x48\x89\x45\xD8")
+        b.emit(b"\x48\xC7\x85\x60\xFF\xFF\xFF\x00\x00\x00\x00")  # [rbp-A0]=0
+
+        if exact_runtime:
+            # Stage 219 Exact Runtime: SHA-256 over the complete DLL file.
+            b.emit(b"\xF7\x47\x0C")
+            b.u32(PE_D64I_DLL_CHECK_EXACT)
+            b.jcc(0x84, "d64i_exact_done")
+    
+            # GetModuleFileNameA(module, path[520], 520)
+            b.emit(b"\x48\x8B\x4D\xD8")
+            b.emit(b"\x48\x8D\x95" + struct.pack("<i", -0x600))
+            b.emit(b"\x41\xB8")
+            b.u32(520)
+            call_api("__d64_loader_GetModuleFileNameA")
+            b.emit(b"\x85\xC0")
+            b.jcc(0x84, "fail")
+            b.emit(b"\x3D")
+            b.u32(520)
+            b.jcc(0x83, "fail")
+    
+            # CreateFileA(path, GENERIC_READ, 7, NULL, OPEN_EXISTING, NORMAL, NULL)
+            b.emit(b"\x48\x8D\x8D" + struct.pack("<i", -0x600))
+            b.emit(b"\xBA")
+            b.u32(0x80000000)
+            b.emit(b"\x41\xB8")
+            b.u32(7)
+            b.emit(b"\x45\x31\xC9")
+            b.emit(b"\x48\xC7\x44\x24\x20\x03\x00\x00\x00")
+            b.emit(b"\x48\xC7\x44\x24\x28\x80\x00\x00\x00")
+            b.emit(b"\x48\xC7\x44\x24\x30\x00\x00\x00\x00")
+            call_api("__d64_loader_CreateFileA")
+            b.emit(b"\x48\x83\xF8\xFF")
+            b.jcc(0x84, "fail")
+            b.emit(b"\x48\x89\x85" + struct.pack("<i", -0x190))
+    
+            # CryptAcquireContextA(&provider, NULL, NULL, PROV_RSA_AES, VERIFYCONTEXT)
+            for disp in (-0x188, -0x180):
+                b.emit(b"\x48\xC7\x85" + struct.pack("<i", disp) + b"\x00\x00\x00\x00")
+            b.emit(b"\x48\x8D\x8D" + struct.pack("<i", -0x188))
+            b.emit(b"\x31\xD2\x45\x31\xC0\x41\xB9")
+            b.u32(24)
+            b.emit(b"\x48\xC7\x44\x24\x20\x00\x00\x00\xF0")
+            call_api("__d64_loader_CryptAcquireContextA")
+            b.emit(b"\x85\xC0")
+            b.jcc(0x84, "fail")
+    
+            # CryptCreateHash(provider, CALG_SHA_256, 0, 0, &hash)
+            b.emit(b"\x48\x8B\x8D" + struct.pack("<i", -0x188))
+            b.emit(b"\xBA")
+            b.u32(0x0000800C)
+            b.emit(b"\x45\x31\xC0\x45\x31\xC9")
+            b.emit(b"\x48\x8D\x85" + struct.pack("<i", -0x180))
+            b.emit(b"\x48\x89\x44\x24\x20")
+            call_api("__d64_loader_CryptCreateHash")
+            b.emit(b"\x85\xC0")
+            b.jcc(0x84, "fail")
+    
+            b.label("d64i_exact_read")
+            b.emit(b"\x48\x8B\x8D" + struct.pack("<i", -0x190))
+            b.emit(b"\x48\x8D\x95" + struct.pack("<i", -0x3E0))
+            b.emit(b"\x41\xB8")
+            b.u32(512)
+            b.emit(b"\x4C\x8D\x8D" + struct.pack("<i", -0x174))
+            b.emit(b"\x48\xC7\x44\x24\x20\x00\x00\x00\x00")
+            call_api("__d64_loader_ReadFile")
+            b.emit(b"\x85\xC0")
+            b.jcc(0x84, "fail")
+            b.emit(b"\x8B\x85" + struct.pack("<i", -0x174) + b"\x85\xC0")
+            b.jcc(0x84, "d64i_exact_eof")
+    
+            b.emit(b"\x48\x8B\x8D" + struct.pack("<i", -0x180))
+            b.emit(b"\x48\x8D\x95" + struct.pack("<i", -0x3E0))
+            b.emit(b"\x41\x89\xC0\x45\x31\xC9")
+            call_api("__d64_loader_CryptHashData")
+            b.emit(b"\x85\xC0")
+            b.jcc(0x84, "fail")
+            b.jmp("d64i_exact_read")
+    
+            b.label("d64i_exact_eof")
+            b.emit(b"\x48\x8B\x8D" + struct.pack("<i", -0x190))
+            call_api("__d64_loader_CloseHandle")
+    
+            b.emit(b"\xC7\x85" + struct.pack("<i", -0x170))
+            b.u32(32)
+            b.emit(b"\x48\x8B\x8D" + struct.pack("<i", -0x180))
+            b.emit(b"\xBA\x02\x00\x00\x00")
+            b.emit(b"\x4C\x8D\x85" + struct.pack("<i", -0x1C0))
+            b.emit(b"\x4C\x8D\x8D" + struct.pack("<i", -0x170))
+            b.emit(b"\x48\xC7\x44\x24\x20\x00\x00\x00\x00")
+            call_api("__d64_loader_CryptGetHashParam")
+            b.emit(b"\x85\xC0")
+            b.jcc(0x84, "fail")
+    
+            b.emit(b"\x48\x8B\x8D" + struct.pack("<i", -0x180))
+            call_api("__d64_loader_CryptDestroyHash")
+            b.emit(b"\x48\x8B\x8D" + struct.pack("<i", -0x188) + b"\x31\xD2")
+            call_api("__d64_loader_CryptReleaseContext")
+    
+            for offset in range(0, 32, 4):
+                b.emit(b"\x8B\x85" + struct.pack("<i", -0x1C0 + offset))
+                b.emit(b"\x3B\x47" + bytes((60 + offset,)))
+                b.jcc(0x85, "fail")
+            b.label("d64i_exact_done")
+
+        # Query D64GetRuntimeAbiInfo by NAME when this record requests a
+        # runtime-version and/or ordinal-map hash check.
+        b.emit(b"\xF7\x47\x0C")
+        b.u32(PE_D64I_DLL_CHECK_RUNTIME | PE_D64I_DLL_CHECK_HASH)
+        b.jcc(0x84, "d64i_compat_done")
+        b.emit(b"\x8B\x57\x18\x85\xD2")
+        b.jcc(0x84, "d64i_compat_mismatch")
+        b.emit(b"\x48\x8D\x14\x16\x48\x8B\x4D\xD8")
+        call_api("__d64_loader_GetProcAddress")
+        b.emit(b"\x48\x85\xC0")
+        b.jcc(0x84, "d64i_compat_mismatch")
+        b.emit(b"\xFF\xD0\x48\x85\xC0")
+        b.jcc(0x84, "d64i_compat_mismatch")
+        b.emit(b"\x83\x38" + bytes((PE_D64_RUNTIME_ABI_INFO_SIZE & 0xFF,)))
+        b.jcc(0x82, "d64i_compat_mismatch")
+
+        # Compare the runtime's stable name with the DLL name recorded in D64I.
+        b.emit(b"\x48\x89\x85\x58\xFF\xFF\xFF")  # [rbp-A8] = ABI info
+        b.emit(b"\x4C\x8D\x40\x30")  # r8 = &runtimeName[0]
+        b.emit(b"\x44\x8B\x0F\x49\x01\xF1")  # r9 = metadata + dllNameOffset
+        b.label("d64i_runtime_name_loop")
+        b.emit(b"\x41\x8A\x00\x41\x3A\x01")
+        b.jcc(0x85, "d64i_compat_mismatch")
+        b.emit(b"\x84\xC0")
+        b.jcc(0x84, "d64i_runtime_name_ok")
+        b.emit(b"\x49\xFF\xC0\x49\xFF\xC1")
+        b.jmp("d64i_runtime_name_loop")
+        b.label("d64i_runtime_name_ok")
+        b.emit(b"\x48\x8B\x85\x58\xFF\xFF\xFF")
+
+        b.emit(b"\xF7\x47\x0C")
+        b.u32(PE_D64I_DLL_CHECK_RUNTIME)
+        b.jcc(0x84, "d64i_compat_hash")
+        b.emit(b"\x0F\xB7\x48\x04\x66\x3B\x4F\x10")
+        b.jcc(0x85, "d64i_compat_mismatch")
+        b.emit(b"\x0F\xB7\x48\x06\x66\x3B\x4F\x12")
+        b.jcc(0x82, "d64i_compat_mismatch")
+        b.emit(b"\x8B\x48\x08\x3B\x4F\x14")
+        b.jcc(0x85, "d64i_compat_mismatch")
+        b.emit(b"\x8B\x48\x0C\x81\xF9")
+        b.u32(PE_D64_LOADER_VERSION_PACKED)
+        b.jcc(0x87, "d64i_compat_mismatch")
+
+        b.label("d64i_compat_hash")
+        b.emit(b"\xF7\x47\x0C")
+        b.u32(PE_D64I_DLL_CHECK_HASH)
+        b.jcc(0x84, "d64i_compat_done")
+        for offset in range(0, 32, 4):
+            b.emit(b"\x8B\x48" + bytes((16 + offset,)))
+            b.emit(b"\x3B\x4F" + bytes((28 + offset,)))
+            b.jcc(0x85, "d64i_compat_mismatch")
+        b.jmp("d64i_compat_done")
+
+        b.label("d64i_compat_mismatch")
+        b.emit(b"\xF7\x47\x0C")
+        b.u32(PE_D64I_DLL_FALLBACK_NAME)
+        b.jcc(0x84, "fail")
+        b.emit(b"\x48\xC7\x85\x60\xFF\xFF\xFF\x01\x00\x00\x00")
+        b.label("d64i_compat_done")
+
+        b.emit(b"\x8B\x47\x04\x48\x01\xF0\x48\x89\x45\xC0")
+        b.emit(b"\x8B\x47\x08\x48\x89\x45\xC8")
+
+        b.label("d64i_import_loop")
+        b.emit(b"\x48\x83\x7D\xC8\x00")
+        b.jcc(0x84, "d64i_next_dll")
+
+        b.emit(b"\x48\x8B\x5D\xC0\x8B\x53\x04")
+        b.emit(b"\xF7\xC2")
+        b.u32(PE_D64I_ORDINAL_FLAG)
+        b.jcc(0x84, "d64i_name")
+        # Name fallback after ABI/map mismatch.
+        b.emit(b"\x48\x83\xBD\x60\xFF\xFF\xFF\x00")
+        b.jcc(0x84, "d64i_ordinal")
+        b.emit(b"\x8B\x53\x08\x85\xD2")
+        b.jcc(0x84, "fail")
+        b.emit(b"\x48\x8D\x14\x16")
+        b.jmp("d64i_getproc")
+
+        b.label("d64i_ordinal")
+        b.emit(b"\x81\xE2\xFF\xFF\x00\x00")
+        b.jmp("d64i_getproc")
+
+        b.label("d64i_name")
+        b.emit(b"\x48\x8D\x14\x16")
+
+        b.label("d64i_getproc")
+        b.emit(b"\x48\x8B\x4D\xD8")
+        call_api("__d64_loader_GetProcAddress")
+        b.emit(b"\x48\x85\xC0")
+        b.jcc(0x84, "fail")
+
+        b.emit(b"\x48\x8B\x5D\xC0\x8B\x13")
+        b.emit(b"\x49\xBA")
+        b.u64(int(image_base))
+        b.emit(b"\x4C\x01\xD2\x48\x89\x02")
+
+        b.emit(b"\x48\x83\xC3" + bytes((PE_D64I_IMPORT_RECORD.size & 0xFF,)) + b"\x48\x89\x5D\xC0")
+        b.emit(b"\x48\xFF\x4D\xC8")
+        b.jmp("d64i_import_loop")
+
+        b.label("d64i_next_dll")
+        b.emit(b"\x48\x83\xC7" + bytes((PE_D64I_DLL_RECORD.size & 0xFF,)) + b"\x48\xFF\x4D\xD0")
+        b.jmp("d64i_dll_loop")
+
+        b.label("d64i_done")
+
+    # FlushInstructionCache((HANDLE)-1, .text, full decompressed size)
     b.emit(b"\x48\xC7\xC1\xFF\xFF\xFF\xFF")
     b.rip32(b"\x48\x8D\x15", text_rva)
     b.emit(b"\x49\xB8")
     b.u64(text_size)
-    b.call_iat(iat_rvas["__d64_loader_FlushInstructionCache"])
+    call_api("__d64_loader_FlushInstructionCache")
 
-    # Seitenschutz wiederherstellen.
+    # Restore original page protection.
     b.rip32(b"\x48\x8D\x0D", text_rva)
     b.emit(b"\x48\xBA")
     b.u64(text_size)
     b.emit(b"\x44\x8B\x45\xF0")
     b.emit(b"\x4C\x8D\x4D\xE0")
-    b.call_iat(iat_rvas["__d64_loader_VirtualProtect"])
+    call_api("__d64_loader_VirtualProtect")
 
-    # Originalen Stack restaurieren und OEP per REL32 anspringen.
+    # Restore non-volatile registers, stack and jump to original entrypoint.
+    b.emit(b"\x48\x8B\x5D\xB8\x48\x8B\x75\xB0\x48\x8B\x7D\xA8")
     b.emit(b"\x48\x89\xEC\x5D")
+    if peb_resolver:
+        b.emit(b"\x41\x5F\x41\x5E\x41\x5D\x41\x5C")
     b.jmp_rva(original_entry_rva)
 
     b.label("fail")
     b.emit(b"\xB9")
     b.u32(0xD6400002)
-    b.call_iat(iat_rvas["__d64_loader_ExitProcess"])
+    call_api("__d64_loader_ExitProcess")
     b.emit(b"\xCC")
+    b.emit(_d64l_info_block(compatibility_values))
     return b.finish()
 
 
@@ -24634,7 +26364,7 @@ def build_pe64_image_with_imports_exports(
 ):
     """Stage-169-Wrapper: vollständigen Stage-167-PE32+-Writer optional packen."""
     if compress_text_mszip is None:
-        compress_text_mszip = PE64_TEXT_COMPRESSION_MSZIP_DEFAULT
+        compress_text_mszip = _pe_packing_enabled("pe64")
 
     pack_text = (
         bool(compress_text_mszip)
@@ -24943,7 +26673,13 @@ def _build_pe_import_section_stage170(
     *,
     pointer_size: int,
 ) -> Tuple[bytes, Dict[str, int], int, int]:
-    """Gemeinsamer PE32/PE32+-Importbuilder mit Name- und Ordinalimporten."""
+    """Gemeinsamer PE32/PE32+-Importbuilder mit Name- und Ordinalimporten.
+
+    Stage 223 uses the PE-defined OriginalFirstThunk==0 form.  Before the
+    Windows loader binds the image, FirstThunk itself is the lookup table; the
+    loader then overwrites those entries with resolved addresses.  Keeping a
+    second, byte-identical ILT therefore only bloats .idata.
+    """
     if pointer_size not in {4, 8}:
         raise PE32AssemblerError("PE-Importpointer muss 4 oder 8 Byte groß sein.")
 
@@ -24962,20 +26698,17 @@ def _build_pe_import_section_stage170(
 
     dll_items = list(grouped.items())
     data = bytearray(20 * (len(dll_items) + 1))
-    ilt_offsets: Dict[str, int] = {}
     iat_offsets: Dict[str, int] = {}
     hint_offsets: Dict[Tuple[str, str], int] = {}
     dll_name_offsets: Dict[str, int] = {}
 
-    for dll, members in dll_items:
-        ilt_offsets[dll] = len(data)
-        data.extend(bytes(pointer_size * (len(members) + 1)))
-
+    # Stage 223: one thunk table per DLL. OriginalFirstThunk stays zero and
+    # FirstThunk initially contains the name/ordinal lookup values.
     for dll, members in dll_items:
         iat_offsets[dll] = len(data)
         data.extend(bytes(pointer_size * (len(members) + 1)))
 
-    # IMAGE_IMPORT_BY_NAME wird nur für echte Namensimporte angelegt.
+    # IMAGE_IMPORT_BY_NAME is needed only for true name imports.
     for dll, members in dll_items:
         for member in members:
             if isinstance(member, int):
@@ -25002,7 +26735,6 @@ def _build_pe_import_section_stage170(
     pack_fmt = "<I" if pointer_size == 4 else "<Q"
 
     for descriptor_index, (dll, members) in enumerate(dll_items):
-        ilt_rva = int(idata_rva) + ilt_offsets[dll]
         iat_rva = int(idata_rva) + iat_offsets[dll]
         if first_iat_rva == 0:
             first_iat_rva = iat_rva
@@ -25012,7 +26744,7 @@ def _build_pe_import_section_stage170(
             "<IIIII",
             data,
             descriptor_index * 20,
-            ilt_rva,
+            0,  # OriginalFirstThunk == 0: FirstThunk is also the lookup table.
             0,
             0,
             int(idata_rva) + dll_name_offsets[dll],
@@ -25025,12 +26757,6 @@ def _build_pe_import_section_stage170(
             else:
                 lookup = int(idata_rva) + hint_offsets[(dll, str(member))]
 
-            struct.pack_into(
-                pack_fmt,
-                data,
-                ilt_offsets[dll] + member_index * pointer_size,
-                lookup,
-            )
             struct.pack_into(
                 pack_fmt,
                 data,
@@ -25060,6 +26786,746 @@ def _build_pe64_import_section(import_specs, idata_rva: int):
         idata_rva,
         pointer_size=8,
     )
+
+
+# ---------------------------------------------------------------------------
+# Stage 209: compact D64I import metadata embedded in the packed D64Z image.
+#
+# The Windows loader sees only a very small bootstrap import table required by
+# the d64 loader itself.  Program imports are represented by D64I records inside
+# the compressed payload and are resolved at runtime with LoadLibraryA /
+# GetProcAddress into a dense, zero-filled virtual IAT tail of .idata.
+#
+# D64I raw format (little endian, offsets relative to D64I start):
+#
+#   header: <4sHHII>
+#       magic       = b"D64I"
+#       version     = 1
+#       pointerSize = 4 / 8
+#       dllCount
+#       importCount
+#
+#   dll[dllCount]: <III>
+#       dllNameOffset
+#       firstImportOffset
+#       importCount
+#
+#   import[importCount]: <II>
+#       targetIatRva
+#       nameOffset | 0x80000000 | ordinal
+#
+#   NUL-terminated ASCII strings
+#
+# The complete D64I block is appended to the uncompressed program .text before
+# MSZIP compression.  It therefore consumes no additional raw PE section and is
+# reconstructed by the existing D64Z decompression step.
+# ---------------------------------------------------------------------------
+PE_D64I_MAGIC = b"D64I"
+# Stage 213 introduced ABI/ordinal metadata in D64I v2. Stage 219 upgrades
+# the DLL record to v3 by adding an optional SHA-256 of the complete DLL file.
+PE_D64I_VERSION = 3
+# Legacy Stage-210 regression marker only: "Format: D64I v1 / MSZIP"
+PE_D64I_ORDINAL_FLAG = 0x80000000
+PE_D64I_HEADER = struct.Struct("<4sHHIIHHHHII")
+PE_D64I_DLL_RECORD = struct.Struct("<IIIIHHII32s32s")
+PE_D64I_IMPORT_RECORD = struct.Struct("<III")
+
+PE_D64I_DLL_HAS_ORDINALS = 0x00000001
+PE_D64I_DLL_CHECK_RUNTIME = 0x00000002
+PE_D64I_DLL_CHECK_HASH = 0x00000004
+PE_D64I_DLL_FALLBACK_NAME = 0x00000008
+PE_D64I_DLL_CHECK_EXACT = 0x00000010
+PE_D64I_RUNTIME_ABI_QUERY = "D64GetRuntimeAbiInfo"
+PE_D64_RUNTIME_ABI_INFO_SIZE = 80
+
+PE_D64_LOADER_MAGIC = b"D64L"
+PE_D64_LOADER_VERSION_MAJOR = 1
+PE_D64_LOADER_VERSION_MINOR = 4
+PE_D64_LOADER_VERSION_PATCH = 0
+PE_D64_LOADER_BUILD = 225
+PE_D64_LOADER_VERSION_PACKED = (
+    (PE_D64_LOADER_VERSION_MAJOR << 16) | PE_D64_LOADER_VERSION_MINOR
+)
+PE_D64_LOADER_INFO = struct.Struct("<4sHHHHIHHII")
+
+# Stage 213 runtime contract matching d64qt5/d64qt5_bridge.def +
+# d64qt5/d64_runtime_abi.inc. The SHA-256 is over canonical
+# "ordinal:name\n" rows sorted by ordinal.
+PE_D64_RUNTIME_DEFAULT_ABI_MAJOR = 1
+PE_D64_RUNTIME_DEFAULT_ABI_MINOR = 2
+PE_D64_RUNTIME_DEFAULT_ORDINAL_MAP_VERSION = 2
+# Stage 224 migration for the transient Stage-223 @65 packed-property ABI.
+PE_D64_TRANSIENT_STAGE223_ABI_MINOR = 3
+PE_D64_TRANSIENT_STAGE223_ORDINAL_MAP_VERSION = 3
+
+def _stage224_normalize_transient_runtime_contract(abi_minor: int, ordinal_map_version: int, *, cut_multiple_codes: bool) -> Tuple[int, int]:
+    abi_minor = max(0, min(0xFFFF, int(abi_minor or 0)))
+    ordinal_map_version = max(0, min(0xFFFFFFFF, int(ordinal_map_version or 0)))
+    if (
+        bool(cut_multiple_codes)
+        and abi_minor == PE_D64_TRANSIENT_STAGE223_ABI_MINOR
+        and ordinal_map_version == PE_D64_TRANSIENT_STAGE223_ORDINAL_MAP_VERSION
+    ):
+        return (PE_D64_RUNTIME_DEFAULT_ABI_MINOR, PE_D64_RUNTIME_DEFAULT_ORDINAL_MAP_VERSION)
+    return (abi_minor, ordinal_map_version)
+
+# Stage 217: compiler/runtime contract for properties which are guaranteed by
+# the WFM constructors. Only these explicitly documented defaults may be
+# elided; arbitrary False/0 values are intentionally NOT removed.
+DBASE_WFM_PROPERTY_DEFAULTS_ABI = 1
+DBASE_WFM_SAFE_PROPERTY_DEFAULTS = {
+    "visible": True,
+    "enabled": True,
+    "tooltip": "",
+    "placeholder": "",
+    "placeholdertext": "",
+    "readonly": False,
+    "checked": False,
+}
+
+def _dbase_wfm_default_scalar_equal(value, default) -> bool:
+    if isinstance(default, bool):
+        if isinstance(value, bool):
+            return value is default
+        text = str(value or "").strip().casefold()
+        truth = text in {".t.", "true", "1", "yes", "on"}
+        falsehood = text in {".f.", "false", "0", "no", "off", ""}
+        return (truth if default else falsehood)
+    if default == "":
+        return str(value or "") == ""
+    return value == default
+
+def _dbase_wfm_initial_property_is_default(class_name, name, value) -> bool:
+    key = str(name or "").strip().casefold()
+    if key not in DBASE_WFM_SAFE_PROPERTY_DEFAULTS:
+        return False
+    return _dbase_wfm_default_scalar_equal(
+        value, DBASE_WFM_SAFE_PROPERTY_DEFAULTS[key]
+    )
+
+def _strip_unused_wfm_property_imports(assembly: str) -> str:
+    """Remove only Stage-217 WFM property imports with no remaining reference."""
+    removable = {
+        "DBaseQtWidgetSetGeometry",
+        "DBaseQtWidgetSetText",
+        "DBaseQtWidgetSetProperty",
+        "DBaseQtWidgetSetProperties",
+        "DBaseQtWidgetSetFont",
+        "DBaseQtTimerSetInterval",
+        "DBaseQtTimerSetActive",
+    }
+    lines = str(assembly).splitlines(keepends=True)
+    non_import = "".join(
+        line for line in lines if not line.lstrip().startswith("import ")
+    )
+    unused = {
+        name for name in removable
+        if re.search(r"\b" + re.escape(name) + r"\b", non_import) is None
+    }
+    if not unused:
+        return str(assembly)
+    pattern = re.compile(
+        r"^\s*import\s+(" + "|".join(map(re.escape, sorted(unused))) + r")\s*,",
+        re.IGNORECASE,
+    )
+    return "".join(line for line in lines if pattern.match(line) is None)
+PE_D64_QT5_ORDINAL_MAP_HASH = bytes.fromhex(
+    "02c94324ebc9e8373c08011d0f8c5ba5aec95b158087092ed4e741877b1a7cd7"
+)
+
+def _d64_qt5_source_ordinal_map_hash() -> bytes:
+    """Use the source DEF when available; packaged builds fall back to Stage-213 hash."""
+    try:
+        def_path = Path(__file__).resolve().with_name("d64qt5") / "d64qt5_bridge.def"
+        if not def_path.is_file():
+            return PE_D64_QT5_ORDINAL_MAP_HASH
+        rows = []
+        for raw_line in def_path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.split(";", 1)[0].strip()
+            if not line or line.upper() == "EXPORTS" or line.upper().startswith("LIBRARY"):
+                continue
+            match = re.match(r"^([^\s]+)\s+@(\d+)(?:\s|$)", line)
+            if not match:
+                return PE_D64_QT5_ORDINAL_MAP_HASH
+            rows.append((int(match.group(2)), match.group(1)))
+        rows.sort(key=lambda item: (item[0], item[1].casefold(), item[1]))
+        canonical = "".join(f"{ordinal}:{name}\n" for ordinal, name in rows).encode("ascii")
+        return hashlib.sha256(canonical).digest()
+    except (OSError, ValueError, UnicodeError, NameError):
+        return PE_D64_QT5_ORDINAL_MAP_HASH
+
+PE_D64I_BOOTSTRAP_IMPORTS: Dict[str, Tuple[str, str]] = dict(
+    PE32_MSZIP_LOADER_IMPORTS
+)
+PE_D64I_BOOTSTRAP_IMPORTS.update({
+    "__d64_loader_LoadLibraryA": ("kernel32.dll", "LoadLibraryA"),
+    "__d64_loader_GetProcAddress": ("kernel32.dll", "GetProcAddress"),
+})
+
+# Stage 219: extra imports used only when Exact Runtime hashes the full DLL
+# file at process startup. CryptoAPI keeps the loader substantially smaller
+# than embedding a second SHA-256 implementation in machine code.
+PE_D64I_EXACT_RUNTIME_IMPORTS: Dict[str, Tuple[str, str]] = {
+    "__d64_loader_GetModuleFileNameA": ("kernel32.dll", "GetModuleFileNameA"),
+    "__d64_loader_CreateFileA": ("kernel32.dll", "CreateFileA"),
+    "__d64_loader_ReadFile": ("kernel32.dll", "ReadFile"),
+    "__d64_loader_CloseHandle": ("kernel32.dll", "CloseHandle"),
+    "__d64_loader_CryptAcquireContextA": ("advapi32.dll", "CryptAcquireContextA"),
+    "__d64_loader_CryptCreateHash": ("advapi32.dll", "CryptCreateHash"),
+    "__d64_loader_CryptHashData": ("advapi32.dll", "CryptHashData"),
+    "__d64_loader_CryptGetHashParam": ("advapi32.dll", "CryptGetHashParam"),
+    "__d64_loader_CryptDestroyHash": ("advapi32.dll", "CryptDestroyHash"),
+    "__d64_loader_CryptReleaseContext": ("advapi32.dll", "CryptReleaseContext"),
+}
+
+def _pe_d64i_bootstrap_imports(exact_runtime: bool = False) -> Dict[str, Tuple[str, str]]:
+    result = dict(PE_D64I_BOOTSTRAP_IMPORTS)
+    if bool(exact_runtime):
+        result.update(PE_D64I_EXACT_RUNTIME_IMPORTS)
+    return result
+
+# Stage 210: project-controlled Import-Packer runtime state. The GUI owns one
+# active project at a time, so a target-indexed module state is sufficient to
+# let all internal compiler/linker paths honor the active project settings.
+PE_IMPORT_PACKER_RUNTIME_SETTINGS = {
+    "pe32": {
+        "enabled": True, "require_savings": True, "minimum_savings": 1,
+        "peb_resolver": False, "abi_major": PE_D64_RUNTIME_DEFAULT_ABI_MAJOR,
+        "abi_minor": PE_D64_RUNTIME_DEFAULT_ABI_MINOR,
+        "ordinal_map_version": PE_D64_RUNTIME_DEFAULT_ORDINAL_MAP_VERSION,
+        "runtime_version_check": True, "ordinal_hash_check": True,
+        "exact_runtime_check": False, "ordinal_mismatch_action": "abort",
+        "object_defaults_enabled": True, "dead_property_imports": True,
+        "empty_standard_strings": True, "cut_multiple_codes": True,
+        "layout_order": PE_IMAGE_LAYOUT_DEFAULT,
+    },
+    "pe64": {
+        "enabled": True, "require_savings": True, "minimum_savings": 1,
+        "peb_resolver": False, "abi_major": PE_D64_RUNTIME_DEFAULT_ABI_MAJOR,
+        "abi_minor": PE_D64_RUNTIME_DEFAULT_ABI_MINOR,
+        "ordinal_map_version": PE_D64_RUNTIME_DEFAULT_ORDINAL_MAP_VERSION,
+        "runtime_version_check": True, "ordinal_hash_check": True,
+        "exact_runtime_check": False, "ordinal_mismatch_action": "abort",
+        "object_defaults_enabled": True, "dead_property_imports": True,
+        "empty_standard_strings": True, "cut_multiple_codes": True,
+        "layout_order": PE_IMAGE_LAYOUT_DEFAULT,
+    },
+}
+PE_IMPORT_PACKER_LAST_DECISION: Dict[str, object] = {}
+
+# Stage 226: PE-Packing ist bewusst von der D64I-Import-Packer-Option getrennt.
+# Bestehende Projekte behalten aus Kompatibilitaetsgruenden den gepackten
+# Modus als Default. Im neuen Linker->Optionen-Panel kann auf Standard-PE
+# ohne .loader/.ztext umgeschaltet werden, um typische heuristische AV-
+# Merkmale zu vermeiden. Eine Whitelist kann dadurch nicht garantiert werden.
+PE_PACKING_DEFAULT = True
+PE_PACKING_RUNTIME_SETTINGS: Dict[str, bool] = {
+    "pe32": PE_PACKING_DEFAULT,
+    "pe64": PE_PACKING_DEFAULT,
+}
+
+
+def _pe_packing_enabled(target: str) -> bool:
+    key = _pe_import_packer_target_key(target)
+    legacy_default = (
+        globals().get("PE64_TEXT_COMPRESSION_MSZIP_DEFAULT", True)
+        if key == "pe64"
+        else globals().get("PE32_TEXT_COMPRESSION_MSZIP_DEFAULT", True)
+    )
+    return bool(
+        PE_PACKING_RUNTIME_SETTINGS.get(key, PE_PACKING_DEFAULT)
+        and legacy_default
+    )
+
+
+def _set_pe_packing_enabled(target: str, enabled: bool) -> None:
+    key = _pe_import_packer_target_key(target)
+    PE_PACKING_RUNTIME_SETTINGS[key] = bool(enabled)
+
+
+def _pe_import_packer_target_key(target: str) -> str:
+    return "pe64" if str(target or "").strip().casefold() in {
+        "pe64", "win64", "windows64", "windows-pe64", "windows pe32+"
+    } else "pe32"
+
+
+def _pe_import_packer_settings(target: str) -> Dict[str, object]:
+    key = _pe_import_packer_target_key(target)
+    values = PE_IMPORT_PACKER_RUNTIME_SETTINGS.get(key, {})
+    action = str(values.get("ordinal_mismatch_action", "abort") or "abort").strip().casefold()
+    if action not in {"abort", "fallback_name"}:
+        action = "abort"
+    return {
+        "enabled": bool(values.get("enabled", True)),
+        "require_savings": bool(values.get("require_savings", True)),
+        "minimum_savings": max(0, int(values.get("minimum_savings", 1) or 0)),
+        "peb_resolver": bool(values.get("peb_resolver", False)),
+        "abi_major": max(0, min(0xFFFF, int(values.get("abi_major", PE_D64_RUNTIME_DEFAULT_ABI_MAJOR) or 0))),
+        "abi_minor": max(0, min(0xFFFF, int(values.get("abi_minor", PE_D64_RUNTIME_DEFAULT_ABI_MINOR) or 0))),
+        "ordinal_map_version": max(0, min(0xFFFFFFFF, int(values.get("ordinal_map_version", PE_D64_RUNTIME_DEFAULT_ORDINAL_MAP_VERSION) or 0))),
+        "runtime_version_check": bool(values.get("runtime_version_check", True)),
+        "ordinal_hash_check": bool(values.get("ordinal_hash_check", True)),
+        "exact_runtime_check": bool(values.get("exact_runtime_check", False)),
+        "ordinal_mismatch_action": action,
+        "object_defaults_enabled": bool(values.get("object_defaults_enabled", True)),
+        "dead_property_imports": bool(values.get("dead_property_imports", True)),
+        "empty_standard_strings": bool(values.get("empty_standard_strings", True)),
+        "cut_multiple_codes": bool(values.get("cut_multiple_codes", True)),
+        "layout_order": _normalize_pe_image_layout_order(
+            values.get("layout_order", PE_IMAGE_LAYOUT_DEFAULT)
+        ),
+    }
+
+
+def _set_pe_import_packer_settings(
+    target: str,
+    *,
+    enabled: bool,
+    require_savings: bool,
+    minimum_savings: int,
+    peb_resolver: bool = False,
+    abi_major: int = PE_D64_RUNTIME_DEFAULT_ABI_MAJOR,
+    abi_minor: int = PE_D64_RUNTIME_DEFAULT_ABI_MINOR,
+    ordinal_map_version: int = PE_D64_RUNTIME_DEFAULT_ORDINAL_MAP_VERSION,
+    runtime_version_check: bool = True,
+    ordinal_hash_check: bool = True,
+    exact_runtime_check: bool = False,
+    ordinal_mismatch_action: str = "abort",
+    object_defaults_enabled: bool = True,
+    dead_property_imports: bool = True,
+    empty_standard_strings: bool = True,
+    cut_multiple_codes: bool = True,
+    layout_order: str = PE_IMAGE_LAYOUT_DEFAULT,
+) -> None:
+    key = _pe_import_packer_target_key(target)
+    action = str(ordinal_mismatch_action or "abort").strip().casefold()
+    if action not in {"abort", "fallback_name"}:
+        action = "abort"
+    cut_multiple_codes = bool(cut_multiple_codes)
+    normalized_abi_minor, normalized_map_version = _stage224_normalize_transient_runtime_contract(
+        abi_minor, ordinal_map_version, cut_multiple_codes=cut_multiple_codes
+    )
+    if cut_multiple_codes:
+        normalized_abi_minor = max(normalized_abi_minor, PE_D64_RUNTIME_DEFAULT_ABI_MINOR)
+        normalized_map_version = max(
+            normalized_map_version, PE_D64_RUNTIME_DEFAULT_ORDINAL_MAP_VERSION
+        )
+    PE_IMPORT_PACKER_RUNTIME_SETTINGS[key] = {
+        "enabled": bool(enabled),
+        "require_savings": bool(require_savings),
+        "minimum_savings": max(0, min(1024 * 1024, int(minimum_savings or 0))),
+        "peb_resolver": bool(peb_resolver),
+        "abi_major": max(0, min(0xFFFF, int(abi_major or 0))),
+        "abi_minor": normalized_abi_minor,
+        "ordinal_map_version": normalized_map_version,
+        "runtime_version_check": bool(runtime_version_check),
+        "ordinal_hash_check": bool(ordinal_hash_check),
+        "exact_runtime_check": bool(exact_runtime_check),
+        "ordinal_mismatch_action": action,
+        "object_defaults_enabled": bool(object_defaults_enabled),
+        "dead_property_imports": bool(dead_property_imports),
+        "empty_standard_strings": bool(empty_standard_strings),
+        "cut_multiple_codes": cut_multiple_codes,
+        "layout_order": _normalize_pe_image_layout_order(layout_order),
+    }
+
+
+def _pe_import_packer_accepts(
+    target: str,
+    packed_size: int,
+    baseline_size: int,
+) -> bool:
+    settings = _pe_import_packer_settings(target)
+    if not settings["require_savings"]:
+        return True
+    saved = int(baseline_size) - int(packed_size)
+    return saved >= int(settings["minimum_savings"])
+
+
+def _pe_export_ordinal_map_hash(ordinals: Dict[str, int]) -> bytes:
+    """Stable SHA-256 over a complete name->ordinal export mapping."""
+    rows = sorted(
+        ((int(ordinal), str(name)) for name, ordinal in (ordinals or {}).items()),
+        key=lambda item: (item[0], item[1].casefold(), item[1]),
+    )
+    canonical = "".join(f"{ordinal}:{name}\n" for ordinal, name in rows).encode("ascii", "strict")
+    return hashlib.sha256(canonical).digest()
+
+
+def _pe_file_sha256(path: Path | str) -> bytes:
+    """SHA-256 over the exact on-disk DLL bytes used by Exact Runtime."""
+    file_path = Path(path)
+    digest = hashlib.sha256()
+    with file_path.open("rb") as stream:
+        while True:
+            chunk = stream.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.digest()
+
+
+def _pe_last_ordinal_fallback(dll: str, ordinal: int) -> Dict[str, object]:
+    dll_key = str(dll or "").casefold()
+    wanted = int(ordinal)
+    for item in reversed(PE_PACK_LAST_ORDINAL_IMPORTS):
+        try:
+            if str(item.get("dll", "")).casefold() != dll_key:
+                continue
+            if int(item.get("ordinal", 0)) != wanted:
+                continue
+            return dict(item)
+        except (TypeError, ValueError):
+            continue
+    return {}
+
+
+def _d64i_import_spec_details(raw_spec) -> Dict[str, object]:
+    dll, member = _pe_import_spec_parts(raw_spec)
+    details: Dict[str, object] = {
+        "dll": dll,
+        "member": member,
+        "fallback_name": "",
+        "ordinal_map_hash": b"",
+        "exact_runtime_hash": b"",
+        "ordinal_source_path": "",
+    }
+    if isinstance(raw_spec, dict):
+        details["fallback_name"] = str(
+            raw_spec.get("fallback_name", raw_spec.get("name", "")) or ""
+        )
+        raw_hash = raw_spec.get("ordinal_map_hash", b"")
+        if isinstance(raw_hash, str):
+            try:
+                raw_hash = bytes.fromhex(raw_hash)
+            except ValueError:
+                raw_hash = b""
+        if isinstance(raw_hash, (bytes, bytearray)) and len(raw_hash) == 32:
+            details["ordinal_map_hash"] = bytes(raw_hash)
+        raw_exact = raw_spec.get("exact_runtime_hash", b"")
+        if isinstance(raw_exact, str):
+            try:
+                raw_exact = bytes.fromhex(raw_exact)
+            except ValueError:
+                raw_exact = b""
+        if isinstance(raw_exact, (bytes, bytearray)) and len(raw_exact) == 32:
+            details["exact_runtime_hash"] = bytes(raw_exact)
+        details["ordinal_source_path"] = str(
+            raw_spec.get("ordinal_source_path", "") or ""
+        )
+
+    if isinstance(member, int):
+        fallback = _pe_last_ordinal_fallback(dll, member)
+        if not details["fallback_name"]:
+            details["fallback_name"] = str(fallback.get("name", "") or "")
+        if not details["ordinal_source_path"]:
+            details["ordinal_source_path"] = str(fallback.get("path", "") or "")
+        if not details["ordinal_map_hash"]:
+            raw_hash = fallback.get("map_hash", b"")
+            if isinstance(raw_hash, str):
+                try:
+                    raw_hash = bytes.fromhex(raw_hash)
+                except ValueError:
+                    raw_hash = b""
+            if isinstance(raw_hash, (bytes, bytearray)) and len(raw_hash) == 32:
+                details["ordinal_map_hash"] = bytes(raw_hash)
+        if not details["exact_runtime_hash"]:
+            raw_exact = fallback.get("file_hash", b"")
+            if isinstance(raw_exact, str):
+                try:
+                    raw_exact = bytes.fromhex(raw_exact)
+                except ValueError:
+                    raw_exact = b""
+            if isinstance(raw_exact, (bytes, bytearray)) and len(raw_exact) == 32:
+                details["exact_runtime_hash"] = bytes(raw_exact)
+    else:
+        details["fallback_name"] = str(member)
+    return details
+
+
+def _d64i_normalized_import_groups(import_specs):
+    """Return normalized symbols and stable DLL/import-detail groups."""
+    normalized: Dict[str, Tuple[str, object]] = {}
+    grouped: Dict[str, List[Dict[str, object]]] = {}
+    seen: Dict[str, set] = {}
+
+    for symbol, raw_spec in (import_specs or {}).items():
+        details = _d64i_import_spec_details(raw_spec)
+        dll = str(details["dll"])
+        member = details["member"]
+        normalized[str(symbol)] = (dll, member)
+        member_key = ("ord", int(member)) if isinstance(member, int) else ("name", str(member))
+        dll_seen = seen.setdefault(dll, set())
+        if member_key in dll_seen:
+            continue
+        dll_seen.add(member_key)
+        grouped.setdefault(dll, []).append(details)
+    return normalized, list(grouped.items())
+
+
+def _d64i_is_runtime_managed(dll: str, entries: Sequence[Dict[str, object]]) -> bool:
+    base = Path(str(dll or "")).name.casefold()
+    if base.startswith("libd64_") or base.startswith("d64_"):
+        return True
+    # A local DLL that actually exports the stable ABI query is managed even
+    # when it uses a project-specific file name.
+    for entry in entries:
+        path_text = str(entry.get("ordinal_source_path", "") or "")
+        if not path_text:
+            continue
+        path = Path(path_text)
+        machine = IMAGE_FILE_MACHINE_AMD64 if int(entry.get("pointer_size", 4)) == 8 else IMAGE_FILE_MACHINE_I386
+        exports = _pe_export_name_ordinals(path, machine)
+        if PE_D64I_RUNTIME_ABI_QUERY in exports:
+            return True
+    return False
+
+
+def _d64l_info_block(settings: Optional[Dict[str, object]] = None) -> bytes:
+    values = dict(settings or {})
+    flags = 0
+    if bool(values.get("runtime_version_check", True)):
+        flags |= PE_D64I_DLL_CHECK_RUNTIME
+    if bool(values.get("ordinal_hash_check", True)):
+        flags |= PE_D64I_DLL_CHECK_HASH
+    if bool(values.get("exact_runtime_check", False)):
+        flags |= PE_D64I_DLL_CHECK_EXACT
+    if str(values.get("ordinal_mismatch_action", "abort")) == "fallback_name":
+        flags |= PE_D64I_DLL_FALLBACK_NAME
+    return PE_D64_LOADER_INFO.pack(
+        PE_D64_LOADER_MAGIC,
+        PE_D64_LOADER_VERSION_MAJOR,
+        PE_D64_LOADER_VERSION_MINOR,
+        PE_D64_LOADER_VERSION_PATCH,
+        PE_D64I_VERSION,
+        PE_D64_LOADER_BUILD,
+        max(0, min(0xFFFF, int(values.get("abi_major", PE_D64_RUNTIME_DEFAULT_ABI_MAJOR) or 0))),
+        max(0, min(0xFFFF, int(values.get("abi_minor", PE_D64_RUNTIME_DEFAULT_ABI_MINOR) or 0))),
+        max(0, min(0xFFFFFFFF, int(values.get("ordinal_map_version", PE_D64_RUNTIME_DEFAULT_ORDINAL_MAP_VERSION) or 0))),
+        int(flags),
+    )
+
+
+def _build_d64i_import_metadata(
+    import_specs,
+    *,
+    iat_base_rva: int,
+    pointer_size: int,
+) -> Tuple[bytes, Dict[str, int], int]:
+    """Build D64I v3 metadata plus dense target-IAT slot mapping."""
+    if int(pointer_size) not in {4, 8}:
+        raise PE32AssemblerError("D64I: Pointergröße muss 4 oder 8 Byte sein.")
+
+    target_key = "pe64" if int(pointer_size) == 8 else "pe32"
+    settings = _pe_import_packer_settings(target_key)
+    normalized, dll_items = _d64i_normalized_import_groups(import_specs)
+    for _dll, entries in dll_items:
+        for entry in entries:
+            entry["pointer_size"] = int(pointer_size)
+    import_count = sum(len(entries) for _dll, entries in dll_items)
+
+    header_size = PE_D64I_HEADER.size
+    dll_table_off = header_size
+    import_table_off = dll_table_off + len(dll_items) * PE_D64I_DLL_RECORD.size
+    string_off = import_table_off + import_count * PE_D64I_IMPORT_RECORD.size
+
+    data = bytearray(string_off)
+    policy_flags = 0
+    if bool(settings.get("runtime_version_check", True)):
+        policy_flags |= PE_D64I_DLL_CHECK_RUNTIME
+    if bool(settings.get("ordinal_hash_check", True)):
+        policy_flags |= PE_D64I_DLL_CHECK_HASH
+    if bool(settings.get("exact_runtime_check", False)):
+        policy_flags |= PE_D64I_DLL_CHECK_EXACT
+    if str(settings.get("ordinal_mismatch_action", "abort")) == "fallback_name":
+        policy_flags |= PE_D64I_DLL_FALLBACK_NAME
+    PE_D64I_HEADER.pack_into(
+        data,
+        0,
+        PE_D64I_MAGIC,
+        PE_D64I_VERSION,
+        int(pointer_size),
+        len(dll_items),
+        import_count,
+        PE_D64_LOADER_VERSION_MAJOR,
+        PE_D64_LOADER_VERSION_MINOR,
+        PE_D64_LOADER_VERSION_PATCH,
+        0,
+        PE_D64_LOADER_BUILD,
+        int(policy_flags),
+    )
+
+    string_offsets: Dict[str, int] = {}
+
+    def add_string(value: str) -> int:
+        text = str(value)
+        cached = string_offsets.get(text)
+        if cached is not None:
+            return cached
+        encoded = text.encode("ascii")
+        offset = len(data)
+        if offset >= PE_D64I_ORDINAL_FLAG:
+            raise PE32AssemblerError("D64I: Stringtabelle überschreitet 2 GiB.")
+        data.extend(encoded + b"\0")
+        string_offsets[text] = offset
+        return offset
+
+    spec_iat_rvas: Dict[Tuple[str, object], int] = {}
+    import_index = 0
+    machine = IMAGE_FILE_MACHINE_AMD64 if int(pointer_size) == 8 else IMAGE_FILE_MACHINE_I386
+
+    for dll_index, (dll, entries) in enumerate(dll_items):
+        dll_name_off = add_string(dll)
+        first_import_off = import_table_off + import_index * PE_D64I_IMPORT_RECORD.size
+        has_ordinals = any(isinstance(entry.get("member"), int) for entry in entries)
+        dll_flags = PE_D64I_DLL_HAS_ORDINALS if has_ordinals else 0
+        managed = _d64i_is_runtime_managed(dll, entries) if has_ordinals else False
+
+        if managed and bool(settings.get("runtime_version_check", True)):
+            dll_flags |= PE_D64I_DLL_CHECK_RUNTIME
+        if managed and bool(settings.get("ordinal_hash_check", True)):
+            dll_flags |= PE_D64I_DLL_CHECK_HASH
+        if managed and has_ordinals and bool(settings.get("exact_runtime_check", False)):
+            dll_flags |= PE_D64I_DLL_CHECK_EXACT
+        if has_ordinals and str(settings.get("ordinal_mismatch_action", "abort")) == "fallback_name":
+            dll_flags |= PE_D64I_DLL_FALLBACK_NAME
+
+        abi_name_off = add_string(PE_D64I_RUNTIME_ABI_QUERY) if managed and has_ordinals else 0
+        map_hash = b""
+        for entry in entries:
+            raw_hash = entry.get("ordinal_map_hash", b"")
+            if isinstance(raw_hash, (bytes, bytearray)) and len(raw_hash) == 32:
+                map_hash = bytes(raw_hash)
+                break
+            path_text = str(entry.get("ordinal_source_path", "") or "")
+            if path_text:
+                exports = _pe_export_name_ordinals(Path(path_text), machine)
+                if exports:
+                    map_hash = _pe_export_ordinal_map_hash(exports)
+                    break
+        if not map_hash and Path(str(dll)).name.casefold() == "libd64_qt5.dll":
+            map_hash = _d64_qt5_source_ordinal_map_hash()
+        if len(map_hash) != 32:
+            map_hash = bytes(32)
+            dll_flags &= ~PE_D64I_DLL_CHECK_HASH
+
+        exact_hash = b""
+        for entry in entries:
+            raw_exact = entry.get("exact_runtime_hash", b"")
+            if isinstance(raw_exact, str):
+                try:
+                    raw_exact = bytes.fromhex(raw_exact)
+                except ValueError:
+                    raw_exact = b""
+            if isinstance(raw_exact, (bytes, bytearray)) and len(raw_exact) == 32:
+                if any(raw_exact):
+                    exact_hash = bytes(raw_exact)
+                    break
+            path_text = str(entry.get("ordinal_source_path", "") or "")
+            if path_text:
+                try:
+                    exact_hash = _pe_file_sha256(Path(path_text))
+                except OSError:
+                    exact_hash = b""
+                if len(exact_hash) == 32:
+                    break
+        if len(exact_hash) != 32:
+            exact_hash = bytes(32)
+        if dll_flags & PE_D64I_DLL_CHECK_EXACT and not any(exact_hash):
+            raise PE32AssemblerError(
+                f"Exact Runtime für '{dll}' ist aktiviert, aber die beim Linken "
+                "verwendete DLL-Datei konnte nicht für SHA-256 gelesen werden."
+            )
+
+        PE_D64I_DLL_RECORD.pack_into(
+            data,
+            dll_table_off + dll_index * PE_D64I_DLL_RECORD.size,
+            int(dll_name_off),
+            int(first_import_off),
+            len(entries),
+            int(dll_flags),
+            int(settings.get("abi_major", PE_D64_RUNTIME_DEFAULT_ABI_MAJOR)) & 0xFFFF,
+            int(settings.get("abi_minor", PE_D64_RUNTIME_DEFAULT_ABI_MINOR)) & 0xFFFF,
+            int(settings.get("ordinal_map_version", PE_D64_RUNTIME_DEFAULT_ORDINAL_MAP_VERSION)) & 0xFFFFFFFF,
+            int(abi_name_off),
+            map_hash,
+            exact_hash,
+        )
+
+        for entry in entries:
+            member = entry["member"]
+            target_rva = int(iat_base_rva) + import_index * int(pointer_size)
+            if not 0 <= target_rva <= 0xFFFFFFFF:
+                raise PE32AssemblerError("D64I: Ziel-IAT-RVA liegt außerhalb 32 Bit.")
+
+            fallback_off = 0
+            fallback_name = str(entry.get("fallback_name", "") or "")
+            if isinstance(member, int):
+                encoded_member = PE_D64I_ORDINAL_FLAG | (int(member) & 0xFFFF)
+                if fallback_name:
+                    fallback_off = add_string(fallback_name)
+            else:
+                name_off = add_string(str(member))
+                if name_off & PE_D64I_ORDINAL_FLAG:
+                    raise PE32AssemblerError("D64I: Funktionsname-Offset kollidiert mit Ordinalflag.")
+                encoded_member = int(name_off)
+                fallback_off = int(name_off)
+
+            PE_D64I_IMPORT_RECORD.pack_into(
+                data,
+                import_table_off + import_index * PE_D64I_IMPORT_RECORD.size,
+                int(target_rva),
+                int(encoded_member) & 0xFFFFFFFF,
+                int(fallback_off) & 0xFFFFFFFF,
+            )
+            spec_iat_rvas[(dll, member)] = int(target_rva)
+            import_index += 1
+
+    symbol_iat_rvas = {symbol: spec_iat_rvas[spec] for symbol, spec in normalized.items()}
+    iat_size = import_count * int(pointer_size)
+    return bytes(data), symbol_iat_rvas, iat_size
+
+
+def _d64i_metadata_size(import_specs, pointer_size: int) -> int:
+    data, _rvas, _size = _build_d64i_import_metadata(
+        import_specs,
+        iat_base_rva=0,
+        pointer_size=pointer_size,
+    )
+    return len(data)
+
+
+def read_d64_loader_info(source) -> Optional[Dict[str, object]]:
+    """Read the raw D64L version marker from packed PE bytes or a file path."""
+    try:
+        data = bytes(source) if isinstance(source, (bytes, bytearray, memoryview)) else Path(source).read_bytes()
+    except (OSError, TypeError, ValueError):
+        return None
+    pos = data.find(PE_D64_LOADER_MAGIC)
+    while pos >= 0:
+        if pos + PE_D64_LOADER_INFO.size <= len(data):
+            try:
+                values = PE_D64_LOADER_INFO.unpack_from(data, pos)
+                if (
+                    values[0] == PE_D64_LOADER_MAGIC
+                    and 1 <= int(values[4]) <= int(PE_D64I_VERSION)
+                ):
+                    return {
+                        "offset": pos,
+                        "loader_major": values[1],
+                        "loader_minor": values[2],
+                        "loader_patch": values[3],
+                        "d64i_version": values[4],
+                        "loader_build": values[5],
+                        "abi_major": values[6],
+                        "abi_minor": values[7],
+                        "ordinal_map_version": values[8],
+                        "flags": values[9],
+                    }
+            except struct.error:
+                return None
+        pos = data.find(PE_D64_LOADER_MAGIC, pos + 1)
+    return None
 
 
 def _pe_file_machine(path: Path) -> Optional[int]:
@@ -25295,7 +27761,7 @@ def _pe_import_specs_with_local_ordinals(
     enabled: Optional[bool] = None,
     search_paths: Iterable[Path | str] = (),
     require_all: bool = False,
-) -> Dict[str, Tuple[str, object]]:
+) -> Dict[str, object]:
     """Ersetzt Namensimporte durch Ordinale aus der lokalen Ziel-DLL.
 
     Das spart IMAGE_IMPORT_BY_NAME-Zeichenketten. Die Bindung an lokale
@@ -25305,16 +27771,48 @@ def _pe_import_specs_with_local_ordinals(
     if enabled is None:
         enabled = PE_PACK_IMPORTS_BY_LOCAL_ORDINAL_DEFAULT
 
-    result: Dict[str, Tuple[str, object]] = {}
+    result: Dict[str, object] = {}
     dll_cache: Dict[str, Tuple[Optional[Path], Dict[str, int]]] = {}
+    file_hash_cache: Dict[str, bytes] = {}
 
+    previous_ordinal_imports = list(PE_PACK_LAST_ORDINAL_IMPORTS)
     if enabled:
         PE_PACK_LAST_ORDINAL_IMPORTS.clear()
 
+    def previous_fallback(dll_name: str, ordinal_value: int) -> Dict[str, object]:
+        key = str(dll_name or "").casefold()
+        for item in reversed(previous_ordinal_imports):
+            try:
+                if str(item.get("dll", "")).casefold() == key and int(item.get("ordinal", 0)) == int(ordinal_value):
+                    return dict(item)
+            except (TypeError, ValueError):
+                pass
+        return {}
+
     for symbol, raw_spec in import_specs.items():
         dll, member = _pe_import_spec_parts(raw_spec)
-        if isinstance(member, int) or not enabled:
-            result[str(symbol)] = (dll, member)
+        if isinstance(member, int):
+            # Preserve Stage-213 fallback metadata when an already converted
+            # #Ordinal import passes through another linker layer.
+            if isinstance(raw_spec, dict):
+                result[str(symbol)] = raw_spec
+            else:
+                old = previous_fallback(dll, member)
+                if old.get("name"):
+                    result[str(symbol)] = {
+                        "dll": dll, "ordinal": int(member),
+                        "name": str(old.get("name")),
+                        "fallback_name": str(old.get("name")),
+                        "ordinal_source_path": str(old.get("path", "") or ""),
+                        "ordinal_map_hash": str(old.get("map_hash", "") or ""),
+                        "exact_runtime_hash": str(old.get("file_hash", "") or ""),
+                    }
+                    PE_PACK_LAST_ORDINAL_IMPORTS.append(old)
+                else:
+                    result[str(symbol)] = (dll, member)
+            continue
+        if not enabled:
+            result[str(symbol)] = raw_spec if isinstance(raw_spec, dict) else (dll, member)
             continue
 
         dll_key = dll.casefold()
@@ -25362,13 +27860,34 @@ def _pe_import_specs_with_local_ordinals(
             result[str(symbol)] = (dll, member)
             continue
 
-        result[str(symbol)] = (dll, int(ordinal))
+        map_hash = _pe_export_ordinal_map_hash(ordinals) if ordinals else bytes(32)
+        file_hash = bytes(32)
+        if path is not None:
+            hash_key = str(path).casefold()
+            file_hash = file_hash_cache.get(hash_key, b"")
+            if not file_hash:
+                try:
+                    file_hash = _pe_file_sha256(path)
+                except OSError:
+                    file_hash = bytes(32)
+                file_hash_cache[hash_key] = file_hash
+        result[str(symbol)] = {
+            "dll": dll,
+            "ordinal": int(ordinal),
+            "name": str(member),
+            "fallback_name": str(member),
+            "ordinal_source_path": str(path) if path is not None else "",
+            "ordinal_map_hash": map_hash.hex(),
+            "exact_runtime_hash": file_hash.hex(),
+        }
         PE_PACK_LAST_ORDINAL_IMPORTS.append({
             "machine": int(machine),
             "dll": dll,
             "name": str(member),
             "ordinal": int(ordinal),
             "path": str(path) if path is not None else "",
+            "map_hash": map_hash.hex(),
+            "file_hash": file_hash.hex(),
         })
 
     return result
@@ -25436,7 +27955,10 @@ def rewrite_pe_assembly_imports_to_ordinals(
         require_all=require_all,
     )
     for index, (key, symbol, original_member) in line_imports.items():
-        dll, member = converted[key]
+        # Stage 213 enriches converted ordinal imports with ABI/fallback metadata
+        # and therefore returns a dict instead of the historical (dll, member)
+        # tuple. Always normalize the import spec before consuming it here.
+        dll, member = _pe_import_spec_parts(converted[key])
         if not isinstance(member, int) or isinstance(original_member, int):
             continue
         raw_line = lines[index]
@@ -25485,6 +28007,8 @@ def _pe_emit_stage170_image(
     first_iat_rva: int,
     iat_size: int,
     entry_rva: int,
+    idata_virtual_size: int = 0,
+    loader_writable: bool = False,
     gui: bool,
     data_rva: int = 0,
     data: bytes = b"",
@@ -25514,7 +28038,7 @@ def _pe_emit_stage170_image(
             "data": bytes(loader),
             "virtual_size": len(loader),
             "rva": int(loader_rva),
-            "chars": 0x60000020,
+            "chars": (0xE0000020 if loader_writable else 0x60000020),
             "raw": True,
         },
         {
@@ -25528,7 +28052,7 @@ def _pe_emit_stage170_image(
         {
             "name": b".idata",
             "data": bytes(idata),
-            "virtual_size": len(idata),
+            "virtual_size": max(len(idata), int(idata_virtual_size or 0), 1),
             "rva": int(idata_rva),
             "chars": 0xC0000040,
             "raw": True,
@@ -25576,26 +28100,36 @@ def _pe_emit_stage170_image(
         file_alignment,
     )
 
-    raw_cursor = headers_size
     layout = []
     size_of_code = 0
     size_of_initialized_data = 0
-    for sec in sections:
+    _target_key = "pe64" if is64 else "pe32"
+    _layout_order = _pe_import_packer_settings(_target_key).get(
+        "layout_order", PE_IMAGE_LAYOUT_DEFAULT
+    )
+    for _index, sec in enumerate(sections):
         if sec["raw"] and sec["data"]:
             raw_size = _align_up(len(sec["data"]), file_alignment)
-            raw_ptr = raw_cursor
-            raw_cursor += raw_size
         else:
             raw_size = 0
-            raw_ptr = 0
         item = dict(sec)
         item["raw_size"] = raw_size
-        item["raw_ptr"] = raw_ptr
+        item["raw_ptr"] = 0
+        item["_physical_index"] = _index
         layout.append(item)
         if int(sec["chars"]) & 0x00000020:
             size_of_code += raw_size
         elif raw_size:
             size_of_initialized_data += raw_size
+    raw_cursor = headers_size
+    for item in sorted(
+        (entry for entry in layout if int(entry["raw_size"]) > 0),
+        key=lambda entry: _pe_physical_layout_sort_key(
+            entry["name"], _layout_order, entry["_physical_index"]
+        ),
+    ):
+        item["raw_ptr"] = raw_cursor
+        raw_cursor += int(item["raw_size"])
 
     last = sections[-1]
     size_of_image = _align_up(
@@ -25655,8 +28189,9 @@ def _pe_emit_stage170_image(
         )
         struct.pack_into("<I", optional, 0x68, 0)
         struct.pack_into("<I", optional, 0x6C, 16)
-        struct.pack_into("<II", optional, 0x78, int(idata_rva), len(idata))
-        struct.pack_into("<II", optional, 0xD0, int(first_iat_rva), int(iat_size))
+        if idata:
+            struct.pack_into("<II", optional, 0x78, int(idata_rva), len(idata))
+            struct.pack_into("<II", optional, 0xD0, int(first_iat_rva), int(iat_size))
     else:
         struct.pack_into("<H", optional, 0x00, 0x010B)
         optional[0x02] = 1
@@ -25685,8 +28220,9 @@ def _pe_emit_stage170_image(
             0x1000,
         )
         struct.pack_into("<II", optional, 0x58, 0, 16)
-        struct.pack_into("<II", optional, 0x68, int(idata_rva), len(idata))
-        struct.pack_into("<II", optional, 0xC0, int(first_iat_rva), int(iat_size))
+        if idata:
+            struct.pack_into("<II", optional, 0x68, int(idata_rva), len(idata))
+            struct.pack_into("<II", optional, 0xC0, int(first_iat_rva), int(iat_size))
 
     pe.extend(optional)
 
@@ -25735,9 +28271,40 @@ def build_pe32_image_with_imports_exports(
     imports_by_local_ordinal: Optional[bool] = None,
     bss_size: int = 0,
 ) -> Tuple[bytes, bytes]:
-    """Stage170-PE32: .text/.loader/.ztext/.idata in RVA-Reihenfolge."""
+    """Stage209-PE32: D64Z program image + compressed D64I imports.
+
+    Only the small loader/bootstrap import table remains as normal PE .idata.
+    Program DLL/function names and dense target-IAT slots are represented by
+    D64I metadata inside the MSZIP-compressed D64Z image.
+    """
     if compress_text_mszip is None:
-        compress_text_mszip = PE32_TEXT_COMPRESSION_MSZIP_DEFAULT
+        compress_text_mszip = _pe_packing_enabled("pe32")
+
+    _import_packer = _pe_import_packer_settings("pe32")
+    peb_resolver = bool(_import_packer.get("peb_resolver", False))
+    exact_runtime = bool(_import_packer.get("exact_runtime_check", False))
+    bootstrap_imports = _pe_d64i_bootstrap_imports(exact_runtime)
+    if not bool(_import_packer["enabled"]):
+        PE_IMPORT_PACKER_LAST_DECISION.clear()
+        PE_IMPORT_PACKER_LAST_DECISION.update({
+            "target": "pe32",
+            "changed": False,
+            "reason": "Stage210: Import-Packer in den Projekteinstellungen deaktiviert.",
+        })
+        return _build_pe32_image_with_imports_exports_stage169_layout(
+            code,
+            entry_offset,
+            import_specs,
+            thunk_patches,
+            exports=exports,
+            dll_name=dll_name,
+            gui=gui,
+            dll=dll,
+            image_base=image_base,
+            base_relocations=base_relocations,
+            compress_text_mszip=compress_text_mszip,
+            bss_size=bss_size,
+        )
 
     pack_text = (
         bool(compress_text_mszip)
@@ -25763,103 +28330,209 @@ def build_pe32_image_with_imports_exports(
         )
 
     text = bytearray(code)
+    program_text_size = len(text)
     text_rva = PE32_SECTION_RVA
     original_entry_rva = text_rva + int(entry_offset)
 
-    effective_import_specs = dict(import_specs)
-    for symbol, spec in PE32_MSZIP_LOADER_IMPORTS.items():
-        effective_import_specs.setdefault(symbol, spec)
-    effective_import_specs = _pe_import_specs_with_local_ordinals(
-        effective_import_specs,
+    # Program imports are normalized/ordinal-optimized independently from the
+    # fixed bootstrap imports used by the loader itself.
+    program_import_specs = _pe_import_specs_with_local_ordinals(
+        dict(import_specs),
         machine=IMAGE_FILE_MACHINE_I386,
         enabled=imports_by_local_ordinal,
     )
 
+    d64i_probe_size = _d64i_metadata_size(
+        program_import_specs,
+        pointer_size=4,
+    )
+    decompressed_size = program_text_size + d64i_probe_size
+
+    # .text VirtualSize includes the D64I scratch tail because the single D64Z
+    # stream reconstructs [program text | D64I metadata] in one operation.
     loader_rva = _align_up(
-        text_rva + max(1, len(text)),
+        text_rva + max(1, decompressed_size),
         PE32_SECTION_ALIGNMENT,
     )
-    dummy_iat = {name: 0 for name in PE32_MSZIP_LOADER_IMPORTS}
+
+    dummy_boot_iat = {} if peb_resolver else {
+        name: 0 for name in bootstrap_imports
+    }
     probe = _build_pe32_mszip_loader(
         image_base=image_base,
         text_rva=text_rva,
-        text_size=len(text),
+        text_size=decompressed_size,
         ztext_rva=0,
-        packed_size=max(1, len(text)),
+        packed_size=max(1, decompressed_size),
         original_entry_rva=original_entry_rva,
-        iat_rvas=dummy_iat,
+        iat_rvas=dummy_boot_iat,
+        d64i_rva=text_rva + program_text_size,
+        loader_rva=loader_rva,
+        peb_resolver=peb_resolver,
+        compatibility=_import_packer,
     )
     ztext_rva = _align_up(
         loader_rva + max(1, len(probe)),
         PE32_SECTION_ALIGNMENT,
     )
     ztext_virtual_size = _pe_stage170_ztext_virtual_span(
-        len(text),
+        decompressed_size,
         PE32_SECTION_ALIGNMENT,
     )
     idata_rva = ztext_rva + ztext_virtual_size
 
-    idata, iat_rvas, first_iat_rva, iat_size = _build_pe32_import_section(
-        effective_import_specs,
-        idata_rva,
+    if peb_resolver:
+        # Stage 211 Variant B: Windows sees no loader imports at all. .idata is
+        # a zero-filled virtual IAT arena populated from D64I after decompression.
+        bootstrap_idata = b""
+        bootstrap_iat_rvas = {}
+        first_iat_rva = 0
+        bootstrap_iat_size = 0
+        bootstrap_raw_span = 0
+    else:
+        # Stage 209/210 Variant A: conventional minimal Bootstrap-IAT.
+        bootstrap_idata, bootstrap_iat_rvas, first_iat_rva, bootstrap_iat_size = (
+            _build_pe32_import_section(bootstrap_imports, idata_rva)
+        )
+        bootstrap_raw_span = _align_up(
+            max(1, len(bootstrap_idata)), PE32_FILE_ALIGNMENT
+        )
+    program_iat_base_rva = idata_rva + bootstrap_raw_span
+    d64i, program_iat_rvas, program_iat_size = _build_d64i_import_metadata(
+        program_import_specs,
+        iat_base_rva=program_iat_base_rva,
+        pointer_size=4,
     )
+    if len(d64i) != d64i_probe_size:
+        raise PE32AssemblerError(
+            "Stage209-PE32: D64I-Metadatengröße änderte sich während des Layouts."
+        )
+
+    idata_virtual_size = bootstrap_raw_span + program_iat_size
     bss_rva = 0
     if int(bss_size) > 0:
         bss_rva = _align_up(
-            idata_rva + max(1, len(idata)), PE32_SECTION_ALIGNMENT
+            idata_rva + max(1, idata_virtual_size),
+            PE32_SECTION_ALIGNMENT,
         )
 
+    # Patch program import thunks to the dense custom IAT, not to the bootstrap
+    # IMAGE_IMPORT_DESCRIPTOR table.
     for symbol, patch_offset in thunk_patches.items():
-        if symbol not in iat_rvas:
+        if symbol not in program_iat_rvas:
             raise PE32AssemblerError(
-                f"Stage170-PE32: IAT-Eintrag fehlt für {symbol}."
+                f"Stage209-PE32: D64I-IAT-Eintrag fehlt für {symbol}."
             )
         struct.pack_into(
             "<I",
             text,
             int(patch_offset),
-            (int(image_base) + int(iat_rvas[symbol])) & 0xFFFFFFFF,
+            (int(image_base) + int(program_iat_rvas[symbol])) & 0xFFFFFFFF,
         )
 
+    packed_source = bytes(text) + bytes(d64i)
     ztext, packed_size = _pe32_build_d64z_payload(
-        bytes(text),
+        packed_source,
         text_rva=text_rva,
         original_entry_rva=original_entry_rva,
     )
     if len(ztext) > ztext_virtual_size:
         raise PE32AssemblerError(
-            "Stage170-PE32: MSZIP-Block überschreitet reservierten .ztext-VA-Raum."
+            "Stage209-PE32: D64Z+D64I-Block überschreitet reservierten .ztext-VA-Raum."
         )
 
     loader = _build_pe32_mszip_loader(
         image_base=image_base,
         text_rva=text_rva,
-        text_size=len(text),
+        text_size=len(packed_source),
         ztext_rva=ztext_rva,
         packed_size=packed_size,
         original_entry_rva=original_entry_rva,
-        iat_rvas=iat_rvas,
+        iat_rvas=bootstrap_iat_rvas,
+        d64i_rva=text_rva + program_text_size,
+        loader_rva=loader_rva,
+        peb_resolver=peb_resolver,
+        compatibility=_import_packer,
     )
 
     image = _pe_emit_stage170_image(
         machine=IMAGE_FILE_MACHINE_I386,
         image_base=image_base,
         text_rva=text_rva,
-        text_virtual_size=len(text),
+        text_virtual_size=len(packed_source),
         loader_rva=loader_rva,
         loader=loader,
         ztext_rva=ztext_rva,
         ztext=ztext,
         ztext_virtual_size=ztext_virtual_size,
         idata_rva=idata_rva,
-        idata=idata,
+        idata=bootstrap_idata,
         first_iat_rva=first_iat_rva,
-        iat_size=iat_size,
+        iat_size=bootstrap_iat_size,
         entry_rva=loader_rva,
+        idata_virtual_size=idata_virtual_size,
+        loader_writable=peb_resolver,
         gui=gui,
         bss_rva=bss_rva,
         bss_size=int(bss_size),
     )
+    _stage225_forced_packed_bss = False
+    if bool(_import_packer["require_savings"]):
+        baseline_image, baseline_text = _build_pe32_image_with_imports_exports_stage169_layout(
+            code,
+            entry_offset,
+            import_specs,
+            thunk_patches,
+            exports=exports,
+            dll_name=dll_name,
+            gui=gui,
+            dll=dll,
+            image_base=image_base,
+            base_relocations=base_relocations,
+            compress_text_mszip=compress_text_mszip,
+            bss_size=bss_size,
+        )
+        if not _pe_import_packer_accepts("pe32", len(image), len(baseline_image)):
+            if int(bss_size) > 0:
+                # Die COFF-DIR32-BSS-Relocations wurden oben bereits fuer das
+                # D64I-Packerlayout fixiert. Ein spaeter Rueckfall auf den
+                # Stage-169-Basispfad wuerde eine andere .bss-RVA ausgeben und
+                # damit die bereits eingebetteten Absolutadressen korrumpieren.
+                # Fuer BSS-Images bleibt deshalb der einmal gewaehlte Writer
+                # verbindlich. Ohne BSS bleibt das historische Savings-Fallback.
+                _stage225_forced_packed_bss = True
+            else:
+                PE_IMPORT_PACKER_LAST_DECISION.clear()
+                PE_IMPORT_PACKER_LAST_DECISION.update({
+                    "target": "pe32",
+                    "changed": False,
+                    "reason": "Stage210: Mindest-Ersparnis nicht erreicht; Basis-Image behalten.",
+                    "packed_size": len(image),
+                    "baseline_size": len(baseline_image),
+                    "saved_bytes": len(baseline_image) - len(image),
+                    "minimum_savings": int(_import_packer["minimum_savings"]),
+                    "peb_resolver": peb_resolver,
+                })
+                return baseline_image, baseline_text
+
+    PE_IMPORT_PACKER_LAST_DECISION.clear()
+    PE_IMPORT_PACKER_LAST_DECISION.update({
+        "target": "pe32",
+        "changed": True,
+        "reason": (
+            "Stage225: D64I-Packer wegen bereits fixierter BSS-RVAs beibehalten; "
+            "Savings-Fallback waere layoutinkompatibel."
+            if _stage225_forced_packed_bss else
+            (
+                "Stage211: D64I + PEB/LDR Resolver ohne Bootstrap-IAT verwendet."
+                if peb_resolver else "Stage210: D64I Import-Packer verwendet."
+            )
+        ),
+        "packed_size": len(image),
+        "peb_resolver": peb_resolver,
+        "minimum_savings": int(_import_packer["minimum_savings"]),
+        "forced_packed_bss_layout": bool(_stage225_forced_packed_bss),
+    })
     return image, bytes(text)
 
 
@@ -25873,7 +28546,28 @@ def link_coff64_objects(
     exports=None,
     dll_name=None,
 ) -> PE64Program:
-    """Stage170-PE32+: gepacktes EXE mit .text/.loader/.ztext/.idata."""
+    """Stage209-PE32+: D64Z program image + compressed D64I imports."""
+    _import_packer = _pe_import_packer_settings("pe64")
+    peb_resolver = bool(_import_packer.get("peb_resolver", False))
+    exact_runtime = bool(_import_packer.get("exact_runtime_check", False))
+    bootstrap_imports = _pe_d64i_bootstrap_imports(exact_runtime)
+    if not bool(_import_packer["enabled"]):
+        PE_IMPORT_PACKER_LAST_DECISION.clear()
+        PE_IMPORT_PACKER_LAST_DECISION.update({
+            "target": "pe64",
+            "changed": False,
+            "reason": "Stage210: Import-Packer in den Projekteinstellungen deaktiviert.",
+        })
+        return _link_coff64_objects_stage169_layout(
+            objects,
+            entry_symbol=entry_symbol,
+            gui=gui,
+            dll=dll,
+            imports=imports,
+            exports=exports,
+            dll_name=dll_name,
+        )
+
     parsed = [parse_coff64_object(x) for x in objects]
 
     declared_exports = {}
@@ -25883,7 +28577,7 @@ def link_coff64_objects(
         declared_exports[str(public)] = str(internal).casefold()
 
     effective_dll = bool(dll or declared_exports)
-    pack_text = bool(PE64_TEXT_COMPRESSION_MSZIP_DEFAULT) and not effective_dll
+    pack_text = _pe_packing_enabled("pe64") and not effective_dll
     if not pack_text:
         return _link_coff64_objects_stage169_layout(
             objects,
@@ -26005,47 +28699,79 @@ def link_coff64_objects(
             + ", ".join(unresolved)
         )
 
-    effective_import_specs = dict(import_specs)
-    for symbol, spec in PE64_MSZIP_LOADER_IMPORTS.items():
-        effective_import_specs.setdefault(symbol, spec)
-    effective_import_specs = _pe_import_specs_with_local_ordinals(
-        effective_import_specs,
+    # These are only the application's imports. Loader imports stay in the
+    # conventional bootstrap IAT and are never merged into D64I.
+    program_import_specs = _pe_import_specs_with_local_ordinals(
+        dict(import_specs),
         machine=IMAGE_FILE_MACHINE_AMD64,
     )
 
-    # Virtuelles Layout zuerst festlegen, damit COFF64-Relocations bereits die
-    # endgültigen .data/.bss-RVAs sehen.
+    program_text_size = len(text)
+    d64i_probe_size = _d64i_metadata_size(
+        program_import_specs,
+        pointer_size=8,
+    )
+    decompressed_size = program_text_size + d64i_probe_size
+
+    # Virtual layout first so relocations see final .data/.bss addresses.
     text_rva = PE64_SECTION_RVA
     loader_rva = _align_up(
-        text_rva + max(1, len(text)),
+        text_rva + max(1, decompressed_size),
         PE64_SECTION_ALIGNMENT,
     )
-    dummy_iat = {name: 0 for name in PE64_MSZIP_LOADER_IMPORTS}
+    dummy_boot_iat = {} if peb_resolver else {
+        name: 0 for name in bootstrap_imports
+    }
     probe = _build_pe64_mszip_loader(
         loader_rva=loader_rva,
         text_rva=text_rva,
-        text_size=len(text),
+        text_size=decompressed_size,
         ztext_rva=0,
-        packed_size=max(1, len(text)),
+        packed_size=max(1, decompressed_size),
         original_entry_rva=text_rva,
-        iat_rvas=dummy_iat,
+        iat_rvas=dummy_boot_iat,
+        d64i_rva=text_rva + program_text_size,
+        image_base=image_base,
+        peb_resolver=peb_resolver,
+        compatibility=_import_packer,
     )
     ztext_rva = _align_up(
         loader_rva + max(1, len(probe)),
         PE64_SECTION_ALIGNMENT,
     )
     ztext_virtual_size = _pe_stage170_ztext_virtual_span(
-        len(text),
+        decompressed_size,
         PE64_SECTION_ALIGNMENT,
     )
     idata_rva = ztext_rva + ztext_virtual_size
-    idata, iat_rvas, first_iat, iat_size = _build_pe64_import_section(
-        effective_import_specs,
-        idata_rva,
-    )
 
+    if peb_resolver:
+        bootstrap_idata = b""
+        bootstrap_iat_rvas = {}
+        first_iat = 0
+        bootstrap_iat_size = 0
+        bootstrap_raw_span = 0
+    else:
+        bootstrap_idata, bootstrap_iat_rvas, first_iat, bootstrap_iat_size = (
+            _build_pe64_import_section(bootstrap_imports, idata_rva)
+        )
+        bootstrap_raw_span = _align_up(
+            max(1, len(bootstrap_idata)), PE64_FILE_ALIGNMENT
+        )
+    program_iat_base_rva = idata_rva + bootstrap_raw_span
+    d64i, program_iat_rvas, program_iat_size = _build_d64i_import_metadata(
+        program_import_specs,
+        iat_base_rva=program_iat_base_rva,
+        pointer_size=8,
+    )
+    if len(d64i) != d64i_probe_size:
+        raise PE64AssemblerError(
+            "Stage209-PE64: D64I-Metadatengröße änderte sich während des Layouts."
+        )
+
+    idata_virtual_size = bootstrap_raw_span + program_iat_size
     next_rva = _align_up(
-        idata_rva + max(1, len(idata)),
+        idata_rva + max(1, idata_virtual_size),
         PE64_SECTION_ALIGNMENT,
     )
     data_rva = 0
@@ -26076,9 +28802,7 @@ def link_coff64_objects(
             )
         return int(base) + int(off)
 
-    # Im gepackten PE32+-Modus wird absichtlich fixed-base gelinkt. Absolute
-    # Werte werden daher auf die bevorzugte ImageBase geschrieben und es wird
-    # keine vor dem Entpacken unbrauchbare .reloc-Sektion benötigt.
+    # Packed PE32+ is fixed-base, as in the Stage-170 implementation.
     for obj, tbase, dbase in zip(parsed, text_bases, data_bases):
         for relocation in obj.relocations:
             target = global_refs.get(relocation.symbol.casefold())
@@ -26130,14 +28854,15 @@ def link_coff64_objects(
                     f"0x{relocation.relocation_type:04X} nicht unterstützt."
                 )
 
+    # Import adapters point to the dense custom IAT in .idata's virtual tail.
     for symbol, patches in iat_patches.items():
-        if symbol not in iat_rvas:
+        if symbol not in program_iat_rvas:
             raise PE64AssemblerError(
-                f"Stage170-PE64: IAT-Eintrag fehlt: {symbol}"
+                f"Stage209-PE64: D64I-IAT-Eintrag fehlt: {symbol}"
             )
         for patch in patches:
             instruction_end = text_rva + int(patch) + 4
-            displacement = int(iat_rvas[symbol]) - instruction_end
+            displacement = int(program_iat_rvas[symbol]) - instruction_end
             struct.pack_into("<i", text, int(patch), displacement)
 
     wanted = str(entry_symbol or "").casefold()
@@ -26156,41 +28881,48 @@ def link_coff64_objects(
     entry = int(entry_ref[1])
     original_entry_rva = text_rva + entry
 
+    packed_source = bytes(text) + bytes(d64i)
     ztext, packed_size = _pe32_build_d64z_payload(
-        bytes(text),
+        packed_source,
         text_rva=text_rva,
         original_entry_rva=original_entry_rva,
     )
     if len(ztext) > ztext_virtual_size:
         raise PE64AssemblerError(
-            "Stage170-PE64: MSZIP-Block überschreitet reservierten .ztext-VA-Raum."
+            "Stage209-PE64: D64Z+D64I-Block überschreitet reservierten .ztext-VA-Raum."
         )
 
     loader = _build_pe64_mszip_loader(
         loader_rva=loader_rva,
         text_rva=text_rva,
-        text_size=len(text),
+        text_size=len(packed_source),
         ztext_rva=ztext_rva,
         packed_size=packed_size,
         original_entry_rva=original_entry_rva,
-        iat_rvas=iat_rvas,
+        iat_rvas=bootstrap_iat_rvas,
+        d64i_rva=text_rva + program_text_size,
+        image_base=image_base,
+        peb_resolver=peb_resolver,
+        compatibility=_import_packer,
     )
 
     image = _pe_emit_stage170_image(
         machine=IMAGE_FILE_MACHINE_AMD64,
         image_base=image_base,
         text_rva=text_rva,
-        text_virtual_size=len(text),
+        text_virtual_size=len(packed_source),
         loader_rva=loader_rva,
         loader=loader,
         ztext_rva=ztext_rva,
         ztext=ztext,
         ztext_virtual_size=ztext_virtual_size,
         idata_rva=idata_rva,
-        idata=idata,
+        idata=bootstrap_idata,
         first_iat_rva=first_iat,
-        iat_size=iat_size,
+        iat_size=bootstrap_iat_size,
         entry_rva=loader_rva,
+        idata_virtual_size=idata_virtual_size,
+        loader_writable=peb_resolver,
         gui=gui,
         data_rva=data_rva,
         data=bytes(init_data),
@@ -26207,13 +28939,52 @@ def link_coff64_objects(
         }.get(sec, text_rva)
         public_symbols[name] = int(base_rva) - text_rva + int(off)
 
-    return PE64Program(
+    packed_program = PE64Program(
         image,
         bytes(text),
         entry,
         0,
         public_symbols,
     )
+    if bool(_import_packer["require_savings"]):
+        baseline_program = _link_coff64_objects_stage169_layout(
+            objects,
+            entry_symbol=entry_symbol,
+            gui=gui,
+            dll=dll,
+            imports=imports,
+            exports=exports,
+            dll_name=dll_name,
+        )
+        if not _pe_import_packer_accepts(
+            "pe64", len(packed_program.executable), len(baseline_program.executable)
+        ):
+            PE_IMPORT_PACKER_LAST_DECISION.clear()
+            PE_IMPORT_PACKER_LAST_DECISION.update({
+                "target": "pe64",
+                "changed": False,
+                "reason": "Stage210: Mindest-Ersparnis nicht erreicht; Basis-Image behalten.",
+                "packed_size": len(packed_program.executable),
+                "baseline_size": len(baseline_program.executable),
+                "saved_bytes": len(baseline_program.executable) - len(packed_program.executable),
+                "minimum_savings": int(_import_packer["minimum_savings"]),
+                "peb_resolver": peb_resolver,
+            })
+            return baseline_program
+
+    PE_IMPORT_PACKER_LAST_DECISION.clear()
+    PE_IMPORT_PACKER_LAST_DECISION.update({
+        "target": "pe64",
+        "changed": True,
+        "reason": (
+            "Stage211: D64I + PEB/LDR Resolver ohne Bootstrap-IAT verwendet."
+            if peb_resolver else "Stage210: D64I Import-Packer verwendet."
+        ),
+        "packed_size": len(packed_program.executable),
+        "peb_resolver": peb_resolver,
+        "minimum_savings": int(_import_packer["minimum_savings"]),
+    })
+    return packed_program
 
 
 # ---------------------------------------------------------------------------
@@ -26827,6 +29598,866 @@ def build_pe32_image_with_imports_exports(
 _compact_packed_pe32_image_stage172 = compact_packed_pe32_image
 
 
+# ---------------------------------------------------------------------------
+# Stage 216: physische PE32-Minimierung.
+#
+# Der interne Linker benötigt keinen DOS-Stub. Deshalb kann die PE-Signatur
+# direkt hinter dem 64-Byte IMAGE_DOS_HEADER bei Dateioffset 0x40 stehen.
+# Zusätzlich wird bei gepackten Images die physische .loader-Sektion vor den
+# übrigen Raw-Sektionen abgelegt. Dadurch liegt der EntryPoint-Code direkt
+# hinter dem (auf FileAlignment gerundeten) Header und ein großer
+# FileAlignment-Leerraum am Ende von .idata befindet sich nicht mehr vor dem
+# Loader. Die virtuellen RVAs, Section-Reihenfolge und DataDirectories bleiben
+# dabei unverändert.
+# ---------------------------------------------------------------------------
+def _pe32_minimize_physical_layout(
+    image: bytes,
+    *,
+    loader_first: bool = True,
+    strict: bool = False,
+) -> Tuple[bytes, Dict[str, object]]:
+    """Repack an internally generated PE32 without changing virtual RVAs.
+
+    Safe scope: unsigned PE32 images without Debug Directory, COFF symbol
+    table, reloc/line-number file pointers or other file-offset metadata.  All
+    section RVAs and SizeOfRawData values remain unchanged; only e_lfanew,
+    SizeOfHeaders and PointerToRawData are rewritten.
+    """
+    original = bytes(image)
+    info: Dict[str, object] = {
+        "changed": False,
+        "before_size": len(original),
+        "after_size": len(original),
+        "saved_bytes": 0,
+    }
+
+    def fail(message: str) -> Tuple[bytes, Dict[str, object]]:
+        info["reason"] = str(message)
+        if strict:
+            raise PE32AssemblerError(str(message))
+        return original, info
+
+    try:
+        if len(original) < 0x40 or original[:2] != b"MZ":
+            return fail("Stage216: MZ-Header fehlt.")
+
+        old_pe = struct.unpack_from("<I", original, 0x3C)[0]
+        if old_pe < 0x40 or old_pe + 24 > len(original):
+            return fail("Stage216: e_lfanew/PE-Header ist ungültig.")
+        if original[old_pe:old_pe + 4] != b"PE\0\0":
+            return fail("Stage216: PE-Signatur fehlt.")
+
+        old_fh = old_pe + 4
+        machine, section_count = struct.unpack_from("<HH", original, old_fh)
+        ptr_symbols, number_symbols = struct.unpack_from("<II", original, old_fh + 8)
+        optional_size = struct.unpack_from("<H", original, old_fh + 16)[0]
+        old_opt = old_fh + 20
+        if machine != IMAGE_FILE_MACHINE_I386:
+            return fail("Stage216: nur PE32/i386 wird physisch minimiert.")
+        if old_opt + optional_size > len(original):
+            return fail("Stage216: Optional Header ist abgeschnitten.")
+        if struct.unpack_from("<H", original, old_opt)[0] != 0x010B:
+            return fail("Stage216: PE32-Magic 0x10B fehlt.")
+        if ptr_symbols or number_symbols:
+            return fail("Stage216: COFF-Symboltabelle verhindert Raw-Repacking.")
+
+        file_alignment = struct.unpack_from("<I", original, old_opt + 0x24)[0]
+        old_headers_size = struct.unpack_from("<I", original, old_opt + 0x3C)[0]
+        if (
+            file_alignment < 0x200
+            or file_alignment & (file_alignment - 1)
+            or old_headers_size <= 0
+            or old_headers_size > len(original)
+        ):
+            return fail("Stage216: ungültiges FileAlignment/SizeOfHeaders.")
+
+        if optional_size >= 0x88:
+            security_off, security_size = struct.unpack_from(
+                "<II", original, old_opt + 0x60 + 4 * 8
+            )
+            debug_rva, debug_size = struct.unpack_from(
+                "<II", original, old_opt + 0x60 + 6 * 8
+            )
+            if security_off or security_size:
+                return fail("Stage216: signierte PE-Dateien werden nicht umgepackt.")
+            if debug_rva or debug_size:
+                return fail("Stage216: Debug-Directory verhindert Raw-Repacking.")
+
+        old_section_table = old_opt + optional_size
+        if old_section_table + int(section_count) * 40 > old_headers_size:
+            return fail("Stage216: Section-Tabelle überschreitet SizeOfHeaders.")
+
+        sections = []
+        highest_raw_end = int(old_headers_size)
+        for index in range(int(section_count)):
+            off = old_section_table + index * 40
+            header = bytearray(original[off:off + 40])
+            name = bytes(header[:8]).split(b"\0", 1)[0]
+            virtual_size, rva, raw_size, raw_ptr = struct.unpack_from(
+                "<IIII", header, 0x08
+            )
+            reloc_ptr = struct.unpack_from("<I", header, 0x18)[0]
+            line_ptr = struct.unpack_from("<I", header, 0x1C)[0]
+            reloc_count, line_count = struct.unpack_from("<HH", header, 0x20)
+            if reloc_ptr or line_ptr or reloc_count or line_count:
+                return fail(
+                    f"Stage216: Section {name!r} enthält dateibasierte COFF-Metadaten."
+                )
+            if raw_size:
+                if raw_ptr <= 0 or raw_ptr + raw_size > len(original):
+                    return fail(f"Stage216: Raw-Bereich von {name!r} ist ungültig.")
+                if raw_ptr % file_alignment:
+                    return fail(f"Stage216: Raw-Bereich von {name!r} ist nicht ausgerichtet.")
+                raw_data = bytes(original[raw_ptr:raw_ptr + raw_size])
+                highest_raw_end = max(highest_raw_end, int(raw_ptr) + int(raw_size))
+            else:
+                raw_data = b""
+            sections.append({
+                "index": index,
+                "header": header,
+                "name": name,
+                "virtual_size": int(virtual_size),
+                "rva": int(rva),
+                "raw_size": int(raw_size),
+                "old_raw_ptr": int(raw_ptr),
+                "raw_ptr": 0,
+                "raw_data": raw_data,
+            })
+
+        number_dirs = 0
+        if optional_size >= 0x60:
+            number_dirs = min(16, struct.unpack_from("<I", original, old_opt + 0x5C)[0])
+        for index in range(number_dirs):
+            rva, size = struct.unpack_from("<II", original, old_opt + 0x60 + index * 8)
+            if index == 4 or not rva or not size:
+                continue
+            if rva < old_headers_size and rva >= PE32_DOS_HEADER_SIZE:
+                return fail(
+                    f"Stage216: DataDirectory[{index}] liegt im zu verkleinernden Header."
+                )
+
+        new_pe = PE32_DOS_HEADER_SIZE
+        new_fh = new_pe + 4
+        new_opt = new_fh + 20
+        new_section_table = new_opt + optional_size
+        new_headers_size = _align_up(
+            new_section_table + int(section_count) * 40,
+            int(file_alignment),
+        )
+
+        raw_sections = [sec for sec in sections if int(sec["raw_size"]) > 0]
+        _layout_order = _pe_import_packer_settings("pe32").get(
+            "layout_order", PE_IMAGE_LAYOUT_DEFAULT
+        )
+        if loader_first:
+            raw_sections.sort(key=lambda sec: _pe_physical_layout_sort_key(
+                sec["name"], _layout_order, sec["index"]
+            ))
+        else:
+            raw_sections.sort(key=lambda sec: (
+                int(sec["old_raw_ptr"]), int(sec["index"])
+            ))
+
+        raw_cursor = int(new_headers_size)
+        for sec in raw_sections:
+            sec["raw_ptr"] = raw_cursor
+            raw_cursor += int(sec["raw_size"])
+
+        overlay = original[highest_raw_end:] if highest_raw_end < len(original) else b""
+
+        rebuilt = bytearray(raw_cursor)
+        rebuilt[:PE32_DOS_HEADER_SIZE] = original[:PE32_DOS_HEADER_SIZE]
+        struct.pack_into("<I", rebuilt, 0x3C, new_pe)
+
+        pe_header_size = 4 + 20 + optional_size
+        rebuilt[new_pe:new_pe + pe_header_size] = original[old_pe:old_pe + pe_header_size]
+        struct.pack_into("<I", rebuilt, new_opt + 0x3C, int(new_headers_size))
+        if optional_size >= 0x44:
+            struct.pack_into("<I", rebuilt, new_opt + 0x40, 0)
+
+        for sec in sections:
+            header = bytearray(sec["header"])
+            struct.pack_into("<I", header, 0x14, int(sec["raw_ptr"]))
+            dst = new_section_table + int(sec["index"]) * 40
+            rebuilt[dst:dst + 40] = header
+
+        for sec in raw_sections:
+            raw_ptr = int(sec["raw_ptr"])
+            raw_size = int(sec["raw_size"])
+            rebuilt[raw_ptr:raw_ptr + raw_size] = bytes(sec["raw_data"])
+
+        if overlay:
+            rebuilt.extend(overlay)
+
+        result = bytes(rebuilt)
+        loader_sec = next((sec for sec in sections if sec["name"] == b".loader"), None)
+        info.update({
+            "changed": result != original,
+            "reason": (
+                "Stage216: PE32-Header auf 0x40/0x200 minimiert und Loader-Rawblock zuerst abgelegt."
+                if result != original else
+                "Stage216: PE32-Layout ist bereits minimal."
+            ),
+            "after_size": len(result),
+            "saved_bytes": len(original) - len(result),
+            "old_pe_offset": int(old_pe),
+            "new_pe_offset": int(new_pe),
+            "old_headers_size": int(old_headers_size),
+            "new_headers_size": int(new_headers_size),
+            "loader_raw_ptr": int(loader_sec["raw_ptr"]) if loader_sec else 0,
+            "layout_order": _layout_order,
+            "overlay_size": len(overlay),
+        })
+        return result, info
+
+    except (struct.error, ValueError, OverflowError) as exc:
+        return fail(f"Stage216: ungültiges PE32-Layout: {exc}")
+
+
+
+# ---------------------------------------------------------------------------
+# Stage 222: restore the initialized Windows IAT for legacy Stage-220/221
+# images that already made .idata raw-free while still exposing a conventional
+# IMAGE_IMPORT_DIRECTORY / IAT directory.  Such an image still contains the
+# import descriptors and ILT metadata in .loader, so the pre-binding FirstThunk
+# contents can be reconstructed losslessly from OriginalFirstThunk.
+# ---------------------------------------------------------------------------
+def _pe32_restore_windows_iat_raw(
+    image: bytes,
+    *,
+    strict: bool = False,
+) -> Tuple[bytes, Dict[str, object]]:
+    original = bytes(image)
+    info: Dict[str, object] = {
+        "changed": False,
+        "before_size": len(original),
+        "after_size": len(original),
+        "saved_bytes": 0,
+    }
+
+    def fail(message: str) -> Tuple[bytes, Dict[str, object]]:
+        info["reason"] = str(message)
+        if strict:
+            raise PE32AssemblerError(str(message))
+        return original, info
+
+    try:
+        if len(original) < 0x100 or original[:2] != b"MZ":
+            return fail("Stage222: MZ-Header fehlt.")
+        pe = struct.unpack_from("<I", original, 0x3C)[0]
+        if pe < 0x40 or pe + 24 > len(original) or original[pe:pe + 4] != b"PE\0\0":
+            return fail("Stage222: PE-Signatur/e_lfanew ist ungültig.")
+
+        fh = pe + 4
+        machine, section_count = struct.unpack_from("<HH", original, fh)
+        optional_size = struct.unpack_from("<H", original, fh + 16)[0]
+        opt = fh + 20
+        if machine != IMAGE_FILE_MACHINE_I386:
+            return fail("Stage222: IAT-Reparatur ist derzeit nur für PE32/i386 aktiv.")
+        if opt + optional_size > len(original) or struct.unpack_from("<H", original, opt)[0] != 0x010B:
+            return fail("Stage222: PE32 Optional Header ist ungültig.")
+
+        file_alignment = struct.unpack_from("<I", original, opt + 0x24)[0]
+        size_headers = struct.unpack_from("<I", original, opt + 0x3C)[0]
+        if file_alignment < 0x200 or file_alignment & (file_alignment - 1):
+            return fail("Stage222: ungültiges FileAlignment.")
+
+        import_rva, import_size = struct.unpack_from("<II", original, opt + 0x68)
+        iat_rva, iat_size = struct.unpack_from("<II", original, opt + 0xC0)
+        if not (import_rva and import_size and iat_rva and iat_size):
+            info["reason"] = "Stage222: keine konventionelle Windows Import/IAT Directory vorhanden."
+            return original, info
+
+        sec_table = opt + optional_size
+        if sec_table + int(section_count) * 40 > len(original):
+            return fail("Stage222: Section-Tabelle ist abgeschnitten.")
+
+        sections = []
+        idata = None
+        highest_raw_end = int(size_headers)
+        for index in range(int(section_count)):
+            off = sec_table + index * 40
+            header = bytearray(original[off:off + 40])
+            name = bytes(header[:8]).split(b"\0", 1)[0]
+            vs, rva, raw_size, raw_ptr = struct.unpack_from("<IIII", header, 0x08)
+            chars = struct.unpack_from("<I", header, 0x24)[0]
+            if raw_size:
+                if raw_ptr <= 0 or raw_ptr + raw_size > len(original):
+                    return fail(f"Stage222: Raw-Bereich von {name!r} ist ungültig.")
+                raw_data = bytes(original[raw_ptr:raw_ptr + raw_size])
+                highest_raw_end = max(highest_raw_end, int(raw_ptr) + int(raw_size))
+            else:
+                raw_data = b""
+            sec = {
+                "index": index, "offset": off, "header": header, "name": name,
+                "virtual_size": int(vs), "rva": int(rva),
+                "raw_size": int(raw_size), "raw_ptr": int(raw_ptr),
+                "raw_data": raw_data, "chars": int(chars),
+            }
+            sections.append(sec)
+            if name == b".idata":
+                idata = sec
+
+        if idata is None:
+            return fail("Stage222: .idata fehlt.")
+        idata_start = int(idata["rva"])
+        idata_end = idata_start + max(int(idata["virtual_size"]), 1)
+        if not (idata_start <= int(iat_rva) < idata_end):
+            return fail("Stage222: Windows-IAT liegt nicht in .idata.")
+
+        # If initialized .idata bytes are still present, there is nothing to
+        # repair.  The caller may continue with the conservative compactor.
+        if int(idata["raw_size"]) > 0:
+            info.update({
+                "reason": "Stage222: initialisierte Windows-IAT ist bereits auf Disk vorhanden.",
+                "windows_iat_preserved": True,
+                "iat_rva": int(iat_rva),
+                "iat_size": int(iat_size),
+            })
+            return original, info
+
+        def rva_to_offset(rva: int) -> int:
+            value = int(rva)
+            if 0 <= value < int(size_headers):
+                return value
+            for sec in sections:
+                raw_size = int(sec["raw_size"])
+                if raw_size <= 0:
+                    continue
+                start = int(sec["rva"])
+                delta = value - start
+                if 0 <= delta < raw_size:
+                    return int(sec["raw_ptr"]) + delta
+            raise ValueError(f"RVA 0x{value:X} besitzt keine Raw-Abbildung")
+
+        # Reconstruct FirstThunk from OriginalFirstThunk.  We intentionally do
+        # not guess when OFT is zero because the lost IAT bytes would then be
+        # the only lookup source.
+        desc_off = rva_to_offset(import_rva)
+        thunk_sets = []
+        max_iat_end = int(iat_rva) + int(iat_size)
+        for _ in range(512):
+            if desc_off + 20 > len(original):
+                raise ValueError("Import-Descriptor abgeschnitten")
+            oft, stamp, chain, name_rva, ft = struct.unpack_from("<IIIII", original, desc_off)
+            desc_off += 20
+            if not (oft or stamp or chain or name_rva or ft):
+                break
+            if not oft:
+                return fail("Stage222: legacy Raw-IAT kann bei OriginalFirstThunk=0 nicht sicher rekonstruiert werden.")
+            ilt_off = rva_to_offset(oft)
+            values = []
+            for _j in range(65536):
+                if ilt_off + 4 > len(original):
+                    raise ValueError("Import Lookup Table abgeschnitten")
+                value = struct.unpack_from("<I", original, ilt_off)[0]
+                ilt_off += 4
+                values.append(int(value))
+                if value == 0:
+                    break
+            else:
+                raise ValueError("Import Lookup Table ohne Terminator")
+            ft_end = int(ft) + len(values) * 4
+            if int(ft) < idata_start or ft_end > idata_end:
+                return fail("Stage222: FirstThunk liegt außerhalb der virtuellen .idata.")
+            max_iat_end = max(max_iat_end, ft_end)
+            thunk_sets.append((int(ft), values))
+        else:
+            raise ValueError("Import Descriptor Table ohne Terminator")
+
+        needed = max(
+            int(idata["virtual_size"]),
+            max_iat_end - idata_start,
+            1,
+        )
+        idata_raw_size = _align_up(needed, int(file_alignment))
+        idata_raw = bytearray(idata_raw_size)
+        for ft, values in thunk_sets:
+            rel = ft - idata_start
+            for index, value in enumerate(values):
+                struct.pack_into("<I", idata_raw, rel + index * 4, int(value))
+
+        # First construct a valid intermediate image with .idata appended.  A
+        # second Stage-216 repack then applies the configured Stage-221 physical
+        # ordering and minimized headers without touching virtual RVAs.
+        new_idata_raw_ptr = _align_up(max(len(original), highest_raw_end), int(file_alignment))
+        intermediate = bytearray(new_idata_raw_ptr + idata_raw_size)
+        intermediate[:len(original)] = original
+        intermediate[new_idata_raw_ptr:new_idata_raw_ptr + idata_raw_size] = idata_raw
+        struct.pack_into("<I", intermediate, int(idata["offset"]) + 0x10, int(idata_raw_size))
+        struct.pack_into("<I", intermediate, int(idata["offset"]) + 0x14, int(new_idata_raw_ptr))
+
+        # Recalculate the PE aggregate raw-size counters from the section table.
+        size_code = 0
+        size_init = 0
+        for sec in sections:
+            raw_size = idata_raw_size if sec is idata else int(sec["raw_size"])
+            chars = int(sec["chars"])
+            if chars & 0x00000020:  # IMAGE_SCN_CNT_CODE
+                size_code += raw_size
+            if chars & 0x00000040:  # IMAGE_SCN_CNT_INITIALIZED_DATA
+                size_init += raw_size
+        struct.pack_into("<I", intermediate, opt + 0x04, int(size_code))
+        struct.pack_into("<I", intermediate, opt + 0x08, int(size_init))
+        if optional_size >= 0x44:
+            struct.pack_into("<I", intermediate, opt + 0x40, 0)
+
+        repaired, physical = _pe32_minimize_physical_layout(
+            bytes(intermediate), loader_first=True, strict=strict
+        )
+        info.update({
+            "changed": repaired != original,
+            "reason": (
+                "Stage222: legacy raw-freie Windows-IAT aus OriginalFirstThunk "
+                "rekonstruiert und als initialisierte .idata wiederhergestellt."
+            ),
+            "after_size": len(repaired),
+            "saved_bytes": len(original) - len(repaired),
+            "windows_iat_restored": True,
+            "windows_iat_preserved": True,
+            "iat_rva": int(iat_rva),
+            "iat_size": int(iat_size),
+            "idata_raw_size": int(idata_raw_size),
+            "physical": dict(physical),
+        })
+        return repaired, info
+
+    except (struct.error, ValueError, OverflowError) as exc:
+        return fail(f"Stage222: Windows-IAT-Reparatur fehlgeschlagen: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# Stage 220/222: PE32 packed raw-section fusion.
+#
+# FileAlignment=0x200 makes every separately stored raw section consume a
+# complete 512-byte block. Stage 220 introduced a stronger raw fusion. Stage
+# 222 restricts that optimization to the PEB/custom-resolver case, where the
+# PE exposes no Windows-managed Import Directory/IAT. If Windows still owns the
+# imports, initialized FirstThunk bytes remain in .idata and only the safe D64Z
+# embedding/physical repack is used. Legacy Stage-220/221 images can be repaired
+# by _pe32_restore_windows_iat_raw() before compaction continues.
+# ---------------------------------------------------------------------------
+def _pe32_fuse_loader_imports_and_d64z(
+    image: bytes,
+    *,
+    strict: bool = False,
+) -> Tuple[bytes, Dict[str, object]]:
+    original = bytes(image)
+    info: Dict[str, object] = {
+        "changed": False,
+        "before_size": len(original),
+        "after_size": len(original),
+        "saved_bytes": 0,
+    }
+
+    def fail(message: str) -> Tuple[bytes, Dict[str, object]]:
+        info["reason"] = str(message)
+        if strict:
+            raise PE32AssemblerError(str(message))
+        return original, info
+
+    def read_c_string(offset: int, limit: int = 0x10000) -> bytes:
+        if offset < 0 or offset >= len(original):
+            raise ValueError("Stringoffset außerhalb der PE-Datei")
+        end_limit = min(len(original), offset + max(1, int(limit)))
+        end = original.find(b"\0", offset, end_limit)
+        if end < 0:
+            raise ValueError("nicht terminierter Import-String")
+        return original[offset:end]
+
+    # Stage 222 can also repair already-generated Stage-220/221 images whose
+    # conventional Windows IAT had been made raw-free.  Doing this before the
+    # .ztext-already-fused fast path prevents a second compactor pass from
+    # preserving the broken legacy layout.
+    restored, restore_info = _pe32_restore_windows_iat_raw(
+        original, strict=False
+    )
+    if bool(restore_info.get("windows_iat_restored", False)):
+        info.update(dict(restore_info))
+        return restored, info
+
+    try:
+        if len(original) < 0x100 or original[:2] != b"MZ":
+            return fail("Stage220: MZ-Header fehlt.")
+        pe = struct.unpack_from("<I", original, 0x3C)[0]
+        if pe < 0x40 or pe + 24 > len(original) or original[pe:pe + 4] != b"PE\0\0":
+            return fail("Stage220: PE-Signatur/e_lfanew ist ungültig.")
+
+        fh = pe + 4
+        machine, section_count = struct.unpack_from("<HH", original, fh)
+        optional_size = struct.unpack_from("<H", original, fh + 16)[0]
+        opt = fh + 20
+        if machine != IMAGE_FILE_MACHINE_I386:
+            return fail("Stage220: Raw-Fusion ist derzeit nur für PE32/i386 aktiv.")
+        if opt + optional_size > len(original) or struct.unpack_from("<H", original, opt)[0] != 0x010B:
+            return fail("Stage220: PE32 Optional Header ist ungültig.")
+
+        file_alignment = struct.unpack_from("<I", original, opt + 0x24)[0]
+        section_alignment = struct.unpack_from("<I", original, opt + 0x20)[0]
+        size_headers = struct.unpack_from("<I", original, opt + 0x3C)[0]
+        image_base = struct.unpack_from("<I", original, opt + 0x1C)[0]
+        if file_alignment < 0x200 or file_alignment & (file_alignment - 1):
+            return fail("Stage220: ungültiges FileAlignment.")
+        if section_alignment <= 0 or section_alignment & (section_alignment - 1):
+            return fail("Stage220: ungültiges SectionAlignment.")
+
+        # Signed/debug images contain file offsets that a raw repack would
+        # invalidate.  Generated D64 images do not use either directory.
+        if optional_size >= 0x88:
+            security_off, security_size = struct.unpack_from("<II", original, opt + 0x60 + 4 * 8)
+            debug_rva, debug_size = struct.unpack_from("<II", original, opt + 0x60 + 6 * 8)
+            if security_off or security_size:
+                return fail("Stage220: signierte PE-Datei wird nicht umgepackt.")
+            if debug_rva or debug_size:
+                return fail("Stage220: Debug-Directory verhindert Raw-Fusion.")
+
+        sec_table = opt + optional_size
+        if sec_table + int(section_count) * 40 > len(original):
+            return fail("Stage220: Section-Tabelle ist abgeschnitten.")
+
+        sections = []
+        highest_raw_end = int(size_headers)
+        by_name = {}
+        for index in range(int(section_count)):
+            off = sec_table + index * 40
+            header = bytearray(original[off:off + 40])
+            name = bytes(header[:8]).split(b"\0", 1)[0]
+            vs, rva, raw_size, raw_ptr = struct.unpack_from("<IIII", header, 0x08)
+            chars = struct.unpack_from("<I", header, 0x24)[0]
+            reloc_ptr = struct.unpack_from("<I", header, 0x18)[0]
+            line_ptr = struct.unpack_from("<I", header, 0x1C)[0]
+            reloc_count, line_count = struct.unpack_from("<HH", header, 0x20)
+            if reloc_ptr or line_ptr or reloc_count or line_count:
+                return fail(f"Stage220: {name!r} besitzt dateibasierte COFF-Metadaten.")
+            if raw_size:
+                if raw_ptr <= 0 or raw_ptr + raw_size > len(original):
+                    return fail(f"Stage220: Raw-Bereich von {name!r} ist ungültig.")
+                raw_data = bytes(original[raw_ptr:raw_ptr + raw_size])
+                highest_raw_end = max(highest_raw_end, int(raw_ptr) + int(raw_size))
+            else:
+                raw_data = b""
+            sec = {
+                "index": index, "header": header, "name": name,
+                "virtual_size": int(vs), "rva": int(rva),
+                "raw_size": int(raw_size), "raw_ptr": int(raw_ptr),
+                "raw_data": raw_data, "chars": int(chars),
+            }
+            sections.append(sec)
+            by_name[name] = sec
+
+        loader = by_name.get(b".loader")
+        ztext = by_name.get(b".ztext")
+        idata = by_name.get(b".idata")
+        if not loader or not ztext or not idata:
+            return fail("Stage220: .loader/.ztext/.idata wurden nicht vollständig gefunden.")
+        if int(ztext["raw_size"]) <= 0:
+            # Already fused by this stage (or an equivalent previous pass).
+            minimized, physical = _pe32_minimize_physical_layout(original, loader_first=True, strict=strict)
+            info.update({
+                "changed": minimized != original,
+                "reason": "Stage220: D64Z ist bereits raw-frei; nur physisches Layout geprüft.",
+                "after_size": len(minimized),
+                "saved_bytes": len(original) - len(minimized),
+                "physical": dict(physical),
+            })
+            return minimized, info
+        if int(loader["virtual_size"]) <= 0 or int(loader["virtual_size"]) > int(loader["raw_size"]):
+            return fail("Stage220: .loader VirtualSize/RawSize ist ungültig.")
+
+        def rva_to_offset(rva: int) -> int:
+            value = int(rva)
+            if 0 <= value < int(size_headers):
+                return value
+            for sec in sections:
+                start = int(sec["rva"])
+                raw_size = int(sec["raw_size"])
+                if raw_size <= 0:
+                    continue
+                delta = value - start
+                if 0 <= delta < raw_size:
+                    return int(sec["raw_ptr"]) + delta
+            raise ValueError(f"RVA 0x{value:X} besitzt keine Raw-Abbildung")
+
+        # D64Z logical bytes; alignment padding is intentionally excluded.
+        zraw = bytes(ztext["raw_data"])
+        if len(zraw) < PE32_D64Z_HEADER_SIZE:
+            return fail("Stage220: .ztext enthält keinen vollständigen D64Z-Header.")
+        magic, version, algorithm, _flags, _text_rva, _text_size, packed_size, _oep, _crc = PE32_D64Z_HEADER.unpack_from(zraw, 0)
+        if magic != PE32_D64Z_MAGIC or int(version) != PE32_D64Z_VERSION or int(algorithm) != PE32_COMPRESS_ALGORITHM_MSZIP:
+            return fail("Stage220: .ztext ist kein bekanntes D64Z/MSZIP-Payload.")
+        zlogical = PE32_D64Z_HEADER_SIZE + int(packed_size)
+        if zlogical > len(zraw):
+            return fail("Stage220: D64Z PackedSize überschreitet .ztext RawSize.")
+
+        loader_code = bytearray(bytes(loader["raw_data"])[:int(loader["virtual_size"])])
+        _layout_order = _pe_import_packer_settings("pe32").get(
+            "layout_order", PE_IMAGE_LAYOUT_DEFAULT
+        )
+
+        # Rebuild only IMAGE_IMPORT_DESCRIPTOR + lookup tables + names.  The
+        # FirstThunk RVAs deliberately remain unchanged in virtual .idata, so
+        # neither packed program code nor loader IAT references need patching.
+        import_dir_off = opt + 0x68
+        iat_dir_off = opt + 0xC0
+        import_rva, import_size = struct.unpack_from("<II", original, import_dir_off)
+        old_iat_rva, old_iat_size = struct.unpack_from("<II", original, iat_dir_off)
+
+        # Stage 222: a Windows-managed IAT must retain its initialized on-disk
+        # thunk contents.  Stage 220 made .idata raw-free even when the PE still
+        # exposed a conventional Import Directory.  That violates the PE import
+        # contract (IAT == ILT before binding) and can prevent the image from
+        # reaching the packed entry point on Windows.  Only the PEB/custom
+        # resolver variant (no Import Directory and no Windows IAT directory)
+        # may make .idata raw-free.  Conventional/Bootstrap-IAT images fall
+        # back to the proven Stage-216 physical repacker, which preserves the
+        # original initialized IAT bytes while still honoring the Stage-221
+        # physical Layout ordering.
+        if int(import_rva) or int(import_size) or int(old_iat_rva) or int(old_iat_size):
+            minimized, physical = _pe32_minimize_physical_layout(
+                original, loader_first=True, strict=strict
+            )
+            info.update({
+                "changed": minimized != original,
+                "reason": (
+                    "Stage222: Windows-Import/IAT erkannt; Raw-Fusion bleibt "
+                    "deaktiviert, damit die initialisierten IAT-Thunks erhalten bleiben."
+                ),
+                "after_size": len(minimized),
+                "saved_bytes": len(original) - len(minimized),
+                "windows_iat_preserved": True,
+                "import_rva": int(import_rva),
+                "iat_rva": int(old_iat_rva),
+                "iat_size": int(old_iat_size),
+                "idata_raw_size": int(idata["raw_size"]),
+                "layout_order": _pe_import_packer_settings("pe32").get(
+                    "layout_order", PE_IMAGE_LAYOUT_DEFAULT
+                ),
+                "physical": dict(physical),
+            })
+            return minimized, info
+
+        # No other RVA directory may depend on raw bytes in .idata because that
+        # section becomes zero-raw after the fusion.
+        if optional_size >= 0x60:
+            number_dirs = min(16, struct.unpack_from("<I", original, opt + 0x5C)[0])
+            idata_start = int(idata["rva"])
+            idata_end = idata_start + max(int(idata["virtual_size"]), int(idata["raw_size"]), 1)
+            for di in range(number_dirs):
+                if di in {1, 4, 12}:
+                    continue
+                rva, sz = struct.unpack_from("<II", original, opt + 0x60 + di * 8)
+                if rva and sz and idata_start <= int(rva) < idata_end:
+                    return fail(f"Stage220: DataDirectory[{di}] liegt in .idata und verhindert Raw-Fusion.")
+
+        descriptors = []
+        if import_rva and import_size:
+            desc_off = rva_to_offset(import_rva)
+            for _ in range(512):
+                if desc_off + 20 > len(original):
+                    raise ValueError("Import-Descriptor abgeschnitten")
+                oft, stamp, chain, name_rva, ft = struct.unpack_from("<IIIII", original, desc_off)
+                desc_off += 20
+                if not (oft or stamp or chain or name_rva or ft):
+                    break
+                dll_name = read_c_string(rva_to_offset(name_rva))
+                lookup_rva = int(oft or ft)
+                lookup_off = rva_to_offset(lookup_rva)
+                thunks = []
+                for _j in range(65536):
+                    if lookup_off + 4 > len(original):
+                        raise ValueError("Import Lookup Table abgeschnitten")
+                    value = struct.unpack_from("<I", original, lookup_off)[0]
+                    lookup_off += 4
+                    if value == 0:
+                        break
+                    if value & 0x80000000:
+                        thunks.append(("ordinal", int(value)))
+                    else:
+                        hn_off = rva_to_offset(value)
+                        if hn_off + 2 > len(original):
+                            raise ValueError("IMAGE_IMPORT_BY_NAME abgeschnitten")
+                        hint = struct.unpack_from("<H", original, hn_off)[0]
+                        func_name = read_c_string(hn_off + 2)
+                        thunks.append(("name", int(hint), func_name))
+                else:
+                    raise ValueError("Import Lookup Table ohne Terminator")
+                descriptors.append({
+                    "dll": dll_name,
+                    "first_thunk": int(ft),
+                    "thunks": thunks,
+                })
+            else:
+                raise ValueError("Import Descriptor Table ohne Terminator")
+
+        def build_import_metadata(base_rva: int) -> bytearray:
+            metadata = bytearray((len(descriptors) + 1) * 20)
+            for di, desc in enumerate(descriptors):
+                while len(metadata) & 3:
+                    metadata.append(0)
+                int_off = len(metadata)
+                metadata.extend(bytes((len(desc["thunks"]) + 1) * 4))
+                for ti, thunk in enumerate(desc["thunks"]):
+                    if thunk[0] == "ordinal":
+                        value = int(thunk[1])
+                    else:
+                        if len(metadata) & 1:
+                            metadata.append(0)
+                        hn_off = len(metadata)
+                        metadata.extend(struct.pack("<H", int(thunk[1]) & 0xFFFF))
+                        metadata.extend(bytes(thunk[2]) + b"\0")
+                        value = int(base_rva) + hn_off
+                    struct.pack_into(
+                        "<I", metadata, int_off + ti * 4, int(value) & 0xFFFFFFFF
+                    )
+                dll_off = len(metadata)
+                metadata.extend(bytes(desc["dll"]) + b"\0")
+                struct.pack_into(
+                    "<IIIII", metadata, di * 20,
+                    int(base_rva) + int_off,
+                    0, 0,
+                    int(base_rva) + dll_off,
+                    int(desc["first_thunk"]),
+                )
+            return metadata
+
+        metadata_probe = build_import_metadata(0)
+        if _layout_order == PE_IMAGE_LAYOUT_LOADER_CODE_DATA:
+            ztext_offset = _align_up(len(loader_code), 4)
+            metadata_offset = _align_up(ztext_offset + zlogical, 4)
+        else:
+            metadata_offset = _align_up(len(loader_code), 4)
+            ztext_offset = _align_up(metadata_offset + len(metadata_probe), 4)
+        metadata_rva = int(loader["rva"]) + metadata_offset
+        metadata = build_import_metadata(metadata_rva)
+        embedded_ztext_rva = int(loader["rva"]) + ztext_offset
+        combined_virtual_size = max(
+            ztext_offset + zlogical,
+            metadata_offset + len(metadata),
+            len(loader_code),
+        )
+        combined_raw_size = _align_up(combined_virtual_size, int(file_alignment))
+
+        next_rvas = [int(sec["rva"]) for sec in sections if int(sec["rva"]) > int(loader["rva"])]
+        next_rva = min(next_rvas) if next_rvas else _align_up(int(loader["rva"]) + combined_virtual_size, int(section_alignment))
+        mapped_end = int(loader["rva"]) + _align_up(max(combined_virtual_size, combined_raw_size), int(section_alignment))
+        if mapped_end > int(next_rva):
+            return fail(
+                "Stage220: zusammengeführter .loader passt nicht in seinen virtuellen Abschnitt "
+                f"(Ende 0x{mapped_end:X}, nächste Section 0x{int(next_rva):X})."
+            )
+
+        old_packed_va = (int(image_base) + int(ztext["rva"]) + PE32_D64Z_HEADER_SIZE) & 0xFFFFFFFF
+        new_packed_va = (int(image_base) + int(embedded_ztext_rva) + PE32_D64Z_HEADER_SIZE) & 0xFFFFFFFF
+        old_push = b"\x68" + struct.pack("<I", old_packed_va)
+        new_push = b"\x68" + struct.pack("<I", new_packed_va)
+        matches = []
+        pos = 0
+        while True:
+            hit = loader_code.find(old_push, pos)
+            if hit < 0:
+                break
+            matches.append(hit)
+            pos = hit + 1
+        if len(matches) != 1:
+            return fail("Stage220: D64Z-PackedVA im Loader ist nicht eindeutig auffindbar.")
+        loader_code[matches[0]:matches[0] + 5] = new_push
+
+        combined = bytearray(combined_raw_size)
+        combined[:len(loader_code)] = loader_code
+        if metadata:
+            combined[metadata_offset:metadata_offset + len(metadata)] = metadata
+        combined[ztext_offset:ztext_offset + zlogical] = zraw[:zlogical]
+
+        loader["virtual_size"] = int(combined_virtual_size)
+        loader["raw_size"] = int(combined_raw_size)
+        loader["raw_data"] = bytes(combined)
+        ztext["raw_size"] = 0
+        ztext["raw_ptr"] = 0
+        ztext["raw_data"] = b""
+        idata["raw_size"] = 0
+        idata["raw_ptr"] = 0
+        idata["raw_data"] = b""
+
+        overlay = original[highest_raw_end:] if highest_raw_end < len(original) else b""
+        raw_cursor = int(size_headers)
+        for sec in sections:
+            if int(sec["raw_size"]) > 0:
+                sec["raw_ptr"] = raw_cursor
+                raw_cursor += int(sec["raw_size"])
+            else:
+                sec["raw_ptr"] = 0
+
+        rebuilt = bytearray(raw_cursor)
+        rebuilt[:int(size_headers)] = original[:int(size_headers)]
+
+        # Import descriptors now live inside .loader. IAT directory remains at
+        # the original virtual .idata addresses and is populated by Windows.
+        if metadata:
+            struct.pack_into("<II", rebuilt, import_dir_off, int(metadata_rva), len(metadata))
+        else:
+            struct.pack_into("<II", rebuilt, import_dir_off, 0, 0)
+        struct.pack_into("<II", rebuilt, iat_dir_off, int(old_iat_rva), int(old_iat_size))
+
+        size_code = 0
+        size_init = 0
+        first_data_rva = 0
+        last_virtual_end = 0
+        for sec in sections:
+            header = bytearray(sec["header"])
+            struct.pack_into("<I", header, 0x08, int(sec["virtual_size"]))
+            struct.pack_into("<I", header, 0x10, int(sec["raw_size"]))
+            struct.pack_into("<I", header, 0x14, int(sec["raw_ptr"]))
+            dst = sec_table + int(sec["index"]) * 40
+            rebuilt[dst:dst + 40] = header
+            raw_size = int(sec["raw_size"])
+            chars = int(sec["chars"])
+            if raw_size and (chars & 0x00000020):
+                size_code += raw_size
+            elif raw_size and (chars & 0x00000040):
+                size_init += raw_size
+            if not first_data_rva and (chars & 0x00000040) and not (chars & 0x00000020):
+                first_data_rva = int(sec["rva"])
+            last_virtual_end = max(last_virtual_end, int(sec["rva"]) + max(1, int(sec["virtual_size"])))
+
+        struct.pack_into("<I", rebuilt, opt + 0x04, int(size_code))
+        struct.pack_into("<I", rebuilt, opt + 0x08, int(size_init))
+        if first_data_rva:
+            struct.pack_into("<I", rebuilt, opt + 0x18, int(first_data_rva))
+        struct.pack_into("<I", rebuilt, opt + 0x38, _align_up(last_virtual_end, int(section_alignment)))
+
+        for sec in sections:
+            if int(sec["raw_size"]) <= 0:
+                continue
+            start = int(sec["raw_ptr"])
+            data = bytes(sec["raw_data"])
+            rebuilt[start:start + len(data)] = data
+        if overlay:
+            rebuilt.extend(overlay)
+
+        minimized, physical = _pe32_minimize_physical_layout(bytes(rebuilt), loader_first=True, strict=strict)
+        info.update({
+            "changed": minimized != original,
+            "reason": (
+                "Stage220: Bootstrap-Importmetadaten und D64Z in .loader vereinigt; "
+                ".idata/.ztext sind raw-freie virtuelle Bereiche."
+            ),
+            "after_size": len(minimized),
+            "saved_bytes": len(original) - len(minimized),
+            "loader_virtual_size": int(combined_virtual_size),
+            "loader_raw_size": int(combined_raw_size),
+            "import_metadata_size": len(metadata),
+            "import_metadata_rva": int(metadata_rva) if metadata else 0,
+            "embedded_ztext_rva": int(embedded_ztext_rva),
+            "layout_order": _layout_order,
+            "idata_raw_size": 0,
+            "ztext_raw_size": 0,
+            "physical": dict(physical),
+        })
+        return minimized, info
+    except (struct.error, ValueError, OverflowError) as exc:
+        return fail(f"Stage220: Raw-Fusion fehlgeschlagen: {exc}")
+
+
 def compact_packed_pe32_image(
     image: bytes,
     *,
@@ -26846,6 +30477,31 @@ def compact_packed_pe32_image(
     preserves the Windows-loader-visible section topology of the original PE.
     """
     original = bytes(image)
+    stage223_input = original
+    stage223_pre_fusion_info = {}
+
+    # Stage 220/222 first tries the stronger fusion only when no conventional
+    # Windows-managed Import/IAT directory exists. Conventional imports retain
+    # initialized .idata; legacy Stage-220/221 raw-free IATs are repaired.
+    fused, fusion_info = _pe32_fuse_loader_imports_and_d64z(
+        original, strict=False
+    )
+    if bool(fusion_info.get("changed", False)):
+        # Stage 223: a conventional Windows IAT may require the Stage-222
+        # physical repack/repair first, but that must not short-circuit the
+        # safe loader+D64Z fusion below.  Continue from the repaired/repacked
+        # image so the large FileAlignment block between loader code and D64Z
+        # can still disappear.  PEB/custom-resolver fusion is already final.
+        if (
+            bool(fusion_info.get("windows_iat_preserved", False))
+            or bool(fusion_info.get("windows_iat_restored", False))
+        ):
+            stage223_pre_fusion_info = dict(fusion_info)
+            original = bytes(fused)
+        else:
+            PE32_PACK_COMPACTOR_LAST_RESULT.clear()
+            PE32_PACK_COMPACTOR_LAST_RESULT.update(dict(fusion_info))
+            return fused
 
     if len(original) < 0x100 or original[:2] != b"MZ":
         return _pe32_compactor_fail(
@@ -26894,6 +30550,9 @@ def compact_packed_pe32_image(
                 strict=strict,
             )
 
+        section_alignment = struct.unpack_from(
+            "<I", original, optional_offset + 0x20
+        )[0]
         file_alignment = struct.unpack_from(
             "<I", original, optional_offset + 0x24
         )[0]
@@ -26904,10 +30563,15 @@ def compact_packed_pe32_image(
             "<I", original, optional_offset + 0x1C
         )[0]
 
-        if file_alignment <= 0 or file_alignment & (file_alignment - 1):
+        if (
+            file_alignment <= 0
+            or file_alignment & (file_alignment - 1)
+            or section_alignment <= 0
+            or section_alignment & (section_alignment - 1)
+        ):
             return _pe32_compactor_fail(
                 original,
-                "PE32-Compactor: ungültiges FileAlignment.",
+                "PE32-Compactor: ungültiges PE-Alignment.",
                 strict=strict,
             )
 
@@ -27014,15 +30678,39 @@ def compact_packed_pe32_image(
         # Already Stage-173 compact: .ztext remains visible but owns no file
         # block. Return byte-identically on a second pass.
         if int(ztext["raw_size"]) == 0 and int(ztext["raw_ptr"]) == 0:
+            loader_mapped_size = _align_up(
+                max(int(loader["virtual_size"]), int(loader["raw_size"])),
+                int(section_alignment),
+            )
+            loader_mapped_end = int(loader["rva"]) + loader_mapped_size
+            if loader_mapped_end > int(ztext["rva"]):
+                return _pe32_compactor_fail(
+                    original,
+                    (
+                        "PE32-Compactor: bereits kompaktes Image besitzt "
+                        "eine virtuelle .loader/.ztext-Überlappung "
+                        f"(loader_end=0x{loader_mapped_end:X}, "
+                        f"ztext_rva=0x{int(ztext['rva']):X})."
+                    ),
+                    strict=strict,
+                )
+            minimized, physical = _pe32_minimize_physical_layout(
+                original, loader_first=True, strict=strict
+            )
             PE32_PACK_COMPACTOR_LAST_RESULT.clear()
             PE32_PACK_COMPACTOR_LAST_RESULT.update({
-                "changed": False,
-                "reason": "PE32-Compactor: .ztext ist bereits raw-frei.",
+                "changed": minimized != original,
+                "reason": physical.get(
+                    "reason",
+                    "PE32-Compactor: .ztext ist bereits raw-frei.",
+                ),
                 "before_size": len(original),
-                "after_size": len(original),
-                "saved_bytes": 0,
+                "after_size": len(minimized),
+                "saved_bytes": len(original) - len(minimized),
+                "ztext_raw_size": 0,
+                "stage216_physical_layout": dict(physical),
             })
-            return original
+            return minimized
 
         if loader["raw_size"] <= 0 or ztext["raw_size"] <= 0:
             return _pe32_compactor_fail(
@@ -27087,11 +30775,39 @@ def compact_packed_pe32_image(
         )
         old_pair_raw_size = int(loader["raw_size"]) + int(ztext["raw_size"])
 
-        if combined_raw_size >= old_pair_raw_size:
+        # Stage 207/209: never let the enlarged physical .loader mapping
+        # overlap the preserved virtual .ztext section. The D64I resolver makes
+        # the loader larger than the original Stage-170 stub, so this guard is
+        # mandatory for valid PE32 images.
+        loader_mapped_size = _align_up(
+            max(int(combined_virtual_size), int(combined_raw_size)),
+            int(section_alignment),
+        )
+        loader_mapped_end = int(loader["rva"]) + loader_mapped_size
+        if loader_mapped_end > int(ztext["rva"]):
             PE32_PACK_COMPACTOR_LAST_RESULT.clear()
             PE32_PACK_COMPACTOR_LAST_RESULT.update({
                 "changed": False,
-                "reason": "PE32-Compactor: kein FileAlignment-Block einsparbar.",
+                "reason": (
+                    "PE32-Compactor Stage209: Kompaktierung übersprungen, "
+                    "weil .loader sonst virtuell mit .ztext überlappt."
+                ),
+                "before_size": len(original),
+                "after_size": len(original),
+                "saved_bytes": 0,
+                "loader_rva": int(loader["rva"]),
+                "candidate_loader_virtual_size": int(combined_virtual_size),
+                "candidate_loader_raw_size": int(combined_raw_size),
+                "candidate_loader_mapped_end": int(loader_mapped_end),
+                "ztext_rva": int(ztext["rva"]),
+            })
+            return original
+
+        if combined_raw_size > old_pair_raw_size:
+            PE32_PACK_COMPACTOR_LAST_RESULT.clear()
+            PE32_PACK_COMPACTOR_LAST_RESULT.update({
+                "changed": False,
+                "reason": "PE32-Compactor: Fusion wuerde das Image vergroessern.",
                 "before_size": len(original),
                 "after_size": len(original),
                 "saved_bytes": 0,
@@ -27200,17 +30916,22 @@ def compact_packed_pe32_image(
         if overlay:
             rebuilt.extend(overlay)
 
-        result = bytes(rebuilt)
+        stage173_result = bytes(rebuilt)
+        result, physical = _pe32_minimize_physical_layout(
+            stage173_result, loader_first=True, strict=strict
+        )
         PE32_PACK_COMPACTOR_LAST_RESULT.clear()
         PE32_PACK_COMPACTOR_LAST_RESULT.update({
-            "changed": True,
+            "changed": result != stage223_input,
             "reason": (
-                "PE32-Compactor Stage173: .ztext-RVA/Section beibehalten; "
-                "nur Raw-Daten in .loader eingebettet."
+                "PE32-Compactor Stage223: Windows-IAT erhalten; D64Z direkt "
+                "hinter den logischen Loader-Code gefaltet und physische "
+                "Zwischenbloecke auf das notwendige PE-Alignment reduziert."
             ),
-            "before_size": len(original),
+            "before_size": len(stage223_input),
             "after_size": len(result),
-            "saved_bytes": len(original) - len(result),
+            "saved_bytes": len(stage223_input) - len(result),
+            "stage223_pre_fusion": dict(stage223_pre_fusion_info),
             "section_count_preserved": int(section_count),
             "ztext_rva_preserved": int(ztext["rva"]),
             "ztext_virtual_size_preserved": int(ztext["virtual_size"]),
@@ -27219,6 +30940,7 @@ def compact_packed_pe32_image(
             "embedded_ztext_offset": embedded_offset,
             "old_packed_va": old_packed_va,
             "new_packed_va": new_packed_va,
+            "stage216_physical_layout": dict(physical),
         })
         return result
 
@@ -30743,6 +34465,51 @@ PROJECT_WINDOWS_PE64_INPUT_RELATIVE_PATHS_KEY = "__windows_pe64_input_relative_p
 PROJECT_WINDOWS_PE64_OUTPUT_RELATIVE_PATHS_KEY = "__windows_pe64_output_relative_paths__"
 PROJECT_WINDOWS_PE32_LINK_WITH_ORDINALS_KEY = "__windows_pe32_link_with_ordinals__"
 PROJECT_WINDOWS_PE64_LINK_WITH_ORDINALS_KEY = "__windows_pe64_link_with_ordinals__"
+# Stage 210: D64I Import-Packer settings per Windows ABI.
+PROJECT_WINDOWS_PE32_IMPORT_PACKER_ENABLED_KEY = "__windows_pe32_import_packer_enabled__"
+PROJECT_WINDOWS_PE64_IMPORT_PACKER_ENABLED_KEY = "__windows_pe64_import_packer_enabled__"
+PROJECT_WINDOWS_PE32_IMPORT_PACKER_REQUIRE_SAVINGS_KEY = "__windows_pe32_import_packer_require_savings__"
+PROJECT_WINDOWS_PE64_IMPORT_PACKER_REQUIRE_SAVINGS_KEY = "__windows_pe64_import_packer_require_savings__"
+PROJECT_WINDOWS_PE32_IMPORT_PACKER_MIN_SAVINGS_KEY = "__windows_pe32_import_packer_min_savings__"
+PROJECT_WINDOWS_PE64_IMPORT_PACKER_MIN_SAVINGS_KEY = "__windows_pe64_import_packer_min_savings__"
+# Stage 217: WFM object-property optimizer per Windows ABI.
+PROJECT_WINDOWS_PE32_OBJECT_DEFAULTS_ENABLED_KEY = "__windows_pe32_object_defaults_enabled__"
+PROJECT_WINDOWS_PE64_OBJECT_DEFAULTS_ENABLED_KEY = "__windows_pe64_object_defaults_enabled__"
+PROJECT_WINDOWS_PE32_DEAD_PROPERTY_IMPORTS_KEY = "__windows_pe32_dead_property_imports__"
+PROJECT_WINDOWS_PE64_DEAD_PROPERTY_IMPORTS_KEY = "__windows_pe64_dead_property_imports__"
+PROJECT_WINDOWS_PE32_EMPTY_STANDARD_STRINGS_KEY = "__windows_pe32_empty_standard_strings__"
+PROJECT_WINDOWS_PE64_EMPTY_STANDARD_STRINGS_KEY = "__windows_pe64_empty_standard_strings__"
+# Stage 218: fold consecutive WFM property setters into one table call.
+PROJECT_WINDOWS_PE32_CUT_MULTIPLE_CODES_KEY = "__windows_pe32_cut_multiple_codes__"
+PROJECT_WINDOWS_PE64_CUT_MULTIPLE_CODES_KEY = "__windows_pe64_cut_multiple_codes__"
+# Stage 221: physical PE image layout order per Windows ABI.
+PROJECT_WINDOWS_PE32_IMAGE_LAYOUT_KEY = "__windows_pe32_image_layout__"
+PROJECT_WINDOWS_PE64_IMAGE_LAYOUT_KEY = "__windows_pe64_image_layout__"
+# Stage 226: optionales D64Z/MSZIP-PE-Packing pro Windows ABI.
+PROJECT_WINDOWS_PE32_PE_PACKING_ENABLED_KEY = "__windows_pe32_pe_packing_enabled__"
+PROJECT_WINDOWS_PE64_PE_PACKING_ENABLED_KEY = "__windows_pe64_pe_packing_enabled__"
+# Stage 227: Authenticode-Signierung pro Windows ABI.
+PROJECT_WINDOWS_PE32_SIGNING_KEY = "__windows_pe32_signing__"
+PROJECT_WINDOWS_PE64_SIGNING_KEY = "__windows_pe64_signing__"
+# Stage 213: ABI/ordinal-map compatibility settings per Windows ABI.
+PROJECT_WINDOWS_PE32_ABI_MAJOR_KEY = "__windows_pe32_abi_major__"
+PROJECT_WINDOWS_PE64_ABI_MAJOR_KEY = "__windows_pe64_abi_major__"
+PROJECT_WINDOWS_PE32_ABI_MINOR_KEY = "__windows_pe32_abi_minor__"
+PROJECT_WINDOWS_PE64_ABI_MINOR_KEY = "__windows_pe64_abi_minor__"
+PROJECT_WINDOWS_PE32_ORDINAL_MAP_VERSION_KEY = "__windows_pe32_ordinal_map_version__"
+PROJECT_WINDOWS_PE64_ORDINAL_MAP_VERSION_KEY = "__windows_pe64_ordinal_map_version__"
+PROJECT_WINDOWS_PE32_RUNTIME_VERSION_CHECK_KEY = "__windows_pe32_runtime_version_check__"
+PROJECT_WINDOWS_PE64_RUNTIME_VERSION_CHECK_KEY = "__windows_pe64_runtime_version_check__"
+PROJECT_WINDOWS_PE32_ORDINAL_HASH_CHECK_KEY = "__windows_pe32_ordinal_hash_check__"
+PROJECT_WINDOWS_PE64_ORDINAL_HASH_CHECK_KEY = "__windows_pe64_ordinal_hash_check__"
+# Stage 219: strict full-file DLL SHA-256 validation.
+PROJECT_WINDOWS_PE32_EXACT_RUNTIME_CHECK_KEY = "__windows_pe32_exact_runtime_check__"
+PROJECT_WINDOWS_PE64_EXACT_RUNTIME_CHECK_KEY = "__windows_pe64_exact_runtime_check__"
+PROJECT_WINDOWS_PE32_ORDINAL_MISMATCH_ACTION_KEY = "__windows_pe32_ordinal_mismatch_action__"
+PROJECT_WINDOWS_PE64_ORDINAL_MISMATCH_ACTION_KEY = "__windows_pe64_ordinal_mismatch_action__"
+# Stage 211: importless PEB/LDR bootstrap per Windows ABI.
+PROJECT_WINDOWS_PE32_PEB_RESOLVER_ENABLED_KEY = "__windows_pe32_peb_resolver_enabled__"
+PROJECT_WINDOWS_PE64_PEB_RESOLVER_ENABLED_KEY = "__windows_pe64_peb_resolver_enabled__"
 PROJECT_WINDOWS_PE32_WORKSTATION_MODE_KEY = "__windows_pe32_workstation_mode__"
 PROJECT_WINDOWS_PE64_WORKSTATION_MODE_KEY = "__windows_pe64_workstation_mode__"
 # Stage 144: Debug-Fenster-Theme getrennt fuer normalen Start und Workstation.
@@ -30751,6 +34518,124 @@ PROJECT_WINDOWS_PE32_DEBUG_THEME_WORKSTATION_KEY = "__windows_pe32_debug_theme_w
 PROJECT_WINDOWS_PE64_DEBUG_THEME_NORMAL_KEY = "__windows_pe64_debug_theme_normal__"
 PROJECT_WINDOWS_PE64_DEBUG_THEME_WORKSTATION_KEY = "__windows_pe64_debug_theme_workstation__"
 
+# Stage 198: projektweite Darstellung der Quelltext-Eingabeeditoren.
+# Die Einstellung wird in beiden Windows-Architektur-Tabs gespiegelt, ist aber
+# bewusst nur einmal pro Projekt gespeichert, damit Pascal-/dBase-Editoren
+# unabhängig vom gerade gewählten PE-Ziel gleich aussehen.
+PROJECT_WINDOWS_EDITOR_FONT_FAMILY_KEY = "__windows_editor_font_family__"
+PROJECT_WINDOWS_EDITOR_FONT_SIZE_KEY = "__windows_editor_font_size__"
+PROJECT_WINDOWS_EDITOR_FOREGROUND_KEY = "__windows_editor_foreground__"
+PROJECT_WINDOWS_EDITOR_BACKGROUND_KEY = "__windows_editor_background__"
+PROJECT_WINDOWS_EDITOR_SECTION = "Settings.Windows.Environment.Editor"
+PROJECT_WINDOWS_EDITOR_DEFAULT_FOREGROUND = "#FFFFFF"
+PROJECT_WINDOWS_EDITOR_DEFAULT_BACKGROUND = "#000080"
+PROJECT_WINDOWS_EDITOR_STANDARD_COLORS = (
+    "#000000", "#800000", "#008000", "#808000",
+    "#000080", "#800080", "#008080", "#C0C0C0",
+    "#808080", "#FF0000", "#00FF00", "#FFFF00",
+    "#0000FF", "#FF00FF", "#00FFFF", "#FFFFFF",
+)
+
+# Stage 199: Syntaxfarben werden pro Sprache und Kandidat gespeichert.
+PROJECT_WINDOWS_EDITOR_COLOR_PROFILES_KEY = "__windows_editor_color_profiles__"
+PROJECT_WINDOWS_EDITOR_LANGUAGES = (
+    ("text", "Text"),
+    ("c_cpp", "C/C++"),
+    ("pascal", "Pascal"),
+    ("dbase", "dBASE"),
+    ("prolog", "Prolog"),
+    ("lisp", "LISP"),
+    ("logo", "LOGO"),
+    ("elan", "ELAN"),
+    ("assembler", "Assembler"),
+)
+PROJECT_WINDOWS_EDITOR_COLOR_CANDIDATES = (
+    ("text", "Text"),
+    ("comment", "Kommentar"),
+    ("float", "Fließkommazahl"),
+    ("string", "Zeichenkette"),
+    ("keyword", "Schlüsselwort"),
+    ("instruction", "Anweisung"),
+    ("operand", "Operanden"),
+)
+PROJECT_WINDOWS_EDITOR_DEFAULT_TOKEN_FOREGROUNDS = {
+    "text": PROJECT_WINDOWS_EDITOR_DEFAULT_FOREGROUND,
+    "comment": "#A0A0A0",
+    "float": "#FF87FF",
+    "string": "#FFBE5A",
+    "keyword": "#6ED2FF",
+    "instruction": "#FFD84D",
+    "operand": "#FFFFFF",
+}
+
+
+def normalize_project_windows_editor_color_profiles(
+    value=None,
+    legacy_foreground=None,
+    legacy_background=None,
+):
+    """Normalisiert die Stage-199-Farbprofile aller Eingabesprachen."""
+    default_bg = PROJECT_WINDOWS_EDITOR_DEFAULT_BACKGROUND
+    profiles = {}
+    for language_key, _language_title in PROJECT_WINDOWS_EDITOR_LANGUAGES:
+        profiles[language_key] = {
+            candidate_key: {
+                "foreground": PROJECT_WINDOWS_EDITOR_DEFAULT_TOKEN_FOREGROUNDS[
+                    candidate_key
+                ],
+                "background": default_bg,
+            }
+            for candidate_key, _candidate_title
+            in PROJECT_WINDOWS_EDITOR_COLOR_CANDIDATES
+        }
+
+    source = value
+    if isinstance(source, str):
+        try:
+            source = json.loads(source)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            source = {}
+    if not isinstance(source, dict):
+        source = {}
+
+    def _valid_color(candidate, fallback):
+        color = QColor(str(candidate or ""))
+        if not color.isValid():
+            color = QColor(fallback)
+        return color.name(QColor.HexRgb).upper()
+
+    for language_key, _language_title in PROJECT_WINDOWS_EDITOR_LANGUAGES:
+        raw_language = source.get(language_key, {})
+        if not isinstance(raw_language, dict):
+            continue
+        for candidate_key, _candidate_title in PROJECT_WINDOWS_EDITOR_COLOR_CANDIDATES:
+            raw_candidate = raw_language.get(candidate_key, {})
+            if not isinstance(raw_candidate, dict):
+                continue
+            target = profiles[language_key][candidate_key]
+            target["foreground"] = _valid_color(
+                raw_candidate.get("foreground"), target["foreground"]
+            )
+            target["background"] = _valid_color(
+                raw_candidate.get("background"), target["background"]
+            )
+
+    # Stage-198-Projekte migrieren: die bisher globale Text-/Hintergrundfarbe
+    # wird als normaler Text aller Sprachen weiterverwendet.
+    legacy_fg = QColor(str(legacy_foreground or ""))
+    legacy_bg = QColor(str(legacy_background or ""))
+    if legacy_fg.isValid() or legacy_bg.isValid():
+        for language_key, _language_title in PROJECT_WINDOWS_EDITOR_LANGUAGES:
+            if legacy_fg.isValid() and not source:
+                profiles[language_key]["text"]["foreground"] = (
+                    legacy_fg.name(QColor.HexRgb).upper()
+                )
+            if legacy_bg.isValid() and not source:
+                bg_name = legacy_bg.name(QColor.HexRgb).upper()
+                for candidate_key, _candidate_title in PROJECT_WINDOWS_EDITOR_COLOR_CANDIDATES:
+                    profiles[language_key][candidate_key]["background"] = bg_name
+    return profiles
+
 PROJECT_WINDOWS_TARGET_SETTINGS = {
     "pe32": {
         "input_key": PROJECT_WINDOWS_PE32_LINK_SEARCH_PATHS_KEY,
@@ -30758,6 +34643,24 @@ PROJECT_WINDOWS_TARGET_SETTINGS = {
         "input_relative_key": PROJECT_WINDOWS_PE32_INPUT_RELATIVE_PATHS_KEY,
         "output_relative_key": PROJECT_WINDOWS_PE32_OUTPUT_RELATIVE_PATHS_KEY,
         "link_with_ordinals_key": PROJECT_WINDOWS_PE32_LINK_WITH_ORDINALS_KEY,
+        "import_packer_enabled_key": PROJECT_WINDOWS_PE32_IMPORT_PACKER_ENABLED_KEY,
+        "import_packer_require_savings_key": PROJECT_WINDOWS_PE32_IMPORT_PACKER_REQUIRE_SAVINGS_KEY,
+        "import_packer_min_savings_key": PROJECT_WINDOWS_PE32_IMPORT_PACKER_MIN_SAVINGS_KEY,
+        "object_defaults_enabled_key": PROJECT_WINDOWS_PE32_OBJECT_DEFAULTS_ENABLED_KEY,
+        "dead_property_imports_key": PROJECT_WINDOWS_PE32_DEAD_PROPERTY_IMPORTS_KEY,
+        "empty_standard_strings_key": PROJECT_WINDOWS_PE32_EMPTY_STANDARD_STRINGS_KEY,
+        "cut_multiple_codes_key": PROJECT_WINDOWS_PE32_CUT_MULTIPLE_CODES_KEY,
+        "image_layout_key": PROJECT_WINDOWS_PE32_IMAGE_LAYOUT_KEY,
+        "pe_packing_enabled_key": PROJECT_WINDOWS_PE32_PE_PACKING_ENABLED_KEY,
+        "signing_key": PROJECT_WINDOWS_PE32_SIGNING_KEY,
+        "abi_major_key": PROJECT_WINDOWS_PE32_ABI_MAJOR_KEY,
+        "abi_minor_key": PROJECT_WINDOWS_PE32_ABI_MINOR_KEY,
+        "ordinal_map_version_key": PROJECT_WINDOWS_PE32_ORDINAL_MAP_VERSION_KEY,
+        "runtime_version_check_key": PROJECT_WINDOWS_PE32_RUNTIME_VERSION_CHECK_KEY,
+        "ordinal_hash_check_key": PROJECT_WINDOWS_PE32_ORDINAL_HASH_CHECK_KEY,
+        "exact_runtime_check_key": PROJECT_WINDOWS_PE32_EXACT_RUNTIME_CHECK_KEY,
+        "ordinal_mismatch_action_key": PROJECT_WINDOWS_PE32_ORDINAL_MISMATCH_ACTION_KEY,
+        "peb_resolver_enabled_key": PROJECT_WINDOWS_PE32_PEB_RESOLVER_ENABLED_KEY,
         "workstation_mode_key": PROJECT_WINDOWS_PE32_WORKSTATION_MODE_KEY,
         "debug_theme_normal_key": PROJECT_WINDOWS_PE32_DEBUG_THEME_NORMAL_KEY,
         "debug_theme_workstation_key": PROJECT_WINDOWS_PE32_DEBUG_THEME_WORKSTATION_KEY,
@@ -30765,8 +34668,11 @@ PROJECT_WINDOWS_TARGET_SETTINGS = {
         "input_section": "Settings.Windows.32Bit.Compiler.InputDirectories",
         "output_section": "Settings.Windows.32Bit.Compiler.OutputDirectory",
         "linker_section": "Settings.Windows.32Bit.Linker",
+        "options_section": "Settings.Windows.32Bit.Linker.Optionen",
+        "optimization_section": "Settings.Windows.32Bit.Linker.Optimierung",
         "manifest_key": "__windows_pe32_manifest__",
         "manifest_section": "Settings.Windows.32Bit.Linker.Manifest",
+        "signing_section": "Settings.Windows.32Bit.Linker.Signierung",
         "title": "32-Bit",
     },
     "pe64": {
@@ -30775,6 +34681,24 @@ PROJECT_WINDOWS_TARGET_SETTINGS = {
         "input_relative_key": PROJECT_WINDOWS_PE64_INPUT_RELATIVE_PATHS_KEY,
         "output_relative_key": PROJECT_WINDOWS_PE64_OUTPUT_RELATIVE_PATHS_KEY,
         "link_with_ordinals_key": PROJECT_WINDOWS_PE64_LINK_WITH_ORDINALS_KEY,
+        "import_packer_enabled_key": PROJECT_WINDOWS_PE64_IMPORT_PACKER_ENABLED_KEY,
+        "import_packer_require_savings_key": PROJECT_WINDOWS_PE64_IMPORT_PACKER_REQUIRE_SAVINGS_KEY,
+        "import_packer_min_savings_key": PROJECT_WINDOWS_PE64_IMPORT_PACKER_MIN_SAVINGS_KEY,
+        "object_defaults_enabled_key": PROJECT_WINDOWS_PE64_OBJECT_DEFAULTS_ENABLED_KEY,
+        "dead_property_imports_key": PROJECT_WINDOWS_PE64_DEAD_PROPERTY_IMPORTS_KEY,
+        "empty_standard_strings_key": PROJECT_WINDOWS_PE64_EMPTY_STANDARD_STRINGS_KEY,
+        "cut_multiple_codes_key": PROJECT_WINDOWS_PE64_CUT_MULTIPLE_CODES_KEY,
+        "image_layout_key": PROJECT_WINDOWS_PE64_IMAGE_LAYOUT_KEY,
+        "pe_packing_enabled_key": PROJECT_WINDOWS_PE64_PE_PACKING_ENABLED_KEY,
+        "signing_key": PROJECT_WINDOWS_PE64_SIGNING_KEY,
+        "abi_major_key": PROJECT_WINDOWS_PE64_ABI_MAJOR_KEY,
+        "abi_minor_key": PROJECT_WINDOWS_PE64_ABI_MINOR_KEY,
+        "ordinal_map_version_key": PROJECT_WINDOWS_PE64_ORDINAL_MAP_VERSION_KEY,
+        "runtime_version_check_key": PROJECT_WINDOWS_PE64_RUNTIME_VERSION_CHECK_KEY,
+        "ordinal_hash_check_key": PROJECT_WINDOWS_PE64_ORDINAL_HASH_CHECK_KEY,
+        "exact_runtime_check_key": PROJECT_WINDOWS_PE64_EXACT_RUNTIME_CHECK_KEY,
+        "ordinal_mismatch_action_key": PROJECT_WINDOWS_PE64_ORDINAL_MISMATCH_ACTION_KEY,
+        "peb_resolver_enabled_key": PROJECT_WINDOWS_PE64_PEB_RESOLVER_ENABLED_KEY,
         "workstation_mode_key": PROJECT_WINDOWS_PE64_WORKSTATION_MODE_KEY,
         "debug_theme_normal_key": PROJECT_WINDOWS_PE64_DEBUG_THEME_NORMAL_KEY,
         "debug_theme_workstation_key": PROJECT_WINDOWS_PE64_DEBUG_THEME_WORKSTATION_KEY,
@@ -30782,8 +34706,11 @@ PROJECT_WINDOWS_TARGET_SETTINGS = {
         "input_section": "Settings.Windows.64Bit.Compiler.InputDirectories",
         "output_section": "Settings.Windows.64Bit.Compiler.OutputDirectory",
         "linker_section": "Settings.Windows.64Bit.Linker",
+        "options_section": "Settings.Windows.64Bit.Linker.Optionen",
+        "optimization_section": "Settings.Windows.64Bit.Linker.Optimierung",
         "manifest_key": "__windows_pe64_manifest__",
         "manifest_section": "Settings.Windows.64Bit.Linker.Manifest",
+        "signing_section": "Settings.Windows.64Bit.Linker.Signierung",
         "title": "64-Bit",
     },
 }
@@ -31170,10 +35097,42 @@ def empty_project_entries() -> Dict[str, List[Dict[str, str]]]:
         entries[_settings["input_relative_key"]] = [{"value": "true"}]
         entries[_settings["output_relative_key"]] = [{"value": "true"}]
         entries[_settings["link_with_ordinals_key"]] = [{"value": "false"}]
+        entries[_settings["pe_packing_enabled_key"]] = [{"value": "false"}]
+        entries[_settings["signing_key"]] = [normalize_signing_settings()]
+        entries[_settings["import_packer_enabled_key"]] = [{"value": "true"}]
+        entries[_settings["import_packer_require_savings_key"]] = [{"value": "true"}]
+        entries[_settings["import_packer_min_savings_key"]] = [{"value": "1"}]
+        entries[_settings["object_defaults_enabled_key"]] = [{"value": "true"}]
+        entries[_settings["dead_property_imports_key"]] = [{"value": "true"}]
+        entries[_settings["empty_standard_strings_key"]] = [{"value": "true"}]
+        entries[_settings["cut_multiple_codes_key"]] = [{"value": "true"}]
+        entries[_settings["abi_major_key"]] = [{"value": str(PE_D64_RUNTIME_DEFAULT_ABI_MAJOR)}]
+        entries[_settings["abi_minor_key"]] = [{"value": str(PE_D64_RUNTIME_DEFAULT_ABI_MINOR)}]
+        entries[_settings["ordinal_map_version_key"]] = [{"value": str(PE_D64_RUNTIME_DEFAULT_ORDINAL_MAP_VERSION)}]
+        entries[_settings["runtime_version_check_key"]] = [{"value": "true"}]
+        entries[_settings["ordinal_hash_check_key"]] = [{"value": "true"}]
+        entries[_settings["exact_runtime_check_key"]] = [{"value": "false"}]
+        entries[_settings["ordinal_mismatch_action_key"]] = [{"value": "abort"}]
+        entries[_settings["peb_resolver_enabled_key"]] = [{"value": "false"}]
         entries[_settings["workstation_mode_key"]] = [{"value": "false"}]
         entries[_settings["debug_theme_normal_key"]] = [{"value": "default"}]
         entries[_settings["debug_theme_workstation_key"]] = [{"value": "default"}]
         entries[_settings["manifest_key"]] = [normalize_manifest_settings()]
+    entries[PROJECT_WINDOWS_EDITOR_FONT_FAMILY_KEY] = [{"value": ""}]
+    entries[PROJECT_WINDOWS_EDITOR_FONT_SIZE_KEY] = [{"value": "9"}]
+    entries[PROJECT_WINDOWS_EDITOR_FOREGROUND_KEY] = [{
+        "value": PROJECT_WINDOWS_EDITOR_DEFAULT_FOREGROUND
+    }]
+    entries[PROJECT_WINDOWS_EDITOR_BACKGROUND_KEY] = [{
+        "value": PROJECT_WINDOWS_EDITOR_DEFAULT_BACKGROUND
+    }]
+    entries[PROJECT_WINDOWS_EDITOR_COLOR_PROFILES_KEY] = [{
+        "value": json.dumps(
+            normalize_project_windows_editor_color_profiles(),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    }]
     entries[PROJECT_C64_OPTIMIZER_ACTIVE_PROFILE_KEY] = [{"value": "68000"}]
     for _profile_settings in PROJECT_C64_OPTIMIZER_PROFILES.values():
         entries[_profile_settings["enabled_key"]] = [{"value": "true"}]
@@ -31640,12 +35599,118 @@ def format_project_ini(
             "DebugThemeWorkstation": _debug_theme_workstation,
         }
 
+        _pe_packing_enabled_value = _project_bool_entry(
+            entries, _settings["pe_packing_enabled_key"], PE_PACKING_DEFAULT
+        )
         _link_with_ordinals = _project_bool_entry(
             entries, _settings["link_with_ordinals_key"], False
         )
+        _import_packer_enabled = _project_bool_entry(
+            entries, _settings["import_packer_enabled_key"], True
+        )
+        _import_packer_require_savings = _project_bool_entry(
+            entries, _settings["import_packer_require_savings_key"], True
+        )
+        _peb_resolver_enabled = _project_bool_entry(
+            entries, _settings["peb_resolver_enabled_key"], False
+        )
+        _object_defaults_enabled = _project_bool_entry(
+            entries, _settings["object_defaults_enabled_key"], True
+        )
+        _dead_property_imports = _project_bool_entry(
+            entries, _settings["dead_property_imports_key"], True
+        )
+        _empty_standard_strings = _project_bool_entry(
+            entries, _settings["empty_standard_strings_key"], True
+        )
+        _cut_multiple_codes = _project_bool_entry(
+            entries, _settings["cut_multiple_codes_key"], True
+        )
+        _layout_entries = entries.get(_settings["image_layout_key"], ())
+        _image_layout = _normalize_pe_image_layout_order(
+            _layout_entries[0].get("value", PE_IMAGE_LAYOUT_DEFAULT)
+            if _layout_entries else PE_IMAGE_LAYOUT_DEFAULT
+        )
+        _minimum_entries = entries.get(_settings["import_packer_min_savings_key"], ())
+        try:
+            _import_packer_min_savings = int(
+                _minimum_entries[0].get("value", "1") if _minimum_entries else 1
+            )
+        except (TypeError, ValueError):
+            _import_packer_min_savings = 1
+        _import_packer_min_savings = max(0, min(1024 * 1024, _import_packer_min_savings))
+
+        def _compat_int_entry(key_name, default_value, maximum):
+            raw_entries = entries.get(_settings[key_name], ())
+            try:
+                value = int(raw_entries[0].get("value", str(default_value))) if raw_entries else int(default_value)
+            except (TypeError, ValueError):
+                value = int(default_value)
+            return max(0, min(int(maximum), value))
+
+        _abi_major = _compat_int_entry("abi_major_key", PE_D64_RUNTIME_DEFAULT_ABI_MAJOR, 0xFFFF)
+        _abi_minor = _compat_int_entry("abi_minor_key", PE_D64_RUNTIME_DEFAULT_ABI_MINOR, 0xFFFF)
+        _ordinal_map_version = _compat_int_entry(
+            "ordinal_map_version_key", PE_D64_RUNTIME_DEFAULT_ORDINAL_MAP_VERSION, 0xFFFFFFFF
+        )
+        _runtime_version_check = _project_bool_entry(
+            entries, _settings["runtime_version_check_key"], True
+        )
+        _ordinal_hash_check = _project_bool_entry(
+            entries, _settings["ordinal_hash_check_key"], True
+        )
+        _exact_runtime_check = _project_bool_entry(
+            entries, _settings["exact_runtime_check_key"], False
+        )
+        _mismatch_entries = entries.get(_settings["ordinal_mismatch_action_key"], ())
+        _ordinal_mismatch_action = str(
+            _mismatch_entries[0].get("value", "abort") if _mismatch_entries else "abort"
+        ).strip().casefold()
+        if _ordinal_mismatch_action not in {"abort", "fallback_name"}:
+            _ordinal_mismatch_action = "abort"
+
         parser[_settings["linker_section"]] = {
             "Title": f"Windows {_settings['title']} Linker",
+        }
+        parser[_settings["options_section"]] = {
+            "Title": f"Windows {_settings['title']} Linker Optionen",
+            "PEPackingEnabled": "true" if _pe_packing_enabled_value else "false",
+            "PEPackingFormat": "D64Z/MSZIP" if _pe_packing_enabled_value else "Standard PE",
+        }
+        parser[_settings["optimization_section"]] = {
+            "Title": f"Windows {_settings['title']} Linker Optimierung",
             "LinkWithOrdinals": "true" if _link_with_ordinals else "false",
+            "ImportPackerEnabled": "true" if _import_packer_enabled else "false",
+            "ImportPackerRequireSavings": (
+                "true" if _import_packer_require_savings else "false"
+            ),
+            "ImportPackerMinimumSavings": str(_import_packer_min_savings),
+            "ObjectDefaultsEnabled": "true" if _object_defaults_enabled else "false",
+            "DeadPropertyImports": "true" if _dead_property_imports else "false",
+            "EmptyStandardStrings": "true" if _empty_standard_strings else "false",
+            "CutMultipleCodes": "true" if _cut_multiple_codes else "false",
+            "ImageLayout": _image_layout,
+            "PropertyDefaultsAbi": str(DBASE_WFM_PROPERTY_DEFAULTS_ABI),
+            "RuntimeAbiMajor": str(_abi_major),
+            "RuntimeAbiMinor": str(_abi_minor),
+            "OrdinalMapVersion": str(_ordinal_map_version),
+            "RuntimeVersionCheck": "true" if _runtime_version_check else "false",
+            "OrdinalMapHashCheck": "true" if _ordinal_hash_check else "false",
+            "ExactRuntimeCheck": "true" if _exact_runtime_check else "false",
+            "OrdinalMismatchAction": _ordinal_mismatch_action,
+            "LoaderVersion": f"{PE_D64_LOADER_VERSION_MAJOR}.{PE_D64_LOADER_VERSION_MINOR}.{PE_D64_LOADER_VERSION_PATCH}",
+            "LoaderBuild": str(PE_D64_LOADER_BUILD),
+            "D64IFormatVersion": str(PE_D64I_VERSION),
+            "PEBResolverEnabled": "true" if _peb_resolver_enabled else "false",
+            "PEBModuleList": "PEB_LDR_DATA/InMemoryOrderModuleList",
+            "PEB32": "FS:[0x30]" if _peb_resolver_enabled else "disabled",
+            "PEB64": "GS:[0x60]" if _peb_resolver_enabled else "disabled",
+            "ImportPackerFormat": "D64I/MSZIP",
+            # Legacy Stage210 default regression marker: "ImportResolver": "Bootstrap-IAT"
+            "ImportResolver": (
+                "PEB/LdrGetProcedureAddress" if _peb_resolver_enabled
+                else "Bootstrap-IAT"
+            ),
         }
 
         # Stage 149: preserve editable manifest data per architecture.
@@ -31655,6 +35720,65 @@ def format_project_ini(
                 _manifest_entries[0] if _manifest_entries else None
             ), ensure_ascii=False),
         }
+        _signing_entries = entries.get(_settings["signing_key"], ())
+        parser[_settings["signing_section"]] = {
+            "Data": json.dumps(normalize_signing_settings(
+                _signing_entries[0] if _signing_entries else None
+            ), ensure_ascii=False),
+        }
+
+    # Stage 198: projektweite Editor-Darstellung.
+    _editor_family_entries = entries.get(PROJECT_WINDOWS_EDITOR_FONT_FAMILY_KEY, ())
+    _editor_size_entries = entries.get(PROJECT_WINDOWS_EDITOR_FONT_SIZE_KEY, ())
+    _editor_foreground_entries = entries.get(PROJECT_WINDOWS_EDITOR_FOREGROUND_KEY, ())
+    _editor_background_entries = entries.get(PROJECT_WINDOWS_EDITOR_BACKGROUND_KEY, ())
+    parser[PROJECT_WINDOWS_EDITOR_SECTION] = {
+        "Title": "Windows Umgebung Editor",
+        "FontFamily": str(
+            _editor_family_entries[0].get("value", "")
+            if _editor_family_entries else ""
+        ),
+        "FontSize": str(
+            _editor_size_entries[0].get("value", "9")
+            if _editor_size_entries else "9"
+        ),
+        "Foreground": str(
+            _editor_foreground_entries[0].get(
+                "value", PROJECT_WINDOWS_EDITOR_DEFAULT_FOREGROUND
+            ) if _editor_foreground_entries
+            else PROJECT_WINDOWS_EDITOR_DEFAULT_FOREGROUND
+        ),
+        "Background": str(
+            _editor_background_entries[0].get(
+                "value", PROJECT_WINDOWS_EDITOR_DEFAULT_BACKGROUND
+            ) if _editor_background_entries
+            else PROJECT_WINDOWS_EDITOR_DEFAULT_BACKGROUND
+        ),
+        "ColorProfiles": json.dumps(
+            normalize_project_windows_editor_color_profiles(
+                (
+                    entries.get(PROJECT_WINDOWS_EDITOR_COLOR_PROFILES_KEY, [{}])[0]
+                    .get("value", {})
+                    if entries.get(PROJECT_WINDOWS_EDITOR_COLOR_PROFILES_KEY, ())
+                    else {}
+                ),
+                (
+                    _editor_foreground_entries[0].get(
+                        "value", PROJECT_WINDOWS_EDITOR_DEFAULT_FOREGROUND
+                    ) if _editor_foreground_entries
+                    else PROJECT_WINDOWS_EDITOR_DEFAULT_FOREGROUND
+                ),
+                (
+                    _editor_background_entries[0].get(
+                        "value", PROJECT_WINDOWS_EDITOR_DEFAULT_BACKGROUND
+                    ) if _editor_background_entries
+                    else PROJECT_WINDOWS_EDITOR_DEFAULT_BACKGROUND
+                ),
+            ),
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+    }
 
     # Stage ASM 48: C=64 Optimizerprofile speichern.
     _active_entries = entries.get(PROJECT_C64_OPTIMIZER_ACTIVE_PROFILE_KEY, ())
@@ -32177,17 +36301,134 @@ def parse_project_ini(text: str, project_path: Path) -> Dict[str, List[Dict[str,
                     )
                 )
             }]
-        if parser.has_section(_linker_section):
-            _link_with_ordinals = _parse_project_bool(
+        _options_section = _settings["options_section"]
+        _pe_packing_enabled_value = PE_PACKING_DEFAULT
+        if parser.has_section(_options_section):
+            _pe_packing_enabled_value = _parse_project_bool(
                 parser.get(
-                    _linker_section,
-                    "LinkWithOrdinals",
-                    fallback="false",
+                    _options_section,
+                    "PEPackingEnabled",
+                    fallback="true" if PE_PACKING_DEFAULT else "false",
                 ),
+                PE_PACKING_DEFAULT,
+            )
+        entries[_settings["pe_packing_enabled_key"]] = [{
+            "value": "true" if _pe_packing_enabled_value else "false"
+        }]
+
+        _optimization_section = _settings["optimization_section"]
+        if parser.has_section(_optimization_section) or parser.has_section(_linker_section):
+            _source_section = (
+                _optimization_section
+                if parser.has_section(_optimization_section)
+                else _linker_section
+            )
+            _link_with_ordinals = _parse_project_bool(
+                parser.get(_source_section, "LinkWithOrdinals", fallback="false"),
                 False,
             )
             entries[_settings["link_with_ordinals_key"]] = [{
                 "value": "true" if _link_with_ordinals else "false"
+            }]
+            _import_enabled = _parse_project_bool(
+                parser.get(_source_section, "ImportPackerEnabled", fallback="true"),
+                True,
+            )
+            _require_savings = _parse_project_bool(
+                parser.get(
+                    _source_section,
+                    "ImportPackerRequireSavings",
+                    fallback="true",
+                ),
+                True,
+            )
+            try:
+                _minimum_savings = int(parser.get(
+                    _source_section,
+                    "ImportPackerMinimumSavings",
+                    fallback="1",
+                ))
+            except (TypeError, ValueError):
+                _minimum_savings = 1
+            _minimum_savings = max(0, min(1024 * 1024, _minimum_savings))
+            entries[_settings["import_packer_enabled_key"]] = [{
+                "value": "true" if _import_enabled else "false"
+            }]
+            entries[_settings["import_packer_require_savings_key"]] = [{
+                "value": "true" if _require_savings else "false"
+            }]
+            entries[_settings["import_packer_min_savings_key"]] = [{
+                "value": str(_minimum_savings)
+            }]
+            _object_defaults_enabled = _parse_project_bool(
+                parser.get(_source_section, "ObjectDefaultsEnabled", fallback="true"), True
+            )
+            _dead_property_imports = _parse_project_bool(
+                parser.get(_source_section, "DeadPropertyImports", fallback="true"), True
+            )
+            _empty_standard_strings = _parse_project_bool(
+                parser.get(_source_section, "EmptyStandardStrings", fallback="true"), True
+            )
+            _cut_multiple_codes = _parse_project_bool(
+                parser.get(_source_section, "CutMultipleCodes", fallback="true"), True
+            )
+            entries[_settings["object_defaults_enabled_key"]] = [{"value": "true" if _object_defaults_enabled else "false"}]
+            entries[_settings["dead_property_imports_key"]] = [{"value": "true" if _dead_property_imports else "false"}]
+            entries[_settings["empty_standard_strings_key"]] = [{"value": "true" if _empty_standard_strings else "false"}]
+            entries[_settings["cut_multiple_codes_key"]] = [{"value": "true" if _cut_multiple_codes else "false"}]
+            _image_layout = _normalize_pe_image_layout_order(
+                parser.get(_source_section, "ImageLayout", fallback=PE_IMAGE_LAYOUT_DEFAULT)
+            )
+            entries[_settings["image_layout_key"]] = [{"value": _image_layout}]
+            _peb_resolver_enabled = _parse_project_bool(
+                parser.get(_source_section, "PEBResolverEnabled", fallback="false"),
+                False,
+            )
+            entries[_settings["peb_resolver_enabled_key"]] = [{
+                "value": "true" if _peb_resolver_enabled else "false"
+            }]
+
+            def _read_compat_int(option, default_value, maximum):
+                try:
+                    value = int(parser.get(_source_section, option, fallback=str(default_value)))
+                except (TypeError, ValueError):
+                    value = int(default_value)
+                return max(0, min(int(maximum), value))
+
+            _abi_major = _read_compat_int("RuntimeAbiMajor", PE_D64_RUNTIME_DEFAULT_ABI_MAJOR, 0xFFFF)
+            _abi_minor = _read_compat_int("RuntimeAbiMinor", PE_D64_RUNTIME_DEFAULT_ABI_MINOR, 0xFFFF)
+            _ordinal_map_version = _read_compat_int(
+                "OrdinalMapVersion", PE_D64_RUNTIME_DEFAULT_ORDINAL_MAP_VERSION, 0xFFFFFFFF
+            )
+            _runtime_version_check = _parse_project_bool(
+                parser.get(_source_section, "RuntimeVersionCheck", fallback="true"), True
+            )
+            _ordinal_hash_check = _parse_project_bool(
+                parser.get(_source_section, "OrdinalMapHashCheck", fallback="true"), True
+            )
+            _exact_runtime_check = _parse_project_bool(
+                parser.get(_source_section, "ExactRuntimeCheck", fallback="false"), False
+            )
+            _ordinal_mismatch_action = str(
+                parser.get(_source_section, "OrdinalMismatchAction", fallback="abort")
+            ).strip().casefold()
+            if _ordinal_mismatch_action not in {"abort", "fallback_name"}:
+                _ordinal_mismatch_action = "abort"
+
+            entries[_settings["abi_major_key"]] = [{"value": str(_abi_major)}]
+            entries[_settings["abi_minor_key"]] = [{"value": str(_abi_minor)}]
+            entries[_settings["ordinal_map_version_key"]] = [{"value": str(_ordinal_map_version)}]
+            entries[_settings["runtime_version_check_key"]] = [{
+                "value": "true" if _runtime_version_check else "false"
+            }]
+            entries[_settings["ordinal_hash_check_key"]] = [{
+                "value": "true" if _ordinal_hash_check else "false"
+            }]
+            entries[_settings["exact_runtime_check_key"]] = [{
+                "value": "true" if _exact_runtime_check else "false"
+            }]
+            entries[_settings["ordinal_mismatch_action_key"]] = [{
+                "value": _ordinal_mismatch_action
             }]
 
         _manifest_json = parser.get(_settings["manifest_section"], "Data", fallback="{}")
@@ -32196,6 +36437,51 @@ def parse_project_ini(text: str, project_path: Path) -> Dict[str, List[Dict[str,
         except (ValueError, TypeError):
             _manifest_data = {}
         entries[_settings["manifest_key"]] = [normalize_manifest_settings(_manifest_data)]
+        _signing_json = parser.get(_settings["signing_section"], "Data", fallback="{}")
+        try:
+            _signing_data = json.loads(_signing_json)
+        except (ValueError, TypeError):
+            _signing_data = {}
+        entries[_settings["signing_key"]] = [normalize_signing_settings(_signing_data)]
+
+    # Stage 198: projektweite Editor-Darstellung laden.
+    if parser.has_section(PROJECT_WINDOWS_EDITOR_SECTION):
+        entries[PROJECT_WINDOWS_EDITOR_FONT_FAMILY_KEY] = [{
+            "value": str(parser.get(
+                PROJECT_WINDOWS_EDITOR_SECTION, "FontFamily", fallback=""
+            ) or "").strip()
+        }]
+        entries[PROJECT_WINDOWS_EDITOR_FONT_SIZE_KEY] = [{
+            "value": str(parser.get(
+                PROJECT_WINDOWS_EDITOR_SECTION, "FontSize", fallback="9"
+            ) or "9").strip()
+        }]
+        entries[PROJECT_WINDOWS_EDITOR_FOREGROUND_KEY] = [{
+            "value": str(parser.get(
+                PROJECT_WINDOWS_EDITOR_SECTION, "Foreground",
+                fallback=PROJECT_WINDOWS_EDITOR_DEFAULT_FOREGROUND,
+            ) or PROJECT_WINDOWS_EDITOR_DEFAULT_FOREGROUND).strip()
+        }]
+        entries[PROJECT_WINDOWS_EDITOR_BACKGROUND_KEY] = [{
+            "value": str(parser.get(
+                PROJECT_WINDOWS_EDITOR_SECTION, "Background",
+                fallback=PROJECT_WINDOWS_EDITOR_DEFAULT_BACKGROUND,
+            ) or PROJECT_WINDOWS_EDITOR_DEFAULT_BACKGROUND).strip()
+        }]
+        _legacy_fg = entries[PROJECT_WINDOWS_EDITOR_FOREGROUND_KEY][0]["value"]
+        _legacy_bg = entries[PROJECT_WINDOWS_EDITOR_BACKGROUND_KEY][0]["value"]
+        _profiles_raw = parser.get(
+            PROJECT_WINDOWS_EDITOR_SECTION, "ColorProfiles", fallback=""
+        )
+        entries[PROJECT_WINDOWS_EDITOR_COLOR_PROFILES_KEY] = [{
+            "value": json.dumps(
+                normalize_project_windows_editor_color_profiles(
+                    _profiles_raw, _legacy_fg, _legacy_bg
+                ),
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        }]
 
     # Stage ASM 48: C=64 Optimizerprofile laden.
     if parser.has_section("Settings.C64"):
@@ -40478,6 +44764,14 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             r"(?:\s+(?P<operand>[^;]*?))?\s*(?:;|$)",
             re.IGNORECASE,
         )
+        ASSEMBLER_NUMBER_PATTERN = re.compile(
+            r"(?<![A-Za-z0-9_])(?:\$[0-9A-F]+|0[xX][0-9A-F]+|"
+            r"[+-]?[0-9]+(?:\.[0-9]+)?)(?![A-Za-z0-9_])",
+            re.IGNORECASE,
+        )
+        ASSEMBLER_STRING_PATTERN = re.compile(
+            r'"(?:\\.|[^"\\\r\n])*"|\'(?:\'\'|[^\'\r\n])*\''
+        )
         PASCAL_KEYWORD_PATTERN = re.compile(
             r"(?<![A-Za-z0-9_])(?:"
             r"program|const|type|var|begin|end|if|then|else|while|do|"
@@ -40489,7 +44783,8 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             re.IGNORECASE,
         )
         PASCAL_NUMBER_PATTERN = re.compile(
-            r"(?<![A-Za-z0-9_])(?:\$[0-9A-F]+|%[01]+|[0-9]+)"
+            r"(?<![A-Za-z0-9_])(?:\$[0-9A-F]+|%[01]+|"
+            r"[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)"
             r"(?![A-Za-z0-9_])",
             re.IGNORECASE,
         )
@@ -40503,8 +44798,9 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             r")(?![A-Za-z0-9_])"
         )
         C_NUMBER_PATTERN = re.compile(
-            r"(?<![A-Za-z0-9_])(?:0[xX][0-9A-Fa-f]+|0[bB][01]+|[0-9]+)"
-            r"[uUlL]*(?![A-Za-z0-9_])"
+            r"(?<![A-Za-z0-9_])(?:0[xX][0-9A-Fa-f]+|0[bB][01]+|"
+            r"[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)[fFuUlL]*"
+            r"(?![A-Za-z0-9_])"
         )
         C_STRING_PATTERN = re.compile(
             r'"(?:\\.|[^"\\\r\n])*"|\'(?:\\.|[^\'\\\r\n])\''
@@ -40518,7 +44814,9 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             r")(?![A-Za-z0-9_])",
             re.IGNORECASE,
         )
-        LISP_NUMBER_PATTERN = re.compile(r"(?<![A-Za-z0-9_])-?[0-9]+(?![A-Za-z0-9_])")
+        LISP_NUMBER_PATTERN = re.compile(
+            r"(?<![A-Za-z0-9_])-?[0-9]+(?:\.[0-9]+)?(?![A-Za-z0-9_])"
+        )
         LISP_STRING_PATTERN = re.compile(r'"(?:\\.|[^"\\\r\n])*"')
         LISP_COMMENT_PATTERN = re.compile(r";.*$")
         PROLOG_KEYWORD_PATTERN = re.compile(
@@ -40538,6 +44836,23 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             r'"(?:\\.|[^"\\\r\n])*"|\'(?:\'\'|[^\'\r\n])*\''
         )
         PROLOG_COMMENT_PATTERN = re.compile(r"%.*$|/\*.*?\*/")
+        ELAN_KEYWORD_PATTERN = re.compile(
+            r"(?<![A-Za-z0-9_])(?:"
+            r"PROC|ENDPROC|IF|THEN|ELSE|FI|WHILE|DO|FOR|FROM|UPTO|"
+            r"REP|PER|REAL|INT|BOOL|TEXT|TRUE|FALSE|CONST|VAR|LET|"
+            r"BEGIN|END"
+            r")(?![A-Za-z0-9_])",
+            re.IGNORECASE,
+        )
+        ELAN_NUMBER_PATTERN = re.compile(
+            r"(?<![A-Za-z0-9_])[+-]?[0-9]+(?:\.[0-9]+)?"
+            r"(?:[eE][+-]?[0-9]+)?(?![A-Za-z0-9_])"
+        )
+        ELAN_STRING_PATTERN = re.compile(
+            r'"(?:\\.|[^"\\\r\n])*"|\'(?:\'\'|[^\'\r\n])*\''
+        )
+        ELAN_COMMENT_PATTERN = re.compile(r"#.*$|//.*$|/\*.*?\*/")
+
         LOGO_KEYWORD_PATTERN = re.compile(
             r"(?<![A-Za-z0-9_])(?:"
             r"rechts|right|links|left|up|hoch|down|runter|go|steps|step|"
@@ -40548,7 +44863,22 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
         LOGO_NUMBER_PATTERN = re.compile(
             r"(?<![A-Za-z0-9_])[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?![A-Za-z0-9_])"
         )
+        LOGO_STRING_PATTERN = re.compile(
+            r'"(?:[^\s;#]+)|\'(?:\'\'|[^\'\r\n])*\''
+        )
         LOGO_COMMENT_PATTERN = re.compile(r";.*$|#.*$|//.*$")
+        DBASE_KEYWORD_PATTERN = re.compile(
+            r"(?<![A-Za-z0-9_])(?:"
+            r"STORE|TO|SET|ON|OFF|IF|ELSE|ENDIF|DO|CASE|ENDCASE|"
+            r"RETURN|PROCEDURE|FUNCTION|LOCAL|PRIVATE|PUBLIC|PARAMETERS|"
+            r"AND|OR|NOT|INT"
+            r")(?![A-Za-z0-9_])",
+            re.IGNORECASE,
+        )
+        DBASE_NUMBER_PATTERN = re.compile(
+            r"(?<![A-Za-z0-9_])[+-]?[0-9]+(?:\.[0-9]+)?"
+            r"(?:[eE][+-]?[0-9]+)?(?![A-Za-z0-9_])"
+        )
         DBASE_BLOCK_STATE = 0xDBA5
         MARKDOWN_FENCE_STATE = 0x4D44
         MARKDOWN_HEADING_PATTERN = re.compile(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$")
@@ -40568,9 +44898,11 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.lisp_enabled = False
             self.prolog_enabled = False
             self.logo_enabled = False
+            self.elan_enabled = False
             self.dbase_enabled = False
             self.markdown_enabled = False
             self.dark_mode = False
+            self._custom_color_profile = None
             self._jump_target_names = set()
             self._jump_target_refresh_pending = False
 
@@ -40675,6 +45007,37 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 QColor("#8B949E") if self.dark_mode else QColor("#57606A")
             )
 
+            # Stage 199: projektspezifische Syntaxfarben uebersteuern die
+            # Theme-Fallbacks. Normaler Text wird ueber die Editor-Palette
+            # gesetzt; hier werden die tokenbezogenen Formate gepflegt.
+            profile = self._custom_color_profile
+            if isinstance(profile, dict):
+                format_map = {
+                    "comment": self.comment_format,
+                    "float": self.pascal_number_format,
+                    "string": self.pascal_string_format,
+                    "keyword": self.pascal_keyword_format,
+                    "instruction": self.opcode_format,
+                    "operand": self.operand_format,
+                }
+                for key, text_format in format_map.items():
+                    values = profile.get(key, {})
+                    if not isinstance(values, dict):
+                        continue
+                    fg = QColor(str(values.get("foreground", "") or ""))
+                    bg = QColor(str(values.get("background", "") or ""))
+                    if fg.isValid():
+                        text_format.setForeground(fg)
+                    if bg.isValid():
+                        text_format.setBackground(bg)
+
+        def set_custom_color_profile(self, profile) -> None:
+            self._custom_color_profile = (
+                dict(profile) if isinstance(profile, dict) else None
+            )
+            self._update_theme_formats()
+            self.rehighlight()
+
         def set_dark_mode(self, enabled: bool) -> None:
             enabled = bool(enabled)
             self.dark_mode = enabled
@@ -40728,6 +45091,13 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             if self.logo_enabled == enabled:
                 return
             self.logo_enabled = enabled
+            self.rehighlight()
+
+        def set_elan_enabled(self, enabled: bool) -> None:
+            enabled = bool(enabled)
+            if self.elan_enabled == enabled:
+                return
+            self.elan_enabled = enabled
             self.rehighlight()
 
         def set_dbase_enabled(self, enabled: bool) -> None:
@@ -40796,6 +45166,18 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             nicht hervorgehoben.
             """
             self.setCurrentBlockState(0)
+            for match in self.DBASE_KEYWORD_PATTERN.finditer(text):
+                self.setFormat(
+                    match.start(),
+                    match.end() - match.start(),
+                    self.pascal_keyword_format,
+                )
+            for match in self.DBASE_NUMBER_PATTERN.finditer(text):
+                self.setFormat(
+                    match.start(),
+                    match.end() - match.start(),
+                    self.pascal_number_format,
+                )
             length = len(text)
             index = 0
             in_block = self.previousBlockState() == self.DBASE_BLOCK_STATE
@@ -40915,11 +45297,35 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             if self.dbase_enabled:
                 self._highlight_dbase_block(text)
                 return
+            if self.elan_enabled:
+                for match in self.ELAN_KEYWORD_PATTERN.finditer(text):
+                    self.setFormat(
+                        match.start(), match.end() - match.start(),
+                        self.pascal_keyword_format,
+                    )
+                for match in self.ELAN_NUMBER_PATTERN.finditer(text):
+                    self.setFormat(
+                        match.start(), match.end() - match.start(),
+                        self.pascal_number_format,
+                    )
+                for match in self.ELAN_STRING_PATTERN.finditer(text):
+                    self.setFormat(
+                        match.start(), match.end() - match.start(),
+                        self.pascal_string_format,
+                    )
+                for match in self.ELAN_COMMENT_PATTERN.finditer(text):
+                    self.setFormat(
+                        match.start(), match.end() - match.start(),
+                        self.comment_format,
+                    )
+                return
             if self.logo_enabled:
                 for match in self.LOGO_KEYWORD_PATTERN.finditer(text):
                     self.setFormat(match.start(), match.end() - match.start(), self.pascal_keyword_format)
                 for match in self.LOGO_NUMBER_PATTERN.finditer(text):
                     self.setFormat(match.start(), match.end() - match.start(), self.pascal_number_format)
+                for match in self.LOGO_STRING_PATTERN.finditer(text):
+                    self.setFormat(match.start(), match.end() - match.start(), self.pascal_string_format)
                 for match in self.LOGO_COMMENT_PATTERN.finditer(text):
                     self.setFormat(match.start(), match.end() - match.start(), self.comment_format)
                 return
@@ -41029,6 +45435,21 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                         end -= 1
                     if end > start:
                         self.setFormat(start, end - start, self.operand_format)
+
+            # Stage 199: Zahlen und Zeichenketten innerhalb eines Operanden
+            # koennen getrennt vom allgemeinen Operandenstil gefaerbt werden.
+            for match in self.ASSEMBLER_NUMBER_PATTERN.finditer(code):
+                self.setFormat(
+                    match.start(),
+                    match.end() - match.start(),
+                    self.pascal_number_format,
+                )
+            for match in self.ASSEMBLER_STRING_PATTERN.finditer(code):
+                self.setFormat(
+                    match.start(),
+                    match.end() - match.start(),
+                    self.pascal_string_format,
+                )
 
             jump_match = self.JUMP_TARGET_PATTERN.match(code)
             if (
@@ -42863,6 +47284,10 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             super().__init__(parent)
             self._dark_mode = False
             self._markdown_mode = False
+            # Stage 198: benutzerdefinierte Projektfarben fuer Eingabeeditor
+            # und Gutter. None bedeutet: bisherige Theme-Farben verwenden.
+            self._custom_editor_foreground = None
+            self._custom_editor_background = None
             self._completion_enabled = False
             self._completion_context = None
             self._assembler_target = "c64"
@@ -43301,7 +47726,16 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 True,
             )
 
-            if self._markdown_mode:
+            if self._custom_editor_foreground and self._custom_editor_background:
+                _fg = QColor(self._custom_editor_foreground)
+                _bg = QColor(self._custom_editor_background)
+                _line_bg = (
+                    _bg.lighter(118) if _bg.lightness() < 128
+                    else _bg.darker(106)
+                )
+                selection.format.setBackground(_line_bg)
+                selection.format.setForeground(_fg)
+            elif self._markdown_mode:
                 if self._dark_mode:
                     selection.format.setBackground(QColor("#161B22"))
                     selection.format.setForeground(QColor("#C9D1D9"))
@@ -44650,6 +49084,20 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self._position_instruction_help_frame()
             self.viewport_geometry_changed.emit()
 
+        def set_custom_editor_colors(self, foreground=None, background=None) -> None:
+            """Stage 198: setzt Text-/Hintergrundfarbe inkl. Gutter."""
+            fg = QColor(str(foreground or ""))
+            bg = QColor(str(background or ""))
+            self._custom_editor_foreground = (
+                fg.name(QColor.HexRgb).upper() if fg.isValid() else None
+            )
+            self._custom_editor_background = (
+                bg.name(QColor.HexRgb).upper() if bg.isValid() else None
+            )
+            self.line_number_area.update()
+            self._update_current_line_highlight()
+            self.viewport().update()
+
         def set_gutter_dark_mode(self, enabled: bool) -> None:
             self._dark_mode = bool(enabled)
             self.line_number_area.update()
@@ -44663,7 +49111,12 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
 
         def line_number_area_paint_event(self, event) -> None:
             painter = QPainter(self.line_number_area)
-            if self._markdown_mode and self._dark_mode:
+            if self._custom_editor_foreground and self._custom_editor_background:
+                background = QColor(self._custom_editor_background)
+                foreground = QColor(self._custom_editor_foreground)
+                separator = QColor(foreground)
+                separator.setAlpha(120)
+            elif self._markdown_mode and self._dark_mode:
                 background = QColor("#161B22")
                 foreground = QColor("#8B949E")
                 separator = QColor("#30363D")
@@ -45098,7 +49551,11 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             root_layout.addWidget(self.path_label)
 
             splitter = QSplitter(Qt.Horizontal, self)
-            splitter.setChildrenCollapsible(False)
+            # Stage 184: Keine Splitter-Seite darf die Mindestgröße des
+            # Mathematik-Workspace bzw. des Hauptfensters festnageln.
+            # Bei wenig Platz dürfen linke Navigation und rechte Arbeitsfläche
+            # bis zur ScrollArea-Grenze zusammenschrumpfen.
+            splitter.setChildrenCollapsible(True)
             root_layout.addWidget(splitter, 1)
 
             left_panel = QWidget(splitter)
@@ -48893,6 +53350,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
         LISP_EXTENSIONS      = {".lisp", ".lsp"}
         PROLOG_EXTENSIONS    = {".pl", ".prolog"}
         LOGO_EXTENSIONS      = {".logo", ".lgo"}
+        ELAN_EXTENSIONS      = {".elan", ".el"}
         DBASE_EXTENSIONS     = {".dbase", ".dbp", ".wfm"}
         MARKDOWN_EXTENSIONS  = {".md", ".markdown"}
         BINARY_EXTENSIONS    = {
@@ -50951,6 +55409,10 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             is_lisp = suffix in self.LISP_EXTENSIONS
             is_prolog = suffix in self.PROLOG_EXTENSIONS
             is_logo = suffix in self.LOGO_EXTENSIONS
+            is_elan = (
+                self.language_override == "elan"
+                or suffix in self.ELAN_EXTENSIONS
+            )
             is_dbase = (self.language_override == "dbase") or suffix in self.DBASE_EXTENSIONS
             is_markdown = suffix in self.MARKDOWN_EXTENSIONS and not self.language_override
             self.configure_dbase_output_tabs(inspect_source=True)
@@ -50990,9 +55452,23 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.syntax_highlighter.set_lisp_enabled(is_lisp)
             self.syntax_highlighter.set_prolog_enabled(is_prolog)
             self.syntax_highlighter.set_logo_enabled(is_logo)
+            self.syntax_highlighter.set_elan_enabled(is_elan)
             self.syntax_highlighter.set_dbase_enabled(is_dbase)
             self.syntax_highlighter.set_markdown_enabled(is_markdown)
             self.raw_editor.set_markdown_mode(is_markdown)
+
+            # Stage 199: nach Dateiendungs-/Sprachwechsel sofort das passende
+            # sprachspezifische Farbprofil aktivieren.
+            _main_window = self.window()
+            _profiles = getattr(_main_window, "editor_color_profiles", None)
+            if isinstance(_profiles, dict):
+                _language_key = self.editor_color_language_key()
+                self.set_editor_color_profile(
+                    _profiles.get(
+                        _language_key,
+                        _profiles.get("text", {}),
+                    )
+                )
             self.pascal_compile_progress.setVisible(is_pascal)
             # Stage 60: assembly source uses a 120 px minimum draggable
             # viewport thumb.  Other source editors keep the historic 18 px
@@ -51380,6 +55856,71 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 editor.update_line_number_area_width(0)
             self.hex_editor.set_editor_font(font)
 
+        def editor_color_language_key(self) -> str:
+            suffix = self.effective_suffix
+            if self.language_override == "dbase" or suffix in self.DBASE_EXTENSIONS:
+                return "dbase"
+            if (
+                suffix in self.ASSEMBLER_EXTENSIONS
+                or self.binary_disassembly_mode
+                or self.assembler_text_mode
+            ):
+                return "assembler"
+            if suffix in self.PASCAL_EXTENSIONS:
+                return "pascal"
+            if suffix in self.C_EXTENSIONS or suffix in self.C_HEADER_EXTENSIONS:
+                return "c_cpp"
+            if suffix in self.PROLOG_EXTENSIONS:
+                return "prolog"
+            if suffix in self.LISP_EXTENSIONS:
+                return "lisp"
+            if suffix in self.LOGO_EXTENSIONS:
+                return "logo"
+            if suffix in self.ELAN_EXTENSIONS or self.language_override == "elan":
+                return "elan"
+            return "text"
+
+        def set_editor_color_profile(self, profile) -> None:
+            if not isinstance(profile, dict):
+                profile = {}
+            text_colors = profile.get("text", {})
+            foreground = text_colors.get(
+                "foreground", PROJECT_WINDOWS_EDITOR_DEFAULT_FOREGROUND
+            )
+            background = text_colors.get(
+                "background", PROJECT_WINDOWS_EDITOR_DEFAULT_BACKGROUND
+            )
+            self.set_editor_colors(foreground, background)
+            highlighter = getattr(self, "syntax_highlighter", None)
+            if highlighter is not None:
+                highlighter.set_custom_color_profile(profile)
+
+        def set_editor_colors(self, foreground: str, background: str) -> None:
+            self._editor_foreground = str(foreground or "").strip()
+            self._editor_background = str(background or "").strip()
+            self._apply_custom_source_editor_colors()
+
+        def _apply_custom_source_editor_colors(self) -> None:
+            editor = getattr(self, "raw_editor", None)
+            if editor is None:
+                return
+            fg = QColor(str(getattr(self, "_editor_foreground", "") or ""))
+            bg = QColor(str(getattr(self, "_editor_background", "") or ""))
+            if not fg.isValid() or not bg.isValid():
+                editor.set_custom_editor_colors(None, None)
+                return
+            palette = QPalette(editor.palette())
+            palette.setColor(QPalette.Base, bg)
+            palette.setColor(QPalette.Text, fg)
+            if hasattr(QPalette, "PlaceholderText"):
+                placeholder = QColor(fg)
+                placeholder.setAlpha(155)
+                palette.setColor(QPalette.PlaceholderText, placeholder)
+            editor.setPalette(palette)
+            editor.viewport().setPalette(palette)
+            editor.set_custom_editor_colors(fg.name(), bg.name())
+            editor.viewport().update()
+
         def set_dark_mode(self, enabled: bool) -> None:
             enabled = bool(enabled)
             code_suffix = self.effective_suffix
@@ -51520,6 +56061,9 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.syntax_highlighter.set_dark_mode(enabled or source_is_code)
             self.generated_assembly_highlighter.set_dark_mode(True)
             self.markdown_preview.set_dark_mode(enabled)
+            # Stage 198: Projektfarben sind fuer den Eingabeeditor autoritativ
+            # und werden nach dem normalen Theme-Paletteaufbau erneut gesetzt.
+            self._apply_custom_source_editor_colors()
 
     class DismWorker(QObject):
         """Fuehrt die unveraenderte d64info-Programmlogik ausserhalb der GUI aus."""
@@ -74540,6 +79084,7 @@ QPushButton {{ min-height: 28px; padding: 4px 12px; }}'''
             enabled_kinds,
             log_path: str,
             log_limit_mb: int,
+            start_number=None,
             parent=None,
         ):
             super().__init__(parent)
@@ -74553,11 +79098,29 @@ QPushButton {{ min-height: 28px; padding: 4px 12px; }}'''
             self._small_primes = ()
             self._effective_sieve_limit = 0
             self._gmpy2 = None
+            self._gmp_version = ''
             try:
                 import gmpy2
                 self._gmpy2 = gmpy2
+                try:
+                    self._gmp_version = str(gmpy2.mp_version())
+                except Exception:
+                    self._gmp_version = ''
             except Exception:
                 self._gmpy2 = None
+
+            # Stage 187: Startzahlen und Kandidaten bleiben als GMP-mpz erhalten.
+            # Dezimalstrings werden bewusst direkt von GMP eingelesen, damit auch
+            # 10.000-stellige Eingaben ohne Python-int-Zwischenschritt und ohne
+            # sys.set_int_max_str_digits()-Anhebung verarbeitet werden.
+            self.start_number = None
+            if start_number not in (None, '') and self._gmpy2 is not None:
+                if isinstance(start_number, self._gmpy2.mpz):
+                    self.start_number = start_number
+                elif isinstance(start_number, str):
+                    self.start_number = self._gmpy2.mpz(start_number.strip(), 10)
+                else:
+                    self.start_number = self._gmpy2.mpz(start_number)
 
         def request_stop(self) -> None:
             self._stop_event.set()
@@ -74621,13 +79184,17 @@ QPushButton {{ min-height: 28px; padding: 4px 12px; }}'''
                     return False
             return True
 
-        def _is_prime(self, value: int) -> bool:
-            if self._gmpy2 is not None:
-                try:
-                    return bool(self._gmpy2.is_prime(value, 25))
-                except TypeError:
-                    return bool(self._gmpy2.is_prime(value))
-            return self._miller_rabin(value, 24)
+        def _is_prime(self, value) -> bool:
+            if self._gmpy2 is None:
+                raise RuntimeError(
+                    'GNU GMP/gmpy2 ist nicht verfügbar. Bitte gmpy2 installieren, '
+                    'bevor die Primzahlsuche gestartet wird.'
+                )
+            value = value if isinstance(value, self._gmpy2.mpz) else self._gmpy2.mpz(value)
+            try:
+                return bool(self._gmpy2.is_prime(value, 25))
+            except TypeError:
+                return bool(self._gmpy2.is_prime(value))
 
         def _analyze_candidate(self, base: int):
             if self._stop_event.is_set():
@@ -74708,7 +79275,14 @@ QPushButton {{ min-height: 28px; padding: 4px 12px; }}'''
                     self._effective_sieve_limit
                 )
 
-                backend = 'gmpy2/GMP' if self._gmpy2 is not None else 'Python Miller-Rabin'
+                if self._gmpy2 is None:
+                    raise RuntimeError(
+                        'GNU GMP/gmpy2 ist für die Primzahlsuche erforderlich. '
+                        'Bitte gmpy2 installieren.'
+                    )
+                backend = 'gmpy2/GMP'
+                if self._gmp_version:
+                    backend += f' {self._gmp_version}'
                 if self.pre_sieve_limit > self._effective_sieve_limit:
                     sieve_note = (
                         f'aktive Vorsieb-Tabelle bis {self._effective_sieve_limit:,}; '
@@ -74722,15 +79296,39 @@ QPushButton {{ min-height: 28px; padding: 4px 12px; }}'''
                     f'Suche läuft: {backend}, {self.thread_count} Threads, {sieve_note}.'
                 )
 
-                start = secrets.randbits(self.bit_length)
-                start |= (1 << (self.bit_length - 1))
-                start |= 1
-                next_candidate = start
+                mpz = self._gmpy2.mpz
+                initial_candidates = []
+                if self.start_number is None:
+                    start = mpz(secrets.randbits(self.bit_length))
+                    start |= mpz(1) << (self.bit_length - 1)
+                    start |= 1
+                    next_candidate = start
+                else:
+                    start = self.start_number
+                    if start < 2:
+                        start = mpz(2)
+                    if start <= 2:
+                        initial_candidates.append(mpz(2))
+                        next_candidate = mpz(3)
+                    else:
+                        next_candidate = start if (start & 1) else start + 1
+
                 checked = 0
                 found_total = 0
                 kind_counts = {key: 0 for key in self.DISPLAY_NAMES}
                 last_stats = time.monotonic()
                 batch_size = max(self.thread_count, 4)
+
+                for candidate in initial_candidates:
+                    checked += 1
+                    for kind, values in self._analyze_candidate(candidate):
+                        found_total += 1
+                        kind_counts[kind] = kind_counts.get(kind, 0) + 1
+                        self._write_log_record(kind, values)
+                        self.result_found.emit(
+                            kind,
+                            tuple(str(v) for v in values),
+                        )
 
                 with concurrent.futures.ThreadPoolExecutor(
                     max_workers=self.thread_count,
@@ -74789,6 +79387,180 @@ QPushButton {{ min-height: 28px; padding: 4px 12px; }}'''
                 self.status_message.emit('Suche wegen eines Fehlers beendet.')
 
 
+    class PrimeConstellationSpiralPlot(QWidget):
+        """Stage 188: kompakter Fermat-/Golden-Angle-Plot für Primzahl-Treffer."""
+
+        MAX_POINTS = 2400
+        GOLDEN_ANGLE = math.pi * (3.0 - math.sqrt(5.0))
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self._dark_mode = True
+            self._points = []
+            self.setObjectName('prime_solver_constellation_spiral_plot')
+            self.setMinimumHeight(220)
+            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            self.setToolTip(
+                'Fermat-/Golden-Angle-Punktspirale der gefundenen Primzahlen und '
+                'Primzahl-Konstellationen. Kleine Punkte sind Einzelprimzahlen; '
+                'größere Punkte kennzeichnen Trillinge bis Sechslinge.'
+            )
+
+        def set_dark_mode(self, enabled: bool) -> None:
+            self._dark_mode = bool(enabled)
+            self.update()
+
+        def clear_plot(self) -> None:
+            self._points.clear()
+            self.update()
+
+        def add_hit(self, kind: str, values) -> None:
+            kind = str(kind or '')
+            if kind not in {
+                'prime', 'twins', 'triplets', 'quadruplets',
+                'quintuplets', 'sextuplets', 'septuplets', 'octuplets',
+            }:
+                return
+            anchor = ''
+            try:
+                if values:
+                    anchor = str(values[0])
+            except Exception:
+                anchor = ''
+            self._points.append((kind, anchor))
+            if len(self._points) > self.MAX_POINTS:
+                del self._points[:len(self._points) - self.MAX_POINTS]
+            if self.isVisible():
+                self.update()
+
+        def _colors(self):
+            if self._dark_mode:
+                return {
+                    'bg': QColor('#0f141b'),
+                    'grid': QColor('#263545'),
+                    'text': QColor('#dce7f2'),
+                    'prime': QColor('#738496'),
+                    'twins': QColor('#7fb3ff'),
+                    'triplets': QColor('#72d6a8'),
+                    'quadruplets': QColor('#ffd166'),
+                    'quintuplets': QColor('#f39ac7'),
+                    'sextuplets': QColor('#ffd166'),
+                    'septuplets': QColor('#c7a0ff'),
+                    'octuplets': QColor('#ff5f7a'),
+                }
+            return {
+                'bg': QColor('#fffaf0'),
+                'grid': QColor('#d8cfbf'),
+                'text': QColor('#242424'),
+                'prime': QColor('#77818a'),
+                'twins': QColor('#3f7fc4'),
+                'triplets': QColor('#2b8a63'),
+                'quadruplets': QColor('#b57900'),
+                'quintuplets': QColor('#b84f85'),
+                'sextuplets': QColor('#b57900'),
+                'septuplets': QColor('#7a4bb0'),
+                'octuplets': QColor('#bf2948'),
+            }
+
+        @staticmethod
+        def _point_radius(kind: str) -> float:
+            return {
+                'prime': 1.6,
+                'twins': 2.2,
+                'triplets': 2.8,
+                'quadruplets': 3.2,
+                'quintuplets': 3.7,
+                'sextuplets': 4.2,
+                'septuplets': 4.6,
+                'octuplets': 5.0,
+            }.get(kind, 1.6)
+
+        def _draw_legend(self, painter, colors, count: int, width: float) -> None:
+            """Stage 189: kompakte Farblegende links oben im Plot."""
+            painter.setPen(colors['text'])
+            metrics = painter.fontMetrics()
+            font_height = max(1, metrics.height())
+            row_height = max(font_height + 2, 14)
+            rect_height = max(1, font_height - 2)
+            rect_width = max(10, min(16, font_height))
+            left = 8.0
+            text_left = left + rect_width + 6.0
+
+            painter.drawText(
+                QRectF(left, 4.0, width - 16.0, float(row_height)),
+                Qt.AlignLeft | Qt.AlignVCenter,
+                f'{count} Treffer',
+            )
+
+            rows = (
+                ('prime', colors['prime']),
+                ('trill', colors['triplets']),
+                ('vierl', colors['quadruplets']),
+                ('fünf', colors['quintuplets']),
+                ('sechs', colors['sextuplets']),
+            )
+            y = 4.0 + float(row_height)
+            for label, color in rows:
+                rect_y = y + max(0.0, (float(row_height) - float(rect_height)) * 0.5)
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(QBrush(color))
+                painter.drawRect(
+                    QRectF(left, rect_y, float(rect_width), float(rect_height))
+                )
+                painter.setPen(colors['text'])
+                painter.drawText(
+                    QRectF(text_left, y, max(1.0, width - text_left - 8.0), float(row_height)),
+                    Qt.AlignLeft | Qt.AlignVCenter,
+                    label,
+                )
+                y += float(row_height)
+
+        def paintEvent(self, event) -> None:
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            colors = self._colors()
+            painter.fillRect(self.rect(), colors['bg'])
+
+            margin = 22.0
+            width = max(1.0, float(self.width()))
+            height = max(1.0, float(self.height()))
+            cx = width * 0.5
+            cy = height * 0.52
+            max_radius = max(8.0, min(width, height) * 0.5 - margin)
+
+            painter.setPen(QPen(colors['grid'], 1))
+            for fraction in (0.25, 0.50, 0.75, 1.0):
+                radius = max_radius * fraction
+                painter.drawEllipse(QPointF(cx, cy), radius, radius)
+
+            count = len(self._points)
+            self._draw_legend(painter, colors, count, width)
+
+            if not self._points:
+                painter.setPen(colors['text'])
+                painter.drawText(
+                    self.rect(),
+                    Qt.AlignCenter,
+                    'Noch keine Treffer für die Punkt-Spirale.',
+                )
+                painter.end()
+                return
+
+            radial_scale = max_radius / math.sqrt(max(1.0, float(count)))
+            for index, (kind, _anchor) in enumerate(self._points, start=1):
+                radius = radial_scale * math.sqrt(float(index))
+                angle = float(index) * self.GOLDEN_ANGLE
+                x = cx + math.cos(angle) * radius
+                y = cy + math.sin(angle) * radius
+                point_radius = self._point_radius(kind)
+                color = colors.get(kind, colors['prime'])
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(QBrush(color))
+                painter.drawEllipse(QPointF(x, y), point_radius, point_radius)
+
+            painter.end()
+
+
     class PrimeSolverFactWidget(QWidget):
         """Stage ASM 160: Fakt-Seite für 16..16284-Bit-Primzahlsuche."""
 
@@ -74800,7 +79572,12 @@ QPushButton {{ min-height: 28px; padding: 4px 12px; }}'''
             self._worker = None
             self._prime_reset_limit = 1000
             self._pattern_lists = {}
+            self._pattern_hit_edits = {}
             self._filter_checks = {}
+            self._elapsed_started_at = None
+            self._elapsed_timer = QTimer(self)
+            self._elapsed_timer.setInterval(250)
+            self._elapsed_timer.timeout.connect(self._update_elapsed_timer)
 
             root = QVBoxLayout(self)
             root.setContentsMargins(12, 10, 12, 10)
@@ -74913,6 +79690,35 @@ QPushButton {{ min-height: 28px; padding: 4px 12px; }}'''
             button_row.addStretch(1)
             root.addLayout(button_row)
 
+            search_meta_row = QHBoxLayout()
+            search_meta_row.addWidget(QLabel('Start:', self))
+            self.start_number_edit = QLineEdit(self)
+            self.start_number_edit.setObjectName('prime_solver_start_number')
+            self.start_number_edit.setMaxLength(10_000)
+            self.start_number_edit.setText('2')
+            self.start_number_edit.setValidator(
+                QRegularExpressionValidator(QRegularExpression(r'^[0-9]{0,10000}$'), self)
+            )
+            self.start_number_edit.setToolTip(
+                'Startzahl für die Primzahlsuche. Es sind ausschließlich Ziffern 0 bis 9 erlaubt; '
+                'die Eingabe ist auf 10.000 Zeichen begrenzt.'
+            )
+            search_meta_row.addWidget(self.start_number_edit, 1)
+
+            self.elapsed_time_title_label = QLabel('Rechenzeit:', self)
+            self.elapsed_time_title_label.setObjectName('prime_solver_elapsed_title')
+            elapsed_font = QFont('Arial', 10)
+            self.elapsed_time_title_label.setFont(elapsed_font)
+            search_meta_row.addWidget(self.elapsed_time_title_label)
+            self.elapsed_time_label = QLabel('0000 000 00:00:00', self)
+            self.elapsed_time_label.setObjectName('prime_solver_elapsed_timer')
+            self.elapsed_time_label.setFont(QFont('Arial', 10))
+            self.elapsed_time_label.setMinimumWidth(165)
+            self.elapsed_time_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self.elapsed_time_label.setToolTip('JJJJ TTT HH:MM:SS')
+            search_meta_row.addWidget(self.elapsed_time_label)
+            root.addLayout(search_meta_row)
+
             self.status_label = QLabel('Bereit.', self)
             self.status_label.setWordWrap(True)
             root.addWidget(self.status_label)
@@ -74935,7 +79741,41 @@ QPushButton {{ min-height: 28px; padding: 4px 12px; }}'''
             result_splitter.addWidget(prime_box)
 
             tuples_box = QGroupBox('Prime-Constellations', result_splitter)
-            tuples_layout = QGridLayout(tuples_box)
+            tuples_layout = QVBoxLayout(tuples_box)
+            tuples_layout.setContentsMargins(8, 10, 8, 8)
+            tuples_layout.setSpacing(6)
+
+            # Stage 188: vertikaler Splitter zwischen Trillinge/Vierlinge und
+            # Fünflinge/Sechslinge. Unter der unteren Reihe kann optional eine
+            # Punkt-Spirale der gefundenen Treffer eingeblendet werden.
+            self.constellation_splitter = QSplitter(Qt.Vertical, tuples_box)
+            self.constellation_splitter.setObjectName('prime_solver_constellation_vertical_splitter')
+            self.constellation_splitter.setChildrenCollapsible(True)
+            tuples_layout.addWidget(self.constellation_splitter, 1)
+
+            upper_row = QWidget(self.constellation_splitter)
+            upper_grid = QGridLayout(upper_row)
+            upper_grid.setContentsMargins(0, 0, 0, 0)
+            upper_grid.setHorizontalSpacing(8)
+            upper_grid.setVerticalSpacing(0)
+            upper_grid.setColumnStretch(0, 1)
+            upper_grid.setColumnStretch(1, 1)
+            self.constellation_splitter.addWidget(upper_row)
+
+            lower_pane = QWidget(self.constellation_splitter)
+            lower_layout = QVBoxLayout(lower_pane)
+            lower_layout.setContentsMargins(0, 0, 0, 0)
+            lower_layout.setSpacing(6)
+
+            lower_row = QWidget(lower_pane)
+            lower_grid = QGridLayout(lower_row)
+            lower_grid.setContentsMargins(0, 0, 0, 0)
+            lower_grid.setHorizontalSpacing(8)
+            lower_grid.setVerticalSpacing(0)
+            lower_grid.setColumnStretch(0, 1)
+            lower_grid.setColumnStretch(1, 1)
+            lower_layout.addWidget(lower_row, 1)
+
             tuple_defs = (
                 ('triplets', 'Trillinge'),
                 ('quadruplets', 'Vierlinge'),
@@ -74943,19 +79783,86 @@ QPushButton {{ min-height: 28px; padding: 4px 12px; }}'''
                 ('sextuplets', 'Sechslinge'),
             )
             for index, (key, title_text) in enumerate(tuple_defs):
-                cell = QWidget(tuples_box)
+                cell_parent = upper_row if index < 2 else lower_row
+                target_grid = upper_grid if index < 2 else lower_grid
+                target_column = index if index < 2 else index - 2
+
+                cell = QWidget(cell_parent)
                 cell_layout = QVBoxLayout(cell)
                 cell_layout.setContentsMargins(0, 0, 0, 0)
+                cell_layout.setSpacing(5)
                 label = QLabel(title_text, cell)
                 label_font = label.font()
                 label_font.setBold(True)
                 label.setFont(label_font)
+                cell_layout.addWidget(label)
+
+                hit_grid = QGridLayout()
+                hit_grid.setContentsMargins(0, 0, 0, 0)
+                hit_grid.setHorizontalSpacing(6)
+                hit_grid.setVerticalSpacing(4)
+                hit_grid.setColumnStretch(1, 1)
+
+                first_edit = QLineEdit(cell)
+                first_edit.setReadOnly(True)
+                first_edit.setObjectName(f'prime_solver_{key}_first_hit')
+                first_edit.setToolTip('Erster Treffer des aktuellen Suchlaufs; bleibt bis zum nächsten Start unverändert.')
+                first_copy = self._create_hit_copy_button(
+                    first_edit,
+                    f'prime_solver_{key}_first_copy',
+                    cell,
+                )
+                hit_grid.addWidget(QLabel('E. Treffer', cell), 0, 0)
+                hit_grid.addWidget(first_edit, 0, 1)
+                hit_grid.addWidget(first_copy, 0, 2)
+
+                last_edit = QLineEdit(cell)
+                last_edit.setReadOnly(True)
+                last_edit.setObjectName(f'prime_solver_{key}_last_hit')
+                last_edit.setToolTip('Zuletzt gefundener Treffer des aktuellen Suchlaufs; wird fortlaufend aktualisiert.')
+                last_copy = self._create_hit_copy_button(
+                    last_edit,
+                    f'prime_solver_{key}_last_copy',
+                    cell,
+                )
+                hit_grid.addWidget(QLabel('L. Treffer', cell), 1, 0)
+                hit_grid.addWidget(last_edit, 1, 1)
+                hit_grid.addWidget(last_copy, 1, 2)
+
+                self._pattern_hit_edits[key] = {
+                    'first': first_edit,
+                    'last': last_edit,
+                }
+                cell_layout.addLayout(hit_grid)
+
                 list_widget = QListWidget(cell)
                 list_widget.setObjectName(f'prime_solver_{key}_list')
                 self._pattern_lists[key] = list_widget
-                cell_layout.addWidget(label)
                 cell_layout.addWidget(list_widget, 1)
-                tuples_layout.addWidget(cell, index // 2, index % 2)
+                target_grid.addWidget(cell, 0, target_column)
+
+            self.constellation_plot_check = QCheckBox('Punkt-Spirale anzeigen', lower_pane)
+            self.constellation_plot_check.setObjectName('prime_solver_constellation_plot_check')
+            self.constellation_plot_check.setToolTip(
+                'Blendet eine Fermat-/Golden-Angle-Punktspirale der gefundenen '
+                'Primzahlen und Primzahl-Konstellationen ein.'
+            )
+            lower_layout.addWidget(self.constellation_plot_check)
+
+            self.constellation_spiral_plot = PrimeConstellationSpiralPlot(lower_pane)
+            self.constellation_spiral_plot.setVisible(False)
+            lower_layout.addWidget(self.constellation_spiral_plot, 1)
+            self.constellation_plot_check.toggled.connect(
+                self.constellation_spiral_plot.setVisible
+            )
+            self.constellation_plot_check.toggled.connect(
+                lambda checked: self.constellation_spiral_plot.update() if checked else None
+            )
+
+            self.constellation_splitter.addWidget(lower_pane)
+            self.constellation_splitter.setStretchFactor(0, 1)
+            self.constellation_splitter.setStretchFactor(1, 1)
+            self.constellation_splitter.setSizes([260, 360])
             result_splitter.addWidget(tuples_box)
             result_splitter.setStretchFactor(0, 3)
             result_splitter.setStretchFactor(1, 2)
@@ -74986,8 +79893,84 @@ QGroupBox::title {{ subcontrol-origin: margin; left: 8px; padding: 0 4px; }}
 QListWidget {{ background: {bg}; color: {fg}; border: 1px solid {border}; }}
 QListWidget::item:selected {{ background: {selection}; }}
 QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {{ background: {bg}; color: {fg}; border: 1px solid {border}; min-height: 24px; }}
-QPushButton {{ min-height: 26px; }}"""
+QPushButton {{ min-height: 26px; }}
+QToolButton {{ background: {panel}; color: {fg}; border: 1px solid {border}; border-radius: 3px; }}
+QToolButton:hover {{ background: {selection}; }}"""
             )
+            if hasattr(self, 'constellation_spiral_plot'):
+                self.constellation_spiral_plot.set_dark_mode(self._dark_mode)
+
+        def _create_hit_copy_button(self, line_edit: QLineEdit, object_name: str, parent) -> QToolButton:
+            button = QToolButton(parent)
+            button.setObjectName(object_name)
+            button.setText('⧉')
+            button.setToolTip('Treffer markieren und in die Zwischenablage kopieren')
+            button.setFixedSize(28, 28)
+            button.clicked.connect(
+                lambda checked=False, edit=line_edit: self._copy_hit_text(edit)
+            )
+            return button
+
+        @staticmethod
+        def _copy_hit_text(line_edit: QLineEdit) -> None:
+            text = line_edit.text()
+            if not text:
+                return
+            line_edit.setFocus(Qt.OtherFocusReason)
+            line_edit.selectAll()
+            line_edit.copy()
+
+        def _reset_pattern_hit_fields(self) -> None:
+            for edits in self._pattern_hit_edits.values():
+                edits['first'].clear()
+                edits['last'].clear()
+
+        def _update_pattern_hit_fields(self, kind: str, values) -> None:
+            edits = self._pattern_hit_edits.get(kind)
+            if edits is None:
+                return
+            text = '  '.join(str(value) for value in values)
+            if not edits['first'].text():
+                edits['first'].setText(text)
+                edits['first'].setCursorPosition(0)
+            edits['last'].setText(text)
+            edits['last'].setCursorPosition(0)
+
+        @staticmethod
+        def _format_elapsed_time(total_seconds: int) -> str:
+            total_seconds = max(0, int(total_seconds))
+            years, remainder = divmod(total_seconds, 365 * 24 * 60 * 60)
+            days, remainder = divmod(remainder, 24 * 60 * 60)
+            hours, remainder = divmod(remainder, 60 * 60)
+            minutes, seconds = divmod(remainder, 60)
+            return f'{years:04d} {days:03d} {hours:02d}:{minutes:02d}:{seconds:02d}'
+
+        def _reset_elapsed_timer(self, *, start: bool = False) -> None:
+            self._elapsed_timer.stop()
+            self._elapsed_started_at = None
+            self.elapsed_time_label.setText('0000 000 00:00:00')
+            if start:
+                self._elapsed_started_at = time.monotonic()
+                self._elapsed_timer.start()
+
+        def _update_elapsed_timer(self) -> None:
+            if self._elapsed_started_at is None:
+                return
+            elapsed = int(max(0.0, time.monotonic() - self._elapsed_started_at))
+            self.elapsed_time_label.setText(self._format_elapsed_time(elapsed))
+
+        def _stop_elapsed_timer(self) -> None:
+            self._update_elapsed_timer()
+            self._elapsed_timer.stop()
+            self._elapsed_started_at = None
+
+        @staticmethod
+        def _load_gmpy2():
+            try:
+                import gmpy2
+                return gmpy2
+            except Exception:
+                return None
 
         def _choose_log_path(self) -> None:
             current = self.log_path_edit.text().strip()
@@ -75017,12 +80000,16 @@ QPushButton {{ min-height: 26px; }}"""
             self.log_path_edit.setEnabled(not running)
             self.log_browse_button.setEnabled(not running)
             self.log_size_spin.setEnabled(not running)
+            self.start_number_edit.setEnabled(not running)
             for box in self._filter_checks.values():
                 box.setEnabled(not running)
 
         def start_search(self) -> None:
             if self._worker is not None and self._worker.isRunning():
                 return
+            # Jeder neue Klick setzt die sichtbare Rechenzeit zurück. Gestartet
+            # wird der QTimer erst, nachdem alle Eingaben validiert wurden.
+            self._reset_elapsed_timer(start=False)
             filters = self._selected_filters()
             if not filters:
                 QMessageBox.information(
@@ -75032,16 +80019,65 @@ QPushButton {{ min-height: 26px; }}"""
                 )
                 return
 
+            start_text = self.start_number_edit.text().strip()
+            if not start_text or not start_text.isdigit():
+                QMessageBox.information(
+                    self,
+                    'Primzahlen',
+                    'Bitte eine gültige Startzahl aus Ziffern 0 bis 9 eingeben.',
+                )
+                self.start_number_edit.setFocus(Qt.OtherFocusReason)
+                return
+            gmpy2 = self._load_gmpy2()
+            if gmpy2 is None:
+                QMessageBox.critical(
+                    self,
+                    'Primzahlen - GMP fehlt',
+                    'GNU GMP/gmpy2 ist für die Großzahlarithmetik erforderlich.\n\n'
+                    'Bitte installieren Sie das Python-Paket gmpy2 und starten Sie die Anwendung erneut.',
+                )
+                return
+            try:
+                # Direkt in GMP einlesen: kein Python-int-Zwischenschritt und
+                # damit kein sys.set_int_max_str_digits()-Limit.
+                start_number = gmpy2.mpz(start_text, 10)
+            except Exception as exc:
+                QMessageBox.critical(
+                    self,
+                    'Primzahlen',
+                    f'Die Startzahl konnte von GMP nicht verarbeitet werden:\n{exc}',
+                )
+                return
+
+            self._reset_pattern_hit_fields()
+            if hasattr(self, 'constellation_spiral_plot'):
+                self.constellation_spiral_plot.clear_plot()
             bit_length = int(self.bit_length_combo.currentData())
-            self._worker = PrimeSearchThread(
-                bit_length=bit_length,
-                thread_count=self.threads_spin.value(),
-                pre_sieve_limit=int(self.pre_sieve_spin.value()),
-                enabled_kinds=filters,
-                log_path=self.log_path_edit.text().strip(),
-                log_limit_mb=self.log_size_spin.value(),
-                parent=self,
-            )
+            try:
+                self._worker = PrimeSearchThread(
+                    bit_length=bit_length,
+                    thread_count=self.threads_spin.value(),
+                    pre_sieve_limit=int(self.pre_sieve_spin.value()),
+                    enabled_kinds=filters,
+                    log_path=self.log_path_edit.text().strip(),
+                    log_limit_mb=self.log_size_spin.value(),
+                    start_number=start_number,
+                    parent=self,
+                )
+            except Exception:
+                # Stage 190: Hier ist der originale Python-Traceback noch sicher
+                # vorhanden. Nicht erst bis zum Qt/sys.excepthook durchreichen.
+                exc_type, exc_value, exc_tb = sys.exc_info()
+                if _GLOBAL_EXCEPTION_DISPATCHER is not None:
+                    _GLOBAL_EXCEPTION_DISPATCHER.report(
+                        exc_type, exc_value, exc_tb,
+                        'Primzahlen / PrimeSearchThread.__init__',
+                    )
+                else:
+                    traceback.print_exc()
+                self._worker = None
+                return
+
             self._worker.result_found.connect(self._on_result_found)
             self._worker.status_message.connect(self.status_label.setText)
             self._worker.stats_changed.connect(self._on_stats_changed)
@@ -75050,12 +80086,32 @@ QPushButton {{ min-height: 26px; }}"""
             self._worker.finished.connect(self._on_worker_finished)
             self._set_controls_running(True)
             self.status_label.setText('Prime-Solver wird gestartet …')
-            self._worker.start()
+            self._reset_elapsed_timer(start=True)
+            try:
+                self._worker.start()
+            except Exception:
+                exc_type, exc_value, exc_tb = sys.exc_info()
+                self._stop_elapsed_timer()
+                self._set_controls_running(False)
+                if _GLOBAL_EXCEPTION_DISPATCHER is not None:
+                    _GLOBAL_EXCEPTION_DISPATCHER.report(
+                        exc_type, exc_value, exc_tb,
+                        'Primzahlen / PrimeSearchThread.start',
+                    )
+                else:
+                    traceback.print_exc()
+                try:
+                    self._worker.deleteLater()
+                except Exception:
+                    pass
+                self._worker = None
 
         def stop_search(self) -> None:
             worker = self._worker
             if worker is None:
                 return
+            # Die angezeigte Rechenzeit endet exakt mit dem Benutzer-Klick auf Stop.
+            self._stop_elapsed_timer()
             worker.request_stop()
             self.stop_button.setEnabled(False)
             self.status_label.setText('Suche wird angehalten …')
@@ -75080,9 +80136,12 @@ QPushButton {{ min-height: 26px; }}"""
 
         def _on_result_found(self, kind: str, values) -> None:
             values = tuple(str(v) for v in values)
+            if hasattr(self, 'constellation_spiral_plot'):
+                self.constellation_spiral_plot.add_hit(kind, values)
             if kind == 'prime' and values:
                 self._append_prime(values[0])
             elif kind in self._pattern_lists:
+                self._update_pattern_hit_fields(kind, values)
                 self._append_pattern(kind, values)
 
         def _on_stats_changed(self, stats) -> None:
@@ -75120,12 +80179,14 @@ QPushButton {{ min-height: 26px; }}"""
 
         def _on_worker_finished(self) -> None:
             worker = self._worker
+            self._stop_elapsed_timer()
             self._set_controls_running(False)
             self._worker = None
             if worker is not None:
                 worker.deleteLater()
 
         def shutdown(self) -> None:
+            self._elapsed_timer.stop()
             worker = self._worker
             if worker is not None and worker.isRunning():
                 worker.request_stop()
@@ -75153,8 +80214,12 @@ QPushButton {{ min-height: 26px; }}"""
             self.left_tabs.setDocumentMode(True)
             self.left_tabs.setMovable(False)
             self.left_tabs.setTabPosition(QTabWidget.North)
-            self.left_tabs.setMinimumWidth(280)
+            # Stage 184: Der linke Navigationsbereich bleibt bevorzugt etwa
+            # 280 px breit, erzwingt diese Breite aber nicht mehr als
+            # QMainWindow-Mindestbreite. QTreeWidget/QTextBrowser scrollen intern.
+            self.left_tabs.setMinimumWidth(0)
             self.left_tabs.setMaximumWidth(360)
+            self.left_tabs.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Ignored)
 
             # Stage 142: Fakten steht absichtlich links vor dem Spiele-Tab.
             facts_tab = QWidget(self.left_tabs)
@@ -75269,30 +80334,84 @@ QPushButton {{ min-height: 26px; }}"""
             self.placeholder.setAlignment(Qt.AlignCenter)
             self.placeholder.setWordWrap(True)
             self.content_stack.addWidget(self.placeholder)
-            self.cantor_diagonal_widget = CantorDiagonalFactWidget(self.content_stack)
-            self.content_stack.addWidget(self.cantor_diagonal_widget)
-            self.pascal_triangle_widget = PascalTriangleFactWidget(self.content_stack)
-            self.content_stack.addWidget(self.pascal_triangle_widget)
-            self.fibonacci_spiral_widget = FibonacciSpiralFactWidget(self.content_stack)
-            self.content_stack.addWidget(self.fibonacci_spiral_widget)
-            self.volume_fact_widget = VolumeFactWidget(self.content_stack)
-            self.content_stack.addWidget(self.volume_fact_widget)
-            self.prime_solver_widget = PrimeSolverFactWidget(self.content_stack)
-            self.content_stack.addWidget(self.prime_solver_widget)
-            self.numbers_wall_widget = NumberPyramidTrainerWidget(self.content_stack)
-            self.content_stack.addWidget(self.numbers_wall_widget)
-            self.arithmetic_widget = ArithmeticTrainerWidget(self.content_stack)
-            self.content_stack.addWidget(self.arithmetic_widget)
-            self.sudoku_widget = SudokuTrainerWidget(self.content_stack)
-            self.content_stack.addWidget(self.sudoku_widget)
-            self.iso_metric_widget = IsoMetricMathGameWidget(self.content_stack)
-            self.content_stack.addWidget(self.iso_metric_widget)
-            self.gorilla_parabola_widget = GorillaParabolaMathGameWidget(self.content_stack)
-            self.content_stack.addWidget(self.gorilla_parabola_widget)
-            self.memory_widget = MathMemoryGameWidget(self.content_stack)
-            self.content_stack.addWidget(self.memory_widget)
+            # Stage 183: ALLE Fakten-Widgets der rechten Mathematik-
+            # Arbeitsfläche werden in identisch konfigurierte QScrollAreas
+            # eingebettet. Damit kann kein Fakten-Widget seine sizeHint-/
+            # Mindestgröße mehr bis zum Hauptfenster durchreichen.
+            def _add_fact_scroll_page(widget, object_name):
+                scroll = QScrollArea(self.content_stack)
+                scroll.setObjectName(object_name)
+                scroll.setWidgetResizable(True)
+                scroll.setFrameShape(QFrame.NoFrame)
+                scroll.setSizeAdjustPolicy(QAbstractScrollArea.AdjustIgnored)
+                scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+                scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+                scroll.setMinimumSize(0, 0)
+                scroll.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+                widget.setMinimumSize(0, 0)
+                scroll.setWidget(widget)
+                self.content_stack.addWidget(scroll)
+                return scroll
+
+            self.cantor_diagonal_widget = CantorDiagonalFactWidget()
+            self.cantor_diagonal_scroll = _add_fact_scroll_page(
+                self.cantor_diagonal_widget, 'cantor_diagonal_scroll_area'
+            )
+            self.pascal_triangle_widget = PascalTriangleFactWidget()
+            self.pascal_triangle_scroll = _add_fact_scroll_page(
+                self.pascal_triangle_widget, 'pascal_triangle_scroll_area'
+            )
+            self.fibonacci_spiral_widget = FibonacciSpiralFactWidget()
+            self.fibonacci_spiral_scroll = _add_fact_scroll_page(
+                self.fibonacci_spiral_widget, 'fibonacci_spiral_scroll_area'
+            )
+            self.volume_fact_widget = VolumeFactWidget()
+            self.volume_fact_scroll = _add_fact_scroll_page(
+                self.volume_fact_widget, 'volume_fact_scroll_area'
+            )
+            self.prime_solver_widget = PrimeSolverFactWidget()
+            self.prime_solver_scroll = _add_fact_scroll_page(
+                self.prime_solver_widget, 'prime_solver_scroll_area'
+            )
+            # Stage 184: Auch ALLE Spiel-/Trainer-Seiten der rechten
+            # Mathematik-Arbeitsfläche werden über denselben ScrollArea-
+            # Mechanismus entkoppelt. QStackedWidget berücksichtigt sonst
+            # auch die minimumSizeHints nicht sichtbarer Seiten und kann
+            # dadurch das QMainWindow am Verkleinern hindern.
+            _add_game_scroll_page = _add_fact_scroll_page
+
+            self.numbers_wall_widget = NumberPyramidTrainerWidget()
+            self.numbers_wall_scroll = _add_game_scroll_page(
+                self.numbers_wall_widget, 'numbers_wall_scroll_area'
+            )
+            self.arithmetic_widget = ArithmeticTrainerWidget()
+            self.arithmetic_scroll = _add_game_scroll_page(
+                self.arithmetic_widget, 'arithmetic_scroll_area'
+            )
+            self.sudoku_widget = SudokuTrainerWidget()
+            self.sudoku_scroll = _add_game_scroll_page(
+                self.sudoku_widget, 'sudoku_scroll_area'
+            )
+            self.iso_metric_widget = IsoMetricMathGameWidget()
+            self.iso_metric_scroll = _add_game_scroll_page(
+                self.iso_metric_widget, 'iso_metric_scroll_area'
+            )
+            self.gorilla_parabola_widget = GorillaParabolaMathGameWidget()
+            self.gorilla_parabola_scroll = _add_game_scroll_page(
+                self.gorilla_parabola_widget, 'gorilla_parabola_scroll_area'
+            )
+            self.memory_widget = MathMemoryGameWidget()
+            self.memory_scroll = _add_game_scroll_page(
+                self.memory_widget, 'memory_scroll_area'
+            )
             self.content_stack.setCurrentWidget(self.placeholder)
 
+            # Die Container selbst dürfen ebenfalls keine Mindestgröße aus
+            # ihren Child-sizeHints an das Hauptfenster weiterreichen.
+            self.content_stack.setMinimumSize(0, 0)
+            self.content_stack.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+            splitter.setMinimumSize(0, 0)
+            splitter.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
             splitter.setStretchFactor(0, 0)
             splitter.setStretchFactor(1, 1)
             splitter.setSizes([290, 1000])
@@ -75517,19 +80636,19 @@ QStackedWidget#learning_content_stack {{
             self.left_tabs.setCurrentIndex(0)
 
             if fact_key == 'cantor_diagonal_argument':
-                self.content_stack.setCurrentWidget(self.cantor_diagonal_widget)
+                self.content_stack.setCurrentWidget(self.cantor_diagonal_scroll)
                 self.cantor_diagonal_widget.activate_fact(fact_key, title)
                 self.cantor_diagonal_widget.rows_spin.setFocus(
                     Qt.OtherFocusReason
                 )
             elif fact_key == 'pascal_triangle':
-                self.content_stack.setCurrentWidget(self.pascal_triangle_widget)
+                self.content_stack.setCurrentWidget(self.pascal_triangle_scroll)
                 self.pascal_triangle_widget.activate_fact(fact_key, title)
                 self.pascal_triangle_widget.depth_spin.setFocus(
                     Qt.OtherFocusReason
                 )
             elif fact_key == 'fibonacci_spiral':
-                self.content_stack.setCurrentWidget(self.fibonacci_spiral_widget)
+                self.content_stack.setCurrentWidget(self.fibonacci_spiral_scroll)
                 self.fibonacci_spiral_widget.activate_fact(fact_key, title)
 
                 # Stage 146:
@@ -75542,10 +80661,10 @@ QStackedWidget#learning_content_stack {{
                     Qt.OtherFocusReason
                 )
             elif fact_key == 'prime_numbers':
-                self.content_stack.setCurrentWidget(self.prime_solver_widget)
+                self.content_stack.setCurrentWidget(self.prime_solver_scroll)
                 self.prime_solver_widget.activate_fact(fact_key, title)
             elif fact_key.startswith('volume_'):
-                self.content_stack.setCurrentWidget(self.volume_fact_widget)
+                self.content_stack.setCurrentWidget(self.volume_fact_scroll)
                 self.volume_fact_widget.activate_fact(fact_key, title)
                 self.volume_fact_widget.setFocus(Qt.OtherFocusReason)
 
@@ -75569,27 +80688,27 @@ QStackedWidget#learning_content_stack {{
                 self.games_tree.scrollToItem(item)
             self.left_tabs.setCurrentIndex(1)
             if game_key.startswith('numbers_wall_'):
-                self.content_stack.setCurrentWidget(self.numbers_wall_widget)
+                self.content_stack.setCurrentWidget(self.numbers_wall_scroll)
                 self.numbers_wall_widget.activate_game(game_key, title)
                 self.numbers_wall_widget.graphics_view.setFocus(Qt.OtherFocusReason)
             elif game_key.startswith('sudoku_'):
-                self.content_stack.setCurrentWidget(self.sudoku_widget)
+                self.content_stack.setCurrentWidget(self.sudoku_scroll)
                 self.sudoku_widget.activate_game(game_key, title)
                 self.sudoku_widget.setFocus(Qt.OtherFocusReason)
             elif game_key.startswith('isometric_'):
-                self.content_stack.setCurrentWidget(self.iso_metric_widget)
+                self.content_stack.setCurrentWidget(self.iso_metric_scroll)
                 self.iso_metric_widget.activate_game(game_key, title)
                 self.iso_metric_widget.view.setFocus(Qt.OtherFocusReason)
             elif game_key.startswith('gorilla_'):
-                self.content_stack.setCurrentWidget(self.gorilla_parabola_widget)
+                self.content_stack.setCurrentWidget(self.gorilla_parabola_scroll)
                 self.gorilla_parabola_widget.activate_game(game_key, title)
                 self.gorilla_parabola_widget.view.setFocus(Qt.OtherFocusReason)
             elif game_key == 'memory_math':
-                self.content_stack.setCurrentWidget(self.memory_widget)
+                self.content_stack.setCurrentWidget(self.memory_scroll)
                 self.memory_widget.activate_game(game_key, title or 'Memory')
                 self.memory_widget.setFocus(Qt.OtherFocusReason)
             else:
-                self.content_stack.setCurrentWidget(self.arithmetic_widget)
+                self.content_stack.setCurrentWidget(self.arithmetic_scroll)
                 self.arithmetic_widget.activate_game(game_key, title)
                 self.arithmetic_widget.setFocus(Qt.OtherFocusReason)
 
@@ -77130,7 +82249,400 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 )
 
 
-    from windows_manifest_settings import WindowsManifestSettingsPage
+    #from windows_manifest_settings import WindowsManifestSettingsPage
+    #from windows_signing import (
+    #    SIGNING_DEFAULTS, normalize_signing_settings, find_signtool,
+    #    sign_file as authenticode_sign_file,
+    #)
+    
+    class WindowsManifestSettingsPage(QScrollArea):
+        settingsChanged = pyqtSignal(dict)
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self._syncing = False
+            self._data = normalize_manifest_settings()
+            self.setWidgetResizable(True)
+            self.setFrameShape(QScrollArea.NoFrame)
+            body = QWidget(self)
+            self.setWidget(body)
+            layout = QVBoxLayout(body)
+
+            self.identity_group = QGroupBox("Identity Attribute", body)
+            form = QFormLayout(self.identity_group)
+            form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+            self.identity_edits = {}
+            labels = {"type": "Type", "name": "Name", "language": "Language",
+                      "processorArchitecture": "processorArchitektur", "version": "Version",
+                      "publicKeyToken": "publicKeyToken"}
+            for key, default in IDENTITY_DEFAULTS.items():
+                edit = QLineEdit(default, self.identity_group)
+                edit.setObjectName("manifest_" + key)
+                self.identity_edits[key] = edit
+                form.addRow(labels[key], edit)
+                edit.textChanged.connect(self._identity_changed)
+                
+            self.identity_edits["type"].setValidator(QRegularExpressionValidator(QRegularExpression("[a-z0-9]*"), self))
+            self.identity_edits["type"].setToolTip("Nur Kleinbuchstaben und Ziffern; Windows-Manifeste verwenden win32.")
+            self.identity_edits["version"].setPlaceholderText("mmmmm.nnnnn.ooooo.ppppp")
+            self.identity_edits["version"].setValidator(QRegularExpressionValidator(QRegularExpression(r"[0-9]{1,5}(\.[0-9]{1,5}){3}"), self))
+            self.identity_edits["version"].setToolTip("Vier Zahlen von 0 bis 65535, getrennt durch Punkte.")
+            self.identity_edits["publicKeyToken"].setValidator(QRegularExpressionValidator(QRegularExpression("[0-9a-fA-F]{0,16}"), self))
+            self.identity_edits["language"].setToolTip("* = sprachneutral; beim Export der Anwendungsidentität wird language dann weggelassen.")
+            self.identity_edits["name"].setPlaceholderText("MyOrganization.MyDivision.MySampleApp")
+            
+            layout.addWidget(self.identity_group)
+
+            self.compatibility_group = QGroupBox("Kompatibel mit:", body)
+            compatibility_layout = QHBoxLayout(self.compatibility_group)
+            self.os_list = QListWidget(self.compatibility_group)
+            self.os_list.setObjectName("manifest_supported_os")
+            self.os_list.setMinimumHeight(170)
+            for name, _ in SUPPORTED_OS:
+                item = QListWidgetItem(name, self.os_list)
+                item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                item.setCheckState(Qt.Unchecked)
+            compatibility_layout.addWidget(self.os_list, 1)
+            id_layout = QVBoxLayout()
+            id_layout.addWidget(QLabel("Id (supportedOS)", self.compatibility_group))
+            self.os_id_edit = QLineEdit(self.compatibility_group)
+            self.os_id_edit.setObjectName("manifest_supported_os_id")
+            self.os_id_edit.setValidator(QRegularExpressionValidator(QRegularExpression(GUID_PATTERN + "|"), self))
+            id_layout.addWidget(self.os_id_edit)
+            self.os_hint = QLabel(self.compatibility_group)
+            self.os_hint.setWordWrap(True)
+            id_layout.addWidget(self.os_hint)
+            id_layout.addStretch(1)
+            compatibility_layout.addLayout(id_layout, 2)
+            layout.addWidget(self.compatibility_group)
+
+            self.general_group = QGroupBox("Allgemein:", body)
+            general_layout = QVBoxLayout(self.general_group)
+            general_layout.addWidget(QLabel("longPathAware", self.general_group))
+            radio_layout = QHBoxLayout()
+            self.long_path_group = QButtonGroup(self.general_group)
+            self.long_path_true = QRadioButton("TRUE", self.general_group)
+            self.long_path_false = QRadioButton("FALSE", self.general_group)
+            for button in (self.long_path_true, self.long_path_false):
+                self.long_path_group.addButton(button)
+                radio_layout.addWidget(button)
+            radio_layout.addStretch(1)
+            general_layout.addLayout(radio_layout)
+            self.long_path_true.setChecked(True)
+            layout.addWidget(self.general_group)
+            self.export_button = QPushButton("Manifest speichern …", body)
+            self.export_button.setToolTip("Als XML-Datei exportieren, z. B. MeineAnwendung.exe.manifest")
+            layout.addWidget(self.export_button, 0, Qt.AlignLeft)
+            layout.addStretch(1)
+
+            self.os_list.currentItemChanged.connect(self._os_selected)
+            self.os_list.itemChanged.connect(self._os_checked)
+            self.os_id_edit.textChanged.connect(self._id_changed)
+            self.long_path_true.toggled.connect(self._long_path_changed)
+            self.export_button.clicked.connect(self._export)
+            self.os_list.setCurrentRow(1)
+
+        def settings(self):
+            return normalize_manifest_settings(self._data)
+
+        def set_settings(self, value):
+            self._syncing = True
+            try:
+                self._data = normalize_manifest_settings(value)
+                for key, edit in self.identity_edits.items():
+                    edit.setText(self._data["identity"][key])
+                for row in range(self.os_list.count()):
+                    item = self.os_list.item(row)
+                    item.setCheckState(Qt.Checked if self._data["compatibility"][item.text()]["checked"] else Qt.Unchecked)
+                self.long_path_true.setChecked(self._data["longPathAware"])
+                self.long_path_false.setChecked(not self._data["longPathAware"])
+                self._os_selected(self.os_list.currentItem(), None)
+            finally:
+                self._syncing = False
+
+        def _notify(self):
+            if not self._syncing:
+                self.settingsChanged.emit(self.settings())
+
+        def _identity_changed(self, _text):
+            if not self._syncing:
+                self._data["identity"] = {key: edit.text() for key, edit in self.identity_edits.items()}
+                self._notify()
+
+        def _os_selected(self, current, _previous):
+            blocked = self.os_id_edit.blockSignals(True)
+            try:
+                name = current.text() if current else ""
+                self.os_id_edit.setText(self._data["compatibility"].get(name, {}).get("id", ""))
+                self.os_id_edit.setEnabled(bool(current) and name != "Windows XP")
+                if name == "Windows XP":
+                    hint = "Windows XP verwendet kein supportedOS-Element. Die Auswahl wird nur im Projekt gespeichert."
+                elif name == "Windows 12":
+                    hint = "Keine ID in der Microsoft-Dokumentation. Für den XML-Export ist bei aktivierter Auswahl eine gültige ID erforderlich."
+                elif name in {"Windows 10", "Windows 11"}:
+                    hint = "Windows 10 und 11 verwenden dieselbe ID. Im XML erscheint eine gemeinsame ID nur einmal."
+                else:
+                    hint = "Die ID gehört zur ausgewählten Windows-Version. Das Häkchen bestimmt die Aufnahme ins Manifest."
+                self.os_hint.setText(hint)
+            finally:
+                self.os_id_edit.blockSignals(blocked)
+
+        def _os_checked(self, item):
+            if not self._syncing:
+                self._data["compatibility"][item.text()]["checked"] = item.checkState() == Qt.Checked
+                self._notify()
+
+        def _id_changed(self, text):
+            item = self.os_list.currentItem()
+            if not self._syncing and item:
+                self._data["compatibility"][item.text()]["id"] = text
+                self._notify()
+
+        def _long_path_changed(self, checked):
+            if not self._syncing:
+                self._data["longPathAware"] = bool(checked)
+                self._notify()
+
+        def _export(self):
+            try:
+                xml = manifest_xml(self.settings())
+            except ValueError as exc:
+                QMessageBox.warning(self, "Manifest", str(exc))
+                return
+            filename, _ = QFileDialog.getSaveFileName(self, "Manifest speichern", "Anwendung.exe.manifest", "Manifest-Dateien (*.manifest);;XML-Dateien (*.xml)")
+            if not filename:
+                return
+            try:
+                Path(filename).write_text(xml, encoding="utf-8")
+            except OSError as exc:
+                QMessageBox.warning(self, "Manifest speichern", str(exc))
+
+    class WindowsSigningSettingsPage(QScrollArea):
+        """Stage 227: project-controlled Authenticode configuration."""
+        settingsChanged = pyqtSignal(dict)
+
+        def __init__(self, owner, target: str, parent=None):
+            super().__init__(parent)
+            self.owner = owner
+            self.target = "pe64" if str(target).casefold() == "pe64" else "pe32"
+            self._syncing = False
+            self._data = normalize_signing_settings()
+            self.setWidgetResizable(True)
+            self.setFrameShape(QFrame.NoFrame)
+            body = QWidget(self)
+            body.setMinimumWidth(700)
+            self.setWidget(body)
+            layout = QVBoxLayout(body)
+            layout.setContentsMargins(10, 8, 10, 12)
+            layout.setSpacing(10)
+
+            general = QGroupBox("Authenticode", body)
+            g = QVBoxLayout(general)
+            self.enabled = QCheckBox("Windows EXE/DLL nach dem Linken signieren", general)
+            self.sign_exe = QCheckBox("EXE signieren", general)
+            self.sign_dll = QCheckBox("DLL signieren", general)
+            self.sign_exe.setChecked(True); self.sign_dll.setChecked(True)
+            g.addWidget(self.enabled)
+            row = QHBoxLayout(); row.addWidget(self.sign_exe); row.addWidget(self.sign_dll); row.addStretch(1)
+            g.addLayout(row)
+            hint = QLabel(
+                "Die Signatur wird als letzter Build-Schritt nach Resource/Manifest/PE-Packing geschrieben. "
+                "Passwörter werden nicht in der Projektdatei gespeichert.", general)
+            hint.setWordWrap(True); g.addWidget(hint)
+            layout.addWidget(general)
+
+            cert_group = QGroupBox("Zertifikat", body)
+            form = QFormLayout(cert_group)
+            self.source = QComboBox(cert_group)
+            self.source.addItem("OpenSSL-CA / ausgestelltes Code-Signing-Zertifikat", "openssl_ca")
+            self.source.addItem("PFX / PKCS#12-Datei", "pfx")
+            self.source.addItem("Windows-Zertifikatsspeicher", "store")
+            form.addRow("Quelle", self.source)
+
+            openssl_row = QWidget(cert_group); orow = QHBoxLayout(openssl_row); orow.setContentsMargins(0,0,0,0)
+            self.openssl_cert_combo = QComboBox(openssl_row)
+            self.openssl_cert_refresh = QPushButton("Aktualisieren", openssl_row)
+            orow.addWidget(self.openssl_cert_combo, 1); orow.addWidget(self.openssl_cert_refresh)
+            form.addRow("OpenSSL-CA Zertifikat", openssl_row)
+
+            self.cert_path = QLineEdit(cert_group); self.cert_path.setReadOnly(True)
+            self.key_path = QLineEdit(cert_group); self.key_path.setReadOnly(True)
+            form.addRow("Zertifikat (.pem/.crt)", self.cert_path)
+            form.addRow("Privater Schlüssel", self.key_path)
+
+            pfx_row = QWidget(cert_group); prow = QHBoxLayout(pfx_row); prow.setContentsMargins(0,0,0,0)
+            self.pfx_path = QLineEdit(pfx_row); self.pfx_button = QPushButton("…", pfx_row); self.pfx_button.setFixedWidth(34)
+            prow.addWidget(self.pfx_path,1); prow.addWidget(self.pfx_button)
+            form.addRow("PFX / PKCS#12", pfx_row)
+
+            self.store_location = QComboBox(cert_group)
+            self.store_location.addItem("Aktueller Benutzer", "CurrentUser")
+            self.store_location.addItem("Lokaler Computer", "LocalMachine")
+            self.store_name = QLineEdit("My", cert_group)
+            self.thumbprint = QLineEdit(cert_group); self.thumbprint.setPlaceholderText("SHA-1 Thumbprint ohne Leerzeichen")
+            form.addRow("Zertifikatsspeicher", self.store_location)
+            form.addRow("Store", self.store_name)
+            form.addRow("Thumbprint", self.thumbprint)
+            layout.addWidget(cert_group)
+
+            digest_group = QGroupBox("Hash / Beschreibung", body)
+            dform = QFormLayout(digest_group)
+            self.file_digest = QComboBox(digest_group); self.file_digest.addItems(["SHA256", "SHA384", "SHA512"])
+            self.description = QLineEdit(digest_group)
+            self.description_url = QLineEdit(digest_group)
+            self.description_url.setPlaceholderText("https://...")
+            dform.addRow("Datei-Digest", self.file_digest)
+            dform.addRow("Beschreibung", self.description)
+            dform.addRow("Produkt-URL", self.description_url)
+            layout.addWidget(digest_group)
+
+            ts_group = QGroupBox("Zeitstempel", body)
+            tform = QFormLayout(ts_group)
+            self.timestamp_enabled = QCheckBox("RFC-3161 Zeitstempel verwenden", ts_group)
+            self.timestamp_url = QLineEdit("http://timestamp.digicert.com", ts_group)
+            self.timestamp_digest = QComboBox(ts_group); self.timestamp_digest.addItems(["SHA256", "SHA384", "SHA512"])
+            tform.addRow(self.timestamp_enabled)
+            tform.addRow("Timestamp URL", self.timestamp_url)
+            tform.addRow("Timestamp Digest", self.timestamp_digest)
+            layout.addWidget(ts_group)
+
+            tool_group = QGroupBox("SignTool / Prüfung", body)
+            t = QFormLayout(tool_group)
+            tool_row = QWidget(tool_group); tl = QHBoxLayout(tool_row); tl.setContentsMargins(0,0,0,0)
+            self.signtool = QLineEdit(tool_row); self.signtool_button = QPushButton("…", tool_row); self.signtool_auto = QPushButton("Auto", tool_row)
+            self.signtool_button.setFixedWidth(34)
+            tl.addWidget(self.signtool,1); tl.addWidget(self.signtool_button); tl.addWidget(self.signtool_auto)
+            self.verify = QCheckBox("Signatur nach dem Signieren mit /pa /v prüfen", tool_group)
+            self.fail_build = QCheckBox("Build bei Signier-/Prüffehler abbrechen", tool_group)
+            t.addRow("signtool.exe", tool_row); t.addRow(self.verify); t.addRow(self.fail_build)
+            layout.addWidget(tool_group)
+            layout.addStretch(1)
+
+            self.pfx_button.clicked.connect(self._choose_pfx)
+            self.signtool_button.clicked.connect(self._choose_signtool)
+            self.signtool_auto.clicked.connect(self._auto_signtool)
+            self.openssl_cert_refresh.clicked.connect(self.refresh_openssl_certificates)
+            self.openssl_cert_combo.currentIndexChanged.connect(self._openssl_certificate_changed)
+            self.source.currentIndexChanged.connect(self._source_changed)
+            for w in (self.enabled, self.sign_exe, self.sign_dll, self.timestamp_enabled, self.verify, self.fail_build):
+                w.toggled.connect(self._controls_changed)
+            for w in (self.source, self.store_location, self.file_digest, self.timestamp_digest):
+                w.currentIndexChanged.connect(self._controls_changed)
+            for w in (self.pfx_path, self.store_name, self.thumbprint, self.timestamp_url, self.description, self.description_url, self.signtool):
+                w.editingFinished.connect(self._controls_changed)
+            self.refresh_openssl_certificates()
+            self.set_settings(self._data)
+
+        def _read_openssl_records(self):
+            settings = getattr(self.owner, "settings", None)
+            if settings is None:
+                return []
+            raw = settings.value("server/openssl/issued_user_certificates", "[]") or "[]"
+            try:
+                data = json.loads(str(raw))
+            except Exception:
+                return []
+            result = []
+            for item in data if isinstance(data, list) else []:
+                if not isinstance(item, dict):
+                    continue
+                preset = str(item.get("usage_preset", "") or "")
+                cert_type = str(item.get("certificate_type", "") or "")
+                eku = str(item.get("extended_key_usage", "") or "")
+                status = str(item.get("status", "ausgestellt") or "ausgestellt").casefold()
+                if status in {"widerrufen", "revoked", "gesperrt"}:
+                    continue
+                if "codesigning" not in eku.casefold().replace("-", "") and "code-sign" not in preset.casefold() and "code-sign" not in cert_type.casefold():
+                    continue
+                result.append(item)
+            return result
+
+        def refresh_openssl_certificates(self):
+            selected_pfx = self.pfx_path.text().strip() if hasattr(self, "pfx_path") else ""
+            self.openssl_cert_combo.blockSignals(True)
+            self.openssl_cert_combo.clear()
+            self.openssl_cert_combo.addItem("<Code-Signing-Zertifikat auswählen>", {})
+            selected_index = 0
+            for record in self._read_openssl_records():
+                title = str(record.get("title") or record.get("common_name") or Path(str(record.get("certificate", "cert"))).stem)
+                pfx = str(record.get("pfx", "") or "")
+                status = str(record.get("status", "ausgestellt") or "ausgestellt")
+                self.openssl_cert_combo.addItem(f"{title} [{status}]", dict(record))
+                if selected_pfx and pfx and Path(pfx) == Path(selected_pfx):
+                    selected_index = self.openssl_cert_combo.count()-1
+            self.openssl_cert_combo.setCurrentIndex(selected_index)
+            self.openssl_cert_combo.blockSignals(False)
+
+        def _openssl_certificate_changed(self, _index=0):
+            if self._syncing:
+                return
+            record = self.openssl_cert_combo.currentData()
+            if isinstance(record, dict) and record:
+                self.cert_path  .setText(str(record.get("certificate", "") or ""))
+                self.key_path   .setText(str(record.get("private_key", "") or ""))
+                self.pfx_path   .setText(str(record.get("pfx",     "")     or ""))
+            self._controls_changed()
+
+        def _choose_pfx(self):
+            filename, _ = QFileDialog.getOpenFileName(self, "PFX/PKCS#12 auswählen", self.pfx_path.text().strip(), "PKCS#12 (*.pfx *.p12);;Alle Dateien (*)")
+            if filename:
+                self.pfx_path.setText(filename); self._controls_changed()
+
+        def _choose_signtool(self):
+            filename, _ = QFileDialog.getOpenFileName(self, "signtool.exe auswählen", self.signtool.text().strip(), "SignTool (signtool.exe);;Programme (*.exe);;Alle Dateien (*)")
+            if filename:
+                self.signtool.setText(filename); self._controls_changed()
+
+        def _auto_signtool(self):
+            found = find_signtool(self.signtool.text().strip())
+            if found:
+                self.signtool.setText(found); self._controls_changed()
+            else:
+                QMessageBox.warning(self, "SignTool", "signtool.exe wurde weder im PATH noch im Windows SDK gefunden.")
+
+        def _source_changed(self, *_args):
+            source = str(self.source.currentData() or "openssl_ca")
+            is_open = source == "openssl_ca"; is_pfx = source in {"openssl_ca", "pfx"}; is_store = source == "store"
+            self.openssl_cert_combo .setEnabled(is_open); self.openssl_cert_refresh .setEnabled(is_open)
+            self.cert_path          .setEnabled(is_open); self.key_path             .setEnabled(is_open)
+            self.pfx_path           .setEnabled(is_pfx ); self.pfx_button           .setEnabled(is_pfx)
+            
+            for w in (self.store_location, self.store_name, self.thumbprint): w.setEnabled(is_store)
+            self._controls_changed()
+
+        def settings(self):
+            return normalize_signing_settings({
+                "enabled"           : self.enabled.isChecked            (), "sign_exe"              : self.sign_exe.isChecked           (), "sign_dll"              : self.sign_dll.isChecked   (),
+                "certificate_source": self.source.currentData           (), "openssl_certificate"   : self.cert_path.text               (), "openssl_private_key"   : self.key_path.text        (),
+                "pfx_file"          : self.pfx_path.text                (), "store_location"        : self.store_location.currentData   (), "store_name"            : self.store_name.text      (),
+                "thumbprint"        : self.thumbprint.text(),
+                "file_digest"       : self.file_digest.currentText      (), "timestamp_enabled"     : self.timestamp_enabled.isChecked  (), "timestamp_url"         : self.timestamp_url.text   (),
+                "timestamp_digest"  : self.timestamp_digest.currentText (), "description"           : self.description.text             (), "description_url"       : self.description_url.text (),
+                "signtool_path"     : self.signtool.text                (), "verify_after_sign"     : self.verify.isChecked             (), "fail_build_on_error"   : self.fail_build.isChecked (),
+            })
+
+        def set_settings(self, value):
+            cfg = normalize_signing_settings(value)
+            self._syncing = True
+            try:
+                self._data = cfg
+                self.enabled.setChecked(cfg["enabled"]); self.sign_exe.setChecked(cfg["sign_exe"]); self.sign_dll.setChecked(cfg["sign_dll"])
+                idx=self.source.findData(cfg["certificate_source"]); self.source.setCurrentIndex(max(0,idx))
+                self.cert_path.setText(cfg["openssl_certificate"]); self.key_path.setText(cfg["openssl_private_key"]); self.pfx_path.setText(cfg["pfx_file"])
+                idx=self.store_location.findData(cfg["store_location"]); self.store_location.setCurrentIndex(max(0,idx)); self.store_name.setText(cfg["store_name"]); self.thumbprint.setText(cfg["thumbprint"])
+                self.file_digest.setCurrentText(cfg["file_digest"]); self.timestamp_enabled.setChecked(cfg["timestamp_enabled"]); self.timestamp_url.setText(cfg["timestamp_url"]); self.timestamp_digest.setCurrentText(cfg["timestamp_digest"])
+                self.description.setText(cfg["description"]); self.description_url.setText(cfg["description_url"]); self.signtool.setText(cfg["signtool_path"])
+                self.verify.setChecked(cfg["verify_after_sign"]); self.fail_build.setChecked(cfg["fail_build_on_error"])
+                self.refresh_openssl_certificates()
+                self._source_changed()
+            finally:
+                self._syncing = False
+
+        def _controls_changed(self, *_args):
+            if not self._syncing:
+                self._data = self.settings()
+                self.settingsChanged.emit(dict(self._data))
+
 
     class WindowsCompilerDirectorySettingsPage(QWidget):
         """Stage 197: architekturspezifische Pfade mit relativer/absoluter Ansicht."""
@@ -77162,6 +82674,23 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 item.setData(0, Qt.UserRole, title.casefold())
                 self.nodes[title.casefold()] = item
 
+            # Stage 198: Umgebung ist nur noch der Hauptknoten. Die bisherige
+            # Umgebung-Seite liegt unter Workstation; Editor erhaelt eine
+            # eigene, scrollbar aufgebaute Konfigurationsseite.
+            self.environment_editor_item = QTreeWidgetItem(
+                self.nodes["umgebung"], ["Editor"]
+            )
+            self.environment_editor_item.setData(
+                0, Qt.UserRole, "environment.editor"
+            )
+            self.environment_workstation_item = QTreeWidgetItem(
+                self.nodes["umgebung"], ["Workstation"]
+            )
+            self.environment_workstation_item.setData(
+                0, Qt.UserRole, "environment.workstation"
+            )
+            self.nodes["umgebung"].setExpanded(True)
+
             self.compiler_input_directories_item = QTreeWidgetItem(
                 self.nodes["compiler"], ["Eingabe-Verzeichnis"]
             )
@@ -77174,6 +82703,25 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.compiler_output_directory_item.setData(
                 0, Qt.UserRole, "compiler.output_directory"
             )
+            # Stage 226: allgemeine Linker-Optionen erhalten ein eigenes Blatt.
+            self.linker_options_item = QTreeWidgetItem(
+                self.nodes["linker"], ["Optionen"]
+            )
+            self.linker_options_item.setData(
+                0, Qt.UserRole, "linker.options"
+            )
+
+            # Stage 209: Linker-spezifische Optimierungen erhalten ein eigenes
+            # Blatt. Das gilt automatisch fuer beide Instanzen dieser Seite
+            # (Windows PE32 und PE32+ / alle hier angebotenen Windows-ABIs).
+            self.linker_optimization_item = QTreeWidgetItem(
+                self.nodes["linker"], ["Optimierung"]
+            )
+            self.linker_optimization_item.setData(
+                0, Qt.UserRole, "linker.optimization"
+            )
+            self.linker_signing_item = QTreeWidgetItem(self.nodes["linker"], ["Signierung"])
+            self.linker_signing_item.setData(0, Qt.UserRole, "linker.signing")
             self.manifest_item = QTreeWidgetItem(self.nodes["linker"], ["Manifest"])
             self.manifest_item.setData(0, Qt.UserRole, "linker.manifest")
             self.nodes["linker"].setExpanded(True)
@@ -77189,13 +82737,22 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             placeholder_layout.addStretch(1)
             self.stack.addWidget(self.placeholder)
 
-            # Umgebung -> Workstation Mode
-            self.environment_page = QWidget(self.stack)
-            environment_layout = QVBoxLayout(self.environment_page)
+            # Umgebung -> Workstation (Stage 198: eigene ScrollArea)
+            self.workstation_scroll = QScrollArea(self.stack)
+            self.workstation_scroll.setObjectName(
+                f"project_windows_{target_tag}_workstation_scroll"
+            )
+            self.workstation_scroll.setWidgetResizable(True)
+            self.workstation_scroll.setFrameShape(QFrame.NoFrame)
+            self.workstation_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.workstation_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.workstation_page = QWidget(self.workstation_scroll)
+            self.workstation_page.setMinimumWidth(620)
+            environment_layout = QVBoxLayout(self.workstation_page)
             environment_layout.setContentsMargins(10, 8, 10, 8)
             environment_layout.setSpacing(8)
             self.workstation_mode_checkbox = QCheckBox(
-                "Workstation Mode", self.environment_page
+                "Workstation Mode", self.workstation_page
             )
             self.workstation_mode_checkbox.setObjectName(
                 f"project_windows_{target_tag}_workstation_mode"
@@ -77210,15 +82767,14 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 "gelinktes Windows-Hauptprogramm an den Workstation-Executor "
                 "weitergereicht und nicht über den normalen lokalen Startpfad "
                 "ausgeführt.",
-                self.environment_page,
+                self.workstation_page,
             )
             environment_hint.setWordWrap(True)
             environment_layout.addWidget(environment_hint)
 
             # Stage 144: Ein gemeinsamer Aussehen-Block mit zwei voneinander
-            # unabhaengigen Radio-Gruppen. Die Auswahl gilt fuer das Debug-/
-            # Ausgabefenster des normalen Starts bzw. des Workstation Starts.
-            self.appearance_group = QGroupBox("Aussehen", self.environment_page)
+            # unabhaengigen Radio-Gruppen.
+            self.appearance_group = QGroupBox("Aussehen", self.workstation_page)
             self.appearance_group.setObjectName(
                 f"project_windows_{target_tag}_debug_appearance"
             )
@@ -77229,7 +82785,6 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
 
             normal_heading = QLabel("Normaler Start", self.appearance_group)
             workstation_heading = QLabel("Workstation Start", self.appearance_group)
-            # Stage 146: Spaltenueberschriften links ueber der jeweiligen Auswahl.
             normal_heading.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             workstation_heading.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             appearance_layout.addWidget(normal_heading, 0, 0)
@@ -77265,7 +82820,184 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.debug_theme_workstation_buttons["default"].setChecked(True)
             environment_layout.addWidget(self.appearance_group)
             environment_layout.addStretch(1)
-            self.stack.addWidget(self.environment_page)
+            self.workstation_scroll.setWidget(self.workstation_page)
+            self.stack.addWidget(self.workstation_scroll)
+            # Kompatibilitaetsalias fuer Code, der die alte environment_page
+            # noch referenziert. Sichtbar ist nun die Workstation-ScrollArea.
+            self.environment_page = self.workstation_scroll
+
+            # Umgebung -> Editor (Stage 198: eigene ScrollArea)
+            self.editor_scroll = QScrollArea(self.stack)
+            self.editor_scroll.setObjectName(
+                f"project_windows_{target_tag}_editor_scroll"
+            )
+            self.editor_scroll.setWidgetResizable(True)
+            self.editor_scroll.setFrameShape(QFrame.NoFrame)
+            self.editor_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.editor_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.editor_page = QWidget(self.editor_scroll)
+            self.editor_page.setMinimumWidth(720)
+            editor_layout = QVBoxLayout(self.editor_page)
+            editor_layout.setContentsMargins(10, 8, 10, 12)
+            editor_layout.setSpacing(10)
+
+            self.editor_font_group = QGroupBox("Schrift", self.editor_page)
+            font_layout = QGridLayout(self.editor_font_group)
+            font_layout.setContentsMargins(12, 18, 12, 12)
+            font_layout.setHorizontalSpacing(10)
+            font_layout.setVerticalSpacing(8)
+            font_layout.addWidget(QLabel("Festbreiten-Schrift:", self.editor_font_group), 0, 0)
+            self.editor_font_combo = QComboBox(self.editor_font_group)
+            self.editor_font_combo.setObjectName(
+                f"project_windows_{target_tag}_editor_font_family"
+            )
+            _font_db = QFontDatabase()
+            _fixed_families = sorted(
+                {
+                    str(_family) for _family in _font_db.families()
+                    if _font_db.isFixedPitch(_family)
+                },
+                key=lambda value: value.casefold(),
+            )
+            if not _fixed_families:
+                _fixed_families = ["Courier New"]
+            self.editor_font_combo.addItems(_fixed_families)
+            font_layout.addWidget(self.editor_font_combo, 0, 1)
+            font_layout.addWidget(QLabel("Schriftgröße (Point):", self.editor_font_group), 1, 0)
+            self.editor_font_size_spin = QSpinBox(self.editor_font_group)
+            self.editor_font_size_spin.setObjectName(
+                f"project_windows_{target_tag}_editor_font_size"
+            )
+            self.editor_font_size_spin.setRange(
+                int(getattr(owner, "MIN_EDITOR_FONT_SIZE", 6)),
+                int(getattr(owner, "MAX_EDITOR_FONT_SIZE", 72)),
+            )
+            self.editor_font_size_spin.setSuffix(" pt")
+            self.editor_font_size_spin.setValue(
+                int(getattr(owner, "DEFAULT_EDITOR_FONT_SIZE", 9))
+            )
+            font_layout.addWidget(self.editor_font_size_spin, 1, 1, Qt.AlignLeft)
+            font_layout.setColumnStretch(1, 1)
+            editor_layout.addWidget(self.editor_font_group)
+
+            self.editor_color_group = QGroupBox("Farben", self.editor_page)
+            color_layout = QVBoxLayout(self.editor_color_group)
+            color_layout.setContentsMargins(12, 18, 12, 12)
+            color_layout.setSpacing(7)
+
+            self._editor_color_profiles = (
+                normalize_project_windows_editor_color_profiles()
+            )
+            self.editor_foreground_buttons = {}
+            self.editor_background_buttons = {}
+
+            selector_layout = QGridLayout()
+            selector_layout.setHorizontalSpacing(10)
+            selector_layout.setVerticalSpacing(6)
+
+            selector_layout.addWidget(
+                QLabel("Sprache:", self.editor_color_group), 0, 0
+            )
+            self.editor_language_combo = QComboBox(self.editor_color_group)
+            self.editor_language_combo.setObjectName(
+                f"project_windows_{target_tag}_editor_language"
+            )
+            for _language_key, _language_title in PROJECT_WINDOWS_EDITOR_LANGUAGES:
+                self.editor_language_combo.addItem(_language_title, _language_key)
+            selector_layout.addWidget(self.editor_language_combo, 0, 1)
+
+            selector_layout.addWidget(
+                QLabel("Kandidat:", self.editor_color_group), 1, 0
+            )
+            self.editor_candidate_combo = QComboBox(self.editor_color_group)
+            self.editor_candidate_combo.setObjectName(
+                f"project_windows_{target_tag}_editor_color_candidate"
+            )
+            for _candidate_key, _candidate_title in PROJECT_WINDOWS_EDITOR_COLOR_CANDIDATES:
+                self.editor_candidate_combo.addItem(
+                    _candidate_title, _candidate_key
+                )
+            selector_layout.addWidget(self.editor_candidate_combo, 1, 1)
+            selector_layout.setColumnStretch(1, 1)
+            color_layout.addLayout(selector_layout)
+
+            color_layout.addWidget(
+                QLabel("Vordergrundfarbe:", self.editor_color_group)
+            )
+            foreground_row = QHBoxLayout()
+            foreground_row.setSpacing(4)
+            for _color in PROJECT_WINDOWS_EDITOR_STANDARD_COLORS:
+                _button = QPushButton("", self.editor_color_group)
+                _button.setObjectName(
+                    f"project_windows_{target_tag}_editor_fg_{_color[1:]}"
+                )
+                _button.setFixedSize(24, 24)
+                _button.setCheckable(True)
+                _button.setToolTip(_color)
+                _button.clicked.connect(
+                    lambda checked=False, color=_color: self._editor_color_clicked(
+                        "foreground", color
+                    )
+                )
+                self.editor_foreground_buttons[_color.upper()] = _button
+                foreground_row.addWidget(_button)
+            foreground_row.addStretch(1)
+            color_layout.addLayout(foreground_row)
+
+            color_layout.addWidget(
+                QLabel("Hintergrundfarbe:", self.editor_color_group)
+            )
+            background_row = QHBoxLayout()
+            background_row.setSpacing(4)
+            for _color in PROJECT_WINDOWS_EDITOR_STANDARD_COLORS:
+                _button = QPushButton("", self.editor_color_group)
+                _button.setObjectName(
+                    f"project_windows_{target_tag}_editor_bg_{_color[1:]}"
+                )
+                _button.setFixedSize(24, 24)
+                _button.setCheckable(True)
+                _button.setToolTip(_color)
+                _button.clicked.connect(
+                    lambda checked=False, color=_color: self._editor_color_clicked(
+                        "background", color
+                    )
+                )
+                self.editor_background_buttons[_color.upper()] = _button
+                background_row.addWidget(_button)
+            background_row.addStretch(1)
+            color_layout.addLayout(background_row)
+
+            preview_caption = QLabel("Vorschau:", self.editor_color_group)
+            color_layout.addWidget(preview_caption)
+            self.editor_preview_frame = QFrame(self.editor_color_group)
+            self.editor_preview_frame.setObjectName(
+                f"project_windows_{target_tag}_editor_preview"
+            )
+            self.editor_preview_frame.setFrameShape(QFrame.StyledPanel)
+            self.editor_preview_frame.setMinimumHeight(118)
+            preview_layout = QHBoxLayout(self.editor_preview_frame)
+            preview_layout.setContentsMargins(0, 0, 0, 0)
+            preview_layout.setSpacing(0)
+            self.editor_preview_gutter = QLabel(
+                "  10  \n  20  \n  30  ", self.editor_preview_frame
+            )
+            self.editor_preview_gutter.setAlignment(Qt.AlignRight | Qt.AlignTop)
+            self.editor_preview_text = QLabel("", self.editor_preview_frame)
+            self.editor_preview_text.setTextFormat(Qt.RichText)
+            self.editor_preview_text.setWordWrap(True)
+            self.editor_preview_text.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+            self.editor_preview_text.setTextInteractionFlags(
+                Qt.TextSelectableByMouse
+            )
+            preview_layout.addWidget(self.editor_preview_gutter)
+            preview_layout.addWidget(self.editor_preview_text, 1)
+            color_layout.addWidget(self.editor_preview_frame)
+            editor_layout.addWidget(self.editor_color_group)
+            editor_layout.addStretch(1)
+            self.editor_scroll.setWidget(self.editor_page)
+            self.stack.addWidget(self.editor_scroll)
+            self._update_editor_color_buttons()
+            self._update_editor_preview()
 
             # Compiler -> Eingabe-Verzeichnis
             self.input_directories_page = QWidget(self.stack)
@@ -77381,13 +83113,127 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             output_layout.addStretch(1)
             self.stack.addWidget(self.output_directory_page)
 
-            # Linker -> Ordinalimporte
+            # Linker-Hauptknoten: nur Navigation. Die bisher direkt hier
+            # sichtbaren Ordinal-Optionen wurden nach Linker -> Optimierung
+            # verschoben.
             self.linker_page = QWidget(self.stack)
             linker_layout = QVBoxLayout(self.linker_page)
             linker_layout.setContentsMargins(10, 8, 10, 8)
-            linker_layout.setSpacing(8)
+            linker_layout.addWidget(QLabel(
+                "Wähle links 'Optionen', 'Optimierung', 'Signierung' oder 'Manifest' aus.",
+                self.linker_page,
+            ))
+            linker_layout.addStretch(1)
+            self.stack.addWidget(self.linker_page)
+
+            # Stage 226: Linker -> Optionen / PE-Packing.
+            self.linker_options_scroll = QScrollArea(self.stack)
+            self.linker_options_scroll.setObjectName(
+                f"project_windows_{target_tag}_linker_options_scroll"
+            )
+            self.linker_options_scroll.setWidgetResizable(True)
+            self.linker_options_scroll.setFrameShape(QFrame.NoFrame)
+            self.linker_options_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.linker_options_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+            self.linker_options_page = QWidget(self.linker_options_scroll)
+            self.linker_options_page.setObjectName(
+                f"project_windows_{target_tag}_linker_options"
+            )
+            self.linker_options_page.setMinimumWidth(620)
+            linker_options_layout = QVBoxLayout(self.linker_options_page)
+            linker_options_layout.setContentsMargins(10, 8, 10, 8)
+            linker_options_layout.setSpacing(10)
+
+            self.pe_packing_group = QGroupBox(
+                "PE-Packing", self.linker_options_page
+            )
+            self.pe_packing_group.setObjectName(
+                f"project_windows_{target_tag}_pe_packing_group"
+            )
+            pe_packing_layout = QVBoxLayout(self.pe_packing_group)
+            pe_packing_layout.setContentsMargins(10, 10, 10, 10)
+            pe_packing_layout.setSpacing(7)
+
+            self.pe_packing_checkbox = QCheckBox(
+                "D64Z/MSZIP PE-Packing aktivieren", self.pe_packing_group
+            )
+            self.pe_packing_checkbox.setObjectName(
+                f"project_windows_{target_tag}_pe_packing_enabled"
+            )
+            self.pe_packing_checkbox.setChecked(PE_PACKING_DEFAULT)
+            self.pe_packing_checkbox.setToolTip(
+                "Komprimiert den Programmcode in einen D64Z/MSZIP-Block und startet "
+                "das Programm über den internen Loader."
+            )
+            pe_packing_layout.addWidget(self.pe_packing_checkbox)
+
+            self.pe_packing_status_label = QLabel("", self.pe_packing_group)
+            self.pe_packing_status_label.setWordWrap(True)
+            pe_packing_layout.addWidget(self.pe_packing_status_label)
+
+            self.pe_packing_hint = QLabel(
+                "Deaktiviert wird ein normales, ungepacktes Windows-PE mit direkt "
+                "ausführbarer .text-Sektion erzeugt; .loader/.ztext und die "
+                "MSZIP-Selbstentpackroutine entfallen. Dieser Standardmodus kann "
+                "heuristische Antivirus-Fehlalarme reduzieren, ist aber keine "
+                "Garantie gegen Erkennungen.",
+                self.pe_packing_group,
+            )
+            self.pe_packing_hint.setWordWrap(True)
+            pe_packing_layout.addWidget(self.pe_packing_hint)
+
+            linker_options_layout.addWidget(self.pe_packing_group)
+            linker_options_layout.addStretch(1)
+            self.linker_options_scroll.setWidget(self.linker_options_page)
+            self.stack.addWidget(self.linker_options_scroll)
+
+            # Stage 214: Linker -> Optimierung ist eine eigene ScrollArea.
+            # Die Optionen (Ordinale / Import-Packer / PEB) duerfen auch bei
+            # schmaler oder niedriger Projekteinstellungs-Ansicht nicht
+            # zusammengedrueckt werden. Stattdessen erscheinen bei Bedarf
+            # horizontale bzw. vertikale Scrollbars.
+            self.linker_optimization_scroll = QScrollArea(self.stack)
+            self.linker_optimization_scroll.setObjectName(
+                f"project_windows_{target_tag}_linker_optimization_scroll"
+            )
+            self.linker_optimization_scroll.setWidgetResizable(True)
+            self.linker_optimization_scroll.setFrameShape(QFrame.NoFrame)
+            self.linker_optimization_scroll.setHorizontalScrollBarPolicy(
+                Qt.ScrollBarAsNeeded
+            )
+            self.linker_optimization_scroll.setVerticalScrollBarPolicy(
+                Qt.ScrollBarAsNeeded
+            )
+
+            self.linker_optimization_page = QWidget(
+                self.linker_optimization_scroll
+            )
+            self.linker_optimization_page.setObjectName(
+                f"project_windows_{target_tag}_linker_optimization"
+            )
+            # Unterhalb dieser Breite wird horizontal gescrollt, statt die
+            # Controls, Labels und GroupBoxes unleserlich zu quetschen.
+            self.linker_optimization_page.setMinimumWidth(680)
+            optimization_layout = QVBoxLayout(self.linker_optimization_page)
+            optimization_layout.setContentsMargins(10, 8, 10, 8)
+            optimization_layout.setSpacing(10)
+            # Sorgt auch in der Hoehe dafuer, dass die ScrollArea den
+            # Mindestplatz der enthaltenen GroupBoxes respektiert.
+            optimization_layout.setSizeConstraint(QLayout.SetMinimumSize)
+
+            self.linker_ordinals_group = QGroupBox(
+                "Ordinale", self.linker_optimization_page
+            )
+            self.linker_ordinals_group.setObjectName(
+                f"project_windows_{target_tag}_linker_ordinals_group"
+            )
+            ordinals_layout = QVBoxLayout(self.linker_ordinals_group)
+            ordinals_layout.setContentsMargins(10, 10, 10, 10)
+            ordinals_layout.setSpacing(6)
+
             self.link_with_ordinals_checkbox = QCheckBox(
-                "Link mit Ordinale", self.linker_page
+                "Link mit Ordinale", self.linker_ordinals_group
             )
             self.link_with_ordinals_checkbox.setObjectName(
                 f"project_windows_{target_tag}_link_with_ordinals"
@@ -77396,15 +83242,357 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.link_with_ordinals_checkbox.setToolTip(
                 "Importiert DLL-Funktionen als #Ordinal statt über den Exportnamen"
             )
-            linker_layout.addWidget(self.link_with_ordinals_checkbox)
-            linker_layout.addWidget(QLabel(
+            ordinals_layout.addWidget(self.link_with_ordinals_checkbox)
+            self.link_with_ordinals_label = QLabel(
                 "Die Ordinale wird beim Kompilieren aus der Exporttabelle der "
                 "zur Zielarchitektur passenden DLL gelesen. Die erzeugte "
                 "Assemblerdatei enthält anschließend #<Ordinal>.",
-                self.linker_page,
-            ))
-            linker_layout.addStretch(1)
-            self.stack.addWidget(self.linker_page)
+                self.linker_ordinals_group,
+            )
+            self.link_with_ordinals_label.setWordWrap(True)
+            ordinals_layout.addWidget(self.link_with_ordinals_label)
+
+            # Stage 213+: explicit ABI / ordinal-map contract; Stage 219 writes D64I v3.
+            ordinal_version_grid = QGridLayout()
+            ordinal_version_grid.setHorizontalSpacing(8)
+            ordinal_version_grid.setVerticalSpacing(5)
+            ordinal_version_grid.addWidget(QLabel("Runtime ABI:", self.linker_ordinals_group), 0, 0)
+            self.ordinal_abi_major_spin = QSpinBox(self.linker_ordinals_group)
+            self.ordinal_abi_major_spin.setRange(0, 65535)
+            self.ordinal_abi_major_spin.setValue(PE_D64_RUNTIME_DEFAULT_ABI_MAJOR)
+            self.ordinal_abi_major_spin.setObjectName(f"project_windows_{target_tag}_runtime_abi_major")
+            ordinal_version_grid.addWidget(self.ordinal_abi_major_spin, 0, 1)
+            ordinal_version_grid.addWidget(QLabel(".", self.linker_ordinals_group), 0, 2)
+            self.ordinal_abi_minor_spin = QSpinBox(self.linker_ordinals_group)
+            self.ordinal_abi_minor_spin.setRange(0, 65535)
+            self.ordinal_abi_minor_spin.setValue(PE_D64_RUNTIME_DEFAULT_ABI_MINOR)
+            self.ordinal_abi_minor_spin.setObjectName(f"project_windows_{target_tag}_runtime_abi_minor")
+            ordinal_version_grid.addWidget(self.ordinal_abi_minor_spin, 0, 3)
+
+            ordinal_version_grid.addWidget(QLabel("Ordinal Map Version:", self.linker_ordinals_group), 1, 0)
+            self.ordinal_map_version_spin = QSpinBox(self.linker_ordinals_group)
+            self.ordinal_map_version_spin.setRange(0, 0x7FFFFFFF)
+            self.ordinal_map_version_spin.setValue(PE_D64_RUNTIME_DEFAULT_ORDINAL_MAP_VERSION)
+            self.ordinal_map_version_spin.setObjectName(f"project_windows_{target_tag}_ordinal_map_version")
+            ordinal_version_grid.addWidget(self.ordinal_map_version_spin, 1, 1, 1, 3)
+            ordinal_version_grid.setColumnStretch(4, 1)
+            ordinals_layout.addLayout(ordinal_version_grid)
+
+            self.runtime_version_check_checkbox = QCheckBox(
+                "Runtime-Version beim Start prüfen", self.linker_ordinals_group
+            )
+            self.runtime_version_check_checkbox.setChecked(True)
+            self.runtime_version_check_checkbox.setObjectName(
+                f"project_windows_{target_tag}_runtime_version_check"
+            )
+            ordinals_layout.addWidget(self.runtime_version_check_checkbox)
+
+            self.ordinal_hash_check_checkbox = QCheckBox(
+                "Ordinal-Map-Hash prüfen", self.linker_ordinals_group
+            )
+            self.ordinal_hash_check_checkbox.setChecked(True)
+            self.ordinal_hash_check_checkbox.setObjectName(
+                f"project_windows_{target_tag}_ordinal_hash_check"
+            )
+            ordinals_layout.addWidget(self.ordinal_hash_check_checkbox)
+
+            mismatch_row = QHBoxLayout()
+            mismatch_row.addWidget(QLabel("Bei Inkompatibilität:", self.linker_ordinals_group))
+            self.ordinal_mismatch_combo = QComboBox(self.linker_ordinals_group)
+            self.ordinal_mismatch_combo.setObjectName(
+                f"project_windows_{target_tag}_ordinal_mismatch_action"
+            )
+            self.ordinal_mismatch_combo.addItem("Programmstart abbrechen", "abort")
+            self.ordinal_mismatch_combo.addItem("auf Namensimport zurückfallen", "fallback_name")
+            mismatch_row.addWidget(self.ordinal_mismatch_combo, 1)
+            ordinals_layout.addLayout(mismatch_row)
+
+            self.ordinal_version_info_label = QLabel(
+                f"Loader {PE_D64_LOADER_VERSION_MAJOR}.{PE_D64_LOADER_VERSION_MINOR}.{PE_D64_LOADER_VERSION_PATCH} "
+                f"Build {PE_D64_LOADER_BUILD} · D64I v{PE_D64I_VERSION} · ABI-Abfrage: {PE_D64I_RUNTIME_ABI_QUERY}",
+                self.linker_ordinals_group,
+            )
+            self.ordinal_version_info_label.setWordWrap(True)
+            ordinals_layout.addWidget(self.ordinal_version_info_label)
+            optimization_layout.addWidget(self.linker_ordinals_group)
+
+            # Stage 219: strict full-file runtime identity in its own panel.
+            self.exact_runtime_group = QGroupBox(
+                "Exact Runtime", self.linker_optimization_page
+            )
+            self.exact_runtime_group.setObjectName(
+                f"project_windows_{target_tag}_exact_runtime_group"
+            )
+            exact_runtime_layout = QVBoxLayout(self.exact_runtime_group)
+            exact_runtime_layout.setContentsMargins(10, 10, 10, 10)
+            exact_runtime_layout.setSpacing(6)
+            self.exact_runtime_check_checkbox = QCheckBox(
+                "Kompletten DLL-SHA-256 prüfen", self.exact_runtime_group
+            )
+            self.exact_runtime_check_checkbox.setChecked(False)
+            self.exact_runtime_check_checkbox.setObjectName(
+                f"project_windows_{target_tag}_exact_runtime_check"
+            )
+            self.exact_runtime_check_checkbox.setToolTip(
+                "Speichert beim Linken den SHA-256 der verwendeten Runtime-DLL "
+                "im D64I-Block und vergleicht beim Programmstart die komplette DLL-Datei."
+            )
+            exact_runtime_layout.addWidget(self.exact_runtime_check_checkbox)
+            self.exact_runtime_hint = QLabel(
+                "Strikte Dateibindung: stimmt auch nur ein Byte der geladenen "
+                "Runtime-DLL nicht mit der beim Linken verwendeten Datei überein, "
+                "wird der Start abgebrochen. Die Namens-Fallback-Option gilt nicht "
+                "für einen Exact-Runtime-Fehler.",
+                self.exact_runtime_group,
+            )
+            self.exact_runtime_hint.setWordWrap(True)
+            exact_runtime_layout.addWidget(self.exact_runtime_hint)
+            optimization_layout.addWidget(self.exact_runtime_group)
+
+            # Stage 210: Import-Packer policy for the D64I/MSZIP packed image.
+            self.import_packer_group = QGroupBox(
+                "Import-Packer", self.linker_optimization_page
+            )
+            self.import_packer_group.setObjectName(
+                f"project_windows_{target_tag}_import_packer_group"
+            )
+            import_packer_layout = QGridLayout(self.import_packer_group)
+            import_packer_layout.setContentsMargins(10, 10, 10, 10)
+            import_packer_layout.setHorizontalSpacing(10)
+            import_packer_layout.setVerticalSpacing(7)
+
+            self.import_packer_enabled_checkbox = QCheckBox(
+                "Import-Packer aktivieren", self.import_packer_group
+            )
+            self.import_packer_enabled_checkbox.setObjectName(
+                f"project_windows_{target_tag}_import_packer_enabled"
+            )
+            self.import_packer_enabled_checkbox.setChecked(True)
+            self.import_packer_enabled_checkbox.setToolTip(
+                "Packt Programmimporte als D64I-Metadaten in den D64Z/MSZIP-Block"
+            )
+            import_packer_layout.addWidget(
+                self.import_packer_enabled_checkbox, 0, 0, 1, 2
+            )
+
+            self.import_packer_require_savings_checkbox = QCheckBox(
+                "Nur übernehmen, wenn die EXE kleiner wird",
+                self.import_packer_group,
+            )
+            self.import_packer_require_savings_checkbox.setObjectName(
+                f"project_windows_{target_tag}_import_packer_require_savings"
+            )
+            self.import_packer_require_savings_checkbox.setChecked(True)
+            import_packer_layout.addWidget(
+                self.import_packer_require_savings_checkbox, 1, 0, 1, 2
+            )
+
+            import_packer_layout.addWidget(
+                QLabel("Mindest-Ersparnis:", self.import_packer_group), 2, 0
+            )
+            self.import_packer_min_savings_spin = QSpinBox(
+                self.import_packer_group
+            )
+            self.import_packer_min_savings_spin.setObjectName(
+                f"project_windows_{target_tag}_import_packer_min_savings"
+            )
+            self.import_packer_min_savings_spin.setRange(0, 1024 * 1024)
+            self.import_packer_min_savings_spin.setValue(1)
+            self.import_packer_min_savings_spin.setSuffix(" Byte")
+            self.import_packer_min_savings_spin.setToolTip(
+                "D64I wird nur verwendet, wenn mindestens so viele Datei-Bytes gespart werden"
+            )
+            import_packer_layout.addWidget(
+                self.import_packer_min_savings_spin, 2, 1, Qt.AlignLeft
+            )
+
+            self.import_packer_format_label = QLabel(
+                f"Format: D64I v{PE_D64I_VERSION} / MSZIP    Resolver: Bootstrap-IAT (Variante A)",
+                self.import_packer_group,
+            )
+            self.import_packer_format_label.setWordWrap(True)
+            import_packer_layout.addWidget(
+                self.import_packer_format_label, 3, 0, 1, 2
+            )
+            self.import_packer_hint = QLabel(
+                "DLL-/Funktionsnamen und Ziel-IAT-RVAs liegen im gepackten D64I-Block. "
+                "Nur die kleine Loader-IAT bleibt als normale Windows-Importtabelle sichtbar.",
+                self.import_packer_group,
+            )
+            self.import_packer_hint.setWordWrap(True)
+            import_packer_layout.addWidget(
+                self.import_packer_hint, 4, 0, 1, 2
+            )
+            import_packer_layout.setColumnStretch(1, 1)
+            optimization_layout.addWidget(self.import_packer_group)
+
+            # Stage 217: WFM object-property optimization.
+            self.object_property_group = QGroupBox(
+                "Objekt-Eigenschaften", self.linker_optimization_page
+            )
+            self.object_property_group.setObjectName(
+                f"project_windows_{target_tag}_object_property_group"
+            )
+            object_property_layout = QVBoxLayout(self.object_property_group)
+            object_property_layout.setContentsMargins(10, 10, 10, 10)
+            object_property_layout.setSpacing(6)
+            self.object_defaults_enabled_checkbox = QCheckBox(
+                "Standardwerte entfernen", self.object_property_group
+            )
+            self.object_defaults_enabled_checkbox.setChecked(True)
+            self.dead_property_imports_checkbox = QCheckBox(
+                "Unbenutzte Property-Imports entfernen", self.object_property_group
+            )
+            self.dead_property_imports_checkbox.setChecked(True)
+            self.empty_standard_strings_checkbox = QCheckBox(
+                "Leere Standard-Strings entfernen", self.object_property_group
+            )
+            self.empty_standard_strings_checkbox.setChecked(True)
+            self.property_defaults_abi_label = QLabel(
+                f"Property Defaults ABI: {DBASE_WFM_PROPERTY_DEFAULTS_ABI}",
+                self.object_property_group,
+            )
+            self.property_defaults_hint = QLabel(
+                "Es werden nur vom WFM-Runtime-Vertrag garantierte Konstruktor-Defaults "
+                "entfernt; beliebige False-/0-Werte bleiben erhalten.",
+                self.object_property_group,
+            )
+            self.property_defaults_hint.setWordWrap(True)
+            for _widget in (
+                self.object_defaults_enabled_checkbox,
+                self.dead_property_imports_checkbox,
+                self.empty_standard_strings_checkbox,
+                self.property_defaults_abi_label,
+                self.property_defaults_hint,
+            ):
+                object_property_layout.addWidget(_widget)
+            optimization_layout.addWidget(self.object_property_group)
+
+            # Stage 218: common-code folding for consecutive WFM property setters.
+            self.cut_multiple_codes_group = QGroupBox(
+                "Code-Faltung", self.linker_optimization_page
+            )
+            self.cut_multiple_codes_group.setObjectName(
+                f"project_windows_{target_tag}_cut_multiple_codes_group"
+            )
+            cut_multiple_layout = QVBoxLayout(self.cut_multiple_codes_group)
+            cut_multiple_layout.setContentsMargins(10, 10, 10, 10)
+            cut_multiple_layout.setSpacing(6)
+            self.cut_multiple_codes_checkbox = QCheckBox(
+                "Cut Multiple Codes", self.cut_multiple_codes_group
+            )
+            self.cut_multiple_codes_checkbox.setChecked(True)
+            self.cut_multiple_codes_checkbox.setToolTip(
+                "Fasst mehrere aufeinanderfolgende DBaseQtWidgetSetProperty-Aufrufe "
+                "eines Objekts in eine kompakte DATA-Tabelle und einen gemeinsamen "
+                "Runtime-Aufruf zusammen."
+            )
+            self.cut_multiple_codes_hint = QLabel(
+                "Property-Name, Wert und Längen werden einmal als kompakter Tabellenblock "
+                "gespeichert. Der Code übergibt nur Objekt, Tabellenadresse und Eintragszahl. "
+                "Benötigt Runtime-ABI 1.2 / Ordinal-Map 2 oder neuer.",
+                self.cut_multiple_codes_group,
+            )
+            self.cut_multiple_codes_hint.setWordWrap(True)
+            cut_multiple_layout.addWidget(self.cut_multiple_codes_checkbox)
+            cut_multiple_layout.addWidget(self.cut_multiple_codes_hint)
+            optimization_layout.addWidget(self.cut_multiple_codes_group)
+
+            # Stage 221: physical raw/image ordering. The PE section table and
+            # virtual RVAs remain stable; only the on-disk payload order changes.
+            self.image_layout_group = QGroupBox(
+                "Layout", self.linker_optimization_page
+            )
+            self.image_layout_group.setObjectName(
+                f"project_windows_{target_tag}_image_layout_group"
+            )
+            image_layout_box = QVBoxLayout(self.image_layout_group)
+            image_layout_box.setContentsMargins(10, 10, 10, 10)
+            image_layout_box.setSpacing(6)
+            image_layout_row = QHBoxLayout()
+            image_layout_row.addWidget(QLabel("Image-Anordnung:", self.image_layout_group))
+            self.image_layout_combo = QComboBox(self.image_layout_group)
+            self.image_layout_combo.setObjectName(
+                f"project_windows_{target_tag}_image_layout"
+            )
+            for _layout_title, _layout_value in PE_IMAGE_LAYOUT_CHOICES:
+                self.image_layout_combo.addItem(_layout_title, _layout_value)
+            image_layout_row.addWidget(self.image_layout_combo, 1)
+            image_layout_box.addLayout(image_layout_row)
+            self.image_layout_hint = QLabel(
+                "Bestimmt die physische Reihenfolge der Raw-Daten im erzeugten "
+                "Windows-Image. Loader bleibt zuerst; DATA und CODE werden danach "
+                "entsprechend der Auswahl angeordnet. Virtuelle Section-RVAs bleiben unverändert.",
+                self.image_layout_group,
+            )
+            self.image_layout_hint.setWordWrap(True)
+            image_layout_box.addWidget(self.image_layout_hint)
+            optimization_layout.addWidget(self.image_layout_group)
+
+            # Stage 211: optionaler importloser Loader-Bootstrap über PEB/LDR.
+            self.linker_peb_group = QGroupBox(
+                "PEB", self.linker_optimization_page
+            )
+            self.linker_peb_group.setObjectName(
+                f"project_windows_{target_tag}_linker_peb_group"
+            )
+            peb_layout = QVBoxLayout(self.linker_peb_group)
+            peb_layout.setContentsMargins(10, 10, 10, 10)
+            peb_layout.setSpacing(6)
+
+            self.peb_resolver_enabled_checkbox = QCheckBox(
+                "PEB-Resolver aktivieren (Bootstrap-IAT entfernen)",
+                self.linker_peb_group,
+            )
+            self.peb_resolver_enabled_checkbox.setObjectName(
+                f"project_windows_{target_tag}_peb_resolver_enabled"
+            )
+            self.peb_resolver_enabled_checkbox.setChecked(False)
+            self.peb_resolver_enabled_checkbox.setToolTip(
+                "Ermittelt NTDLL/KERNEL32 direkt aus dem PEB und benötigt keine Loader-IAT."
+            )
+            peb_layout.addWidget(self.peb_resolver_enabled_checkbox)
+
+            self.peb_arch_label = QLabel(
+                (
+                    "PE32: FS:[0x30] → PEB → PEB_LDR_DATA → InMemoryOrderModuleList"
+                    if target_tag == "32"
+                    else "PE32+: GS:[0x60] → PEB → PEB_LDR_DATA → InMemoryOrderModuleList"
+                ),
+                self.linker_peb_group,
+            )
+            self.peb_arch_label.setWordWrap(True)
+            peb_layout.addWidget(self.peb_arch_label)
+
+            self.peb_resolver_label = QLabel(
+                "Der Loader sucht NTDLL und KERNEL32 in der Modul-Liste, liest die "
+                "PE-Exporttabelle von NTDLL und ermittelt LdrGetProcedureAddress. "
+                "Darüber werden LoadLibraryA/GetProcAddress gebootstrapped; Cabinet- "
+                "und restliche Loader-Funktionen werden anschließend dynamisch aufgelöst.",
+                self.linker_peb_group,
+            )
+            self.peb_resolver_label.setWordWrap(True)
+            peb_layout.addWidget(self.peb_resolver_label)
+
+            self.peb_importless_label = QLabel(
+                "Bei aktivem PEB-Resolver setzt der Linker Import Directory und IAT Directory "
+                "des Bootstrap-Loaders auf 0. Die virtuelle .idata bleibt nur für die vom "
+                "D64I-Resolver rekonstruierten Programm-IAT-Slots erhalten.",
+                self.linker_peb_group,
+            )
+            self.peb_importless_label.setWordWrap(True)
+            peb_layout.addWidget(self.peb_importless_label)
+            optimization_layout.addWidget(self.linker_peb_group)
+            optimization_layout.addStretch(1)
+            self.linker_optimization_scroll.setWidget(
+                self.linker_optimization_page
+            )
+            self.stack.addWidget(self.linker_optimization_scroll)
+
+            self.signing_page = WindowsSigningSettingsPage(self.owner, self.target, self.stack)
+            self.signing_page.setObjectName(f"project_windows_{target_tag}_signing")
+            self.signing_page.settingsChanged.connect(self._signing_changed)
+            self.stack.addWidget(self.signing_page)
 
             self.manifest_page = WindowsManifestSettingsPage(self.stack)
             self.manifest_page.setObjectName(f"project_windows_{target_tag}_manifest")
@@ -77427,11 +83615,70 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.output_directory_edit.editingFinished.connect(self._output_directory_edited)
             self.input_relative_checkbox.toggled.connect(self._input_relative_toggled)
             self.output_relative_checkbox.toggled.connect(self._output_relative_toggled)
+            self.pe_packing_checkbox.toggled.connect(
+                self._pe_packing_toggled
+            )
             self.link_with_ordinals_checkbox.toggled.connect(
                 self._link_with_ordinals_toggled
             )
+            self.link_with_ordinals_checkbox.toggled.connect(
+                self._update_import_packer_controls
+            )
+            self.import_packer_enabled_checkbox.toggled.connect(
+                self._import_packer_controls_changed
+            )
+            self.import_packer_require_savings_checkbox.toggled.connect(
+                self._import_packer_controls_changed
+            )
+            self.import_packer_min_savings_spin.valueChanged.connect(
+                self._import_packer_controls_changed
+            )
+            self.import_packer_enabled_checkbox.toggled.connect(
+                self._update_import_packer_controls
+            )
+            self.import_packer_require_savings_checkbox.toggled.connect(
+                self._update_import_packer_controls
+            )
+            self.peb_resolver_enabled_checkbox.toggled.connect(
+                self._import_packer_controls_changed
+            )
+            for _object_opt_signal in (
+                self.object_defaults_enabled_checkbox.toggled,
+                self.dead_property_imports_checkbox.toggled,
+                self.empty_standard_strings_checkbox.toggled,
+                self.cut_multiple_codes_checkbox.toggled,
+                self.image_layout_combo.currentIndexChanged,
+            ):
+                _object_opt_signal.connect(self._import_packer_controls_changed)
+            self.peb_resolver_enabled_checkbox.toggled.connect(
+                self._update_import_packer_controls
+            )
+            for _compat_widget_signal in (
+                self.ordinal_abi_major_spin.valueChanged,
+                self.ordinal_abi_minor_spin.valueChanged,
+                self.ordinal_map_version_spin.valueChanged,
+                self.runtime_version_check_checkbox.toggled,
+                self.ordinal_hash_check_checkbox.toggled,
+                self.exact_runtime_check_checkbox.toggled,
+                self.ordinal_mismatch_combo.currentIndexChanged,
+            ):
+                _compat_widget_signal.connect(self._import_packer_controls_changed)
+            self._update_pe_packing_controls()
+            self._update_import_packer_controls()
             self.workstation_mode_checkbox.toggled.connect(
                 self._workstation_mode_toggled
+            )
+            self.editor_font_combo.currentTextChanged.connect(
+                self._editor_controls_changed
+            )
+            self.editor_font_size_spin.valueChanged.connect(
+                self._editor_controls_changed
+            )
+            self.editor_language_combo.currentIndexChanged.connect(
+                self._editor_color_selection_changed
+            )
+            self.editor_candidate_combo.currentIndexChanged.connect(
+                self._editor_color_selection_changed
             )
             for _theme_key, _button in self.debug_theme_normal_buttons.items():
                 _button.toggled.connect(
@@ -77450,19 +83697,319 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
 
         def _tree_changed(self, current, _previous) -> None:
             key = str(current.data(0, Qt.UserRole) or "") if current is not None else ""
-            if key == "umgebung":
-                page = self.environment_page
+            if key == "environment.editor":
+                page = self.editor_scroll
+            elif key == "environment.workstation":
+                page = self.workstation_scroll
+            elif key == "umgebung":
+                page = self.placeholder
             elif key == "compiler.input_directories":
                 page = self.input_directories_page
             elif key == "compiler.output_directory":
                 page = self.output_directory_page
             elif key == "linker":
                 page = self.linker_page
+            elif key == "linker.options":
+                page = self.linker_options_scroll
+            elif key == "linker.optimization":
+                page = self.linker_optimization_scroll
+            elif key == "linker.signing":
+                page = self.signing_page
             elif key == "linker.manifest":
                 page = self.manifest_page
             else:
                 page = self.placeholder
             self.stack.setCurrentWidget(page)
+
+        @staticmethod
+        def _normalized_color(value: str, fallback: str) -> str:
+            color = QColor(str(value or ""))
+            if not color.isValid():
+                color = QColor(fallback)
+            return color.name(QColor.HexRgb).upper()
+
+        def _current_editor_language_key(self) -> str:
+            value = self.editor_language_combo.currentData()
+            return str(value or "text")
+
+        def _current_editor_candidate_key(self) -> str:
+            value = self.editor_candidate_combo.currentData()
+            return str(value or "text")
+
+        def _editor_candidate_colors(self):
+            language = self._current_editor_language_key()
+            candidate = self._current_editor_candidate_key()
+            profile = self._editor_color_profiles.setdefault(
+                language,
+                normalize_project_windows_editor_color_profiles()[language],
+            )
+            return profile.setdefault(
+                candidate,
+                {
+                    "foreground": PROJECT_WINDOWS_EDITOR_DEFAULT_TOKEN_FOREGROUNDS[
+                        candidate
+                    ],
+                    "background": PROJECT_WINDOWS_EDITOR_DEFAULT_BACKGROUND,
+                },
+            )
+
+        def editor_settings(self):
+            text_colors = self._editor_color_profiles["text"]["text"]
+            return {
+                "font_family": str(self.editor_font_combo.currentText() or "").strip(),
+                "font_size": int(self.editor_font_size_spin.value()),
+                # Legacywerte bleiben fuer Stage-198-Projekte/Codepfade erhalten.
+                "foreground": self._normalized_color(
+                    text_colors.get("foreground"),
+                    PROJECT_WINDOWS_EDITOR_DEFAULT_FOREGROUND,
+                ),
+                "background": self._normalized_color(
+                    text_colors.get("background"),
+                    PROJECT_WINDOWS_EDITOR_DEFAULT_BACKGROUND,
+                ),
+                "color_profiles": normalize_project_windows_editor_color_profiles(
+                    self._editor_color_profiles
+                ),
+            }
+
+        def set_editor_settings(
+            self,
+            font_family: str,
+            font_size: int,
+            foreground: str,
+            background: str,
+            color_profiles=None,
+        ) -> None:
+            self._syncing = True
+            try:
+                family = str(font_family or "").strip()
+                index = self.editor_font_combo.findText(
+                    family, Qt.MatchFixedString
+                ) if family else -1
+                if index < 0 and self.editor_font_combo.count():
+                    index = self.editor_font_combo.findText(
+                        "Consolas", Qt.MatchFixedString
+                    )
+                    if index < 0:
+                        index = 0
+                if index >= 0:
+                    self.editor_font_combo.setCurrentIndex(index)
+                self.editor_font_size_spin.setValue(max(
+                    self.editor_font_size_spin.minimum(),
+                    min(self.editor_font_size_spin.maximum(), int(font_size)),
+                ))
+                self._editor_color_profiles = (
+                    normalize_project_windows_editor_color_profiles(
+                        color_profiles, foreground, background
+                    )
+                )
+                self._update_editor_color_buttons()
+                self._update_editor_preview()
+            finally:
+                self._syncing = False
+
+        def _editor_controls_changed(self, *_args) -> None:
+            if self._syncing:
+                return
+            self._update_editor_preview()
+            self._notify_editor_settings()
+
+        def _editor_color_selection_changed(self, *_args) -> None:
+            self._update_editor_color_buttons()
+            self._update_editor_preview()
+
+        def _editor_color_clicked(self, kind: str, color: str) -> None:
+            values = self._editor_candidate_colors()
+            candidate = self._current_editor_candidate_key()
+            if str(kind) == "foreground":
+                values["foreground"] = self._normalized_color(
+                    color,
+                    PROJECT_WINDOWS_EDITOR_DEFAULT_TOKEN_FOREGROUNDS[candidate],
+                )
+            else:
+                values["background"] = self._normalized_color(
+                    color, PROJECT_WINDOWS_EDITOR_DEFAULT_BACKGROUND
+                )
+            self._update_editor_color_buttons()
+            self._update_editor_preview()
+            if not self._syncing:
+                self._notify_editor_settings()
+
+        def _update_editor_color_buttons(self) -> None:
+            values = self._editor_candidate_colors()
+            selected_fg = values.get(
+                "foreground", PROJECT_WINDOWS_EDITOR_DEFAULT_FOREGROUND
+            )
+            selected_bg = values.get(
+                "background", PROJECT_WINDOWS_EDITOR_DEFAULT_BACKGROUND
+            )
+            for _buttons, _selected in (
+                (self.editor_foreground_buttons, selected_fg),
+                (self.editor_background_buttons, selected_bg),
+            ):
+                for _color, _button in _buttons.items():
+                    _active = _color.upper() == str(_selected).upper()
+                    _button.setChecked(_active)
+                    _border = (
+                        "3px solid #FFD54F"
+                        if _active else "1px solid #606060"
+                    )
+                    _button.setStyleSheet(
+                        "QPushButton{"
+                        f"background-color:{_color};border:{_border};"
+                        "border-radius:2px;}"
+                    )
+
+        def _editor_preview_markup(self, language: str) -> str:
+            profile = self._editor_color_profiles.get(
+                language, self._editor_color_profiles["text"]
+            )
+
+            def span(candidate, value, *, bold=False):
+                colors = profile.get(candidate, profile["text"])
+                fg = self._normalized_color(
+                    colors.get("foreground"),
+                    PROJECT_WINDOWS_EDITOR_DEFAULT_TOKEN_FOREGROUNDS.get(
+                        candidate, PROJECT_WINDOWS_EDITOR_DEFAULT_FOREGROUND
+                    ),
+                )
+                bg = self._normalized_color(
+                    colors.get("background"),
+                    PROJECT_WINDOWS_EDITOR_DEFAULT_BACKGROUND,
+                )
+                weight = "font-weight:bold;" if bold else ""
+                return (
+                    f'<span style="color:{fg};background-color:{bg};'
+                    f'{weight}">{html.escape(str(value))}</span>'
+                )
+
+            t = lambda value: span("text", value)
+            k = lambda value: span("keyword", value, bold=True)
+            q = lambda value: span("string", value)
+            n = lambda value: span("float", value)
+            c = lambda value: span("comment", value)
+            ins = lambda value: span("instruction", value, bold=True)
+            op = lambda value: span("operand", value)
+
+            samples = {
+                "text": [
+                    t("normaler Text"),
+                    t("Eingabe-Editor mit Gutter"),
+                    t("ABCDEFGHIJKLMNOPQRSTUVWXYZ 0123456789"),
+                ],
+                "c_cpp": [
+                    k("int") + t(" main() { ") + k("const") + t(" char *s = ")
+                    + q('"Hallo"') + t("; }"),
+                    k("double") + t(" wert = ") + n("101.42") + t("; ")
+                    + c("// Kommentar"),
+                    c("/* Block-Kommentar */") + t("  ") + c("# Präprozessor"),
+                ],
+                "pascal": [
+                    k("program") + t(" Beispiel; ") + k("begin"),
+                    t("wert := ") + n("101.42") + t("; WriteLn(")
+                    + q("'Hallo'") + t(");"),
+                    c("// Kommentar") + t("  ") + c("(* Block-Kommentar *)"),
+                ],
+                "dbase": [
+                    k("STORE") + t(" ") + n("101.42") + t(" ")
+                    + k("TO") + t(" Ausdruck"),
+                    t("? ") + q('"Hallo"') + t("   Ausdruck = ") + n("42.5"),
+                    c("** Kommentar") + t("   ") + c("&& Kommentar"),
+                ],
+                "prolog": [
+                    k("main") + t(" :- ") + k("writeln") + t("(")
+                    + q('"Hallo"') + t(")."),
+                    t("wert(") + n("101.42") + t(")."),
+                    c("/* Kommentar */"),
+                ],
+                "lisp": [
+                    t("(") + k("defun") + t(" start ()"),
+                    t("  (") + k("print") + t(" ") + q('"Hallo"')
+                    + t(") ") + n("101.42") + t(")"),
+                    c("; Kommentar"),
+                ],
+                "logo": [
+                    k("RIGHT") + t(" ") + n("90.5") + t("  ")
+                    + k("PRINT") + t(" ") + q('"Hallo'),
+                    t("FORWARD ") + n("101.42"),
+                    c("; Kommentar") + t("   ") + c("# Kommentar"),
+                ],
+                "elan": [
+                    k("PROC") + t(" beispiel = ") + k("REAL")
+                    + t(" wert := ") + n("101.42"),
+                    t("put(") + q('"Hallo"') + t(")"),
+                    c("# Kommentar"),
+                ],
+                "assembler": [
+                    ins("MOV") + t(" ") + op("EAX, 101"),
+                    ins("FLD") + t(" ") + op("qword ptr [wert]")
+                    + t("   ") + n("101.42"),
+                    ins("DB") + t(" ") + q('"Hallo"') + t("   ")
+                    + c("; Kommentar"),
+                ],
+            }
+            lines = samples.get(language, samples["text"])
+            return (
+                '<div style="white-space:pre; padding:4px;">'
+                + "<br>".join(lines)
+                + "</div>"
+            )
+
+        def _update_editor_preview(self) -> None:
+            family = str(self.editor_font_combo.currentText() or "Courier New")
+            size = int(self.editor_font_size_spin.value())
+            preview_font = QFont(family, size)
+            preview_font.setFixedPitch(True)
+            preview_font.setStyleHint(QFont.Monospace)
+            self.editor_preview_gutter.setFont(preview_font)
+            self.editor_preview_text.setFont(preview_font)
+
+            language = self._current_editor_language_key()
+            text_profile = self._editor_color_profiles.get(
+                language, self._editor_color_profiles["text"]
+            ).get("text", {})
+            fg = self._normalized_color(
+                text_profile.get("foreground"),
+                PROJECT_WINDOWS_EDITOR_DEFAULT_FOREGROUND,
+            )
+            bg = self._normalized_color(
+                text_profile.get("background"),
+                PROJECT_WINDOWS_EDITOR_DEFAULT_BACKGROUND,
+            )
+            self.editor_preview_gutter.setStyleSheet(
+                f"background:{bg};color:{fg};"
+                f"border-right:1px solid {fg};padding:4px;"
+            )
+            self.editor_preview_text.setStyleSheet(
+                f"background:{bg};color:{fg};padding:0px;"
+            )
+            self.editor_preview_text.setText(
+                self._editor_preview_markup(language)
+            )
+            self.editor_preview_frame.setStyleSheet(
+                "QFrame{"
+                f"background:{bg};border:1px solid #777777;"
+                "}"
+            )
+
+        def _notify_editor_settings(self) -> None:
+            callback = getattr(self.owner, "set_project_editor_settings", None)
+            if callback is None:
+                return
+            settings = self.editor_settings()
+            callback(
+                settings["font_family"],
+                settings["font_size"],
+                settings["foreground"],
+                settings["background"],
+                color_profiles=settings["color_profiles"],
+                mark_modified=True,
+            )
+
+        def _signing_changed(self, value) -> None:
+            callback = getattr(self.owner, "set_project_windows_signing", None)
+            if callback is not None:
+                callback(self.target, value, mark_modified=True)
 
         def _manifest_changed(self, value) -> None:
             callback = getattr(self.owner, "set_project_windows_manifest", None)
@@ -77551,6 +84098,191 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 self.link_with_ordinals_checkbox.setChecked(bool(enabled))
             finally:
                 self._syncing = False
+
+        def pe_packing_enabled(self) -> bool:
+            return bool(self.pe_packing_checkbox.isChecked())
+
+        def set_pe_packing_enabled(self, enabled: bool) -> None:
+            self._syncing = True
+            try:
+                self.pe_packing_checkbox.setChecked(bool(enabled))
+                self._update_pe_packing_controls()
+            finally:
+                self._syncing = False
+
+        def signing_settings(self) -> dict:
+            return self.signing_page.settings()
+
+        def set_signing_settings(self, value) -> None:
+            self.signing_page.set_settings(value)
+
+        def _update_pe_packing_controls(self, *_args) -> None:
+            enabled = bool(self.pe_packing_checkbox.isChecked())
+            if enabled:
+                self.pe_packing_status_label.setText(
+                    "Aktueller Modus: D64Z/MSZIP – Programmcode wird gepackt und "
+                    "über den internen Loader gestartet."
+                )
+            else:
+                self.pe_packing_status_label.setText(
+                    "Aktueller Modus: Standard PE – Programmcode liegt direkt in "
+                    ".text; kein D64Z/MSZIP-Selbstentpacker."
+                )
+            if hasattr(self, "import_packer_group"):
+                self._update_import_packer_controls()
+
+        def _pe_packing_toggled(self, checked: bool) -> None:
+            self._update_pe_packing_controls()
+            if self._syncing:
+                return
+            callback = getattr(
+                self.owner, "set_project_windows_pe_packing", None
+            )
+            if callable(callback):
+                callback(self.target, bool(checked), mark_modified=True)
+
+        def import_packer_settings(self) -> Dict[str, object]:
+            action = str(self.ordinal_mismatch_combo.currentData() or "abort")
+            if action not in {"abort", "fallback_name"}:
+                action = "abort"
+            return {
+                "enabled": bool(self.import_packer_enabled_checkbox.isChecked()),
+                "require_savings": bool(
+                    self.import_packer_require_savings_checkbox.isChecked()
+                ),
+                "minimum_savings": int(self.import_packer_min_savings_spin.value()),
+                "peb_resolver": bool(self.peb_resolver_enabled_checkbox.isChecked()),
+                "abi_major": int(self.ordinal_abi_major_spin.value()),
+                "abi_minor": int(self.ordinal_abi_minor_spin.value()),
+                "ordinal_map_version": int(self.ordinal_map_version_spin.value()),
+                "runtime_version_check": bool(self.runtime_version_check_checkbox.isChecked()),
+                "ordinal_hash_check": bool(self.ordinal_hash_check_checkbox.isChecked()),
+                "exact_runtime_check": bool(self.exact_runtime_check_checkbox.isChecked()),
+                "ordinal_mismatch_action": action,
+                "object_defaults_enabled": bool(self.object_defaults_enabled_checkbox.isChecked()),
+                "dead_property_imports": bool(self.dead_property_imports_checkbox.isChecked()),
+                "empty_standard_strings": bool(self.empty_standard_strings_checkbox.isChecked()),
+                "cut_multiple_codes": bool(self.cut_multiple_codes_checkbox.isChecked()),
+                "layout_order": _normalize_pe_image_layout_order(
+                    self.image_layout_combo.currentData()
+                ),
+            }
+
+        def set_import_packer_settings(
+            self,
+            enabled: bool,
+            require_savings: bool,
+            minimum_savings: int,
+            peb_resolver: bool = False,
+            abi_major: int = PE_D64_RUNTIME_DEFAULT_ABI_MAJOR,
+            abi_minor: int = PE_D64_RUNTIME_DEFAULT_ABI_MINOR,
+            ordinal_map_version: int = PE_D64_RUNTIME_DEFAULT_ORDINAL_MAP_VERSION,
+            runtime_version_check: bool = True,
+            ordinal_hash_check: bool = True,
+            exact_runtime_check: bool = False,
+            ordinal_mismatch_action: str = "abort",
+            object_defaults_enabled: bool = True,
+            dead_property_imports: bool = True,
+            empty_standard_strings: bool = True,
+            cut_multiple_codes: bool = True,
+            layout_order: str = PE_IMAGE_LAYOUT_DEFAULT,
+        ) -> None:
+            self._syncing = True
+            try:
+                self.import_packer_enabled_checkbox.setChecked(bool(enabled))
+                self.import_packer_require_savings_checkbox.setChecked(bool(require_savings))
+                self.import_packer_min_savings_spin.setValue(
+                    max(0, min(1024 * 1024, int(minimum_savings or 0)))
+                )
+                self.peb_resolver_enabled_checkbox.setChecked(bool(peb_resolver))
+                self.ordinal_abi_major_spin.setValue(max(0, min(65535, int(abi_major or 0))))
+                self.ordinal_abi_minor_spin.setValue(max(0, min(65535, int(abi_minor or 0))))
+                self.ordinal_map_version_spin.setValue(max(0, min(0x7FFFFFFF, int(ordinal_map_version or 0))))
+                self.runtime_version_check_checkbox.setChecked(bool(runtime_version_check))
+                self.ordinal_hash_check_checkbox.setChecked(bool(ordinal_hash_check))
+                self.exact_runtime_check_checkbox.setChecked(bool(exact_runtime_check))
+                self.object_defaults_enabled_checkbox.setChecked(bool(object_defaults_enabled))
+                self.dead_property_imports_checkbox.setChecked(bool(dead_property_imports))
+                self.empty_standard_strings_checkbox.setChecked(bool(empty_standard_strings))
+                self.cut_multiple_codes_checkbox.setChecked(bool(cut_multiple_codes))
+                _layout_value = _normalize_pe_image_layout_order(layout_order)
+                _layout_index = self.image_layout_combo.findData(_layout_value)
+                self.image_layout_combo.setCurrentIndex(max(0, _layout_index))
+                action = str(ordinal_mismatch_action or "abort").strip().casefold()
+                index = self.ordinal_mismatch_combo.findData(
+                    action if action in {"abort", "fallback_name"} else "abort"
+                )
+                self.ordinal_mismatch_combo.setCurrentIndex(max(0, index))
+                self._update_import_packer_controls()
+            finally:
+                self._syncing = False
+
+        def _update_import_packer_controls(self, *_args) -> None:
+            packing_enabled = bool(
+                getattr(self, "pe_packing_checkbox", None) is None
+                or self.pe_packing_checkbox.isChecked()
+            )
+            enabled = bool(
+                packing_enabled and self.import_packer_enabled_checkbox.isChecked()
+            )
+            self.import_packer_group.setEnabled(packing_enabled)
+            self.exact_runtime_group.setEnabled(packing_enabled)
+            self.linker_peb_group.setEnabled(packing_enabled)
+            require = bool(
+                enabled and self.import_packer_require_savings_checkbox.isChecked()
+            )
+            self.import_packer_require_savings_checkbox.setEnabled(enabled)
+            self.import_packer_min_savings_spin.setEnabled(require)
+            self.import_packer_format_label.setEnabled(enabled)
+            self.import_packer_hint.setEnabled(enabled)
+            self.peb_resolver_enabled_checkbox.setEnabled(enabled)
+            peb_enabled = enabled and self.peb_resolver_enabled_checkbox.isChecked()
+            self.peb_arch_label.setEnabled(peb_enabled)
+            self.peb_resolver_label.setEnabled(peb_enabled)
+            self.peb_importless_label.setEnabled(peb_enabled)
+            self.import_packer_format_label.setText(
+                f"Format: D64I v{PE_D64I_VERSION} / MSZIP    Resolver: "
+                + ("PEB/LDR (Variante B)" if peb_enabled else "Bootstrap-IAT (Variante A)")
+            )
+            ordinal_enabled = bool(enabled and self.link_with_ordinals_checkbox.isChecked())
+            for widget in (
+                self.ordinal_abi_major_spin, self.ordinal_abi_minor_spin,
+                self.ordinal_map_version_spin, self.runtime_version_check_checkbox,
+                self.ordinal_hash_check_checkbox, self.exact_runtime_check_checkbox,
+                self.exact_runtime_hint, self.ordinal_mismatch_combo,
+                self.ordinal_version_info_label,
+            ):
+                widget.setEnabled(ordinal_enabled)
+
+        def _import_packer_controls_changed(self, *_args) -> None:
+            self._update_import_packer_controls()
+            if self._syncing:
+                return
+            callback = getattr(
+                self.owner, "set_project_windows_import_packer", None
+            )
+            if callback is not None:
+                values = self.import_packer_settings()
+                callback(
+                    self.target,
+                    bool(values["enabled"]),
+                    bool(values["require_savings"]),
+                    int(values["minimum_savings"]),
+                    bool(values.get("peb_resolver", False)),
+                    int(values.get("abi_major", PE_D64_RUNTIME_DEFAULT_ABI_MAJOR)),
+                    int(values.get("abi_minor", PE_D64_RUNTIME_DEFAULT_ABI_MINOR)),
+                    int(values.get("ordinal_map_version", PE_D64_RUNTIME_DEFAULT_ORDINAL_MAP_VERSION)),
+                    bool(values.get("runtime_version_check", True)),
+                    bool(values.get("ordinal_hash_check", True)),
+                    bool(values.get("exact_runtime_check", False)),
+                    str(values.get("ordinal_mismatch_action", "abort")),
+                    bool(values.get("object_defaults_enabled", True)),
+                    bool(values.get("dead_property_imports", True)),
+                    bool(values.get("empty_standard_strings", True)),
+                    bool(values.get("cut_multiple_codes", True)),
+                    str(values.get("layout_order", PE_IMAGE_LAYOUT_DEFAULT)),
+                    mark_modified=True,
+                )
 
         def workstation_mode(self) -> bool:
             return bool(self.workstation_mode_checkbox.isChecked())
@@ -78541,11 +85273,71 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
         def set_link_with_ordinals(self, target: str, enabled: bool) -> None:
             self.page_for_target(target).set_link_with_ordinals(enabled)
 
+        def pe_packing_enabled(self, target: str = "pe32") -> bool:
+            return self.page_for_target(target).pe_packing_enabled()
+
+        def set_pe_packing_enabled(self, target: str, enabled: bool) -> None:
+            self.page_for_target(target).set_pe_packing_enabled(enabled)
+
+        def signing_settings(self, target: str) -> dict:
+            return self.page_for_target(target).signing_settings()
+
+        def set_signing_settings(self, target: str, value) -> None:
+            self.page_for_target(target).set_signing_settings(value)
+
+        def import_packer_settings(self, target: str = "pe32") -> Dict[str, object]:
+            return self.page_for_target(target).import_packer_settings()
+
+        def set_import_packer_settings(
+            self,
+            target: str,
+            enabled: bool,
+            require_savings: bool,
+            minimum_savings: int,
+            peb_resolver: bool = False,
+            abi_major: int = PE_D64_RUNTIME_DEFAULT_ABI_MAJOR,
+            abi_minor: int = PE_D64_RUNTIME_DEFAULT_ABI_MINOR,
+            ordinal_map_version: int = PE_D64_RUNTIME_DEFAULT_ORDINAL_MAP_VERSION,
+            runtime_version_check: bool = True,
+            ordinal_hash_check: bool = True,
+            exact_runtime_check: bool = False,
+            ordinal_mismatch_action: str = "abort",
+            object_defaults_enabled: bool = True,
+            dead_property_imports: bool = True,
+            empty_standard_strings: bool = True,
+            cut_multiple_codes: bool = True,
+            layout_order: str = PE_IMAGE_LAYOUT_DEFAULT,
+        ) -> None:
+            self.page_for_target(target).set_import_packer_settings(
+                enabled, require_savings, minimum_savings, peb_resolver,
+                abi_major, abi_minor, ordinal_map_version, runtime_version_check,
+                ordinal_hash_check, exact_runtime_check, ordinal_mismatch_action,
+                object_defaults_enabled, dead_property_imports, empty_standard_strings,
+                cut_multiple_codes, layout_order,
+            )
+
         def workstation_mode(self, target: str = "pe32") -> bool:
             return self.page_for_target(target).workstation_mode()
 
         def set_workstation_mode(self, target: str, enabled: bool) -> None:
             self.page_for_target(target).set_workstation_mode(enabled)
+
+        def set_editor_settings(
+            self,
+            font_family: str,
+            font_size: int,
+            foreground: str,
+            background: str,
+            color_profiles=None,
+        ) -> None:
+            for page in self.windows_pages.values():
+                page.set_editor_settings(
+                    font_family,
+                    font_size,
+                    foreground,
+                    background,
+                    color_profiles=color_profiles,
+                )
 
         def debug_theme(self, target: str = "pe32", launch_mode: str = "normal") -> str:
             return self.page_for_target(target).debug_theme(launch_mode)
@@ -79845,6 +86637,11 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
         DEFAULT_WINDOW_HEIGHT = 800
         MAX_WINDOW_HEIGHT = 1000
         MAX_MATH_DOCK_HEIGHT = 900
+        # Stage 212: Das seitlich angedockte Projekt/Informationen-Fenster
+        # darf niemals mehr als ein Viertel der Hauptfensterbreite belegen.
+        # Floating bleibt bewusst unbeschränkt.
+        PROJECT_INFORMATION_DOCK_WIDTH_DIVISOR = 4
+        PROJECT_INFORMATION_DOCK_UNBOUNDED_WIDTH = 16777215
         MIN_MATH_FLOATING_WIDTH = 360
         MIN_MATH_FLOATING_HEIGHT = 320
         WIDGET_PROPERTY_NAME = "d64WidgetPropertyId"
@@ -80017,6 +86814,23 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 "pe32": False,
                 "pe64": False,
             }
+            self.project_windows_pe_packing_enabled: Dict[str, bool] = {
+                "pe32": PE_PACKING_DEFAULT,
+                "pe64": PE_PACKING_DEFAULT,
+            }
+            self.project_windows_signing: Dict[str, Dict[str, object]] = {
+                "pe32": normalize_signing_settings(),
+                "pe64": normalize_signing_settings(),
+            }
+            self._signing_session_passwords: Dict[str, str] = {}
+            for _target_key, _enabled in self.project_windows_pe_packing_enabled.items():
+                _set_pe_packing_enabled(_target_key, _enabled)
+            self.project_windows_import_packer: Dict[str, Dict[str, object]] = {
+                "pe32": dict(PE_IMPORT_PACKER_RUNTIME_SETTINGS["pe32"]),
+                "pe64": dict(PE_IMPORT_PACKER_RUNTIME_SETTINGS["pe64"]),
+            }
+            for _target_key, _packer in self.project_windows_import_packer.items():
+                _set_pe_import_packer_settings(_target_key, **_packer)
             self.project_windows_workstation_mode: Dict[str, bool] = {
                 "pe32": False,
                 "pe64": False,
@@ -80081,7 +86895,14 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.workspace_root = self.current_directory
             self.icon_provider = QFileIconProvider()
             self.untitled_counter = 0
+            # Stage 198: projektweite Eingabeeditor-Darstellung.
+            self.editor_font_family = ""
             self.editor_font_size = self.DEFAULT_EDITOR_FONT_SIZE
+            self.editor_foreground = PROJECT_WINDOWS_EDITOR_DEFAULT_FOREGROUND
+            self.editor_background = PROJECT_WINDOWS_EDITOR_DEFAULT_BACKGROUND
+            self.editor_color_profiles = (
+                normalize_project_windows_editor_color_profiles()
+            )
             # Stage 130: Anwendung startet standardmäßig im Dark-Mode.
             # Die Toolbar zeigt deshalb sofort das Sonnen-/Light-Symbol.
             self.dark_mode_enabled = True
@@ -80563,6 +87384,10 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             super().resizeEvent(event)
             self._update_frameless_corner_mask()
             self._layout_frameless_resize_overlays()
+            # Stage 212: Auch beim Verkleinern/Vergrößern des Hauptfensters
+            # bleibt das Projekt/Informationen-Dock auf maximal 1/4 begrenzt.
+            # Die Methode ist vor _create_right_dock() gefahrlos aufrufbar.
+            self._enforce_project_information_dock_width()
 
         def showEvent(self, event) -> None:
             super().showEvent(event)
@@ -81072,7 +87897,9 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             self.settings_action.setStatusTip("Desktop-, Tabellen-, Datei- und Alias-Einstellungen öffnen")
             self.settings_action.triggered.connect(self.show_settings_dock)
 
-            self.project_settings_action = QAction("Projekt", self)
+            # Stage 229: Projekt-Einstellungen liegen im Hauptmenü
+            # Projekt -> Einstellungen statt Ansicht -> Einstellungen -> Projekt.
+            self.project_settings_action = QAction("Einstellungen", self)
             self.project_settings_action.setObjectName("project_settings_action")
             self.project_settings_action.setStatusTip(
                 "Projektbezogene Compiler-, Assembler- und Linker-Einstellungen öffnen"
@@ -81937,7 +88764,20 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             *,
             game_key: Optional[str] = None,
         ) -> None:
-            dock, widget = self._ensure_math_learning_dock()
+            try:
+                dock, widget = self._ensure_math_learning_dock()
+            except Exception:
+                # Stage 190: Konstruktorfehler der Mathematik-Arbeitsfläche
+                # direkt hier abfangen, solange der echte Traceback existiert.
+                exc_type, exc_value, exc_tb = sys.exc_info()
+                if _GLOBAL_EXCEPTION_DISPATCHER is not None:
+                    _GLOBAL_EXCEPTION_DISPATCHER.report(
+                        exc_type, exc_value, exc_tb,
+                        'Lernen -> Mathematik -> Arbeitsfläche / Konstruktion',
+                    )
+                else:
+                    traceback.print_exc()
+                return
 
             self._prepare_math_learning_workspace(dock)
 
@@ -82554,6 +89394,8 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     dll_name=target.name if is_dll else None,
                 )
                 target.write_bytes(program.executable)
+                if not self._sign_windows_output_if_enabled(target, "pe32"):
+                    return
             except (OSError, PE32AssemblerError) as exc:
                 self.show_error("PE32-Linkerfehler", str(exc))
                 return
@@ -82619,6 +89461,8 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     gui=True, dll=is_dll, dll_name=target.name if is_dll else None,
                 )
                 target.write_bytes(program.executable)
+                if not self._sign_windows_output_if_enabled(target, "pe64"):
+                    return
             except (OSError,PE64AssemblerError) as exc:
                 self.show_error("PE64-Linkerfehler",str(exc)); return
             self.log(f"PE64 LINK: {len(filenames)} Eingabe(n) -> {target}, {len(program.executable)} Bytes")
@@ -82901,6 +89745,14 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 untitled_number=0,
                 text="",
                 dark_mode=self.dark_mode_enabled,
+                editor_font=self._make_editor_font(),
+            )
+            build_document.set_editor_color_profile(
+                normalize_project_windows_editor_color_profiles(
+                    self.editor_color_profiles,
+                    self.editor_foreground,
+                    self.editor_background,
+                )["dbase"]
             )
             build_document.custom_display_name = "Form1.wfm"
             build_document.set_build_target("pe32")
@@ -83707,6 +90559,47 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             )
             is64 = str(target).casefold() in {"pe64", "win64", "pe32+", "x64"}
             ptr = "qword" if is64 else "dword"
+            _opt_target = self._project_windows_target_key(target) if hasattr(self, "_project_windows_target_key") else ("pe64" if is64 else "pe32")
+            _object_opt = dict(getattr(self, "project_windows_import_packer", {}).get(_opt_target, {}) or {})
+            _elide_defaults = bool(_object_opt.get("object_defaults_enabled", True))
+            _dead_property_imports = bool(_object_opt.get("dead_property_imports", True))
+            _empty_standard_strings = bool(_object_opt.get("empty_standard_strings", True))
+            _cut_multiple_codes = bool(_object_opt.get("cut_multiple_codes", True))
+            _property_defaults_abi = int(globals().get("DBASE_WFM_PROPERTY_DEFAULTS_ABI", 1))
+            _property_default_fn = globals().get("_dbase_wfm_initial_property_is_default")
+            if not callable(_property_default_fn):
+                _safe_defaults = {
+                    "visible": True, "enabled": True, "tooltip": "",
+                    "placeholder": "", "placeholdertext": "",
+                    "readonly": False, "checked": False,
+                }
+                def _property_default_fn(_class_name, _name, _value):
+                    _key = str(_name or "").strip().casefold()
+                    if _key not in _safe_defaults:
+                        return False
+                    _default = _safe_defaults[_key]
+                    if isinstance(_default, bool):
+                        if isinstance(_value, bool):
+                            return _value is _default
+                        _text = str(_value or "").strip().casefold()
+                        if _default:
+                            return _text in {".t.", "true", "1", "yes", "on"}
+                        return _text in {".f.", "false", "0", "no", "off", ""}
+                    return str(_value or "") == ""
+            _strip_property_imports_fn = globals().get("_strip_unused_wfm_property_imports")
+            if not callable(_strip_property_imports_fn):
+                def _strip_property_imports_fn(_assembly):
+                    _removable = {
+                        "DBaseQtWidgetSetGeometry", "DBaseQtWidgetSetText",
+                        "DBaseQtWidgetSetProperty", "DBaseQtWidgetSetProperties",
+                                        "DBaseQtWidgetSetFont",
+                        "DBaseQtTimerSetInterval", "DBaseQtTimerSetActive",
+                    }
+                    _lines = str(_assembly).splitlines(keepends=True)
+                    _body = "".join(line for line in _lines if not line.lstrip().startswith("import "))
+                    _unused = {name for name in _removable if re.search(r"\b" + re.escape(name) + r"\b", _body) is None}
+                    _pat = re.compile(r"^\s*import\s+(" + "|".join(map(re.escape, sorted(_unused))) + r")\s*,", re.IGNORECASE) if _unused else None
+                    return "".join(line for line in _lines if _pat is None or _pat.match(line) is None)
             imports = (
                 "DBaseQtSetWorkstationMode",
                 "DBaseQtSetDebugTheme",
@@ -83789,15 +90682,27 @@ QMenu#green_beige_popup_menu::indicator:checked {{
 
             labels = []
             console_labels = []
+            property_tables = []
+            property_table_index = 0
             label_count = 0
+            # Stage 223: intern all length-addressed WFM strings.  Property
+            # names/values are repeated heavily between FORM and controls; a
+            # single DATA copy is sufficient because callers pass an explicit
+            # UTF-8 byte length.
+            text_label_cache = {}
 
             def text_label(value):
                 nonlocal label_count
                 value_text = str(value)
+                cached = text_label_cache.get(value_text)
+                if cached is not None:
+                    return cached
                 label = f"__dbase_wfm_text_{label_count}"
                 label_count += 1
+                result = (label, len(value_text.encode("utf-8")))
+                text_label_cache[value_text] = result
                 labels.append((label, value_text))
-                return label, len(value_text.encode("utf-8"))
+                return result
 
             def console_text_label(value):
                 """Stage 116: UTF-8-Puffer fuer den Qt5-Ausgabedialog.
@@ -83835,6 +90740,106 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 return f"__dbase_wfm_param_{proc_safe}_{param_safe}"
 
             runtime_parameter_slots = []
+
+            # Stage 192: dBase-Memory-Variablen, die innerhalb von WFM-
+            # PROCEDURE/FUNCTION-Bloecken per STORE ... TO ... angelegt
+            # werden. Die Slots sind absichtlich formularweit/global, so wie
+            # klassische dBase-Memory-Variablen, und koennen deshalb auch von
+            # einem spaeteren Event wieder gelesen werden.
+            runtime_memory_slots = {}
+            runtime_memory_kinds = {}
+            runtime_number_constants = []
+            runtime_number_constant_index = 0
+            runtime_strlen_label_index = 0
+            runtime_variant_label_index = 0
+
+            # Stage 201: WFM-Memory-Variablen besitzen einen Laufzeit-Typ.
+            # Dadurch darf ?/?? nicht mehr pauschal jeden Slot als Double
+            # interpretieren.
+            WFM_VALUE_NULL = 0
+            WFM_VALUE_INTEGER = 1
+            WFM_VALUE_FLOAT = 2
+            WFM_VALUE_STRING = 3
+            WFM_VALUE_OBJECT = 4
+
+            WFM_RESERVED_MEMORY_NAMES = {
+                "and", "case", "class", "do", "else", "endcase", "endclass",
+                "endif", "endproc", "endprocedure", "exit", "false", "for",
+                "function", "if", "local", "not", "null", "off", "on", "or",
+                "parameters", "private", "procedure", "public", "return",
+                "set", "store", "this", "to", "true", "while",
+            }
+
+            def memory_slot(variable):
+                key = str(variable or "").strip().casefold()
+                existing = runtime_memory_slots.get(key)
+                if existing:
+                    return existing
+                safe = re.sub(r"[^A-Za-z0-9_]", "_", str(variable or "").strip())
+                slot = "__dbase_wfm_mem_" + (safe or "value")
+                # Case-insensitive dBase-Namen koennen beim Sanitizing auf
+                # denselben ASM-Namen fallen. In diesem seltenen Fall wird
+                # stabil ein Suffix angehaengt.
+                used = set(runtime_memory_slots.values())
+                base_slot = slot
+                suffix = 2
+                while slot in used:
+                    slot = f"{base_slot}_{suffix}"
+                    suffix += 1
+                runtime_memory_slots[key] = slot
+                runtime_memory_kinds.setdefault(key, "variant")
+                return slot
+
+            def memory_type_label(slot):
+                return f"{slot}_type"
+
+            def memory_number_label(slot):
+                return f"{slot}_num"
+
+            def memory_pointer_label(slot):
+                return f"{slot}_ptr"
+
+            def memory_length_label(slot):
+                return f"{slot}_len"
+
+            def validate_memory_destination(name, *, statement_text):
+                target_name = str(name or "").strip()
+                if re.fullmatch(r"[A-Za-z_]\w*", target_name) is None:
+                    raise AssemblerError(
+                        f"{filename}: WFM-Prozedur {procedure}: "
+                        "STORE-Ziel muss ein gueltiger Variablenname sein: "
+                        + target_name
+                    )
+                if target_name.casefold() in WFM_RESERVED_MEMORY_NAMES:
+                    raise AssemblerError(
+                        f"{filename}: WFM-Prozedur {procedure}: "
+                        "reserviertes dBase-Schluesselwort ist als "
+                        f"Memory-Variable nicht erlaubt: {target_name}"
+                    )
+                return target_name
+
+            def normalize_wfm_memory_reference(value):
+                # Stage 196: unsichtbare Unicode-Formatzeichen aus dem
+                # WFM-Editor/Parser duerfen eine normale dBase-Memory-
+                # Referenz nicht unkenntlich machen.
+                text = str(value or "")
+                text = "".join(
+                    ch for ch in text
+                    if ch not in "\u200b\u200c\u200d\u2060\ufeff"
+                )
+                text = text.replace("\u00a0", " ").strip()
+                if re.fullmatch(r"[A-Za-z_]\w*", text) is None:
+                    return None
+                return text
+
+            def number_constant(value):
+                nonlocal runtime_number_constant_index
+                number = float(value)
+                bits = struct.unpack("<Q", struct.pack("<d", number))[0]
+                label = f"__dbase_wfm_numconst_{runtime_number_constant_index}"
+                runtime_number_constant_index += 1
+                runtime_number_constants.append((label, bits))
+                return label
 
             method_map = {
                 str(getattr(method, "name", "")).casefold(): method
@@ -84055,13 +91060,30 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                         "    add esp, 12",
                     ])
 
-            def emit_property(slot, name, value):
+            def make_property_record(name, value, class_name=""):
+                _property_name_key = str(name or "").strip().casefold()
+                if (
+                    _empty_standard_strings
+                    and str(value or "") == ""
+                    and _property_name_key in {"tooltip", "placeholder", "placeholdertext"}
+                ):
+                    return None
+                if _elide_defaults and _property_default_fn(
+                    class_name, name, value
+                ):
+                    return None
                 name_label, name_len = text_label(name)
                 if isinstance(value, bool):
                     rendered = ".T." if value else ".F."
                 else:
                     rendered = str(value)
                 value_label, value_len = text_label(rendered)
+                # Table order intentionally follows the user's Stage-218
+                # proposal: value length/pointer, then name length/pointer.
+                return (int(value_len), value_label, int(name_len), name_label)
+
+            def emit_property_record(slot, record):
+                value_len, value_label, name_len, name_label = record
                 if is64:
                     lines.extend([
                         f"    mov rcx, {ptr} ptr [{slot}]",
@@ -84082,6 +91104,64 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                         f"    push dword ptr [{slot}]",
                         "    call DBaseQtWidgetSetProperty",
                         "    add esp, 20",
+                    ])
+
+            def emit_property(slot, name, value, class_name=""):
+                record = make_property_record(name, value, class_name)
+                if record is not None:
+                    emit_property_record(slot, record)
+
+            def emit_property_block(slot, items, class_name=""):
+                """Stage 218: fold 2+ consecutive property setters into DATA.
+
+                The Runtime reads native-pointer packed records. This keeps the
+                generated call site independent of the number of properties:
+                PE32 passes object/table/count; PE32+ uses RCX/RDX/R8D.
+                """
+                nonlocal property_table_index
+                records = []
+                for name, value in items:
+                    record = make_property_record(name, value, class_name)
+                    if record is not None:
+                        records.append(record)
+                if not records:
+                    return
+                # Stage 223 compact record: the two UTF-8 lengths are one
+                # byte each.  Oversized strings keep the proven scalar setter
+                # path instead of truncating a length.
+                packed_lengths_ok = all(
+                    0 <= int(record[0]) <= 0xFF and
+                    0 <= int(record[2]) <= 0xFF
+                    for record in records
+                )
+                if (
+                    not _cut_multiple_codes
+                    or len(records) < 2
+                    or not packed_lengths_ok
+                ):
+                    for record in records:
+                        emit_property_record(slot, record)
+                    return
+
+                table_label = f"__dbase_wfm_property_table_{property_table_index}"
+                property_table_index += 1
+                property_tables.append((table_label, tuple(records)))
+                if is64:
+                    lines.extend([
+                        f"    mov rcx, {ptr} ptr [{slot}]",
+                        f"    mov rdx, {table_label}",
+                        f"    mov r8d, {len(records)}",
+                        "    sub rsp, 40",
+                        "    call __dbase_wfm_set_properties_packed",
+                        "    add rsp, 40",
+                    ])
+                else:
+                    lines.extend([
+                        f"    push {len(records)}",
+                        f"    push {table_label}",
+                        f"    push dword ptr [{slot}]",
+                        "    call __dbase_wfm_set_properties_packed",
+                        "    add esp, 12",
                     ])
 
             def emit_font(slot, font):
@@ -84182,45 +91262,61 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                         f"    mov dword ptr [{slot}], eax",
                     ])
 
-                interval = self._dbase_wfm_int(props, "Interval", 1000)
+                interval = max(10, self._dbase_wfm_int(props, "Interval", 1000))
                 active = bool(self._dbase_wfm_prop(props, "Active", False))
+                emit_interval = not (_elide_defaults and int(interval) == 1000)
+                emit_active = not (_elide_defaults and active is False)
                 if is64:
-                    lines.extend([
-                        f"    mov rcx, {ptr} ptr [{slot}]",
-                        f"    mov edx, {max(10, int(interval))}",
-                        "    sub rsp, 40",
-                        "    call DBaseQtTimerSetInterval",
-                        "    add rsp, 40",
-                        f"    mov rcx, {ptr} ptr [{slot}]",
-                        f"    mov edx, {1 if active else 0}",
-                        "    sub rsp, 40",
-                        "    call DBaseQtTimerSetActive",
-                        "    add rsp, 40",
-                    ])
+                    if emit_interval:
+                        lines.extend([
+                            f"    mov rcx, {ptr} ptr [{slot}]",
+                            f"    mov edx, {int(interval)}",
+                            "    sub rsp, 40",
+                            "    call DBaseQtTimerSetInterval",
+                            "    add rsp, 40",
+                        ])
+                    if emit_active:
+                        lines.extend([
+                            f"    mov rcx, {ptr} ptr [{slot}]",
+                            f"    mov edx, {1 if active else 0}",
+                            "    sub rsp, 40",
+                            "    call DBaseQtTimerSetActive",
+                            "    add rsp, 40",
+                        ])
                 else:
-                    lines.extend([
-                        f"    push {max(10, int(interval))}",
-                        f"    push dword ptr [{slot}]",
-                        "    call DBaseQtTimerSetInterval",
-                        "    add esp, 8",
-                        f"    push {1 if active else 0}",
-                        f"    push dword ptr [{slot}]",
-                        "    call DBaseQtTimerSetActive",
-                        "    add esp, 8",
-                    ])
+                    if emit_interval:
+                        lines.extend([
+                            f"    push {int(interval)}",
+                            f"    push dword ptr [{slot}]",
+                            "    call DBaseQtTimerSetInterval",
+                            "    add esp, 8",
+                        ])
+                    if emit_active:
+                        lines.extend([
+                            f"    push {1 if active else 0}",
+                            f"    push dword ptr [{slot}]",
+                            "    call DBaseQtTimerSetActive",
+                            "    add esp, 8",
+                        ])
 
             form_props = dict(getattr(model, "properties", {}) or {})
-            emit_geometry(
-                form_slot,
+            _form_geometry = (
                 self._dbase_wfm_int(form_props, "Left", 200),
                 self._dbase_wfm_int(form_props, "Top", 200),
                 self._dbase_wfm_int(form_props, "Width", 400),
                 self._dbase_wfm_int(form_props, "Height", 400),
             )
+            if not (_elide_defaults and _form_geometry == (200, 200, 400, 400)):
+                emit_geometry(form_slot, *_form_geometry)
             emit_font(form_slot, getattr(model, "font", None))
-            for key, value in form_props.items():
-                if str(key).casefold() not in {"left", "top", "width", "height"}:
-                    emit_property(form_slot, key, value)
+            emit_property_block(
+                form_slot,
+                [
+                    (key, value) for key, value in form_props.items()
+                    if str(key).casefold() not in {"left", "top", "width", "height"}
+                ],
+                "FORM",
+            )
             for event_name, procedure in dict(
                 getattr(model, "events", {}) or {}
             ).items():
@@ -84258,7 +91354,10 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 # NEW PUSHBUTTON(parent, "press me") entspricht damit in der
                 # Runtime einem echten QPushButton("press me", parent).
                 ctor_text = self._dbase_wfm_prop(props, "Text", "")
-                text_ctor_label, text_ctor_len = text_label(ctor_text)
+                if _empty_standard_strings and str(ctor_text) == "":
+                    text_ctor_label, text_ctor_len = "0", 0
+                else:
+                    text_ctor_label, text_ctor_len = text_label(ctor_text)
 
                 if is64:
                     lines.extend([
@@ -84284,22 +91383,28 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                         f"    mov dword ptr [{slot}], eax",
                     ])
 
-                emit_geometry(
-                    slot,
+                _control_geometry = (
                     self._dbase_wfm_int(props, "Left", 0),
                     self._dbase_wfm_int(props, "Top", 0),
                     self._dbase_wfm_int(props, "Width", 120),
                     self._dbase_wfm_int(props, "Height", 30),
                 )
+                if not (_elide_defaults and _control_geometry == (0, 0, 120, 30)):
+                    emit_geometry(slot, *_control_geometry)
                 value = self._dbase_wfm_prop(props, "Text", None)
                 if value is not None and str(value) != str(ctor_text):
                     emit_text(slot, value)
                 emit_font(slot, getattr(control, "font", None))
-                for key, value in props.items():
-                    if str(key).casefold() not in {
-                        "left", "top", "width", "height", "text"
-                    }:
-                        emit_property(slot, key, value)
+                emit_property_block(
+                    slot,
+                    [
+                        (key, value) for key, value in props.items()
+                        if str(key).casefold() not in {
+                            "left", "top", "width", "height", "text"
+                        }
+                    ],
+                    str(control.class_name),
+                )
                 for event_name, procedure in dict(
                     getattr(control, "events", {}) or {}
                 ).items():
@@ -84344,7 +91449,19 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     quote = text[0]
                     return text[1:-1].replace(quote + quote, quote)
                 if re.match(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$", text):
-                    return text
+                    # Stage 202: numerische WFM-Literale genauso formatieren
+                    # wie der normale dBase-Compiler. Damit wird z.B. 42.
+                    # als "42" statt "42." ausgegeben.
+                    try:
+                        from d64dbase.compiler import (
+                            DBaseValue,
+                            _format_dbase_value,
+                        )
+                        return _format_dbase_value(
+                            DBaseValue("number", text)
+                        )
+                    except Exception:
+                        return text.rstrip(".")
                 if text.casefold() in {".t.", ".f.", "true", "false"}:
                     return text
 
@@ -84443,19 +91560,27 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                                 pos += 1
                             rewritten = "".join(parts)
 
-                        if scope:
-                            parsed = parse_dbase_statements(
-                                "? " + rewritten,
+                        # Stage 202: auch vollstaendig konstante WFM-
+                        # Ausdruecke ohne Konstruktor-Scope auswerten.
+                        # Bisher wurde dieser Block nur bei nichtleerem
+                        # ``scope`` betreten; deshalb scheiterte z.B.
+                        #     ? "1." + 101.42
+                        # im Event-Assembler, obwohl der normale dBase-
+                        # Compiler denselben Ausdruck bereits beherrscht.
+                        parsed = parse_dbase_statements(
+                            "? " + rewritten,
+                            filename=filename,
+                            target=target,
+                        )
+                        if len(parsed) == 1 and isinstance(
+                            parsed[0], DBasePrintStatement
+                        ):
+                            value = _evaluate_dbase_expression(
+                                parsed[0].expression,
                                 filename=filename,
-                                target=target,
+                                variables=scope,
                             )
-                            if len(parsed) == 1 and isinstance(parsed[0], DBasePrintStatement):
-                                value = _evaluate_dbase_expression(
-                                    parsed[0].expression,
-                                    filename=filename,
-                                    variables=scope,
-                                )
-                                return _format_dbase_value(value)
+                            return _format_dbase_value(value)
                     except AssemblerError:
                         raise
                     except Exception:
@@ -84510,6 +91635,672 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             def resolve_wfm_object_slot(name):
                 key = re.sub(r"\s+", "", str(name or "")).casefold()
                 return object_slots.get(key)
+
+            def emit_wfm_memory_null(out, destination):
+                out.extend([
+                    f"    mov dword ptr [{memory_type_label(destination)}], "
+                    f"{WFM_VALUE_NULL}",
+                    f"    mov dword ptr [{memory_length_label(destination)}], 0",
+                ])
+                if is64:
+                    out.append(
+                        f"    mov qword ptr [{memory_pointer_label(destination)}], 0"
+                    )
+                else:
+                    out.append(
+                        f"    mov dword ptr [{memory_pointer_label(destination)}], 0"
+                    )
+
+            def emit_wfm_memory_copy(out, source, destination):
+                # Alle Variant-Felder werden kopiert. Der numerische Payload
+                # bleibt als Double erhalten; String/Object verwenden ptr/len.
+                out.extend([
+                    f"    mov eax, dword ptr [{memory_type_label(source)}]",
+                    f"    mov dword ptr [{memory_type_label(destination)}], eax",
+                    f"    fld qword ptr [{memory_number_label(source)}]",
+                    f"    fstp qword ptr [{memory_number_label(destination)}]",
+                    f"    mov eax, dword ptr [{memory_length_label(source)}]",
+                    f"    mov dword ptr [{memory_length_label(destination)}], eax",
+                ])
+                if is64:
+                    out.extend([
+                        f"    mov rax, qword ptr [{memory_pointer_label(source)}]",
+                        f"    mov qword ptr [{memory_pointer_label(destination)}], rax",
+                    ])
+                else:
+                    out.extend([
+                        f"    mov eax, dword ptr [{memory_pointer_label(source)}]",
+                        f"    mov dword ptr [{memory_pointer_label(destination)}], eax",
+                    ])
+
+            def emit_wfm_numeric_payload(out, destination, const_label, type_code):
+                out.extend([
+                    f"    fld qword ptr [{const_label}]",
+                    f"    fstp qword ptr [{memory_number_label(destination)}]",
+                    f"    mov dword ptr [{memory_type_label(destination)}], "
+                    f"{int(type_code)}",
+                    f"    mov dword ptr [{memory_length_label(destination)}], 0",
+                ])
+                if is64:
+                    out.append(
+                        f"    mov qword ptr [{memory_pointer_label(destination)}], 0"
+                    )
+                else:
+                    out.append(
+                        f"    mov dword ptr [{memory_pointer_label(destination)}], 0"
+                    )
+
+            def emit_wfm_string_payload(out, destination, label, length):
+                if is64:
+                    out.extend([
+                        f"    mov rax, {label}",
+                        f"    mov qword ptr [{memory_pointer_label(destination)}], rax",
+                    ])
+                else:
+                    out.append(
+                        f"    mov dword ptr [{memory_pointer_label(destination)}], {label}"
+                    )
+                out.extend([
+                    f"    mov dword ptr [{memory_length_label(destination)}], "
+                    f"{int(length)}",
+                    f"    mov dword ptr [{memory_type_label(destination)}], "
+                    f"{WFM_VALUE_STRING}",
+                ])
+
+            def emit_wfm_object_payload(out, destination, object_slot):
+                if is64:
+                    out.extend([
+                        f"    mov rax, qword ptr [{object_slot}]",
+                        f"    mov qword ptr [{memory_pointer_label(destination)}], rax",
+                    ])
+                else:
+                    out.extend([
+                        f"    mov eax, dword ptr [{object_slot}]",
+                        f"    mov dword ptr [{memory_pointer_label(destination)}], eax",
+                    ])
+                out.extend([
+                    f"    mov dword ptr [{memory_length_label(destination)}], 0",
+                    f"    mov dword ptr [{memory_type_label(destination)}], "
+                    f"{WFM_VALUE_OBJECT}",
+                ])
+
+            def emit_wfm_int_from_memory(out, source, destination):
+                nonlocal runtime_variant_label_index
+                index = runtime_variant_label_index
+                runtime_variant_label_index += 1
+                numeric_label = f"__dbase_wfm_int_numeric_{index}"
+                done_label = f"__dbase_wfm_int_done_{index}"
+
+                out.extend([
+                    f"    cmp dword ptr [{memory_type_label(source)}], "
+                    f"{WFM_VALUE_INTEGER}",
+                    f"    je {numeric_label}",
+                    f"    cmp dword ptr [{memory_type_label(source)}], "
+                    f"{WFM_VALUE_FLOAT}",
+                    f"    je {numeric_label}",
+                ])
+                emit_wfm_memory_null(out, destination)
+                out.append(f"    jmp {done_label}")
+                out.extend([
+                    f"{numeric_label}:",
+                    f"    fld qword ptr [{memory_number_label(source)}]",
+                ])
+                if is64:
+                    out.extend([
+                        "    sub rsp, 8",
+                        "    fnstcw word ptr [rsp]",
+                        "    mov eax, dword ptr [rsp]",
+                        "    or eax, 0x0C00",
+                        "    mov dword ptr [rsp+4], eax",
+                        "    fldcw word ptr [rsp+4]",
+                        "    frndint",
+                        "    fldcw word ptr [rsp]",
+                        "    add rsp, 8",
+                    ])
+                else:
+                    out.extend([
+                        "    sub esp, 8",
+                        "    fnstcw word ptr [esp]",
+                        "    mov eax, dword ptr [esp]",
+                        "    or eax, 0x0C00",
+                        "    mov dword ptr [esp+4], eax",
+                        "    fldcw word ptr [esp+4]",
+                        "    frndint",
+                        "    fldcw word ptr [esp]",
+                        "    add esp, 8",
+                    ])
+                out.extend([
+                    f"    fstp qword ptr [{memory_number_label(destination)}]",
+                    f"    mov dword ptr [{memory_type_label(destination)}], "
+                    f"{WFM_VALUE_INTEGER}",
+                    f"    mov dword ptr [{memory_length_label(destination)}], 0",
+                ])
+                if is64:
+                    out.append(
+                        f"    mov qword ptr [{memory_pointer_label(destination)}], 0"
+                    )
+                else:
+                    out.append(
+                        f"    mov dword ptr [{memory_pointer_label(destination)}], 0"
+                    )
+                out.append(f"{done_label}:")
+
+            def evaluate_wfm_constant(expression_text):
+                value = None
+                try:
+                    from d64dbase.compiler import (
+                        DBasePrintStatement,
+                        _evaluate_dbase_expression,
+                        parse_dbase_statements,
+                    )
+                    parsed = parse_dbase_statements(
+                        "? " + expression_text,
+                        filename=filename,
+                        target=target,
+                    )
+                    if (
+                        len(parsed) == 1
+                        and isinstance(parsed[0], DBasePrintStatement)
+                    ):
+                        value = _evaluate_dbase_expression(
+                            parsed[0].expression,
+                            filename=filename,
+                            variables={},
+                        )
+                except Exception:
+                    value = None
+                return value
+
+            def emit_wfm_upper_expression(out, expression_text):
+                # Parse with the real expression parser, never strip parentheses
+                # by regex: nested calls and quoted parentheses stay intact.
+                if not str(expression_text).lstrip().startswith(("!", "$")):
+                    return None
+                from d64dbase.compiler import (parse_dbase_statements,
+                    DBaseCallExpression, DBaseIdentifierExpression,
+                    DBaseBinaryExpression, DBaseUnaryExpression,
+                    _evaluate_dbase_expression)
+                from d64dbase.string_upper import emit_upper_copy
+                parsed = parse_dbase_statements("? " + expression_text,
+                    filename=filename, target=target)
+                expression = parsed[0].expression
+                if not isinstance(expression, DBaseCallExpression) or expression.name not in {"!", "$"}:
+                    return None
+
+                def fresh_slot():
+                    nonlocal runtime_variant_label_index
+                    index = runtime_variant_label_index
+                    runtime_variant_label_index += 1
+                    return memory_slot(f"__string_arg_{index}"), f"__wfm_upper_{index}"
+
+                def check_type(slot, numeric, prefix):
+                    codes = (WFM_VALUE_INTEGER, WFM_VALUE_FLOAT) if numeric else (WFM_VALUE_STRING,)
+                    for code in codes:
+                        out.extend([f"    cmp dword ptr [{slot}_type], {code}",
+                                    f"    je {prefix}_valid"])
+                    if is64:
+                        out.extend(["    mov ecx, 13", "    sub rsp, 40", "    call ExitProcess"])
+                    else:
+                        out.extend(["    push 13", "    call ExitProcess"])
+                    out.append(prefix + "_valid:")
+
+                def resolve(node, numeric=False):
+                    if isinstance(node, DBaseIdentifierExpression):
+                        key = node.name.casefold()
+                        kind = runtime_memory_kinds.get(key)
+                        invalid = {"string", "object"} if numeric else {"integer", "float", "object"}
+                        if kind in invalid or key not in runtime_memory_slots:
+                            expected = "numerischen Wert" if numeric else "String"
+                            raise AssemblerError(f"{filename}: String-Funktion erwartet einen {expected}: {node.name}")
+                        slot = memory_slot(node.name)
+                        _, prefix = fresh_slot()
+                        check_type(slot, numeric, prefix)
+                        return slot
+                    if isinstance(node, DBaseCallExpression) and node.name in {"!", "$"}:
+                        if numeric:
+                            raise AssemblerError(f"{filename}: $(...) erwartet numerische Position/Laenge.")
+                        source = resolve(node.arguments[0])
+                        destination, prefix = fresh_slot()
+                        if node.name == "!":
+                            out.extend(emit_upper_copy(
+                                source, destination, is64, prefix, WFM_VALUE_STRING
+                            ))
+                        else:
+                            from d64dbase.string_substring import emit_substring_copy
+                            start = resolve(node.arguments[1], True)
+                            count = resolve(node.arguments[2], True) if len(node.arguments) == 3 else None
+                            out.extend(emit_substring_copy(source, start, count, destination,
+                                is64, prefix, WFM_VALUE_STRING))
+                        return destination
+                    if numeric and isinstance(node, DBaseBinaryExpression):
+                        left = resolve(node.left, True)
+                        right = resolve(node.right, True)
+                        slot, _ = fresh_slot()
+                        instruction = {"+": "faddp", "-": "fsubp", "*": "fmulp", "/": "fdivp"}[node.operator]
+                        out.extend([f"    fld qword ptr [{left}_num]",
+                            f"    fld qword ptr [{right}_num]", f"    {instruction}",
+                            f"    fstp qword ptr [{slot}_num]",
+                            f"    mov dword ptr [{slot}_type], {WFM_VALUE_FLOAT}"])
+                        return slot
+                    if numeric and isinstance(node, DBaseUnaryExpression):
+                        source = resolve(node.operand, True)
+                        slot, _ = fresh_slot()
+                        out.append(f"    fld qword ptr [{source}_num]")
+                        if node.operator == "-":
+                            out.append("    fchs")
+                        out.extend([f"    fstp qword ptr [{slot}_num]",
+                            f"    mov dword ptr [{slot}_type], {WFM_VALUE_FLOAT}"])
+                        return slot
+                    if numeric and isinstance(node, DBaseCallExpression) and node.name.casefold() == "int" and len(node.arguments) == 1:
+                        source = resolve(node.arguments[0], True)
+                        slot, _ = fresh_slot()
+                        emit_wfm_int_from_memory(out, source, slot)
+                        return slot
+                    value = _evaluate_dbase_expression(node, filename=filename, variables={})
+                    if value.kind not in ({"number"} if numeric else {"string", "char"}):
+                        expected = "numerischen Wert" if numeric else "String"
+                        raise AssemblerError(f"{filename}: String-Funktion erwartet einen {expected}.")
+                    slot, _ = fresh_slot()
+                    if numeric:
+                        emit_wfm_numeric_payload(out, slot, number_constant(value.value), WFM_VALUE_FLOAT)
+                    else:
+                        label, length = console_text_label(str(value.value))
+                        emit_wfm_string_payload(out, slot, label, length)
+                    return slot
+
+                return resolve(expression)
+
+            def emit_wfm_memory_store(
+                out,
+                expression_text,
+                destination_name,
+                statement_text,
+            ):
+                destination_name = validate_memory_destination(
+                    destination_name, statement_text=statement_text
+                )
+                destination_key = destination_name.casefold()
+                destination = memory_slot(destination_name)
+                expression_text = str(expression_text or "").strip()
+
+                upper_slot = emit_wfm_upper_expression(out, expression_text)
+                if upper_slot is not None:
+                    emit_wfm_memory_copy(out, upper_slot, destination)
+                    runtime_memory_kinds[destination_key] = "string"
+                    return True
+
+                # Direkte Selbstzuweisung besitzt keine Semantik und kann bei
+                # spaeteren Referenztypen Zyklen verschleiern.
+                source_name = normalize_wfm_memory_reference(expression_text)
+                if (
+                    source_name is not None
+                    and source_name.casefold() == destination_key
+                ):
+                    raise AssemblerError(
+                        f"{filename}: WFM-Prozedur {procedure}: "
+                        "zirkulaere/identische STORE-Zuweisung ist nicht "
+                        f"erlaubt: {destination_name} -> {destination_name}"
+                    )
+
+                # WFM-Objekt/Control-Referenz, z.B. THIS.Button2.
+                object_slot = resolve_wfm_object_slot(expression_text)
+                if object_slot is not None:
+                    out.append(f"    ; {statement_text}")
+                    emit_wfm_object_payload(out, destination, object_slot)
+                    runtime_memory_kinds[destination_key] = "object"
+                    return True
+
+                # Direkte Kopie einer Variant-Memory-Variablen.
+                if source_name is not None:
+                    source_key = source_name.casefold()
+                    source = runtime_memory_slots.get(source_key)
+                    if source is not None:
+                        out.append(f"    ; {statement_text}")
+                        emit_wfm_memory_copy(out, source, destination)
+                        runtime_memory_kinds[destination_key] = "variant"
+                        return True
+
+                # INT(<MemoryVariable>) bleibt eine Integer-Variable. Bei
+                # NULL/String/Object wird das Ergebnis sicher auf NULL gesetzt.
+                int_mem = re.fullmatch(
+                    r"(?is)INT\s*\(\s*([A-Za-z_]\w*)\s*\)",
+                    expression_text,
+                )
+                if int_mem is not None:
+                    source_key = int_mem.group(1).casefold()
+                    source = runtime_memory_slots.get(source_key)
+                    if source is not None:
+                        out.append(f"    ; {statement_text}")
+                        emit_wfm_int_from_memory(out, source, destination)
+                        runtime_memory_kinds[destination_key] = "integer"
+                        return True
+
+                # Konstante dBase-Ausdruecke: Zahl oder Zeichenkette.
+                value = evaluate_wfm_constant(expression_text)
+                if value is not None:
+                    kind = str(getattr(value, "kind", ""))
+                    if kind == "number":
+                        number_value = getattr(value, "value", 0)
+                        is_integer = False
+                        try:
+                            if hasattr(number_value, "to_integral_value"):
+                                is_integer = (
+                                    number_value
+                                    == number_value.to_integral_value()
+                                )
+                            else:
+                                is_integer = float(number_value).is_integer()
+                        except Exception:
+                            is_integer = False
+                        type_code = (
+                            WFM_VALUE_INTEGER if is_integer
+                            else WFM_VALUE_FLOAT
+                        )
+                        const_label = number_constant(number_value)
+                        out.append(f"    ; {statement_text}")
+                        emit_wfm_numeric_payload(
+                            out, destination, const_label, type_code
+                        )
+                        runtime_memory_kinds[destination_key] = (
+                            "integer" if is_integer else "float"
+                        )
+                        return True
+
+                    if kind in {"string", "char"}:
+                        label, length = console_text_label(
+                            str(getattr(value, "value", ""))
+                        )
+                        out.append(f"    ; {statement_text}")
+                        emit_wfm_string_payload(
+                            out, destination, label, length
+                        )
+                        runtime_memory_kinds[destination_key] = "string"
+                        return True
+
+                return False
+
+            def emit_wfm_console_buffer(
+                out,
+                label_name,
+                byte_length,
+                add_newline,
+            ):
+                """Schreibt einen statischen UTF-8-Puffer in den WFM-Ausgabekanal."""
+                if is64:
+                    out.extend([
+                        f"    mov rcx, {label_name}",
+                        f"    mov edx, {int(byte_length)}",
+                        f"    mov r8d, {1 if add_newline else 0}",
+                        "    sub rsp, 40",
+                        "    call DBaseQtConsoleWrite",
+                        "    add rsp, 40",
+                    ])
+                else:
+                    out.extend([
+                        f"    push {1 if add_newline else 0}",
+                        f"    push {int(byte_length)}",
+                        f"    push {label_name}",
+                        "    call DBaseQtConsoleWrite",
+                        "    add esp, 12",
+                    ])
+
+            def split_wfm_concat_expression(expression_text):
+                """Teilt nur '+' auf oberster Ebene; Strings/Klammern bleiben intakt."""
+                text = str(expression_text or "")
+                parts = []
+                start = 0
+                index = 0
+                depth = 0
+                quote = ""
+                while index < len(text):
+                    char = text[index]
+                    if quote:
+                        if char == quote:
+                            # dBase verdoppelt Quote-Zeichen innerhalb eines Strings.
+                            if (
+                                index + 1 < len(text)
+                                and text[index + 1] == quote
+                            ):
+                                index += 2
+                                continue
+                            quote = ""
+                        elif char == "\\" and index + 1 < len(text):
+                            index += 2
+                            continue
+                        index += 1
+                        continue
+
+                    if char in {'"', "'"}:
+                        quote = char
+                    elif char == "(":
+                        depth += 1
+                    elif char == ")":
+                        depth = max(0, depth - 1)
+                    elif char == "+" and depth == 0:
+                        part = text[start:index].strip()
+                        if not part:
+                            return None
+                        parts.append(part)
+                        start = index + 1
+                    index += 1
+
+                if quote or depth != 0:
+                    return None
+                part = text[start:].strip()
+                if not part:
+                    return None
+                parts.append(part)
+                return parts if len(parts) > 1 else None
+
+            def emit_wfm_concat_print(
+                out,
+                expression_text,
+                method,
+                statement_text,
+                add_newline,
+            ):
+                """Stage 203: dynamische dBase-Textverkettung fuer ?/??."""
+                parts = split_wfm_concat_expression(expression_text)
+                if not parts:
+                    return False
+
+                resolved = []
+                for part in parts:
+                    upper_slot = emit_wfm_upper_expression(out, part)
+                    if upper_slot is not None:
+                        resolved.append(("memory", upper_slot))
+                        continue
+                    memory_name = normalize_wfm_memory_reference(part)
+                    if memory_name is not None:
+                        slot = runtime_memory_slots.get(memory_name.casefold())
+                        if slot is None:
+                            # Wie bei ? Variable: noch nicht beschrieben => NULL.
+                            slot = memory_slot(memory_name)
+                        resolved.append(("memory", slot))
+                        continue
+
+                    literal = render_program_literal(part, method=method)
+                    if literal is None:
+                        return False
+                    label, length = console_text_label(literal)
+                    resolved.append(("literal", (label, length)))
+
+                out.append(f"    ; {statement_text}")
+                for index, (kind, value) in enumerate(resolved):
+                    last = index == len(resolved) - 1
+                    part_newline = bool(add_newline and last)
+                    if kind == "memory":
+                        emit_wfm_memory_print(
+                            out,
+                            value,
+                            "",
+                            part_newline,
+                        )
+                    else:
+                        label, length = value
+                        emit_wfm_console_buffer(
+                            out,
+                            label,
+                            length,
+                            part_newline,
+                        )
+                return True
+
+            def emit_wfm_memory_print(
+                out,
+                source,
+                statement_text,
+                add_newline,
+            ):
+                nonlocal runtime_variant_label_index
+                nonlocal runtime_strlen_label_index
+
+                index = runtime_variant_label_index
+                runtime_variant_label_index += 1
+                null_branch = f"__dbase_wfm_print_null_{index}"
+                string_branch = f"__dbase_wfm_print_string_{index}"
+                object_branch = f"__dbase_wfm_print_object_{index}"
+                number_branch = f"__dbase_wfm_print_number_{index}"
+                done_branch = f"__dbase_wfm_print_done_{index}"
+
+                null_label, null_len = console_text_label("<null>")
+                object_label, object_len = console_text_label("<object>")
+
+                if str(statement_text or "").strip():
+                    out.append(f"    ; {statement_text}")
+                out.extend([
+                    f"    cmp dword ptr [{memory_type_label(source)}], "
+                    f"{WFM_VALUE_NULL}",
+                    f"    je {null_branch}",
+                    f"    cmp dword ptr [{memory_type_label(source)}], "
+                    f"{WFM_VALUE_STRING}",
+                    f"    je {string_branch}",
+                    f"    cmp dword ptr [{memory_type_label(source)}], "
+                    f"{WFM_VALUE_OBJECT}",
+                    f"    je {object_branch}",
+                    f"    cmp dword ptr [{memory_type_label(source)}], "
+                    f"{WFM_VALUE_INTEGER}",
+                    f"    je {number_branch}",
+                    f"    cmp dword ptr [{memory_type_label(source)}], "
+                    f"{WFM_VALUE_FLOAT}",
+                    f"    je {number_branch}",
+                    f"    jmp {null_branch}",
+                    f"{number_branch}:",
+                    f"    fld qword ptr [{memory_number_label(source)}]",
+                    "    fstp qword ptr [__dbase_temp_number]",
+                ])
+
+                strlen_index = runtime_strlen_label_index
+                runtime_strlen_label_index += 1
+                strlen_loop = f"__dbase_wfm_strlen_{strlen_index}"
+                strlen_done = f"__dbase_wfm_strlen_done_{strlen_index}"
+
+                if is64:
+                    out.extend([
+                        "    movsd xmm0, qword ptr [__dbase_temp_number]",
+                        "    mov edx, 15",
+                        "    mov r8, qword ptr [__dbase_format_buffer]",
+                        "    sub rsp, 40",
+                        "    call __dbase_gcvt",
+                        "    add rsp, 40",
+                        "    mov rcx, qword ptr [__dbase_format_buffer]",
+                        "    xor edx, edx",
+                        f"{strlen_loop}:",
+                        "    movzx eax, byte ptr [rcx]",
+                        "    test eax, eax",
+                        f"    je {strlen_done}",
+                        "    inc rcx",
+                        "    inc edx",
+                        f"    jmp {strlen_loop}",
+                        f"{strlen_done}:",
+                        "    mov rcx, qword ptr [__dbase_format_buffer]",
+                        f"    mov r8d, {1 if add_newline else 0}",
+                        "    sub rsp, 40",
+                        "    call DBaseQtConsoleWrite",
+                        "    add rsp, 40",
+                        f"    jmp {done_branch}",
+                        f"{string_branch}:",
+                        f"    mov rcx, qword ptr [{memory_pointer_label(source)}]",
+                        "    test rcx, rcx",
+                        f"    je {null_branch}",
+                        f"    mov edx, dword ptr [{memory_length_label(source)}]",
+                        f"    mov r8d, {1 if add_newline else 0}",
+                        "    sub rsp, 40",
+                        "    call DBaseQtConsoleWrite",
+                        "    add rsp, 40",
+                        f"    jmp {done_branch}",
+                        f"{object_branch}:",
+                        f"    mov rax, qword ptr [{memory_pointer_label(source)}]",
+                        "    test rax, rax",
+                        f"    je {null_branch}",
+                        f"    mov rcx, {object_label}",
+                        f"    mov edx, {object_len}",
+                        f"    mov r8d, {1 if add_newline else 0}",
+                        "    sub rsp, 40",
+                        "    call DBaseQtConsoleWrite",
+                        "    add rsp, 40",
+                        f"    jmp {done_branch}",
+                        f"{null_branch}:",
+                        f"    mov rcx, {null_label}",
+                        f"    mov edx, {null_len}",
+                        f"    mov r8d, {1 if add_newline else 0}",
+                        "    sub rsp, 40",
+                        "    call DBaseQtConsoleWrite",
+                        "    add rsp, 40",
+                        f"{done_branch}:",
+                    ])
+                else:
+                    out.extend([
+                        "    push dword ptr [__dbase_format_buffer]",
+                        "    push 15",
+                        "    push dword ptr [__dbase_temp_number_hi]",
+                        "    push dword ptr [__dbase_temp_number]",
+                        "    call __dbase_gcvt",
+                        "    add esp, 16",
+                        "    mov ecx, dword ptr [__dbase_format_buffer]",
+                        "    xor edx, edx",
+                        f"{strlen_loop}:",
+                        "    movzx eax, byte ptr [ecx]",
+                        "    test eax, eax",
+                        f"    je {strlen_done}",
+                        "    inc ecx",
+                        "    inc edx",
+                        f"    jmp {strlen_loop}",
+                        f"{strlen_done}:",
+                        f"    push {1 if add_newline else 0}",
+                        "    push edx",
+                        "    push dword ptr [__dbase_format_buffer]",
+                        "    call DBaseQtConsoleWrite",
+                        "    add esp, 12",
+                        f"    jmp {done_branch}",
+                        f"{string_branch}:",
+                        f"    mov eax, dword ptr [{memory_pointer_label(source)}]",
+                        "    test eax, eax",
+                        f"    je {null_branch}",
+                        f"    push {1 if add_newline else 0}",
+                        f"    push dword ptr [{memory_length_label(source)}]",
+                        "    push eax",
+                        "    call DBaseQtConsoleWrite",
+                        "    add esp, 12",
+                        f"    jmp {done_branch}",
+                        f"{object_branch}:",
+                        f"    mov eax, dword ptr [{memory_pointer_label(source)}]",
+                        "    test eax, eax",
+                        f"    je {null_branch}",
+                        f"    push {1 if add_newline else 0}",
+                        f"    push {object_len}",
+                        f"    push {object_label}",
+                        "    call DBaseQtConsoleWrite",
+                        "    add esp, 12",
+                        f"    jmp {done_branch}",
+                        f"{null_branch}:",
+                        f"    push {1 if add_newline else 0}",
+                        f"    push {null_len}",
+                        f"    push {null_label}",
+                        "    call DBaseQtConsoleWrite",
+                        "    add esp, 12",
+                        f"{done_branch}:",
+                    ])
 
             def callback_literal(expression, method):
                 value = render_program_literal(expression, method=method)
@@ -84575,6 +92366,39 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                         "    call DBaseQtWidgetSetProperty",
                         "    add esp, 20",
                     ])
+
+            # Stage 192: STORE-Namen vorab erfassen, damit Memory-Variablen
+            # formularweit zwischen mehreren Event-Prozeduren sichtbar sind,
+            # unabhaengig von der alphabetischen Codegen-Reihenfolge.
+            for scan_method in list(getattr(model, "methods", []) or []):
+                for scan_line in list(getattr(scan_method, "body", []) or []):
+                    scan_statement = str(scan_line or "").strip()
+                    scan_store = re.match(
+                        r"(?is)^STORE\s+(.+?)\s+TO\s+([A-Za-z_]\w*)\s*$",
+                        scan_statement,
+                    )
+                    if scan_store is not None:
+                        scan_name = scan_store.group(2)
+                        if (
+                            re.fullmatch(r"[A-Za-z_]\w*", str(scan_name or ""))
+                            is not None
+                            and str(scan_name).casefold()
+                            not in WFM_RESERVED_MEMORY_NAMES
+                        ):
+                            memory_slot(scan_name)
+                        continue
+
+                    # Stage 193: auch klassische "Name = Ausdruck"-
+                    # Zuweisungen vorab erfassen. Property-Zuweisungen
+                    # enthalten links einen Punkt und passen absichtlich nicht.
+                    scan_assignment = re.match(
+                        r"(?is)^([A-Za-z_]\w*)\s*=\s*(.+)$",
+                        scan_statement,
+                    )
+                    if scan_assignment is not None:
+                        scan_name = scan_assignment.group(1)
+                        if str(scan_name).casefold() not in WFM_RESERVED_MEMORY_NAMES:
+                            memory_slot(scan_name)
 
             callback_lines = []
             for procedure in sorted(
@@ -84665,6 +92489,64 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                             in_block_comment = True
                         continue
                     if statement.startswith("//") or statement.startswith("**"):
+                        continue
+
+                    # Stage 201: typisierte dBase-Memory-Variable:
+                    #     STORE <Ausdruck> TO <Name>
+                    #
+                    # Zuerst wird jede STORE-Zeile syntaktisch als STORE
+                    # erkannt, damit ungueltige Ziele (z.B. TO 123 oder
+                    # TO PROCEDURE) einen gezielten Compilerfehler liefern.
+                    store_any = re.match(
+                        r"(?is)^STORE\s+(.+?)\s+TO\s+(.+?)\s*$",
+                        statement,
+                    )
+                    if store_any:
+                        store_expr = str(store_any.group(1) or "").strip()
+                        store_name = str(store_any.group(2) or "").strip()
+                        validate_memory_destination(
+                            store_name, statement_text=statement
+                        )
+                        if not emit_wfm_memory_store(
+                            callback_lines,
+                            store_expr,
+                            store_name,
+                            statement,
+                        ):
+                            raise AssemblerError(
+                                f"{filename}: WFM-Prozedur {procedure}: "
+                                "STORE-Ausdruck wird im Event-Assembler noch "
+                                f"nicht unterstuetzt: {store_expr}"
+                            )
+                        continue
+
+                    # Stage 201: normale dBase-Zuweisung verwendet
+                    # dasselbe Variant-Modell wie STORE ... TO ...
+                    assignment_match = re.match(
+                        r"(?is)^([A-Za-z_]\w*)\s*=\s*(.+)$",
+                        statement,
+                    )
+                    if assignment_match:
+                        assign_name = str(
+                            assignment_match.group(1) or ""
+                        ).strip()
+                        assign_expr = str(
+                            assignment_match.group(2) or ""
+                        ).strip()
+                        validate_memory_destination(
+                            assign_name, statement_text=statement
+                        )
+                        if not emit_wfm_memory_store(
+                            callback_lines,
+                            assign_expr,
+                            assign_name,
+                            statement,
+                        ):
+                            raise AssemblerError(
+                                f"{filename}: WFM-Prozedur {procedure}: "
+                                "Zuweisungsausdruck wird im Event-Assembler "
+                                f"noch nicht unterstuetzt: {assign_expr}"
+                            )
                         continue
 
                     # Stage 112: Property-Zuweisungen im Event-/Konstruktor-
@@ -84760,44 +92642,61 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                         statement,
                     )
                     if print_match:
-                        literal = render_program_literal(print_match.group(2), method=method)
+                        print_expression = str(print_match.group(2) or "").strip()
+                        upper_slot = emit_wfm_upper_expression(callback_lines, print_expression)
+                        if upper_slot is not None:
+                            emit_wfm_memory_print(callback_lines, upper_slot, statement,
+                                                  print_match.group(1) != "??")
+                            continue
+                        print_memory_name = normalize_wfm_memory_reference(
+                            print_expression
+                        )
+                        print_is_memory_identifier = print_memory_name is not None
+                        if print_is_memory_identifier:
+                            print_memory_slot = runtime_memory_slots.get(
+                                print_memory_name.casefold()
+                            )
+                            if print_memory_slot is None:
+                                # Uninitialisierte Memory-Variable ist NULL.
+                                print_memory_slot = memory_slot(print_memory_name)
+                            emit_wfm_memory_print(
+                                callback_lines,
+                                print_memory_slot,
+                                statement,
+                                print_match.group(1) != "??",
+                            )
+                            continue
+
+                        newline = print_match.group(1) != "??"
+                        if emit_wfm_concat_print(
+                            callback_lines,
+                            print_expression,
+                            method,
+                            statement,
+                            newline,
+                        ):
+                            continue
+
+                        literal = render_program_literal(print_expression, method=method)
                         if literal is None:
                             raise AssemblerError(
                                 f"{filename}: WFM-Prozedur {procedure}: "
-                                f"Ausdruck für {print_match.group(1)} "
-                                "wird im Event-Code noch nicht unterstützt: "
+                                f"[WFM Event-Assembler Stage 203] Ausdruck für "
+                                f"{print_match.group(1)} wird im Event-Code "
+                                "noch nicht unterstützt: "
                                 + print_match.group(2)
+                                + " | repr=" + repr(print_expression)
                             )
                         out_label, out_len = console_text_label(literal)
                         newline = print_match.group(1) != "??"
                         callback_lines.append(f"    ; {statement}")
 
-                        def emit_console_buffer(label_name, byte_length, add_newline):
-                            # Stage 116: WFM-Ausgabe direkt an die Qt5-Runtime.
-                            # Die Runtime besitzt einen nicht modalen
-                            # QPlainTextEdit-Dialog auf dem Workstation-Desktop.
-                            if is64:
-                                callback_lines.extend([
-                                    f"    mov rcx, {label_name}",
-                                    f"    mov edx, {byte_length}",
-                                    f"    mov r8d, {1 if add_newline else 0}",
-                                    "    sub rsp, 40",
-                                    "    call DBaseQtConsoleWrite",
-                                    "    add rsp, 40",
-                                ])
-                            else:
-                                callback_lines.extend([
-                                    f"    push {1 if add_newline else 0}",
-                                    f"    push {byte_length}",
-                                    f"    push {label_name}",
-                                    "    call DBaseQtConsoleWrite",
-                                    "    add esp, 12",
-                                ])
-
                         # Auch ?? "" wird an die Runtime gemeldet. Der Dialog
                         # ist bereits beim WFM-Start erzeugt; ?/?? schreiben
                         # nur noch in dessen QPlainTextEdit.
-                        emit_console_buffer(out_label, out_len, newline)
+                        emit_wfm_console_buffer(
+                            callback_lines, out_label, out_len, newline
+                        )
                         continue
 
                     # Stage 135: Win32 Beep(freq,duration).
@@ -84945,6 +92844,23 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     "    sub rsp, 40",
                     "    call DBaseQtInitializeGui",
                     "    add rsp, 40",
+                    # Stage 201: eigener WFM-Entry umgeht den historischen
+                    # dBase-_start. Deshalb muss auch der _gcvt-Puffer hier
+                    # explizit alloziert werden.
+                    "    xor ecx, ecx",
+                    "    mov edx, 96",
+                    "    mov r8d, 12288",
+                    "    mov r9d, 4",
+                    "    sub rsp, 40",
+                    "    call VirtualAlloc",
+                    "    add rsp, 40",
+                    "    test rax, rax",
+                    "    jne __dbase_wfm_format_buffer_ok",
+                    "    mov ecx, 1",
+                    "    sub rsp, 40",
+                    "    call ExitProcess",
+                    "__dbase_wfm_format_buffer_ok:",
+                    "    mov qword ptr [__dbase_format_buffer], rax",
                     body.rstrip("\n"),
                     *init_call_lines,
                     f"    mov rcx, qword ptr [{form_slot}]",
@@ -84969,6 +92885,16 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     "    sub rsp, 40",
                     "    call DBaseQtShutdown",
                     "    add rsp, 40",
+                    "    mov rcx, qword ptr [__dbase_format_buffer]",
+                    "    test rcx, rcx",
+                    "    je __dbase_wfm_format_buffer_free_done",
+                    "    xor edx, edx",
+                    "    mov r8d, 32768",
+                    "    sub rsp, 40",
+                    "    call VirtualFree",
+                    "    add rsp, 40",
+                    "    mov qword ptr [__dbase_format_buffer], 0",
+                    "__dbase_wfm_format_buffer_free_done:",
                     "    xor ecx, ecx",
                     "    sub rsp, 40",
                     "    call ExitProcess",
@@ -84992,6 +92918,19 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     f"    push {title_label}",
                     "    call DBaseQtInitializeGui",
                     "    add esp, 4",
+                    # Stage 201: _gcvt-Ausgabepuffer fuer den eigenen
+                    # WFM-Programmeinstieg bereitstellen.
+                    "    push 4",
+                    "    push 12288",
+                    "    push 96",
+                    "    push 0",
+                    "    call VirtualAlloc",
+                    "    test eax, eax",
+                    "    jne __dbase_wfm_format_buffer_ok",
+                    "    push 1",
+                    "    call ExitProcess",
+                    "__dbase_wfm_format_buffer_ok:",
+                    "    mov dword ptr [__dbase_format_buffer], eax",
                     body.rstrip("\n"),
                     *init_call_lines,
                     f"    push dword ptr [{form_slot}]",
@@ -85007,6 +92946,15 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                         if "__del__".casefold() in method_map else ""
                     ),
                     "    call DBaseQtShutdown",
+                    "    mov eax, dword ptr [__dbase_format_buffer]",
+                    "    test eax, eax",
+                    "    je __dbase_wfm_format_buffer_free_done",
+                    "    push 32768",
+                    "    push 0",
+                    "    push eax",
+                    "    call VirtualFree",
+                    "    mov dword ptr [__dbase_format_buffer], 0",
+                    "__dbase_wfm_format_buffer_free_done:",
                     "    push 0",
                     "    call ExitProcess",
                     "",
@@ -85025,21 +92973,106 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     + "\n"
                 )
 
+            # Stage 224: the compact Stage-223 property records are decoded by
+            # one local helper per image.  It calls the long-established @51
+            # DBaseQtWidgetSetProperty export and therefore does not require a
+            # newly rebuilt libd64_qt5.dll merely to use Cut Multiple Codes.
+            if property_tables:
+                if is64:
+                    packed_property_helper = "\n".join([
+                        "",
+                        "; Stage 224: local packed WFM property decoder (PE32+)",
+                        ".section .text",
+                        "__dbase_wfm_set_properties_packed:",
+                        "    sub rsp, 72",
+                        "    mov qword ptr [rsp+40], rcx",
+                        "    mov qword ptr [rsp+48], rdx",
+                        "    mov dword ptr [rsp+56], r8d",
+                        "__dbase_wfm_set_properties_packed_loop:",
+                        "    cmp dword ptr [rsp+56], 0",
+                        "    jle __dbase_wfm_set_properties_packed_done",
+                        "    mov r10, qword ptr [rsp+48]",
+                        "    mov rcx, qword ptr [rsp+40]",
+                        "    movzx eax, byte ptr [r10]",
+                        "    mov r9, qword ptr [r10+1]",
+                        "    movzx r8d, byte ptr [r10+9]",
+                        "    mov rdx, qword ptr [r10+10]",
+                        "    mov dword ptr [rsp+32], eax",
+                        "    call DBaseQtWidgetSetProperty",
+                        "    mov r10, qword ptr [rsp+48]",
+                        "    add r10, 18",
+                        "    mov qword ptr [rsp+48], r10",
+                        "    mov eax, dword ptr [rsp+56]",
+                        "    dec eax",
+                        "    mov dword ptr [rsp+56], eax",
+                        "    jmp __dbase_wfm_set_properties_packed_loop",
+                        "__dbase_wfm_set_properties_packed_done:",
+                        "    add rsp, 72",
+                        "    ret",
+                        "",
+                    ])
+                else:
+                    packed_property_helper = "\n".join([
+                        "",
+                        "; Stage 224: local packed WFM property decoder (PE32)",
+                        ".section .text",
+                        "__dbase_wfm_set_properties_packed:",
+                        "    push ebp",
+                        "    mov ebp, esp",
+                        "    push ebx",
+                        "    push esi",
+                        "    push edi",
+                        "    mov ebx, dword ptr [ebp+8]",
+                        "    mov esi, dword ptr [ebp+12]",
+                        "    mov edi, dword ptr [ebp+16]",
+                        "__dbase_wfm_set_properties_packed_loop:",
+                        "    test edi, edi",
+                        "    jle __dbase_wfm_set_properties_packed_done",
+                        "    movzx eax, byte ptr [esi]",
+                        "    push eax",
+                        "    push dword ptr [esi+1]",
+                        "    movzx eax, byte ptr [esi+5]",
+                        "    push eax",
+                        "    push dword ptr [esi+6]",
+                        "    push ebx",
+                        "    call DBaseQtWidgetSetProperty",
+                        "    add esp, 20",
+                        "    add esi, 10",
+                        "    dec edi",
+                        "    jmp __dbase_wfm_set_properties_packed_loop",
+                        "__dbase_wfm_set_properties_packed_done:",
+                        "    pop edi",
+                        "    pop esi",
+                        "    pop ebx",
+                        "    mov esp, ebp",
+                        "    pop ebp",
+                        "    ret",
+                        "",
+                    ])
+                assembly = assembly.rstrip() + "\n" + packed_property_helper
+
             data_lines = [
                 "",
-                "; Stage 127 WFM object handles / data",
+                "; Stage 127 WFM initialized data",
                 ".section .data",
-                f"{form_slot}:",
-                "    dq 0" if is64 else "    dd 0",
                 # Stage 116: Der Runner darf fuer diese WFM-GUI trotz des
                 # historischen Core-Markers KEINE Win32-Console vorreservieren.
                 "__dbase_wfm_qt_output_marker:",
                 "    db 68, 54, 52, 68, 66, 65, 83, 69, 95, 87, 70, 77, 95, 81, 84, 95, 79, 85, 84, 80, 85, 84, 95, 86, 49, 0",
             ]
+            # Stage 223: handles and all other zero-initialized WFM storage are
+            # emitted to .bss; they consume no file bytes.
+            bss_lines = [
+                "",
+                "; Stage 223 WFM zero-initialized storage",
+                ".section .bss",
+                f"{form_slot}:",
+                "    resq 1" if is64 else "    resd 1",
+            ]
             for control in model.controls:
-                data_lines.extend([
+                bss_lines.extend([
                     f"{slot_for(control.path)}:",
-                    "    dq 0" if is64 else "    dd 0",
+                    "    resq 1" if is64 else "    resd 1",
                 ])
             for label, value in labels:
                 data_lines.extend([
@@ -85055,15 +93088,61 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     ),
                 ])
 
-            if runtime_parameter_slots:
+            if property_tables:
                 data_lines.extend([
                     "",
-                    "; Stage 111: WFM runtime parameter slots",
+                    "; Stage 223: compact WFM property blocks",
+                    "; record = db valueLength, ptr valuePtr, db nameLength, ptr namePtr",
+                ])
+                for table_label, table_records in property_tables:
+                    data_lines.append(f"{table_label}:")
+                    for value_len, value_label, name_len, name_label in table_records:
+                        data_lines.extend([
+                            f"    db {int(value_len)}",
+                            f"    {'dq' if is64 else 'dd'} {value_label}",
+                            f"    db {int(name_len)}",
+                            f"    {'dq' if is64 else 'dd'} {name_label}",
+                        ])
+
+            if runtime_parameter_slots:
+                bss_lines.extend([
+                    "",
+                    "; Stage 223: WFM runtime parameter slots (.bss)",
                 ])
                 for slot_name in dict.fromkeys(runtime_parameter_slots):
-                    data_lines.extend([
+                    bss_lines.extend([
                         f"{slot_name}:",
-                        "    dq 0" if is64 else "    dd 0",
+                        "    resq 1" if is64 else "    resd 1",
+                    ])
+
+            if runtime_memory_slots:
+                bss_lines.extend([
+                    "",
+                    "; Stage 223: typed dBase WFM memory variables (.bss)",
+                ])
+                for memory_key, slot_name in runtime_memory_slots.items():
+                    bss_lines.extend([
+                        f"{memory_type_label(slot_name)}:",
+                        "    resd 1",
+                        f"{memory_number_label(slot_name)}:",
+                        "    resq 1",
+                        f"{memory_pointer_label(slot_name)}:",
+                        "    resq 1" if is64 else "    resd 1",
+                        f"{memory_length_label(slot_name)}:",
+                        "    resd 1",
+                    ])
+
+            if runtime_number_constants:
+                data_lines.extend([
+                    "",
+                    "; Stage 192: WFM numeric STORE constants",
+                ])
+                for const_label, number_bits in runtime_number_constants:
+                    low = int(number_bits) & 0xFFFFFFFF
+                    high = (int(number_bits) >> 32) & 0xFFFFFFFF
+                    data_lines.extend([
+                        f"{const_label}:",
+                        f"    dd {low}, {high}",
                     ])
 
             if constructor_args_built:
@@ -85089,9 +93168,40 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                         f"    dd {int(text_arg_len)}",
                     ])
 
-            assembly = assembly.rstrip() + "\n" + "\n".join(data_lines) + "\n"
+            assembly = (
+                assembly.rstrip() + "\n"
+                + "\n".join(data_lines) + "\n"
+                + "\n".join(bss_lines) + "\n"
+            )
+
+            # Stage 208/209: WFM-Basisshell importiert DBaseUpperBuffer nur,
+            # wenn Event-Code !() tatsaechlich verwendet.
+            if "call __dbase_upper_buffer" in assembly:
+                declaration = (
+                    'import __dbase_upper_buffer, "libd64_qt5.dll", '
+                    '"DBaseUpperBuffer"'
+                )
+                if declaration not in assembly:
+                    asm_lines = assembly.splitlines(keepends=True)
+                    insert_at = 0
+                    for index, line in enumerate(asm_lines):
+                        if line.lstrip().startswith("import "):
+                            insert_at = index + 1
+                    if insert_at == 0:
+                        for index, line in enumerate(asm_lines):
+                            if line.strip().casefold().startswith("bits "):
+                                insert_at = index + 1
+                                break
+                    asm_lines[insert_at:insert_at] = [declaration + "\n"]
+                    assembly = "".join(asm_lines)
+
+            if _dead_property_imports:
+                assembly = _strip_property_imports_fn(assembly)
 
             notes = tuple(getattr(base, "notes", ()) or ()) + (
+                f"Stage 217: WFM Default-Property-Elision={'an' if _elide_defaults else 'aus'}; Property Defaults ABI {_property_defaults_abi}.",
+                f"Stage 217: Dead-Property-Imports={'an' if _dead_property_imports else 'aus'}, leere Standardstrings={'an' if _empty_standard_strings else 'aus'}.",
+                f"Stage 218: Cut Multiple Codes={'an' if _cut_multiple_codes else 'aus'}; Property-Setter werden ab 2 Eintraegen als DATA-Tabelle gebuendelt.",
                 "FORM/WFM: eigenstaendige GUI-Anwendung mit __d64_wfm_entry.",
                 "WFM verwendet DBaseQtInitializeGui; kein Console-Hauptfenster wird erzeugt.",
                 "Designer-Komponenten werden als echte Qt5-Widgets mit Parent/Geometrie/Properties erzeugt.",
@@ -85221,30 +93331,59 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             return True
 
         def _prepare_dbase_form_runtime(self, output_path: Path) -> bool:
-            """Stage 118: vorhandene d64_qt5.dll neben die Formular-EXE legen."""
+            """Stage 224: nur eine zum Compilervertrag passende Qt5-Runtime verwenden."""
             output_path = Path(output_path).resolve()
             destination = output_path.parent / "libd64_qt5.dll"
-            if destination.is_file():
+            machine = _pe_file_machine(output_path)
+            if machine not in {IMAGE_FILE_MACHINE_I386, IMAGE_FILE_MACHINE_AMD64}:
+                machine = IMAGE_FILE_MACHINE_I386
+
+            def _compatible(candidate: Path) -> bool:
+                try:
+                    exports = _pe_export_name_ordinals(candidate, int(machine))
+                    if not exports:
+                        return False
+                    return _pe_export_ordinal_map_hash(exports) == PE_D64_QT5_ORDINAL_MAP_HASH
+                except (OSError, ValueError, TypeError):
+                    return False
+
+            # Eine bereits neben der EXE liegende DLL wird nicht mehr blind
+            # akzeptiert. Stage 223 konnte dadurch eine EXE gegen @65 erzeugen,
+            # während eine ältere Runtime nur bis @64 exportierte.
+            if destination.is_file() and _compatible(destination):
+                self.log(f"DBASE FORM RUNTIME: kompatibel: {destination}")
                 return True
 
             base_dir = Path(__file__).resolve().parent
+            # Benutzer-/Projektbuilds haben Vorrang vor mitgelieferten Build-
+            # Artefakten. Jeder Kandidat wird zusätzlich gegen die vollständige
+            # Ordinal-Map geprüft.
             candidates = (
+                self.current_directory / "libd64_qt5.dll",
                 base_dir / "libd64_qt5.dll",
                 base_dir / "d64_qt5" / "libd64_qt5.dll",
+                base_dir / "d64qt5" / "release" / "libd64_qt5.dll",
+                base_dir / "d64qt5" / "debug"   / "libd64_qt5.dll",
                 base_dir / "d64_qt5" / "release" / "libd64_qt5.dll",
                 base_dir / "d64_qt5" / "debug"   / "libd64_qt5.dll",
-                self.current_directory / "libd64_qt5.dll",
             )
             for candidate in candidates:
                 try:
                     candidate = Path(candidate).resolve()
                 except OSError:
                     continue
+                if candidate == destination.resolve():
+                    continue
                 if not candidate.is_file():
                     continue
+                if not _compatible(candidate):
+                    self.log(
+                        "DBASE FORM RUNTIME übersprungen (ABI/Ordinal-Map nicht kompatibel): "
+                        + str(candidate)
+                    )
+                    continue
                 try:
-                    if candidate != destination.resolve():
-                        shutil.copy2(candidate, destination)
+                    shutil.copy2(candidate, destination)
                     self.log(
                         f"DBASE FORM RUNTIME: {candidate} -> {destination}"
                     )
@@ -85256,16 +93395,25 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     )
                     return False
 
+            actual_hash = ""
+            if destination.is_file():
+                try:
+                    exports = _pe_export_name_ordinals(destination, int(machine))
+                    if exports:
+                        actual_hash = _pe_export_ordinal_map_hash(exports).hex()
+                except OSError:
+                    pass
+            expected_hash = PE_D64_QT5_ORDINAL_MAP_HASH.hex()
+            detail = (
+                f"\n\nErwartete Ordinal-Map: {expected_hash}"
+                + (f"\nGefundene Ordinal-Map: {actual_hash}" if actual_hash else "")
+            )
             self.show_error(
-                "libd64_qt5.dll fehlt",
-                "Das Formular wurde erfolgreich erzeugt, aber die Qt5-Runtime "
-                "libd64_qt5.dll wurde nicht gefunden.\n\n"
-                "Lege eine gebaute libd64_qt5.dll in eines dieser Verzeichnisse:\n"
-                f"  {base_dir}\n"
-                f"  {base_dir / 'd64_qt5'}\n"
-                f"  {base_dir / 'd64_qt5' / 'release'}\n"
-                f"  {self.current_directory}\n\n"
-                "Die vollständigen Runtime-Quelldateien liegen im Paket unter d64_qt5/.",
+                "libd64_qt5.dll fehlt oder ist inkompatibel",
+                "Das Formular wurde erzeugt, aber es wurde keine zur EXE passende "
+                "libd64_qt5.dll gefunden." + detail + "\n\n"
+                "Lege eine aktuelle Runtime in das Projekt-/Arbeitsverzeichnis oder "
+                "baue d64qt5 neu.",
             )
             return False
 
@@ -87472,6 +95620,39 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     _target,
                     self.project_windows_link_with_ordinals.get(_target, False),
                 )
+                panel.set_pe_packing_enabled(
+                    _target,
+                    self.project_windows_pe_packing_enabled.get(
+                        _target, PE_PACKING_DEFAULT
+                    ),
+                )
+                panel.set_signing_settings(
+                    _target,
+                    self.project_windows_signing.get(_target, normalize_signing_settings()),
+                )
+                _packer = self.project_windows_import_packer.get(
+                    _target,
+                    {"enabled": True, "require_savings": True, "minimum_savings": 1, "peb_resolver": False},
+                )
+                panel.set_import_packer_settings(
+                    _target,
+                    bool(_packer.get("enabled", True)),
+                    bool(_packer.get("require_savings", True)),
+                    int(_packer.get("minimum_savings", 1)),
+                    bool(_packer.get("peb_resolver", False)),
+                    int(_packer.get("abi_major", PE_D64_RUNTIME_DEFAULT_ABI_MAJOR)),
+                    int(_packer.get("abi_minor", PE_D64_RUNTIME_DEFAULT_ABI_MINOR)),
+                    int(_packer.get("ordinal_map_version", PE_D64_RUNTIME_DEFAULT_ORDINAL_MAP_VERSION)),
+                    bool(_packer.get("runtime_version_check", True)),
+                    bool(_packer.get("ordinal_hash_check", True)),
+                    bool(_packer.get("exact_runtime_check", False)),
+                    str(_packer.get("ordinal_mismatch_action", "abort")),
+                    bool(_packer.get("object_defaults_enabled", True)),
+                    bool(_packer.get("dead_property_imports", True)),
+                    bool(_packer.get("empty_standard_strings", True)),
+                    bool(_packer.get("cut_multiple_codes", True)),
+                    str(_packer.get("layout_order", PE_IMAGE_LAYOUT_DEFAULT)),
+                )
                 panel.set_workstation_mode(
                     _target,
                     self.project_windows_workstation_mode.get(_target, False),
@@ -87487,6 +95668,13 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 panel.page_for_target(_target).manifest_page.set_settings(
                     self.project_windows_manifests.get(_target)
                 )
+            panel.set_editor_settings(
+                self.editor_font_family or self._default_editor_font_family(),
+                self.editor_font_size,
+                self.editor_foreground,
+                self.editor_background,
+                color_profiles=self.editor_color_profiles,
+            )
             for _profile in PROJECT_C64_OPTIMIZER_PROFILES:
                 panel.set_c64_screen_keyboard(
                     _profile,
@@ -87629,6 +95817,39 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     _target,
                     self.project_windows_link_with_ordinals.get(_target, False),
                 )
+                self.project_settings_panel.set_pe_packing_enabled(
+                    _target,
+                    self.project_windows_pe_packing_enabled.get(
+                        _target, PE_PACKING_DEFAULT
+                    ),
+                )
+                self.project_settings_panel.set_signing_settings(
+                    _target,
+                    self.project_windows_signing.get(_target, normalize_signing_settings()),
+                )
+                _packer = self.project_windows_import_packer.get(
+                    _target,
+                    {"enabled": True, "require_savings": True, "minimum_savings": 1, "peb_resolver": False},
+                )
+                self.project_settings_panel.set_import_packer_settings(
+                    _target,
+                    bool(_packer.get("enabled", True)),
+                    bool(_packer.get("require_savings", True)),
+                    int(_packer.get("minimum_savings", 1)),
+                    bool(_packer.get("peb_resolver", False)),
+                    int(_packer.get("abi_major", PE_D64_RUNTIME_DEFAULT_ABI_MAJOR)),
+                    int(_packer.get("abi_minor", PE_D64_RUNTIME_DEFAULT_ABI_MINOR)),
+                    int(_packer.get("ordinal_map_version", PE_D64_RUNTIME_DEFAULT_ORDINAL_MAP_VERSION)),
+                    bool(_packer.get("runtime_version_check", True)),
+                    bool(_packer.get("ordinal_hash_check", True)),
+                    bool(_packer.get("exact_runtime_check", False)),
+                    str(_packer.get("ordinal_mismatch_action", "abort")),
+                    bool(_packer.get("object_defaults_enabled", True)),
+                    bool(_packer.get("dead_property_imports", True)),
+                    bool(_packer.get("empty_standard_strings", True)),
+                    bool(_packer.get("cut_multiple_codes", True)),
+                    str(_packer.get("layout_order", PE_IMAGE_LAYOUT_DEFAULT)),
+                )
                 self.project_settings_panel.set_workstation_mode(
                     _target,
                     self.project_windows_workstation_mode.get(_target, False),
@@ -87644,6 +95865,13 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 self.project_settings_panel.page_for_target(_target).manifest_page.set_settings(
                     self.project_windows_manifests.get(_target)
                 )
+            self.project_settings_panel.set_editor_settings(
+                self.editor_font_family or self._default_editor_font_family(),
+                self.editor_font_size,
+                self.editor_foreground,
+                self.editor_background,
+                color_profiles=self.editor_color_profiles,
+            )
             for _profile in PROJECT_C64_OPTIMIZER_PROFILES:
                 self.project_settings_panel.set_c64_screen_keyboard(
                     _profile,
@@ -88119,6 +96347,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     )
                 if len(sizes) == 2:
                     self.resizeDocks([first, second], sizes, orientation)
+                self._enforce_project_information_dock_width()
                 return True
             except Exception:
                 return False
@@ -88690,6 +96919,219 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 if self.current_project_path is not None:
                     self.save_project()
 
+        def set_project_windows_pe_packing(
+            self,
+            target: str,
+            enabled: bool,
+            *,
+            mark_modified: bool = True,
+        ) -> None:
+            target_key = self._project_windows_target_key(target)
+            value = bool(enabled)
+            changed = bool(
+                self.project_windows_pe_packing_enabled.get(
+                    target_key, PE_PACKING_DEFAULT
+                )
+            ) != value
+            self.project_windows_pe_packing_enabled[target_key] = value
+            _set_pe_packing_enabled(target_key, value)
+            panel = getattr(self, "project_settings_panel", None)
+            if panel is not None:
+                current = panel.pe_packing_enabled(target_key)
+                if current != value:
+                    panel.set_pe_packing_enabled(target_key, value)
+            if changed and mark_modified:
+                for index in range(self.document_tabs.count()):
+                    document = self.document_tabs.widget(index)
+                    try:
+                        if (
+                            isinstance(document, DocumentEditor)
+                            and str(getattr(document, "build_target", "")).casefold()
+                                in {"pe32", "pe64"}
+                            and self._project_windows_target_key(document.build_target)
+                                == target_key
+                        ):
+                            document.invalidate_assembly_result(
+                                "PE-Packing geändert"
+                            )
+                    except Exception:
+                        pass
+                self.set_project_modified(True)
+                if self.current_project_path is not None:
+                    self.save_project()
+
+        def set_project_windows_import_packer(
+            self,
+            target: str,
+            enabled: bool,
+            require_savings: bool,
+            minimum_savings: int,
+            peb_resolver: bool = False,
+            abi_major: int = PE_D64_RUNTIME_DEFAULT_ABI_MAJOR,
+            abi_minor: int = PE_D64_RUNTIME_DEFAULT_ABI_MINOR,
+            ordinal_map_version: int = PE_D64_RUNTIME_DEFAULT_ORDINAL_MAP_VERSION,
+            runtime_version_check: bool = True,
+            ordinal_hash_check: bool = True,
+            exact_runtime_check: bool = False,
+            ordinal_mismatch_action: str = "abort",
+            object_defaults_enabled: bool = True,
+            dead_property_imports: bool = True,
+            empty_standard_strings: bool = True,
+            cut_multiple_codes: bool = True,
+            layout_order: str = PE_IMAGE_LAYOUT_DEFAULT,
+            *,
+            mark_modified: bool = True,
+        ) -> None:
+            target_key = self._project_windows_target_key(target)
+            action = str(ordinal_mismatch_action or "abort").strip().casefold()
+            if action not in {"abort", "fallback_name"}:
+                action = "abort"
+            cut_multiple_codes = bool(cut_multiple_codes)
+            normalized_abi_minor, normalized_map_version = _stage224_normalize_transient_runtime_contract(
+                abi_minor, ordinal_map_version, cut_multiple_codes=cut_multiple_codes
+            )
+            if cut_multiple_codes:
+                normalized_abi_minor = max(
+                    normalized_abi_minor, PE_D64_RUNTIME_DEFAULT_ABI_MINOR
+                )
+                normalized_map_version = max(
+                    normalized_map_version, PE_D64_RUNTIME_DEFAULT_ORDINAL_MAP_VERSION
+                )
+            normalized = {
+                "enabled": bool(enabled),
+                "require_savings": bool(require_savings),
+                "minimum_savings": max(
+                    0, min(1024 * 1024, int(minimum_savings or 0))
+                ),
+                "peb_resolver": bool(peb_resolver),
+                "abi_major": max(0, min(0xFFFF, int(abi_major or 0))),
+                "abi_minor": normalized_abi_minor,
+                "ordinal_map_version": normalized_map_version,
+                "runtime_version_check": bool(runtime_version_check),
+                "ordinal_hash_check": bool(ordinal_hash_check),
+                "exact_runtime_check": bool(exact_runtime_check),
+                "ordinal_mismatch_action": action,
+                "object_defaults_enabled": bool(object_defaults_enabled),
+                "dead_property_imports": bool(dead_property_imports),
+                "empty_standard_strings": bool(empty_standard_strings),
+                "cut_multiple_codes": cut_multiple_codes,
+                "layout_order": _normalize_pe_image_layout_order(layout_order),
+            }
+            changed = (
+                dict(self.project_windows_import_packer.get(target_key, {}))
+                != normalized
+            )
+            self.project_windows_import_packer[target_key] = normalized
+            _set_pe_import_packer_settings(target_key, **normalized)
+            panel = getattr(self, "project_settings_panel", None)
+            if panel is not None:
+                current = panel.import_packer_settings(target_key)
+                if current != normalized:
+                    panel.set_import_packer_settings(
+                        target_key,
+                        normalized["enabled"],
+                        normalized["require_savings"],
+                        normalized["minimum_savings"],
+                        normalized["peb_resolver"],
+                        normalized["abi_major"],
+                        normalized["abi_minor"],
+                        normalized["ordinal_map_version"],
+                        normalized["runtime_version_check"],
+                        normalized["ordinal_hash_check"],
+                        normalized["exact_runtime_check"],
+                        normalized["ordinal_mismatch_action"],
+                        normalized["object_defaults_enabled"],
+                        normalized["dead_property_imports"],
+                        normalized["empty_standard_strings"],
+                        normalized["cut_multiple_codes"],
+                        normalized["layout_order"],
+                    )
+            if changed and mark_modified:
+                for index in range(self.document_tabs.count()):
+                    document = self.document_tabs.widget(index)
+                    try:
+                        if (
+                            isinstance(document, DocumentEditor)
+                            and str(getattr(document, "build_target", "")).casefold()
+                                in {"pe32", "pe64"}
+                            and self._project_windows_target_key(document.build_target)
+                                == target_key
+                        ):
+                            document.invalidate_assembly_result(
+                                "Linker-Optimierung geändert"
+                            )
+                    except Exception:
+                        pass
+                self.set_project_modified(True)
+                if self.current_project_path is not None:
+                    self.save_project()
+
+        def set_project_windows_signing(self, target: str, value, *, mark_modified: bool = True) -> None:
+            target_key = self._project_windows_target_key(target)
+            normalized = normalize_signing_settings(value)
+            changed = self.project_windows_signing.get(target_key) != normalized
+            self.project_windows_signing[target_key] = normalized
+            panel = getattr(self, "project_settings_panel", None)
+            if panel is not None:
+                try:
+                    if panel.signing_settings(target_key) != normalized:
+                        panel.set_signing_settings(target_key, normalized)
+                except Exception:
+                    pass
+            if changed and mark_modified:
+                self.set_project_modified(True)
+                if self.current_project_path is not None:
+                    self.save_project()
+
+        def _windows_signing_password(self, pfx_path: str) -> tuple[str, bool]:
+            key = str(Path(pfx_path).expanduser()) if pfx_path else ""
+            if key and key in self._signing_session_passwords:
+                return self._signing_session_passwords[key], True
+            password, ok = QInputDialog.getText(
+                self, "Authenticode Signierung", "Passwort der PFX/PKCS#12-Datei:", QLineEdit.Password
+            )
+            if ok and key:
+                self._signing_session_passwords[key] = password
+            return password, bool(ok)
+
+        def _sign_windows_output_if_enabled(self, output_path: Path | str, target: str) -> bool:
+            target_key = self._project_windows_target_key(target)
+            cfg = normalize_signing_settings(self.project_windows_signing.get(target_key))
+            if not cfg["enabled"]:
+                return True
+            path = Path(output_path)
+            suffix = path.suffix.casefold()
+            if suffix == ".exe" and not cfg["sign_exe"]:
+                return True
+            if suffix == ".dll" and not cfg["sign_dll"]:
+                return True
+            if suffix not in {".exe", ".dll"}:
+                return True
+
+            password = ""
+            if cfg["certificate_source"] in {"openssl_ca", "pfx"}:
+                password, ok = self._windows_signing_password(cfg["pfx_file"])
+                if not ok:
+                    message = "Authenticode-Signierung wurde abgebrochen (kein PFX-Passwort)."
+                    self.log("SIGN: " + message)
+                    if cfg["fail_build_on_error"]:
+                        self.show_error("Signierung abgebrochen", message)
+                        return False
+                    return True
+            ok, output = sign_file(cfg, str(path), pfx_password=password)
+            for line in str(output or "").splitlines():
+                self.log("SIGN: " + line)
+            if ok:
+                self.log(f"AUTHENTICODE: {path.name} erfolgreich signiert")
+                self.statusBar().showMessage(f"Signiert: {path.name}")
+                return True
+            message = "Authenticode-Signierung fehlgeschlagen:\n" + (output.strip() or "Unbekannter SignTool-Fehler")
+            if cfg["fail_build_on_error"]:
+                self.show_error("Signierungsfehler", message)
+                return False
+            self.log("SIGN WARNING: " + message.replace("\n", " | "))
+            return True
+
         def set_project_windows_workstation_mode(
             self,
             target: str,
@@ -88737,6 +97179,76 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                         self.dbase_form_build_status.setText(
                             "Workstation Mode geändert – neu kompilieren/assemblieren"
                         )
+            if changed and mark_modified:
+                self.set_project_modified(True)
+                if self.current_project_path is not None:
+                    self.save_project()
+
+        def set_project_editor_settings(
+            self,
+            font_family: str,
+            font_size: int,
+            foreground: str,
+            background: str,
+            *,
+            color_profiles=None,
+            mark_modified: bool = True,
+        ) -> None:
+            database = QFontDatabase()
+            family = str(font_family or "").strip()
+            if not family or not database.isFixedPitch(family):
+                family = self._default_editor_font_family()
+            try:
+                size = int(font_size)
+            except (TypeError, ValueError):
+                size = self.DEFAULT_EDITOR_FONT_SIZE
+            size = max(
+                self.MIN_EDITOR_FONT_SIZE,
+                min(self.MAX_EDITOR_FONT_SIZE, size),
+            )
+
+            profiles = normalize_project_windows_editor_color_profiles(
+                color_profiles, foreground, background
+            )
+            text_colors = profiles["text"]["text"]
+            fg_name = str(text_colors["foreground"])
+            bg_name = str(text_colors["background"])
+
+            changed = (
+                str(getattr(self, "editor_font_family", "")) != family
+                or int(
+                    getattr(
+                        self,
+                        "editor_font_size",
+                        self.DEFAULT_EDITOR_FONT_SIZE,
+                    )
+                ) != size
+                or normalize_project_windows_editor_color_profiles(
+                    getattr(self, "editor_color_profiles", None)
+                ) != profiles
+            )
+            self.editor_font_family = family
+            self.editor_font_size = size
+            self.editor_color_profiles = profiles
+            # Legacyattribute bleiben auf dem Text-Profil, damit ältere
+            # Editorpfade weiterhin einen sinnvollen Grundstil erhalten.
+            self.editor_foreground = fg_name
+            self.editor_background = bg_name
+
+            panel = getattr(self, "project_settings_panel", None)
+            if panel is not None:
+                panel.set_editor_settings(
+                    family,
+                    size,
+                    fg_name,
+                    bg_name,
+                    color_profiles=profiles,
+                )
+
+            self._apply_editor_font()
+            self._apply_editor_colors()
+            self._update_zoom_action_state()
+
             if changed and mark_modified:
                 self.set_project_modified(True)
                 if self.current_project_path is not None:
@@ -89153,7 +97665,6 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             self.view_settings_menu = self.view_menu.addMenu("Einstellungen")
             self.view_settings_menu.setObjectName("view_settings_menu")
             self.view_settings_menu.addAction(self.settings_action)
-            self.view_settings_menu.addAction(self.project_settings_action)
 
             # Stage ASM 92: Baukasten-Steuerungen als normale QAction-
             # Untermenues. QMenu enthaelt bewusst keine QWidgetAction/SpinBox.
@@ -89236,6 +97747,8 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             self.project_menu.setObjectName("project_menu")
             self.project_menu.addAction(self.project_open_action)
             self.project_menu.addAction(self.project_close_action)
+            self.project_menu.addSeparator()
+            self.project_menu.addAction(self.project_settings_action)
 
             # Stage 155: native Server-Verwaltung als eigener Hauptmenüpunkt.
             self.server_menu = self.main_menu_bar.addMenu("&Server")
@@ -89729,12 +98242,28 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             painter.end()
             return QIcon(pixmap)
 
+        def _default_editor_font_family(self) -> str:
+            database = QFontDatabase()
+            families = {family.casefold(): family for family in database.families()}
+            for wanted in (
+                "Consolas", "Courier New", "DejaVu Sans Mono",
+                "Liberation Mono", "Noto Sans Mono",
+            ):
+                family = families.get(wanted.casefold())
+                if family and database.isFixedPitch(family):
+                    return family
+            fixed = sorted(
+                [family for family in database.families() if database.isFixedPitch(family)],
+                key=lambda value: value.casefold(),
+            )
+            return fixed[0] if fixed else "Courier New"
+
         def _make_editor_font(self) -> QFont:
-            available = {
-                family.casefold(): family
-                for family in QFontDatabase().families()
-            }
-            family = available.get("consolas", "Courier New")
+            family = str(getattr(self, "editor_font_family", "") or "").strip()
+            database = QFontDatabase()
+            if not family or not database.isFixedPitch(family):
+                family = self._default_editor_font_family()
+                self.editor_font_family = family
             font = QFont(family, self.editor_font_size)
             font.setFixedPitch(True)
             font.setStyleHint(QFont.Monospace)
@@ -89750,6 +98279,9 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             font = self._make_editor_font()
             for document in self._documents():
                 document.set_editor_font(font)
+            form_document = getattr(self, "dbase_form_build_document", None)
+            if isinstance(form_document, DocumentEditor):
+                form_document.set_editor_font(font)
 
             # Stage 180: Apache reuses the very same SourceTextEdit class as
             # the Pascal/source editors, so global editor zoom/font changes
@@ -89763,6 +98295,30 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 apache_minimap = getattr(apache_widget, "apache_config_minimap", None)
                 if apache_minimap is not None:
                     apache_minimap.update()
+
+        def _apply_editor_colors(self) -> None:
+            profiles = normalize_project_windows_editor_color_profiles(
+                getattr(self, "editor_color_profiles", None),
+                getattr(
+                    self,
+                    "editor_foreground",
+                    PROJECT_WINDOWS_EDITOR_DEFAULT_FOREGROUND,
+                ),
+                getattr(
+                    self,
+                    "editor_background",
+                    PROJECT_WINDOWS_EDITOR_DEFAULT_BACKGROUND,
+                ),
+            )
+            self.editor_color_profiles = profiles
+            for document in self._documents():
+                language = document.editor_color_language_key()
+                document.set_editor_color_profile(
+                    profiles.get(language, profiles["text"])
+                )
+            form_document = getattr(self, "dbase_form_build_document", None)
+            if isinstance(form_document, DocumentEditor):
+                form_document.set_editor_color_profile(profiles["dbase"])
 
         def increase_editor_font(self) -> None:
             self._change_editor_font_size(1)
@@ -89790,9 +98346,14 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 self._update_zoom_action_state()
                 return
 
-            self.editor_font_size = new_size
-            self._apply_editor_font()
-            self._update_zoom_action_state()
+            self.set_project_editor_settings(
+                self.editor_font_family,
+                new_size,
+                self.editor_foreground,
+                self.editor_background,
+                color_profiles=self.editor_color_profiles,
+                mark_modified=True,
+            )
             self.statusBar().showMessage(
                 f"Editor-Schriftgröße: {self.editor_font_size} Punkt"
             )
@@ -91819,6 +100380,15 @@ border: 2px solid #2a69aa;
                 self.dark_mode_enabled
             )
             document.set_dark_mode(dark_mode)
+            profiles = normalize_project_windows_editor_color_profiles(
+                getattr(self, "editor_color_profiles", None),
+                self.editor_foreground,
+                self.editor_background,
+            )
+            language = document.editor_color_language_key()
+            document.set_editor_color_profile(
+                profiles.get(language, profiles["text"])
+            )
 
         @staticmethod
         def _document_tooltip(document: DocumentEditor) -> str:
@@ -93527,6 +102097,9 @@ border: 2px solid #2a69aa;
                     else program.prg
                 )
                 self._write_assembled_program(output_path, program_data)
+                if document.build_target in {"pe32", "pe64"}:
+                    if not self._sign_windows_output_if_enabled(output_path, document.build_target):
+                        return False
             except OSError as exc:
                 message = (
                     "Die Assembler-Ausgabe konnte nicht gespeichert werden:\n"
@@ -94068,6 +102641,9 @@ border: 2px solid #2a69aa;
                         program, packer_stats = self._apply_c64_image_packer(program)
                     program_data = program.prg
                 self._write_assembled_program(output_path, program_data)
+                if document.build_target in {"pe32", "pe64"}:
+                    if not self._sign_windows_output_if_enabled(output_path, document.build_target):
+                        return False
             except (AssemblerError, AmigaAssemblerError, PE32AssemblerError, PE64AssemblerError) as exc:
                 message = str(exc)
                 document.show_assembly_error(message, exc.line or 0)
@@ -95249,6 +103825,10 @@ border: 2px solid #2a69aa;
             self.updateGeometry()
             if int(self.width()) > width_before > 0:
                 self.resize(width_before, self.height())
+            # Stage 212: Der benutzerdefinierte Snap darf die Projektspalte
+            # ebenfalls niemals breiter als 1/4 des Hauptfensters machen.
+            self._enforce_project_information_dock_width()
+            QTimer.singleShot(0, self._enforce_project_information_dock_width)
             return True
 
         def _finish_project_dock_snap(
@@ -95835,6 +104415,79 @@ border: 2px solid #2a69aa;
                     ),
                     mark_modified=False,
                 )
+                self.set_project_windows_pe_packing(
+                    _target,
+                    _project_bool_entry(
+                        values,
+                        _settings["pe_packing_enabled_key"],
+                        PE_PACKING_DEFAULT,
+                    ),
+                    mark_modified=False,
+                )
+                # Stage 228: reset_project_tree() is also called without an
+                # explicit entries mapping during GUI startup.  Use the
+                # normalized/default project entry mapping (values) instead
+                # of dereferencing the optional argument directly.
+                _sign_entries = values.get(_settings["signing_key"], ())
+                self.set_project_windows_signing(
+                    _target,
+                    normalize_signing_settings(_sign_entries[0] if _sign_entries else None),
+                    mark_modified=False,
+                )
+                _min_entries = values.get(_settings["import_packer_min_savings_key"], ())
+                try:
+                    _min_savings = int(
+                        _min_entries[0].get("value", "1") if _min_entries else 1
+                    )
+                except (TypeError, ValueError):
+                    _min_savings = 1
+                def _entry_int(key_name, default_value, maximum):
+                    raw_entries = values.get(_settings[key_name], ())
+                    try:
+                        value = int(raw_entries[0].get("value", str(default_value))) if raw_entries else int(default_value)
+                    except (TypeError, ValueError):
+                        value = int(default_value)
+                    return max(0, min(int(maximum), value))
+
+                _mismatch_entries = values.get(_settings["ordinal_mismatch_action_key"], ())
+                _mismatch_action = str(
+                    _mismatch_entries[0].get("value", "abort") if _mismatch_entries else "abort"
+                ).strip().casefold()
+                if _mismatch_action not in {"abort", "fallback_name"}:
+                    _mismatch_action = "abort"
+
+                self.set_project_windows_import_packer(
+                    _target,
+                    _project_bool_entry(
+                        values, _settings["import_packer_enabled_key"], True
+                    ),
+                    _project_bool_entry(
+                        values,
+                        _settings["import_packer_require_savings_key"],
+                        True,
+                    ),
+                    _min_savings,
+                    _project_bool_entry(
+                        values, _settings["peb_resolver_enabled_key"], False
+                    ),
+                    _entry_int("abi_major_key", PE_D64_RUNTIME_DEFAULT_ABI_MAJOR, 0xFFFF),
+                    _entry_int("abi_minor_key", PE_D64_RUNTIME_DEFAULT_ABI_MINOR, 0xFFFF),
+                    _entry_int("ordinal_map_version_key", PE_D64_RUNTIME_DEFAULT_ORDINAL_MAP_VERSION, 0xFFFFFFFF),
+                    _project_bool_entry(values, _settings["runtime_version_check_key"], True),
+                    _project_bool_entry(values, _settings["ordinal_hash_check_key"], True),
+                    _project_bool_entry(values, _settings["exact_runtime_check_key"], False),
+                    _mismatch_action,
+                    _project_bool_entry(values, _settings["object_defaults_enabled_key"], True),
+                    _project_bool_entry(values, _settings["dead_property_imports_key"], True),
+                    _project_bool_entry(values, _settings["empty_standard_strings_key"], True),
+                    _project_bool_entry(values, _settings["cut_multiple_codes_key"], True),
+                    _normalize_pe_image_layout_order(
+                        (values.get(_settings["image_layout_key"], ()) or [{"value": PE_IMAGE_LAYOUT_DEFAULT}])[0].get(
+                            "value", PE_IMAGE_LAYOUT_DEFAULT
+                        )
+                    ),
+                    mark_modified=False,
+                )
                 self.set_project_windows_workstation_mode(
                     _target,
                     _project_bool_entry(
@@ -95873,6 +104526,49 @@ border: 2px solid #2a69aa;
                     ),
                     mark_modified=False,
                 )
+            _editor_family_entries = values.get(
+                PROJECT_WINDOWS_EDITOR_FONT_FAMILY_KEY, ()
+            )
+            _editor_size_entries = values.get(
+                PROJECT_WINDOWS_EDITOR_FONT_SIZE_KEY, ()
+            )
+            _editor_foreground_entries = values.get(
+                PROJECT_WINDOWS_EDITOR_FOREGROUND_KEY, ()
+            )
+            _editor_background_entries = values.get(
+                PROJECT_WINDOWS_EDITOR_BACKGROUND_KEY, ()
+            )
+            _editor_color_profile_entries = values.get(
+                PROJECT_WINDOWS_EDITOR_COLOR_PROFILES_KEY, ()
+            )
+            _loaded_editor_color_profiles = (
+                _editor_color_profile_entries[0].get("value", {})
+                if _editor_color_profile_entries else {}
+            )
+            self.set_project_editor_settings(
+                (
+                    _editor_family_entries[0].get("value", "")
+                    if _editor_family_entries else ""
+                ),
+                (
+                    _editor_size_entries[0].get("value", self.DEFAULT_EDITOR_FONT_SIZE)
+                    if _editor_size_entries else self.DEFAULT_EDITOR_FONT_SIZE
+                ),
+                (
+                    _editor_foreground_entries[0].get(
+                        "value", PROJECT_WINDOWS_EDITOR_DEFAULT_FOREGROUND
+                    ) if _editor_foreground_entries
+                    else PROJECT_WINDOWS_EDITOR_DEFAULT_FOREGROUND
+                ),
+                (
+                    _editor_background_entries[0].get(
+                        "value", PROJECT_WINDOWS_EDITOR_DEFAULT_BACKGROUND
+                    ) if _editor_background_entries
+                    else PROJECT_WINDOWS_EDITOR_DEFAULT_BACKGROUND
+                ),
+                color_profiles=_loaded_editor_color_profiles,
+                mark_modified=False,
+            )
             _active_entries = values.get(PROJECT_C64_OPTIMIZER_ACTIVE_PROFILE_KEY, ())
             _active_profile = (
                 str(_active_entries[0].get("value", "68000") or "68000")
@@ -96673,6 +105369,77 @@ border: 2px solid #2a69aa;
                         else "false"
                     )
                 }]
+                entries[_settings["pe_packing_enabled_key"]] = [{
+                    "value": (
+                        "true"
+                        if bool(
+                            self.project_windows_pe_packing_enabled.get(
+                                _target, PE_PACKING_DEFAULT
+                            )
+                        )
+                        else "false"
+                    )
+                }]
+                entries[_settings["signing_key"]] = [normalize_signing_settings(
+                    self.project_windows_signing.get(_target)
+                )]
+                _packer = self.project_windows_import_packer.get(
+                    _target,
+                    {"enabled": True, "require_savings": True, "minimum_savings": 1, "peb_resolver": False},
+                )
+                entries[_settings["import_packer_enabled_key"]] = [{
+                    "value": "true" if bool(_packer.get("enabled", True)) else "false"
+                }]
+                entries[_settings["import_packer_require_savings_key"]] = [{
+                    "value": (
+                        "true" if bool(_packer.get("require_savings", True)) else "false"
+                    )
+                }]
+                entries[_settings["import_packer_min_savings_key"]] = [{
+                    "value": str(max(0, int(_packer.get("minimum_savings", 1) or 0)))
+                }]
+                entries[_settings["object_defaults_enabled_key"]] = [{
+                    "value": "true" if bool(_packer.get("object_defaults_enabled", True)) else "false"
+                }]
+                entries[_settings["dead_property_imports_key"]] = [{
+                    "value": "true" if bool(_packer.get("dead_property_imports", True)) else "false"
+                }]
+                entries[_settings["empty_standard_strings_key"]] = [{
+                    "value": "true" if bool(_packer.get("empty_standard_strings", True)) else "false"
+                }]
+                entries[_settings["cut_multiple_codes_key"]] = [{
+                    "value": "true" if bool(_packer.get("cut_multiple_codes", True)) else "false"
+                }]
+                entries[_settings["image_layout_key"]] = [{
+                    "value": _normalize_pe_image_layout_order(
+                        _packer.get("layout_order", PE_IMAGE_LAYOUT_DEFAULT)
+                    )
+                }]
+                entries[_settings["abi_major_key"]] = [{
+                    "value": str(max(0, min(0xFFFF, int(_packer.get("abi_major", PE_D64_RUNTIME_DEFAULT_ABI_MAJOR) or 0))))
+                }]
+                entries[_settings["abi_minor_key"]] = [{
+                    "value": str(max(0, min(0xFFFF, int(_packer.get("abi_minor", PE_D64_RUNTIME_DEFAULT_ABI_MINOR) or 0))))
+                }]
+                entries[_settings["ordinal_map_version_key"]] = [{
+                    "value": str(max(0, min(0xFFFFFFFF, int(_packer.get("ordinal_map_version", PE_D64_RUNTIME_DEFAULT_ORDINAL_MAP_VERSION) or 0))))
+                }]
+                entries[_settings["runtime_version_check_key"]] = [{
+                    "value": "true" if bool(_packer.get("runtime_version_check", True)) else "false"
+                }]
+                entries[_settings["ordinal_hash_check_key"]] = [{
+                    "value": "true" if bool(_packer.get("ordinal_hash_check", True)) else "false"
+                }]
+                entries[_settings["exact_runtime_check_key"]] = [{
+                    "value": "true" if bool(_packer.get("exact_runtime_check", False)) else "false"
+                }]
+                _mismatch_action = str(_packer.get("ordinal_mismatch_action", "abort") or "abort").strip().casefold()
+                if _mismatch_action not in {"abort", "fallback_name"}:
+                    _mismatch_action = "abort"
+                entries[_settings["ordinal_mismatch_action_key"]] = [{"value": _mismatch_action}]
+                entries[_settings["peb_resolver_enabled_key"]] = [{
+                    "value": "true" if bool(_packer.get("peb_resolver", False)) else "false"
+                }]
                 entries[_settings["workstation_mode_key"]] = [{
                     "value": (
                         "true"
@@ -96700,6 +105467,27 @@ border: 2px solid #2a69aa;
                 entries[_settings["manifest_key"]] = [normalize_manifest_settings(
                     self.project_windows_manifests.get(_target)
                 )]
+            entries[PROJECT_WINDOWS_EDITOR_FONT_FAMILY_KEY] = [{
+                "value": str(self.editor_font_family or "")
+            }]
+            entries[PROJECT_WINDOWS_EDITOR_FONT_SIZE_KEY] = [{
+                "value": str(int(self.editor_font_size))
+            }]
+            entries[PROJECT_WINDOWS_EDITOR_FOREGROUND_KEY] = [{
+                "value": str(self.editor_foreground)
+            }]
+            entries[PROJECT_WINDOWS_EDITOR_BACKGROUND_KEY] = [{
+                "value": str(self.editor_background)
+            }]
+            entries[PROJECT_WINDOWS_EDITOR_COLOR_PROFILES_KEY] = [{
+                "value": json.dumps(
+                    normalize_project_windows_editor_color_profiles(
+                        self.editor_color_profiles
+                    ),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            }]
             entries[PROJECT_C64_OPTIMIZER_ACTIVE_PROFILE_KEY] = [{
                 "value": str(self.project_c64_active_profile or "68000")
             }]
@@ -97504,6 +106292,9 @@ border: 2px solid #2a69aa;
                         if _name in _dock_area:
                             _descriptor[_name] = _dock_area[_name]
                     self._apply_primary_side_dock_sizes(_descriptor)
+            # Stage 212: gespeicherte Separatorpositionen dürfen das
+            # Projekt/Informationen-Dock ebenfalls nicht über 1/4 aufziehen.
+            self._enforce_project_information_dock_width()
 
         def _restore_project_view_state(self, entries) -> bool:
             """Stage ASM 65: projektbezogenes Dock-/Editor-Layout laden."""
@@ -97577,6 +106368,10 @@ border: 2px solid #2a69aa;
             # automatisch im von den Docks freigelassenen Bereich.
             if getattr(self, "document_tabs", None) is not None:
                 self.document_tabs.updateGeometry()
+            # Stage 212: Auch projektgespeicherte ViewStates werden auf die
+            # 1/4-Regel normalisiert, inklusive spätem Qt-Layoutpass.
+            self._enforce_project_information_dock_width()
+            QTimer.singleShot(0, self._enforce_project_information_dock_width)
             self.log("Projekt-Ansicht wiederhergestellt")
             return True
 
@@ -100973,6 +109768,76 @@ QFileDialog QComboBox QAbstractItemView {
             else:
                 self.open_path(path)
 
+        def _project_information_dock_width_limit(self) -> int:
+            """Maximale Breite des seitlich angedockten Projekt-Docks.
+
+            Stage 212 verwendet absichtlich die aktuelle Breite des gesamten
+            Hauptfensters als Bezugsgröße. Damit kann das Projekt/Informationen-
+            Dock links oder rechts niemals den Editor bzw. die übrigen Docks
+            über die komplette Fläche verdrängen.
+            """
+            divisor = max(1, int(self.PROJECT_INFORMATION_DOCK_WIDTH_DIVISOR))
+            return max(1, int(self.width()) // divisor)
+
+        def _enforce_project_information_dock_width(self) -> None:
+            """Projekt/Informationen seitlich auf höchstens 1/4 begrenzen.
+
+            Floating-Fenster bleiben frei resizebar. Beim Andocken wird sowohl
+            maximumWidth gesetzt als auch ein eventuell aus einem alten
+            restoreState()/Projektlayout stammender zu breiter Separator
+            unmittelbar zurückgesetzt.
+            """
+            dock = getattr(self, "right_dock", None)
+            if dock is None:
+                return
+
+            if dock.isFloating():
+                if dock.maximumWidth() != self.PROJECT_INFORMATION_DOCK_UNBOUNDED_WIDTH:
+                    dock.setMaximumWidth(self.PROJECT_INFORMATION_DOCK_UNBOUNDED_WIDTH)
+                return
+
+            area = self.dockWidgetArea(dock)
+            if area not in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea):
+                return
+
+            limit = self._project_information_dock_width_limit()
+            # Der frühere feste Mindestwert 360 px konnte bei schmaleren
+            # Hauptfenstern größer als 1/4 sein und damit die Begrenzung
+            # aushebeln. Die Dock-Inhalte dürfen daher horizontal schrumpfen.
+            if dock.minimumWidth() != 0:
+                dock.setMinimumWidth(0)
+            if dock.maximumWidth() != limit:
+                dock.setMaximumWidth(limit)
+
+            if dock.width() > limit:
+                try:
+                    self.resizeDocks([dock], [limit], Qt.Horizontal)
+                except Exception:
+                    pass
+
+            widget = dock.widget()
+            if widget is not None:
+                widget.updateGeometry()
+            dock.updateGeometry()
+
+        def _project_information_dock_top_level_changed(self, floating: bool) -> None:
+            """Floating freigeben, nach dem Einrasten sofort wieder begrenzen."""
+            dock = getattr(self, "right_dock", None)
+            if dock is None:
+                return
+            if bool(floating):
+                dock.setMaximumWidth(self.PROJECT_INFORMATION_DOCK_UNBOUNDED_WIDTH)
+                return
+            self._enforce_project_information_dock_width()
+            # QMainWindow legt den finalen Dock-Separator erst im folgenden
+            # Layout-Pass fest. Danach nochmals autoritativ begrenzen.
+            QTimer.singleShot(0, self._enforce_project_information_dock_width)
+
+        def _project_information_dock_location_changed(self, area) -> None:
+            if area in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea):
+                self._enforce_project_information_dock_width()
+                QTimer.singleShot(0, self._enforce_project_information_dock_width)
+
         def _create_right_dock(self) -> None:
             self.right_dock = QDockWidget("Projekt / Informationen", self)
             self.right_dock.setObjectName("d64_content_dock")
@@ -100982,9 +109847,12 @@ QFileDialog QComboBox QAbstractItemView {
             self.right_dock.setAllowedAreas(
                 Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea
             )
-            self.right_dock.setMinimumWidth(360)
+            # Stage 212: kein fester 360-px-Mindestwert mehr. Bei einem
+            # Hauptfenster < 1440 px würde er bereits die 1/4-Regel verletzen.
+            self.right_dock.setMinimumWidth(0)
 
             container = QWidget(self.right_dock)
+            container.setMinimumWidth(0)
             layout = QVBoxLayout(container)
             layout.setContentsMargins(7, 7, 7, 7)
             layout.setSpacing(6)
@@ -101118,7 +109986,15 @@ QFileDialog QComboBox QAbstractItemView {
 
             self.right_dock.setWidget(container)
             self.right_dock.setTitleBarWidget(DockTitleBar(self.right_dock))
+            self.right_dock.topLevelChanged.connect(
+                self._project_information_dock_top_level_changed
+            )
+            self.right_dock.dockLocationChanged.connect(
+                self._project_information_dock_location_changed
+            )
             self.addDockWidget(Qt.RightDockWidgetArea, self.right_dock)
+            self._enforce_project_information_dock_width()
+            QTimer.singleShot(0, self._enforce_project_information_dock_width)
             self.view_menu.addAction(self.right_dock.toggleViewAction())
 
         def _create_bottom_dock(self) -> None:
@@ -102538,6 +111414,10 @@ QFileDialog QComboBox QAbstractItemView {
                 _area = self.dockWidgetArea(_project_dock)
                 if _area not in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea):
                     self.addDockWidget(Qt.RightDockWidgetArea, _project_dock)
+            # Stage 212: Alte QSettings-Zustände dürfen keine Vollbreite des
+            # Projekt/Informationen-Docks wiederherstellen.
+            self._enforce_project_information_dock_width()
+            QTimer.singleShot(0, self._enforce_project_information_dock_width)
 
             # Stage 148:
             # restoreGeometry() darf die in __init__ gesetzte Starthöhe nicht

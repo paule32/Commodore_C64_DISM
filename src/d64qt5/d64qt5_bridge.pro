@@ -19,7 +19,11 @@ SOURCES += d64qt5_bridge.cpp   \
            d64_workstation.cpp
 
 HEADERS += d64qt5_bridge.h \
-           d64_workstation.h
+           d64_workstation.h \
+           d64_dbase_runtime.hpp \
+           d64_dbase_case_tables.inc \
+           d64_runtime_abi.hpp \
+           d64_runtime_abi.inc
 
 DEF_FILE = d64qt5_bridge.def
 
@@ -37,3 +41,5 @@ win32 {
     LIBS             += -luser32 -lgdi32 -ladvapi32 -lodbc32 -lws2_32
     QMAKE_LFLAGS_DLL += "-Wl,--out-implib,$$RUNTIME_IMPLIB"
 }
+
+DISTFILES += generate_runtime_abi.py
