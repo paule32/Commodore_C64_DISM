@@ -8,7 +8,8 @@ def substring(value, start, count=None):
     return value[start:] if count is None else value[start:start + max(0, int(count))]
 
 
-def emit_substring_copy(source, start, count, destination, is64, prefix, string_type):
+def emit_substring_copy(source, start, count, destination, is64, prefix, string_type, *,
+                        shadow_space_reserved=False):
     """Copy a bounded UTF-8 substring to a new string; arguments are value slots.
 
     Numeric arguments truncate toward zero. Nonpositive starts mean position 1;
@@ -20,12 +21,20 @@ def emit_substring_copy(source, start, count, destination, is64, prefix, string_
     L = lambda name: prefix + '_' + name
     lines = [f'    mov eax, dword ptr [{source}_len]', '    add eax, 1']
     if is64:
-        lines += ['    mov ecx, eax', '    sub rsp, 40', '    call __dbase_malloc', '    add rsp, 40']
+        lines += ['    mov ecx, eax']
+        if shadow_space_reserved:
+            lines += ['    call __dbase_malloc']
+        else:
+            lines += ['    sub rsp, 40', '    call __dbase_malloc', '    add rsp, 40']
     else:
         lines += ['    push eax', '    call __dbase_malloc', '    add esp, 4']
     lines += [f'    test {acc}, {acc}', f'    jne {L("allocated")}']
     if is64:
-        lines += ['    mov ecx, 8', '    sub rsp, 40', '    call ExitProcess']
+        lines += ['    mov ecx, 8']
+        if shadow_space_reserved:
+            lines += ['    call ExitProcess']
+        else:
+            lines += ['    sub rsp, 40', '    call ExitProcess']
     else:
         lines += ['    push 8', '    call ExitProcess']
     lines += [L('allocated') + ':', f'    mov {ptr} ptr [{destination}_ptr], {acc}']

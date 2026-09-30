@@ -8,6 +8,7 @@ EXPORTS
     _jit_dynstring_setlength=__jit_dynstring_setlength
     _jit_dynstring_length=__jit_dynstring_length
     _jit_dynstring_concat=__jit_dynstring_concat
+    jit_dynstring_from_cstr=_jit_dynstring_from_cstr
     _jit_dynstring_from_cstr=__jit_dynstring_from_cstr
     _jit_malloc=__jit_malloc
     _jit_calloc=__jit_calloc

@@ -520,7 +520,18 @@ C(_jit_dynstring_concat):
     pop ebp
     ret
 
+; The Pascal PE32 import table uses the DLL-visible name
+;   jit_dynstring_from_cstr
+; while the runtime-internal helper is named
+;   _jit_dynstring_from_cstr.
+; Under the 32-bit MinGW C ABI these become two distinct COFF symbols:
+;   _jit_dynstring_from_cstr   (public compatibility alias)
+;   __jit_dynstring_from_cstr  (internal helper)
+; Export both labels at the same entry point so libd64_runtime.def can keep
+; the established public DLL name without requiring a second wrapper body.
+global C(jit_dynstring_from_cstr)
 global C(_jit_dynstring_from_cstr)
+C(jit_dynstring_from_cstr):
 C(_jit_dynstring_from_cstr):
     push ebx
     push esi

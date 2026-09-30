@@ -133,37 +133,6 @@ __basic_line_100:
     jsr __basic_newline
 __basic_line_110:
     rts
-__basic_line_120:
-__basic_line_130:
-__basic_line_140:
-__basic_line_150:
-__basic_line_160:
-__basic_line_170:
-__basic_line_180:
-__basic_line_190:
-__basic_line_200:
-__basic_line_210:
-__basic_line_220:
-__basic_line_230:
-__basic_line_240:
-__basic_line_250:
-__basic_line_260:
-__basic_line_270:
-__basic_line_280:
-__basic_line_290:
-__basic_line_300:
-__basic_line_310:
-__basic_line_320:
-__basic_line_330:
-__basic_line_340:
-__basic_line_350:
-__basic_line_360:
-__basic_line_370:
-__basic_line_380:
-__basic_line_390:
-__basic_line_400:
-__basic_line_410:
-__basic_line_420:
 __basic_program_end:
     jsr $FFCC
     rts

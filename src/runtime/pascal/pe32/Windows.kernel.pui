@@ -6,7 +6,7 @@
         "normalized_name": "windows_kernel"
     },
     "fingerprint": {
-        "source_sha256": "f6b47af85582f29a58638330a826b6cfb533d29c1e298e3f562158005af27414"
+        "source_sha256": "17da3e4ef5c6cb552e866db5bc1b3dff91bdce1a4dd7f7b86cc37e258245a8fc"
     },
     "target": {
         "target": "win32",
@@ -22,8 +22,7 @@
     },
     "uses": {
         "interface": [
-            "System",
-            "Windows.Types"
+            "System"
         ],
         "implementation": []
     },

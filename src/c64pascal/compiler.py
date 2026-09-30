@@ -6256,6 +6256,15 @@ class _CodeGenerator:
         self._owner_class_name_text(position)
         return self.types.get("string", STRING_TYPE)
 
+    def _class_instance_header_size(self) -> int:
+        """Bytes reserved at offset 0 of every class instance.
+
+        Legacy C64/Amiga classes keep the historical layout. Windows backends
+        override this with the native pointer width because ``jitObject`` stores
+        a ``JitVmt *`` as the first member of every object.
+        """
+        return 0
+
     def _value_storage_size(self, type_info: _PascalType) -> int:
         """Bytes occupied by one Pascal value in a variable/field slot.
 
@@ -6544,9 +6553,18 @@ class _CodeGenerator:
                     )
                     if base_type.kind != "class":
                         raise self._error("Eine Klasse kann nur von einer Klasse erben.", specification.position)
+                # Stage 240: a Windows object starts with its runtime VMT
+                # pointer.  The old root-class size became 1, so the first
+                # derived PE32 field started at +1 and overwrote bytes 1..3 of
+                # that pointer.  ClassName/InstanceSize then crashed as soon as
+                # they inspected Self's runtime class.
                 type_info = _PascalType(
                     declaration.name,
-                    base_type.size if base_type is not None else 0,
+                    (
+                        base_type.size
+                        if base_type is not None
+                        else self._class_instance_header_size()
+                    ),
                     False,
                     "class",
                     base_type=base_type,
@@ -9224,6 +9242,90 @@ class _PE32CodeGenerator(_CodeGenerator):
                 self.emitter.emit("    call _jit_debug_break", line)
         super()._compile_statement(statement)
 
+    def _class_instance_header_size(self) -> int:
+        return 4
+
+    def _class_vmt_label(self, class_type: _PascalType) -> str:
+        return f"{self.symbol_prefix}_vmt_{self._safe_name(class_type.name)}"
+
+    def _class_name_label(self, class_type: _PascalType) -> str:
+        return f"{self.symbol_prefix}_classname_{self._safe_name(class_type.name)}"
+
+    def _class_types_for_runtime_metadata(self) -> List[_PascalType]:
+        result: List[_PascalType] = []
+        seen: set[int] = set()
+        for type_info in self.types.values():
+            if type_info.kind != "class" or id(type_info) in seen:
+                continue
+            seen.add(id(type_info))
+            result.append(type_info)
+        result.sort(key=lambda item: item.name.casefold())
+        return result
+
+    def _class_destructor_method(self, class_type: _PascalType) -> Optional[_MethodInfo]:
+        method = class_type.methods.get("destroy")
+        if method is None or method.kind != "destructor":
+            return None
+        return method
+
+    def _class_destroy_thunk_label(self, class_type: _PascalType) -> str:
+        return f"{self.symbol_prefix}_vmt_destroy_{self._safe_name(class_type.name)}"
+
+    def _class_destructor_symbol(self, class_type: _PascalType) -> str:
+        # PE32 JitDestroyProc is a cdecl callback receiving the instance on the
+        # stack, while generated Pascal instance methods keep Self in ESI.
+        # A tiny per-class thunk bridges those ABIs.
+        if self._class_destructor_method(class_type) is None:
+            return "0"
+        return self._class_destroy_thunk_label(class_type)
+
+    def _emit_class_runtime_thunks(self) -> None:
+        for class_type in self._class_types_for_runtime_metadata():
+            method = self._class_destructor_method(class_type)
+            if method is None:
+                continue
+            self.emitter.emit()
+            self.emitter.emit(f"; Stage 240: cdecl JitDestroyProc -> {class_type.name}.Destroy")
+            self.emitter.emit(f"{self._class_destroy_thunk_label(class_type)}:")
+            self.emitter.emit("    push ebp")
+            self.emitter.emit("    mov ebp, esp")
+            self.emitter.emit("    push esi")
+            self.emitter.emit("    mov esi, dword ptr [ebp+8]")
+            self.emitter.emit(f"    call {method.label}")
+            self.emitter.emit("    pop esi")
+            self.emitter.emit("    mov esp, ebp")
+            self.emitter.emit("    pop ebp")
+            self.emitter.emit("    ret")
+
+    def _emit_class_runtime_metadata(self) -> None:
+        classes = self._class_types_for_runtime_metadata()
+        if not classes:
+            return
+        self.emitter.emit()
+        self.emitter.emit("; Stage 240: Pascal class runtime metadata / JitVmt (PE32)")
+        for class_type in classes:
+            name_label = self._class_name_label(class_type)
+            encoded = class_type.name.encode("latin-1", errors="replace") + b"\x00"
+            values = ", ".join(str(value) for value in encoded)
+            self.emitter.emit(f"{name_label}: db {values}")
+        self.emitter.emit("align 4")
+        for class_type in classes:
+            parent = (
+                self._class_vmt_label(class_type.base_type)
+                if class_type.base_type is not None
+                else "0"
+            )
+            destroy = self._class_destructor_symbol(class_type)
+            self.emitter.emit(f"{self._class_vmt_label(class_type)}:")
+            self.emitter.emit(f"    dd {parent}")
+            self.emitter.emit(f"    dd {self._class_name_label(class_type)}")
+            self.emitter.emit(
+                f"    dd {max(self._class_instance_header_size(), int(class_type.size))}"
+            )
+            self.emitter.emit("    dd 0")  # initialize_instance
+            self.emitter.emit("    dd 0")  # finalize_instance
+            self.emitter.emit(f"    dd {destroy}")
+
     def _value_storage_size(self, type_info: _PascalType) -> int:
         if type_info.kind == "class":
             return max(1, int(self.types.get("pointer", PE32_POINTER_TYPE).size))
@@ -10239,11 +10341,11 @@ class _PE32CodeGenerator(_CodeGenerator):
             internal=True,
             label_prefix="ctor_result",
         )
-        # calloc(count=1, size=instance_size), cdecl/right-to-left.
-        self.emitter.emit(f"    push {max(1, int(class_type.size))}", line)
-        self.emitter.emit("    push 1", line)
-        self.emitter.emit(f"    call {self._class_allocator_symbol()}", line)
-        self.emitter.emit("    add esp, 8", line)
+        # Stage 240: let the object runtime install the VMT pointer before
+        # any constructor body touches fields or calls inherited methods.
+        self.emitter.emit(f"    push {self._class_vmt_label(class_type)}", line)
+        self.emitter.emit("    call _jit_object_instance_new", line)
+        self.emitter.emit("    add esp, 4", line)
         self._store_variable(temp, line)
         receiver = _StorageAccess(
             class_type, position, temp.label, False
@@ -10714,6 +10816,7 @@ class _PE32CodeGenerator(_CodeGenerator):
                 low = bits & 0xFFFFFFFF
                 high = (bits >> 32) & 0xFFFFFFFF
                 self.emitter.emit(f"{label}: dd {low}, {high}")
+        self._emit_class_runtime_metadata()
         if self.variable_order:
             self.emitter.emit(); self.emitter.emit(f"; {self.language_name}-Variablen")
             for variable in self.variable_order:
@@ -10765,8 +10868,10 @@ class _PE32CodeGenerator(_CodeGenerator):
     def _emit_external_declarations(self) -> None:
         emitted: set[str] = set()
         if self._node_uses_class_constructor(self.program):
-            allocator_symbol = self._class_allocator_symbol()
-            line = f'import {allocator_symbol}, "msvcrt.dll", "calloc"'
+            line = (
+                f'import _jit_object_instance_new, "{PASCAL_MINIRUNTIME_DLL}", '
+                '"jit_object_instance_new"'
+            )
             self.emitter.emit(line)
             emitted.add(line)
         for routine in self.external_routines.values():
@@ -10834,6 +10939,7 @@ class _PE32CodeGenerator(_CodeGenerator):
             self.emitter.emit("    ret")
             self._emit_global_routines()
             self._emit_methods()
+            self._emit_class_runtime_thunks()
             self._emit_runtime()
             self._emit_data()
             assembly = "\n".join(self.emitter.lines).rstrip() + "\n"
@@ -10896,6 +11002,7 @@ class _PE32CodeGenerator(_CodeGenerator):
             self.emitter.emit("    ret 12", source_line)
             self._emit_global_routines()
             self._emit_methods()
+            self._emit_class_runtime_thunks()
             self._emit_library_exports()
             self._emit_runtime()
             self._emit_data()
@@ -10942,7 +11049,7 @@ class _PE32CodeGenerator(_CodeGenerator):
             self.emitter.emit(f"    call {self.symbol_prefix}_console_restore", source_line)
         self.emitter.emit("    push 0", source_line)
         self.emitter.emit("    call ExitProcess", source_line)
-        self._emit_global_routines(); self._emit_methods(); self._emit_runtime(); self._emit_data()
+        self._emit_global_routines(); self._emit_methods(); self._emit_class_runtime_thunks(); self._emit_runtime(); self._emit_data()
         assembly = "\n".join(self.emitter.lines).rstrip() + "\n"
         return GeneratedAssembly(
             self.program.name,
@@ -10997,6 +11104,48 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
     def _align16(value: int) -> int:
         value = int(value)
         return (value + 15) & ~15
+
+    def _class_instance_header_size(self) -> int:
+        return 8
+
+    def _class_destructor_symbol(self, class_type: _PascalType) -> str:
+        # Microsoft x64 already passes the instance in RCX, which is the
+        # generated Pascal-method Self ABI on PE32+.
+        method = self._class_destructor_method(class_type)
+        return method.label if method is not None else "0"
+
+    def _emit_class_runtime_thunks(self) -> None:
+        return
+
+    def _emit_class_runtime_metadata(self) -> None:
+        classes = self._class_types_for_runtime_metadata()
+        if not classes:
+            return
+        self.emitter.emit()
+        self.emitter.emit("; Stage 240: Pascal class runtime metadata / JitVmt (PE32+)")
+        for class_type in classes:
+            name_label = self._class_name_label(class_type)
+            encoded = class_type.name.encode("latin-1", errors="replace") + b"\x00"
+            values = ", ".join(str(value) for value in encoded)
+            self.emitter.emit(f"{name_label}: db {values}")
+        self.emitter.emit("align 8")
+        for class_type in classes:
+            parent = (
+                self._class_vmt_label(class_type.base_type)
+                if class_type.base_type is not None
+                else "0"
+            )
+            destroy = self._class_destructor_symbol(class_type)
+            self.emitter.emit(f"{self._class_vmt_label(class_type)}:")
+            self.emitter.emit(f"    dq {parent}")
+            self.emitter.emit(f"    dq {self._class_name_label(class_type)}")
+            self.emitter.emit(
+                f"    dd {max(self._class_instance_header_size(), int(class_type.size))}"
+            )
+            self.emitter.emit("    dd 0")  # native alignment after uint32_t
+            self.emitter.emit("    dq 0")  # initialize_instance
+            self.emitter.emit("    dq 0")  # finalize_instance
+            self.emitter.emit(f"    dq {destroy}")
 
     def _compile_owner_class_name_builtin(
         self,
@@ -11656,10 +11805,9 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
             internal=True,
             label_prefix="ctor_result",
         )
-        self.emitter.emit("    mov ecx, 1", line)
-        self.emitter.emit(f"    mov edx, {max(1, int(class_type.size))}", line)
+        self.emitter.emit(f"    mov rcx, {self._class_vmt_label(class_type)}", line)
         self.emitter.emit("    sub rsp, 32", line)
-        self.emitter.emit(f"    call {self._class_allocator_symbol()}", line)
+        self.emitter.emit("    call jit_object_instance_new", line)
         self.emitter.emit("    add rsp, 32", line)
         self._store_variable(temp, line)
         receiver = _StorageAccess(
@@ -12190,6 +12338,7 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
             self.emitter.emit("; IEEE-754 Double-Literale")
             for bits, label in self.double_literals.items():
                 self.emitter.emit(f"{label}: dq {bits}")
+        self._emit_class_runtime_metadata()
         if self.variable_order:
             self.emitter.emit()
             self.emitter.emit(f"; {self.language_name}-Variablen")
@@ -12249,8 +12398,10 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
     def _emit_external_declarations(self) -> None:
         emitted: set[str] = set()
         if self._node_uses_class_constructor(self.program):
-            allocator_symbol = self._class_allocator_symbol()
-            line = f'import {allocator_symbol}, "msvcrt.dll", "calloc"'
+            line = (
+                f'import jit_object_instance_new, "{PASCAL_MINIRUNTIME_DLL}", '
+                '"jit_object_instance_new"'
+            )
             self.emitter.emit(line)
             emitted.add(line)
         for routine in self.external_routines.values():

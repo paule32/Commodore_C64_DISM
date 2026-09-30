@@ -486,7 +486,11 @@ _jit_free(void *ptr) {
     if (!init_msvcrt())
         return;
 
-    _jit_free(ptr);
+    // Stage 241: call the resolved MSVCRT free() implementation.
+    // Calling _jit_free(ptr) here recursively re-entered this wrapper until
+    // the process exhausted its stack. TObject.Free reaches this path via
+    // jit_object_free() -> jit_object_instance_free() -> _jit_free().
+    p_free((JitJumpBuffer *)ptr);
 }
 
 DLL_API size_t

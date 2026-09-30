@@ -821,55 +821,29 @@ __dbase_wfm_print_null_5:
     call DBaseQtConsoleWrite
     add esp, 12
 __dbase_wfm_print_done_5:
-    mov dword ptr [__dbase_wfm_mem___string_arg_6_ptr], __dbase_wfm_output_text_92
-    mov dword ptr [__dbase_wfm_mem___string_arg_6_len], 11
-    mov dword ptr [__dbase_wfm_mem___string_arg_6_type], 3
-    mov eax, dword ptr [__dbase_wfm_mem___string_arg_6_len]
-    mov ecx, eax
-    add eax, ecx
-    add eax, ecx
-    add eax, 1
-    push eax
-    call __dbase_malloc
-    add esp, 4
-    test eax, eax
-    jne __wfm_upper_7_allocated
-    push 8
-    call ExitProcess
-__wfm_upper_7_allocated:
-    mov dword ptr [__dbase_wfm_mem___string_arg_7_ptr], eax
-    mov ecx, dword ptr [__dbase_wfm_mem___string_arg_6_len]
-    mov edx, ecx
-    add edx, ecx
-    add edx, ecx
-    add edx, 1
-    push ecx
-    push dword ptr [__dbase_wfm_mem___string_arg_6_ptr]
-    push edx
-    push dword ptr [__dbase_wfm_mem___string_arg_7_ptr]
-    call __dbase_upper_buffer
-    add esp, 16
-    cmp eax, -1
-    jne __wfm_upper_7_converted
-    push 13
-    call ExitProcess
-__wfm_upper_7_converted:
-    mov dword ptr [__dbase_wfm_mem___string_arg_7_len], eax
-    mov dword ptr [__dbase_wfm_mem___string_arg_7_type], 3
-    ; ? !("Das ist Gut")
-    cmp dword ptr [__dbase_wfm_mem___string_arg_7_type], 0
-    je __dbase_wfm_print_null_8
-    cmp dword ptr [__dbase_wfm_mem___string_arg_7_type], 3
-    je __dbase_wfm_print_string_8
-    cmp dword ptr [__dbase_wfm_mem___string_arg_7_type], 4
-    je __dbase_wfm_print_object_8
-    cmp dword ptr [__dbase_wfm_mem___string_arg_7_type], 1
-    je __dbase_wfm_print_number_8
-    cmp dword ptr [__dbase_wfm_mem___string_arg_7_type], 2
-    je __dbase_wfm_print_number_8
-    jmp __dbase_wfm_print_null_8
-__dbase_wfm_print_number_8:
-    fld qword ptr [__dbase_wfm_mem___string_arg_7_num]
+    ; STORE "Zeichenstring" TO SpeicherVar
+    mov dword ptr [__dbase_wfm_mem_SpeicherVar_ptr], __dbase_wfm_output_text_92
+    mov dword ptr [__dbase_wfm_mem_SpeicherVar_len], 13
+    mov dword ptr [__dbase_wfm_mem_SpeicherVar_type], 3
+    ; ? "4: " + SpeicherVar
+    push 0
+    push 3
+    push __dbase_wfm_output_text_93
+    call DBaseQtConsoleWrite
+    add esp, 12
+    cmp dword ptr [__dbase_wfm_mem_SpeicherVar_type], 0
+    je __dbase_wfm_print_null_6
+    cmp dword ptr [__dbase_wfm_mem_SpeicherVar_type], 3
+    je __dbase_wfm_print_string_6
+    cmp dword ptr [__dbase_wfm_mem_SpeicherVar_type], 4
+    je __dbase_wfm_print_object_6
+    cmp dword ptr [__dbase_wfm_mem_SpeicherVar_type], 1
+    je __dbase_wfm_print_number_6
+    cmp dword ptr [__dbase_wfm_mem_SpeicherVar_type], 2
+    je __dbase_wfm_print_number_6
+    jmp __dbase_wfm_print_null_6
+__dbase_wfm_print_number_6:
+    fld qword ptr [__dbase_wfm_mem_SpeicherVar_num]
     fstp qword ptr [__dbase_temp_number]
     push dword ptr [__dbase_format_buffer]
     push 15
@@ -892,34 +866,259 @@ __dbase_wfm_strlen_done_5:
     push dword ptr [__dbase_format_buffer]
     call DBaseQtConsoleWrite
     add esp, 12
-    jmp __dbase_wfm_print_done_8
-__dbase_wfm_print_string_8:
-    mov eax, dword ptr [__dbase_wfm_mem___string_arg_7_ptr]
+    jmp __dbase_wfm_print_done_6
+__dbase_wfm_print_string_6:
+    mov eax, dword ptr [__dbase_wfm_mem_SpeicherVar_ptr]
     test eax, eax
-    je __dbase_wfm_print_null_8
+    je __dbase_wfm_print_null_6
     push 1
-    push dword ptr [__dbase_wfm_mem___string_arg_7_len]
+    push dword ptr [__dbase_wfm_mem_SpeicherVar_len]
     push eax
     call DBaseQtConsoleWrite
     add esp, 12
-    jmp __dbase_wfm_print_done_8
-__dbase_wfm_print_object_8:
-    mov eax, dword ptr [__dbase_wfm_mem___string_arg_7_ptr]
+    jmp __dbase_wfm_print_done_6
+__dbase_wfm_print_object_6:
+    mov eax, dword ptr [__dbase_wfm_mem_SpeicherVar_ptr]
     test eax, eax
-    je __dbase_wfm_print_null_8
+    je __dbase_wfm_print_null_6
     push 1
     push 8
+    push __dbase_wfm_output_text_95
+    call DBaseQtConsoleWrite
+    add esp, 12
+    jmp __dbase_wfm_print_done_6
+__dbase_wfm_print_null_6:
+    push 1
+    push 6
     push __dbase_wfm_output_text_94
     call DBaseQtConsoleWrite
     add esp, 12
-    jmp __dbase_wfm_print_done_8
-__dbase_wfm_print_null_8:
-    push 1
-    push 6
-    push __dbase_wfm_output_text_93
+__dbase_wfm_print_done_6:
+    cmp dword ptr [__dbase_wfm_mem_SpeicherVar_type], 3
+    je __wfm_upper_7_valid
+    push 13
+    call ExitProcess
+__wfm_upper_7_valid:
+    fld qword ptr [__dbase_wfm_numconst_2]
+    fstp qword ptr [__dbase_wfm_mem___string_arg_9_num]
+    mov dword ptr [__dbase_wfm_mem___string_arg_9_type], 2
+    mov dword ptr [__dbase_wfm_mem___string_arg_9_len], 0
+    mov dword ptr [__dbase_wfm_mem___string_arg_9_ptr], 0
+    fld qword ptr [__dbase_wfm_numconst_3]
+    fstp qword ptr [__dbase_wfm_mem___string_arg_10_num]
+    mov dword ptr [__dbase_wfm_mem___string_arg_10_type], 2
+    mov dword ptr [__dbase_wfm_mem___string_arg_10_len], 0
+    mov dword ptr [__dbase_wfm_mem___string_arg_10_ptr], 0
+    mov eax, dword ptr [__dbase_wfm_mem_SpeicherVar_len]
+    add eax, 1
+    push eax
+    call __dbase_malloc
+    add esp, 4
+    test eax, eax
+    jne __wfm_upper_8_allocated
+    push 8
+    call ExitProcess
+__wfm_upper_8_allocated:
+    mov dword ptr [__dbase_wfm_mem___string_arg_8_ptr], eax
+    push ebx
+    push esi
+    push edi
+    push ebp
+    sub esp, 16
+    xor ebx, ebx
+    mov eax, dword ptr [__dbase_wfm_mem___string_arg_9_num+4]
+    test eax, eax
+    js __wfm_upper_8_start_done
+    cmp eax, 0x41E00000
+    jb __wfm_upper_8_start_convert
+    mov ebx, 2147483647
+    jmp __wfm_upper_8_start_done
+__wfm_upper_8_start_convert:
+    fnstcw word ptr [esp]
+    movzx eax, word ptr [esp]
+    or eax, 0x0C00
+    mov dword ptr [esp+4], eax
+    fldcw word ptr [esp+4]
+    fld qword ptr [__dbase_wfm_mem___string_arg_9_num]
+    fistp dword ptr [esp+8]
+    fldcw word ptr [esp]
+    mov ebx, dword ptr [esp+8]
+__wfm_upper_8_start_done:
+    test ebx, ebx
+    je __wfm_upper_8_start_ready
+    dec ebx
+__wfm_upper_8_start_ready:
+    xor ecx, ecx
+    mov eax, dword ptr [__dbase_wfm_mem___string_arg_10_num+4]
+    test eax, eax
+    js __wfm_upper_8_count_done
+    cmp eax, 0x41E00000
+    jb __wfm_upper_8_count_convert
+    mov ecx, 2147483647
+    jmp __wfm_upper_8_count_done
+__wfm_upper_8_count_convert:
+    fnstcw word ptr [esp]
+    movzx eax, word ptr [esp]
+    or eax, 0x0C00
+    mov dword ptr [esp+4], eax
+    fldcw word ptr [esp+4]
+    fld qword ptr [__dbase_wfm_mem___string_arg_10_num]
+    fistp dword ptr [esp+8]
+    fldcw word ptr [esp]
+    mov ecx, dword ptr [esp+8]
+__wfm_upper_8_count_done:
+    add esp, 16
+    mov esi, dword ptr [__dbase_wfm_mem_SpeicherVar_ptr]
+    mov edi, dword ptr [__dbase_wfm_mem___string_arg_8_ptr]
+    mov edx, dword ptr [__dbase_wfm_mem_SpeicherVar_len]
+__wfm_upper_8_loop:
+    test edx, edx
+    je __wfm_upper_8_done
+    test ecx, ecx
+    je __wfm_upper_8_done
+    movzx eax, byte ptr [esi]
+    mov ebp, 1
+    cmp eax, 194
+    jb __wfm_upper_8_width
+    cmp eax, 245
+    jae __wfm_upper_8_width
+    mov ebp, 2
+    cmp eax, 224
+    jb __wfm_upper_8_width
+    mov ebp, 3
+    cmp eax, 240
+    jb __wfm_upper_8_width
+    mov ebp, 4
+__wfm_upper_8_width:
+    cmp ebp, edx
+    jbe __wfm_upper_8_bounded
+    mov ebp, 1
+__wfm_upper_8_bounded:
+    sub edx, ebp
+    test ebx, ebx
+    je __wfm_upper_8_copy
+    add esi, ebp
+    dec ebx
+    jmp __wfm_upper_8_loop
+__wfm_upper_8_copy:
+    movzx eax, byte ptr [esi]
+    mov byte ptr [edi], al
+    inc esi
+    inc edi
+    dec ebp
+    jne __wfm_upper_8_copy
+    dec ecx
+    jmp __wfm_upper_8_loop
+__wfm_upper_8_done:
+    mov byte ptr [edi], 0
+    sub edi, dword ptr [__dbase_wfm_mem___string_arg_8_ptr]
+    mov dword ptr [__dbase_wfm_mem___string_arg_8_len], edi
+    mov dword ptr [__dbase_wfm_mem___string_arg_8_type], 3
+    pop ebp
+    pop edi
+    pop esi
+    pop ebx
+    mov eax, dword ptr [__dbase_wfm_mem___string_arg_8_len]
+    mov ecx, eax
+    add eax, ecx
+    add eax, ecx
+    add eax, 1
+    push eax
+    call __dbase_malloc
+    add esp, 4
+    test eax, eax
+    jne __wfm_upper_11_allocated
+    push 8
+    call ExitProcess
+__wfm_upper_11_allocated:
+    mov dword ptr [__dbase_wfm_mem___string_arg_11_ptr], eax
+    mov ecx, dword ptr [__dbase_wfm_mem___string_arg_8_len]
+    mov edx, ecx
+    add edx, ecx
+    add edx, ecx
+    add edx, 1
+    push ecx
+    push dword ptr [__dbase_wfm_mem___string_arg_8_ptr]
+    push edx
+    push dword ptr [__dbase_wfm_mem___string_arg_11_ptr]
+    call __dbase_upper_buffer
+    add esp, 16
+    cmp eax, -1
+    jne __wfm_upper_11_converted
+    push 13
+    call ExitProcess
+__wfm_upper_11_converted:
+    mov dword ptr [__dbase_wfm_mem___string_arg_11_len], eax
+    mov dword ptr [__dbase_wfm_mem___string_arg_11_type], 3
+    ; ? "5: " + !($(SpeicherVar, 8, 6))
+    push 0
+    push 3
+    push __dbase_wfm_output_text_96
     call DBaseQtConsoleWrite
     add esp, 12
-__dbase_wfm_print_done_8:
+    cmp dword ptr [__dbase_wfm_mem___string_arg_11_type], 0
+    je __dbase_wfm_print_null_12
+    cmp dword ptr [__dbase_wfm_mem___string_arg_11_type], 3
+    je __dbase_wfm_print_string_12
+    cmp dword ptr [__dbase_wfm_mem___string_arg_11_type], 4
+    je __dbase_wfm_print_object_12
+    cmp dword ptr [__dbase_wfm_mem___string_arg_11_type], 1
+    je __dbase_wfm_print_number_12
+    cmp dword ptr [__dbase_wfm_mem___string_arg_11_type], 2
+    je __dbase_wfm_print_number_12
+    jmp __dbase_wfm_print_null_12
+__dbase_wfm_print_number_12:
+    fld qword ptr [__dbase_wfm_mem___string_arg_11_num]
+    fstp qword ptr [__dbase_temp_number]
+    push dword ptr [__dbase_format_buffer]
+    push 15
+    push dword ptr [__dbase_temp_number_hi]
+    push dword ptr [__dbase_temp_number]
+    call __dbase_gcvt
+    add esp, 16
+    mov ecx, dword ptr [__dbase_format_buffer]
+    xor edx, edx
+__dbase_wfm_strlen_6:
+    movzx eax, byte ptr [ecx]
+    test eax, eax
+    je __dbase_wfm_strlen_done_6
+    inc ecx
+    inc edx
+    jmp __dbase_wfm_strlen_6
+__dbase_wfm_strlen_done_6:
+    push 1
+    push edx
+    push dword ptr [__dbase_format_buffer]
+    call DBaseQtConsoleWrite
+    add esp, 12
+    jmp __dbase_wfm_print_done_12
+__dbase_wfm_print_string_12:
+    mov eax, dword ptr [__dbase_wfm_mem___string_arg_11_ptr]
+    test eax, eax
+    je __dbase_wfm_print_null_12
+    push 1
+    push dword ptr [__dbase_wfm_mem___string_arg_11_len]
+    push eax
+    call DBaseQtConsoleWrite
+    add esp, 12
+    jmp __dbase_wfm_print_done_12
+__dbase_wfm_print_object_12:
+    mov eax, dword ptr [__dbase_wfm_mem___string_arg_11_ptr]
+    test eax, eax
+    je __dbase_wfm_print_null_12
+    push 1
+    push 8
+    push __dbase_wfm_output_text_98
+    call DBaseQtConsoleWrite
+    add esp, 12
+    jmp __dbase_wfm_print_done_12
+__dbase_wfm_print_null_12:
+    push 1
+    push 6
+    push __dbase_wfm_output_text_97
+    call DBaseQtConsoleWrite
+    add esp, 12
+__dbase_wfm_print_done_12:
     ret
 ; END WFM PROCEDURE/FUNCTION: PushButton1_onClick
 
@@ -1146,10 +1345,18 @@ __dbase_wfm_output_text_90:
 __dbase_wfm_output_text_91:
     db 60, 111, 98, 106, 101, 99, 116, 62
 __dbase_wfm_output_text_92:
-    db 68, 97, 115, 32, 105, 115, 116, 32, 71, 117, 116
+    db 90, 101, 105, 99, 104, 101, 110, 115, 116, 114, 105, 110, 103
 __dbase_wfm_output_text_93:
-    db 60, 110, 117, 108, 108, 62
+    db 52, 58, 32
 __dbase_wfm_output_text_94:
+    db 60, 110, 117, 108, 108, 62
+__dbase_wfm_output_text_95:
+    db 60, 111, 98, 106, 101, 99, 116, 62
+__dbase_wfm_output_text_96:
+    db 53, 58, 32
+__dbase_wfm_output_text_97:
+    db 60, 110, 117, 108, 108, 62
+__dbase_wfm_output_text_98:
     db 60, 111, 98, 106, 101, 99, 116, 62
 
 ; Stage 223: compact WFM property blocks
@@ -1438,6 +1645,10 @@ __dbase_wfm_numconst_0:
     dd 1202590843, 1079597793
 __dbase_wfm_numconst_1:
     dd 1202590843, 1079597793
+__dbase_wfm_numconst_2:
+    dd 0, 1075838976
+__dbase_wfm_numconst_3:
+    dd 0, 1075314688
 
 ; Stage 223 WFM zero-initialized storage
 .section .bss
@@ -1463,6 +1674,14 @@ __dbase_wfm_mem_Ausdruck_ptr:
     resd 1
 __dbase_wfm_mem_Ausdruck_len:
     resd 1
+__dbase_wfm_mem_SpeicherVar_type:
+    resd 1
+__dbase_wfm_mem_SpeicherVar_num:
+    resq 1
+__dbase_wfm_mem_SpeicherVar_ptr:
+    resd 1
+__dbase_wfm_mem_SpeicherVar_len:
+    resd 1
 __dbase_wfm_mem_p1_type:
     resd 1
 __dbase_wfm_mem_p1_num:
@@ -1479,14 +1698,6 @@ __dbase_wfm_mem_p2_ptr:
     resd 1
 __dbase_wfm_mem_p2_len:
     resd 1
-__dbase_wfm_mem___string_arg_6_type:
-    resd 1
-__dbase_wfm_mem___string_arg_6_num:
-    resq 1
-__dbase_wfm_mem___string_arg_6_ptr:
-    resd 1
-__dbase_wfm_mem___string_arg_6_len:
-    resd 1
 __dbase_wfm_mem___string_arg_7_type:
     resd 1
 __dbase_wfm_mem___string_arg_7_num:
@@ -1494,4 +1705,36 @@ __dbase_wfm_mem___string_arg_7_num:
 __dbase_wfm_mem___string_arg_7_ptr:
     resd 1
 __dbase_wfm_mem___string_arg_7_len:
+    resd 1
+__dbase_wfm_mem___string_arg_8_type:
+    resd 1
+__dbase_wfm_mem___string_arg_8_num:
+    resq 1
+__dbase_wfm_mem___string_arg_8_ptr:
+    resd 1
+__dbase_wfm_mem___string_arg_8_len:
+    resd 1
+__dbase_wfm_mem___string_arg_9_type:
+    resd 1
+__dbase_wfm_mem___string_arg_9_num:
+    resq 1
+__dbase_wfm_mem___string_arg_9_ptr:
+    resd 1
+__dbase_wfm_mem___string_arg_9_len:
+    resd 1
+__dbase_wfm_mem___string_arg_10_type:
+    resd 1
+__dbase_wfm_mem___string_arg_10_num:
+    resq 1
+__dbase_wfm_mem___string_arg_10_ptr:
+    resd 1
+__dbase_wfm_mem___string_arg_10_len:
+    resd 1
+__dbase_wfm_mem___string_arg_11_type:
+    resd 1
+__dbase_wfm_mem___string_arg_11_num:
+    resq 1
+__dbase_wfm_mem___string_arg_11_ptr:
+    resd 1
+__dbase_wfm_mem___string_arg_11_len:
     resd 1

@@ -124,7 +124,7 @@
             {
                 "name": "TObject",
                 "parent": null,
-                "size": 1,
+                "size": 4,
                 "vmt_symbol": null,
                 "class_name_symbol": null,
                 "fields": [],

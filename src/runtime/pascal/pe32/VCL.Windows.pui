@@ -52,7 +52,7 @@
             {
                 "name": "TWindow",
                 "parent": "TObject",
-                "size": 17,
+                "size": 20,
                 "vmt_symbol": null,
                 "class_name_symbol": null,
                 "fields": [],
@@ -144,7 +144,7 @@
             {
                 "name": "TForm",
                 "parent": "TWindow",
-                "size": 37,
+                "size": 40,
                 "vmt_symbol": null,
                 "class_name_symbol": null,
                 "fields": [],

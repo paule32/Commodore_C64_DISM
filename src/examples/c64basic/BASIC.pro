@@ -3,24 +3,25 @@ Format = dBase2Many Project
 Version = 2
 WorkingDirectory = .
 WorkspaceRoot = ../..
-ViewState = AAAA/wAAAAD9AAAAAwAAAAAAAAL9AAACL/wCAAAACvwAAABtAAABKgAAAAAA/////AEAAAAD+wAAACoAcAByAG8AagBlAGMAdABfAHMAZQB0AHQAaQBuAGcAcwBfAGQAbwBjAGsAAAAAAgAABG0AAAAAAAAAAPsAAAAyAGQAYgBhAHMAZQBfAHQAYQBiAGwAZQBfAGQAZQBzAGkAZwBuAGUAcgBfAGQAbwBjAGsAAAABRgAAAoQAAAAAAAAAAPsAAAAqAGQAZQBzAGsAdABvAHAAXwBzAGUAdAB0AGkAbgBnAHMAXwBkAG8AYwBrAAAAAUYAAALxAAAAAAAAAAD7AAAAKgBwAHIAbwBsAG8AZwBfAGsAbgBvAHcAbABlAGQAZwBlAF8AZABvAGMAawEAAABtAAABmAAAAAAAAAAA+wAAACYAbABvAGMAYQBsAGkAegBlAF8AcABvAF8AbQBvAF8AZABvAGMAawAAAABtAAACYgAAAAAAAAAA+wAAADQAZABvAHgAeQBnAGUAbgBfAGQAbwBjAHUAbQBlAG4AdABhAHQAaQBvAG4AXwBkAG8AYwBrAAAAAG0AAAIqAAAAAAAAAAD8AAAAbQAAAp0AAAAAAP////wBAAAAAvsAAAAwAGQAYgBhAHMAZQBfAGYAbwByAG0AXwBwAHIAbwBwAGUAcgB0AHkAXwBkAG8AYwBrAAAAAAIAAATnAAAAAAAAAAD7AAAAMABkAGIAYQBzAGUAXwBmAG8AcgBtAF8AZABlAHMAaQBnAG4AZQByAF8AZABvAGMAawAAAAEeAAADywAAAAAAAAAA+wAAACQAbQBhAHQAaABfAGwAZQBhAHIAbgBpAG4AZwBfAGQAbwBjAGsAAAAAbQAAApUAAAAAAAAAAPsAAAAmAG0AdQBzAGkAYwBfAGsAZQB5AGIAbwBhAHIAZABfAGQAbwBjAGsAAAAAbQAAAwgAAAAAAAAAAPsAAAAsAGQAYgBhAHMAZQBfAHMAcQBsAF8AYgB1AGkAbABkAGUAcgBfAGQAbwBjAGsAAAAAbQAAAp0AAAAAAAAAAPsAAAAyAGQAYgBhAHMAZQBfAHIAZQBwAG8AcgB0AF8AYgB1AGkAbABkAGUAcgBfAGQAbwBjAGsBAAAAbQAAAioAAAAAAAAAAPsAAAAyAGQAYgBhAHMAZQBfAGwAYQBiAGUAbABfAGQAZQBzAGkAZwBuAGUAcgBfAGQAbwBjAGsBAAAAbQAAAi8AAAAAAAAAAAAAAAEAAAFoAAACL/wCAAAAA/sAAAAqAG0AdQBzAGkAYwBfAGkAbgBzAHQAcgB1AG0AZQBuAHQAXwBkAG8AYwBrAAAAAG0AAAMIAAAAAAAAAAD7AAAAIABkADYANABfAGMAbwBuAHQAZQBuAHQAXwBkAG8AYwBrAQAAAG0AAAEBAAAA4gD////7AAAAHgBmAGkAbABlAHMAeQBzAHQAZQBtAF8AZABvAGMAawEAAAFyAAABKgAAASoA////AAAAAwAABGkAAABv/AEAAAAB+wAAABAAbABvAGcAXwBkAG8AYwBrAQAAAAIAAARpAAAA4QD///8AAAL9AAACLwAAAAQAAAAEAAAACAAAAAj8AAAAAQAAAAIAAAABAAAAGABtAGEAaQBuAF8AdABvAG8AbABiAGEAcgEAAAAA/////wAAAAAAAAAA
-PrimaryDockLayout = {"paired":true,"area":2,"orientation":2,"first":"right_dock","second":"left_dock","sizes":[257,298],"area_width":360,"central_width":765,"separator_x":771}
+ViewState = AAAA/wAAAAD9AAAAAwAAAAAAAAL9AAACL/wCAAAACvwAAABtAAABKgAAAAAA/////AEAAAAD+wAAACoAcAByAG8AagBlAGMAdABfAHMAZQB0AHQAaQBuAGcAcwBfAGQAbwBjAGsAAAAAAgAABG0AAAAAAAAAAPsAAAAyAGQAYgBhAHMAZQBfAHQAYQBiAGwAZQBfAGQAZQBzAGkAZwBuAGUAcgBfAGQAbwBjAGsAAAABRgAAAoQAAAAAAAAAAPsAAAAqAGQAZQBzAGsAdABvAHAAXwBzAGUAdAB0AGkAbgBnAHMAXwBkAG8AYwBrAAAAAUYAAALxAAAAAAAAAAD7AAAAKgBwAHIAbwBsAG8AZwBfAGsAbgBvAHcAbABlAGQAZwBlAF8AZABvAGMAawEAAABtAAABmAAAAAAAAAAA+wAAACYAbABvAGMAYQBsAGkAegBlAF8AcABvAF8AbQBvAF8AZABvAGMAawAAAABtAAACYgAAAAAAAAAA+wAAADQAZABvAHgAeQBnAGUAbgBfAGQAbwBjAHUAbQBlAG4AdABhAHQAaQBvAG4AXwBkAG8AYwBrAAAAAG0AAAIqAAAAAAAAAAD8AAAAbQAAAp0AAAAAAP////wBAAAAAvsAAAAwAGQAYgBhAHMAZQBfAGYAbwByAG0AXwBwAHIAbwBwAGUAcgB0AHkAXwBkAG8AYwBrAAAAAAIAAATnAAAAAAAAAAD7AAAAMABkAGIAYQBzAGUAXwBmAG8AcgBtAF8AZABlAHMAaQBnAG4AZQByAF8AZABvAGMAawAAAAEeAAADywAAAAAAAAAA+wAAACQAbQBhAHQAaABfAGwAZQBhAHIAbgBpAG4AZwBfAGQAbwBjAGsAAAAAbQAAApUAAAAAAAAAAPsAAAAmAG0AdQBzAGkAYwBfAGsAZQB5AGIAbwBhAHIAZABfAGQAbwBjAGsAAAAAbQAAAwgAAAAAAAAAAPsAAAAsAGQAYgBhAHMAZQBfAHMAcQBsAF8AYgB1AGkAbABkAGUAcgBfAGQAbwBjAGsAAAAAbQAAAp0AAAAAAAAAAPsAAAAyAGQAYgBhAHMAZQBfAHIAZQBwAG8AcgB0AF8AYgB1AGkAbABkAGUAcgBfAGQAbwBjAGsBAAAAbQAAAioAAAAAAAAAAPsAAAAyAGQAYgBhAHMAZQBfAGwAYQBiAGUAbABfAGQAZQBzAGkAZwBuAGUAcgBfAGQAbwBjAGsBAAAAbQAAAi8AAAAAAAAAAAAAAAEAAAFAAAACLfwCAAAAA/sAAAAqAG0AdQBzAGkAYwBfAGkAbgBzAHQAcgB1AG0AZQBuAHQAXwBkAG8AYwBrAAAAAG0AAAMIAAAAAAAAAAD7AAAAIABkADYANABfAGMAbwBuAHQAZQBuAHQAXwBkAG8AYwBrAQAAAG4AAAD/AAAA4gD////7AAAAHgBmAGkAbABlAHMAeQBzAHQAZQBtAF8AZABvAGMAawEAAAAAAAABKgAAASoA////AAAAAwAABGcAAABv/AEAAAAB+wAAABAAbABvAGcAXwBkAG8AYwBrAQAAAAMAAARnAAAA4QD///8AAAMjAAACLQAAAAQAAAAEAAAACAAAAAj8AAAAAQAAAAIAAAABAAAAGABtAGEAaQBuAF8AdABvAG8AbABiAGEAcgEAAAAA/////wAAAAAAAAAA
+PrimaryDockLayout = {"paired":true,"area":2,"orientation":2,"first":"right_dock","second":"left_dock","sizes":[226,327],"area_width":320,"central_width":803,"separator_x":810}
 
 [Session.Geometry]
 Version = 2
 MainWindow = {"x":72,"y":95,"width":1133,"height":805,"maximized":false,"fullscreen":false,"qt_geometry":"AdnQywADAAAAAABIAAAAXwAABLQAAAODAAAASAAAAF8AAAS0AAADgwAAAAAAAAAAB4AAAABIAAAAXwAABLQAAAOD"}
-CentralArea = {"x":2,"y":109,"width":765,"height":559}
-PrimaryDockArea = {"area":2,"orientation":2,"first":"right_dock","second":"left_dock","sizes":[257,298],"area_width":360,"central_width":765,"separator_x":771}
-FileSystemDock = {"visible":true,"floating":false,"area":2,"x":771,"y":370,"width":360,"height":298}
-ProjectDock = {"visible":true,"floating":false,"area":2,"x":771,"y":109,"width":360,"height":257}
-ProtocolDock = {"visible":true,"floating":false,"area":8,"x":2,"y":672,"width":1129,"height":111}
+CentralArea = {"x":3,"y":110,"width":840,"height":557}
+PrimaryDockArea = {"area":2,"orientation":2,"first":"right_dock","second":"left_dock","sizes":[226,327],"area_width":320,"central_width":803,"separator_x":810}
+FileSystemDock = {"visible":true,"floating":false,"area":2,"x":810,"y":340,"width":320,"height":327}
+ProjectDock = {"visible":true,"floating":false,"area":2,"x":810,"y":110,"width":283,"height":226}
+ProtocolDock = {"visible":true,"floating":false,"area":8,"x":3,"y":671,"width":1127,"height":111}
 
 [Session.C64]
-LastBasicFile = basic_demo.bas
+LastBasicFile = ../c64_minesweeper/minesweeper.bas
 
 [Session.C64.Editors]
 Title = Offene C64 BASIC Editoren
-Item0001 = {"path":"basic_demo.bas","active":true,"keyboard_visible":true,"splitter_sizes":[237,187],"keyboard_last_sizes":[237,187],"splitter_state":"AAAA/wAAAAEAAAACAAAA7QAAALsA/////wEAAAACAA==","splitter_handle_width":5,"keyboard_width":756,"keyboard_height":183,"keyboard_host_width":761,"keyboard_host_height":187,"keyboard_scroll_x":0,"keyboard_scroll_y":0}
+Item0001 = {"path":"basic_demo.bas","active":false,"keyboard_visible":true,"splitter_sizes":[235,187],"keyboard_last_sizes":[237,187],"splitter_state":"AAAA/wAAAAEAAAACAAAA6wAAALsA/////wEAAAACAA==","splitter_handle_width":5,"keyboard_width":756,"keyboard_height":183,"keyboard_host_width":836,"keyboard_host_height":187,"keyboard_scroll_x":0,"keyboard_scroll_y":0}
+Item0002 = {"path":"../c64_minesweeper/minesweeper.bas","active":true,"keyboard_visible":true,"splitter_sizes":[202,220],"keyboard_last_sizes":[650,220],"splitter_state":"AAAA/wAAAAEAAAACAAACigAAANwA/////wEAAAACAA==","splitter_handle_width":5,"keyboard_width":756,"keyboard_height":183,"keyboard_host_width":836,"keyboard_host_height":220,"keyboard_scroll_x":0,"keyboard_scroll_y":0}
 
 [Category.c64]
 Title = Commodore C= 64
@@ -30,6 +31,7 @@ Item0002 = {"title":"DALEK ATTACK_TSM.prg.prg","path":"../../Dalek_Attack/DALEK 
 [Category.basic]
 Title = BASIC - Programme
 Item0001 = {"title":"basic_demo.bas","path":"basic_demo.bas"}
+Item0002 = {"title":"minesweeper.bas","path":"../c64_minesweeper/minesweeper.bas"}
 
 [Category.assembler]
 Title = Assembler-Programme
@@ -128,6 +130,48 @@ Title = Windows PE32 Tabellen
 [Category.pascal.pe64.tables]
 Title = Windows PE32+ Tabellen
 
+[Category.basic.pe32.resources]
+Title = BASIC - Programme Windows PE32 Resourcen
+
+[Category.basic.pe64.resources]
+Title = BASIC - Programme Windows PE32+ Resourcen
+
+[Category.assembler.pe32.resources]
+Title = Assembler-Programme Windows PE32 Resourcen
+
+[Category.assembler.pe64.resources]
+Title = Assembler-Programme Windows PE32+ Resourcen
+
+[Category.pascal.pe32.resources]
+Title = Pascal-Programme Windows PE32 Resourcen
+
+[Category.pascal.pe64.resources]
+Title = Pascal-Programme Windows PE32+ Resourcen
+
+[Category.c.pe32.resources]
+Title = C-Programme Windows PE32 Resourcen
+
+[Category.c.pe64.resources]
+Title = C-Programme Windows PE32+ Resourcen
+
+[Category.lisp.pe32.resources]
+Title = LISP-Programme Windows PE32 Resourcen
+
+[Category.lisp.pe64.resources]
+Title = LISP-Programme Windows PE32+ Resourcen
+
+[Category.prolog.pe32.resources]
+Title = PROLOG-Programme Windows PE32 Resourcen
+
+[Category.prolog.pe64.resources]
+Title = PROLOG-Programme Windows PE32+ Resourcen
+
+[Category.dbase.pe32.resources]
+Title = dBase-Programme Windows PE32 Resourcen
+
+[Category.dbase.pe64.resources]
+Title = dBase-Programme Windows PE32+ Resourcen
+
 [Debug.Breakpoints]
 Title = Break points
 
@@ -145,10 +189,51 @@ RelativePaths = true
 [Settings.Windows.32Bit.Environment]
 Title = Windows 32-Bit Umgebung
 WorkstationMode = false
+DebugThemeNormal = default
+DebugThemeWorkstation = default
 
 [Settings.Windows.32Bit.Linker]
 Title = Windows 32-Bit Linker
+
+[Settings.Windows.32Bit.Linker.Optionen]
+Title = Windows 32-Bit Linker Optionen
+PEPackingEnabled = true
+PEPackingFormat = D64Z/MSZIP
+
+[Settings.Windows.32Bit.Linker.Optimierung]
+Title = Windows 32-Bit Linker Optimierung
 LinkWithOrdinals = false
+ImportPackerEnabled = true
+ImportPackerRequireSavings = true
+ImportPackerMinimumSavings = 1
+ObjectDefaultsEnabled = true
+DeadPropertyImports = true
+EmptyStandardStrings = true
+CutMultipleCodes = true
+ImageLayout = loader_data_code
+PropertyDefaultsAbi = 1
+RuntimeAbiMajor = 1
+RuntimeAbiMinor = 2
+OrdinalMapVersion = 2
+RuntimeVersionCheck = true
+OrdinalMapHashCheck = true
+ExactRuntimeCheck = false
+OrdinalMismatchAction = abort
+LoaderVersion = 1.4.0
+LoaderBuild = 225
+D64IFormatVersion = 3
+PEBResolverEnabled = false
+PEBModuleList = PEB_LDR_DATA/InMemoryOrderModuleList
+PEB32 = disabled
+PEB64 = disabled
+ImportPackerFormat = D64I/MSZIP
+ImportResolver = Bootstrap-IAT
+
+[Settings.Windows.32Bit.Linker.Manifest]
+Data = {"identity": {"type": "win32", "name": "", "language": "*", "processorArchitecture": "*", "version": "6.0.0.0", "publicKeyToken": ""}, "compatibility": {"Windows 12": {"checked": false, "id": ""}, "Windows 11": {"checked": false, "id": "{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"}, "Windows 10": {"checked": false, "id": "{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"}, "Windows Vista": {"checked": false, "id": "{e2011457-1546-43c5-a5fe-008deee3d3f0}"}, "Windows 8.1": {"checked": false, "id": "{1f676c76-80e1-4239-95bb-83d0f6d0da78}"}, "Windows 8": {"checked": false, "id": "{4a2f28e3-53b9-4441-ba9c-d69d4a4a6e38}"}, "Windows 7": {"checked": false, "id": "{35138b9a-5d96-4fbd-8e2d-a2440225f93a}"}, "Windows XP": {"checked": false, "id": ""}}, "longPathAware": true}
+
+[Settings.Windows.32Bit.Linker.Signierung]
+Data = {"enabled": false, "sign_exe": true, "sign_dll": true, "certificate_source": "openssl_ca", "openssl_certificate": "", "openssl_private_key": "", "pfx_file": "", "store_location": "CurrentUser", "store_name": "My", "thumbprint": "", "file_digest": "SHA256", "timestamp_enabled": true, "timestamp_url": "http://timestamp.digicert.com", "timestamp_digest": "SHA256", "description": "", "description_url": "", "signtool_path": "", "verify_after_sign": true, "fail_build_on_error": true}
 
 [Settings.Windows.64Bit.Compiler.InputDirectories]
 Title = Windows 64-Bit Compiler Eingabe-Verzeichnis
@@ -161,10 +246,59 @@ RelativePaths = true
 [Settings.Windows.64Bit.Environment]
 Title = Windows 64-Bit Umgebung
 WorkstationMode = false
+DebugThemeNormal = default
+DebugThemeWorkstation = default
 
 [Settings.Windows.64Bit.Linker]
 Title = Windows 64-Bit Linker
+
+[Settings.Windows.64Bit.Linker.Optionen]
+Title = Windows 64-Bit Linker Optionen
+PEPackingEnabled = true
+PEPackingFormat = D64Z/MSZIP
+
+[Settings.Windows.64Bit.Linker.Optimierung]
+Title = Windows 64-Bit Linker Optimierung
 LinkWithOrdinals = false
+ImportPackerEnabled = true
+ImportPackerRequireSavings = true
+ImportPackerMinimumSavings = 1
+ObjectDefaultsEnabled = true
+DeadPropertyImports = true
+EmptyStandardStrings = true
+CutMultipleCodes = true
+ImageLayout = loader_data_code
+PropertyDefaultsAbi = 1
+RuntimeAbiMajor = 1
+RuntimeAbiMinor = 2
+OrdinalMapVersion = 2
+RuntimeVersionCheck = true
+OrdinalMapHashCheck = true
+ExactRuntimeCheck = false
+OrdinalMismatchAction = abort
+LoaderVersion = 1.4.0
+LoaderBuild = 225
+D64IFormatVersion = 3
+PEBResolverEnabled = false
+PEBModuleList = PEB_LDR_DATA/InMemoryOrderModuleList
+PEB32 = disabled
+PEB64 = disabled
+ImportPackerFormat = D64I/MSZIP
+ImportResolver = Bootstrap-IAT
+
+[Settings.Windows.64Bit.Linker.Manifest]
+Data = {"identity": {"type": "win32", "name": "", "language": "*", "processorArchitecture": "*", "version": "6.0.0.0", "publicKeyToken": ""}, "compatibility": {"Windows 12": {"checked": false, "id": ""}, "Windows 11": {"checked": false, "id": "{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"}, "Windows 10": {"checked": false, "id": "{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"}, "Windows Vista": {"checked": false, "id": "{e2011457-1546-43c5-a5fe-008deee3d3f0}"}, "Windows 8.1": {"checked": false, "id": "{1f676c76-80e1-4239-95bb-83d0f6d0da78}"}, "Windows 8": {"checked": false, "id": "{4a2f28e3-53b9-4441-ba9c-d69d4a4a6e38}"}, "Windows 7": {"checked": false, "id": "{35138b9a-5d96-4fbd-8e2d-a2440225f93a}"}, "Windows XP": {"checked": false, "id": ""}}, "longPathAware": true}
+
+[Settings.Windows.64Bit.Linker.Signierung]
+Data = {"enabled": false, "sign_exe": true, "sign_dll": true, "certificate_source": "openssl_ca", "openssl_certificate": "", "openssl_private_key": "", "pfx_file": "", "store_location": "CurrentUser", "store_name": "My", "thumbprint": "", "file_digest": "SHA256", "timestamp_enabled": true, "timestamp_url": "http://timestamp.digicert.com", "timestamp_digest": "SHA256", "description": "", "description_url": "", "signtool_path": "", "verify_after_sign": true, "fail_build_on_error": true}
+
+[Settings.Windows.Environment.Editor]
+Title = Windows Umgebung Editor
+FontFamily = Consolas
+FontSize = 9
+Foreground = #FFFFFF
+Background = #000080
+ColorProfiles = {"assembler": {"comment": {"background": "#000080", "foreground": "#A0A0A0"}, "float": {"background": "#000080", "foreground": "#FF87FF"}, "instruction": {"background": "#000080", "foreground": "#FFD84D"}, "keyword": {"background": "#000080", "foreground": "#6ED2FF"}, "operand": {"background": "#000080", "foreground": "#FFFFFF"}, "string": {"background": "#000080", "foreground": "#FFBE5A"}, "text": {"background": "#000080", "foreground": "#FFFFFF"}}, "c_cpp": {"comment": {"background": "#000080", "foreground": "#A0A0A0"}, "float": {"background": "#000080", "foreground": "#FF87FF"}, "instruction": {"background": "#000080", "foreground": "#FFD84D"}, "keyword": {"background": "#000080", "foreground": "#6ED2FF"}, "operand": {"background": "#000080", "foreground": "#FFFFFF"}, "string": {"background": "#000080", "foreground": "#FFBE5A"}, "text": {"background": "#000080", "foreground": "#FFFFFF"}}, "dbase": {"comment": {"background": "#000080", "foreground": "#A0A0A0"}, "float": {"background": "#000080", "foreground": "#FF87FF"}, "instruction": {"background": "#000080", "foreground": "#FFD84D"}, "keyword": {"background": "#000080", "foreground": "#6ED2FF"}, "operand": {"background": "#000080", "foreground": "#FFFFFF"}, "string": {"background": "#000080", "foreground": "#FFBE5A"}, "text": {"background": "#000080", "foreground": "#FFFFFF"}}, "elan": {"comment": {"background": "#000080", "foreground": "#A0A0A0"}, "float": {"background": "#000080", "foreground": "#FF87FF"}, "instruction": {"background": "#000080", "foreground": "#FFD84D"}, "keyword": {"background": "#000080", "foreground": "#6ED2FF"}, "operand": {"background": "#000080", "foreground": "#FFFFFF"}, "string": {"background": "#000080", "foreground": "#FFBE5A"}, "text": {"background": "#000080", "foreground": "#FFFFFF"}}, "lisp": {"comment": {"background": "#000080", "foreground": "#A0A0A0"}, "float": {"background": "#000080", "foreground": "#FF87FF"}, "instruction": {"background": "#000080", "foreground": "#FFD84D"}, "keyword": {"background": "#000080", "foreground": "#6ED2FF"}, "operand": {"background": "#000080", "foreground": "#FFFFFF"}, "string": {"background": "#000080", "foreground": "#FFBE5A"}, "text": {"background": "#000080", "foreground": "#FFFFFF"}}, "logo": {"comment": {"background": "#000080", "foreground": "#A0A0A0"}, "float": {"background": "#000080", "foreground": "#FF87FF"}, "instruction": {"background": "#000080", "foreground": "#FFD84D"}, "keyword": {"background": "#000080", "foreground": "#6ED2FF"}, "operand": {"background": "#000080", "foreground": "#FFFFFF"}, "string": {"background": "#000080", "foreground": "#FFBE5A"}, "text": {"background": "#000080", "foreground": "#FFFFFF"}}, "pascal": {"comment": {"background": "#000080", "foreground": "#A0A0A0"}, "float": {"background": "#000080", "foreground": "#FF87FF"}, "instruction": {"background": "#000080", "foreground": "#FFD84D"}, "keyword": {"background": "#000080", "foreground": "#6ED2FF"}, "operand": {"background": "#000080", "foreground": "#FFFFFF"}, "string": {"background": "#000080", "foreground": "#FFBE5A"}, "text": {"background": "#000080", "foreground": "#FFFFFF"}}, "prolog": {"comment": {"background": "#000080", "foreground": "#A0A0A0"}, "float": {"background": "#000080", "foreground": "#FF87FF"}, "instruction": {"background": "#000080", "foreground": "#FFD84D"}, "keyword": {"background": "#000080", "foreground": "#6ED2FF"}, "operand": {"background": "#000080", "foreground": "#FFFFFF"}, "string": {"background": "#000080", "foreground": "#FFBE5A"}, "text": {"background": "#000080", "foreground": "#FFFFFF"}}, "text": {"comment": {"background": "#000080", "foreground": "#A0A0A0"}, "float": {"background": "#000080", "foreground": "#FF87FF"}, "instruction": {"background": "#000080", "foreground": "#FFD84D"}, "keyword": {"background": "#000080", "foreground": "#6ED2FF"}, "operand": {"background": "#000080", "foreground": "#FFFFFF"}, "string": {"background": "#000080", "foreground": "#FFBE5A"}, "text": {"background": "#000080", "foreground": "#FFFFFF"}}}
 
 [Settings.C64]
 Title = C=64 Projekteinstellungen
@@ -199,6 +333,33 @@ KeyboardLayout = qwertz
 Title = C=64 68030 Umgebung
 ScreenKeyboard = false
 KeyboardLayout = qwertz
+
+[Settings.C64.68000.Environment.SpeechOutput]
+Title = C=64 68000 Sprachausgabe
+Mode = internal_samples
+SampleRate = 8000
+Quality = 4
+VICEInterface = turbo232
+Host = localhost
+Port = 6464
+
+[Settings.C64.68020.Environment.SpeechOutput]
+Title = C=64 68020 Sprachausgabe
+Mode = internal_samples
+SampleRate = 8000
+Quality = 4
+VICEInterface = turbo232
+Host = localhost
+Port = 6464
+
+[Settings.C64.68030.Environment.SpeechOutput]
+Title = C=64 68030 Sprachausgabe
+Mode = internal_samples
+SampleRate = 8000
+Quality = 4
+VICEInterface = turbo232
+Host = localhost
+Port = 6464
 
 [Settings.C64.68000.Compiler.ImagePacker]
 Title = C=64 68000 Compiler Image Packer

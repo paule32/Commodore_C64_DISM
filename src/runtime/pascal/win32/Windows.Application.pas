@@ -59,8 +59,12 @@ end;
 
 destructor TApplication.Destroy;
 begin
-    FAppForm.Free;
-    
+    if Assigned(FAppForm) then
+    begin
+        FAppForm.Free;
+        FAppForm := nil;
+    end;
+
     inherited Destroy;
 end;
 

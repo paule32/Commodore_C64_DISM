@@ -1,0 +1,22 @@
+{
+  "basis": "d64_dism_asm_252.zip",
+  "basic_source": "examples/c64_minesweeper_stage252/minesweeper.bas",
+  "assembly": "examples/c64_minesweeper_stage252/minesweeper.generated.c64.asm",
+  "prg": "examples/c64_minesweeper_stage252/minesweeper.prg",
+  "prg_size": 17442,
+  "prg_sha256": "0619cd4dd04aa826a65d2f1937c8fd334e86841155605d9da290e5eb8b8f1d10",
+  "assembler_verified": true,
+  "load_address": "0x0801",
+  "entry_address": "0x080D",
+  "end_address": "0x4AE3",
+  "instruction_count": 6787,
+  "basic_sys_stub": true,
+  "basic_sha256": "62da947291bceddf9eb64a66e411a235bbcf3b80a30d9f56883e21620ce261a4",
+  "assembly_sha256": "0cc69ea897ef7afbafaa711cb6b139b0f79d8468f0f863ac6271b6d8cf468bd0",
+  "max_basic_line_length": 55,
+  "compiler_tested": true,
+  "runtime_tested_in_vice": false,
+  "stage": 253,
+  "fix": "GET K$ empty string checked before ASC(K$)",
+  "assembler_tested": true
+}

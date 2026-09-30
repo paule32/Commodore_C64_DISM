@@ -1,0 +1,222 @@
+{
+  "format": "d64.formula-designer",
+  "version": 1,
+  "max_depth": 32,
+  "expression": "root[7](((root[3]((root[3](root[2](12 * 13^(2))^(42_(11_(root[31]((C C C G )/(G G)))))))^(root[3](2)))) (* 22))/(root[3]((integral3[22..11](sum[lim[□](□)..2=1](sum[i = 1..2](1212))))/(2))))",
+  "formula": {
+    "type": "root",
+    "degree": {
+      "type": "text",
+      "id": "120be8df14df4db39cfb2f3666612bbb",
+      "text": "7",
+      "role": "root_degree"
+    },
+    "radicand": {
+      "type": "fraction",
+      "numerator": {
+        "type": "sequence",
+        "children": [
+          {
+            "type": "group",
+            "child": {
+              "type": "root",
+              "degree": {
+                "type": "text",
+                "id": "b6a7fd1a1a0d488e86b8d3da136f1d8d",
+                "text": "3",
+                "role": "root_degree"
+              },
+              "radicand": {
+                "type": "power",
+                "base": {
+                  "type": "group",
+                  "child": {
+                    "type": "root",
+                    "degree": {
+                      "type": "text",
+                      "id": "a4a802f4d17542ff9e97a66c308e861b",
+                      "text": "3",
+                      "role": "root_degree"
+                    },
+                    "radicand": {
+                      "type": "power",
+                      "base": {
+                        "type": "root",
+                        "degree": {
+                          "type": "text",
+                          "id": "1c4080e63a1440ffb8f2974cabfd20d9",
+                          "text": "2",
+                          "role": "root_degree"
+                        },
+                        "radicand": {
+                          "type": "power",
+                          "base": {
+                            "type": "text",
+                            "id": "ee0d3b7e76244d24baf3af59231f9232",
+                            "text": "12 * 13",
+                            "role": "value"
+                          },
+                          "exponent": {
+                            "type": "text",
+                            "id": "8dd5cdb288cd40d2ab2c9ff0c1899dae",
+                            "text": "2",
+                            "role": "exponent"
+                          }
+                        }
+                      },
+                      "exponent": {
+                        "type": "subscript",
+                        "base": {
+                          "type": "text",
+                          "id": "f379af86203c4dec8f2c8e421a5be690",
+                          "text": "42",
+                          "role": "exponent"
+                        },
+                        "subscript": {
+                          "type": "subscript",
+                          "base": {
+                            "type": "text",
+                            "id": "7c77273a70d348bf93b81f5205ee7981",
+                            "text": "11",
+                            "role": "subscript"
+                          },
+                          "subscript": {
+                            "type": "root",
+                            "degree": {
+                              "type": "text",
+                              "id": "cb25ca73e14c4a11939e2120a6737340",
+                              "text": "31",
+                              "role": "root_degree"
+                            },
+                            "radicand": {
+                              "type": "fraction",
+                              "numerator": {
+                                "type": "text",
+                                "id": "a08b359286b242d2bb9d13e4f810d2e9",
+                                "text": "C C C G ",
+                                "role": "value"
+                              },
+                              "denominator": {
+                                "type": "text",
+                                "id": "2fb0bf53ce994c2bb0367344394069c7",
+                                "text": "G G",
+                                "role": "denominator"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                "exponent": {
+                  "type": "root",
+                  "degree": {
+                    "type": "text",
+                    "id": "997e015b2f664f34a7f99c28088aa2ee",
+                    "text": "3",
+                    "role": "root_degree"
+                  },
+                  "radicand": {
+                    "type": "text",
+                    "id": "6293b0a9b3ca4f0a86b1746cd90a0b53",
+                    "text": "2",
+                    "role": "exponent"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "group",
+            "child": {
+              "type": "text",
+              "id": "d8de86ed114a40a8b645736fae9f5fbb",
+              "text": "* 22",
+              "role": "value"
+            }
+          }
+        ]
+      },
+      "denominator": {
+        "type": "root",
+        "degree": {
+          "type": "text",
+          "id": "c385bb6298174d8a92161cec6122c600",
+          "text": "3",
+          "role": "root_degree"
+        },
+        "radicand": {
+          "type": "fraction",
+          "numerator": {
+            "type": "integral",
+            "count": 3,
+            "upper": {
+              "type": "text",
+              "id": "1d0bc3843eb44a9da99669f8d0f0d25f",
+              "text": "11",
+              "role": "integral_upper"
+            },
+            "lower": {
+              "type": "text",
+              "id": "f5ce8f5e46dd4d7db69744d5609dd887",
+              "text": "22",
+              "role": "integral_lower"
+            },
+            "body": {
+              "type": "sigma",
+              "upper": {
+                "type": "text",
+                "id": "3a6b07fdac0a4d99aab7764b42ec8207",
+                "text": "2=1",
+                "role": "sigma_upper"
+              },
+              "lower": {
+                "type": "limit",
+                "lower": {
+                  "type": "text",
+                  "id": "9b58d30a542c489185ff3ad61cdbee97",
+                  "text": "",
+                  "role": "limit_lower"
+                },
+                "body": {
+                  "type": "text",
+                  "id": "6b19c819d0af4996838994781b19eceb",
+                  "text": "",
+                  "role": "sigma_lower"
+                }
+              },
+              "body": {
+                "type": "sigma",
+                "upper": {
+                  "type": "text",
+                  "id": "4967a862544245b493c764b62dec7a7a",
+                  "text": "2",
+                  "role": "sigma_upper"
+                },
+                "lower": {
+                  "type": "text",
+                  "id": "d5ed4d82d1494cc2be780f38b285b1b2",
+                  "text": "i = 1",
+                  "role": "sigma_lower"
+                },
+                "body": {
+                  "type": "text",
+                  "id": "7da41521117e4a51bb0d5d1a580d6fb1",
+                  "text": "1212",
+                  "role": "denominator"
+                }
+              }
+            }
+          },
+          "denominator": {
+            "type": "text",
+            "id": "a5d737026a884cce8dd9c5f73db02d95",
+            "text": "2",
+            "role": "denominator"
+          }
+        }
+      }
+    }
+  }
+}

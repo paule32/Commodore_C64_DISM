@@ -9011,7 +9011,12 @@ extern "C" D64QT5_API void DBaseQtConsoleWrite(
         // Fallback fuer direkten Start ausserhalb der Workstation: derselbe
         // nicht modale Qt5/QPlainTextEdit-Dialog, aber lokal im WFM-Prozess.
         append_wfm_output(value, newline != 0);
-        if (g_app)
+        // Eine dBase-Verkettung wie ? "4: " + SpeicherVar wird als mehrere
+        // Teilwrites emittiert. Zwischen diesen Fragmenten darf die Qt-
+        // Eventqueue nicht abgearbeitet werden: sonst kann derselbe Event-
+        // Callback reentrant werden, bevor der Ausdruck vollstaendig ist.
+        // Erst das abschliessende Fragment (newline != 0) gibt Ereignisse frei.
+        if (newline && g_app)
             g_app->processEvents(QEventLoop::ExcludeUserInputEvents);
         return;
     }

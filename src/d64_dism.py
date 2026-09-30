@@ -167,11 +167,40 @@
 #    und Resultat als Python-Liste oder formatierter String.
 #  * Stage 256: *.prg bleibt Binärprogramm; Rohdaten zeigt Disassembly, Hex zeigt 4+4 Bytes.
 #  * Stage 257: C64-PRG/BIN-Disassembly im QThread mit bytebasierter 0..100-%-ProgressBar;
+#  * Stage 258: Formel-Designer: Bruchgrenze per Delete/Backspace löschbar; Zähler und Nenner werden zusammengeführt.
+#  * Stage 262: Formel-Designer: Wurzelgrad ~42px tiefer; Ansicht->Zoom + STRG/Mausrad; Sigma sowie 1-/2-/3-fache Integrale mit Ober-/Unterobjekten.
+#  * Stage 263: Formel-Designer: Wurzelgrad dynamisch auf Höhe der linken Wurzelfaltung;
+#    untere Wurzelfaltung folgt nahezu der Unterkante des Radikanden.
+#  * Stage 259 GEO: Lernen->Deutsch->Geographie mit eingebetteter Deutschlandkarte und Bundesland-Hover.
+#  * Stage 260 GEO: Deutschland-PNG Base85 lazy in deutschland.py; Modul/Qt-Kartenressourcen werden beim Dock-Schliessen freigegeben.
+#  * Stage 261 GEO: Dark-Mode schwarz, Ansicht->Zoom/Strg+Mausrad, Wappen-Tooltip; Wappen lazy in deutschland_wappen.py.
 #  * Stage 259: C64-ProgressBar wird vor Workerstart garantiert gezeichnet; Live-Repaint,
 #               verzögerter Threadstart und Mindestanzeigezeit bis/bei 100 %.
 #    __main__.py startet d64_dism hinter einem Commodore-C64-Splash und übergibt danach den Fokus.
 #  * Stage 258: QtWebEngine-OpenGL-Kontext wird vor QApplication aktiviert; Splash lädt C64Pro.ttf
 #    nicht mehr doppelt. C64Pro bleibt exklusiv für die C64-/Hex-Darstellung im Hauptprogramm.
+#  * Stage 244: Periodensystem als Vollbreiten-Dock; oberer Detailrahmen +64 px,
+#    Kacheln +150 px nach unten und weiße Dock-Titelleisten-Symbole im Dark-Mode.
+#  * Stage 247: Mathematischer Formel-Designer mit QGraphicsScene, Objektfokus,
+#    Exponenten/Klammern/Wurzeln bis Tiefe 32 sowie *.d64formula Save/Load.
+#  * Stage 251: MineSweeper-Mauslernspiel unter Lernen->Computer->Maus mit quadratischen Schwierigkeitsstufen,
+#    Zeit/Punkten, klassischen Nachbarhinweisen, Rechtsklick-Markierung und automatischem Entschärfen.
+#  * Stage 252: C64-BASIC-MineSweeper-Beispiel; RND(FAC) im BASIC-Compiler,
+#    weit-sprungsicheres IF/THEN sowie BASIC->6510-ASM->PRG Buildnachweis.
+#  * Stage 253: C64-BASIC-MineSweeper: GET-Leerstring vor ASC() abgefangen;
+#    behebt ?ILLEGAL QUANTITY ERROR IN 100 in VICE.
+#  * Stage 254: C64-BASIC-MineSweeper: reserviertes ST in Zeile 400 durch T0 ersetzt;
+#    Compiler lehnt numerische Schreibzugriffe auf ST/TI jetzt C64-V2-kompatibel ab.
+#  * Stage 255: MOS-6510-Assembler relaxiert bedingte Sprünge außerhalb ±127 Bytes
+#    automatisch als inversen Kurzsprung über JMP absolute.
+#  * Stage 256: Formel-Designer: Division über '/' als echten Bruchknoten;
+#    Zähler und Nenner werden zweizeilig mit horizontalem Bruchstrich dargestellt.
+#  * Stage 250: Formel-Designer mit 2-px-Textcursor und Links/Rechts-Navigation innerhalb langer Eingabefelder.
+#  * Stage 257: Formel-Designer: Bruch-Rendering korrigiert; Zähler/Nenner und Fokusrahmen sind sichtbar.
+#  * Stage 248: Formel-Eingaberahmen exakt auf Glyphenhöhe + 4 px oben/unten;
+#    n-te Wurzel reserviert die volle Breite des Wurzelgrades vor dem Wurzelsymbol.
+#  * Stage 249: '_' erzeugt tiefgestellte Indizes; Index-Inhalte sind vollwertige
+#    Formelobjekte und können bis Tiefe 32 weiter verschachtelt werden.
 #  * Stage 241: Workstation Runner: generischer PE32/PE32+-Session-Host auf Basis
 #    des vorhandenen src/d64qt5/d64_workstation.cpp; keine Quellsprachenpflicht.
 #  * Stage 237: DBF-Datengrid mit Ganzgrid-/Zeilen-/Spaltenauswahl, Auswahl-Clipboard,
@@ -226,6 +255,7 @@ import hashlib
 import html
 import inspect
 import importlib
+import gc
 import random
 import secrets
 
@@ -243,7 +273,7 @@ from typing import (
 )
 
 from html.parser import HTMLParser
-from collections import defaultdict
+from collections import defaultdict, deque
 
 import copy
 import json
@@ -252,6 +282,7 @@ import uuid
 import os
 import re
 import shutil
+import socket
 import subprocess
 import struct
 import sys
@@ -348,6 +379,7 @@ try:
         pyqtSignal,
     )
     from PyQt5.QtGui import (
+        QGuiApplication,
         QBrush,
         QCloseEvent,
         QColor,
@@ -1234,6 +1266,6909 @@ IMAGE_REL_AMD64_ADDR32NB        = 0x0003
 IMAGE_SCN_CNT_INITIALIZED_DATA  = 0x00000040
 IMAGE_SCN_ALIGN_4BYTES          = 0x00300000
 IMAGE_SCN_MEM_READ              = 0x40000000
+
+# ---------------------------------------------------------------------------
+# The packer is deliberately independent from the BASIC compiler.  It receives
+# an already assembled C64 PRG, compresses only the actually loaded bytes and
+# builds a tiny self-extracting wrapper.  C64-CBSS is therefore not part of the
+# compressed stream.
+#
+# Modes:
+#    none  - return the original image
+#    rle   - force RLE, even when the wrapper becomes larger
+#    lz    - force LZ, even when the wrapper becomes larger
+#    auto  - build RLE and LZ candidates and keep a packed image only if it is
+#            smaller than the original image
+#
+# LZ search modes affect only compiler-side match search.  The 6510 decruncher
+# is identical for fast/balanced/maximum.
+# ---------------------------------------------------------------------------
+PACKER_MODES        = ("none", "rle", "lz", "auto")
+PACKER_SEARCH_MODES = ("fast", "balanced", "maximum")
+
+DATA_FILE = Path(__file__).with_name("periodic_elements.json")
+
+# ---------------------------------------------------------------------------
+# Szenen-Geometrie für das Perioden-System der Elemente.
+# Die Anordnung orientiert sich an der bereitgestellten
+# Referenzgrafik: Haupttabelle + ausgelagerte Lanthanoide/Actinoide.
+# ---------------------------------------------------------------------------
+PER_CELL_W      = 48
+PER_CELL_H      = 30
+PER_GAP_X       = 2
+PER_GAP_Y       = 2
+PER_STEP_X      = PER_CELL_W + PER_GAP_X
+PER_STEP_Y      = PER_CELL_H + PER_GAP_Y
+PER_LEFT_MARGIN = 92
+PER_TOP_MARGIN  = 226                                # Stage 244: Tabelle/Kacheln +150 px nach unten
+PER_SERIES_GAP  = 44
+
+PER_INFO_X      = PER_LEFT_MARGIN +  3 * PER_STEP_X  # ab Gruppe 4
+PER_INFO_Y      = 68                                 # Detailrahmen bleibt oben stehen
+PER_INFO_W      = 9 * PER_STEP_X  -      PER_GAP_X   # Gruppen 4 .. 12
+PER_INFO_H      = 248                                # Stage 244: vorher 184, jetzt +64 px
+
+PER_SCENE_W     = PER_LEFT_MARGIN + 18 * PER_STEP_X + 28
+PER_SCENE_H     = PER_TOP_MARGIN  +  7 * PER_STEP_Y + PER_SERIES_GAP + 2 * PER_STEP_Y + 28
+
+PER_CATEGORY_COLORS = {
+    "metal":      "#8DB8DE",
+    "metalloid":  "#94EF6F",
+    "nonmetal":   "#FFF68A",
+    "lanthanide": "#DAD8FF",
+    "actinide":   "#DAD8FF",
+    "unknown":    "#E6E6E6",
+}
+
+def _load_elements():
+    with DATA_FILE.open("r", encoding="utf-8") as f:
+        data = json.load(f)
+    if len(data) != 118:
+        raise RuntimeError(
+            "periodic_elements.json muss exakt 118 Elemente enthalten "
+            f"(gefunden: {len(data)})."
+        )
+    return data
+
+
+def _is_dark_mode():
+    app = QApplication.instance()
+    if app is None:
+        return False
+    color = app.palette().color(QPalette.Window)
+    return color.lightness() < 128
+
+
+def _density_text(element):
+    value = element.get("density_g_cm3")
+    if value is None:
+        return "—"
+    # Deutsche Dezimaldarstellung, sinnvoll kurz gehalten.
+    if   value < 0.001: text = f"{value:.7f}"
+    elif value <   0.1: text = f"{value:.5f}"
+    elif value <    10: text = f"{value:.4f}"
+    else:               text = f"{value:.3f}"
+    
+    text = text.rstrip("0").rstrip(".").replace(".", ",")
+    return f"{text} g/cm³"
+
+
+def _element_pairs(element):
+    return [
+        ("Element", f'{element["name_de"]} ({element["symbol"]})'),
+        ("Lateinisch / international", element.get("name_latin", "—")),
+        ("Halbwertzeit", element.get("half_life", "—")),
+        ("Rangordnung / Ordnungszahl", str(element.get("atomic_number", "—"))),
+        ("Orbitale", element.get("orbitals", "—")),
+        ("Dichte", _density_text(element)),
+        ("Formel", element.get("formula", "—")),
+        ("Massenzahl (Isotope)", element.get("isotopes", "—")),
+        ("Häufigkeit", element.get("abundance", "—")),
+        ("Nebengruppe", element.get("sub_group", "—")),
+        ("Hauptgruppe", element.get("main_group", "—")),
+    ]
+
+
+class _PropertyBox(QWidget):
+    """Kompaktes Feld für den oberen Info-Kasten."""
+
+    def __init__(self, caption, parent=None):
+        super().__init__(parent)
+        self.setFocusPolicy(Qt.NoFocus)
+
+        self.caption = QLabel(caption, self)
+        self.caption.setObjectName("propertyCaption")
+
+        self.value = QLabel("—", self)
+        self.value.setObjectName("propertyValue")
+        self.value.setWordWrap(True)
+        self.value.setTextInteractionFlags(Qt.NoTextInteraction)
+        self.value.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(2, 1, 2, 1)
+        lay.setSpacing(0)
+        lay.addWidget(self.caption)
+        lay.addWidget(self.value, 1)
+
+        self._apply_style()
+
+    def _apply_style(self):
+        if _is_dark_mode():
+            cap = "#AFC7E8"
+            val = "#F3F3F3"
+        else:
+            cap = "#415B78"
+            val = "#111111"
+
+        self.setStyleSheet(f"""
+QLabel#propertyCaption {{
+color: {cap};
+font-size: 7pt;
+font-weight: bold;
+border: none;
+background: transparent;
+}}
+QLabel#propertyValue {{
+color: {val};
+font-size: 7pt;
+border: none;
+background: transparent;
+}}
+""")
+
+    def set_value(self, value):
+        value = str(value or "—")
+        self.value.setText(value)
+        self.value.setToolTip(value)
+
+
+class ElementDetailsWidget(QFrame):
+    """Großer eingebetteter Detailkasten in der freien oberen Tabellenfläche."""
+
+    FIELD_NAMES = [
+        "Lateinisch / international",
+        "Halbwertzeit",
+        "Rangordnung / Ordnungszahl",
+        "Orbitale",
+        "Dichte",
+        "Formel",
+        "Massenzahl (Isotope)",
+        "Häufigkeit",
+        "Nebengruppe",
+        "Hauptgruppe",
+    ]
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("elementDetails")
+        self.setFocusPolicy(Qt.NoFocus)
+        self.setFixedSize(PER_INFO_W, PER_INFO_H)
+
+        dark        = _is_dark_mode()
+        bg          = "#24282D" if dark else "#F7F7F7"
+        border      = "#7A8795" if dark else "#404040"
+        text        = "#F4F4F4" if dark else "#111111"
+        secondary   = "#B9C4D0" if dark else "#4A4A4A"
+
+        self.setStyleSheet(f"""
+QFrame#elementDetails {{
+background: {bg};
+border: 1px solid {border};
+}}
+QLabel#detailSymbol {{
+color: {text};
+border: 1px solid {border};
+background: transparent;
+font-size: 20pt;
+font-weight: bold;
+}}
+QLabel#detailName {{
+color: {text};
+border: none;
+background: transparent;
+font-size: 9pt;
+font-weight: bold;
+}}
+QLabel#detailHint {{
+color: {secondary};
+border: none;
+background: transparent;
+font-size: 7pt;
+}}
+""")
+
+        self.symbol_label = QLabel("U")
+        self.symbol_label.setObjectName("detailSymbol")
+        self.symbol_label.setAlignment(Qt.AlignCenter)
+        self.symbol_label.setFixedSize(54, 46)
+
+        self.name_label = QLabel("Uran")
+        self.name_label.setObjectName("detailName")
+        self.name_label.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
+        self.name_label.setWordWrap(True)
+        self.name_label.setFixedWidth(74)
+
+        self.hint_label = QLabel("Klick / Enter übernimmt")
+        self.hint_label.setObjectName("detailHint")
+        self.hint_label.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
+        self.hint_label.setWordWrap(True)
+        self.hint_label.setFixedWidth(74)
+
+        left = QVBoxLayout()
+        left.setContentsMargins(0, 0, 0, 0)
+        left.setSpacing(3)
+        
+        left.addWidget(self.symbol_label, 0, Qt.AlignHCenter)
+        left.addWidget(self.name_label,   0, Qt.AlignHCenter)
+        left.addWidget(self.hint_label,   1, Qt.AlignHCenter)
+
+        self.fields = {}
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(3)
+        grid.setVerticalSpacing(2)
+
+        # 10 Eigenschaften -> 5 Spalten / 2 Zeilen.
+        for index, name in enumerate(self.FIELD_NAMES):
+            box = _PropertyBox(name)
+            self.fields[name] = box
+            row = index // 5
+            col = index % 5
+            grid.addWidget(box, row, col)
+            grid.setColumnStretch(col, 1)
+
+        root = QHBoxLayout(self)
+        root.setContentsMargins(8, 7, 8, 7)
+        root.setSpacing(8)
+        root.addLayout(left)
+        root.addLayout(grid, 1)
+
+    def set_element(self, element):
+        self.symbol_label.setText(element["symbol"])
+        self.name_label.setText(element["name_de"])
+
+        values = dict(_element_pairs(element))
+        for name in self.FIELD_NAMES:
+            self.fields[name].set_value(values.get(name, "—"))
+
+
+class ElementHoverCard(QFrame):
+    """Grafische Info-Karte am Mauszeiger."""
+
+    def __init__(self):
+        super().__init__(
+            None,
+            Qt.ToolTip | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+        )
+        self.setObjectName("elementHoverCard")
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        self.setFocusPolicy(Qt.NoFocus)
+        self.setFixedWidth(620)
+
+        dark    = _is_dark_mode()
+        bg      = "#20242A" if dark else "#FFFFF6"
+        border  = "#C6B94E" if dark else "#68612A"
+        text    = "#F6F6F6" if dark else "#101010"
+        key     = "#F2D75B" if dark else "#5B4E00"
+
+        self.setStyleSheet(f"""
+QFrame#elementHoverCard {{
+background: {bg};
+border: 2px solid {border};
+border-radius: 4px;
+}}
+QLabel {{
+color: {text};
+border: none;
+background: transparent;
+font-size: 7pt;
+}}
+QLabel#hoverTitle {{
+font-size: 12pt;
+font-weight: bold;
+}}
+QLabel#hoverSymbol {{
+font-size: 24pt;
+font-weight: bold;
+border: 1px solid {border};
+}}
+QLabel#hoverKey {{
+color: {key};
+font-weight: bold;
+}}
+""")
+
+        self.symbol = QLabel("H")
+        self.symbol.setObjectName("hoverSymbol")
+        self.symbol.setAlignment(Qt.AlignCenter)
+        self.symbol.setFixedSize(76, 62)
+
+        self.title = QLabel("Wasserstoff")
+        self.title.setObjectName("hoverTitle")
+
+        head = QHBoxLayout()
+        head.setContentsMargins(0, 0, 0, 0)
+        
+        head.setSpacing(8)
+        head.addWidget(self.symbol)
+        head.addWidget(self.title, 1)
+
+        self.grid = QGridLayout()
+        self.grid.setHorizontalSpacing(8)
+        self.grid.setVerticalSpacing  (2)
+
+        self.key_labels   = []
+        self.value_labels = []
+
+        # "Element" wird durch Header dargestellt, daher ab Index 1.
+        for row, (caption, _value) in enumerate(_element_pairs({
+            "name_de"       : "",
+            "symbol"        : "",
+            "name_latin"    : "",
+            "half_life"     : "",
+            "atomic_number" : "",
+            "orbitals"      : "",
+            "density_g_cm3" : None,
+            "formula"       : "",
+            "isotopes"      : "",
+            "abundance"     : "",
+            "sub_group"     : "",
+            "main_group"    : ""
+        })[1:]):
+            k = QLabel(caption + ":")
+            k.setObjectName("hoverKey")
+            k.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+
+            v = QLabel("—")
+            v.setWordWrap(True)
+            v.setTextInteractionFlags(Qt.NoTextInteraction)
+            v.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+
+            self.key_labels.append(k)
+            self.value_labels.append(v)
+            self.grid.addWidget(k, row, 0)
+            self.grid.addWidget(v, row, 1)
+            self.grid.setColumnStretch(1, 1)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(10, 9, 10, 9)
+        root.setSpacing(7)
+        root.addLayout(head)
+        root.addLayout(self.grid)
+
+    def set_element(self, element):
+        self.symbol.setText(element["symbol"])
+        self.title.setText(element["name_de"])
+
+        pairs = _element_pairs(element)[1:]
+        for lab, (_caption, value) in zip(self.value_labels, pairs):
+            value = str(value or "—")
+            lab.setText(value)
+            lab.setToolTip(value)
+
+        self.adjustSize()
+
+    def show_at(self, global_pos):
+        self.adjustSize()
+
+        screen = QGuiApplication.screenAt(global_pos)
+        if screen is None:
+            screen = QGuiApplication.primaryScreen()
+
+        geo = screen.availableGeometry() if screen else QRect(0, 0, 1920, 1080)
+
+        x = global_pos.x() + 18
+        y = global_pos.y() + 18
+
+        if x + self.width () > geo.right (): x = global_pos.x() - self.width () - 18
+        if y + self.height() > geo.bottom(): y = global_pos.y() - self.height() - 18
+
+        x = max(geo.left(), x)
+        y = max(geo.top (), y)
+
+        self.move(QPoint(x, y))
+        self.show()
+        self.raise_()
+
+
+class ElementTile(QFrame):
+    """Fokussierbares QWidget, das als QGraphicsProxyWidget in der Szene steckt."""
+
+    def __init__(self, element, owner):
+        super().__init__()
+        self.element = element
+        self.owner = owner
+
+        self.setObjectName("periodicElementTile")
+        self.setFixedSize(PER_CELL_W, PER_CELL_H)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setMouseTracking(True)
+
+        # Sichtbar ist nur noch das chemische Kurzzeichen, z. B. Pb, Au, Ag.
+        self.label = QLabel(element["symbol"], self)
+        self.label.setAlignment(Qt.AlignCenter)
+        self.label.setWordWrap(True)
+        self.label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
+        font = QFont()
+        font.setPointSize(12)
+        font.setBold(True)
+        self.label.setFont(font)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(1, 1, 1, 1)
+        layout.addWidget(self.label)
+
+        color = PER_CATEGORY_COLORS.get(element.get("category"), PER_CATEGORY_COLORS["unknown"])
+
+        # Der geforderte 3-px-gelbe Fokusrahmen wird ausschließlich per Qt5-CSS border gesetzt.
+        self.setStyleSheet(f"""
+QFrame#periodicElementTile {{
+background-color: {color};
+border: 1px solid #353535;
+}}
+QFrame#periodicElementTile:focus {{
+border: 3px solid #FFD600;
+}}
+QFrame#periodicElementTile QLabel {{
+color: #101010;
+border: none;
+background: transparent;
+}}
+""")
+
+    def enterEvent(self, event):
+        self.owner.show_hover(self.element, QCursor.pos())
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self.owner.hide_hover()
+        super().leaveEvent(event)
+
+    def mouseMoveEvent(self, event):
+        self.owner.show_hover(self.element, QCursor.pos())
+        super().mouseMoveEvent(event)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.setFocus(Qt.MouseFocusReason)
+            self.owner.select_element(self.element)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def keyPressEvent(self, event):
+        key = event.key()
+
+        if key in (Qt.Key_Return, Qt.Key_Enter):
+            self.owner.select_element(self.element)
+            event.accept()
+            return
+
+        # Stage 245:
+        # Periodensystem zusätzlich mit den Cursor-Tasten navigieren.
+        # Links/Rechts bleiben in derselben sichtbaren Tabellenzeile,
+        # Oben/Unten wählen in der nächsten sichtbaren Zeile die Kachel,
+        # deren Gruppenspalte der aktuellen Position am nächsten liegt.
+        if key in (Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down):
+            self.owner.focus_direction(self, key)
+            event.accept()
+            return
+
+        if key == Qt.Key_Tab:
+            self.owner.focus_relative(self, +1)
+            event.accept()
+            return
+
+        if key == Qt.Key_Backtab:
+            self.owner.focus_relative(self, -1)
+            event.accept()
+            return
+
+        super().keyPressEvent(event)
+
+
+class PeriodicTableCanvas(QGraphicsView):
+    """QGraphicsView mit der eigentlichen QGraphicsScene."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        self.elements = _load_elements()
+        self.by_atomic_number = {e["atomic_number"]: e for e in self.elements}
+        self.by_symbol = {e["symbol"]: e for e in self.elements}
+
+        self.scene_obj = QGraphicsScene(self)
+        self.scene_obj.setSceneRect(0, 0, PER_SCENE_W, PER_SCENE_H)
+        self.setScene(self.scene_obj)
+
+        self.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy  (Qt.ScrollBarAlwaysOff)
+        self.setFrameShape(QFrame.NoFrame)
+        self.setRenderHints(self.renderHints())
+        self.setMouseTracking(True)
+        self.viewport().setMouseTracking(True)
+
+        if _is_dark_mode():
+            self.setBackgroundBrush(QBrush(QColor("#181B1F")))
+        else:
+            self.setBackgroundBrush(QBrush(QColor("#FFFFFF")))
+
+        # QScrollArea übernimmt das Scrollen; die View entspricht der Szenengröße.
+        self.setFixedSize(PER_SCENE_W + 2, PER_SCENE_H + 2)
+
+        self.hover_card = ElementHoverCard()
+        self.tiles = []
+        self.focus_order = []
+        self.detail_widget = None
+
+        # Wird vom PeriodicTableDock gesetzt. Damit kann eine mit den
+        # Cursor-Tasten fokussierte Kachel bei Bedarf automatisch in den
+        # sichtbaren Bereich der äußeren QScrollArea gescrollt werden.
+        self.outer_scroll_area = None
+
+        self._build_scene()
+
+    def _text_item(self, text, x, y, size=9, bold=False):
+        item = self.scene_obj.addSimpleText(text)
+        font = QFont()
+        font.setPointSize(size)
+        font.setBold(bold)
+        item.setFont(font)
+        if _is_dark_mode():
+            item.setBrush(QBrush(QColor("#E8E8E8")))
+        else:
+            item.setBrush(QBrush(QColor("#111111")))
+        item.setPos(x, y)
+        return item
+
+    def _build_scene(self):
+        # Titel
+        self._text_item("Periodensystem der Elemente", 4, 6, 12, True)
+
+        # Gruppen 1..18
+        for group in range(1, 19):
+            x = PER_LEFT_MARGIN + (group - 1) * PER_STEP_X + PER_CELL_W / 2 - 7
+            self._text_item(str(group), x, 42, 8, True)
+
+        # Perioden I..VII
+        roman = ["I", "II", "III", "IV", "V", "VI", "VII"]
+        for row in range(1, 8):
+            y = PER_TOP_MARGIN + (row - 1) * PER_STEP_Y + 18
+            self._text_item(roman[row - 1], 54, y, 10, True)
+
+        self._text_item("Periode", 5, PER_TOP_MARGIN + 8, 8, False)
+        self._text_item("Gruppe",
+            PER_LEFT_MARGIN + 2 * PER_STEP_X +     8,
+            PER_TOP_MARGIN  + 3 * PER_STEP_Y - 23, 8, False)
+
+        # Oberer Detailkasten in die freie Fläche der Perioden 1..3.
+        self.detail_widget = ElementDetailsWidget()
+        detail_proxy = self.scene_obj.addWidget(self.detail_widget)
+        detail_proxy.setPos(PER_INFO_X, PER_INFO_Y)
+        detail_proxy.setZValue(2)
+
+        # Elemente als echte QWidget-Proxy-Elemente.
+        for element in self.elements:
+            tile = ElementTile(element, self)
+            proxy = self.scene_obj.addWidget(tile)
+            proxy.setZValue(1)
+
+            scene_row = element["scene_row"]
+            scene_col = element["scene_col"]
+
+            x = PER_LEFT_MARGIN + (scene_col - 1) * PER_STEP_X
+
+            if scene_row <= 7:
+                y = PER_TOP_MARGIN + (scene_row - 1) * PER_STEP_Y
+            else:
+                base = PER_TOP_MARGIN + 7  * PER_STEP_Y + PER_SERIES_GAP
+                y = base + (scene_row - 8) * PER_STEP_Y
+
+            proxy.setPos(x, y)
+            tile._periodic_proxy = proxy
+
+            self.tiles.append(tile)
+
+        # Lanthanoide / Actinoide beschriften.
+        series_base = PER_TOP_MARGIN + 7 * PER_STEP_Y + PER_SERIES_GAP
+        self._text_item("Lanthanoide", 4, series_base + 18, 9, False)
+        self._text_item("Actinoide",  13, series_base + PER_STEP_Y + 18, 9, False)
+
+        # Fokusreihenfolge: visuelle Reihenfolge der Szene.
+        self.focus_order = sorted(
+            self.tiles,
+            key=lambda tile: (
+                tile.element["scene_row"],
+                tile.element["scene_col"],
+                tile.element["atomic_number"],
+            )
+        )
+
+        # WICHTIG: Keine QWidget.setTabOrder()-Kette für die Elementkacheln
+        # erzeugen. Jede Kachel steckt in einem eigenen QGraphicsProxyWidget.
+        # Qt betrachtet diese Widgets deshalb nicht als normale Widgets im
+        # selben Fenster und meldet sonst für nahezu jedes Paar:
+        #
+        #   QWidget::setTabOrder: 'first' and 'second' must be in the same window
+        #
+        # Tab/Shift+Tab werden bereits vollständig in ElementTile.keyPressEvent()
+        # über focus_relative() behandelt. Damit bleibt die gewünschte
+        # Tastatur-Navigation erhalten, ohne die Qt-Warnungen zu erzeugen.
+
+        # Wie in der Referenzgrafik initial Uran im Info-Kasten anzeigen.
+        self.select_element(self.by_symbol["U"])
+
+    def select_element(self, element):
+        self.detail_widget.set_element(element)
+        self.hide_hover()
+
+    def show_hover(self, element, global_pos):
+        self.hover_card.set_element(element)
+        self.hover_card.show_at(global_pos)
+
+    def hide_hover(self):
+        self.hover_card.hide()
+
+    def set_outer_scroll_area(self, scroll_area):
+        self.outer_scroll_area = scroll_area
+
+    def _ensure_tile_visible(self, tile):
+        """
+        Hält die per Tastatur fokussierte Kachel innerhalb der sichtbaren
+        QScrollArea. Die Element-QWidgets selbst liegen in QGraphicsProxyWidgets
+        und sind daher keine normalen Child-Widgets der QScrollArea; deshalb
+        werden die Scrollbars anhand der Proxy-Position gesetzt.
+        """
+        scroll = self.outer_scroll_area
+        proxy = getattr(tile, "_periodic_proxy", None)
+
+        if scroll is None or proxy is None:
+            return
+
+        pos = proxy.pos()
+        x = int(pos.x())
+        y = int(pos.y())
+        w = PER_CELL_W
+        h = PER_CELL_H
+        margin = 18
+
+        hbar = scroll.horizontalScrollBar()
+        vbar = scroll.verticalScrollBar()
+        viewport = scroll.viewport()
+
+        left = hbar.value()
+        top = vbar.value()
+        right = left + viewport.width()
+        bottom = top + viewport.height()
+
+        if x < left + margin:
+            hbar.setValue(max(hbar.minimum(), x - margin))
+        elif x + w > right - margin:
+            hbar.setValue(min(
+                hbar.maximum(),
+                x + w - viewport.width() + margin
+            ))
+
+        if y < top + margin:
+            vbar.setValue(max(vbar.minimum(), y - margin))
+        elif y + h > bottom - margin:
+            vbar.setValue(min(
+                vbar.maximum(),
+                y + h - viewport.height() + margin
+            ))
+
+    def _focus_tile(self, tile, reason=Qt.OtherFocusReason):
+        if tile is None:
+            return
+
+        self.hide_hover()
+        tile.setFocus(reason)
+
+        # Erst nach dem Qt-Fokuswechsel scrollen, damit Proxy/ScrollArea ihre
+        # Geometrie bereits aktualisiert haben.
+        QTimer.singleShot(
+            0,
+            lambda target=tile: self._ensure_tile_visible(target)
+        )
+
+    def focus_first(self):
+        if self.focus_order:
+            self._focus_tile(self.focus_order[0], Qt.TabFocusReason)
+
+    def focus_relative(self, current_tile, delta):
+        if not self.focus_order:
+            return
+
+        try:
+            index = self.focus_order.index(current_tile)
+        except ValueError:
+            index = 0
+
+        index = (index + delta) % len(self.focus_order)
+        reason = Qt.TabFocusReason if delta > 0 else Qt.BacktabFocusReason
+        self._focus_tile(self.focus_order[index], reason)
+
+    def focus_direction(self, current_tile, key):
+        """
+        Räumliche Cursor-Navigation für das Periodensystem.
+
+        Links/Rechts:
+            nächste vorhandene Kachel derselben sichtbaren Zeile.
+
+        Oben/Unten:
+            nächste vorhandene sichtbare Zeile; darin wird die Kachel mit
+            der geringsten Spaltenentfernung gewählt. Das funktioniert auch
+            bei den großen Lücken der ersten drei Perioden sowie bei
+            Lanthanoiden und Actinoiden.
+        """
+        if current_tile not in self.tiles:
+            return
+
+        try:
+            current_row = int(current_tile.element.get("scene_row", 0))
+            current_col = int(current_tile.element.get("scene_col", 0))
+        except (TypeError, ValueError):
+            return
+
+        target = None
+
+        if key in (Qt.Key_Left, Qt.Key_Right):
+            same_row = [
+                tile for tile in self.tiles
+                if int(tile.element.get("scene_row", 0)) == current_row
+            ]
+
+            if key == Qt.Key_Left:
+                candidates = [
+                    tile for tile in same_row
+                    if int(tile.element.get("scene_col", 0)) < current_col
+                ]
+                if candidates:
+                    target = max(
+                        candidates,
+                        key=lambda tile: int(tile.element.get("scene_col", 0))
+                    )
+            else:
+                candidates = [
+                    tile for tile in same_row
+                    if int(tile.element.get("scene_col", 0)) > current_col
+                ]
+                if candidates:
+                    target = min(
+                        candidates,
+                        key=lambda tile: int(tile.element.get("scene_col", 0))
+                    )
+
+        elif key in (Qt.Key_Up, Qt.Key_Down):
+            visible_rows = sorted({
+                int(tile.element.get("scene_row", 0))
+                for tile in self.tiles
+            })
+
+            if key == Qt.Key_Up:
+                candidate_rows = [
+                    row for row in visible_rows if row < current_row
+                ]
+                candidate_rows.sort(reverse=True)
+            else:
+                candidate_rows = [
+                    row for row in visible_rows if row > current_row
+                ]
+                candidate_rows.sort()
+
+            # Nur die räumlich nächste belegte Zeile verwenden.
+            for row in candidate_rows:
+                row_tiles = [
+                    tile for tile in self.tiles
+                    if int(tile.element.get("scene_row", 0)) == row
+                ]
+                if not row_tiles:
+                    continue
+
+                target = min(
+                    row_tiles,
+                    key=lambda tile: (
+                        abs(int(tile.element.get("scene_col", 0)) - current_col),
+                        int(tile.element.get("scene_col", 0)),
+                        int(tile.element.get("atomic_number", 0)),
+                    )
+                )
+                break
+
+        if target is not None:
+            self._focus_tile(target, Qt.OtherFocusReason)
+
+
+class PeriodicTableDock(QDockWidget):
+    """Docking-Fenster mit äußerer QScrollArea."""
+
+    def __init__(self, main_window, title_bar_factory=None):
+        super().__init__("Perioden-System der Elemente", main_window)
+
+        self.setObjectName("PeriodicTableDock")
+        self.setAllowedAreas(Qt.AllDockWidgetAreas)
+        self.setFeatures(
+            QDockWidget.DockWidgetClosable
+            | QDockWidget.DockWidgetMovable
+            | QDockWidget.DockWidgetFloatable
+        )
+
+        # Absichtlich keine große Mindestgröße: das Hauptfenster darf beim
+        # erstmaligen Einfügen des Docks nicht wachsen.
+        self.setMinimumSize(120, 100)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        # Stage 244: dieselbe anwendungsweite Dock-Titelleiste wie die anderen
+        # d64_dism-Docks verwenden. Die Factory wird aus run_gui()/ExplorerWindow
+        # übergeben, weil DockTitleBar dort als lokale GUI-Klasse definiert ist.
+        if callable(title_bar_factory):
+            self.setTitleBarWidget(title_bar_factory(self))
+
+        self.canvas = PeriodicTableCanvas()
+
+        self.scroll = QScrollArea(self)
+        self.scroll.setObjectName("PeriodicTableScrollArea")
+        self.scroll.setWidgetResizable(False)
+        self.scroll.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        self.scroll.setFocusPolicy(Qt.NoFocus)
+        self.scroll.setMinimumSize(0, 0)
+        self.scroll.setSizeAdjustPolicy(QAbstractScrollArea.AdjustIgnored)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.scroll.setWidget(self.canvas)
+        self.canvas.set_outer_scroll_area(self.scroll)
+
+        self.setWidget(self.scroll)
+
+        self.visibilityChanged.connect(self._on_visibility_changed)
+
+    def _on_visibility_changed(self, visible):
+        if not visible:
+            self.canvas.hide_hover()
+        else:
+            QTimer.singleShot(0, self.canvas.focus_first)
+
+    def closeEvent(self, event):
+        self.canvas.hide_hover()
+        super().closeEvent(event)
+
+
+class PeriodicTableController:
+    """Verwaltet das Periodensystem als exklusiven Vollbreiten-Workspace."""
+
+    def __init__(self, main_window, title_bar_factory=None):
+        self.main_window = main_window
+        self.title_bar_factory = title_bar_factory
+        self.dock = None
+        self.action = None
+        self._workspace_active = False
+        self._hidden_docks = []
+        self._central_was_visible = False
+
+    @staticmethod
+    def _plain(text):
+        return (text or "").replace("&", "").strip().lower()
+
+    def _find_top_menu(self, caption):
+        wanted = self._plain(caption)
+        for action in self.main_window.menuBar().actions():
+            menu = action.menu()
+            if menu is not None and self._plain(action.text()) == wanted:
+                return menu
+        return None
+
+    def _find_submenu(self, parent_menu, caption):
+        wanted = self._plain(caption)
+        for action in parent_menu.actions():
+            menu = action.menu()
+            if menu is not None and self._plain(action.text()) == wanted:
+                return menu
+        return None
+
+    def _find_action(self, menu, caption):
+        wanted = self._plain(caption)
+        for action in menu.actions():
+            if action.menu() is None and self._plain(action.text()) == wanted:
+                return action
+        return None
+
+    def _create_dock(self):
+        self.dock = PeriodicTableDock(
+            self.main_window,
+            title_bar_factory=self.title_bar_factory,
+        )
+        self.dock.hide()
+
+        # Links/Rechts kann das Dock bei ausgeblendeter Central-Widget-Fläche
+        # tatsächlich die gesamte freie Hauptfensterbreite belegen.
+        self.main_window.addDockWidget(Qt.LeftDockWidgetArea, self.dock)
+        self.dock.visibilityChanged.connect(self._dock_visibility_changed)
+        self.dock.dockLocationChanged.connect(self._dock_location_changed)
+        self.dock.topLevelChanged.connect(self._dock_top_level_changed)
+
+        # Kein adjustSize(), kein resize() des Hauptfensters.
+        return self.dock
+
+    def _enter_workspace(self):
+        if self._workspace_active:
+            return
+
+        self._hidden_docks = []
+        for candidate in self.main_window.findChildren(QDockWidget):
+            if candidate is self.dock:
+                continue
+            if candidate is not None and candidate.isVisible():
+                self._hidden_docks.append(candidate)
+
+        # Beim programmgesteuerten Ausblenden keine fremden Workspace-
+        # Restore-Callbacks auslösen.
+        for candidate in list(self._hidden_docks):
+            try:
+                old_blocked = candidate.blockSignals(True)
+                try:
+                    candidate.hide()
+                finally:
+                    candidate.blockSignals(old_blocked)
+            except RuntimeError:
+                pass
+
+        central = self.main_window.centralWidget()
+        self._central_was_visible = bool(
+            central is not None and central.isVisible()
+        )
+        if self._central_was_visible:
+            central.hide()
+
+        self._workspace_active = True
+
+    def _restore_workspace(self):
+        if not self._workspace_active:
+            return
+
+        self._workspace_active = False
+
+        central = self.main_window.centralWidget()
+        if self._central_was_visible and central is not None:
+            central.show()
+        self._central_was_visible = False
+
+        saved = list(self._hidden_docks)
+        self._hidden_docks = []
+        for candidate in saved:
+            try:
+                if candidate is None:
+                    continue
+                old_blocked = candidate.blockSignals(True)
+                try:
+                    candidate.show()
+                finally:
+                    candidate.blockSignals(old_blocked)
+            except RuntimeError:
+                pass
+
+    def _expand_to_free_width(self):
+        dock = self.dock
+        if dock is None or not dock.isVisible() or dock.isFloating():
+            return
+
+        try:
+            area = self.main_window.dockWidgetArea(dock)
+            if area in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea):
+                # Nach dem Ausblenden der Central-Widget-Fläche ist praktisch
+                # die komplette Clientbreite für das Periodensystem verfügbar.
+                self.main_window.resizeDocks(
+                    [dock],
+                    [max(320, self.main_window.width() - 8)],
+                    Qt.Horizontal,
+                )
+            else:
+                # Top/Bottom-Docks füllen die Breite konstruktionsbedingt.
+                dock.updateGeometry()
+        except RuntimeError:
+            pass
+
+    def _dock_visibility_changed(self, visible):
+        if visible:
+            QTimer.singleShot(0, self._expand_to_free_width)
+            QTimer.singleShot(25, self._expand_to_free_width)
+        elif self._workspace_active:
+            self._restore_workspace()
+
+    def _dock_location_changed(self, _area):
+        if self._workspace_active:
+            QTimer.singleShot(0, self._expand_to_free_width)
+
+    def _dock_top_level_changed(self, floating):
+        if self._workspace_active and not floating:
+            QTimer.singleShot(0, self._expand_to_free_width)
+
+    def show_periodic_table(self):
+        # Außen-Geometrie VOR dem Dock-Aufbau sichern. Die Dock-Expansion darf
+        # ausschließlich die interne QMainWindow-Aufteilung ändern.
+        old_geometry = QRect(self.main_window.geometry())
+
+        dock = self.dock or self._create_dock()
+        self._enter_workspace()
+        dock.show()
+        dock.raise_()
+
+        # QMainWindow führt nach addDockWidget/show noch Layout-Pässe aus.
+        # Deshalb Fenstergeometrie und Vollbreite zeitversetzt stabilisieren.
+        def restore_outer_geometry():
+            if self.main_window is not None:
+                self.main_window.setGeometry(old_geometry)
+
+        QTimer.singleShot(0, restore_outer_geometry)
+        QTimer.singleShot(25, restore_outer_geometry)
+        QTimer.singleShot(0, self._expand_to_free_width)
+        QTimer.singleShot(25, self._expand_to_free_width)
+        QTimer.singleShot(0, dock.canvas.focus_first)
+
+def install_periodic_table(main_window, title_bar_factory=None):
+    """
+    Installiert das Periodensystem in ein bestehendes QMainWindow.
+
+    Empfohlene Stelle in d64_dism.py:
+        nachdem die Hauptmenüs erzeugt wurden.
+
+        self._periodic_table_controller = install_periodic_table(self)
+    """
+    controller = getattr(main_window, "_periodic_table_controller", None)
+    if controller is None:
+        controller = PeriodicTableController(
+            main_window,
+            title_bar_factory=title_bar_factory,
+        )
+        main_window._periodic_table_controller = controller
+    return controller
+
+
+# ---------------------------------------------------------------------------
+# Mathematik: struktureller Formel-Designer
+# ---------------------------------------------------------------------------
+FORMULA_DESIGNER_MAX_DEPTH = 32
+FORMULA_DESIGNER_FORMAT = "d64.formula-designer"
+FORMULA_DESIGNER_VERSION = 1
+
+
+def _formula_new_text(text="", role="value"):
+    return {
+        "type": "text",
+        "id": uuid.uuid4().hex,
+        "text": str(text),
+        "role": str(role),
+    }
+
+
+def _formula_new_example():
+    """Initiale Demonstration entsprechend 2^4."""
+    return {
+        "type": "power",
+        "base": _formula_new_text("2"),
+        "exponent": _formula_new_text("4", "exponent"),
+    }
+
+
+def _formula_depth(node):
+    """Strukturelle Verschachtelung; ein reines Eingabefeld besitzt Tiefe 0."""
+    kind = node.get("type")
+    if kind == "text":
+        return 0
+    if kind == "sequence":
+        return max((_formula_depth(child) for child in node.get("children", [])), default=0)
+    if kind == "power":
+        return 1 + max(
+            _formula_depth(node["base"]),
+            _formula_depth(node["exponent"]),
+        )
+    if kind == "subscript":
+        return 1 + max(
+            _formula_depth(node["base"]),
+            _formula_depth(node["subscript"]),
+        )
+    if kind == "fraction":
+        return 1 + max(
+            _formula_depth(node["numerator"]),
+            _formula_depth(node["denominator"]),
+        )
+    if kind == "group":
+        return 1 + _formula_depth(node["child"])
+    if kind == "root":
+        degree = node.get("degree")
+        degree_depth = _formula_depth(degree) if degree else 0
+        return 1 + max(degree_depth, _formula_depth(node["radicand"]))
+    if kind in {"sigma", "product", "integral"}:
+        return 1 + max(
+            _formula_depth(node["upper"]),
+            _formula_depth(node["lower"]),
+            _formula_depth(node["body"]),
+        )
+    if kind == "limit":
+        return 1 + max(
+            _formula_depth(node["lower"]),
+            _formula_depth(node["body"]),
+        )
+    raise ValueError("Unbekannter Formel-Knotentyp: " + str(kind))
+
+
+def _formula_iter_leaves(node):
+    kind = node.get("type")
+    if kind == "text":
+        yield node
+        return
+    if kind == "sequence":
+        for child in node.get("children", []):
+            yield from _formula_iter_leaves(child)
+        return
+    if kind == "power":
+        yield from _formula_iter_leaves(node["base"])
+        yield from _formula_iter_leaves(node["exponent"])
+        return
+    if kind == "subscript":
+        yield from _formula_iter_leaves(node["base"])
+        yield from _formula_iter_leaves(node["subscript"])
+        return
+    if kind == "fraction":
+        # Tab-Reihenfolge: zuerst Zähler, danach Nenner.
+        yield from _formula_iter_leaves(node["numerator"])
+        yield from _formula_iter_leaves(node["denominator"])
+        return
+    if kind == "group":
+        yield from _formula_iter_leaves(node["child"])
+        return
+    if kind == "root":
+        degree = node.get("degree")
+        if degree is not None:
+            yield from _formula_iter_leaves(degree)
+        yield from _formula_iter_leaves(node["radicand"])
+        return
+    if kind in {"sigma", "product", "integral"}:
+        # Tab-Reihenfolge: Kopf, Fuß, danach Ausdruck rechts vom Operator.
+        yield from _formula_iter_leaves(node["upper"])
+        yield from _formula_iter_leaves(node["lower"])
+        yield from _formula_iter_leaves(node["body"])
+        return
+    if kind == "limit":
+        # Limes: Bedingung unter dem lim, danach Ausdruck rechts.
+        yield from _formula_iter_leaves(node["lower"])
+        yield from _formula_iter_leaves(node["body"])
+        return
+
+
+def _formula_find_leaf(node, leaf_id):
+    for leaf in _formula_iter_leaves(node):
+        if leaf.get("id") == leaf_id:
+            return leaf
+    return None
+
+
+def _formula_replace_leaf(node, leaf_id, replacement):
+    """Ersetzt exakt das aktuell editierbare Blatt und gibt (node, changed) zurück."""
+    if node.get("type") == "text":
+        if node.get("id") == leaf_id:
+            return replacement, True
+        return node, False
+
+    kind = node.get("type")
+    if kind == "sequence":
+        children = node.get("children", [])
+        for index, child in enumerate(children):
+            new_child, changed = _formula_replace_leaf(child, leaf_id, replacement)
+            if changed:
+                children[index] = new_child
+                return node, True
+        return node, False
+
+    if kind == "power":
+        new_base, changed = _formula_replace_leaf(node["base"], leaf_id, replacement)
+        if changed:
+            node["base"] = new_base
+            return node, True
+        new_exp, changed = _formula_replace_leaf(node["exponent"], leaf_id, replacement)
+        if changed:
+            node["exponent"] = new_exp
+            return node, True
+        return node, False
+
+    if kind == "subscript":
+        new_base, changed = _formula_replace_leaf(node["base"], leaf_id, replacement)
+        if changed:
+            node["base"] = new_base
+            return node, True
+        new_index, changed = _formula_replace_leaf(node["subscript"], leaf_id, replacement)
+        if changed:
+            node["subscript"] = new_index
+            return node, True
+        return node, False
+
+    if kind == "fraction":
+        numerator, changed = _formula_replace_leaf(
+            node["numerator"], leaf_id, replacement
+        )
+        if changed:
+            node["numerator"] = numerator
+            return node, True
+        denominator, changed = _formula_replace_leaf(
+            node["denominator"], leaf_id, replacement
+        )
+        if changed:
+            node["denominator"] = denominator
+            return node, True
+        return node, False
+
+    if kind == "group":
+        child, changed = _formula_replace_leaf(node["child"], leaf_id, replacement)
+        if changed:
+            node["child"] = child
+        return node, changed
+
+    if kind == "root":
+        degree = node.get("degree")
+        if degree is not None:
+            new_degree, changed = _formula_replace_leaf(degree, leaf_id, replacement)
+            if changed:
+                node["degree"] = new_degree
+                return node, True
+        radicand, changed = _formula_replace_leaf(node["radicand"], leaf_id, replacement)
+        if changed:
+            node["radicand"] = radicand
+        return node, changed
+
+    if kind in {"sigma", "product", "integral"}:
+        for key in ("upper", "lower", "body"):
+            child, changed = _formula_replace_leaf(node[key], leaf_id, replacement)
+            if changed:
+                node[key] = child
+                return node, True
+        return node, False
+
+    if kind == "limit":
+        for key in ("lower", "body"):
+            child, changed = _formula_replace_leaf(node[key], leaf_id, replacement)
+            if changed:
+                node[key] = child
+                return node, True
+        return node, False
+
+    return node, False
+
+
+def _formula_first_leaf_id(node):
+    """ID des ersten editierbaren Blattes eines Formel-Unterbaums."""
+    for leaf in _formula_iter_leaves(node):
+        return leaf.get("id")
+    return None
+
+
+def _formula_last_leaf_id(node):
+    """ID des letzten editierbaren Blattes eines Formel-Unterbaums."""
+    result = None
+    for leaf in _formula_iter_leaves(node):
+        result = leaf.get("id")
+    return result
+
+
+def _formula_join_fraction_sides(numerator, denominator):
+    """
+    Entfernt die Bruchstruktur und führt Zähler/Nenner wieder horizontal
+    zusammen.
+
+    Sind beide Seiten einfache Textfelder, werden ihre Texte wirklich zu
+    EINEM Eingabeobjekt verbunden: 2/4 -> 24. Bei komplexen Formelobjekten
+    entsteht eine normale Sequence, damit keine Struktur verloren geht.
+
+    Rückgabe:
+        (replacement_node, focus_leaf_id, cursor_position)
+    """
+    if (
+        numerator.get("type") == "text"
+        and denominator.get("type") == "text"
+    ):
+        left_text = str(numerator.get("text", ""))
+        right_text = str(denominator.get("text", ""))
+
+        # Die ID des Zählers bleibt erhalten. Damit kann der Fokus sauber
+        # auf die ehemalige Trennstelle gesetzt werden.
+        numerator["text"] = left_text + right_text
+        numerator["role"] = "value"
+        return numerator, numerator.get("id"), len(left_text)
+
+    children = []
+
+    if numerator.get("type") == "sequence":
+        children.extend(numerator.get("children", []))
+    else:
+        children.append(numerator)
+
+    if denominator.get("type") == "sequence":
+        children.extend(denominator.get("children", []))
+    else:
+        children.append(denominator)
+
+    if len(children) == 1:
+        replacement = children[0]
+    else:
+        replacement = {
+            "type": "sequence",
+            "children": children,
+        }
+
+    # Bei komplexen Objekten bleibt der logische Fokus möglichst an der
+    # ehemaligen Bruchgrenze: letztes Blatt des linken Teils.
+    focus_id = _formula_last_leaf_id(numerator)
+    if focus_id is None:
+        focus_id = _formula_first_leaf_id(denominator)
+
+    cursor_position = None
+    if numerator.get("type") == "text":
+        cursor_position = len(str(numerator.get("text", "")))
+
+    return replacement, focus_id, cursor_position
+
+
+def _formula_collapse_fraction_boundary(node, leaf_id, boundary):
+    """
+    Löst den INNERSTEN Bruch auf, dessen Grenzblatt dem aktiven Blatt
+    entspricht.
+
+    boundary:
+        "numerator_end"      -> Delete rechts am Ende des Zählers
+        "denominator_start"  -> Backspace links am Anfang des Nenners
+
+    Rückgabe:
+        (node, changed, focus_leaf_id, cursor_position)
+    """
+    kind = node.get("type")
+
+    if kind == "text":
+        return node, False, None, None
+
+    # Zuerst rekursiv in die Kinder gehen. Dadurch wird bei verschachtelten
+    # Brüchen immer der innerste passende Bruch entfernt.
+    if kind == "sequence":
+        children = node.get("children", [])
+        for index, child in enumerate(children):
+            new_child, changed, focus_id, cursor_pos = (
+                _formula_collapse_fraction_boundary(
+                    child,
+                    leaf_id,
+                    boundary,
+                )
+            )
+            if changed:
+                children[index] = new_child
+                return node, True, focus_id, cursor_pos
+        return node, False, None, None
+
+    if kind == "power":
+        for key in ("base", "exponent"):
+            child, changed, focus_id, cursor_pos = (
+                _formula_collapse_fraction_boundary(
+                    node[key],
+                    leaf_id,
+                    boundary,
+                )
+            )
+            if changed:
+                node[key] = child
+                return node, True, focus_id, cursor_pos
+        return node, False, None, None
+
+    if kind == "subscript":
+        for key in ("base", "subscript"):
+            child, changed, focus_id, cursor_pos = (
+                _formula_collapse_fraction_boundary(
+                    node[key],
+                    leaf_id,
+                    boundary,
+                )
+            )
+            if changed:
+                node[key] = child
+                return node, True, focus_id, cursor_pos
+        return node, False, None, None
+
+    if kind == "group":
+        child, changed, focus_id, cursor_pos = (
+            _formula_collapse_fraction_boundary(
+                node["child"],
+                leaf_id,
+                boundary,
+            )
+        )
+        if changed:
+            node["child"] = child
+            return node, True, focus_id, cursor_pos
+        return node, False, None, None
+
+    if kind == "root":
+        degree = node.get("degree")
+        if degree is not None:
+            new_degree, changed, focus_id, cursor_pos = (
+                _formula_collapse_fraction_boundary(
+                    degree,
+                    leaf_id,
+                    boundary,
+                )
+            )
+            if changed:
+                node["degree"] = new_degree
+                return node, True, focus_id, cursor_pos
+
+        radicand, changed, focus_id, cursor_pos = (
+            _formula_collapse_fraction_boundary(
+                node["radicand"],
+                leaf_id,
+                boundary,
+            )
+        )
+        if changed:
+            node["radicand"] = radicand
+            return node, True, focus_id, cursor_pos
+        return node, False, None, None
+
+    if kind in {"sigma", "product", "integral"}:
+        for key in ("upper", "lower", "body"):
+            child, changed, focus_id, cursor_pos = (
+                _formula_collapse_fraction_boundary(
+                    node[key],
+                    leaf_id,
+                    boundary,
+                )
+            )
+            if changed:
+                node[key] = child
+                return node, True, focus_id, cursor_pos
+        return node, False, None, None
+
+    if kind == "limit":
+        for key in ("lower", "body"):
+            child, changed, focus_id, cursor_pos = (
+                _formula_collapse_fraction_boundary(
+                    node[key],
+                    leaf_id,
+                    boundary,
+                )
+            )
+            if changed:
+                node[key] = child
+                return node, True, focus_id, cursor_pos
+        return node, False, None, None
+
+    if kind == "fraction":
+        # Zunächst eventuell tiefer verschachtelte Brüche bearbeiten.
+        for key in ("numerator", "denominator"):
+            child, changed, focus_id, cursor_pos = (
+                _formula_collapse_fraction_boundary(
+                    node[key],
+                    leaf_id,
+                    boundary,
+                )
+            )
+            if changed:
+                node[key] = child
+                return node, True, focus_id, cursor_pos
+
+        numerator = node["numerator"]
+        denominator = node["denominator"]
+
+        matches_boundary = (
+            boundary == "numerator_end"
+            and _formula_last_leaf_id(numerator) == leaf_id
+        ) or (
+            boundary == "denominator_start"
+            and _formula_first_leaf_id(denominator) == leaf_id
+        )
+
+        if matches_boundary:
+            replacement, focus_id, cursor_pos = (
+                _formula_join_fraction_sides(
+                    numerator,
+                    denominator,
+                )
+            )
+            return replacement, True, focus_id, cursor_pos
+
+        return node, False, None, None
+
+    return node, False, None, None
+
+
+
+def _formula_unwrap_group_for_leaf(node, leaf_id):
+    """Entfernt genau eine innerste Klammer-Ebene um das aktive Blatt."""
+    kind = node.get("type")
+
+    if kind == "text":
+        return node, False
+
+    if kind == "sequence":
+        children = node.get("children", [])
+        for index, child in enumerate(children):
+            child, changed = _formula_unwrap_group_for_leaf(child, leaf_id)
+            if changed:
+                children[index] = child
+                return node, True
+        return node, False
+
+    if kind in {"power", "subscript"}:
+        keys = ("base", "exponent") if kind == "power" else ("base", "subscript")
+        for key in keys:
+            child, changed = _formula_unwrap_group_for_leaf(node[key], leaf_id)
+            if changed:
+                node[key] = child
+                return node, True
+        return node, False
+
+    if kind == "fraction":
+        for key in ("numerator", "denominator"):
+            child, changed = _formula_unwrap_group_for_leaf(node[key], leaf_id)
+            if changed:
+                node[key] = child
+                return node, True
+        return node, False
+
+    if kind == "root":
+        degree = node.get("degree")
+        if degree is not None:
+            degree, changed = _formula_unwrap_group_for_leaf(degree, leaf_id)
+            if changed:
+                node["degree"] = degree
+                return node, True
+        radicand, changed = _formula_unwrap_group_for_leaf(node["radicand"], leaf_id)
+        if changed:
+            node["radicand"] = radicand
+            return node, True
+        return node, False
+
+    if kind in {"sigma", "product", "integral"}:
+        for key in ("upper", "lower", "body"):
+            child, changed = _formula_unwrap_group_for_leaf(node[key], leaf_id)
+            if changed:
+                node[key] = child
+                return node, True
+        return node, False
+
+    if kind == "limit":
+        for key in ("lower", "body"):
+            child, changed = _formula_unwrap_group_for_leaf(node[key], leaf_id)
+            if changed:
+                node[key] = child
+                return node, True
+        return node, False
+
+    if kind == "group":
+        # Bei ((x)) zuerst die innerste Klammer lösen.
+        child, changed = _formula_unwrap_group_for_leaf(node["child"], leaf_id)
+        if changed:
+            node["child"] = child
+            return node, True
+        if _formula_find_leaf(node["child"], leaf_id) is not None:
+            return node["child"], True
+        return node, False
+
+    return node, False
+
+
+FORMULA_DESIGNER_CLIPBOARD_MIME = "application/x-d64-formula-node+json"
+
+
+def _formula_find_path_for_leaf(node, leaf_id, path=()):
+    """Pfad (dict-Keys/List-Indizes) zum editierbaren Blatt ermitteln."""
+    kind = node.get("type")
+    if kind == "text":
+        return tuple(path) if node.get("id") == leaf_id else None
+
+    if kind == "sequence":
+        for index, child in enumerate(node.get("children", [])):
+            result = _formula_find_path_for_leaf(
+                child,
+                leaf_id,
+                tuple(path) + ("children", index),
+            )
+            if result is not None:
+                return result
+        return None
+
+    child_keys = {
+        "power": ("base", "exponent"),
+        "subscript": ("base", "subscript"),
+        "fraction": ("numerator", "denominator"),
+        "group": ("child",),
+        "root": ("degree", "radicand"),
+        "sigma": ("upper", "lower", "body"),
+        "product": ("upper", "lower", "body"),
+        "integral": ("upper", "lower", "body"),
+        "limit": ("lower", "body"),
+    }.get(kind, ())
+
+    for key in child_keys:
+        child = node.get(key)
+        if child is None:
+            continue
+        result = _formula_find_path_for_leaf(
+            child,
+            leaf_id,
+            tuple(path) + (key,),
+        )
+        if result is not None:
+            return result
+    return None
+
+
+def _formula_get_node_at_path(node, path):
+    current = node
+    try:
+        for part in tuple(path):
+            current = current[part]
+    except (KeyError, IndexError, TypeError):
+        return None
+    return current if isinstance(current, dict) else None
+
+
+def _formula_clone_with_new_ids(node):
+    """Formelknoten für Paste klonen und alle Blatt-IDs neu vergeben."""
+    clone = copy.deepcopy(node)
+    for leaf in _formula_iter_leaves(clone):
+        leaf["id"] = uuid.uuid4().hex
+    return clone
+
+
+def _formula_primary_content(node):
+    """
+    Entfernt den Operator des Knotens, erhält aber dessen primären Inhalt.
+
+    Das macht insbesondere `lim x` -> `x`, wenn das Limes-Objekt gelöscht
+    wird. Gleiches gilt sinnvoll für Klammern, Wurzeln, Potenzen, Sigma,
+    Produkt und Integrale.
+    """
+    kind = node.get("type")
+
+    if kind == "text":
+        result = copy.deepcopy(node)
+        result["text"] = ""
+        return result
+
+    if kind == "group":
+        return node["child"]
+    if kind == "root":
+        return node["radicand"]
+    if kind == "power":
+        return node["base"]
+    if kind == "subscript":
+        return node["base"]
+    if kind == "fraction":
+        replacement, _focus_id, _cursor_pos = _formula_join_fraction_sides(
+            node["numerator"],
+            node["denominator"],
+        )
+        return replacement
+    if kind in {"sigma", "product", "integral", "limit"}:
+        return node["body"]
+
+    # Eine komplette Sequenz wird als einzelnes ausgewähltes Objekt gelöscht.
+    if kind == "sequence":
+        return _formula_new_text("")
+
+    return _formula_new_text("")
+
+
+def _formula_delete_node_at_path(node, path):
+    """
+    Ausgewählten Knoten löschen/entfernen.
+
+    Bei Operator-Knoten wird der Operator entfernt und der primäre Inhalt
+    erhalten. Ein Kind einer Sequenz wird dagegen wirklich aus der Sequenz
+    entfernt. Rückgabe: (node, changed, focus_leaf_id).
+    """
+    path = tuple(path)
+    if not path:
+        replacement = _formula_primary_content(node)
+        return replacement, True, _formula_first_leaf_id(replacement)
+
+    key = path[0]
+
+    if key == "children":
+        if node.get("type") != "sequence" or len(path) < 2:
+            return node, False, None
+        index = path[1]
+        children = node.get("children", [])
+        if not isinstance(index, int) or not (0 <= index < len(children)):
+            return node, False, None
+
+        if len(path) == 2:
+            selected = children[index]
+            if selected.get("type") == "text":
+                del children[index]
+                if not children:
+                    replacement = _formula_new_text("")
+                    return replacement, True, replacement["id"]
+                if len(children) == 1:
+                    replacement = children[0]
+                    return replacement, True, _formula_first_leaf_id(replacement)
+                focus_index = min(index, len(children) - 1)
+                return node, True, _formula_first_leaf_id(children[focus_index])
+
+            # Ein markierter Operator in einer Sequenz wird nicht samt Inhalt
+            # verworfen. Stattdessen fällt nur der Operator weg (z. B. lim -> body).
+            replacement = _formula_primary_content(selected)
+            children[index] = replacement
+            return node, True, _formula_first_leaf_id(replacement)
+
+        child, changed, focus_id = _formula_delete_node_at_path(
+            children[index],
+            path[2:],
+        )
+        if changed:
+            children[index] = child
+            return node, True, focus_id
+        return node, False, None
+
+    child = node.get(key) if isinstance(node, dict) else None
+    if not isinstance(child, dict):
+        return node, False, None
+
+    child, changed, focus_id = _formula_delete_node_at_path(child, path[1:])
+    if changed:
+        node[key] = child
+        return node, True, focus_id
+    return node, False, None
+
+
+def _formula_replace_node_at_path(node, path, replacement):
+    """Beliebigen Formelknoten an einem Modellpfad ersetzen."""
+    path = tuple(path)
+    if not path:
+        return replacement, True
+
+    key = path[0]
+    if key == "children":
+        if node.get("type") != "sequence" or len(path) < 2:
+            return node, False
+        index = path[1]
+        children = node.get("children", [])
+        if not isinstance(index, int) or not (0 <= index < len(children)):
+            return node, False
+        if len(path) == 2:
+            children[index] = replacement
+            return node, True
+        child, changed = _formula_replace_node_at_path(
+            children[index], path[2:], replacement
+        )
+        if changed:
+            children[index] = child
+        return node, changed
+
+    child = node.get(key) if isinstance(node, dict) else None
+    if not isinstance(child, dict):
+        return node, False
+    child, changed = _formula_replace_node_at_path(child, path[1:], replacement)
+    if changed:
+        node[key] = child
+    return node, changed
+
+
+def _formula_to_text(node):
+    kind = node.get("type")
+    if kind == "text":
+        return str(node.get("text", "")) or "□"
+    if kind == "sequence":
+        return " ".join(_formula_to_text(child) for child in node.get("children", []))
+    if kind == "power":
+        return f"{_formula_to_text(node['base'])}^({_formula_to_text(node['exponent'])})"
+    if kind == "subscript":
+        return f"{_formula_to_text(node['base'])}_({_formula_to_text(node['subscript'])})"
+    if kind == "fraction":
+        return (
+            f"({_formula_to_text(node['numerator'])})/"
+            f"({_formula_to_text(node['denominator'])})"
+        )
+    if kind == "group":
+        return f"({_formula_to_text(node['child'])})"
+    if kind == "root":
+        degree = node.get("degree")
+        inner = _formula_to_text(node["radicand"])
+        if degree is None:
+            return f"sqrt({inner})"
+        return f"root[{_formula_to_text(degree)}]({inner})"
+    if kind == "sigma":
+        return (
+            "sum["
+            + _formula_to_text(node["lower"])
+            + ".."
+            + _formula_to_text(node["upper"])
+            + "](" + _formula_to_text(node["body"]) + ")"
+        )
+    if kind == "product":
+        return (
+            "prod["
+            + _formula_to_text(node["lower"])
+            + ".."
+            + _formula_to_text(node["upper"])
+            + "](" + _formula_to_text(node["body"]) + ")"
+        )
+    if kind == "limit":
+        return (
+            "lim["
+            + _formula_to_text(node["lower"])
+            + "](" + _formula_to_text(node["body"]) + ")"
+        )
+    if kind == "integral":
+        count = int(node.get("count", 1))
+        return (
+            f"integral{count}["
+            + _formula_to_text(node["lower"])
+            + ".."
+            + _formula_to_text(node["upper"])
+            + "](" + _formula_to_text(node["body"]) + ")"
+        )
+    return "?"
+
+
+def _formula_validate_model(node, *, _depth=0, _ids=None):
+    if _ids is None:
+        _ids = set()
+    if _depth > FORMULA_DESIGNER_MAX_DEPTH:
+        raise ValueError(
+            f"Die Formel überschreitet die maximale Tiefe {FORMULA_DESIGNER_MAX_DEPTH}."
+        )
+    if not isinstance(node, dict):
+        raise ValueError("Ungültiger Formel-Knoten.")
+
+    kind = node.get("type")
+    if kind == "text":
+        leaf_id = node.get("id")
+        if not isinstance(leaf_id, str) or not leaf_id:
+            raise ValueError("Eingabefeld ohne gültige ID.")
+        if leaf_id in _ids:
+            raise ValueError("Doppelte Eingabefeld-ID in der Formel.")
+        _ids.add(leaf_id)
+        text = node.get("text", "")
+        if not isinstance(text, str) or len(text) > 256:
+            raise ValueError("Ungültiger Eingabetext.")
+        role = node.get("role", "value")
+        if not isinstance(role, str):
+            raise ValueError("Ungültige Eingabefeld-Rolle.")
+        return
+
+    if kind == "sequence":
+        children = node.get("children")
+        if not isinstance(children, list) or not children or len(children) > 256:
+            raise ValueError("Ungültige Formel-Sequenz.")
+        for child in children:
+            _formula_validate_model(child, _depth=_depth, _ids=_ids)
+        return
+
+    if kind == "power":
+        _formula_validate_model(node.get("base"), _depth=_depth + 1, _ids=_ids)
+        _formula_validate_model(node.get("exponent"), _depth=_depth + 1, _ids=_ids)
+        return
+
+    if kind == "subscript":
+        # Basis und Index sind absichtlich beide beliebige Formelobjekte.
+        # Dadurch kann ein Index selbst z. B. Potenz, Wurzel, Klammerausdruck
+        # oder ein weiterer tiefgestellter Index sein.
+        _formula_validate_model(node.get("base"), _depth=_depth + 1, _ids=_ids)
+        _formula_validate_model(node.get("subscript"), _depth=_depth + 1, _ids=_ids)
+        return
+
+    if kind == "fraction":
+        # Zähler und Nenner sind vollwertige Formelobjekte. Dadurch dürfen
+        # Brüche Potenzen, Wurzeln, Klammern, Indizes und weitere Brüche
+        # enthalten und selbst wieder in solchen Strukturen verwendet werden.
+        _formula_validate_model(node.get("numerator"), _depth=_depth + 1, _ids=_ids)
+        _formula_validate_model(node.get("denominator"), _depth=_depth + 1, _ids=_ids)
+        return
+
+    if kind == "group":
+        _formula_validate_model(node.get("child"), _depth=_depth + 1, _ids=_ids)
+        return
+
+    if kind == "root":
+        degree = node.get("degree")
+        if degree is not None:
+            if not isinstance(degree, dict) or degree.get("type") != "text":
+                raise ValueError("Der Wurzelgrad muss ein Eingabefeld sein.")
+            _formula_validate_model(degree, _depth=_depth + 1, _ids=_ids)
+        _formula_validate_model(node.get("radicand"), _depth=_depth + 1, _ids=_ids)
+        return
+
+    if kind in {"sigma", "product"}:
+        for key in ("upper", "lower", "body"):
+            _formula_validate_model(node.get(key), _depth=_depth + 1, _ids=_ids)
+        return
+
+    if kind == "limit":
+        for key in ("lower", "body"):
+            _formula_validate_model(node.get(key), _depth=_depth + 1, _ids=_ids)
+        return
+
+    if kind == "integral":
+        count = node.get("count", 1)
+        if not isinstance(count, int) or isinstance(count, bool) or count not in (1, 2, 3):
+            raise ValueError("Integraltyp muss 1, 2 oder 3 sein.")
+        for key in ("upper", "lower", "body"):
+            _formula_validate_model(node.get(key), _depth=_depth + 1, _ids=_ids)
+        return
+
+    raise ValueError("Unbekannter Formel-Knotentyp: " + str(kind))
+
+
+class FormulaCanvasItem(QGraphicsObject):
+    """Ein fokussierbares QGraphicsObject, das die komplette Strukturformel zeichnet."""
+
+    BASE_POINT_SIZE = 24.0
+
+    def __init__(self, editor):
+        super().__init__()
+        self.editor = editor
+        self.model = editor.model
+        self.active_leaf_id = None
+        self._layout = None
+        self._bounds = QRectF(0.0, 0.0, 80.0, 60.0)
+        self._leaf_rects = {}
+        self._leaf_layouts = {}
+        self._node_rects = {}
+        self._node_kinds = {}
+        self.selected_path = None
+
+        # Stage 250:
+        # Eigener Textcursor je editierbarem Blatt. Die Position ist ein
+        # Zeichenindex zwischen 0 und len(text). So kann innerhalb längerer
+        # Eingaben mit Links/Rechts navigiert und an der Cursorposition
+        # eingefügt bzw. gelöscht werden.
+        self._cursor_positions = {}
+
+        self._dark_mode = False
+
+        self.setFlag(QGraphicsItem.ItemIsFocusable, True)
+        self.setAcceptedMouseButtons(Qt.LeftButton | Qt.RightButton)
+        self.setAcceptHoverEvents(True)
+
+        leaves = list(_formula_iter_leaves(self.model))
+        if leaves:
+            self.active_leaf_id = leaves[0]["id"]
+        self.refresh_layout()
+
+    def set_model(self, model, active_leaf_id=None):
+        self.model = model
+        leaves = list(_formula_iter_leaves(self.model))
+        ids = {leaf["id"] for leaf in leaves}
+        self.active_leaf_id = active_leaf_id if active_leaf_id in ids else (leaves[0]["id"] if leaves else None)
+        self.refresh_layout()
+
+    def set_dark_mode(self, enabled):
+        self._dark_mode = bool(enabled)
+        self.update()
+
+    def _sync_cursor_positions(self):
+        """Entfernt veraltete Cursorpositionen und begrenzt vorhandene."""
+        leaves = list(_formula_iter_leaves(self.model))
+        valid_ids = {leaf["id"] for leaf in leaves}
+
+        self._cursor_positions = {
+            leaf_id: position
+            for leaf_id, position in self._cursor_positions.items()
+            if leaf_id in valid_ids
+        }
+
+        for leaf in leaves:
+            leaf_id = leaf["id"]
+            text = str(leaf.get("text", ""))
+            if leaf_id not in self._cursor_positions:
+                self._cursor_positions[leaf_id] = len(text)
+            else:
+                self._cursor_positions[leaf_id] = max(
+                    0,
+                    min(int(self._cursor_positions[leaf_id]), len(text)),
+                )
+
+    def cursor_position(self, leaf_id=None):
+        leaf_id = leaf_id or self.active_leaf_id
+        leaf = _formula_find_leaf(self.model, leaf_id)
+        if leaf is None:
+            return 0
+
+        text = str(leaf.get("text", ""))
+        position = self._cursor_positions.get(leaf_id, len(text))
+        position = max(0, min(int(position), len(text)))
+        self._cursor_positions[leaf_id] = position
+        return position
+
+    def set_cursor_position(self, position, leaf_id=None, ensure_visible=True):
+        leaf_id = leaf_id or self.active_leaf_id
+        leaf = _formula_find_leaf(self.model, leaf_id)
+        if leaf is None:
+            return
+
+        text = str(leaf.get("text", ""))
+        self._cursor_positions[leaf_id] = max(
+            0,
+            min(int(position), len(text)),
+        )
+        self.update()
+
+        if ensure_visible:
+            QTimer.singleShot(0, self.editor.ensure_active_visible)
+
+    @staticmethod
+    def _text_origin_x(layout, rect, text):
+        if not text:
+            return rect.center().x()
+
+        glyph_rect = layout["glyph_rect"]
+        return rect.center().x() - glyph_rect.width() / 2.0 - glyph_rect.left()
+
+    def _caret_x_for_leaf(self, leaf_id, layout=None, rect=None):
+        leaf = _formula_find_leaf(self.model, leaf_id)
+        if leaf is None:
+            return None
+
+        if layout is None:
+            layout = self._leaf_layouts.get(leaf_id)
+        if rect is None:
+            rect = self._leaf_rects.get(leaf_id)
+        if layout is None or rect is None:
+            return None
+
+        text = str(leaf.get("text", ""))
+        if not text:
+            return rect.center().x()
+
+        position = self.cursor_position(leaf_id)
+        metrics = QFontMetricsF(layout["font"])
+        origin_x = self._text_origin_x(layout, rect, text)
+        x = origin_x + metrics.horizontalAdvance(text[:position])
+        return max(rect.left() + 2.0, min(x, rect.right() - 2.0))
+
+    def active_caret_rect(self):
+        """2-px-Cursorrechteck des aktiven Textobjekts in Item-Koordinaten."""
+        leaf_id = self.active_leaf_id
+        rect = self._leaf_rects.get(leaf_id)
+        layout = self._leaf_layouts.get(leaf_id)
+        if rect is None or layout is None:
+            return None
+
+        x = self._caret_x_for_leaf(leaf_id, layout, rect)
+        if x is None:
+            return None
+
+        top = rect.top() + 4.0
+        bottom = rect.bottom() - 4.0
+        return QRectF(x - 1.0, top, 2.0, max(1.0, bottom - top))
+
+    def _cursor_position_from_x(self, leaf_id, mouse_x):
+        """Bestimmt den nächstliegenden Zeichenindex zu einer Maus-X-Position."""
+        leaf = _formula_find_leaf(self.model, leaf_id)
+        layout = self._leaf_layouts.get(leaf_id)
+        rect = self._leaf_rects.get(leaf_id)
+        if leaf is None or layout is None or rect is None:
+            return 0
+
+        text = str(leaf.get("text", ""))
+        if not text:
+            return 0
+
+        metrics = QFontMetricsF(layout["font"])
+        origin_x = self._text_origin_x(layout, rect, text)
+
+        best_index = 0
+        best_distance = abs(float(mouse_x) - origin_x)
+        for index in range(1, len(text) + 1):
+            x = origin_x + metrics.horizontalAdvance(text[:index])
+            distance = abs(float(mouse_x) - x)
+            if distance < best_distance:
+                best_distance = distance
+                best_index = index
+
+        return best_index
+
+    def selected_node(self):
+        if self.selected_path is None:
+            return None
+        return _formula_get_node_at_path(self.model, self.selected_path)
+
+    def set_selected_path(self, path):
+        path = tuple(path) if path is not None else None
+        if path is not None and path not in self._node_rects:
+            path = None
+        self.selected_path = path
+        self.update()
+        self.editor.update_status()
+
+    def _node_path_at(self, pos):
+        candidates = []
+        for path, rect in self._node_rects.items():
+            hit_rect = rect.adjusted(-3.0, -3.0, 3.0, 3.0)
+            if hit_rect.contains(pos):
+                area = max(1.0, rect.width() * rect.height())
+                candidates.append((len(path), -area, path))
+        if not candidates:
+            return None
+        candidates.sort(reverse=True)
+        return candidates[0][2]
+
+    def _activate_selected_path(self, path, pos=None, focus_reason=Qt.MouseFocusReason):
+        node = _formula_get_node_at_path(self.model, path)
+        if node is None:
+            return False
+
+        self.set_selected_path(path)
+
+        if node.get("type") == "text":
+            leaf_id = node.get("id")
+            # Stage-247-Kompatibilität der Logik: ehemals
+            # self.set_active_leaf(hit, Qt.MouseFocusReason)
+            # cursor_position = self._cursor_position_from_x(hit, pos.x())
+            self.set_active_leaf(
+                leaf_id,
+                focus_reason,
+                update_selection=False,
+            )
+            if pos is not None:
+                cursor_position = self._cursor_position_from_x(leaf_id, pos.x())
+                self.set_cursor_position(
+                    cursor_position,
+                    leaf_id,
+                    ensure_visible=True,
+                )
+            return True
+
+        # Bei strukturellen Objekten bleibt der vorhandene Blattfokus erhalten,
+        # sofern er innerhalb der Auswahl liegt; sonst erstes Blatt aktivieren.
+        active_inside = _formula_find_leaf(node, self.active_leaf_id)
+        if active_inside is None:
+            first_id = _formula_first_leaf_id(node)
+            if first_id:
+                self.set_active_leaf(
+                    first_id,
+                    focus_reason,
+                    update_selection=False,
+                )
+            else:
+                self.setFocus(focus_reason)
+        else:
+            self.setFocus(focus_reason)
+        self.update()
+        return True
+
+    def _font(self, scale=1.0):
+        font = QFont("Cambria Math")
+        font.setPointSizeF(max(9.0, self.BASE_POINT_SIZE * float(scale)))
+        return font
+
+    def _measure_text_leaf(self, node, scale):
+        font = self._font(scale)
+        metrics = QFontMetricsF(font)
+        text = str(node.get("text", ""))
+
+        # Stage 248:
+        # Der Eingaberahmen orientiert sich nicht mehr an der kompletten
+        # Font-Zeilenhöhe (inkl. Leading), sondern an der tatsächlich
+        # gezeichneten Glyphenhöhe. Damit liegt der Rahmen maximal/exakt
+        # 4 Pixel oberhalb und 4 Pixel unterhalb des Symbols.
+        measure_text = text or "0"
+        glyph_rect = metrics.tightBoundingRect(measure_text)
+        glyph_width = max(1.0, glyph_rect.width())
+        glyph_height = max(1.0, glyph_rect.height())
+
+        width = max(18.0 * scale, glyph_width + 8.0)
+        height = glyph_height + 8.0
+
+        return {
+            "kind": "text",
+            "node": node,
+            "font": font,
+            "scale": scale,
+            "glyph_rect": glyph_rect,
+            "w": width,
+            "h": height,
+        }
+
+    def _measure_limit_operator(self, node, scale, *, kind, symbol_text):
+        """Layout für Sigma und ein-/mehrfache Integrale mit Ober-/Untergrenze."""
+        upper = self._measure_node(node["upper"], max(0.42, scale * 0.62))
+        lower = self._measure_node(node["lower"], max(0.42, scale * 0.62))
+        body = self._measure_node(node["body"], scale)
+
+        symbol_font = self._font(max(0.90, scale * 1.62))
+        symbol_metrics = QFontMetricsF(symbol_font)
+        symbol_rect = symbol_metrics.tightBoundingRect(symbol_text)
+        symbol_w = max(18.0 * scale, symbol_rect.width())
+        symbol_h = max(28.0 * scale, symbol_rect.height())
+
+        limit_gap = max(2.0, 3.0 * scale)
+        body_gap = max(5.0, 7.0 * scale)
+        limit_w = max(symbol_w, upper["w"], lower["w"])
+
+        upper_x = (limit_w - upper["w"]) / 2.0
+        upper_y = 0.0
+        symbol_x = (limit_w - symbol_w) / 2.0
+        symbol_y = upper["h"] + limit_gap
+        lower_x = (limit_w - lower["w"]) / 2.0
+        lower_y = symbol_y + symbol_h + limit_gap
+        stack_h = lower_y + lower["h"]
+
+        height = max(stack_h, body["h"])
+        body_x = limit_w + body_gap
+        body_y = (height - body["h"]) / 2.0
+
+        return {
+            "kind": kind,
+            "node": node,
+            "upper": (upper, upper_x, upper_y),
+            "lower": (lower, lower_x, lower_y),
+            "body": (body, body_x, body_y),
+            "symbol_text": symbol_text,
+            "symbol_font": symbol_font,
+            "symbol_rect": symbol_rect,
+            "symbol_x": symbol_x,
+            "symbol_y": symbol_y,
+            "symbol_w": symbol_w,
+            "symbol_h": symbol_h,
+            "w": body_x + body["w"],
+            "h": height,
+        }
+
+    def _measure_limit_text(self, node, scale):
+        """Layout für 'lim' mit Bedingung darunter und Ausdruck rechts."""
+        lower = self._measure_node(node["lower"], max(0.42, scale * 0.62))
+        body = self._measure_node(node["body"], scale)
+
+        symbol_text = "lim"
+        symbol_font = self._font(max(0.78, scale * 1.12))
+        symbol_metrics = QFontMetricsF(symbol_font)
+        symbol_rect = symbol_metrics.tightBoundingRect(symbol_text)
+        symbol_w = max(28.0 * scale, symbol_rect.width())
+        symbol_h = max(18.0 * scale, symbol_rect.height())
+
+        gap = max(2.0, 3.0 * scale)
+        body_gap = max(5.0, 7.0 * scale)
+        limit_w = max(symbol_w, lower["w"])
+
+        symbol_x = (limit_w - symbol_w) / 2.0
+        symbol_y = 0.0
+        lower_x = (limit_w - lower["w"]) / 2.0
+        lower_y = symbol_h + gap
+        stack_h = lower_y + lower["h"]
+
+        height = max(stack_h, body["h"])
+        body_x = limit_w + body_gap
+        body_y = (height - body["h"]) / 2.0
+
+        return {
+            "kind": "limit",
+            "node": node,
+            "lower": (lower, lower_x, lower_y),
+            "body": (body, body_x, body_y),
+            "symbol_text": symbol_text,
+            "symbol_font": symbol_font,
+            "symbol_rect": symbol_rect,
+            "symbol_x": symbol_x,
+            "symbol_y": symbol_y,
+            "symbol_w": symbol_w,
+            "symbol_h": symbol_h,
+            "w": body_x + body["w"],
+            "h": height,
+        }
+
+    def _measure_node(self, node, scale=1.0):
+        kind = node.get("type")
+        if kind == "text":
+            return self._measure_text_leaf(node, scale)
+
+        if kind == "sequence":
+            layouts = [self._measure_node(child, scale) for child in node.get("children", [])]
+            gap = 10.0 * scale
+            width = sum(layout["w"] for layout in layouts)
+            if layouts:
+                width += gap * (len(layouts) - 1)
+            height = max((layout["h"] for layout in layouts), default=30.0 * scale)
+            children = []
+            x = 0.0
+            for layout in layouts:
+                y = (height - layout["h"]) / 2.0
+                children.append((layout, x, y))
+                x += layout["w"] + gap
+            return {
+                "kind": "sequence",
+                "node": node,
+                "children": children,
+                "w": width,
+                "h": height,
+            }
+
+        if kind == "power":
+            base = self._measure_node(node["base"], scale)
+            exp = self._measure_node(node["exponent"], max(0.42, scale * 0.68))
+            base_y = max(4.0 * scale, exp["h"] * 0.56)
+            exp_x = base["w"] + 2.0 * scale
+            width = exp_x + exp["w"]
+            height = max(exp["h"], base_y + base["h"])
+            return {
+                "kind": "power",
+                "node": node,
+                "base": (base, 0.0, base_y),
+                "exponent": (exp, exp_x, 0.0),
+                "w": width,
+                "h": height,
+            }
+
+        if kind == "subscript":
+            base = self._measure_node(node["base"], scale)
+            index = self._measure_node(node["subscript"], max(0.42, scale * 0.68))
+
+            # Der Index steht rechts unten an der Basis. Auch komplexe
+            # Indexobjekte (Potenz/Wurzel/Klammer/weiterer Index) werden
+            # rekursiv im verkleinerten Maßstab vermessen.
+            index_x = base["w"] + 2.0 * scale
+            index_y = max(
+                base["h"] * 0.58,
+                base["h"] - index["h"] * 0.35,
+            )
+            width = index_x + index["w"]
+            height = max(base["h"], index_y + index["h"])
+            return {
+                "kind": "subscript",
+                "node": node,
+                "base": (base, 0.0, 0.0),
+                "subscript": (index, index_x, index_y),
+                "w": width,
+                "h": height,
+            }
+
+        if kind == "fraction":
+            numerator = self._measure_node(node["numerator"], scale)
+            denominator = self._measure_node(node["denominator"], scale)
+
+            # Stage 256: klassischer zweizeiliger Bruch. Beide Unterbäume
+            # bleiben vollwertige editierbare Formelstrukturen. Der Bruchstrich
+            # erhält links/rechts etwas Luft und liegt zwischen den beiden
+            # Eingabezeilen, ohne deren dünne Fokusrahmen zu berühren.
+            pad_x = max(4.0, 5.0 * scale)
+            gap_y = max(3.0, 4.0 * scale)
+            inner_w = max(numerator["w"], denominator["w"])
+            width = inner_w + 2.0 * pad_x
+
+            numerator_x = (width - numerator["w"]) / 2.0
+            numerator_y = 0.0
+            bar_y = numerator["h"] + gap_y
+            denominator_x = (width - denominator["w"]) / 2.0
+            denominator_y = bar_y + gap_y
+            height = denominator_y + denominator["h"]
+
+            return {
+                "kind": "fraction",
+                "node": node,
+                "numerator": (numerator, numerator_x, numerator_y),
+                "denominator": (denominator, denominator_x, denominator_y),
+                "bar_y": bar_y,
+                "bar_left": 0.0,
+                "bar_right": width,
+                "bar_width": max(1.4, 1.6 * scale),
+                "w": width,
+                "h": height,
+            }
+
+        if kind == "sigma":
+            return self._measure_limit_operator(
+                node,
+                scale,
+                kind="sigma",
+                symbol_text="Σ",
+            )
+
+        if kind == "product":
+            return self._measure_limit_operator(
+                node,
+                scale,
+                kind="product",
+                symbol_text="∏",
+            )
+
+        if kind == "limit":
+            return self._measure_limit_text(node, scale)
+
+        if kind == "integral":
+            count = max(1, min(3, int(node.get("count", 1))))
+            return self._measure_limit_operator(
+                node,
+                scale,
+                kind="integral",
+                symbol_text="∫" * count,
+            )
+
+        if kind == "group":
+            child = self._measure_node(node["child"], scale)
+            paren_w = max(10.0, 12.0 * scale)
+            top_pad = 3.0 * scale
+            return {
+                "kind": "group",
+                "node": node,
+                "child": (child, paren_w, top_pad),
+                "paren_w": paren_w,
+                "w": child["w"] + 2.0 * paren_w,
+                "h": child["h"] + 2.0 * top_pad,
+            }
+
+        if kind == "root":
+            radicand = self._measure_node(node["radicand"], scale)
+            degree_node = node.get("degree")
+            degree = self._measure_node(
+                degree_node,
+                max(0.36, scale * 0.52),
+            ) if degree_node else None
+
+            degree_w = degree["w"] if degree else 0.0
+            degree_h = degree["h"] if degree else 0.0
+            radical_w = max(17.0, 20.0 * scale)
+
+            # Stage 248:
+            # Der Wurzelgrad erhält links vom eigentlichen Wurzelsymbol seine
+            # vollständige Breite. Die alte prozentuale Überlappung führte bei
+            # mehrstelligen Graden dazu, dass Ziffern über dem Wurzelsymbol
+            # gezeichnet wurden.
+            degree_gap = max(2.0, 3.0 * scale) if degree else 0.0
+            radical_x = degree_w + degree_gap
+            radicand_x = radical_x + radical_w
+
+            # Der Radikand erhält oben nur den für den Überstrich nötigen
+            # Abstand. Die vertikale Lage des Wurzelgrades wird NICHT mehr mit
+            # einem festen Pixelwert bestimmt, sondern aus der tatsächlichen
+            # Geometrie des Wurzelsymbols abgeleitet.
+            rad_y = max(
+                7.0 * scale,
+                degree_h * 0.42 if degree else 0.0,
+            ) + 4.0 * scale
+
+            # Stage 263:
+            # Die linke Faltung des Wurzelsymbols ist der erste Punkt des
+            # kurzen linken Hakens. Der Wurzelgrad wird mit seiner vertikalen
+            # Mitte exakt auf diese Höhe gelegt. Dadurch sitzen Grade bei
+            # großen/verschachtelten Wurzeln automatisch tiefer und bei kleinen
+            # Wurzeln automatisch höher - unabhängig von der Objekthöhe.
+            radical_hook_y = rad_y + radicand["h"] * 0.58
+            degree_y = (
+                max(0.0, radical_hook_y - degree_h * 0.50)
+                if degree else 0.0
+            )
+
+            # Die untere Faltung (der tiefe Knick des Wurzelzeichens) liegt nun
+            # nahezu auf Höhe der Unterkante des inneren Objekts. Das ist vor
+            # allem bei hohen Integral-/Bruchobjekten wichtig: die Wurzel soll
+            # optisch das gesamte innere Objekt umfassen.
+            fold_margin = max(2.0, 2.0 * scale)
+            radical_fold_y = max(
+                radical_hook_y + max(3.0, 4.0 * scale),
+                rad_y + radicand["h"] - fold_margin,
+            )
+            radical_overbar_y = rad_y - max(1.5, 2.0 * scale)
+
+            width = radicand_x + radicand["w"] + 5.0 * scale
+            height = max(
+                degree_y + degree_h,
+                rad_y + radicand["h"] + 3.0 * scale,
+            )
+
+            return {
+                "kind": "root",
+                "node": node,
+                "degree": (degree, 0.0, degree_y) if degree else None,
+                "radicand": (radicand, radicand_x, rad_y),
+                "radical_x": radical_x,
+                "radical_w": radical_w,
+                "radical_hook_y": radical_hook_y,
+                "radical_fold_y": radical_fold_y,
+                "radical_overbar_y": radical_overbar_y,
+                "degree_gap": degree_gap,
+                "w": width,
+                "h": height,
+            }
+
+        return self._measure_text_leaf(_formula_new_text("?"), scale)
+
+    def _collect_leaf_rects(self, layout, x=0.0, y=0.0, path=()):
+        kind = layout["kind"]
+        path = tuple(path)
+        self._node_rects[path] = QRectF(x, y, layout["w"], layout["h"])
+        self._node_kinds[path] = kind
+
+        if kind == "text":
+            leaf_id = layout["node"]["id"]
+            self._leaf_rects[leaf_id] = QRectF(x, y, layout["w"], layout["h"])
+            self._leaf_layouts[leaf_id] = layout
+            return
+
+        if kind == "sequence":
+            for index, (child, dx, dy) in enumerate(layout["children"]):
+                self._collect_leaf_rects(
+                    child,
+                    x + dx,
+                    y + dy,
+                    path + ("children", index),
+                )
+            return
+
+        if kind == "fraction":
+            child, dx, dy = layout["numerator"]
+            self._collect_leaf_rects(
+                child, x + dx, y + dy, path + ("numerator",)
+            )
+            child, dx, dy = layout["denominator"]
+            self._collect_leaf_rects(
+                child, x + dx, y + dy, path + ("denominator",)
+            )
+            return
+
+        child_paths = {
+            "power": (("base", "base"), ("exponent", "exponent")),
+            "subscript": (("base", "base"), ("subscript", "subscript")),
+            "group": (("child", "child"),),
+            "limit": (("lower", "lower"), ("body", "body")),
+        }.get(kind)
+
+        if child_paths is not None:
+            for layout_key, model_key in child_paths:
+                child, dx, dy = layout[layout_key]
+                self._collect_leaf_rects(
+                    child,
+                    x + dx,
+                    y + dy,
+                    path + (model_key,),
+                )
+            return
+
+        if kind in {"sigma", "product", "integral"}:
+            for key in ("upper", "lower", "body"):
+                child, dx, dy = layout[key]
+                self._collect_leaf_rects(
+                    child,
+                    x + dx,
+                    y + dy,
+                    path + (key,),
+                )
+            return
+
+        if kind == "root":
+            degree = layout.get("degree")
+            if degree:
+                child, dx, dy = degree
+                self._collect_leaf_rects(
+                    child,
+                    x + dx,
+                    y + dy,
+                    path + ("degree",),
+                )
+            child, dx, dy = layout["radicand"]
+            self._collect_leaf_rects(
+                child,
+                x + dx,
+                y + dy,
+                path + ("radicand",),
+            )
+
+    def refresh_layout(self):
+        new_layout = self._measure_node(self.model, 1.0)
+        self.prepareGeometryChange()
+        self._layout = new_layout
+        self._bounds = QRectF(0.0, 0.0, max(50.0, new_layout["w"]), max(44.0, new_layout["h"]))
+        self._leaf_rects = {}
+        self._leaf_layouts = {}
+        self._node_rects = {}
+        self._node_kinds = {}
+        self._sync_cursor_positions()
+        self._collect_leaf_rects(new_layout)
+
+        if self.selected_path not in self._node_rects:
+            self.selected_path = _formula_find_path_for_leaf(
+                self.model,
+                self.active_leaf_id,
+            )
+        self.update()
+
+    def boundingRect(self):
+        return self._bounds.adjusted(-3.0, -3.0, 3.0, 3.0)
+
+    def _text_color(self):
+        return QColor("#f1f1f1") if self._dark_mode else QColor("#111111")
+
+    def _paint_node(self, painter, layout, x=0.0, y=0.0):
+        kind = layout["kind"]
+        text_color = self._text_color()
+
+        if kind == "text":
+            node = layout["node"]
+            rect = QRectF(x, y, layout["w"], layout["h"])
+            active = node.get("id") == self.active_leaf_id and self.hasFocus()
+
+            if active:
+                painter.setPen(QPen(QColor("#ffd600"), 1.2))
+                painter.setBrush(Qt.NoBrush)
+                painter.drawRect(rect.adjusted(0.6, 0.6, -0.6, -0.6))
+
+            painter.setFont(layout["font"])
+            painter.setPen(QPen(text_color, 1.0))
+            text = str(node.get("text", ""))
+
+            if text:
+                # tightBoundingRect() ist relativ zur Text-Baseline. Durch
+                # diese Baseline-Berechnung liegt die tatsächliche Glyphe
+                # exakt 4 px unter der Rahmenoberkante; unten bleiben damit
+                # ebenfalls 4 px frei.
+                glyph_rect = layout["glyph_rect"]
+                text_x = self._text_origin_x(layout, rect, text)
+                baseline_y = rect.top() + 4.0 - glyph_rect.top()
+                painter.drawText(QPointF(text_x, baseline_y), text)
+
+            if active:
+                # Stage 250: echter Textcursor an der aktuellen Zeichenposition.
+                # Die Linie ist exakt 2 Pixel breit.
+                caret_x = self._caret_x_for_leaf(
+                    node.get("id"),
+                    layout,
+                    rect,
+                )
+                if caret_x is not None:
+                    painter.setPen(
+                        QPen(
+                            QColor("#ffd600"),
+                            2.0,
+                            Qt.SolidLine,
+                            Qt.SquareCap,
+                        )
+                    )
+                    painter.drawLine(
+                        QPointF(caret_x, rect.top() + 4.0),
+                        QPointF(caret_x, rect.bottom() - 4.0),
+                    )
+            return
+
+        if kind == "sequence":
+            for child, dx, dy in layout["children"]:
+                self._paint_node(painter, child, x + dx, y + dy)
+            return
+
+        if kind == "power":
+            child, dx, dy = layout["base"]
+            self._paint_node(painter, child, x + dx, y + dy)
+            child, dx, dy = layout["exponent"]
+            self._paint_node(painter, child, x + dx, y + dy)
+            return
+
+        if kind == "subscript":
+            child, dx, dy = layout["base"]
+            self._paint_node(painter, child, x + dx, y + dy)
+            child, dx, dy = layout["subscript"]
+            self._paint_node(painter, child, x + dx, y + dy)
+            return
+
+        if kind == "fraction":
+            # Stage 257:
+            # Zähler und Nenner müssen wie alle übrigen Formel-Unterbäume
+            # tatsächlich gezeichnet werden. In Stage 256 war dieser Block
+            # versehentlich in _collect_leaf_rects() gelandet und dort hinter
+            # einem return unerreichbar. Dadurch waren sowohl die Ziffern als
+            # auch der aktive Eingaberahmen unsichtbar.
+            numerator, ndx, ndy = layout["numerator"]
+            denominator, ddx, ddy = layout["denominator"]
+
+            self._paint_node(
+                painter,
+                numerator,
+                x + ndx,
+                y + ndy,
+            )
+            self._paint_node(
+                painter,
+                denominator,
+                x + ddx,
+                y + ddy,
+            )
+
+            # Den Bruchstrich nach den beiden Unterbäumen zeichnen. Er erhält
+            # immer die aktuelle Textfarbe und bleibt damit im Dark-/Light-
+            # Mode sichtbar.
+            painter.setPen(
+                QPen(
+                    text_color,
+                    layout["bar_width"],
+                    Qt.SolidLine,
+                    Qt.SquareCap,
+                )
+            )
+            bar_y = y + layout["bar_y"]
+            painter.drawLine(
+                QPointF(x + layout["bar_left"], bar_y),
+                QPointF(x + layout["bar_right"], bar_y),
+            )
+            return
+
+        if kind in {"sigma", "product", "integral"}:
+            upper, udx, udy = layout["upper"]
+            lower, ldx, ldy = layout["lower"]
+            body, bdx, bdy = layout["body"]
+
+            self._paint_node(painter, upper, x + udx, y + udy)
+            self._paint_node(painter, lower, x + ldx, y + ldy)
+
+            painter.setFont(layout["symbol_font"])
+            painter.setPen(QPen(text_color, 1.0))
+            symbol_rect = layout["symbol_rect"]
+            symbol_x = x + layout["symbol_x"] - symbol_rect.left()
+            symbol_baseline = y + layout["symbol_y"] - symbol_rect.top()
+            painter.drawText(
+                QPointF(symbol_x, symbol_baseline),
+                layout["symbol_text"],
+            )
+
+            self._paint_node(painter, body, x + bdx, y + bdy)
+            return
+
+        if kind == "limit":
+            lower, ldx, ldy = layout["lower"]
+            body, bdx, bdy = layout["body"]
+
+            painter.setFont(layout["symbol_font"])
+            painter.setPen(QPen(text_color, 1.0))
+            symbol_rect = layout["symbol_rect"]
+            symbol_x = x + layout["symbol_x"] - symbol_rect.left()
+            symbol_baseline = y + layout["symbol_y"] - symbol_rect.top()
+            painter.drawText(
+                QPointF(symbol_x, symbol_baseline),
+                layout["symbol_text"],
+            )
+
+            self._paint_node(painter, lower, x + ldx, y + ldy)
+            self._paint_node(painter, body, x + bdx, y + bdy)
+            return
+
+        if kind == "group":
+            child, dx, dy = layout["child"]
+            child_x = x + dx
+            child_y = y + dy
+            h = layout["h"]
+            pw = layout["paren_w"]
+            painter.setPen(QPen(text_color, 1.5))
+            painter.setBrush(Qt.NoBrush)
+
+            left = QPainterPath()
+            left.moveTo(x + pw * 0.82, y + 1.0)
+            left.cubicTo(x + pw * 0.20, y + h * 0.20, x + pw * 0.20, y + h * 0.80, x + pw * 0.82, y + h - 1.0)
+            painter.drawPath(left)
+
+            right_x = x + layout["w"] - pw
+            right = QPainterPath()
+            right.moveTo(right_x + pw * 0.18, y + 1.0)
+            right.cubicTo(right_x + pw * 0.80, y + h * 0.20, right_x + pw * 0.80, y + h * 0.80, right_x + pw * 0.18, y + h - 1.0)
+            painter.drawPath(right)
+
+            self._paint_node(painter, child, child_x, child_y)
+            return
+
+        if kind == "root":
+            degree = layout.get("degree")
+            if degree:
+                child, dx, dy = degree
+                self._paint_node(painter, child, x + dx, y + dy)
+
+            radicand, rdx, rdy = layout["radicand"]
+            rx = x + layout["radical_x"]
+            rw = layout["radical_w"]
+
+            # Stage 263: Zeichen- und Layoutgeometrie verwenden dieselben drei
+            # vertikalen Referenzpunkte. So kann der Grad exakt an der linken
+            # Faltung ausgerichtet werden und die untere Faltung reicht bis
+            # fast an die Unterkante des Radikanden.
+            hook_y = y + layout["radical_hook_y"]
+            fold_y = y + layout["radical_fold_y"]
+            overbar_y = y + layout["radical_overbar_y"]
+
+            painter.setPen(QPen(text_color, 1.6, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            painter.setBrush(Qt.NoBrush)
+            path = QPainterPath()
+            path.moveTo(rx + 1.0, hook_y)
+            path.lineTo(rx + rw * 0.28, fold_y)
+            path.lineTo(rx + rw * 0.52, overbar_y)
+            path.lineTo(x + rdx + radicand["w"] + 2.0, overbar_y)
+            painter.drawPath(path)
+
+            self._paint_node(painter, radicand, x + rdx, y + rdy)
+
+    def paint(self, painter, option, widget=None):
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        if self._layout is not None:
+            self._paint_node(painter, self._layout)
+
+        # Stage 265: strukturelle Formelobjekte werden als echte Auswahl
+        # markiert. Textfelder besitzen zusätzlich weiterhin ihren bisherigen
+        # Eingaberahmen/Textcursor.
+        if self.selected_path is not None:
+            rect = self._node_rects.get(tuple(self.selected_path))
+            if rect is not None:
+                painter.save()
+                painter.setBrush(Qt.NoBrush)
+                painter.setPen(
+                    QPen(
+                        QColor("#ffd600"),
+                        1.4,
+                        Qt.DashLine,
+                        Qt.SquareCap,
+                    )
+                )
+                painter.drawRect(rect.adjusted(-2.0, -2.0, 2.0, 2.0))
+                painter.restore()
+
+    def set_active_leaf(
+        self,
+        leaf_id,
+        focus_reason=Qt.OtherFocusReason,
+        update_selection=True,
+    ):
+        leaf = _formula_find_leaf(self.model, leaf_id)
+        if leaf is None:
+            return
+
+        self.active_leaf_id = leaf_id
+        if update_selection:
+            self.selected_path = _formula_find_path_for_leaf(
+                self.model,
+                leaf_id,
+            )
+
+        # Noch nie besuchte Felder beginnen mit dem Cursor am Textende.
+        if leaf_id not in self._cursor_positions:
+            self._cursor_positions[leaf_id] = len(str(leaf.get("text", "")))
+        else:
+            self.cursor_position(leaf_id)
+
+        self.setFocus(focus_reason)
+        self.update()
+        self.editor.ensure_active_visible()
+        self.editor.update_status()
+
+    def focusInEvent(self, event):
+        self.update()
+        super().focusInEvent(event)
+
+    def focusOutEvent(self, event):
+        self.update()
+        super().focusOutEvent(event)
+
+    def mousePressEvent(self, event):
+        pos = event.pos()
+        path = self._node_path_at(pos)
+
+        if event.button() == Qt.LeftButton:
+            if path is not None:
+                self._activate_selected_path(
+                    path,
+                    pos=pos,
+                    focus_reason=Qt.MouseFocusReason,
+                )
+                event.accept()
+                return
+
+        if event.button() == Qt.RightButton:
+            if path is not None:
+                self._activate_selected_path(
+                    path,
+                    pos=pos,
+                    focus_reason=Qt.MouseFocusReason,
+                )
+            self.editor.show_formula_context_menu(event.screenPos())
+            event.accept()
+            return
+
+        super().mousePressEvent(event)
+
+    def keyPressEvent(self, event):
+        key = event.key()
+        modifiers = event.modifiers()
+
+        if modifiers & Qt.ControlModifier:
+            if key == Qt.Key_Z and not (modifiers & Qt.ShiftModifier):
+                self.editor.undo_formula()
+                event.accept()
+                return
+            if key == Qt.Key_Y or (key == Qt.Key_Z and modifiers & Qt.ShiftModifier):
+                self.editor.redo_formula()
+                event.accept()
+                return
+            if key == Qt.Key_X:
+                self.editor.cut_selected_object()
+                event.accept()
+                return
+            if key == Qt.Key_V:
+                self.editor.paste_selected_object()
+                event.accept()
+                return
+
+        if key == Qt.Key_Delete and self.selected_path is not None:
+            selected = self.selected_node()
+            if selected is not None and selected.get("type") != "text":
+                self.editor.delete_selected_object()
+                event.accept()
+                return
+
+        if key == Qt.Key_Tab:
+            self.editor.focus_next(+1)
+            event.accept()
+            return
+        if key == Qt.Key_Backtab:
+            self.editor.focus_next(-1)
+            event.accept()
+            return
+        if key in (Qt.Key_Return, Qt.Key_Enter):
+            self.editor.focus_next(+1)
+            event.accept()
+            return
+
+        leaf = _formula_find_leaf(self.model, self.active_leaf_id)
+        if leaf is None:
+            super().keyPressEvent(event)
+            return
+
+        current = str(leaf.get("text", ""))
+        cursor = self.cursor_position(self.active_leaf_id)
+
+        # Stage 250: Links/Rechts bewegen den Textcursor innerhalb des
+        # aktuellen Formelobjekts und wechseln NICHT das Formelobjekt.
+        if key == Qt.Key_Left:
+            self.set_cursor_position(cursor - 1)
+            event.accept()
+            return
+
+        if key == Qt.Key_Right:
+            self.set_cursor_position(cursor + 1)
+            event.accept()
+            return
+
+        # Praktische Ergänzung für lange Eingaben.
+        if key == Qt.Key_Home:
+            self.set_cursor_position(0)
+            event.accept()
+            return
+
+        if key == Qt.Key_End:
+            self.set_cursor_position(len(current))
+            event.accept()
+            return
+
+        if key == Qt.Key_Backspace:
+            if cursor > 0:
+                leaf["text"] = current[:cursor - 1] + current[cursor:]
+                self._cursor_positions[self.active_leaf_id] = cursor - 1
+                self.editor.model_changed(keep_focus=True)
+            else:
+                # Stage 258:
+                # Steht der Cursor ganz am Anfang des Nenners, entspricht
+                # Backspace dem Löschen des links liegenden Bruchstrichs.
+                # Zähler und Nenner werden wieder horizontal verbunden.
+                self.editor.collapse_fraction_boundary(
+                    self.active_leaf_id,
+                    "denominator_start",
+                )
+            event.accept()
+            return
+
+        if key == Qt.Key_Delete:
+            if cursor < len(current):
+                leaf["text"] = current[:cursor] + current[cursor + 1:]
+                self._cursor_positions[self.active_leaf_id] = cursor
+                self.editor.model_changed(keep_focus=True)
+            else:
+                # Stage 258:
+                # Steht der Cursor ganz am Ende des Zählers, liegt rechts
+                # kein Zeichen mehr, sondern die strukturelle Bruchgrenze.
+                # Delete entfernt deshalb den Bruchstrich und verbindet beide
+                # Seiten wieder.
+                self.editor.collapse_fraction_boundary(
+                    self.active_leaf_id,
+                    "numerator_end",
+                )
+            event.accept()
+            return
+
+        text = event.text()
+        if text and text.isprintable() and not (event.modifiers() & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)):
+            # Stage 249: Der Unterstrich ist kein Literalzeichen, sondern der
+            # Struktur-Operator für einen tiefgestellten Index.
+            if text == "_":
+                self.editor.add_subscript_from_input()
+                event.accept()
+                return
+
+            # Stage 256: '/' wird nicht als sichtbares Slash-Zeichen in das
+            # Textfeld geschrieben. Stattdessen wird das aktive Eingabefeld
+            # in einen strukturellen Bruch aus Zähler und Nenner umgewandelt.
+            if text == "/":
+                self.editor.add_fraction_from_input()
+                event.accept()
+                return
+
+            if leaf.get("role") == "root_degree" and not text.isdigit():
+                QApplication.beep()
+                event.accept()
+                return
+
+            if len(current) < 64:
+                # Zeichen an der aktuellen Cursorposition einfügen statt
+                # grundsätzlich an das Textende anzuhängen.
+                leaf["text"] = current[:cursor] + text + current[cursor:]
+                self._cursor_positions[self.active_leaf_id] = cursor + len(text)
+                self.editor.model_changed(keep_focus=True)
+
+            event.accept()
+            return
+
+        super().keyPressEvent(event)
+
+
+class FormulaGraphicsView(QGraphicsView):
+    """Formelansicht mit Tab-Fokus und unabhängigem Scene-Zoom."""
+
+    zoomChanged = pyqtSignal(int)
+    MIN_ZOOM = 40
+    MAX_ZOOM = 400
+    WHEEL_ZOOM_STEP = 10
+
+    def __init__(self, editor, scene):
+        super().__init__(scene, editor)
+        self.editor = editor
+        self.zoom_percent = 100
+        self.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        self.setRenderHint(QPainter.Antialiasing, True)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+        self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
+
+    def set_zoom_percent(self, value):
+        value = max(self.MIN_ZOOM, min(self.MAX_ZOOM, int(round(float(value)))))
+        if value == self.zoom_percent:
+            return
+        old = max(1, int(self.zoom_percent))
+        factor = float(value) / float(old)
+        self.scale(factor, factor)
+        self.zoom_percent = value
+        self.zoomChanged.emit(value)
+
+    def zoom_in(self):
+        self.set_zoom_percent(self.zoom_percent + self.WHEEL_ZOOM_STEP)
+
+    def zoom_out(self):
+        self.set_zoom_percent(self.zoom_percent - self.WHEEL_ZOOM_STEP)
+
+    def reset_zoom(self):
+        if self.zoom_percent != 100:
+            self.resetTransform()
+            self.zoom_percent = 100
+            self.zoomChanged.emit(100)
+
+    def wheelEvent(self, event):
+        # STRG/CTRL + Mausrad zoomt ausschließlich die QGraphicsScene.
+        if event.modifiers() & Qt.ControlModifier:
+            delta = event.angleDelta().y()
+            if delta > 0:
+                self.zoom_in()
+            elif delta < 0:
+                self.zoom_out()
+            event.accept()
+            return
+        super().wheelEvent(event)
+
+    def focusNextPrevChild(self, next_child):
+        if self.hasFocus() or (self.scene() is not None and self.scene().focusItem() is self.editor.canvas):
+            self.editor.focus_next(+1 if next_child else -1)
+            return True
+        return super().focusNextPrevChild(next_child)
+
+    def keyPressEvent(self, event):
+        modifiers = event.modifiers()
+        key = event.key()
+        if modifiers & Qt.ControlModifier:
+            if key == Qt.Key_Z and not (modifiers & Qt.ShiftModifier):
+                self.editor.undo_formula()
+                event.accept()
+                return
+            if key == Qt.Key_Y or (key == Qt.Key_Z and modifiers & Qt.ShiftModifier):
+                self.editor.redo_formula()
+                event.accept()
+                return
+
+        if event.key() == Qt.Key_Tab:
+            self.editor.focus_next(+1)
+            event.accept()
+            return
+        if event.key() == Qt.Key_Backtab:
+            self.editor.focus_next(-1)
+            event.accept()
+            return
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            self.editor.focus_next(+1)
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
+class FormulaDesignerWidget(QWidget):
+    """QGraphicsScene-basierter, struktureller mathematischer Formel-Designer."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.model = _formula_new_example()
+        self.current_path = ""
+        self._dark_mode = _is_dark_mode()
+
+        # Stage 265: kompletter Formel-History-Stack.
+        self._history = []
+        self._history_index = -1
+        self._history_limit = 256
+        self._history_restoring = False
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(6, 6, 6, 6)
+        root.setSpacing(5)
+
+        tools = QHBoxLayout()
+        tools.setContentsMargins(0, 0, 0, 0)
+        tools.setSpacing(4)
+
+        self.new_button = QPushButton("Neu", self)
+        self.field_button = QPushButton("Feld +", self)
+        self.power_button = QPushButton("Exponent", self)
+        self.fraction_button = QPushButton("Bruch", self)
+        self.group_button = QPushButton("( )", self)
+        self.sqrt_button = QPushButton("√", self)
+        self.nroot_button = QPushButton("ⁿ√", self)
+        self.sigma_button = QPushButton("Σ", self)
+        self.integral_button = QPushButton("∫", self)
+        self.double_integral_button = QPushButton("∫∫", self)
+        self.triple_integral_button = QPushButton("∫∫∫", self)
+
+        for button in (
+            self.new_button,
+            self.field_button,
+            self.power_button,
+            self.fraction_button,
+            self.group_button,
+            self.sqrt_button,
+            self.nroot_button,
+            self.sigma_button,
+            self.integral_button,
+            self.double_integral_button,
+            self.triple_integral_button,
+        ):
+            tools.addWidget(button)
+
+        tools.addSpacing(10)
+        tools.addWidget(QLabel("Anwenden auf:", self))
+        self.target_combo = QComboBox(self)
+        self.target_combo.addItem("Aktuelles Objekt", "current")
+        self.target_combo.addItem("Gesamte Formel", "whole")
+        tools.addWidget(self.target_combo)
+        tools.addStretch(1)
+
+        self.load_button = QPushButton("Laden …", self)
+        self.save_button = QPushButton("Speichern …", self)
+        tools.addWidget(self.load_button)
+        tools.addWidget(self.save_button)
+        root.addLayout(tools)
+
+        advanced = QHBoxLayout()
+        advanced.setContentsMargins(0, 0, 0, 0)
+        advanced.setSpacing(4)
+
+        self.remove_group_button = QPushButton("Klammer −", self)
+        self.product_button = QPushButton("∏", self)
+        self.limit_button = QPushButton("lim", self)
+
+        advanced.addWidget(self.remove_group_button)
+        advanced.addWidget(self.product_button)
+        advanced.addWidget(self.limit_button)
+        advanced.addSpacing(8)
+
+        advanced.addWidget(QLabel("Symbole:", self))
+        self.symbol_combo = QComboBox(self)
+        self.symbol_combo.setObjectName("formula_special_symbol_combo")
+        self.symbol_combo.setMaximumWidth(190)
+        self.symbol_combo.addItem("— auswählen —", "")
+        for label, symbol in (
+            ("∀  für alle", "∀"),
+            ("∃  es existiert", "∃"),
+            ("π  Pi", "π"),
+            ("∞  Unendlich", "∞"),
+            ("≠  ungleich", "≠"),
+            ("∩  Schnittmenge", "∩"),
+            ("⊂  echte Teilmenge", "⊂"),
+            ("⊆  Teilmenge oder gleich", "⊆"),
+        ):
+            self.symbol_combo.addItem(label, symbol)
+        advanced.addWidget(self.symbol_combo)
+
+        advanced.addWidget(QLabel("griech. klein:", self))
+        self.greek_lower_combo = QComboBox(self)
+        self.greek_lower_combo.setObjectName("formula_greek_lower_combo")
+        self.greek_lower_combo.setMaximumWidth(145)
+        self.greek_lower_combo.addItem("—", "")
+        for name, symbol in (
+            ("alpha", "α"), ("beta", "β"), ("gamma", "γ"), ("delta", "δ"),
+            ("epsilon", "ε"), ("zeta", "ζ"), ("eta", "η"), ("theta", "θ"),
+            ("iota", "ι"), ("kappa", "κ"), ("lambda", "λ"), ("mu", "μ"),
+            ("nu", "ν"), ("xi", "ξ"), ("omicron", "ο"), ("pi", "π"),
+            ("rho", "ρ"), ("sigma", "σ"), ("tau", "τ"), ("upsilon", "υ"),
+            ("phi", "φ"), ("chi", "χ"), ("psi", "ψ"), ("omega", "ω"),
+        ):
+            self.greek_lower_combo.addItem(f"{symbol}  {name}", symbol)
+        advanced.addWidget(self.greek_lower_combo)
+
+        advanced.addWidget(QLabel("griech. groß:", self))
+        self.greek_upper_combo = QComboBox(self)
+        self.greek_upper_combo.setObjectName("formula_greek_upper_combo")
+        self.greek_upper_combo.setMaximumWidth(145)
+        self.greek_upper_combo.addItem("—", "")
+        for name, symbol in (
+            ("Alpha", "Α"), ("Beta", "Β"), ("Gamma", "Γ"), ("Delta", "Δ"),
+            ("Epsilon", "Ε"), ("Zeta", "Ζ"), ("Eta", "Η"), ("Theta", "Θ"),
+            ("Iota", "Ι"), ("Kappa", "Κ"), ("Lambda", "Λ"), ("Mu", "Μ"),
+            ("Nu", "Ν"), ("Xi", "Ξ"), ("Omicron", "Ο"), ("Pi", "Π"),
+            ("Rho", "Ρ"), ("Sigma", "Σ"), ("Tau", "Τ"), ("Upsilon", "Υ"),
+            ("Phi", "Φ"), ("Chi", "Χ"), ("Psi", "Ψ"), ("Omega", "Ω"),
+        ):
+            self.greek_upper_combo.addItem(f"{symbol}  {name}", symbol)
+        advanced.addWidget(self.greek_upper_combo)
+        advanced.addStretch(1)
+
+        root.addLayout(advanced)
+
+        self.help_label = QLabel(
+            "Tab/Shift+Tab: Objekt wechseln   •   Return: Eingabe beenden + weiter   •   "
+            "'/' = Bruch   •   '_' = Index   •   STRG+Mausrad: Zoom   •   "
+            "Mausklick: Objekt aktivieren   •   Backspace/Delete: Zeichen bzw. Bruchgrenze löschen   •   "
+            "Klammer −: innerste Klammer-Ebene entfernen   •   STRG+Z/Y: Rückgängig/Wiederherstellen   •   "
+            "Rechtsklick: Objektmenü",
+            self,
+        )
+        self.help_label.setWordWrap(True)
+        root.addWidget(self.help_label)
+
+        self.scene = QGraphicsScene(self)
+        self.canvas = FormulaCanvasItem(self)
+        self.canvas.setPos(44.0, 58.0)
+        self.scene.addItem(self.canvas)
+        self.view = FormulaGraphicsView(self, self.scene)
+        self.view.setObjectName("math_formula_designer_view")
+        root.addWidget(self.view, 1)
+
+        self.undo_action = QAction("Rückgängig", self)
+        self.undo_action.setShortcut(QKeySequence("Ctrl+Z"))
+        self.undo_action.setShortcutContext(Qt.WidgetWithChildrenShortcut)
+        self.undo_action.triggered.connect(self.undo_formula)
+        self.addAction(self.undo_action)
+
+        self.redo_action = QAction("Wiederherstellen", self)
+        self.redo_action.setShortcuts([
+            QKeySequence("Ctrl+Y"),
+            QKeySequence("Ctrl+Shift+Z"),
+        ])
+        self.redo_action.setShortcutContext(Qt.WidgetWithChildrenShortcut)
+        self.redo_action.triggered.connect(self.redo_formula)
+        self.addAction(self.redo_action)
+
+        bottom = QHBoxLayout()
+        bottom.setContentsMargins(0, 0, 0, 0)
+        self.expression_label = QLabel(self)
+        self.expression_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.status_label = QLabel(self)
+        self.status_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        bottom.addWidget(self.expression_label, 1)
+        bottom.addWidget(self.status_label)
+        root.addLayout(bottom)
+
+        self.new_button.clicked.connect(self.new_formula)
+        self.field_button.clicked.connect(self.add_field)
+        self.power_button.clicked.connect(self.add_exponent)
+        self.fraction_button.clicked.connect(self.add_fraction)
+        self.group_button.clicked.connect(self.wrap_parentheses)
+        self.sqrt_button.clicked.connect(self.wrap_square_root)
+        self.nroot_button.clicked.connect(self.wrap_nth_root)
+        self.sigma_button.clicked.connect(self.add_sigma)
+        self.integral_button.clicked.connect(
+            lambda checked=False: self.add_integral(1)
+        )
+        self.double_integral_button.clicked.connect(
+            lambda checked=False: self.add_integral(2)
+        )
+        self.triple_integral_button.clicked.connect(
+            lambda checked=False: self.add_integral(3)
+        )
+        self.remove_group_button.clicked.connect(self.remove_parentheses)
+        self.product_button.clicked.connect(self.add_product)
+        self.limit_button.clicked.connect(self.add_limit)
+        self.symbol_combo.activated.connect(
+            lambda _index: self._insert_from_combo(self.symbol_combo)
+        )
+        self.greek_lower_combo.activated.connect(
+            lambda _index: self._insert_from_combo(self.greek_lower_combo)
+        )
+        self.greek_upper_combo.activated.connect(
+            lambda _index: self._insert_from_combo(self.greek_upper_combo)
+        )
+        self.load_button.clicked.connect(self.load_formula)
+        self.save_button.clicked.connect(self.save_formula)
+
+        self.new_button.setToolTip("Neue Formel mit einem leeren Eingabeobjekt")
+        self.field_button.setToolTip("Weiteres Eingabeobjekt hinter der Formel anfügen")
+        self.power_button.setToolTip("Exponent an das ausgewählte Ziel anhängen")
+        self.fraction_button.setToolTip(
+            "Ausgewähltes Ziel als Zähler verwenden und einen Nenner anlegen"
+        )
+        self.group_button.setToolTip("Ausgewähltes Ziel mit einer Klammerpaar-Ebene umgeben")
+        self.sqrt_button.setToolTip("Ausgewähltes Ziel mit einer Quadratwurzel umgeben")
+        self.nroot_button.setToolTip("Ausgewähltes Ziel mit einer n-ten Wurzel umgeben")
+        self.sigma_button.setToolTip(
+            "Summenzeichen mit editierbarem Kopf, Fuß und Ausdruck rechts anlegen"
+        )
+        self.integral_button.setToolTip(
+            "Einfaches Integral mit Ober-/Untergrenze und Ausdruck rechts anlegen"
+        )
+        self.double_integral_button.setToolTip(
+            "Doppeltes Integral mit Ober-/Untergrenze und Ausdruck rechts anlegen"
+        )
+        self.triple_integral_button.setToolTip(
+            "Dreifaches Integral mit Ober-/Untergrenze und Ausdruck rechts anlegen"
+        )
+        self.remove_group_button.setToolTip(
+            "Die innerste Klammer-Ebene um das aktive Objekt entfernen"
+        )
+        self.product_button.setToolTip(
+            "Produktzeichen mit editierbarem Kopf, Fuß und Ausdruck rechts anlegen"
+        )
+        self.limit_button.setToolTip(
+            "Limes mit editierbarer Bedingung unter 'lim' und Ausdruck rechts anlegen"
+        )
+        self.symbol_combo.setToolTip(
+            "Mathematisches Sonderzeichen an der Textcursorposition einfügen"
+        )
+        self.greek_lower_combo.setToolTip(
+            "Kleinen griechischen Buchstaben an der Textcursorposition einfügen"
+        )
+        self.greek_upper_combo.setToolTip(
+            "Großen griechischen Buchstaben an der Textcursorposition einfügen"
+        )
+
+        self.view.zoomChanged.connect(lambda _value: self.update_status())
+
+        self.set_dark_mode(self._dark_mode)
+        self.model_changed(keep_focus=False)
+        QTimer.singleShot(0, self.focus_initial)
+
+    def set_dark_mode(self, enabled):
+        self._dark_mode = bool(enabled)
+        bg = "#181b1f" if self._dark_mode else "#ffffff"
+        panel = "#252a31" if self._dark_mode else "#f3f3f3"
+        fg = "#f0f0f0" if self._dark_mode else "#111111"
+        border = "#5f6875" if self._dark_mode else "#a0a0a0"
+        self.setStyleSheet(
+            "QWidget { background: transparent; }"
+            f"QLabel {{ color:{fg}; }}"
+            f"QPushButton, QComboBox {{ color:{fg}; background:{panel}; border:1px solid {border}; padding:4px 7px; }}"
+            f"QPushButton:hover, QComboBox:hover {{ border-color:#ffd600; }}"
+        )
+        self.scene.setBackgroundBrush(QBrush(QColor(bg)))
+        self.view.setStyleSheet(f"QGraphicsView {{ background:{bg}; border:1px solid {border}; }}")
+        self.canvas.set_dark_mode(self._dark_mode)
+
+    def _active_leaf_ids(self):
+        return [leaf["id"] for leaf in _formula_iter_leaves(self.model)]
+
+    def focus_initial(self):
+        ids = self._active_leaf_ids()
+        if not ids:
+            return
+        if self.canvas.active_leaf_id not in ids:
+            self.canvas.active_leaf_id = ids[0]
+        self.canvas.setFocus(Qt.TabFocusReason)
+        self.ensure_active_visible()
+        self.canvas.update()
+
+    def focus_next(self, delta):
+        ids = self._active_leaf_ids()
+        if not ids:
+            return
+        try:
+            index = ids.index(self.canvas.active_leaf_id)
+        except ValueError:
+            index = 0
+        index = (index + int(delta)) % len(ids)
+        reason = Qt.TabFocusReason if delta >= 0 else Qt.BacktabFocusReason
+        self.canvas.set_active_leaf(ids[index], reason)
+
+    def ensure_active_visible(self):
+        # Bei langen Textobjekten gezielt den 2-px-Textcursor sichtbar halten.
+        # So folgt die horizontale QGraphicsView beim Navigieren mit
+        # Links/Rechts der aktuellen Einfügeposition.
+        rect = self.canvas.active_caret_rect()
+        if rect is None:
+            rect = self.canvas._leaf_rects.get(self.canvas.active_leaf_id)
+        if rect is None:
+            return
+
+        scene_rect = rect.translated(self.canvas.pos()).adjusted(
+            -24.0,
+            -24.0,
+            24.0,
+            24.0,
+        )
+        self.view.ensureVisible(scene_rect, 20, 20)
+
+    def _history_snapshot(self):
+        return {
+            "model": copy.deepcopy(self.model),
+            "active_leaf_id": self.canvas.active_leaf_id,
+            "cursor_positions": copy.deepcopy(self.canvas._cursor_positions),
+            "selected_path": (
+                list(self.canvas.selected_path)
+                if self.canvas.selected_path is not None
+                else None
+            ),
+        }
+
+    @staticmethod
+    def _history_model_signature(snapshot):
+        return json.dumps(
+            snapshot.get("model"),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    def _update_history_actions(self):
+        if hasattr(self, "undo_action"):
+            self.undo_action.setEnabled(self._history_index > 0)
+        if hasattr(self, "redo_action"):
+            self.redo_action.setEnabled(
+                0 <= self._history_index < len(self._history) - 1
+            )
+
+    def _record_history(self):
+        if self._history_restoring:
+            return
+        snapshot = self._history_snapshot()
+        signature = self._history_model_signature(snapshot)
+
+        if self._history and self._history_index >= 0:
+            current = self._history[self._history_index]
+            if self._history_model_signature(current) == signature:
+                # Fokus/Cursor im aktuellen Snapshot aktuell halten, ohne
+                # einen neuen Undo-Schritt anzulegen.
+                self._history[self._history_index] = snapshot
+                self._update_history_actions()
+                return
+
+        if self._history_index < len(self._history) - 1:
+            del self._history[self._history_index + 1:]
+
+        self._history.append(snapshot)
+        if len(self._history) > self._history_limit:
+            overflow = len(self._history) - self._history_limit
+            del self._history[:overflow]
+        self._history_index = len(self._history) - 1
+        self._update_history_actions()
+
+    def _restore_history_snapshot(self, snapshot):
+        self._history_restoring = True
+        try:
+            self.model = copy.deepcopy(snapshot["model"])
+            active = snapshot.get("active_leaf_id")
+            self.canvas._cursor_positions = copy.deepcopy(
+                snapshot.get("cursor_positions", {})
+            )
+            self.canvas.set_model(self.model, active)
+            selected = snapshot.get("selected_path")
+            self.canvas.set_selected_path(
+                tuple(selected) if selected is not None else None
+            )
+            self.model_changed(
+                keep_focus=True,
+                record_history=False,
+            )
+        finally:
+            self._history_restoring = False
+        self._update_history_actions()
+
+    def undo_formula(self):
+        if self._history_index <= 0:
+            QApplication.beep()
+            return False
+        self._history_index -= 1
+        self._restore_history_snapshot(
+            self._history[self._history_index]
+        )
+        return True
+
+    def redo_formula(self):
+        if self._history_index < 0 or self._history_index >= len(self._history) - 1:
+            QApplication.beep()
+            return False
+        self._history_index += 1
+        self._restore_history_snapshot(
+            self._history[self._history_index]
+        )
+        return True
+
+    def model_changed(self, keep_focus=True, record_history=True):
+        self.canvas.model = self.model
+        ids = self._active_leaf_ids()
+        if not keep_focus or self.canvas.active_leaf_id not in ids:
+            self.canvas.active_leaf_id = ids[0] if ids else None
+        self.canvas.refresh_layout()
+
+        bounds = self.canvas.boundingRect().translated(self.canvas.pos())
+        width = max(900.0, bounds.right() + 100.0)
+        height = max(420.0, bounds.bottom() + 120.0)
+        self.scene.setSceneRect(0.0, 0.0, width, height)
+        self.update_status()
+        if record_history:
+            self._record_history()
+        if keep_focus:
+            self.canvas.setFocus(Qt.OtherFocusReason)
+            QTimer.singleShot(0, self.ensure_active_visible)
+
+    def update_status(self):
+        depth = _formula_depth(self.model)
+        expression = _formula_to_text(self.model)
+        self.expression_label.setText("Formel: " + expression)
+        self.expression_label.setToolTip(expression)
+        ids = self._active_leaf_ids()
+        try:
+            position = ids.index(self.canvas.active_leaf_id) + 1
+        except ValueError:
+            position = 0
+        selected = self.canvas.selected_node()
+        selected_kind = selected.get("type") if isinstance(selected, dict) else "—"
+        self.status_label.setText(
+            f"Objekt {position}/{len(ids)}   •   Auswahl {selected_kind}   •   "
+            f"Tiefe {depth}/{FORMULA_DESIGNER_MAX_DEPTH}"
+            f"   •   Zoom {self.view.zoom_percent}%"
+        )
+
+    def _target_is_whole_formula(self):
+        return self.target_combo.currentData() == "whole"
+
+    def _apply_structure(self, builder, *, new_focus_id=None, force_current=False):
+        candidate = copy.deepcopy(self.model)
+        active_id = self.canvas.active_leaf_id
+
+        if self._target_is_whole_formula() and not force_current:
+            candidate = builder(candidate)
+        else:
+            if not active_id:
+                QApplication.beep()
+                return False
+            target = _formula_find_leaf(candidate, active_id)
+            if target is None:
+                QApplication.beep()
+                return False
+            replacement = builder(target)
+            candidate, changed = _formula_replace_leaf(candidate, active_id, replacement)
+            if not changed:
+                QApplication.beep()
+                return False
+
+        try:
+            depth = _formula_depth(candidate)
+            if depth > FORMULA_DESIGNER_MAX_DEPTH:
+                raise ValueError(
+                    f"Maximale Verschachtelungstiefe von {FORMULA_DESIGNER_MAX_DEPTH} erreicht."
+                )
+            _formula_validate_model(candidate)
+        except (ValueError, RecursionError) as exc:
+            QApplication.beep()
+            QMessageBox.warning(self, "Formel-Designer", str(exc))
+            return False
+
+        self.model = candidate
+        self.canvas.model = self.model
+        if new_focus_id:
+            self.canvas.active_leaf_id = new_focus_id
+        elif active_id and _formula_find_leaf(self.model, active_id):
+            self.canvas.active_leaf_id = active_id
+        self.model_changed(keep_focus=True)
+        return True
+
+    def new_formula(self):
+        self.model = _formula_new_text("")
+        self.canvas.set_model(self.model)
+        self.model_changed(keep_focus=True)
+
+    def add_field(self):
+        new_leaf = _formula_new_text("")
+        candidate = copy.deepcopy(self.model)
+        if candidate.get("type") == "sequence":
+            candidate["children"].append(new_leaf)
+        else:
+            candidate = {
+                "type": "sequence",
+                "children": [candidate, new_leaf],
+            }
+        _formula_validate_model(candidate)
+        self.model = candidate
+        self.canvas.set_model(self.model, new_leaf["id"])
+        self.model_changed(keep_focus=True)
+
+    def add_exponent(self):
+        new_exp = _formula_new_text("", "exponent")
+        self._apply_structure(
+            lambda target: {
+                "type": "power",
+                "base": target,
+                "exponent": new_exp,
+            },
+            new_focus_id=new_exp["id"],
+        )
+
+    def _selected_path(self):
+        path = self.canvas.selected_path
+        if path is not None and _formula_get_node_at_path(self.model, path) is not None:
+            return tuple(path)
+        return _formula_find_path_for_leaf(
+            self.model,
+            self.canvas.active_leaf_id,
+        )
+
+    def _selected_node(self):
+        path = self._selected_path()
+        if path is None:
+            return None
+        return _formula_get_node_at_path(self.model, path)
+
+    def _clipboard_has_formula(self):
+        mime = QApplication.clipboard().mimeData()
+        return bool(
+            mime is not None
+            and (
+                mime.hasFormat(FORMULA_DESIGNER_CLIPBOARD_MIME)
+                or mime.hasText()
+            )
+        )
+
+    def _copy_selected_to_clipboard(self):
+        node = self._selected_node()
+        if node is None:
+            QApplication.beep()
+            return False
+
+        mime = QMimeData()
+        payload = json.dumps(
+            node,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        mime.setData(
+            FORMULA_DESIGNER_CLIPBOARD_MIME,
+            QByteArray(payload),
+        )
+        mime.setText(_formula_to_text(node))
+        QApplication.clipboard().setMimeData(mime)
+        return True
+
+    def delete_selected_object(self):
+        path = self._selected_path()
+        if path is None:
+            QApplication.beep()
+            return False
+
+        candidate = copy.deepcopy(self.model)
+        candidate, changed, focus_id = _formula_delete_node_at_path(
+            candidate,
+            path,
+        )
+        if not changed:
+            QApplication.beep()
+            return False
+
+        try:
+            _formula_validate_model(candidate)
+        except (ValueError, RecursionError) as exc:
+            QApplication.beep()
+            QMessageBox.warning(self, "Formel-Designer", str(exc))
+            return False
+
+        self.model = candidate
+        self.canvas.model = self.model
+        leaves = list(_formula_iter_leaves(self.model))
+        ids = {leaf["id"] for leaf in leaves}
+        if focus_id not in ids:
+            focus_id = leaves[0]["id"] if leaves else None
+        self.canvas.active_leaf_id = focus_id
+        self.canvas.selected_path = _formula_find_path_for_leaf(
+            self.model,
+            focus_id,
+        )
+        self.model_changed(keep_focus=True)
+        return True
+
+    def cut_selected_object(self):
+        if not self._copy_selected_to_clipboard():
+            return False
+        return self.delete_selected_object()
+
+    def paste_selected_object(self):
+        mime = QApplication.clipboard().mimeData()
+        if mime is None:
+            QApplication.beep()
+            return False
+
+        # Strukturierter Formel-Clipboardinhalt ersetzt das markierte Objekt.
+        if mime.hasFormat(FORMULA_DESIGNER_CLIPBOARD_MIME):
+            try:
+                raw = bytes(mime.data(FORMULA_DESIGNER_CLIPBOARD_MIME)).decode("utf-8")
+                clipboard_node = json.loads(raw)
+                _formula_validate_model(clipboard_node)
+            except (UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError, RecursionError):
+                QApplication.beep()
+                return False
+
+            path = self._selected_path()
+            if path is None:
+                path = ()
+            replacement = _formula_clone_with_new_ids(clipboard_node)
+            candidate = copy.deepcopy(self.model)
+            candidate, changed = _formula_replace_node_at_path(
+                candidate,
+                path,
+                replacement,
+            )
+            if not changed:
+                QApplication.beep()
+                return False
+
+            try:
+                if _formula_depth(candidate) > FORMULA_DESIGNER_MAX_DEPTH:
+                    raise ValueError(
+                        f"Maximale Verschachtelungstiefe von {FORMULA_DESIGNER_MAX_DEPTH} erreicht."
+                    )
+                _formula_validate_model(candidate)
+            except (ValueError, RecursionError) as exc:
+                QApplication.beep()
+                QMessageBox.warning(self, "Formel-Designer", str(exc))
+                return False
+
+            self.model = candidate
+            self.canvas.model = self.model
+            focus_id = _formula_first_leaf_id(replacement)
+            self.canvas.active_leaf_id = focus_id
+            self.canvas.selected_path = tuple(path)
+            self.model_changed(keep_focus=True)
+            return True
+
+        # Reiner Text aus anderen Anwendungen wird an der Cursorposition
+        # eingefügt, sofern gerade ein Texteingabefeld aktiv ist.
+        if mime.hasText():
+            text = str(mime.text())
+            if text:
+                return self.insert_symbol_text(text)
+
+        QApplication.beep()
+        return False
+
+    def show_selected_object_help(self):
+        node = self._selected_node()
+        if node is None:
+            QMessageBox.information(
+                self,
+                "Formel-Designer Hilfe",
+                "Kein Formelobjekt ist markiert.",
+            )
+            return
+
+        kind = node.get("type", "?")
+        names = {
+            "text": "Eingabefeld",
+            "sequence": "Formelsequenz",
+            "power": "Potenz / Exponent",
+            "subscript": "Index",
+            "fraction": "Bruch / Division",
+            "group": "Klammer",
+            "root": "Wurzel",
+            "sigma": "Summe / Sigma",
+            "product": "Produkt",
+            "limit": "Limes",
+            "integral": "Integral",
+        }
+        QMessageBox.information(
+            self,
+            "Formel-Designer Hilfe",
+            f"Markiertes Objekt: {names.get(kind, kind)}\n\n"
+            "Ausschneiden entfernt den Operator bzw. das Objekt und legt es "
+            "in die Zwischenablage. Einfügen ersetzt das markierte Objekt.\n"
+            "Löschen entfernt bei strukturellen Operatoren den Operator und "
+            "behält den primären Inhalt.\n\n"
+            "STRG+Z = Rückgängig, STRG+Y = Wiederherstellen.",
+        )
+
+    def show_formula_context_menu(self, screen_pos):
+        menu = QMenu(self)
+        cut_action = menu.addAction("Ausschneiden")
+        paste_action = menu.addAction("Einfügen")
+        delete_action = menu.addAction("Löschen")
+        menu.addSeparator()
+        help_action = menu.addAction("Hilfe")
+
+        has_selection = self._selected_node() is not None
+        cut_action.setEnabled(has_selection)
+        delete_action.setEnabled(has_selection)
+        paste_action.setEnabled(self._clipboard_has_formula())
+
+        chosen = menu.exec_(screen_pos)
+        if chosen is cut_action:
+            self.cut_selected_object()
+        elif chosen is paste_action:
+            self.paste_selected_object()
+        elif chosen is delete_action:
+            self.delete_selected_object()
+        elif chosen is help_action:
+            self.show_selected_object_help()
+
+    def _insert_from_combo(self, combo):
+        symbol = str(combo.currentData() or "")
+        combo.setCurrentIndex(0)
+        if symbol:
+            self.insert_symbol_text(symbol)
+
+    def insert_symbol_text(self, symbol):
+        """Unicode-Zeichen an der aktuellen Textcursorposition einfügen."""
+        leaf_id = self.canvas.active_leaf_id
+        leaf = _formula_find_leaf(self.model, leaf_id)
+        if leaf is None:
+            QApplication.beep()
+            return False
+        if leaf.get("role") == "root_degree":
+            QApplication.beep()
+            return False
+
+        current = str(leaf.get("text", ""))
+        cursor = self.canvas.cursor_position(leaf_id)
+        cursor = max(0, min(int(cursor), len(current)))
+
+        if len(current) + len(symbol) > 256:
+            QApplication.beep()
+            return False
+
+        leaf["text"] = current[:cursor] + str(symbol) + current[cursor:]
+        self.canvas._cursor_positions[leaf_id] = cursor + len(str(symbol))
+        self.model_changed(keep_focus=True)
+        self.canvas.set_cursor_position(
+            cursor + len(str(symbol)),
+            leaf_id,
+            ensure_visible=True,
+        )
+        return True
+
+    def remove_parentheses(self):
+        """Entfernt eine innerste Klammer-Ebene um das aktive Objekt."""
+        active_id = self.canvas.active_leaf_id
+        if not active_id:
+            QApplication.beep()
+            return False
+
+        candidate = copy.deepcopy(self.model)
+        candidate, changed = _formula_unwrap_group_for_leaf(candidate, active_id)
+        if not changed:
+            QApplication.beep()
+            return False
+
+        try:
+            _formula_validate_model(candidate)
+        except (ValueError, RecursionError):
+            QApplication.beep()
+            return False
+
+        self.model = candidate
+        self.canvas.model = self.model
+        if _formula_find_leaf(self.model, active_id) is not None:
+            self.canvas.active_leaf_id = active_id
+        self.model_changed(keep_focus=True)
+        return True
+
+    def add_product(self):
+        upper = _formula_new_text("", "product_upper")
+        lower = _formula_new_text("", "product_lower")
+        self._apply_structure(
+            lambda target: {
+                "type": "product",
+                "upper": upper,
+                "lower": lower,
+                "body": target,
+            },
+            new_focus_id=upper["id"],
+        )
+
+    def add_limit(self):
+        lower = _formula_new_text("", "limit_lower")
+        self._apply_structure(
+            lambda target: {
+                "type": "limit",
+                "lower": lower,
+                "body": target,
+            },
+            new_focus_id=lower["id"],
+        )
+
+    def add_sigma(self):
+        upper = _formula_new_text("", "sigma_upper")
+        lower = _formula_new_text("", "sigma_lower")
+        self._apply_structure(
+            lambda target: {
+                "type": "sigma",
+                "upper": upper,
+                "lower": lower,
+                "body": target,
+            },
+            new_focus_id=upper["id"],
+        )
+
+    def add_integral(self, count=1):
+        count = max(1, min(3, int(count)))
+        upper = _formula_new_text("", "integral_upper")
+        lower = _formula_new_text("", "integral_lower")
+        self._apply_structure(
+            lambda target: {
+                "type": "integral",
+                "count": count,
+                "upper": upper,
+                "lower": lower,
+                "body": target,
+            },
+            new_focus_id=upper["id"],
+        )
+
+    def collapse_fraction_boundary(self, leaf_id, boundary):
+        """
+        Stage 258:
+        Entfernt einen Bruch an seiner direkten Editiergrenze.
+
+        - Delete am Ende des Zählers löscht den Bruchstrich nach rechts.
+        - Backspace am Anfang des Nenners löscht den Bruchstrich nach links.
+
+        Beispiel: 2/4 -> 24
+        """
+        candidate = copy.deepcopy(self.model)
+        candidate, changed, focus_id, cursor_pos = (
+            _formula_collapse_fraction_boundary(
+                candidate,
+                leaf_id,
+                boundary,
+            )
+        )
+
+        if not changed:
+            return False
+
+        try:
+            _formula_validate_model(candidate)
+        except (ValueError, RecursionError):
+            QApplication.beep()
+            return False
+
+        self.model = candidate
+        self.canvas.model = self.model
+
+        if focus_id and _formula_find_leaf(self.model, focus_id):
+            self.canvas.active_leaf_id = focus_id
+
+        self.model_changed(keep_focus=True)
+
+        if (
+            focus_id
+            and cursor_pos is not None
+            and _formula_find_leaf(self.model, focus_id) is not None
+        ):
+            self.canvas.set_cursor_position(
+                cursor_pos,
+                focus_id,
+                ensure_visible=True,
+            )
+
+        return True
+
+    def add_fraction(self):
+        """Legt einen strukturellen Bruch mit leerem Nenner an."""
+        denominator = _formula_new_text("", "denominator")
+        self._apply_structure(
+            lambda target: {
+                "type": "fraction",
+                "numerator": target,
+                "denominator": denominator,
+            },
+            new_focus_id=denominator["id"],
+        )
+
+    def add_fraction_from_input(self):
+        """Wandelt die Eingabe 'Zähler/Nenner' beim Tippen von '/' in einen Bruch um."""
+        active_id = self.canvas.active_leaf_id
+        active = _formula_find_leaf(self.model, active_id)
+        if active is None:
+            QApplication.beep()
+            return False
+
+        # Der Grad einer n-ten Wurzel bleibt weiterhin eine reine ganze Zahl.
+        if active.get("role") == "root_degree":
+            QApplication.beep()
+            return False
+
+        text = str(active.get("text", ""))
+        cursor = self.canvas.cursor_position(active_id)
+        cursor = max(0, min(int(cursor), len(text)))
+
+        # Befindet sich rechts vom Textcursor bereits Text, wird er zum
+        # Anfang des Nenners. So kann man auch nachträglich aus "1234" durch
+        # Einfügen von '/' zwischen 12 und 34 den Bruch 12/34 bilden.
+        numerator_text = text[:cursor]
+        denominator_text = text[cursor:]
+        denominator = _formula_new_text(denominator_text, "denominator")
+
+        def build_fraction(target):
+            target["text"] = numerator_text
+            return {
+                "type": "fraction",
+                "numerator": target,
+                "denominator": denominator,
+            }
+
+        changed = self._apply_structure(
+            build_fraction,
+            new_focus_id=denominator["id"],
+            force_current=True,
+        )
+        if changed:
+            # Direkt nach '/' beginnt die Eingabe am Anfang des Nenners.
+            self.canvas.set_cursor_position(
+                0,
+                denominator["id"],
+                ensure_visible=True,
+            )
+        return changed
+
+    def add_subscript_from_input(self):
+        """Erzeugt durch '_' einen tiefgestellten Index am aktiven Eingabeobjekt."""
+        active = _formula_find_leaf(self.model, self.canvas.active_leaf_id)
+        if active is None:
+            QApplication.beep()
+            return False
+
+        # Ein Wurzelgrad ist in diesem Designer absichtlich weiterhin eine
+        # reine ganzzahlige Gradangabe. Der Index selbst darf dagegen jede
+        # unterstützte Formelstruktur enthalten.
+        if active.get("role") == "root_degree":
+            QApplication.beep()
+            return False
+
+        new_index = _formula_new_text("", "subscript")
+        return self._apply_structure(
+            lambda target: {
+                "type": "subscript",
+                "base": target,
+                "subscript": new_index,
+            },
+            new_focus_id=new_index["id"],
+            force_current=True,
+        )
+
+    def wrap_parentheses(self):
+        self._apply_structure(
+            lambda target: {
+                "type": "group",
+                "child": target,
+            }
+        )
+
+    def wrap_square_root(self):
+        self._apply_structure(
+            lambda target: {
+                "type": "root",
+                "degree": None,
+                "radicand": target,
+            }
+        )
+
+    def wrap_nth_root(self):
+        value, ok = QInputDialog.getInt(
+            self,
+            "n-te Wurzel",
+            "Wurzelgrad:",
+            3,
+            2,
+            999,
+            1,
+        )
+        if not ok:
+            return
+        degree = _formula_new_text(str(value), "root_degree")
+        self._apply_structure(
+            lambda target: {
+                "type": "root",
+                "degree": degree,
+                "radicand": target,
+            },
+            new_focus_id=degree["id"],
+        )
+
+    def save_formula(self):
+        start = self.current_path or "formel.d64formula"
+        path, _selected = QFileDialog.getSaveFileName(
+            self,
+            "Formel speichern",
+            start,
+            "d64 Formel (*.d64formula);;JSON (*.json);;Alle Dateien (*)",
+        )
+        if not path:
+            return
+        if not Path(path).suffix:
+            path += ".d64formula"
+
+        payload = {
+            "format": FORMULA_DESIGNER_FORMAT,
+            "version": FORMULA_DESIGNER_VERSION,
+            "max_depth": FORMULA_DESIGNER_MAX_DEPTH,
+            "expression": _formula_to_text(self.model),
+            "formula": self.model,
+        }
+        try:
+            Path(path).write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            QMessageBox.critical(self, "Formel speichern", str(exc))
+            return
+        self.current_path = path
+        self.status_label.setToolTip("Gespeichert: " + path)
+
+    def load_formula(self):
+        path, _selected = QFileDialog.getOpenFileName(
+            self,
+            "Formel laden",
+            self.current_path or "",
+            "d64 Formel (*.d64formula *.json);;Alle Dateien (*)",
+        )
+        if not path:
+            return
+        try:
+            payload = json.loads(Path(path).read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("Ungültiges Dateiformat.")
+            if payload.get("format") != FORMULA_DESIGNER_FORMAT:
+                raise ValueError("Die Datei ist keine d64-Formeldatei.")
+            if int(payload.get("version", 0)) != FORMULA_DESIGNER_VERSION:
+                raise ValueError("Nicht unterstützte Formeldatei-Version.")
+            model = payload.get("formula")
+            _formula_validate_model(model)
+            if _formula_depth(model) > FORMULA_DESIGNER_MAX_DEPTH:
+                raise ValueError("Die gespeicherte Formel ist zu tief verschachtelt.")
+        except (OSError, ValueError, TypeError, json.JSONDecodeError, RecursionError) as exc:
+            QMessageBox.critical(self, "Formel laden", str(exc))
+            return
+
+        self.model = model
+        leaves = list(_formula_iter_leaves(self.model))
+        active = leaves[0]["id"] if leaves else None
+        self.canvas.set_model(self.model, active)
+        self.current_path = path
+        self.model_changed(keep_focus=True)
+
+
+class FormulaDesignerDock(QDockWidget):
+    def __init__(self, parent=None, title_bar_factory=None):
+        super().__init__("Mathematischer Formel-Designer", parent)
+        self.setObjectName("math_formula_designer_dock")
+        self.setFeatures(
+            QDockWidget.DockWidgetMovable
+            | QDockWidget.DockWidgetFloatable
+            | QDockWidget.DockWidgetClosable
+        )
+        self.setAllowedAreas(
+            Qt.LeftDockWidgetArea
+            | Qt.RightDockWidgetArea
+            | Qt.TopDockWidgetArea
+            | Qt.BottomDockWidgetArea
+        )
+        self.setMinimumSize(0, 0)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        self.designer = FormulaDesignerWidget(self)
+        self.setWidget(self.designer)
+
+        if title_bar_factory is not None:
+            try:
+                self.setTitleBarWidget(title_bar_factory(self))
+            except Exception:
+                pass
+
+    def set_dark_mode(self, enabled):
+        self.designer.set_dark_mode(enabled)
+        title_bar = self.titleBarWidget()
+        if title_bar is not None and hasattr(title_bar, "set_dark_mode"):
+            title_bar.set_dark_mode(enabled)
+
+
+class FormulaDesignerController(QObject):
+    def __init__(self, main_window, title_bar_factory=None):
+        super().__init__(main_window)
+        self.main_window = main_window
+        self.title_bar_factory = title_bar_factory
+        self.dock = None
+
+    def _create_dock(self):
+        if self.dock is not None:
+            return self.dock
+        dock = FormulaDesignerDock(
+            self.main_window,
+            title_bar_factory=self.title_bar_factory,
+        )
+        self.main_window.addDockWidget(Qt.TopDockWidgetArea, dock)
+        self.dock = dock
+        return dock
+
+    def show(self):
+        dock = self._create_dock()
+        dock.set_dark_mode(bool(getattr(self.main_window, "dark_mode_enabled", False)))
+        dock.show()
+        dock.raise_()
+
+        # Top-/Bottom-Docks nutzen konstruktionsbedingt die gesamte freie Breite.
+        # Nur die interne Dockaufteilung ändern; die Hauptfenster-Geometrie bleibt unangetastet.
+        try:
+            self.main_window.resizeDocks([dock], [100000], Qt.Horizontal)
+            self.main_window.resizeDocks([dock], [560], Qt.Vertical)
+        except Exception:
+            pass
+
+        QTimer.singleShot(0, dock.designer.focus_initial)
+
+
+
+
+# ---------------------------------------------------------------------------
+# Stage 259 GEO: Lernen -> Deutsch -> Geographie / Deutschland.
+#
+# Die hochgeladene Deutschland-Grafik wird bytegenau in d64_dism.py
+# eingebettet. Die Bundesland-Geometrien wurden aus den originalen
+# Farbflaechen/Flood-Fill-Grenzen abgeleitet und liegen als Polygone vor.
+# Dadurch benoetigt das Lernmodul weder eine weitere Python-Datei noch eine
+# externe Bilddatei.
+# ---------------------------------------------------------------------------
+# Stage 260: Das grosse Base85-PNG liegt nicht mehr in d64_dism.py.
+# Es wird beim Oeffnen der Deutschland-Karte lokal mit ``import deutschland``
+# geladen und beim Schliessen wieder aus ``sys.modules`` entfernt.
+# Die GUI-/Hover-Logik bleibt weiterhin hier in d64_dism.py.
+
+GERMANY_STATE_GEOMETRY = {
+    'Schleswig-Holstein': {
+        "capital": 'Kiel',
+        "color": (128, 204, 216),
+        "area": 18182.0,
+        "polygons": (
+            ((227, 22), (227, 28), (228, 31), (230, 32), (230, 36), (233, 36), (234, 39), (237, 39), (241, 41), (240,
+             45), (241, 55), (243, 55), (246, 58), (247, 62), (252, 66), (253, 69), (253, 74), (247, 79), (241, 82),
+             (234, 81), (229, 83), (228, 87), (224, 90), (225, 95), (231, 95), (232, 94), (236, 95), (246, 92), (249,
+             93), (249, 95), (245, 99), (242, 100), (240, 104), (241, 114), (244, 115), (246, 113), (249, 113), (253,
+             120), (253, 127), (251, 130), (246, 130), (244, 128), (242, 129), (242, 134), (246, 143), (257, 144), (261,
+             147), (269, 147), (274, 149), (279, 154), (282, 159), (284, 166), (292, 179), (296, 183), (304, 187), (305,
+             185), (307, 185), (306, 182), (309, 180), (312, 181), (311, 185), (314, 185), (319, 179), (323, 179), (328,
+             175), (333, 177), (332, 172), (333, 169), (336, 168), (340, 176), (339, 179), (340, 188), (337, 191), (338,
+             193), (340, 194), (346, 202), (352, 203), (357, 207), (359, 207), (361, 210), (367, 212), (368, 211), (368,
+             206), (370, 205), (372, 201), (376, 197), (383, 193), (383, 191), (380, 191), (379, 187), (376, 187), (375,
+             184), (380, 183), (381, 186), (392, 185), (394, 183), (393, 177), (389, 176), (379, 165), (378, 149), (387,
+             143), (389, 139), (387, 134), (383, 134), (379, 130), (379, 125), (384, 120), (388, 120), (396, 112), (403,
+             108), (404, 106), (403, 88), (398, 86), (392, 86), (383, 95), (374, 95), (366, 87), (362, 86), (352, 80),
+             (347, 80), (342, 82), (340, 85), (340, 92), (342, 93), (341, 97), (336, 98), (335, 97), (334, 86), (338,
+             80), (335, 74), (330, 73), (329, 74), (322, 74), (318, 76), (314, 75), (314, 73), (323, 66), (325, 61),
+             (325, 51), (319, 49), (319, 47), (323, 43), (321, 36), (317, 36), (315, 38), (312, 38), (296, 27), (291,
+             27), (285, 30), (280, 30), (277, 32), (270, 32), (266, 26), (260, 24), (254, 24), (247, 20), (241, 20),
+             (240, 19), (236, 21)),
+            ((400, 71), (402, 75), (404, 75), (409, 79), (418, 78), (409, 67), (405, 67)),
+            ((212, 39), (212, 43), (214, 44), (217, 44), (219, 42), (218, 39), (214, 38)),
+        ),
+    },
+    'Hamburg': {
+        "capital": 'Hamburg',
+        "color": (52, 172, 228),
+        "area": 541.0,
+        "polygons": (
+            ((337, 176), (334, 178), (321, 180), (319, 184), (315, 186), (311, 186), (310, 191), (312, 198), (315, 201),
+             (320, 202), (333, 201), (336, 204), (342, 204), (344, 201), (342, 199), (338, 198), (335, 190), (335, 184)),
+        ),
+    },
+    'Mecklenburg-Vorpommern': {
+        "capital": 'Schwerin',
+        "color": (220, 220, 76),
+        "area": 26691.5,
+        "polygons": (
+            ((650, 198), (650, 193), (647, 190), (645, 185), (644, 176), (642, 173), (642, 168), (639, 164), (638, 159),
+             (631, 160), (623, 158), (607, 146), (607, 142), (610, 138), (610, 134), (607, 129), (602, 126), (603, 114),
+             (601, 111), (597, 109), (592, 112), (587, 112), (583, 117), (580, 117), (574, 111), (574, 109), (569, 107),
+             (553, 108), (552, 107), (532, 107), (531, 106), (532, 102), (531, 98), (532, 97), (541, 97), (542, 99),
+             (552, 97), (547, 92), (549, 83), (545, 79), (542, 79), (539, 81), (536, 86), (530, 86), (526, 84), (515,
+             85), (503, 100), (496, 97), (491, 100), (479, 111), (465, 112), (463, 115), (449, 115), (444, 124), (444,
+             127), (436, 133), (437, 140), (434, 144), (429, 144), (424, 141), (418, 142), (414, 136), (410, 135), (408,
+             133), (400, 134), (397, 137), (396, 142), (392, 148), (384, 152), (384, 159), (386, 165), (388, 167), (394,
+             169), (399, 176), (398, 179), (399, 180), (399, 187), (394, 191), (390, 191), (387, 198), (383, 202), (377,
+             204), (376, 209), (381, 213), (383, 220), (386, 223), (389, 223), (393, 228), (398, 230), (403, 235), (406,
+             235), (408, 237), (412, 236), (416, 239), (420, 240), (427, 247), (434, 247), (438, 249), (447, 249), (447,
+             247), (437, 239), (436, 234), (442, 228), (450, 225), (451, 223), (458, 218), (462, 218), (464, 222), (467,
+             222), (473, 218), (473, 214), (477, 210), (484, 210), (485, 211), (492, 210), (496, 214), (499, 214), (505,
+             217), (509, 221), (524, 223), (537, 231), (550, 232), (556, 228), (560, 222), (566, 223), (573, 218), (578,
+             219), (582, 218), (586, 215), (588, 211), (588, 206), (594, 200), (613, 201), (619, 198), (623, 198), (628,
+             202), (631, 210), (636, 216), (639, 217), (642, 216), (652, 206)),
+            ((556, 86), (565, 94), (569, 94), (571, 91), (574, 90), (577, 85), (582, 82), (591, 82), (592, 78), (589,
+             77), (586, 74), (581, 76), (579, 74), (579, 72), (569, 63), (563, 63), (564, 70), (562, 72), (562, 75),
+             (564, 78), (564, 81), (562, 83), (556, 84)),
+            ((634, 134), (631, 131), (627, 131), (625, 134), (622, 134), (618, 136), (617, 142), (622, 142), (624, 140),
+             (633, 138)),
+            ((508, 76), (509, 79), (512, 79), (515, 76), (513, 74), (510, 74)),
+        ),
+    },
+    'Niedersachsen': {
+        "capital": 'Hannover',
+        "color": (144, 152, 144),
+        "area": 58084.0,
+        "polygons": (
+            ((108, 176), (107, 179), (104, 179), (106, 180), (105, 183), (109, 183), (111, 185), (111, 188), (109, 190),
+             (104, 191), (102, 200), (102, 207), (105, 210), (111, 210), (112, 208), (116, 208), (118, 211), (117, 216),
+             (118, 220), (116, 222), (117, 230), (115, 234), (115, 258), (112, 265), (104, 277), (102, 299), (100, 301),
+             (95, 300), (91, 301), (88, 299), (78, 299), (76, 302), (78, 305), (78, 309), (75, 310), (74, 312), (74,
+             317), (78, 320), (85, 320), (88, 323), (93, 321), (96, 322), (98, 327), (102, 332), (102, 335), (98, 342),
+             (100, 348), (106, 345), (119, 344), (120, 340), (125, 339), (126, 337), (129, 338), (130, 336), (138, 331),
+             (139, 329), (138, 323), (140, 321), (145, 321), (149, 324), (150, 327), (159, 336), (163, 335), (164, 336),
+             (163, 339), (168, 342), (167, 354), (166, 355), (167, 358), (171, 360), (172, 364), (171, 367), (166, 371),
+             (166, 373), (170, 374), (173, 372), (182, 372), (190, 366), (201, 367), (205, 360), (205, 353), (204, 352),
+             (205, 345), (203, 343), (202, 338), (194, 332), (194, 329), (197, 326), (205, 324), (205, 322), (210, 319),
+             (216, 319), (219, 317), (223, 317), (227, 322), (228, 331), (231, 333), (238, 333), (244, 330), (245, 326),
+             (248, 322), (255, 321), (258, 326), (258, 337), (256, 338), (253, 343), (250, 343), (249, 345), (249, 350),
+             (253, 354), (253, 359), (250, 362), (250, 365), (257, 366), (260, 369), (260, 371), (263, 373), (263, 384),
+             (270, 388), (269, 392), (271, 392), (277, 400), (280, 400), (284, 403), (284, 411), (279, 418), (279, 422),
+             (277, 426), (278, 429), (282, 428), (283, 431), (284, 429), (292, 429), (297, 432), (301, 437), (301, 440),
+             (297, 442), (295, 446), (298, 453), (298, 459), (296, 461), (293, 461), (293, 464), (291, 466), (293, 466),
+             (303, 472), (304, 470), (302, 469), (302, 467), (305, 466), (303, 465), (303, 463), (307, 460), (310, 460),
+             (315, 457), (317, 457), (320, 460), (326, 455), (334, 455), (338, 450), (341, 450), (342, 448), (346, 446),
+             (347, 443), (350, 442), (352, 437), (355, 435), (359, 435), (363, 438), (368, 438), (373, 435), (373, 432),
+             (376, 429), (375, 424), (368, 413), (368, 404), (372, 399), (370, 387), (372, 386), (371, 383), (376, 378),
+             (380, 377), (385, 378), (395, 376), (398, 369), (402, 368), (404, 365), (402, 362), (402, 358), (404, 353),
+             (401, 350), (402, 346), (400, 344), (400, 341), (403, 336), (396, 329), (396, 322), (398, 321), (395, 314),
+             (396, 309), (392, 307), (392, 305), (394, 304), (389, 303), (387, 296), (383, 292), (381, 282), (384, 281),
+             (384, 278), (386, 276), (397, 275), (400, 269), (403, 269), (404, 271), (406, 271), (407, 269), (414, 270),
+             (415, 273), (416, 271), (420, 272), (427, 271), (432, 266), (436, 264), (436, 258), (441, 255), (438, 253),
+             (433, 252), (425, 252), (415, 243), (409, 241), (404, 241), (399, 236), (394, 235), (388, 229), (385, 229),
+             (383, 224), (379, 223), (377, 217), (373, 213), (370, 215), (365, 215), (358, 212), (352, 207), (347, 207),
+             (344, 210), (337, 210), (331, 206), (329, 206), (327, 208), (320, 208), (316, 206), (313, 206), (309, 202),
+             (305, 191), (301, 190), (291, 183), (285, 174), (284, 177), (281, 176), (281, 173), (284, 172), (281, 168),
+             (279, 160), (275, 154), (268, 150), (259, 150), (252, 153), (238, 155), (233, 153), (226, 147), (223, 147),
+             (218, 154), (217, 161), (213, 167), (212, 175), (214, 179), (215, 177), (217, 177), (216, 176), (217, 173),
+             (220, 174), (221, 178), (219, 180), (222, 181), (223, 187), (219, 192), (214, 194), (213, 189), (204, 186),
+             (200, 181), (196, 181), (194, 184), (194, 191), (199, 192), (199, 199), (196, 205), (193, 207), (191, 207),
+             (185, 200), (181, 201), (179, 199), (178, 194), (180, 192), (180, 190), (182, 188), (186, 189), (186, 187),
+             (181, 183), (181, 180), (183, 178), (178, 178), (177, 177), (176, 169), (174, 167), (152, 169), (143, 172),
+             (138, 172), (133, 169), (123, 169), (117, 172), (114, 178), (111, 178)),
+        ),
+    },
+    'Bremen': {
+        "capital": 'Bremen',
+        "color": (52, 120, 183),
+        "area": 157.0,
+        "polygons": (
+            ((223, 236), (225, 242), (229, 246), (229, 250), (233, 250), (234, 252), (235, 251), (242, 252), (246, 250),
+             (245, 247), (238, 247), (235, 243), (235, 240), (230, 237)),
+        ),
+    },
+    'Brandenburg': {
+        "capital": 'Potsdam',
+        "color": (152, 188, 84),
+        "area": 36565.0,
+        "polygons": (
+            ((445, 230), (440, 235), (440, 237), (443, 241), (447, 242), (454, 249), (454, 252), (450, 254), (452, 256),
+             (457, 257), (463, 256), (465, 263), (467, 265), (469, 265), (471, 269), (476, 270), (477, 267), (484, 267),
+             (486, 270), (491, 272), (495, 276), (496, 283), (494, 286), (494, 291), (496, 296), (496, 302), (492, 305),
+             (490, 311), (492, 314), (496, 314), (501, 319), (500, 329), (497, 341), (497, 347), (498, 348), (498, 355),
+             (496, 357), (497, 361), (506, 370), (509, 377), (518, 379), (523, 383), (527, 383), (530, 381), (535, 382),
+             (546, 389), (550, 389), (552, 391), (559, 392), (564, 398), (566, 398), (569, 401), (572, 413), (574, 415),
+             (574, 418), (570, 422), (570, 424), (568, 426), (568, 430), (572, 432), (577, 440), (577, 453), (585, 453),
+             (593, 450), (605, 457), (613, 457), (614, 458), (619, 458), (627, 455), (633, 455), (638, 453), (639, 444),
+             (646, 434), (649, 434), (652, 432), (657, 432), (660, 434), (666, 434), (669, 431), (678, 430), (681, 427),
+             (692, 425), (693, 420), (691, 416), (685, 411), (683, 403), (681, 402), (679, 398), (680, 393), (687, 383),
+             (688, 367), (683, 361), (684, 346), (682, 344), (676, 343), (672, 337), (669, 337), (667, 335), (669, 330),
+             (662, 327), (663, 322), (665, 322), (669, 326), (670, 321), (674, 318), (675, 315), (675, 302), (670, 298),
+             (665, 296), (655, 284), (649, 282), (643, 276), (639, 276), (636, 273), (637, 256), (639, 255), (640, 252),
+             (648, 248), (654, 239), (652, 225), (655, 223), (656, 220), (655, 211), (650, 212), (647, 217), (643, 220),
+             (635, 220), (632, 218), (632, 216), (628, 212), (625, 203), (623, 201), (616, 204), (596, 203), (591, 208),
+             (591, 215), (584, 220), (584, 223), (582, 225), (579, 225), (576, 221), (573, 222), (569, 227), (565, 227),
+             (562, 225), (562, 227), (551, 237), (549, 237), (545, 234), (532, 233), (530, 230), (526, 229), (523, 226),
+             (519, 227), (516, 225), (509, 225), (500, 218), (492, 215), (491, 213), (488, 214), (478, 213), (476, 219),
+             (471, 224), (461, 228), (459, 226), (460, 222), (459, 221), (452, 228)),
+        ),
+    },
+    'Berlin': {
+        "capital": 'Berlin',
+        "color": (160, 212, 236),
+        "area": 827.0,
+        "polygons": (
+            ((608, 323), (606, 320), (602, 320), (600, 318), (600, 315), (598, 312), (591, 307), (590, 301), (585, 303),
+             (579, 303), (578, 304), (574, 303), (569, 305), (566, 314), (565, 327), (567, 328), (576, 327), (580, 329),
+             (585, 329), (587, 327), (589, 327), (590, 328), (599, 328), (606, 330), (608, 326)),
+        ),
+    },
+    'Sachsen-Anhalt': {
+        "capital": 'Magdeburg',
+        "color": (212, 132, 148),
+        "area": 24738.5,
+        "polygons": (
+            ((447, 256), (443, 257), (439, 261), (439, 265), (434, 270), (432, 270), (431, 272), (423, 276), (420, 276),
+             (417, 274), (409, 272), (404, 272), (398, 278), (386, 280), (384, 282), (384, 286), (387, 292), (390, 295),
+             (392, 302), (395, 303), (399, 307), (399, 316), (400, 317), (400, 326), (399, 328), (400, 330), (403, 331),
+             (406, 336), (406, 340), (404, 341), (405, 342), (405, 349), (407, 352), (406, 356), (407, 367), (403, 371),
+             (400, 372), (400, 375), (397, 379), (380, 380), (377, 381), (373, 385), (375, 401), (371, 407), (371, 412),
+             (378, 423), (378, 427), (380, 429), (389, 430), (392, 433), (398, 433), (399, 434), (398, 444), (401, 450),
+             (401, 456), (402, 457), (407, 457), (415, 460), (416, 459), (424, 460), (429, 463), (428, 466), (433, 468),
+             (435, 470), (434, 475), (435, 479), (431, 482), (434, 485), (435, 492), (437, 493), (438, 496), (440, 497),
+             (442, 496), (447, 496), (448, 497), (455, 496), (456, 499), (459, 500), (461, 505), (463, 506), (464, 505),
+             (471, 505), (475, 507), (477, 514), (479, 514), (480, 512), (483, 512), (490, 514), (495, 513), (498, 515),
+             (502, 509), (503, 504), (501, 504), (500, 500), (495, 496), (489, 476), (489, 471), (491, 467), (490, 452),
+             (494, 445), (494, 441), (496, 438), (501, 435), (507, 435), (513, 433), (514, 431), (527, 430), (535, 426),
+             (542, 426), (545, 423), (552, 423), (555, 425), (565, 424), (569, 415), (566, 405), (558, 399), (556, 396),
+             (551, 394), (546, 394), (542, 390), (538, 389), (535, 386), (527, 388), (521, 387), (518, 384), (507, 381),
+             (504, 378), (502, 372), (496, 367), (496, 365), (493, 361), (493, 355), (495, 353), (493, 347), (493, 340),
+             (495, 335), (495, 328), (497, 324), (497, 320), (494, 319), (489, 320), (486, 316), (486, 308), (491, 300),
+             (492, 295), (491, 291), (489, 290), (492, 279), (489, 276), (487, 276), (481, 272), (472, 273), (464, 270),
+             (462, 265), (456, 262), (453, 262)),
+        ),
+    },
+    'Nordrhein-Westfalen': {
+        "capital": 'Düsseldorf',
+        "color": (248, 204, 92),
+        "area": 37957.5,
+        "polygons": (
+            ((252, 328), (250, 327), (247, 333), (240, 337), (232, 337), (226, 335), (223, 331), (223, 324), (222, 323),
+             (209, 325), (205, 330), (203, 330), (202, 331), (203, 334), (207, 338), (208, 354), (211, 361), (208, 364),
+             (207, 367), (201, 372), (197, 372), (193, 370), (190, 373), (182, 376), (165, 379), (160, 375), (161, 370),
+             (166, 364), (165, 361), (162, 358), (162, 351), (163, 350), (162, 344), (159, 344), (153, 341), (149, 343),
+             (144, 342), (143, 343), (135, 343), (133, 342), (118, 349), (107, 349), (101, 352), (96, 352), (96, 354),
+             (89, 361), (81, 367), (76, 369), (76, 374), (80, 377), (81, 383), (80, 387), (72, 393), (65, 393), (47,
+             400), (41, 400), (33, 396), (30, 398), (17, 398), (15, 400), (15, 403), (20, 415), (24, 420), (24, 425),
+             (30, 435), (31, 435), (33, 428), (35, 428), (42, 432), (54, 432), (56, 430), (59, 430), (60, 432), (65,
+             433), (79, 432), (81, 434), (80, 440), (78, 442), (72, 442), (67, 440), (32, 441), (32, 446), (30, 449),
+             (31, 450), (31, 456), (28, 462), (24, 465), (20, 472), (21, 476), (24, 479), (24, 483), (20, 488), (12,
+             492), (8, 497), (5, 497), (7, 501), (9, 501), (12, 504), (12, 506), (16, 512), (16, 520), (14, 525), (15,
+             526), (18, 525), (19, 527), (25, 528), (28, 530), (36, 530), (37, 531), (41, 530), (42, 528), (48, 530),
+             (49, 529), (54, 529), (55, 530), (60, 530), (63, 533), (63, 536), (61, 538), (58, 537), (52, 539), (41,
+             538), (40, 539), (29, 540), (26, 539), (21, 534), (19, 536), (22, 544), (28, 549), (28, 554), (24, 559),
+             (26, 562), (31, 563), (35, 567), (37, 572), (36, 577), (39, 581), (52, 581), (59, 584), (65, 585), (66,
+             580), (64, 572), (66, 569), (71, 568), (74, 570), (75, 565), (78, 560), (84, 559), (90, 555), (94, 555),
+             (102, 551), (110, 551), (115, 547), (115, 544), (117, 542), (137, 536), (139, 534), (139, 530), (142, 527),
+             (145, 526), (145, 519), (148, 516), (153, 516), (156, 519), (156, 522), (160, 527), (163, 524), (162, 517),
+             (163, 516), (163, 511), (165, 509), (168, 509), (170, 511), (173, 510), (176, 512), (196, 511), (201, 514),
+             (206, 510), (207, 507), (206, 503), (208, 497), (212, 495), (217, 495), (223, 485), (222, 480), (212, 480),
+             (210, 477), (210, 473), (215, 467), (215, 465), (217, 463), (222, 462), (225, 460), (237, 458), (238, 455),
+             (236, 453), (236, 450), (241, 445), (248, 444), (256, 450), (259, 450), (270, 439), (271, 432), (273, 431),
+             (273, 422), (279, 408), (275, 404), (271, 403), (270, 398), (259, 388), (257, 384), (250, 381), (244, 383),
+             (239, 382), (222, 383), (220, 381), (215, 381), (211, 378), (211, 374), (213, 372), (219, 372), (220, 371),
+             (227, 373), (230, 372), (233, 374), (234, 373), (244, 374), (247, 373), (248, 371), (254, 373), (254, 372),
+             (251, 372), (250, 370), (248, 370), (245, 365), (245, 362), (247, 360), (248, 356), (245, 351), (245, 344),
+             (249, 338), (254, 335)),
+        ),
+    },
+    'Hessen': {
+        "capital": 'Wiesbaden',
+        "color": (188, 160, 208),
+        "area": 24501.5,
+        "polygons": (
+            ((286, 430), (282, 430), (277, 434), (272, 447), (269, 448), (267, 452), (263, 455), (256, 456), (252, 454),
+             (248, 449), (246, 449), (243, 452), (244, 459), (241, 463), (233, 463), (228, 465), (224, 465), (217, 472),
+             (217, 474), (225, 475), (227, 477), (229, 487), (226, 490), (226, 492), (224, 493), (224, 496), (222, 499),
+             (220, 499), (219, 501), (215, 500), (212, 502), (211, 511), (208, 512), (208, 515), (205, 518), (204, 522),
+             (202, 524), (198, 525), (196, 527), (189, 527), (186, 531), (182, 533), (181, 543), (177, 550), (177, 556),
+             (179, 559), (179, 563), (175, 568), (170, 568), (166, 571), (166, 579), (168, 585), (172, 591), (174, 592),
+             (174, 594), (175, 591), (178, 592), (178, 594), (176, 595), (176, 600), (171, 604), (168, 604), (167, 607),
+             (163, 607), (166, 608), (165, 612), (161, 612), (160, 611), (161, 608), (160, 612), (162, 613), (162, 616),
+             (159, 617), (158, 613), (157, 614), (158, 618), (156, 620), (154, 620), (149, 625), (150, 629), (154, 633),
+             (159, 634), (160, 632), (173, 629), (181, 629), (183, 631), (185, 631), (186, 633), (188, 633), (192, 640),
+             (192, 650), (194, 652), (195, 659), (202, 664), (202, 666), (192, 676), (194, 682), (196, 685), (201, 685),
+             (209, 691), (210, 690), (209, 689), (209, 683), (211, 681), (217, 681), (219, 683), (220, 690), (231, 696),
+             (230, 699), (232, 701), (231, 707), (235, 703), (237, 697), (247, 696), (249, 694), (248, 678), (249, 673),
+             (251, 671), (251, 665), (250, 661), (248, 660), (248, 657), (246, 656), (243, 649), (244, 634), (241, 631),
+             (242, 624), (249, 619), (259, 618), (262, 615), (265, 615), (268, 617), (272, 616), (273, 618), (276, 618),
+             (281, 621), (282, 609), (286, 605), (288, 605), (289, 603), (292, 603), (293, 601), (295, 601), (300, 596),
+             (300, 593), (303, 591), (303, 584), (308, 582), (315, 583), (324, 575), (326, 570), (327, 556), (324, 555),
+             (320, 559), (318, 559), (312, 554), (312, 552), (316, 543), (316, 536), (318, 535), (319, 532), (325, 526),
+             (323, 523), (323, 520), (321, 519), (321, 517), (324, 516), (325, 510), (328, 507), (335, 507), (336, 505),
+             (334, 503), (334, 492), (338, 489), (337, 487), (330, 484), (328, 482), (328, 480), (323, 475), (320, 474),
+             (319, 471), (316, 468), (316, 463), (317, 462), (316, 460), (313, 459), (312, 462), (309, 461), (306, 462),
+             (306, 464), (304, 465), (305, 467), (308, 468), (307, 471), (305, 471), (304, 469), (303, 472), (300, 472),
+             (297, 469), (294, 470), (293, 467), (291, 468), (288, 467), (288, 464), (290, 463), (290, 459), (297, 457),
+             (294, 455), (294, 452), (296, 451), (293, 450), (293, 445), (295, 444), (296, 441), (299, 440), (300, 437),
+             (297, 433), (293, 434), (292, 432), (287, 432)),
+        ),
+    },
+    'Thüringen': {
+        "capital": 'Erfurt',
+        "color": (244, 144, 76),
+        "area": 17419.5,
+        "polygons": (
+            ((322, 465), (323, 468), (331, 475), (332, 478), (335, 479), (336, 481), (340, 482), (344, 486), (344, 488),
+             (339, 497), (340, 503), (343, 506), (343, 510), (338, 513), (333, 512), (330, 513), (329, 520), (331, 527),
+             (329, 531), (324, 536), (321, 537), (320, 550), (322, 549), (329, 550), (332, 553), (332, 566), (335, 567),
+             (340, 566), (351, 573), (354, 576), (355, 581), (357, 583), (361, 584), (368, 591), (370, 591), (372, 593),
+             (375, 603), (378, 606), (383, 603), (384, 601), (380, 597), (378, 592), (388, 585), (391, 586), (392, 585),
+             (398, 585), (400, 587), (412, 589), (417, 593), (418, 597), (421, 597), (423, 595), (423, 587), (421, 583),
+             (421, 577), (425, 572), (430, 569), (437, 570), (440, 573), (440, 575), (445, 583), (470, 583), (472, 582),
+             (475, 573), (475, 568), (480, 563), (485, 563), (491, 559), (494, 559), (495, 554), (500, 552), (502, 549),
+             (500, 546), (500, 541), (498, 537), (478, 538), (474, 535), (474, 528), (475, 527), (481, 527), (482, 528),
+             (488, 519), (490, 519), (493, 522), (494, 526), (503, 532), (508, 528), (513, 527), (519, 521), (529, 519),
+             (520, 511), (520, 509), (516, 505), (509, 502), (505, 504), (505, 511), (500, 518), (493, 517), (491, 519),
+             (489, 519), (487, 517), (482, 517), (479, 521), (471, 521), (470, 519), (465, 521), (448, 521), (446, 519),
+             (446, 513), (447, 512), (451, 512), (455, 515), (458, 512), (461, 513), (469, 512), (472, 514), (473, 510),
+             (471, 509), (461, 509), (456, 505), (455, 501), (453, 500), (438, 500), (436, 499), (433, 495), (432, 489),
+             (427, 485), (427, 480), (431, 478), (431, 471), (424, 464), (415, 464), (408, 461), (400, 460), (395, 449),
+             (394, 439), (391, 436), (389, 436), (385, 433), (380, 433), (376, 440), (372, 443), (361, 443), (359, 441),
+             (354, 442), (353, 446), (342, 456), (338, 456), (335, 460), (331, 459), (327, 460)),
+        ),
+    },
+    'Sachsen': {
+        "capital": 'Dresden',
+        "color": (52, 172, 228),
+        "area": 19102.0,
+        "polygons": (
+            ((483, 581), (487, 590), (499, 591), (506, 598), (510, 600), (511, 596), (520, 584), (527, 579), (538, 578),
+             (545, 574), (552, 574), (559, 576), (560, 572), (566, 566), (575, 564), (578, 561), (578, 558), (581, 555),
+             (585, 555), (588, 553), (591, 548), (596, 549), (600, 548), (602, 544), (602, 541), (605, 538), (620, 534),
+             (627, 534), (630, 532), (631, 529), (634, 526), (637, 526), (639, 523), (645, 522), (652, 518), (654, 518),
+             (657, 515), (659, 515), (663, 512), (663, 510), (658, 505), (659, 495), (656, 491), (653, 491), (652, 493),
+             (648, 493), (643, 491), (639, 493), (634, 493), (633, 491), (629, 491), (628, 493), (625, 493), (624, 491),
+             (621, 490), (621, 484), (622, 483), (625, 483), (626, 486), (627, 485), (633, 485), (634, 486), (644, 485),
+             (645, 486), (651, 484), (655, 484), (660, 486), (664, 485), (666, 487), (666, 492), (668, 494), (680, 495),
+             (686, 498), (688, 500), (689, 504), (694, 509), (695, 516), (702, 517), (703, 509), (707, 505), (708, 497),
+             (711, 494), (711, 486), (709, 483), (709, 477), (701, 474), (700, 475), (695, 475), (694, 474), (692, 476),
+             (687, 474), (682, 476), (679, 473), (678, 469), (681, 465), (685, 465), (689, 468), (690, 467), (693, 468),
+             (701, 467), (702, 465), (705, 465), (707, 467), (712, 467), (713, 470), (711, 473), (714, 472), (715, 465),
+             (710, 456), (708, 445), (703, 440), (696, 439), (689, 434), (673, 437), (671, 439), (665, 441), (652, 439),
+             (648, 442), (647, 446), (644, 449), (644, 455), (640, 462), (626, 462), (618, 464), (611, 464), (610, 463),
+             (601, 463), (594, 458), (588, 458), (585, 460), (573, 460), (571, 459), (569, 456), (571, 450), (571, 441),
+             (567, 437), (565, 437), (561, 432), (554, 431), (551, 429), (548, 429), (547, 431), (536, 432), (531, 436),
+             (523, 436), (522, 437), (519, 436), (511, 440), (502, 442), (500, 444), (500, 447), (497, 449), (498, 463),
+             (496, 467), (496, 478), (498, 481), (498, 486), (501, 493), (503, 495), (511, 495), (514, 497), (519, 498),
+             (528, 507), (529, 510), (532, 510), (535, 512), (538, 518), (538, 521), (536, 524), (532, 526), (523, 527),
+             (520, 531), (517, 533), (512, 534), (511, 536), (508, 537), (510, 554), (504, 557), (497, 566), (490, 568),
+             (485, 571), (482, 574)),
+        ),
+    },
+    'Rheinland-Pfalz': {
+        "capital": 'Mainz',
+        "color": (244, 180, 140),
+        "area": 23410.5,
+        "polygons": (
+            ((151, 518), (146, 519), (145, 522), (148, 523), (148, 527), (144, 529), (141, 534), (130, 538), (128, 540),
+             (122, 541), (121, 544), (118, 544), (118, 546), (115, 547), (111, 552), (108, 552), (107, 555), (103, 554),
+             (101, 555), (98, 554), (90, 555), (84, 559), (80, 559), (78, 561), (79, 566), (76, 567), (75, 570), (70,
+             569), (66, 574), (64, 574), (67, 575), (69, 579), (69, 581), (65, 585), (61, 585), (56, 583), (51, 584),
+             (50, 582), (43, 582), (42, 581), (42, 583), (39, 584), (39, 586), (35, 590), (29, 592), (25, 597), (22,
+             597), (20, 599), (20, 604), (15, 609), (15, 626), (16, 629), (20, 632), (22, 639), (30, 645), (32, 648),
+             (41, 650), (44, 653), (43, 665), (38, 669), (36, 675), (32, 679), (33, 684), (39, 684), (46, 686), (48,
+             684), (63, 682), (64, 680), (74, 675), (82, 675), (95, 681), (97, 683), (103, 684), (107, 694), (107, 697),
+             (104, 700), (104, 703), (112, 710), (112, 716), (110, 719), (109, 724), (111, 725), (110, 734), (113, 735),
+             (117, 734), (120, 737), (122, 743), (129, 746), (133, 750), (155, 751), (170, 760), (177, 761), (181, 758),
+             (182, 752), (184, 751), (185, 746), (187, 745), (187, 734), (191, 728), (195, 725), (198, 713), (198, 707),
+             (195, 702), (195, 696), (190, 690), (189, 693), (185, 693), (184, 691), (173, 692), (172, 688), (175, 687),
+             (176, 685), (180, 686), (181, 684), (183, 684), (184, 687), (185, 685), (191, 685), (189, 672), (192, 669),
+             (194, 669), (196, 665), (192, 661), (191, 655), (188, 650), (183, 647), (183, 645), (185, 643), (185, 639),
+             (179, 634), (171, 633), (161, 637), (160, 639), (157, 639), (156, 637), (151, 636), (147, 630), (144, 628),
+             (144, 625), (152, 616), (152, 609), (156, 607), (159, 607), (162, 603), (168, 600), (168, 596), (163, 596),
+             (163, 598), (160, 599), (156, 595), (156, 597), (154, 599), (150, 599), (149, 596), (152, 595), (149, 594),
+             (149, 590), (153, 589), (155, 591), (166, 591), (165, 587), (161, 584), (161, 581), (163, 579), (163, 570),
+             (168, 564), (173, 564), (175, 562), (174, 548), (172, 548), (171, 545), (177, 543), (176, 539), (176, 543),
+             (172, 544), (170, 542), (166, 532), (163, 531), (163, 529), (165, 528), (165, 522), (161, 527), (157, 528),
+             (155, 520), (153, 520)),
+        ),
+    },
+    'Saarland': {
+        "capital": 'Saarbrücken',
+        "color": (156, 216, 236),
+        "area": 2507.5,
+        "polygons": (
+            ((33, 691), (32, 693), (39, 696), (43, 700), (43, 703), (47, 707), (48, 715), (51, 718), (54, 725), (57,
+             727), (57, 729), (60, 732), (63, 732), (66, 727), (74, 727), (75, 728), (78, 727), (80, 729), (82, 736),
+             (84, 737), (89, 737), (91, 739), (98, 739), (99, 740), (102, 740), (104, 738), (104, 736), (102, 736), (100,
+             733), (98, 733), (97, 730), (95, 732), (90, 733), (88, 729), (89, 726), (92, 727), (96, 724), (98, 724),
+             (100, 726), (100, 729), (100, 727), (106, 718), (106, 712), (104, 710), (94, 707), (95, 704), (98, 704),
+             (98, 700), (101, 696), (101, 691), (99, 688), (93, 687), (85, 682), (76, 680), (64, 686), (61, 686), (57,
+             688), (49, 688), (46, 691), (43, 690)),
+        ),
+    },
+    'Baden-Württemberg': {
+        "capital": 'Stuttgart',
+        "color": (128, 200, 192),
+        "area": 43219.0,
+        "polygons": (
+            ((305, 675), (304, 676), (294, 676), (292, 668), (285, 668), (278, 666), (273, 667), (273, 670), (278, 673),
+             (278, 680), (274, 683), (269, 684), (268, 687), (265, 690), (262, 690), (260, 692), (254, 691), (253, 692),
+             (254, 694), (253, 698), (240, 699), (239, 705), (235, 708), (233, 712), (229, 712), (226, 710), (228, 700),
+             (225, 696), (222, 696), (218, 693), (216, 690), (216, 685), (214, 684), (214, 686), (212, 687), (213, 692),
+             (211, 694), (207, 694), (203, 692), (201, 689), (198, 689), (201, 694), (201, 702), (203, 704), (203, 710),
+             (204, 711), (204, 713), (202, 715), (201, 725), (193, 733), (192, 744), (187, 753), (187, 756), (184, 762),
+             (173, 770), (170, 775), (168, 783), (156, 793), (156, 795), (152, 799), (149, 800), (144, 806), (143, 820),
+             (141, 822), (140, 827), (137, 832), (137, 841), (133, 847), (132, 854), (128, 858), (122, 871), (122, 879),
+             (125, 882), (126, 887), (120, 896), (120, 900), (117, 908), (118, 916), (115, 921), (117, 926), (120, 929),
+             (120, 932), (125, 931), (128, 933), (128, 938), (135, 937), (139, 933), (144, 933), (149, 938), (158, 938),
+             (163, 936), (170, 930), (176, 930), (182, 936), (191, 936), (192, 937), (197, 930), (202, 931), (204, 929),
+             (194, 930), (188, 926), (188, 922), (192, 919), (192, 916), (196, 912), (199, 912), (203, 908), (206, 908),
+             (208, 910), (208, 912), (212, 911), (214, 913), (216, 913), (218, 915), (216, 921), (220, 922), (222, 919),
+             (225, 919), (228, 922), (229, 927), (234, 927), (238, 924), (247, 924), (250, 921), (253, 921), (255, 923),
+             (256, 927), (263, 927), (274, 935), (276, 935), (279, 938), (285, 941), (287, 941), (289, 936), (299, 932),
+             (303, 932), (308, 927), (322, 927), (323, 926), (328, 927), (330, 926), (331, 918), (328, 916), (328, 914),
+             (330, 911), (329, 888), (331, 886), (332, 874), (330, 865), (328, 863), (329, 860), (321, 842), (319, 831),
+             (320, 830), (324, 831), (329, 826), (336, 825), (343, 821), (347, 816), (345, 801), (347, 799), (359, 798),
+             (358, 787), (357, 786), (357, 784), (359, 782), (359, 769), (356, 767), (354, 763), (351, 762), (351, 760),
+             (344, 756), (342, 751), (343, 748), (342, 745), (338, 741), (335, 740), (334, 728), (332, 727), (331, 718),
+             (333, 713), (333, 708), (331, 704), (331, 701), (329, 700), (325, 703), (319, 703), (317, 701), (317, 698),
+             (309, 693), (310, 681)),
+        ),
+    },
+    'Bayern': {
+        "capital": 'München',
+        "color": (128, 184, 36),
+        "area": 81585.0,
+        "polygons": (
+            ((248, 626), (248, 630), (250, 633), (249, 647), (251, 651), (251, 654), (254, 657), (257, 665), (256, 677),
+             (255, 680), (253, 681), (254, 685), (256, 687), (259, 687), (267, 680), (269, 677), (269, 673), (267, 671),
+             (267, 665), (272, 660), (281, 659), (284, 662), (294, 662), (297, 665), (300, 671), (308, 670), (314, 678),
+             (315, 686), (320, 692), (321, 697), (325, 697), (329, 694), (334, 695), (336, 699), (337, 707), (339, 710),
+             (339, 714), (337, 716), (337, 723), (340, 735), (343, 738), (343, 740), (347, 743), (349, 753), (358, 759),
+             (363, 767), (364, 781), (362, 790), (363, 793), (366, 796), (366, 802), (361, 805), (357, 804), (352, 805),
+             (352, 819), (351, 821), (348, 822), (338, 830), (334, 829), (326, 837), (325, 840), (326, 843), (331, 849),
+             (332, 857), (334, 858), (334, 863), (333, 864), (336, 869), (337, 874), (336, 886), (334, 890), (335, 891),
+             (334, 894), (335, 899), (334, 916), (336, 925), (335, 928), (332, 930), (318, 933), (313, 932), (309, 933),
+             (307, 935), (310, 939), (314, 941), (318, 941), (323, 944), (325, 947), (328, 948), (333, 954), (333, 959),
+             (336, 961), (342, 961), (344, 964), (343, 971), (345, 973), (350, 970), (351, 967), (359, 958), (357, 949),
+             (357, 939), (360, 936), (364, 936), (369, 940), (373, 938), (382, 939), (384, 933), (386, 931), (391, 931),
+             (392, 933), (393, 932), (400, 932), (401, 934), (407, 932), (414, 934), (417, 933), (431, 934), (432, 932),
+             (434, 932), (437, 934), (452, 933), (458, 935), (459, 934), (467, 935), (468, 934), (475, 934), (481, 931),
+             (503, 930), (505, 927), (504, 921), (507, 920), (512, 915), (514, 915), (521, 920), (522, 919), (529, 920),
+             (535, 925), (539, 925), (541, 923), (547, 921), (558, 922), (563, 927), (563, 934), (562, 935), (567, 939),
+             (571, 939), (573, 941), (573, 944), (577, 943), (577, 939), (579, 936), (579, 931), (580, 930), (579, 923),
+             (577, 921), (571, 921), (566, 917), (570, 906), (570, 896), (568, 892), (561, 885), (559, 880), (556, 879),
+             (552, 875), (552, 867), (555, 863), (557, 863), (559, 861), (560, 857), (565, 853), (569, 852), (574, 847),
+             (578, 845), (581, 845), (583, 843), (596, 841), (600, 837), (602, 832), (605, 830), (606, 820), (607, 819),
+             (607, 805), (609, 803), (609, 801), (601, 800), (600, 798), (593, 798), (591, 795), (591, 792), (593, 790),
+             (599, 790), (604, 792), (617, 791), (620, 793), (621, 792), (625, 793), (626, 791), (630, 791), (633, 794),
+             (633, 799), (632, 800), (627, 801), (619, 800), (618, 802), (621, 805), (623, 805), (625, 808), (632, 809),
+             (635, 802), (635, 782), (634, 778), (632, 775), (628, 774), (619, 765), (615, 763), (608, 764), (605, 761),
+             (603, 761), (601, 758), (601, 753), (594, 746), (585, 744), (584, 742), (580, 740), (578, 735), (574, 732),
+             (574, 730), (567, 720), (562, 717), (551, 718), (547, 714), (547, 711), (545, 709), (543, 709), (538, 704),
+             (536, 698), (531, 691), (530, 685), (521, 676), (521, 673), (517, 671), (516, 664), (520, 659), (521, 654),
+             (523, 652), (524, 644), (515, 634), (507, 631), (499, 622), (498, 615), (496, 613), (496, 609), (491, 606),
+             (489, 598), (480, 595), (471, 598), (471, 600), (468, 602), (460, 602), (459, 601), (454, 602), (452, 599),
+             (452, 594), (454, 592), (466, 593), (470, 591), (474, 586), (468, 588), (444, 589), (437, 583), (435, 580),
+             (435, 576), (430, 575), (427, 577), (426, 581), (428, 594), (426, 601), (424, 603), (415, 602), (411, 596),
+             (409, 596), (406, 593), (400, 593), (395, 590), (390, 590), (385, 592), (385, 594), (390, 598), (392, 602),
+             (391, 606), (387, 608), (384, 608), (383, 611), (373, 610), (370, 608), (369, 598), (367, 597), (366, 594),
+             (364, 594), (360, 590), (353, 587), (349, 578), (342, 575), (339, 571), (334, 570), (331, 572), (329, 579),
+             (325, 584), (317, 587), (316, 589), (310, 588), (305, 601), (299, 605), (297, 608), (288, 612), (288, 619),
+             (285, 624), (281, 626), (277, 626), (273, 623), (265, 621), (260, 622), (258, 624), (251, 624)),
+        ),
+    },
+}
+
+
+def _load_deutschland_module():
+    """Deutschland-Kartenasset erst bei Bedarf laden."""
+    import deutschland
+    return deutschland
+
+
+def _free_deutschland_module(module=None):
+    """Das lazy geladene Kartenmodul so weit wie Python erlaubt freigeben."""
+    try:
+        loaded = module if module is not None else sys.modules.get("deutschland")
+        if loaded is not None:
+            try:
+                loaded.GERMANY_MAP_IMAGE_B85 = b""
+            except Exception:
+                pass
+    finally:
+        sys.modules.pop("deutschland", None)
+        gc.collect()
+
+
+def _load_deutschland_wappen_module():
+    """Stage 261: Wappen erst beim ersten Tooltip lazy importieren."""
+    import deutschland_wappen
+    return deutschland_wappen
+
+
+def _free_deutschland_wappen_module(module=None):
+    """Wappen-Base85-Daten nach dem Schliessen des Deutschland-Docks loesen."""
+    try:
+        loaded = module if module is not None else sys.modules.get("deutschland_wappen")
+        if loaded is not None:
+            try:
+                loaded.GERMANY_COAT_OF_ARMS_B85.clear()
+            except Exception:
+                try:
+                    loaded.GERMANY_COAT_OF_ARMS_B85 = {}
+                except Exception:
+                    pass
+    finally:
+        sys.modules.pop("deutschland_wappen", None)
+        gc.collect()
+
+
+def _germany_map_pixmap(deutschland_module):
+    """Die bytegenaue Referenzgrafik aus dem lazy Assetmodul laden."""
+    payload = _d64info_base64.b85decode(
+        deutschland_module.GERMANY_MAP_IMAGE_B85
+    )
+    pixmap = QPixmap()
+    if not pixmap.loadFromData(payload, "PNG"):
+        raise RuntimeError("Die eingebettete Deutschland-Karte konnte nicht geladen werden.")
+    return pixmap
+
+
+def _germany_state_path(polygons):
+    path = QPainterPath()
+    path.setFillRule(Qt.OddEvenFill)
+    for polygon in polygons:
+        if not polygon:
+            continue
+        x0, y0 = polygon[0]
+        path.moveTo(float(x0), float(y0))
+        for x, y in polygon[1:]:
+            path.lineTo(float(x), float(y))
+        path.closeSubpath()
+    return path
+
+
+def _germany_dark_background_pixmap(source_pixmap):
+    """Nur den mit dem Bildrand verbundenen hellen PNG-Hintergrund schwärzen.
+
+    Weiß in Städten, Beschriftungen und Bundesland-Grenzen bleibt erhalten,
+    weil die Flood-Fill-Suche ausschließlich am äußeren Bildrand startet.
+    """
+    if source_pixmap is None or source_pixmap.isNull():
+        return QPixmap()
+
+    image = source_pixmap.toImage().convertToFormat(QImage.Format_ARGB32)
+    width = image.width()
+    height = image.height()
+    if width <= 0 or height <= 0:
+        return QPixmap.fromImage(image)
+
+    visited = bytearray(width * height)
+    pending = deque()
+
+    def is_background_pixel(x, y):
+        pixel = int(image.pixel(x, y))
+        alpha = (pixel >> 24) & 0xFF
+        red = (pixel >> 16) & 0xFF
+        green = (pixel >> 8) & 0xFF
+        blue = pixel & 0xFF
+        return alpha > 0 and red >= 245 and green >= 245 and blue >= 245
+
+    def enqueue(x, y):
+        index = y * width + x
+        if visited[index]:
+            return
+        visited[index] = 1
+        if is_background_pixel(x, y):
+            pending.append((x, y))
+
+    for x in range(width):
+        enqueue(x, 0)
+        enqueue(x, height - 1)
+    for y in range(1, height - 1):
+        enqueue(0, y)
+        enqueue(width - 1, y)
+
+    black = QColor(0, 0, 0, 255).rgba()
+    while pending:
+        x, y = pending.popleft()
+        image.setPixel(x, y, black)
+        if x > 0:
+            enqueue(x - 1, y)
+        if x + 1 < width:
+            enqueue(x + 1, y)
+        if y > 0:
+            enqueue(x, y - 1)
+        if y + 1 < height:
+            enqueue(x, y + 1)
+
+    return QPixmap.fromImage(image)
+
+
+class GermanyStateToolTip(QFrame):
+    """Eigener Tooltip mit Wappen links und Bundesland/Hauptstadt rechts."""
+
+    def __init__(self, parent=None):
+        super().__init__(None, Qt.ToolTip | Qt.FramelessWindowHint)
+        self.setObjectName("germany_state_tooltip")
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(9, 8, 11, 8)
+        layout.setSpacing(10)
+
+        self.coat_label = QLabel(self)
+        self.coat_label.setObjectName("germany_state_tooltip_coat")
+        self.coat_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        self.coat_label.setFixedSize(68, 82)
+        layout.addWidget(self.coat_label, 0, Qt.AlignTop)
+
+        text_box = QWidget(self)
+        text_layout = QVBoxLayout(text_box)
+        text_layout.setContentsMargins(0, 1, 0, 0)
+        text_layout.setSpacing(3)
+
+        self.state_label = QLabel(text_box)
+        self.state_label.setObjectName("germany_state_tooltip_state")
+        state_font = self.state_label.font()
+        state_font.setBold(True)
+        state_font.setPointSize(max(11, state_font.pointSize() + 2))
+        self.state_label.setFont(state_font)
+
+        self.capital_label = QLabel(text_box)
+        self.capital_label.setObjectName("germany_state_tooltip_capital")
+
+        text_layout.addWidget(self.state_label)
+        text_layout.addWidget(self.capital_label)
+        text_layout.addStretch(1)
+        layout.addWidget(text_box, 1, Qt.AlignTop)
+
+        self._dark_mode = False
+        self.set_dark_mode(False)
+
+    def set_dark_mode(self, enabled):
+        self._dark_mode = bool(enabled)
+        if self._dark_mode:
+            self.setStyleSheet(
+                "QFrame#germany_state_tooltip {"
+                "background:#171717; color:#ffffff; border:1px solid #8b8b8b;"
+                "border-radius:5px;}"
+                "QLabel { color:#ffffff; background:transparent; border:0px;}"
+            )
+        else:
+            self.setStyleSheet(
+                "QFrame#germany_state_tooltip {"
+                "background:#fffde8; color:#111111; border:1px solid #777777;"
+                "border-radius:5px;}"
+                "QLabel { color:#111111; background:transparent; border:0px;}"
+            )
+
+    def clear_content(self):
+        self.hide()
+        self.coat_label.clear()
+        self.state_label.clear()
+        self.capital_label.clear()
+
+    def show_state(self, state_name, capital, coat_pixmap, global_pos):
+        self.state_label.setText(str(state_name))
+        self.capital_label.setText(f"Hauptstadt:  {capital}")
+        if coat_pixmap is not None and not coat_pixmap.isNull():
+            self.coat_label.setPixmap(
+                coat_pixmap.scaled(
+                    self.coat_label.size(),
+                    Qt.KeepAspectRatio,
+                    Qt.SmoothTransformation,
+                )
+            )
+        else:
+            self.coat_label.clear()
+
+        self.adjustSize()
+        point = QPoint(global_pos) + QPoint(16, 18)
+        screen = QGuiApplication.screenAt(point)
+        if screen is not None:
+            rect = screen.availableGeometry()
+            x = min(max(point.x(), rect.left()), rect.right() - self.width())
+            y = min(max(point.y(), rect.top()), rect.bottom() - self.height())
+            point = QPoint(x, y)
+        self.move(point)
+        self.show()
+        self.raise_()
+
+
+class GermanyStateHoverItem(QGraphicsPathItem):
+    """Transparente Bundesland-Hitflaeche mit roter Hover-Grenze."""
+
+    HOVER_COLOR = QColor("#ff6f6f")
+
+    def __init__(self, state_name, capital, path, owner, z_value=20.0):
+        super().__init__(path)
+        self.state_name = str(state_name)
+        self.capital = str(capital)
+        self.owner = owner
+        self.setAcceptHoverEvents(True)
+        self.setAcceptedMouseButtons(Qt.LeftButton | Qt.RightButton)
+        self.setZValue(float(z_value))
+        self.setBrush(QBrush(QColor(255, 255, 255, 0)))
+        self.setPen(QPen(Qt.NoPen))
+
+    def _hover_pen(self):
+        pen = QPen(self.HOVER_COLOR)
+        pen.setWidthF(2.6)
+        pen.setJoinStyle(Qt.RoundJoin)
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setCosmetic(True)
+        return pen
+
+    def _show_tooltip(self, event):
+        if self.owner is None:
+            return
+        try:
+            screen_pos = event.screenPos()
+        except Exception:
+            screen_pos = QCursor.pos()
+        self.owner.show_state_tooltip(
+            self.state_name,
+            self.capital,
+            screen_pos,
+        )
+
+    def hoverEnterEvent(self, event):
+        self.setPen(self._hover_pen())
+        if self.owner is not None:
+            self.owner.set_hover_state(self.state_name, self.capital)
+        self._show_tooltip(event)
+        self.update()
+        super().hoverEnterEvent(event)
+
+    def hoverMoveEvent(self, event):
+        if self.pen().style() == Qt.NoPen:
+            self.setPen(self._hover_pen())
+        self._show_tooltip(event)
+        super().hoverMoveEvent(event)
+
+    def hoverLeaveEvent(self, event):
+        self.setPen(QPen(Qt.NoPen))
+        if self.owner is not None:
+            self.owner.clear_hover_state(self.state_name)
+            self.owner.hide_state_tooltip()
+        self.update()
+        super().hoverLeaveEvent(event)
+
+    def mousePressEvent(self, event):
+        self.setPen(self._hover_pen())
+        if self.owner is not None:
+            self.owner.set_hover_state(self.state_name, self.capital)
+        self._show_tooltip(event)
+        event.accept()
+
+
+class GermanyMapView(QGraphicsView):
+    """QGraphicsView fuer Deutschlandkarte, Hover-Wappen und Lern-Zoom."""
+
+    stateHovered = pyqtSignal(str, str)
+    stateHoverLeft = pyqtSignal()
+    zoomChanged = pyqtSignal(int)
+
+    MIN_ZOOM_PERCENT = 50
+    MAX_ZOOM_PERCENT = 400
+    WHEEL_ZOOM_STEP = 20
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._scene = QGraphicsScene(self)
+        self.setScene(self._scene)
+        self.setObjectName("germany_geography_view")
+        self.setFrameShape(QFrame.NoFrame)
+        self.setAlignment(Qt.AlignCenter)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setTransformationAnchor(QGraphicsView.AnchorViewCenter)
+        self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
+        self.setRenderHint(QPainter.Antialiasing, True)
+        self.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        self.setMouseTracking(True)
+        self.viewport().setMouseTracking(True)
+
+        self._dark_mode = False
+        self._zoom_percent = 100
+        self._hover_state_name = ""
+        self._released = False
+        self._deutschland_module = None
+        self._wappen_module = None
+        self._map_item = None
+        self._map_pixmap_light = QPixmap()
+        self._map_pixmap_dark = QPixmap()
+        self._wappen_pixmaps = {}
+        self._state_items = {}
+        self._map_size = QSizeF()
+        self._state_tooltip = GermanyStateToolTip(self)
+
+        # Stage 260: der grosse PNG/Base85-Block wird erst jetzt importiert.
+        self._deutschland_module = _load_deutschland_module()
+        try:
+            pixmap = _germany_map_pixmap(self._deutschland_module)
+            self._map_pixmap_light = pixmap
+            self._map_size = QSizeF(float(pixmap.width()), float(pixmap.height()))
+            bg = self._scene.addPixmap(pixmap)
+            self._map_item = bg
+            bg.setZValue(0.0)
+            self._scene.setSceneRect(
+                QRectF(0.0, 0.0, self._map_size.width(), self._map_size.height())
+            )
+
+            city_states = {"Berlin", "Bremen", "Hamburg"}
+            for state_name, meta in GERMANY_STATE_GEOMETRY.items():
+                polygons = list(meta["polygons"])
+                if state_name == "Brandenburg":
+                    polygons.extend(GERMANY_STATE_GEOMETRY["Berlin"]["polygons"])
+
+                path = _germany_state_path(polygons)
+                z = 40.0 if state_name in city_states else 20.0
+                item = GermanyStateHoverItem(
+                    state_name,
+                    meta["capital"],
+                    path,
+                    self,
+                    z_value=z,
+                )
+                self._scene.addItem(item)
+                self._state_items[state_name] = item
+        except Exception:
+            module = self._deutschland_module
+            self._deutschland_module = None
+            _free_deutschland_module(module)
+            raise
+
+        QTimer.singleShot(0, self.fit_map)
+
+    @property
+    def zoom_percent(self):
+        return int(self._zoom_percent)
+
+    def set_dark_mode(self, enabled):
+        self._dark_mode = bool(enabled)
+        self.setBackgroundBrush(
+            QBrush(QColor("#000000" if self._dark_mode else "#ffffff"))
+        )
+        self.viewport().setStyleSheet(
+            "background:#000000;" if self._dark_mode else "background:#ffffff;"
+        )
+
+        # Das Referenz-PNG besitzt einen weißen Außenhintergrund. Im Dark
+        # Mode wird nur die vom Bildrand erreichbare Weißfläche per FloodFill
+        # schwarz ersetzt; weiße Stadtpunkte, Schriften und innere Grenzen
+        # bleiben dadurch unverändert.
+        if self._map_item is not None:
+            if self._dark_mode:
+                if self._map_pixmap_dark.isNull():
+                    self._map_pixmap_dark = _germany_dark_background_pixmap(
+                        self._map_pixmap_light
+                    )
+                self._map_item.setPixmap(self._map_pixmap_dark)
+            else:
+                self._map_item.setPixmap(self._map_pixmap_light)
+
+        if self._state_tooltip is not None:
+            self._state_tooltip.set_dark_mode(self._dark_mode)
+        self.viewport().update()
+
+    def _coat_pixmap(self, state_name):
+        state_name = str(state_name)
+        cached = self._wappen_pixmaps.get(state_name)
+        if cached is not None:
+            return cached
+
+        if self._wappen_module is None:
+            self._wappen_module = _load_deutschland_wappen_module()
+
+        encoded = getattr(
+            self._wappen_module,
+            "GERMANY_COAT_OF_ARMS_B85",
+            {},
+        ).get(state_name)
+        if not encoded:
+            return QPixmap()
+
+        raw = _d64info_base64.b85decode(encoded)
+        pixmap = QPixmap()
+        if pixmap.loadFromData(raw, "PNG"):
+            self._wappen_pixmaps[state_name] = pixmap
+            return pixmap
+        return QPixmap()
+
+    def show_state_tooltip(self, state_name, capital, global_pos):
+        if self._released or self._state_tooltip is None:
+            return
+        self._state_tooltip.show_state(
+            state_name,
+            capital,
+            self._coat_pixmap(state_name),
+            global_pos,
+        )
+
+    def hide_state_tooltip(self):
+        if self._state_tooltip is not None:
+            self._state_tooltip.hide()
+
+    def release_resources(self):
+        """Qt-Karte sowie Karten- und Wappenmodule deterministisch loesen."""
+        if self._released:
+            return
+        self._released = True
+
+        self._hover_state_name = ""
+        self._state_items.clear()
+        self._map_size = QSizeF()
+
+        if self._state_tooltip is not None:
+            self._state_tooltip.clear_content()
+            self._state_tooltip.deleteLater()
+            self._state_tooltip = None
+
+        self._wappen_pixmaps.clear()
+        self._map_item = None
+        self._map_pixmap_light = QPixmap()
+        self._map_pixmap_dark = QPixmap()
+        wappen_module = self._wappen_module
+        self._wappen_module = None
+        _free_deutschland_wappen_module(wappen_module)
+
+        try:
+            self._scene.clear()
+            self._scene.setSceneRect(QRectF())
+        except RuntimeError:
+            pass
+
+        module = self._deutschland_module
+        self._deutschland_module = None
+        _free_deutschland_module(module)
+
+    def set_hover_state(self, state_name, capital):
+        self._hover_state_name = str(state_name)
+        self.stateHovered.emit(str(state_name), str(capital))
+
+    def clear_hover_state(self, state_name):
+        if self._hover_state_name == str(state_name):
+            self._hover_state_name = ""
+            self.stateHoverLeft.emit()
+
+    def _map_rect(self):
+        if self._map_size.isEmpty():
+            return QRectF()
+        rect = QRectF(0.0, 0.0, self._map_size.width(), self._map_size.height())
+        rect.adjust(-5.0, -5.0, 5.0, 5.0)
+        return rect
+
+    def _apply_zoom(self):
+        rect = self._map_rect()
+        if rect.isEmpty():
+            return
+        self.resetTransform()
+        self.fitInView(rect, Qt.KeepAspectRatio)
+        factor = float(self._zoom_percent) / 100.0
+        if abs(factor - 1.0) > 0.0001:
+            self.scale(factor, factor)
+
+    def set_zoom_percent(self, percent):
+        percent = max(
+            self.MIN_ZOOM_PERCENT,
+            min(self.MAX_ZOOM_PERCENT, int(percent)),
+        )
+        if percent == self._zoom_percent:
+            self._apply_zoom()
+            return
+        self._zoom_percent = percent
+        self._apply_zoom()
+        self.zoomChanged.emit(int(self._zoom_percent))
+
+    def fit_map(self):
+        self._apply_zoom()
+
+    def wheelEvent(self, event):
+        if event.modifiers() & Qt.ControlModifier:
+            delta = event.angleDelta().y()
+            if delta:
+                step = self.WHEEL_ZOOM_STEP if delta > 0 else -self.WHEEL_ZOOM_STEP
+                self.set_zoom_percent(self._zoom_percent + step)
+            event.accept()
+            return
+        super().wheelEvent(event)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._apply_zoom()
+
+
+class GermanyMapDock(QDockWidget):
+    def __init__(self, parent=None):
+        super().__init__("Deutschland", parent)
+        self.setObjectName("germany_geography_dock")
+        self.setFeatures(
+            QDockWidget.DockWidgetMovable
+            | QDockWidget.DockWidgetFloatable
+            | QDockWidget.DockWidgetClosable
+        )
+        self.setAllowedAreas(Qt.AllDockWidgetAreas)
+        self.setMinimumSize(0, 0)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
+        self.map_view = GermanyMapView(self)
+        self.setWidget(self.map_view)
+        self.set_dark_mode(bool(getattr(parent, "dark_mode_enabled", False)))
+
+    def set_dark_mode(self, enabled):
+        dark = bool(enabled)
+        self.setStyleSheet(
+            "QDockWidget#germany_geography_dock { background:#000000; }"
+            if dark
+            else "QDockWidget#germany_geography_dock { background:#ffffff; }"
+        )
+        if self.map_view is not None:
+            self.map_view.set_dark_mode(dark)
+
+    def closeEvent(self, event):
+        try:
+            self.map_view.release_resources()
+        finally:
+            super().closeEvent(event)
+
+
+# ---------------------------------------------------------------------------
+# Lernen -> Computer -> Maus: MineSweeper
+# ---------------------------------------------------------------------------
+class MinesweeperCell(QPushButton):
+    """Ein einzelnes Feld des MineSweeper-Bretts."""
+
+    CELL_SIZE = 28
+
+    def __init__(self, board, row, col, parent=None):
+        super().__init__(parent)
+        self.board = board
+        self.row = int(row)
+        self.col = int(col)
+        self.setObjectName("minesweeper_cell")
+        self.setFixedSize(self.CELL_SIZE, self.CELL_SIZE)
+        self.setFocusPolicy(Qt.NoFocus)
+        self.setCursor(Qt.PointingHandCursor)
+
+        font = QFont("Segoe UI", 10)
+        font.setBold(True)
+        self.setFont(font)
+        self.refresh()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.RightButton:
+            self.board.toggle_flag(self.row, self.col)
+            event.accept()
+            return
+
+        if event.button() == Qt.LeftButton:
+            self.board.open_cell(self.row, self.col)
+            event.accept()
+            return
+
+        super().mousePressEvent(event)
+
+    def _covered_style(self, text_color):
+        if self.board.dark_mode:
+            bg, hi, lo = "#363b43", "#626b76", "#15181c"
+        else:
+            bg, hi, lo = "#d7d7d7", "#ffffff", "#777777"
+
+        return (
+            "QPushButton#minesweeper_cell{{"
+            "background:{bg};color:{fg};"
+            "border-width:2px;border-style:outset;"
+            "border-top-color:{hi};border-left-color:{hi};"
+            "border-right-color:{lo};border-bottom-color:{lo};"
+            "padding:0px;"
+            "}}"
+            "QPushButton#minesweeper_cell:pressed{{border-style:inset;}}"
+        ).format(bg=bg, fg=text_color, hi=hi, lo=lo)
+
+    def _clean_style(self, text_color, *, solid=False):
+        if self.board.dark_mode:
+            bg, border = "#171a1f", "#505760"
+        else:
+            bg, border = "#f3f3f3", "#9a9a9a"
+
+        border_style = "solid" if solid else "inset"
+        return (
+            "QPushButton#minesweeper_cell{{"
+            "background:{bg};color:{fg};"
+            "border:1px {style} {border};padding:0px;"
+            "}}"
+        ).format(
+            bg=bg,
+            fg=text_color,
+            style=border_style,
+            border=border,
+        )
+
+    def refresh(self):
+        state = self.board.cell_state(self.row, self.col)
+
+        number_colors_dark = {
+            1: "#6ab0ff",
+            2: "#66d17a",
+            3: "#ff6b6b",
+            4: "#b79cff",
+            5: "#ff9d6c",
+            6: "#61d6d6",
+            7: "#f4f4f4",
+            8: "#b8bec7",
+        }
+        number_colors_light = {
+            1: "#0000cc",
+            2: "#087b18",
+            3: "#c40000",
+            4: "#5b198f",
+            5: "#8b2b00",
+            6: "#007c7c",
+            7: "#111111",
+            8: "#666666",
+        }
+
+        if state == "covered":
+            self.setText("")
+            self.setEnabled(True)
+            self.setStyleSheet(
+                self._covered_style("#f0f2f5" if self.board.dark_mode else "#111111")
+            )
+            return
+
+        if state == "flagged":
+            self.setText("F")
+            self.setEnabled(True)
+            self.setStyleSheet(self._covered_style("#ffcc33"))
+            return
+
+        if state == "defused":
+            self.setText("✓")
+            self.setEnabled(True)
+            self.setStyleSheet(self._clean_style("#40d060", solid=True))
+            return
+
+        if state == "mine":
+            self.setText("●")
+            self.setEnabled(False)
+            self.setStyleSheet(
+                "QPushButton#minesweeper_cell{"
+                "background:#7b1f1f;color:#ffffff;"
+                "border:1px inset #3d0d0d;padding:0px;"
+                "}"
+            )
+            return
+
+        if state == "mine_other":
+            self.setText("●")
+            self.setEnabled(False)
+            self.setStyleSheet(self._clean_style("#d74b4b", solid=True))
+            return
+
+        if state == "wrong_flag":
+            self.setText("×")
+            self.setEnabled(False)
+            self.setStyleSheet(self._clean_style("#e05050", solid=True))
+            return
+
+        # "clean": sicher begangen. Der erhabene Rahmen verschwindet.
+        number = self.board.adjacent_count(self.row, self.col)
+        self.setText("" if number == 0 else str(number))
+        self.setEnabled(True)
+
+        color_map = number_colors_dark if self.board.dark_mode else number_colors_light
+        default_color = "#f0f2f5" if self.board.dark_mode else "#111111"
+        self.setStyleSheet(
+            self._clean_style(color_map.get(number, default_color))
+        )
+
+
+class MinesweeperWidget(QWidget):
+    """Quadratischer MineSweeper-Clone als Maus-Lernspiel."""
+
+    DIFFICULTIES = (
+        ("Anfänger", 9, 10, 1),
+        ("Leicht", 12, 22, 2),
+        ("Mittel", 16, 40, 3),
+        ("Schwer", 22, 90, 4),
+        ("Experte", 30, 180, 5),
+    )
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("minesweeper_widget")
+
+        self.dark_mode = False
+        self.size = 9
+        self.mine_count = 10
+        self.score_factor = 1
+        self.mines = set()
+        self.revealed = set()
+        self.flagged = set()
+        self.defused = set()
+        self.exploded_cell = None
+        self.finished = False
+        self.started = False
+        self.elapsed_seconds = 0
+        self.score = 0
+        self.cells = {}
+
+        self.timer = QTimer(self)
+        self.timer.setInterval(1000)
+        self.timer.timeout.connect(self._tick)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(7)
+
+        toolbar = QHBoxLayout()
+        toolbar.setContentsMargins(0, 0, 0, 0)
+        toolbar.setSpacing(7)
+
+        toolbar.addWidget(QLabel("Schwierigkeit:", self))
+
+        self.difficulty_combo = QComboBox(self)
+        self.difficulty_combo.setObjectName("minesweeper_difficulty")
+        for label, size, mines, factor in self.DIFFICULTIES:
+            self.difficulty_combo.addItem(
+                f"{label} — {size}×{size} / {mines} Minen",
+                (size, mines, factor),
+            )
+        toolbar.addWidget(self.difficulty_combo)
+
+        self.new_button = QPushButton("Neues Spiel", self)
+        self.new_button.setObjectName("minesweeper_new_game")
+        toolbar.addWidget(self.new_button)
+
+        toolbar.addSpacing(12)
+
+        self.time_label = QLabel("Zeit: 000 s", self)
+        self.score_label = QLabel("Punkte: 0", self)
+        self.mine_label = QLabel("Minen: 10", self)
+        self.defused_label = QLabel("Entschärft: 0", self)
+        self.flag_label = QLabel("Markiert: 0", self)
+
+        for label in (
+            self.time_label,
+            self.score_label,
+            self.mine_label,
+            self.defused_label,
+            self.flag_label,
+        ):
+            label.setMinimumWidth(90)
+            toolbar.addWidget(label)
+
+        toolbar.addStretch(1)
+        root.addLayout(toolbar)
+
+        self.help_label = QLabel(
+            "Linksklick: Feld begehen   •   Rechtsklick: Mine vermuten/markieren   •   "
+            "Zahl: Anzahl der Minen in den acht angrenzenden Feldern   •   "
+            "Ist der sichere Weg um eine Mine vollständig geöffnet, gilt sie als entschärft.",
+            self,
+        )
+        self.help_label.setWordWrap(True)
+        root.addWidget(self.help_label)
+
+        self.status_label = QLabel(
+            "Bereit — alle Minen sind verdeckt.",
+            self,
+        )
+        self.status_label.setObjectName("minesweeper_status")
+        self.status_label.setWordWrap(True)
+        root.addWidget(self.status_label)
+
+        self.board_scroll = QScrollArea(self)
+        self.board_scroll.setObjectName("minesweeper_scroll")
+        self.board_scroll.setWidgetResizable(False)
+        self.board_scroll.setAlignment(Qt.AlignCenter)
+        self.board_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.board_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+        self.board_widget = QWidget(self.board_scroll)
+        self.board_widget.setObjectName("minesweeper_board")
+
+        self.board_layout = QGridLayout(self.board_widget)
+        self.board_layout.setContentsMargins(5, 5, 5, 5)
+        self.board_layout.setSpacing(1)
+
+        self.board_scroll.setWidget(self.board_widget)
+        root.addWidget(self.board_scroll, 1)
+
+        self.new_button.clicked.connect(self.new_game)
+        self.difficulty_combo.currentIndexChanged.connect(
+            lambda _index: self.new_game()
+        )
+
+        self.new_game()
+
+    def set_dark_mode(self, enabled):
+        self.dark_mode = bool(enabled)
+
+        if self.dark_mode:
+            self.setStyleSheet(
+                "QWidget#minesweeper_widget{background:#181b1f;color:#f1f1f1;}"
+                "QWidget#minesweeper_board{background:#111419;}"
+                "QScrollArea#minesweeper_scroll{background:#111419;border:1px solid #4b515a;}"
+                "QLabel{color:#f1f1f1;}"
+                "QLabel#minesweeper_status{color:#ffe46b;font-weight:bold;}"
+                "QComboBox,QPushButton#minesweeper_new_game{"
+                "background:#2d3239;color:#ffffff;border:1px solid #606873;"
+                "padding:4px 7px;}"
+            )
+        else:
+            self.setStyleSheet(
+                "QWidget#minesweeper_widget{background:#efefef;color:#111111;}"
+                "QWidget#minesweeper_board{background:#b9b9b9;}"
+                "QScrollArea#minesweeper_scroll{background:#dcdcdc;border:1px solid #999999;}"
+                "QLabel{color:#111111;}"
+                "QLabel#minesweeper_status{color:#623c00;font-weight:bold;}"
+                "QComboBox,QPushButton#minesweeper_new_game{"
+                "background:#eeeeee;color:#111111;border:1px solid #888888;"
+                "padding:4px 7px;}"
+            )
+
+        for cell in self.cells.values():
+            cell.refresh()
+
+    def _difficulty(self):
+        data = self.difficulty_combo.currentData()
+        try:
+            size, mines, factor = data
+            return int(size), int(mines), int(factor)
+        except (TypeError, ValueError):
+            return 9, 10, 1
+
+    def _clear_board_widgets(self):
+        while self.board_layout.count():
+            item = self.board_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self.cells.clear()
+
+    def new_game(self):
+        self.timer.stop()
+
+        self.size, self.mine_count, self.score_factor = self._difficulty()
+        self.mine_count = min(
+            self.mine_count,
+            self.size * self.size - 1,
+        )
+
+        all_positions = [
+            (row, col)
+            for row in range(self.size)
+            for col in range(self.size)
+        ]
+        self.mines = set(
+            random.sample(all_positions, self.mine_count)
+        )
+
+        self.revealed = set()
+        self.flagged = set()
+        self.defused = set()
+        self.exploded_cell = None
+        self.finished = False
+        self.started = False
+        self.elapsed_seconds = 0
+        self.score = 0
+
+        self._clear_board_widgets()
+
+        for row in range(self.size):
+            for col in range(self.size):
+                cell = MinesweeperCell(
+                    self,
+                    row,
+                    col,
+                    self.board_widget,
+                )
+                self.cells[(row, col)] = cell
+                self.board_layout.addWidget(cell, row, col)
+
+        side = (
+            self.size * MinesweeperCell.CELL_SIZE
+            + max(0, self.size - 1) * self.board_layout.spacing()
+            + 10
+        )
+        self.board_widget.setFixedSize(side, side)
+
+        self.status_label.setText(
+            "Bereit — alle Minen sind verdeckt. Ein Klick startet die Zeit."
+        )
+        self._update_labels()
+        self.set_dark_mode(self.dark_mode)
+
+    def _start_if_needed(self):
+        if self.finished:
+            return
+
+        if not self.started:
+            self.started = True
+            self.timer.start()
+
+    def _tick(self):
+        if self.finished or not self.started:
+            self.timer.stop()
+            return
+
+        self.elapsed_seconds += 1
+        self._update_labels()
+
+    def _neighbors(self, row, col):
+        for dr in (-1, 0, 1):
+            for dc in (-1, 0, 1):
+                if dr == 0 and dc == 0:
+                    continue
+
+                nr = row + dr
+                nc = col + dc
+
+                if (
+                    0 <= nr < self.size
+                    and 0 <= nc < self.size
+                ):
+                    yield (nr, nc)
+
+    def adjacent_count(self, row, col):
+        return sum(
+            1
+            for pos in self._neighbors(row, col)
+            if pos in self.mines
+        )
+
+    def cell_state(self, row, col):
+        pos = (row, col)
+
+        if self.finished and self.exploded_cell is not None:
+            if pos == self.exploded_cell:
+                return "mine"
+
+            if pos in self.flagged and pos not in self.mines:
+                return "wrong_flag"
+
+            if pos in self.mines:
+                return "mine_other"
+
+        if pos in self.defused:
+            return "defused"
+
+        if pos in self.revealed:
+            return "clean"
+
+        if pos in self.flagged:
+            return "flagged"
+
+        return "covered"
+
+    def toggle_flag(self, row, col):
+        if self.finished:
+            return
+
+        pos = (row, col)
+
+        if pos in self.revealed or pos in self.defused:
+            return
+
+        self._start_if_needed()
+
+        if pos in self.flagged:
+            self.flagged.remove(pos)
+        else:
+            if len(self.flagged) >= self.mine_count:
+                QApplication.beep()
+                self.status_label.setText(
+                    "Es sind bereits so viele Felder markiert wie Minen vorhanden sind."
+                )
+                return
+
+            self.flagged.add(pos)
+
+        self.cells[pos].refresh()
+        self._update_labels()
+
+    def open_cell(self, row, col):
+        if self.finished:
+            return
+
+        pos = (row, col)
+
+        if pos in self.flagged:
+            return
+
+        if pos in self.revealed:
+            return
+
+        self._start_if_needed()
+
+        # Bereits entschärfte Minen sind nicht mehr tödlich.
+        if pos in self.defused:
+            self.status_label.setText(
+                "Diese Mine ist bereits entschärft."
+            )
+            return
+
+        # Wie gewünscht kann bereits der erste Klick eine Mine treffen.
+        if pos in self.mines:
+            self._lose(pos)
+            return
+
+        newly_revealed = self._reveal_safe_region(pos)
+
+        if newly_revealed:
+            self.score += (
+                len(newly_revealed)
+                * 10
+                * self.score_factor
+            )
+
+        self._update_defused_mines()
+
+        safe_field_count = (
+            self.size * self.size - self.mine_count
+        )
+        if len(self.revealed) >= safe_field_count:
+            self._win()
+            return
+
+        count = self.adjacent_count(row, col)
+
+        if count:
+            self.status_label.setText(
+                f"Clean — in den acht Nachbarfeldern liegen {count} Mine(n)."
+            )
+        else:
+            self.status_label.setText(
+                "Clean — kein direkt angrenzendes Minenfeld."
+            )
+
+        self._update_labels()
+
+    def _reveal_safe_region(self, start):
+        """Öffnet ein sicheres Feld; Nullfelder breiten sich automatisch aus."""
+        opened = set()
+        stack = [start]
+
+        while stack:
+            pos = stack.pop()
+
+            if (
+                pos in opened
+                or pos in self.revealed
+                or pos in self.mines
+                or pos in self.flagged
+            ):
+                continue
+
+            self.revealed.add(pos)
+            opened.add(pos)
+
+            row, col = pos
+
+            if self.adjacent_count(row, col) == 0:
+                for neighbor in self._neighbors(row, col):
+                    if (
+                        neighbor not in self.mines
+                        and neighbor not in self.revealed
+                        and neighbor not in self.flagged
+                    ):
+                        stack.append(neighbor)
+
+        for pos in opened:
+            cell = self.cells.get(pos)
+            if cell is not None:
+                cell.refresh()
+
+        return opened
+
+    def _update_defused_mines(self):
+        """
+        Eine Mine gilt als entschärft, wenn alle existierenden sicheren
+        Nachbarfelder um die Mine bereits begangen wurden.
+        """
+        newly_defused = []
+
+        for mine in self.mines:
+            if mine in self.defused:
+                continue
+
+            safe_neighbors = [
+                pos
+                for pos in self._neighbors(*mine)
+                if pos not in self.mines
+            ]
+
+            if (
+                safe_neighbors
+                and all(
+                    pos in self.revealed
+                    for pos in safe_neighbors
+                )
+            ):
+                self.defused.add(mine)
+                self.flagged.discard(mine)
+                newly_defused.append(mine)
+
+        if newly_defused:
+            self.score += (
+                len(newly_defused)
+                * 50
+                * self.score_factor
+            )
+
+            for pos in newly_defused:
+                cell = self.cells.get(pos)
+                if cell is not None:
+                    cell.refresh()
+
+            self.status_label.setText(
+                f"{len(newly_defused)} Mine(n) durch den vollständigen sicheren Weg entschärft."
+            )
+
+        return newly_defused
+
+    def _lose(self, exploded):
+        self.finished = True
+        self.exploded_cell = exploded
+        self.timer.stop()
+
+        for pos, cell in self.cells.items():
+            if (
+                pos in self.mines
+                or (
+                    pos in self.flagged
+                    and pos not in self.mines
+                )
+            ):
+                cell.refresh()
+
+        self.status_label.setText(
+            "Game Over — Mine getroffen. "
+            "Mit 'Neues Spiel' wird ein frisches Minenfeld erzeugt."
+        )
+        self._update_labels()
+
+    def _win(self):
+        self.finished = True
+        self.timer.stop()
+
+        # Sind alle sicheren Wege begangen, sind auch die restlichen
+        # Minen eindeutig und gelten als entschärft.
+        remaining = self.mines - self.defused
+        self.defused.update(remaining)
+        self.flagged.difference_update(self.mines)
+
+        self.score += (
+            self.size * self.size * self.score_factor
+            + max(
+                0,
+                300 - self.elapsed_seconds,
+            ) * self.score_factor
+        )
+
+        for pos in self.mines:
+            cell = self.cells.get(pos)
+            if cell is not None:
+                cell.refresh()
+
+        self.status_label.setText(
+            "Gewonnen — alle sicheren Wege sind begangen "
+            "und die Minen entschärft."
+        )
+        self._update_labels()
+
+    def _update_labels(self):
+        self.time_label.setText(
+            f"Zeit: {self.elapsed_seconds:03d} s"
+        )
+        self.score_label.setText(
+            f"Punkte: {self.score}"
+        )
+        self.mine_label.setText(
+            f"Minen: {self.mine_count}"
+        )
+        self.defused_label.setText(
+            f"Entschärft: {len(self.defused)}/{self.mine_count}"
+        )
+        self.flag_label.setText(
+            f"Markiert: {len(self.flagged)}"
+        )
+
+
+class MinesweeperDock(QDockWidget):
+    def __init__(
+        self,
+        parent=None,
+        title_bar_factory=None,
+    ):
+        super().__init__("MineSweeper", parent)
+        self.setObjectName("minesweeper_learning_dock")
+        self.setFeatures(
+            QDockWidget.DockWidgetMovable
+            | QDockWidget.DockWidgetFloatable
+            | QDockWidget.DockWidgetClosable
+        )
+        self.setAllowedAreas(
+            Qt.LeftDockWidgetArea
+            | Qt.RightDockWidgetArea
+            | Qt.TopDockWidgetArea
+            | Qt.BottomDockWidgetArea
+        )
+        self.setMinimumSize(0, 0)
+        self.setSizePolicy(
+            QSizePolicy.Expanding,
+            QSizePolicy.Expanding,
+        )
+
+        self.game = MinesweeperWidget(self)
+        self.setWidget(self.game)
+
+        if title_bar_factory is not None:
+            try:
+                self.setTitleBarWidget(
+                    title_bar_factory(self)
+                )
+            except Exception:
+                pass
+
+    def set_dark_mode(self, enabled):
+        self.game.set_dark_mode(bool(enabled))
+
+
+class MinesweeperController(QObject):
+    def __init__(
+        self,
+        main_window,
+        title_bar_factory=None,
+    ):
+        super().__init__(main_window)
+        self.main_window = main_window
+        self.title_bar_factory = title_bar_factory
+        self.dock = None
+
+    def _create_dock(self):
+        if self.dock is not None:
+            return self.dock
+
+        self.dock = MinesweeperDock(
+            self.main_window,
+            title_bar_factory=self.title_bar_factory,
+        )
+        self.main_window.addDockWidget(
+            Qt.TopDockWidgetArea,
+            self.dock,
+        )
+        return self.dock
+
+    def show(self):
+        dock = self._create_dock()
+        dock.set_dark_mode(
+            bool(
+                getattr(
+                    self.main_window,
+                    "dark_mode_enabled",
+                    False,
+                )
+            )
+        )
+        dock.show()
+        dock.raise_()
+
+        # Große quadratische Felder scrollen innerhalb des Docks.
+        # Die äußere Hauptfenster-Geometrie wird nicht verändert.
+        try:
+            self.main_window.resizeDocks(
+                [dock],
+                [620],
+                Qt.Vertical,
+            )
+        except Exception:
+            pass
+
+
+
+# ---------------------------------------------------------------------------
+# Commodore C=64
+# ---------------------------------------------------------------------------
+class C64PackerError(RuntimeError):
+    pass
+
+def normalize_packer_mode(value: str) -> str:
+    text = str(value or "none").strip().casefold().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "off": "none",
+        "disabled": "none",
+        "false": "none",
+        "0": "none",
+        "run_length": "rle",
+        "runlength": "rle",
+        "lz77": "lz",
+        "lzss": "lz",
+        "automatic": "auto",
+    }
+    text = aliases.get(text, text)
+    return text if text in PACKER_MODES else "none"
+
+
+def normalize_search_mode(value: str) -> str:
+    text = str(value or "balanced").strip().casefold().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "normal": "balanced",
+        "default": "balanced",
+        "max": "maximum",
+        "best": "maximum",
+    }
+    text = aliases.get(text, text)
+    return text if text in PACKER_SEARCH_MODES else "balanced"
+
+
+@dataclass(frozen=True)
+class C64PackerStats:
+    requested_mode: str
+    selected_mode: str
+    search_mode: str
+    original_size: int
+    result_size: int
+    compressed_stream_size: int = 0
+    bootstrap_size: int = 0
+    decruncher_size: int = 0
+    temp_start: int = 0
+    temp_end: int = 0
+    auto_kept_original: bool = False
+    message: str = ""
+    # Stage 51: exact, reassemblierbarer Wrapper-Quelltext fuer den separaten
+    # D64PACK-ASM-Editor.  Der Hochspeicher-Decruncher wird darin physisch als
+    # .byte-Bundle gespeichert; seine symbolische Quelle folgt nur kommentiert.
+    asm_source: str = ""
+    # Stage 55: whether the symbolic, commented De-Cruncher source was
+    # requested for the Packed-ASM editor. Runtime bytes are unaffected.
+    include_decruncher_source: bool = True
+
+    @property
+    def saved_bytes(self) -> int:
+        return self.original_size - self.result_size
+
+    @property
+    def ratio(self) -> float:
+        if not self.original_size:
+            return 1.0
+        return self.result_size / self.original_size
+
+
+@dataclass(frozen=True)
+class _C64PackToken:
+    kind: str
+    literal: bytes = b""
+    length: int = 0
+    value: int = 0
+    distance: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Reverse-stream formats
+# ---------------------------------------------------------------------------
+# The decruncher reads from the end of the packed stream towards its start and
+# writes the destination from high to low.  0x80 is an explicit end marker.
+# 00..7f: literal run, len = control + 1
+# 81..ff: RLE/LZ run/match, len = (control & 0x7f) + 2  => 3..129
+# ---------------------------------------------------------------------------
+_END_MARKER  = 0x80
+_MAX_LITERAL = 128
+_MAX_MATCH   = 129
+
+
+def _serialize_tokens(tokens: Sequence[_C64PackToken], mode: str) -> bytes:
+    serialized: List[bytes] = []
+    for token in tokens:
+        if token.kind == "literal":
+            if not 1 <= len(token.literal) <= _MAX_LITERAL:
+                raise C64PackerError("Interner Packerfehler: ungültige Literal-Länge.")
+            # Decoder reads bytes backwards, therefore store the reverse of the
+            # decoder order before the control byte.
+            serialized.append(token.literal[::-1] + bytes((len(token.literal) - 1,)))
+        elif mode == "rle" and token.kind == "run":
+            if not 3 <= token.length <= _MAX_MATCH:
+                raise C64PackerError("Interner Packerfehler: ungültige RLE-Länge.")
+            ctrl = 0x80 | (token.length - 2)
+            serialized.append(bytes((token.value & 0xFF, ctrl)))
+        elif mode == "lz" and token.kind == "match":
+            if not 3 <= token.length <= _MAX_MATCH:
+                raise C64PackerError("Interner Packerfehler: ungültige LZ-Länge.")
+            if not 1 <= token.distance <= 0xFFFF:
+                raise C64PackerError("Interner Packerfehler: ungültige LZ-Distanz.")
+            ctrl = 0x80 | (token.length - 2)
+            serialized.append(bytes((token.distance & 0xFF, token.distance >> 8, ctrl)))
+        else:
+            raise C64PackerError("Interner Packerfehler: unbekannter Token-Typ.")
+    # First decoded token must be physically last in the stream.  The marker is
+    # physically first and is therefore read after the last token.
+    return bytes((_END_MARKER,)) + b"".join(reversed(serialized))
+
+
+def _compress_rle(data: bytes) -> bytes:
+    rev = data[::-1]
+    tokens: List[_C64PackToken] = []
+    literals = bytearray()
+
+    def flush_literals() -> None:
+        nonlocal literals
+        while literals:
+            chunk = bytes(literals[:_MAX_LITERAL])
+            del literals[:_MAX_LITERAL]
+            tokens.append(_C64PackToken("literal", literal=chunk))
+
+    i = 0
+    n = len(rev)
+    while i < n:
+        run = 1
+        while i + run < n and run < _MAX_MATCH and rev[i + run] == rev[i]:
+            run += 1
+        if run >= 3:
+            flush_literals()
+            tokens.append(_C64PackToken("run", length=run, value=rev[i]))
+            i += run
+            continue
+        literals.append(rev[i])
+        i += 1
+        if len(literals) >= _MAX_LITERAL:
+            flush_literals()
+    flush_literals()
+    return _serialize_tokens(tokens, "rle")
+
+
+def _candidate_limit(search_mode: str) -> int:
+    return {"fast": 12, "balanced": 48, "maximum": 128}[normalize_search_mode(search_mode)]
+
+
+def _best_lz_matches(rev: bytes, search_mode: str) -> Tuple[List[int], List[int]]:
+    """Return best match length and distance at every position in reversed data."""
+    n = len(rev)
+    best_len = [0] * n
+    best_dist = [0] * n
+    positions: Dict[bytes, List[int]] = {}
+    limit = _candidate_limit(search_mode)
+
+    for i in range(n):
+        if i + 2 >= n:
+            continue
+        key = rev[i:i + 3]
+        candidates = positions.get(key, ())
+        longest = 0
+        distance = 0
+        # Recent matches tend to have smaller distances and are usually better
+        # for generated 6502 code.  The stream still carries a full 16-bit
+        # distance, so this is a search-speed choice, not a format restriction.
+        for j in reversed(candidates[-limit:]):
+            dist = i - j
+            if dist <= 0 or dist > 0xFFFF:
+                continue
+            max_len = min(_MAX_MATCH, n - i)
+            length = 3
+            while length < max_len and rev[i + length] == rev[j + length]:
+                length += 1
+            if length > longest:
+                longest = length
+                distance = dist
+                if longest == max_len:
+                    break
+        if longest >= 3:
+            best_len[i] = longest
+            best_dist[i] = distance
+        bucket = positions.setdefault(key, [])
+        bucket.append(i)
+        # Bound retained history as well; an old position farther than 65535
+        # can never be encoded by this format.
+        while bucket and i - bucket[0] > 0xFFFF:
+            del bucket[0]
+    return best_len, best_dist
+
+
+def _lz_tokens_greedy(rev: bytes, search_mode: str) -> List[_C64PackToken]:
+    best_len, best_dist = _best_lz_matches(rev, search_mode)
+    n = len(rev)
+    tokens: List[_C64PackToken] = []
+    literals = bytearray()
+
+    def flush() -> None:
+        nonlocal literals
+        while literals:
+            chunk = bytes(literals[:_MAX_LITERAL])
+            del literals[:_MAX_LITERAL]
+            tokens.append(_C64PackToken("literal", literal=chunk))
+
+    i = 0
+    lazy = normalize_search_mode(search_mode) == "balanced"
+    while i < n:
+        length = best_len[i]
+        # ---------------------------------------------------------------------------
+        # One-byte lazy parsing in balanced mode.  It can trade a short current
+        # match for a significantly longer match after one literal byte.
+        # ---------------------------------------------------------------------------
+        if lazy and length >= 3 and i + 1 < n and best_len[i + 1] > length + 1:
+            length = 0
+        if length >= 3:
+            flush()
+            tokens.append(_C64PackToken("match", length=length, distance=best_dist[i]))
+            i += length
+        else:
+            literals.append(rev[i])
+            i += 1
+            if len(literals) >= _MAX_LITERAL:
+                flush()
+    flush()
+    return tokens
+
+
+def _lz_tokens_maximum(rev: bytes) -> List[_C64PackToken]:
+    """Dynamic-programming parser minimizing packed-stream bytes."""
+    best_len, best_dist = _best_lz_matches(rev, "maximum")
+    n = len(rev)
+    inf = 1 << 60
+    dp = [inf] * (n + 1)
+    choice: List[Tuple[str, int]] = [("", 0)] * (n + 1)
+    dp[n] = 0
+
+    for i in range(n - 1, -1, -1):
+        # Literal token: N data bytes + one control byte.
+        max_lit = min(_MAX_LITERAL, n - i)
+        best_cost = inf
+        best_choice = ("literal", 1)
+        for length in range(1, max_lit + 1):
+            cost = length + 1 + dp[i + length]
+            if cost < best_cost:
+                best_cost = cost
+                best_choice = ("literal", length)
+        # LZ match token always costs three bytes.
+        max_match = best_len[i]
+        if max_match >= 3:
+            for length in range(3, max_match + 1):
+                cost = 3 + dp[i + length]
+                if cost < best_cost or (cost == best_cost and best_choice[0] == "literal"):
+                    best_cost = cost
+                    best_choice = ("match", length)
+        dp[i] = best_cost
+        choice[i] = best_choice
+
+    tokens: List[_C64PackToken] = []
+    i = 0
+    while i < n:
+        kind, length = choice[i]
+        if kind == "match":
+            tokens.append(_C64PackToken("match", length=length, distance=best_dist[i]))
+        else:
+            tokens.append(_C64PackToken("literal", literal=rev[i:i + length]))
+        i += length
+    return tokens
+
+
+def _compress_lz(data: bytes, search_mode: str) -> bytes:
+    rev = data[::-1]
+    mode = normalize_search_mode(search_mode)
+    if mode == "maximum":
+        tokens = _lz_tokens_maximum(rev)
+    else:
+        tokens = _lz_tokens_greedy(rev, mode)
+    return _serialize_tokens(tokens, "lz")
+
+
+def decompress_stream_for_test(packed: bytes, mode: str, expected_size: int) -> bytes:
+    """Pure-Python reference decoder used by regression tests."""
+    mode = normalize_packer_mode(mode)
+    if mode not in {"rle", "lz"}:
+        raise C64PackerError("Referenzdecoder erwartet RLE oder LZ.")
+    src = len(packed) - 1
+    out_rev = bytearray()
+    while src >= 0:
+        ctrl = packed[src]
+        src -= 1
+        if ctrl == _END_MARKER:
+            break
+        if ctrl < 0x80:
+            length = ctrl + 1
+            for _ in range(length):
+                if src < 0:
+                    raise C64PackerError("Beschädigter Literal-Stream.")
+                out_rev.append(packed[src])
+                src -= 1
+            continue
+        length = (ctrl & 0x7F) + 2
+        if mode == "rle":
+            if src < 0:
+                raise C64PackerError("Beschädigter RLE-Stream.")
+            value = packed[src]
+            src -= 1
+            out_rev.extend(bytes((value,)) * length)
+        else:
+            if src < 1:
+                raise C64PackerError("Beschädigter LZ-Stream.")
+            hi = packed[src]
+            src -= 1
+            lo = packed[src]
+            src -= 1
+            distance = lo | (hi << 8)
+            if distance <= 0 or distance > len(out_rev):
+                raise C64PackerError("Ungültige LZ-Distanz im Stream.")
+            for _ in range(length):
+                out_rev.append(out_rev[-distance])
+    result = bytes(out_rev[::-1])
+    if len(result) != expected_size:
+        raise C64PackerError(
+            f"Decompression ergab {len(result)} statt {expected_size} Bytes."
+        )
+    return result
+
+
+# ---------------------------------------------------------------------------
+# 6510 self-extracting wrapper
+# ---------------------------------------------------------------------------
+_ZP_SRC_LO          = 0xF7
+_ZP_SRC_HI          = 0xF8
+_ZP_DST_LO          = 0xF9
+_ZP_DST_HI          = 0xFA
+_ZP_AUX_LO          = 0xFB
+_ZP_AUX_HI          = 0xFC
+_ZP_MATCH_LO        = 0xFD
+_ZP_MATCH_HI        = 0xFE
+_ZP_TEMP            = 0xFF
+_HIGH_END           = 0xFFF9  # leave the six hardware-vector bytes untouched
+_RETURN_RAM_START   = 0xC000
+_RETURN_RAM_END     = 0xCFFF
+
+
+# ---------------------------------------------------------------------------
+# Banking-safe final trampoline executed from always-visible $Cxxx RAM.
+#
+# Stack on entry (top first): original $01, Y, X, A, P.  Restoring $01
+# here is safe because $C000-$CFFF remains RAM for every normal C64 bank
+# configuration.
+# ---------------------------------------------------------------------------
+def _return_stub_bytes(entry: int) -> bytes:
+    entry &= 0xFFFF
+    return bytes((
+        0x68,             # PLA          original $01
+        0x85, 0x01,       # STA $01
+        0x68,             # PLA          original Y
+        0xA8,             # TAY
+        0x68,             # PLA          original X
+        0xAA,             # TAX
+        0x68,             # PLA          original A
+        0x28,             # PLP          original status
+        0x4C, entry & 0xFF, (entry >> 8) & 0xFF,  # JMP entry
+    ))
+
+
+def _choose_return_stub_address(occupied_end: int, entry: int) -> int:
+    size = len(_return_stub_bytes(entry))
+    occupied_end = int(occupied_end) & 0xFFFF
+    if occupied_end < _RETURN_RAM_START:
+        return _RETURN_RAM_START
+    candidate = occupied_end + 1
+    if _RETURN_RAM_START <= candidate and candidate + size - 1 <= _RETURN_RAM_END:
+        return candidate
+    raise C64PackerError(
+        "D64PACK benötigt einen kleinen banking-sicheren Rücksprungbereich in "
+        f"$C000-$CFFF ({size} Bytes); Programm/CBSS endet bei ${occupied_end:04X}."
+    )
+
+
+def _hex16(value: int) -> str:
+    return f"${int(value) & 0xFFFF:04X}"
+
+
+def _decrunch_source(mode: str, org: int, packed_end: int, destination_end: int, entry: int, return_stub: int) -> str:
+    common_header = f"""
+.nostub
+.org {_hex16(org)}
+.entry __d64pack_high_start
+__d64pack_high_start:
+    ; Stage 52: install the final return trampoline in always-visible RAM.
+{chr(10).join(f"    lda #${b:02X}{chr(10)}    sta {_hex16(return_stub + i)}" for i, b in enumerate(_return_stub_bytes(entry)))}
+
+    lda #<{_hex16(packed_end)}
+    sta ${_ZP_SRC_LO:02X}
+    lda #>{_hex16(packed_end)}
+    sta ${_ZP_SRC_HI:02X}
+    lda #<{_hex16(destination_end)}
+    sta ${_ZP_DST_LO:02X}
+    lda #>{_hex16(destination_end)}
+    sta ${_ZP_DST_HI:02X}
+__d64pack_next:
+    ldy #$00
+    lda (${_ZP_SRC_LO:02X}),y
+    cmp #$80
+    beq __d64pack_done
+    bcs __d64pack_encoded
+    tax
+    inx
+    jsr __d64pack_dec_src
+__d64pack_literal_loop:
+    ldy #$00
+    lda (${_ZP_SRC_LO:02X}),y
+    sta (${_ZP_DST_LO:02X}),y
+    jsr __d64pack_dec_src
+    jsr __d64pack_dec_dst
+    dex
+    bne __d64pack_literal_loop
+    jmp __d64pack_next
+__d64pack_encoded:
+    and #$7F
+    clc
+    adc #$02
+    tax
+"""
+    if mode == "rle":
+        encoded = f"""
+    jsr __d64pack_dec_src
+    ldy #$00
+    lda (${_ZP_SRC_LO:02X}),y
+    sta ${_ZP_TEMP:02X}
+    jsr __d64pack_dec_src
+__d64pack_run_loop:
+    lda ${_ZP_TEMP:02X}
+    ldy #$00
+    sta (${_ZP_DST_LO:02X}),y
+    jsr __d64pack_dec_dst
+    dex
+    bne __d64pack_run_loop
+    jmp __d64pack_next
+"""
+    else:
+        encoded = f"""
+    jsr __d64pack_dec_src
+    ldy #$00
+    lda (${_ZP_SRC_LO:02X}),y
+    sta ${_ZP_MATCH_HI:02X}
+    jsr __d64pack_dec_src
+    ldy #$00
+    lda (${_ZP_SRC_LO:02X}),y
+    sta ${_ZP_MATCH_LO:02X}
+    jsr __d64pack_dec_src
+    clc
+    lda ${_ZP_MATCH_LO:02X}
+    adc ${_ZP_DST_LO:02X}
+    sta ${_ZP_MATCH_LO:02X}
+    lda ${_ZP_MATCH_HI:02X}
+    adc ${_ZP_DST_HI:02X}
+    sta ${_ZP_MATCH_HI:02X}
+__d64pack_match_loop:
+    ldy #$00
+    lda (${_ZP_MATCH_LO:02X}),y
+    sta (${_ZP_DST_LO:02X}),y
+    jsr __d64pack_dec_match
+    jsr __d64pack_dec_dst
+    dex
+    bne __d64pack_match_loop
+    jmp __d64pack_next
+"""
+    common_tail = f"""
+__d64pack_done:
+    pla
+    sta $FF
+    pla
+    sta $FE
+    pla
+    sta $FD
+    pla
+    sta $FC
+    pla
+    sta $FB
+    pla
+    sta $FA
+    pla
+    sta $F9
+    pla
+    sta $F8
+    pla
+    sta $F7
+    jmp {_hex16(return_stub)}
+
+__d64pack_dec_src:
+    lda ${_ZP_SRC_LO:02X}
+    bne __d64pack_dec_src_low
+    dec ${_ZP_SRC_HI:02X}
+__d64pack_dec_src_low:
+    dec ${_ZP_SRC_LO:02X}
+    rts
+
+__d64pack_dec_dst:
+    lda ${_ZP_DST_LO:02X}
+    bne __d64pack_dec_dst_low
+    dec ${_ZP_DST_HI:02X}
+__d64pack_dec_dst_low:
+    dec ${_ZP_DST_LO:02X}
+    rts
+"""
+    if mode == "lz":
+        common_tail += f"""
+__d64pack_dec_match:
+    lda ${_ZP_MATCH_LO:02X}
+    bne __d64pack_dec_match_low
+    dec ${_ZP_MATCH_HI:02X}
+__d64pack_dec_match_low:
+    dec ${_ZP_MATCH_LO:02X}
+    rts
+"""
+    return common_header + encoded + common_tail + "\n"
+
+
+def _byte_lines(data: bytes, width: int = 16) -> str:
+    lines = []
+    for offset in range(0, len(data), width):
+        chunk = data[offset:offset + width]
+        lines.append("    .byte " + ", ".join(f"${value:02X}" for value in chunk))
+    return "\n".join(lines)
+
+
+def _bootstrap_source(
+    bundle: bytes,
+    temp_start: int,
+    *,
+    mode: str,
+    search_mode: str,
+    original_load: int,
+    original_size: int,
+    original_entry: int,
+    packed_size: int,
+) -> str:
+    size = len(bundle)
+    mode_id = {"rle": 1, "lz": 2}.get(mode, 0)
+    search_id = {"fast": 1, "balanced": 2, "maximum": 3}.get(normalize_search_mode(search_mode), 0)
+    return f"""
+; ---------------------------------------------------------------------------
+; D64PACK v1 self-extracting C64 PRG
+; Stage 52: bootstrap -> high-RAM decruncher -> banking-safe return trampoline
+; ---------------------------------------------------------------------------
+.org $080D
+.entry __d64pack_boot
+__d64pack_boot:
+    ; Preserve the machine state seen by the original SYS entry.
+    php
+    pha
+    txa
+    pha
+    tya
+    pha
+    sei
+    lda $01
+    pha
+    lda $F7
+    pha
+    lda $F8
+    pha
+    lda $F9
+    pha
+    lda $FA
+    pha
+    lda $FB
+    pha
+    lda $FC
+    pha
+    lda $FD
+    pha
+    lda $FE
+    pha
+    lda $FF
+    pha
+    lda #$34
+    sta $01
+
+    lda #<__d64pack_bundle
+    sta ${_ZP_SRC_LO:02X}
+    lda #>__d64pack_bundle
+    sta ${_ZP_SRC_HI:02X}
+    lda #<{_hex16(temp_start)}
+    sta ${_ZP_DST_LO:02X}
+    lda #>{_hex16(temp_start)}
+    sta ${_ZP_DST_HI:02X}
+    lda #<${size:04X}
+    sta ${_ZP_AUX_LO:02X}
+    lda #>${size:04X}
+    sta ${_ZP_AUX_HI:02X}
+
+__d64pack_copy_loop:
+    lda ${_ZP_AUX_LO:02X}
+    ora ${_ZP_AUX_HI:02X}
+    beq __d64pack_copy_done
+    ldy #$00
+    lda (${_ZP_SRC_LO:02X}),y
+    sta (${_ZP_DST_LO:02X}),y
+    inc ${_ZP_SRC_LO:02X}
+    bne __d64pack_src_inc_done
+    inc ${_ZP_SRC_HI:02X}
+__d64pack_src_inc_done:
+    inc ${_ZP_DST_LO:02X}
+    bne __d64pack_dst_inc_done
+    inc ${_ZP_DST_HI:02X}
+__d64pack_dst_inc_done:
+    lda ${_ZP_AUX_LO:02X}
+    bne __d64pack_count_low
+    dec ${_ZP_AUX_HI:02X}
+__d64pack_count_low:
+    dec ${_ZP_AUX_LO:02X}
+    jmp __d64pack_copy_loop
+
+__d64pack_copy_done:
+    jmp {_hex16(temp_start)}
+
+; D64PACK v1 inspectable header (not needed by the decrunch loop itself).
+__d64pack_header:
+    .byte $44, $36, $34, $50
+    .byte $01, ${mode_id:02X}, ${search_id:02X}, $00
+    .word {_hex16(original_load)}
+    .word {_hex16(original_size)}
+    .word {_hex16(original_entry)}
+    .word {_hex16(packed_size)}
+
+__d64pack_bundle:
+{_byte_lines(bundle)}
+"""
+
+
+def _inspection_source(
+    wrapper_source: str,
+    high_source: str,
+    *,
+    mode: str,
+    search_mode: str,
+    temp_start: int,
+    temp_end: int,
+    include_decruncher_source: bool = True,
+) -> str:
+    """Create the ASM text shown by the Stage-51 packed-code editor.
+
+    ``wrapper_source`` is intentionally left byte-for-byte assemblable.  The
+    high-RAM decruncher is already part of ``__d64pack_bundle`` as bytes; its
+    symbolic source is appended *as comments only*, so assembling this editor
+    produces exactly the same self-extracting PRG instead of a huge sparse
+    image reaching into high RAM.
+    """
+    if not bool(include_decruncher_source):
+        return str(wrapper_source).rstrip() + "\n"
+
+    commented_high = "\n".join(
+        "; " + line if line else ";"
+        for line in str(high_source).strip("\n").splitlines()
+    )
+    return (
+        str(wrapper_source).rstrip()
+        + "\n\n"
+        + "; ===========================================================================\n"
+        + "; D64PACK Stage 52 - lesbare Decruncher-Quelle (NUR KOMMENTAR)\n"
+        + f"; Modus       : {str(mode).upper()}\n"
+        + f"; Packsuche   : {normalize_search_mode(search_mode)}\n"
+        + f"; Hochspeicher: ${int(temp_start) & 0xFFFF:04X}-${int(temp_end) & 0xFFFF:04X}\n"
+        + "; Der oben eingebettete __d64pack_bundle enthaelt genau diesen\n"
+        + "; Decruncher bereits als Maschinencode plus den gepackten Stream.\n"
+        + "; Die folgenden Zeilen sind deshalb ausnahmslos Kommentare und\n"
+        + "; veraendern beim erneuten Assemblieren das PRG nicht.\n"
+        + "; ===========================================================================\n"
+        + commented_high
+        + "\n"
+    )
+
+
+def _safe_assemble(assemble_func: Callable[..., object], source: str, filename: str):
+    try:
+        return assemble_func(source, filename=filename)
+    except Exception as exc:
+        raise C64PackerError(f"Interner D64PACK-Assemblerfehler ({filename}): {exc}") from exc
+
+
+def _assemble_payload_bytes(assembled) -> bytes:
+    prg = bytes(getattr(assembled, "prg"))
+    if len(prg) < 2:
+        raise C64PackerError("Assembler lieferte kein gültiges PRG.")
+    return prg[2:]
+
+
+def _make_candidate(
+    program,
+    packed: bytes,
+    mode: str,
+    search_mode: str,
+    assemble_func: Callable[[str], object],
+    *,
+    include_decruncher_source: bool = True,
+):
+    original_prg = bytes(program.prg)
+    original_payload = original_prg[2:]
+    load = int(program.load_address)
+    original_end = int(program.end_address)
+    entry = int(program.entry_address)
+    cbss_end = int(getattr(program, "symbols", {}).get("__basic_cbss_end", original_end + 1))
+    occupied_end = max(original_end, cbss_end - 1)
+    return_stub = _choose_return_stub_address(occupied_end, entry)
+
+    # First pass determines the exact decruncher size.  Its instruction sizes do
+    # not depend on the final high-memory address.
+    probe_org = 0xC000
+    probe_source = _decrunch_source(mode, probe_org, probe_org + 0x300, original_end, entry, return_stub)
+    probe = _safe_assemble(assemble_func, probe_source, "<d64pack-high-probe>")
+    decrunch_size = len(_assemble_payload_bytes(probe))
+
+    bundle_size = decrunch_size + len(packed)
+    temp_start = _HIGH_END - bundle_size + 1
+    if temp_start <= occupied_end:
+        raise C64PackerError(
+            "D64PACK benötigt oberhalb des Programm-/CBSS-Bereichs temporären RAM: "
+            f"benötigt ${temp_start:04X}-${_HIGH_END:04X}, Programm/CBSS endet bei ${occupied_end:04X}."
+        )
+    if temp_start < 0x1000:
+        raise C64PackerError("D64PACK-Temporärbereich würde in kritischen Niedrig-RAM fallen.")
+
+    packed_start = temp_start + decrunch_size
+    packed_end = packed_start + len(packed) - 1
+    high_source = _decrunch_source(mode, temp_start, packed_end, original_end, entry, return_stub)
+    high_program = _safe_assemble(assemble_func, high_source, f"<d64pack-{mode}-high>")
+    high_bytes = _assemble_payload_bytes(high_program)
+    if len(high_bytes) != decrunch_size:
+        # Recalculate once if assembler layout changed unexpectedly.
+        decrunch_size = len(high_bytes)
+        bundle_size = decrunch_size + len(packed)
+        temp_start = _HIGH_END - bundle_size + 1
+        packed_start = temp_start + decrunch_size
+        packed_end = packed_start + len(packed) - 1
+        if temp_start <= occupied_end:
+            raise C64PackerError("D64PACK-Hochspeicher reicht nach finalem Layout nicht aus.")
+        high_source = _decrunch_source(mode, temp_start, packed_end, original_end, entry, return_stub)
+        high_program = _safe_assemble(assemble_func, high_source, f"<d64pack-{mode}-high-final>")
+        high_bytes = _assemble_payload_bytes(high_program)
+
+    bundle = high_bytes + packed
+    wrapper_source = _bootstrap_source(
+        bundle, temp_start,
+        mode=mode,
+        search_mode=search_mode,
+        original_load=load,
+        original_size=len(original_payload),
+        original_entry=entry,
+        packed_size=len(packed),
+    )
+    wrapper = _safe_assemble(assemble_func, wrapper_source, f"<d64pack-{mode}-wrapper>")
+
+    # Bootstrap and source bundle must not overlap the high destination while
+    # copying forward.  If they did, an explicit pack request gets a clear
+    # diagnostic; auto can simply reject this candidate.
+    wrapper_end = int(wrapper.end_address)
+    if wrapper_end >= temp_start:
+        raise C64PackerError(
+            "D64PACK-Wrapper und Hochspeicher-Bundle würden sich beim Kopieren überschneiden: "
+            f"Wrapper endet ${wrapper_end:04X}, Ziel beginnt ${temp_start:04X}."
+        )
+
+    bootstrap_size = len(wrapper.prg) - 2 - len(bundle)
+    inspection_source = _inspection_source(
+        wrapper_source,
+        high_source,
+        mode=mode,
+        search_mode=search_mode,
+        temp_start=temp_start,
+        temp_end=_HIGH_END,
+        include_decruncher_source=include_decruncher_source,
+    )
+    # Stage 51 invariant: what the user sees in the new ASM editor must really
+    # reproduce the packed PRG byte-for-byte.
+    inspection_program = _safe_assemble(
+        assemble_func, inspection_source, f"<d64pack-{mode}-inspection>"
+    )
+    if bytes(inspection_program.prg) != bytes(wrapper.prg):
+        raise C64PackerError(
+            "Interner D64PACK-Fehler: ASM-Editor-Quelle reproduziert das gepackte PRG nicht."
+        )
+    return wrapper, C64PackerStats(
+        requested_mode=mode,
+        selected_mode=mode,
+        search_mode="",
+        original_size=len(original_prg),
+        result_size=len(wrapper.prg),
+        compressed_stream_size=len(packed),
+        bootstrap_size=max(0, bootstrap_size),
+        decruncher_size=len(high_bytes),
+        temp_start=temp_start,
+        temp_end=_HIGH_END,
+        message=(
+            f"D64PACK {mode.upper()}: {len(original_prg)} -> {len(wrapper.prg)} Bytes; "
+            f"Stream {len(packed)} Bytes; Decruncher {len(high_bytes)} Bytes."
+        ),
+        asm_source=inspection_source,
+        include_decruncher_source=bool(include_decruncher_source),
+    )
+
+# ---------------------------------------------------------------------------
+# Return ``(assembled_program, stats)``.
+#
+# Explicit RLE/LZ requests are never silently disabled based on size.  Auto is
+# the only mode allowed to keep the original image when packing has no size
+# benefit or cannot satisfy the temporary-RAM safety constraints.
+# ---------------------------------------------------------------------------
+def pack_c64_program(
+    program,
+    *,
+    assemble_func: Callable[..., object],
+    mode: str = "none",
+    search_mode: str = "balanced",
+    include_decruncher_source: bool = True,
+):
+    requested = normalize_packer_mode(mode)
+    search = normalize_search_mode(search_mode)
+    original = bytes(program.prg)
+
+    if requested == "none":
+        return program, C64PackerStats(
+            requested_mode="none",
+            selected_mode="none",
+            search_mode=search,
+            original_size=len(original),
+            result_size=len(original),
+            message="D64PACK deaktiviert.",
+        )
+
+    payload = original[2:]
+    if not payload:
+        raise C64PackerError("Leeres C64-PRG kann nicht gepackt werden.")
+
+    def candidate(kind: str):
+        stream = _compress_rle(payload) if kind == "rle" else _compress_lz(payload, search)
+        # Validate the compressor independently of the 6510 implementation.
+        if decompress_stream_for_test(stream, kind, len(payload)) != payload:
+            raise C64PackerError(f"Interne {kind.upper()}-Verifikation fehlgeschlagen.")
+        wrapper, stats = _make_candidate(
+            program,
+            stream,
+            kind,
+            search,
+            assemble_func,
+            include_decruncher_source=include_decruncher_source,
+        )
+        stats = C64PackerStats(
+            **{**stats.__dict__, "requested_mode": requested, "search_mode": search}
+        )
+        return wrapper, stats
+
+    if requested in {"rle", "lz"}:
+        return candidate(requested)
+
+    candidates = []
+    errors = []
+    for kind in ("rle", "lz"):
+        try:
+            candidates.append(candidate(kind))
+        except C64PackerError as exc:
+            errors.append(f"{kind.upper()}: {exc}")
+    if not candidates:
+        return program, C64PackerStats(
+            requested_mode="auto",
+            selected_mode="none",
+            search_mode=search,
+            original_size=len(original),
+            result_size=len(original),
+            auto_kept_original=True,
+            message="D64PACK Auto: kein sicherer Pack-Kandidat; Original beibehalten. " + " | ".join(errors),
+        )
+
+    wrapper, stats = min(candidates, key=lambda pair: len(pair[0].prg))
+    if len(wrapper.prg) >= len(original):
+        return program, C64PackerStats(
+            requested_mode="auto",
+            selected_mode="none",
+            search_mode=search,
+            original_size=len(original),
+            result_size=len(original),
+            auto_kept_original=True,
+            message=(
+                "D64PACK Auto: Packen wäre nicht kleiner "
+                f"(beste Variante {stats.selected_mode.upper()} {len(wrapper.prg)} >= {len(original)} Bytes); "
+                "Original beibehalten."
+            ),
+        )
+    return wrapper, stats
+
 
 # ---------------------------------------------------------------------------
 # Code signing ...
@@ -4069,6 +11004,9 @@ QMessageBox = _DoxygenMessageBoxProxy
 _GLOBAL_EXCEPTION_DISPATCHER = None
 _GLOBAL_EXCEPTION_DIALOG_ACTIVE = False
 _GLOBAL_FAULT_LOG_STREAM = None
+# Stage 233: Während des Qt-Shutdowns dürfen keine neuen modalen
+# Exception-Dialoge mehr über bereits zerlegte QObject-Instanzen ausgelöst werden.
+_GLOBAL_EXCEPTION_SHUTTING_DOWN = False
 _ORIGINAL_SYS_EXCEPTHOOK = sys.excepthook
 _ORIGINAL_THREADING_EXCEPTHOOK = getattr(threading, "excepthook", None)
 _ORIGINAL_UNRAISABLEHOOK = getattr(sys, "unraisablehook", None)
@@ -4500,7 +11438,16 @@ class _GlobalExceptionDispatcher(QObject):
             print(formatted, file=sys.stderr, flush=True)
         except Exception:
             pass
-        self.exception_raised.emit("Anwendungsfehler", summary, formatted, str(log_path))
+        # Stage 233: QApplication kann beim Beenden den C++-Teil dieses
+        # QObject bereits zerlegt haben, obwohl die Python-Referenz noch lebt.
+        # Ein Fehlerdialog ist in dieser Phase ohnehin nicht mehr sinnvoll.
+        if _GLOBAL_EXCEPTION_SHUTTING_DOWN:
+            return
+        try:
+            self.exception_raised.emit("Anwendungsfehler", summary, formatted, str(log_path))
+        except RuntimeError as emit_error:
+            if "has been deleted" not in str(emit_error):
+                raise
 
     def report_text(self, title: str, summary: str, details: str):
         log_path = _append_global_crash_log(details)
@@ -4509,11 +11456,17 @@ class _GlobalExceptionDispatcher(QObject):
                 _INTERNAL_APPLICATION_WATCHDOG.mark_exception(summary, details)
             except Exception:
                 pass
-        self.exception_raised.emit(title, summary, details, str(log_path))
+        if _GLOBAL_EXCEPTION_SHUTTING_DOWN:
+            return
+        try:
+            self.exception_raised.emit(title, summary, details, str(log_path))
+        except RuntimeError as emit_error:
+            if "has been deleted" not in str(emit_error):
+                raise
 
     def _show_exception_dialog(self, title: str, summary: str, details: str, log_path: str):
         global _GLOBAL_EXCEPTION_DIALOG_ACTIVE
-        if _GLOBAL_EXCEPTION_DIALOG_ACTIVE:
+        if _GLOBAL_EXCEPTION_SHUTTING_DOWN or _GLOBAL_EXCEPTION_DIALOG_ACTIVE:
             return
         app = QApplication.instance()
         if app is None:
@@ -4529,6 +11482,36 @@ class _GlobalExceptionDispatcher(QObject):
             _GLOBAL_EXCEPTION_DIALOG_ACTIVE = False
 
 
+def begin_global_exception_shutdown() -> None:
+    """Stage 233: Exception-GUI vor dem QObject-Abbau stilllegen."""
+    global _GLOBAL_EXCEPTION_SHUTTING_DOWN
+    _GLOBAL_EXCEPTION_SHUTTING_DOWN = True
+    dispatcher = _GLOBAL_EXCEPTION_DISPATCHER
+    if dispatcher is not None:
+        try:
+            dispatcher.set_host(None)
+        except RuntimeError:
+            # Der C++-QObject kann in der Qt-Abbauphase bereits gelöscht sein.
+            pass
+
+
+def _dispatch_global_exception(exc_type, exc_value, exc_tb, context: str) -> None:
+    """Report an exception without cascading on a deleted Qt dispatcher."""
+    dispatcher = _GLOBAL_EXCEPTION_DISPATCHER
+    if dispatcher is None:
+        if not _GLOBAL_EXCEPTION_SHUTTING_DOWN:
+            _ORIGINAL_SYS_EXCEPTHOOK(exc_type, exc_value, exc_tb)
+        return
+    try:
+        dispatcher.report(exc_type, exc_value, exc_tb, context)
+    except RuntimeError as dispatcher_error:
+        # PyQt keeps the Python wrapper slightly longer than its C++ QObject.
+        # During shutdown this is a normal lifetime boundary, not a second crash.
+        if _GLOBAL_EXCEPTION_SHUTTING_DOWN or "has been deleted" in str(dispatcher_error):
+            return
+        raise
+
+
 def install_global_exception_handler(host=None):
     """Install global Python/Qt-friendly exception hooks and faulthandler."""
     global _GLOBAL_EXCEPTION_DISPATCHER, _GLOBAL_FAULT_LOG_STREAM
@@ -4538,14 +11521,14 @@ def install_global_exception_handler(host=None):
         _GLOBAL_EXCEPTION_DISPATCHER.set_host(host)
 
     def _sys_hook(exc_type, exc_value, exc_tb):
-        _GLOBAL_EXCEPTION_DISPATCHER.report(exc_type, exc_value, exc_tb, "GUI / sys.excepthook")
+        _dispatch_global_exception(exc_type, exc_value, exc_tb, "GUI / sys.excepthook")
 
     sys.excepthook = _sys_hook
 
     if hasattr(threading, "excepthook"):
         def _thread_hook(args):
             thread_name = getattr(getattr(args, "thread", None), "name", "unbekannt")
-            _GLOBAL_EXCEPTION_DISPATCHER.report(
+            _dispatch_global_exception(
                 args.exc_type,
                 args.exc_value,
                 args.exc_traceback,
@@ -4557,7 +11540,7 @@ def install_global_exception_handler(host=None):
         def _unraisable_hook(args):
             exc_type = args.exc_type or RuntimeError
             exc_value = args.exc_value or RuntimeError("Unraisable exception")
-            _GLOBAL_EXCEPTION_DISPATCHER.report(
+            _dispatch_global_exception(
                 exc_type,
                 exc_value,
                 args.exc_traceback,
@@ -19812,6 +26795,382 @@ C64_PRO_PETSCII_GLYPHS: Tuple[str, ...] = tuple(
 )
 
 # ---------------------------------------------------------------------------
+# Stage 232 - VICE Binary Remote Monitor fuer den C64-BASIC-Debugpfad.
+#
+# Dieser Kanal ist absichtlich nur ein IDE-Debugwerkzeug. Der normale F2-/
+# Release-Build des BASIC-Compilers bleibt davon getrennt und erzeugt weiterhin
+# das regulaere C64-Zielartefakt. VICE API v2 verwendet STX 0x02, little-endian
+# Header und fuer Keyboard Feed den Befehl 0x72.
+# ---------------------------------------------------------------------------
+VICE_BINARY_MONITOR_HOST = "127.0.0.1"
+VICE_BINARY_MONITOR_PORT = 6502
+VICE_BINARY_MONITOR_API_VERSION = 0x02
+VICE_BINARY_MONITOR_MEMORY_GET = 0x01
+VICE_BINARY_MONITOR_MEMORY_SET = 0x02
+VICE_BINARY_MONITOR_KEYBOARD_FEED = 0x72
+VICE_BINARY_MONITOR_PING = 0x81
+VICE_BINARY_MONITOR_EXIT = 0xAA
+
+
+class ViceBinaryMonitorError(RuntimeError):
+    pass
+
+
+def c64_basic_debug_load_screen(line: str):
+    """Erkennt die Compiler-Erweiterung LOAD SCREEN im VICE-Debugpfad.
+
+    VICE fuehrt im Keyboard-Feed das originale C64 BASIC V2 aus. ``LOAD
+    SCREEN`` ist dagegen eine d64_dism-Compiler-Erweiterung und muss deshalb
+    hostseitig ueber den Binary Monitor umgesetzt werden. Ein optionaler
+    BASIC-Zeilennummernpraefix wird mitgeliefert, damit beim Programmtransfer
+    eine REM-Platzhalterzeile erzeugt werden kann.
+    """
+    text = str(line or "").strip()
+    match = re.fullmatch(
+        r'(?is)(?:(\d+)\s+)?(?:LOAD\s+SCREEN|LOADSCREEN|SCREENLOAD)\s+'
+        r'"((?:""|[^"])*)"\s*',
+        text,
+    )
+    if match is None:
+        return None
+    number = int(match.group(1)) if match.group(1) else None
+    return number, match.group(2).replace('""', '"')
+
+
+def c64_basic_text_to_petscii(text: str) -> bytes:
+    """Kodiert die fuer den BASIC-Debugtransfer benoetigte PETSCII-Teilmenge.
+
+    C64-Pro-Direct-PETSCII-Zeichen U+E000..U+E0FF werden bytegenau
+    uebertragen. BASIC-Schluesselwoerter liegen im Editor ohnehin in
+    Grossschrift. Kleinbuchstaben werden fuer den Debug-Tastaturpfad auf die
+    robuste Upper/Graphics-PETSCII-Teilmenge abgebildet; der Compilerpfad wird
+    dadurch nicht beruehrt.
+    """
+    output = bytearray()
+    for char in str(text or ""):
+        codepoint = ord(char)
+        if 0xE000 <= codepoint <= 0xE0FF:
+            output.append(codepoint - 0xE000)
+            continue
+        if char in ("\r", "\n"):
+            output.append(0x0D)
+            continue
+        if "a" <= char <= "z":
+            output.append(ord(char.upper()))
+            continue
+        if char == "£":
+            output.append(0x5C)
+            continue
+        if char == "↑":
+            output.append(0x5E)
+            continue
+        if char == "←":
+            output.append(0x5F)
+            continue
+        if 0x20 <= codepoint <= 0x5F:
+            output.append(codepoint)
+            continue
+        if codepoint in (0xA0,):
+            output.append(0xA0)
+            continue
+        raise ViceBinaryMonitorError(
+            "Zeichen kann fuer den VICE-BASIC-Debugtransfer nicht als "
+            f"PETSCII kodiert werden: U+{codepoint:04X} ({char!r})"
+        )
+    return bytes(output)
+
+
+class ViceBinaryMonitorClient:
+    """Kleiner synchroner Client fuer VICE Binary Monitor API v2."""
+
+    def __init__(
+        self,
+        host: str = VICE_BINARY_MONITOR_HOST,
+        port: int = VICE_BINARY_MONITOR_PORT,
+        *,
+        timeout: float = 2.0,
+    ):
+        self.host = str(host)
+        self.port = int(port)
+        self.timeout = float(timeout)
+        self._socket = None
+        self._request_id = 0xD6400000
+
+    def connect(self) -> None:
+        if self._socket is not None:
+            return
+        try:
+            sock = socket.create_connection(
+                (self.host, self.port), timeout=self.timeout
+            )
+            sock.settimeout(self.timeout)
+        except OSError as exc:
+            raise ViceBinaryMonitorError(
+                f"VICE Binary Monitor nicht erreichbar: {self.host}:{self.port} ({exc})"
+            ) from exc
+        self._socket = sock
+
+    def close(self) -> None:
+        sock = self._socket
+        self._socket = None
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+    def __enter__(self):
+        self.connect()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+        return False
+
+    def _recv_exact(self, size: int) -> bytes:
+        if self._socket is None:
+            raise ViceBinaryMonitorError("VICE Binary Monitor ist nicht verbunden.")
+        data = bytearray()
+        while len(data) < size:
+            try:
+                chunk = self._socket.recv(size - len(data))
+            except OSError as exc:
+                raise ViceBinaryMonitorError(
+                    f"VICE Binary Monitor: Empfang fehlgeschlagen ({exc})"
+                ) from exc
+            if not chunk:
+                raise ViceBinaryMonitorError(
+                    "VICE Binary Monitor hat die Verbindung geschlossen."
+                )
+            data.extend(chunk)
+        return bytes(data)
+
+    def _read_response(self, request_id: int, expected_type: int) -> bytes:
+        # VICE kann beim Eintritt in den Monitor zuerst asynchrone Events mit
+        # request-id 0xffffffff senden. Diese werden vollstaendig gelesen und
+        # uebersprungen, bis die Antwort auf unseren Request eintrifft.
+        while True:
+            header = self._recv_exact(12)
+            if header[0] != 0x02:
+                raise ViceBinaryMonitorError(
+                    f"VICE Binary Monitor: ungueltiges STX 0x{header[0]:02X}."
+                )
+            api_version = header[1]
+            body_length = struct.unpack_from("<I", header, 2)[0]
+            response_type = header[6]
+            error_code = header[7]
+            response_request_id = struct.unpack_from("<I", header, 8)[0]
+            body = self._recv_exact(body_length) if body_length else b""
+            if response_request_id != (request_id & 0xFFFFFFFF):
+                continue
+            if api_version != VICE_BINARY_MONITOR_API_VERSION:
+                raise ViceBinaryMonitorError(
+                    "VICE Binary Monitor: inkompatible API-Version "
+                    f"{api_version}; erwartet wird 2."
+                )
+            if error_code != 0:
+                raise ViceBinaryMonitorError(
+                    "VICE Binary Monitor meldet Fehler "
+                    f"0x{error_code:02X} fuer Befehl 0x{expected_type:02X}."
+                )
+            if response_type != (expected_type & 0xFF):
+                raise ViceBinaryMonitorError(
+                    "VICE Binary Monitor: unerwarteter Antworttyp "
+                    f"0x{response_type:02X}; erwartet 0x{expected_type:02X}."
+                )
+            return body
+
+    def command(self, command_type: int, body: bytes = b"") -> bytes:
+        self.connect()
+        payload = bytes(body)
+        request_id = self._request_id & 0xFFFFFFFF
+        self._request_id = (self._request_id + 1) & 0xFFFFFFFF
+        packet = (
+            bytes((0x02, VICE_BINARY_MONITOR_API_VERSION))
+            + struct.pack("<I", len(payload))
+            + struct.pack("<I", request_id)
+            + bytes((int(command_type) & 0xFF,))
+            + payload
+        )
+        try:
+            self._socket.sendall(packet)
+        except OSError as exc:
+            raise ViceBinaryMonitorError(
+                f"VICE Binary Monitor: Senden fehlgeschlagen ({exc})"
+            ) from exc
+        return self._read_response(request_id, int(command_type) & 0xFF)
+
+    def ping(self) -> None:
+        self.command(VICE_BINARY_MONITOR_PING)
+
+    @staticmethod
+    def _memory_body_prefix(
+        start: int,
+        end: int,
+        *,
+        side_effects: bool = False,
+        memspace: int = 0,
+        bank_id: int = 0,
+    ) -> bytes:
+        start = int(start)
+        end = int(end)
+        if not (0 <= start <= 0xFFFF and 0 <= end <= 0xFFFF and end >= start):
+            raise ViceBinaryMonitorError(
+                f"Ungueltiger VICE-Speicherbereich: ${start:04X}-${end:04X}."
+            )
+        return (
+            bytes((1 if side_effects else 0,))
+            + struct.pack("<H", start)
+            + struct.pack("<H", end)
+            + bytes((int(memspace) & 0xFF,))
+            + struct.pack("<H", int(bank_id) & 0xFFFF)
+        )
+
+    def memory_get(
+        self,
+        start: int,
+        end: int,
+        *,
+        side_effects: bool = False,
+        memspace: int = 0,
+        bank_id: int = 0,
+    ) -> bytes:
+        body = self.command(
+            VICE_BINARY_MONITOR_MEMORY_GET,
+            self._memory_body_prefix(
+                start, end, side_effects=side_effects,
+                memspace=memspace, bank_id=bank_id,
+            ),
+        )
+        if len(body) < 2:
+            raise ViceBinaryMonitorError(
+                "VICE Memory Get lieferte keine gueltige Laengenangabe."
+            )
+        reported = struct.unpack_from("<H", body, 0)[0]
+        data = body[2:]
+        expected = int(end) - int(start) + 1
+        # Nur der Spezialfall $0000-$FFFF kodiert die Laenge als 0.
+        if reported != expected or len(data) != expected:
+            raise ViceBinaryMonitorError(
+                "VICE Memory Get lieferte eine unerwartete Datenlaenge: "
+                f"{len(data)} Byte (Header {reported}), erwartet {expected}."
+            )
+        return data
+
+    def memory_set(
+        self,
+        start: int,
+        data: bytes,
+        *,
+        side_effects: bool = False,
+        memspace: int = 0,
+        bank_id: int = 0,
+    ) -> None:
+        payload = bytes(data)
+        if not payload:
+            return
+        start = int(start)
+        end = start + len(payload) - 1
+        if end > 0xFFFF:
+            raise ViceBinaryMonitorError(
+                "VICE Memory Set wuerde den 16-Bit-Adressraum ueberschreiten."
+            )
+        self.command(
+            VICE_BINARY_MONITOR_MEMORY_SET,
+            self._memory_body_prefix(
+                start, end, side_effects=side_effects,
+                memspace=memspace, bank_id=bank_id,
+            ) + payload,
+        )
+
+    def write_memory(
+        self,
+        start: int,
+        data: bytes,
+        *,
+        side_effects: bool = False,
+        chunk_size: int = 0x1000,
+    ) -> None:
+        payload = bytes(data)
+        chunk_size = max(1, min(int(chunk_size), 0x4000))
+        for offset in range(0, len(payload), chunk_size):
+            chunk = payload[offset:offset + chunk_size]
+            self.memory_set(
+                int(start) + offset, chunk, side_effects=side_effects
+            )
+
+    def _read_io_byte(self, address: int) -> int:
+        return self.memory_get(
+            address, address, side_effects=True
+        )[0]
+
+    def _write_io_byte(self, address: int, value: int) -> None:
+        self.memory_set(
+            address, bytes((int(value) & 0xFF,)), side_effects=True
+        )
+
+    def load_screen_resource(
+        self,
+        kind: str,
+        primary: bytes,
+        secondary: bytes,
+    ) -> None:
+        """Setzt eine d64_dism-LOAD-SCREEN-Ressource direkt in VICE um."""
+        kind = str(kind or "").casefold()
+        if kind == "text":
+            if len(primary) != 1000 or len(secondary) != 1000:
+                raise ViceBinaryMonitorError(
+                    "Textscreen erwartet 1000 Zeichen- und 1000 Farbbytes."
+                )
+            self.write_memory(0x0400, primary)
+            # $D800 ist Color-RAM/I/O und muss mit Side Effects beschrieben werden.
+            self.write_memory(0xD800, secondary, side_effects=True)
+            dd00 = self._read_io_byte(0xDD00)
+            self._write_io_byte(0xDD00, (dd00 & 0xFC) | 0x03)
+            self._write_io_byte(0xD018, 0x14)
+            self._write_io_byte(0xD011, self._read_io_byte(0xD011) & 0xDF)
+            self._write_io_byte(0xD016, self._read_io_byte(0xD016) & 0xEF)
+            return
+
+        if kind == "bitmap":
+            if len(primary) != 8000 or len(secondary) != 1000:
+                raise ViceBinaryMonitorError(
+                    "Pixelscreen erwartet 8000 Bitmap- und 1000 Screenbytes."
+                )
+            self.write_memory(0xE000, primary)
+            self.write_memory(0xC400, secondary)
+            dd00 = self._read_io_byte(0xDD00)
+            self._write_io_byte(0xDD00, dd00 & 0xFC)
+            self._write_io_byte(0xD018, 0x18)
+            self._write_io_byte(0xD011, self._read_io_byte(0xD011) | 0x20)
+            self._write_io_byte(0xD016, self._read_io_byte(0xD016) & 0xEF)
+            return
+
+        raise ViceBinaryMonitorError(
+            f"Unbekannte LOAD-SCREEN-Ressourcenart fuer VICE: {kind!r}."
+        )
+
+    def keyboard_feed(self, petscii: bytes) -> None:
+        data = bytes(petscii)
+        if len(data) > 255:
+            raise ViceBinaryMonitorError(
+                "VICE Keyboard Feed akzeptiert hoechstens 255 PETSCII-Bytes pro Befehl."
+            )
+        self.command(
+            VICE_BINARY_MONITOR_KEYBOARD_FEED,
+            bytes((len(data),)) + data,
+        )
+
+    def resume(self) -> None:
+        self.command(VICE_BINARY_MONITOR_EXIT)
+
+    def feed_basic_line(self, text: str) -> None:
+        data = c64_basic_text_to_petscii(str(text).rstrip("\r\n") + "\r")
+        self.keyboard_feed(data)
+        self.resume()
+
+
+# ---------------------------------------------------------------------------
 # C64-Character-Editor: Ein Zeichensatz umfasst 256 Zeichen zu je acht Bytes.
 # Zeichen $00 bleibt als reserviertes Leerzeichen erhalten; editierbar sind
 # die 255 Zeichen $01..$FF. Rohdateien duerfen entweder 2048 Bytes inklusive
@@ -23652,38 +31011,84 @@ def link_coff32_objects(
         and code
     )
     if total_bss_size and packed_layout:
-        effective_import_specs = dict(import_specs)
-        for symbol, spec in PE32_MSZIP_LOADER_IMPORTS.items():
-            effective_import_specs.setdefault(symbol, spec)
-        effective_import_specs = _pe_import_specs_with_local_ordinals(
-            effective_import_specs,
+        # Stage 231:
+        # Die Relocation-Planung muss den Stage-209/D64I-Writer bytegenau
+        # nachbilden. Stage 225 beruecksichtigte zwar, ob der Import-Packer
+        # aktiv ist, plante hier aber weiterhin nur len(code) und eine
+        # konventionelle Importsektion. Der finale Writer reserviert zusaetzlich
+        # die D64I-Metadaten im virtuellen .text-Bereich und trennt
+        # Bootstrap-IAT und Programm-IAT. Sobald diese Metadaten eine
+        # SectionAlignment-Grenze verschieben, lag die geplante .bss-RVA daher
+        # zu frueh (bei Form1 z.B. 0x8000 statt real 0xA000).
+        peb_resolver = bool(_pe32_link_packer.get("peb_resolver", False))
+        exact_runtime = bool(_pe32_link_packer.get("exact_runtime_check", False))
+        bootstrap_imports = _pe_d64i_bootstrap_imports(exact_runtime)
+
+        program_import_specs = _pe_import_specs_with_local_ordinals(
+            dict(import_specs),
             machine=IMAGE_FILE_MACHINE_I386,
         )
-        loader_rva = _align_up(
-            text_rva + max(1, len(code)), PE32_SECTION_ALIGNMENT
+        d64i_probe_size = _d64i_metadata_size(
+            program_import_specs,
+            pointer_size=4,
         )
-        dummy_iat = {name: 0 for name in PE32_MSZIP_LOADER_IMPORTS}
+        decompressed_size = len(code) + d64i_probe_size
+
+        loader_rva = _align_up(
+            text_rva + max(1, decompressed_size),
+            PE32_SECTION_ALIGNMENT,
+        )
+        dummy_boot_iat = (
+            {}
+            if peb_resolver
+            else {name: 0 for name in bootstrap_imports}
+        )
         loader_probe = _build_pe32_mszip_loader(
             image_base=image_base,
             text_rva=text_rva,
-            text_size=len(code),
+            text_size=decompressed_size,
             ztext_rva=0,
-            packed_size=max(1, len(code)),
+            packed_size=max(1, decompressed_size),
             original_entry_rva=text_rva,
-            iat_rvas=dummy_iat,
+            iat_rvas=dummy_boot_iat,
+            d64i_rva=text_rva + len(code),
+            loader_rva=loader_rva,
+            peb_resolver=peb_resolver,
+            compatibility=_pe32_link_packer,
         )
         ztext_rva = _align_up(
             loader_rva + max(1, len(loader_probe)),
             PE32_SECTION_ALIGNMENT,
         )
-        idata_rva = ztext_rva + _pe_stage170_ztext_virtual_span(
-            len(code), PE32_SECTION_ALIGNMENT
+        ztext_virtual_size = _pe_stage170_ztext_virtual_span(
+            decompressed_size,
+            PE32_SECTION_ALIGNMENT,
         )
-        idata, _iat_rvas, _first_iat, _iat_size = _build_pe32_import_section(
-            effective_import_specs, idata_rva
+        idata_rva = ztext_rva + ztext_virtual_size
+
+        if peb_resolver:
+            bootstrap_raw_span = 0
+        else:
+            bootstrap_idata, _bootstrap_iat, _first_iat, _iat_size = (
+                _build_pe32_import_section(bootstrap_imports, idata_rva)
+            )
+            bootstrap_raw_span = _align_up(
+                max(1, len(bootstrap_idata)),
+                PE32_FILE_ALIGNMENT,
+            )
+
+        program_iat_base_rva = idata_rva + bootstrap_raw_span
+        _d64i, _program_iat_rvas, program_iat_size = (
+            _build_d64i_import_metadata(
+                program_import_specs,
+                iat_base_rva=program_iat_base_rva,
+                pointer_size=4,
+            )
         )
+        idata_virtual_size = bootstrap_raw_span + program_iat_size
         bss_rva = _align_up(
-            idata_rva + max(1, len(idata)), PE32_SECTION_ALIGNMENT
+            idata_rva + max(1, idata_virtual_size),
+            PE32_SECTION_ALIGNMENT,
         )
     elif total_bss_size:
         bss_rva = _align_up(
@@ -23956,15 +31361,41 @@ def _coff_link_input_objects(
         referenced.difference_update(defined)
         return defined, referenced
 
+    # Stage 239: Linkeingaben erst *nach* der architekturspezifischen
+    # Begleiterauflösung deduplizieren.  Ein Legacy-Objekt wie
+    # ``System.Objects.o`` und sein PE32-Begleiter
+    # ``System.Objects.coff32.o`` können sonst beide auf exakt dasselbe
+    # COFF-Modul zeigen und damit z. B. __pas_method_tobject_create doppelt
+    # definieren.  Zusätzlich werden byte-identische Kopien aus verschiedenen
+    # Verzeichnissen verworfen; echte, inhaltlich unterschiedliche
+    # Mehrfachdefinitionen bleiben weiterhin ein Linkerfehler.
+    seen_input_paths: set[str] = set()
+    seen_input_payloads: set[bytes] = set()
+
     for path_value in paths:
         requested_path = Path(path_value).expanduser()
         path = _coff_preferred_input_for_target(requested_path, target)
         try:
-            data = path.read_bytes()
+            canonical_path = path.resolve()
+        except (OSError, RuntimeError):
+            canonical_path = path.absolute()
+        path_key = str(canonical_path).casefold()
+        if path_key in seen_input_paths:
+            continue
+        try:
+            data = canonical_path.read_bytes()
         except OSError as exc:
             raise error_type(
-                f"COFF-Linkeingabe kann nicht gelesen werden: {path}: {exc}"
+                f"COFF-Linkeingabe kann nicht gelesen werden: {canonical_path}: {exc}"
             ) from exc
+
+        payload_key = hashlib.sha256(data).digest()
+        if payload_key in seen_input_payloads:
+            seen_input_paths.add(path_key)
+            continue
+        seen_input_paths.add(path_key)
+        seen_input_payloads.add(payload_key)
+        path = canonical_path
 
         if path.suffix.casefold() in {".a", ".lib"}:
             try:
@@ -47269,6 +54700,9 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
         assembler_help_requested = pyqtSignal(str, str)
         context_help_requested = pyqtSignal(str)
         build_requested = pyqtSignal()
+        # Stage 232: Debugbefehle des C64-BASIC-Editors an den VICE
+        # Binary Remote Monitor weiterreichen.
+        basic_vice_requested = pyqtSignal(str)
         find_requested = pyqtSignal(object)
         find_next_requested = pyqtSignal(object)
         breakpoints_changed = pyqtSignal()
@@ -48692,9 +56126,19 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             # reservieren, damit Worterkennung, print() und Hilfesignal laufen.
             if (
                 event.type() == QEvent.ShortcutOverride
-                and event.key() == Qt.Key_F1
                 and event.modifiers() == Qt.NoModifier
+                and (
+                    event.key() == Qt.Key_F1
+                    or (
+                        self._basic_line_number_mode
+                        and event.key() == Qt.Key_F2
+                    )
+                )
             ):
+                # F1 bleibt exklusiv fuer die Offline-Kontexthilfe. F2 wird
+                # im BASIC-Editor exklusiv fuer Compile -> Assemble -> Link ->
+                # Start reserviert und darf nicht von globalen QAction-
+                # Shortcuts abgefangen werden.
                 event.accept()
                 return True
             return super().event(event)
@@ -48854,7 +56298,67 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             operand_context = self._assembler_operand_context_at_point(
                 event.pos()
             )
-            menu = self.createStandardContextMenu()
+            standard_menu = self.createStandardContextMenu()
+
+            if self._basic_line_number_mode:
+                # Stage 232: Der VICE-Debugblock wird VOR das unveraenderte
+                # Standardmenue (Cut/Copy/Paste/...) gesetzt. Die zweite
+                # Separatorlinie trennt ihn klar vom Qt-Standardmenue.
+                menu = QMenu(self)
+                heading = menu.addAction("Ausführen")
+                heading.setEnabled(False)
+                heading_font = QFont(heading.font())
+                heading_font.setBold(True)
+                heading.setFont(heading_font)
+                menu.addSeparator()
+
+                line_action = menu.addAction("Zeile in VICE ausführen")
+                selection_action = menu.addAction("Auswahl in VICE ausführen")
+                program_action = menu.addAction("Programm an VICE übertragen")
+                run_action = menu.addAction("Programm übertragen + RUN")
+                reset_action = menu.addAction("VICE BASIC zurücksetzen")
+
+                line_action.setToolTip(
+                    "Debug: aktuelle BASIC-Zeile ueber VICE Binary Remote Monitor ausfuehren"
+                )
+                selection_action.setToolTip(
+                    "Debug: markierten BASIC-Text ueber VICE Binary Remote Monitor ausfuehren"
+                )
+                program_action.setToolTip(
+                    "Debug: nummeriertes BASIC-Programm ueber Keyboard Feed nach VICE uebertragen"
+                )
+                run_action.setToolTip(
+                    "Debug: BASIC-Programm uebertragen und danach RUN senden"
+                )
+                reset_action.setToolTip(
+                    "Debug: NEW an den BASIC-Interpreter in VICE senden"
+                )
+
+                line_action.setEnabled(bool(self.textCursor().block().text().strip()))
+                selection_action.setEnabled(self.textCursor().hasSelection())
+
+                line_action.triggered.connect(
+                    lambda checked=False: self.basic_vice_requested.emit("line")
+                )
+                selection_action.triggered.connect(
+                    lambda checked=False: self.basic_vice_requested.emit("selection")
+                )
+                program_action.triggered.connect(
+                    lambda checked=False: self.basic_vice_requested.emit("program")
+                )
+                run_action.triggered.connect(
+                    lambda checked=False: self.basic_vice_requested.emit("program_run")
+                )
+                reset_action.triggered.connect(
+                    lambda checked=False: self.basic_vice_requested.emit("reset")
+                )
+
+                menu.addSeparator()
+                for action in standard_menu.actions():
+                    menu.addAction(action)
+            else:
+                menu = standard_menu
+
             if operand_context is not None:
                 menu.addSeparator()
                 calculator_action = menu.addAction("Rechner für Operand...")
@@ -48863,7 +56367,9 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                     self._open_operand_calculator(value)
                 )
             menu.exec_(event.globalPos())
-            menu.deleteLater()
+            if menu is not standard_menu:
+                menu.deleteLater()
+            standard_menu.deleteLater()
 
         def leaveEvent(self, event) -> None:
             self._instruction_help_hover_active = False
@@ -53328,6 +60834,8 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
         c64_help_topic_requested = pyqtSignal(object, str, int)
         build_requested = pyqtSignal(object)
         build_generated_requested = pyqtSignal(object)
+        # Stage 232: VICE-BASIC-Debugaktion inklusive zugehoerigem Dokument.
+        basic_vice_requested = pyqtSignal(object, str)
         find_requested = pyqtSignal(object, object)
         find_next_requested = pyqtSignal(object, object)
         # Stage ASM 58: C64-BASIC-Gutter vollstaendig neu nummerieren und
@@ -53542,6 +61050,13 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 "assembly_status_label"
             )
             self.assembly_status_label.setTextFormat(Qt.PlainText)
+            # Stage 238: Statusmeldungen (insbesondere lange VICE-Debugtexte)
+            # duerfen niemals die Minimum-/SizeHint-Breite des zentralen
+            # BASIC-Bereichs und damit des QMainWindow vergroessern.
+            self.assembly_status_label.setMinimumWidth(0)
+            self.assembly_status_label.setSizePolicy(
+                QSizePolicy.Ignored, QSizePolicy.Preferred
+            )
 
             assembler_panel_layout.addWidget(self.assemble_button)
             assembler_panel_layout.addWidget(self.start_assembled_button)
@@ -53585,6 +61100,9 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             )
             self.raw_editor.build_requested.connect(
                 lambda: self.build_requested.emit(self)
+            )
+            self.raw_editor.basic_vice_requested.connect(
+                lambda operation: self.basic_vice_requested.emit(self, operation)
             )
             self.raw_editor.find_requested.connect(
                 lambda editor: self.find_requested.emit(self, editor)
@@ -53631,8 +61149,13 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 Qt.ScrollBarAlwaysOff
             )
             self.basic_screen_keyboard_scroll.setMinimumWidth(0)
+            # Stage 236: Der BASIC-/Tastaturbereich soll die komplette
+            # vom rechten QMainWindow-Dockseparator freigegebene Breite
+            # ausfuellen. Die Tastatur selbst wird bei breitem Panel bis zur
+            # Viewportbreite gestreckt; bei schmalem Panel behaelt sie ihre
+            # natuerliche Mindestbreite und die QScrollArea scrollt horizontal.
             self.basic_screen_keyboard_scroll.setSizePolicy(
-                QSizePolicy.Ignored, QSizePolicy.Preferred
+                QSizePolicy.Expanding, QSizePolicy.Preferred
             )
             self.basic_screen_keyboard = C64BasicOnScreenKeyboard()
             self.basic_screen_keyboard.setObjectName("basic_screen_keyboard")
@@ -54007,6 +61530,12 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 "generated_assembly_status_label"
             )
             self.generated_assembly_status_label.setTextFormat(Qt.PlainText)
+            # Stage 238: Auch der ASM-Status darf bei langen Laufzeitmeldungen
+            # keine neue Mindestbreite fuer das Hauptfenster erzwingen.
+            self.generated_assembly_status_label.setMinimumWidth(0)
+            self.generated_assembly_status_label.setSizePolicy(
+                QSizePolicy.Ignored, QSizePolicy.Preferred
+            )
 
             generated_assembly_panel_layout.addWidget(
                 self.assemble_generated_button
@@ -54683,6 +62212,168 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             if not self._c64_disassembly_running:
                 self.c64_disassembly_progress.hide()
 
+        def _basic_keyboard_natural_width(self) -> int:
+            """Stage 235: stabile Obergrenze fuer das sichtbare BASIC-Panel.
+
+            Die Bildschirmtastatur sitzt absichtlich in einer horizontal
+            scrollbaren QScrollArea. Ihr natuerlicher Layout-Width ist damit die
+            einzige erlaubte maximale Breite des BASIC-Dokuments, solange die
+            Tastatur sichtbar ist. Gespeicherte, versehentlich aufgeblasene
+            Keyboard-Geometrien duerfen diese Grenze nicht wieder vergroessern.
+            """
+            keyboard = getattr(self, "basic_screen_keyboard", None)
+            if keyboard is None:
+                return 0
+            try:
+                keyboard.ensurePolished()
+            except Exception:
+                pass
+            candidates = []
+            try:
+                candidates.append(int(keyboard.sizeHint().width()))
+            except Exception:
+                pass
+            try:
+                candidates.append(int(keyboard.minimumSizeHint().width()))
+            except Exception:
+                pass
+            candidates = [value for value in candidates if value > 0]
+            return max(candidates) if candidates else max(1, int(keyboard.width()))
+
+        def _sync_basic_keyboard_to_panel_width(self) -> None:
+            """Stage 236: Tastaturbreite an den sichtbaren BASIC-Bereich koppeln.
+
+            Der QMainWindow-Dockseparator rechts neben dem Editor ist jetzt die
+            autoritative horizontale Begrenzung. Wird er verschoben, darf der
+            BASIC-Editor kleiner oder groesser werden. Die Bildschirmtastatur
+            folgt dieser Breite:
+
+            * Panel >= natuerliche Tastaturbreite: Tastatur auf Viewportbreite
+              strecken, so dass rechts kein ungenutzter Leerraum entsteht.
+            * Panel < natuerliche Tastaturbreite: Tastatur behaelt ihre
+              natuerliche Breite und die vorhandene QScrollArea scrollt.
+
+            Damit gilt weiterhin: Der BASIC-Bereich ist niemals breiter als die
+            sichtbare Tastaturflaeche, aber der Benutzer kann die aeussere
+            Trennlinie zum Projekt-/Informationsdock frei verschieben.
+            """
+            if not self.basic_screen_keyboard_visible():
+                return
+
+            keyboard = getattr(self, "basic_screen_keyboard", None)
+            host = getattr(self, "basic_screen_keyboard_scroll", None)
+            if keyboard is None or host is None:
+                return
+
+            try:
+                viewport = host.viewport()
+                viewport_width = max(1, int(viewport.width()))
+            except (AttributeError, RuntimeError):
+                viewport_width = max(1, int(host.width()))
+
+            natural_width = max(1, int(self._basic_keyboard_natural_width()))
+            target_width = max(natural_width, viewport_width)
+
+            try:
+                current_height = max(1, int(keyboard.height()))
+                if int(keyboard.width()) != target_width:
+                    keyboard.resize(target_width, current_height)
+                keyboard.updateGeometry()
+                host.updateGeometry()
+            except RuntimeError:
+                return
+
+            # Kompatibilitaetsattribut aus Stage 235 beibehalten. Es bezeichnet
+            # ab Stage 236 nicht mehr eine harte QWidget-Maximalbreite, sondern
+            # die aktuell von Tastatur und Panel gemeinsam benutzte Breite.
+            self._basic_keyboard_panel_width_limit = int(target_width)
+
+        def _apply_basic_panel_keyboard_width_limit(self, enabled: bool) -> None:
+            """Stage 236: BASIC-Panel bis zum rechten Dockseparator ausfuellen.
+
+            Stage 235 setzte ``maximumWidth`` direkt auf DocumentEditor, Views,
+            Source-Page und BASIC-Splitter. Dadurch blieb rechts vor dem
+            QMainWindow-Dockseparator eine tote Flaeche stehen und der Separator
+            konnte den BASIC-Bereich zwar verkleinern, aber nicht wieder frei
+            vergroessern.
+
+            Ab Stage 236 gibt es auf diesen Widgets keine Tastatur-bedingte
+            Maximalbreite mehr. Die normale QMainWindow-/Dock-Geometrie bestimmt
+            die Panelbreite. Die Tastatur wird stattdessen an die Viewportbreite
+            gekoppelt und waechst mit dem Panel mit.
+            """
+            widget_names = (
+                "__document__",
+                "views",
+                "source_page",
+                "basic_editor_splitter",
+            )
+
+            if not hasattr(self, "_basic_panel_width_snapshot"):
+                snapshot = {}
+                for name in widget_names:
+                    widget = self if name == "__document__" else getattr(self, name, None)
+                    if widget is None:
+                        continue
+                    snapshot[name] = (
+                        int(widget.minimumWidth()),
+                        int(widget.maximumWidth()),
+                    )
+                self._basic_panel_width_snapshot = snapshot
+
+            snapshot = getattr(self, "_basic_panel_width_snapshot", {})
+
+            # Sowohl beim Ein- als auch beim Ausblenden zuerst die urspruengliche
+            # maximale Breite wiederherstellen. Nur die Mindestbreite wird bei
+            # sichtbarer Tastatur auf 0 gesetzt, damit der Dockseparator den
+            # Editor ohne kuenstliche Untergrenze nach links schieben kann.
+            for name in widget_names:
+                widget = self if name == "__document__" else getattr(self, name, None)
+                if widget is None:
+                    continue
+                try:
+                    minimum, maximum = snapshot.get(
+                        name, (int(widget.minimumWidth()), int(widget.maximumWidth()))
+                    )
+                    widget.setMaximumWidth(max(0, int(maximum)))
+                    widget.setMinimumWidth(0 if bool(enabled) else max(0, int(minimum)))
+                    widget.updateGeometry()
+                except RuntimeError:
+                    pass
+
+            host = getattr(self, "basic_screen_keyboard_scroll", None)
+            if host is not None:
+                try:
+                    host.setMinimumWidth(0)
+                    host.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+                    host.updateGeometry()
+                except RuntimeError:
+                    pass
+
+            if not bool(enabled):
+                return
+
+            # Erst nach dem aktuellen Qt-Layoutpass ist die Viewportbreite des
+            # Scrollbereichs identisch mit der vom Dockseparator vorgegebenen
+            # Editorbreite. Deshalb sofort und nochmals queued synchronisieren.
+            self._sync_basic_keyboard_to_panel_width()
+            QTimer.singleShot(0, self._sync_basic_keyboard_to_panel_width)
+
+            parent = self.parentWidget()
+            if parent is not None:
+                try:
+                    parent.updateGeometry()
+                except RuntimeError:
+                    pass
+
+        def resizeEvent(self, event) -> None:
+            """Stage 236: Dockseparator-Resize direkt an Tastatur weitergeben."""
+            super().resizeEvent(event)
+            if self.basic_screen_keyboard_visible():
+                # resizeEvent kann vor dem finalen QScrollArea-Layout eintreffen.
+                # Der queued Durchlauf sieht die endgueltige Viewportbreite.
+                QTimer.singleShot(0, self._sync_basic_keyboard_to_panel_width)
+
         def set_basic_screen_keyboard_visible(
             self, visible: bool, *, notify: bool = True
         ) -> None:
@@ -54713,6 +62404,20 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 if len(restore) < 2 or restore[1] <= 0:
                     restore = [650, 220]
                 splitter.setSizes(restore)
+
+                # Stage 236: nach show()/adjustSize() ist die natuerliche
+                # Tastaturbreite bekannt. Der BASIC-Bereich selbst folgt jetzt
+                # der Trennlinie zum rechten Dock; die Tastatur wird passend zur
+                # verfuegbaren Viewportbreite nachgefuehrt.
+                self._apply_basic_panel_keyboard_width_limit(True)
+                QTimer.singleShot(
+                    0,
+                    lambda value=self: (
+                        value._apply_basic_panel_keyboard_width_limit(True)
+                        if value.basic_screen_keyboard_visible() else None
+                    ),
+                )
+
                 self.basic_keyboard_toggle_button.setText("Tastatur Ausblenden")
             else:
                 sizes = splitter.sizes()
@@ -54720,6 +62425,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                     self._basic_keyboard_last_sizes = list(sizes[:2])
                 self._basic_screen_keyboard_enabled = False
                 keyboard_host.hide()
+                self._apply_basic_panel_keyboard_width_limit(False)
                 self.basic_keyboard_toggle_button.setText("Tastatur Einblenden")
                 # Beim Ausblenden erst NACH keyboard.hide() restaurieren.
                 if notify and was_visible:
@@ -54783,6 +62489,9 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                     keyboard = getattr(self, "basic_screen_keyboard", None)
                     if keyboard is not None:
                         keyboard.set_keyboard_font(basic_font)
+                        if self.basic_screen_keyboard_visible():
+                            keyboard.adjustSize()
+                            self._apply_basic_panel_keyboard_width_limit(True)
                     editor.update_line_number_area_width(0)
                     return
 
@@ -60398,6 +68107,10 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
         def __init__(self, scene: DBaseFormDesignerScene, parent=None):
             super().__init__(parent)
             self.scene = scene
+            # Stage 233: QGraphicsScene und Property-Panel werden beim
+            # Anwendungsende nicht garantiert in Python-Reihenfolge zerlegt.
+            # Merker verhindert Zugriffe auf einen bereits gelöschten C++-Scene.
+            self._scene_disposed = False
             self._selected_item = None
             self._syncing = False
             self._spin_boxes = {}
@@ -60837,6 +68550,7 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             self.scene.placement_mode_changed.connect(self._placement_mode_changed)
             self.scene.control_created.connect(self.bind_item)
             self.scene.selectionChanged.connect(self._selection_changed)
+            self.scene.destroyed.connect(self._scene_destroyed)
             self.timer_interval_spin.valueChanged.connect(
                 self._timer_interval_changed
             )
@@ -61340,6 +69054,13 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                 self._selected_item.timer_active = value
             self._selected_item.properties_changed.emit(self._selected_item)
 
+        def _scene_destroyed(self, *_args) -> None:
+            # Stage 233: Qt kann selectionChanged noch in der Abbauphase
+            # zustellen. Ab hier darf das Panel die Scene nicht mehr anfassen.
+            self._scene_disposed = True
+            self.scene = None
+            self._selected_item = None
+
         def bind_item(self, item) -> None:
             if not isinstance(item, (DBaseFormControlItem, DBaseFormWindowItem)):
                 return
@@ -61359,8 +69080,23 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                 self._refresh_event_grid()
 
         def _selected_control(self):
+            scene = getattr(self, "scene", None)
+            if self._scene_disposed or scene is None:
+                return None
+            try:
+                scene_items = scene.selectedItems()
+            except RuntimeError as scene_error:
+                # PyQt meldet beim Qt-Shutdown:
+                # "wrapped C/C++ object ... has been deleted".
+                # Das ist hier nur die QObject-Abbaureihenfolge.
+                if "has been deleted" in str(scene_error):
+                    self._scene_disposed = True
+                    self.scene = None
+                    self._selected_item = None
+                    return None
+                raise
             selected = [
-                item for item in self.scene.selectedItems()
+                item for item in scene_items
                 if isinstance(item, (DBaseFormControlItem, DBaseFormWindowItem))
             ]
             # Ein echtes Control hat Vorrang, falls Qt waehrend eines
@@ -61369,7 +69105,11 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             return selected[0] if selected else None
 
         def _selection_changed(self) -> None:
+            if self._scene_disposed:
+                return
             self._selected_item = self._selected_control()
+            if self._scene_disposed:
+                return
             self._update_property_values()
             self._refresh_event_grid()
 
@@ -86628,6 +94368,9 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
 
 
     class ExplorerWindow(QMainWindow):
+        # Stage 232: Thread-Rueckmeldung des VICE Binary Monitor Debugtransfers.
+        vice_debug_finished = pyqtSignal(object, bool, str, object)
+
         ORGANIZATION = "paule32"
         APPLICATION = "Qt5D64Explorer"
         DEFAULT_EDITOR_FONT_SIZE = 9
@@ -86715,6 +94458,9 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
 
         def __init__(self, requested_directory: Optional[Path]):
             super().__init__()
+            self.vice_debug_finished.connect(self._on_vice_debug_finished)
+            self._vice_debug_threads = []
+            self._vice_debug_processes = []
             self.settings = QSettings(self.ORGANIZATION, self.APPLICATION)
             # Stage 167: die Sprache des Ansicht-Menüs wird unabhängig vom
             # Localize-Quell-/Zielsprachenpaar persistent geführt.
@@ -88020,11 +95766,55 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             )
             self.html_editor_action.triggered.connect(self.show_html_editor_dock)
 
+            self.germany_geography_action = QAction("Geographie", self)
+            self.germany_geography_action.setObjectName("germany_geography_action")
+            self.germany_geography_action.setStatusTip(
+                "Deutschland-Karte mit Bundesländern, Hauptstädten und größeren Städten öffnen"
+            )
+            self.germany_geography_action.triggered.connect(
+                self.show_germany_geography_dock
+            )
+
             self.math_learning_action = QAction("Arbeitsfläche", self)
             self.math_learning_action.setStatusTip(
                 "Den Mathematik-Arbeitsbereich im freien Dock-Bereich öffnen"
             )
             self.math_learning_action.triggered.connect(self.show_math_learning_dock)
+
+            self.math_formula_designer_action = QAction("Formel-Designer", self)
+            self.math_formula_designer_action.setObjectName("math_formula_designer_action")
+            self.math_formula_designer_action.setStatusTip(
+                "Strukturelle mathematische Formeln mit Exponenten, Klammern und Wurzeln entwerfen"
+            )
+            self.math_formula_designer_action.triggered.connect(
+                self.show_math_formula_designer_dock
+            )
+
+            self.minesweeper_action = QAction("MineSweeper", self)
+            self.minesweeper_action.setObjectName(
+                "minesweeper_action"
+            )
+            self.minesweeper_action.setStatusTip(
+                "MineSweeper-Mauslernspiel mit verschiedenen Schwierigkeitsstufen öffnen"
+            )
+            self.minesweeper_action.triggered.connect(
+                self.show_minesweeper_dock
+            )
+
+            self.minesweeper_c64_basic_action = QAction(
+                "MineSweeper (C64 BASIC)",
+                self,
+            )
+            self.minesweeper_c64_basic_action.setObjectName(
+                "minesweeper_c64_basic_action"
+            )
+            self.minesweeper_c64_basic_action.setStatusTip(
+                "Das C64-BASIC-MineSweeper-Beispiel im BASIC-Editor öffnen; "
+                "Compile erzeugt 6510-ASM, Assemble erzeugt ein C64-PRG"
+            )
+            self.minesweeper_c64_basic_action.triggered.connect(
+                self.open_minesweeper_c64_basic_example
+            )
 
             self.music_keyboard_action = QAction("Keyboard", self)
             self.music_keyboard_action.setStatusTip(
@@ -91839,7 +99629,9 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                         out.extend([f"    cmp dword ptr [{slot}_type], {code}",
                                     f"    je {prefix}_valid"])
                     if is64:
-                        out.extend(["    mov ecx, 13", "    sub rsp, 40", "    call ExitProcess"])
+                        # Der WFM-Callback-Prolog reserviert bereits 32 Byte
+                        # Shadow Space und richtet RSP fuer Microsoft x64 aus.
+                        out.extend(["    mov ecx, 13", "    call ExitProcess"])
                     else:
                         out.extend(["    push 13", "    call ExitProcess"])
                     out.append(prefix + "_valid:")
@@ -91863,14 +99655,18 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                         destination, prefix = fresh_slot()
                         if node.name == "!":
                             out.extend(emit_upper_copy(
-                                source, destination, is64, prefix, WFM_VALUE_STRING
+                                source, destination, is64, prefix, WFM_VALUE_STRING,
+                                shadow_space_reserved=is64,
                             ))
                         else:
                             from d64dbase.string_substring import emit_substring_copy
                             start = resolve(node.arguments[1], True)
                             count = resolve(node.arguments[2], True) if len(node.arguments) == 3 else None
-                            out.extend(emit_substring_copy(source, start, count, destination,
-                                is64, prefix, WFM_VALUE_STRING))
+                            out.extend(emit_substring_copy(
+                                source, start, count, destination,
+                                is64, prefix, WFM_VALUE_STRING,
+                                shadow_space_reserved=is64,
+                            ))
                         return destination
                     if numeric and isinstance(node, DBaseBinaryExpression):
                         left = resolve(node.left, True)
@@ -92027,13 +99823,14 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             ):
                 """Schreibt einen statischen UTF-8-Puffer in den WFM-Ausgabekanal."""
                 if is64:
+                    # WFM-Callbacks besitzen bereits einen ausgerichteten
+                    # 40/56-Byte-Frame. Ein weiteres sub rsp,40 wuerde die
+                    # 16-Byte-Ausrichtung vor dem CALL zerstoeren.
                     out.extend([
                         f"    mov rcx, {label_name}",
                         f"    mov edx, {int(byte_length)}",
                         f"    mov r8d, {1 if add_newline else 0}",
-                        "    sub rsp, 40",
                         "    call DBaseQtConsoleWrite",
-                        "    add rsp, 40",
                     ])
                 else:
                     out.extend([
@@ -92200,9 +99997,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                         "    movsd xmm0, qword ptr [__dbase_temp_number]",
                         "    mov edx, 15",
                         "    mov r8, qword ptr [__dbase_format_buffer]",
-                        "    sub rsp, 40",
                         "    call __dbase_gcvt",
-                        "    add rsp, 40",
                         "    mov rcx, qword ptr [__dbase_format_buffer]",
                         "    xor edx, edx",
                         f"{strlen_loop}:",
@@ -92215,9 +100010,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                         f"{strlen_done}:",
                         "    mov rcx, qword ptr [__dbase_format_buffer]",
                         f"    mov r8d, {1 if add_newline else 0}",
-                        "    sub rsp, 40",
                         "    call DBaseQtConsoleWrite",
-                        "    add rsp, 40",
                         f"    jmp {done_branch}",
                         f"{string_branch}:",
                         f"    mov rcx, qword ptr [{memory_pointer_label(source)}]",
@@ -92225,9 +100018,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                         f"    je {null_branch}",
                         f"    mov edx, dword ptr [{memory_length_label(source)}]",
                         f"    mov r8d, {1 if add_newline else 0}",
-                        "    sub rsp, 40",
                         "    call DBaseQtConsoleWrite",
-                        "    add rsp, 40",
                         f"    jmp {done_branch}",
                         f"{object_branch}:",
                         f"    mov rax, qword ptr [{memory_pointer_label(source)}]",
@@ -92236,17 +100027,13 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                         f"    mov rcx, {object_label}",
                         f"    mov edx, {object_len}",
                         f"    mov r8d, {1 if add_newline else 0}",
-                        "    sub rsp, 40",
                         "    call DBaseQtConsoleWrite",
-                        "    add rsp, 40",
                         f"    jmp {done_branch}",
                         f"{null_branch}:",
                         f"    mov rcx, {null_label}",
                         f"    mov edx, {null_len}",
                         f"    mov r8d, {1 if add_newline else 0}",
-                        "    sub rsp, 40",
                         "    call DBaseQtConsoleWrite",
-                        "    add rsp, 40",
                         f"{done_branch}:",
                     ])
                 else:
@@ -92731,9 +100518,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                             callback_lines.extend([
                                 f"    mov ecx, {frequency}",
                                 f"    mov edx, {duration}",
-                                "    sub rsp, 40",
                                 "    call Beep",
-                                "    add rsp, 40",
                             ])
                         else:
                             # Win32 WINAPI/__stdcall:
@@ -94292,6 +102077,11 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             return min(values, key=lambda candidate: abs(candidate - int(value)))
 
         def _sync_e_baukasten_view_control_checks(self) -> None:
+            germany_dock = getattr(self, "germany_geography_dock", None)
+            if germany_dock is not None and germany_dock.isVisible():
+                self._sync_germany_zoom_control_checks()
+                return
+
             widget = getattr(self, "e_baukasten_widget", None)
             if widget is None:
                 return
@@ -96791,7 +104581,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             if not enabled or mode == "none":
                 return program, None
             try:
-                from c64packer import C64PackerError, pack_c64_program
+                #from c64packer import C64PackerError, pack_c64_program
                 packed, stats = pack_c64_program(
                     program,
                     assemble_func=assemble_mos6510_source,
@@ -97804,8 +105594,24 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             learning_menu.addAction(self.music_keyboard_action)
             learning_menu.addAction(self.math_memory_action)
             learning_menu.addSeparator()
+            
+            deutsch_menu = learning_menu.addMenu("Deutsch")
+            deutsch_menu.setObjectName("learning_deutsch_menu")
+            deutsch_menu.addAction(self.germany_geography_action)
+
+            computer_menu = learning_menu.addMenu("Computer")
+            mouse_menu = computer_menu.addMenu("Maus")
+            mouse_menu.addAction(self.minesweeper_action)
+            mouse_menu.addAction(self.minesweeper_c64_basic_action)
+
+            
+            self.chemie_menu   = learning_menu.addMenu("Chemie")
+            self.chemie_action = self.chemie_menu.addAction("Perioden-System der Elemente")
+            self.chemie_action.triggered.connect(self.show_chemie_learning_dock)
+            
             math_menu = learning_menu.addMenu("Mathematik")
             math_menu.addAction(self.math_learning_action)
+            math_menu.addAction(self.math_formula_designer_action)
             math_menu.addSeparator()
             math_menu.addAction(self.math_numbers_wall_100_action)
             math_menu.addAction(self.math_numbers_wall_1000_action)
@@ -97815,10 +105621,395 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             help_menu.addSeparator()
             help_menu.addAction(self.about_action)
             help_menu.addAction(self.about_qt_action)
+            
+            # Perioden-System
+            
+            #self._periodic_table_controller = install_periodic_table(self)
 
             # Stage 75: popup menus inherit the same Green-&-Beige palette.
             self._sync_green_beige_menu_objects()
             self._apply_green_beige_chrome_style()
+
+        def _sync_formula_zoom_control_checks(self, _value=None):
+            controller = getattr(self, "_math_formula_designer_controller", None)
+            dock = getattr(controller, "dock", None) if controller is not None else None
+            if dock is None or not dock.isVisible():
+                return
+
+            current = int(dock.designer.view.zoom_percent)
+            actions = getattr(self, "e_baukasten_zoom_actions", {})
+            if not actions:
+                return
+            nearest = self._nearest_e_baukasten_menu_value(current, actions.keys())
+            for value, action in actions.items():
+                blocked = action.blockSignals(True)
+                action.setChecked(int(value) == int(nearest))
+                action.blockSignals(blocked)
+
+        def _bind_formula_zoom_controls(self, dock):
+            if dock is None:
+                return
+            menu = getattr(self, "e_baukasten_zoom_menu", None)
+            actions = getattr(self, "e_baukasten_zoom_actions", {})
+            if menu is None:
+                return
+
+            # Beim Formel-Designer ist nur Ansicht -> Zoom aktiv.
+            for other_menu in (
+                getattr(self, "e_baukasten_xpos_menu", None),
+                getattr(self, "e_baukasten_ypos_menu", None),
+                getattr(self, "e_baukasten_zpos_menu", None),
+                getattr(self, "e_baukasten_raster_menu", None),
+            ):
+                if other_menu is not None:
+                    other_menu.setEnabled(False)
+
+            for value, action in actions.items():
+                try:
+                    action.triggered.disconnect()
+                except (TypeError, RuntimeError):
+                    pass
+                action.triggered.connect(
+                    lambda checked=False, v=int(value): dock.designer.view.set_zoom_percent(v)
+                )
+
+            try:
+                dock.designer.view.zoomChanged.disconnect(
+                    self._sync_formula_zoom_control_checks
+                )
+            except (TypeError, RuntimeError):
+                pass
+            dock.designer.view.zoomChanged.connect(
+                self._sync_formula_zoom_control_checks
+            )
+
+            menu.setEnabled(True)
+            self._sync_formula_zoom_control_checks()
+
+            if not bool(getattr(dock, "_formula_zoom_visibility_connected", False)):
+                dock.visibilityChanged.connect(
+                    self._formula_designer_visibility_changed
+                )
+                dock._formula_zoom_visibility_connected = True
+
+        def _restore_context_zoom_after_formula(self):
+            germany_dock = getattr(self, "germany_geography_dock", None)
+            if germany_dock is not None and germany_dock.isVisible():
+                self._bind_germany_zoom_controls(germany_dock)
+                return
+
+            e_dock = getattr(self, "e_baukasten_dock", None)
+            e_widget = getattr(self, "e_baukasten_widget", None)
+            if e_dock is not None and e_dock.isVisible() and e_widget is not None:
+                self._bind_e_baukasten_view_controls(e_widget)
+                self._set_e_baukasten_view_controls_enabled(True)
+                return
+
+            for action in getattr(self, "e_baukasten_zoom_actions", {}).values():
+                try:
+                    action.triggered.disconnect()
+                except (TypeError, RuntimeError):
+                    pass
+            menu = getattr(self, "e_baukasten_zoom_menu", None)
+            if menu is not None:
+                menu.setEnabled(False)
+
+        def _formula_designer_visibility_changed(self, visible):
+            controller = getattr(self, "_math_formula_designer_controller", None)
+            dock = getattr(controller, "dock", None) if controller is not None else None
+            if visible and dock is not None:
+                self._bind_formula_zoom_controls(dock)
+            else:
+                # Andere Vollflächen (z. B. E-Baukasten/Deutschland) werden
+                # häufig im selben Event-Zyklus sichtbar. Die verzögerte
+                # Rückgabe der Zoom-Aktionen verhindert, dass deren Bindung
+                # beim Wechsel vom Formel-Designer verloren geht.
+                QTimer.singleShot(0, self._restore_context_zoom_after_formula)
+
+        def show_math_formula_designer_dock(self):
+            controller = getattr(self, "_math_formula_designer_controller", None)
+            if controller is None:
+                controller = FormulaDesignerController(
+                    self,
+                    title_bar_factory=DockTitleBar,
+                )
+                self._math_formula_designer_controller = controller
+            controller.show()
+            self._bind_formula_zoom_controls(controller.dock)
+            self.statusBar().showMessage(
+                "Mathematischer Formel-Designer geöffnet — Ansicht -> Zoom und STRG+Mausrad aktiv"
+            )
+
+        def show_minesweeper_dock(self):
+            controller = getattr(
+                self,
+                "_minesweeper_controller",
+                None,
+            )
+            if controller is None:
+                controller = MinesweeperController(
+                    self,
+                    title_bar_factory=DockTitleBar,
+                )
+                self._minesweeper_controller = controller
+
+            controller.show()
+            self.statusBar().showMessage(
+                "MineSweeper unter Lernen -> Computer -> Maus geöffnet"
+            )
+
+        def open_minesweeper_c64_basic_example(self):
+            """Stage 252: editierbare C64-BASIC-Fassung des MineSweepers öffnen."""
+            relative = Path(
+                "examples/c64_minesweeper_stage252/minesweeper.bas"
+            )
+            source_candidates = [
+                Path(__file__).resolve().parent / relative,
+                Path(sys.executable).resolve().parent / relative,
+            ]
+            template_path = next(
+                (candidate for candidate in source_candidates if candidate.is_file()),
+                None,
+            )
+            if template_path is None:
+                self.show_error(
+                    "C64 BASIC MineSweeper",
+                    "Die Beispieldatei wurde nicht gefunden:\n"
+                    + "\n".join(str(path) for path in source_candidates),
+                )
+                return
+
+            destination = Path(self.current_directory) / "minesweeper.bas"
+            if not destination.exists():
+                try:
+                    shutil.copy2(template_path, destination)
+                except OSError as exc:
+                    self.show_error(
+                        "C64 BASIC MineSweeper",
+                        f"Die BASIC-Datei konnte nicht angelegt werden:\n"
+                        f"{destination}\n\n{exc}",
+                    )
+                    return
+
+            if self.open_document(
+                destination,
+                language_override="basic",
+            ):
+                document = self.current_document()
+                if isinstance(document, DocumentEditor):
+                    document.set_build_target("c64")
+                self._register_opened_file_in_project(destination)
+                self.statusBar().showMessage(
+                    "C64 MineSweeper geöffnet — Rechtsklick im BASIC-Editor "
+                    "bietet VICE-Zeile/Auswahl/Programm/Programm+RUN/Reset"
+                )
+
+        def _prepare_germany_geography_workspace(self, dock):
+            """Alle anderen Docks ausblenden, ohne die Hauptfenstergröße zu ändern."""
+            if getattr(self, "_germany_geography_workspace_active", False):
+                return
+
+            self._germany_geography_hidden_docks = []
+            for candidate in self.findChildren(QDockWidget):
+                if candidate is dock:
+                    continue
+                if candidate.isVisible():
+                    self._germany_geography_hidden_docks.append(candidate)
+
+            central = self.centralWidget()
+            self._germany_geography_central_was_visible = bool(
+                central is not None and central.isVisible()
+            )
+
+            for candidate in list(self._germany_geography_hidden_docks):
+                try:
+                    candidate.hide()
+                except RuntimeError:
+                    pass
+
+            for candidate in self.findChildren(QDockWidget):
+                if candidate is not dock and candidate.isVisible():
+                    try:
+                        candidate.hide()
+                    except RuntimeError:
+                        pass
+
+            if central is not None and central.isVisible():
+                central.hide()
+
+            self._germany_geography_workspace_active = True
+
+        def _restore_germany_geography_workspace(self):
+            if not getattr(self, "_germany_geography_workspace_active", False):
+                return
+
+            self._germany_geography_workspace_active = False
+
+            if getattr(self, "_germany_geography_central_was_visible", False):
+                central = self.centralWidget()
+                if central is not None:
+                    central.show()
+
+            for candidate in getattr(self, "_germany_geography_hidden_docks", []):
+                try:
+                    candidate.show()
+                except RuntimeError:
+                    pass
+
+            self._germany_geography_hidden_docks = []
+            self._germany_geography_central_was_visible = False
+
+        def _sync_germany_zoom_control_checks(self, _value=None):
+            dock = getattr(self, "germany_geography_dock", None)
+            if dock is None or not dock.isVisible():
+                return
+            current = int(dock.map_view.zoom_percent)
+            actions = getattr(self, "e_baukasten_zoom_actions", {})
+            if not actions:
+                return
+            nearest = self._nearest_e_baukasten_menu_value(
+                current,
+                actions.keys(),
+            )
+            for value, action in actions.items():
+                blocked = action.blockSignals(True)
+                action.setChecked(int(value) == int(nearest))
+                action.blockSignals(blocked)
+
+        def _bind_germany_zoom_controls(self, dock):
+            menu = getattr(self, "e_baukasten_zoom_menu", None)
+            actions = getattr(self, "e_baukasten_zoom_actions", {})
+            if menu is None:
+                return
+
+            # Nur Ansicht -> Zoom wird fuer die Geographie aktiviert. X/Y/Z
+            # und Raster bleiben deaktiviert.
+            for other_menu in (
+                getattr(self, "e_baukasten_xpos_menu", None),
+                getattr(self, "e_baukasten_ypos_menu", None),
+                getattr(self, "e_baukasten_zpos_menu", None),
+                getattr(self, "e_baukasten_raster_menu", None),
+            ):
+                if other_menu is not None:
+                    other_menu.setEnabled(False)
+
+            for value, action in actions.items():
+                try:
+                    action.triggered.disconnect()
+                except (TypeError, RuntimeError):
+                    pass
+                action.triggered.connect(
+                    lambda checked=False, v=int(value): dock.map_view.set_zoom_percent(v)
+                )
+
+            menu.setEnabled(True)
+            self._sync_germany_zoom_control_checks()
+
+        def _disable_germany_zoom_controls(self):
+            menu = getattr(self, "e_baukasten_zoom_menu", None)
+            for action in getattr(self, "e_baukasten_zoom_actions", {}).values():
+                try:
+                    action.triggered.disconnect()
+                except (TypeError, RuntimeError):
+                    pass
+            if menu is not None:
+                menu.setEnabled(False)
+
+        def _germany_geography_visibility_changed(self, visible):
+            if visible:
+                dock = getattr(self, "germany_geography_dock", None)
+                if dock is not None:
+                    dock.set_dark_mode(self.dark_mode_enabled)
+                    self._bind_germany_zoom_controls(dock)
+                QTimer.singleShot(0, self._expand_germany_geography_dock)
+                QTimer.singleShot(50, self._expand_germany_geography_dock)
+            else:
+                self._disable_germany_zoom_controls()
+                self._restore_germany_geography_workspace()
+
+        def _germany_geography_dock_destroyed(self, _obj=None):
+            self._disable_germany_zoom_controls()
+            self.germany_geography_dock = None
+            _free_deutschland_module()
+            _free_deutschland_wappen_module()
+
+        def _expand_germany_geography_dock(self):
+            dock = getattr(self, "germany_geography_dock", None)
+            if dock is None or not dock.isVisible():
+                return
+            try:
+                self.resizeDocks([dock], [100000], Qt.Horizontal)
+                self.resizeDocks([dock], [100000], Qt.Vertical)
+            except Exception:
+                pass
+            dock.setMinimumSize(0, 0)
+            dock.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            dock.map_view.fit_map()
+
+        def _ensure_germany_geography_dock(self):
+            dock = getattr(self, "germany_geography_dock", None)
+            if dock is not None:
+                return dock
+
+            dock = GermanyMapDock(self)
+            try:
+                dock.setTitleBarWidget(DockTitleBar(dock))
+            except Exception:
+                pass
+            dock.set_dark_mode(self.dark_mode_enabled)
+
+            dock.map_view.stateHovered.connect(
+                lambda state_name, capital: self.statusBar().showMessage(
+                    f"{state_name} — Hauptstadt: {capital}"
+                )
+            )
+            dock.map_view.stateHoverLeft.connect(
+                lambda: self.statusBar().showMessage(
+                    "Deutschland — Bundesland mit der Maus berühren"
+                )
+            )
+            dock.map_view.zoomChanged.connect(
+                self._sync_germany_zoom_control_checks
+            )
+            dock.visibilityChanged.connect(
+                self._germany_geography_visibility_changed
+            )
+            dock.destroyed.connect(self._germany_geography_dock_destroyed)
+            self.addDockWidget(Qt.LeftDockWidgetArea, dock)
+            dock.hide()
+
+            self.germany_geography_dock = dock
+            self._assign_widget_property_ids(dock)
+            return dock
+
+        def show_germany_geography_dock(self, _checked=False):
+            """Lernen -> Deutsch -> Geographie: Deutschland im Vollflächen-Dock."""
+            dock = self._ensure_germany_geography_dock()
+            self._prepare_germany_geography_workspace(dock)
+
+            if dock.isFloating():
+                dock.setFloating(False)
+            self.addDockWidget(Qt.LeftDockWidgetArea, dock)
+            dock.set_dark_mode(self.dark_mode_enabled)
+            dock.show()
+            dock.raise_()
+            self._bind_germany_zoom_controls(dock)
+            self._expand_germany_geography_dock()
+            QTimer.singleShot(0, dock.map_view.fit_map)
+            QTimer.singleShot(60, dock.map_view.fit_map)
+            self.statusBar().showMessage(
+                "Deutschland geöffnet — Ansicht -> Zoom oder STRG+Mausrad zum Zoomen"
+            )
+
+        def show_chemie_learning_dock(self):
+            controller = getattr(self, "_periodic_table_controller", None)
+            if controller is None:
+                controller = PeriodicTableController(
+                    self,
+                    title_bar_factory=DockTitleBar,
+                )
+                self._periodic_table_controller = controller
+            controller.show_periodic_table()
 
         def _favorite_editor_name(
             self, document: DocumentEditor, editor: SourceTextEdit
@@ -98741,9 +106932,17 @@ border: 2px solid #2a69aa;
                     widget.set_dark_mode(enabled)
                 elif isinstance(widget, MathematicsLearningDockWidget):
                     widget.set_dark_mode(enabled)
+                elif isinstance(widget, FormulaDesignerWidget):
+                    widget.set_dark_mode(enabled)
                 elif isinstance(widget, MusicKeyboardDockWidget):
                     widget.set_dark_mode(enabled)
                 elif isinstance(widget, InstrumentDockWidget):
+                    widget.set_dark_mode(enabled)
+                elif isinstance(widget, GermanyMapDock):
+                    widget.set_dark_mode(enabled)
+                elif isinstance(widget, GermanyMapView):
+                    widget.set_dark_mode(enabled)
+                elif isinstance(widget, GermanyStateToolTip):
                     widget.set_dark_mode(enabled)
                 elif isinstance(widget, DockTitleBar):
                     widget.set_dark_mode(enabled)
@@ -98797,6 +106996,19 @@ border: 2px solid #2a69aa;
                 )
             if self.html_editor_widget is not None:
                 self.html_editor_widget.set_dark_mode(self.dark_mode_enabled)
+
+            minesweeper_controller = getattr(
+                self,
+                "_minesweeper_controller",
+                None,
+            )
+            if (
+                minesweeper_controller is not None
+                and minesweeper_controller.dock is not None
+            ):
+                minesweeper_controller.dock.set_dark_mode(
+                    self.dark_mode_enabled
+                )
 
             self.chm_viewer_action.setIcon(self._toolbar_symbol_icon("help"))
             self.zoom_in_action.setIcon(self._toolbar_symbol_icon("zoom_in"))
@@ -100293,6 +108505,9 @@ border: 2px solid #2a69aa;
             )
             document.build_requested.connect(
                 self.build_and_run_source_document
+            )
+            document.basic_vice_requested.connect(
+                self._handle_basic_vice_debug_request
             )
             document.build_generated_requested.connect(
                 self.build_and_run_generated_assembly_document
@@ -102358,11 +110573,18 @@ border: 2px solid #2a69aa;
                     suffix = source_path.suffix.casefold()
                     if suffix in {".o", ".obj", ".a", ".lib"}:
                         add(source_path)
+                    elif document.is_pascal_document and suffix in DocumentEditor.PASCAL_EXTENSIONS:
+                        # Stage 239: Pascal-Units werden ausschließlich über
+                        # USES/PUI (generated_link_object_files) in den Link
+                        # aufgenommen.  Das bisherige automatische Hinzufügen
+                        # *aller* anderen .pas/.pp-Projektdateien konnte eine
+                        # Unit ein zweites Mal linken, obwohl der Compiler ihr
+                        # COFF bereits aus der PUI-Abhängigkeit geliefert hatte.
+                        # Explizite .o/.obj/.a/.lib-Projektknoten bleiben oben
+                        # selbstverständlich gültige Linkeingaben.
+                        continue
                     elif (
                         document.is_c_document and suffix == ".c"
-                    ) or (
-                        document.is_pascal_document
-                        and suffix in DocumentEditor.PASCAL_EXTENSIONS
                     ) or (
                         document.is_lisp_document
                         and suffix in DocumentEditor.LISP_EXTENSIONS
@@ -102757,6 +110979,346 @@ border: 2px solid #2a69aa;
             if output_path.parent == self.current_directory:
                 self.populate_file_list()
             return True
+
+        def _capture_vice_host_window_size(self):
+            """Stage 238: aktuelle IDE-Fenstergroesse vor einem VICE-Start merken.
+
+            Ein externer Emulatorstart darf niemals die Breite oder Hoehe des
+            d64_dism-Hauptfensters veraendern. Fuer maximierte/Vollbildfenster
+            wird absichtlich keine Normalgroesse restauriert.
+            """
+            try:
+                state = self.windowState()
+                guarded = not bool(state & (Qt.WindowMaximized | Qt.WindowFullScreen))
+                return (guarded, int(self.width()), int(self.height()))
+            except RuntimeError:
+                return (False, 0, 0)
+
+        def _restore_vice_host_window_size(self, snapshot) -> None:
+            """Stage 238: nur eine von Qt unbeabsichtigt geaenderte Groesse korrigieren."""
+            try:
+                guarded, width, height = snapshot
+            except Exception:
+                return
+            if not guarded or width <= 0 or height <= 0:
+                return
+            try:
+                if self.isMaximized() or self.isFullScreen():
+                    return
+                if int(self.width()) != int(width) or int(self.height()) != int(height):
+                    self.resize(int(width), int(height))
+            except RuntimeError:
+                pass
+
+        def _schedule_vice_host_window_size_restore(self, snapshot) -> None:
+            """Stage 238: spaete Qt-LayoutRequests nach VICE-Start abfangen.
+
+            Die kurzen queued Wiederholungen decken insbesondere den Layoutpass
+            nach QLabel-/StatusBar-Aktualisierungen und nach dem externen
+            Prozessstart ab, ohne die Groesse dauerhaft zu sperren.
+            """
+            self._restore_vice_host_window_size(snapshot)
+            for delay in (0, 80, 250):
+                QTimer.singleShot(
+                    delay,
+                    lambda value=snapshot: self._restore_vice_host_window_size(value),
+                )
+
+        @staticmethod
+        def _vice_binary_monitor_probe(
+            host: str = VICE_BINARY_MONITOR_HOST,
+            port: int = VICE_BINARY_MONITOR_PORT,
+        ) -> bool:
+            try:
+                with ViceBinaryMonitorClient(host, port, timeout=0.35) as client:
+                    client.ping()
+                    client.resume()
+                return True
+            except (OSError, ViceBinaryMonitorError):
+                return False
+
+        @staticmethod
+        def _vice_debug_commands_for_document(
+            document: DocumentEditor,
+            operation: str,
+        ) -> Tuple[str, ...]:
+            operation = str(operation or "").strip().casefold()
+            editor = document.raw_editor
+
+            if operation == "line":
+                line = editor.textCursor().block().text().strip()
+                if not line:
+                    raise ViceBinaryMonitorError("Die aktuelle BASIC-Zeile ist leer.")
+                return (line,)
+
+            if operation == "selection":
+                cursor = editor.textCursor()
+                if not cursor.hasSelection():
+                    raise ViceBinaryMonitorError("Im BASIC-Editor ist nichts markiert.")
+                selected = cursor.selectedText().replace("\u2029", "\n")
+                raw_lines = tuple(
+                    line.strip() for line in selected.splitlines() if line.strip()
+                )
+                if not raw_lines:
+                    raise ViceBinaryMonitorError("Die BASIC-Auswahl ist leer.")
+                if len(raw_lines) == 1:
+                    return raw_lines
+
+                # Mehrzeilige Auswahl als temporaeres BASIC-Programm uebertragen.
+                # Damit funktionieren FOR/NEXT und GOTO/GOSUB wie beim echten
+                # Programm statt als voneinander getrennte Direct-Mode-Befehle.
+                start = min(cursor.selectionStart(), cursor.selectionEnd())
+                end = max(cursor.selectionStart(), cursor.selectionEnd())
+                block = editor.document().findBlock(start)
+                numbered = []
+                fallback_number = 10
+                while block.isValid() and block.position() <= end:
+                    block_start = block.position()
+                    block_end = block_start + len(block.text())
+                    left = max(start, block_start) - block_start
+                    right = min(end, block_end) - block_start
+                    fragment = block.text()[max(0, left):max(0, right)].strip()
+                    if fragment:
+                        number = editor._basic_block_line_number(block)
+                        if number is None:
+                            number = fallback_number
+                        fallback_number = max(fallback_number + 10, int(number) + 10)
+                        numbered.append(f"{int(number)} {fragment}")
+                    if block_end >= end:
+                        break
+                    block = block.next()
+                if not numbered:
+                    raise ViceBinaryMonitorError("Die BASIC-Auswahl ist leer.")
+                return ("NEW",) + tuple(numbered) + ("RUN",)
+
+            if operation in {"program", "program_run"}:
+                source = document.basic_source_for_compiler()
+                program_lines = tuple(
+                    line.rstrip() for line in source.splitlines() if line.strip()
+                )
+                if not program_lines:
+                    raise ViceBinaryMonitorError("Das BASIC-Programm ist leer.")
+                # Ein sauberer Debugtransfer darf keine alten Zeilen im C64-
+                # BASIC-Speicher stehen lassen.
+                commands = ("NEW",) + program_lines
+                if operation == "program_run":
+                    commands += ("RUN",)
+                return commands
+
+            if operation == "reset":
+                # BASIC zuruecksetzen bedeutet bewusst NEW und keinen harten
+                # Maschinenreset. Damit bleiben VICE-Konfiguration und Debug-
+                # Verbindung erhalten.
+                return ("NEW",)
+
+            raise ViceBinaryMonitorError(
+                f"Unbekannte VICE-BASIC-Debugaktion: {operation!r}"
+            )
+
+        def _handle_basic_vice_debug_request(
+            self,
+            document: DocumentEditor,
+            operation: str,
+        ) -> None:
+            if not isinstance(document, DocumentEditor) or not document.is_basic_document:
+                return
+            try:
+                commands = self._vice_debug_commands_for_document(
+                    document, operation
+                )
+            except ViceBinaryMonitorError as exc:
+                self.show_error("VICE BASIC Debug", str(exc))
+                return
+
+            # Wenn bereits ein Binary Monitor lauscht, wird kein weiterer VICE-
+            # Prozess gestartet. Andernfalls wird der konfigurierte x64sc/x64
+            # mit dem Debugmonitor auf 127.0.0.1:6502 gestartet.
+            vice_path = None
+            monitor_running = self._vice_binary_monitor_probe()
+            if not monitor_running:
+                vice_path = self._resolve_vice_for_program_start()
+                if vice_path is None:
+                    return
+
+            # Stage 238: VICE-Debug darf das IDE-Hauptfenster auch waehrend
+            # eines spaeten Qt-Layoutpasses nicht vergroessern.
+            vice_window_size = self._capture_vice_host_window_size()
+            self._vice_debug_window_size = vice_window_size
+
+            labels = {
+                "line": "Zeile in VICE ausführen",
+                "selection": "Auswahl in VICE ausführen",
+                "program": "Programm an VICE übertragen",
+                "program_run": "Programm übertragen + RUN",
+                "reset": "VICE BASIC zurücksetzen",
+            }
+            description = labels.get(str(operation), "VICE BASIC Debug")
+            self.statusBar().showMessage(
+                f"VICE BASIC Debug: {description} ..."
+            )
+            self.log(
+                f"VICE BASIC DEBUG: {description}; "
+                f"Binary Monitor {VICE_BINARY_MONITOR_HOST}:{VICE_BINARY_MONITOR_PORT}"
+            )
+            source_filename = str(document.path) if document.path is not None else ""
+
+            def worker():
+                spawned_process = None
+                try:
+                    if not monitor_running:
+                        command = [
+                            str(vice_path),
+                            "-binarymonitor",
+                            "-binarymonitoraddress",
+                            f"ip4://{VICE_BINARY_MONITOR_HOST}:{VICE_BINARY_MONITOR_PORT}",
+                        ]
+                        options = {
+                            "cwd": str(Path(vice_path).resolve().parent),
+                            "stdin": subprocess.DEVNULL,
+                            "stdout": subprocess.DEVNULL,
+                            "stderr": subprocess.DEVNULL,
+                        }
+                        if os.name == "nt" and hasattr(
+                            subprocess, "CREATE_NEW_PROCESS_GROUP"
+                        ):
+                            options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+                        spawned_process = subprocess.Popen(command, **options)
+
+                        deadline = time.monotonic() + 8.0
+                        connected = False
+                        while time.monotonic() < deadline:
+                            if spawned_process.poll() is not None:
+                                raise ViceBinaryMonitorError(
+                                    "VICE wurde beendet, bevor der Binary Remote Monitor bereit war."
+                                )
+                            try:
+                                with ViceBinaryMonitorClient(timeout=0.35) as probe:
+                                    probe.ping()
+                                    probe.resume()
+                                connected = True
+                                break
+                            except ViceBinaryMonitorError:
+                                time.sleep(0.15)
+                        if not connected:
+                            raise ViceBinaryMonitorError(
+                                "VICE Binary Remote Monitor wurde nicht innerhalb von 8 Sekunden erreichbar.\n"
+                                "Erwartete Adresse: 127.0.0.1:6502"
+                            )
+                        # ROM/KERNAL nach einem frisch gestarteten VICE etwas
+                        # Zeit geben, bis der BASIC-Eingabeprompt bereit ist.
+                        time.sleep(0.85)
+
+                    loaded_screens = 0
+                    screen_warnings = []
+                    with ViceBinaryMonitorClient(timeout=2.5) as client:
+                        for index, basic_line in enumerate(commands):
+                            screen_command = c64_basic_debug_load_screen(basic_line)
+                            if screen_command is not None:
+                                line_number, screen_name = screen_command
+                                from c64basic import (
+                                    C64BasicError,
+                                    load_c64_basic_screen_resource,
+                                )
+                                try:
+                                    resource = load_c64_basic_screen_resource(
+                                        screen_name, source_filename
+                                    )
+                                except C64BasicError as exc:
+                                    raise ViceBinaryMonitorError(str(exc)) from exc
+                                client.load_screen_resource(
+                                    resource.kind, resource.primary, resource.secondary
+                                )
+                                loaded_screens += 1
+                                # Bei einem nummerierten Programm bleibt die
+                                # Zeile als REM erhalten. Spruenge auf diese
+                                # BASIC-Zeilennummer bleiben damit definiert.
+                                if line_number is not None:
+                                    escaped_name = screen_name.replace('"', '""')
+                                    client.feed_basic_line(
+                                        f'{line_number} REM DEBUG LOAD SCREEN "{escaped_name}"'
+                                    )
+                                else:
+                                    client.resume()
+                                screen_warnings.extend(resource.warnings)
+                            else:
+                                client.feed_basic_line(basic_line)
+                            # Nach MON_CMD_EXIT muss der emulierte C64 Zeit
+                            # bekommen, den Keyboard-Puffer abzuarbeiten, bevor
+                            # der naechste Monitorbefehl ihn erneut stoppt.
+                            if index + 1 < len(commands):
+                                time.sleep(0.09)
+
+                    extra = (
+                        f"; {loaded_screens} LOAD-SCREEN-Ressource(n) direkt "
+                        "ueber Binary Monitor geladen"
+                        if loaded_screens else ""
+                    )
+                    if screen_warnings:
+                        extra += "; " + " | ".join(screen_warnings)
+                    self.vice_debug_finished.emit(
+                        document,
+                        True,
+                        f"{description}: {len(commands)} BASIC-Befehl(e) übertragen{extra}.",
+                        spawned_process,
+                    )
+                except (OSError, ViceBinaryMonitorError) as exc:
+                    self.vice_debug_finished.emit(
+                        document,
+                        False,
+                        str(exc),
+                        spawned_process,
+                    )
+
+            thread = threading.Thread(
+                target=worker,
+                name="d64-vice-basic-debug",
+                daemon=True,
+            )
+            self._vice_debug_threads = [
+                item for item in self._vice_debug_threads if item.is_alive()
+            ]
+            self._vice_debug_threads.append(thread)
+            thread.start()
+            self._schedule_vice_host_window_size_restore(vice_window_size)
+
+        def _on_vice_debug_finished(
+            self,
+            document,
+            success: bool,
+            message: str,
+            spawned_process,
+        ) -> None:
+            vice_window_size = getattr(
+                self, "_vice_debug_window_size", self._capture_vice_host_window_size()
+            )
+            if spawned_process is not None:
+                self._vice_debug_processes = [
+                    process for process in self._vice_debug_processes
+                    if process.poll() is None
+                ]
+                if spawned_process.poll() is None:
+                    self._vice_debug_processes.append(spawned_process)
+
+            text = str(message or "")
+            if success:
+                self.log("VICE BASIC DEBUG OK: " + text)
+                # Stage 238: Die vollstaendige Debugmeldung bleibt im Log und
+                # Tooltip. Der temporaere StatusBar-Text bleibt bewusst kurz,
+                # damit auch die QStatusBar keine neue Mindestbreite anfordert.
+                self.statusBar().showMessage("VICE BASIC Debug abgeschlossen", 7000)
+                self.statusBar().setToolTip(text)
+                if isinstance(document, DocumentEditor):
+                    document.assembly_status_label.setText("VICE Debug: abgeschlossen")
+                    document.assembly_status_label.setToolTip(text)
+                self._schedule_vice_host_window_size_restore(vice_window_size)
+                self._vice_debug_window_size = None
+                return
+
+            self.log("VICE BASIC DEBUG FEHLER: " + text)
+            self.statusBar().showMessage("VICE BASIC Debug fehlgeschlagen", 7000)
+            self._schedule_vice_host_window_size_restore(vice_window_size)
+            self._vice_debug_window_size = None
+            self.show_error("VICE BASIC Debug", text)
 
         def _resolve_vice_for_program_start(self) -> Optional[Path]:
             if self.dism_vice_path:
@@ -103451,6 +112013,10 @@ border: 2px solid #2a69aa;
             if vice_path is None:
                 return False
 
+            # Stage 238: F2/Start darf beim Erzeugen des externen VICE-Fensters
+            # die aktuelle d64_dism-Fenstergroesse nicht veraendern.
+            vice_window_size = self._capture_vice_host_window_size()
+
             command = [
                 str(vice_path),
                 "-autostartprgmode",
@@ -103500,6 +112066,7 @@ border: 2px solid #2a69aa;
             self.statusBar().showMessage(
                 f"In VICE gestartet: {output_path.name}"
             )
+            self._schedule_vice_host_window_size_restore(vice_window_size)
             return True
 
         def _launch_amiga_document(
@@ -105594,7 +114161,17 @@ border: 2px solid #2a69aa;
                         _entry["splitter_state"] = ""
                     _entry["splitter_handle_width"] = int(_splitter.handleWidth())
                 if _keyboard is not None:
-                    _entry["keyboard_width"] = int(_keyboard.width())
+                    # Stage 236: die Laufzeitbreite kann durch den rechten
+                    # Dockseparator groesser als die natuerliche Tastaturbreite
+                    # sein. Diese Stretchbreite ist kein eigener Sessionwert;
+                    # beim Restore wird sie erneut aus der Panelbreite abgeleitet.
+                    try:
+                        _keyboard_natural_width = int(
+                            _document._basic_keyboard_natural_width()
+                        )
+                    except Exception:
+                        _keyboard_natural_width = int(_keyboard.width())
+                    _entry["keyboard_width"] = max(1, _keyboard_natural_width)
                     _entry["keyboard_height"] = int(_keyboard.height())
                 if _keyboard_host is not None:
                     _entry["keyboard_host_width"] = int(_keyboard_host.width())
@@ -106398,6 +114975,19 @@ border: 2px solid #2a69aa;
             if keyboard is not None:
                 width = max(1, int(entry.get("keyboard_width", keyboard.width()) or keyboard.width()))
                 height = max(1, int(entry.get("keyboard_height", keyboard.height()) or keyboard.height()))
+
+                # Stage 235: alte Projekt-Sessions koennen eine durch einen
+                # frueheren Layoutfehler aufgeblasene Tastaturbreite enthalten.
+                # Solche Werte duerfen die neue harte BASIC-Panel-Grenze nicht
+                # wieder vergroessern. Kleinere gespeicherte Breiten bleiben
+                # dagegen zulaessig.
+                try:
+                    natural_width = int(document._basic_keyboard_natural_width())
+                except Exception:
+                    natural_width = 0
+                if natural_width > 0:
+                    width = min(width, natural_width)
+
                 keyboard.resize(width, height)
 
             if splitter is not None:
@@ -106455,6 +115045,15 @@ border: 2px solid #2a69aa;
                     )
                 except Exception:
                     pass
+
+            # Stage 236: Nach dem Session-Restore ist die gespeicherte
+            # Tastaturbreite nur noch die natuerliche Ausgangsbreite. Die
+            # tatsaechliche Laufzeitbreite folgt wieder dem rechten Dockseparator.
+            if document.basic_screen_keyboard_visible():
+                document._apply_basic_panel_keyboard_width_limit(True)
+                QTimer.singleShot(
+                    0, document._sync_basic_keyboard_to_panel_width
+                )
 
         def _restore_project_c64_open_editors(self, entries) -> None:
             """Stage ASM 71: C64-BASIC-Editor-Session inklusive exakter Layoutdaten."""
@@ -111528,6 +120127,10 @@ QFileDialog QComboBox QAbstractItemView {
             self.settings.setValue("window/geometry", self.saveGeometry())
             self.settings.setValue("window/state", self.saveState())
             self.settings.setValue("workspace/root", str(self.workspace_root))
+
+            # Stage 233: Ab jetzt wurde der Close akzeptiert. Exception-GUI
+            # stilllegen, bevor Qt Docks/Scenes/QObjects in C++ abbaut.
+            begin_global_exception_shutdown()
             super().closeEvent(event)
 
     app = application or QApplication.instance()
@@ -111538,6 +120141,10 @@ QFileDialog QComboBox QAbstractItemView {
     # QApplication aktivieren. Der Host wird nach Erzeugung des Hauptfensters
     # noch einmal gesetzt, damit der Fehlerdialog sauber modal dazu erscheint.
     install_global_exception_handler(None)
+    try:
+        app.aboutToQuit.connect(begin_global_exception_shutdown)
+    except Exception:
+        pass
 
     app.setOrganizationName(ExplorerWindow.ORGANIZATION)
     app.setApplicationName(ExplorerWindow.APPLICATION)
@@ -112824,6 +121431,34 @@ _ASSEMBLER_SYMBOL = r"[A-Za-z_.$][A-Za-z0-9_.$]*"
 _ASSEMBLER_BRANCHES = frozenset(
     {"BCC", "BCS", "BEQ", "BMI", "BNE", "BPL", "BVC", "BVS"}
 )
+
+# Stage 255:
+# Der MOS 6502/6510 kann bei bedingten Sprüngen nur -128..+127 Bytes
+# relativ verzweigen. Der integrierte Assembler relaxiert weiter entfernte
+# Ziele automatisch zu:
+#
+#     B<inverse> +3
+#     JMP target
+#
+# Beispiel:
+#     BEQ target
+# wird bei Bedarf zu:
+#     BNE +3
+#     JMP target
+#
+# Dadurch bleiben Compiler-Ausgaben auch dann assemblierbar, wenn ein
+# BASIC-Ausdruck/Arrayzugriff einen THEN-/Loop-Block über 127 Bytes anwachsen
+# lässt.
+_ASSEMBLER_BRANCH_INVERSE = {
+    "BCC": "BCS",
+    "BCS": "BCC",
+    "BEQ": "BNE",
+    "BMI": "BPL",
+    "BNE": "BEQ",
+    "BPL": "BMI",
+    "BVC": "BVS",
+    "BVS": "BVC",
+}
 _ASSEMBLER_DIRECTIVE_ALIASES = {
     "org": "org",
     "entry": "entry",
@@ -113579,7 +122214,49 @@ def _layout_assembler(
                 opcode_map,
                 final=final,
             )
-            size = mode_sizes[mode]
+
+            # Stage 255: Long-Branch-Relaxation.
+            #
+            # Ein normaler 6502-Branch ist zwei Bytes lang und erreicht nur
+            # -128..+127 Bytes. Sobald das Ziel bekannt und weiter entfernt
+            # ist, reserviert das Layout fünf Bytes für:
+            #
+            #     inverse branch +3
+            #     JMP absolute
+            #
+            # Da die Layoutberechnung ohnehin bis zur Stabilität iteriert,
+            # werden dadurch verschobene Labels in den Folgedurchläufen
+            # automatisch neu berechnet.
+            if mode == "rel":
+                expression = _assembler_operand_expression(
+                    mode,
+                    statement.operand,
+                    statement.line,
+                )
+                target, unresolved = _evaluate_assembler_expression(
+                    expression,
+                    visible_symbols,
+                    pc,
+                    statement.line,
+                )
+                if not unresolved:
+                    if not 0 <= target <= 0xFFFF:
+                        raise AssemblerError(
+                            "Sprungziel außerhalb des Adressraums.",
+                            statement.line,
+                        )
+                    displacement = (
+                        (target - (pc + 2) + 0x8000) & 0xFFFF
+                    ) - 0x8000
+                    if not -128 <= displacement <= 127:
+                        mode = "rel_long"
+                        size = 5
+                    else:
+                        size = mode_sizes["rel"]
+                else:
+                    size = mode_sizes["rel"]
+            else:
+                size = mode_sizes[mode]
         elif statement.kind != "empty":
             raise AssemblerError(
                 f"Unbekannte Direktive: {statement.operation}.",
@@ -113797,9 +122474,62 @@ def assemble_mos6510_source(
         if statement.kind != "instruction":
             continue
 
-        instruction_count += 1
         if first_instruction is None:
             first_instruction = item.address
+
+        # Stage 255: Ein zu weiter bedingter Branch wird als zwei echte
+        # Maschineninstruktionen ausgegeben:
+        #
+        #   inverse Branch +3
+        #   JMP absolute target
+        #
+        # Das Ziel des kurzen inversen Branches liegt dadurch immer direkt
+        # hinter dem drei Byte langen JMP.
+        if item.mode == "rel_long":
+            instruction_count += 2
+            expression = _assembler_operand_expression(
+                "rel",
+                statement.operand,
+                statement.line,
+            )
+            value, unresolved = _evaluate_assembler_expression(
+                expression,
+                layout.symbols,
+                item.address,
+                statement.line,
+            )
+            if unresolved:
+                names = ", ".join(sorted(unresolved, key=str.casefold))
+                raise AssemblerError(
+                    f"Unbekanntes Symbol: {names}.",
+                    statement.line,
+                )
+            if not 0 <= value <= 0xFFFF:
+                raise AssemblerError(
+                    "Sprungziel außerhalb des Adressraums.",
+                    statement.line,
+                )
+
+            inverse = _ASSEMBLER_BRANCH_INVERSE.get(
+                statement.operation.upper()
+            )
+            if inverse is None:
+                raise AssemblerError(
+                    f"Long-Branch für {statement.operation} nicht unterstützt.",
+                    statement.line,
+                )
+
+            inverse_opcode = opcode_map[(inverse, "rel")]
+            jmp_opcode = opcode_map[("JMP", "abs")]
+
+            write_byte(item.address, inverse_opcode, statement.line)
+            write_byte(item.address + 1, 3, statement.line)
+            write_byte(item.address + 2, jmp_opcode, statement.line)
+            write_byte(item.address + 3, value & 0xFF, statement.line)
+            write_byte(item.address + 4, (value >> 8) & 0xFF, statement.line)
+            continue
+
+        instruction_count += 1
         opcode = opcode_map[(statement.operation, item.mode)]
         write_byte(item.address, opcode, statement.line)
         if item.mode in {"imp", "acc"}:
@@ -113826,8 +122556,9 @@ def assemble_mos6510_source(
                 (value - (item.address + 2) + 0x8000) & 0xFFFF
             ) - 0x8000
             if not -128 <= displacement <= 127:
+                # Sollte nach der Layout-Relaxation nicht mehr auftreten.
                 raise AssemblerError(
-                    f"Relativer Sprung nach ${value:04X} ist außer Reichweite "
+                    f"Interner Long-Branch-Fehler nach ${value:04X} "
                     f"({displacement:+d} Bytes).",
                     statement.line,
                 )
@@ -114801,7 +123532,7 @@ def _compile_cli(args: argparse.Namespace) -> int:
             getattr(args, "c64_pack_search", "balanced")
         )
         if _cli_packer_mode != "none":
-            from c64packer import C64PackerError, pack_c64_program
+            #from c64packer import C64PackerError, pack_c64_program
             try:
                 assembled, _packer_stats = pack_c64_program(
                     assembled,

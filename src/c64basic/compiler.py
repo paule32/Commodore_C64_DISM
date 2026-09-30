@@ -34,6 +34,17 @@ class C64BasicCompileResult:
 
 
 @dataclass(frozen=True)
+class C64BasicScreenResource:
+    """Dekodierte LOAD-SCREEN-Ressource fuer Compiler und VICE-Debugpfad."""
+
+    path: Path
+    kind: str
+    primary: bytes
+    secondary: bytes
+    warnings: Tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class _ArrayInfo:
     name: str
     symbol: str
@@ -56,7 +67,7 @@ class _ArrayInfo:
 Token = Tuple[str, object]
 Node = Tuple
 
-_FLOAT_FUNCTIONS = {"ABS", "INT", "SGN", "PEEK", "LEN", "VAL", "ASC"}
+_FLOAT_FUNCTIONS = {"ABS", "INT", "SGN", "PEEK", "RND", "LEN", "VAL", "ASC"}
 _STRING_FUNCTIONS = {"CHR$", "STR$"}
 _COMPARISON_OPERATORS = ("<=", ">=", "<>", "=", "<", ">")
 
@@ -655,6 +666,78 @@ def _decode_screen_resource_json(data: bytes) -> Tuple[bytes, bytes]:
     raise ValueError("Screen-JSON enthält keine Zell-/Farbwerte.")
 
 
+def _screen_resource_path_for_source(name: str, source_filename: str = "") -> Path:
+    candidate = Path(str(name or "")).expanduser()
+    if candidate.is_absolute():
+        return candidate.resolve()
+    source_name = str(source_filename or "").strip()
+    if source_name and not (source_name.startswith("<") and source_name.endswith(">")):
+        try:
+            base = Path(source_name).expanduser().resolve().parent
+        except OSError:
+            base = Path(source_name).expanduser().parent
+    else:
+        base = Path.cwd()
+    return (base / candidate).resolve()
+
+
+def load_c64_basic_screen_resource(
+    file_name: str,
+    source_filename: str = "",
+    *,
+    line: Optional[int] = None,
+) -> C64BasicScreenResource:
+    """Liest eine ``LOAD SCREEN``-Datei mit exakt derselben Semantik wie F2.
+
+    Diese gemeinsame Dekodierung wird sowohl vom Release-Compiler als auch
+    vom VICE-Binary-Monitor-Debugpfad benutzt. Dadurch interpretiert Debug
+    ``*.scr``/JSON und ``*.px16``/``*.pixel``/``*.pix`` nicht anders als der
+    eigentliche C64-BASIC-Compiler.
+    """
+    path = _screen_resource_path_for_source(file_name, source_filename)
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        raise C64BasicError(
+            f"Screen-Datei konnte nicht gelesen werden: {path}: {exc}", line
+        ) from exc
+
+    warnings: List[str] = []
+    try:
+        suffix = path.suffix.casefold()
+        if suffix in _C64_PIXEL_EXTENSIONS or len(data) == _C64_PIXEL_PACKED_SIZE:
+            pixels = _decode_pixel_screen_resource_bytes(data)
+            bitmap, screen, reduced_cells = _convert_pixel_screen_to_hires(pixels)
+            if reduced_cells:
+                warnings.append(
+                    f"{path.name}: {reduced_cells} 8x8-Zelle(n) enthielten mehr als "
+                    "zwei Farben und wurden für 320x200-HiRes auf je zwei Farben reduziert."
+                )
+            return C64BasicScreenResource(
+                path=path,
+                kind="bitmap",
+                primary=bitmap,
+                secondary=screen,
+                warnings=tuple(warnings),
+            )
+
+        if suffix == ".json" or data.lstrip().startswith(b"{"):
+            chars, colors = _decode_screen_resource_json(data)
+        else:
+            chars, colors = _decode_screen_resource_bytes(data)
+        return C64BasicScreenResource(
+            path=path,
+            kind="text",
+            primary=bytes(_petscii_to_screen_code(value) for value in chars),
+            secondary=colors,
+            warnings=(),
+        )
+    except (UnicodeError, ValueError, json.JSONDecodeError) as exc:
+        raise C64BasicError(
+            f"Ungültige Screen-Datei {path.name}: {exc}", line
+        ) from exc
+
+
 class _BasicCompiler:
     AUTO_PRINT_LITERAL_MARKER = ";@BASIC_AUTO_PRINT_LITERAL "
 
@@ -1009,6 +1092,11 @@ class _BasicCompiler:
             self.emit("    lda ($FB),y")
             self.emit("    ldx #$00")
             self.emit("    jsr __basic_int_to_fac")
+        elif name == "RND":
+            # C64 BASIC V2 ROM: FAC = RND(FAC), $E097-$E0F8.
+            # Das Argument wurde bereits in den FAC kompiliert. Damit bleiben
+            # RND(1), RND(0) und negative Seed-Werte kompatibel zum Original.
+            self.emit("    jsr $E097")
 
     def compile_special_numeric_function(self, text: str, line: int) -> bool:
         match = re.fullmatch(r"(?is)\s*(LEN|VAL|ASC)\s*\((.*)\)\s*", text)
@@ -1292,6 +1380,23 @@ class _BasicCompiler:
             self.emit("    jsr __basic_newline")
 
     def compile_numeric_store(self, name: str, indices: Tuple[str, ...], line: int) -> None:
+        # Stage 254:
+        # C64 BASIC V2 reserviert die numerischen Systemvariablen ST (STATUS)
+        # und TI (TIME). Da nur die ersten zwei Zeichen eines Variablennamens
+        # signifikant sind, sind auch numerische Namen wie START oder TIMER
+        # Schreibzugriffe auf ST bzw. TI und würden im echten BASIC-Interpreter
+        # mit ?SYNTAX ERROR abbrechen. Der interne Compiler weist solche
+        # Schreibzugriffe nun bereits beim Übersetzen zurück.
+        if not indices:
+            source_name = str(name).upper()
+            base_name = source_name.rstrip("%#!")
+            if not _is_string_name(source_name) and base_name[:2] in {"ST", "TI"}:
+                raise C64BasicError(
+                    f"{name} ist in C64 BASIC V2 eine schreibgeschützte "
+                    "Systemvariable (ST/TI).",
+                    line,
+                )
+
         if indices:
             info = self.ensure_array(name, len(indices), line)
             if info.kind == "string":
@@ -1362,18 +1467,30 @@ class _BasicCompiler:
         condition_text = match.group(1).strip()
         action = match.group(2).strip()
         comparison = _find_top_level_comparison(condition_text)
+
+        # Stage 252:
+        # Ein einzelnes BEQ über den kompletten THEN-Code kann beim 6510 nur
+        # -128..+127 Bytes überspringen. Insbesondere Array-Zuweisungen können
+        # deutlich größer werden. Deshalb nur noch über einen nahen THEN-Label
+        # verzweigen und den langen False-Weg per absolutem JMP überspringen.
+        execute = self.new_label("if_then")
         skip = self.new_label("if_skip")
+
         if comparison is not None and (
             _looks_like_string_expression(comparison[0])
             or _looks_like_string_expression(comparison[2])
         ):
             self.compile_string_compare(*comparison, line)
             self.emit("    cmp #$00")
-            self.emit(f"    beq {skip}")
+            self.emit(f"    bne {execute}")
+            self.emit(f"    jmp {skip}")
         else:
             self.compile_numeric_text(condition_text, line)
             self.emit("    lda $61")            # FAC exponent: 0 means numeric zero
-            self.emit(f"    beq {skip}")
+            self.emit(f"    bne {execute}")
+            self.emit(f"    jmp {skip}")
+
+        self.emit(f"{execute}:")
         if re.fullmatch(r"\d+", action):
             target = int(action)
             self.referenced_line_numbers.append((target, line))
@@ -1650,60 +1767,25 @@ class _BasicCompiler:
         self.emit("    jsr $FFC9")
 
     def _screen_resource_path(self, name: str) -> Path:
-        candidate = Path(name).expanduser()
-        if candidate.is_absolute():
-            return candidate.resolve()
-        source_name = str(self.filename or "").strip()
-        if source_name and not (source_name.startswith("<") and source_name.endswith(">")):
-            try:
-                base = Path(source_name).expanduser().resolve().parent
-            except OSError:
-                base = Path(source_name).expanduser().parent
-        else:
-            base = Path.cwd()
-        return (base / candidate).resolve()
+        return _screen_resource_path_for_source(name, self.filename)
 
     def add_screen_resource(self, file_name: str, line: int) -> Tuple[str, str, bytes, bytes]:
-        path = self._screen_resource_path(file_name)
-        key = str(path).casefold()
+        resource_info = load_c64_basic_screen_resource(
+            file_name, self.filename, line=line
+        )
+        key = str(resource_info.path).casefold()
         existing = self.screen_resources.get(key)
         if existing is not None:
             return existing
-        try:
-            data = path.read_bytes()
-        except OSError as exc:
-            raise C64BasicError(
-                f"Screen-Datei konnte nicht gelesen werden: {path}: {exc}", line
-            ) from exc
-        try:
-            suffix = path.suffix.casefold()
-            if suffix in _C64_PIXEL_EXTENSIONS or len(data) == _C64_PIXEL_PACKED_SIZE:
-                pixels = _decode_pixel_screen_resource_bytes(data)
-                bitmap, screen, reduced_cells = _convert_pixel_screen_to_hires(pixels)
-                kind = "bitmap"
-                primary, secondary = bitmap, screen
-                if reduced_cells:
-                    self.warnings.append(
-                        f"{path.name}: {reduced_cells} 8x8-Zelle(n) enthielten mehr als "
-                        "zwei Farben und wurden für 320x200-HiRes auf je zwei Farben reduziert."
-                    )
-            elif suffix == ".json" or data.lstrip().startswith(b"{"):
-                chars, colors = _decode_screen_resource_json(data)
-                kind = "text"
-                primary = bytes(_petscii_to_screen_code(value) for value in chars)
-                secondary = colors
-            else:
-                chars, colors = _decode_screen_resource_bytes(data)
-                kind = "text"
-                primary = bytes(_petscii_to_screen_code(value) for value in chars)
-                secondary = colors
-        except (UnicodeError, ValueError, json.JSONDecodeError) as exc:
-            raise C64BasicError(
-                f"Ungültige Screen-Datei {path.name}: {exc}", line
-            ) from exc
 
+        self.warnings.extend(resource_info.warnings)
         label = self.new_label("screen_resource")
-        resource = (kind, label, primary, secondary)
+        resource = (
+            resource_info.kind,
+            label,
+            resource_info.primary,
+            resource_info.secondary,
+        )
         self.screen_resources[key] = resource
         self.screen_resource_order.append(key)
         return resource

@@ -1,5 +1,5 @@
 ** END HEADER -- do not remove this line
-// Generated on 25.09.2026
+// Generated on 26.09.2026
 //
 PARAMETER bmodal
 LOCAL B
@@ -189,7 +189,9 @@ CLASS Form1 OF FORM
         ? "1: " + 101.42
         ? "2: " + INT(101.42)
         ? "3: " + Ausdruck
-        ? !("Das ist Gut")
+        STORE "Zeichenstring" TO SpeicherVar
+        ? "4: " + SpeicherVar
+        ? "5: " + !($(SpeicherVar, 8, 6))
         return
 
 ENDCLASS

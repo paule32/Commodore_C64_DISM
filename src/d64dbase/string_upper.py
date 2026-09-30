@@ -44,7 +44,8 @@ def _lower_mapping_rows():
 
 
 def emit_upper_copy(source, destination, is64, prefix, string_type, *,
-                    table_label=None, include_table=False):
+                    table_label=None, include_table=False,
+                    shadow_space_reserved=False):
     """Allocate an independent result string and uppercase it in the DLL."""
     ptr, acc = ('qword', 'rax') if is64 else ('dword', 'eax')
     L = lambda name: prefix + '_' + name
@@ -56,12 +57,15 @@ def emit_upper_copy(source, destination, is64, prefix, string_type, *,
         '    add eax, 1',
     ]
     if is64:
-        lines += [
-            '    mov ecx, eax',
-            '    sub rsp, 40',
-            '    call __dbase_malloc',
-            '    add rsp, 40',
-        ]
+        lines += ['    mov ecx, eax']
+        if shadow_space_reserved:
+            lines += ['    call __dbase_malloc']
+        else:
+            lines += [
+                '    sub rsp, 40',
+                '    call __dbase_malloc',
+                '    add rsp, 40',
+            ]
     else:
         lines += ['    push eax', '    call __dbase_malloc', '    add esp, 4']
     lines += [
@@ -69,7 +73,11 @@ def emit_upper_copy(source, destination, is64, prefix, string_type, *,
         f'    jne {L("allocated")}',
     ]
     if is64:
-        lines += ['    mov ecx, 8', '    sub rsp, 40', '    call ExitProcess']
+        lines += ['    mov ecx, 8']
+        if shadow_space_reserved:
+            lines += ['    call ExitProcess']
+        else:
+            lines += ['    sub rsp, 40', '    call ExitProcess']
     else:
         lines += ['    push 8', '    call ExitProcess']
     lines += [
@@ -86,10 +94,15 @@ def emit_upper_copy(source, destination, is64, prefix, string_type, *,
             '    add edx, 1',
             f'    mov r8, qword ptr [{source}_ptr]',
             f'    mov r9d, dword ptr [{source}_len]',
-            '    sub rsp, 40',
-            '    call __dbase_upper_buffer',
-            '    add rsp, 40',
         ]
+        if shadow_space_reserved:
+            lines += ['    call __dbase_upper_buffer']
+        else:
+            lines += [
+                '    sub rsp, 40',
+                '    call __dbase_upper_buffer',
+                '    add rsp, 40',
+            ]
     else:
         lines += [
             f'    mov ecx, dword ptr [{source}_len]',
@@ -106,7 +119,11 @@ def emit_upper_copy(source, destination, is64, prefix, string_type, *,
         ]
     lines += ['    cmp eax, -1', f'    jne {L("converted")}']
     if is64:
-        lines += ['    mov ecx, 13', '    sub rsp, 40', '    call ExitProcess']
+        lines += ['    mov ecx, 13']
+        if shadow_space_reserved:
+            lines += ['    call ExitProcess']
+        else:
+            lines += ['    sub rsp, 40', '    call ExitProcess']
     else:
         lines += ['    push 13', '    call ExitProcess']
     lines += [

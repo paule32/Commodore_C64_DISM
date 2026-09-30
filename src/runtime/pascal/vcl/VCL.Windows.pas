@@ -101,13 +101,16 @@ begin
 
         if uMsg = WM_NCDESTROY then
         begin
+            // The HWND does not own the Pascal object.  TApplication owns
+            // FAppForm and releases it from TApplication.Destroy.
+            // Freeing AppForm here leaves TApplication.FAppForm dangling and
+            // causes Application.Free to free an already destroyed object.
             SetWindowLongA(
                 winhwnd,
                 GWL_USERDATA,
                 0
             );
             AppForm.FWinHandle := 0;
-            AppForm.Free;
             Exit;
         end;
         
