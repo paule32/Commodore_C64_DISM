@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IC SVG Bibliothek</title>
+<style>
+:root {
+  color-scheme: dark;
+  --bg: #0d0f12;
+  --panel: #15191f;
+  --panel2: #101318;
+  --text: #f2f4f7;
+  --muted: #9aa4b2;
+  --accent: #65d7ff;
+  --accent2: #ffd84a;
+  --border: #2a3440;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: Arial, Helvetica, sans-serif;
+}
+main {
+  max-width: 1050px;
+  margin: 0 auto;
+  padding: 28px 20px 48px;
+}
+h1 { margin: 0 0 8px; color: var(--accent2); }
+.subtitle { margin: 0 0 24px; color: var(--muted); }
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(270px, 360px) 1fr;
+  gap: 22px;
+}
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 18px;
+}
+label {
+  display: block;
+  margin: 0 0 7px;
+  color: var(--muted);
+  font-size: 13px;
+}
+select, input {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel2);
+  color: var(--text);
+  padding: 10px;
+  font-size: 14px;
+}
+.field { margin-bottom: 18px; }
+
+.rotations {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+button {
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: #1b222b;
+  color: var(--text);
+  padding: 10px 7px;
+  cursor: pointer;
+}
+button:hover { border-color: var(--accent); }
+button.active {
+  background: #163343;
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.preview-wrap {
+  min-height: 360px;
+  display: grid;
+  place-items: center;
+  background: #000;
+  border-radius: 9px;
+  overflow: hidden;
+  padding: 18px;
+}
+#icImage {
+  display: block;
+  max-width: 100%;
+  max-height: 520px;
+  object-fit: contain;
+}
+.meta {
+  margin-top: 15px;
+  color: var(--muted);
+  line-height: 1.55;
+}
+.meta strong { color: var(--text); }
+
+.code-panel { margin-top: 22px; }
+code, pre {
+  font-family: Consolas, "Courier New", monospace;
+}
+pre {
+  margin: 8px 0 0;
+  background: #090b0e;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 13px;
+  overflow-x: auto;
+  color: #d7e7ef;
+}
+.api-url {
+  color: var(--accent);
+  word-break: break-all;
+}
+.status {
+  min-height: 20px;
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 13px;
+}
+@media (max-width: 760px) {
+  .layout { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+<main>
+  <h1>IC SVG Bibliothek</h1>
+  <p class="subtitle">Komponenten direkt über <code>api/ic.php</code> anzeigen.</p>
+
+  <div class="layout">
+    <section class="panel">
+      <div class="field">
+        <label for="component">Komponente</label>
+        <select id="component"></select>
+      </div>
+
+      <div class="field">
+        <label>Ausrichtung</label>
+        <div class="rotations" id="rotations">
+          <button type="button" data-rotation="0">0°</button>
+          <button type="button" data-rotation="90">90°</button>
+          <button type="button" data-rotation="180">180°</button>
+          <button type="button" data-rotation="270">270°</button>
+        </div>
+      </div>
+
+      <div class="meta">
+        <div><strong>ID:</strong> <span id="componentId">–</span></div>
+        <div><strong>Name:</strong> <span id="componentName">–</span></div>
+        <div><strong>Beschreibung:</strong> <span id="componentDescription">–</span></div>
+      </div>
+
+      <div class="status" id="status"></div>
+    </section>
+
+    <section class="panel">
+      <div class="preview-wrap">
+        <img id="icImage" alt="IC SVG">
+      </div>
+    </section>
+  </div>
+
+  <section class="panel code-panel">
+    <label>Direkter API-Aufruf</label>
+    <div class="api-url" id="apiUrl"></div>
+
+    <label style="margin-top:16px">HTML-Einbindung</label>
+    <pre id="htmlCode"></pre>
+  </section>
+</main>
+
+<script>
+(() => {
+  const API = 'api/ic.php';
+
+  const componentSelect = document.getElementById('component');
+  const image = document.getElementById('icImage');
+  const status = document.getElementById('status');
+  const apiUrl = document.getElementById('apiUrl');
+  const htmlCode = document.getElementById('htmlCode');
+  const buttons = [...document.querySelectorAll('[data-rotation]')];
+
+  const componentId = document.getElementById('componentId');
+  const componentName = document.getElementById('componentName');
+  const componentDescription = document.getElementById('componentDescription');
+
+  let components = [];
+  let rotation = '0';
+
+  function getSelectedComponent() {
+    return components.find(c => c.id === componentSelect.value) || components[0];
+  }
+
+  function updateView() {
+    const c = getSelectedComponent();
+    if (!c) return;
+
+    if (!c.rotations.includes(rotation)) {
+      rotation = c.rotations[0] || '0';
+    }
+
+    buttons.forEach(btn => {
+      const buttonRotation = String(btn.dataset.rotation);
+      const available = c.rotations.includes(buttonRotation);
+      btn.disabled = !available;
+      btn.classList.toggle('active', buttonRotation === rotation);
+    });
+
+    const src = `${API}?id=${encodeURIComponent(c.id)}&rotation=${encodeURIComponent(rotation)}`;
+    image.src = src;
+    image.alt = `${c.name}, ${rotation} Grad`;
+
+    componentId.textContent = c.id;
+    componentName.textContent = c.name;
+    componentDescription.textContent = c.description || '–';
+
+    apiUrl.textContent = src;
+    htmlCode.textContent =
+      `<img src="${src}" alt="${c.name}">`;
+
+    const pageUrl = new URL(window.location.href);
+    pageUrl.searchParams.set('id', c.id);
+    pageUrl.searchParams.set('rotation', rotation);
+    history.replaceState(null, '', pageUrl);
+  }
+
+  buttons.forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (!btn.disabled) {
+        rotation = btn.dataset.rotation;
+        updateView();
+      }
+    });
+  });
+
+  componentSelect.addEventListener('change', updateView);
+
+  image.addEventListener('error', () => {
+    status.textContent = 'SVG konnte nicht über die API geladen werden.';
+  });
+
+  image.addEventListener('load', () => {
+    status.textContent = '';
+  });
+
+  async function init() {
+    try {
+      const response = await fetch(`${API}?action=list`, { cache: 'no-store' });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+      const data = await response.json();
+      components = Array.isArray(data.components) ? data.components : [];
+
+      // PHP/JSON kann numerisch aussehende Objekt-Keys als Zahlen liefern.
+      // Für die Button-Logik vereinheitlichen wir Rotationen immer auf Strings.
+      components = components.map(c => ({
+        ...c,
+        rotations: Array.isArray(c.rotations)
+          ? c.rotations.map(value => String(value))
+          : ['0']
+      }));
+
+      if (!components.length) throw new Error('Keine Komponenten gefunden.');
+
+      componentSelect.innerHTML = '';
+      for (const c of components) {
+        const option = document.createElement('option');
+        option.value = c.id;
+        option.textContent = `${c.name} (${c.id})`;
+        componentSelect.appendChild(option);
+      }
+
+      const params = new URLSearchParams(window.location.search);
+      const requestedId = params.get('id');
+      const requestedRotation = params.get('rotation');
+
+      if (requestedId && components.some(c => c.id === requestedId)) {
+        componentSelect.value = requestedId;
+      }
+
+      if (['0', '90', '180', '270'].includes(requestedRotation)) {
+        rotation = requestedRotation;
+      }
+
+      updateView();
+    } catch (err) {
+      status.textContent = `API-Fehler: ${err.message}`;
+    }
+  }
+
+  init();
+})();
+</script>
+</body>
+</html>

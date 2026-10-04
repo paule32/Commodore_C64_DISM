@@ -1,0 +1,19 @@
+Primary references used for the new stage:
+
+Texas Instruments CD4013B – CMOS Dual D-Type Flip-Flop
+https://www.ti.com/product/CD4013B
+
+Texas Instruments CD4017B / CD4022B – CMOS Counter/Dividers
+https://www.ti.com/product/CD4017B
+
+Texas Instruments CD4020B / CD4024B / CD4040B – Ripple-Carry Binary Counter/Dividers
+https://www.ti.com/product/CD4020B
+
+Texas Instruments CD4026B / CD4033B – Decade Counter / 7-Segment Decoder
+https://www.ti.com/product/CD4026B
+
+Texas Instruments CD4051B / CD4052B / CD4053B – Analog Multiplexers/Demultiplexers
+https://www.ti.com/lit/ds/symlink/cd4053b.pdf
+
+Texas Instruments CD4511B – BCD-to-7-Segment Latch Decoder Driver
+https://www.ti.com/product/CD4511B

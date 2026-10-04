@@ -13,6 +13,9 @@
 
 extern "C" {
 
+// Stage 271: zusaetzlicher Spiegel in das Workstation-DEBUG-Fenster.
+void d64_workstation_debug_mirror(const char *text, DWORD length);
+
 DLL_API void  _jit_print_newline() { _jit_print_text("\n"); }
 DLL_API char* _jit_dynstring_from_cstr(const char* text);
 
@@ -47,9 +50,11 @@ unsigned int itoa10(int value, char *buffer)
 
 DLL_API VOID _jit_print_char(int ch)
 {
+    const char output = static_cast<char>(ch & 0xff);
     DWORD  written;
     HANDLE h = p_GetStdHandle(STD_OUTPUT_HANDLE);
-    p_WriteFile(h, &ch, 1, &written, 0);
+    p_WriteFile(h, &output, 1, &written, 0);
+    d64_workstation_debug_mirror(&output, 1);
 }
 
 DLL_API VOID _jit_print_double(double value)
@@ -73,6 +78,7 @@ DLL_API VOID _jit_print_double(double value)
 
         DWORD written;
         p_WriteFile(h, &c, 1, &written, nullptr);
+        d64_workstation_debug_mirror(&c, 1);
         frac -= digit;
     }
 }
@@ -86,6 +92,7 @@ DLL_API VOID _jit_print_int(int value)
     HANDLE   h = p_GetStdHandle(STD_OUTPUT_HANDLE);
 
     p_WriteFile(h, buffer, len, &written, 0);
+    d64_workstation_debug_mirror(buffer, static_cast<DWORD>(len));
     //ExitProcess(1);
 }
 

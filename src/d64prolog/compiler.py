@@ -272,6 +272,9 @@ class _Parser:
         self.tokens = _tokenize(source, filename)
         self.index = 0
         self._anonymous_counter = 0
+        # Stage 281: SWI-style top-level directives (:- Goal.) are kept
+        # separately from interactive ?- queries and ordinary clauses.
+        self.startup_queries: List[PrologQuery] = []
 
     @property
     def current(self) -> PrologToken:
@@ -296,6 +299,14 @@ class _Parser:
                 goals = self.parse_goal_list()
                 self.take("DOT")
                 queries.append(PrologQuery(tuple(goals), token.line))
+                continue
+            if self.current.kind == "RULE":
+                # SWI-compatible source directive, e.g.
+                #   :- set_stream(user_output, encoding(cp1252)).
+                token = self.take("RULE")
+                goals = self.parse_goal_list()
+                self.take("DOT")
+                self.startup_queries.append(PrologQuery(tuple(goals), token.line))
                 continue
             # dBase2Many-PROLOG Stage 56 syntax:
             #     _apfel = "Ein Apfel ist gesund".
@@ -799,10 +810,49 @@ def _rewrite_knowledge_syntax(
     return tuple(rewritten_clauses), tuple(rewritten_queries)
 
 
-def parse_prolog(source: str, *, filename: str = "<PROLOG>") -> Tuple[Tuple[PrologClause, ...], Tuple[PrologQuery, ...]]:
-    clauses, queries = _Parser(source, filename).parse()
+def parse_prolog_program(
+    source: str,
+    *,
+    filename: str = "<PROLOG>",
+) -> Tuple[Tuple[PrologClause, ...], Tuple[PrologQuery, ...], Tuple[PrologQuery, ...]]:
+    """Parse clauses, interactive queries and startup directives.
+
+    Stage 281 also treats the two console-configuration predicates as
+    startup directives when they appear as standalone source statements.
+    This intentionally makes the already used d64 syntax
+    ``set_stream(...).`` useful at process startup while also accepting the
+    SWI form ``:- set_stream(...).``.
+    """
+    parser = _Parser(source, filename)
+    clauses, queries = parser.parse()
     clauses = _resolve_named_knowledge_assignments(clauses, filename=filename)
-    return _rewrite_knowledge_syntax(clauses, queries, filename=filename)
+    clauses, queries = _rewrite_knowledge_syntax(clauses, queries, filename=filename)
+
+    startup = list(parser.startup_queries)
+    remaining: List[PrologClause] = []
+    startup_signatures = {("set_stream", 2), ("set_console_codepage", 1)}
+    for clause in clauses:
+        if clause.head.kind == "atom":
+            key = (str(clause.head.value), 0)
+        elif clause.head.kind == "compound":
+            key = (str(clause.head.value), len(clause.head.args))
+        else:
+            key = ("", -1)
+        if not clause.body and key in startup_signatures:
+            startup.append(PrologQuery((clause.head,), clause.line))
+        else:
+            remaining.append(clause)
+
+    # Apply the same knowledge-value rewrite to explicit directives.
+    _unused, rewritten_startup = _rewrite_knowledge_syntax(
+        (), tuple(startup), filename=filename
+    )
+    return tuple(remaining), tuple(queries), tuple(rewritten_startup)
+
+
+def parse_prolog(source: str, *, filename: str = "<PROLOG>") -> Tuple[Tuple[PrologClause, ...], Tuple[PrologQuery, ...]]:
+    clauses, queries, _startup = parse_prolog_program(source, filename=filename)
+    return clauses, queries
 
 
 # ---------------------------------------------------------------------------
@@ -1209,7 +1259,9 @@ class PrologCompiler:
         self.is64 = self.target == "pe64"
         self.is_gui = self.windows_application_mode == "GUI"
         self.verbose = bool(verbose)
-        user_clauses, self.queries = parse_prolog(self.source, filename=self.filename)
+        user_clauses, self.queries, self.startup_queries = parse_prolog_program(
+            self.source, filename=self.filename
+        )
         self.user_clauses = tuple(user_clauses)
         self.clauses = _with_prolog_standard_library(self.user_clauses)
         self.resolver = _Resolver(self.clauses, filename=self.filename)
@@ -1339,6 +1391,7 @@ class PrologCompiler:
         emitter = PrologRuntimeEmitter(
             self.clauses,
             self.queries,
+            startup_queries=self.startup_queries,
             target=self.target,
             mode=self.windows_application_mode,
             filename=self.filename,
@@ -1401,8 +1454,18 @@ class PrologCompiler:
         if not self.is_gui:
             self.notes.append(
                 "Interaktive Queries: repl/0 startet den Console-Top-Level; nach einer Loesung "
-                "fordert ';' die naechste Alternative an, ENTER beendet die aktuelle Suche. "
-                "Ohne ?-Query und ohne main/0 startet die EXE automatisch im REPL."
+                "fordert ENTER die naechste Alternative an, q + ENTER beendet die aktuelle Suche "
+                "und kehrt zum ?-Prompt zurueck. ';' sowie n/r/SPACE/TAB bleiben als "
+                "SWI-kompatible Redo-Aliase erhalten. Ohne ?-Query und ohne main/0 startet die EXE "
+                "automatisch im REPL."
+            )
+            self.notes.append(
+                "SWI-Console-Encoding: set_stream(user_input, encoding(utf8)) und "
+                "set_stream(user_output, encoding(utf8)) werden fuer die Standard-Console-Streams "
+                "unterstuetzt. Stage 281 fuehrt :- set_stream(...). sowie die d64-Kurzform "
+                "set_stream(...). bereits beim Programmstart aus. Zusaetzlich setzt "
+                "set_console_codepage/1 eine numerische Windows-Codepage fuer Ein- und Ausgabe, "
+                "z.B. set_console_codepage(65001)."
             )
         else:
             self.notes.append(

@@ -103,9 +103,13 @@ BUILD_VAR_MAX = 256
 BUILTIN_NAMES = (
     "[]", ".", ",", ";", ":-", "true", "false", "fail", "!", "=", "\\=", "==", "is",
     "<", "=<", ">", ">=", "+", "-", "*", "/", "mod",
-    "write", "writeln", "nl", "var", "nonvar", "atom", "integer", "float", "number", "string",
+    "write", "writeln", "d64_eval", "nl", "var", "nonvar", "atom", "integer", "float", "number", "string",
     "assert", "asserta", "assertz", "retract", "repl", "halt", "quit",
     "gc", "garbage_collect", "verbose",
+    # SWI-compatible console stream encoding subset plus a d64 Windows helper.
+    "set_stream", "set_console_codepage", "encoding",
+    "user_input", "user_output", "user_error", "current_input", "current_output",
+    "utf8", "ascii", "iso_latin_1", "text", "cp1252", "windows_1252",
     "database_open", "database_close", "database_save", "database_save_as",
     "database_select", "current_database", "database_assert", "database_asserta",
     "database_assertz", "database_retract", "database_modified", "with_database",
@@ -199,9 +203,10 @@ class PrologRuntimeEmitter:
         conjunctions and lists.
     """
 
-    def __init__(self, clauses, queries, *, target: str, mode: str, filename: str, verbose: bool = False) -> None:
+    def __init__(self, clauses, queries, *, startup_queries=(), target: str, mode: str, filename: str, verbose: bool = False) -> None:
         self.clauses = tuple(clauses)
         self.queries = tuple(queries)
+        self.startup_queries = tuple(startup_queries or ())
         self.filename = filename
         self.arch = _Arch(str(target).casefold() == "pe64")
         self.is_gui = str(mode).casefold() == "gui"
@@ -248,6 +253,13 @@ class PrologRuntimeEmitter:
                     if term.kind == "compound":
                         values.append(str(term.value))
         for query in self.queries:
+            for goal in query.goals:
+                for term in self._walk(goal):
+                    if term.kind in {"atom", "string"}:
+                        values.append(str(term.value))
+                    if term.kind == "compound":
+                        values.append(str(term.value))
+        for query in self.startup_queries:
             for goal in query.goals:
                 for term in self._walk(goal):
                     if term.kind in {"atom", "string"}:
@@ -455,6 +467,33 @@ class PrologRuntimeEmitter:
                 else:
                     a.e(f"    mov eax, {label}")
                     a.e(f"    mov dword ptr [{ar.di}+{vi*4}], eax")
+            a.e("    mov eax, ebx")
+            self._epilogue(a, save=(ar.bx,))
+            a.e()
+        return specs
+
+    def _emit_startup_query_builders(self, a: _A) -> List[Tuple[str, object]]:
+        """Build silent startup goals (SWI :- directives / d64 console config)."""
+        ar = self.arch
+        specs: List[Tuple[str, object]] = []
+        for qi, query in enumerate(self.startup_queries):
+            name = f"__prolog_startup_{qi}_build"
+            specs.append((name, query))
+            varmap, _public = self._variables(tuple(query.goals), public_only=True)
+            a.l(name)
+            self._prologue(a, save=(ar.bx,))
+            self._call1_imm(a, "__rt_build_vars_reset", len(varmap))
+            a.e(f"    mov ebx, {INVALID}")
+            for goal in reversed(query.goals):
+                self._emit_term_builder(a, goal, varmap)
+                a.e(f"    {ar.push_reg32('ebx')}")
+                a.e(f"    {ar.push_reg32('eax')}")
+                a.e("    call __rt_make_link")
+                a.e(f"    {ar.cleanup(2)}")
+                a.e("    mov ebx, eax")
+            # Startup directives are configuration/actions, not interactive
+            # top-level queries; never expose implicit variable bindings.
+            a.e("    mov dword ptr [__prolog_query_var_count], 0")
             a.e("    mov eax, ebx")
             self._epilogue(a, save=(ar.bx,))
             a.e()
@@ -3924,6 +3963,11 @@ class PrologRuntimeEmitter:
         # implicit Top-Level representation.  This keeps failure detection
         # and backtracking semantics independent of presentation.
         a.e("    inc dword ptr [__prolog_solution_count]")
+        # Direct arithmetic evaluation has already emitted its value.  Count
+        # it as a successful solution, but do not print true./bindings and do
+        # not enter the "weitere Loesung" state.
+        a.e("    cmp dword ptr [__prolog_direct_eval], 0")
+        a.e("    jne __rt_emit_solution_direct_done")
         a.e("    cmp dword ptr [__prolog_verbose], 0")
         a.e("    jne __rt_emit_solution_after_auto_output")
         a.e("    mov ebx, dword ptr [__prolog_query_var_count]")
@@ -3968,7 +4012,17 @@ class PrologRuntimeEmitter:
         a.e("    call __rt_emit_text")
         a.e(f"    {ar.cleanup(1)}")
         a.l("__rt_emit_solution_after_auto_output")
-        # Interactive console top-level: keep ';' backtracking available.
+        a.e("    jmp __rt_emit_solution_interactive")
+        a.l("__rt_emit_solution_direct_done")
+        a.e("    mov dword ptr [__prolog_direct_eval], 0")
+        a.e("    jmp __rt_emit_solution_return")
+        a.l("__rt_emit_solution_interactive")
+        # Interactive console top-level.  d64's preferred interaction is:
+        #   ENTER      -> next solution
+        #   q + ENTER  -> stop this search and return to the ?- prompt
+        # For SWI-Prolog muscle memory we additionally accept ';', n, r,
+        # SPACE and TAB as redo keys.  SWI itself uses ';' for redo and RET
+        # for stop; d64 intentionally makes bare RET the fast "next" action.
         # In verbose=true mode a deterministic solution should remain fully
         # silent, so skip the continuation prompt when no choice point exists.
         if not self.is_gui:
@@ -3984,8 +4038,24 @@ class PrologRuntimeEmitter:
             a.e(f"    {ar.cleanup(1)}")
             a.e("    call __rt_read_line")
             a.e(f"    movzx ecx, byte ptr [{ar.ax}]")
-            a.e("    cmp ecx, 59")  # ';'
+            # Empty input is the d64 fast-path for the next alternative.
+            a.e("    test ecx, ecx")
             a.e("    je __rt_emit_solution_more")
+            # SWI-compatible redo aliases.
+            for code in (59, 110, 78, 114, 82, 32, 9):  # ; n N r R SPACE TAB
+                a.e(f"    cmp ecx, {code}")
+                a.e("    je __rt_emit_solution_more")
+            # q/Q explicitly abandons this search and returns to the REPL.
+            a.e("    cmp ecx, 113")
+            a.e("    je __rt_emit_solution_stop")
+            a.e("    cmp ecx, 81")
+            a.e("    je __rt_emit_solution_stop")
+            # Stop aliases: '.', ':' (IDE continuation key), c/C, a/A.
+            # Unknown input also stops.
+            for code in (46, 58, 99, 67, 97, 65):
+                a.e(f"    cmp ecx, {code}")
+                a.e("    je __rt_emit_solution_stop")
+            a.l("__rt_emit_solution_stop")
             a.e("    mov dword ptr [__prolog_stop_search], 1")
             a.e("    jmp __rt_emit_solution_return")
             a.l("__rt_emit_solution_verbose_stop")
@@ -3993,6 +4063,10 @@ class PrologRuntimeEmitter:
             a.e("    jmp __rt_emit_solution_return")
             a.l("__rt_emit_solution_more")
             a.e("    mov dword ptr [__prolog_requested_more], 1")
+            a.l("__rt_emit_solution_return")
+        else:
+            # GUI targets do not emit the interactive continuation code, but
+            # the common direct-eval path still needs a concrete return label.
             a.l("__rt_emit_solution_return")
         self._epilogue(a, save=(ar.bx, ar.si, ar.di))
         a.e()
@@ -4065,7 +4139,10 @@ class PrologRuntimeEmitter:
             ("nl",0,"__rt_bi_nl"),("repl",0,"__rt_bi_repl"),("halt",0,"__rt_bi_halt"),("quit",0,"__rt_bi_halt"),
             ("gc",0,"__rt_bi_gc"),("garbage_collect",0,"__rt_bi_gc"),
             ("verbose",1,"__rt_bi_verbose"),
+            ("set_stream",2,"__rt_bi_set_stream"),
+            ("set_console_codepage",1,"__rt_bi_set_console_codepage"),
             ("write",1,"__rt_bi_write"),("writeln",1,"__rt_bi_writeln"),
+            ("d64_eval",1,"__rt_bi_d64_eval"),
             ("var",1,"__rt_bi_var"),("nonvar",1,"__rt_bi_nonvar"),("atom",1,"__rt_bi_atom"),
             ("integer",1,"__rt_bi_integer"),("float",1,"__rt_bi_float"),("number",1,"__rt_bi_number"),("string",1,"__rt_bi_string"),
             ("assert",1,"__rt_bi_assertz"),("asserta",1,"__rt_bi_asserta"),("assertz",1,"__rt_bi_assertz"),
@@ -4146,6 +4223,56 @@ class PrologRuntimeEmitter:
         a.e("    jne __rt_solve_done")
         a.e("    mov dword ptr [__prolog_verbose], 0")
         solve_rest()
+        # SWI-Prolog compatibility subset:
+        #   set_stream(user_input,  encoding(utf8)).
+        #   set_stream(user_output, encoding(utf8)).
+        # The runtime maps these stream encodings to the native Windows
+        # console codepage APIs.  GUI targets have no Console REPL stream.
+        a.l("__rt_bi_set_stream")
+        if self.is_gui:
+            a.e("    jmp __rt_solve_done")
+        else:
+            a.e("    push 1")
+            a.e(f"    {ar.push_reg32('esi')}")
+            a.e("    call __rt_struct_arg")
+            a.e(f"    {ar.cleanup(2)}")
+            a.e(f"    {ar.push_reg32('eax')}")  # encoding(...) attribute term
+            a.e("    push 0")
+            a.e(f"    {ar.push_reg32('esi')}")
+            a.e("    call __rt_struct_arg")
+            a.e(f"    {ar.cleanup(2)}")
+            a.e(f"    {ar.push_reg32('eax')}")  # stream term
+            a.e("    call __rt_set_stream_encoding")
+            a.e(f"    {ar.cleanup(2)}")
+            a.e("    test eax, eax")
+            a.e("    je __rt_solve_done")
+            solve_rest()
+
+        # d64 extension for applications that want to use an explicit Windows
+        # codepage number.  Both input and output are changed together.
+        # Example: set_console_codepage(65001).
+        a.l("__rt_bi_set_console_codepage")
+        if self.is_gui:
+            a.e("    jmp __rt_solve_done")
+        else:
+            a.e("    push 0")
+            a.e(f"    {ar.push_reg32('esi')}")
+            a.e("    call __rt_struct_arg")
+            a.e(f"    {ar.cleanup(2)}")
+            a.e(f"    {ar.push_reg32('eax')}")
+            a.e("    call __rt_term_int")
+            a.e(f"    {ar.cleanup(1)}")
+            a.e("    test edx, edx")
+            a.e("    je __rt_solve_done")
+            a.e("    test eax, eax")
+            a.e("    jle __rt_solve_done")
+            a.e(f"    {ar.push_reg32('eax')}")
+            a.e("    call __rt_set_console_codepage")
+            a.e(f"    {ar.cleanup(1)}")
+            a.e("    test eax, eax")
+            a.e("    je __rt_solve_done")
+            solve_rest()
+
         a.l("__rt_bi_halt")
         a.e("    push 0")
         a.e("    call ExitProcess")
@@ -4173,6 +4300,31 @@ class PrologRuntimeEmitter:
                 a.e("    call __rt_emit_text")
                 a.e(f"    {ar.cleanup(1)}")
             solve_rest()
+
+        # Stage 285: d64_eval/1 is the private top-level helper used by the
+        # Qt PROLOG console for direct arithmetic input such as ``2+3.``.
+        # It delegates to exactly the same arithmetic evaluator as is/2,
+        # prints the resulting numeric term, and marks the final solution so
+        # __rt_emit_solution does not append an extra ``true.`` or a
+        # continuation prompt. Normal PROLOG predicates remain unchanged.
+        a.l("__rt_bi_d64_eval")
+        a.e("    push 0")
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e("    call __rt_struct_arg")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_eval_arith")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    test edx, edx")
+        a.e("    je __rt_solve_done")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_emit_term")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    push __prolog_text_newline")
+        a.e("    call __rt_emit_text")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    mov dword ptr [__prolog_direct_eval], 1")
+        solve_rest()
 
         # Type tests are pure recognizers: they dereference the argument and
         # compare its existing runtime tag.  In particular string/1 never
@@ -4985,14 +5137,15 @@ class PrologRuntimeEmitter:
         a.e("    mov dword ptr [__prolog_solution_count], 0")
         a.e("    mov dword ptr [__prolog_stop_search], 0")
         a.e("    mov dword ptr [__prolog_requested_more], 0")
+        a.e("    mov dword ptr [__prolog_direct_eval], 0")
         a.e(f"    push {ar.arg(0)}")
         a.e("    call __rt_solve_goals")
         a.e(f"    {ar.cleanup(1)}")
         a.e("    cmp dword ptr [__prolog_solution_count], 0")
         a.e("    je __rt_run_query_false")
-        # If the user explicitly requested another answer with ';' and the
-        # search exhausted without being stopped by ENTER, report failure just
-        # like an interactive Prolog top-level does after the last solution.
+        # If the user explicitly requested another answer (ENTER or one of
+        # the redo aliases) and the search exhausts without q/stop, report
+        # failure after the final solution.
         a.e("    cmp dword ptr [__prolog_interactive_mode], 0")
         a.e("    je __rt_run_query_done")
         a.e("    cmp dword ptr [__prolog_requested_more], 0")
@@ -5014,6 +5167,115 @@ class PrologRuntimeEmitter:
         if self.is_gui:
             return
         ar = self.arch
+
+        # set_console_codepage(CodePage) -> EAX=1 on success.
+        # This is the native Windows helper used by the public
+        # set_console_codepage/1 predicate.  It deliberately updates both
+        # directions so typed text and the echoed/output bytes stay aligned.
+        a.l("__rt_set_console_codepage")
+        self._prologue(a)
+        a.e(f"    push {ar.arg(0)}")
+        a.e("    call SetConsoleCP")
+        a.e(f"    push {ar.arg(0)}")
+        a.e("    call SetConsoleOutputCP")
+        # Redirected IDE pipes intentionally have no attached Win32 console.
+        # The logical stream encoding is still accepted; the Qt console owns
+        # byte decoding in that mode. For a normal console both calls above
+        # apply the requested codepage as usual.
+        a.e("    mov eax, 1")
+        a.l("__rt_set_console_codepage_done")
+        self._epilogue(a)
+        a.e()
+
+        # SWI-compatible subset of set_stream/2 for the standard terminal
+        # aliases and encoding/1.  SWI's stream layer is richer than this
+        # runtime; here the encoding is translated to the corresponding
+        # Windows Console codepage.  Unsupported encodings simply make the
+        # predicate fail instead of pretending that they work.
+        a.l("__rt_set_stream_encoding")
+        self._prologue(a, save=(ar.bx, ar.si, ar.di))
+        # stream alias atom
+        a.e(f"    push {ar.arg(0)}")
+        a.e("    call __rt_term_atom_id")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    test edx, edx")
+        a.e("    je __rt_set_stream_encoding_fail")
+        a.e("    mov ebx, eax")
+        # attribute must be encoding(Atom)
+        a.e(f"    mov esi, {ar.arg(1)}")
+        a.e("    mov eax, esi")
+        a.e("    call __rt_deref")
+        a.e("    call __rt_node_ptr")
+        a.e(f"    cmp dword ptr [{ar.di}], {NODE_STRUCT}")
+        a.e("    jne __rt_set_stream_encoding_fail")
+        a.e(f"    cmp dword ptr [{ar.di}+4], {self.atom_id('encoding')}")
+        a.e("    jne __rt_set_stream_encoding_fail")
+        a.e(f"    cmp dword ptr [{ar.di}+8], 1")
+        a.e("    jne __rt_set_stream_encoding_fail")
+        a.e("    push 0")
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e("    call __rt_struct_arg")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_term_atom_id")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    test edx, edx")
+        a.e("    je __rt_set_stream_encoding_fail")
+        # Encoding atom -> Windows codepage.  'text' follows SWI on Windows,
+        # where the default text encoding is UTF-8.
+        a.e(f"    cmp eax, {self.atom_id('utf8')}")
+        a.e("    je __rt_set_stream_cp_utf8")
+        a.e(f"    cmp eax, {self.atom_id('text')}")
+        a.e("    je __rt_set_stream_cp_utf8")
+        a.e(f"    cmp eax, {self.atom_id('ascii')}")
+        a.e("    je __rt_set_stream_cp_ascii")
+        a.e(f"    cmp eax, {self.atom_id('iso_latin_1')}")
+        a.e("    je __rt_set_stream_cp_latin1")
+        a.e(f"    cmp eax, {self.atom_id('cp1252')}")
+        a.e("    je __rt_set_stream_cp_1252")
+        a.e(f"    cmp eax, {self.atom_id('windows_1252')}")
+        a.e("    je __rt_set_stream_cp_1252")
+        a.e("    jmp __rt_set_stream_encoding_fail")
+        a.l("__rt_set_stream_cp_utf8")
+        a.e("    mov esi, 65001")
+        a.e("    jmp __rt_set_stream_cp_ready")
+        a.l("__rt_set_stream_cp_ascii")
+        a.e("    mov esi, 20127")
+        a.e("    jmp __rt_set_stream_cp_ready")
+        a.l("__rt_set_stream_cp_latin1")
+        a.e("    mov esi, 28591")
+        a.e("    jmp __rt_set_stream_cp_ready")
+        a.l("__rt_set_stream_cp_1252")
+        a.e("    mov esi, 1252")
+        a.l("__rt_set_stream_cp_ready")
+        # Input aliases -> SetConsoleCP; output/error aliases -> output CP.
+        a.e(f"    cmp ebx, {self.atom_id('user_input')}")
+        a.e("    je __rt_set_stream_input")
+        a.e(f"    cmp ebx, {self.atom_id('current_input')}")
+        a.e("    je __rt_set_stream_input")
+        a.e(f"    cmp ebx, {self.atom_id('user_output')}")
+        a.e("    je __rt_set_stream_output")
+        a.e(f"    cmp ebx, {self.atom_id('current_output')}")
+        a.e("    je __rt_set_stream_output")
+        a.e(f"    cmp ebx, {self.atom_id('user_error')}")
+        a.e("    je __rt_set_stream_output")
+        a.e("    jmp __rt_set_stream_encoding_fail")
+        a.l("__rt_set_stream_input")
+        a.e("    push esi")
+        a.e("    call SetConsoleCP")
+        a.e("    mov eax, 1")
+        a.e("    jmp __rt_set_stream_encoding_done")
+        a.l("__rt_set_stream_output")
+        a.e("    push esi")
+        a.e("    call SetConsoleOutputCP")
+        a.e("    mov eax, 1")
+        a.e("    jmp __rt_set_stream_encoding_done")
+        a.l("__rt_set_stream_encoding_fail")
+        a.e("    xor eax, eax")
+        a.l("__rt_set_stream_encoding_done")
+        self._epilogue(a, save=(ar.bx, ar.si, ar.di))
+        a.e()
+
         # read line -> pointer in AX, trim CR/LF
         a.l("__rt_read_line")
         self._prologue(a, save=(ar.si, ar.di))
@@ -6602,11 +6864,19 @@ class PrologRuntimeEmitter:
     # ------------------------------------------------------------------
     # Start / initialization / data
     # ------------------------------------------------------------------
-    def _emit_init(self, a: _A, query_specs: Sequence[Tuple[str, object]]) -> None:
+    def _emit_init(
+        self,
+        a: _A,
+        startup_specs: Sequence[Tuple[str, object]],
+        query_specs: Sequence[Tuple[str, object]],
+    ) -> None:
         ar = self.arch
         a.l("_start")
         if not self.is_gui:
-            a.e("    call AllocConsole")
+            # Do not call AllocConsole here. Console-subsystem programs receive
+            # a normal Windows console when started conventionally, while the
+            # IDE can start the same image with redirected stdio and
+            # CREATE_NO_WINDOW for its own Qt console dialog.
             a.e("    push -11")
             a.e("    call GetStdHandle")
             a.e(f"    mov {ar.mem_ptr('__prolog_stdout')}, {ar.ax}")
@@ -6648,6 +6918,7 @@ class PrologRuntimeEmitter:
         a.e("    mov dword ptr [__prolog_interactive_mode], 0")
         a.e("    mov dword ptr [__prolog_stop_search], 0")
         a.e("    mov dword ptr [__prolog_requested_more], 0")
+        a.e("    mov dword ptr [__prolog_direct_eval], 0")
         a.e(f"    mov dword ptr [__prolog_verbose], {1 if self.verbose else 0}")
         a.e("    mov dword ptr [__prolog_db_next_id], 1")
         a.e("    mov dword ptr [__prolog_current_db], 0")
@@ -6655,6 +6926,21 @@ class PrologRuntimeEmitter:
         a.e("    mov dword ptr [__prolog_parser_db_mode], 0")
         a.e("    mov dword ptr [__prolog_emit_to_file], 0")
         a.e("    mov dword ptr [__prolog_emit_file_error], 0")
+
+        # Stage 281: startup directives execute before main/?-/REPL.  They
+        # run with implicit solution printing suppressed so a configuration
+        # line such as set_stream(...). does not emit an extra true.
+        if startup_specs:
+            a.e("    mov dword ptr [__prolog_verbose], 1")
+            for name, _q in startup_specs:
+                a.e("    mov dword ptr [__prolog_heap_top], 0")
+                a.e("    mov dword ptr [__prolog_trail_top], 0")
+                a.e("    mov dword ptr [__prolog_choice_top], 0")
+                a.e(f"    call {name}")
+                a.e(f"    {ar.push_reg32('eax')}")
+                a.e("    call __rt_run_query")
+                a.e(f"    {ar.cleanup(1)}")
+            a.e(f"    mov dword ptr [__prolog_verbose], {1 if self.verbose else 0}")
 
         if query_specs:
             for name,_q in query_specs:
@@ -6726,7 +7012,7 @@ class PrologRuntimeEmitter:
             "__prolog_text_true_line":"true.\r\n",
             "__prolog_text_false_line":"false.\r\n",
             "__prolog_text_prompt":"?- ",
-            "__prolog_text_more_prompt":"; = weitere Lösung, ENTER = fertig: ",
+            "__prolog_text_more_prompt":"ENTER = weitere Lösung, q = zurück zum Prompt (; = SWI-redo): ",
             "__prolog_text_parse_error":"syntax_error.\r\n",
             "__prolog_text_repl_gui":"repl/0 ist nur im Console-Modus verfügbar.\r\n",
             "__prolog_fmt_saved_var":"_V%d",
@@ -6768,7 +7054,7 @@ class PrologRuntimeEmitter:
                 "__prolog_query_var_count","__prolog_solution_count","__prolog_read_count","__prolog_parse_pos",
                 "__prolog_qname_top","__prolog_written","__prolog_dyn_copy_var_count","__prolog_dyn_clone_var_count",
                 "__prolog_current_cut_barrier","__prolog_cut_active_barrier","__prolog_build_barrier",
-                "__prolog_interactive_mode","__prolog_stop_search","__prolog_requested_more","__prolog_verbose","__prolog_gc_heap_mark",
+                "__prolog_interactive_mode","__prolog_stop_search","__prolog_requested_more","__prolog_direct_eval","__prolog_verbose","__prolog_gc_heap_mark",
                 "__prolog_db_next_id","__prolog_current_db","__prolog_db_loading","__prolog_db_file_read","__prolog_db_file_pos","__prolog_db_heap_mark",
                 "__prolog_parser_db_mode","__prolog_db_parser_var_count","__prolog_db_parser_name_top","__prolog_save_var_count",
                 "__prolog_emit_to_file","__prolog_emit_file_error",
@@ -6787,7 +7073,7 @@ class PrologRuntimeEmitter:
                 "__prolog_query_var_count","__prolog_solution_count","__prolog_read_count","__prolog_parse_pos",
                 "__prolog_qname_top","__prolog_written","__prolog_dyn_copy_var_count","__prolog_dyn_clone_var_count",
                 "__prolog_current_cut_barrier","__prolog_cut_active_barrier","__prolog_build_barrier",
-                "__prolog_interactive_mode","__prolog_stop_search","__prolog_requested_more","__prolog_verbose","__prolog_gc_heap_mark",
+                "__prolog_interactive_mode","__prolog_stop_search","__prolog_requested_more","__prolog_direct_eval","__prolog_verbose","__prolog_gc_heap_mark",
                 "__prolog_db_next_id","__prolog_current_db","__prolog_db_loading","__prolog_db_file_read","__prolog_db_file_pos","__prolog_db_heap_mark",
                 "__prolog_parser_db_mode","__prolog_db_parser_var_count","__prolog_db_parser_name_top","__prolog_save_var_count",
                 "__prolog_emit_to_file","__prolog_emit_file_error",
@@ -6805,8 +7091,9 @@ class PrologRuntimeEmitter:
         if self.is_gui:
             a.e('import MessageBoxA, "user32.dll", "MessageBoxA"')
         else:
-            a.e('import AllocConsole, "kernel32.dll", "AllocConsole"')
             a.e('import GetStdHandle, "kernel32.dll", "GetStdHandle"')
+            a.e('import SetConsoleCP, "kernel32.dll", "SetConsoleCP"')
+            a.e('import SetConsoleOutputCP, "kernel32.dll", "SetConsoleOutputCP"')
         # File I/O is also used by the external PROLOG database runtime.
         a.e('import WriteFile, "kernel32.dll", "WriteFile"')
         a.e('import ReadFile, "kernel32.dll", "ReadFile"')
@@ -6837,7 +7124,8 @@ class PrologRuntimeEmitter:
         self._emit_solver(a)
         self._emit_repl(a)
         self._emit_clause_builders(a)
+        startup_specs = self._emit_startup_query_builders(a)
         query_specs = self._emit_query_builders(a)
-        self._emit_init(a, query_specs)
+        self._emit_init(a, startup_specs, query_specs)
         self._emit_data(a)
         return a.render()

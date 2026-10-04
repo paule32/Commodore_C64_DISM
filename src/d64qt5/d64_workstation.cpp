@@ -36,6 +36,10 @@ enum class PanelHotItem {
     Db
 };
 PanelHotItem g_panel_hover = PanelHotItem::None;
+// Stage 275: Aktionen werden nur nach einem passenden Down/Up-Paar ausgeloest.
+// Dadurch erzeugt insbesondere der zweite WM_LBUTTONUP eines Doppelklicks
+// keine zweite EXIT-Abfrage.
+PanelHotItem g_panel_pressed = PanelHotItem::None;
 
 D64WorkstationCallback g_exit_callback = nullptr;
 D64WorkstationBtxCallback g_btx_callback = nullptr;
@@ -1028,24 +1032,36 @@ LRESULT CALLBACK workstation_exit_proc(
         InvalidateRect(hwnd, nullptr, TRUE);
         return 0;
 
+    case WM_LBUTTONDOWN:
+        g_panel_pressed = panel_item_at(lParam);
+        return 0;
+
     case WM_LBUTTONUP: {
         const PanelHotItem item = panel_item_at(lParam);
+        const PanelHotItem pressed = g_panel_pressed;
+        g_panel_pressed = PanelHotItem::None;
+
+        // Nur ein echtes Down/Up-Paar auf demselben Panel-Eintrag darf eine
+        // Aktion ausloesen. Bei einem Windows-Doppelklick folgt nach
+        // WM_LBUTTONDBLCLK noch ein zweites WM_LBUTTONUP; dieses ist nicht
+        // mehr armed und kann daher keine zweite EXIT-Abfrage starten.
+        if (pressed != item)
+            return 0;
+
         if (item == PanelHotItem::Exit && g_exit_callback) {
-            // EXIT zeigt zuerst die JA/NEIN-Abfrage im Qt-Thread.
             g_exit_callback();
         } else if (item == PanelHotItem::Btx && g_btx_callback) {
-            // BTX.exe wird im Qt-Thread gestartet, nicht direkt im WndProc.
             g_btx_callback();
         } else if (item == PanelHotItem::Db && g_db_callback) {
-            // Das verborgene Hauptfenster wieder anzeigen.
             g_db_callback();
         }
         return 0;
     }
 
     case WM_LBUTTONDBLCLK:
-        // Keine zweite Exit-Semantik. Ein einfacher Klick auf EXIT reicht und
-        // ist durch die JA/NEIN-Abfrage gegen versehentliches Beenden geschuetzt.
+        // Windows sendet nach WM_LBUTTONDBLCLK noch WM_LBUTTONUP. Nicht
+        // arming bedeutet: der zweite Up kann keine zweite Aktion ausloesen.
+        g_panel_pressed = PanelHotItem::None;
         return 0;
 
     case WM_ERASEBKGND:

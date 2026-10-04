@@ -55,6 +55,9 @@
 #  * Stage 136: Lernen->Mathematik mit Zahlenmauer-Dock und 2x5 QGraphicsScene-Aufgaben.
 #  * Stage 38: Lernen->Memory mit 42 Karten, 21 Rechenpaaren und ausgeblendeten Treffern.
 #  * Stage 263: Lernen->Keyboard mit Musik-Dock, 4 Notensystemen und 88-Tasten-Piano.
+#  * Stage 277: Einheitskreis-Animation auf volle 360 Grad erweitert; Graphen max. 25 % Fensterbreite.
+#  * Stage 276: Lernen->Mathe->Geometrie->Einheitskreis als animiertes Qt5-QPainter-Dock;
+#    Sinus/Kosinus-Graphen belegen zusammen maximal 1/4 der Zeichenflaeche.
 #  * Stage 264: Musik-Arbeitsbereich schließt alle Docks; Instrument-Dock rechts mit
 #    General-MIDI, Play/Loop/Freihand, Lautstärke und Musikprojekt Save/Load.
 #  * Stage 139: Sudoku mit Leicht/Mittel/Schwer/Experte im Mathematik-Lernbereich.
@@ -201,6 +204,8 @@
 #    n-te Wurzel reserviert die volle Breite des Wurzelgrades vor dem Wurzelsymbol.
 #  * Stage 249: '_' erzeugt tiefgestellte Indizes; Index-Inhalte sind vollwertige
 #    Formelobjekte und können bis Tiefe 32 weiter verschachtelt werden.
+#  * Stage 270: Workstation-Start aus der GUI uebergibt die fertig gelinkte PE32/PE32+-EXE
+#    ausschliesslich ueber die DWR1-Named-Pipe; der Runner startet argumentlos als Host.
 #  * Stage 241: Workstation Runner: generischer PE32/PE32+-Session-Host auf Basis
 #    des vorhandenen src/d64qt5/d64_workstation.cpp; keine Quellsprachenpflicht.
 #  * Stage 237: DBF-Datengrid mit Ganzgrid-/Zeilen-/Spaltenauswahl, Auswahl-Clipboard,
@@ -2329,9 +2334,64 @@ def install_periodic_table(main_window, title_bar_factory=None):
 # ---------------------------------------------------------------------------
 # Mathematik: struktureller Formel-Designer
 # ---------------------------------------------------------------------------
-FORMULA_DESIGNER_MAX_DEPTH = 32
+FORMULA_DESIGNER_MAX_DEPTH = 256
 FORMULA_DESIGNER_FORMAT = "d64.formula-designer"
 FORMULA_DESIGNER_VERSION = 1
+
+# Stage 269:
+# Klassische 16 Farben des Windows-Konsolen-/Textmodus in Attributreihenfolge
+# 0..F. Diese Palette wird im Formel-Kontextmenü als "Farbe" angeboten.
+FORMULA_DESIGNER_CONSOLE_COLORS = (
+    ("Schwarz",        "#000000"),
+    ("Dunkelblau",     "#000080"),
+    ("Dunkelgrün",     "#008000"),
+    ("Dunkelcyan",     "#008080"),
+    ("Dunkelrot",      "#800000"),
+    ("Dunkelmagenta",  "#800080"),
+    ("Dunkelgelb",     "#808000"),
+    ("Hellgrau",       "#C0C0C0"),
+    ("Dunkelgrau",     "#808080"),
+    ("Blau",           "#0000FF"),
+    ("Grün",           "#00FF00"),
+    ("Cyan",           "#00FFFF"),
+    ("Rot",            "#FF0000"),
+    ("Magenta",        "#FF00FF"),
+    ("Gelb",           "#FFFF00"),
+    ("Weiß",           "#FFFFFF"),
+)
+FORMULA_DESIGNER_CONSOLE_COLOR_VALUES = frozenset(
+    color.lower()
+    for _name, color in FORMULA_DESIGNER_CONSOLE_COLORS
+)
+
+
+def _formula_set_subtree_color(node, color_hex):
+    """
+    Färbt einen kompletten Formel-Unterbaum.
+
+    Damit erhalten bei einem ausgewählten Struktur-Objekt sowohl die
+    strukturellen Symbole (z. B. Σ, ∫, Wurzel, Klammern, Bruchstrich)
+    als auch alle darin enthaltenen Zahlen/Zeichen dieselbe Farbe.
+    """
+    if not isinstance(node, dict):
+        return False
+
+    normalized = str(color_hex).strip().lower()
+    if normalized not in FORMULA_DESIGNER_CONSOLE_COLOR_VALUES:
+        raise ValueError("Ungültige Formel-Farbe.")
+
+    changed = node.get("color", "").lower() != normalized
+    node["color"] = normalized
+
+    for value in node.values():
+        if isinstance(value, dict):
+            changed = _formula_set_subtree_color(value, normalized) or changed
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    changed = _formula_set_subtree_color(item, normalized) or changed
+
+    return changed
 
 
 def _formula_new_text(text="", role="value"):
@@ -2354,6 +2414,14 @@ def _formula_new_example():
 
 def _formula_depth(node):
     """Strukturelle Verschachtelung; ein reines Eingabefeld besitzt Tiefe 0."""
+    node_color = node.get("color")
+    if node_color is not None:
+        if (
+            not isinstance(node_color, str)
+            or node_color.lower() not in FORMULA_DESIGNER_CONSOLE_COLOR_VALUES
+        ):
+            raise ValueError("Ungültige Farbe im Formelobjekt.")
+
     kind = node.get("type")
     if kind == "text":
         return 0
@@ -2390,6 +2458,17 @@ def _formula_depth(node):
         return 1 + max(
             _formula_depth(node["lower"]),
             _formula_depth(node["body"]),
+        )
+    if kind in {"bracket_group", "vector"}:
+        return 1 + _formula_depth(node["child"])
+    if kind == "cases":
+        return 1 + _formula_depth(node["items"])
+    if kind == "matrix":
+        operator = node.get("operator")
+        return 1 + max(
+            _formula_depth(node["left_vector"]),
+            _formula_depth(operator) if isinstance(operator, dict) else 0,
+            _formula_depth(node["rows"]),
         )
     raise ValueError("Unbekannter Formel-Knotentyp: " + str(kind))
 
@@ -2435,6 +2514,20 @@ def _formula_iter_leaves(node):
         # Limes: Bedingung unter dem lim, danach Ausdruck rechts.
         yield from _formula_iter_leaves(node["lower"])
         yield from _formula_iter_leaves(node["body"])
+        return
+    if kind in {"bracket_group", "vector"}:
+        yield from _formula_iter_leaves(node["child"])
+        return
+    if kind == "cases":
+        yield from _formula_iter_leaves(node["items"])
+        return
+    if kind == "matrix":
+        # Tab-Reihenfolge: Spaltenvektor -> Operator -> Matrix zeilenweise.
+        yield from _formula_iter_leaves(node["left_vector"])
+        operator = node.get("operator")
+        if isinstance(operator, dict):
+            yield from _formula_iter_leaves(operator)
+        yield from _formula_iter_leaves(node["rows"])
         return
 
 
@@ -2528,6 +2621,29 @@ def _formula_replace_leaf(node, leaf_id, replacement):
     if kind == "limit":
         for key in ("lower", "body"):
             child, changed = _formula_replace_leaf(node[key], leaf_id, replacement)
+            if changed:
+                node[key] = child
+                return node, True
+        return node, False
+
+    if kind in {"bracket_group", "vector"}:
+        child, changed = _formula_replace_leaf(node["child"], leaf_id, replacement)
+        if changed:
+            node["child"] = child
+        return node, changed
+
+    if kind == "cases":
+        child, changed = _formula_replace_leaf(node["items"], leaf_id, replacement)
+        if changed:
+            node["items"] = child
+        return node, changed
+
+    if kind == "matrix":
+        for key in ("left_vector", "operator", "rows"):
+            child = node.get(key)
+            if not isinstance(child, dict):
+                continue
+            child, changed = _formula_replace_leaf(child, leaf_id, replacement)
             if changed:
                 node[key] = child
                 return node, True
@@ -2738,6 +2854,37 @@ def _formula_collapse_fraction_boundary(node, leaf_id, boundary):
                 return node, True, focus_id, cursor_pos
         return node, False, None, None
 
+    if kind in {"bracket_group", "vector"}:
+        child, changed, focus_id, cursor_pos = _formula_collapse_fraction_boundary(
+            node["child"], leaf_id, boundary
+        )
+        if changed:
+            node["child"] = child
+            return node, True, focus_id, cursor_pos
+        return node, False, None, None
+
+    if kind == "cases":
+        child, changed, focus_id, cursor_pos = _formula_collapse_fraction_boundary(
+            node["items"], leaf_id, boundary
+        )
+        if changed:
+            node["items"] = child
+            return node, True, focus_id, cursor_pos
+        return node, False, None, None
+
+    if kind == "matrix":
+        for key in ("left_vector", "operator", "rows"):
+            child = node.get(key)
+            if not isinstance(child, dict):
+                continue
+            child, changed, focus_id, cursor_pos = _formula_collapse_fraction_boundary(
+                child, leaf_id, boundary
+            )
+            if changed:
+                node[key] = child
+                return node, True, focus_id, cursor_pos
+        return node, False, None, None
+
     if kind == "fraction":
         # Zunächst eventuell tiefer verschachtelte Brüche bearbeiten.
         for key in ("numerator", "denominator"):
@@ -2840,6 +2987,40 @@ def _formula_unwrap_group_for_leaf(node, leaf_id):
                 return node, True
         return node, False
 
+    if kind == "vector":
+        child, changed = _formula_unwrap_group_for_leaf(node["child"], leaf_id)
+        if changed:
+            node["child"] = child
+            return node, True
+        return node, False
+
+    if kind == "cases":
+        child, changed = _formula_unwrap_group_for_leaf(node["items"], leaf_id)
+        if changed:
+            node["items"] = child
+            return node, True
+        return node, False
+
+    if kind == "matrix":
+        for key in ("left_vector", "operator", "rows"):
+            child = node.get(key)
+            if not isinstance(child, dict):
+                continue
+            child, changed = _formula_unwrap_group_for_leaf(child, leaf_id)
+            if changed:
+                node[key] = child
+                return node, True
+        return node, False
+
+    if kind == "bracket_group":
+        child, changed = _formula_unwrap_group_for_leaf(node["child"], leaf_id)
+        if changed:
+            node["child"] = child
+            return node, True
+        if _formula_find_leaf(node["child"], leaf_id) is not None:
+            return node["child"], True
+        return node, False
+
     if kind == "group":
         # Bei ((x)) zuerst die innerste Klammer lösen.
         child, changed = _formula_unwrap_group_for_leaf(node["child"], leaf_id)
@@ -2883,6 +3064,10 @@ def _formula_find_path_for_leaf(node, leaf_id, path=()):
         "product": ("upper", "lower", "body"),
         "integral": ("upper", "lower", "body"),
         "limit": ("lower", "body"),
+        "bracket_group": ("child",),
+        "vector": ("child",),
+        "cases": ("items",),
+        "matrix": ("left_vector", "operator", "rows"),
     }.get(kind, ())
 
     for key in child_keys:
@@ -2932,8 +3117,13 @@ def _formula_primary_content(node):
         result["text"] = ""
         return result
 
-    if kind == "group":
+    if kind in {"group", "bracket_group", "vector"}:
         return node["child"]
+    if kind == "cases":
+        return node["items"]
+    if kind == "matrix":
+        # Beim Entfernen einer Matrix soll das komplette 2D-Objekt verschwinden.
+        return _formula_new_text("")
     if kind == "root":
         return node["radicand"]
     if kind == "power":
@@ -3068,6 +3258,39 @@ def _formula_to_text(node):
         )
     if kind == "group":
         return f"({_formula_to_text(node['child'])})"
+    if kind == "bracket_group":
+        inner = _formula_to_text(node["child"])
+        style = node.get("style", "square")
+        return f"[{inner}]" if style == "square" else "{" + inner + "}"
+    if kind == "vector":
+        direction = node.get("direction", "right")
+        prefix = "vec<-" if direction == "left" else "vec->"
+        return prefix + "(" + _formula_to_text(node["child"]) + ")"
+    if kind == "cases":
+        labels = node.get("labels", [])
+        values = list(_formula_iter_leaves(node["items"]))
+        parts = []
+        for index, leaf in enumerate(values):
+            label = labels[index] if index < len(labels) else f"Fall {index + 1}"
+            parts.append(label + ":" + (str(leaf.get("text", "")) or "□"))
+        return "cases{" + "; ".join(parts) + "}"
+    if kind == "matrix":
+        vector_text = ",".join(
+            _formula_to_text(child)
+            for child in node["left_vector"].get("children", [])
+        )
+        operator = node.get("operator")
+        operator_text = _formula_to_text(operator) if isinstance(operator, dict) else "□"
+        row_texts = []
+        for row in node["rows"].get("children", []):
+            row_texts.append(",".join(
+                _formula_to_text(cell)
+                for cell in row.get("children", [])
+            ))
+        return (
+            "matrix[" + vector_text + " " + operator_text + " "
+            + "; ".join(row_texts) + "]"
+        )
     if kind == "root":
         degree = node.get("degree")
         inner = _formula_to_text(node["radicand"])
@@ -3165,6 +3388,74 @@ def _formula_validate_model(node, *, _depth=0, _ids=None):
 
     if kind == "group":
         _formula_validate_model(node.get("child"), _depth=_depth + 1, _ids=_ids)
+        return
+
+    if kind == "bracket_group":
+        if node.get("style") not in {"square", "curly"}:
+            raise ValueError("Ungültiger Klammerstil.")
+        _formula_validate_model(node.get("child"), _depth=_depth + 1, _ids=_ids)
+        return
+
+    if kind == "vector":
+        if node.get("direction") not in {"left", "right"}:
+            raise ValueError("Ungültige Vektorrichtung.")
+        _formula_validate_model(node.get("child"), _depth=_depth + 1, _ids=_ids)
+        return
+
+    if kind == "cases":
+        count = node.get("count")
+        if count not in (2, 3):
+            raise ValueError("Fallklammer muss 2 oder 3 Eingabeobjekte besitzen.")
+        labels = node.get("labels")
+        if not isinstance(labels, list) or len(labels) != count:
+            raise ValueError("Ungültige Fallklammer-Beschriftung.")
+        items = node.get("items")
+        if not isinstance(items, dict) or items.get("type") != "sequence":
+            raise ValueError("Fallklammer benötigt eine Eingabesequenz.")
+        if len(items.get("children", [])) != count:
+            raise ValueError("Fallklammer besitzt falsche Objektanzahl.")
+        _formula_validate_model(items, _depth=_depth + 1, _ids=_ids)
+        return
+
+    if kind == "matrix":
+        rows_count = node.get("row_count")
+        cols_count = node.get("col_count")
+        if not isinstance(rows_count, int) or not 1 <= rows_count <= 12:
+            raise ValueError("Matrix-Zeilen müssen zwischen 1 und 12 liegen.")
+        if not isinstance(cols_count, int) or not 1 <= cols_count <= 12:
+            raise ValueError("Matrix-Spalten müssen zwischen 1 und 12 liegen.")
+        left_vector = node.get("left_vector")
+        operator = node.get("operator")
+        rows_node = node.get("rows")
+
+        # Stage 267 migration: ältere *.d64formula-Matrizen aus Stage 266
+        # besitzen noch kein Operatorfeld. Beim Laden wird ein leeres,
+        # editierbares Feld nachgerüstet.
+        if operator is None:
+            operator = _formula_new_text("", "matrix_operator")
+            node["operator"] = operator
+
+        if not isinstance(left_vector, dict) or left_vector.get("type") != "sequence":
+            raise ValueError("Matrix benötigt einen linken Spaltenvektor.")
+        if len(left_vector.get("children", [])) != rows_count:
+            raise ValueError("Spaltenvektor-Länge passt nicht zur Matrixhöhe.")
+        if not isinstance(rows_node, dict) or rows_node.get("type") != "sequence":
+            raise ValueError("Ungültige Matrix-Zeilenstruktur.")
+        rows = rows_node.get("children", [])
+        if len(rows) != rows_count:
+            raise ValueError("Matrix-Zeilenzahl stimmt nicht.")
+        for row in rows:
+            if not isinstance(row, dict) or row.get("type") != "sequence":
+                raise ValueError("Ungültige Matrixzeile.")
+            if len(row.get("children", [])) != cols_count:
+                raise ValueError("Matrix-Spaltenzahl stimmt nicht.")
+        if not isinstance(operator, dict) or operator.get("type") != "text":
+            raise ValueError("Matrix-Operator muss ein Eingabefeld sein.")
+        operator["role"] = "matrix_operator"
+
+        _formula_validate_model(left_vector, _depth=_depth + 1, _ids=_ids)
+        _formula_validate_model(operator, _depth=_depth + 1, _ids=_ids)
+        _formula_validate_model(rows_node, _depth=_depth + 1, _ids=_ids)
         return
 
     if kind == "root":
@@ -3555,6 +3846,182 @@ class FormulaCanvasItem(QGraphicsObject):
             "h": height,
         }
 
+    def _measure_bracket_group(self, node, scale):
+        child = self._measure_node(node["child"], scale)
+        style = node.get("style", "square")
+        bracket_w = max(10.0, 12.0 * scale)
+        pad_x = max(3.0, 4.0 * scale)
+        pad_y = max(2.0, 3.0 * scale)
+        child_x = bracket_w + pad_x
+        child_y = pad_y
+        return {
+            "kind": "bracket_group",
+            "node": node,
+            "style": style,
+            "child": (child, child_x, child_y),
+            "bracket_w": bracket_w,
+            "w": child["w"] + 2.0 * (bracket_w + pad_x),
+            "h": child["h"] + 2.0 * pad_y,
+        }
+
+    def _measure_cases(self, node, scale):
+        items = node["items"].get("children", [])
+        layouts = [self._measure_node(item, scale) for item in items]
+        labels = list(node.get("labels", []))
+        label_font = self._font(max(0.44, scale * 0.58))
+        label_metrics = QFontMetricsF(label_font)
+        label_width = max(
+            [label_metrics.horizontalAdvance(str(label)) for label in labels] or [0.0]
+        )
+        row_gap = max(4.0, 6.0 * scale)
+        brace_w = max(15.0, 18.0 * scale)
+        gap = max(5.0, 7.0 * scale)
+        content_x = brace_w + gap
+        item_x = content_x + label_width + gap
+        width = item_x + max((layout["w"] for layout in layouts), default=20.0)
+
+        positioned = []
+        y = 0.0
+        for index, layout in enumerate(layouts):
+            label_h = max(1.0, label_metrics.height())
+            row_h = max(layout["h"], label_h)
+            item_y = y + (row_h - layout["h"]) / 2.0
+            label_y = y + (row_h - label_h) / 2.0
+            positioned.append((layout, item_x, item_y, label_y))
+            y += row_h
+            if index + 1 < len(layouts):
+                y += row_gap
+
+        return {
+            "kind": "cases",
+            "node": node,
+            "items": positioned,
+            "labels": labels,
+            "label_font": label_font,
+            "label_width": label_width,
+            "label_x": content_x,
+            "brace_w": brace_w,
+            "closed": bool(node.get("closed", False)),
+            "w": width + (brace_w if node.get("closed", False) else 0.0),
+            "h": max(y, 24.0 * scale),
+        }
+
+    def _measure_vector(self, node, scale):
+        child = self._measure_node(node["child"], scale)
+        arrow_h = max(10.0, 12.0 * scale)
+        side_pad = max(3.0, 4.0 * scale)
+        child_x = side_pad
+        child_y = arrow_h + max(2.0, 3.0 * scale)
+        return {
+            "kind": "vector",
+            "node": node,
+            "direction": node.get("direction", "right"),
+            "child": (child, child_x, child_y),
+            "arrow_y": arrow_h * 0.55,
+            "arrow_left": side_pad,
+            "arrow_right": side_pad + child["w"],
+            "w": child["w"] + 2.0 * side_pad,
+            "h": child_y + child["h"],
+        }
+
+    def _measure_matrix(self, node, scale):
+        vector_nodes = node["left_vector"].get("children", [])
+        operator_node = node.get("operator")
+        if not isinstance(operator_node, dict):
+            # Nur ein defensiver Fallback; beim normalen Laden migriert
+            # _formula_validate_model() alte Stage-266-Matrizen bereits.
+            operator_node = _formula_new_text("", "matrix_operator")
+            node["operator"] = operator_node
+        row_nodes = node["rows"].get("children", [])
+        row_count = int(node.get("row_count", len(row_nodes)))
+        col_count = int(node.get("col_count", 1))
+
+        vector_layouts = [self._measure_node(child, scale) for child in vector_nodes]
+        operator_layout = self._measure_node(operator_node, scale)
+        matrix_layouts = []
+        for row in row_nodes:
+            matrix_layouts.append([
+                self._measure_node(cell, scale)
+                for cell in row.get("children", [])
+            ])
+
+        row_gap = max(4.0, 6.0 * scale)
+        col_gap = max(5.0, 7.0 * scale)
+        bracket_w = max(8.0, 10.0 * scale)
+        inner_pad = max(3.0, 4.0 * scale)
+        vector_operator_gap = max(7.0, 9.0 * scale)
+        operator_matrix_gap = max(7.0, 9.0 * scale)
+
+        vector_w = max((layout["w"] for layout in vector_layouts), default=20.0)
+        col_widths = []
+        for col in range(col_count):
+            col_widths.append(max(
+                [row[col]["w"] for row in matrix_layouts if col < len(row)] or [20.0]
+            ))
+
+        row_heights = []
+        for row in range(row_count):
+            heights = []
+            if row < len(vector_layouts):
+                heights.append(vector_layouts[row]["h"])
+            if row < len(matrix_layouts):
+                heights.extend(layout["h"] for layout in matrix_layouts[row])
+            row_heights.append(max(heights or [24.0 * scale]))
+
+        grid_h = sum(row_heights) + row_gap * max(0, row_count - 1)
+        total_h = max(grid_h, operator_layout["h"])
+        grid_y = (total_h - grid_h) / 2.0
+
+        vector_inner_w = vector_w
+        matrix_inner_w = sum(col_widths) + col_gap * max(0, col_count - 1)
+        vector_rect_w = vector_inner_w + 2.0 * (bracket_w + inner_pad)
+        matrix_rect_w = matrix_inner_w + 2.0 * (bracket_w + inner_pad)
+
+        operator_x = vector_rect_w + vector_operator_gap
+        operator_y = (total_h - operator_layout["h"]) / 2.0
+        matrix_x = (
+            operator_x
+            + operator_layout["w"]
+            + operator_matrix_gap
+        )
+        total_w = matrix_x + matrix_rect_w
+
+        vector_positions = []
+        matrix_positions = []
+        y = grid_y
+        for row in range(row_count):
+            rh = row_heights[row]
+            if row < len(vector_layouts):
+                layout = vector_layouts[row]
+                vx = bracket_w + inner_pad + (vector_inner_w - layout["w"]) / 2.0
+                vy = y + (rh - layout["h"]) / 2.0
+                vector_positions.append((layout, vx, vy))
+
+            row_positions = []
+            cx = matrix_x + bracket_w + inner_pad
+            if row < len(matrix_layouts):
+                for col, layout in enumerate(matrix_layouts[row]):
+                    cw = col_widths[col]
+                    px = cx + (cw - layout["w"]) / 2.0
+                    py = y + (rh - layout["h"]) / 2.0
+                    row_positions.append((layout, px, py))
+                    cx += cw + col_gap
+            matrix_positions.append(row_positions)
+            y += rh + (row_gap if row + 1 < row_count else 0.0)
+
+        return {
+            "kind": "matrix",
+            "node": node,
+            "vector_items": vector_positions,
+            "operator": (operator_layout, operator_x, operator_y),
+            "matrix_rows": matrix_positions,
+            "vector_rect": QRectF(0.0, grid_y, vector_rect_w, grid_h),
+            "matrix_rect": QRectF(matrix_x, grid_y, matrix_rect_w, grid_h),
+            "bracket_w": bracket_w,
+            "w": total_w,
+            "h": total_h,
+        }
+
     def _measure_node(self, node, scale=1.0):
         kind = node.get("type")
         if kind == "text":
@@ -3680,6 +4147,18 @@ class FormulaCanvasItem(QGraphicsObject):
                 kind="integral",
                 symbol_text="∫" * count,
             )
+
+        if kind == "bracket_group":
+            return self._measure_bracket_group(node, scale)
+
+        if kind == "cases":
+            return self._measure_cases(node, scale)
+
+        if kind == "vector":
+            return self._measure_vector(node, scale)
+
+        if kind == "matrix":
+            return self._measure_matrix(node, scale)
 
         if kind == "group":
             child = self._measure_node(node["child"], scale)
@@ -3832,6 +4311,54 @@ class FormulaCanvasItem(QGraphicsObject):
                 )
             return
 
+        if kind in {"bracket_group", "vector"}:
+            child, dx, dy = layout["child"]
+            self._collect_leaf_rects(
+                child,
+                x + dx,
+                y + dy,
+                path + ("child",),
+            )
+            return
+
+        if kind == "cases":
+            for index, entry in enumerate(layout["items"]):
+                child, dx, dy, _label_y = entry
+                self._collect_leaf_rects(
+                    child,
+                    x + dx,
+                    y + dy,
+                    path + ("items", "children", index),
+                )
+            return
+
+        if kind == "matrix":
+            for row, (child, dx, dy) in enumerate(layout["vector_items"]):
+                self._collect_leaf_rects(
+                    child,
+                    x + dx,
+                    y + dy,
+                    path + ("left_vector", "children", row),
+                )
+
+            operator, odx, ody = layout["operator"]
+            self._collect_leaf_rects(
+                operator,
+                x + odx,
+                y + ody,
+                path + ("operator",),
+            )
+
+            for row, row_items in enumerate(layout["matrix_rows"]):
+                for col, (child, dx, dy) in enumerate(row_items):
+                    self._collect_leaf_rects(
+                        child,
+                        x + dx,
+                        y + dy,
+                        path + ("rows", "children", row, "children", col),
+                    )
+            return
+
         if kind == "root":
             degree = layout.get("degree")
             if degree:
@@ -3875,9 +4402,74 @@ class FormulaCanvasItem(QGraphicsObject):
     def _text_color(self):
         return QColor("#f1f1f1") if self._dark_mode else QColor("#111111")
 
+    def _formula_node_color(self, node):
+        """Objektfarbe oder die Theme-Standardfarbe zurückgeben."""
+        if isinstance(node, dict):
+            value = node.get("color")
+            if (
+                isinstance(value, str)
+                and value.lower() in FORMULA_DESIGNER_CONSOLE_COLOR_VALUES
+            ):
+                return QColor(value)
+        return self._text_color()
+
+    def _draw_square_bracket(self, painter, rect, side, color, width=1.5):
+        painter.setPen(QPen(color, width, Qt.SolidLine, Qt.SquareCap))
+        hook = max(5.0, min(12.0, rect.width() * 0.18))
+        if side == "left":
+            x = rect.left() + 2.0
+            painter.drawLine(QPointF(x + hook, rect.top()), QPointF(x, rect.top()))
+            painter.drawLine(QPointF(x, rect.top()), QPointF(x, rect.bottom()))
+            painter.drawLine(QPointF(x, rect.bottom()), QPointF(x + hook, rect.bottom()))
+        else:
+            x = rect.right() - 2.0
+            painter.drawLine(QPointF(x - hook, rect.top()), QPointF(x, rect.top()))
+            painter.drawLine(QPointF(x, rect.top()), QPointF(x, rect.bottom()))
+            painter.drawLine(QPointF(x, rect.bottom()), QPointF(x - hook, rect.bottom()))
+
+    def _draw_curly_bracket(self, painter, rect, side, color, width=1.5):
+        painter.setPen(QPen(color, width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        painter.setBrush(Qt.NoBrush)
+        top = rect.top()
+        bottom = rect.bottom()
+        mid = (top + bottom) / 2.0
+        h = max(8.0, bottom - top)
+        bw = max(8.0, min(18.0, rect.width()))
+        if side == "left":
+            outer = rect.left() + bw * 0.82
+            inner = rect.left() + bw * 0.18
+            center = rect.left() + bw * 0.48
+        else:
+            outer = rect.right() - bw * 0.82
+            inner = rect.right() - bw * 0.18
+            center = rect.right() - bw * 0.48
+
+        p = QPainterPath()
+        p.moveTo(outer, top)
+        p.cubicTo(inner, top + h * 0.08, inner, mid - h * 0.12, center, mid - h * 0.03)
+        p.cubicTo(center + ((outer-center)*0.55), mid, center + ((outer-center)*0.55), mid, center, mid + h * 0.03)
+        p.cubicTo(inner, mid + h * 0.12, inner, bottom - h * 0.08, outer, bottom)
+        painter.drawPath(p)
+
+    def _draw_vector_arrow(self, painter, left, right, y, direction, color):
+        painter.setPen(QPen(color, 1.5, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        if right <= left:
+            right = left + 12.0
+        painter.drawLine(QPointF(left, y), QPointF(right, y))
+        head = 5.0
+        if direction == "left":
+            tip = QPointF(left, y)
+            painter.drawLine(tip, QPointF(left + head, y - head * 0.65))
+            painter.drawLine(tip, QPointF(left + head, y + head * 0.65))
+        else:
+            tip = QPointF(right, y)
+            painter.drawLine(tip, QPointF(right - head, y - head * 0.65))
+            painter.drawLine(tip, QPointF(right - head, y + head * 0.65))
+
     def _paint_node(self, painter, layout, x=0.0, y=0.0):
         kind = layout["kind"]
-        text_color = self._text_color()
+        node = layout.get("node")
+        text_color = self._formula_node_color(node)
 
         if kind == "text":
             node = layout["node"]
@@ -4023,6 +4615,78 @@ class FormulaCanvasItem(QGraphicsObject):
 
             self._paint_node(painter, lower, x + ldx, y + ldy)
             self._paint_node(painter, body, x + bdx, y + bdy)
+            return
+
+        if kind == "bracket_group":
+            child, dx, dy = layout["child"]
+            rect = QRectF(x, y, layout["w"], layout["h"])
+            if layout.get("style") == "curly":
+                self._draw_curly_bracket(painter, rect, "left", text_color)
+                self._draw_curly_bracket(painter, rect, "right", text_color)
+            else:
+                self._draw_square_bracket(painter, rect, "left", text_color)
+                self._draw_square_bracket(painter, rect, "right", text_color)
+            self._paint_node(painter, child, x + dx, y + dy)
+            return
+
+        if kind == "cases":
+            rect = QRectF(x, y, layout["w"], layout["h"])
+            brace_rect = QRectF(x, y, layout["brace_w"], layout["h"])
+            self._draw_curly_bracket(painter, brace_rect, "left", text_color)
+            if layout.get("closed"):
+                right_rect = QRectF(
+                    x + layout["w"] - layout["brace_w"],
+                    y,
+                    layout["brace_w"],
+                    layout["h"],
+                )
+                self._draw_curly_bracket(painter, right_rect, "right", text_color)
+
+            painter.setFont(layout["label_font"])
+            painter.setPen(QPen(text_color, 1.0))
+            metrics = QFontMetricsF(layout["label_font"])
+            for index, entry in enumerate(layout["items"]):
+                child, dx, dy, label_y = entry
+                label = layout["labels"][index] if index < len(layout["labels"]) else ""
+                label_rect = metrics.tightBoundingRect(label or " ")
+                baseline = y + label_y - label_rect.top()
+                painter.drawText(
+                    QPointF(x + layout["label_x"] - label_rect.left(), baseline),
+                    label,
+                )
+                self._paint_node(painter, child, x + dx, y + dy)
+            return
+
+        if kind == "vector":
+            child, dx, dy = layout["child"]
+            self._draw_vector_arrow(
+                painter,
+                x + layout["arrow_left"],
+                x + layout["arrow_right"],
+                y + layout["arrow_y"],
+                layout.get("direction", "right"),
+                text_color,
+            )
+            self._paint_node(painter, child, x + dx, y + dy)
+            return
+
+        if kind == "matrix":
+            vector_rect = layout["vector_rect"].translated(x, y)
+            matrix_rect = layout["matrix_rect"].translated(x, y)
+            self._draw_square_bracket(painter, vector_rect, "left", text_color)
+            self._draw_square_bracket(painter, vector_rect, "right", text_color)
+            self._draw_square_bracket(painter, matrix_rect, "left", text_color)
+            self._draw_square_bracket(painter, matrix_rect, "right", text_color)
+
+            for child, dx, dy in layout["vector_items"]:
+                self._paint_node(painter, child, x + dx, y + dy)
+
+            operator, odx, ody = layout["operator"]
+            self._paint_node(painter, operator, x + odx, y + ody)
+
+            for row_items in layout["matrix_rows"]:
+                for child, dx, dy in row_items:
+                    self._paint_node(painter, child, x + dx, y + dy)
             return
 
         if kind == "group":
@@ -4213,6 +4877,20 @@ class FormulaCanvasItem(QGraphicsObject):
 
         current = str(leaf.get("text", ""))
         cursor = self.cursor_position(self.active_leaf_id)
+        matrix_operator = leaf.get("role") == "matrix_operator"
+
+        # Stage 268:
+        # '^' / deutsche Hochstelltaste erzeugt eine Potenz. Qt kann diese
+        # Taste je nach Tastaturlayout entweder als normales ASCII-Zeichen
+        # oder als Dead-Circumflex-Key melden.
+        caret_key = (
+            key == getattr(Qt, "Key_AsciiCircum", 0x5E)
+            or key == getattr(Qt, "Key_Dead_Circumflex", -0x1000)
+        )
+        if caret_key and not matrix_operator:
+            self.editor.add_exponent_from_input()
+            event.accept()
+            return
 
         # Stage 250: Links/Rechts bewegen den Textcursor innerhalb des
         # aktuellen Formelobjekts und wechseln NICHT das Formelobjekt.
@@ -4274,17 +4952,25 @@ class FormulaCanvasItem(QGraphicsObject):
 
         text = event.text()
         if text and text.isprintable() and not (event.modifiers() & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)):
-            # Stage 249: Der Unterstrich ist kein Literalzeichen, sondern der
-            # Struktur-Operator für einen tiefgestellten Index.
-            if text == "_":
+            # Das Matrix-Operatorfeld ist bewusst ein freies Textkästchen.
+            # Dort müssen '/' und '_' als sichtbare Operatorzeichen eingegeben
+            # werden können und dürfen keine Formelstruktur erzeugen.
+            # Stage 268: Einige Layouts liefern '^' nur über event.text().
+            if text == "^" and not matrix_operator:
+                self.editor.add_exponent_from_input()
+                event.accept()
+                return
+
+            # Stage 249: Der Unterstrich ist außerhalb des Matrix-Operators
+            # ein Struktur-Operator für einen tiefgestellten Index.
+            if text == "_" and not matrix_operator:
                 self.editor.add_subscript_from_input()
                 event.accept()
                 return
 
-            # Stage 256: '/' wird nicht als sichtbares Slash-Zeichen in das
-            # Textfeld geschrieben. Stattdessen wird das aktive Eingabefeld
-            # in einen strukturellen Bruch aus Zähler und Nenner umgewandelt.
-            if text == "/":
+            # Stage 256: '/' erzeugt außerhalb des Matrix-Operators einen
+            # strukturellen Bruch. Im Operatorfeld bleibt '/' literal.
+            if text == "/" and not matrix_operator:
                 self.editor.add_fraction_from_input()
                 event.accept()
                 return
@@ -4525,11 +5211,40 @@ class FormulaDesignerWidget(QWidget):
 
         root.addLayout(advanced)
 
+        structures = QHBoxLayout()
+        structures.setContentsMargins(0, 0, 0, 0)
+        structures.setSpacing(4)
+
+        structures.addWidget(QLabel("Klammern:", self))
+        self.square_group_button = QPushButton("[ ]", self)
+        self.curly_group_button = QPushButton("{ }", self)
+        self.cases2_button = QPushButton("{ WENN/DANN", self)
+        self.cases3_button = QPushButton("{ WENN/DANN/SONST", self)
+        structures.addWidget(self.square_group_button)
+        structures.addWidget(self.curly_group_button)
+        structures.addWidget(self.cases2_button)
+        structures.addWidget(self.cases3_button)
+
+        structures.addSpacing(8)
+        structures.addWidget(QLabel("Vektor:", self))
+        self.vector_left_button = QPushButton("←  Feld", self)
+        self.vector_right_button = QPushButton("Feld  →", self)
+        structures.addWidget(self.vector_left_button)
+        structures.addWidget(self.vector_right_button)
+
+        structures.addSpacing(8)
+        self.matrix_button = QPushButton("Matrix …", self)
+        structures.addWidget(self.matrix_button)
+        structures.addStretch(1)
+
+        root.addLayout(structures)
+
         self.help_label = QLabel(
             "Tab/Shift+Tab: Objekt wechseln   •   Return: Eingabe beenden + weiter   •   "
             "'/' = Bruch   •   '_' = Index   •   STRG+Mausrad: Zoom   •   "
             "Mausklick: Objekt aktivieren   •   Backspace/Delete: Zeichen bzw. Bruchgrenze löschen   •   "
-            "Klammer −: innerste Klammer-Ebene entfernen   •   STRG+Z/Y: Rückgängig/Wiederherstellen   •   "
+            "Klammer −: innerste Klammer-Ebene entfernen   •   [ ]/{ }: weitere Klammerarten   •   "
+            "Vektorpfeile/Matrix/Fallklammern als Objekte   •   STRG+Z/Y: Rückgängig/Wiederherstellen   •   "
             "Rechtsklick: Objektmenü",
             self,
         )
@@ -4561,8 +5276,18 @@ class FormulaDesignerWidget(QWidget):
 
         bottom = QHBoxLayout()
         bottom.setContentsMargins(0, 0, 0, 0)
-        self.expression_label = QLabel(self)
-        self.expression_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.expression_label = QLineEdit(self)
+        self.expression_label.setObjectName("formula_expression_readonly")
+        self.expression_label.setReadOnly(True)
+        self.expression_label.setFrame(True)
+        self.expression_label.setMinimumWidth(120)
+        self.expression_label.setSizePolicy(
+            QSizePolicy.Ignored,
+            QSizePolicy.Fixed,
+        )
+        self.expression_label.setToolTip(
+            "Read-only Formeltext. Der Text kann markiert und mit STRG+C kopiert werden."
+        )
         self.status_label = QLabel(self)
         self.status_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         bottom.addWidget(self.expression_label, 1)
@@ -4589,6 +5314,25 @@ class FormulaDesignerWidget(QWidget):
         self.remove_group_button.clicked.connect(self.remove_parentheses)
         self.product_button.clicked.connect(self.add_product)
         self.limit_button.clicked.connect(self.add_limit)
+        self.square_group_button.clicked.connect(
+            lambda checked=False: self.wrap_bracket_group("square")
+        )
+        self.curly_group_button.clicked.connect(
+            lambda checked=False: self.wrap_bracket_group("curly")
+        )
+        self.cases2_button.clicked.connect(
+            lambda checked=False: self.add_cases(2)
+        )
+        self.cases3_button.clicked.connect(
+            lambda checked=False: self.add_cases(3)
+        )
+        self.vector_left_button.clicked.connect(
+            lambda checked=False: self.wrap_vector("left")
+        )
+        self.vector_right_button.clicked.connect(
+            lambda checked=False: self.wrap_vector("right")
+        )
+        self.matrix_button.clicked.connect(self.add_matrix)
         self.symbol_combo.activated.connect(
             lambda _index: self._insert_from_combo(self.symbol_combo)
         )
@@ -4630,6 +5374,27 @@ class FormulaDesignerWidget(QWidget):
         )
         self.limit_button.setToolTip(
             "Limes mit editierbarer Bedingung unter 'lim' und Ausdruck rechts anlegen"
+        )
+        self.square_group_button.setToolTip(
+            "Aktuelles Ziel mit eckigen Klammern [ ] umgeben"
+        )
+        self.curly_group_button.setToolTip(
+            "Aktuelles Ziel mit normalen geschweiften Klammern { } umgeben"
+        )
+        self.cases2_button.setToolTip(
+            "Geschweifte Fallklammer mit WENN- und DANN-Eingabeobjekt anlegen"
+        )
+        self.cases3_button.setToolTip(
+            "Geschweifte Fallklammer mit WENN-, DANN- und SONST-Eingabeobjekt anlegen"
+        )
+        self.vector_left_button.setToolTip(
+            "Aktuelles Ziel als Richtungsvektor mit Pfeil nach links darstellen"
+        )
+        self.vector_right_button.setToolTip(
+            "Aktuelles Ziel als Richtungsvektor mit Pfeil nach rechts darstellen"
+        )
+        self.matrix_button.setToolTip(
+            "Editierbare Matrix mit gleich langem linken Spaltenvektor anlegen"
         )
         self.symbol_combo.setToolTip(
             "Mathematisches Sonderzeichen an der Textcursorposition einfügen"
@@ -4823,7 +5588,10 @@ class FormulaDesignerWidget(QWidget):
         depth = _formula_depth(self.model)
         expression = _formula_to_text(self.model)
         self.expression_label.setText("Formel: " + expression)
-        self.expression_label.setToolTip(expression)
+        # Bei Überlänge bleibt die Formel im Feld scrollbar, statt die
+        # Fensterbreite zu beeinflussen. Die Auswahl/Kopie erfolgt direkt
+        # im read-only QLineEdit.
+        self.expression_label.setCursorPosition(0)
         ids = self._active_leaf_ids()
         try:
             position = ids.index(self.canvas.active_leaf_id) + 1
@@ -4911,6 +5679,58 @@ class FormulaDesignerWidget(QWidget):
             },
             new_focus_id=new_exp["id"],
         )
+
+    def add_exponent_from_input(self):
+        """
+        Stage 268:
+        Die Hochstelltaste '^' wandelt das aktive normale Eingabefeld
+        unmittelbar in eine Potenz um und aktiviert den Exponenten.
+
+        Bei "12|34" entsteht sinngemäß "12^(34)" und der Cursor steht am
+        Anfang des Exponenten. Bei "2|" entsteht "2^()" mit leerem,
+        aktiviertem Exponentenfeld.
+        """
+        active_id = self.canvas.active_leaf_id
+        active = _formula_find_leaf(self.model, active_id)
+        if active is None:
+            QApplication.beep()
+            return False
+
+        role = active.get("role", "value")
+        if role in {"root_degree", "matrix_operator"}:
+            # Wurzelgrad bleibt numerisch; das Matrix-Operatorfeld ist
+            # absichtlich ein freies Operatorfeld.
+            QApplication.beep()
+            return False
+
+        text = str(active.get("text", ""))
+        cursor = self.canvas.cursor_position(active_id)
+        cursor = max(0, min(int(cursor), len(text)))
+
+        base_text = text[:cursor]
+        exponent_text = text[cursor:]
+        exponent = _formula_new_text(exponent_text, "exponent")
+
+        def build_power(target):
+            target["text"] = base_text
+            return {
+                "type": "power",
+                "base": target,
+                "exponent": exponent,
+            }
+
+        changed = self._apply_structure(
+            build_power,
+            new_focus_id=exponent["id"],
+            force_current=True,
+        )
+        if changed:
+            self.canvas.set_cursor_position(
+                0,
+                exponent["id"],
+                ensure_visible=True,
+            )
+        return changed
 
     def _selected_path(self):
         path = self.canvas.selected_path
@@ -5080,6 +5900,10 @@ class FormulaDesignerWidget(QWidget):
             "product": "Produkt",
             "limit": "Limes",
             "integral": "Integral",
+            "bracket_group": "Eckige/geschweifte Klammer",
+            "cases": "Fallklammer / WENN-DANN(-SONST)",
+            "vector": "Richtungsvektor",
+            "matrix": "Matrix mit linkem Spaltenvektor",
         }
         QMessageBox.information(
             self,
@@ -5092,21 +5916,98 @@ class FormulaDesignerWidget(QWidget):
             "STRG+Z = Rückgängig, STRG+Y = Wiederherstellen.",
         )
 
+    @staticmethod
+    def _formula_console_color_icon(color_hex):
+        """Kleines gefülltes Rechteck für die 16 Farb-Menüeinträge."""
+        pixmap = QPixmap(20, 14)
+        pixmap.fill(Qt.transparent)
+
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing, False)
+        painter.setPen(QPen(QColor("#707070"), 1.0))
+        painter.setBrush(QBrush(QColor(color_hex)))
+        painter.drawRect(QRectF(1.5, 2.0, 16.0, 9.0))
+        painter.end()
+        return QIcon(pixmap)
+
+    def set_selected_object_color(self, color_hex):
+        """
+        Farbe auf das markierte Formelobjekt anwenden.
+
+        Bei Strukturknoten wird der gesamte Unterbaum eingefärbt, damit
+        Zahlen, Zeichen und das eigentliche Struktur-Symbol zusammenpassen.
+        Die Änderung läuft über model_changed() und landet damit im
+        STRG+Z/STRG+Y-History-Stack.
+        """
+        path = self._selected_path()
+        if path is None:
+            QApplication.beep()
+            return False
+
+        candidate = copy.deepcopy(self.model)
+        target = _formula_get_node_at_path(candidate, path)
+        if not isinstance(target, dict):
+            QApplication.beep()
+            return False
+
+        try:
+            changed = _formula_set_subtree_color(target, color_hex)
+            _formula_validate_model(candidate)
+        except (ValueError, RecursionError) as exc:
+            QApplication.beep()
+            QMessageBox.warning(self, "Formel-Designer", str(exc))
+            return False
+
+        if not changed:
+            return True
+
+        self.model = candidate
+        self.canvas.model = self.model
+        self.canvas.selected_path = tuple(path)
+        self.model_changed(keep_focus=True)
+        return True
+
     def show_formula_context_menu(self, screen_pos):
         menu = QMenu(self)
+
+        # Stage 269: Farbe ist bewusst der ERSTE Eintrag.
+        color_menu = menu.addMenu("Farbe")
+        color_actions = {}
+        selected_node = self._selected_node()
+        selected_color = (
+            str(selected_node.get("color", "")).lower()
+            if isinstance(selected_node, dict)
+            else ""
+        )
+
+        for color_name, color_hex in FORMULA_DESIGNER_CONSOLE_COLORS:
+            action = color_menu.addAction(
+                self._formula_console_color_icon(color_hex),
+                color_name,
+            )
+            action.setCheckable(True)
+            action.setChecked(selected_color == color_hex.lower())
+            color_actions[action] = color_hex
+
+        # Gewünschter Separator unmittelbar unter "Farbe".
+        menu.addSeparator()
+
         cut_action = menu.addAction("Ausschneiden")
         paste_action = menu.addAction("Einfügen")
         delete_action = menu.addAction("Löschen")
         menu.addSeparator()
         help_action = menu.addAction("Hilfe")
 
-        has_selection = self._selected_node() is not None
+        has_selection = selected_node is not None
+        color_menu.setEnabled(has_selection)
         cut_action.setEnabled(has_selection)
         delete_action.setEnabled(has_selection)
         paste_action.setEnabled(self._clipboard_has_formula())
 
         chosen = menu.exec_(screen_pos)
-        if chosen is cut_action:
+        if chosen in color_actions:
+            self.set_selected_object_color(color_actions[chosen])
+        elif chosen is cut_action:
             self.cut_selected_object()
         elif chosen is paste_action:
             self.paste_selected_object()
@@ -5175,6 +6076,114 @@ class FormulaDesignerWidget(QWidget):
             self.canvas.active_leaf_id = active_id
         self.model_changed(keep_focus=True)
         return True
+
+    def wrap_bracket_group(self, style="square"):
+        style = "curly" if style == "curly" else "square"
+        self._apply_structure(
+            lambda target: {
+                "type": "bracket_group",
+                "style": style,
+                "child": target,
+            }
+        )
+
+    def add_cases(self, count=2):
+        count = 3 if int(count) >= 3 else 2
+        labels = ["WENN", "DANN"] if count == 2 else ["WENN", "DANN", "SONST"]
+        extra = [
+            _formula_new_text("", f"case_{label.lower()}")
+            for label in labels[1:]
+        ]
+
+        def build(target):
+            return {
+                "type": "cases",
+                "count": count,
+                "labels": labels,
+                # Konventionell bleibt die rechte Seite offen. Das Modell
+                # besitzt dennoch ein 'closed'-Flag für spätere Stiloptionen.
+                "closed": False,
+                "items": {
+                    "type": "sequence",
+                    "children": [target] + extra,
+                },
+            }
+
+        focus_id = extra[0]["id"] if extra else None
+        self._apply_structure(build, new_focus_id=focus_id)
+
+    def wrap_vector(self, direction="right"):
+        direction = "left" if direction == "left" else "right"
+        self._apply_structure(
+            lambda target: {
+                "type": "vector",
+                "direction": direction,
+                "child": target,
+            }
+        )
+
+    def add_matrix(self):
+        rows, ok = QInputDialog.getInt(
+            self,
+            "Matrix anlegen",
+            "Zeilen / Höhe:",
+            3,
+            1,
+            12,
+            1,
+        )
+        if not ok:
+            return False
+        cols, ok = QInputDialog.getInt(
+            self,
+            "Matrix anlegen",
+            "Spalten / Breite:",
+            3,
+            1,
+            12,
+            1,
+        )
+        if not ok:
+            return False
+
+        vector_entries = [
+            _formula_new_text("", f"matrix_vector_{row + 1}")
+            for row in range(rows)
+        ]
+        operator = _formula_new_text("", "matrix_operator")
+        matrix_cells = [
+            [
+                _formula_new_text("", f"matrix_{row + 1}_{col + 1}")
+                for col in range(cols)
+            ]
+            for row in range(rows)
+        ]
+
+        def build(target):
+            # Das bisherige Ziel wird als erstes Matrixelement erhalten.
+            matrix_cells[0][0] = target
+            return {
+                "type": "matrix",
+                "row_count": rows,
+                "col_count": cols,
+                "left_vector": {
+                    "type": "sequence",
+                    "children": vector_entries,
+                },
+                "operator": operator,
+                "rows": {
+                    "type": "sequence",
+                    "children": [
+                        {"type": "sequence", "children": row}
+                        for row in matrix_cells
+                    ],
+                },
+            }
+
+        return self._apply_structure(
+            build,
+            new_focus_id=vector_entries[0]["id"],
+        )
 
     def add_product(self):
         upper = _formula_new_text("", "product_upper")
@@ -49923,6 +50932,7 @@ def run_gui(
         "mo:ExplorerWindow.main_title_bar": tr("mo:ExplorerWindow.main_title_bar"),
         "mo:ExplorerWindow.main_top_chrome": tr("mo:ExplorerWindow.main_top_chrome"),
         "mo:ExplorerWindow.math_learning_action": tr("mo:ExplorerWindow.math_learning_action"),
+        "mo:ExplorerWindow.unit_circle_action": tr("mo:ExplorerWindow.unit_circle_action"),
         "mo:ExplorerWindow.math_numbers_wall_1000_action": tr("mo:ExplorerWindow.math_numbers_wall_1000_action"),
         "mo:ExplorerWindow.math_numbers_wall_100_action": tr("mo:ExplorerWindow.math_numbers_wall_100_action"),
         "mo:ExplorerWindow.new_amiga_project_action": tr("mo:ExplorerWindow.new_amiga_project_action"),
@@ -60821,6 +61831,587 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.text_requested.emit(shifted if self._shift else normal)
 
 
+    class PrologConsoleOutputEdit(QPlainTextEdit):
+        """Ausgabeansicht der internen PROLOG-Konsole mit Continuation-Key-Modus."""
+
+        continuation_requested = pyqtSignal(str)
+
+        _CONTINUATION_TEXT_KEYS = {
+            ";", ".", ":", "c", "a", "r", "n", "q",
+            "C", "A", "R", "N", "Q",
+        }
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self._continuation_mode = False
+            font = QFont("Consolas", 10)
+            font.setStyleHint(QFont.Monospace)
+            font.setFixedPitch(True)
+            self.setFont(font)
+            self.setLineWrapMode(QPlainTextEdit.NoWrap)
+            self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.setReadOnly(True)
+            self.setUndoRedoEnabled(False)
+
+        def set_continuation_mode(self, enabled: bool) -> None:
+            self._continuation_mode = bool(enabled)
+            # Benutzerwunsch: beim "weitere Lösung"-Prompt vom Read-only-
+            # Zustand in einen kontrollierten Read/Write-Zustand wechseln.
+            # keyPressEvent verhindert dennoch jede Textmanipulation und lässt
+            # ausschließlich die PROLOG-Continuation-Tasten durch.
+            self.setReadOnly(not self._continuation_mode)
+            if self._continuation_mode:
+                self.moveCursor(QTextCursor.End)
+                self.setFocus(Qt.OtherFocusReason)
+
+        def keyPressEvent(self, event) -> None:
+            if not self._continuation_mode:
+                super().keyPressEvent(event)
+                return
+
+            key = event.key()
+            text = event.text()
+            if key in (Qt.Key_Return, Qt.Key_Enter):
+                self.continuation_requested.emit("\n")
+                event.accept()
+                return
+            if key == Qt.Key_Tab:
+                self.continuation_requested.emit("\t")
+                event.accept()
+                return
+            if key == Qt.Key_Space:
+                self.continuation_requested.emit(" ")
+                event.accept()
+                return
+            if text in self._CONTINUATION_TEXT_KEYS:
+                self.continuation_requested.emit(text)
+                event.accept()
+                return
+
+            # Cursor-, Editier- und alle sonstigen Tasten sind während der
+            # Lösungsauswahl gesperrt und werden akustisch quittiert.
+            QApplication.beep()
+            event.accept()
+
+        def contextMenuEvent(self, event) -> None:
+            if self._continuation_mode:
+                # Im Continuation-Modus darf auch ueber das Maus-Kontextmenue
+                # kein Text eingefuegt, geloescht oder ausgeschnitten werden.
+                QApplication.beep()
+                event.accept()
+                return
+            super().contextMenuEvent(event)
+
+        def insertFromMimeData(self, source) -> None:
+            if self._continuation_mode:
+                QApplication.beep()
+                return
+            super().insertFromMimeData(source)
+
+        def dropEvent(self, event) -> None:
+            if self._continuation_mode:
+                QApplication.beep()
+                event.ignore()
+                return
+            super().dropEvent(event)
+
+        def inputMethodEvent(self, event) -> None:
+            if self._continuation_mode:
+                QApplication.beep()
+                event.ignore()
+                return
+            super().inputMethodEvent(event)
+
+
+    class PrologHistoryLineEdit(QLineEdit):
+        """Editierbare Eingabezeile mit Shell-artiger History-Navigation."""
+
+        history_previous_requested = pyqtSignal()
+        history_next_requested = pyqtSignal()
+
+        def keyPressEvent(self, event) -> None:
+            if event.key() == Qt.Key_Up:
+                self.history_previous_requested.emit()
+                event.accept()
+                return
+            if event.key() == Qt.Key_Down:
+                self.history_next_requested.emit()
+                event.accept()
+                return
+            super().keyPressEvent(event)
+
+
+    class PrologConsoleSession(QObject):
+        """Piped child process for a generated PROLOG PE image."""
+
+        stdout_ready = pyqtSignal(bytes)
+        stderr_ready = pyqtSignal(bytes)
+        finished = pyqtSignal(int)
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.process = None
+            self._stdin_lock = threading.Lock()
+            self._reader_threads = []
+
+        def start(self, executable: Path) -> None:
+            executable = Path(executable).resolve()
+            options = {
+                "cwd": str(executable.parent),
+                "stdin": subprocess.PIPE,
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.PIPE,
+                "bufsize": 0,
+            }
+            creationflags = 0
+            if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW"):
+                creationflags |= subprocess.CREATE_NO_WINDOW
+            if os.name == "nt" and hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
+                creationflags |= subprocess.CREATE_NEW_PROCESS_GROUP
+            if creationflags:
+                options["creationflags"] = creationflags
+
+            self.process = subprocess.Popen([str(executable)], **options)
+
+            def pump(stream, signal):
+                try:
+                    while True:
+                        chunk = stream.read(512)
+                        if not chunk:
+                            break
+                        signal.emit(bytes(chunk))
+                except Exception:
+                    pass
+
+            for stream, signal in (
+                (self.process.stdout, self.stdout_ready),
+                (self.process.stderr, self.stderr_ready),
+            ):
+                thread = threading.Thread(
+                    target=pump,
+                    args=(stream, signal),
+                    daemon=True,
+                )
+                self._reader_threads.append(thread)
+                thread.start()
+
+            def wait_for_process():
+                code = self.process.wait()
+                for thread in tuple(self._reader_threads):
+                    thread.join(timeout=0.5)
+                try:
+                    self.finished.emit(int(code))
+                except RuntimeError:
+                    # Der Dialog kann bereits geschlossen und sein QObject
+                    # geloescht sein, waehrend der Wait-Thread auslaeuft.
+                    pass
+
+            threading.Thread(target=wait_for_process, daemon=True).start()
+
+        def write(self, text: str) -> bool:
+            process = self.process
+            if process is None or process.poll() is not None or process.stdin is None:
+                return False
+            data = str(text).encode("cp1252", errors="replace")
+            try:
+                with self._stdin_lock:
+                    process.stdin.write(data)
+                    process.stdin.flush()
+                return True
+            except (BrokenPipeError, OSError, ValueError):
+                return False
+
+        def terminate(self) -> None:
+            process = self.process
+            if process is None or process.poll() is not None:
+                return
+            try:
+                process.terminate()
+            except OSError:
+                pass
+
+
+    class PrologConsoleDialog(QDialog):
+        """Eigene Qt5-Konsole für stdout/stderr und den interaktiven PROLOG-REPL."""
+
+        MORE_PROMPT = "ENTER = weitere Lösung"
+        QUERY_PROMPT = "?- "
+
+        def __init__(self, executable: Path, parent=None, *, dark_mode: bool = False):
+            super().__init__(parent)
+            self.executable = Path(executable).resolve()
+            self.dark_mode_enabled = bool(dark_mode)
+            self.session = PrologConsoleSession(self)
+            self._protocol_tail = ""
+            self._continuation_mode = False
+            # Stage 285: session-lokale, eindeutige Eingabe-History. Die
+            # interne Liste ist chronologisch (alt -> neu), waehrend das
+            # Combo-Popup die zuletzt verwendeten Befehle oben zeigt.
+            self._input_history = []
+            self._history_position = 0
+            self._history_draft = ""
+            self._restoring_history = False
+
+            self.setObjectName("prolog_console_dialog")
+            self.setWindowTitle(f"PROLOG Konsole - {self.executable.name}")
+            # Stage 284: Beim Oeffnen exakt mit der minimal zulaessigen
+            # Geometrie starten. Danach bleibt der Dialog normal vergroesserbar,
+            # kann aber nicht unter 620x360 Pixel verkleinert werden.
+            self.setMinimumSize(620, 360)
+            self.resize(self.minimumSize())
+
+            self.output_editor = PrologConsoleOutputEdit(self)
+            self.output_editor.setObjectName("prolog_console_output")
+            self.output_editor.continuation_requested.connect(
+                self._send_continuation_key
+            )
+
+            self.input_combo = QComboBox(self)
+            self.input_combo.setObjectName("prolog_console_input_combo")
+            self.input_combo.setEditable(True)
+            self.input_combo.setInsertPolicy(QComboBox.NoInsert)
+            self.input_combo.setMaxVisibleItems(18)
+            self.input_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+            self.input_combo.setMinimumContentsLength(24)
+
+            history_edit = PrologHistoryLineEdit(self.input_combo)
+            history_edit.setObjectName("prolog_console_input")
+            history_edit.setFont(QFont("Consolas", 10))
+            history_edit.setPlaceholderText("PROLOG-Befehl eingeben und Enter drücken")
+            self.input_combo.setLineEdit(history_edit)
+            # input_edit bleibt als Alias erhalten, damit die bestehende
+            # Fokus-/Enable-Logik unveraendert weiterarbeitet.
+            self.input_edit = history_edit
+            self.input_edit.returnPressed.connect(self._submit_input_line)
+            self.input_edit.history_previous_requested.connect(self._history_previous)
+            self.input_edit.history_next_requested.connect(self._history_next)
+            self.input_edit.textEdited.connect(self._history_text_edited)
+            self.input_combo.activated[str].connect(self._history_item_selected)
+
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(8, 8, 8, 8)
+            layout.setSpacing(6)
+            layout.addWidget(self.output_editor, 1)
+            layout.addWidget(self.input_combo, 0)
+
+            self.session.stdout_ready.connect(
+                lambda data: self._append_process_bytes(data, False)
+            )
+            self.session.stderr_ready.connect(
+                lambda data: self._append_process_bytes(data, True)
+            )
+            self.session.finished.connect(self._process_finished)
+            self.set_dark_mode(self.dark_mode_enabled)
+
+        def set_dark_mode(self, enabled: bool) -> None:
+            self.dark_mode_enabled = bool(enabled)
+            if enabled:
+                self.setStyleSheet(
+                    "QDialog#prolog_console_dialog{background:#17191d;color:#e8e8e8;}"
+                    "QPlainTextEdit#prolog_console_output{background:#0d0f12;color:#e8e8e8;"
+                    "border:1px solid #454a52;selection-background-color:#345d86;}"
+                    "QComboBox#prolog_console_input_combo{background:#111419;color:#f2f2f2;"
+                    "border:1px solid #50555e;padding:2px;selection-background-color:#345d86;}"
+                    "QComboBox#prolog_console_input_combo QLineEdit{background:#111419;color:#f2f2f2;"
+                    "border:0;padding:3px;selection-background-color:#345d86;}"
+                    "QComboBox#prolog_console_input_combo QAbstractItemView{background:#111419;color:#f2f2f2;"
+                    "border:1px solid #50555e;selection-background-color:#345d86;}"
+                )
+            else:
+                self.setStyleSheet("")
+
+        def start_process(self) -> bool:
+            try:
+                self.session.start(self.executable)
+            except OSError as exc:
+                self._append_text(f"PROLOG-Prozess konnte nicht gestartet werden:\n{exc}\n")
+                self.input_combo.setEnabled(False)
+                return False
+            self.input_combo.setEnabled(True)
+            self.input_edit.setFocus(Qt.OtherFocusReason)
+            return True
+
+        def _append_text(self, text: str, *, foreground=None, bold: bool = False) -> None:
+            if not text:
+                return
+            cursor = self.output_editor.textCursor()
+            cursor.movePosition(QTextCursor.End)
+
+            char_format = QTextCharFormat()
+            if foreground is None:
+                # Fuer lokale Meldungen/Eingabeecho die normale Textfarbe des
+                # aktuellen Qt-Themes verwenden.
+                char_format.setForeground(
+                    self.output_editor.palette().color(QPalette.Text)
+                )
+            else:
+                char_format.setForeground(QColor(foreground))
+            char_format.setFontWeight(QFont.Bold if bold else QFont.Normal)
+
+            cursor.insertText(text, char_format)
+            self.output_editor.setTextCursor(cursor)
+            self.output_editor.ensureCursorVisible()
+
+        def _highlight_boolean_solutions(self) -> None:
+            """Faerbt reine Top-Level-Ergebnisse true./false. gesondert.
+
+            Andere PROLOG-Loesungen behalten die gelbe/fette Darstellung.
+            Da stdout in mehreren Pipe-Chunks eintreffen kann, wird nach jedem
+            neuen Chunk das komplette Dokument nach alleinstehenden
+            Ergebniszeilen durchsucht.
+            """
+            plain_text = self.output_editor.toPlainText()
+            for match in re.finditer(r"(?m)^(true|false)\.$", plain_text):
+                word = match.group(1)
+                start = match.start(1)
+                end = match.end(1)
+
+                cursor = QTextCursor(self.output_editor.document())
+                cursor.setPosition(start)
+                cursor.setPosition(end, QTextCursor.KeepAnchor)
+                char_format = QTextCharFormat()
+                char_format.setForeground(
+                    QColor("#00c853" if word == "true" else "#ff3b30")
+                )
+                # Die Loesungsdarstellung bleibt fett; nur die Farbe wird
+                # gegenueber normalen gelben Loesungen spezialisiert.
+                char_format.setFontWeight(QFont.Bold)
+                cursor.mergeCharFormat(char_format)
+
+        def _highlight_more_prompt(self) -> None:
+            """Faerbt die aktuelle 'weitere Loesung'-Zeile grau/nicht fett.
+
+            stdout kommt ueber eine Pipe und kann den Prompt auf mehrere Chunks
+            verteilen. Deshalb wird nach jedem Chunk vom Prompt-Anfang bis zum
+            aktuellen Zeilenende neu formatiert.
+            """
+            plain_text = self.output_editor.toPlainText()
+            start = plain_text.rfind(self.MORE_PROMPT)
+            if start < 0:
+                return
+
+            end = plain_text.find("\n", start)
+            if end < 0:
+                end = len(plain_text)
+
+            cursor = QTextCursor(self.output_editor.document())
+            cursor.setPosition(start)
+            cursor.setPosition(end, QTextCursor.KeepAnchor)
+            char_format = QTextCharFormat()
+            char_format.setForeground(QColor("#9a9a9a"))
+            char_format.setFontWeight(QFont.Normal)
+            cursor.mergeCharFormat(char_format)
+
+        def _append_process_bytes(self, data: bytes, is_stderr: bool) -> None:
+            # Die native PROLOG-Runtime erzeugt aktuell byteorientierte
+            # Latin-1/Windows-1252-Ausgabe. Damit sind auch umgeleitete Pipes
+            # unabhängig von der Windows-Console-Codepage korrekt lesbar.
+            text = bytes(data).decode("cp1252", errors="replace")
+            if is_stderr and text:
+                # Fehlermeldungen behalten die normale Dialog-Textfarbe.
+                self._append_text(text)
+            else:
+                # Stage 283: PROLOG-Loesungen gelb und fett hervorheben.
+                # Der anschliessende Continuation-/Abfragetext wird danach
+                # gezielt grau und mit normaler Schriftstaerke formatiert.
+                self._append_text(text, foreground="#ffff00", bold=True)
+                self._highlight_boolean_solutions()
+                self._highlight_more_prompt()
+
+            self._protocol_tail = (self._protocol_tail + text)[-2048:]
+            more_pos = self._protocol_tail.rfind(self.MORE_PROMPT)
+            query_pos = self._protocol_tail.rfind(self.QUERY_PROMPT)
+            if more_pos >= 0 and more_pos > query_pos:
+                self._enter_continuation_mode()
+            elif query_pos >= 0 and query_pos > more_pos:
+                self._leave_continuation_mode(focus_input=True)
+
+        def _enter_continuation_mode(self) -> None:
+            if self._continuation_mode:
+                return
+            self._continuation_mode = True
+            self.input_combo.setEnabled(False)
+            self.output_editor.set_continuation_mode(True)
+
+        def _leave_continuation_mode(self, *, focus_input: bool) -> None:
+            self._continuation_mode = False
+            self.output_editor.set_continuation_mode(False)
+            running = (
+                self.session.process is not None
+                and self.session.process.poll() is None
+            )
+            self.input_combo.setEnabled(running)
+            if focus_input and running:
+                self.input_combo.setEditText("")
+                self._history_position = len(self._input_history)
+                self._history_draft = ""
+                self.input_edit.setFocus(Qt.OtherFocusReason)
+
+        def _refresh_history_combo(self) -> None:
+            current_text = self.input_edit.text()
+            blocker = self.input_combo.blockSignals(True)
+            self.input_combo.clear()
+            # Neueste Eingaben stehen im Maus-Popup oben.
+            for item in reversed(self._input_history):
+                self.input_combo.addItem(item)
+            self.input_combo.setEditText(current_text)
+            self.input_combo.blockSignals(blocker)
+
+        def _remember_input_line(self, line: str) -> None:
+            text = str(line).strip()
+            if not text:
+                self._history_position = len(self._input_history)
+                self._history_draft = ""
+                return
+            # Keine Duplikate: wird ein vorhandener Befehl erneut benutzt,
+            # wandert er lediglich an das Ende und ist damit wieder der
+            # neueste History-Eintrag.
+            self._input_history = [item for item in self._input_history if item != text]
+            self._input_history.append(text)
+            self._history_position = len(self._input_history)
+            self._history_draft = ""
+            self._refresh_history_combo()
+
+        def _set_history_text(self, text: str) -> None:
+            self._restoring_history = True
+            try:
+                self.input_combo.setEditText(text)
+                self.input_edit.setCursorPosition(len(text))
+            finally:
+                self._restoring_history = False
+
+        def _history_previous(self) -> None:
+            if not self._input_history:
+                QApplication.beep()
+                return
+            if self._history_position >= len(self._input_history):
+                self._history_draft = self.input_edit.text()
+                self._history_position = len(self._input_history) - 1
+            elif self._history_position > 0:
+                self._history_position -= 1
+            else:
+                QApplication.beep()
+            self._set_history_text(self._input_history[self._history_position])
+
+        def _history_next(self) -> None:
+            if not self._input_history:
+                QApplication.beep()
+                return
+            if self._history_position < len(self._input_history) - 1:
+                self._history_position += 1
+                self._set_history_text(self._input_history[self._history_position])
+                return
+            if self._history_position == len(self._input_history) - 1:
+                self._history_position = len(self._input_history)
+                self._set_history_text(self._history_draft)
+                return
+            QApplication.beep()
+
+        def _history_text_edited(self, text: str) -> None:
+            if self._restoring_history:
+                return
+            self._history_position = len(self._input_history)
+            self._history_draft = str(text)
+
+        def _history_item_selected(self, text: str) -> None:
+            # Das Popup bleibt eine echte, per Maus bedienbare ComboBox. Eine
+            # Auswahl wird nur in die Edit-Zeile uebernommen; ausgefuehrt wird
+            # sie wie gewohnt erst mit ENTER/RETURN.
+            try:
+                self._history_position = self._input_history.index(str(text))
+            except ValueError:
+                self._history_position = len(self._input_history)
+            self._history_draft = ""
+            self._set_history_text(str(text))
+            self.input_edit.setFocus(Qt.MouseFocusReason)
+
+        @staticmethod
+        def _direct_arithmetic_expression(line: str) -> Optional[str]:
+            """Return an arithmetic expression eligible for direct eval.
+
+            This intentionally recognizes only arithmetic syntax already
+            supported by the native PROLOG evaluator (+, -, *, /, mod,
+            parentheses, numeric literals and float/1). Normal predicates,
+            variables and comparisons therefore cannot be rewritten by
+            accident.
+            """
+            text = str(line).strip()
+            if text.startswith("?-"):
+                text = text[2:].strip()
+            # Ignore an optional one-line PROLOG comment for recognition.
+            if "%" in text:
+                text = text.split("%", 1)[0].rstrip()
+            if text.endswith("."):
+                text = text[:-1].rstrip()
+            if not text:
+                return None
+
+            # Remove the only alphabetic arithmetic names supported here; if
+            # letters/underscores remain, this is a normal PROLOG query.
+            reduced = re.sub(r"(?i)\bmod\b", "", text)
+            reduced = re.sub(r"(?i)\bfloat\s*(?=\()", "", reduced)
+            if re.search(r"[A-Za-z_]", reduced):
+                return None
+            if not re.fullmatch(r"[0-9eE+\-*/().,\s]+", reduced):
+                return None
+            # Decimal comma is not a PROLOG numeric token and a top-level
+            # comma would be a conjunction, not arithmetic.
+            if "," in reduced:
+                return None
+            # At least one numeric literal must be present. A single number is
+            # also a useful direct expression (e.g. 42.).
+            if not re.search(r"\d", text):
+                return None
+            return text
+
+        def _wire_input_line(self, line: str) -> str:
+            expression = self._direct_arithmetic_expression(line)
+            if expression is None:
+                return str(line)
+            # d64_eval/1 is a private native-runtime helper. The visible echo
+            # and ComboBox history keep the exact command entered by the user.
+            return f"d64_eval({expression})."
+
+        def _submit_input_line(self) -> None:
+            if self._continuation_mode:
+                QApplication.beep()
+                return
+            line = self.input_edit.text()
+            self._remember_input_line(line)
+            wire_line = self._wire_input_line(line)
+            self.input_combo.setEditText("")
+            self.input_combo.setEnabled(False)
+            self._protocol_tail = ""
+            # Bei einer Pipe gibt es kein Win32-Console-Echo. Deshalb wird die
+            # ORIGINAL eingegebene Zeile sichtbar gemacht. Eine eventuelle
+            # d64_eval/1-Umschreibung bleibt ein internes Protokolldetail.
+            self._append_text(line + "\n")
+            if not self.session.write(wire_line + "\n"):
+                QApplication.beep()
+                self.input_combo.setEnabled(False)
+
+        def _send_continuation_key(self, key: str) -> None:
+            if not self._continuation_mode:
+                return
+            visible = "\n" if key == "\n" else ("\t\n" if key == "\t" else key + "\n")
+            self._append_text(visible)
+            payload = "\n" if key == "\n" else key + "\n"
+            self._protocol_tail = ""
+            self._leave_continuation_mode(focus_input=False)
+            if not self.session.write(payload):
+                QApplication.beep()
+
+        def _process_finished(self, return_code: int) -> None:
+            self._leave_continuation_mode(focus_input=False)
+            self.input_combo.setEnabled(False)
+            self._append_text(f"\n[PROLOG-Prozess beendet, Exit-Code {int(return_code)}]\n")
+
+        def closeEvent(self, event: QCloseEvent) -> None:
+            self.session.terminate()
+            super().closeEvent(event)
+
+
     class DocumentEditor(QWidget):
         """Ein Dateidokument mit Rohdaten-, Hex- und Hinweisansicht."""
 
@@ -61375,6 +62966,19 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.pascal_compile_progress.hide()
             source_layout.addWidget(self.pascal_compile_progress)
 
+            # Stage 281: PROLOG-Buildfortschritt bleibt unterhalb der gesamten
+            # Dokumentansicht sichtbar. Dadurch kann derselbe Balken Compile
+            # und den anschließenden ASM/COFF/Link-Schritt verfolgen, auch wenn
+            # nach dem Compile der erzeugte ASM-Tab aktiv ist.
+            self.prolog_build_progress = QProgressBar(self)
+            self.prolog_build_progress.setObjectName("prolog_build_progress")
+            self.prolog_build_progress.setRange(0, 100)
+            self.prolog_build_progress.setValue(0)
+            self.prolog_build_progress.setTextVisible(True)
+            self.prolog_build_progress.setFormat("PROLOG: bereit – 0 %")
+            self.prolog_build_progress.setFixedHeight(20)
+            self.prolog_build_progress.hide()
+
             self.views.addTab(self.source_page, "Rohdaten")
 
             self.markdown_preview_page = QWidget(self.views)
@@ -61679,6 +63283,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 self.views.setCurrentWidget(self.hex_editor)
 
             layout.addWidget(self.views)
+            layout.addWidget(self.prolog_build_progress)
             self.set_dark_mode(dark_mode)
             self._invalidate_c64_overlay_cache()
 
@@ -63179,6 +64784,14 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                     )
                 )
             self.pascal_compile_progress.setVisible(is_pascal)
+            # Stage 283: Die PROLOG-Progressbar ist keine dauerhafte
+            # Editor-Komponente. Beim Oeffnen eines PROLOG-Dokuments bleibt
+            # sie verborgen und wird ausschliesslich von
+            # begin_prolog_build_progress() fuer Compile/Assemble/Link
+            # eingeblendet. Beim Sprachwechsel weg von PROLOG sicher
+            # ausblenden.
+            if not is_prolog:
+                self.prolog_build_progress.hide()
             # Stage 60: assembly source uses a 120 px minimum draggable
             # viewport thumb.  Other source editors keep the historic 18 px
             # minimum.  This also updates correctly after Save As/Rename.
@@ -63357,6 +64970,39 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 self.pascal_compile_progress.setFormat(
                     "Pascal-Kompilierung fehlgeschlagen – %p %"
                 )
+
+        def begin_prolog_build_progress(self, text: str = "Kompilieren") -> None:
+            self.prolog_build_progress.setVisible(True)
+            self.prolog_build_progress.setValue(1)
+            self.prolog_build_progress.setFormat(f"PROLOG: {str(text)} – %p %")
+            QApplication.processEvents(QEventLoop.ExcludeUserInputEvents, 25)
+
+        def set_prolog_build_progress(self, value: int, text: str = "") -> None:
+            self.prolog_build_progress.setVisible(True)
+            self.prolog_build_progress.setValue(max(0, min(100, int(value))))
+            if text:
+                self.prolog_build_progress.setFormat(
+                    f"PROLOG: {str(text)} – %p %"
+                )
+            QApplication.processEvents(QEventLoop.ExcludeUserInputEvents, 25)
+
+        def finish_prolog_build_progress(self, success: bool, text: str = "") -> None:
+            if success:
+                self.prolog_build_progress.setValue(100)
+                label = str(text or "Vorgang abgeschlossen")
+                self.prolog_build_progress.setFormat(f"PROLOG: {label} – 100 %")
+                # Den abgeschlossenen Zustand noch einmal zeichnen lassen und
+                # danach die Progressbar wieder ausblenden. Beim naechsten
+                # Compile/Assemble blendet begin_prolog_build_progress() sie
+                # erneut ein.
+                QApplication.processEvents(QEventLoop.ExcludeUserInputEvents, 25)
+                self.prolog_build_progress.hide()
+            else:
+                # Bei einem Fehler bleibt der letzte Fortschrittsstand
+                # sichtbar, damit er als Diagnosehinweis dienen kann.
+                label = str(text or "Vorgang fehlgeschlagen")
+                self.prolog_build_progress.setFormat(f"PROLOG: {label} – %p %")
+                QApplication.processEvents(QEventLoop.ExcludeUserInputEvents, 25)
 
         @property
         def is_basic_document(self) -> bool:
@@ -87932,6 +89578,615 @@ QToolButton:hover {{ background: {selection}; }}"""
                 worker.request_stop()
                 worker.wait(5000)
 
+    class UnitCircleLearningWidget(QWidget):
+        """Animierter Einheitskreis fuer Lernen -> Mathe -> Geometrie.
+
+        Die komplette Darstellung wird mit QPainter erzeugt. Die Animation
+        bewegt den Radius gleichmaessig ueber den kompletten Einheitskreis:
+        (1,0) -> (0,1) -> (-1,0) -> (0,-1) -> (1,0). Sinus und Kosinus
+        werden gleichzeitig als Projektionen am Kreis und als zwei synchron
+        laufende Kurven unterhalb des Kreises dargestellt.
+        """
+
+        GRAPH_WIDTH_FRACTION = 0.25
+        # Kompatibilitaet mit Stage 276: alter Name bezeichnet weiterhin
+        # den vertikalen Anteil des Graphenbereichs.
+        GRAPH_FRACTION = 0.24
+        GRAPH_HEIGHT_FRACTION = GRAPH_FRACTION
+        ANIMATION_INTERVAL_MS = 16
+        ANIMATION_SPEED_DEG_PER_SECOND = 18.0
+
+        _ANGLE_MARKS = (
+            (0,   '0°',   '0'),
+            (30,  '30°',  'π/6'),
+            (45,  '45°',  'π/4'),
+            (60,  '60°',  'π/3'),
+            (90,  '90°',  'π/2'),
+            (120, '120°', '2π/3'),
+            (135, '135°', '3π/4'),
+            (150, '150°', '5π/6'),
+            (180, '180°', 'π'),
+            (210, '210°', '7π/6'),
+            (225, '225°', '5π/4'),
+            (240, '240°', '4π/3'),
+            (270, '270°', '3π/2'),
+            (300, '300°', '5π/3'),
+            (315, '315°', '7π/4'),
+            (330, '330°', '11π/6'),
+        )
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self._dark_mode = True
+            self._angle_deg = 0.0
+            self._last_tick = None
+
+            self.setObjectName('unit_circle_learning_widget')
+            self.setMinimumSize(640, 480)
+            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            self.setAttribute(Qt.WA_OpaquePaintEvent, True)
+
+            self._animation_timer = QTimer(self)
+            self._animation_timer.setInterval(self.ANIMATION_INTERVAL_MS)
+            self._animation_timer.timeout.connect(self._advance_animation)
+
+        def sizeHint(self):
+            return QSize(1180, 820)
+
+        def minimumSizeHint(self):
+            return QSize(640, 480)
+
+        @property
+        def angle_deg(self) -> float:
+            return float(self._angle_deg)
+
+        def set_dark_mode(self, enabled: bool) -> None:
+            self._dark_mode = bool(enabled)
+            self.update()
+
+        def start_animation(self) -> None:
+            self._last_tick = time.monotonic()
+            if not self._animation_timer.isActive():
+                self._animation_timer.start()
+
+        def stop_animation(self) -> None:
+            self._animation_timer.stop()
+            self._last_tick = None
+
+        def reset_animation(self) -> None:
+            self._angle_deg = 0.0
+            self._last_tick = time.monotonic()
+            self.update()
+
+        def showEvent(self, event) -> None:
+            super().showEvent(event)
+            self.start_animation()
+
+        def hideEvent(self, event) -> None:
+            self.stop_animation()
+            super().hideEvent(event)
+
+        def _advance_animation(self) -> None:
+            now = time.monotonic()
+            if self._last_tick is None:
+                self._last_tick = now
+                return
+
+            delta = max(0.0, min(0.100, now - self._last_tick))
+            self._last_tick = now
+            self._angle_deg += self.ANIMATION_SPEED_DEG_PER_SECOND * delta
+
+            # Vollstaendiger Umlauf des Einheitsradius:
+            # (1,0) -> (0,1) -> (-1,0) -> (0,-1) -> (1,0).
+            # Nach 360 Grad beginnt der naechste Umlauf wieder bei 0 Grad.
+            if self._angle_deg >= 360.0:
+                self._angle_deg = math.fmod(self._angle_deg, 360.0)
+
+            self.update()
+
+        @staticmethod
+        def _polar_point(cx: float, cy: float, radius: float, degree: float) -> QPointF:
+            angle = math.radians(float(degree))
+            return QPointF(
+                cx + radius * math.cos(angle),
+                cy - radius * math.sin(angle),
+            )
+
+        @staticmethod
+        def _set_font(painter: QPainter, pixel_size: float, bold: bool = False) -> None:
+            font = QFont(painter.font())
+            font.setPixelSize(max(7, int(round(pixel_size))))
+            font.setBold(bool(bold))
+            painter.setFont(font)
+
+        def _draw_text_centered(
+            self,
+            painter: QPainter,
+            center: QPointF,
+            text: str,
+            color: QColor,
+            pixel_size: float,
+            *,
+            bold: bool = False,
+            width: float = 100.0,
+            height: float = 24.0,
+        ) -> None:
+            self._set_font(painter, pixel_size, bold)
+            painter.setPen(color)
+            painter.drawText(
+                QRectF(
+                    center.x() - width / 2.0,
+                    center.y() - height / 2.0,
+                    width,
+                    height,
+                ),
+                Qt.AlignCenter,
+                text,
+            )
+
+        def _draw_info_box(
+            self,
+            painter: QPainter,
+            rect: QRectF,
+            label: str,
+            value: str,
+            colors: dict,
+        ) -> None:
+            painter.save()
+            painter.setPen(QPen(colors['info_border'], 1.4))
+            painter.setBrush(QBrush(colors['info_fill']))
+            painter.drawRoundedRect(rect, 7.0, 7.0)
+
+            self._set_font(painter, 10, False)
+            painter.setPen(colors['muted'])
+            painter.drawText(
+                QRectF(rect.left(), rect.top() + 4.0, rect.width(), 17.0),
+                Qt.AlignCenter,
+                label,
+            )
+            self._set_font(painter, 17, True)
+            painter.setPen(colors['text'])
+            painter.drawText(
+                QRectF(rect.left(), rect.top() + 20.0, rect.width(), 24.0),
+                Qt.AlignCenter,
+                value,
+            )
+            painter.restore()
+
+        def _theme_colors(self) -> dict:
+            if self._dark_mode:
+                return {
+                    'background': QColor('#17353B'),
+                    'text': QColor('#F6F7F8'),
+                    'muted': QColor('#CBD5DA'),
+                    'axis': QColor('#D8E1E5'),
+                    'circle': QColor('#D6E2E6'),
+                    'grid': QColor(182, 205, 214, 70),
+                    'orange': QColor('#FF9B49'),
+                    'red': QColor('#FF4050'),
+                    'yellow': QColor('#F2E51B'),
+                    'white': QColor('#FFFFFF'),
+                    'roman': QColor(190, 202, 207, 165),
+                    'info_fill': QColor('#20525D'),
+                    'info_border': QColor('#27B7C8'),
+                    'graph_separator': QColor(212, 227, 232, 80),
+                }
+            return {
+                'background': QColor('#F6F1E6'),
+                'text': QColor('#172126'),
+                'muted': QColor('#4D5A60'),
+                'axis': QColor('#4A565C'),
+                'circle': QColor('#5B6C72'),
+                'grid': QColor(78, 96, 104, 70),
+                'orange': QColor('#B65B00'),
+                'red': QColor('#C92539'),
+                'yellow': QColor('#8B7C00'),
+                'white': QColor('#222222'),
+                'roman': QColor(75, 87, 92, 155),
+                'info_fill': QColor('#D9ECEF'),
+                'info_border': QColor('#188697'),
+                'graph_separator': QColor(50, 65, 72, 75),
+            }
+
+        def paintEvent(self, event) -> None:
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            painter.setRenderHint(QPainter.TextAntialiasing, True)
+
+            colors = self._theme_colors()
+            painter.fillRect(self.rect(), colors['background'])
+
+            width = float(max(1, self.width()))
+            height = float(max(1, self.height()))
+
+            # Stage 277: Die beiden Funktionsgraphen zusammen sind bewusst
+            # schmal. Ihre Breite darf 25 % der aktuellen Fensterbreite nicht
+            # ueberschreiten. Sie werden zentriert unter dem Kreis angeordnet.
+            graph_total_width = max(1.0, width * self.GRAPH_WIDTH_FRACTION)
+            graph_total_height = min(height * self.GRAPH_HEIGHT_FRACTION, 220.0)
+            graph_left = (width - graph_total_width) / 2.0
+            graph_top = height - graph_total_height
+            circle_area = QRectF(0.0, 0.0, width, max(0.0, graph_top))
+
+            self._paint_unit_circle(painter, circle_area, colors)
+
+            painter.setPen(QPen(colors['graph_separator'], 1.0))
+            painter.drawLine(
+                QPointF(graph_left, graph_top),
+                QPointF(graph_left + graph_total_width, graph_top),
+            )
+
+            graph_gap = 4.0
+            graph_height = max(1.0, (graph_total_height - graph_gap) / 2.0)
+            sine_rect = QRectF(graph_left, graph_top, graph_total_width, graph_height)
+            cosine_rect = QRectF(
+                graph_left,
+                graph_top + graph_height + graph_gap,
+                graph_total_width,
+                graph_height,
+            )
+            self._paint_function_graph(painter, sine_rect, colors, 'sin')
+            self._paint_function_graph(painter, cosine_rect, colors, 'cos')
+
+        def _paint_unit_circle(self, painter: QPainter, area: QRectF, colors: dict) -> None:
+            if area.width() < 40.0 or area.height() < 80.0:
+                return
+
+            info_top = 10.0
+            box_width = min(190.0, max(120.0, area.width() * 0.18))
+            box_height = 48.0
+            box_gap = 18.0
+            info_center_x = area.center().x()
+            left_box = QRectF(
+                info_center_x - box_gap / 2.0 - box_width,
+                info_top,
+                box_width,
+                box_height,
+            )
+            right_box = QRectF(
+                info_center_x + box_gap / 2.0,
+                info_top,
+                box_width,
+                box_height,
+            )
+
+            angle = float(self._angle_deg)
+            angle_rad = math.radians(angle)
+            sine_value = math.sin(angle_rad)
+            cosine_value = math.cos(angle_rad)
+
+            self._draw_info_box(
+                painter,
+                left_box,
+                'Winkel θ (Grad)',
+                f'{angle:0.2f}°',
+                colors,
+            )
+            self._draw_info_box(
+                painter,
+                right_box,
+                'Winkel θ (Bogenmaß)',
+                f'{angle_rad:0.2f} rad.',
+                colors,
+            )
+
+            top_margin = info_top + box_height + 15.0
+            available_height = max(120.0, area.height() - top_margin - 16.0)
+            radius = min(
+                area.width() * 0.205,
+                max(55.0, (available_height - 74.0) / 2.0),
+            )
+            radius = max(45.0, radius)
+            cx = area.center().x()
+            cy = top_margin + available_height / 2.0
+
+            # Achsenkreuz und Kreis.
+            axis_extra = min(34.0, max(18.0, radius * 0.14))
+            painter.setPen(QPen(colors['axis'], 1.25))
+            painter.drawLine(
+                QPointF(cx - radius - axis_extra, cy),
+                QPointF(cx + radius + axis_extra, cy),
+            )
+            painter.drawLine(
+                QPointF(cx, cy - radius - axis_extra),
+                QPointF(cx, cy + radius + axis_extra),
+            )
+            painter.setPen(QPen(colors['circle'], 2.0))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawEllipse(QPointF(cx, cy), radius, radius)
+
+            # Quadranten I..IV ausserhalb des Kreises.
+            roman_radius = radius + min(58.0, max(34.0, radius * 0.22))
+            for degree, text in ((45, 'I'), (135, 'II'), (225, 'III'), (315, 'IV')):
+                self._draw_text_centered(
+                    painter,
+                    self._polar_point(cx, cy, roman_radius, degree),
+                    text,
+                    colors['roman'],
+                    max(18.0, radius * 0.10),
+                    bold=True,
+                    width=70.0,
+                    height=38.0,
+                )
+
+            # Winkelmarken. Grad innen, Bogenmass ausserhalb des Kreises.
+            dot_radius = max(2.0, min(3.5, radius * 0.012))
+            degree_band = max(18.0, radius - 24.0)
+            radian_band = radius + 22.0
+            for degree, degree_text, radian_text in self._ANGLE_MARKS:
+                point = self._polar_point(cx, cy, radius, degree)
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(colors['red'])
+                painter.drawEllipse(point, dot_radius, dot_radius)
+
+                if degree in (0, 90, 180, 270):
+                    continue
+
+                self._draw_text_centered(
+                    painter,
+                    self._polar_point(cx, cy, degree_band, degree),
+                    degree_text,
+                    colors['orange'],
+                    max(8.0, radius * 0.040),
+                    width=55.0,
+                    height=18.0,
+                )
+                self._draw_text_centered(
+                    painter,
+                    self._polar_point(cx, cy, radian_band, degree),
+                    radian_text,
+                    colors['orange'],
+                    max(8.0, radius * 0.038),
+                    width=64.0,
+                    height=18.0,
+                )
+
+            # Kardinalpunkte und die fuer das Lernen wichtigen 0/90/180/270 Grad.
+            cardinal_size = max(9.0, radius * 0.044)
+            label_offset = min(45.0, max(28.0, radius * 0.16))
+            self._draw_text_centered(
+                painter,
+                QPointF(cx + radius + label_offset, cy - 16.0),
+                '(1, 0)', colors['text'], cardinal_size, width=78.0,
+            )
+            self._draw_text_centered(
+                painter,
+                QPointF(cx - radius - label_offset, cy - 16.0),
+                '(-1, 0)', colors['text'], cardinal_size, width=84.0,
+            )
+            self._draw_text_centered(
+                painter,
+                QPointF(cx + 30.0, cy - radius - label_offset * 0.55),
+                '(0, 1)', colors['text'], cardinal_size, width=80.0,
+            )
+            self._draw_text_centered(
+                painter,
+                QPointF(cx + 34.0, cy + radius + label_offset * 0.58),
+                '(0, -1)', colors['text'], cardinal_size, width=84.0,
+            )
+
+            self._draw_text_centered(
+                painter, QPointF(cx + radius - 28.0, cy - 18.0),
+                '0°', colors['orange'], cardinal_size, width=50.0,
+            )
+            self._draw_text_centered(
+                painter, QPointF(cx + 31.0, cy - radius + 23.0),
+                '90°', colors['orange'], cardinal_size, width=52.0,
+            )
+            self._draw_text_centered(
+                painter, QPointF(cx - 34.0, cy - radius + 23.0),
+                'π/2', colors['orange'], cardinal_size, width=52.0,
+            )
+            self._draw_text_centered(
+                painter, QPointF(cx - radius + 35.0, cy - 18.0),
+                '180°', colors['orange'], cardinal_size, width=58.0,
+            )
+            self._draw_text_centered(
+                painter, QPointF(cx - radius + 31.0, cy + 18.0),
+                'π', colors['orange'], cardinal_size, width=40.0,
+            )
+            self._draw_text_centered(
+                painter, QPointF(cx + 31.0, cy + radius - 22.0),
+                '270°', colors['orange'], cardinal_size, width=58.0,
+            )
+            self._draw_text_centered(
+                painter, QPointF(cx - 31.0, cy + radius - 22.0),
+                '3π/2', colors['orange'], cardinal_size, width=58.0,
+            )
+
+            center = QPointF(cx, cy)
+            rim_point = self._polar_point(cx, cy, radius, angle)
+            x_projection = QPointF(rim_point.x(), cy)
+            y_projection = QPointF(cx, rim_point.y())
+
+            # Weisser Radius.
+            painter.setPen(QPen(colors['white'], max(2.5, radius * 0.015), Qt.SolidLine, Qt.RoundCap))
+            painter.drawLine(center, rim_point)
+
+            # Gelb = Kosinus: Strecke auf der x-Achse plus duenne Projektion.
+            painter.setPen(QPen(colors['yellow'], max(3.0, radius * 0.017), Qt.SolidLine, Qt.RoundCap))
+            painter.drawLine(center, x_projection)
+            projection_pen = QPen(colors['yellow'], 1.4, Qt.DashLine)
+            painter.setPen(projection_pen)
+            painter.drawLine(x_projection, rim_point)
+
+            # Rot = Sinus: Strecke auf der y-Achse plus duenne horizontale Projektion.
+            painter.setPen(QPen(colors['red'], max(3.0, radius * 0.017), Qt.SolidLine, Qt.RoundCap))
+            painter.drawLine(center, y_projection)
+            projection_pen = QPen(colors['red'], 1.4, Qt.DashLine)
+            painter.setPen(projection_pen)
+            painter.drawLine(y_projection, rim_point)
+
+            # Winkelbogen am Mittelpunkt.
+            arc_radius = max(24.0, radius * 0.18)
+            arc_rect = QRectF(
+                cx - arc_radius,
+                cy - arc_radius,
+                arc_radius * 2.0,
+                arc_radius * 2.0,
+            )
+            painter.setPen(QPen(colors['muted'], 1.6))
+            painter.drawArc(arc_rect, 0, int(round(angle * 16.0)))
+
+            # Aktuelle Punkte.
+            painter.setPen(QPen(colors['white'], 1.4))
+            painter.setBrush(colors['white'])
+            painter.drawEllipse(rim_point, 5.0, 5.0)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(colors['yellow'])
+            painter.drawEllipse(x_projection, 4.0, 4.0)
+            painter.setBrush(colors['red'])
+            painter.drawEllipse(y_projection, 4.0, 4.0)
+            painter.setBrush(colors['white'])
+            painter.drawEllipse(center, 3.5, 3.5)
+
+            # Dynamische Beschriftungen nahe dem Mittelpunkt.
+            dynamic_size = max(10.0, radius * 0.052)
+            angle_label_point = self._polar_point(
+                cx,
+                cy,
+                max(42.0, radius * 0.30),
+                max(18.0, angle * 0.50),
+            )
+            self._draw_text_centered(
+                painter,
+                QPointF(angle_label_point.x() + 36.0, angle_label_point.y() - 10.0),
+                f'θ = {angle:0.2f}°',
+                colors['text'],
+                dynamic_size,
+                width=128.0,
+                height=24.0,
+            )
+            self._draw_text_centered(
+                painter,
+                QPointF(cx + max(50.0, radius * 0.34), cy + 28.0),
+                f'cosθ = {cosine_value:0.3f}',
+                colors['yellow'],
+                dynamic_size,
+                bold=True,
+                width=160.0,
+                height=24.0,
+            )
+            self._draw_text_centered(
+                painter,
+                QPointF(cx - max(60.0, radius * 0.38), rim_point.y() + 15.0),
+                f'sinθ = {sine_value:0.3f}',
+                colors['red'],
+                dynamic_size,
+                bold=True,
+                width=160.0,
+                height=24.0,
+            )
+
+        def _paint_function_graph(
+            self,
+            painter: QPainter,
+            area: QRectF,
+            colors: dict,
+            function_name: str,
+        ) -> None:
+            if area.width() < 100.0 or area.height() < 24.0:
+                return
+
+            is_sine = function_name == 'sin'
+            series_color = colors['red'] if is_sine else colors['yellow']
+            value = math.sin(math.radians(self._angle_deg)) if is_sine else math.cos(math.radians(self._angle_deg))
+
+            left_margin = min(58.0, max(42.0, area.width() * 0.16))
+            right_margin = min(18.0, max(10.0, area.width() * 0.05))
+            top_margin = 9.0
+            bottom_margin = 17.0
+            plot = QRectF(
+                area.left() + left_margin,
+                area.top() + top_margin,
+                max(1.0, area.width() - left_margin - right_margin),
+                max(1.0, area.height() - top_margin - bottom_margin),
+            )
+
+            # Linke Kurvenbezeichnung und aktueller Wert.
+            self._set_font(painter, max(9.0, area.height() * 0.16), True)
+            painter.setPen(series_color)
+            painter.drawText(
+                QRectF(area.left() + 8.0, area.top(), left_margin - 12.0, area.height()),
+                Qt.AlignVCenter | Qt.AlignLeft,
+                'sin(θ)' if is_sine else 'cos(θ)',
+            )
+
+            self._set_font(painter, max(7.0, area.height() * 0.115), False)
+            painter.setPen(series_color)
+            painter.drawText(
+                QRectF(plot.left() + 6.0, area.top(), min(210.0, plot.width() * 0.42), 18.0),
+                Qt.AlignLeft | Qt.AlignVCenter,
+                f"{'sin' if is_sine else 'cos'}({self._angle_deg:0.2f}°) = {value:0.3f}",
+            )
+
+            # Raster / Achsen.
+            painter.setPen(QPen(colors['grid'], 1.0, Qt.DashLine))
+            for degree in (0, 90, 180, 270, 360):
+                x = plot.left() + (degree / 360.0) * plot.width()
+                painter.drawLine(QPointF(x, plot.top()), QPointF(x, plot.bottom()))
+            for y_factor in (-1.0, 0.0, 1.0):
+                y = plot.center().y() - y_factor * plot.height() * 0.46
+                painter.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y))
+
+            painter.setPen(QPen(colors['axis'], 1.0))
+            painter.drawLine(
+                QPointF(plot.left(), plot.center().y()),
+                QPointF(plot.right(), plot.center().y()),
+            )
+
+            # Sinus- bzw. Kosinuskurve ueber 0..360 Grad.
+            path = QPainterPath()
+            amplitude = plot.height() * 0.46
+            for degree in range(361):
+                x = plot.left() + (degree / 360.0) * plot.width()
+                rad = math.radians(float(degree))
+                sample = math.sin(rad) if is_sine else math.cos(rad)
+                y = plot.center().y() - sample * amplitude
+                if degree == 0:
+                    path.moveTo(x, y)
+                else:
+                    path.lineTo(x, y)
+            painter.setPen(QPen(series_color, 1.8))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawPath(path)
+
+            # Synchroner Positionszeiger fuer den aktuellen Winkel.
+            current_x = plot.left() + (self._angle_deg / 360.0) * plot.width()
+            current_y = plot.center().y() - value * amplitude
+            marker_pen = QPen(colors['text'], 1.0, Qt.DashLine)
+            painter.setPen(marker_pen)
+            painter.drawLine(
+                QPointF(current_x, plot.top()),
+                QPointF(current_x, plot.bottom()),
+            )
+            painter.setPen(QPen(colors['white'], 1.2))
+            painter.setBrush(series_color)
+            painter.drawEllipse(QPointF(current_x, current_y), 4.0, 4.0)
+
+            # Kompakte Grad-/Bogenmass-Skala, damit beide Graphen im unteren
+            # Viertel lesbar bleiben.
+            self._set_font(painter, max(7.0, area.height() * 0.095), False)
+            painter.setPen(colors['muted'])
+            labels = (
+                (0, '0° / 0'),
+                (90, '90° / π/2'),
+                (180, '180° / π'),
+                (270, '270° / 3π/2'),
+                (360, '360° / 2π'),
+            )
+            for degree, label in labels:
+                x = plot.left() + (degree / 360.0) * plot.width()
+                painter.drawText(
+                    QRectF(x - 42.0, plot.bottom() + 1.0, 84.0, 15.0),
+                    Qt.AlignHCenter | Qt.AlignTop,
+                    label,
+                )
+
+        def shutdown(self) -> None:
+            self.stop_animation()
+
+
     class MathematicsLearningDockWidget(QWidget):
         """Lern-Workspace mit linksseitigen Tabs und rechts eingebetteter Szene."""
 
@@ -94695,6 +96950,12 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.doxygen_dock = None
             self.math_learning_dock = None
             self.math_learning_widget = None
+            # Stage 276: eigener Vollflaechen-Lernbereich fuer den Einheitskreis.
+            self.unit_circle_dock = None
+            self.unit_circle_widget = None
+            self._unit_circle_workspace_active = False
+            self._unit_circle_workspace_hidden_docks = []
+            self._unit_circle_workspace_replaced_central_widget = False
             # Stage 151: Windows-Resourcen-Editor als eigene Vollflaechen-Arbeitsflaeche.
             self.windows_resource_editor_dock = None
             self.windows_resource_editor_widget = None
@@ -95781,6 +98042,15 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             )
             self.math_learning_action.triggered.connect(self.show_math_learning_dock)
 
+            self.unit_circle_action = QAction("Einheitskreis", self)
+            self.unit_circle_action.setObjectName("unit_circle_action")
+            self.unit_circle_action.setStatusTip(
+                "Animierten Einheitskreis mit synchronen Sinus-/Kosinus-Kurven öffnen"
+            )
+            self.unit_circle_action.triggered.connect(
+                self.show_unit_circle_learning_dock
+            )
+
             self.math_formula_designer_action = QAction("Formel-Designer", self)
             self.math_formula_designer_action.setObjectName("math_formula_designer_action")
             self.math_formula_designer_action.setStatusTip(
@@ -96309,6 +98579,144 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             res_window.exec_()
             return
             
+
+        # -------------------------------------------------------------------
+        # Stage 276: Lernen -> Mathe -> Geometrie -> Einheitskreis.
+        # Alle zuvor sichtbaren Docking-Fenster werden temporaer ausgeblendet;
+        # der Einheitskreis bekommt die gesamte freie Hauptfensterflaeche.
+        # -------------------------------------------------------------------
+        def _restore_unit_circle_workspace(self) -> None:
+            if not getattr(self, '_unit_circle_workspace_active', False):
+                return
+
+            self._unit_circle_workspace_active = False
+
+            widget = getattr(self, 'unit_circle_widget', None)
+            if widget is not None:
+                widget.stop_animation()
+
+            if self._unit_circle_workspace_replaced_central_widget:
+                central = self.centralWidget()
+                if central is not None:
+                    central.show()
+            self._unit_circle_workspace_replaced_central_widget = False
+
+            saved = list(getattr(self, '_unit_circle_workspace_hidden_docks', []))
+            self._unit_circle_workspace_hidden_docks = []
+            for candidate in saved:
+                try:
+                    if candidate is not None:
+                        candidate.show()
+                except RuntimeError:
+                    pass
+
+        def _prepare_unit_circle_workspace(self, unit_dock) -> None:
+            if getattr(self, '_unit_circle_workspace_active', False):
+                return
+
+            self._unit_circle_workspace_hidden_docks = []
+            for candidate in self.findChildren(QDockWidget):
+                if candidate is unit_dock:
+                    continue
+                if candidate is not None and candidate.isVisible():
+                    self._unit_circle_workspace_hidden_docks.append(candidate)
+
+            # Beim programmgesteuerten Ausblenden werden die Visibility-
+            # Signale blockiert. So kann kein anderer Workspace waehrend des
+            # Wechsels seine Docks sofort wieder einblenden.
+            for candidate in list(self._unit_circle_workspace_hidden_docks):
+                try:
+                    blocked = candidate.blockSignals(True)
+                    candidate.hide()
+                    candidate.blockSignals(blocked)
+                except RuntimeError:
+                    pass
+
+            central = self.centralWidget()
+            self._unit_circle_workspace_replaced_central_widget = bool(
+                central is not None and central.isVisible()
+            )
+            if self._unit_circle_workspace_replaced_central_widget:
+                central.hide()
+
+            self._unit_circle_workspace_active = True
+
+        def _unit_circle_dock_visibility_changed(self, visible: bool) -> None:
+            dock = getattr(self, 'unit_circle_dock', None)
+            widget = getattr(self, 'unit_circle_widget', None)
+            if dock is None:
+                return
+
+            if visible:
+                self._prepare_unit_circle_workspace(dock)
+                if widget is not None:
+                    widget.start_animation()
+                QTimer.singleShot(0, self._expand_unit_circle_learning_dock)
+            else:
+                self._restore_unit_circle_workspace()
+
+        def _expand_unit_circle_learning_dock(self) -> None:
+            dock = getattr(self, 'unit_circle_dock', None)
+            if dock is None or not dock.isVisible() or dock.isFloating():
+                return
+
+            # Keine anderen Docks sind sichtbar. Damit bekommt das Lernmodul
+            # horizontal und vertikal die komplette freie Dockflaeche.
+            self.resizeDocks([dock], [100000], Qt.Horizontal)
+            self.resizeDocks([dock], [100000], Qt.Vertical)
+            widget = getattr(self, 'unit_circle_widget', None)
+            if widget is not None:
+                widget.setMinimumSize(0, 0)
+                widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+                widget.updateGeometry()
+            self._assign_widget_property_ids(dock)
+
+        def _ensure_unit_circle_learning_dock(self):
+            dock = getattr(self, 'unit_circle_dock', None)
+            widget = getattr(self, 'unit_circle_widget', None)
+            if dock is not None and widget is not None:
+                return dock, widget
+
+            dock = QDockWidget('Einheitskreis', self)
+            dock.setObjectName('unit_circle_learning_dock')
+            dock.setFeatures(self._dock_features())
+            dock.setAllowedAreas(
+                Qt.LeftDockWidgetArea
+                | Qt.RightDockWidgetArea
+                | Qt.TopDockWidgetArea
+                | Qt.BottomDockWidgetArea
+            )
+            dock.setMinimumSize(0, 0)
+            dock.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+            widget = UnitCircleLearningWidget(dock)
+            widget.setMinimumSize(0, 0)
+            widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            widget.set_dark_mode(self.dark_mode_enabled)
+            dock.setWidget(widget)
+            dock.hide()
+
+            self.addDockWidget(Qt.LeftDockWidgetArea, dock)
+            dock.visibilityChanged.connect(self._unit_circle_dock_visibility_changed)
+
+            self.unit_circle_dock = dock
+            self.unit_circle_widget = widget
+            self._assign_widget_property_ids(dock)
+            return dock, widget
+
+        def show_unit_circle_learning_dock(self, _checked: bool = False) -> None:
+            dock, widget = self._ensure_unit_circle_learning_dock()
+            self._prepare_unit_circle_workspace(dock)
+
+            dock.show()
+            dock.raise_()
+            widget.start_animation()
+            self._expand_unit_circle_learning_dock()
+            QTimer.singleShot(0, self._expand_unit_circle_learning_dock)
+
+            self.statusBar().showMessage(
+                'Einheitskreis-Lernanimation geöffnet – QPainter / Sinus / Kosinus'
+            )
 
         def _restore_math_learning_workspace(self) -> None:
             if not getattr(self, '_math_learning_workspace_active', False):
@@ -102031,6 +104439,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 "_e_baukasten_workspace_active",
                 "_music_workspace_active",
                 "_math_learning_workspace_active",
+                "_unit_circle_workspace_active",
                 "_math_learning_replaced_filesystem_dock",
                 "_localize_replaced_filesystem_dock",
                 "_knowledge_replaced_filesystem_dock",
@@ -105609,9 +108018,15 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             self.chemie_action = self.chemie_menu.addAction("Perioden-System der Elemente")
             self.chemie_action.triggered.connect(self.show_chemie_learning_dock)
             
-            math_menu = learning_menu.addMenu("Mathematik")
+            math_menu = learning_menu.addMenu("Mathe")
+            math_menu.setObjectName("learning_math_menu")
             math_menu.addAction(self.math_learning_action)
             math_menu.addAction(self.math_formula_designer_action)
+
+            geometry_menu = math_menu.addMenu("Geometrie")
+            geometry_menu.setObjectName("learning_geometry_menu")
+            geometry_menu.addAction(self.unit_circle_action)
+
             math_menu.addSeparator()
             math_menu.addAction(self.math_numbers_wall_100_action)
             math_menu.addAction(self.math_numbers_wall_1000_action)
@@ -106924,6 +109339,8 @@ border: 2px solid #2a69aa;
                     widget.set_dark_mode(enabled)
                 elif isinstance(widget, PrologKnowledgeDialog):
                     widget.set_dark_mode(enabled)
+                elif isinstance(widget, PrologConsoleDialog):
+                    widget.set_dark_mode(enabled)
                 elif isinstance(widget, DBaseTableDesignerWidget):
                     widget.set_dark_mode(enabled)
                 elif isinstance(widget, DBaseLabelDesignerWidget):
@@ -106931,6 +109348,8 @@ border: 2px solid #2a69aa;
                 elif isinstance(widget, DBaseFormPropertyPanel):
                     widget.set_dark_mode(enabled)
                 elif isinstance(widget, MathematicsLearningDockWidget):
+                    widget.set_dark_mode(enabled)
+                elif isinstance(widget, UnitCircleLearningWidget):
                     widget.set_dark_mode(enabled)
                 elif isinstance(widget, FormulaDesignerWidget):
                     widget.set_dark_mode(enabled)
@@ -108953,6 +111372,12 @@ border: 2px solid #2a69aa;
             )
             if marker_changed and self.current_project_path is not None:
                 self.save_project()
+            if document.is_prolog_document:
+                self._show_message_box(
+                    QMessageBox.Information,
+                    "PROLOG",
+                    "Datei wurde gespeichert",
+                )
             return True
 
         @staticmethod
@@ -109884,9 +112309,12 @@ border: 2px solid #2a69aa;
             if document.build_target not in {"pe32", "pe64"}:
                 document.set_build_target("pe32")
             source = document.raw_editor.toPlainText()
+            document.begin_prolog_build_progress("Compiler vorbereiten")
+            document.set_prolog_build_progress(12, "Quelltext analysieren")
             try:
                 from d64prolog import PrologCompilerError, compile_prolog_to_assembly
                 assembly_path = self._prolog_assembly_output_path(document)
+                document.set_prolog_build_progress(28, "Parser / Runtime erzeugen")
                 generated = compile_prolog_to_assembly(
                     source,
                     filename=str(document.path),
@@ -109894,16 +112322,28 @@ border: 2px solid #2a69aa;
                     windows_application_mode=document.windows_application_mode,
                     verbose=document.prolog_verbose,
                 )
+                document.set_prolog_build_progress(72, "Assemblercode speichern")
             except (ImportError, PrologCompilerError, AssemblerError) as exc:
+                document.finish_prolog_build_progress(False, "Kompilierung fehlgeschlagen")
                 message = str(exc)
                 error_line = getattr(exc, "line", 0) or 0
                 document.show_assembly_error(message, error_line, "Compilerfehler")
                 self.show_error("PROLOG-Compilerfehler", message)
                 self.statusBar().showMessage("PROLOG-Kompilierung fehlgeschlagen")
                 return False
-            return self._finish_compile_stage(
+            ok = self._finish_compile_stage(
                 document, generated, assembly_path, "PROLOG"
             )
+            if not ok:
+                document.finish_prolog_build_progress(False, "Kompilierung fehlgeschlagen")
+                return False
+            document.finish_prolog_build_progress(True, "Erfolgreich kompiliert")
+            self._show_message_box(
+                QMessageBox.Information,
+                "PROLOG",
+                "Erfolgreich kompiliert",
+            )
+            return True
 
         def _compile_dbase_document(self, document: DocumentEditor) -> bool:
             """dBase -> IA-32/AMD64-Assembler mit eigener Qt5-GUI-Runtime."""
@@ -110103,6 +112543,11 @@ border: 2px solid #2a69aa;
                 self.show_error("Keine ASM-Daten", message)
                 return False
 
+            is_prolog_build = bool(document.is_prolog_document)
+            if is_prolog_build:
+                document.begin_prolog_build_progress("Assemblieren / Linken vorbereiten")
+                document.set_prolog_build_progress(12, "Assembler analysieren")
+
             packer_stats = None
             try:
                 #from amiga500 import (
@@ -110171,6 +112616,8 @@ border: 2px solid #2a69aa;
                         _write_pe64_generated_objects if is64
                         else _write_pe32_generated_objects
                     )
+                    if is_prolog_build:
+                        document.set_prolog_build_progress(32, "COFF-Objekte erzeugen")
                     _project_output_directory = self._document_windows_output_path(document)
                     object_paths = object_writer(
                         proxy,
@@ -110237,6 +112684,8 @@ border: 2px solid #2a69aa;
                     is_library = source_kind == "library"
                     is_form = source_kind == "form"
                     linker = link_coff64_inputs if is64 else link_coff32_inputs
+                    if is_prolog_build:
+                        document.set_prolog_build_progress(58, "Link-Eingaben vorbereiten")
 
                     # Stage 127:
                     # FORM/WFM ist immer eine GUI-Anwendung und besitzt einen
@@ -110250,6 +112699,8 @@ border: 2px solid #2a69aa;
                     else:
                         entry_symbol = "_start"
 
+                    if is_prolog_build:
+                        document.set_prolog_build_progress(70, "PE-Linker ausführen")
                     program = linker(
                         object_paths,
                         entry_symbol=entry_symbol,
@@ -110274,6 +112725,8 @@ border: 2px solid #2a69aa;
                     if not bool(getattr(document, "d64pack_generated_source", False)):
                         program, packer_stats = self._apply_c64_image_packer(program)
             except (AssemblerError, AmigaAssemblerError, PE32AssemblerError, PE64AssemblerError) as exc:
+                if is_prolog_build:
+                    document.finish_prolog_build_progress(False, "Assemblieren / Linken fehlgeschlagen")
                 message = str(exc)
                 document.show_generated_assembly_error(
                     message,
@@ -110297,9 +112750,13 @@ border: 2px solid #2a69aa;
                     status_text="ASM-Datei ist geöffnet",
                 )
                 self.show_error("ASM-Ausgabe kann nicht ersetzt werden", message)
+                if is_prolog_build:
+                    document.finish_prolog_build_progress(False, "Assemblieren / Linken fehlgeschlagen")
                 return False
 
             try:
+                if is_prolog_build:
+                    document.set_prolog_build_progress(88, "Programmdatei schreiben")
                 self._write_assembled_program(
                     assembly_path,
                     assembly_source.encode("utf-8"),
@@ -110314,8 +112771,12 @@ border: 2px solid #2a69aa;
                 self._write_assembled_program(output_path, program_data)
                 if document.build_target in {"pe32", "pe64"}:
                     if not self._sign_windows_output_if_enabled(output_path, document.build_target):
+                        if is_prolog_build:
+                            document.finish_prolog_build_progress(False, "Signieren fehlgeschlagen")
                         return False
             except OSError as exc:
+                if is_prolog_build:
+                    document.finish_prolog_build_progress(False, "Ausgabefehler")
                 message = (
                     "Die Assembler-Ausgabe konnte nicht gespeichert werden:\n"
                     f"ASM: {assembly_path}\n"
@@ -110443,6 +112904,13 @@ border: 2px solid #2a69aa;
             )
             if output_path.parent == self.current_directory:
                 self.populate_file_list()
+            if is_prolog_build:
+                document.finish_prolog_build_progress(True, "Erfolgreich assembliert")
+                self._show_message_box(
+                    QMessageBox.Information,
+                    "PROLOG",
+                    "Erfolgreich assembliert",
+                )
             return True
 
         @staticmethod
@@ -111634,15 +114102,29 @@ border: 2px solid #2a69aa;
             *,
             console_mode: bool,
             debug_theme: str = "default",
-            timeout_ms: int = 200,
+            timeout_ms: int = 5000,
         ) -> bool:
-            """Uebergibt eine fertige PE-EXE an den laufenden Runner."""
+            """Uebergibt eine fertige PE-EXE aus der GUI an den Runner.
+
+            Stage 270: Diese Named-Pipe-Uebergabe ist jetzt der verbindliche
+            GUI->Runner-Startpfad. Sie wartet auch dann auf die Pipe, wenn der
+            Runner gerade erst als residenter Host erzeugt wurde.
+            """
             if os.name != "nt":
                 return False
 
             try:
                 import ctypes
                 from ctypes import wintypes
+                import time
+
+                output_path = Path(output_path).resolve()
+                if not output_path.is_file():
+                    self.log(
+                        "WORKSTATION RUNNER GUI HANDOFF FAILED: "
+                        f"application missing: {output_path}"
+                    )
+                    return False
 
                 pipe_name = self._workstation_runner_pipe_name()
                 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -111677,40 +114159,67 @@ border: 2px solid #2a69aa;
                 close_handle.argtypes = [wintypes.HANDLE]
                 close_handle.restype = wintypes.BOOL
 
-                if not wait_named_pipe(pipe_name, max(0, int(timeout_ms))):
-                    return False
-
                 GENERIC_WRITE = 0x40000000
                 OPEN_EXISTING = 3
-                handle = create_file(
-                    pipe_name,
-                    GENERIC_WRITE,
-                    0,
-                    None,
-                    OPEN_EXISTING,
-                    0,
-                    None,
-                )
                 invalid_handle = ctypes.c_void_p(-1).value
-                handle_value = int(handle) if handle else 0
-                if not handle_value or handle_value == int(invalid_handle):
-                    return False
+
+                timeout_ms = max(0, int(timeout_ms))
+                deadline = time.monotonic() + (timeout_ms / 1000.0)
+                handle = None
+
+                # WaitNamedPipeW liefert bei noch nicht erzeugter Pipe sofort
+                # ERROR_FILE_NOT_FOUND. Deshalb bis zum Timeout erneut pruefen;
+                # genau dieser Zustand tritt beim frischen GUI-Start des Hosts auf.
+                while True:
+                    remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
+                    wait_slice = min(200, remaining_ms)
+                    if wait_named_pipe(pipe_name, wait_slice):
+                        candidate = create_file(
+                            pipe_name,
+                            GENERIC_WRITE,
+                            0,
+                            None,
+                            OPEN_EXISTING,
+                            0,
+                            None,
+                        )
+                        candidate_value = int(candidate) if candidate else 0
+                        if (
+                            candidate_value
+                            and candidate_value != int(invalid_handle)
+                        ):
+                            handle = candidate
+                            break
+
+                    if time.monotonic() >= deadline:
+                        return False
+                    time.sleep(0.05)
 
                 try:
-                    exe = str(Path(output_path).resolve())
-                    cwd = str(Path(output_path).resolve().parent)
+                    exe = str(output_path)
+                    cwd = str(output_path.parent)
                     exe_bytes = exe.encode("utf-16-le")
                     cwd_bytes = cwd.encode("utf-16-le")
                     flags = 1 if console_mode else 0
+                    # Stage 274: Console-Programme im GUI-Workstation-Pfad
+                    # besitzen keine sichtbare native Console. Der Runner
+                    # faengt deren echtes STDOUT/STDERR ab und zeigt es im
+                    # residenten D64 Workstation DEBUG-Fenster an; die EXE
+                    # darf danach per ExitProcess enden, ohne den Runner zu beenden.
+                    if console_mode:
+                        flags |= 0x00000040  # DEBUG-console-only
                     flags |= 0x00000002  # Runner-Theme ist explizit gesetzt
                     if self.dark_mode_enabled:
                         flags |= 0x00000004  # Dark-Mode
                     flags |= 0x00000008  # Debug-Theme ist explizit gesetzt
-                    _debug_theme = _normalize_project_windows_debug_theme(debug_theme)
-                    if _debug_theme == "light":
+                    normalized_debug_theme = (
+                        _normalize_project_windows_debug_theme(debug_theme)
+                    )
+                    if normalized_debug_theme == "light":
                         flags |= 0x00000010
-                    elif _debug_theme == "dark":
+                    elif normalized_debug_theme == "dark":
                         flags |= 0x00000020
+
                     payload = (
                         struct.pack(
                             "<IIII",
@@ -111731,39 +114240,48 @@ border: 2px solid #2a69aa;
                         ctypes.byref(written),
                         None,
                     )
-                    return bool(ok) and int(written.value) == len(payload)
+                    success = bool(ok) and int(written.value) == len(payload)
+                    if success:
+                        self.log(
+                            "WORKSTATION RUNNER GUI HANDOFF: "
+                            f"application={exe}; cwd={cwd}; "
+                            f"mode={'console' if console_mode else 'gui'}; "
+                            f"debug_theme={normalized_debug_theme}"
+                        )
+                    else:
+                        self.log(
+                            "WORKSTATION RUNNER GUI HANDOFF FAILED: "
+                            f"application={exe}; written={int(written.value)}/"
+                            f"{len(payload)}"
+                        )
+                    return success
                 finally:
                     close_handle(handle)
-            except Exception:
+            except Exception as exc:
+                self.log(
+                    "WORKSTATION RUNNER GUI HANDOFF EXCEPTION: "
+                    + str(exc)
+                )
                 return False
 
-        def _start_workstation_runner_process(
+        def _start_workstation_runner_host_process(
             self,
             runner: Path,
-            output_path: Path,
-            *,
-            console_mode: bool,
-            debug_theme: str = "default",
         ) -> bool:
-            """Startet Runner + Anwendung direkt; kein Compiler/Make-Aufruf.
+            """Startet ausschliesslich den residenten Workstation-Host.
 
-            Eine bereits laufende Runner-Instanz wird vom C++-Runner selbst
-            erkannt. Die kurzlebige zweite Instanz leitet den Startauftrag
-            dann ueber die bestehende Named Pipe an den OWNER weiter.
+            Stage 270: Die GUI uebergibt die zu startende Anwendung nicht mehr
+            ueber die Kommandozeile des Runners. Der Runner wird ohne Argumente
+            als Pipe-Host gestartet; EXE, Arbeitsverzeichnis, Console/GUI-Modus
+            und Themes folgen danach ueber das DWR1-Named-Pipe-Protokoll.
+
+            Damit kann ein fehlerhafter/alter CLI-Aufruf nicht mehr den
+            Hilfe-Dialog des Runners anzeigen, obwohl die IDE bereits eine
+            fertig gelinkte Pascal-EXE besitzt.
             """
             try:
-                output_path = Path(output_path).resolve()
-                mode_switch = "--console" if console_mode else "--gui"
-                theme_switch = "--dark" if self.dark_mode_enabled else "--light"
-                debug_theme = _normalize_project_windows_debug_theme(debug_theme)
-                command = [
-                    str(runner),
-                    mode_switch,
-                    theme_switch,
-                    "--debug-theme",
-                    debug_theme,
-                    str(output_path),
-                ]
+                runner = Path(runner).resolve()
+                command = [str(runner)]
                 runner_env = os.environ.copy()
                 runner_env["D64_WORKSTATION_RUNNER_PARENT"] = "d64_dism"
                 options = {
@@ -111774,7 +114292,7 @@ border: 2px solid #2a69aa;
                     "env": runner_env,
                 }
                 self.log(
-                    "WORKSTATION RUNNER POPEN: "
+                    "WORKSTATION RUNNER HOST POPEN: "
                     + subprocess.list2cmdline(command)
                 )
                 creationflags = 0
@@ -111807,13 +114325,13 @@ border: 2px solid #2a69aa;
             console_mode: bool,
             debug_theme: str = "default",
         ) -> bool:
-            """Startet PE32/PE32+ direkt ueber den Workstation Runner.
+            """Startet PE32/PE32+ ueber den residenten Workstation Runner.
 
-            Der Runner linkt src/d64qt5/d64_workstation.cpp und entscheidet
-            selbst race-sicher zwischen OWNER und bestehender Session. Bei
-            einem bereits residenten Runner leitet eine zweite, kurzlebige
-            Runner-Instanz den Auftrag ueber die kompatible Named Pipe weiter.
-            d64_dism baut den Runner beim Start ausdruecklich NICHT.
+            Stage 270: Die IDE uebergibt die fertig gelinkte Anwendung immer
+            selbst ueber die DWR1-Named-Pipe. Nur wenn noch kein Runner lauscht,
+            wird zunaechst ein argumentloser Host-Prozess gestartet. Dadurch
+            bleibt die Anwendung ein GUI-seitig kontrollierter Parameter und
+            landet nicht mehr in einem separaten CLI-Parserpfad.
             """
             if os.name != "nt":
                 self.show_error(
@@ -111825,8 +114343,7 @@ border: 2px solid #2a69aa;
             # Stage 148: Defense in depth. Selbst wenn ein spaeterer/neuer
             # Startpfad diese Funktion versehentlich direkt aufruft, darf der
             # Runner nur bei der aktuell wirksamen PE32/PE32+-Checkbox erzeugt
-            # werden. Damit existiert direkt vor subprocess.Popen() nochmals
-            # eine verbindliche Workstation-Mode-Schranke.
+            # werden.
             target_key = self._project_windows_target_key(target)
             if not self._project_windows_workstation_mode_for_target(target_key):
                 self.log(
@@ -111836,7 +114353,37 @@ border: 2px solid #2a69aa;
                 return False
 
             output_path = Path(output_path).resolve()
-            workstation_was_open = self._d64_workstation_is_open()
+            if not output_path.is_file():
+                self.show_error(
+                    "Workstation Mode",
+                    "Die an den Workstation Runner zu übergebende Anwendung "
+                    "existiert nicht:\n\n"
+                    f"{output_path}",
+                )
+                return False
+
+            normalized_debug_theme = (
+                _normalize_project_windows_debug_theme(debug_theme)
+            )
+
+            # Zuerst eine bereits laufende Runner-Session direkt aus der GUI
+            # ansprechen. Das vermeidet einen unnoetigen zweiten Runner-Prozess.
+            if self._send_workstation_runner_request(
+                output_path,
+                console_mode=console_mode,
+                debug_theme=normalized_debug_theme,
+                timeout_ms=250,
+            ):
+                self.log(
+                    "WORKSTATION RUNNER GUI START: existing pipe; "
+                    f"application={output_path}"
+                )
+                self.statusBar().showMessage(
+                    "Workstation Mode: Anwendung an vorhandene "
+                    "Workstation-Session übergeben",
+                    7000,
+                )
+                return True
 
             runner = self._find_workstation_runner()
             if runner is None:
@@ -111855,33 +114402,96 @@ border: 2px solid #2a69aa;
                 )
                 return False
 
-            if not self._start_workstation_runner_process(
-                runner,
-                output_path,
-                console_mode=console_mode,
-                debug_theme=debug_theme,
-            ):
+            # Kein Pipe-Host vorhanden: Runner ohne CLI-Anwendungsargumente
+            # starten. Die konkrete Pascal-/C-/dBase-/... EXE wird danach von
+            # dieser GUI ueber die Named Pipe uebergeben.
+            if not self._start_workstation_runner_host_process(runner):
                 return False
 
-            if workstation_was_open:
-                message = (
-                    "Workstation Mode: Startauftrag an vorhandene "
-                    "Workstation-Session übergeben"
+            if not self._send_workstation_runner_request(
+                output_path,
+                console_mode=console_mode,
+                debug_theme=normalized_debug_theme,
+                timeout_ms=6000,
+            ):
+                self.show_error(
+                    "Workstation Mode",
+                    "Der Workstation Runner wurde gestartet, aber die GUI konnte "
+                    "die gelinkte Anwendung nicht an seine Named Pipe übergeben.\n\n"
+                    f"Anwendung:\n{output_path}\n\n"
+                    f"Runner:\n{runner}\n\n"
+                    "Prüfe zusätzlich das Protokoll auf "
+                    "'WORKSTATION RUNNER GUI HANDOFF'.",
                 )
-            else:
-                message = (
-                    "Workstation Mode: Runner startet neue Workstation-Session; "
-                    f"{output_path.name} wird geladen"
-                )
+                return False
 
             self.log(
-                "WORKSTATION RUNNER DIRECT START: "
-                f"{runner} {'--console' if console_mode else '--gui'} "
-                f"{'--dark' if self.dark_mode_enabled else '--light'} "
-                f"--debug-theme {_normalize_project_windows_debug_theme(debug_theme)} "
-                f"{output_path}"
+                "WORKSTATION RUNNER GUI START: new host + pipe handoff; "
+                f"runner={runner}; application={output_path}; "
+                f"mode={'console' if console_mode else 'gui'}; "
+                f"debug_theme={normalized_debug_theme}"
             )
-            self.statusBar().showMessage(message, 7000)
+            self.statusBar().showMessage(
+                "Workstation Mode: Runner gestartet; "
+                f"{output_path.name} aus der GUI übergeben",
+                7000,
+            )
+            return True
+
+        def _launch_prolog_console_dialog(
+            self,
+            document: DocumentEditor,
+            output_path: Path,
+        ) -> bool:
+            """Startet ein PROLOG-Console-PE unsichtbar mit stdin/out/err-Pipes."""
+            if os.name != "nt":
+                self.show_error(
+                    "PROLOG Konsole",
+                    "Die integrierte PROLOG-PE-Konsole kann nur unter Windows gestartet werden.\n"
+                    f"Programm: {output_path}",
+                )
+                return False
+
+            dialog = PrologConsoleDialog(
+                output_path,
+                self,
+                dark_mode=self.application_dark_mode(self.dark_mode_enabled),
+            )
+            dialog.setAttribute(Qt.WA_DeleteOnClose, True)
+            if not dialog.start_process():
+                dialog.close()
+                self.show_error(
+                    "PROLOG Konsole",
+                    f"Das PROLOG-Programm konnte nicht gestartet werden:\n{output_path}",
+                )
+                return False
+
+            dialogs = list(getattr(self, "_prolog_console_dialogs", []))
+            dialogs.append(dialog)
+            self._prolog_console_dialogs = dialogs
+
+            def forget_dialog(_object=None, *, _dialog=dialog):
+                active = list(getattr(self, "_prolog_console_dialogs", []))
+                if _dialog in active:
+                    active.remove(_dialog)
+                    self._prolog_console_dialogs = active
+
+            dialog.destroyed.connect(forget_dialog)
+            dialog.show()
+            dialog.raise_()
+            dialog.activateWindow()
+            document.assembly_status_label.setText(
+                f"In PROLOG-Konsole gestartet: {output_path.name}"
+            )
+            if document.generated_assembly_path is not None:
+                document.generated_assembly_status_label.setText(
+                    f"In PROLOG-Konsole gestartet: {output_path.name}"
+                )
+            self.log(f"PROLOG QT CONSOLE START: {output_path}")
+            self.statusBar().showMessage(
+                f"PROLOG-Konsole gestartet: {output_path.name}",
+                7000,
+            )
             return True
 
         def _launch_assembled_document(
@@ -111942,6 +114552,13 @@ border: 2px solid #2a69aa;
                         document.windows_application_mode
                     ) == "Console"
                 )
+
+                # Stage 281: normale PROLOG-Console-Starts laufen in einem
+                # eigenen Qt5-Dialog. CREATE_NO_WINDOW + Pipes verhindern ein
+                # separates Windows-Konsolenfenster. Workstation Mode bleibt
+                # bewusst beim vorhandenen Runner.
+                if document.is_prolog_document and console_mode and not workstation_mode:
+                    return self._launch_prolog_console_dialog(document, output_path)
 
                 if document.is_logo_document and not console_mode:
                     runtime_dll = output_path.parent / "d64graphics.dll"

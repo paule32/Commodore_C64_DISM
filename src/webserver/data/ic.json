@@ -1,0 +1,20 @@
+{
+  "components": {
+    "74ls00": {
+      "name": "TTL - 74LS00",
+      "description": "Quad 2-input NAND",
+      "rotations": {
+        "0": "vectors/74ls00_0deg.svg",
+        "90": "vectors/74ls00_90deg.svg",
+        "180": "vectors/74ls00_180deg.svg",
+        "270": "vectors/74ls00_270deg.svg"
+      },
+      "aliases": [
+        "7400",
+        "ttl-74ls00",
+        "ttl74ls00",
+        "sn74ls00"
+      ]
+    }
+  }
+}

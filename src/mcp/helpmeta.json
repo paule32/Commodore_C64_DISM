@@ -1,0 +1,18 @@
+{
+  "basic": {
+    "PRINT": {
+      "context_id": 2101,
+      "local": "basic/print.html"
+    },
+    "GOTO": {
+      "context_id": 2102,
+      "local": "basic/goto.html"
+    }
+  },
+  "pascal": {
+    "WRITELN": {
+      "context_id": 3101,
+      "local": "pascal/writeln.html"
+    }
+  }
+}

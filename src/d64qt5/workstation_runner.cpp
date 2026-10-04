@@ -24,7 +24,14 @@
 #include <QLinearGradient>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPaintEvent>
+#include <QPolygon>
+#include <QProxyStyle>
+#include <QPushButton>
+#include <QLabel>
+#include <QHBoxLayout>
 #include <QStyle>
+#include <QStyleOption>
 #include <QPlainTextEdit>
 #include <QResizeEvent>
 #include <QShowEvent>
@@ -50,6 +57,10 @@ namespace {
 constexpr wchar_t RUNNER_WINDOW_CLASS[] = L"D64WorkstationRunnerWindow";
 constexpr wchar_t RUNNER_WINDOW_TITLE[] = L"D64 Workstation Runner";
 constexpr wchar_t RUNNER_PIPE_NAME[] = L"\\\\.\\pipe\\dBase2Many.D64Workstation.Runner.v1";
+// Stage 271: Child-Runtimes erkennen an dieser geerbten Variablen, dass
+// Write/WriteLn zusaetzlich in das zentrale Workstation-DEBUG-Fenster
+// gespiegelt werden sollen. Der normale Console-Ausgabepfad bleibt erhalten.
+constexpr wchar_t RUNNER_DEBUG_OUTPUT_ENV[] = L"D64_WORKSTATION_DEBUG_OUTPUT";
 constexpr std::uint32_t RUNNER_PIPE_MAGIC = 0x31525744u; // "DWR1"
 constexpr std::uint32_t RUNNER_OUTPUT_MAGIC = 0x31574F44u; // "DOW1"
 constexpr std::uint32_t RUNNER_OUTPUT_NEWLINE = 0x00000001u;
@@ -59,9 +70,14 @@ constexpr std::uint32_t RUNNER_LAUNCH_THEME_DARK          = 0x00000004u;
 constexpr std::uint32_t RUNNER_LAUNCH_DEBUG_THEME_PRESENT = 0x00000008u;
 constexpr std::uint32_t RUNNER_LAUNCH_DEBUG_THEME_LIGHT   = 0x00000010u;
 constexpr std::uint32_t RUNNER_LAUNCH_DEBUG_THEME_DARK    = 0x00000020u;
+// Stage 274: GUI-Console-Starts laufen im Workstation Mode ohne sichtbare
+// Win32-Konsole. Der Runner faengt STDOUT/STDERR direkt ab und schreibt die
+// Bytes in das residente DEBUG-Fenster; die Ziel-Runtime muss DOW1 nicht kennen.
+constexpr std::uint32_t RUNNER_LAUNCH_DEBUG_CONSOLE_ONLY  = 0x00000040u;
 constexpr std::uint32_t RUNNER_OUTPUT_THEME_PRESENT       = 0x00000002u;
 constexpr std::uint32_t RUNNER_OUTPUT_THEME_LIGHT         = 0x00000004u;
 constexpr std::uint32_t RUNNER_OUTPUT_THEME_DARK          = 0x00000008u;
+constexpr std::uint32_t RUNNER_OUTPUT_LATIN1              = 0x00000010u;
 constexpr UINT WM_RUNNER_LAUNCH = WM_APP + 0x321;
 constexpr UINT WM_RUNNER_EXIT   = WM_APP + 0x322;
 constexpr UINT WM_RUNNER_OUTPUT = WM_APP + 0x323;
@@ -89,6 +105,7 @@ struct LaunchRequest {
     std::wstring application;
     std::wstring workingDirectory;
     bool consoleMode = false;
+    bool debugConsoleOnly = false; // Stage 274: keine sichtbare Console, STDOUT/STDERR -> DEBUG-Fenster
     int themeMode = -1;      // Workstation-Chrome: -1 unveraendert, 0 light, 1 dark
     int debugThemeMode = -1; // Debugfenster: -1 unveraendert, 0 default, 1 light, 2 dark
 };
@@ -96,6 +113,7 @@ struct LaunchRequest {
 struct OutputMessage {
     std::string text;
     bool newline = false;
+    bool latin1 = false;
     DWORD processId = 0;
     int debugThemeMode = -1;
 };
@@ -225,6 +243,297 @@ private:
     bool resizing_ = false;
     QPoint pressGlobal_;
     QRect startGeometry_;
+};
+
+// Stage 278: Die Scrollbars des DEBUG-QPlainTextEdit werden komplett durch
+// diesen Proxy-Style gezeichnet. In Stage 275 wurden nur die Pfeil-Primitives
+// ueberschrieben. Sobald der Style direkt auf QScrollBar gesetzt war, konnte
+// deshalb der native Windows-Style den eigentlichen Kanal und Griff weiterhin
+// grau zeichnen. Jetzt kommen Kanal, Buttons, Griff UND Pfeile aus einer Hand.
+class WorkstationScrollBarStyle final : public QProxyStyle
+{
+public:
+    WorkstationScrollBarStyle()
+        : QProxyStyle()
+    {
+    }
+
+    int pixelMetric(
+        PixelMetric metric,
+        const QStyleOption *option = nullptr,
+        const QWidget *widget = nullptr
+    ) const override
+    {
+        if (metric == PM_ScrollBarExtent)
+            return 16;
+        if (metric == PM_ScrollBarSliderMin)
+            return 24;
+        return QProxyStyle::pixelMetric(metric, option, widget);
+    }
+
+    void drawComplexControl(
+        ComplexControl control,
+        const QStyleOptionComplex *option,
+        QPainter *painter,
+        const QWidget *widget = nullptr
+    ) const override
+    {
+        if (control != CC_ScrollBar || !option || !painter) {
+            QProxyStyle::drawComplexControl(control, option, painter, widget);
+            return;
+        }
+
+        const QStyleOptionSlider *slider =
+            qstyleoption_cast<const QStyleOptionSlider *>(option);
+        if (!slider) {
+            QProxyStyle::drawComplexControl(control, option, painter, widget);
+            return;
+        }
+
+        const QColor trackColor(6, 21, 43);       // #06152b
+        const QColor buttonColor(6, 27, 58);      // #061b3a
+        const QColor handleColor(11, 47, 99);     // #0b2f63
+        const QColor handleHover(18, 68, 126);    // #12447e
+        const QColor handlePressed(14, 55, 108);  // #0e376c
+        const QColor borderColor(36, 77, 122);    // #244d7a
+        const QColor hoverBorder(255, 216, 0);    // #ffd800
+
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing, false);
+
+        // Niemals den nativen Style den Scrollbar-Hintergrund zeichnen lassen.
+        painter->fillRect(slider->rect, trackColor);
+
+        const QRect groove = subControlRect(
+            CC_ScrollBar, slider, SC_ScrollBarGroove, widget
+        );
+        const QRect knob = subControlRect(
+            CC_ScrollBar, slider, SC_ScrollBarSlider, widget
+        );
+        const QRect subLine = subControlRect(
+            CC_ScrollBar, slider, SC_ScrollBarSubLine, widget
+        );
+        const QRect addLine = subControlRect(
+            CC_ScrollBar, slider, SC_ScrollBarAddLine, widget
+        );
+
+        if (groove.isValid())
+            painter->fillRect(groove, trackColor);
+
+        auto drawBox = [&](const QRect &rect, const QColor &fill, const QColor &border) {
+            if (!rect.isValid() || rect.isEmpty())
+                return;
+            painter->fillRect(rect, fill);
+            painter->setPen(QPen(border, 1));
+            painter->setBrush(Qt::NoBrush);
+            painter->drawRect(rect.adjusted(0, 0, -1, -1));
+        };
+
+        drawBox(subLine, buttonColor, borderColor);
+        drawBox(addLine, buttonColor, borderColor);
+
+        const bool sliderHover =
+            (slider->state & State_MouseOver) &&
+            (slider->activeSubControls & SC_ScrollBarSlider);
+        const bool sliderPressed =
+            (slider->state & State_Sunken) &&
+            (slider->activeSubControls & SC_ScrollBarSlider);
+
+        QColor knobColor = handleColor;
+        QColor knobBorder = borderColor;
+        if (sliderPressed) {
+            knobColor = handlePressed;
+            knobBorder = hoverBorder;
+        } else if (sliderHover) {
+            knobColor = handleHover;
+            knobBorder = hoverBorder;
+        }
+        drawBox(knob, knobColor, knobBorder);
+
+        // Die vier Pfeile werden absichtlich selbst gezeichnet. Damit bleiben
+        // sie auch bei Windows High-Contrast-/Fusion-/Native-Styles gelb.
+        if (slider->orientation == Qt::Vertical) {
+            drawYellowArrow(PE_IndicatorArrowUp, subLine, painter);
+            drawYellowArrow(PE_IndicatorArrowDown, addLine, painter);
+        } else {
+            drawYellowArrow(PE_IndicatorArrowLeft, subLine, painter);
+            drawYellowArrow(PE_IndicatorArrowRight, addLine, painter);
+        }
+
+        painter->setPen(QPen(borderColor, 1));
+        painter->setBrush(Qt::NoBrush);
+        painter->drawRect(slider->rect.adjusted(0, 0, -1, -1));
+        painter->restore();
+    }
+
+    void drawPrimitive(
+        PrimitiveElement element,
+        const QStyleOption *option,
+        QPainter *painter,
+        const QWidget *widget = nullptr
+    ) const override
+    {
+        if (option && painter &&
+            (element == PE_IndicatorArrowUp ||
+             element == PE_IndicatorArrowDown ||
+             element == PE_IndicatorArrowLeft ||
+             element == PE_IndicatorArrowRight)) {
+            drawYellowArrow(element, option->rect, painter);
+            return;
+        }
+
+        QProxyStyle::drawPrimitive(element, option, painter, widget);
+    }
+
+private:
+    static void drawYellowArrow(
+        PrimitiveElement element,
+        const QRect &buttonRect,
+        QPainter *painter
+    )
+    {
+        if (!painter || !buttonRect.isValid() || buttonRect.isEmpty())
+            return;
+
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing, false);
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(QColor(255, 216, 0));
+
+        QRect r = buttonRect.adjusted(4, 4, -4, -4);
+        if (r.width() < 3 || r.height() < 3)
+            r = buttonRect.adjusted(2, 2, -2, -2);
+
+        const QPoint c = r.center();
+        const int sx = qMax(2, r.width() / 3);
+        const int sy = qMax(2, r.height() / 3);
+        QPolygon points;
+
+        switch (element) {
+        case PE_IndicatorArrowUp:
+            points << QPoint(c.x(), c.y() - sy)
+                   << QPoint(c.x() - sx, c.y() + sy)
+                   << QPoint(c.x() + sx, c.y() + sy);
+            break;
+        case PE_IndicatorArrowDown:
+            points << QPoint(c.x() - sx, c.y() - sy)
+                   << QPoint(c.x() + sx, c.y() - sy)
+                   << QPoint(c.x(), c.y() + sy);
+            break;
+        case PE_IndicatorArrowLeft:
+            points << QPoint(c.x() - sx, c.y())
+                   << QPoint(c.x() + sx, c.y() - sy)
+                   << QPoint(c.x() + sx, c.y() + sy);
+            break;
+        case PE_IndicatorArrowRight:
+            points << QPoint(c.x() - sx, c.y() - sy)
+                   << QPoint(c.x() + sx, c.y())
+                   << QPoint(c.x() - sx, c.y() + sy);
+            break;
+        default:
+            painter->restore();
+            return;
+        }
+
+        painter->drawPolygon(points);
+        painter->restore();
+    }
+};
+
+
+// Stage 279: QStyle/QSS kann die von einem Proxy-Style gezeichneten Pfeile
+// unter Windows noch einmal uebermalen. Deshalb liegen die DEBUG-Pfeile jetzt
+// in einem echten QScrollBar-Subclass. paintEvent() laesst zuerst Qt/QSS den
+// kompletten Balken zeichnen und malt die gelben Dreiecke DANACH als letzte
+// sichtbare Ebene. Damit koennen weder QStyleSheetStyle noch der Windows-Style
+// die Pfeile wieder verdecken.
+class WorkstationDebugScrollBar final : public QScrollBar
+{
+public:
+    explicit WorkstationDebugScrollBar(
+        Qt::Orientation orientation,
+        QWidget *parent = nullptr
+    )
+        : QScrollBar(orientation, parent)
+    {
+        setMouseTracking(true);
+        setAttribute(Qt::WA_Hover, true);
+    }
+
+protected:
+    void paintEvent(QPaintEvent *event) override
+    {
+        // Erst Kanal, Griff und Button-Flaechen durch den normalen
+        // QScrollBar/QSS-Pfad zeichnen lassen.
+        QScrollBar::paintEvent(event);
+
+        // Danach die Pfeile als Overlay. Das ist absichtlich NICHT Teil des
+        // Proxy-Styles, weil Qt unter Windows einen QStyleSheetStyle um den
+        // Widget-Style legen kann und dessen Ausgabe sonst uebermalt.
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing, false);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor(255, 216, 0)); // #ffd800
+
+        if (orientation() == Qt::Vertical) {
+            const int extent = qMin(16, height() / 2);
+            drawArrow(painter, QRect(0, 0, width(), extent), Qt::UpArrow);
+            drawArrow(
+                painter,
+                QRect(0, qMax(0, height() - extent), width(), extent),
+                Qt::DownArrow
+            );
+        } else {
+            const int extent = qMin(16, width() / 2);
+            drawArrow(painter, QRect(0, 0, extent, height()), Qt::LeftArrow);
+            drawArrow(
+                painter,
+                QRect(qMax(0, width() - extent), 0, extent, height()),
+                Qt::RightArrow
+            );
+        }
+    }
+
+private:
+    static void drawArrow(QPainter &painter, const QRect &buttonRect, Qt::ArrowType arrow)
+    {
+        if (!buttonRect.isValid() || buttonRect.width() < 5 || buttonRect.height() < 5)
+            return;
+
+        // Ein deutlich sichtbares 7x7-Pixel-Dreieck in der Mitte der
+        // 16-Pixel-Navy-Schaltflaeche. Bei kleineren Balken wird automatisch
+        // skaliert, bleibt aber mindestens 5 Pixel gross.
+        const QPoint c = buttonRect.center();
+        const int half = qMax(2, qMin(4, qMin(buttonRect.width(), buttonRect.height()) / 3));
+        QPolygon points;
+
+        switch (arrow) {
+        case Qt::UpArrow:
+            points << QPoint(c.x(),        c.y() - half)
+                   << QPoint(c.x() - half, c.y() + half)
+                   << QPoint(c.x() + half, c.y() + half);
+            break;
+        case Qt::DownArrow:
+            points << QPoint(c.x() - half, c.y() - half)
+                   << QPoint(c.x() + half, c.y() - half)
+                   << QPoint(c.x(),        c.y() + half);
+            break;
+        case Qt::LeftArrow:
+            points << QPoint(c.x() - half, c.y())
+                   << QPoint(c.x() + half, c.y() - half)
+                   << QPoint(c.x() + half, c.y() + half);
+            break;
+        case Qt::RightArrow:
+            points << QPoint(c.x() + half, c.y())
+                   << QPoint(c.x() - half, c.y() - half)
+                   << QPoint(c.x() - half, c.y() + half);
+            break;
+        default:
+            return;
+        }
+
+        painter.drawPolygon(points);
+    }
 };
 
 class WorkstationOutputDialog final : public QDialog
@@ -616,6 +925,194 @@ private:
     WorkstationResizeHandle *resizeHandles_[ResizeHandleCount] = {};
 };
 
+// Stage 275: Eigener Workstation-Exit-Dialog statt nativer MessageBox.
+// Optisch folgt er bewusst dem DEBUG-Fenster (frameless, 3px-Rahmen,
+// dunkle Verlaufstitelleiste, db-Icon und rotes X).
+class WorkstationExitDialog final : public QDialog
+{
+public:
+    explicit WorkstationExitDialog(bool darkMode, QWidget *parent = nullptr)
+        : QDialog(parent), darkMode_(darkMode)
+    {
+        setObjectName(QStringLiteral("d64WorkstationExitDialog"));
+        setWindowTitle(QStringLiteral("Workstation beenden"));
+        setModal(true);
+        setFixedSize(500, 190);
+        setMouseTracking(true);
+        setWindowFlags(
+            Qt::Dialog |
+            Qt::FramelessWindowHint |
+            Qt::WindowSystemMenuHint |
+            Qt::WindowStaysOnTopHint
+        );
+
+        auto *layout = new QVBoxLayout(this);
+        layout->setContentsMargins(18, 48, 18, 16);
+        layout->setSpacing(16);
+
+        auto *label = new QLabel(
+            QStringLiteral("Möchten Sie die Workstation wirklich beenden?"),
+            this
+        );
+        label->setObjectName(QStringLiteral("d64WorkstationExitText"));
+        label->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        label->setWordWrap(true);
+        layout->addWidget(label, 1);
+
+        auto *buttons = new QHBoxLayout();
+        buttons->setSpacing(10);
+        buttons->addStretch(1);
+
+        auto *yesButton = new QPushButton(QStringLiteral("Ja"), this);
+        yesButton->setObjectName(QStringLiteral("d64WorkstationExitYes"));
+        yesButton->setMinimumWidth(96);
+        auto *noButton = new QPushButton(QStringLiteral("Nein"), this);
+        noButton->setObjectName(QStringLiteral("d64WorkstationExitNo"));
+        noButton->setMinimumWidth(96);
+        noButton->setDefault(true);
+        noButton->setAutoDefault(true);
+
+        buttons->addWidget(yesButton);
+        buttons->addWidget(noButton);
+        layout->addLayout(buttons);
+
+        connect(yesButton, &QPushButton::clicked, this, &QDialog::accept);
+        connect(noButton, &QPushButton::clicked, this, &QDialog::reject);
+        noButton->setFocus(Qt::OtherFocusReason);
+
+        applyTheme();
+    }
+
+    static constexpr int borderSize() { return 3; }
+    static constexpr int titleHeight() { return 32; }
+    static constexpr int buttonWidth() { return 46; }
+
+    QRect closeButtonRect() const
+    {
+        return QRect(width() - buttonWidth(), 0, buttonWidth(), titleHeight());
+    }
+
+protected:
+#ifdef _WIN32
+    bool nativeEvent(const QByteArray &eventType, void *message, long *result) override
+    {
+        MSG *msg = static_cast<MSG *>(message);
+        if (msg && msg->message == WM_NCHITTEST) {
+            const QPoint p = mapFromGlobal(QCursor::pos());
+            if (closeButtonRect().contains(p)) {
+                if (result) *result = HTCLIENT;
+                return true;
+            }
+            if (p.y() >= 0 && p.y() < titleHeight()) {
+                if (result) *result = HTCAPTION;
+                return true;
+            }
+        }
+        return QDialog::nativeEvent(eventType, message, result);
+    }
+#endif
+
+    void paintEvent(QPaintEvent *event) override
+    {
+        QDialog::paintEvent(event);
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing, false);
+
+        QLinearGradient gradient(0, 0, width(), 0);
+        gradient.setColorAt(0.0, QColor(68, 68, 68));
+        gradient.setColorAt(1.0, QColor(14, 14, 14));
+        painter.fillRect(QRect(0, 0, width(), titleHeight()), gradient);
+
+        const QRect closeRect = closeButtonRect();
+        if (hoverClose_)
+            painter.fillRect(closeRect, QColor(205, 35, 35));
+
+        QRect iconRect(8, 6, 20, 20);
+        painter.setPen(QPen(QColor(230, 230, 230), 1));
+        painter.setBrush(QColor(0, 115, 80));
+        painter.drawRoundedRect(iconRect, 3, 3);
+        QFont iconFont(QStringLiteral("Segoe UI"), 7, QFont::Bold);
+        painter.setFont(iconFont);
+        painter.setPen(Qt::white);
+        painter.drawText(iconRect, Qt::AlignCenter, QStringLiteral("db"));
+
+        painter.setFont(QFont(QStringLiteral("Segoe UI"), 9));
+        painter.setPen(QColor(235, 235, 235));
+        const QRect titleRect(34, 0, qMax(0, width() - 34 - buttonWidth()), titleHeight());
+        painter.drawText(titleRect, Qt::AlignVCenter | Qt::AlignLeft, windowTitle());
+
+        QFont glyph(QStringLiteral("Segoe MDL2 Assets"), 10);
+        painter.setFont(glyph);
+        painter.setPen(QColor(238, 238, 238));
+        painter.drawText(closeRect, Qt::AlignCenter, QString(QChar(0xE8BB)));
+
+        const QColor border = isActiveWindow() ? QColor(185, 185, 185) : QColor(105, 105, 105);
+        const int r = borderSize();
+        painter.fillRect(QRect(0, 0, width(), r), border);
+        painter.fillRect(QRect(0, height() - r, width(), r), border);
+        painter.fillRect(QRect(0, r, r, qMax(0, height() - 2 * r)), border);
+        painter.fillRect(QRect(width() - r, r, r, qMax(0, height() - 2 * r)), border);
+    }
+
+    void mouseMoveEvent(QMouseEvent *event) override
+    {
+        const bool hover = event && closeButtonRect().contains(event->pos());
+        if (hover != hoverClose_) {
+            hoverClose_ = hover;
+            update(closeButtonRect());
+        }
+        QDialog::mouseMoveEvent(event);
+    }
+
+    void leaveEvent(QEvent *event) override
+    {
+        if (hoverClose_) {
+            hoverClose_ = false;
+            update(closeButtonRect());
+        }
+        QDialog::leaveEvent(event);
+    }
+
+    void mouseReleaseEvent(QMouseEvent *event) override
+    {
+        if (event && event->button() == Qt::LeftButton && closeButtonRect().contains(event->pos())) {
+            reject();
+            event->accept();
+            return;
+        }
+        QDialog::mouseReleaseEvent(event);
+    }
+
+private:
+    void applyTheme()
+    {
+        if (darkMode_) {
+            setStyleSheet(QStringLiteral(
+                "QDialog#d64WorkstationExitDialog { background:#171717; }"
+                "QLabel#d64WorkstationExitText { color:#d2ca87; font:10pt 'Segoe UI'; }"
+                "QPushButton { background:#061b3a; color:#ffd800; border:1px solid #315581;"
+                " border-radius:3px; padding:6px 18px; min-height:24px; }"
+                "QPushButton:hover { background:#0b2f63; border-color:#ffd800; }"
+                "QPushButton:pressed { background:#0e376c; }"
+                "QPushButton:default { border:2px solid #ffd800; }"
+            ));
+        } else {
+            setStyleSheet(QStringLiteral(
+                "QDialog#d64WorkstationExitDialog { background:#ececec; }"
+                "QLabel#d64WorkstationExitText { color:#202020; font:10pt 'Segoe UI'; }"
+                "QPushButton { background:#f7f7f7; color:#102c52; border:1px solid #607d9e;"
+                " border-radius:3px; padding:6px 18px; min-height:24px; }"
+                "QPushButton:hover { background:#dbe8f5; border-color:#173b66; }"
+                "QPushButton:pressed { background:#c8dced; }"
+                "QPushButton:default { border:2px solid #173b66; }"
+            ));
+        }
+    }
+
+    bool darkMode_ = true;
+    bool hoverClose_ = false;
+};
+
 struct ChildProcess {
     std::wstring canonicalPath;
     HANDLE process = nullptr;
@@ -645,7 +1142,15 @@ std::vector<HWND> g_hidden_windows;
 std::vector<ChildProcess> g_children;
 std::thread g_pipe_thread;
 std::atomic<bool> g_pipe_stop{false};
+// Stage 273: true nur solange eine frische Pipe-Instanz wirklich auf den
+// naechsten Client wartet. Damit wird der Kind-Thread erst freigegeben, wenn
+// Write/WriteLn garantiert einen empfangsbereiten Runner vorfindet.
+std::atomic<bool> g_pipe_ready{false};
 bool g_leave_started = false;
+// Stage 275: Der Panel-Klick darf niemals zwei Bestätigungsdialoge erzeugen.
+bool g_exit_prompt_active = false;
+bool g_exit_confirmed = false;
+ULONGLONG g_exit_prompt_suppress_until = 0;
 // Stage 144: 0=default (Workstation-Theme folgen), 1=light, 2=dark.
 int g_output_debug_theme_mode = 0;
 
@@ -656,25 +1161,71 @@ int g_output_debug_theme_mode = 0;
 LaunchRequest g_db_launch_request;
 bool g_has_db_launch_request = false;
 
+QString workstation_debug_scrollbar_style_sheet()
+{
+    return QStringLiteral(
+        "QScrollBar:vertical { background:#06152b; width:16px; margin:16px 0 16px 0;"
+        " border:1px solid #244d7a; }"
+        "QScrollBar::handle:vertical { background:#0b2f63; min-height:24px;"
+        " border:1px solid #416d9c; border-radius:2px; }"
+        "QScrollBar::handle:vertical:hover { background:#12447e; border-color:#ffd800; }"
+        "QScrollBar::sub-line:vertical { background:#061b3a; height:16px;"
+        " subcontrol-position:top; subcontrol-origin:margin; border:1px solid #244d7a; }"
+        "QScrollBar::add-line:vertical { background:#061b3a; height:16px;"
+        " subcontrol-position:bottom; subcontrol-origin:margin; border:1px solid #244d7a; }"
+        "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background:#06152b; }"
+        "QScrollBar:horizontal { background:#06152b; height:16px; margin:0 16px 0 16px;"
+        " border:1px solid #244d7a; }"
+        "QScrollBar::handle:horizontal { background:#0b2f63; min-width:24px;"
+        " border:1px solid #416d9c; border-radius:2px; }"
+        "QScrollBar::handle:horizontal:hover { background:#12447e; border-color:#ffd800; }"
+        "QScrollBar::sub-line:horizontal { background:#061b3a; width:16px;"
+        " subcontrol-position:left; subcontrol-origin:margin; border:1px solid #244d7a; }"
+        "QScrollBar::add-line:horizontal { background:#061b3a; width:16px;"
+        " subcontrol-position:right; subcontrol-origin:margin; border:1px solid #244d7a; }"
+        "QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background:#06152b; }"
+    );
+}
+
+bool workstation_debug_uses_dark_theme()
+{
+    if (g_output_debug_theme_mode == 1)
+        return false;
+    if (g_output_debug_theme_mode == 2)
+        return true;
+    return D64WorkstationDarkMode();
+}
+
 void apply_workstation_output_theme(bool darkMode)
 {
     if (!g_output_dialog || !g_output_edit)
         return;
+
+    QString style;
     if (darkMode) {
-        g_output_dialog->setStyleSheet(QStringLiteral(
+        // Stage 278: Dark-Mode an den Beenden-Dialog angleichen:
+        // gleiche Grundflaeche, gleiche gelb/beige Textfarbe und Navy-Akzente.
+        style = QStringLiteral(
             "QDialog#d64WorkstationOutputDialog { background:#171717; }"
             "QPlainTextEdit#d64WorkstationOutput {"
-            " background:#000000; color:#d2ca87; border:1px solid #555555;"
-            " selection-background-color:#5a5000; selection-color:#fff1a0; }"
-        ));
+            " background:#171717; color:#d2ca87; border:1px solid #315581;"
+            " padding:2px;"
+            " selection-background-color:#0b2f63; selection-color:#ffd800; }"
+        );
     } else {
-        g_output_dialog->setStyleSheet(QStringLiteral(
+        style = QStringLiteral(
             "QDialog#d64WorkstationOutputDialog { background:#ececec; }"
             "QPlainTextEdit#d64WorkstationOutput {"
             " background:#ffffff; color:#202020; border:1px solid #8a8a8a;"
             " selection-background-color:#3478c7; selection-color:#ffffff; }"
-        ));
+        );
     }
+
+    // Stage 275: Beide DEBUG-Scrollbars bleiben bewusst navyblau, unabhaengig
+    // vom Text-Theme. Die Pfeile selbst zeichnet WorkstationScrollBarStyle
+    // gelb; die QSS-Regeln liefern Kanal, Griff und Pfeilbutton-Hintergrund.
+    style += workstation_debug_scrollbar_style_sheet();
+    g_output_dialog->setStyleSheet(style);
     g_output_dialog->update();
     g_output_edit->viewport()->update();
 }
@@ -706,7 +1257,9 @@ void create_workstation_output_dialog()
     // Stage 116 compatibility marker: g_output_dialog = new QDialog(nullptr);
     g_output_dialog = new WorkstationOutputDialog(nullptr);
     g_output_dialog->setObjectName(QStringLiteral("d64WorkstationOutputDialog"));
-    g_output_dialog->setWindowTitle(QStringLiteral("dBase Workstation Ausgabe"));
+    // Stage 271: gemeinsamer DEBUG-Ausgabekanal fuer dBase/WFM und
+    // generische Pascal/C-Programme im Workstation Mode.
+    g_output_dialog->setWindowTitle(QStringLiteral("D64 Workstation DEBUG"));
     g_output_dialog->setModal(false);
     g_output_dialog->setAttribute(Qt::WA_DeleteOnClose, false);
     g_output_dialog->resize(680, 300);
@@ -724,11 +1277,38 @@ void create_workstation_output_dialog()
     g_output_edit->setObjectName(QStringLiteral("d64WorkstationOutput"));
     g_output_edit->setReadOnly(true);
     g_output_edit->setPlaceholderText(
-        QStringLiteral("Workstation-Ausgabe bereit - Debug und Print erscheinen hier.")
+        QStringLiteral(
+            "DEBUG-Ausgabe bereit - Write/WriteLn, Print und dBase-DEBUG erscheinen hier."
+        )
     );
     g_output_edit->setLineWrapMode(QPlainTextEdit::NoWrap);
+
+    // Stage 279: Die echten Scrollbar-Widgets des QPlainTextEdit ersetzen.
+    // Der Subclass malt seine gelben Pfeile nach dem kompletten Qt/QSS-Paint
+    // und ist deshalb unter dem Windows-Style sichtbar.
+    auto *verticalBar = new WorkstationDebugScrollBar(Qt::Vertical, g_output_edit);
+    auto *horizontalBar = new WorkstationDebugScrollBar(Qt::Horizontal, g_output_edit);
+    g_output_edit->setVerticalScrollBar(verticalBar);
+    g_output_edit->setHorizontalScrollBar(horizontalBar);
     g_output_edit->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     g_output_edit->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+
+    // Kanal/Griff/Button-Flaechen bleiben im Stage-278-Navy-Style.
+    // WorkstationDebugScrollBar garantiert zusaetzlich die gelben Pfeile.
+    auto *scrollStyle = new WorkstationScrollBarStyle();
+    scrollStyle->setParent(g_output_edit);
+    verticalBar->setStyle(scrollStyle);
+    horizontalBar->setStyle(scrollStyle);
+
+    // Stage 278: QPlainTextEdit besitzt eigene QScrollBar-Child-Widgets.
+    // Der Proxy-Style zeichnet diese beiden Widgets nun VOLLSTAENDIG selbst.
+    // Deshalb kann der native Windows-Style nicht mehr als grauer Balken
+    // durchscheinen; QSS bleibt nur noch eine zusaetzliche Theme-Absicherung.
+    verticalBar->setMinimumWidth(16);
+    verticalBar->setMaximumWidth(16);
+    horizontalBar->setMinimumHeight(16);
+    horizontalBar->setMaximumHeight(16);
+
     g_output_edit->document()->setMaximumBlockCount(500);
     g_output_edit->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     layout->addWidget(g_output_edit, 1);
@@ -835,8 +1415,14 @@ void ensure_workstation_output_dialog_visible()
     if (!g_output_dialog)
         return;
 
+    // Stage 272: Das DEBUG-Fenster ist ein fester Bestandteil des Runners.
+    // Ein minimierter Zustand darf deshalb nicht dazu fuehren, dass der
+    // Sichtbarkeits-Watchdog dauerhaft wirkungslos bleibt. Das war besonders
+    // bei residenten Runner-Sessions problematisch: Die IDE konnte eine neue
+    // Pascal-EXE erfolgreich uebergeben, das DEBUG-Fenster blieb aber
+    // minimiert bzw. scheinbar verschwunden.
     if (g_output_dialog->isMinimized())
-        return;
+        g_output_dialog->showNormal();
 
     if (!g_output_dialog->isVisible())
         g_output_dialog->show();
@@ -847,16 +1433,70 @@ void ensure_workstation_output_dialog_visible()
 #ifdef _WIN32
     const HWND outputHwnd = reinterpret_cast<HWND>(g_output_dialog->winId());
     if (outputHwnd && IsWindow(outputHwnd)) {
-        if (!IsWindowVisible(outputHwnd))
-            ShowWindow(outputHwnd, SW_SHOWNORMAL);
+        if (!IsWindowVisible(outputHwnd) || IsIconic(outputHwnd))
+            ShowWindow(outputHwnd, SW_RESTORE);
         SetWindowPos(
             outputHwnd,
             HWND_TOPMOST,
             0, 0, 0, 0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE
         );
+        // Eine echte Console wird vom Runner ebenfalls TOPMOST gehalten.
+        // BringWindowToTop() nach SetWindowPos() stellt sicher, dass das
+        // DEBUG-Fenster innerhalb dieses TOPMOST-Bandes sichtbar bleibt.
+        BringWindowToTop(outputHwnd);
     }
 #endif
+}
+
+// Stage 274: Console-Programme aus dem GUI-Workstation-Pfad werden nicht
+// mehr darauf angewiesen, dass ihre Runtime den proprietaeren DOW1-Kanal
+// kennt. Der Runner faengt den echten STDOUT/STDERR-Byte-Strom des Kindes
+// ueber eine anonyme Pipe ab. Damit erscheint exakt die Ausgabe, die bei
+// einem normalen Start in der Windows-Konsole landen wuerde, im DEBUG-Fenster.
+void start_child_standard_output_capture(
+    HANDLE readPipe,
+    DWORD processId,
+    int debugThemeMode)
+{
+    if (!readPipe || readPipe == INVALID_HANDLE_VALUE)
+        return;
+
+    std::thread([readPipe, processId, debugThemeMode]() {
+        char buffer[4096];
+        for (;;) {
+            DWORD bytesRead = 0;
+            const BOOL ok = ReadFile(
+                readPipe,
+                buffer,
+                static_cast<DWORD>(sizeof(buffer)),
+                &bytesRead,
+                nullptr
+            );
+            if (!ok || bytesRead == 0)
+                break;
+
+            std::unique_ptr<OutputMessage> output(new OutputMessage());
+            output->text.assign(buffer, buffer + bytesRead);
+            // Die aktuelle Pascal-Runtime schreibt ihre Console-Bytes als
+            // ANSI/Latin-1. Das entspricht auch der bisherigen DOW1-Route.
+            output->latin1 = true;
+            output->processId = processId;
+            output->debugThemeMode = debugThemeMode;
+
+            HWND host = g_host_window;
+            if (host && IsWindow(host)) {
+                if (PostMessageW(
+                        host,
+                        WM_RUNNER_OUTPUT,
+                        0,
+                        reinterpret_cast<LPARAM>(output.get()))) {
+                    output.release();
+                }
+            }
+        }
+        CloseHandle(readPipe);
+    }).detach();
 }
 
 void append_workstation_output(const OutputMessage &message)
@@ -874,8 +1514,14 @@ void append_workstation_output(const OutputMessage &message)
 
     QTextCursor cursor = g_output_edit->textCursor();
     cursor.movePosition(QTextCursor::End);
-    if (!message.text.empty())
-        cursor.insertText(QString::fromUtf8(message.text.data(), static_cast<int>(message.text.size())));
+    if (!message.text.empty()) {
+        const int textSize = static_cast<int>(message.text.size());
+        cursor.insertText(
+            message.latin1
+                ? QString::fromLatin1(message.text.data(), textSize)
+                : QString::fromUtf8(message.text.data(), textSize)
+        );
+    }
     if (message.newline)
         cursor.insertText(QStringLiteral("\n"));
     g_output_edit->setTextCursor(cursor);
@@ -1782,23 +2428,42 @@ void begin_console_modal_test(ChildProcess &child)
     BringWindowToTop(child.consoleWindow);
     SetForegroundWindow(child.consoleWindow);
     child.consoleModalTest = true;
+
+    // Stage 272: Console und DEBUG-Dialog sind beide TOPMOST. Bisher wurde
+    // die Console nach dem 500-ms-Watchdog zuletzt nach oben geholt und konnte
+    // den DEBUG-Dialog vollstaendig verdecken. Das DEBUG-Fenster wird deshalb
+    // unmittelbar danach erneut in den sichtbaren TOPMOST-Bereich gehoben,
+    // ohne der Console den Eingabefokus wegzunehmen.
+    ensure_workstation_output_dialog_visible();
 }
 
 void cleanup_finished_children()
 {
+    bool childExited = false;
     for (auto it = g_children.begin(); it != g_children.end();) {
         if (!it->process) {
             end_console_modal_test(*it);
             it = g_children.erase(it);
+            childExited = true;
             continue;
         }
         if (WaitForSingleObject(it->process, 0) == WAIT_OBJECT_0) {
+            // Stage 273: ExitProcess() beendet ausschliesslich das uebergebene
+            // Programm. Der Runner/Workstation-OWNER bleibt resident. Damit
+            // bleibt das DEBUG-Fenster samt letzter Write/WriteLn-Ausgabe bis
+            // zum grossen Workstation-X erhalten.
             end_console_modal_test(*it);
             CloseHandle(it->process);
             it = g_children.erase(it);
+            childExited = true;
             continue;
         }
         ++it;
+    }
+
+    if (childExited && !g_leave_started) {
+        switch_to_workstation_desktop();
+        ensure_workstation_output_dialog_visible();
     }
 }
 
@@ -2047,6 +2712,53 @@ bool activate_child_windows(DWORD pid)
     return true;
 }
 
+bool wait_for_runner_output_pipe_ready(DWORD timeoutMs)
+{
+    const DWORD started = GetTickCount();
+    while (!g_pipe_stop.load()) {
+        if (g_pipe_ready.load())
+            return true;
+        if (static_cast<DWORD>(GetTickCount() - started) >= timeoutMs)
+            return false;
+        Sleep(5);
+    }
+    return false;
+}
+
+bool prepare_debug_window_before_child_start()
+{
+    // Stage 273: Diese Funktion ist die verbindliche Startbarriere. Erst wenn
+    // der Workstation-Desktop aktiv, das DEBUG-Fenster sichtbar/gezeichnet und
+    // die DOW1-Pipe empfangsbereit ist, darf der Hauptthread der Ziel-EXE laufen.
+    switch_to_workstation_desktop();
+    ensure_workstation_output_dialog_visible();
+
+#ifdef _WIN32
+    if (g_output_dialog) {
+        const HWND outputHwnd =
+            reinterpret_cast<HWND>(g_output_dialog->winId());
+        if (outputHwnd && IsWindow(outputHwnd)) {
+            ShowWindow(outputHwnd, SW_SHOWNORMAL);
+            SetWindowPos(
+                outputHwnd,
+                HWND_TOPMOST,
+                0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE
+            );
+            RedrawWindow(
+                outputHwnd, nullptr, nullptr,
+                RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN
+            );
+            UpdateWindow(outputHwnd);
+        }
+    }
+#endif
+
+    QCoreApplication::sendPostedEvents();
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
+    return wait_for_runner_output_pipe_ready(1500);
+}
+
 bool launch_program(const LaunchRequest &request)
 {
     if (request.application.empty())
@@ -2070,6 +2782,13 @@ bool launch_program(const LaunchRequest &request)
         ensure_workstation_output_dialog_visible();
         return true;
     }
+
+    // Stage 273: Nicht nur "show before launch_program", sondern eine echte
+    // Startbarriere vor CreateProcess/ResumeThread. So kann selbst ein sehr
+    // kurzes Pascal-Programm sofort WriteLn() ausfuehren und findet den
+    // DEBUG-Empfaenger bereits vollstaendig betriebsbereit vor.
+    if (!prepare_debug_window_before_child_start())
+        return false;
 
     std::wstring desktopSpec = L"WinSta0\\";
     const wchar_t *desktopName = D64WorkstationDesktopName();
@@ -2129,19 +2848,109 @@ bool launch_program(const LaunchRequest &request)
     PROCESS_INFORMATION processInfo;
     ZeroMemory(&processInfo, sizeof(processInfo));
 
-    DWORD creationFlags = CREATE_UNICODE_ENVIRONMENT | CREATE_NEW_PROCESS_GROUP;
-    if (request.consoleMode) {
+    // Stage 274: Fuer den GUI->Runner-Console-Pfad wird echtes STDOUT/STDERR
+    // umgeleitet. Das ist absichtlich auf Runner-Ebene geloest: auch bereits
+    // gebaute/komprimierte Pascal-EXEs, deren Runtime keinen DOW1-Spiegel
+    // enthaelt, schreiben damit in dasselbe DEBUG-Fenster.
+    const bool captureStandardOutput =
+        request.consoleMode && request.debugConsoleOnly;
+    HANDLE childStdoutRead = nullptr;
+    HANDLE childStdoutWrite = nullptr;
+    HANDLE childStdin = nullptr;
+
+    if (captureStandardOutput) {
+        SECURITY_ATTRIBUTES inheritAttributes{};
+        inheritAttributes.nLength = sizeof(inheritAttributes);
+        inheritAttributes.bInheritHandle = TRUE;
+
+        if (!CreatePipe(
+                &childStdoutRead,
+                &childStdoutWrite,
+                &inheritAttributes,
+                0)) {
+            return false;
+        }
+
+        // Nur die Schreibseite darf ins Kind vererbt werden. Haelt das Kind
+        // versehentlich auch die Leseseite, koennte EOF nie erkannt werden.
+        if (!SetHandleInformation(
+                childStdoutRead, HANDLE_FLAG_INHERIT, 0)) {
+            CloseHandle(childStdoutRead);
+            CloseHandle(childStdoutWrite);
+            return false;
+        }
+
+        // STARTF_USESTDHANDLES verlangt einen gueltigen Satz von drei Handles.
+        // Fuer Stage 274 ist das DEBUG-Fenster ein reiner Ausgabekanal; ReadLn
+        // bleibt eine spaetere, getrennte STDIN-Erweiterung.
+        childStdin = CreateFileW(
+            L"NUL",
+            GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            &inheritAttributes,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            nullptr
+        );
+        if (childStdin == INVALID_HANDLE_VALUE) {
+            childStdin = nullptr;
+            CloseHandle(childStdoutRead);
+            CloseHandle(childStdoutWrite);
+            return false;
+        }
+
+        startup.dwFlags |= STARTF_USESTDHANDLES;
+        startup.hStdInput = childStdin;
+        startup.hStdOutput = childStdoutWrite;
+        startup.hStdError = childStdoutWrite;
+    }
+
+    // Stage 273: Jede Ziel-EXE wird zunaechst suspendiert erzeugt. Der Runner
+    // gibt den Hauptthread erst nach sichtbarem DEBUG-Fenster und bereiter
+    // DOW1-Pipe frei. Dadurch gehen auch Ausgaben direkt am Programmeinstieg
+    // nicht verloren.
+    DWORD creationFlags =
+        CREATE_UNICODE_ENVIRONMENT |
+        CREATE_NEW_PROCESS_GROUP |
+        CREATE_SUSPENDED;
+
+    if (request.consoleMode && request.debugConsoleOnly) {
+        // GUI->Runner Console-Programme werden mit unsichtbarer Console
+        // gestartet. STDOUT/STDERR zeigen ueber die geerbte anonyme Pipe
+        // direkt auf das residente DEBUG-Fenster des Runners.
+        creationFlags |= CREATE_NO_WINDOW;
+    } else if (request.consoleMode) {
+        // Legacy/CLI-Verhalten bleibt verfuegbar.
         creationFlags |= CREATE_NEW_CONSOLE;
-    } else if (wfmQtOutput) {
-        // Stage 123: Die eigentliche WFM-GUI darf erst laufen, nachdem der
-        // zentrale Debug-/Print-Konsolenersatz sichtbar und gezeichnet ist.
-        creationFlags |= CREATE_SUSPENDED;
     } else if (lazyDBaseConsole) {
         // Die Console muss auf dem in startup.lpDesktop angegebenen
-        // D64Workstation-Desktop entstehen. CREATE_SUSPENDED verhindert ein
-        // Aufblitzen: Der Runner ermittelt/versteckt das Console-HWND, bevor
-        // irgendein dBase-/Qt-Code des Kindes ausgefuehrt wird.
-        creationFlags |= CREATE_NEW_CONSOLE | CREATE_SUSPENDED;
+        // D64Workstation-Desktop entstehen. Der suspendierte Hauptthread
+        // verhindert ein Aufblitzen, bevor der Runner das HWND versteckt.
+        creationFlags |= CREATE_NEW_CONSOLE;
+    }
+
+    // Stage 271-Kompatibilitaet: GUI-/Legacy-Pfade duerfen weiterhin den
+    // Runtime-DOW1-Spiegel verwenden. Beim Stage-274-STDOUT-Capture wird der
+    // Spiegel dagegen bewusst NICHT aktiviert, sonst wuerde eine neue Runtime
+    // dieselbe WriteLn-Ausgabe doppelt ins DEBUG-Fenster senden.
+    const bool enableRuntimeDebugMirror = !captureStandardOutput;
+    std::wstring previousDebugOutputEnv;
+    bool hadPreviousDebugOutputEnv = false;
+    if (enableRuntimeDebugMirror) {
+        const DWORD required = GetEnvironmentVariableW(
+            RUNNER_DEBUG_OUTPUT_ENV, nullptr, 0
+        );
+        if (required > 0) {
+            std::vector<wchar_t> previous(required);
+            const DWORD copied = GetEnvironmentVariableW(
+                RUNNER_DEBUG_OUTPUT_ENV, previous.data(), required
+            );
+            if (copied > 0 && copied < required) {
+                previousDebugOutputEnv.assign(previous.data(), copied);
+                hadPreviousDebugOutputEnv = true;
+            }
+        }
+        SetEnvironmentVariableW(RUNNER_DEBUG_OUTPUT_ENV, L"1");
     }
 
     const BOOL ok = CreateProcessW(
@@ -2149,7 +2958,7 @@ bool launch_program(const LaunchRequest &request)
         command.data(),
         nullptr,
         nullptr,
-        FALSE,
+        captureStandardOutput ? TRUE : FALSE,
         creationFlags,
         nullptr,
         request.workingDirectory.empty()
@@ -2158,8 +2967,33 @@ bool launch_program(const LaunchRequest &request)
         &startup,
         &processInfo
     );
-    if (!ok)
+
+    if (enableRuntimeDebugMirror) {
+        if (hadPreviousDebugOutputEnv) {
+            SetEnvironmentVariableW(
+                RUNNER_DEBUG_OUTPUT_ENV, previousDebugOutputEnv.c_str()
+            );
+        } else {
+            SetEnvironmentVariableW(RUNNER_DEBUG_OUTPUT_ENV, nullptr);
+        }
+    }
+
+    // Der Parent darf die geerbten Kind-Seiten unmittelbar nach CreateProcess
+    // schliessen. Nur dadurch sieht der Reader nach ExitProcess() sicher EOF.
+    if (childStdoutWrite) {
+        CloseHandle(childStdoutWrite);
+        childStdoutWrite = nullptr;
+    }
+    if (childStdin) {
+        CloseHandle(childStdin);
+        childStdin = nullptr;
+    }
+
+    if (!ok) {
+        if (childStdoutRead)
+            CloseHandle(childStdoutRead);
         return false;
+    }
 
     ChildProcess child;
     child.canonicalPath = canonical;
@@ -2167,51 +3001,48 @@ bool launch_program(const LaunchRequest &request)
     child.pid = processInfo.dwProcessId;
     g_children.push_back(child);
 
-    if (wfmQtOutput) {
-        // Stage 123: Reihenfolge verbindlich erzwingen:
-        //   Workstation sichtbar -> Debugfenster sichtbar/gezeichnet ->
-        //   erst dann Form1-Hauptthread starten.
-        switch_to_workstation_desktop();
-        ensure_workstation_output_dialog_visible();
-        if (g_output_dialog) {
-            g_output_dialog->move(10, 10);
-#ifdef _WIN32
-            const HWND outputHwnd =
-                reinterpret_cast<HWND>(g_output_dialog->winId());
-            if (outputHwnd && IsWindow(outputHwnd)) {
-                ShowWindow(outputHwnd, SW_SHOWNORMAL);
-                SetWindowPos(
-                    outputHwnd,
-                    HWND_TOPMOST,
-                    10, 10,
-                    0, 0,
-                    SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE
-                );
-                RedrawWindow(
-                    outputHwnd, nullptr, nullptr,
-                    RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN
-                );
-                UpdateWindow(outputHwnd);
-            }
-#endif
-        }
-        QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
-        ResumeThread(processInfo.hThread);
-    } else if (lazyDBaseConsole) {
+    if (captureStandardOutput && childStdoutRead) {
+        // Reader vor ResumeThread starten. Selbst wenn der OS-Scheduler den
+        // Thread erst spaeter ausfuehrt, puffert die Pipe die ersten Bytes;
+        // damit kann ein extrem kurzes Programm unmittelbar WriteLn +
+        // ExitProcess ausfuehren, ohne Ausgabe zu verlieren.
+        start_child_standard_output_capture(
+            childStdoutRead,
+            processInfo.dwProcessId,
+            request.debugThemeMode
+        );
+        childStdoutRead = nullptr;
+    }
+
+    if (lazyDBaseConsole) {
         ChildProcess &created = g_children.back();
         // CREATE_NEW_CONSOLE wird durch CreateProcess angelegt, bevor der
         // suspendierte Hauptthread dBase-Code ausfuehrt. Ein kurzer Retry
-        // deckt langsame Console-Host-Initialisierung ab.
+        // deckt langsame Console-Host-Initialisierung ab; sichtbar wird sie
+        // erst spaeter durch den expliziten dBase-Console-Pfad.
         const DWORD consoleDeadline = GetTickCount() + 1000;
         while (!discover_child_console_window(created, false)) {
             if (static_cast<LONG>(GetTickCount() - consoleDeadline) >= 0)
                 break;
             Sleep(10);
         }
-        ResumeThread(processInfo.hThread);
     }
 
+    // Noch einmal unmittelbar vor ResumeThread zeichnen. Zwischen CreateProcess
+    // und hier kann Windows neue TOPMOST-Fenster/Console-Hosts angelegt haben.
+    // Der Zielcode hat bis zu diesem Punkt noch keine einzige Instruktion
+    // ausgefuehrt.
+    switch_to_workstation_desktop();
+    ensure_workstation_output_dialog_visible();
+    QCoreApplication::sendPostedEvents();
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
+
+    const DWORD resumeResult = ResumeThread(processInfo.hThread);
     CloseHandle(processInfo.hThread);
+    if (resumeResult == static_cast<DWORD>(-1)) {
+        TerminateProcess(processInfo.hProcess, 1);
+        return false;
+    }
 
     /*
      * Stage 254:
@@ -2434,6 +3265,8 @@ bool send_request_to_existing_runner(
     PipeHeader header{};
     header.magic = RUNNER_PIPE_MAGIC;
     header.flags = request.consoleMode ? RUNNER_LAUNCH_CONSOLE : 0u;
+    if (request.debugConsoleOnly)
+        header.flags |= RUNNER_LAUNCH_DEBUG_CONSOLE_ONLY;
     if (request.themeMode >= 0) {
         header.flags |= RUNNER_LAUNCH_THEME_PRESENT;
         if (request.themeMode != 0)
@@ -2535,12 +3368,21 @@ void pipe_server_loop()
             0,
             nullptr
         );
-        if (pipe == INVALID_HANDLE_VALUE)
+        if (pipe == INVALID_HANDLE_VALUE) {
+            g_pipe_ready.store(false);
             return;
+        }
 
+        // Stage 273: Ab hier existiert eine frische Pipe-Instanz und wartet
+        // auf genau den naechsten Launch-/Output-Client.
+        g_pipe_ready.store(true);
         const BOOL connected = ConnectNamedPipe(pipe, nullptr)
             ? TRUE
             : (GetLastError() == ERROR_PIPE_CONNECTED);
+        // Sobald ein Client verbunden ist, ist diese Instanz nicht mehr fuer
+        // den ersten WriteLn-Aufruf der neuen Anwendung verfuegbar. Erst die
+        // naechste Schleifenrunde setzt ready wieder auf true.
+        g_pipe_ready.store(false);
 
         if (!connected) {
             CloseHandle(pipe);
@@ -2570,6 +3412,8 @@ void pipe_server_loop()
                             output->text.assign(textBytes.data(), textBytes.size());
                         output->newline =
                             (header.flags & RUNNER_OUTPUT_NEWLINE) != 0;
+                        output->latin1 =
+                            (header.flags & RUNNER_OUTPUT_LATIN1) != 0;
                         output->processId = static_cast<DWORD>(header.cwdBytes);
                         if ((header.flags & RUNNER_OUTPUT_THEME_PRESENT) != 0) {
                             if ((header.flags & RUNNER_OUTPUT_THEME_DARK) != 0)
@@ -2614,6 +3458,8 @@ void pipe_server_loop()
                         );
                     }
                     request->consoleMode = (header.flags & RUNNER_LAUNCH_CONSOLE) != 0;
+                    request->debugConsoleOnly =
+                        (header.flags & RUNNER_LAUNCH_DEBUG_CONSOLE_ONLY) != 0;
                     if ((header.flags & RUNNER_LAUNCH_THEME_PRESENT) != 0)
                         request->themeMode = (header.flags & RUNNER_LAUNCH_THEME_DARK) != 0 ? 1 : 0;
                     if ((header.flags & RUNNER_LAUNCH_DEBUG_THEME_PRESENT) != 0) {
@@ -2638,6 +3484,7 @@ void pipe_server_loop()
         DisconnectNamedPipe(pipe);
         CloseHandle(pipe);
     }
+    g_pipe_ready.store(false);
 }
 
 void wake_pipe_server()
@@ -2657,6 +3504,7 @@ void wake_pipe_server()
 
 void stop_pipe_server()
 {
+    g_pipe_ready.store(false);
     g_pipe_stop.store(true);
     wake_pipe_server();
     if (g_pipe_thread.joinable())
@@ -2679,14 +3527,43 @@ void begin_leave_once()
 
 void workstation_exit_requested()
 {
-    const int answer = MessageBoxW(
-        nullptr,
-        L"Moechten Sie die Workstation wirklich beenden?",
-        L"Workstation beenden",
-        MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2 | MB_SETFOREGROUND
+    // Stage 275: Ein einzelner physischer Panel-Klick konnte unter der
+    // verschachtelten modalen Eventloop-Situation zweimal beim Callback
+    // ankommen. Solange ein Dialog offen ist, nach einem bestaetigten Exit
+    // sowie fuer eine kurze Entprellzeit wird jeder weitere Aufruf ignoriert.
+    if (g_leave_started || g_exit_confirmed || g_exit_prompt_active)
+        return;
+
+    const ULONGLONG now = GetTickCount64();
+    if (now < g_exit_prompt_suppress_until)
+        return;
+
+    g_exit_prompt_active = true;
+
+    WorkstationExitDialog dialog(
+        workstation_debug_uses_dark_theme(),
+        g_output_dialog
     );
-    if (answer == IDYES && g_host_window)
+
+    // Der Dialog gehoert zum Workstation-Desktop und wird ueber dem
+    // DEBUG-Fenster zentriert. "Nein" ist absichtlich der Default.
+    if (g_output_dialog) {
+        const QRect parentGeometry = g_output_dialog->frameGeometry();
+        const QSize dialogSize = dialog.size();
+        dialog.move(
+            parentGeometry.center().x() - dialogSize.width() / 2,
+            parentGeometry.center().y() - dialogSize.height() / 2
+        );
+    }
+
+    const int answer = dialog.exec();
+    g_exit_prompt_active = false;
+    g_exit_prompt_suppress_until = GetTickCount64() + 600;
+
+    if (answer == QDialog::Accepted && g_host_window) {
+        g_exit_confirmed = true;
         PostMessageW(g_host_window, WM_RUNNER_EXIT, 0, 0);
+    }
 }
 
 void workstation_db_requested()
@@ -2745,6 +3622,18 @@ LRESULT CALLBACK runner_window_proc(
             D64WorkstationSetDarkMode(request->themeMode != 0);
         if (request && request->debugThemeMode >= 0)
             apply_workstation_output_debug_theme(request->debugThemeMode);
+
+        // Stage 272: Das DEBUG-Fenster zuerst sichtbar machen und einmal
+        // zeichnen lassen. launch_program() kann bei einer generischen GUI
+        // anschliessend bis WaitForInputIdle()/Fenstersuche warten. Ohne
+        // diesen Schritt war bei einer residenten Runner-Session waehrend
+        // genau dieser Zeit kein DEBUG-Fenster zu sehen.
+        if (request) {
+            switch_to_workstation_desktop();
+            ensure_workstation_output_dialog_visible();
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
+        }
+
         if (request && !launch_program(*request)) {
             MessageBoxW(
                 nullptr,
@@ -2773,13 +3662,18 @@ LRESULT CALLBACK runner_window_proc(
     case WM_TIMER:
         if (wParam == RUNNER_TIMER) {
             cleanup_finished_children();
-            if (!g_leave_started)
-                ensure_workstation_output_dialog_visible();
             // Stage 114: Eine lazy AllocConsole-Konsole kann erst lange nach
             // dem ersten Formularfenster entstehen. Deshalb alle 500 ms neue
             // Consolen der laufenden Kindprozesse entdecken und genau beim
             // ersten Auftauchen sichtbar machen.
             discover_child_console_windows();
+
+            // Stage 272: Erst NACH der Console-Behandlung den DEBUG-Dialog
+            // nach oben holen. Beide Fenster koennen TOPMOST sein; in der
+            // alten Reihenfolge gewann die Console bei jedem Timer-Takt und
+            // das DEBUG-Fenster wirkte dadurch wie nicht angezeigt.
+            if (!g_leave_started)
+                ensure_workstation_output_dialog_visible();
         }
         return 0;
 
