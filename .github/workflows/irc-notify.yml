@@ -1,0 +1,27 @@
+name: IRC Push Notification
+
+on:
+  push:
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Notify webserver
+        env:
+          WEBHOOK_SECRET: ${{ secrets.IRC_WEBHOOK_SECRET }}
+        run: |
+          curl --fail --silent --show-error \
+            -X POST \
+            -H "Content-Type: application/json" \
+            -H "X-Webhook-Token: ${WEBHOOK_SECRET}" \
+            -d '{
+              "repository": "${{ github.repository }}",
+              "branch": "${{ github.ref_name }}",
+              "actor": "${{ github.actor }}",
+              "commit": "${{ github.sha }}",
+              "message": ${{ toJSON(github.event.head_commit.message) }},
+              "url": "${{ github.event.head_commit.url }}"
+            }' \
+            https://kallup.net/github-irc.php
