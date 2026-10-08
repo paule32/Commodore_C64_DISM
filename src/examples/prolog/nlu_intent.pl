@@ -26,6 +26,8 @@ intent(ask_status).
 intent(ask_identity).
 intent(thanks).
 
+intent(doctor_can_help).
+
 % -------------------------------------------------------------------
 % Intent Beschreibungen
 % -------------------------------------------------------------------
@@ -37,6 +39,107 @@ intent_description(goodbye,           'Der Benutzer verabschiedet sich.').
 intent_description(ask_status,        'Der Benutzer fragt nach dem Befinden.').
 intent_description(ask_identity,      'Der Benutzer fragt, wer oder was das System ist.').
 intent_description(thanks,            'Der Benutzer bedankt sich.').
+
+% -------------------------------------------------------------------
+% Formen ...
+% -------------------------------------------------------------------
+simgular([ einzeln , einzahl  ]).
+plural  ([ mehrmals, mehrzahl ]).
+
+% -------------------------------------------------------------------
+% Wort Beschreibungen
+% -------------------------------------------------------------------
+word_description(arbeit, "für das überleben an der Aebeit arbeiten").
+word_description(arbeit, "jemanden ausbilden, um die Arbeit machen zu können.").
+
+word_description(arbeiter, "für Arbeiten notwendige, fähigen Mensch einstellen.").
+word_description(arbeiter, "für Arbeiten notwendige, fähige Menschen einstellen.").
+
+% -------------------------------------------------------------------
+% Substantive ...
+% -------------------------------------------------------------------
+word(arbeit,       noun, [der, singular]).
+word(arbeit,       noun, [die, singular]).
+
+word(arbeiter,     noun, [der, singular]).
+word(arbeiter,     noun, [die, plural  ]).
+
+word(arbeiten,     noun, [die, plural  ]).
+word(arbeitsamt,   noun, [das, singular]).
+word(arznei,       noun, [die, singular]).
+word(arzneien,     noun, [die, plural  ]).
+word(arzt,         noun, [der, singular]).
+word(band,         noun, [das, singular]).
+word(bande,        noun, [die, singular]).
+word(bank,         noun, [die, singular]).
+word(banknote,     noun, [die, singular]).
+word(baum,         noun, [der, singular]).
+word(brand,        noun, [der, singular]).
+word(brauerei,     noun, [die, singular]).
+word(brause,       noun, [die, singular]).
+word(bruder,       noun, [der, singular]).
+word(chef,         noun, [der, singular]).
+word(dach,         noun, [das, singular]).
+word(dachfenster,  noun, [das, singular]).
+word(dachrinne,    noun, [die, singular]).
+word(fenster,      noun, [das, singular]).
+word(freund,       noun, [der, singular]).
+word(geruch,       noun, [der, singular]).
+word(gerüche,      noun, [die, singular]).
+word(getränk,      noun, [das, singular]).
+word(getränke,     noun, [die, plural  ]).
+word(haus,         noun, [das, singular]).
+word(hausnummer,   noun, [die, singular]).
+word(haustür,      noun, [die, singular]).
+word(hauswand,     noun, [die, singular]).
+word(hund,         noun, [der, singular]).
+word(kollege,      noun, [der, singular]).
+word(krimi,        noun, [der, singular]).
+word(kriminalamt,  noun, [das, singular]).
+word(kriminalität, noun, [die, singular]).
+word(kuchen,       noun, [der, singular]).
+word(lehrer,       noun, [der, singular]).
+word(mann,         noun, [der, singular]).
+word(mensch,       noun, [der, singular]).
+word(nachbar,      noun, [der, singular]).
+
+word(note,         noun, [die, singular]).
+word(noten,        noun, [die, plural  ]).
+
+word(oma,          noun, [die, singular]).
+word(onkel,        noun, [der, singular]).
+word(ober,         noun, [der, singular]).
+word(opa,          noun, [der, singular]).
+
+word(programm,     noun, [das, singular]).
+word(programme,    noun, [die, plural  ]).
+
+word(quelle,       noun, [die, singular]).
+word(quellen,      noun, [die, plural  ]).
+
+word(raum,         noun, [der, singular]).
+word(räume,        noun, [die, plural  ]).
+
+word(rinne,        noun, [die, singular]).
+word(sohle,        noun, [die, singular]).
+word(sonde,        noun, [die, singular]).
+
+word(sonne,        noun, [die, singular]).
+word(sonnen,       noun, [die, plural  ]).
+word(sonntag,      noun, [der, singular]).
+
+word(stern,        noun, [der, singular]).
+
+word(student,      noun, [der, singular]).
+word(ufer,         noun, [das, singular]).
+word(vater,        noun, [der, singular]).
+word(zahn,         noun, [der, singular]).
+word(zahnarzt,     noun, [der, singular]).
+word(zange,        noun, [die, singular]).
+word(zaun,         noun, [der, singular]).
+word(zug,          noun, [der, singular]).
+word(zunge,        noun, [die, singular]).
+word(zwischenraum, noun, [der, singular]).
 
 % -------------------------------------------------------------------
 % Fragewörter
@@ -112,6 +215,11 @@ semantic_list(
     semantic_list(Words, Meanings).
 
 % -------------------------------------------------------------------
+% DOCTOR_CAN_HELP
+% -------------------------------------------------------------------
+utterance(doctor_can_help, [der, arzt, kann, uns, helfen]).
+
+% -------------------------------------------------------------------
 % ASK_NAME_INFORMAL
 % -------------------------------------------------------------------
 utterance(ask_name_informal, [wie, heisst, du]).
@@ -165,34 +273,98 @@ utterance(ask_identity, [was, kannst, du]).
 utterance(ask_identity, [wer, seid, ihr]).
 
 % -------------------------------------------------------------------
-response(ask_name_informal, 'Ich heiße dBase2Many.').
-response(ask_name_informal, 'Mein Name ist dBase2Many.').
+% built-ins
+% -------------------------------------------------------------------
+% random(X).                    % X = Integer 0 .. 2147483647
+% random(Max, X).               % 0 =< X < Max, Max > 0
+% random_between(Min, Max, X).  % Min =< X =< Max
+% -------------------------------------------------------------------
+random_list_length([], 0).
 
-response(ask_name_formal, 'Ich heiße dBase2Many.').
-response(ask_name_formal, 'Mein Name ist dBase2Many.').
+random_list_length([_|Tail], N) :-
+    random_list_length(Tail, N0),
+    N is N0 + 1.
 
-response(greeting, 'Hallo!').
-response(greeting, 'Guten Tag!').
-response(greeting, 'Hallo, wie kann ich helfen?').
+random_nth0(0, [Head|_], Head).
 
-response(goodbye, 'Auf Wiedersehen!').
-response(goodbye, 'Bis bald!').
+random_nth0(N, [_|Tail], Value) :-
+    N > 0,
+    N1 is N - 1,
+    random_nth0(N1, Tail, Value).
 
-response(ask_status, 'Mir geht es gut.').
-response(ask_status, 'Danke der Nachfrage.').
+random_member(List, Value) :-
+    random_list_length(List, Count),
+    random(Count, Index),
+    random_nth0(Index, List, Value).
+
+% -------------------------------------------------------------------
+%response(ask_name_informal, 'Ich heiße Conny.').
+%response(ask_name_informal, 'Mein Name ist Conny.').
+
+%response(ask_name_formal, 'Ich heiße Conny.').
+%response(ask_name_formal, 'Mein Name Conny.').
+
+response(doctor_can_help, 'Das ist richtig.').
+
+%response(greeting, 'Hallo!').
+%response(greeting, 'Guten Tag!').
+%response(greeting, 'Hallo, wie kann ich helfen?').
+
+%response(goodbye, 'Auf Wiedersehen!').
+%response(goodbye, 'Bis bald!').
+
+%response(ask_status, 'Mir geht es gut.').
+%response(ask_status, 'Danke der Nachfrage.').
 
 response(ask_identity, 'Ich bin ein dialogorientiertes System.' ).
 
 response(thanks, 'Gern geschehen.').
 response(thanks, 'Keine Ursache.' ).
 
-% -------------------------------------------------------------------
-%detect_intent(Words, Intent) :-
-%    utterance(Intent, Words).
+random_response(ask_name_informal, Answer) :-
+    random_member([
+        'Ich heiße Conny.',
+        'Ich heiße Frank.',
+        'Ich heiße Sonny.',
+        'Ich heiße Peter.'
+    ],  Answer).
+
+random_response(ask_name_formal, Answer) :-
+    random_member([
+        'Mein Name ist Conny.',
+        'Mein Name ist Frank.',
+        'Mein Name ist Sonny.',
+        'Mein Name ist Peter.'
+    ],  Answer).
+
+random_response(ask_status, Answer) :-
+    random_member([
+        'Mir geht es gut.',
+        'Danke der Nachfrage.'
+    ],  Answer).
+
+random_response(greeting, Answer) :-
+    random_member([
+        'Hallo!',
+        'Guten Tag!',
+        'Schön dich zu sehen.',
+        'Hallo, wie kann ich helfen?'
+    ],  Answer).
+
+random_response(goodbye, Answer) :-
+    random_member([
+        'Auf Wiedersehen!',
+        'Bis bald!',
+        'Machs gut!'
+    ],  Answer).
 
 respond(Words, Answer) :-
     detect_intent(Words, Intent),
-    response(Intent, Answer).
+    random_response(Intent, Answer).
+
+%respond(Words, Answer) :-
+%    detect_intent(Words, Intent),
+%    response(Intent, Answer).
 
 % -------------------------------------------------------------------
 dot_utterance(ask_name_informal, 'wie.heißt.du').
@@ -210,11 +382,20 @@ intent_rule([question, name, informal], ask_name_informal).
 intent_rule([question, name, formal  ], ask_name_formal).
 
 % -------------------------------------------------------------------
+%detect_intent(Words, Intent) :-
+%    utterance(Intent, Words).
+
 detect_intent(Words, Intent) :-
     semantic_list(Words, Semantics),
     intent_rule(Semantics, Intent).
 
 % -------------------------------------------------------------------
-%?- detect_intent([wie, heisst, du], Intent).
-%?- detect_intent([wie, heissen, sie], Intent).
-%?- respond([wie, heisst, du], Answer).
+% ?- detect_intent([wie, heisst, du], Intent).
+% ?- detect_intent([wie, heissen, sie], Intent).
+% ?- respond([wie, heisst, du], Answer).
+% ?- respond([der, arzt, kann, uns, helfen], Answer).
+
+% ?- word(arbeit, noun, Form).
+% Form = [der, singular] ;
+% Form = [die, singular] .
+

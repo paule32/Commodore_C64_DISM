@@ -1,0 +1,103 @@
+<style>
+.ic-library{font-family:Arial,Helvetica,sans-serif}.ic-library .layout{display:grid;grid-template-columns:minmax(280px,420px) minmax(320px,1fr);gap:18px;align-items:start}.ic-library .panel{border:1px solid #555;border-radius:8px;padding:16px;margin-bottom:18px}.ic-library .field{margin-bottom:14px}.ic-library label{display:block;font-weight:bold;margin-bottom:6px}.ic-library select{width:100%;min-height:34px}.ic-library .filters{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 12px}.ic-library .rotations{display:flex;flex-wrap:wrap;gap:8px}.ic-library .rotations button{min-width:58px;min-height:36px;cursor:pointer}.ic-library .rotations button.active{font-weight:bold;outline:2px solid currentColor}.ic-library .rotations button:disabled{opacity:.35;cursor:default}.ic-library .meta{margin-top:16px;line-height:1.7}.ic-library .preview-wrap{min-height:240px;display:flex;align-items:center;justify-content:center;overflow:auto;background:#000}.ic-library #icImage{display:block;max-width:100%;height:auto}.ic-library .status{margin-top:12px;min-height:1.4em}.ic-library .api-url,.ic-library pre{overflow-wrap:anywhere;white-space:pre-wrap}@media(max-width:760px){.ic-library .layout{grid-template-columns:1fr}.ic-library .filters{grid-template-columns:1fr}}
+</style>
+<main class="ic-library">
+  <h1>IC SVG Bibliothek</h1>
+  <p class="subtitle">SVG-Komponenten direkt aus den Rotations-Verzeichnissen anzeigen.</p>
+
+  <div class="layout">
+    <section class="panel">
+      <div class="filters">
+        <div class="field"><label for="categoryFilter">Kategorie</label><select id="categoryFilter"><option value="">Alle</option></select></div>
+        <div class="field"><label for="familyFilter">Familie</label><select id="familyFilter"><option value="">Alle</option></select></div>
+        <div class="field"><label for="typeFilter">Typ</label><select id="typeFilter"><option value="">Alle</option></select></div>
+        <div class="field"><label for="packageFilter">Gehäuse</label><select id="packageFilter"><option value="">Alle</option></select></div>
+      </div>
+
+      <div class="field"><label for="component">Komponente</label><select id="component"></select></div>
+
+      <div class="field"><label>Ausrichtung</label><div class="rotations" id="rotations">
+        <button type="button" data-rotation="0">0°</button>
+        <button type="button" data-rotation="90">90°</button>
+        <button type="button" data-rotation="180">180°</button>
+        <button type="button" data-rotation="270">270°</button>
+      </div></div>
+
+      <div class="meta">
+        <div><strong>ID:</strong> <span id="componentId">–</span></div>
+        <div><strong>Name:</strong> <span id="componentName">–</span></div>
+        <div><strong>Beschreibung:</strong> <span id="componentDescription">–</span></div>
+        <div><strong>Kategorie:</strong> <span id="componentCategory">–</span></div>
+        <div><strong>Familie:</strong> <span id="componentFamily">–</span></div>
+        <div><strong>Typ:</strong> <span id="componentType">–</span></div>
+        <div><strong>Gatter:</strong> <span id="componentGates">–</span></div>
+        <div><strong>Eingänge je Gatter:</strong> <span id="componentInputs">–</span></div>
+        <div><strong>Gehäuse:</strong> <span id="componentPackage">–</span></div>
+      </div>
+      <div class="status" id="status"></div>
+    </section>
+
+    <section class="panel"><div class="preview-wrap"><img id="icImage" alt="IC SVG"></div></section>
+  </div>
+
+  <section class="panel code-panel">
+    <label>Direkter SVG-Aufruf</label><div class="api-url" id="apiUrl"></div>
+    <label style="margin-top:16px">HTML-Einbindung</label><pre id="htmlCode"></pre>
+  </section>
+</main>
+
+<script src="[::CustomServer::]/data/components.js"></script>
+<script>
+(() => {
+  const BASE='[::CustomServer::]';
+  const library=window.IC_COMPONENT_LIBRARY||{};
+  const components=Array.isArray(library.components)?library.components:[];
+  const rotationDirectories=library.rotationDirectories||{'0':'b0','90':'b90','180':'b180','270':'b270'};
+  const $=id=>document.getElementById(id);
+  const componentSelect=$('component'), image=$('icImage'), status=$('status'), apiUrl=$('apiUrl'), htmlCode=$('htmlCode');
+  const categoryFilter=$('categoryFilter'), familyFilter=$('familyFilter'), typeFilter=$('typeFilter'), packageFilter=$('packageFilter');
+  const buttons=[...document.querySelectorAll('[data-rotation]')];
+  let rotation='0';
+
+  components.forEach(c=>{
+    c.id=String(c.id||'');
+    c.name=String(c.name||c.id);
+    c.file=String(c.file||`${c.id}.svg`);
+    c.rotations=Array.isArray(c.rotations)?c.rotations.map(String):Object.keys(rotationDirectories);
+  });
+
+  function uniq(field){return [...new Set(components.map(c=>c[field]).filter(v=>v!==undefined&&v!==null&&String(v).trim()!=='').map(String))].sort((a,b)=>a.localeCompare(b,'de'));}
+  function fillFilter(select,values){select.innerHTML='<option value="">Alle</option>'; values.forEach(v=>{const o=document.createElement('option');o.value=v;o.textContent=v;select.appendChild(o);});}
+  function selected(){return components.find(c=>c.id===componentSelect.value)||null;}
+  function buildUrl(c,r){const dir=rotationDirectories[r]; if(!dir) throw new Error(`Kein Verzeichnis für Rotation ${r}.`); return `${BASE}/${encodeURIComponent(dir)}/${encodeURIComponent(c.file)}`;}
+  function setText(id,value){$(id).textContent=(value===undefined||value===null||value==='')?'–':String(value);}
+
+  function updateView(){
+    const c=selected(); if(!c){status.textContent='Keine Komponente ausgewählt.'; return;}
+    if(!c.rotations.includes(rotation)) rotation=c.rotations[0]||'0';
+    buttons.forEach(b=>{const r=String(b.dataset.rotation); const ok=c.rotations.includes(r)&&Object.prototype.hasOwnProperty.call(rotationDirectories,r); b.disabled=!ok; b.classList.toggle('active',ok&&r===rotation);});
+    const src=buildUrl(c,rotation);
+    image.src=src; image.alt=`${c.name}, ${rotation} Grad`;
+    setText('componentId',c.id); setText('componentName',c.name); setText('componentDescription',c.description); setText('componentCategory',c.category); setText('componentFamily',c.family); setText('componentType',c.type); setText('componentGates',c.gates); setText('componentInputs',c.inputs); setText('componentPackage',c.package);
+    apiUrl.textContent=src; htmlCode.textContent=`<img src="${src}" alt="${c.name}">`;
+    const u=new URL(window.location.href); u.searchParams.set('id',c.id); u.searchParams.set('rotation',rotation); history.replaceState(null,'',u);
+  }
+
+  function applyFilters(preferred=''){
+    const list=components.filter(c=>(!categoryFilter.value||String(c.category||'')===categoryFilter.value)&&(!familyFilter.value||String(c.family||'')===familyFilter.value)&&(!typeFilter.value||String(c.type||'')===typeFilter.value)&&(!packageFilter.value||String(c.package||'')===packageFilter.value));
+    componentSelect.innerHTML=''; list.forEach(c=>{const o=document.createElement('option');o.value=c.id;o.textContent=`${c.name} (${c.id})`;componentSelect.appendChild(o);});
+    if(!list.length){status.textContent='Keine Bauteile für die gewählten Filter gefunden.'; image.removeAttribute('src'); return;}
+    const wanted=preferred||componentSelect.value; componentSelect.value=list.some(c=>c.id===wanted)?wanted:list[0].id; updateView();
+  }
+
+  buttons.forEach(b=>b.addEventListener('click',()=>{if(!b.disabled){rotation=String(b.dataset.rotation);updateView();}}));
+  componentSelect.addEventListener('change',updateView);
+  [categoryFilter,familyFilter,typeFilter,packageFilter].forEach(f=>f.addEventListener('change',()=>applyFilters()));
+  image.addEventListener('error',()=>{status.textContent=`SVG konnte nicht geladen werden: ${image.src||''}`;});
+  image.addEventListener('load',()=>{status.textContent='';});
+
+  if(!components.length){status.textContent='components.js wurde nicht geladen oder enthält keine Komponenten.'; return;}
+  fillFilter(categoryFilter,uniq('category')); fillFilter(familyFilter,uniq('family')); fillFilter(typeFilter,uniq('type')); fillFilter(packageFilter,uniq('package'));
+  const p=new URLSearchParams(window.location.search); const id=p.get('id'), r=p.get('rotation'); if(r&&Object.prototype.hasOwnProperty.call(rotationDirectories,r)) rotation=r; applyFilters(id||'');
+})();
+</script>

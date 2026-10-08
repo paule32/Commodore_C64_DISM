@@ -17,6 +17,19 @@ NODE_STRUCT = 7
 NODE_LINK = 8
 NODE_FLOAT = 9
 
+# Stage 288 generic descriptor bytecode.  The stream contains 16-bit words
+# (opcode plus compact operands); clause-specific atom/int/float payloads stay
+# in the per-clause dword descriptor.  This removes the native
+# __prolog_clause_template_N_build family entirely.
+DESC_VAR = 1
+DESC_INT = 2
+DESC_FLOAT = 3
+DESC_STRING = 4
+DESC_ATOM = 5
+DESC_NIL = 6
+DESC_LIST = 7
+DESC_COMPOUND = 8
+
 # One VirtualAlloc arena (currently 0x240000 bytes). All transient/dynamic term handles are 32-bit
 # node indexes, so the logic representation is identical for PE32 and PE32+.
 ARENA_SIZE = 0x240000
@@ -114,6 +127,8 @@ BUILTIN_NAMES = (
     "database_select", "current_database", "database_assert", "database_asserta",
     "database_assertz", "database_retract", "database_modified", "with_database",
     "read_only", "read_write", "knowledge", "record", "system",
+    # Stage 290: append-only so all pre-Stage-290 builtin atom IDs remain stable.
+    "random", "random_between",
 )
 
 
@@ -203,22 +218,55 @@ class PrologRuntimeEmitter:
         conjunctions and lists.
     """
 
-    def __init__(self, clauses, queries, *, startup_queries=(), target: str, mode: str, filename: str, verbose: bool = False) -> None:
+    def __init__(self, clauses, queries, *, startup_queries=(), target: str, mode: str, filename: str, verbose: bool = False, with_descriptors: bool = False) -> None:
         self.clauses = tuple(clauses)
         self.queries = tuple(queries)
         self.startup_queries = tuple(startup_queries or ())
         self.filename = filename
         self.arch = _Arch(str(target).casefold() == "pe64")
-        self.is_gui = str(mode).casefold() == "gui"
+        # Stage 295: PROLOG images are dual-mode at runtime. The generated
+        # engine always contains the console REPL; --gui switches the same PE
+        # process to the native Qt5 bridge loaded dynamically by name.
+        self.requested_gui_subsystem = str(mode).casefold() == "gui"
+        self.is_gui = False
         self.verbose = bool(verbose)
+        # Stage 288: optional generic descriptor-program clause builder.
+        # False is intentionally the default so Stage-286 output stays the
+        # compatibility path unless the project checkbox explicitly enables it.
+        self.with_descriptors = bool(with_descriptors)
         self.atom_ids: Dict[str, int] = {}
         self.atom_labels: Dict[str, str] = {}
         self.qvar_labels: Dict[Tuple[int, str], str] = {}
         self._collect_atoms()
+
+        # Stage 286: compact static atom storage.  Older stages emitted one
+        # absolute pointer (DD/DQ + relocation) for every atom.  Static atom
+        # strings are now stored in one NUL-separated blob and indexed by
+        # numeric offsets.  DW is enough while the blob fits in 64 KiB; for a
+        # very large source we transparently fall back to DD offsets.
+        self.static_atom_offsets: List[int] = []
+        atom_blob = bytearray()
+        for key, _atom_id in sorted(self.atom_ids.items(), key=lambda kv: kv[1]):
+            self.static_atom_offsets.append(len(atom_blob))
+            atom_blob.extend(key.encode("latin-1", errors="replace"))
+            atom_blob.append(0)
+        self.static_atom_blob = bytes(atom_blob)
+        self.static_atom_offset_width = 2 if len(self.static_atom_blob) <= 0xFFFF else 4
+
         self.pred_groups: Dict[Tuple[str, int], List[Tuple[int, object]]] = {}
         for idx, clause in enumerate(self.clauses):
             key = self._predicate_key(clause.head)
             self.pred_groups.setdefault(key, []).append((idx, clause))
+
+        # Stage 288 descriptor metadata.  When enabled, every static clause
+        # is represented by a compact payload descriptor and references one
+        # structural descriptor program.  All structural programs are executed
+        # by one generic native builder; with descriptors disabled the original
+        # Stage-286 builder path remains unchanged.
+        self.descriptor_templates: List[dict] = []
+        self.descriptor_clause_map: Dict[int, Tuple[int, Tuple[int, ...]]] = {}
+        if self.with_descriptors:
+            self._prepare_descriptor_templates()
 
     # ------------------------------------------------------------------
     # Python-side term inspection / metadata
@@ -239,7 +287,12 @@ class PrologRuntimeEmitter:
             yield from self._walk(arg)
 
     def _collect_atoms(self) -> None:
-        values: List[str] = list(BUILTIN_NAMES) + ["d64_knowledge_value"]
+        # Stage 290 keeps all pre-existing atom IDs stable: the new random
+        # builtin names are not pre-seeded ahead of source atoms.  If a source
+        # uses them they are collected at their natural source position; if it
+        # does not, they are appended after all program/query atoms below.
+        stage290_random_names = {"random", "random_between"}
+        values: List[str] = [name for name in BUILTIN_NAMES if name not in stage290_random_names] + ["d64_knowledge_value"]
         for clause in self.clauses:
             for term in self._walk(clause.head):
                 if term.kind in {"atom", "string"}:
@@ -266,6 +319,7 @@ class PrologRuntimeEmitter:
                         values.append(str(term.value))
                     if term.kind == "compound":
                         values.append(str(term.value))
+        values.extend(("random", "random_between"))
         for value in values:
             key = value
             if key not in self.atom_ids:
@@ -298,6 +352,222 @@ class PrologRuntimeEmitter:
         for t in terms:
             visit(t)
         return mapping, public if public_only else list(mapping)
+
+    # ------------------------------------------------------------------
+    # Stage 288 descriptor structural programs
+    # ------------------------------------------------------------------
+    def _descriptor_term_shape(self, term, varmap: Dict[str, int], values: List[int]):
+        """Return a value-independent term shape and collect its dword parameters.
+
+        Atom/string/functor IDs, integers and float bit patterns become descriptor
+        slots. Variable positions and the recursive term topology remain in the
+        structural signature. Identical signatures can therefore share one native
+        builder while each clause owns only a compact DD descriptor.
+        """
+        if term.kind == "var":
+            return ("var", int(varmap[str(term.value)]))
+        if term.kind == "number":
+            slot = len(values)
+            values.append(int(term.value) & 0xFFFFFFFF)
+            return ("number", slot)
+        if term.kind == "float":
+            low, high = struct.unpack("<II", struct.pack("<d", float(term.value)))
+            slot = len(values)
+            values.extend((int(low), int(high)))
+            return ("float", slot, slot + 1)
+        if term.kind == "string":
+            slot = len(values)
+            values.append(self.atom_id(str(term.value)))
+            return ("string", slot)
+        if term.kind == "atom":
+            if str(term.value) == "[]":
+                return ("nil",)
+            slot = len(values)
+            values.append(self.atom_id(str(term.value)))
+            return ("atom", slot)
+        if term.kind != "compound":
+            raise ValueError(f"unsupported term kind {term.kind}")
+        if str(term.value) == "." and len(term.args) == 2:
+            return (
+                "list",
+                self._descriptor_term_shape(term.args[0], varmap, values),
+                self._descriptor_term_shape(term.args[1], varmap, values),
+            )
+        functor_slot = len(values)
+        values.append(self.atom_id(str(term.value)))
+        args = tuple(
+            self._descriptor_term_shape(arg, varmap, values)
+            for arg in term.args
+        )
+        return ("compound", len(term.args), functor_slot, args)
+
+    def _prepare_descriptor_templates(self) -> None:
+        grouped: Dict[object, List[Tuple[int, Tuple[int, ...]]]] = {}
+        for idx, clause in enumerate(self.clauses):
+            varmap, _ = self._variables((clause.head,) + tuple(clause.body))
+            values: List[int] = []
+            head_shape = self._descriptor_term_shape(clause.head, varmap, values)
+            body_shapes = tuple(
+                self._descriptor_term_shape(goal, varmap, values)
+                for goal in clause.body
+            )
+            signature = (len(varmap), head_shape, body_shapes)
+            grouped.setdefault(signature, []).append((idx, tuple(values)))
+
+        # Stage 288 deliberately keeps even unique structural shapes. Native
+        # code no longer grows per shape: every shape is compact data consumed
+        # by __prolog_clause_descriptor_build / __rt_build_descriptor_term.
+        for signature, members in grouped.items():
+            template_index = len(self.descriptor_templates)
+            var_count, head_shape, body_shapes = signature
+            self.descriptor_templates.append({
+                "index": template_index,
+                "var_count": int(var_count),
+                "head_shape": head_shape,
+                "body_shapes": tuple(body_shapes),
+                "members": tuple(members),
+            })
+            for clause_idx, values in members:
+                self.descriptor_clause_map[int(clause_idx)] = (
+                    template_index, tuple(values)
+                )
+
+    def _descriptor_shape_words(self, shape) -> List[int]:
+        """Encode one structural term as a compact 16-bit prefix stream."""
+        kind = shape[0]
+        if kind == "var":
+            return [DESC_VAR, int(shape[1])]
+        if kind == "number":
+            return [DESC_INT, int(shape[1])]
+        if kind == "float":
+            return [DESC_FLOAT, int(shape[1])]
+        if kind == "string":
+            return [DESC_STRING, int(shape[1])]
+        if kind == "atom":
+            return [DESC_ATOM, int(shape[1])]
+        if kind == "nil":
+            return [DESC_NIL]
+        if kind == "list":
+            words = [DESC_LIST]
+            words.extend(self._descriptor_shape_words(shape[2]))
+            words.extend(self._descriptor_shape_words(shape[1]))
+            return words
+        if kind != "compound":
+            raise ValueError(f"unsupported descriptor term shape {kind}")
+        arity = int(shape[1])
+        functor_slot = int(shape[2])
+        words = [DESC_COMPOUND, functor_slot, arity]
+        for arg_shape in reversed(tuple(shape[3])):
+            words.extend(self._descriptor_shape_words(arg_shape))
+        return words
+
+    def _descriptor_template_words(self, template: dict) -> List[int]:
+        words = [int(template["var_count"]), len(tuple(template["body_shapes"]))]
+        words.extend(self._descriptor_shape_words(template["head_shape"]))
+        for goal_shape in reversed(tuple(template["body_shapes"])):
+            words.extend(self._descriptor_shape_words(goal_shape))
+        for value in words:
+            if not 0 <= int(value) <= 0xFFFF:
+                raise ValueError(
+                    f"descriptor structural operand out of 16-bit range: {value}"
+                )
+        return words
+
+    def _descriptor_mem32(self, slot: int) -> str:
+        reg = self.arch.si
+        return f"dword ptr [{reg}+{int(slot) * 4}]" if int(slot) else f"dword ptr [{reg}]"
+
+    def _push_descriptor_slot(self, a: _A, slot: int) -> None:
+        ar = self.arch
+        if ar.is64:
+            a.e(f"    mov eax, {self._descriptor_mem32(slot)}")
+            a.e("    push rax")
+        else:
+            a.e(f"    push {self._descriptor_mem32(slot)}")
+
+    def _call1_descriptor(self, a: _A, fn: str, slot: int) -> None:
+        self._push_descriptor_slot(a, slot)
+        a.e(f"    call {fn}")
+        a.e(f"    {self.arch.cleanup(1)}")
+
+    def _emit_descriptor_term_builder(self, a: _A, shape) -> None:
+        ar = self.arch
+        kind = shape[0]
+        if kind == "var":
+            self._call1_imm(a, "__rt_make_var", int(shape[1]))
+            return
+        if kind == "number":
+            self._call1_descriptor(a, "__rt_make_int", int(shape[1]))
+            return
+        if kind == "float":
+            self._push_descriptor_slot(a, int(shape[2]))  # high
+            self._push_descriptor_slot(a, int(shape[1]))  # low
+            a.e("    call __rt_make_float_bits")
+            a.e(f"    {ar.cleanup(2)}")
+            return
+        if kind == "string":
+            self._call1_descriptor(a, "__rt_make_string", int(shape[1]))
+            return
+        if kind == "atom":
+            self._call1_descriptor(a, "__rt_make_atom", int(shape[1]))
+            return
+        if kind == "nil":
+            a.e("    call __rt_make_nil")
+            return
+        if kind == "list":
+            # Match Stage-286 evaluation order: tail first, then head.
+            self._emit_descriptor_term_builder(a, shape[2])
+            a.e(f"    {ar.push_reg32('eax')}")
+            self._emit_descriptor_term_builder(a, shape[1])
+            a.e(f"    pop {ar.cx}")
+            self._call2_regs(a, "__rt_make_list", "eax", "ecx")
+            return
+        if kind != "compound":
+            raise ValueError(f"unsupported descriptor term shape {kind}")
+
+        arity = int(shape[1])
+        functor_slot = int(shape[2])
+        args = tuple(shape[3])
+        a.e(f"    push {INVALID}")
+        for arg_shape in reversed(args):
+            self._emit_descriptor_term_builder(a, arg_shape)
+            a.e(f"    pop {ar.cx}")
+            self._call2_regs(a, "__rt_make_link", "eax", "ecx")
+            a.e(f"    {ar.push_reg32('eax')}")
+        a.e(f"    pop {ar.cx}")
+        a.e(f"    {ar.push_reg32('ecx')}")
+        a.e(f"    push {arity}")
+        self._push_descriptor_slot(a, functor_slot)
+        a.e("    call __rt_make_struct")
+        a.e(f"    {ar.cleanup(3)}")
+
+    def _emit_descriptor_template_builder(self, a: _A, template: dict) -> None:
+        ar = self.arch
+        index = int(template["index"])
+        a.l(f"__prolog_clause_template_{index}_build")
+        # EAX/RAX carries the descriptor address from the tiny clause thunk.
+        self._prologue(a, save=(ar.bx, ar.si))
+        a.e("    mov ebx, edx")
+        if ar.is64:
+            a.e("    mov rsi, rax")
+        else:
+            a.e("    mov esi, eax")
+        self._call1_imm(a, "__rt_build_vars_reset", int(template["var_count"]))
+        self._emit_descriptor_term_builder(a, template["head_shape"])
+        a.e(f"    {ar.push_reg32('eax')}")
+        for goal_shape in reversed(tuple(template["body_shapes"])):
+            self._emit_descriptor_term_builder(a, goal_shape)
+            a.e("    mov ecx, dword ptr [__prolog_build_barrier]")
+            a.e(f"    {ar.push_reg32('ecx')}")
+            a.e(f"    {ar.push_reg32('ebx')}")
+            a.e(f"    {ar.push_reg32('eax')}")
+            a.e("    call __rt_make_goal_link")
+            a.e(f"    {ar.cleanup(3)}")
+            a.e("    mov ebx, eax")
+        a.e(f"    pop {ar.ax}")
+        a.e("    mov ecx, ebx")
+        self._epilogue(a, save=(ar.bx, ar.si))
+        a.e()
 
     # ------------------------------------------------------------------
     # Assembly utility
@@ -393,8 +663,213 @@ class PrologRuntimeEmitter:
         a.e("    call __rt_make_struct")
         a.e(f"    {ar.cleanup(3)}")
 
+    def _emit_generic_descriptor_builders(self, a: _A) -> None:
+        """Emit the single Stage-288 descriptor interpreter/builder.
+
+        RSI/ESI walks a 16-bit structural program; RDI/EDI points at the
+        clause-specific dword payload.  __rt_build_descriptor_term returns the
+        built term handle in EAX while leaving the structural cursor advanced.
+        """
+        ar = self.arch
+        local_bytes = 16 if ar.is64 else 12
+
+        a.e("; Stage 288: one generic structural descriptor interpreter")
+        a.l("__rt_build_descriptor_term")
+        a.e(f"    push {ar.bp}")
+        a.e(f"    mov {ar.bp}, {ar.sp}")
+        a.e(f"    sub {ar.sp}, {local_bytes}")
+        a.e(f"    push {ar.bx}")
+        a.e(f"    movzx ebx, word ptr [{ar.si}]")
+        a.e(f"    add {ar.si}, 2")
+        a.e(f"    cmp ebx, {DESC_VAR}")
+        a.e("    je __rt_desc_term_var")
+        a.e(f"    cmp ebx, {DESC_INT}")
+        a.e("    je __rt_desc_term_int")
+        a.e(f"    cmp ebx, {DESC_FLOAT}")
+        a.e("    je __rt_desc_term_float")
+        a.e(f"    cmp ebx, {DESC_STRING}")
+        a.e("    je __rt_desc_term_string")
+        a.e(f"    cmp ebx, {DESC_ATOM}")
+        a.e("    je __rt_desc_term_atom")
+        a.e(f"    cmp ebx, {DESC_NIL}")
+        a.e("    je __rt_desc_term_nil")
+        a.e(f"    cmp ebx, {DESC_LIST}")
+        a.e("    je __rt_desc_term_list")
+        a.e(f"    cmp ebx, {DESC_COMPOUND}")
+        a.e("    je __rt_desc_term_compound")
+        a.e("    call __rt_fatal")
+
+        a.l("__rt_desc_term_var")
+        a.e(f"    movzx eax, word ptr [{ar.si}]")
+        a.e(f"    add {ar.si}, 2")
+        # Stage 289: EDI/RDI is the immutable descriptor payload base.
+        # Heap constructors use EDI/RDI internally, so preserve it across
+        # every constructor/recursive call made by the descriptor VM.
+        a.e(f"    push {ar.di}")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_make_var")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e(f"    pop {ar.di}")
+        a.e("    jmp __rt_desc_term_done")
+
+        def emit_value_call(label: str, fn: str) -> None:
+            a.l(label)
+            a.e(f"    movzx ecx, word ptr [{ar.si}]")
+            a.e(f"    add {ar.si}, 2")
+            a.e(f"    mov eax, dword ptr [{ar.di}+{ar.cx}*4]")
+            a.e(f"    push {ar.di}")
+            a.e(f"    {ar.push_reg32('eax')}")
+            a.e(f"    call {fn}")
+            a.e(f"    {ar.cleanup(1)}")
+            a.e(f"    pop {ar.di}")
+            a.e("    jmp __rt_desc_term_done")
+
+        emit_value_call("__rt_desc_term_int", "__rt_make_int")
+
+        a.l("__rt_desc_term_float")
+        a.e(f"    movzx ecx, word ptr [{ar.si}]")
+        a.e(f"    add {ar.si}, 2")
+        a.e(f"    mov eax, dword ptr [{ar.di}+{ar.cx}*4]")
+        a.e(f"    mov edx, dword ptr [{ar.di}+{ar.cx}*4+4]")
+        a.e(f"    push {ar.di}")
+        a.e(f"    {ar.push_reg32('edx')}")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_make_float_bits")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e(f"    pop {ar.di}")
+        a.e("    jmp __rt_desc_term_done")
+
+        emit_value_call("__rt_desc_term_string", "__rt_make_string")
+        emit_value_call("__rt_desc_term_atom", "__rt_make_atom")
+
+        a.l("__rt_desc_term_nil")
+        a.e(f"    push {ar.di}")
+        a.e("    call __rt_make_nil")
+        a.e(f"    pop {ar.di}")
+        a.e("    jmp __rt_desc_term_done")
+
+        a.l("__rt_desc_term_list")
+        # Prefix stream stores tail before head to preserve Stage-286 build order.
+        a.e(f"    push {ar.di}")
+        a.e("    call __rt_build_descriptor_term")
+        a.e(f"    pop {ar.di}")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e(f"    push {ar.di}")
+        a.e("    call __rt_build_descriptor_term")
+        a.e(f"    pop {ar.di}")
+        a.e(f"    pop {ar.cx}")
+        a.e(f"    push {ar.di}")
+        self._call2_regs(a, "__rt_make_list", "eax", "ecx")
+        a.e(f"    pop {ar.di}")
+        a.e("    jmp __rt_desc_term_done")
+
+        a.l("__rt_desc_term_compound")
+        a.e(f"    movzx eax, word ptr [{ar.si}]")
+        a.e(f"    add {ar.si}, 2")
+        a.e(f"    mov dword ptr [{ar.bp}-4], eax")   # functor payload slot
+        a.e(f"    movzx eax, word ptr [{ar.si}]")
+        a.e(f"    add {ar.si}, 2")
+        a.e(f"    mov dword ptr [{ar.bp}-8], eax")   # arity
+        a.e(f"    mov dword ptr [{ar.bp}-12], eax")  # remaining arguments
+        a.e(f"    push {INVALID}")
+        a.l("__rt_desc_term_compound_loop")
+        a.e(f"    cmp dword ptr [{ar.bp}-12], 0")
+        a.e("    je __rt_desc_term_compound_ready")
+        a.e(f"    push {ar.di}")
+        a.e("    call __rt_build_descriptor_term")
+        a.e(f"    pop {ar.di}")
+        a.e(f"    pop {ar.cx}")
+        a.e(f"    push {ar.di}")
+        self._call2_regs(a, "__rt_make_link", "eax", "ecx")
+        a.e(f"    pop {ar.di}")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e(f"    dec dword ptr [{ar.bp}-12]")
+        a.e("    jmp __rt_desc_term_compound_loop")
+        a.l("__rt_desc_term_compound_ready")
+        a.e(f"    pop {ar.dx}")
+        a.e(f"    mov ecx, dword ptr [{ar.bp}-4]")
+        a.e(f"    mov eax, dword ptr [{ar.di}+{ar.cx}*4]")
+        a.e(f"    mov ecx, dword ptr [{ar.bp}-8]")
+        a.e(f"    push {ar.di}")
+        a.e(f"    {ar.push_reg32('edx')}")
+        a.e(f"    {ar.push_reg32('ecx')}")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_make_struct")
+        a.e(f"    {ar.cleanup(3)}")
+        a.e(f"    pop {ar.di}")
+
+        a.l("__rt_desc_term_done")
+        a.e(f"    pop {ar.bx}")
+        a.e(f"    mov {ar.sp}, {ar.bp}")
+        a.e(f"    pop {ar.bp}")
+        a.e("    ret")
+        a.e()
+
+        # EAX/RAX = per-clause descriptor address, EDX = remaining goal chain.
+        a.l("__prolog_clause_descriptor_build")
+        a.e(f"    push {ar.bp}")
+        a.e(f"    mov {ar.bp}, {ar.sp}")
+        a.e(f"    sub {ar.sp}, {8 if ar.is64 else 4}")
+        for reg in (ar.bx, ar.si, ar.di):
+            a.e(f"    push {reg}")
+        a.e("    mov ebx, edx")
+        if ar.is64:
+            a.e("    mov rdi, rax")
+        else:
+            a.e("    mov edi, eax")
+        a.e(f"    mov ecx, dword ptr [{ar.di}]")
+        a.e(f"    add {ar.di}, 4")
+        if ar.is64:
+            a.e("    mov rsi, __prolog_clause_template_table")
+            a.e("    mov rsi, qword ptr [rsi+rcx*8]")
+        else:
+            a.e("    mov esi, __prolog_clause_template_table")
+            a.e("    mov esi, dword ptr [esi+ecx*4]")
+        a.e(f"    movzx eax, word ptr [{ar.si}]")
+        a.e(f"    add {ar.si}, 2")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_build_vars_reset")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e(f"    movzx eax, word ptr [{ar.si}]")
+        a.e(f"    add {ar.si}, 2")
+        a.e(f"    mov dword ptr [{ar.bp}-4], eax")
+        a.e("    call __rt_build_descriptor_term")
+        a.e(f"    {ar.push_reg32('eax')}")  # head
+        a.l("__prolog_clause_descriptor_body_loop")
+        a.e(f"    cmp dword ptr [{ar.bp}-4], 0")
+        a.e("    je __prolog_clause_descriptor_done")
+        a.e("    call __rt_build_descriptor_term")
+        a.e("    mov ecx, dword ptr [__prolog_build_barrier]")
+        a.e(f"    push {ar.di}")
+        a.e(f"    {ar.push_reg32('ecx')}")
+        a.e(f"    {ar.push_reg32('ebx')}")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_make_goal_link")
+        a.e(f"    {ar.cleanup(3)}")
+        a.e(f"    pop {ar.di}")
+        a.e("    mov ebx, eax")
+        a.e(f"    dec dword ptr [{ar.bp}-4]")
+        a.e("    jmp __prolog_clause_descriptor_body_loop")
+        a.l("__prolog_clause_descriptor_done")
+        a.e(f"    pop {ar.ax}")
+        a.e("    mov ecx, ebx")
+        for reg in (ar.di, ar.si, ar.bx):
+            a.e(f"    pop {reg}")
+        a.e(f"    mov {ar.sp}, {ar.bp}")
+        a.e(f"    pop {ar.bp}")
+        a.e("    ret")
+        a.e()
+
     def _emit_clause_builders(self, a: _A) -> None:
         ar = self.arch
+
+        if self.with_descriptors and self.descriptor_templates:
+            # Stage 288: every static clause is data-driven.  There are no
+            # per-shape native templates and no per-clause builder thunks.
+            self._emit_generic_descriptor_builders(a)
+            return
+
+        # Compatibility path: byte-for-byte Stage-286 builder structure.
         for idx, clause in enumerate(self.clauses):
             varmap, _ = self._variables((clause.head,) + tuple(clause.body))
             a.l(f"__prolog_clause_{idx}_build")
@@ -405,7 +880,6 @@ class PrologRuntimeEmitter:
             a.e(f"    {ar.push_reg32('eax')}")  # save head
             for goal in reversed(clause.body):
                 self._emit_term_builder(a, goal, varmap)
-                # make goal link(term, current chain)
                 a.e("    mov ecx, dword ptr [__prolog_build_barrier]")
                 a.e(f"    {ar.push_reg32('ecx')}")
                 a.e(f"    {ar.push_reg32('ebx')}")
@@ -525,6 +999,55 @@ class PrologRuntimeEmitter:
         a.l("__rt_fatal")
         a.e("    push 2")
         a.e("    call ExitProcess")
+        a.e("    ret")
+        a.e()
+
+        # Stage 290: small self-contained xorshift32 PRNG.  The state is
+        # seeded once in _start from GetTickCount mixed with the VirtualAlloc
+        # base.  random_bounded uses rejection sampling instead of a raw
+        # modulo so every result in 0..bound-1 has the same probability.
+        a.l("__rt_random_u32")
+        a.e("    mov eax, dword ptr [__prolog_random_state]")
+        a.e("    mov ecx, eax")
+        a.e("    shl ecx, 13")
+        a.e("    xor eax, ecx")
+        a.e("    mov ecx, eax")
+        a.e("    shr ecx, 17")
+        a.e("    xor eax, ecx")
+        a.e("    mov ecx, eax")
+        a.e("    shl ecx, 5")
+        a.e("    xor eax, ecx")
+        a.e("    mov dword ptr [__prolog_random_state], eax")
+        a.e("    ret")
+        a.e()
+
+        # Input ECX = unsigned bound. Output EAX in [0,bound).  ECX==0
+        # represents the complete 2^32 range and therefore returns raw U32.
+        a.l("__rt_random_bounded")
+        a.e(f"    {ar.push_reg32('ebx')}")
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e("    mov ebx, ecx")
+        a.e("    test ebx, ebx")
+        a.e("    je __rt_random_bounded_full")
+        # threshold = (-bound) % bound
+        a.e("    mov eax, ebx")
+        a.e("    neg eax")
+        a.e("    xor edx, edx")
+        a.e("    div ebx")
+        a.e("    mov esi, edx")
+        a.l("__rt_random_bounded_retry")
+        a.e("    call __rt_random_u32")
+        a.e("    cmp eax, esi")
+        a.e("    jb __rt_random_bounded_retry")
+        a.e("    xor edx, edx")
+        a.e("    div ebx")
+        a.e("    mov eax, edx")
+        a.e("    jmp __rt_random_bounded_done")
+        a.l("__rt_random_bounded_full")
+        a.e("    call __rt_random_u32")
+        a.l("__rt_random_bounded_done")
+        a.e(f"    pop {ar.si}")
+        a.e(f"    pop {ar.bx}")
         a.e("    ret")
         a.e()
 
@@ -3669,34 +4192,51 @@ class PrologRuntimeEmitter:
         a.e("    jmp __rt_emit_text_done")
 
         a.l("__rt_emit_text_normal")
-        if self.is_gui:
-            a.e("    mov ebx, dword ptr [__prolog_output_top]")
-            self._arena_to(a, ar.di, OUTPUT_OFF)
-            a.l("__rt_emit_text_gui_loop")
-            a.e(f"    movzx eax, byte ptr [{ar.si}]")
-            a.e("    test eax, eax")
-            a.e("    je __rt_emit_text_gui_done")
-            a.e(f"    cmp ebx, {OUTPUT_SIZE-1}")
-            a.e("    jae __rt_emit_text_gui_done")
-            a.e(f"    mov byte ptr [{ar.di}+{ar.bx}], al")
-            a.e(f"    inc {ar.si}")
-            a.e("    inc ebx")
-            a.e("    jmp __rt_emit_text_gui_loop")
-            a.l("__rt_emit_text_gui_done")
-            a.e("    mov dword ptr [__prolog_output_top], ebx")
-            a.e("    xor eax, eax")
-            a.e(f"    mov byte ptr [{ar.di}+{ar.bx}], al")
+        # Stage 295: --gui renders directly through libd64_qt5 in this same
+        # process. Console/pipe modes keep the existing WriteFile path.
+        a.e("    cmp dword ptr [__prolog_start_mode], 1")
+        a.e("    jne __rt_emit_text_console")
+        a.e(f"    {'push rsi' if ar.is64 else 'push esi'}")
+        a.e("    call __rt_strlen")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    mov ebx, eax")
+        a.e("    xor edi, edi")
+        if ar.is64:
+            a.e("    mov rax, __prolog_text_false_line")
+            a.e("    cmp rsi, rax")
         else:
-            a.e(f"    {'push rsi' if ar.is64 else 'push esi'}")
-            a.e("    call __rt_strlen")
-            a.e(f"    {ar.cleanup(1)}")
-            a.e("    mov ebx, eax")
-            a.e("    push 0")
-            a.e("    push __prolog_written")
-            a.e(f"    {ar.push_reg32('ebx')}")
-            a.e(f"    {'push rsi' if ar.is64 else 'push esi'}")
-            a.e(f"    push {ar.mem_ptr('__prolog_stdout')}")
-            a.e("    call WriteFile")
+            a.e("    mov eax, __prolog_text_false_line")
+            a.e("    cmp esi, eax")
+        a.e("    jne __rt_emit_text_gui_style_ready")
+        a.e("    mov edi, 1")
+        a.l("__rt_emit_text_gui_style_ready")
+        if ar.is64:
+            a.e("    mov rcx, rsi")
+            a.e("    mov edx, ebx")
+            a.e("    mov r8d, edi")
+            a.e("    mov rax, qword ptr [__prolog_qt_write_fn]")
+            a.e("    sub rsp, 40")
+            a.e("    call rax")
+            a.e("    add rsp, 40")
+        else:
+            a.e("    push edi")
+            a.e("    push ebx")
+            a.e("    push esi")
+            a.e("    mov eax, dword ptr [__prolog_qt_write_fn]")
+            a.e("    call eax")
+            a.e("    add esp, 12")
+        a.e("    jmp __rt_emit_text_done")
+        a.l("__rt_emit_text_console")
+        a.e(f"    {'push rsi' if ar.is64 else 'push esi'}")
+        a.e("    call __rt_strlen")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    mov ebx, eax")
+        a.e("    push 0")
+        a.e("    push __prolog_written")
+        a.e(f"    {ar.push_reg32('ebx')}")
+        a.e(f"    {'push rsi' if ar.is64 else 'push esi'}")
+        a.e(f"    push {ar.mem_ptr('__prolog_stdout')}")
+        a.e("    call WriteFile")
         a.l("__rt_emit_text_done")
         self._epilogue(a, save=(ar.bx, ar.si, ar.di))
         a.e()
@@ -3710,12 +4250,24 @@ class PrologRuntimeEmitter:
         a.e("    test ebx, ebx")
         a.e("    je __rt_atom_ptr_fail")
         a.e("    dec ebx")
+        # Stage 286: static atoms use a compact numeric offset table instead
+        # of one relocated absolute pointer per atom.
         if ar.is64:
-            a.e("    mov rdi, __prolog_static_atom_table")
-            a.e("    mov rax, qword ptr [rdi+rbx*8]")
+            a.e("    mov rdi, __prolog_static_atom_offsets")
+            if self.static_atom_offset_width == 2:
+                a.e("    movzx eax, word ptr [rdi+rbx*2]")
+            else:
+                a.e("    mov eax, dword ptr [rdi+rbx*4]")
+            a.e("    mov rdi, __prolog_static_atom_blob")
+            a.e("    add rax, rdi")
         else:
-            a.e("    mov edi, __prolog_static_atom_table")
-            a.e("    mov eax, dword ptr [edi+ebx*4]")
+            a.e("    mov edi, __prolog_static_atom_offsets")
+            if self.static_atom_offset_width == 2:
+                a.e("    movzx eax, word ptr [edi+ebx*2]")
+            else:
+                a.e("    mov eax, dword ptr [edi+ebx*4]")
+            a.e("    mov edi, __prolog_static_atom_blob")
+            a.e("    add eax, edi")
         a.e("    jmp __rt_atom_ptr_done")
         a.l("__rt_atom_ptr_dynamic")
         a.e(f"    sub ebx, {len(self.atom_ids)+1}")
@@ -3959,24 +4511,67 @@ class PrologRuntimeEmitter:
         ar = self.arch
         a.l("__rt_emit_solution")
         self._prologue(a, save=(ar.bx, ar.si, ar.di))
-        # A solution always counts, even when verbose=true suppresses the
-        # implicit Top-Level representation.  This keeps failure detection
-        # and backtracking semantics independent of presentation.
-        a.e("    inc dword ptr [__prolog_solution_count]")
-        # Direct arithmetic evaluation has already emitted its value.  Count
-        # it as a successful solution, but do not print true./bindings and do
-        # not enter the "weitere Loesung" state.
+
+        # Stage 293: one-solution look-ahead.  A continuation prompt is no
+        # longer emitted immediately after the current answer.  Instead the
+        # solver keeps searching.  Only when a *real* next solution has been
+        # reached do we ask whether that already-proven solution should be
+        # shown.  Therefore an exhausted search can return directly with the
+        # definitive "keine weiteren Antworten." message without requiring
+        # one extra ENTER from the user.
+        #
+        # __prolog_solution_count counts solutions that were actually accepted
+        # for presentation.  When this routine is entered with count > 0, the
+        # current solution is precisely the look-ahead solution following the
+        # previously displayed answer.
         a.e("    cmp dword ptr [__prolog_direct_eval], 0")
-        a.e("    jne __rt_emit_solution_direct_done")
+        a.e("    jne __rt_emit_solution_direct")
+        a.e("    cmp dword ptr [__prolog_interactive_mode], 0")
+        a.e("    je __rt_emit_solution_accept")
+        a.e("    cmp dword ptr [__prolog_solution_count], 0")
+        a.e("    je __rt_emit_solution_accept")
+
+        # A next solution really exists: ask before revealing it.  ENTER and
+        # the historical redo aliases accept the already-found solution; q and
+        # all stop aliases abandon the search and leave that look-ahead answer
+        # undisplayed.
+        a.l("__rt_emit_solution_prompt_next")
+        a.e("    push __prolog_text_more_prompt")
+        a.e("    call __rt_emit_text")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    call __rt_read_line")
+        a.e(f"    movzx ecx, byte ptr [{ar.ax}]")
+        a.e("    test ecx, ecx")
+        a.e("    je __rt_emit_solution_accept_redo")
+        for code in (59, 110, 78, 114, 82, 32, 9):  # ; n N r R SPACE TAB
+            a.e(f"    cmp ecx, {code}")
+            a.e("    je __rt_emit_solution_accept_redo")
+        a.e("    cmp ecx, 113")
+        a.e("    je __rt_emit_solution_stop")
+        a.e("    cmp ecx, 81")
+        a.e("    je __rt_emit_solution_stop")
+        for code in (46, 58, 99, 67, 97, 65):  # . : c C a A
+            a.e(f"    cmp ecx, {code}")
+            a.e("    je __rt_emit_solution_stop")
+        # Unknown input keeps the historical behaviour and stops the query.
+        a.l("__rt_emit_solution_stop")
+        a.e("    mov dword ptr [__prolog_stop_search], 1")
+        a.e("    jmp __rt_emit_solution_return")
+        a.l("__rt_emit_solution_accept_redo")
+        a.e("    mov dword ptr [__prolog_requested_more], 1")
+
+        a.l("__rt_emit_solution_accept")
+        a.e("    inc dword ptr [__prolog_solution_count]")
         a.e("    cmp dword ptr [__prolog_verbose], 0")
-        a.e("    jne __rt_emit_solution_after_auto_output")
+        a.e("    jne __rt_emit_solution_return")
         a.e("    mov ebx, dword ptr [__prolog_query_var_count]")
         a.e("    test ebx, ebx")
         a.e("    jne __rt_emit_solution_vars")
         a.e("    push __prolog_text_true_line")
         a.e("    call __rt_emit_text")
         a.e(f"    {ar.cleanup(1)}")
-        a.e("    jmp __rt_emit_solution_after_auto_output")
+        a.e("    jmp __rt_emit_solution_return")
+
         a.l("__rt_emit_solution_vars")
         a.e("    xor esi, esi")
         a.l("__rt_emit_solution_loop")
@@ -4011,63 +4606,18 @@ class PrologRuntimeEmitter:
         a.e("    push __prolog_text_dot_nl")
         a.e("    call __rt_emit_text")
         a.e(f"    {ar.cleanup(1)}")
-        a.l("__rt_emit_solution_after_auto_output")
-        a.e("    jmp __rt_emit_solution_interactive")
-        a.l("__rt_emit_solution_direct_done")
-        a.e("    mov dword ptr [__prolog_direct_eval], 0")
         a.e("    jmp __rt_emit_solution_return")
-        a.l("__rt_emit_solution_interactive")
-        # Interactive console top-level.  d64's preferred interaction is:
-        #   ENTER      -> next solution
-        #   q + ENTER  -> stop this search and return to the ?- prompt
-        # For SWI-Prolog muscle memory we additionally accept ';', n, r,
-        # SPACE and TAB as redo keys.  SWI itself uses ';' for redo and RET
-        # for stop; d64 intentionally makes bare RET the fast "next" action.
-        # In verbose=true mode a deterministic solution should remain fully
-        # silent, so skip the continuation prompt when no choice point exists.
-        if not self.is_gui:
-            a.e("    cmp dword ptr [__prolog_interactive_mode], 0")
-            a.e("    je __rt_emit_solution_return")
-            a.e("    cmp dword ptr [__prolog_verbose], 0")
-            a.e("    je __rt_emit_solution_prompt_more")
-            a.e("    cmp dword ptr [__prolog_choice_top], 0")
-            a.e("    je __rt_emit_solution_verbose_stop")
-            a.l("__rt_emit_solution_prompt_more")
-            a.e("    push __prolog_text_more_prompt")
-            a.e("    call __rt_emit_text")
-            a.e(f"    {ar.cleanup(1)}")
-            a.e("    call __rt_read_line")
-            a.e(f"    movzx ecx, byte ptr [{ar.ax}]")
-            # Empty input is the d64 fast-path for the next alternative.
-            a.e("    test ecx, ecx")
-            a.e("    je __rt_emit_solution_more")
-            # SWI-compatible redo aliases.
-            for code in (59, 110, 78, 114, 82, 32, 9):  # ; n N r R SPACE TAB
-                a.e(f"    cmp ecx, {code}")
-                a.e("    je __rt_emit_solution_more")
-            # q/Q explicitly abandons this search and returns to the REPL.
-            a.e("    cmp ecx, 113")
-            a.e("    je __rt_emit_solution_stop")
-            a.e("    cmp ecx, 81")
-            a.e("    je __rt_emit_solution_stop")
-            # Stop aliases: '.', ':' (IDE continuation key), c/C, a/A.
-            # Unknown input also stops.
-            for code in (46, 58, 99, 67, 97, 65):
-                a.e(f"    cmp ecx, {code}")
-                a.e("    je __rt_emit_solution_stop")
-            a.l("__rt_emit_solution_stop")
-            a.e("    mov dword ptr [__prolog_stop_search], 1")
-            a.e("    jmp __rt_emit_solution_return")
-            a.l("__rt_emit_solution_verbose_stop")
-            a.e("    mov dword ptr [__prolog_stop_search], 1")
-            a.e("    jmp __rt_emit_solution_return")
-            a.l("__rt_emit_solution_more")
-            a.e("    mov dword ptr [__prolog_requested_more], 1")
-            a.l("__rt_emit_solution_return")
-        else:
-            # GUI targets do not emit the interactive continuation code, but
-            # the common direct-eval path still needs a concrete return label.
-            a.l("__rt_emit_solution_return")
+
+        # Direct arithmetic evaluation has already emitted its value before
+        # the generic solver reaches the empty goal chain.  Count it as one
+        # completed result, suppress a synthetic "keine weiteren Antworten."
+        # line, and terminate this search immediately.
+        a.l("__rt_emit_solution_direct")
+        a.e("    inc dword ptr [__prolog_solution_count]")
+        a.e("    mov dword ptr [__prolog_direct_eval], 0")
+        a.e("    mov dword ptr [__prolog_stop_search], 1")
+
+        a.l("__rt_emit_solution_return")
         self._epilogue(a, save=(ar.bx, ar.si, ar.di))
         a.e()
 
@@ -4120,6 +4670,7 @@ class PrologRuntimeEmitter:
         self._epilogue(a, save=(ar.bx, ar.si, ar.di))
         a.e()
 
+        self._emit_static_clause_dispatch_helpers(a)
         self._emit_user_dispatch(a)
         self._emit_dynamic_user_loop(a)
         self._emit_run_query(a)
@@ -4145,6 +4696,8 @@ class PrologRuntimeEmitter:
             ("d64_eval",1,"__rt_bi_d64_eval"),
             ("var",1,"__rt_bi_var"),("nonvar",1,"__rt_bi_nonvar"),("atom",1,"__rt_bi_atom"),
             ("integer",1,"__rt_bi_integer"),("float",1,"__rt_bi_float"),("number",1,"__rt_bi_number"),("string",1,"__rt_bi_string"),
+            ("random",1,"__rt_bi_random1"),("random",2,"__rt_bi_random2"),
+            ("random_between",3,"__rt_bi_random_between"),
             ("assert",1,"__rt_bi_assertz"),("asserta",1,"__rt_bi_asserta"),("assertz",1,"__rt_bi_assertz"),
             ("retract",1,"__rt_bi_retract"),
             ("database_open",2,"__rt_bi_database_open2"),
@@ -4729,6 +5282,138 @@ class PrologRuntimeEmitter:
         a.e(f"    pop {ar.cx}")
         a.e("    jmp __rt_solve_done")
 
+        # Stage 290 random builtins.  These are deliberately ordinary
+        # predicates rather than arithmetic functions so they can bind an
+        # output variable and remain usable from pure Prolog source code.
+        # random(X): non-negative signed 31-bit integer.
+        a.l("__rt_bi_random1")
+        a.e("    push 0")
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e("    call __rt_struct_arg")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e(f"    {ar.push_reg32('eax')}")  # output term
+        a.e("    call __rt_random_u32")
+        a.e("    and eax, 2147483647")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_make_int")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    mov ecx, eax")
+        a.e(f"    pop {ar.ax}")
+        a.e(f"    {ar.push_reg32('ecx')}")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_unify")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e("    test eax, eax")
+        a.e("    je __rt_solve_done")
+        solve_rest()
+
+        # random(Max, X): 0 =< X < Max. Max must be a positive integer.
+        a.l("__rt_bi_random2")
+        a.e("    push 1")
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e("    call __rt_struct_arg")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e(f"    {ar.push_reg32('eax')}")  # output term survives bound parsing
+        a.e("    push 0")
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e("    call __rt_struct_arg")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_eval_arith")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    test edx, edx")
+        a.e("    je __rt_bi_random2_fail_pop")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_term_int")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    test edx, edx")
+        a.e("    je __rt_bi_random2_fail_pop")
+        a.e("    test eax, eax")
+        a.e("    jle __rt_bi_random2_fail_pop")
+        a.e("    mov ecx, eax")
+        a.e("    call __rt_random_bounded")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_make_int")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    mov ecx, eax")
+        a.e(f"    pop {ar.ax}")
+        a.e(f"    {ar.push_reg32('ecx')}")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_unify")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e("    test eax, eax")
+        a.e("    je __rt_solve_done")
+        solve_rest()
+        a.l("__rt_bi_random2_fail_pop")
+        a.e(f"    pop {ar.ax}")
+        a.e("    jmp __rt_solve_done")
+
+        # random_between(Min, Max, X): inclusive signed integer range.
+        # A wrapped span of zero means the full signed 32-bit domain (2^32
+        # distinct values), which __rt_random_bounded intentionally supports.
+        a.l("__rt_bi_random_between")
+        a.e("    push 2")
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e("    call __rt_struct_arg")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e(f"    {ar.push_reg32('eax')}")  # output term
+        a.e("    push 0")
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e("    call __rt_struct_arg")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_eval_arith")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    test edx, edx")
+        a.e("    je __rt_bi_random_between_fail_output")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_term_int")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    test edx, edx")
+        a.e("    je __rt_bi_random_between_fail_output")
+        a.e(f"    {ar.push_reg32('eax')}")  # Min value
+        a.e("    push 1")
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e("    call __rt_struct_arg")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_eval_arith")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    test edx, edx")
+        a.e("    je __rt_bi_random_between_fail_min_output")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_term_int")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    test edx, edx")
+        a.e("    je __rt_bi_random_between_fail_min_output")
+        a.e("    mov ecx, eax")  # Max
+        a.e(f"    pop {ar.ax}")  # Min
+        a.e("    cmp ecx, eax")
+        a.e("    jl __rt_bi_random_between_fail_output")
+        a.e("    sub ecx, eax")
+        a.e("    inc ecx")
+        a.e(f"    {ar.push_reg32('eax')}")  # preserve Min while RNG uses EDX/EAX
+        a.e("    call __rt_random_bounded")
+        a.e(f"    pop {ar.cx}")
+        a.e("    add eax, ecx")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_make_int")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    mov ecx, eax")
+        a.e(f"    pop {ar.ax}")  # output term
+        a.e(f"    {ar.push_reg32('ecx')}")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e("    call __rt_unify")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e("    test eax, eax")
+        a.e("    je __rt_solve_done")
+        solve_rest()
+        a.l("__rt_bi_random_between_fail_min_output")
+        a.e(f"    pop {ar.ax}")  # Min
+        a.l("__rt_bi_random_between_fail_output")
+        a.e(f"    pop {ar.ax}")  # output
+        a.e("    jmp __rt_solve_done")
+
         # Conjunction/disjunction are runtime control constructs.  The helper
         # converts a conjunction expression to ordinary goal links while
         # preserving the current lexical cut barrier.
@@ -4917,6 +5602,111 @@ class PrologRuntimeEmitter:
 
         a.l("__rt_builtin_fallthrough")
 
+    def _emit_static_clause_dispatch_helpers(self, a: _A) -> None:
+        """Shared static-clause iterator used by every user predicate.
+
+        Stage 285 emitted the complete choice/unify/solve/restore sequence once
+        per clause.  Large knowledge bases therefore contained hundreds of
+        nearly identical ``__rt_clause_N_after`` blocks.  Stage 286 keeps the
+        clause-specific builder routines, but drives them through compact
+        per-predicate tables and these two shared helpers.
+        """
+        ar = self.arch
+
+        # try_static_clause(builder_ptr) -> EAX=0 continue, EAX=1 stop group
+        # ESI = current goal, EBX = remaining goal chain (owned by try_user).
+        a.l("__rt_try_static_clause")
+        # EDX and EDI belong to the surrounding table iterator and must survive.
+        self._prologue(a, save=(ar.dx, ar.di))
+        a.e("    mov eax, dword ptr [__prolog_choice_top]")
+        a.e("    mov dword ptr [__prolog_build_barrier], eax")
+        a.e(f"    {ar.push_reg32('eax')}")       # exact choice mark
+        a.e("    call __rt_choice_push")
+        a.e("    mov edx, ebx")
+        if self.with_descriptors:
+            # Stage 288 group entries are descriptor addresses.  The one
+            # generic builder consumes them directly; no clause thunk or
+            # native structural template is needed.
+            if ar.is64:
+                a.e(f"    mov rax, {ar.arg(0, 'qword')}")
+            else:
+                a.e(f"    mov eax, {ar.arg(0)}")
+            a.e("    call __prolog_clause_descriptor_build")
+        elif ar.is64:
+            a.e(f"    mov rax, {ar.arg(0, 'qword')}")
+            a.e("    call rax")
+        else:
+            a.e(f"    mov eax, {ar.arg(0)}")
+            a.e("    call eax")
+        # builder returns EAX=head, ECX=new goal chain
+        a.e(f"    {ar.push_reg32('ecx')}")
+        a.e(f"    {ar.push_reg32('eax')}")
+        a.e(f"    {ar.push_reg32('esi')}")
+        a.e("    call __rt_unify")
+        a.e(f"    {ar.cleanup(2)}")
+        a.e(f"    pop {ar.cx}")
+        a.e("    test eax, eax")
+        a.e("    je __rt_try_static_clause_after")
+        a.e(f"    {ar.push_reg32('ecx')}")
+        a.e("    call __rt_solve_goals")
+        a.e(f"    {ar.cleanup(1)}")
+        a.l("__rt_try_static_clause_after")
+        # The exact choice mark is still the top stack item.
+        a.e(f"    mov ecx, dword ptr [{ar.sp}]")
+        a.e(f"    {ar.push_reg32('ecx')}")
+        a.e("    call __rt_choice_restore_slot")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e(f"    pop {ar.cx}")
+        a.e("    cmp dword ptr [__prolog_cut_active_barrier], ecx")
+        a.e("    jne __rt_try_static_clause_no_cut")
+        a.e(f"    mov dword ptr [__prolog_cut_active_barrier], {INVALID}")
+        a.e("    mov eax, 1")
+        a.e("    jmp __rt_try_static_clause_return")
+        a.l("__rt_try_static_clause_no_cut")
+        a.e("    cmp dword ptr [__prolog_stop_search], 0")
+        a.e("    jne __rt_try_static_clause_stop")
+        a.e("    xor eax, eax")
+        a.e("    jmp __rt_try_static_clause_return")
+        a.l("__rt_try_static_clause_stop")
+        a.e("    mov eax, 1")
+        a.l("__rt_try_static_clause_return")
+        self._epilogue(a, save=(ar.dx, ar.di))
+        a.e()
+
+        # try_static_group(builder_table, count) -> EAX=0 exhausted, EAX=1 stop
+        a.l("__rt_try_static_group")
+        self._prologue(a, save=(ar.dx, ar.di))
+        if ar.is64:
+            a.e(f"    mov rdi, {ar.arg(0, 'qword')}")
+        else:
+            a.e(f"    mov edi, {ar.arg(0)}")
+        a.e(f"    mov edx, {ar.arg(1)}")
+        a.l("__rt_try_static_group_loop")
+        a.e("    test edx, edx")
+        a.e("    je __rt_try_static_group_exhausted")
+        if ar.is64:
+            a.e("    mov rax, qword ptr [rdi]")
+            a.e("    add rdi, 8")
+            a.e("    push rax")
+        else:
+            a.e("    mov eax, dword ptr [edi]")
+            a.e("    add edi, 4")
+            a.e("    push eax")
+        a.e("    call __rt_try_static_clause")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    test eax, eax")
+        a.e("    jne __rt_try_static_group_stop")
+        a.e("    dec edx")
+        a.e("    jmp __rt_try_static_group_loop")
+        a.l("__rt_try_static_group_exhausted")
+        a.e("    xor eax, eax")
+        a.e("    jmp __rt_try_static_group_return")
+        a.l("__rt_try_static_group_stop")
+        a.e("    mov eax, 1")
+        a.l("__rt_try_static_group_return")
+        self._epilogue(a, save=(ar.dx, ar.di))
+        a.e()
+
     def _emit_user_dispatch(self, a: _A) -> None:
         ar = self.arch
         a.l("__rt_try_user")
@@ -4939,55 +5729,37 @@ class PrologRuntimeEmitter:
         a.e(f"    mov edx, dword ptr [{ar.di}+4]")
         a.e("    xor ecx, ecx")
         a.l("__rt_try_user_dispatch")
-        group_index=0
-        for (name,arity), entries in sorted(self.pred_groups.items(), key=lambda x:(x[0][0],x[0][1])):
+
+        # Stage 286: one compact builder table per predicate.  The complete
+        # backtracking sequence lives in __rt_try_static_group / clause.
+        group_index = 0
+        for (name, arity), entries in sorted(self.pred_groups.items(), key=lambda x:(x[0][0],x[0][1])):
             if name in set(BUILTIN_NAMES):
                 continue
-            nxt=f"__rt_try_pred_next_{group_index}"; group_index+=1
+            nxt = f"__rt_try_pred_next_{group_index}"
+            table = (
+                f"__prolog_pred_group_{group_index}_descriptors"
+                if self.with_descriptors else
+                f"__prolog_pred_group_{group_index}_builders"
+            )
             a.e(f"    cmp edx, {self.atom_id(name)}")
             a.e(f"    jne {nxt}")
             a.e(f"    cmp ecx, {arity}")
             a.e(f"    jne {nxt}")
-            for clause_idx,_clause in entries:
-                # Exact clause-choice slot is retained on the CPU stack. ! may
-                # lower choice_top, but restore_slot can still restore this
-                # snapshot without accidentally touching an outer choicepoint.
-                a.e("    mov eax, dword ptr [__prolog_choice_top]")
-                a.e("    mov dword ptr [__prolog_build_barrier], eax")
-                a.e(f"    {ar.push_reg32('eax')}")
-                a.e("    call __rt_choice_push")
-                a.e("    mov edx, ebx")
-                a.e(f"    call __prolog_clause_{clause_idx}_build")
-                # eax=head, ecx=new chain
-                a.e(f"    {ar.push_reg32('ecx')}")
-                a.e(f"    {ar.push_reg32('eax')}")
-                a.e(f"    {ar.push_reg32('esi')}")
-                a.e("    call __rt_unify")
-                a.e(f"    {ar.cleanup(2)}")
-                a.e(f"    pop {ar.cx}")
-                fail=f"__rt_clause_{clause_idx}_after"
-                cont=f"__rt_clause_{clause_idx}_continue"
-                a.e("    test eax, eax")
-                a.e(f"    je {fail}")
-                a.e(f"    {ar.push_reg32('ecx')}")
-                a.e("    call __rt_solve_goals")
-                a.e(f"    {ar.cleanup(1)}")
-                a.l(fail)
-                # duplicate mark from stack for restore_slot, then consume it
-                a.e(f"    mov ecx, dword ptr [{ar.sp}]")
-                a.e(f"    {ar.push_reg32('ecx')}")
-                a.e("    call __rt_choice_restore_slot")
-                a.e(f"    {ar.cleanup(1)}")
-                a.e(f"    pop {ar.cx}")
-                a.e("    cmp dword ptr [__prolog_cut_active_barrier], ecx")
-                a.e(f"    jne {cont}")
-                a.e(f"    mov dword ptr [__prolog_cut_active_barrier], {INVALID}")
-                a.e("    jmp __rt_try_user_return")
-                a.l(cont)
-                a.e("    cmp dword ptr [__prolog_stop_search], 0")
-                a.e("    jne __rt_try_user_return")
+            a.e(f"    push {len(entries)}")
+            if ar.is64:
+                a.e(f"    mov rax, {table}")
+                a.e("    push rax")
+            else:
+                a.e(f"    push {table}")
+            a.e("    call __rt_try_static_group")
+            a.e(f"    {ar.cleanup(2)}")
+            a.e("    test eax, eax")
+            a.e("    jne __rt_try_user_return")
             a.e("    jmp __rt_try_user_dynamic")
             a.l(nxt)
+            group_index += 1
+
         a.l("__rt_try_user_dynamic")
         # Dynamic facts/rules are attempted after static clauses.
         a.e(f"    {ar.push_reg32('ebx')}")
@@ -5141,18 +5913,28 @@ class PrologRuntimeEmitter:
         a.e(f"    push {ar.arg(0)}")
         a.e("    call __rt_solve_goals")
         a.e(f"    {ar.cleanup(1)}")
-        a.e("    cmp dword ptr [__prolog_solution_count], 0")
-        a.e("    je __rt_run_query_false")
-        # If the user explicitly requested another answer (ENTER or one of
-        # the redo aliases) and the search exhausts without q/stop, report
-        # failure after the final solution.
+
+        # Stage 293: for an interactive query the solver itself now proves
+        # exhaustion.  The first answer is shown immediately; searching then
+        # continues until a real next answer is reached.  If no such answer
+        # exists, execution arrives here with stop_search == 0 and we can emit
+        # the definitive end-of-solutions message without asking for one more
+        # ENTER.  A user q/stop (or direct arithmetic evaluation) sets
+        # stop_search and intentionally suppresses that message.
         a.e("    cmp dword ptr [__prolog_interactive_mode], 0")
-        a.e("    je __rt_run_query_done")
-        a.e("    cmp dword ptr [__prolog_requested_more], 0")
-        a.e("    je __rt_run_query_done")
+        a.e("    je __rt_run_query_noninteractive")
         a.e("    cmp dword ptr [__prolog_stop_search], 0")
         a.e("    jne __rt_run_query_done")
-        a.l("__rt_run_query_false")
+        a.e("    push __prolog_text_false_line")
+        a.e("    call __rt_emit_text")
+        a.e(f"    {ar.cleanup(1)}")
+        a.e("    jmp __rt_run_query_done")
+
+        # Preserve Stage-292 batch/startup behaviour: only a completely failed
+        # non-interactive query emits the failure/end marker.
+        a.l("__rt_run_query_noninteractive")
+        a.e("    cmp dword ptr [__prolog_solution_count], 0")
+        a.e("    jne __rt_run_query_done")
         a.e("    push __prolog_text_false_line")
         a.e("    call __rt_emit_text")
         a.e(f"    {ar.cleanup(1)}")
@@ -5276,10 +6058,35 @@ class PrologRuntimeEmitter:
         self._epilogue(a, save=(ar.bx, ar.si, ar.di))
         a.e()
 
-        # read line -> pointer in AX, trim CR/LF
+        # read line -> pointer in AX. Stage 295 uses a nested Qt event loop
+        # inside libd64_qt5 for --gui; console/pipe mode keeps ReadFile.
         a.l("__rt_read_line")
         self._prologue(a, save=(ar.si, ar.di))
         self._arena_to(a, ar.si, INPUT_OFF)
+        a.e("    cmp dword ptr [__prolog_start_mode], 1")
+        a.e("    jne __rt_read_line_console")
+        if ar.is64:
+            a.e("    mov rcx, rsi")
+            a.e(f"    mov edx, {INPUT_SIZE-1}")
+            a.e("    mov rax, qword ptr [__prolog_qt_read_fn]")
+            a.e("    sub rsp, 40")
+            a.e("    call rax")
+            a.e("    add rsp, 40")
+        else:
+            a.e(f"    push {INPUT_SIZE-1}")
+            a.e("    push esi")
+            a.e("    mov eax, dword ptr [__prolog_qt_read_fn]")
+            a.e("    call eax")
+            a.e("    add esp, 8")
+        a.e("    test eax, eax")
+        a.e("    js __rt_read_line_gui_closed")
+        a.e("    mov edx, eax")
+        a.e("    jmp __rt_read_terminate")
+        a.l("__rt_read_line_gui_closed")
+        a.e("    call __rt_gui_shutdown")
+        a.e("    push 0")
+        a.e("    call ExitProcess")
+        a.l("__rt_read_line_console")
         a.e("    mov dword ptr [__prolog_read_count], 0")
         a.e("    push 0")
         a.e("    push __prolog_read_count")
@@ -5760,12 +6567,22 @@ class PrologRuntimeEmitter:
         a.e("    jae __rt_intern_dynamic_scan")
         a.e(f"    {ar.push_reg32('ecx')}")  # preserve scan index below call arguments
         if ar.is64:
-            a.e("    mov rdi, __prolog_static_atom_table")
-            a.e("    mov rax, qword ptr [rdi+rcx*8]")
+            a.e("    mov rdi, __prolog_static_atom_offsets")
+            if self.static_atom_offset_width == 2:
+                a.e("    movzx eax, word ptr [rdi+rcx*2]")
+            else:
+                a.e("    mov eax, dword ptr [rdi+rcx*4]")
+            a.e("    mov rdi, __prolog_static_atom_blob")
+            a.e("    add rax, rdi")
             a.e("    push rax")
         else:
-            a.e("    mov edi, __prolog_static_atom_table")
-            a.e("    mov eax, dword ptr [edi+ecx*4]")
+            a.e("    mov edi, __prolog_static_atom_offsets")
+            if self.static_atom_offset_width == 2:
+                a.e("    movzx eax, word ptr [edi+ecx*2]")
+            else:
+                a.e("    mov eax, dword ptr [edi+ecx*4]")
+            a.e("    mov edi, __prolog_static_atom_blob")
+            a.e("    add eax, edi")
             a.e("    push eax")
         a.e(f"    {ar.push_reg32('ebx')}")
         a.e(f"    {'push rsi' if ar.is64 else 'push esi'}")
@@ -6862,6 +7679,189 @@ class PrologRuntimeEmitter:
         a.e()
 
     # ------------------------------------------------------------------
+    # Stage 295: runtime UI-mode detection + native in-process Qt5 bridge.
+    # ------------------------------------------------------------------
+    def _emit_stage292_start_helpers(self, a: _A) -> None:
+        ar = self.arch
+
+        # detect_mode() -> EAX: 0=normal console, 1=--gui, 2=--ide-pipe
+        # Stage 294 byte scanner retained: no CRT argv dependency at startup.
+        a.l("__rt_detect_start_mode")
+        self._prologue(a, save=(ar.bx, ar.si, ar.di))
+        a.e(f"    xor {ar.bx}, {ar.bx}")
+        a.e("    call GetCommandLineA")
+        a.e(f"    test {ar.ax}, {ar.ax}")
+        a.e("    je __rt_detect_start_mode_done")
+        a.e(f"    mov {ar.si}, {ar.ax}")
+        a.e(f"    mov {ar.di}, 32")
+        a.l("__rt_detect_start_mode_scan")
+        a.e(f"    movzx eax, byte ptr [{ar.si}]")
+        a.e("    test eax, eax")
+        a.e("    je __rt_detect_start_mode_done")
+        a.e("    cmp eax, 45")
+        a.e("    jne __rt_detect_start_mode_advance")
+        a.e(f"    cmp {ar.di}, 32")
+        a.e("    je __rt_detect_start_mode_maybe_gui")
+        a.e(f"    cmp {ar.di}, 9")
+        a.e("    je __rt_detect_start_mode_maybe_gui")
+        a.e(f"    cmp {ar.di}, 34")
+        a.e("    jne __rt_detect_start_mode_advance")
+        a.l("__rt_detect_start_mode_maybe_gui")
+        for off, ch in enumerate("--gui"):
+            a.e(f"    movzx ecx, byte ptr [{ar.si}+{off}]")
+            a.e(f"    cmp ecx, {ord(ch)}")
+            a.e("    jne __rt_detect_start_mode_maybe_pipe")
+        a.e(f"    movzx ecx, byte ptr [{ar.si}+5]")
+        a.e("    test ecx, ecx")
+        a.e("    je __rt_detect_start_mode_found_gui")
+        a.e("    cmp ecx, 32")
+        a.e("    je __rt_detect_start_mode_found_gui")
+        a.e("    cmp ecx, 9")
+        a.e("    je __rt_detect_start_mode_found_gui")
+        a.e("    cmp ecx, 34")
+        a.e("    jne __rt_detect_start_mode_maybe_pipe")
+        a.l("__rt_detect_start_mode_found_gui")
+        a.e(f"    mov {ar.bx}, 1")
+        a.e("    jmp __rt_detect_start_mode_done")
+        a.l("__rt_detect_start_mode_maybe_pipe")
+        for off, ch in enumerate("--ide-pipe"):
+            a.e(f"    movzx ecx, byte ptr [{ar.si}+{off}]")
+            a.e(f"    cmp ecx, {ord(ch)}")
+            a.e("    jne __rt_detect_start_mode_advance")
+        a.e(f"    movzx ecx, byte ptr [{ar.si}+10]")
+        a.e("    test ecx, ecx")
+        a.e("    je __rt_detect_start_mode_found_pipe")
+        a.e("    cmp ecx, 32")
+        a.e("    je __rt_detect_start_mode_found_pipe")
+        a.e("    cmp ecx, 9")
+        a.e("    je __rt_detect_start_mode_found_pipe")
+        a.e("    cmp ecx, 34")
+        a.e("    jne __rt_detect_start_mode_advance")
+        a.l("__rt_detect_start_mode_found_pipe")
+        a.e(f"    mov {ar.bx}, 2")
+        a.e("    jmp __rt_detect_start_mode_done")
+        a.l("__rt_detect_start_mode_advance")
+        a.e(f"    mov {ar.di}, {ar.ax}")
+        a.e(f"    inc {ar.si}")
+        a.e("    jmp __rt_detect_start_mode_scan")
+        a.l("__rt_detect_start_mode_done")
+        a.e(f"    mov {ar.ax}, {ar.bx}")
+        self._epilogue(a, save=(ar.bx, ar.si, ar.di))
+        a.e()
+
+        # Load libd64_qt5.dll only for --gui and resolve the PROLOG extension
+        # ABI by name. Console images therefore have no hard Qt dependency.
+        a.l("__rt_load_gui_bridge")
+        self._prologue(a, save=(ar.bx, ar.si))
+        if ar.is64:
+            a.e("    mov rcx, __prolog_qt_dll_name")
+            a.e("    sub rsp, 40")
+            a.e("    call LoadLibraryA")
+            a.e("    add rsp, 40")
+            a.e("    test rax, rax")
+            a.e("    je __rt_load_gui_bridge_fail")
+            a.e("    mov qword ptr [__prolog_qt_module], rax")
+            for label, symbol in (
+                ("__prolog_qt_init_fn", "__prolog_qt_name_init"),
+                ("__prolog_qt_write_fn", "__prolog_qt_name_write"),
+                ("__prolog_qt_read_fn", "__prolog_qt_name_read"),
+                ("__prolog_qt_shutdown_fn", "__prolog_qt_name_shutdown"),
+            ):
+                a.e("    mov rcx, qword ptr [__prolog_qt_module]")
+                a.e(f"    mov rdx, {symbol}")
+                a.e("    sub rsp, 40")
+                a.e("    call GetProcAddress")
+                a.e("    add rsp, 40")
+                a.e("    test rax, rax")
+                a.e("    je __rt_load_gui_bridge_fail")
+                a.e(f"    mov qword ptr [{label}], rax")
+        else:
+            a.e("    push __prolog_qt_dll_name")
+            a.e("    call LoadLibraryA")
+            a.e("    test eax, eax")
+            a.e("    je __rt_load_gui_bridge_fail")
+            a.e("    mov dword ptr [__prolog_qt_module], eax")
+            for label, symbol in (
+                ("__prolog_qt_init_fn", "__prolog_qt_name_init"),
+                ("__prolog_qt_write_fn", "__prolog_qt_name_write"),
+                ("__prolog_qt_read_fn", "__prolog_qt_name_read"),
+                ("__prolog_qt_shutdown_fn", "__prolog_qt_name_shutdown"),
+            ):
+                a.e(f"    push {symbol}")
+                a.e("    push dword ptr [__prolog_qt_module]")
+                a.e("    call GetProcAddress")
+                a.e("    test eax, eax")
+                a.e("    je __rt_load_gui_bridge_fail")
+                a.e(f"    mov dword ptr [{label}], eax")
+        a.e("    mov eax, 1")
+        a.e("    jmp __rt_load_gui_bridge_done")
+        a.l("__rt_load_gui_bridge_fail")
+        a.e("    xor eax, eax")
+        a.l("__rt_load_gui_bridge_done")
+        self._epilogue(a, save=(ar.bx, ar.si))
+        a.e()
+
+        a.l("__rt_gui_initialize")
+        self._prologue(a)
+        a.e("    call __rt_load_gui_bridge")
+        a.e("    test eax, eax")
+        a.e("    je __rt_gui_initialize_fail")
+        if ar.is64:
+            a.e("    mov rcx, __prolog_caption")
+            a.e("    mov edx, -1")  # environment/system auto dark-mode
+            a.e("    mov rax, qword ptr [__prolog_qt_init_fn]")
+            a.e("    sub rsp, 40")
+            a.e("    call rax")
+            a.e("    add rsp, 40")
+        else:
+            a.e("    push -1")
+            a.e("    push __prolog_caption")
+            a.e("    mov eax, dword ptr [__prolog_qt_init_fn]")
+            a.e("    call eax")
+            a.e("    add esp, 8")
+        a.e("    test eax, eax")
+        a.e("    je __rt_gui_initialize_fail")
+        a.e("    mov eax, 1")
+        a.e("    jmp __rt_gui_initialize_done")
+        a.l("__rt_gui_initialize_fail")
+        if ar.is64:
+            a.e("    xor rcx, rcx")
+            a.e("    mov rdx, __prolog_gui_launch_error")
+            a.e("    mov r8, __prolog_caption")
+            a.e("    mov r9d, 16")
+            a.e("    sub rsp, 40")
+            a.e("    call MessageBoxA")
+            a.e("    add rsp, 40")
+        else:
+            a.e("    push 16")
+            a.e("    push __prolog_caption")
+            a.e("    push __prolog_gui_launch_error")
+            a.e("    push 0")
+            a.e("    call MessageBoxA")
+        a.e("    xor eax, eax")
+        a.l("__rt_gui_initialize_done")
+        self._epilogue(a)
+        a.e()
+
+        a.l("__rt_gui_shutdown")
+        self._prologue(a)
+        if ar.is64:
+            a.e("    mov rax, qword ptr [__prolog_qt_shutdown_fn]")
+            a.e("    test rax, rax")
+            a.e("    je __rt_gui_shutdown_done")
+            a.e("    sub rsp, 40")
+            a.e("    call rax")
+            a.e("    add rsp, 40")
+        else:
+            a.e("    mov eax, dword ptr [__prolog_qt_shutdown_fn]")
+            a.e("    test eax, eax")
+            a.e("    je __rt_gui_shutdown_done")
+            a.e("    call eax")
+        a.l("__rt_gui_shutdown_done")
+        self._epilogue(a)
+        a.e()
+
+    # ------------------------------------------------------------------
     # Start / initialization / data
     # ------------------------------------------------------------------
     def _emit_init(
@@ -6872,17 +7872,37 @@ class PrologRuntimeEmitter:
     ) -> None:
         ar = self.arch
         a.l("_start")
-        if not self.is_gui:
-            # Do not call AllocConsole here. Console-subsystem programs receive
-            # a normal Windows console when started conventionally, while the
-            # IDE can start the same image with redirected stdio and
-            # CREATE_NO_WINDOW for its own Qt console dialog.
-            a.e("    push -11")
-            a.e("    call GetStdHandle")
-            a.e(f"    mov {ar.mem_ptr('__prolog_stdout')}, {ar.ax}")
-            a.e("    push -10")
-            a.e("    call GetStdHandle")
-            a.e(f"    mov {ar.mem_ptr('__prolog_stdin')}, {ar.ax}")
+        # Stage 295 dual UI:
+        #   --gui      -> native in-process Qt5 frontend in this EXE
+        #   --ide-pipe -> inherited redirected stdio, no visible console
+        #   default    -> use attached console or create one with AllocConsole
+        a.e("    call __rt_detect_start_mode")
+        a.e("    mov dword ptr [__prolog_start_mode], eax")
+        a.e("    cmp eax, 1")
+        a.e("    jne __prolog_start_not_gui")
+        a.e("    call __rt_gui_initialize")
+        a.e("    test eax, eax")
+        a.e("    je __prolog_gui_start_failed")
+        a.e("    call FreeConsole")
+        a.e("    jmp __prolog_start_runtime")
+        a.l("__prolog_gui_start_failed")
+        a.e("    push 2")
+        a.e("    call ExitProcess")
+        a.l("__prolog_start_not_gui")
+        a.e("    cmp dword ptr [__prolog_start_mode], 2")
+        a.e("    je __prolog_console_handles")
+        a.e("    call GetConsoleWindow")
+        a.e(f"    test {ar.ax}, {ar.ax}")
+        a.e("    jne __prolog_console_handles")
+        a.e("    call AllocConsole")
+        a.l("__prolog_console_handles")
+        a.e("    push -11")
+        a.e("    call GetStdHandle")
+        a.e(f"    mov {ar.mem_ptr('__prolog_stdout')}, {ar.ax}")
+        a.e("    push -10")
+        a.e("    call GetStdHandle")
+        a.e(f"    mov {ar.mem_ptr('__prolog_stdin')}, {ar.ax}")
+        a.l("__prolog_start_runtime")
         # VirtualAlloc arena
         a.e("    push 4")
         a.e("    push 12288")
@@ -6904,6 +7924,17 @@ class PrologRuntimeEmitter:
         a.e(f"    mov {ar.di}, {ar.ax}")
         a.e(f"    add {ar.di}, {DYN_ALT_OFF}")
         a.e(f"    mov {ar.mem_ptr('__prolog_dyn_alt_base')}, {ar.di}")
+
+        # Stage 290 PRNG seed. GetTickCount gives per-run variation and the
+        # VirtualAlloc base adds ASLR entropy. xorshift32 must never start at 0.
+        a.e("    call GetTickCount")
+        a.e("    xor eax, dword ptr [__prolog_arena]")
+        a.e("    test eax, eax")
+        a.e("    jne __prolog_random_seed_ok")
+        a.e("    mov eax, 2463534242")
+        a.l("__prolog_random_seed_ok")
+        a.e("    mov dword ptr [__prolog_random_state], eax")
+
         a.e("    mov dword ptr [__prolog_heap_top], 0")
         a.e("    mov dword ptr [__prolog_dyn_heap_top], 0")
         a.e("    mov dword ptr [__prolog_trail_top], 0")
@@ -6951,16 +7982,12 @@ class PrologRuntimeEmitter:
                 a.e(f"    {ar.push_reg32('eax')}")
                 a.e("    call __rt_run_query")
                 a.e(f"    {ar.cleanup(1)}")
-        elif not self.is_gui:
+        else:
             a.e("    call __rt_repl")
-        if self.is_gui:
-            # show accumulated output once
-            self._arena_to(a, ar.ax, OUTPUT_OFF)
-            a.e("    push 0")
-            a.e("    push __prolog_caption")
-            a.e(f"    push {ar.ax}")
-            a.e("    push 0")
-            a.e("    call MessageBoxA")
+        a.e("    cmp dword ptr [__prolog_start_mode], 1")
+        a.e("    jne __prolog_exit_process")
+        a.e("    call __rt_gui_shutdown")
+        a.l("__prolog_exit_process")
         a.e("    push 0")
         a.e("    call ExitProcess")
         a.e()
@@ -6977,25 +8004,79 @@ class PrologRuntimeEmitter:
         ar = self.arch
         a.e("section .data")
         a.e()
-        # static atom pointer table
-        a.l("__prolog_static_atom_table")
-        directive = "dq" if ar.is64 else "dd"
-        for key, atom_id in sorted(self.atom_ids.items(), key=lambda kv: kv[1]):
-            a.e(f"    {directive} {self.atom_labels[key]}")
+        # Stage 286 compact static atom index: numeric offsets + one blob.
+        # This removes one absolute relocation per atom and halves the PE32
+        # table size (and cuts PE64 table entries from 8 bytes to 2 bytes) as
+        # long as the static atom blob remains below 64 KiB.
+        a.l("__prolog_static_atom_offsets")
+        atom_directive = "dw" if self.static_atom_offset_width == 2 else "dd"
+        for i in range(0, len(self.static_atom_offsets), 16):
+            chunk = self.static_atom_offsets[i:i+16]
+            a.e(f"    {atom_directive} " + ", ".join(str(v) for v in chunk))
+        a.l("__prolog_static_atom_blob")
+        for i in range(0, len(self.static_atom_blob), 24):
+            chunk = self.static_atom_blob[i:i+24]
+            a.e("    db " + ", ".join(str(v) for v in chunk))
         a.e()
-        for key, atom_id in sorted(self.atom_ids.items(), key=lambda kv: kv[1]):
-            # Original spelling: keys are casefolded. Good enough for atoms;
-            # source strings retain spelling by searching original term value.
-            display = key
-            for line in self._db_bytes(self.atom_labels[key], display):
-                a.e(line)
+
+        # Static predicate table consumed by __rt_try_static_group.  In the
+        # Stage-288 descriptor mode entries are direct descriptor addresses;
+        # otherwise this is the unchanged Stage-286 builder table.
+        directive = "dq" if ar.is64 else "dd"
+        group_index = 0
+        for (name, arity), entries in sorted(self.pred_groups.items(), key=lambda x:(x[0][0],x[0][1])):
+            if name in set(BUILTIN_NAMES):
+                continue
+            suffix = "descriptors" if self.with_descriptors else "builders"
+            a.l(f"__prolog_pred_group_{group_index}_{suffix}")
+            if self.with_descriptors:
+                labels = [f"__prolog_clause_{clause_idx}_desc" for clause_idx, _clause in entries]
+            else:
+                labels = [f"__prolog_clause_{clause_idx}_build" for clause_idx, _clause in entries]
+            for i in range(0, len(labels), 8):
+                a.e(f"    {directive} " + ", ".join(labels[i:i+8]))
+            group_index += 1
+        a.e()
+
+        if self.with_descriptors and self.descriptor_clause_map:
+            # One pointer per distinct structural program, rather than one
+            # relocation per clause.  The programs themselves are 16-bit word
+            # streams: [var_count, body_count, prefix-term ...].
+            a.e("; Stage 288: generic descriptor structural programs")
+            a.l("__prolog_clause_template_table")
+            template_labels = [
+                f"__prolog_clause_template_{int(t['index'])}_desc"
+                for t in self.descriptor_templates
+            ]
+            for i in range(0, len(template_labels), 8):
+                a.e(f"    {directive} " + ", ".join(template_labels[i:i+8]))
+            for template in self.descriptor_templates:
+                a.l(f"__prolog_clause_template_{int(template['index'])}_desc")
+                words = self._descriptor_template_words(template)
+                for i in range(0, len(words), 16):
+                    chunk = words[i:i+16]
+                    a.e("    dw " + ", ".join(str(int(v) & 0xFFFF) for v in chunk))
+            a.e()
+
+            # Per-clause payload starts with the structural-template index,
+            # followed by atom/int/float dwords referenced by the program.
+            a.e("; Stage 288: per-clause descriptor payloads")
+            for clause_idx in sorted(self.descriptor_clause_map):
+                template_index, values = self.descriptor_clause_map[clause_idx]
+                payload = (int(template_index),) + tuple(values)
+                a.l(f"__prolog_clause_{clause_idx}_desc")
+                for i in range(0, len(payload), 12):
+                    chunk = payload[i:i+12]
+                    a.e("    dd " + ", ".join(str(int(v) & 0xFFFFFFFF) for v in chunk))
+            a.e()
+
         for (_qi,_name), label in sorted(self.qvar_labels.items()):
             # recover name from key tuple
             name = _name
             for line in self._db_bytes(label, name):
                 a.e(line)
         constants = {
-            "__prolog_caption":"d64 PROLOG Runtime",
+            "__prolog_caption":"Prolog - (c) 2026 by Jens Kallup",
             "__prolog_fmt_int":"%d",
             "__prolog_text_underscore":"_",
             "__prolog_text_nil":"[]",
@@ -7010,11 +8091,17 @@ class PrologRuntimeEmitter:
             "__prolog_text_dot_nl":".\r\n",
             "__prolog_text_newline":"\r\n",
             "__prolog_text_true_line":"true.\r\n",
-            "__prolog_text_false_line":"false.\r\n",
+            "__prolog_text_false_line":"keine weiteren Antworten.\r\n",
             "__prolog_text_prompt":"?- ",
             "__prolog_text_more_prompt":"ENTER = weitere Lösung, q = zurück zum Prompt (; = SWI-redo): ",
             "__prolog_text_parse_error":"syntax_error.\r\n",
             "__prolog_text_repl_gui":"repl/0 ist nur im Console-Modus verfügbar.\r\n",
+            "__prolog_qt_dll_name":"libd64_qt5.dll",
+            "__prolog_qt_name_init":"DBaseQtPrologInitialize",
+            "__prolog_qt_name_write":"DBaseQtPrologWrite",
+            "__prolog_qt_name_read":"DBaseQtPrologReadLine",
+            "__prolog_qt_name_shutdown":"DBaseQtPrologShutdown",
+            "__prolog_gui_launch_error":"PROLOG --gui: native Qt5-Runtime libd64_qt5.dll fehlt oder besitzt nicht die Stage-295-PROLOG-Schnittstelle.",
             "__prolog_fmt_saved_var":"_V%d",
             "__prolog_text_rule_sep":" :- ",
             "__prolog_text_knowledge_sep":" = ",
@@ -7038,62 +8125,53 @@ class PrologRuntimeEmitter:
         for label,text in constants.items():
             for line in self._db_bytes(label,text):
                 a.e(line)
-        # writable small globals. PE64 puts zero-initialized globals in .bss;
-        # PE32 remains .data because that assembler currently has no BSS model.
-        if ar.is64:
-            a.e()
-            a.e("section .bss")
-            for name,size in (
-                ("__prolog_arena",8),("__prolog_stdout",8),("__prolog_stdin",8),("__prolog_dyn_base",8),("__prolog_dyn_alt_base",8),("__prolog_db_file_handle",8),("__prolog_emit_file_handle",8),
-            ):
-                a.e(name+":")
-                a.e("    resq 1")
-            for name in (
-                "__prolog_heap_top","__prolog_dyn_heap_top","__prolog_trail_top","__prolog_choice_top",
-                "__prolog_dyn_count","__prolog_dyn_atom_count","__prolog_atom_pool_top","__prolog_output_top",
-                "__prolog_query_var_count","__prolog_solution_count","__prolog_read_count","__prolog_parse_pos",
-                "__prolog_qname_top","__prolog_written","__prolog_dyn_copy_var_count","__prolog_dyn_clone_var_count",
-                "__prolog_current_cut_barrier","__prolog_cut_active_barrier","__prolog_build_barrier",
-                "__prolog_interactive_mode","__prolog_stop_search","__prolog_requested_more","__prolog_direct_eval","__prolog_verbose","__prolog_gc_heap_mark",
-                "__prolog_db_next_id","__prolog_current_db","__prolog_db_loading","__prolog_db_file_read","__prolog_db_file_pos","__prolog_db_heap_mark",
-                "__prolog_parser_db_mode","__prolog_db_parser_var_count","__prolog_db_parser_name_top","__prolog_save_var_count",
-                "__prolog_emit_to_file","__prolog_emit_file_error",
-            ):
-                a.e(name+":")
-                a.e("    resd 1")
-            a.e("__prolog_format_buffer:")
-            a.e("    resb 64")
-        else:
-            for name in ("__prolog_arena","__prolog_stdout","__prolog_stdin","__prolog_dyn_base","__prolog_dyn_alt_base","__prolog_db_file_handle","__prolog_emit_file_handle"):
-                a.e(name+":")
-                a.e("    dd 0")
-            for name in (
-                "__prolog_heap_top","__prolog_dyn_heap_top","__prolog_trail_top","__prolog_choice_top",
-                "__prolog_dyn_count","__prolog_dyn_atom_count","__prolog_atom_pool_top","__prolog_output_top",
-                "__prolog_query_var_count","__prolog_solution_count","__prolog_read_count","__prolog_parse_pos",
-                "__prolog_qname_top","__prolog_written","__prolog_dyn_copy_var_count","__prolog_dyn_clone_var_count",
-                "__prolog_current_cut_barrier","__prolog_cut_active_barrier","__prolog_build_barrier",
-                "__prolog_interactive_mode","__prolog_stop_search","__prolog_requested_more","__prolog_direct_eval","__prolog_verbose","__prolog_gc_heap_mark",
-                "__prolog_db_next_id","__prolog_current_db","__prolog_db_loading","__prolog_db_file_read","__prolog_db_file_pos","__prolog_db_heap_mark",
-                "__prolog_parser_db_mode","__prolog_db_parser_var_count","__prolog_db_parser_name_top","__prolog_save_var_count",
-                "__prolog_emit_to_file","__prolog_emit_file_error",
-            ):
-                a.e(name+":")
-                a.e("    dd 0")
-            a.e("__prolog_format_buffer:")
-            a.e("    db " + ", ".join("0" for _ in range(64)))
+        # Stage 286: the internal PE32 assembler has a real .bss model now.
+        # Keep every zero-initialized runtime scalar/buffer out of .data for
+        # both architectures; only VirtualSize grows, not the file payload.
+        a.e()
+        a.e("section .bss")
+        pointer_res = "resq 1" if ar.is64 else "resd 1"
+        for name in (
+            "__prolog_arena","__prolog_stdout","__prolog_stdin","__prolog_dyn_base",
+            "__prolog_dyn_alt_base","__prolog_db_file_handle","__prolog_emit_file_handle",
+            "__prolog_qt_module","__prolog_qt_init_fn","__prolog_qt_write_fn",
+            "__prolog_qt_read_fn","__prolog_qt_shutdown_fn",
+        ):
+            a.e(name+":")
+            a.e("    " + pointer_res)
+        for name in (
+            "__prolog_heap_top","__prolog_dyn_heap_top","__prolog_trail_top","__prolog_choice_top",
+            "__prolog_dyn_count","__prolog_dyn_atom_count","__prolog_atom_pool_top","__prolog_output_top",
+            "__prolog_query_var_count","__prolog_solution_count","__prolog_read_count","__prolog_parse_pos",
+            "__prolog_qname_top","__prolog_written","__prolog_dyn_copy_var_count","__prolog_dyn_clone_var_count",
+            "__prolog_current_cut_barrier","__prolog_cut_active_barrier","__prolog_build_barrier",
+            "__prolog_interactive_mode","__prolog_stop_search","__prolog_requested_more","__prolog_direct_eval","__prolog_verbose","__prolog_gc_heap_mark",
+            "__prolog_db_next_id","__prolog_current_db","__prolog_db_loading","__prolog_db_file_read","__prolog_db_file_pos","__prolog_db_heap_mark",
+            "__prolog_parser_db_mode","__prolog_db_parser_var_count","__prolog_db_parser_name_top","__prolog_save_var_count",
+            "__prolog_emit_to_file","__prolog_emit_file_error",
+            "__prolog_random_state","__prolog_start_mode","__prolog_argc",
+        ):
+            a.e(name+":")
+            a.e("    resd 1")
+        a.e("__prolog_format_buffer:")
+        a.e("    resb 64")
 
     def emit(self) -> str:
         a = _A()
         ar = self.arch
         a.e("bits 64" if ar.is64 else "bits 32")
         a.e()
-        if self.is_gui:
-            a.e('import MessageBoxA, "user32.dll", "MessageBoxA"')
-        else:
-            a.e('import GetStdHandle, "kernel32.dll", "GetStdHandle"')
-            a.e('import SetConsoleCP, "kernel32.dll", "SetConsoleCP"')
-            a.e('import SetConsoleOutputCP, "kernel32.dll", "SetConsoleOutputCP"')
+        # Stage 295: every PROLOG PE supports console, hidden IDE pipes and native in-process --gui.
+        a.e('import AllocConsole, "kernel32.dll", "AllocConsole"')
+        a.e('import GetConsoleWindow, "kernel32.dll", "GetConsoleWindow"')
+        a.e('import FreeConsole, "kernel32.dll", "FreeConsole"')
+        a.e('import GetCommandLineA, "kernel32.dll", "GetCommandLineA"')
+        a.e('import LoadLibraryA, "kernel32.dll", "LoadLibraryA"')
+        a.e('import GetProcAddress, "kernel32.dll", "GetProcAddress"')
+        a.e('import GetStdHandle, "kernel32.dll", "GetStdHandle"')
+        a.e('import SetConsoleCP, "kernel32.dll", "SetConsoleCP"')
+        a.e('import SetConsoleOutputCP, "kernel32.dll", "SetConsoleOutputCP"')
+        a.e('import MessageBoxA, "user32.dll", "MessageBoxA"')
         # File I/O is also used by the external PROLOG database runtime.
         a.e('import WriteFile, "kernel32.dll", "WriteFile"')
         a.e('import ReadFile, "kernel32.dll", "ReadFile"')
@@ -7102,6 +8180,7 @@ class PrologRuntimeEmitter:
         a.e('import FlushFileBuffers, "kernel32.dll", "FlushFileBuffers"')
         a.e('import MoveFileExA, "kernel32.dll", "MoveFileExA"')
         a.e('import DeleteFileA, "kernel32.dll", "DeleteFileA"')
+        a.e('import GetTickCount, "kernel32.dll", "GetTickCount"')
         a.e('import VirtualAlloc, "kernel32.dll", "VirtualAlloc"')
         a.e('import ExitProcess, "kernel32.dll", "ExitProcess"')
         a.e('import wsprintfA, "user32.dll", "wsprintfA"')
@@ -7124,6 +8203,7 @@ class PrologRuntimeEmitter:
         self._emit_solver(a)
         self._emit_repl(a)
         self._emit_clause_builders(a)
+        self._emit_stage292_start_helpers(a)
         startup_specs = self._emit_startup_query_builders(a)
         query_specs = self._emit_query_builders(a)
         self._emit_init(a, startup_specs, query_specs)

@@ -1,0 +1,164 @@
+{
+  "components": [
+    {
+      "id": "74LS248",
+      "name": "74LS248",
+      "description": "BCD-zu-7-Segment-Decoder/Treiber",
+      "category": "Display",
+      "family": "74LS",
+      "type": "BCD to 7-Segment Decoder",
+      "package": "DIP16",
+      "file": "74LS248.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS251",
+      "name": "74LS251",
+      "description": "8-zu-1 Multiplexer/Datenselektor mit 3-State-Ausgängen",
+      "category": "Multiplexer",
+      "family": "74LS",
+      "type": "8-to-1 3-State Multiplexer",
+      "package": "DIP16",
+      "file": "74LS251.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS253",
+      "name": "74LS253",
+      "description": "Zwei 4-zu-1 Multiplexer mit 3-State-Ausgängen",
+      "category": "Multiplexer",
+      "family": "74LS",
+      "type": "Dual 4-to-1 3-State Multiplexer",
+      "package": "DIP16",
+      "file": "74LS253.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS257",
+      "name": "74LS257",
+      "description": "Vier 2-zu-1 Multiplexer mit nichtinvertierenden 3-State-Ausgängen",
+      "category": "Multiplexer",
+      "family": "74LS",
+      "type": "Quad 2-to-1 3-State Multiplexer",
+      "package": "DIP16",
+      "file": "74LS257.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS258",
+      "name": "74LS258",
+      "description": "Vier 2-zu-1 Multiplexer mit invertierenden 3-State-Ausgängen",
+      "category": "Multiplexer",
+      "family": "74LS",
+      "type": "Quad Inverting 2-to-1 3-State Multiplexer",
+      "package": "DIP16",
+      "file": "74LS258.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS259",
+      "name": "74LS259",
+      "description": "Adressierbares 8-Bit-Latch",
+      "category": "Register",
+      "family": "74LS",
+      "type": "8-bit Addressable Latch",
+      "package": "DIP16",
+      "file": "74LS259.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS266",
+      "name": "74LS266",
+      "description": "Vier 2-Eingang XNOR-Gatter mit Open-Collector-Ausgängen",
+      "category": "Logikgatter",
+      "family": "74LS",
+      "type": "XNOR Open-Collector",
+      "package": "DIP14",
+      "file": "74LS266.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS273",
+      "name": "74LS273",
+      "description": "Acht D-Flipflops mit gemeinsamem Master Reset",
+      "category": "Register",
+      "family": "74LS",
+      "type": "Octal D Flip-Flop",
+      "package": "DIP20",
+      "file": "74LS273.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS283",
+      "name": "74LS283",
+      "description": "4-Bit-Binär-Volladdierer mit schnellem Carry",
+      "category": "Arithmetik",
+      "family": "74LS",
+      "type": "4-bit Full Adder",
+      "package": "DIP16",
+      "file": "74LS283.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS299",
+      "name": "74LS299",
+      "description": "Universelles 8-Bit-Schiebe-/Speicherregister mit 3-State-I/O",
+      "category": "Schieberegister",
+      "family": "74LS",
+      "type": "8-bit Universal Shift/Storage Register",
+      "package": "DIP20",
+      "file": "74LS299.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    }
+  ]
+}

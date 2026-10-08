@@ -1,0 +1,164 @@
+{
+  "components": [
+    {
+      "id": "74LS323",
+      "name": "74LS323",
+      "description": "8-Bit Universal Shift/Storage Register mit 3-State-Ausgängen",
+      "category": "Schieberegister",
+      "family": "74LS",
+      "type": "8-bit Universal Shift/Storage Register",
+      "package": "DIP20",
+      "file": "74LS323.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS365",
+      "name": "74LS365",
+      "description": "Sechs nichtinvertierende 3-State-Buspuffer mit gemeinsamer Freigabe",
+      "category": "Puffer",
+      "family": "74LS",
+      "type": "Hex 3-State Buffer",
+      "package": "DIP16",
+      "file": "74LS365.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS366",
+      "name": "74LS366",
+      "description": "Sechs invertierende 3-State-Buspuffer mit gemeinsamer Freigabe",
+      "category": "Puffer",
+      "family": "74LS",
+      "type": "Hex Inverting 3-State Buffer",
+      "package": "DIP16",
+      "file": "74LS366.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS367",
+      "name": "74LS367",
+      "description": "Sechs nichtinvertierende 3-State-Puffer in 4-Bit- und 2-Bit-Gruppen",
+      "category": "Puffer",
+      "family": "74LS",
+      "type": "Hex 3-State Buffer (4+2)",
+      "package": "DIP16",
+      "file": "74LS367.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS368",
+      "name": "74LS368",
+      "description": "Sechs invertierende 3-State-Puffer in 4-Bit- und 2-Bit-Gruppen",
+      "category": "Puffer",
+      "family": "74LS",
+      "type": "Hex Inverting 3-State Buffer (4+2)",
+      "package": "DIP16",
+      "file": "74LS368.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS373",
+      "name": "74LS373",
+      "description": "8-Bit transparentes D-Latch mit 3-State-Ausgängen",
+      "category": "Register",
+      "family": "74LS",
+      "type": "Octal Transparent D Latch",
+      "package": "DIP20",
+      "file": "74LS373.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS374",
+      "name": "74LS374",
+      "description": "8-Bit D-Flipflop-Register mit 3-State-Ausgängen",
+      "category": "Register",
+      "family": "74LS",
+      "type": "Octal D Flip-Flop 3-State",
+      "package": "DIP20",
+      "file": "74LS374.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS377",
+      "name": "74LS377",
+      "description": "Acht D-Flipflops mit gemeinsamem Enable und Clock",
+      "category": "Register",
+      "family": "74LS",
+      "type": "Octal D Flip-Flop with Enable",
+      "package": "DIP20",
+      "file": "74LS377.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS378",
+      "name": "74LS378",
+      "description": "Sechs D-Flipflops mit gemeinsamem Enable und Clock",
+      "category": "Register",
+      "family": "74LS",
+      "type": "Hex D Flip-Flop with Enable",
+      "package": "DIP16",
+      "file": "74LS378.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS379",
+      "name": "74LS379",
+      "description": "Vier D-Flipflops mit Enable und komplementären Ausgängen",
+      "category": "Register",
+      "family": "74LS",
+      "type": "Quad D Flip-Flop with Enable",
+      "package": "DIP16",
+      "file": "74LS379.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    }
+  ]
+}

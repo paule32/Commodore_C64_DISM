@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import random as _random
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -1070,6 +1071,9 @@ class _Resolver:
             self.by_predicate.setdefault(key, []).append(clause)
         self._fresh_counter = 0
         self._solution_count = 0
+        # Stage 290 reference/interpreter RNG. Native executables use the
+        # matching xorshift32 runtime implementation emitted by runtime.py.
+        self._random = _random.Random()
 
     def _fresh_clause(self, clause: PrologClause) -> PrologClause:
         self._fresh_counter += 1
@@ -1169,6 +1173,54 @@ class _Resolver:
             if ok:
                 yield from self._solve(rest, env, output, depth)
             return
+        # Stage 290 general-purpose random predicates.  random_response/2 is
+        # intentionally NOT a builtin; applications can express it in Prolog
+        # using random/2 or random_between/3.
+        if name == "random" and arity == 1:
+            value = PrologTerm("number", self._random.getrandbits(31), line=goal.line, column=goal.column)
+            new_env = _unify(goal.args[0], value, env)
+            if new_env is not None:
+                yield from self._solve(rest, new_env, output, depth)
+            return
+        if name == "random" and arity == 2:
+            maximum = _eval_arith_term(goal.args[0], env)
+            if maximum is None or maximum.kind != "number" or int(maximum.value) <= 0:
+                return
+            value = PrologTerm(
+                "number",
+                self._random.randrange(int(maximum.value)),
+                line=goal.line,
+                column=goal.column,
+            )
+            new_env = _unify(goal.args[1], value, env)
+            if new_env is not None:
+                yield from self._solve(rest, new_env, output, depth)
+            return
+        if name == "random_between" and arity == 3:
+            minimum = _eval_arith_term(goal.args[0], env)
+            maximum = _eval_arith_term(goal.args[1], env)
+            if (
+                minimum is None or maximum is None
+                or minimum.kind != "number" or maximum.kind != "number"
+                or int(minimum.value) > int(maximum.value)
+            ):
+                return
+            lo = int(minimum.value)
+            hi = int(maximum.value)
+            # Native runtime stores INTEGER values as signed 32-bit dwords.
+            if lo < -2147483648 or hi > 2147483647:
+                return
+            value = PrologTerm(
+                "number",
+                self._random.randint(lo, hi),
+                line=goal.line,
+                column=goal.column,
+            )
+            new_env = _unify(goal.args[2], value, env)
+            if new_env is not None:
+                yield from self._solve(rest, new_env, output, depth)
+            return
+
         if name in {"<", "=<", ">", ">="} and arity == 2:
             a = _eval_arith_term(goal.args[0], env)
             b = _eval_arith_term(goal.args[1], env)
@@ -1237,6 +1289,7 @@ class PrologCompiler:
         target: str,
         windows_application_mode: str = "Console",
         verbose: bool = False,
+        with_descriptors: bool = False,
     ) -> None:
         self.source = str(source or "")
         self.filename = str(filename or "<PROLOG>")
@@ -1259,6 +1312,7 @@ class PrologCompiler:
         self.is64 = self.target == "pe64"
         self.is_gui = self.windows_application_mode == "GUI"
         self.verbose = bool(verbose)
+        self.with_descriptors = bool(with_descriptors)
         user_clauses, self.queries, self.startup_queries = parse_prolog_program(
             self.source, filename=self.filename
         )
@@ -1396,6 +1450,7 @@ class PrologCompiler:
             mode=self.windows_application_mode,
             filename=self.filename,
             verbose=self.verbose,
+            with_descriptors=self.with_descriptors,
         )
         assembly = emitter.emit()
         predicate_names = sorted(
@@ -1408,6 +1463,24 @@ class PrologCompiler:
         self.notes.append(
             "Native PROLOG-Runtime aktiv: Term-Heap, Listen, Trail-Stack, "
             "Choice-Points und Unifikation laufen in der erzeugten EXE."
+        )
+        self.notes.append(
+            "Stage 286 Compact-ASM: statische Atome verwenden eine Offset-Tabelle mit "
+            "zusammenhaengendem String-Blob; statische Klauseln laufen ueber gemeinsame "
+            "Choice/Unify/Solve/Restore-Helfer und Builder-Tabellen. Nullinitialisierte "
+            "Runtime-Daten liegen fuer PE32 und PE32+ in .bss."
+        )
+        self.notes.append(
+            "Stage 289 Prolog-Optimierung 'with descriptors': "
+            + (
+                "aktiv; alle statischen Clauses verwenden kompakte Payload-Descriptoren, "
+                "16-Bit-Strukturprogramme und einen einzigen generischen Descriptor-Builder. "
+                "Native Clause-Template- und Clause-Thunk-Routinen entfallen. Der Descriptor-"
+                "Payload-Zeiger EDI/RDI wird ueber Heap-Konstruktoren und rekursive Builder-"
+                "Aufrufe hinweg erhalten."
+                if self.with_descriptors else
+                "inaktiv; der Stage-286 Clause-Builder-Codepfad bleibt unveraendert."
+            )
         )
         self.notes.append(
             "assert/1, asserta/1 und assertz/1 speichern zur Laufzeit Fakten und Regeln; "
@@ -1451,27 +1524,32 @@ class PrologCompiler:
             "Aktuelle Runtime-Grenzen fuer externe PROLOG-Dateien: maximal 32 gleichzeitig geoeffnete "
             "Datenbanken, knapp 1 MiB Quelldatei und derzeit etwa 4 KiB pro einzelner Klausel."
         )
-        if not self.is_gui:
-            self.notes.append(
-                "Interaktive Queries: repl/0 startet den Console-Top-Level; nach einer Loesung "
-                "fordert ENTER die naechste Alternative an, q + ENTER beendet die aktuelle Suche "
-                "und kehrt zum ?-Prompt zurueck. ';' sowie n/r/SPACE/TAB bleiben als "
-                "SWI-kompatible Redo-Aliase erhalten. Ohne ?-Query und ohne main/0 startet die EXE "
-                "automatisch im REPL."
-            )
-            self.notes.append(
-                "SWI-Console-Encoding: set_stream(user_input, encoding(utf8)) und "
-                "set_stream(user_output, encoding(utf8)) werden fuer die Standard-Console-Streams "
-                "unterstuetzt. Stage 281 fuehrt :- set_stream(...). sowie die d64-Kurzform "
-                "set_stream(...). bereits beim Programmstart aus. Zusaetzlich setzt "
-                "set_console_codepage/1 eine numerische Windows-Codepage fuer Ein- und Ausgabe, "
-                "z.B. set_console_codepage(65001)."
-            )
-        else:
-            self.notes.append(
-                "GUI-Ausgaben werden zur Laufzeit gesammelt und am Programmende in MessageBoxA angezeigt; "
-                "repl/0 ist im GUI-Modus deaktiviert."
-            )
+        self.notes.append(
+            "Stage 295 Dual-UI: --gui wird im fruehen PE-Startpfad aus GetCommandLineA erkannt "
+            "und startet die Qt5-Oberflaeche direkt im erzeugten PROLOG-Prozess. Es gibt keinen "
+            "Python-/Helper-/Pipe-Host mehr. libd64_qt5.dll wird nur fuer --gui dynamisch per "
+            "LoadLibraryA geladen; Console-Starts bleiben Qt-unabhaengig. Das native Qt5-Fenster "
+            "besitzt 3-Pixel-Resize-Rahmen, Min/Max/Restore/Close, Dark-Mode-Titelverlauf und die "
+            "Eingabezeile unter dem PROLOG-Ausgabefeld. Ohne --gui wird eine vorhandene Konsole "
+            "verwendet oder per AllocConsole erzeugt; --ide-pipe bleibt nur fuer bestehende IDE-"
+            "Pipe-Integrationen erhalten."
+        )
+        self.notes.append(
+            "Stage 293 interaktive Queries: der Solver benutzt einen echten Ein-Loesungs-Look-ahead. "
+            "Nach einer ausgegebenen Antwort sucht er selbst weiter; nur wenn eine reale weitere "
+            "Loesung erreicht wurde, erscheint die ENTER-Fortsetzungsabfrage vor deren Ausgabe. "
+            "Ist die Suche erschoepft, erscheint sofort 'keine weiteren Antworten.' und der "
+            "Top-Level kehrt ohne zusaetzliches ENTER zum ?-Prompt zurueck. q + ENTER verwirft die "
+            "bereits gefundene Look-ahead-Loesung; ';' sowie n/r/SPACE/TAB bleiben Redo-Aliase."
+        )
+        self.notes.append(
+            "SWI-Console-Encoding: set_stream(user_input, encoding(utf8)) und "
+            "set_stream(user_output, encoding(utf8)) werden fuer die Standard-Console-Streams "
+            "unterstuetzt. Stage 281 fuehrt :- set_stream(...). sowie die d64-Kurzform "
+            "set_stream(...). bereits beim Programmstart aus. Zusaetzlich setzt "
+            "set_console_codepage/1 eine numerische Windows-Codepage fuer Ein- und Ausgabe, "
+            "z.B. set_console_codepage(65001)."
+        )
         return PrologCompileResult(
             assembly=assembly,
             source_kind="program",
@@ -1490,6 +1568,7 @@ def compile_prolog_to_assembly(
     target: str = "pe32",
     windows_application_mode: str = "Console",
     verbose: bool = False,
+    with_descriptors: bool = False,
 ) -> PrologCompileResult:
     return PrologCompiler(
         source,
@@ -1497,4 +1576,5 @@ def compile_prolog_to_assembly(
         target=target,
         windows_application_mode=windows_application_mode,
         verbose=verbose,
+        with_descriptors=with_descriptors,
     ).compile()

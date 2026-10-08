@@ -1,0 +1,1151 @@
+{
+  "version": 7,
+  "rotationDirectories": {
+    "0": "b0",
+    "90": "b90",
+    "180": "b180",
+    "270": "b270"
+  },
+  "components": [
+    {
+      "id": "74LS00",
+      "name": "74LS00",
+      "description": "Vier 2-Eingang NAND-Gatter",
+      "category": "Logikgatter",
+      "family": "74LS",
+      "type": "NAND",
+      "gates": 4,
+      "inputs": 2,
+      "package": "DIP14",
+      "file": "74LS00.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS02",
+      "name": "74LS02",
+      "description": "Vier 2-Eingang NOR-Gatter",
+      "category": "Logikgatter",
+      "family": "74LS",
+      "type": "NOR",
+      "gates": 4,
+      "inputs": 2,
+      "package": "DIP14",
+      "file": "74LS02.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS04",
+      "name": "74LS04",
+      "description": "Sechs Inverter",
+      "category": "Logikgatter",
+      "family": "74LS",
+      "type": "NOT",
+      "gates": 6,
+      "inputs": 1,
+      "package": "DIP14",
+      "file": "74LS04.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS08",
+      "name": "74LS08",
+      "description": "Vier 2-Eingang AND-Gatter",
+      "category": "Logikgatter",
+      "family": "74LS",
+      "type": "AND",
+      "gates": 4,
+      "inputs": 2,
+      "package": "DIP14",
+      "file": "74LS08.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS10",
+      "name": "74LS10",
+      "description": "Drei 3-Eingang NAND-Gatter",
+      "category": "Logikgatter",
+      "family": "74LS",
+      "type": "NAND",
+      "gates": 3,
+      "inputs": 3,
+      "package": "DIP14",
+      "file": "74LS10.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS11",
+      "name": "74LS11",
+      "description": "Drei 3-Eingang AND-Gatter",
+      "category": "Logikgatter",
+      "family": "74LS",
+      "type": "AND",
+      "gates": 3,
+      "inputs": 3,
+      "package": "DIP14",
+      "file": "74LS11.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS20",
+      "name": "74LS20",
+      "description": "Zwei 4-Eingang NAND-Gatter",
+      "category": "Logikgatter",
+      "family": "74LS",
+      "type": "NAND",
+      "gates": 2,
+      "inputs": 4,
+      "package": "DIP14",
+      "file": "74LS20.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS21",
+      "name": "74LS21",
+      "description": "Zwei 4-Eingang AND-Gatter",
+      "category": "Logikgatter",
+      "family": "74LS",
+      "type": "AND",
+      "gates": 2,
+      "inputs": 4,
+      "package": "DIP14",
+      "file": "74LS21.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS32",
+      "name": "74LS32",
+      "description": "Vier 2-Eingang OR-Gatter",
+      "category": "Logikgatter",
+      "family": "74LS",
+      "type": "OR",
+      "gates": 4,
+      "inputs": 2,
+      "package": "DIP14",
+      "file": "74LS32.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS86",
+      "name": "74LS86",
+      "description": "Vier 2-Eingang XOR-Gatter",
+      "category": "Logikgatter",
+      "family": "74LS",
+      "type": "XOR",
+      "gates": 4,
+      "inputs": 2,
+      "package": "DIP14",
+      "file": "74LS86.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS90",
+      "name": "74LS90",
+      "description": "Dekadenzähler / Divide-by-10",
+      "category": "Zähler",
+      "family": "74LS",
+      "type": "Counter",
+      "package": "DIP14",
+      "file": "74LS90.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS93",
+      "name": "74LS93",
+      "description": "4-Bit-Binärzähler",
+      "category": "Zähler",
+      "family": "74LS",
+      "type": "Counter",
+      "package": "DIP14",
+      "file": "74LS93.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS107",
+      "name": "74LS107",
+      "description": "Zwei J-K-Flipflops mit Clear",
+      "category": "Flipflop",
+      "family": "74LS",
+      "type": "JK Flip-Flop",
+      "package": "DIP14",
+      "file": "74LS107.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS123",
+      "name": "74LS123",
+      "description": "Zwei retriggerbare monostabile Multivibratoren",
+      "category": "Zeitglieder",
+      "family": "74LS",
+      "type": "Monoflop",
+      "package": "DIP16",
+      "file": "74LS123.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS125",
+      "name": "74LS125",
+      "description": "Vier Bus-Puffer mit Tri-State-Ausgängen",
+      "category": "Puffer",
+      "family": "74LS",
+      "type": "Tri-State Buffer",
+      "package": "DIP14",
+      "file": "74LS125.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS132",
+      "name": "74LS132",
+      "description": "Vier 2-Eingang NAND-Schmitt-Trigger",
+      "category": "Logikgatter",
+      "family": "74LS",
+      "type": "NAND Schmitt",
+      "package": "DIP14",
+      "file": "74LS132.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS138",
+      "name": "74LS138",
+      "description": "3-zu-8 Decoder / Demultiplexer",
+      "category": "Decoder",
+      "family": "74LS",
+      "type": "3-to-8 Decoder",
+      "package": "DIP16",
+      "file": "74LS138.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS139",
+      "name": "74LS139",
+      "description": "Zwei 2-zu-4 Decoder / Demultiplexer",
+      "category": "Decoder",
+      "family": "74LS",
+      "type": "Dual 2-to-4 Decoder",
+      "package": "DIP16",
+      "file": "74LS139.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS151",
+      "name": "74LS151",
+      "description": "8-zu-1 Datenselektor / Multiplexer",
+      "category": "Multiplexer",
+      "family": "74LS",
+      "type": "8-to-1 Multiplexer",
+      "package": "DIP16",
+      "file": "74LS151.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS157",
+      "name": "74LS157",
+      "description": "Vier 2-zu-1 Datenselektoren / Multiplexer",
+      "category": "Multiplexer",
+      "family": "74LS",
+      "type": "Quad 2-to-1 Multiplexer",
+      "package": "DIP16",
+      "file": "74LS157.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS161",
+      "name": "74LS161",
+      "description": "Synchroner 4-Bit-Binärzähler mit Parallel Load",
+      "category": "Zähler",
+      "family": "74LS",
+      "type": "4-bit Binary Counter",
+      "package": "DIP16",
+      "file": "74LS161.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS163",
+      "name": "74LS163",
+      "description": "Synchroner 4-Bit-Binärzähler mit synchronem Clear",
+      "category": "Zähler",
+      "family": "74LS",
+      "type": "4-bit Synchronous Counter",
+      "package": "DIP16",
+      "file": "74LS163.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS164",
+      "name": "74LS164",
+      "description": "8-Bit Serial-In / Parallel-Out Schieberegister",
+      "category": "Schieberegister",
+      "family": "74LS",
+      "type": "SIPO Shift Register",
+      "package": "DIP14",
+      "file": "74LS164.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS165",
+      "name": "74LS165",
+      "description": "8-Bit Parallel-In / Serial-Out Schieberegister",
+      "category": "Schieberegister",
+      "family": "74LS",
+      "type": "PISO Shift Register",
+      "package": "DIP16",
+      "file": "74LS165.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS166",
+      "name": "74LS166",
+      "description": "8-Bit Parallel-Load Schieberegister",
+      "category": "Schieberegister",
+      "family": "74LS",
+      "type": "Parallel-load Shift Register",
+      "package": "DIP16",
+      "file": "74LS166.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS173",
+      "name": "74LS173",
+      "description": "4-Bit D-Register mit 3-State-Ausgängen",
+      "category": "Register",
+      "family": "74LS",
+      "type": "4-bit D Register",
+      "package": "DIP16",
+      "file": "74LS173.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS174",
+      "name": "74LS174",
+      "description": "Sechs D-Flipflops mit gemeinsamem Clear",
+      "category": "Flipflop",
+      "family": "74LS",
+      "type": "Hex D Flip-Flop",
+      "package": "DIP16",
+      "file": "74LS174.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS175",
+      "name": "74LS175",
+      "description": "Vier D-Flipflops mit komplementären Ausgängen und Clear",
+      "category": "Flipflop",
+      "family": "74LS",
+      "type": "Quad D Flip-Flop",
+      "package": "DIP16",
+      "file": "74LS175.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS181",
+      "name": "74LS181",
+      "description": "4-Bit Arithmetic Logic Unit / Function Generator",
+      "category": "ALU",
+      "family": "74LS",
+      "type": "4-bit ALU",
+      "package": "DIP24",
+      "file": "74LS181.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS190",
+      "name": "74LS190",
+      "description": "Synchroner BCD Up/Down-Zähler mit Preset",
+      "category": "Zähler",
+      "family": "74LS",
+      "type": "BCD Up/Down Counter",
+      "package": "DIP16",
+      "file": "74LS190.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS191",
+      "name": "74LS191",
+      "description": "Synchroner 4-Bit-Binär-Up/Down-Zähler",
+      "category": "Zähler",
+      "family": "74LS",
+      "type": "4-bit Binary Up/Down Counter",
+      "package": "DIP16",
+      "file": "74LS191.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS192",
+      "name": "74LS192",
+      "description": "Synchroner BCD-Up/Down-Zähler mit getrennten Takten",
+      "category": "Zähler",
+      "family": "74LS",
+      "type": "BCD Up/Down Counter",
+      "package": "DIP16",
+      "file": "74LS192.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS193",
+      "name": "74LS193",
+      "description": "Synchroner 4-Bit-Binär-Up/Down-Zähler mit getrennten Takten",
+      "category": "Zähler",
+      "family": "74LS",
+      "type": "Binary Up/Down Counter",
+      "package": "DIP16",
+      "file": "74LS193.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS194",
+      "name": "74LS194",
+      "description": "Universelles bidirektionales 4-Bit-Schieberegister",
+      "category": "Schieberegister",
+      "family": "74LS",
+      "type": "Universal Shift Register",
+      "package": "DIP16",
+      "file": "74LS194.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS221",
+      "name": "74LS221",
+      "description": "Zwei monostabile Multivibratoren mit Schmitt-Trigger-Eingängen",
+      "category": "Zeitglieder",
+      "family": "74LS",
+      "type": "Dual Monostable",
+      "package": "DIP16",
+      "file": "74LS221.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS240",
+      "name": "74LS240",
+      "description": "Acht invertierende Bus-/Leitungstreiber mit 3-State-Ausgängen",
+      "category": "Puffer",
+      "family": "74LS",
+      "type": "Octal Inverting 3-State Buffer",
+      "package": "DIP20",
+      "file": "74LS240.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS241",
+      "name": "74LS241",
+      "description": "Acht nichtinvertierende Bus-/Leitungstreiber mit 3-State-Ausgängen",
+      "category": "Puffer",
+      "family": "74LS",
+      "type": "Octal 3-State Buffer",
+      "package": "DIP20",
+      "file": "74LS241.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS244",
+      "name": "74LS244",
+      "description": "Acht nichtinvertierende Puffer/Leitungstreiber mit 3-State-Ausgängen",
+      "category": "Puffer",
+      "family": "74LS",
+      "type": "Octal 3-State Buffer",
+      "package": "DIP20",
+      "file": "74LS244.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS245",
+      "name": "74LS245",
+      "description": "Bidirektionaler 8-Bit-Bus-Transceiver mit 3-State-Ausgängen",
+      "category": "Bus",
+      "family": "74LS",
+      "type": "Octal Bus Transceiver",
+      "package": "DIP20",
+      "file": "74LS245.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS247",
+      "name": "74LS247",
+      "description": "BCD-zu-7-Segment-Decoder/Treiber mit Open-Collector-Ausgängen",
+      "category": "Display",
+      "family": "74LS",
+      "type": "BCD to 7-Segment Decoder",
+      "package": "DIP16",
+      "file": "74LS247.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS248",
+      "name": "74LS248",
+      "description": "BCD-zu-7-Segment-Decoder/Treiber",
+      "category": "Display",
+      "family": "74LS",
+      "type": "BCD to 7-Segment Decoder",
+      "package": "DIP16",
+      "file": "74LS248.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS251",
+      "name": "74LS251",
+      "description": "8-zu-1 Multiplexer/Datenselektor mit 3-State-Ausgängen",
+      "category": "Multiplexer",
+      "family": "74LS",
+      "type": "8-to-1 3-State Multiplexer",
+      "package": "DIP16",
+      "file": "74LS251.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS253",
+      "name": "74LS253",
+      "description": "Zwei 4-zu-1 Multiplexer mit 3-State-Ausgängen",
+      "category": "Multiplexer",
+      "family": "74LS",
+      "type": "Dual 4-to-1 3-State Multiplexer",
+      "package": "DIP16",
+      "file": "74LS253.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS257",
+      "name": "74LS257",
+      "description": "Vier 2-zu-1 Multiplexer mit nichtinvertierenden 3-State-Ausgängen",
+      "category": "Multiplexer",
+      "family": "74LS",
+      "type": "Quad 2-to-1 3-State Multiplexer",
+      "package": "DIP16",
+      "file": "74LS257.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS258",
+      "name": "74LS258",
+      "description": "Vier 2-zu-1 Multiplexer mit invertierenden 3-State-Ausgängen",
+      "category": "Multiplexer",
+      "family": "74LS",
+      "type": "Quad Inverting 2-to-1 3-State Multiplexer",
+      "package": "DIP16",
+      "file": "74LS258.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS259",
+      "name": "74LS259",
+      "description": "Adressierbares 8-Bit-Latch",
+      "category": "Register",
+      "family": "74LS",
+      "type": "8-bit Addressable Latch",
+      "package": "DIP16",
+      "file": "74LS259.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS266",
+      "name": "74LS266",
+      "description": "Vier 2-Eingang XNOR-Gatter mit Open-Collector-Ausgängen",
+      "category": "Logikgatter",
+      "family": "74LS",
+      "type": "XNOR Open-Collector",
+      "package": "DIP14",
+      "file": "74LS266.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS273",
+      "name": "74LS273",
+      "description": "Acht D-Flipflops mit gemeinsamem Master Reset",
+      "category": "Register",
+      "family": "74LS",
+      "type": "Octal D Flip-Flop",
+      "package": "DIP20",
+      "file": "74LS273.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS283",
+      "name": "74LS283",
+      "description": "4-Bit-Binär-Volladdierer mit schnellem Carry",
+      "category": "Arithmetik",
+      "family": "74LS",
+      "type": "4-bit Full Adder",
+      "package": "DIP16",
+      "file": "74LS283.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS299",
+      "name": "74LS299",
+      "description": "Universelles 8-Bit-Schiebe-/Speicherregister mit 3-State-I/O",
+      "category": "Schieberegister",
+      "family": "74LS",
+      "type": "8-bit Universal Shift/Storage Register",
+      "package": "DIP20",
+      "file": "74LS299.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS323",
+      "name": "74LS323",
+      "description": "8-Bit Universal Shift/Storage Register mit 3-State-Ausgängen",
+      "category": "Schieberegister",
+      "family": "74LS",
+      "type": "8-bit Universal Shift/Storage Register",
+      "package": "DIP20",
+      "file": "74LS323.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS365",
+      "name": "74LS365",
+      "description": "Sechs nichtinvertierende 3-State-Buspuffer mit gemeinsamer Freigabe",
+      "category": "Puffer",
+      "family": "74LS",
+      "type": "Hex 3-State Buffer",
+      "package": "DIP16",
+      "file": "74LS365.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS366",
+      "name": "74LS366",
+      "description": "Sechs invertierende 3-State-Buspuffer mit gemeinsamer Freigabe",
+      "category": "Puffer",
+      "family": "74LS",
+      "type": "Hex Inverting 3-State Buffer",
+      "package": "DIP16",
+      "file": "74LS366.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS367",
+      "name": "74LS367",
+      "description": "Sechs nichtinvertierende 3-State-Puffer in 4-Bit- und 2-Bit-Gruppen",
+      "category": "Puffer",
+      "family": "74LS",
+      "type": "Hex 3-State Buffer (4+2)",
+      "package": "DIP16",
+      "file": "74LS367.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS368",
+      "name": "74LS368",
+      "description": "Sechs invertierende 3-State-Puffer in 4-Bit- und 2-Bit-Gruppen",
+      "category": "Puffer",
+      "family": "74LS",
+      "type": "Hex Inverting 3-State Buffer (4+2)",
+      "package": "DIP16",
+      "file": "74LS368.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS373",
+      "name": "74LS373",
+      "description": "8-Bit transparentes D-Latch mit 3-State-Ausgängen",
+      "category": "Register",
+      "family": "74LS",
+      "type": "Octal Transparent D Latch",
+      "package": "DIP20",
+      "file": "74LS373.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS374",
+      "name": "74LS374",
+      "description": "8-Bit D-Flipflop-Register mit 3-State-Ausgängen",
+      "category": "Register",
+      "family": "74LS",
+      "type": "Octal D Flip-Flop 3-State",
+      "package": "DIP20",
+      "file": "74LS374.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS377",
+      "name": "74LS377",
+      "description": "Acht D-Flipflops mit gemeinsamem Enable und Clock",
+      "category": "Register",
+      "family": "74LS",
+      "type": "Octal D Flip-Flop with Enable",
+      "package": "DIP20",
+      "file": "74LS377.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS378",
+      "name": "74LS378",
+      "description": "Sechs D-Flipflops mit gemeinsamem Enable und Clock",
+      "category": "Register",
+      "family": "74LS",
+      "type": "Hex D Flip-Flop with Enable",
+      "package": "DIP16",
+      "file": "74LS378.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS379",
+      "name": "74LS379",
+      "description": "Vier D-Flipflops mit Enable und komplementären Ausgängen",
+      "category": "Register",
+      "family": "74LS",
+      "type": "Quad D Flip-Flop with Enable",
+      "package": "DIP16",
+      "file": "74LS379.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS390",
+      "name": "74LS390",
+      "description": "Zweifacher 4-Bit-Dekadenzähler mit getrennten ÷2/÷5-Stufen",
+      "category": "Zähler",
+      "family": "74LS",
+      "type": "Dual Decade Counter",
+      "package": "DIP16",
+      "file": "74LS390.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS393",
+      "name": "74LS393",
+      "description": "Zweifacher 4-Bit-Binärzähler",
+      "category": "Zähler",
+      "family": "74LS",
+      "type": "Dual 4-bit Binary Counter",
+      "package": "DIP14",
+      "file": "74LS393.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS399",
+      "name": "74LS399",
+      "description": "Vierfacher 2-zu-1-Multiplexer mit Speicher",
+      "category": "Multiplexer",
+      "family": "74LS",
+      "type": "Quad 2-to-1 Multiplexer with Storage",
+      "package": "DIP16",
+      "file": "74LS399.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS541",
+      "name": "74LS541",
+      "description": "Acht nichtinvertierende Buspuffer/Leitungstreiber mit 3-State-Ausgängen",
+      "category": "Puffer",
+      "family": "74LS",
+      "type": "Octal 3-State Buffer",
+      "package": "DIP20",
+      "file": "74LS541.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS590",
+      "name": "74LS590",
+      "description": "8-Bit-Binärzähler mit Ausgangsregister und 3-State-Ausgängen",
+      "category": "Zähler",
+      "family": "74LS",
+      "type": "8-bit Counter with Output Register",
+      "package": "DIP16",
+      "file": "74LS590.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS591",
+      "name": "74LS591",
+      "description": "8-Bit-Binärzähler mit Ausgangsregister und Open-Collector-Ausgängen",
+      "category": "Zähler",
+      "family": "74LS",
+      "type": "8-bit Counter with OC Output Register",
+      "package": "DIP16",
+      "file": "74LS591.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS592",
+      "name": "74LS592",
+      "description": "8-Bit-Binärzähler mit Eingangsregister",
+      "category": "Zähler",
+      "family": "74LS",
+      "type": "8-bit Counter with Input Register",
+      "package": "DIP16",
+      "file": "74LS592.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS593",
+      "name": "74LS593",
+      "description": "8-Bit-Binärzähler mit Eingangsregister und 3-State-I/O",
+      "category": "Zähler",
+      "family": "74LS",
+      "type": "8-bit Counter with Input Register and 3-State I/O",
+      "package": "DIP20",
+      "file": "74LS593.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS682",
+      "name": "74LS682",
+      "description": "8-Bit-Identitäts-/Größenkomparator mit Q-Eingangs-Pullups",
+      "category": "Komparator",
+      "family": "74LS",
+      "type": "8-bit Magnitude/Identity Comparator",
+      "package": "DIP20",
+      "file": "74LS682.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS688",
+      "name": "74LS688",
+      "description": "8-Bit-Identitätskomparator (P = Q) mit Enable",
+      "category": "Komparator",
+      "family": "74LS",
+      "type": "8-bit Identity Comparator",
+      "package": "DIP20",
+      "file": "74LS688.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    }
+  ]
+}

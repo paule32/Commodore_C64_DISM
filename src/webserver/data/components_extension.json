@@ -1,0 +1,164 @@
+{
+  "components": [
+    {
+      "id": "74LS90",
+      "name": "74LS90",
+      "description": "Dekadenzähler / Divide-by-10",
+      "category": "Zähler",
+      "family": "74LS",
+      "type": "Counter",
+      "package": "DIP14",
+      "file": "74LS90.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS93",
+      "name": "74LS93",
+      "description": "4-Bit-Binärzähler",
+      "category": "Zähler",
+      "family": "74LS",
+      "type": "Counter",
+      "package": "DIP14",
+      "file": "74LS93.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS107",
+      "name": "74LS107",
+      "description": "Zwei J-K-Flipflops mit Clear",
+      "category": "Flipflop",
+      "family": "74LS",
+      "type": "JK Flip-Flop",
+      "package": "DIP14",
+      "file": "74LS107.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS123",
+      "name": "74LS123",
+      "description": "Zwei retriggerbare monostabile Multivibratoren",
+      "category": "Zeitglieder",
+      "family": "74LS",
+      "type": "Monoflop",
+      "package": "DIP16",
+      "file": "74LS123.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS125",
+      "name": "74LS125",
+      "description": "Vier Bus-Puffer mit Tri-State-Ausgängen",
+      "category": "Puffer",
+      "family": "74LS",
+      "type": "Tri-State Buffer",
+      "package": "DIP14",
+      "file": "74LS125.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS132",
+      "name": "74LS132",
+      "description": "Vier 2-Eingang NAND-Schmitt-Trigger",
+      "category": "Logikgatter",
+      "family": "74LS",
+      "type": "NAND Schmitt",
+      "package": "DIP14",
+      "file": "74LS132.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS138",
+      "name": "74LS138",
+      "description": "3-zu-8 Decoder / Demultiplexer",
+      "category": "Decoder",
+      "family": "74LS",
+      "type": "3-to-8 Decoder",
+      "package": "DIP16",
+      "file": "74LS138.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS139",
+      "name": "74LS139",
+      "description": "Zwei 2-zu-4 Decoder / Demultiplexer",
+      "category": "Decoder",
+      "family": "74LS",
+      "type": "Dual 2-to-4 Decoder",
+      "package": "DIP16",
+      "file": "74LS139.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS151",
+      "name": "74LS151",
+      "description": "8-zu-1 Datenselektor / Multiplexer",
+      "category": "Multiplexer",
+      "family": "74LS",
+      "type": "8-to-1 Multiplexer",
+      "package": "DIP16",
+      "file": "74LS151.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS157",
+      "name": "74LS157",
+      "description": "Vier 2-zu-1 Datenselektoren / Multiplexer",
+      "category": "Multiplexer",
+      "family": "74LS",
+      "type": "Quad 2-to-1 Multiplexer",
+      "package": "DIP16",
+      "file": "74LS157.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    }
+  ]
+}

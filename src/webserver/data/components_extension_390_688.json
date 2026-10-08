@@ -1,0 +1,164 @@
+{
+  "components": [
+    {
+      "id": "74LS390",
+      "name": "74LS390",
+      "description": "Zweifacher 4-Bit-Dekadenzähler mit getrennten ÷2/÷5-Stufen",
+      "category": "Zähler",
+      "family": "74LS",
+      "type": "Dual Decade Counter",
+      "package": "DIP16",
+      "file": "74LS390.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS393",
+      "name": "74LS393",
+      "description": "Zweifacher 4-Bit-Binärzähler",
+      "category": "Zähler",
+      "family": "74LS",
+      "type": "Dual 4-bit Binary Counter",
+      "package": "DIP14",
+      "file": "74LS393.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS399",
+      "name": "74LS399",
+      "description": "Vierfacher 2-zu-1-Multiplexer mit Speicher",
+      "category": "Multiplexer",
+      "family": "74LS",
+      "type": "Quad 2-to-1 Multiplexer with Storage",
+      "package": "DIP16",
+      "file": "74LS399.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS541",
+      "name": "74LS541",
+      "description": "Acht nichtinvertierende Buspuffer/Leitungstreiber mit 3-State-Ausgängen",
+      "category": "Puffer",
+      "family": "74LS",
+      "type": "Octal 3-State Buffer",
+      "package": "DIP20",
+      "file": "74LS541.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS590",
+      "name": "74LS590",
+      "description": "8-Bit-Binärzähler mit Ausgangsregister und 3-State-Ausgängen",
+      "category": "Zähler",
+      "family": "74LS",
+      "type": "8-bit Counter with Output Register",
+      "package": "DIP16",
+      "file": "74LS590.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS591",
+      "name": "74LS591",
+      "description": "8-Bit-Binärzähler mit Ausgangsregister und Open-Collector-Ausgängen",
+      "category": "Zähler",
+      "family": "74LS",
+      "type": "8-bit Counter with OC Output Register",
+      "package": "DIP16",
+      "file": "74LS591.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS592",
+      "name": "74LS592",
+      "description": "8-Bit-Binärzähler mit Eingangsregister",
+      "category": "Zähler",
+      "family": "74LS",
+      "type": "8-bit Counter with Input Register",
+      "package": "DIP16",
+      "file": "74LS592.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS593",
+      "name": "74LS593",
+      "description": "8-Bit-Binärzähler mit Eingangsregister und 3-State-I/O",
+      "category": "Zähler",
+      "family": "74LS",
+      "type": "8-bit Counter with Input Register and 3-State I/O",
+      "package": "DIP20",
+      "file": "74LS593.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS682",
+      "name": "74LS682",
+      "description": "8-Bit-Identitäts-/Größenkomparator mit Q-Eingangs-Pullups",
+      "category": "Komparator",
+      "family": "74LS",
+      "type": "8-bit Magnitude/Identity Comparator",
+      "package": "DIP20",
+      "file": "74LS682.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS688",
+      "name": "74LS688",
+      "description": "8-Bit-Identitätskomparator (P = Q) mit Enable",
+      "category": "Komparator",
+      "family": "74LS",
+      "type": "8-bit Identity Comparator",
+      "package": "DIP20",
+      "file": "74LS688.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    }
+  ]
+}

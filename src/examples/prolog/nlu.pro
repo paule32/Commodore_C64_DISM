@@ -3,14 +3,14 @@ Format = dBase2Many Project
 Version = 2
 WorkingDirectory = .
 WorkspaceRoot = ../..
-ViewState = AAAA/wAAAAD9AAAABAAAAAAAAAOqAAACm/wCAAAADfwAAABtAAABKgAAAAAA/////AEAAAAC+wAAADIAZABiAGEAcwBlAF8AdABhAGIAbABlAF8AZABlAHMAaQBnAG4AZQByAF8AZABvAGMAawAAAAFGAAAChAAAAAAAAAAA+wAAACoAZABlAHMAawB0AG8AcABfAHMAZQB0AHQAaQBuAGcAcwBfAGQAbwBjAGsAAAABRgAAAvEAAAAAAAAAAPsAAAAqAHAAcgBvAGwAbwBnAF8AawBuAG8AdwBsAGUAZABnAGUAXwBkAG8AYwBrAQAAAG0AAAGYAAAAAAAAAAD7AAAAJgBsAG8AYwBhAGwAaQB6AGUAXwBwAG8AXwBtAG8AXwBkAG8AYwBrAAAAAG0AAAJiAAAAAAAAAAD7AAAANABkAG8AeAB5AGcAZQBuAF8AZABvAGMAdQBtAGUAbgB0AGEAdABpAG8AbgBfAGQAbwBjAGsAAAAAbQAAAioAAAAAAAAAAPwAAABtAAACnQAAAAAA/////AEAAAAC+wAAADAAZABiAGEAcwBlAF8AZgBvAHIAbQBfAHAAcgBvAHAAZQByAHQAeQBfAGQAbwBjAGsAAAAAAgAABOcAAAAAAAAAAPsAAAAwAGQAYgBhAHMAZQBfAGYAbwByAG0AXwBkAGUAcwBpAGcAbgBlAHIAXwBkAG8AYwBrAAAAAR4AAAPLAAAAAAAAAAD7AAAALABkAGIAYQBzAGUAXwBzAHEAbABfAGIAdQBpAGwAZABlAHIAXwBkAG8AYwBrAAAAAG0AAAKdAAAAAAAAAAD7AAAAMgBkAGIAYQBzAGUAXwByAGUAcABvAHIAdABfAGIAdQBpAGwAZABlAHIAXwBkAG8AYwBrAQAAAG0AAAIqAAAAAAAAAAD7AAAAMgBkAGIAYQBzAGUAXwBsAGEAYgBlAGwAXwBkAGUAcwBpAGcAbgBlAHIAXwBkAG8AYwBrAQAAAG0AAAIvAAAAAAAAAAD7AAAAJgBtAHUAcwBpAGMAXwBrAGUAeQBiAG8AYQByAGQAXwBkAG8AYwBrAAAAAG4AAAKbAAAAAAAAAAD7AAAALABnAGUAcgBtAGEAbgB5AF8AZwBlAG8AZwByAGEAcABoAHkAXwBkAG8AYwBrAAAAAG4AAAKbAAAAAAAAAAD7AAAAJABtAGEAdABoAF8AbABlAGEAcgBuAGkAbgBnAF8AZABvAGMAawEAAABuAAACKAAAAAAAAAAA+wAAACIAUABlAHIAaQBvAGQAaQBjAFQAYQBiAGwAZQBEAG8AYwBrAAAAAG4AAAKbAAAAAAAAAAD7AAAAMgB1AG4AaQB0AF8AYwBpAHIAYwBsAGUAXwBsAGUAYQByAG4AaQBuAGcAXwBkAG8AYwBrAAAAAG4AAAKbAAAAAAAAAAAAAAABAAADqgAAApv8AgAAAAP7AAAAIABkADYANABfAGMAbwBuAHQAZQBuAHQAXwBkAG8AYwBrAAAAAG4AAADiAAAA4gD////8AAAAbgAAApsAAAAAAP////wBAAAAAvsAAAAeAGYAaQBsAGUAcwB5AHMAdABlAG0AXwBkAG8AYwBrAAAAAAD/////AAABQAD////7AAAAKgBwAHIAbwBqAGUAYwB0AF8AcwBlAHQAdABpAG4AZwBzAF8AZABvAGMAawAAAAADAAADqgAAAQQA////+wAAACoAbQB1AHMAaQBjAF8AaQBuAHMAdAByAHUAbQBlAG4AdABfAGQAbwBjAGsAAAAAbgAAApsAAAAAAAAAAAAAAAIAAARIAAACkfwBAAAAAvsAAAAyAG0AaQBuAGUAcwB3AGUAZQBwAGUAcgBfAGwAZQBhAHIAbgBpAG4AZwBfAGQAbwBjAGsAAAAAAwAABQUAAAAAAAAAAPsAAAA0AG0AYQB0AGgAXwBmAG8AcgBtAHUAbABhAF8AZABlAHMAaQBnAG4AZQByAF8AZABvAGMAawEAAAADAAAESAAAAAAAAAAAAAAAAwAABEYAAAC+/AEAAAAB+wAAABAAbABvAGcAXwBkAG8AYwBrAAAAAAMAAARGAAAA4QD///8AAAAAAAACmwAAAAQAAAAEAAAACAAAAAj8AAAAAQAAAAIAAAABAAAAGABtAGEAaQBuAF8AdABvAG8AbABiAGEAcgEAAAAA/////wAAAAAAAAAA
+ViewState = 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
 
 [Session.Geometry]
 Version = 2
-MainWindow = {"x":269,"y":87,"width":944,"height":800,"maximized":false,"fullscreen":false,"qt_geometry":"AdnQywADAAAAAAENAAAAVwAABLwAAAN2AAABDQAAAFcAAAS8AAADdgAAAAAAAAAAB4AAAAENAAAAVwAABLwAAAN2"}
-CentralArea = {"x":3,"y":110,"width":698,"height":667}
-FileSystemDock = {"visible":false,"floating":false,"area":2,"x":0,"y":0,"width":320,"height":294}
-ProjectDock = {"visible":false,"floating":false,"area":2,"x":342,"y":110,"width":236,"height":226}
+MainWindow = {"x":269,"y":87,"width":1009,"height":800,"maximized":false,"fullscreen":false,"qt_geometry":"AdnQywADAAAAAAENAAAAVwAABP0AAAN2AAABDQAAAFcAAAT9AAADdgAAAAAAAAAAB4AAAAENAAAAVwAABP0AAAN2"}
+CentralArea = {"x":3,"y":110,"width":747,"height":667}
+FileSystemDock = {"visible":false,"floating":false,"area":2,"x":0,"y":0,"width":320,"height":296}
+ProjectDock = {"visible":true,"floating":false,"area":2,"x":754,"y":110,"width":252,"height":667}
 ProtocolDock = {"visible":false,"floating":false,"area":8,"x":0,"y":0,"width":225,"height":190}
 
 [Session.C64.Editors]
@@ -172,6 +172,10 @@ RelativePaths = true
 Title = Windows 32-Bit Compiler Ausgabe-Verzeichnis
 RelativePaths = true
 
+[Settings.Windows.32Bit.Compiler.Prolog.Optimierung]
+Title = Windows 32-Bit Compiler Prolog Optimierung
+WithDescriptors = true
+
 [Settings.Windows.32Bit.Environment]
 Title = Windows 32-Bit Umgebung
 WorkstationMode = false
@@ -191,7 +195,7 @@ Title = Windows 32-Bit Linker Optimierung
 LinkWithOrdinals = true
 ImportPackerEnabled = true
 ImportPackerRequireSavings = true
-ImportPackerMinimumSavings = 1
+ImportPackerMinimumSavings = 16
 ObjectDefaultsEnabled = true
 DeadPropertyImports = true
 EmptyStandardStrings = true
@@ -219,7 +223,7 @@ ImportResolver = Bootstrap-IAT
 Data = {"identity": {"type": "win32", "name": "", "language": "*", "processorArchitecture": "*", "version": "6.0.0.0", "publicKeyToken": ""}, "compatibility": {"Windows 12": {"checked": false, "id": ""}, "Windows 11": {"checked": false, "id": "{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"}, "Windows 10": {"checked": false, "id": "{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"}, "Windows Vista": {"checked": false, "id": "{e2011457-1546-43c5-a5fe-008deee3d3f0}"}, "Windows 8.1": {"checked": false, "id": "{1f676c76-80e1-4239-95bb-83d0f6d0da78}"}, "Windows 8": {"checked": false, "id": "{4a2f28e3-53b9-4441-ba9c-d69d4a4a6e38}"}, "Windows 7": {"checked": false, "id": "{35138b9a-5d96-4fbd-8e2d-a2440225f93a}"}, "Windows XP": {"checked": false, "id": ""}}, "longPathAware": true}
 
 [Settings.Windows.32Bit.Linker.Signierung]
-Data = {"enabled": false, "sign_exe": true, "sign_dll": true, "certificate_source": "openssl_ca", "openssl_certificate": "", "openssl_private_key": "", "pfx_file": "", "store_location": "CurrentUser", "store_name": "My", "thumbprint": "", "file_digest": "SHA256", "timestamp_enabled": true, "timestamp_url": "http://timestamp.digicert.com", "timestamp_digest": "SHA256", "description": "", "description_url": "", "signtool_path": "", "verify_after_sign": true, "fail_build_on_error": true}
+Data = {"enabled": false, "sign_exe": true, "sign_dll": true, "certificate_source": "openssl_ca", "openssl_certificate": "S:\\CA\\Clients\\user1\\user_1.cert.pem", "openssl_private_key": "S:\\CA\\Clients\\user1\\user_1.key.pem", "pfx_file": "S:\\CA\\Clients\\user1\\user_1.pfx", "store_location": "CurrentUser", "store_name": "My", "thumbprint": "", "file_digest": "SHA256", "timestamp_enabled": true, "timestamp_url": "http://timestamp.digicert.com", "timestamp_digest": "SHA256", "description": "", "description_url": "", "signtool_path": "T:/GitHub/dBase2Many/src/asmjit/compiler/frontend/c64/tools/x86/signtool.exe", "verify_after_sign": true, "fail_build_on_error": true}
 
 [Settings.Windows.64Bit.Compiler.InputDirectories]
 Title = Windows 64-Bit Compiler Eingabe-Verzeichnis
@@ -228,6 +232,10 @@ RelativePaths = true
 [Settings.Windows.64Bit.Compiler.OutputDirectory]
 Title = Windows 64-Bit Compiler Ausgabe-Verzeichnis
 RelativePaths = true
+
+[Settings.Windows.64Bit.Compiler.Prolog.Optimierung]
+Title = Windows 64-Bit Compiler Prolog Optimierung
+WithDescriptors = false
 
 [Settings.Windows.64Bit.Environment]
 Title = Windows 64-Bit Umgebung

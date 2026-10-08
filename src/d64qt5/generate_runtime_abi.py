@@ -44,7 +44,11 @@ def read_exports():
 
 def main() -> int:
     rows = read_exports()
-    canonical = "".join(f"{ordinal}:{name}\n" for ordinal, name in rows).encode("ascii")
+    # Stage 295: DBaseQtProlog* are optional name-resolved extension exports.
+    # They intentionally do not participate in the stable dBase/WFM ordinal
+    # ABI hash, so old generated applications remain compatible.
+    core_rows = [(ordinal, name) for ordinal, name in rows if not name.startswith("DBaseQtProlog")]
+    canonical = "".join(f"{ordinal}:{name}\n" for ordinal, name in core_rows).encode("ascii")
     digest = hashlib.sha256(canonical).digest()
     byte_rows = []
     for offset in range(0, 32, 8):

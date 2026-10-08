@@ -256,3 +256,19 @@ Der Build regeneriert den Ordinal-Hash automatisch. Werden Exporte oder deren
 Ordinale geaendert, soll zusaetzlich `ORDINAL_MAP_VERSION` in
 `generate_runtime_abi.py` erhoeht werden. Auch wenn dies vergessen wird, erkennt
 der SHA-256-Vergleich die veraenderte Exportbelegung.
+
+## Stage 295 – Native PROLOG GUI
+
+Generated PROLOG PE images no longer start a Python/PyQt helper for `--gui`.
+The generated EXE remains the application process and dynamically loads
+`libd64_qt5.dll` only in GUI mode. The bridge exports the name-resolved PROLOG
+extension API:
+
+- `DBaseQtPrologInitialize`
+- `DBaseQtPrologWrite`
+- `DBaseQtPrologReadLine`
+- `DBaseQtPrologShutdown`
+
+The extension exports use high ordinals in the DEF file but are deliberately
+excluded from the stable dBase/WFM ordinal-map hash. Rebuild `libd64_qt5.dll`
+after updating to Stage 295. Console-mode PROLOG executables do not load Qt.

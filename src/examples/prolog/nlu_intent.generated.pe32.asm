@@ -1,8 +1,15 @@
 bits 32
 
+import AllocConsole, "kernel32.dll", "#26"
+import GetConsoleWindow, "kernel32.dll", "#562"
+import FreeConsole, "kernel32.dll", "#467"
+import GetCommandLineA, "kernel32.dll", "#513"
+import LoadLibraryA, "kernel32.dll", "#1016"
+import GetProcAddress, "kernel32.dll", "#734"
 import GetStdHandle, "kernel32.dll", "#772"
 import SetConsoleCP, "kernel32.dll", "#1317"
 import SetConsoleOutputCP, "kernel32.dll", "#1339"
+import MessageBoxA, "user32.dll", "#2151"
 import WriteFile, "kernel32.dll", "#1622"
 import ReadFile, "kernel32.dll", "#1196"
 import CreateFileA, "kernel32.dll", "#230"
@@ -10,6 +17,7 @@ import CloseHandle, "kernel32.dll", "#165"
 import FlushFileBuffers, "kernel32.dll", "#458"
 import MoveFileExA, "kernel32.dll", "#1055"
 import DeleteFileA, "kernel32.dll", "#314"
+import GetTickCount, "kernel32.dll", "#830"
 import VirtualAlloc, "kernel32.dll", "#1546"
 import ExitProcess, "kernel32.dll", "#392"
 import wsprintfA, "user32.dll", "#2547"
@@ -37,6 +45,46 @@ __rt_dyn_ptr:
 __rt_fatal:
     push 2
     call ExitProcess
+    ret
+
+__rt_random_u32:
+    mov eax, dword ptr [__prolog_random_state]
+    mov ecx, eax
+    shl ecx, 13
+    xor eax, ecx
+    mov ecx, eax
+    shr ecx, 17
+    xor eax, ecx
+    mov ecx, eax
+    shl ecx, 5
+    xor eax, ecx
+    mov dword ptr [__prolog_random_state], eax
+    ret
+
+__rt_random_bounded:
+    push ebx
+    push esi
+    mov ebx, ecx
+    test ebx, ebx
+    je __rt_random_bounded_full
+    mov eax, ebx
+    neg eax
+    xor edx, edx
+    div ebx
+    mov esi, edx
+__rt_random_bounded_retry:
+    call __rt_random_u32
+    cmp eax, esi
+    jb __rt_random_bounded_retry
+    xor edx, edx
+    div ebx
+    mov eax, edx
+    jmp __rt_random_bounded_done
+__rt_random_bounded_full:
+    call __rt_random_u32
+__rt_random_bounded_done:
+    pop esi
+    pop ebx
     ret
 
 __rt_new_node:
@@ -2296,6 +2344,26 @@ __rt_emit_text:
     mov dword ptr [__prolog_emit_file_error], 1
     jmp __rt_emit_text_done
 __rt_emit_text_normal:
+    cmp dword ptr [__prolog_start_mode], 1
+    jne __rt_emit_text_console
+    push esi
+    call __rt_strlen
+    add esp, 4
+    mov ebx, eax
+    xor edi, edi
+    mov eax, __prolog_text_false_line
+    cmp esi, eax
+    jne __rt_emit_text_gui_style_ready
+    mov edi, 1
+__rt_emit_text_gui_style_ready:
+    push edi
+    push ebx
+    push esi
+    mov eax, dword ptr [__prolog_qt_write_fn]
+    call eax
+    add esp, 12
+    jmp __rt_emit_text_done
+__rt_emit_text_console:
     push esi
     call __rt_strlen
     add esp, 4
@@ -2320,16 +2388,18 @@ __rt_atom_ptr:
     push ebx
     push edi
     mov ebx, dword ptr [ebp+8]
-    cmp ebx, 185
+    cmp ebx, 289
     ja __rt_atom_ptr_dynamic
     test ebx, ebx
     je __rt_atom_ptr_fail
     dec ebx
-    mov edi, __prolog_static_atom_table
-    mov eax, dword ptr [edi+ebx*4]
+    mov edi, __prolog_static_atom_offsets
+    movzx eax, word ptr [edi+ebx*2]
+    mov edi, __prolog_static_atom_blob
+    add eax, edi
     jmp __rt_atom_ptr_done
 __rt_atom_ptr_dynamic:
-    sub ebx, 186
+    sub ebx, 290
     cmp ebx, dword ptr [__prolog_dyn_atom_count]
     jae __rt_atom_ptr_fail
     mov edi, dword ptr [__prolog_arena]
@@ -2560,18 +2630,66 @@ __rt_emit_solution:
     push ebx
     push esi
     push edi
-    inc dword ptr [__prolog_solution_count]
     cmp dword ptr [__prolog_direct_eval], 0
-    jne __rt_emit_solution_direct_done
+    jne __rt_emit_solution_direct
+    cmp dword ptr [__prolog_interactive_mode], 0
+    je __rt_emit_solution_accept
+    cmp dword ptr [__prolog_solution_count], 0
+    je __rt_emit_solution_accept
+__rt_emit_solution_prompt_next:
+    push __prolog_text_more_prompt
+    call __rt_emit_text
+    add esp, 4
+    call __rt_read_line
+    movzx ecx, byte ptr [eax]
+    test ecx, ecx
+    je __rt_emit_solution_accept_redo
+    cmp ecx, 59
+    je __rt_emit_solution_accept_redo
+    cmp ecx, 110
+    je __rt_emit_solution_accept_redo
+    cmp ecx, 78
+    je __rt_emit_solution_accept_redo
+    cmp ecx, 114
+    je __rt_emit_solution_accept_redo
+    cmp ecx, 82
+    je __rt_emit_solution_accept_redo
+    cmp ecx, 32
+    je __rt_emit_solution_accept_redo
+    cmp ecx, 9
+    je __rt_emit_solution_accept_redo
+    cmp ecx, 113
+    je __rt_emit_solution_stop
+    cmp ecx, 81
+    je __rt_emit_solution_stop
+    cmp ecx, 46
+    je __rt_emit_solution_stop
+    cmp ecx, 58
+    je __rt_emit_solution_stop
+    cmp ecx, 99
+    je __rt_emit_solution_stop
+    cmp ecx, 67
+    je __rt_emit_solution_stop
+    cmp ecx, 97
+    je __rt_emit_solution_stop
+    cmp ecx, 65
+    je __rt_emit_solution_stop
+__rt_emit_solution_stop:
+    mov dword ptr [__prolog_stop_search], 1
+    jmp __rt_emit_solution_return
+__rt_emit_solution_accept_redo:
+    mov dword ptr [__prolog_requested_more], 1
+__rt_emit_solution_accept:
+    inc dword ptr [__prolog_solution_count]
     cmp dword ptr [__prolog_verbose], 0
-    jne __rt_emit_solution_after_auto_output
+    jne __rt_emit_solution_return
     mov ebx, dword ptr [__prolog_query_var_count]
     test ebx, ebx
     jne __rt_emit_solution_vars
     push __prolog_text_true_line
     call __rt_emit_text
     add esp, 4
-    jmp __rt_emit_solution_after_auto_output
+    jmp __rt_emit_solution_return
 __rt_emit_solution_vars:
     xor esi, esi
 __rt_emit_solution_loop:
@@ -2604,64 +2722,11 @@ __rt_emit_solution_line_done:
     push __prolog_text_dot_nl
     call __rt_emit_text
     add esp, 4
-__rt_emit_solution_after_auto_output:
-    jmp __rt_emit_solution_interactive
-__rt_emit_solution_direct_done:
+    jmp __rt_emit_solution_return
+__rt_emit_solution_direct:
+    inc dword ptr [__prolog_solution_count]
     mov dword ptr [__prolog_direct_eval], 0
-    jmp __rt_emit_solution_return
-__rt_emit_solution_interactive:
-    cmp dword ptr [__prolog_interactive_mode], 0
-    je __rt_emit_solution_return
-    cmp dword ptr [__prolog_verbose], 0
-    je __rt_emit_solution_prompt_more
-    cmp dword ptr [__prolog_choice_top], 0
-    je __rt_emit_solution_verbose_stop
-__rt_emit_solution_prompt_more:
-    push __prolog_text_more_prompt
-    call __rt_emit_text
-    add esp, 4
-    call __rt_read_line
-    movzx ecx, byte ptr [eax]
-    test ecx, ecx
-    je __rt_emit_solution_more
-    cmp ecx, 59
-    je __rt_emit_solution_more
-    cmp ecx, 110
-    je __rt_emit_solution_more
-    cmp ecx, 78
-    je __rt_emit_solution_more
-    cmp ecx, 114
-    je __rt_emit_solution_more
-    cmp ecx, 82
-    je __rt_emit_solution_more
-    cmp ecx, 32
-    je __rt_emit_solution_more
-    cmp ecx, 9
-    je __rt_emit_solution_more
-    cmp ecx, 113
-    je __rt_emit_solution_stop
-    cmp ecx, 81
-    je __rt_emit_solution_stop
-    cmp ecx, 46
-    je __rt_emit_solution_stop
-    cmp ecx, 58
-    je __rt_emit_solution_stop
-    cmp ecx, 99
-    je __rt_emit_solution_stop
-    cmp ecx, 67
-    je __rt_emit_solution_stop
-    cmp ecx, 97
-    je __rt_emit_solution_stop
-    cmp ecx, 65
-    je __rt_emit_solution_stop
-__rt_emit_solution_stop:
     mov dword ptr [__prolog_stop_search], 1
-    jmp __rt_emit_solution_return
-__rt_emit_solution_verbose_stop:
-    mov dword ptr [__prolog_stop_search], 1
-    jmp __rt_emit_solution_return
-__rt_emit_solution_more:
-    mov dword ptr [__prolog_requested_more], 1
 __rt_emit_solution_return:
     pop edi
     pop esi
@@ -2895,11 +2960,13 @@ __rt_intern_atom:
     mov ebx, dword ptr [ebp+12]
     xor ecx, ecx
 __rt_intern_static_loop:
-    cmp ecx, 185
+    cmp ecx, 289
     jae __rt_intern_dynamic_scan
     push ecx
-    mov edi, __prolog_static_atom_table
-    mov eax, dword ptr [edi+ecx*4]
+    mov edi, __prolog_static_atom_offsets
+    movzx eax, word ptr [edi+ecx*2]
+    mov edi, __prolog_static_atom_blob
+    add eax, edi
     push eax
     push ebx
     push esi
@@ -2933,7 +3000,7 @@ __rt_intern_dynamic_loop:
     inc ecx
     jmp __rt_intern_dynamic_loop
 __rt_intern_dynamic_found:
-    add ecx, 186
+    add ecx, 290
     mov eax, ecx
     jmp __rt_intern_done
 __rt_intern_create:
@@ -2968,7 +3035,7 @@ __rt_intern_copy_done:
     add edi, 739328
     mov dword ptr [edi+ecx*4], esi
     inc dword ptr [__prolog_dyn_atom_count]
-    add ecx, 186
+    add ecx, 290
     mov eax, ecx
     jmp __rt_intern_done
 __rt_intern_fail:
@@ -5693,146 +5760,161 @@ __rt_builtin_next_20:
     cmp ecx, 1
     je __rt_bi_string
 __rt_builtin_next_21:
-    cmp edx, 34
+    cmp edx, 254
     jne __rt_builtin_next_22
     cmp ecx, 1
-    je __rt_bi_assertz
+    je __rt_bi_random1
 __rt_builtin_next_22:
-    cmp edx, 35
+    cmp edx, 254
     jne __rt_builtin_next_23
-    cmp ecx, 1
-    je __rt_bi_asserta
+    cmp ecx, 2
+    je __rt_bi_random2
 __rt_builtin_next_23:
-    cmp edx, 36
+    cmp edx, 289
     jne __rt_builtin_next_24
-    cmp ecx, 1
-    je __rt_bi_assertz
+    cmp ecx, 3
+    je __rt_bi_random_between
 __rt_builtin_next_24:
-    cmp edx, 37
+    cmp edx, 34
     jne __rt_builtin_next_25
     cmp ecx, 1
-    je __rt_bi_retract
+    je __rt_bi_assertz
 __rt_builtin_next_25:
-    cmp edx, 58
+    cmp edx, 35
     jne __rt_builtin_next_26
+    cmp ecx, 1
+    je __rt_bi_asserta
+__rt_builtin_next_26:
+    cmp edx, 36
+    jne __rt_builtin_next_27
+    cmp ecx, 1
+    je __rt_bi_assertz
+__rt_builtin_next_27:
+    cmp edx, 37
+    jne __rt_builtin_next_28
+    cmp ecx, 1
+    je __rt_bi_retract
+__rt_builtin_next_28:
+    cmp edx, 58
+    jne __rt_builtin_next_29
     cmp ecx, 2
     je __rt_bi_database_open2
-__rt_builtin_next_26:
+__rt_builtin_next_29:
     cmp edx, 58
-    jne __rt_builtin_next_27
+    jne __rt_builtin_next_30
     cmp ecx, 3
     je __rt_bi_database_open3
-__rt_builtin_next_27:
+__rt_builtin_next_30:
     cmp edx, 58
-    jne __rt_builtin_next_28
+    jne __rt_builtin_next_31
     cmp ecx, 4
     je __rt_bi_database_open4
-__rt_builtin_next_28:
-    cmp edx, 59
-    jne __rt_builtin_next_29
-    cmp ecx, 1
-    je __rt_bi_database_close
-__rt_builtin_next_29:
-    cmp edx, 60
-    jne __rt_builtin_next_30
-    cmp ecx, 1
-    je __rt_bi_database_save
-__rt_builtin_next_30:
-    cmp edx, 61
-    jne __rt_builtin_next_31
-    cmp ecx, 2
-    je __rt_bi_database_save_as
 __rt_builtin_next_31:
-    cmp edx, 62
+    cmp edx, 59
     jne __rt_builtin_next_32
     cmp ecx, 1
-    je __rt_bi_database_select
+    je __rt_bi_database_close
 __rt_builtin_next_32:
-    cmp edx, 63
+    cmp edx, 60
     jne __rt_builtin_next_33
     cmp ecx, 1
-    je __rt_bi_current_database
+    je __rt_bi_database_save
 __rt_builtin_next_33:
-    cmp edx, 68
+    cmp edx, 61
     jne __rt_builtin_next_34
+    cmp ecx, 2
+    je __rt_bi_database_save_as
+__rt_builtin_next_34:
+    cmp edx, 62
+    jne __rt_builtin_next_35
+    cmp ecx, 1
+    je __rt_bi_database_select
+__rt_builtin_next_35:
+    cmp edx, 63
+    jne __rt_builtin_next_36
+    cmp ecx, 1
+    je __rt_bi_current_database
+__rt_builtin_next_36:
+    cmp edx, 68
+    jne __rt_builtin_next_37
     cmp ecx, 1
     je __rt_bi_database_modified
-__rt_builtin_next_34:
-    cmp edx, 64
-    jne __rt_builtin_next_35
-    cmp ecx, 2
-    je __rt_bi_database_assertz
-__rt_builtin_next_35:
-    cmp edx, 65
-    jne __rt_builtin_next_36
-    cmp ecx, 2
-    je __rt_bi_database_asserta
-__rt_builtin_next_36:
-    cmp edx, 66
-    jne __rt_builtin_next_37
-    cmp ecx, 2
-    je __rt_bi_database_assertz
 __rt_builtin_next_37:
-    cmp edx, 67
+    cmp edx, 64
     jne __rt_builtin_next_38
     cmp ecx, 2
-    je __rt_bi_database_retract
+    je __rt_bi_database_assertz
 __rt_builtin_next_38:
-    cmp edx, 69
+    cmp edx, 65
     jne __rt_builtin_next_39
     cmp ecx, 2
-    je __rt_bi_with_database
+    je __rt_bi_database_asserta
 __rt_builtin_next_39:
-    cmp edx, 3
+    cmp edx, 66
     jne __rt_builtin_next_40
     cmp ecx, 2
-    je __rt_bi_conjunction
+    je __rt_bi_database_assertz
 __rt_builtin_next_40:
-    cmp edx, 4
+    cmp edx, 67
     jne __rt_builtin_next_41
     cmp ecx, 2
-    je __rt_bi_disjunction
+    je __rt_bi_database_retract
 __rt_builtin_next_41:
-    cmp edx, 10
+    cmp edx, 69
     jne __rt_builtin_next_42
     cmp ecx, 2
-    je __rt_bi_unify
+    je __rt_bi_with_database
 __rt_builtin_next_42:
-    cmp edx, 11
+    cmp edx, 3
     jne __rt_builtin_next_43
     cmp ecx, 2
-    je __rt_bi_notunify
+    je __rt_bi_conjunction
 __rt_builtin_next_43:
-    cmp edx, 12
+    cmp edx, 4
     jne __rt_builtin_next_44
     cmp ecx, 2
-    je __rt_bi_equal
+    je __rt_bi_disjunction
 __rt_builtin_next_44:
-    cmp edx, 13
+    cmp edx, 10
     jne __rt_builtin_next_45
     cmp ecx, 2
-    je __rt_bi_is
+    je __rt_bi_unify
 __rt_builtin_next_45:
-    cmp edx, 14
+    cmp edx, 11
     jne __rt_builtin_next_46
     cmp ecx, 2
-    je __rt_bi_lt
+    je __rt_bi_notunify
 __rt_builtin_next_46:
-    cmp edx, 15
+    cmp edx, 12
     jne __rt_builtin_next_47
     cmp ecx, 2
-    je __rt_bi_le
+    je __rt_bi_equal
 __rt_builtin_next_47:
-    cmp edx, 16
+    cmp edx, 13
     jne __rt_builtin_next_48
     cmp ecx, 2
-    je __rt_bi_gt
+    je __rt_bi_is
 __rt_builtin_next_48:
-    cmp edx, 17
+    cmp edx, 14
     jne __rt_builtin_next_49
     cmp ecx, 2
-    je __rt_bi_ge
+    je __rt_bi_lt
 __rt_builtin_next_49:
+    cmp edx, 15
+    jne __rt_builtin_next_50
+    cmp ecx, 2
+    je __rt_bi_le
+__rt_builtin_next_50:
+    cmp edx, 16
+    jne __rt_builtin_next_51
+    cmp ecx, 2
+    je __rt_bi_gt
+__rt_builtin_next_51:
+    cmp edx, 17
+    jne __rt_builtin_next_52
+    cmp ecx, 2
+    je __rt_bi_ge
+__rt_builtin_next_52:
     jmp __rt_builtin_fallthrough
 __rt_bi_true:
     push ebx
@@ -6526,6 +6608,136 @@ __rt_bi_with_database_have_db:
 __rt_bi_with_database_fail_pop:
     pop ecx
     jmp __rt_solve_done
+__rt_bi_random1:
+    push 0
+    push esi
+    call __rt_struct_arg
+    add esp, 8
+    push eax
+    call __rt_random_u32
+    and eax, 2147483647
+    push eax
+    call __rt_make_int
+    add esp, 4
+    mov ecx, eax
+    pop eax
+    push ecx
+    push eax
+    call __rt_unify
+    add esp, 8
+    test eax, eax
+    je __rt_solve_done
+    push ebx
+    call __rt_solve_goals
+    add esp, 4
+    jmp __rt_solve_done
+__rt_bi_random2:
+    push 1
+    push esi
+    call __rt_struct_arg
+    add esp, 8
+    push eax
+    push 0
+    push esi
+    call __rt_struct_arg
+    add esp, 8
+    push eax
+    call __rt_eval_arith
+    add esp, 4
+    test edx, edx
+    je __rt_bi_random2_fail_pop
+    push eax
+    call __rt_term_int
+    add esp, 4
+    test edx, edx
+    je __rt_bi_random2_fail_pop
+    test eax, eax
+    jle __rt_bi_random2_fail_pop
+    mov ecx, eax
+    call __rt_random_bounded
+    push eax
+    call __rt_make_int
+    add esp, 4
+    mov ecx, eax
+    pop eax
+    push ecx
+    push eax
+    call __rt_unify
+    add esp, 8
+    test eax, eax
+    je __rt_solve_done
+    push ebx
+    call __rt_solve_goals
+    add esp, 4
+    jmp __rt_solve_done
+__rt_bi_random2_fail_pop:
+    pop eax
+    jmp __rt_solve_done
+__rt_bi_random_between:
+    push 2
+    push esi
+    call __rt_struct_arg
+    add esp, 8
+    push eax
+    push 0
+    push esi
+    call __rt_struct_arg
+    add esp, 8
+    push eax
+    call __rt_eval_arith
+    add esp, 4
+    test edx, edx
+    je __rt_bi_random_between_fail_output
+    push eax
+    call __rt_term_int
+    add esp, 4
+    test edx, edx
+    je __rt_bi_random_between_fail_output
+    push eax
+    push 1
+    push esi
+    call __rt_struct_arg
+    add esp, 8
+    push eax
+    call __rt_eval_arith
+    add esp, 4
+    test edx, edx
+    je __rt_bi_random_between_fail_min_output
+    push eax
+    call __rt_term_int
+    add esp, 4
+    test edx, edx
+    je __rt_bi_random_between_fail_min_output
+    mov ecx, eax
+    pop eax
+    cmp ecx, eax
+    jl __rt_bi_random_between_fail_output
+    sub ecx, eax
+    inc ecx
+    push eax
+    call __rt_random_bounded
+    pop ecx
+    add eax, ecx
+    push eax
+    call __rt_make_int
+    add esp, 4
+    mov ecx, eax
+    pop eax
+    push ecx
+    push eax
+    call __rt_unify
+    add esp, 8
+    test eax, eax
+    je __rt_solve_done
+    push ebx
+    call __rt_solve_goals
+    add esp, 4
+    jmp __rt_solve_done
+__rt_bi_random_between_fail_min_output:
+    pop eax
+__rt_bi_random_between_fail_output:
+    pop eax
+    jmp __rt_solve_done
 __rt_bi_conjunction:
     mov edx, dword ptr [__prolog_current_cut_barrier]
     push edx
@@ -6869,6 +7081,85 @@ __rt_solve_done:
     pop ebp
     ret
 
+__rt_try_static_clause:
+    push ebp
+    mov ebp, esp
+    push edx
+    push edi
+    mov eax, dword ptr [__prolog_choice_top]
+    mov dword ptr [__prolog_build_barrier], eax
+    push eax
+    call __rt_choice_push
+    mov edx, ebx
+    mov eax, dword ptr [ebp+8]
+    call __prolog_clause_descriptor_build
+    push ecx
+    push eax
+    push esi
+    call __rt_unify
+    add esp, 8
+    pop ecx
+    test eax, eax
+    je __rt_try_static_clause_after
+    push ecx
+    call __rt_solve_goals
+    add esp, 4
+__rt_try_static_clause_after:
+    mov ecx, dword ptr [esp]
+    push ecx
+    call __rt_choice_restore_slot
+    add esp, 4
+    pop ecx
+    cmp dword ptr [__prolog_cut_active_barrier], ecx
+    jne __rt_try_static_clause_no_cut
+    mov dword ptr [__prolog_cut_active_barrier], 4294967295
+    mov eax, 1
+    jmp __rt_try_static_clause_return
+__rt_try_static_clause_no_cut:
+    cmp dword ptr [__prolog_stop_search], 0
+    jne __rt_try_static_clause_stop
+    xor eax, eax
+    jmp __rt_try_static_clause_return
+__rt_try_static_clause_stop:
+    mov eax, 1
+__rt_try_static_clause_return:
+    pop edi
+    pop edx
+    mov esp, ebp
+    pop ebp
+    ret
+
+__rt_try_static_group:
+    push ebp
+    mov ebp, esp
+    push edx
+    push edi
+    mov edi, dword ptr [ebp+8]
+    mov edx, dword ptr [ebp+12]
+__rt_try_static_group_loop:
+    test edx, edx
+    je __rt_try_static_group_exhausted
+    mov eax, dword ptr [edi]
+    add edi, 4
+    push eax
+    call __rt_try_static_clause
+    add esp, 4
+    test eax, eax
+    jne __rt_try_static_group_stop
+    dec edx
+    jmp __rt_try_static_group_loop
+__rt_try_static_group_exhausted:
+    xor eax, eax
+    jmp __rt_try_static_group_return
+__rt_try_static_group_stop:
+    mov eax, 1
+__rt_try_static_group_return:
+    pop edi
+    pop edx
+    mov esp, ebp
+    pop ebp
+    ret
+
 __rt_try_user:
     push ebp
     mov ebp, esp
@@ -6892,225 +7183,27 @@ __rt_try_user_atom:
     mov edx, dword ptr [edi+4]
     xor ecx, ecx
 __rt_try_user_dispatch:
-    cmp edx, 176
+    cmp edx, 279
     jne __rt_try_pred_next_0
     cmp ecx, 2
     jne __rt_try_pred_next_0
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_114_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
+    push 1
+    push __prolog_pred_group_0_descriptors
+    call __rt_try_static_group
     add esp, 8
-    pop ecx
     test eax, eax
-    je __rt_clause_114_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_114_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_114_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_114_continue:
-    cmp dword ptr [__prolog_stop_search], 0
     jne __rt_try_user_return
     jmp __rt_try_user_dynamic
 __rt_try_pred_next_0:
-    cmp edx, 177
+    cmp edx, 280
     jne __rt_try_pred_next_1
     cmp ecx, 2
     jne __rt_try_pred_next_1
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_106_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
+    push 6
+    push __prolog_pred_group_1_descriptors
+    call __rt_try_static_group
     add esp, 8
-    pop ecx
     test eax, eax
-    je __rt_clause_106_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_106_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_106_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_106_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_107_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_107_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_107_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_107_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_107_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_108_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_108_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_108_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_108_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_108_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_109_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_109_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_109_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_109_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_109_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_110_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_110_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_110_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_110_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_110_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_111_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_111_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_111_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_111_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_111_continue:
-    cmp dword ptr [__prolog_stop_search], 0
     jne __rt_try_user_return
     jmp __rt_try_user_dynamic
 __rt_try_pred_next_1:
@@ -7118,3362 +7211,218 @@ __rt_try_pred_next_1:
     jne __rt_try_pred_next_2
     cmp ecx, 1
     jne __rt_try_pred_next_2
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_0_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
+    push 9
+    push __prolog_pred_group_2_descriptors
+    call __rt_try_static_group
     add esp, 8
-    pop ecx
     test eax, eax
-    je __rt_clause_0_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_0_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_0_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_0_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_1_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_1_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_1_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_1_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_1_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_2_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_2_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_2_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_2_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_2_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_3_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_3_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_3_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_3_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_3_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_4_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_4_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_4_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_4_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_4_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_5_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_5_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_5_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_5_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_5_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_6_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_6_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_6_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_6_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_6_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_7_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_7_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_7_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_7_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_7_continue:
-    cmp dword ptr [__prolog_stop_search], 0
     jne __rt_try_user_return
     jmp __rt_try_user_dynamic
 __rt_try_pred_next_2:
-    cmp edx, 85
+    cmp edx, 86
     jne __rt_try_pred_next_3
     cmp ecx, 2
     jne __rt_try_pred_next_3
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_8_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
+    push 8
+    push __prolog_pred_group_3_descriptors
+    call __rt_try_static_group
     add esp, 8
-    pop ecx
     test eax, eax
-    je __rt_clause_8_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_8_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_8_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_8_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_9_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_9_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_9_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_9_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_9_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_10_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_10_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_10_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_10_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_10_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_11_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_11_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_11_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_11_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_11_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_12_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_12_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_12_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_12_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_12_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_13_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_13_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_13_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_13_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_13_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_14_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_14_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_14_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_14_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_14_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_15_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_15_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_15_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_15_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_15_continue:
-    cmp dword ptr [__prolog_stop_search], 0
     jne __rt_try_user_return
     jmp __rt_try_user_dynamic
 __rt_try_pred_next_3:
-    cmp edx, 184
+    cmp edx, 287
     jne __rt_try_pred_next_4
     cmp ecx, 2
     jne __rt_try_pred_next_4
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_112_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
+    push 2
+    push __prolog_pred_group_4_descriptors
+    call __rt_try_static_group
     add esp, 8
-    pop ecx
     test eax, eax
-    je __rt_clause_112_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_112_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_112_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_112_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_113_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_113_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_113_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_113_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_113_continue:
-    cmp dword ptr [__prolog_stop_search], 0
     jne __rt_try_user_return
     jmp __rt_try_user_dynamic
 __rt_try_pred_next_4:
-    cmp edx, 185
+    cmp edx, 288
     jne __rt_try_pred_next_5
     cmp ecx, 2
     jne __rt_try_pred_next_5
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_115_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
+    push 2
+    push __prolog_pred_group_5_descriptors
+    call __rt_try_static_group
     add esp, 8
-    pop ecx
     test eax, eax
-    je __rt_clause_115_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_115_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_115_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_115_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_116_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_116_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_116_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_116_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_116_continue:
-    cmp dword ptr [__prolog_stop_search], 0
     jne __rt_try_user_return
     jmp __rt_try_user_dynamic
 __rt_try_pred_next_5:
-    cmp edx, 175
+    cmp edx, 98
     jne __rt_try_pred_next_6
-    cmp ecx, 2
+    cmp ecx, 1
     jne __rt_try_pred_next_6
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_105_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
+    push 1
+    push __prolog_pred_group_6_descriptors
+    call __rt_try_static_group
     add esp, 8
-    pop ecx
     test eax, eax
-    je __rt_clause_105_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_105_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_105_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_105_continue:
-    cmp dword ptr [__prolog_stop_search], 0
     jne __rt_try_user_return
     jmp __rt_try_user_dynamic
 __rt_try_pred_next_6:
-    cmp edx, 162
+    cmp edx, 251
     jne __rt_try_pred_next_7
     cmp ecx, 2
     jne __rt_try_pred_next_7
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_91_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
+    push 2
+    push __prolog_pred_group_7_descriptors
+    call __rt_try_static_group
     add esp, 8
-    pop ecx
     test eax, eax
-    je __rt_clause_91_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_91_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_91_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_91_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_92_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_92_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_92_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_92_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_92_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_93_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_93_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_93_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_93_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_93_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_94_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_94_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_94_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_94_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_94_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_95_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_95_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_95_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_95_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_95_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_96_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_96_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_96_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_96_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_96_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_97_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_97_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_97_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_97_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_97_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_98_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_98_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_98_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_98_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_98_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_99_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_99_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_99_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_99_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_99_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_100_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_100_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_100_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_100_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_100_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_101_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_101_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_101_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_101_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_101_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_102_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_102_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_102_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_102_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_102_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_103_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_103_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_103_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_103_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_103_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_104_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_104_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_104_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_104_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_104_continue:
-    cmp dword ptr [__prolog_stop_search], 0
     jne __rt_try_user_return
     jmp __rt_try_user_dynamic
 __rt_try_pred_next_7:
-    cmp edx, 129
+    cmp edx, 253
     jne __rt_try_pred_next_8
     cmp ecx, 2
     jne __rt_try_pred_next_8
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_47_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
+    push 1
+    push __prolog_pred_group_8_descriptors
+    call __rt_try_static_group
     add esp, 8
-    pop ecx
     test eax, eax
-    je __rt_clause_47_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_47_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_47_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_47_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_48_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_48_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_48_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_48_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_48_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_49_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_49_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_49_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_49_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_49_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_50_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_50_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_50_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_50_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_50_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_51_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_51_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_51_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_51_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_51_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_52_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_52_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_52_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_52_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_52_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_53_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_53_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_53_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_53_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_53_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_54_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_54_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_54_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_54_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_54_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_55_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_55_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_55_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_55_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_55_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_56_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_56_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_56_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_56_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_56_continue:
-    cmp dword ptr [__prolog_stop_search], 0
     jne __rt_try_user_return
     jmp __rt_try_user_dynamic
 __rt_try_pred_next_8:
-    cmp edx, 133
+    cmp edx, 252
     jne __rt_try_pred_next_9
-    cmp ecx, 2
+    cmp ecx, 3
     jne __rt_try_pred_next_9
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_57_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
+    push 2
+    push __prolog_pred_group_9_descriptors
+    call __rt_try_static_group
     add esp, 8
-    pop ecx
     test eax, eax
-    je __rt_clause_57_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_57_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_57_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_57_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_58_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_58_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_58_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_58_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_58_continue:
-    cmp dword ptr [__prolog_stop_search], 0
     jne __rt_try_user_return
     jmp __rt_try_user_dynamic
 __rt_try_pred_next_9:
-    cmp edx, 134
+    cmp edx, 260
     jne __rt_try_pred_next_10
     cmp ecx, 2
     jne __rt_try_pred_next_10
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_59_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
+    push 5
+    push __prolog_pred_group_10_descriptors
+    call __rt_try_static_group
     add esp, 8
-    pop ecx
     test eax, eax
-    je __rt_clause_59_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_59_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_59_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_59_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_60_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_60_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_60_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_60_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_60_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_61_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_61_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_61_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_61_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_61_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_62_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_62_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_62_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_62_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_62_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_63_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_63_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_63_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_63_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_63_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_64_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_64_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_64_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_64_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_64_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_65_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_65_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_65_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_65_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_65_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_66_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_66_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_66_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_66_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_66_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_67_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_67_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_67_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_67_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_67_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_68_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_68_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_68_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_68_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_68_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_69_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_69_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_69_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_69_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_69_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_70_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_70_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_70_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_70_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_70_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_71_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_71_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_71_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_71_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_71_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_72_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_72_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_72_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_72_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_72_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_73_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_73_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_73_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_73_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_73_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_74_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_74_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_74_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_74_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_74_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_75_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_75_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_75_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_75_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_75_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_76_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_76_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_76_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_76_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_76_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_77_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_77_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_77_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_77_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_77_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_78_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_78_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_78_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_78_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_78_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_79_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_79_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_79_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_79_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_79_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_80_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_80_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_80_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_80_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_80_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_81_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_81_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_81_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_81_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_81_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_82_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_82_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_82_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_82_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_82_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_83_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_83_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_83_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_83_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_83_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_84_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_84_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_84_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_84_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_84_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_85_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_85_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_85_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_85_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_85_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_86_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_86_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_86_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_86_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_86_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_87_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_87_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_87_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_87_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_87_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_88_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_88_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_88_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_88_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_88_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_89_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_89_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_89_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_89_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_89_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_90_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_90_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_90_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_90_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_90_continue:
-    cmp dword ptr [__prolog_stop_search], 0
     jne __rt_try_user_return
     jmp __rt_try_user_dynamic
 __rt_try_pred_next_10:
-    cmp edx, 94
+    cmp edx, 278
     jne __rt_try_pred_next_11
     cmp ecx, 2
     jne __rt_try_pred_next_11
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_16_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
+    push 1
+    push __prolog_pred_group_11_descriptors
+    call __rt_try_static_group
     add esp, 8
-    pop ecx
     test eax, eax
-    je __rt_clause_16_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_16_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_16_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_16_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_17_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_17_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_17_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_17_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_17_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_18_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_18_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_18_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_18_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_18_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_19_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_19_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_19_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_19_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_19_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_20_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_20_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_20_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_20_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_20_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_21_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_21_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_21_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_21_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_21_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_22_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_22_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_22_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_22_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_22_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_23_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_23_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_23_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_23_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_23_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_24_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_24_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_24_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_24_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_24_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_25_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_25_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_25_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_25_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_25_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_26_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_26_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_26_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_26_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_26_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_27_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_27_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_27_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_27_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_27_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_28_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_28_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_28_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_28_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_28_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_29_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_29_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_29_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_29_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_29_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_30_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_30_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_30_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_30_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_30_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_31_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_31_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_31_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_31_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_31_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_32_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_32_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_32_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_32_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_32_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_33_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_33_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_33_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_33_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_33_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_34_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_34_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_34_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_34_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_34_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_35_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_35_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_35_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_35_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_35_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_36_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_36_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_36_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_36_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_36_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_37_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_37_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_37_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_37_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_37_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_38_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_38_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_38_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_38_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_38_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_39_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_39_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_39_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_39_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_39_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_40_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_40_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_40_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_40_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_40_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_41_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_41_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_41_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_41_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_41_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_42_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_42_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_42_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_42_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_42_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_43_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_43_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_43_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_43_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_43_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_44_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_44_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_44_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_44_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_44_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_45_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_45_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_45_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_45_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_45_continue:
-    cmp dword ptr [__prolog_stop_search], 0
-    jne __rt_try_user_return
-    mov eax, dword ptr [__prolog_choice_top]
-    mov dword ptr [__prolog_build_barrier], eax
-    push eax
-    call __rt_choice_push
-    mov edx, ebx
-    call __prolog_clause_46_build
-    push ecx
-    push eax
-    push esi
-    call __rt_unify
-    add esp, 8
-    pop ecx
-    test eax, eax
-    je __rt_clause_46_after
-    push ecx
-    call __rt_solve_goals
-    add esp, 4
-__rt_clause_46_after:
-    mov ecx, dword ptr [esp]
-    push ecx
-    call __rt_choice_restore_slot
-    add esp, 4
-    pop ecx
-    cmp dword ptr [__prolog_cut_active_barrier], ecx
-    jne __rt_clause_46_continue
-    mov dword ptr [__prolog_cut_active_barrier], 4294967295
-    jmp __rt_try_user_return
-__rt_clause_46_continue:
-    cmp dword ptr [__prolog_stop_search], 0
     jne __rt_try_user_return
     jmp __rt_try_user_dynamic
 __rt_try_pred_next_11:
+    cmp edx, 255
+    jne __rt_try_pred_next_12
+    cmp ecx, 2
+    jne __rt_try_pred_next_12
+    push 4
+    push __prolog_pred_group_12_descriptors
+    call __rt_try_static_group
+    add esp, 8
+    test eax, eax
+    jne __rt_try_user_return
+    jmp __rt_try_user_dynamic
+__rt_try_pred_next_12:
+    cmp edx, 215
+    jne __rt_try_pred_next_13
+    cmp ecx, 2
+    jne __rt_try_pred_next_13
+    push 10
+    push __prolog_pred_group_13_descriptors
+    call __rt_try_static_group
+    add esp, 8
+    test eax, eax
+    jne __rt_try_user_return
+    jmp __rt_try_user_dynamic
+__rt_try_pred_next_13:
+    cmp edx, 219
+    jne __rt_try_pred_next_14
+    cmp ecx, 2
+    jne __rt_try_pred_next_14
+    push 2
+    push __prolog_pred_group_14_descriptors
+    call __rt_try_static_group
+    add esp, 8
+    test eax, eax
+    jne __rt_try_user_return
+    jmp __rt_try_user_dynamic
+__rt_try_pred_next_14:
+    cmp edx, 95
+    jne __rt_try_pred_next_15
+    cmp ecx, 1
+    jne __rt_try_pred_next_15
+    push 1
+    push __prolog_pred_group_15_descriptors
+    call __rt_try_static_group
+    add esp, 8
+    test eax, eax
+    jne __rt_try_user_return
+    jmp __rt_try_user_dynamic
+__rt_try_pred_next_15:
+    cmp edx, 220
+    jne __rt_try_pred_next_16
+    cmp ecx, 2
+    jne __rt_try_pred_next_16
+    push 33
+    push __prolog_pred_group_16_descriptors
+    call __rt_try_static_group
+    add esp, 8
+    test eax, eax
+    jne __rt_try_user_return
+    jmp __rt_try_user_dynamic
+__rt_try_pred_next_16:
+    cmp edx, 108
+    jne __rt_try_pred_next_17
+    cmp ecx, 2
+    jne __rt_try_pred_next_17
+    push 31
+    push __prolog_pred_group_17_descriptors
+    call __rt_try_static_group
+    add esp, 8
+    test eax, eax
+    jne __rt_try_user_return
+    jmp __rt_try_user_dynamic
+__rt_try_pred_next_17:
+    cmp edx, 108
+    jne __rt_try_pred_next_18
+    cmp ecx, 3
+    jne __rt_try_pred_next_18
+    push 71
+    push __prolog_pred_group_18_descriptors
+    call __rt_try_static_group
+    add esp, 8
+    test eax, eax
+    jne __rt_try_user_return
+    jmp __rt_try_user_dynamic
+__rt_try_pred_next_18:
+    cmp edx, 101
+    jne __rt_try_pred_next_19
+    cmp ecx, 2
+    jne __rt_try_pred_next_19
+    push 4
+    push __prolog_pred_group_19_descriptors
+    call __rt_try_static_group
+    add esp, 8
+    test eax, eax
+    jne __rt_try_user_return
+    jmp __rt_try_user_dynamic
+__rt_try_pred_next_19:
 __rt_try_user_dynamic:
     push ebx
     push esi
@@ -10627,15 +7576,17 @@ __rt_run_query:
     push dword ptr [ebp+8]
     call __rt_solve_goals
     add esp, 4
-    cmp dword ptr [__prolog_solution_count], 0
-    je __rt_run_query_false
     cmp dword ptr [__prolog_interactive_mode], 0
-    je __rt_run_query_done
-    cmp dword ptr [__prolog_requested_more], 0
-    je __rt_run_query_done
+    je __rt_run_query_noninteractive
     cmp dword ptr [__prolog_stop_search], 0
     jne __rt_run_query_done
-__rt_run_query_false:
+    push __prolog_text_false_line
+    call __rt_emit_text
+    add esp, 4
+    jmp __rt_run_query_done
+__rt_run_query_noninteractive:
+    cmp dword ptr [__prolog_solution_count], 0
+    jne __rt_run_query_done
     push __prolog_text_false_line
     call __rt_emit_text
     add esp, 4
@@ -10751,6 +7702,22 @@ __rt_read_line:
     push edi
     mov esi, dword ptr [__prolog_arena]
     add esi, 720896
+    cmp dword ptr [__prolog_start_mode], 1
+    jne __rt_read_line_console
+    push 4095
+    push esi
+    mov eax, dword ptr [__prolog_qt_read_fn]
+    call eax
+    add esp, 8
+    test eax, eax
+    js __rt_read_line_gui_closed
+    mov edx, eax
+    jmp __rt_read_terminate
+__rt_read_line_gui_closed:
+    call __rt_gui_shutdown
+    push 0
+    call ExitProcess
+__rt_read_line_console:
     mov dword ptr [__prolog_read_count], 0
     push 0
     push __prolog_read_count
@@ -10816,5771 +7783,382 @@ __rt_repl_run:
     pop ebp
     ret
 
-__prolog_clause_0_build:
+; Stage 288: one generic structural descriptor interpreter
+__rt_build_descriptor_term:
     push ebp
     mov ebp, esp
+    sub esp, 12
     push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 77
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
+    movzx ebx, word ptr [esi]
+    add esi, 2
+    cmp ebx, 1
+    je __rt_desc_term_var
+    cmp ebx, 2
+    je __rt_desc_term_int
+    cmp ebx, 3
+    je __rt_desc_term_float
+    cmp ebx, 4
+    je __rt_desc_term_string
+    cmp ebx, 5
+    je __rt_desc_term_atom
+    cmp ebx, 6
+    je __rt_desc_term_nil
+    cmp ebx, 7
+    je __rt_desc_term_list
+    cmp ebx, 8
+    je __rt_desc_term_compound
+    call __rt_fatal
+__rt_desc_term_var:
+    movzx eax, word ptr [esi]
+    add esi, 2
+    push edi
     push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 1
-    push 76
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_1_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 78
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 1
-    push 76
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_2_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 79
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 1
-    push 76
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_3_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 80
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 1
-    push 76
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_4_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 81
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 1
-    push 76
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_5_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 82
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 1
-    push 76
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_6_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 83
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 1
-    push 76
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_7_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 84
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 1
-    push 76
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_8_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 86
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 77
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 85
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_9_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 87
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 78
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 85
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_10_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 88
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 79
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 85
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_11_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 89
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 80
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 85
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_12_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 90
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 81
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 85
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_13_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 91
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 82
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 85
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_14_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 92
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 83
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 85
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_15_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 93
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 84
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 85
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_16_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 96
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 95
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 94
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_17_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 96
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 97
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 94
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_18_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 96
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 98
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 94
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_19_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 96
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 99
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 94
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_20_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 96
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 100
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 94
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_21_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 96
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 101
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 94
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_22_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 96
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 102
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 94
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_23_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 96
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 103
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 94
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_24_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 96
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 104
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 94
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_25_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 106
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 105
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 94
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_26_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 106
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 107
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 94
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_27_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 106
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 108
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 94
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_28_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 106
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 109
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 94
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_29_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 106
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 110
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 94
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_30_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 106
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 111
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 94
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_31_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 113
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 112
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 94
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_32_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 113
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 114
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 94
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_33_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 113
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 115
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 94
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_34_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 113
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 116
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 94
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_35_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 113
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 111
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 94
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_36_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 113
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 117
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 94
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_37_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 119
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 118
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 94
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_38_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 119
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 120
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 94
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_39_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 119
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 121
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 94
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_40_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 119
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 122
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 94
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_41_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 119
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 123
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 94
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_42_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 119
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 124
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 94
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_43_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 119
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 125
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 94
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_44_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 119
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 126
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 94
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_45_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 119
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 127
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 94
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_46_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 119
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 128
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 94
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_47_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 130
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 118
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 129
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_48_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 130
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 120
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 129
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_49_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 130
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 130
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 129
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_50_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 131
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 107
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 129
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_51_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 131
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 115
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 129
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_52_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 132
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 109
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 129
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_53_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 132
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 111
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 129
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_54_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 96
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 95
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 129
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_55_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 96
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 98
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 129
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_56_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 96
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 97
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 129
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_57_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    call __rt_make_nil
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    call __rt_make_nil
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 133
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_58_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 4
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 3
     call __rt_make_var
     add esp, 4
+    pop edi
+    jmp __rt_desc_term_done
+__rt_desc_term_int:
+    movzx ecx, word ptr [esi]
+    add esi, 2
+    mov eax, dword ptr [edi+ecx*4]
+    push edi
     push eax
-    push 2
-    call __rt_make_var
+    call __rt_make_int
     add esp, 4
+    pop edi
+    jmp __rt_desc_term_done
+__rt_desc_term_float:
+    movzx ecx, word ptr [esi]
+    add esi, 2
+    mov eax, dword ptr [edi+ecx*4]
+    mov edx, dword ptr [edi+ecx*4+4]
+    push edi
+    push edx
+    push eax
+    call __rt_make_float_bits
+    add esp, 8
+    pop edi
+    jmp __rt_desc_term_done
+__rt_desc_term_string:
+    movzx ecx, word ptr [esi]
+    add esi, 2
+    mov eax, dword ptr [edi+ecx*4]
+    push edi
+    push eax
+    call __rt_make_string
+    add esp, 4
+    pop edi
+    jmp __rt_desc_term_done
+__rt_desc_term_atom:
+    movzx ecx, word ptr [esi]
+    add esi, 2
+    mov eax, dword ptr [edi+ecx*4]
+    push edi
+    push eax
+    call __rt_make_atom
+    add esp, 4
+    pop edi
+    jmp __rt_desc_term_done
+__rt_desc_term_nil:
+    push edi
+    call __rt_make_nil
+    pop edi
+    jmp __rt_desc_term_done
+__rt_desc_term_list:
+    push edi
+    call __rt_build_descriptor_term
+    pop edi
+    push eax
+    push edi
+    call __rt_build_descriptor_term
+    pop edi
     pop ecx
+    push edi
     push ecx
     push eax
     call __rt_make_list
     add esp, 8
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 1
-    call __rt_make_var
-    add esp, 4
-    push eax
-    push 0
-    call __rt_make_var
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 133
-    call __rt_make_struct
-    add esp, 12
-    push eax
+    pop edi
+    jmp __rt_desc_term_done
+__rt_desc_term_compound:
+    movzx eax, word ptr [esi]
+    add esi, 2
+    mov dword ptr [ebp-4], eax
+    movzx eax, word ptr [esi]
+    add esi, 2
+    mov dword ptr [ebp-8], eax
+    mov dword ptr [ebp-12], eax
     push 4294967295
-    push 3
-    call __rt_make_var
-    add esp, 4
+__rt_desc_term_compound_loop:
+    cmp dword ptr [ebp-12], 0
+    je __rt_desc_term_compound_ready
+    push edi
+    call __rt_build_descriptor_term
+    pop edi
     pop ecx
+    push edi
     push ecx
     push eax
     call __rt_make_link
     add esp, 8
+    pop edi
     push eax
-    push 1
-    call __rt_make_var
-    add esp, 4
-    pop ecx
+    dec dword ptr [ebp-12]
+    jmp __rt_desc_term_compound_loop
+__rt_desc_term_compound_ready:
+    pop edx
+    mov ecx, dword ptr [ebp-4]
+    mov eax, dword ptr [edi+ecx*4]
+    mov ecx, dword ptr [ebp-8]
+    push edi
+    push edx
     push ecx
     push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 133
     call __rt_make_struct
     add esp, 12
+    pop edi
+__rt_desc_term_done:
+    pop ebx
+    mov esp, ebp
+    pop ebp
+    ret
+
+__prolog_clause_descriptor_build:
+    push ebp
+    mov ebp, esp
+    sub esp, 4
+    push ebx
+    push esi
+    push edi
+    mov ebx, edx
+    mov edi, eax
+    mov ecx, dword ptr [edi]
+    add edi, 4
+    mov esi, __prolog_clause_template_table
+    mov esi, dword ptr [esi+ecx*4]
+    movzx eax, word ptr [esi]
+    add esi, 2
+    push eax
+    call __rt_build_vars_reset
+    add esp, 4
+    movzx eax, word ptr [esi]
+    add esi, 2
+    mov dword ptr [ebp-4], eax
+    call __rt_build_descriptor_term
+    push eax
+__prolog_clause_descriptor_body_loop:
+    cmp dword ptr [ebp-4], 0
+    je __prolog_clause_descriptor_done
+    call __rt_build_descriptor_term
     mov ecx, dword ptr [__prolog_build_barrier]
+    push edi
     push ecx
     push ebx
     push eax
     call __rt_make_goal_link
     add esp, 12
+    pop edi
     mov ebx, eax
-    push 4294967295
-    push 2
-    call __rt_make_var
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 0
-    call __rt_make_var
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 129
-    call __rt_make_struct
-    add esp, 12
-    mov ecx, dword ptr [__prolog_build_barrier]
-    push ecx
-    push ebx
-    push eax
-    call __rt_make_goal_link
-    add esp, 12
-    mov ebx, eax
+    dec dword ptr [ebp-4]
+    jmp __prolog_clause_descriptor_body_loop
+__prolog_clause_descriptor_done:
     pop eax
     mov ecx, ebx
+    pop edi
+    pop esi
     pop ebx
     mov esp, ebp
     pop ebp
     ret
 
-__prolog_clause_59_build:
+__rt_detect_start_mode:
     push ebp
     mov ebp, esp
     push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    call __rt_make_nil
-    push eax
-    push 107
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 118
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 95
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 77
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 134
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
+    push esi
+    push edi
+    xor ebx, ebx
+    call GetCommandLineA
+    test eax, eax
+    je __rt_detect_start_mode_done
+    mov esi, eax
+    mov edi, 32
+__rt_detect_start_mode_scan:
+    movzx eax, byte ptr [esi]
+    test eax, eax
+    je __rt_detect_start_mode_done
+    cmp eax, 45
+    jne __rt_detect_start_mode_advance
+    cmp edi, 32
+    je __rt_detect_start_mode_maybe_gui
+    cmp edi, 9
+    je __rt_detect_start_mode_maybe_gui
+    cmp edi, 34
+    jne __rt_detect_start_mode_advance
+__rt_detect_start_mode_maybe_gui:
+    movzx ecx, byte ptr [esi+0]
+    cmp ecx, 45
+    jne __rt_detect_start_mode_maybe_pipe
+    movzx ecx, byte ptr [esi+1]
+    cmp ecx, 45
+    jne __rt_detect_start_mode_maybe_pipe
+    movzx ecx, byte ptr [esi+2]
+    cmp ecx, 103
+    jne __rt_detect_start_mode_maybe_pipe
+    movzx ecx, byte ptr [esi+3]
+    cmp ecx, 117
+    jne __rt_detect_start_mode_maybe_pipe
+    movzx ecx, byte ptr [esi+4]
+    cmp ecx, 105
+    jne __rt_detect_start_mode_maybe_pipe
+    movzx ecx, byte ptr [esi+5]
+    test ecx, ecx
+    je __rt_detect_start_mode_found_gui
+    cmp ecx, 32
+    je __rt_detect_start_mode_found_gui
+    cmp ecx, 9
+    je __rt_detect_start_mode_found_gui
+    cmp ecx, 34
+    jne __rt_detect_start_mode_maybe_pipe
+__rt_detect_start_mode_found_gui:
+    mov ebx, 1
+    jmp __rt_detect_start_mode_done
+__rt_detect_start_mode_maybe_pipe:
+    movzx ecx, byte ptr [esi+0]
+    cmp ecx, 45
+    jne __rt_detect_start_mode_advance
+    movzx ecx, byte ptr [esi+1]
+    cmp ecx, 45
+    jne __rt_detect_start_mode_advance
+    movzx ecx, byte ptr [esi+2]
+    cmp ecx, 105
+    jne __rt_detect_start_mode_advance
+    movzx ecx, byte ptr [esi+3]
+    cmp ecx, 100
+    jne __rt_detect_start_mode_advance
+    movzx ecx, byte ptr [esi+4]
+    cmp ecx, 101
+    jne __rt_detect_start_mode_advance
+    movzx ecx, byte ptr [esi+5]
+    cmp ecx, 45
+    jne __rt_detect_start_mode_advance
+    movzx ecx, byte ptr [esi+6]
+    cmp ecx, 112
+    jne __rt_detect_start_mode_advance
+    movzx ecx, byte ptr [esi+7]
+    cmp ecx, 105
+    jne __rt_detect_start_mode_advance
+    movzx ecx, byte ptr [esi+8]
+    cmp ecx, 112
+    jne __rt_detect_start_mode_advance
+    movzx ecx, byte ptr [esi+9]
+    cmp ecx, 101
+    jne __rt_detect_start_mode_advance
+    movzx ecx, byte ptr [esi+10]
+    test ecx, ecx
+    je __rt_detect_start_mode_found_pipe
+    cmp ecx, 32
+    je __rt_detect_start_mode_found_pipe
+    cmp ecx, 9
+    je __rt_detect_start_mode_found_pipe
+    cmp ecx, 34
+    jne __rt_detect_start_mode_advance
+__rt_detect_start_mode_found_pipe:
+    mov ebx, 2
+    jmp __rt_detect_start_mode_done
+__rt_detect_start_mode_advance:
+    mov edi, eax
+    inc esi
+    jmp __rt_detect_start_mode_scan
+__rt_detect_start_mode_done:
+    mov eax, ebx
+    pop edi
+    pop esi
     pop ebx
     mov esp, ebp
     pop ebp
     ret
 
-__prolog_clause_60_build:
+__rt_load_gui_bridge:
     push ebp
     mov ebp, esp
     push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    call __rt_make_nil
-    push eax
-    push 130
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 115
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 121
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 95
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 77
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 134
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
+    push esi
+    push __prolog_qt_dll_name
+    call LoadLibraryA
+    test eax, eax
+    je __rt_load_gui_bridge_fail
+    mov dword ptr [__prolog_qt_module], eax
+    push __prolog_qt_name_init
+    push dword ptr [__prolog_qt_module]
+    call GetProcAddress
+    test eax, eax
+    je __rt_load_gui_bridge_fail
+    mov dword ptr [__prolog_qt_init_fn], eax
+    push __prolog_qt_name_write
+    push dword ptr [__prolog_qt_module]
+    call GetProcAddress
+    test eax, eax
+    je __rt_load_gui_bridge_fail
+    mov dword ptr [__prolog_qt_write_fn], eax
+    push __prolog_qt_name_read
+    push dword ptr [__prolog_qt_module]
+    call GetProcAddress
+    test eax, eax
+    je __rt_load_gui_bridge_fail
+    mov dword ptr [__prolog_qt_read_fn], eax
+    push __prolog_qt_name_shutdown
+    push dword ptr [__prolog_qt_module]
+    call GetProcAddress
+    test eax, eax
+    je __rt_load_gui_bridge_fail
+    mov dword ptr [__prolog_qt_shutdown_fn], eax
+    mov eax, 1
+    jmp __rt_load_gui_bridge_done
+__rt_load_gui_bridge_fail:
+    xor eax, eax
+__rt_load_gui_bridge_done:
+    pop esi
     pop ebx
     mov esp, ebp
     pop ebp
     ret
 
-__prolog_clause_61_build:
+__rt_gui_initialize:
     push ebp
     mov ebp, esp
-    push ebx
-    mov ebx, edx
+    call __rt_load_gui_bridge
+    test eax, eax
+    je __rt_gui_initialize_fail
+    push -1
+    push __prolog_caption
+    mov eax, dword ptr [__prolog_qt_init_fn]
+    call eax
+    add esp, 8
+    test eax, eax
+    je __rt_gui_initialize_fail
+    mov eax, 1
+    jmp __rt_gui_initialize_done
+__rt_gui_initialize_fail:
+    push 16
+    push __prolog_caption
+    push __prolog_gui_launch_error
     push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    call __rt_make_nil
-    push eax
-    push 130
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 115
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 121
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 97
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 77
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 134
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
+    call MessageBoxA
+    xor eax, eax
+__rt_gui_initialize_done:
     mov esp, ebp
     pop ebp
     ret
 
-__prolog_clause_62_build:
+__rt_gui_shutdown:
     push ebp
     mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    call __rt_make_nil
-    push eax
-    push 107
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 124
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 98
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 77
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 134
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_63_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    call __rt_make_nil
-    push eax
-    push 138
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 137
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 136
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 135
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 77
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 134
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_64_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    call __rt_make_nil
-    push eax
-    push 109
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 120
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 95
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 78
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 134
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_65_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    call __rt_make_nil
-    push eax
-    push 130
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 111
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 121
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 95
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 78
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 134
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_66_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    call __rt_make_nil
-    push eax
-    push 130
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 111
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 121
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 97
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 78
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 134
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_67_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    call __rt_make_nil
-    push eax
-    push 109
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 122
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 98
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 78
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 134
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_68_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    call __rt_make_nil
-    push eax
-    push 118
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 95
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 79
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 134
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_69_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    call __rt_make_nil
-    push eax
-    push 120
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 95
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 79
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 134
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_70_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    call __rt_make_nil
-    push eax
-    push 139
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 80
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 134
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_71_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    call __rt_make_nil
-    push eax
-    push 140
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 80
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 134
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_72_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    call __rt_make_nil
-    push eax
-    push 141
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 80
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 134
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_73_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    call __rt_make_nil
-    push eax
-    push 143
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 142
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 80
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 134
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_74_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    call __rt_make_nil
-    push eax
-    push 144
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 142
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 80
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 134
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_75_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    call __rt_make_nil
-    push eax
-    push 145
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 142
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 80
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 134
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_76_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    call __rt_make_nil
-    push eax
-    push 146
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 80
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 134
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_77_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    call __rt_make_nil
-    push eax
-    push 147
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 81
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 134
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_78_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    call __rt_make_nil
-    push eax
-    push 149
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 148
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 81
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 134
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_79_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    call __rt_make_nil
-    push eax
-    push 151
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 150
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 81
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 134
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_80_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    call __rt_make_nil
-    push eax
-    push 152
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 150
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 81
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 134
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_81_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    call __rt_make_nil
-    push eax
-    push 153
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 81
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 134
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_82_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    call __rt_make_nil
-    push eax
-    push 155
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 154
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 123
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 95
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 82
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 134
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_83_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    call __rt_make_nil
-    push eax
-    push 156
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 95
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 82
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 134
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_84_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    call __rt_make_nil
-    push eax
-    push 154
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 123
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 95
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 82
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 134
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_85_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    call __rt_make_nil
-    push eax
-    push 158
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 157
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 82
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 134
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_86_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    call __rt_make_nil
-    push eax
-    push 160
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 107
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 159
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 95
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 82
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 134
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_87_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    call __rt_make_nil
-    push eax
-    push 107
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 124
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 98
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 83
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 134
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_88_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    call __rt_make_nil
-    push eax
-    push 107
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 124
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 97
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 83
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 134
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_89_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    call __rt_make_nil
-    push eax
-    push 107
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 127
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 97
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 83
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 134
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_90_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    call __rt_make_nil
-    push eax
-    push 111
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 161
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 98
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 83
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 134
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_91_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 163
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 77
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 162
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_92_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 164
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 77
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 162
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_93_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 163
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 78
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 162
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_94_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 164
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 78
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 162
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_95_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 165
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 80
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 162
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_96_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 166
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 80
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 162
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_97_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 167
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 80
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 162
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_98_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 168
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 81
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 162
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_99_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 169
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 81
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 162
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_100_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 170
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 82
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 162
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_101_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 171
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 82
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 162
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_102_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 172
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 83
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 162
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_103_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 173
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 84
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 162
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_104_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 174
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 84
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 162
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_105_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 3
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 1
-    call __rt_make_var
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 0
-    call __rt_make_var
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 175
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    push 4294967295
-    push 1
-    call __rt_make_var
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 2
-    call __rt_make_var
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 162
-    call __rt_make_struct
-    add esp, 12
-    mov ecx, dword ptr [__prolog_build_barrier]
-    push ecx
-    push ebx
-    push eax
-    call __rt_make_goal_link
-    add esp, 12
-    mov ebx, eax
-    push 4294967295
-    push 2
-    call __rt_make_var
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 0
-    call __rt_make_var
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 176
-    call __rt_make_struct
-    add esp, 12
-    mov ecx, dword ptr [__prolog_build_barrier]
-    push ecx
-    push ebx
-    push eax
-    call __rt_make_goal_link
-    add esp, 12
-    mov ebx, eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_106_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 178
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 77
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 177
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_107_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 179
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 77
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 177
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_108_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 180
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 78
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 177
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_109_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 181
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 78
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 177
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_110_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 182
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 82
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 177
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_111_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 183
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 80
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 177
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_112_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 77
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    call __rt_make_nil
-    push eax
-    push 131
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 130
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 96
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 184
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_113_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 0
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 78
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    call __rt_make_nil
-    push eax
-    push 132
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 130
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    push eax
-    push 96
-    call __rt_make_atom
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 184
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_114_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 3
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 1
-    call __rt_make_var
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 0
-    call __rt_make_var
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 176
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    push 4294967295
-    push 1
-    call __rt_make_var
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 2
-    call __rt_make_var
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 184
-    call __rt_make_struct
-    add esp, 12
-    mov ecx, dword ptr [__prolog_build_barrier]
-    push ecx
-    push ebx
-    push eax
-    call __rt_make_goal_link
-    add esp, 12
-    mov ebx, eax
-    push 4294967295
-    push 2
-    call __rt_make_var
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 0
-    call __rt_make_var
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 133
-    call __rt_make_struct
-    add esp, 12
-    mov ecx, dword ptr [__prolog_build_barrier]
-    push ecx
-    push ebx
-    push eax
-    call __rt_make_goal_link
-    add esp, 12
-    mov ebx, eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_115_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 2
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 1
-    call __rt_make_var
-    add esp, 4
-    push eax
-    push 0
-    call __rt_make_var
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 0
-    call __rt_make_var
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 185
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_116_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 3
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 2
-    call __rt_make_var
-    add esp, 4
-    push eax
-    push 1
-    call __rt_make_var
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_list
-    add esp, 8
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 0
-    call __rt_make_var
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 185
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    push 4294967295
-    push 2
-    call __rt_make_var
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 0
-    call __rt_make_var
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 185
-    call __rt_make_struct
-    add esp, 12
-    mov ecx, dword ptr [__prolog_build_barrier]
-    push ecx
-    push ebx
-    push eax
-    call __rt_make_goal_link
-    add esp, 12
-    mov ebx, eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    ret
-
-__prolog_clause_117_build:
-    push ebp
-    mov ebp, esp
-    push ebx
-    mov ebx, edx
-    push 2
-    call __rt_build_vars_reset
-    add esp, 4
-    push 4294967295
-    push 1
-    call __rt_make_var
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 0
-    call __rt_make_var
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 72
-    call __rt_make_struct
-    add esp, 12
-    push eax
-    push 4294967295
-    push 1
-    call __rt_make_var
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    push 0
-    call __rt_make_var
-    add esp, 4
-    pop ecx
-    push ecx
-    push eax
-    call __rt_make_link
-    add esp, 8
-    push eax
-    pop ecx
-    push ecx
-    push 2
-    push 75
-    call __rt_make_struct
-    add esp, 12
-    mov ecx, dword ptr [__prolog_build_barrier]
-    push ecx
-    push ebx
-    push eax
-    call __rt_make_goal_link
-    add esp, 12
-    mov ebx, eax
-    pop eax
-    mov ecx, ebx
-    pop ebx
+    mov eax, dword ptr [__prolog_qt_shutdown_fn]
+    test eax, eax
+    je __rt_gui_shutdown_done
+    call eax
+__rt_gui_shutdown_done:
     mov esp, ebp
     pop ebp
     ret
@@ -16644,12 +8222,33 @@ __prolog_startup_0_build:
     ret
 
 _start:
+    call __rt_detect_start_mode
+    mov dword ptr [__prolog_start_mode], eax
+    cmp eax, 1
+    jne __prolog_start_not_gui
+    call __rt_gui_initialize
+    test eax, eax
+    je __prolog_gui_start_failed
+    call FreeConsole
+    jmp __prolog_start_runtime
+__prolog_gui_start_failed:
+    push 2
+    call ExitProcess
+__prolog_start_not_gui:
+    cmp dword ptr [__prolog_start_mode], 2
+    je __prolog_console_handles
+    call GetConsoleWindow
+    test eax, eax
+    jne __prolog_console_handles
+    call AllocConsole
+__prolog_console_handles:
     push -11
     call GetStdHandle
     mov dword ptr [__prolog_stdout], eax
     push -10
     call GetStdHandle
     mov dword ptr [__prolog_stdin], eax
+__prolog_start_runtime:
     push 4
     push 12288
     push 2359296
@@ -16666,6 +8265,13 @@ __prolog_init_ok:
     mov edi, eax
     add edi, 1048576
     mov dword ptr [__prolog_dyn_alt_base], edi
+    call GetTickCount
+    xor eax, dword ptr [__prolog_arena]
+    test eax, eax
+    jne __prolog_random_seed_ok
+    mov eax, 2463534242
+__prolog_random_seed_ok:
+    mov dword ptr [__prolog_random_state], eax
     mov dword ptr [__prolog_heap_top], 0
     mov dword ptr [__prolog_dyn_heap_top], 0
     mov dword ptr [__prolog_trail_top], 0
@@ -16698,582 +8304,686 @@ __prolog_init_ok:
     add esp, 4
     mov dword ptr [__prolog_verbose], 0
     call __rt_repl
+    cmp dword ptr [__prolog_start_mode], 1
+    jne __prolog_exit_process
+    call __rt_gui_shutdown
+__prolog_exit_process:
     push 0
     call ExitProcess
 
 section .data
 
-__prolog_static_atom_table:
-    dd __prolog_atom_1
-    dd __prolog_atom_2
-    dd __prolog_atom_3
-    dd __prolog_atom_4
-    dd __prolog_atom_5
-    dd __prolog_atom_6
-    dd __prolog_atom_7
-    dd __prolog_atom_8
-    dd __prolog_atom_9
-    dd __prolog_atom_10
-    dd __prolog_atom_11
-    dd __prolog_atom_12
-    dd __prolog_atom_13
-    dd __prolog_atom_14
-    dd __prolog_atom_15
-    dd __prolog_atom_16
-    dd __prolog_atom_17
-    dd __prolog_atom_18
-    dd __prolog_atom_19
-    dd __prolog_atom_20
-    dd __prolog_atom_21
-    dd __prolog_atom_22
-    dd __prolog_atom_23
-    dd __prolog_atom_24
-    dd __prolog_atom_25
-    dd __prolog_atom_26
-    dd __prolog_atom_27
-    dd __prolog_atom_28
-    dd __prolog_atom_29
-    dd __prolog_atom_30
-    dd __prolog_atom_31
-    dd __prolog_atom_32
-    dd __prolog_atom_33
-    dd __prolog_atom_34
-    dd __prolog_atom_35
-    dd __prolog_atom_36
-    dd __prolog_atom_37
-    dd __prolog_atom_38
-    dd __prolog_atom_39
-    dd __prolog_atom_40
-    dd __prolog_atom_41
-    dd __prolog_atom_42
-    dd __prolog_atom_43
-    dd __prolog_atom_44
-    dd __prolog_atom_45
-    dd __prolog_atom_46
-    dd __prolog_atom_47
-    dd __prolog_atom_48
-    dd __prolog_atom_49
-    dd __prolog_atom_50
-    dd __prolog_atom_51
-    dd __prolog_atom_52
-    dd __prolog_atom_53
-    dd __prolog_atom_54
-    dd __prolog_atom_55
-    dd __prolog_atom_56
-    dd __prolog_atom_57
-    dd __prolog_atom_58
-    dd __prolog_atom_59
-    dd __prolog_atom_60
-    dd __prolog_atom_61
-    dd __prolog_atom_62
-    dd __prolog_atom_63
-    dd __prolog_atom_64
-    dd __prolog_atom_65
-    dd __prolog_atom_66
-    dd __prolog_atom_67
-    dd __prolog_atom_68
-    dd __prolog_atom_69
-    dd __prolog_atom_70
-    dd __prolog_atom_71
-    dd __prolog_atom_72
-    dd __prolog_atom_73
-    dd __prolog_atom_74
-    dd __prolog_atom_75
-    dd __prolog_atom_76
-    dd __prolog_atom_77
-    dd __prolog_atom_78
-    dd __prolog_atom_79
-    dd __prolog_atom_80
-    dd __prolog_atom_81
-    dd __prolog_atom_82
-    dd __prolog_atom_83
-    dd __prolog_atom_84
-    dd __prolog_atom_85
-    dd __prolog_atom_86
-    dd __prolog_atom_87
-    dd __prolog_atom_88
-    dd __prolog_atom_89
-    dd __prolog_atom_90
-    dd __prolog_atom_91
-    dd __prolog_atom_92
-    dd __prolog_atom_93
-    dd __prolog_atom_94
-    dd __prolog_atom_95
-    dd __prolog_atom_96
-    dd __prolog_atom_97
-    dd __prolog_atom_98
-    dd __prolog_atom_99
-    dd __prolog_atom_100
-    dd __prolog_atom_101
-    dd __prolog_atom_102
-    dd __prolog_atom_103
-    dd __prolog_atom_104
-    dd __prolog_atom_105
-    dd __prolog_atom_106
-    dd __prolog_atom_107
-    dd __prolog_atom_108
-    dd __prolog_atom_109
-    dd __prolog_atom_110
-    dd __prolog_atom_111
-    dd __prolog_atom_112
-    dd __prolog_atom_113
-    dd __prolog_atom_114
-    dd __prolog_atom_115
-    dd __prolog_atom_116
-    dd __prolog_atom_117
-    dd __prolog_atom_118
-    dd __prolog_atom_119
-    dd __prolog_atom_120
-    dd __prolog_atom_121
-    dd __prolog_atom_122
-    dd __prolog_atom_123
-    dd __prolog_atom_124
-    dd __prolog_atom_125
-    dd __prolog_atom_126
-    dd __prolog_atom_127
-    dd __prolog_atom_128
-    dd __prolog_atom_129
-    dd __prolog_atom_130
-    dd __prolog_atom_131
-    dd __prolog_atom_132
-    dd __prolog_atom_133
-    dd __prolog_atom_134
-    dd __prolog_atom_135
-    dd __prolog_atom_136
-    dd __prolog_atom_137
-    dd __prolog_atom_138
-    dd __prolog_atom_139
-    dd __prolog_atom_140
-    dd __prolog_atom_141
-    dd __prolog_atom_142
-    dd __prolog_atom_143
-    dd __prolog_atom_144
-    dd __prolog_atom_145
-    dd __prolog_atom_146
-    dd __prolog_atom_147
-    dd __prolog_atom_148
-    dd __prolog_atom_149
-    dd __prolog_atom_150
-    dd __prolog_atom_151
-    dd __prolog_atom_152
-    dd __prolog_atom_153
-    dd __prolog_atom_154
-    dd __prolog_atom_155
-    dd __prolog_atom_156
-    dd __prolog_atom_157
-    dd __prolog_atom_158
-    dd __prolog_atom_159
-    dd __prolog_atom_160
-    dd __prolog_atom_161
-    dd __prolog_atom_162
-    dd __prolog_atom_163
-    dd __prolog_atom_164
-    dd __prolog_atom_165
-    dd __prolog_atom_166
-    dd __prolog_atom_167
-    dd __prolog_atom_168
-    dd __prolog_atom_169
-    dd __prolog_atom_170
-    dd __prolog_atom_171
-    dd __prolog_atom_172
-    dd __prolog_atom_173
-    dd __prolog_atom_174
-    dd __prolog_atom_175
-    dd __prolog_atom_176
-    dd __prolog_atom_177
-    dd __prolog_atom_178
-    dd __prolog_atom_179
-    dd __prolog_atom_180
-    dd __prolog_atom_181
-    dd __prolog_atom_182
-    dd __prolog_atom_183
-    dd __prolog_atom_184
-    dd __prolog_atom_185
+__prolog_static_atom_offsets:
+    dw 0, 3, 5, 7, 9, 12, 17, 23, 28, 30, 32, 35, 38, 41, 43, 46
+    dw 48, 51, 53, 55, 57, 59, 63, 69, 77, 86, 89, 93, 100, 105, 113, 119
+    dw 126, 133, 140, 148, 156, 164, 169, 174, 179, 182, 198, 206, 217, 238, 247, 258
+    dw 270, 281, 295, 310, 315, 321, 333, 338, 345, 358, 372, 387, 401, 418, 434, 451
+    dw 467, 484, 501, 518, 536, 550, 560, 571, 581, 588, 595, 615, 622, 640, 656, 673
+    dw 682, 690, 701, 714, 721, 737, 756, 801, 844, 891, 924, 957, 995, 1044, 1071, 1080
+    dw 1088, 1096, 1103, 1112, 1121, 1138, 1145, 1186, 1238, 1247, 1299, 1352, 1357, 1362, 1366, 1375
+    dw 1379, 1388, 1399, 1403, 1410, 1419, 1424, 1429, 1435, 1440, 1449, 1454, 1460, 1469, 1476, 1483
+    dw 1488, 1493, 1505, 1515, 1523, 1530, 1537, 1545, 1553, 1562, 1567, 1578, 1586, 1595, 1600, 1608
+    dw 1614, 1626, 1639, 1646, 1653, 1658, 1665, 1673, 1678, 1684, 1688, 1694, 1699, 1703, 1712, 1722
+    dw 1729, 1737, 1742, 1748, 1754, 1760, 1766, 1772, 1779, 1787, 1793, 1801, 1806, 1812, 1817, 1826
+    dw 1832, 1837, 1841, 1847, 1860, 1864, 1873, 1877, 1881, 1884, 1889, 1895, 1902, 1910, 1918, 1922
+    dw 1930, 1933, 1936, 1940, 1944, 1948, 1953, 1964, 1970, 1975, 1981, 1986, 1993, 1998, 2006, 2010
+    dw 2015, 2020, 2025, 2030, 2036, 2043, 2051, 2060, 2065, 2074, 2081, 2095, 2105, 2110, 2114, 2121
+    dw 2125, 2129, 2136, 2142, 2148, 2151, 2155, 2161, 2168, 2172, 2178, 2185, 2193, 2197, 2209, 2213
+    dw 2220, 2225, 2229, 2232, 2236, 2242, 2248, 2252, 2259, 2264, 2269, 2288, 2300, 2314, 2321, 2330
+    dw 2347, 2386, 2402, 2417, 2433, 2450, 2467, 2484, 2501, 2522, 2543, 2564, 2585, 2602, 2623, 2630
+    dw 2641, 2662, 2690, 2707, 2717, 2728, 2736, 2750, 2764, 2777, 2795, 2810, 2827, 2843, 2853, 2865
+    dw 2872
+__prolog_static_atom_blob:
+    db 91, 93, 0, 46, 0, 44, 0, 59, 0, 58, 45, 0, 116, 114, 117, 101, 0, 102, 97, 108, 115, 101, 0, 102
+    db 97, 105, 108, 0, 33, 0, 61, 0, 92, 61, 0, 61, 61, 0, 105, 115, 0, 60, 0, 61, 60, 0, 62, 0
+    db 62, 61, 0, 43, 0, 45, 0, 42, 0, 47, 0, 109, 111, 100, 0, 119, 114, 105, 116, 101, 0, 119, 114, 105
+    db 116, 101, 108, 110, 0, 100, 54, 52, 95, 101, 118, 97, 108, 0, 110, 108, 0, 118, 97, 114, 0, 110, 111, 110
+    db 118, 97, 114, 0, 97, 116, 111, 109, 0, 105, 110, 116, 101, 103, 101, 114, 0, 102, 108, 111, 97, 116, 0, 110
+    db 117, 109, 98, 101, 114, 0, 115, 116, 114, 105, 110, 103, 0, 97, 115, 115, 101, 114, 116, 0, 97, 115, 115, 101
+    db 114, 116, 97, 0, 97, 115, 115, 101, 114, 116, 122, 0, 114, 101, 116, 114, 97, 99, 116, 0, 114, 101, 112, 108
+    db 0, 104, 97, 108, 116, 0, 113, 117, 105, 116, 0, 103, 99, 0, 103, 97, 114, 98, 97, 103, 101, 95, 99, 111
+    db 108, 108, 101, 99, 116, 0, 118, 101, 114, 98, 111, 115, 101, 0, 115, 101, 116, 95, 115, 116, 114, 101, 97, 109
+    db 0, 115, 101, 116, 95, 99, 111, 110, 115, 111, 108, 101, 95, 99, 111, 100, 101, 112, 97, 103, 101, 0, 101, 110
+    db 99, 111, 100, 105, 110, 103, 0, 117, 115, 101, 114, 95, 105, 110, 112, 117, 116, 0, 117, 115, 101, 114, 95, 111
+    db 117, 116, 112, 117, 116, 0, 117, 115, 101, 114, 95, 101, 114, 114, 111, 114, 0, 99, 117, 114, 114, 101, 110, 116
+    db 95, 105, 110, 112, 117, 116, 0, 99, 117, 114, 114, 101, 110, 116, 95, 111, 117, 116, 112, 117, 116, 0, 117, 116
+    db 102, 56, 0, 97, 115, 99, 105, 105, 0, 105, 115, 111, 95, 108, 97, 116, 105, 110, 95, 49, 0, 116, 101, 120
+    db 116, 0, 99, 112, 49, 50, 53, 50, 0, 119, 105, 110, 100, 111, 119, 115, 95, 49, 50, 53, 50, 0, 100, 97
+    db 116, 97, 98, 97, 115, 101, 95, 111, 112, 101, 110, 0, 100, 97, 116, 97, 98, 97, 115, 101, 95, 99, 108, 111
+    db 115, 101, 0, 100, 97, 116, 97, 98, 97, 115, 101, 95, 115, 97, 118, 101, 0, 100, 97, 116, 97, 98, 97, 115
+    db 101, 95, 115, 97, 118, 101, 95, 97, 115, 0, 100, 97, 116, 97, 98, 97, 115, 101, 95, 115, 101, 108, 101, 99
+    db 116, 0, 99, 117, 114, 114, 101, 110, 116, 95, 100, 97, 116, 97, 98, 97, 115, 101, 0, 100, 97, 116, 97, 98
+    db 97, 115, 101, 95, 97, 115, 115, 101, 114, 116, 0, 100, 97, 116, 97, 98, 97, 115, 101, 95, 97, 115, 115, 101
+    db 114, 116, 97, 0, 100, 97, 116, 97, 98, 97, 115, 101, 95, 97, 115, 115, 101, 114, 116, 122, 0, 100, 97, 116
+    db 97, 98, 97, 115, 101, 95, 114, 101, 116, 114, 97, 99, 116, 0, 100, 97, 116, 97, 98, 97, 115, 101, 95, 109
+    db 111, 100, 105, 102, 105, 101, 100, 0, 119, 105, 116, 104, 95, 100, 97, 116, 97, 98, 97, 115, 101, 0, 114, 101
+    db 97, 100, 95, 111, 110, 108, 121, 0, 114, 101, 97, 100, 95, 119, 114, 105, 116, 101, 0, 107, 110, 111, 119, 108
+    db 101, 100, 103, 101, 0, 114, 101, 99, 111, 114, 100, 0, 115, 121, 115, 116, 101, 109, 0, 100, 54, 52, 95, 107
+    db 110, 111, 119, 108, 101, 100, 103, 101, 95, 118, 97, 108, 117, 101, 0, 105, 110, 116, 101, 110, 116, 0, 97, 115
+    db 107, 95, 110, 97, 109, 101, 95, 105, 110, 102, 111, 114, 109, 97, 108, 0, 97, 115, 107, 95, 110, 97, 109, 101
+    db 95, 102, 111, 114, 109, 97, 108, 0, 97, 115, 107, 95, 110, 97, 109, 101, 95, 103, 101, 110, 101, 114, 97, 108
+    db 0, 103, 114, 101, 101, 116, 105, 110, 103, 0, 103, 111, 111, 100, 98, 121, 101, 0, 97, 115, 107, 95, 115, 116
+    db 97, 116, 117, 115, 0, 97, 115, 107, 95, 105, 100, 101, 110, 116, 105, 116, 121, 0, 116, 104, 97, 110, 107, 115
+    db 0, 100, 111, 99, 116, 111, 114, 95, 99, 97, 110, 95, 104, 101, 108, 112, 0, 105, 110, 116, 101, 110, 116, 95
+    db 100, 101, 115, 99, 114, 105, 112, 116, 105, 111, 110, 0, 68, 101, 114, 32, 66, 101, 110, 117, 116, 122, 101, 114
+    db 32, 102, 114, 97, 103, 116, 32, 105, 110, 102, 111, 114, 109, 101, 108, 108, 32, 110, 97, 99, 104, 32, 100, 101
+    db 109, 32, 78, 97, 109, 101, 110, 46, 0, 68, 101, 114, 32, 66, 101, 110, 117, 116, 122, 101, 114, 32, 102, 114
+    db 97, 103, 116, 32, 104, 246, 102, 108, 105, 99, 104, 32, 110, 97, 99, 104, 32, 100, 101, 109, 32, 78, 97, 109
+    db 101, 110, 46, 0, 68, 101, 114, 32, 66, 101, 110, 117, 116, 122, 101, 114, 32, 102, 114, 97, 103, 116, 32, 97
+    db 108, 108, 103, 101, 109, 101, 105, 110, 32, 110, 97, 99, 104, 32, 101, 105, 110, 101, 109, 32, 78, 97, 109, 101
+    db 110, 46, 0, 68, 101, 114, 32, 66, 101, 110, 117, 116, 122, 101, 114, 32, 98, 101, 103, 114, 252, 223, 116, 32
+    db 100, 97, 115, 32, 83, 121, 115, 116, 101, 109, 46, 0, 68, 101, 114, 32, 66, 101, 110, 117, 116, 122, 101, 114
+    db 32, 118, 101, 114, 97, 98, 115, 99, 104, 105, 101, 100, 101, 116, 32, 115, 105, 99, 104, 46, 0, 68, 101, 114
+    db 32, 66, 101, 110, 117, 116, 122, 101, 114, 32, 102, 114, 97, 103, 116, 32, 110, 97, 99, 104, 32, 100, 101, 109
+    db 32, 66, 101, 102, 105, 110, 100, 101, 110, 46, 0, 68, 101, 114, 32, 66, 101, 110, 117, 116, 122, 101, 114, 32
+    db 102, 114, 97, 103, 116, 44, 32, 119, 101, 114, 32, 111, 100, 101, 114, 32, 119, 97, 115, 32, 100, 97, 115, 32
+    db 83, 121, 115, 116, 101, 109, 32, 105, 115, 116, 46, 0, 68, 101, 114, 32, 66, 101, 110, 117, 116, 122, 101, 114
+    db 32, 98, 101, 100, 97, 110, 107, 116, 32, 115, 105, 99, 104, 46, 0, 115, 105, 109, 103, 117, 108, 97, 114, 0
+    db 101, 105, 110, 122, 101, 108, 110, 0, 101, 105, 110, 122, 97, 104, 108, 0, 112, 108, 117, 114, 97, 108, 0, 109
+    db 101, 104, 114, 109, 97, 108, 115, 0, 109, 101, 104, 114, 122, 97, 104, 108, 0, 119, 111, 114, 100, 95, 100, 101
+    db 115, 99, 114, 105, 112, 116, 105, 111, 110, 0, 97, 114, 98, 101, 105, 116, 0, 102, 252, 114, 32, 100, 97, 115
+    db 32, 252, 98, 101, 114, 108, 101, 98, 101, 110, 32, 97, 110, 32, 100, 101, 114, 32, 65, 101, 98, 101, 105, 116
+    db 32, 97, 114, 98, 101, 105, 116, 101, 110, 0, 106, 101, 109, 97, 110, 100, 101, 110, 32, 97, 117, 115, 98, 105
+    db 108, 100, 101, 110, 44, 32, 117, 109, 32, 100, 105, 101, 32, 65, 114, 98, 101, 105, 116, 32, 109, 97, 99, 104
+    db 101, 110, 32, 122, 117, 32, 107, 246, 110, 110, 101, 110, 46, 0, 97, 114, 98, 101, 105, 116, 101, 114, 0, 102
+    db 252, 114, 32, 65, 114, 98, 101, 105, 116, 101, 110, 32, 110, 111, 116, 119, 101, 110, 100, 105, 103, 101, 44, 32
+    db 102, 228, 104, 105, 103, 101, 110, 32, 77, 101, 110, 115, 99, 104, 32, 101, 105, 110, 115, 116, 101, 108, 108, 101
+    db 110, 46, 0, 102, 252, 114, 32, 65, 114, 98, 101, 105, 116, 101, 110, 32, 110, 111, 116, 119, 101, 110, 100, 105
+    db 103, 101, 44, 32, 102, 228, 104, 105, 103, 101, 32, 77, 101, 110, 115, 99, 104, 101, 110, 32, 101, 105, 110, 115
+    db 116, 101, 108, 108, 101, 110, 46, 0, 119, 111, 114, 100, 0, 110, 111, 117, 110, 0, 100, 101, 114, 0, 115, 105
+    db 110, 103, 117, 108, 97, 114, 0, 100, 105, 101, 0, 97, 114, 98, 101, 105, 116, 101, 110, 0, 97, 114, 98, 101
+    db 105, 116, 115, 97, 109, 116, 0, 100, 97, 115, 0, 97, 114, 122, 110, 101, 105, 0, 97, 114, 122, 110, 101, 105
+    db 101, 110, 0, 97, 114, 122, 116, 0, 98, 97, 110, 100, 0, 98, 97, 110, 100, 101, 0, 98, 97, 110, 107, 0
+    db 98, 97, 110, 107, 110, 111, 116, 101, 0, 98, 97, 117, 109, 0, 98, 114, 97, 110, 100, 0, 98, 114, 97, 117
+    db 101, 114, 101, 105, 0, 98, 114, 97, 117, 115, 101, 0, 98, 114, 117, 100, 101, 114, 0, 99, 104, 101, 102, 0
+    db 100, 97, 99, 104, 0, 100, 97, 99, 104, 102, 101, 110, 115, 116, 101, 114, 0, 100, 97, 99, 104, 114, 105, 110
+    db 110, 101, 0, 102, 101, 110, 115, 116, 101, 114, 0, 102, 114, 101, 117, 110, 100, 0, 103, 101, 114, 117, 99, 104
+    db 0, 103, 101, 114, 252, 99, 104, 101, 0, 103, 101, 116, 114, 228, 110, 107, 0, 103, 101, 116, 114, 228, 110, 107
+    db 101, 0, 104, 97, 117, 115, 0, 104, 97, 117, 115, 110, 117, 109, 109, 101, 114, 0, 104, 97, 117, 115, 116, 252
+    db 114, 0, 104, 97, 117, 115, 119, 97, 110, 100, 0, 104, 117, 110, 100, 0, 107, 111, 108, 108, 101, 103, 101, 0
+    db 107, 114, 105, 109, 105, 0, 107, 114, 105, 109, 105, 110, 97, 108, 97, 109, 116, 0, 107, 114, 105, 109, 105, 110
+    db 97, 108, 105, 116, 228, 116, 0, 107, 117, 99, 104, 101, 110, 0, 108, 101, 104, 114, 101, 114, 0, 109, 97, 110
+    db 110, 0, 109, 101, 110, 115, 99, 104, 0, 110, 97, 99, 104, 98, 97, 114, 0, 110, 111, 116, 101, 0, 110, 111
+    db 116, 101, 110, 0, 111, 109, 97, 0, 111, 110, 107, 101, 108, 0, 111, 98, 101, 114, 0, 111, 112, 97, 0, 112
+    db 114, 111, 103, 114, 97, 109, 109, 0, 112, 114, 111, 103, 114, 97, 109, 109, 101, 0, 113, 117, 101, 108, 108, 101
+    db 0, 113, 117, 101, 108, 108, 101, 110, 0, 114, 97, 117, 109, 0, 114, 228, 117, 109, 101, 0, 114, 105, 110, 110
+    db 101, 0, 115, 111, 104, 108, 101, 0, 115, 111, 110, 100, 101, 0, 115, 111, 110, 110, 101, 0, 115, 111, 110, 110
+    db 101, 110, 0, 115, 111, 110, 110, 116, 97, 103, 0, 115, 116, 101, 114, 110, 0, 115, 116, 117, 100, 101, 110, 116
+    db 0, 117, 102, 101, 114, 0, 118, 97, 116, 101, 114, 0, 122, 97, 104, 110, 0, 122, 97, 104, 110, 97, 114, 122
+    db 116, 0, 122, 97, 110, 103, 101, 0, 122, 97, 117, 110, 0, 122, 117, 103, 0, 122, 117, 110, 103, 101, 0, 122
+    db 119, 105, 115, 99, 104, 101, 110, 114, 97, 117, 109, 0, 119, 105, 101, 0, 113, 117, 101, 115, 116, 105, 111, 110
+    db 0, 119, 97, 115, 0, 119, 101, 114, 0, 119, 111, 0, 119, 97, 110, 110, 0, 119, 97, 114, 117, 109, 0, 119
+    db 101, 108, 99, 104, 101, 0, 119, 101, 108, 99, 104, 101, 114, 0, 119, 101, 108, 99, 104, 101, 115, 0, 105, 99
+    db 104, 0, 112, 114, 111, 110, 111, 117, 110, 0, 100, 117, 0, 101, 114, 0, 115, 105, 101, 0, 119, 105, 114, 0
+    db 105, 104, 114, 0, 109, 101, 105, 110, 0, 112, 111, 115, 115, 101, 115, 115, 105, 118, 101, 0, 109, 101, 105, 110
+    db 101, 0, 100, 101, 105, 110, 0, 100, 101, 105, 110, 101, 0, 105, 104, 114, 101, 0, 104, 101, 105, 115, 115, 116
+    db 0, 118, 101, 114, 98, 0, 104, 101, 105, 115, 115, 101, 110, 0, 105, 115, 116, 0, 115, 105, 110, 100, 0, 103
+    db 101, 104, 116, 0, 98, 105, 115, 116, 0, 104, 97, 115, 116, 0, 104, 97, 98, 101, 110, 0, 107, 97, 110, 110
+    db 115, 116, 0, 107, 111, 101, 110, 110, 101, 110, 0, 115, 101, 109, 97, 110, 116, 105, 99, 0, 110, 97, 109, 101
+    db 0, 105, 110, 102, 111, 114, 109, 97, 108, 0, 102, 111, 114, 109, 97, 108, 0, 115, 101, 109, 97, 110, 116, 105
+    db 99, 95, 108, 105, 115, 116, 0, 117, 116, 116, 101, 114, 97, 110, 99, 101, 0, 107, 97, 110, 110, 0, 117, 110
+    db 115, 0, 104, 101, 108, 102, 101, 110, 0, 115, 97, 103, 0, 109, 105, 114, 0, 100, 101, 105, 110, 101, 110, 0
+    db 110, 97, 109, 101, 110, 0, 104, 97, 108, 108, 111, 0, 104, 105, 0, 104, 101, 121, 0, 103, 117, 116, 101, 110
+    db 0, 109, 111, 114, 103, 101, 110, 0, 116, 97, 103, 0, 97, 98, 101, 110, 100, 0, 115, 101, 114, 118, 117, 115
+    db 0, 116, 115, 99, 104, 252, 115, 115, 0, 97, 117, 102, 0, 119, 105, 101, 100, 101, 114, 115, 101, 104, 101, 110
+    db 0, 98, 105, 115, 0, 115, 112, 228, 116, 101, 114, 0, 98, 97, 108, 100, 0, 98, 121, 101, 0, 101, 115, 0
+    db 100, 105, 114, 0, 103, 101, 104, 116, 115, 0, 97, 108, 108, 101, 115, 0, 103, 117, 116, 0, 102, 252, 104, 108
+    db 115, 116, 0, 100, 105, 99, 104, 0, 115, 101, 105, 100, 0, 114, 97, 110, 100, 111, 109, 95, 108, 105, 115, 116
+    db 95, 108, 101, 110, 103, 116, 104, 0, 114, 97, 110, 100, 111, 109, 95, 110, 116, 104, 48, 0, 114, 97, 110, 100
+    db 111, 109, 95, 109, 101, 109, 98, 101, 114, 0, 114, 97, 110, 100, 111, 109, 0, 114, 101, 115, 112, 111, 110, 115
+    db 101, 0, 68, 97, 115, 32, 105, 115, 116, 32, 114, 105, 99, 104, 116, 105, 103, 46, 0, 73, 99, 104, 32, 98
+    db 105, 110, 32, 101, 105, 110, 32, 100, 105, 97, 108, 111, 103, 111, 114, 105, 101, 110, 116, 105, 101, 114, 116, 101
+    db 115, 32, 83, 121, 115, 116, 101, 109, 46, 0, 71, 101, 114, 110, 32, 103, 101, 115, 99, 104, 101, 104, 101, 110
+    db 46, 0, 75, 101, 105, 110, 101, 32, 85, 114, 115, 97, 99, 104, 101, 46, 0, 114, 97, 110, 100, 111, 109, 95
+    db 114, 101, 115, 112, 111, 110, 115, 101, 0, 73, 99, 104, 32, 104, 101, 105, 223, 101, 32, 67, 111, 110, 110, 121
+    db 46, 0, 73, 99, 104, 32, 104, 101, 105, 223, 101, 32, 70, 114, 97, 110, 107, 46, 0, 73, 99, 104, 32, 104
+    db 101, 105, 223, 101, 32, 83, 111, 110, 110, 121, 46, 0, 73, 99, 104, 32, 104, 101, 105, 223, 101, 32, 80, 101
+    db 116, 101, 114, 46, 0, 77, 101, 105, 110, 32, 78, 97, 109, 101, 32, 105, 115, 116, 32, 67, 111, 110, 110, 121
+    db 46, 0, 77, 101, 105, 110, 32, 78, 97, 109, 101, 32, 105, 115, 116, 32, 70, 114, 97, 110, 107, 46, 0, 77
+    db 101, 105, 110, 32, 78, 97, 109, 101, 32, 105, 115, 116, 32, 83, 111, 110, 110, 121, 46, 0, 77, 101, 105, 110
+    db 32, 78, 97, 109, 101, 32, 105, 115, 116, 32, 80, 101, 116, 101, 114, 46, 0, 77, 105, 114, 32, 103, 101, 104
+    db 116, 32, 101, 115, 32, 103, 117, 116, 46, 0, 68, 97, 110, 107, 101, 32, 100, 101, 114, 32, 78, 97, 99, 104
+    db 102, 114, 97, 103, 101, 46, 0, 72, 97, 108, 108, 111, 33, 0, 71, 117, 116, 101, 110, 32, 84, 97, 103, 33
+    db 0, 83, 99, 104, 246, 110, 32, 100, 105, 99, 104, 32, 122, 117, 32, 115, 101, 104, 101, 110, 46, 0, 72, 97
+    db 108, 108, 111, 44, 32, 119, 105, 101, 32, 107, 97, 110, 110, 32, 105, 99, 104, 32, 104, 101, 108, 102, 101, 110
+    db 63, 0, 65, 117, 102, 32, 87, 105, 101, 100, 101, 114, 115, 101, 104, 101, 110, 33, 0, 66, 105, 115, 32, 98
+    db 97, 108, 100, 33, 0, 77, 97, 99, 104, 115, 32, 103, 117, 116, 33, 0, 114, 101, 115, 112, 111, 110, 100, 0
+    db 100, 101, 116, 101, 99, 116, 95, 105, 110, 116, 101, 110, 116, 0, 100, 111, 116, 95, 117, 116, 116, 101, 114, 97
+    db 110, 99, 101, 0, 119, 105, 101, 46, 104, 101, 105, 223, 116, 46, 100, 117, 0, 119, 105, 101, 46, 105, 115, 116
+    db 46, 100, 101, 105, 110, 46, 110, 97, 109, 101, 0, 119, 105, 101, 46, 104, 101, 105, 223, 101, 110, 46, 115, 105
+    db 101, 0, 119, 105, 101, 46, 105, 115, 116, 46, 105, 104, 114, 46, 110, 97, 109, 101, 0, 119, 105, 101, 46, 103
+    db 101, 104, 116, 46, 101, 115, 46, 100, 105, 114, 0, 103, 117, 116, 101, 110, 46, 116, 97, 103, 0, 105, 110, 116
+    db 101, 110, 116, 95, 114, 117, 108, 101, 0, 109, 101, 109, 98, 101, 114, 0, 114, 97, 110, 100, 111, 109, 95, 98
+    db 101, 116, 119, 101, 101, 110, 0
 
-__prolog_atom_1:
-    db 91, 93, 0
-__prolog_atom_2:
-    db 46, 0
-__prolog_atom_3:
-    db 44, 0
-__prolog_atom_4:
-    db 59, 0
-__prolog_atom_5:
-    db 58, 45, 0
-__prolog_atom_6:
-    db 116, 114, 117, 101, 0
-__prolog_atom_7:
-    db 102, 97, 108, 115, 101, 0
-__prolog_atom_8:
-    db 102, 97, 105, 108, 0
-__prolog_atom_9:
-    db 33, 0
-__prolog_atom_10:
-    db 61, 0
-__prolog_atom_11:
-    db 92, 61, 0
-__prolog_atom_12:
-    db 61, 61, 0
-__prolog_atom_13:
-    db 105, 115, 0
-__prolog_atom_14:
-    db 60, 0
-__prolog_atom_15:
-    db 61, 60, 0
-__prolog_atom_16:
-    db 62, 0
-__prolog_atom_17:
-    db 62, 61, 0
-__prolog_atom_18:
-    db 43, 0
-__prolog_atom_19:
-    db 45, 0
-__prolog_atom_20:
-    db 42, 0
-__prolog_atom_21:
-    db 47, 0
-__prolog_atom_22:
-    db 109, 111, 100, 0
-__prolog_atom_23:
-    db 119, 114, 105, 116, 101, 0
-__prolog_atom_24:
-    db 119, 114, 105, 116, 101, 108, 110, 0
-__prolog_atom_25:
-    db 100, 54, 52, 95, 101, 118, 97, 108, 0
-__prolog_atom_26:
-    db 110, 108, 0
-__prolog_atom_27:
-    db 118, 97, 114, 0
-__prolog_atom_28:
-    db 110, 111, 110, 118, 97, 114, 0
-__prolog_atom_29:
-    db 97, 116, 111, 109, 0
-__prolog_atom_30:
-    db 105, 110, 116, 101, 103, 101, 114, 0
-__prolog_atom_31:
-    db 102, 108, 111, 97, 116, 0
-__prolog_atom_32:
-    db 110, 117, 109, 98, 101, 114, 0
-__prolog_atom_33:
-    db 115, 116, 114, 105, 110, 103, 0
-__prolog_atom_34:
-    db 97, 115, 115, 101, 114, 116, 0
-__prolog_atom_35:
-    db 97, 115, 115, 101, 114, 116, 97, 0
-__prolog_atom_36:
-    db 97, 115, 115, 101, 114, 116, 122, 0
-__prolog_atom_37:
-    db 114, 101, 116, 114, 97, 99, 116, 0
-__prolog_atom_38:
-    db 114, 101, 112, 108, 0
-__prolog_atom_39:
-    db 104, 97, 108, 116, 0
-__prolog_atom_40:
-    db 113, 117, 105, 116, 0
-__prolog_atom_41:
-    db 103, 99, 0
-__prolog_atom_42:
-    db 103, 97, 114, 98, 97, 103, 101, 95, 99, 111, 108, 108, 101, 99, 116, 0
-__prolog_atom_43:
-    db 118, 101, 114, 98, 111, 115, 101, 0
-__prolog_atom_44:
-    db 115, 101, 116, 95, 115, 116, 114, 101, 97, 109, 0
-__prolog_atom_45:
-    db 115, 101, 116, 95, 99, 111, 110, 115, 111, 108, 101, 95, 99, 111, 100, 101, 112, 97, 103, 101, 0
-__prolog_atom_46:
-    db 101, 110, 99, 111, 100, 105, 110, 103, 0
-__prolog_atom_47:
-    db 117, 115, 101, 114, 95, 105, 110, 112, 117, 116, 0
-__prolog_atom_48:
-    db 117, 115, 101, 114, 95, 111, 117, 116, 112, 117, 116, 0
-__prolog_atom_49:
-    db 117, 115, 101, 114, 95, 101, 114, 114, 111, 114, 0
-__prolog_atom_50:
-    db 99, 117, 114, 114, 101, 110, 116, 95, 105, 110, 112, 117, 116, 0
-__prolog_atom_51:
-    db 99, 117, 114, 114, 101, 110, 116, 95, 111, 117, 116, 112, 117, 116, 0
-__prolog_atom_52:
-    db 117, 116, 102, 56, 0
-__prolog_atom_53:
-    db 97, 115, 99, 105, 105, 0
-__prolog_atom_54:
-    db 105, 115, 111, 95, 108, 97, 116, 105, 110, 95, 49, 0
-__prolog_atom_55:
-    db 116, 101, 120, 116, 0
-__prolog_atom_56:
-    db 99, 112, 49, 50, 53, 50, 0
-__prolog_atom_57:
-    db 119, 105, 110, 100, 111, 119, 115, 95, 49, 50, 53, 50, 0
-__prolog_atom_58:
-    db 100, 97, 116, 97, 98, 97, 115, 101, 95, 111, 112, 101, 110, 0
-__prolog_atom_59:
-    db 100, 97, 116, 97, 98, 97, 115, 101, 95, 99, 108, 111, 115, 101, 0
-__prolog_atom_60:
-    db 100, 97, 116, 97, 98, 97, 115, 101, 95, 115, 97, 118, 101, 0
-__prolog_atom_61:
-    db 100, 97, 116, 97, 98, 97, 115, 101, 95, 115, 97, 118, 101, 95, 97, 115, 0
-__prolog_atom_62:
-    db 100, 97, 116, 97, 98, 97, 115, 101, 95, 115, 101, 108, 101, 99, 116, 0
-__prolog_atom_63:
-    db 99, 117, 114, 114, 101, 110, 116, 95, 100, 97, 116, 97, 98, 97, 115, 101, 0
-__prolog_atom_64:
-    db 100, 97, 116, 97, 98, 97, 115, 101, 95, 97, 115, 115, 101, 114, 116, 0
-__prolog_atom_65:
-    db 100, 97, 116, 97, 98, 97, 115, 101, 95, 97, 115, 115, 101, 114, 116, 97, 0
-__prolog_atom_66:
-    db 100, 97, 116, 97, 98, 97, 115, 101, 95, 97, 115, 115, 101, 114, 116, 122, 0
-__prolog_atom_67:
-    db 100, 97, 116, 97, 98, 97, 115, 101, 95, 114, 101, 116, 114, 97, 99, 116, 0
-__prolog_atom_68:
-    db 100, 97, 116, 97, 98, 97, 115, 101, 95, 109, 111, 100, 105, 102, 105, 101, 100, 0
-__prolog_atom_69:
-    db 119, 105, 116, 104, 95, 100, 97, 116, 97, 98, 97, 115, 101, 0
-__prolog_atom_70:
-    db 114, 101, 97, 100, 95, 111, 110, 108, 121, 0
-__prolog_atom_71:
-    db 114, 101, 97, 100, 95, 119, 114, 105, 116, 101, 0
-__prolog_atom_72:
-    db 107, 110, 111, 119, 108, 101, 100, 103, 101, 0
-__prolog_atom_73:
-    db 114, 101, 99, 111, 114, 100, 0
-__prolog_atom_74:
-    db 115, 121, 115, 116, 101, 109, 0
-__prolog_atom_75:
-    db 100, 54, 52, 95, 107, 110, 111, 119, 108, 101, 100, 103, 101, 95, 118, 97, 108, 117, 101, 0
-__prolog_atom_76:
-    db 105, 110, 116, 101, 110, 116, 0
-__prolog_atom_77:
-    db 97, 115, 107, 95, 110, 97, 109, 101, 95, 105, 110, 102, 111, 114, 109, 97, 108, 0
-__prolog_atom_78:
-    db 97, 115, 107, 95, 110, 97, 109, 101, 95, 102, 111, 114, 109, 97, 108, 0
-__prolog_atom_79:
-    db 97, 115, 107, 95, 110, 97, 109, 101, 95, 103, 101, 110, 101, 114, 97, 108, 0
-__prolog_atom_80:
-    db 103, 114, 101, 101, 116, 105, 110, 103, 0
-__prolog_atom_81:
-    db 103, 111, 111, 100, 98, 121, 101, 0
-__prolog_atom_82:
-    db 97, 115, 107, 95, 115, 116, 97, 116, 117, 115, 0
-__prolog_atom_83:
-    db 97, 115, 107, 95, 105, 100, 101, 110, 116, 105, 116, 121, 0
-__prolog_atom_84:
-    db 116, 104, 97, 110, 107, 115, 0
-__prolog_atom_85:
-    db 105, 110, 116, 101, 110, 116, 95, 100, 101, 115, 99, 114, 105, 112, 116, 105, 111, 110, 0
-__prolog_atom_86:
-    db 68, 101, 114, 32, 66, 101, 110, 117, 116, 122, 101, 114, 32, 102, 114, 97, 103, 116, 32, 105, 110, 102, 111, 114
-    db 109, 101, 108, 108, 32, 110, 97, 99, 104, 32, 100, 101, 109, 32, 78, 97, 109, 101, 110, 46, 0
-__prolog_atom_87:
-    db 68, 101, 114, 32, 66, 101, 110, 117, 116, 122, 101, 114, 32, 102, 114, 97, 103, 116, 32, 104, 246, 102, 108, 105
-    db 99, 104, 32, 110, 97, 99, 104, 32, 100, 101, 109, 32, 78, 97, 109, 101, 110, 46, 0
-__prolog_atom_88:
-    db 68, 101, 114, 32, 66, 101, 110, 117, 116, 122, 101, 114, 32, 102, 114, 97, 103, 116, 32, 97, 108, 108, 103, 101
-    db 109, 101, 105, 110, 32, 110, 97, 99, 104, 32, 101, 105, 110, 101, 109, 32, 78, 97, 109, 101, 110, 46, 0
-__prolog_atom_89:
-    db 68, 101, 114, 32, 66, 101, 110, 117, 116, 122, 101, 114, 32, 98, 101, 103, 114, 252, 223, 116, 32, 100, 97, 115
-    db 32, 83, 121, 115, 116, 101, 109, 46, 0
-__prolog_atom_90:
-    db 68, 101, 114, 32, 66, 101, 110, 117, 116, 122, 101, 114, 32, 118, 101, 114, 97, 98, 115, 99, 104, 105, 101, 100
-    db 101, 116, 32, 115, 105, 99, 104, 46, 0
-__prolog_atom_91:
-    db 68, 101, 114, 32, 66, 101, 110, 117, 116, 122, 101, 114, 32, 102, 114, 97, 103, 116, 32, 110, 97, 99, 104, 32
-    db 100, 101, 109, 32, 66, 101, 102, 105, 110, 100, 101, 110, 46, 0
-__prolog_atom_92:
-    db 68, 101, 114, 32, 66, 101, 110, 117, 116, 122, 101, 114, 32, 102, 114, 97, 103, 116, 44, 32, 119, 101, 114, 32
-    db 111, 100, 101, 114, 32, 119, 97, 115, 32, 100, 97, 115, 32, 83, 121, 115, 116, 101, 109, 32, 105, 115, 116, 46
-    db 0
-__prolog_atom_93:
-    db 68, 101, 114, 32, 66, 101, 110, 117, 116, 122, 101, 114, 32, 98, 101, 100, 97, 110, 107, 116, 32, 115, 105, 99
-    db 104, 46, 0
-__prolog_atom_94:
-    db 119, 111, 114, 100, 0
-__prolog_atom_95:
-    db 119, 105, 101, 0
-__prolog_atom_96:
-    db 113, 117, 101, 115, 116, 105, 111, 110, 0
-__prolog_atom_97:
-    db 119, 97, 115, 0
-__prolog_atom_98:
-    db 119, 101, 114, 0
-__prolog_atom_99:
-    db 119, 111, 0
-__prolog_atom_100:
-    db 119, 97, 110, 110, 0
-__prolog_atom_101:
-    db 119, 97, 114, 117, 109, 0
-__prolog_atom_102:
-    db 119, 101, 108, 99, 104, 101, 0
-__prolog_atom_103:
-    db 119, 101, 108, 99, 104, 101, 114, 0
-__prolog_atom_104:
-    db 119, 101, 108, 99, 104, 101, 115, 0
-__prolog_atom_105:
-    db 105, 99, 104, 0
-__prolog_atom_106:
-    db 112, 114, 111, 110, 111, 117, 110, 0
-__prolog_atom_107:
-    db 100, 117, 0
-__prolog_atom_108:
-    db 101, 114, 0
-__prolog_atom_109:
-    db 115, 105, 101, 0
-__prolog_atom_110:
-    db 119, 105, 114, 0
-__prolog_atom_111:
-    db 105, 104, 114, 0
-__prolog_atom_112:
-    db 109, 101, 105, 110, 0
-__prolog_atom_113:
-    db 112, 111, 115, 115, 101, 115, 115, 105, 118, 101, 0
-__prolog_atom_114:
-    db 109, 101, 105, 110, 101, 0
-__prolog_atom_115:
-    db 100, 101, 105, 110, 0
-__prolog_atom_116:
-    db 100, 101, 105, 110, 101, 0
-__prolog_atom_117:
-    db 105, 104, 114, 101, 0
-__prolog_atom_118:
-    db 104, 101, 105, 115, 115, 116, 0
-__prolog_atom_119:
-    db 118, 101, 114, 98, 0
-__prolog_atom_120:
-    db 104, 101, 105, 115, 115, 101, 110, 0
-__prolog_atom_121:
-    db 105, 115, 116, 0
-__prolog_atom_122:
-    db 115, 105, 110, 100, 0
-__prolog_atom_123:
-    db 103, 101, 104, 116, 0
-__prolog_atom_124:
-    db 98, 105, 115, 116, 0
-__prolog_atom_125:
-    db 104, 97, 115, 116, 0
-__prolog_atom_126:
-    db 104, 97, 98, 101, 110, 0
-__prolog_atom_127:
-    db 107, 97, 110, 110, 115, 116, 0
-__prolog_atom_128:
-    db 107, 111, 101, 110, 110, 101, 110, 0
-__prolog_atom_129:
-    db 115, 101, 109, 97, 110, 116, 105, 99, 0
-__prolog_atom_130:
-    db 110, 97, 109, 101, 0
-__prolog_atom_131:
-    db 105, 110, 102, 111, 114, 109, 97, 108, 0
-__prolog_atom_132:
-    db 102, 111, 114, 109, 97, 108, 0
-__prolog_atom_133:
-    db 115, 101, 109, 97, 110, 116, 105, 99, 95, 108, 105, 115, 116, 0
-__prolog_atom_134:
-    db 117, 116, 116, 101, 114, 97, 110, 99, 101, 0
-__prolog_atom_135:
-    db 115, 97, 103, 0
-__prolog_atom_136:
-    db 109, 105, 114, 0
-__prolog_atom_137:
-    db 100, 101, 105, 110, 101, 110, 0
-__prolog_atom_138:
-    db 110, 97, 109, 101, 110, 0
-__prolog_atom_139:
-    db 104, 97, 108, 108, 111, 0
-__prolog_atom_140:
-    db 104, 105, 0
-__prolog_atom_141:
-    db 104, 101, 121, 0
-__prolog_atom_142:
-    db 103, 117, 116, 101, 110, 0
-__prolog_atom_143:
-    db 109, 111, 114, 103, 101, 110, 0
-__prolog_atom_144:
-    db 116, 97, 103, 0
-__prolog_atom_145:
-    db 97, 98, 101, 110, 100, 0
-__prolog_atom_146:
-    db 115, 101, 114, 118, 117, 115, 0
-__prolog_atom_147:
-    db 116, 115, 99, 104, 252, 115, 115, 0
-__prolog_atom_148:
-    db 97, 117, 102, 0
-__prolog_atom_149:
-    db 119, 105, 101, 100, 101, 114, 115, 101, 104, 101, 110, 0
-__prolog_atom_150:
-    db 98, 105, 115, 0
-__prolog_atom_151:
-    db 115, 112, 228, 116, 101, 114, 0
-__prolog_atom_152:
-    db 98, 97, 108, 100, 0
-__prolog_atom_153:
-    db 98, 121, 101, 0
-__prolog_atom_154:
-    db 101, 115, 0
-__prolog_atom_155:
-    db 100, 105, 114, 0
-__prolog_atom_156:
-    db 103, 101, 104, 116, 115, 0
-__prolog_atom_157:
-    db 97, 108, 108, 101, 115, 0
-__prolog_atom_158:
-    db 103, 117, 116, 0
-__prolog_atom_159:
-    db 102, 252, 104, 108, 115, 116, 0
-__prolog_atom_160:
-    db 100, 105, 99, 104, 0
-__prolog_atom_161:
-    db 115, 101, 105, 100, 0
-__prolog_atom_162:
-    db 114, 101, 115, 112, 111, 110, 115, 101, 0
-__prolog_atom_163:
-    db 73, 99, 104, 32, 104, 101, 105, 223, 101, 32, 100, 66, 97, 115, 101, 50, 77, 97, 110, 121, 46, 0
-__prolog_atom_164:
-    db 77, 101, 105, 110, 32, 78, 97, 109, 101, 32, 105, 115, 116, 32, 100, 66, 97, 115, 101, 50, 77, 97, 110, 121
-    db 46, 0
-__prolog_atom_165:
-    db 72, 97, 108, 108, 111, 33, 0
-__prolog_atom_166:
-    db 71, 117, 116, 101, 110, 32, 84, 97, 103, 33, 0
-__prolog_atom_167:
-    db 72, 97, 108, 108, 111, 44, 32, 119, 105, 101, 32, 107, 97, 110, 110, 32, 105, 99, 104, 32, 104, 101, 108, 102
-    db 101, 110, 63, 0
-__prolog_atom_168:
-    db 65, 117, 102, 32, 87, 105, 101, 100, 101, 114, 115, 101, 104, 101, 110, 33, 0
-__prolog_atom_169:
-    db 66, 105, 115, 32, 98, 97, 108, 100, 33, 0
-__prolog_atom_170:
-    db 77, 105, 114, 32, 103, 101, 104, 116, 32, 101, 115, 32, 103, 117, 116, 46, 0
-__prolog_atom_171:
-    db 68, 97, 110, 107, 101, 32, 100, 101, 114, 32, 78, 97, 99, 104, 102, 114, 97, 103, 101, 46, 0
-__prolog_atom_172:
-    db 73, 99, 104, 32, 98, 105, 110, 32, 101, 105, 110, 32, 100, 105, 97, 108, 111, 103, 111, 114, 105, 101, 110, 116
-    db 105, 101, 114, 116, 101, 115, 32, 83, 121, 115, 116, 101, 109, 46, 0
-__prolog_atom_173:
-    db 71, 101, 114, 110, 32, 103, 101, 115, 99, 104, 101, 104, 101, 110, 46, 0
-__prolog_atom_174:
-    db 75, 101, 105, 110, 101, 32, 85, 114, 115, 97, 99, 104, 101, 46, 0
-__prolog_atom_175:
-    db 114, 101, 115, 112, 111, 110, 100, 0
-__prolog_atom_176:
-    db 100, 101, 116, 101, 99, 116, 95, 105, 110, 116, 101, 110, 116, 0
-__prolog_atom_177:
-    db 100, 111, 116, 95, 117, 116, 116, 101, 114, 97, 110, 99, 101, 0
-__prolog_atom_178:
-    db 119, 105, 101, 46, 104, 101, 105, 223, 116, 46, 100, 117, 0
-__prolog_atom_179:
-    db 119, 105, 101, 46, 105, 115, 116, 46, 100, 101, 105, 110, 46, 110, 97, 109, 101, 0
-__prolog_atom_180:
-    db 119, 105, 101, 46, 104, 101, 105, 223, 101, 110, 46, 115, 105, 101, 0
-__prolog_atom_181:
-    db 119, 105, 101, 46, 105, 115, 116, 46, 105, 104, 114, 46, 110, 97, 109, 101, 0
-__prolog_atom_182:
-    db 119, 105, 101, 46, 103, 101, 104, 116, 46, 101, 115, 46, 100, 105, 114, 0
-__prolog_atom_183:
-    db 103, 117, 116, 101, 110, 46, 116, 97, 103, 0
-__prolog_atom_184:
-    db 105, 110, 116, 101, 110, 116, 95, 114, 117, 108, 101, 0
-__prolog_atom_185:
-    db 109, 101, 109, 98, 101, 114, 0
+__prolog_pred_group_0_descriptors:
+    dd __prolog_clause_193_desc
+__prolog_pred_group_1_descriptors:
+    dd __prolog_clause_185_desc, __prolog_clause_186_desc, __prolog_clause_187_desc, __prolog_clause_188_desc, __prolog_clause_189_desc, __prolog_clause_190_desc
+__prolog_pred_group_2_descriptors:
+    dd __prolog_clause_0_desc, __prolog_clause_1_desc, __prolog_clause_2_desc, __prolog_clause_3_desc, __prolog_clause_4_desc, __prolog_clause_5_desc, __prolog_clause_6_desc, __prolog_clause_7_desc
+    dd __prolog_clause_8_desc
+__prolog_pred_group_3_descriptors:
+    dd __prolog_clause_9_desc, __prolog_clause_10_desc, __prolog_clause_11_desc, __prolog_clause_12_desc, __prolog_clause_13_desc, __prolog_clause_14_desc, __prolog_clause_15_desc, __prolog_clause_16_desc
+__prolog_pred_group_4_descriptors:
+    dd __prolog_clause_191_desc, __prolog_clause_192_desc
+__prolog_pred_group_5_descriptors:
+    dd __prolog_clause_194_desc, __prolog_clause_195_desc
+__prolog_pred_group_6_descriptors:
+    dd __prolog_clause_18_desc
+__prolog_pred_group_7_descriptors:
+    dd __prolog_clause_170_desc, __prolog_clause_171_desc
+__prolog_pred_group_8_descriptors:
+    dd __prolog_clause_174_desc
+__prolog_pred_group_9_descriptors:
+    dd __prolog_clause_172_desc, __prolog_clause_173_desc
+__prolog_pred_group_10_descriptors:
+    dd __prolog_clause_179_desc, __prolog_clause_180_desc, __prolog_clause_181_desc, __prolog_clause_182_desc, __prolog_clause_183_desc
+__prolog_pred_group_11_descriptors:
+    dd __prolog_clause_184_desc
+__prolog_pred_group_12_descriptors:
+    dd __prolog_clause_175_desc, __prolog_clause_176_desc, __prolog_clause_177_desc, __prolog_clause_178_desc
+__prolog_pred_group_13_descriptors:
+    dd __prolog_clause_125_desc, __prolog_clause_126_desc, __prolog_clause_127_desc, __prolog_clause_128_desc, __prolog_clause_129_desc, __prolog_clause_130_desc, __prolog_clause_131_desc, __prolog_clause_132_desc
+    dd __prolog_clause_133_desc, __prolog_clause_134_desc
+__prolog_pred_group_14_descriptors:
+    dd __prolog_clause_135_desc, __prolog_clause_136_desc
+__prolog_pred_group_15_descriptors:
+    dd __prolog_clause_17_desc
+__prolog_pred_group_16_descriptors:
+    dd __prolog_clause_137_desc, __prolog_clause_138_desc, __prolog_clause_139_desc, __prolog_clause_140_desc, __prolog_clause_141_desc, __prolog_clause_142_desc, __prolog_clause_143_desc, __prolog_clause_144_desc
+    dd __prolog_clause_145_desc, __prolog_clause_146_desc, __prolog_clause_147_desc, __prolog_clause_148_desc, __prolog_clause_149_desc, __prolog_clause_150_desc, __prolog_clause_151_desc, __prolog_clause_152_desc
+    dd __prolog_clause_153_desc, __prolog_clause_154_desc, __prolog_clause_155_desc, __prolog_clause_156_desc, __prolog_clause_157_desc, __prolog_clause_158_desc, __prolog_clause_159_desc, __prolog_clause_160_desc
+    dd __prolog_clause_161_desc, __prolog_clause_162_desc, __prolog_clause_163_desc, __prolog_clause_164_desc, __prolog_clause_165_desc, __prolog_clause_166_desc, __prolog_clause_167_desc, __prolog_clause_168_desc
+    dd __prolog_clause_169_desc
+__prolog_pred_group_17_descriptors:
+    dd __prolog_clause_94_desc, __prolog_clause_95_desc, __prolog_clause_96_desc, __prolog_clause_97_desc, __prolog_clause_98_desc, __prolog_clause_99_desc, __prolog_clause_100_desc, __prolog_clause_101_desc
+    dd __prolog_clause_102_desc, __prolog_clause_103_desc, __prolog_clause_104_desc, __prolog_clause_105_desc, __prolog_clause_106_desc, __prolog_clause_107_desc, __prolog_clause_108_desc, __prolog_clause_109_desc
+    dd __prolog_clause_110_desc, __prolog_clause_111_desc, __prolog_clause_112_desc, __prolog_clause_113_desc, __prolog_clause_114_desc, __prolog_clause_115_desc, __prolog_clause_116_desc, __prolog_clause_117_desc
+    dd __prolog_clause_118_desc, __prolog_clause_119_desc, __prolog_clause_120_desc, __prolog_clause_121_desc, __prolog_clause_122_desc, __prolog_clause_123_desc, __prolog_clause_124_desc
+__prolog_pred_group_18_descriptors:
+    dd __prolog_clause_23_desc, __prolog_clause_24_desc, __prolog_clause_25_desc, __prolog_clause_26_desc, __prolog_clause_27_desc, __prolog_clause_28_desc, __prolog_clause_29_desc, __prolog_clause_30_desc
+    dd __prolog_clause_31_desc, __prolog_clause_32_desc, __prolog_clause_33_desc, __prolog_clause_34_desc, __prolog_clause_35_desc, __prolog_clause_36_desc, __prolog_clause_37_desc, __prolog_clause_38_desc
+    dd __prolog_clause_39_desc, __prolog_clause_40_desc, __prolog_clause_41_desc, __prolog_clause_42_desc, __prolog_clause_43_desc, __prolog_clause_44_desc, __prolog_clause_45_desc, __prolog_clause_46_desc
+    dd __prolog_clause_47_desc, __prolog_clause_48_desc, __prolog_clause_49_desc, __prolog_clause_50_desc, __prolog_clause_51_desc, __prolog_clause_52_desc, __prolog_clause_53_desc, __prolog_clause_54_desc
+    dd __prolog_clause_55_desc, __prolog_clause_56_desc, __prolog_clause_57_desc, __prolog_clause_58_desc, __prolog_clause_59_desc, __prolog_clause_60_desc, __prolog_clause_61_desc, __prolog_clause_62_desc
+    dd __prolog_clause_63_desc, __prolog_clause_64_desc, __prolog_clause_65_desc, __prolog_clause_66_desc, __prolog_clause_67_desc, __prolog_clause_68_desc, __prolog_clause_69_desc, __prolog_clause_70_desc
+    dd __prolog_clause_71_desc, __prolog_clause_72_desc, __prolog_clause_73_desc, __prolog_clause_74_desc, __prolog_clause_75_desc, __prolog_clause_76_desc, __prolog_clause_77_desc, __prolog_clause_78_desc
+    dd __prolog_clause_79_desc, __prolog_clause_80_desc, __prolog_clause_81_desc, __prolog_clause_82_desc, __prolog_clause_83_desc, __prolog_clause_84_desc, __prolog_clause_85_desc, __prolog_clause_86_desc
+    dd __prolog_clause_87_desc, __prolog_clause_88_desc, __prolog_clause_89_desc, __prolog_clause_90_desc, __prolog_clause_91_desc, __prolog_clause_92_desc, __prolog_clause_93_desc
+__prolog_pred_group_19_descriptors:
+    dd __prolog_clause_19_desc, __prolog_clause_20_desc, __prolog_clause_21_desc, __prolog_clause_22_desc
+
+; Stage 288: generic descriptor structural programs
+__prolog_clause_template_table:
+    dd __prolog_clause_template_0_desc, __prolog_clause_template_1_desc, __prolog_clause_template_2_desc, __prolog_clause_template_3_desc, __prolog_clause_template_4_desc, __prolog_clause_template_5_desc, __prolog_clause_template_6_desc, __prolog_clause_template_7_desc
+    dd __prolog_clause_template_8_desc, __prolog_clause_template_9_desc, __prolog_clause_template_10_desc, __prolog_clause_template_11_desc, __prolog_clause_template_12_desc, __prolog_clause_template_13_desc, __prolog_clause_template_14_desc, __prolog_clause_template_15_desc
+    dd __prolog_clause_template_16_desc, __prolog_clause_template_17_desc, __prolog_clause_template_18_desc, __prolog_clause_template_19_desc, __prolog_clause_template_20_desc, __prolog_clause_template_21_desc, __prolog_clause_template_22_desc, __prolog_clause_template_23_desc
+    dd __prolog_clause_template_24_desc
+__prolog_clause_template_0_desc:
+    dw 0, 0, 8, 0, 1, 5, 1
+__prolog_clause_template_1_desc:
+    dw 0, 0, 8, 0, 2, 5, 2, 5, 1
+__prolog_clause_template_2_desc:
+    dw 0, 0, 8, 0, 1, 7, 7, 6, 5, 2, 5, 1
+__prolog_clause_template_3_desc:
+    dw 0, 0, 8, 0, 2, 4, 2, 5, 1
+__prolog_clause_template_4_desc:
+    dw 0, 0, 8, 0, 3, 7, 7, 6, 5, 4, 5, 3, 5, 2, 5, 1
+__prolog_clause_template_5_desc:
+    dw 0, 0, 8, 0, 2, 6, 6
+__prolog_clause_template_6_desc:
+    dw 4, 2, 8, 0, 2, 7, 1, 3, 1, 2, 7, 1, 1, 1, 0, 8
+    dw 2, 2, 1, 3, 1, 1, 8, 1, 2, 1, 2, 1, 0
+__prolog_clause_template_7_desc:
+    dw 0, 0, 8, 0, 2, 7, 7, 7, 7, 7, 6, 5, 6, 5, 5, 5
+    dw 4, 5, 3, 5, 2, 5, 1
+__prolog_clause_template_8_desc:
+    dw 0, 0, 8, 0, 2, 7, 7, 7, 6, 5, 4, 5, 3, 5, 2, 5
+    dw 1
+__prolog_clause_template_9_desc:
+    dw 0, 0, 8, 0, 2, 7, 7, 7, 7, 6, 5, 5, 5, 4, 5, 3
+    dw 5, 2, 5, 1
+__prolog_clause_template_10_desc:
+    dw 0, 0, 8, 0, 2, 7, 7, 6, 5, 3, 5, 2, 5, 1
+__prolog_clause_template_11_desc:
+    dw 0, 0, 8, 0, 2, 7, 6, 5, 2, 5, 1
+__prolog_clause_template_12_desc:
+    dw 0, 0, 8, 0, 2, 2, 1, 6
+__prolog_clause_template_13_desc:
+    dw 4, 2, 8, 0, 2, 1, 2, 7, 1, 1, 1, 0, 8, 2, 2, 8
+    dw 3, 2, 2, 4, 1, 3, 1, 2, 8, 1, 2, 1, 3, 1, 1
+__prolog_clause_template_14_desc:
+    dw 2, 0, 8, 0, 3, 1, 0, 7, 1, 1, 1, 0, 2, 1
+__prolog_clause_template_15_desc:
+    dw 5, 3, 8, 0, 3, 1, 3, 7, 1, 2, 1, 1, 1, 0, 8, 6
+    dw 3, 1, 3, 1, 2, 1, 4, 8, 3, 2, 8, 4, 2, 2, 5, 1
+    dw 0, 1, 4, 8, 1, 2, 2, 2, 1, 0
+__prolog_clause_template_16_desc:
+    dw 4, 3, 8, 0, 2, 1, 1, 1, 0, 8, 3, 3, 1, 1, 1, 0
+    dw 1, 3, 8, 2, 2, 1, 3, 1, 2, 8, 1, 2, 1, 2, 1, 0
+__prolog_clause_template_17_desc:
+    dw 1, 1, 8, 0, 2, 1, 0, 5, 1, 8, 2, 2, 1, 0, 7, 7
+    dw 7, 7, 6, 5, 6, 5, 5, 5, 4, 5, 3
+__prolog_clause_template_18_desc:
+    dw 1, 1, 8, 0, 2, 1, 0, 5, 1, 8, 2, 2, 1, 0, 7, 7
+    dw 6, 5, 4, 5, 3
+__prolog_clause_template_19_desc:
+    dw 1, 1, 8, 0, 2, 1, 0, 5, 1, 8, 2, 2, 1, 0, 7, 7
+    dw 7, 6, 5, 5, 5, 4, 5, 3
+__prolog_clause_template_20_desc:
+    dw 3, 2, 8, 0, 2, 1, 1, 1, 0, 8, 2, 2, 1, 1, 1, 2
+    dw 8, 1, 2, 1, 2, 1, 0
+__prolog_clause_template_21_desc:
+    dw 0, 0, 8, 0, 2, 5, 4, 7, 7, 7, 6, 5, 3, 5, 2, 5
+    dw 1
+__prolog_clause_template_22_desc:
+    dw 2, 0, 8, 0, 2, 7, 1, 1, 1, 0, 1, 0
+__prolog_clause_template_23_desc:
+    dw 3, 1, 8, 0, 2, 7, 1, 2, 1, 1, 1, 0, 8, 1, 2, 1
+    dw 2, 1, 0
+__prolog_clause_template_24_desc:
+    dw 2, 1, 8, 0, 2, 1, 1, 1, 0, 8, 1, 2, 1, 1, 1, 0
+
+; Stage 288: per-clause descriptor payloads
+__prolog_clause_0_desc:
+    dd 0, 76, 77
+__prolog_clause_1_desc:
+    dd 0, 76, 78
+__prolog_clause_2_desc:
+    dd 0, 76, 79
+__prolog_clause_3_desc:
+    dd 0, 76, 80
+__prolog_clause_4_desc:
+    dd 0, 76, 81
+__prolog_clause_5_desc:
+    dd 0, 76, 82
+__prolog_clause_6_desc:
+    dd 0, 76, 83
+__prolog_clause_7_desc:
+    dd 0, 76, 84
+__prolog_clause_8_desc:
+    dd 0, 76, 85
+__prolog_clause_9_desc:
+    dd 1, 86, 77, 87
+__prolog_clause_10_desc:
+    dd 1, 86, 78, 88
+__prolog_clause_11_desc:
+    dd 1, 86, 79, 89
+__prolog_clause_12_desc:
+    dd 1, 86, 80, 90
+__prolog_clause_13_desc:
+    dd 1, 86, 81, 91
+__prolog_clause_14_desc:
+    dd 1, 86, 82, 92
+__prolog_clause_15_desc:
+    dd 1, 86, 83, 93
+__prolog_clause_16_desc:
+    dd 1, 86, 84, 94
+__prolog_clause_17_desc:
+    dd 2, 95, 96, 97
+__prolog_clause_18_desc:
+    dd 2, 98, 99, 100
+__prolog_clause_19_desc:
+    dd 3, 101, 102, 103
+__prolog_clause_20_desc:
+    dd 3, 101, 102, 104
+__prolog_clause_21_desc:
+    dd 3, 101, 105, 106
+__prolog_clause_22_desc:
+    dd 3, 101, 105, 107
+__prolog_clause_23_desc:
+    dd 4, 108, 102, 109, 110, 111
+__prolog_clause_24_desc:
+    dd 4, 108, 102, 109, 112, 111
+__prolog_clause_25_desc:
+    dd 4, 108, 105, 109, 110, 111
+__prolog_clause_26_desc:
+    dd 4, 108, 105, 109, 112, 98
+__prolog_clause_27_desc:
+    dd 4, 108, 113, 109, 112, 98
+__prolog_clause_28_desc:
+    dd 4, 108, 114, 109, 115, 111
+__prolog_clause_29_desc:
+    dd 4, 108, 116, 109, 112, 111
+__prolog_clause_30_desc:
+    dd 4, 108, 117, 109, 112, 98
+__prolog_clause_31_desc:
+    dd 4, 108, 118, 109, 110, 111
+__prolog_clause_32_desc:
+    dd 4, 108, 119, 109, 115, 111
+__prolog_clause_33_desc:
+    dd 4, 108, 120, 109, 112, 111
+__prolog_clause_34_desc:
+    dd 4, 108, 121, 109, 112, 111
+__prolog_clause_35_desc:
+    dd 4, 108, 122, 109, 112, 111
+__prolog_clause_36_desc:
+    dd 4, 108, 123, 109, 110, 111
+__prolog_clause_37_desc:
+    dd 4, 108, 124, 109, 110, 111
+__prolog_clause_38_desc:
+    dd 4, 108, 125, 109, 112, 111
+__prolog_clause_39_desc:
+    dd 4, 108, 126, 109, 112, 111
+__prolog_clause_40_desc:
+    dd 4, 108, 127, 109, 110, 111
+__prolog_clause_41_desc:
+    dd 4, 108, 128, 109, 110, 111
+__prolog_clause_42_desc:
+    dd 4, 108, 129, 109, 115, 111
+__prolog_clause_43_desc:
+    dd 4, 108, 130, 109, 115, 111
+__prolog_clause_44_desc:
+    dd 4, 108, 131, 109, 112, 111
+__prolog_clause_45_desc:
+    dd 4, 108, 132, 109, 115, 111
+__prolog_clause_46_desc:
+    dd 4, 108, 133, 109, 110, 111
+__prolog_clause_47_desc:
+    dd 4, 108, 134, 109, 110, 111
+__prolog_clause_48_desc:
+    dd 4, 108, 135, 109, 112, 111
+__prolog_clause_49_desc:
+    dd 4, 108, 136, 109, 115, 111
+__prolog_clause_50_desc:
+    dd 4, 108, 137, 109, 112, 98
+__prolog_clause_51_desc:
+    dd 4, 108, 138, 109, 115, 111
+__prolog_clause_52_desc:
+    dd 4, 108, 139, 109, 112, 111
+__prolog_clause_53_desc:
+    dd 4, 108, 140, 109, 112, 111
+__prolog_clause_54_desc:
+    dd 4, 108, 141, 109, 112, 111
+__prolog_clause_55_desc:
+    dd 4, 108, 142, 109, 110, 111
+__prolog_clause_56_desc:
+    dd 4, 108, 143, 109, 110, 111
+__prolog_clause_57_desc:
+    dd 4, 108, 144, 109, 110, 111
+__prolog_clause_58_desc:
+    dd 4, 108, 145, 109, 115, 111
+__prolog_clause_59_desc:
+    dd 4, 108, 146, 109, 112, 111
+__prolog_clause_60_desc:
+    dd 4, 108, 147, 109, 110, 111
+__prolog_clause_61_desc:
+    dd 4, 108, 148, 109, 110, 111
+__prolog_clause_62_desc:
+    dd 4, 108, 149, 109, 110, 111
+__prolog_clause_63_desc:
+    dd 4, 108, 150, 109, 110, 111
+__prolog_clause_64_desc:
+    dd 4, 108, 151, 109, 110, 111
+__prolog_clause_65_desc:
+    dd 4, 108, 152, 109, 112, 111
+__prolog_clause_66_desc:
+    dd 4, 108, 153, 109, 112, 98
+__prolog_clause_67_desc:
+    dd 4, 108, 154, 109, 112, 111
+__prolog_clause_68_desc:
+    dd 4, 108, 155, 109, 110, 111
+__prolog_clause_69_desc:
+    dd 4, 108, 156, 109, 110, 111
+__prolog_clause_70_desc:
+    dd 4, 108, 157, 109, 110, 111
+__prolog_clause_71_desc:
+    dd 4, 108, 158, 109, 115, 111
+__prolog_clause_72_desc:
+    dd 4, 108, 159, 109, 112, 98
+__prolog_clause_73_desc:
+    dd 4, 108, 160, 109, 112, 111
+__prolog_clause_74_desc:
+    dd 4, 108, 161, 109, 112, 98
+__prolog_clause_75_desc:
+    dd 4, 108, 162, 109, 110, 111
+__prolog_clause_76_desc:
+    dd 4, 108, 163, 109, 112, 98
+__prolog_clause_77_desc:
+    dd 4, 108, 164, 109, 112, 111
+__prolog_clause_78_desc:
+    dd 4, 108, 165, 109, 112, 111
+__prolog_clause_79_desc:
+    dd 4, 108, 166, 109, 112, 111
+__prolog_clause_80_desc:
+    dd 4, 108, 167, 109, 112, 111
+__prolog_clause_81_desc:
+    dd 4, 108, 168, 109, 112, 98
+__prolog_clause_82_desc:
+    dd 4, 108, 169, 109, 110, 111
+__prolog_clause_83_desc:
+    dd 4, 108, 170, 109, 110, 111
+__prolog_clause_84_desc:
+    dd 4, 108, 171, 109, 110, 111
+__prolog_clause_85_desc:
+    dd 4, 108, 172, 109, 115, 111
+__prolog_clause_86_desc:
+    dd 4, 108, 173, 109, 110, 111
+__prolog_clause_87_desc:
+    dd 4, 108, 174, 109, 110, 111
+__prolog_clause_88_desc:
+    dd 4, 108, 175, 109, 110, 111
+__prolog_clause_89_desc:
+    dd 4, 108, 176, 109, 112, 111
+__prolog_clause_90_desc:
+    dd 4, 108, 177, 109, 110, 111
+__prolog_clause_91_desc:
+    dd 4, 108, 178, 109, 110, 111
+__prolog_clause_92_desc:
+    dd 4, 108, 179, 109, 112, 111
+__prolog_clause_93_desc:
+    dd 4, 108, 180, 109, 110, 111
+__prolog_clause_94_desc:
+    dd 1, 108, 181, 182
+__prolog_clause_95_desc:
+    dd 1, 108, 183, 182
+__prolog_clause_96_desc:
+    dd 1, 108, 184, 182
+__prolog_clause_97_desc:
+    dd 1, 108, 185, 182
+__prolog_clause_98_desc:
+    dd 1, 108, 186, 182
+__prolog_clause_99_desc:
+    dd 1, 108, 187, 182
+__prolog_clause_100_desc:
+    dd 1, 108, 188, 182
+__prolog_clause_101_desc:
+    dd 1, 108, 189, 182
+__prolog_clause_102_desc:
+    dd 1, 108, 190, 182
+__prolog_clause_103_desc:
+    dd 1, 108, 191, 192
+__prolog_clause_104_desc:
+    dd 1, 108, 193, 192
+__prolog_clause_105_desc:
+    dd 1, 108, 194, 192
+__prolog_clause_106_desc:
+    dd 1, 108, 195, 192
+__prolog_clause_107_desc:
+    dd 1, 108, 196, 192
+__prolog_clause_108_desc:
+    dd 1, 108, 197, 192
+__prolog_clause_109_desc:
+    dd 1, 108, 198, 199
+__prolog_clause_110_desc:
+    dd 1, 108, 200, 199
+__prolog_clause_111_desc:
+    dd 1, 108, 201, 199
+__prolog_clause_112_desc:
+    dd 1, 108, 202, 199
+__prolog_clause_113_desc:
+    dd 1, 108, 197, 199
+__prolog_clause_114_desc:
+    dd 1, 108, 203, 199
+__prolog_clause_115_desc:
+    dd 1, 108, 204, 205
+__prolog_clause_116_desc:
+    dd 1, 108, 206, 205
+__prolog_clause_117_desc:
+    dd 1, 108, 207, 205
+__prolog_clause_118_desc:
+    dd 1, 108, 208, 205
+__prolog_clause_119_desc:
+    dd 1, 108, 209, 205
+__prolog_clause_120_desc:
+    dd 1, 108, 210, 205
+__prolog_clause_121_desc:
+    dd 1, 108, 211, 205
+__prolog_clause_122_desc:
+    dd 1, 108, 212, 205
+__prolog_clause_123_desc:
+    dd 1, 108, 213, 205
+__prolog_clause_124_desc:
+    dd 1, 108, 214, 205
+__prolog_clause_125_desc:
+    dd 1, 215, 204, 216
+__prolog_clause_126_desc:
+    dd 1, 215, 206, 216
+__prolog_clause_127_desc:
+    dd 1, 215, 216, 216
+__prolog_clause_128_desc:
+    dd 1, 215, 193, 217
+__prolog_clause_129_desc:
+    dd 1, 215, 201, 217
+__prolog_clause_130_desc:
+    dd 1, 215, 195, 218
+__prolog_clause_131_desc:
+    dd 1, 215, 197, 218
+__prolog_clause_132_desc:
+    dd 1, 215, 181, 182
+__prolog_clause_133_desc:
+    dd 1, 215, 184, 182
+__prolog_clause_134_desc:
+    dd 1, 215, 183, 182
+__prolog_clause_135_desc:
+    dd 5, 219
+__prolog_clause_136_desc:
+    dd 6, 219, 215, 219
+__prolog_clause_137_desc:
+    dd 7, 220, 85, 110, 118, 221, 222, 223
+__prolog_clause_138_desc:
+    dd 8, 220, 77, 181, 204, 193
+__prolog_clause_139_desc:
+    dd 9, 220, 77, 181, 207, 201, 216
+__prolog_clause_140_desc:
+    dd 9, 220, 77, 183, 207, 201, 216
+__prolog_clause_141_desc:
+    dd 8, 220, 77, 184, 210, 193
+__prolog_clause_142_desc:
+    dd 9, 220, 77, 224, 225, 226, 227
+__prolog_clause_143_desc:
+    dd 8, 220, 78, 181, 206, 195
+__prolog_clause_144_desc:
+    dd 9, 220, 78, 181, 207, 197, 216
+__prolog_clause_145_desc:
+    dd 9, 220, 78, 183, 207, 197, 216
+__prolog_clause_146_desc:
+    dd 8, 220, 78, 184, 208, 195
+__prolog_clause_147_desc:
+    dd 10, 220, 79, 181, 204
+__prolog_clause_148_desc:
+    dd 10, 220, 79, 181, 206
+__prolog_clause_149_desc:
+    dd 11, 220, 80, 228
+__prolog_clause_150_desc:
+    dd 11, 220, 80, 229
+__prolog_clause_151_desc:
+    dd 11, 220, 80, 230
+__prolog_clause_152_desc:
+    dd 10, 220, 80, 231, 232
+__prolog_clause_153_desc:
+    dd 10, 220, 80, 231, 233
+__prolog_clause_154_desc:
+    dd 10, 220, 80, 231, 234
+__prolog_clause_155_desc:
+    dd 11, 220, 80, 235
+__prolog_clause_156_desc:
+    dd 11, 220, 81, 236
+__prolog_clause_157_desc:
+    dd 10, 220, 81, 237, 238
+__prolog_clause_158_desc:
+    dd 10, 220, 81, 239, 240
+__prolog_clause_159_desc:
+    dd 10, 220, 81, 239, 241
+__prolog_clause_160_desc:
+    dd 11, 220, 81, 242
+__prolog_clause_161_desc:
+    dd 9, 220, 82, 181, 209, 243, 244
+__prolog_clause_162_desc:
+    dd 10, 220, 82, 181, 245
+__prolog_clause_163_desc:
+    dd 8, 220, 82, 181, 209, 243
+__prolog_clause_164_desc:
+    dd 10, 220, 82, 246, 247
+__prolog_clause_165_desc:
+    dd 9, 220, 82, 181, 248, 193, 249
+__prolog_clause_166_desc:
+    dd 8, 220, 83, 184, 210, 193
+__prolog_clause_167_desc:
+    dd 8, 220, 83, 183, 210, 193
+__prolog_clause_168_desc:
+    dd 8, 220, 83, 183, 213, 193
+__prolog_clause_169_desc:
+    dd 8, 220, 83, 184, 250, 197
+__prolog_clause_170_desc:
+    dd 12, 251, 0
+__prolog_clause_171_desc:
+    dd 13, 251, 251, 13, 18, 1
+__prolog_clause_172_desc:
+    dd 14, 252, 0
+__prolog_clause_173_desc:
+    dd 15, 252, 16, 0, 13, 19, 1, 252
+__prolog_clause_174_desc:
+    dd 16, 253, 251, 254, 252
+__prolog_clause_175_desc:
+    dd 1, 255, 85, 256
+__prolog_clause_176_desc:
+    dd 1, 255, 83, 257
+__prolog_clause_177_desc:
+    dd 1, 255, 84, 258
+__prolog_clause_178_desc:
+    dd 1, 255, 84, 259
+__prolog_clause_179_desc:
+    dd 17, 260, 77, 253, 261, 262, 263, 264
+__prolog_clause_180_desc:
+    dd 17, 260, 78, 253, 265, 266, 267, 268
+__prolog_clause_181_desc:
+    dd 18, 260, 82, 253, 269, 270
+__prolog_clause_182_desc:
+    dd 17, 260, 80, 253, 271, 272, 273, 274
+__prolog_clause_183_desc:
+    dd 19, 260, 81, 253, 275, 276, 277
+__prolog_clause_184_desc:
+    dd 20, 278, 279, 260
+__prolog_clause_185_desc:
+    dd 1, 280, 77, 281
+__prolog_clause_186_desc:
+    dd 1, 280, 77, 282
+__prolog_clause_187_desc:
+    dd 1, 280, 78, 283
+__prolog_clause_188_desc:
+    dd 1, 280, 78, 284
+__prolog_clause_189_desc:
+    dd 1, 280, 82, 285
+__prolog_clause_190_desc:
+    dd 1, 280, 80, 286
+__prolog_clause_191_desc:
+    dd 21, 287, 182, 216, 217, 77
+__prolog_clause_192_desc:
+    dd 21, 287, 182, 216, 218, 78
+__prolog_clause_193_desc:
+    dd 20, 279, 219, 287
+__prolog_clause_194_desc:
+    dd 22, 288
+__prolog_clause_195_desc:
+    dd 23, 288, 288
+__prolog_clause_196_desc:
+    dd 24, 72, 75
+
 __prolog_caption:
-    db 100, 54, 52, 32, 80, 82, 79, 76, 79, 71, 32, 82, 117, 110, 116, 105, 109, 101, 0
+    db 80, 114, 111, 108, 111, 103, 32, 45, 32, 40, 99, 41, 32, 50, 48, 50, 54, 32, 98, 121, 32, 74, 101, 110
+    db 115, 32, 75, 97, 108, 108, 117, 112, 0
 __prolog_fmt_int:
     db 37, 100, 0
 __prolog_text_underscore:
@@ -17303,7 +9013,8 @@ __prolog_text_newline:
 __prolog_text_true_line:
     db 116, 114, 117, 101, 46, 13, 10, 0
 __prolog_text_false_line:
-    db 102, 97, 108, 115, 101, 46, 13, 10, 0
+    db 107, 101, 105, 110, 101, 32, 119, 101, 105, 116, 101, 114, 101, 110, 32, 65, 110, 116, 119, 111, 114, 116, 101, 110
+    db 46, 13, 10, 0
 __prolog_text_prompt:
     db 63, 45, 32, 0
 __prolog_text_more_prompt:
@@ -17315,6 +9026,22 @@ __prolog_text_parse_error:
 __prolog_text_repl_gui:
     db 114, 101, 112, 108, 47, 48, 32, 105, 115, 116, 32, 110, 117, 114, 32, 105, 109, 32, 67, 111, 110, 115, 111, 108
     db 101, 45, 77, 111, 100, 117, 115, 32, 118, 101, 114, 102, 252, 103, 98, 97, 114, 46, 13, 10, 0
+__prolog_qt_dll_name:
+    db 108, 105, 98, 100, 54, 52, 95, 113, 116, 53, 46, 100, 108, 108, 0
+__prolog_qt_name_init:
+    db 68, 66, 97, 115, 101, 81, 116, 80, 114, 111, 108, 111, 103, 73, 110, 105, 116, 105, 97, 108, 105, 122, 101, 0
+__prolog_qt_name_write:
+    db 68, 66, 97, 115, 101, 81, 116, 80, 114, 111, 108, 111, 103, 87, 114, 105, 116, 101, 0
+__prolog_qt_name_read:
+    db 68, 66, 97, 115, 101, 81, 116, 80, 114, 111, 108, 111, 103, 82, 101, 97, 100, 76, 105, 110, 101, 0
+__prolog_qt_name_shutdown:
+    db 68, 66, 97, 115, 101, 81, 116, 80, 114, 111, 108, 111, 103, 83, 104, 117, 116, 100, 111, 119, 110, 0
+__prolog_gui_launch_error:
+    db 80, 82, 79, 76, 79, 71, 32, 45, 45, 103, 117, 105, 58, 32, 110, 97, 116, 105, 118, 101, 32, 81, 116, 53
+    db 45, 82, 117, 110, 116, 105, 109, 101, 32, 108, 105, 98, 100, 54, 52, 95, 113, 116, 53, 46, 100, 108, 108, 32
+    db 102, 101, 104, 108, 116, 32, 111, 100, 101, 114, 32, 98, 101, 115, 105, 116, 122, 116, 32, 110, 105, 99, 104, 116
+    db 32, 100, 105, 101, 32, 83, 116, 97, 103, 101, 45, 50, 57, 53, 45, 80, 82, 79, 76, 79, 71, 45, 83, 99
+    db 104, 110, 105, 116, 116, 115, 116, 101, 108, 108, 101, 46, 0
 __prolog_fmt_saved_var:
     db 95, 86, 37, 100, 0
 __prolog_text_rule_sep:
@@ -17353,93 +9080,111 @@ __prolog_text_op_div:
     db 32, 47, 32, 0
 __prolog_text_op_mod:
     db 32, 109, 111, 100, 32, 0
+
+section .bss
 __prolog_arena:
-    dd 0
+    resd 1
 __prolog_stdout:
-    dd 0
+    resd 1
 __prolog_stdin:
-    dd 0
+    resd 1
 __prolog_dyn_base:
-    dd 0
+    resd 1
 __prolog_dyn_alt_base:
-    dd 0
+    resd 1
 __prolog_db_file_handle:
-    dd 0
+    resd 1
 __prolog_emit_file_handle:
-    dd 0
+    resd 1
+__prolog_qt_module:
+    resd 1
+__prolog_qt_init_fn:
+    resd 1
+__prolog_qt_write_fn:
+    resd 1
+__prolog_qt_read_fn:
+    resd 1
+__prolog_qt_shutdown_fn:
+    resd 1
 __prolog_heap_top:
-    dd 0
+    resd 1
 __prolog_dyn_heap_top:
-    dd 0
+    resd 1
 __prolog_trail_top:
-    dd 0
+    resd 1
 __prolog_choice_top:
-    dd 0
+    resd 1
 __prolog_dyn_count:
-    dd 0
+    resd 1
 __prolog_dyn_atom_count:
-    dd 0
+    resd 1
 __prolog_atom_pool_top:
-    dd 0
+    resd 1
 __prolog_output_top:
-    dd 0
+    resd 1
 __prolog_query_var_count:
-    dd 0
+    resd 1
 __prolog_solution_count:
-    dd 0
+    resd 1
 __prolog_read_count:
-    dd 0
+    resd 1
 __prolog_parse_pos:
-    dd 0
+    resd 1
 __prolog_qname_top:
-    dd 0
+    resd 1
 __prolog_written:
-    dd 0
+    resd 1
 __prolog_dyn_copy_var_count:
-    dd 0
+    resd 1
 __prolog_dyn_clone_var_count:
-    dd 0
+    resd 1
 __prolog_current_cut_barrier:
-    dd 0
+    resd 1
 __prolog_cut_active_barrier:
-    dd 0
+    resd 1
 __prolog_build_barrier:
-    dd 0
+    resd 1
 __prolog_interactive_mode:
-    dd 0
+    resd 1
 __prolog_stop_search:
-    dd 0
+    resd 1
 __prolog_requested_more:
-    dd 0
+    resd 1
 __prolog_direct_eval:
-    dd 0
+    resd 1
 __prolog_verbose:
-    dd 0
+    resd 1
 __prolog_gc_heap_mark:
-    dd 0
+    resd 1
 __prolog_db_next_id:
-    dd 0
+    resd 1
 __prolog_current_db:
-    dd 0
+    resd 1
 __prolog_db_loading:
-    dd 0
+    resd 1
 __prolog_db_file_read:
-    dd 0
+    resd 1
 __prolog_db_file_pos:
-    dd 0
+    resd 1
 __prolog_db_heap_mark:
-    dd 0
+    resd 1
 __prolog_parser_db_mode:
-    dd 0
+    resd 1
 __prolog_db_parser_var_count:
-    dd 0
+    resd 1
 __prolog_db_parser_name_top:
-    dd 0
+    resd 1
 __prolog_save_var_count:
-    dd 0
+    resd 1
 __prolog_emit_to_file:
-    dd 0
+    resd 1
 __prolog_emit_file_error:
-    dd 0
+    resd 1
+__prolog_random_state:
+    resd 1
+__prolog_start_mode:
+    resd 1
+__prolog_argc:
+    resd 1
 __prolog_format_buffer:
-    db 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    resb 64

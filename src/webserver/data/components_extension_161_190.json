@@ -1,0 +1,164 @@
+{
+  "components": [
+    {
+      "id": "74LS161",
+      "name": "74LS161",
+      "description": "Synchroner 4-Bit-Binärzähler mit Parallel Load",
+      "category": "Zähler",
+      "family": "74LS",
+      "type": "4-bit Binary Counter",
+      "package": "DIP16",
+      "file": "74LS161.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS163",
+      "name": "74LS163",
+      "description": "Synchroner 4-Bit-Binärzähler mit synchronem Clear",
+      "category": "Zähler",
+      "family": "74LS",
+      "type": "4-bit Synchronous Counter",
+      "package": "DIP16",
+      "file": "74LS163.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS164",
+      "name": "74LS164",
+      "description": "8-Bit Serial-In / Parallel-Out Schieberegister",
+      "category": "Schieberegister",
+      "family": "74LS",
+      "type": "SIPO Shift Register",
+      "package": "DIP14",
+      "file": "74LS164.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS165",
+      "name": "74LS165",
+      "description": "8-Bit Parallel-In / Serial-Out Schieberegister",
+      "category": "Schieberegister",
+      "family": "74LS",
+      "type": "PISO Shift Register",
+      "package": "DIP16",
+      "file": "74LS165.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS166",
+      "name": "74LS166",
+      "description": "8-Bit Parallel-Load Schieberegister",
+      "category": "Schieberegister",
+      "family": "74LS",
+      "type": "Parallel-load Shift Register",
+      "package": "DIP16",
+      "file": "74LS166.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS173",
+      "name": "74LS173",
+      "description": "4-Bit D-Register mit 3-State-Ausgängen",
+      "category": "Register",
+      "family": "74LS",
+      "type": "4-bit D Register",
+      "package": "DIP16",
+      "file": "74LS173.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS174",
+      "name": "74LS174",
+      "description": "Sechs D-Flipflops mit gemeinsamem Clear",
+      "category": "Flipflop",
+      "family": "74LS",
+      "type": "Hex D Flip-Flop",
+      "package": "DIP16",
+      "file": "74LS174.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS175",
+      "name": "74LS175",
+      "description": "Vier D-Flipflops mit komplementären Ausgängen und Clear",
+      "category": "Flipflop",
+      "family": "74LS",
+      "type": "Quad D Flip-Flop",
+      "package": "DIP16",
+      "file": "74LS175.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS181",
+      "name": "74LS181",
+      "description": "4-Bit Arithmetic Logic Unit / Function Generator",
+      "category": "ALU",
+      "family": "74LS",
+      "type": "4-bit ALU",
+      "package": "DIP24",
+      "file": "74LS181.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS190",
+      "name": "74LS190",
+      "description": "Synchroner BCD Up/Down-Zähler mit Preset",
+      "category": "Zähler",
+      "family": "74LS",
+      "type": "BCD Up/Down Counter",
+      "package": "DIP16",
+      "file": "74LS190.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    }
+  ]
+}

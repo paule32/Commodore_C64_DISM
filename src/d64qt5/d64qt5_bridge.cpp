@@ -65,6 +65,7 @@
 # include <QShowEvent>
 # include <QScrollBar>
 # include <QScreen>
+# include <QSettings>
 # include <QSize>
 # include <QSizePolicy>
 # include <QStackedWidget>
@@ -927,8 +928,24 @@ protected:
         painter.setRenderHint(QPainter::Antialiasing, false);
 
         QLinearGradient titleGradient(0, 0, width(), 0);
-        titleGradient.setColorAt(0.0, QColor(70, 70, 70));
-        titleGradient.setColorAt(1.0, QColor(12, 12, 12));
+        const bool prologWindow = property("d64PrologWindow").toBool();
+        const bool prologDark = property("d64PrologDark").toBool();
+        if (prologWindow) {
+            // Stage 295: standalone/native PROLOG window uses the requested
+            // black -> gray title gradient in dark mode.  The light variant
+            // deliberately stays medium gray so the required white title is
+            // still readable.
+            if (prologDark) {
+                titleGradient.setColorAt(0.0, QColor(0, 0, 0));
+                titleGradient.setColorAt(1.0, QColor(105, 105, 105));
+            } else {
+                titleGradient.setColorAt(0.0, QColor(92, 92, 92));
+                titleGradient.setColorAt(1.0, QColor(155, 155, 155));
+            }
+        } else {
+            titleGradient.setColorAt(0.0, QColor(70, 70, 70));
+            titleGradient.setColorAt(1.0, QColor(12, 12, 12));
+        }
         painter.fillRect(QRect(0, 0, width(), titleHeight()), titleGradient);
 
         const QRect minRect = minButtonRect();
@@ -947,7 +964,10 @@ protected:
         painter.drawRoundedRect(iconRect, 3, 3);
         painter.setFont(QFont(QStringLiteral("Segoe UI"), 7, QFont::Bold));
         painter.setPen(Qt::white);
-        painter.drawText(iconRect, Qt::AlignCenter, QStringLiteral("db"));
+        painter.drawText(
+            iconRect, Qt::AlignCenter,
+            prologWindow ? QStringLiteral("P") : QStringLiteral("db")
+        );
 
         painter.setFont(QFont(QStringLiteral("Segoe UI"), 9));
         painter.setPen(QColor(238, 238, 238));
@@ -1022,6 +1042,29 @@ protected:
         }
 #endif
         QMainWindow::mousePressEvent(event);
+    }
+
+    void mouseReleaseEvent(QMouseEvent *event) override
+    {
+        if (event && event->button() == Qt::LeftButton) {
+            const QPoint p = event->pos();
+            if (closeButtonRect().contains(p)) {
+                close();
+                event->accept();
+                return;
+            }
+            if (minButtonRect().contains(p)) {
+                showMinimized();
+                event->accept();
+                return;
+            }
+            if (maxButtonRect().contains(p)) {
+                isMaximized() ? showNormal() : showMaximized();
+                event->accept();
+                return;
+            }
+        }
+        QMainWindow::mouseReleaseEvent(event);
     }
 
     void leaveEvent(QEvent *event) override
@@ -1193,6 +1236,143 @@ private:
     int hoverButton_ = 0;
     DBaseWfmResizeHandle *resizeHandles_[ResizeHandleCount] = {};
 };
+
+// ---------------------------------------------------------------------------
+// Stage 295: native in-process PROLOG Qt5 frontend.
+// The generated PROLOG PE remains the only application process.  It loads the
+// existing libd64_qt5 runtime only when --gui is requested and calls these C
+// ABI helpers directly; there is no Python/helper/pipe host anymore.
+// ---------------------------------------------------------------------------
+class DBasePrologHistoryEdit final : public QLineEdit
+{
+public:
+    explicit DBasePrologHistoryEdit(QWidget *parent = nullptr)
+        : QLineEdit(parent)
+    {
+    }
+
+    void remember(const QString &text)
+    {
+        if (!text.isEmpty()) {
+            if (history_.isEmpty() || history_.last() != text)
+                history_.append(text);
+            while (history_.size() > 100)
+                history_.removeFirst();
+        }
+        historyIndex_ = history_.size();
+    }
+
+protected:
+    void keyPressEvent(QKeyEvent *event) override
+    {
+        if (event && event->key() == Qt::Key_Up && !history_.isEmpty()) {
+            if (historyIndex_ > 0)
+                --historyIndex_;
+            setText(history_.value(historyIndex_));
+            setCursorPosition(text().size());
+            event->accept();
+            return;
+        }
+        if (event && event->key() == Qt::Key_Down && !history_.isEmpty()) {
+            if (historyIndex_ < history_.size() - 1) {
+                ++historyIndex_;
+                setText(history_.value(historyIndex_));
+            } else {
+                historyIndex_ = history_.size();
+                clear();
+            }
+            setCursorPosition(text().size());
+            event->accept();
+            return;
+        }
+        QLineEdit::keyPressEvent(event);
+    }
+
+private:
+    QStringList history_;
+    int historyIndex_ = 0;
+};
+
+DBaseWfmMainWindow *g_prolog_window = nullptr;
+QPlainTextEdit *g_prolog_output = nullptr;
+DBasePrologHistoryEdit *g_prolog_input = nullptr;
+QObject *g_prolog_layout_filter = nullptr;
+bool g_prolog_dark_mode = true;
+
+static void layout_prolog_frontend()
+{
+    if (!g_prolog_window || !g_prolog_window->clientArea())
+        return;
+    QWidget *client = g_prolog_window->clientArea();
+    const int margin = 6;
+    const int inputHeight = 30;
+    const int width = qMax(1, client->width() - 2 * margin);
+    const int outputHeight = qMax(1, client->height() - inputHeight - 3 * margin);
+    if (g_prolog_output)
+        g_prolog_output->setGeometry(margin, margin, width, outputHeight);
+    if (g_prolog_input)
+        g_prolog_input->setGeometry(
+            margin,
+            margin + outputHeight + margin,
+            width,
+            inputHeight
+        );
+}
+
+class DBasePrologLayoutFilter final : public QObject
+{
+public:
+    explicit DBasePrologLayoutFilter(QObject *parent = nullptr)
+        : QObject(parent)
+    {
+    }
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        Q_UNUSED(watched)
+        if (event && (
+            event->type() == QEvent::Resize ||
+            event->type() == QEvent::Show ||
+            event->type() == QEvent::LayoutRequest
+        )) {
+            QTimer::singleShot(0, []() { layout_prolog_frontend(); });
+        }
+        return false;
+    }
+};
+
+static bool prolog_dark_mode_from_environment(int requested)
+{
+    if (requested == 0)
+        return false;
+    if (requested == 1)
+        return true;
+
+    const QByteArray forced = qgetenv("D64_PROLOG_DARK").trimmed().toLower();
+    if (
+        forced == "1" || forced == "true" || forced == "yes" ||
+        forced == "on" || forced == "dark"
+    )
+        return true;
+    if (
+        forced == "0" || forced == "false" || forced == "no" ||
+        forced == "off" || forced == "light"
+    )
+        return false;
+
+#ifdef _WIN32
+    QSettings settings(
+        QStringLiteral("HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"),
+        QSettings::NativeFormat
+    );
+    const QVariant light = settings.value(QStringLiteral("AppsUseLightTheme"));
+    if (light.isValid())
+        return light.toInt() == 0;
+#endif
+    return QApplication::palette().color(QPalette::Window).lightness() < 128;
+}
+
 QString choose_menu_font_family()
 {
     QFontDatabase database;
@@ -7456,6 +7636,169 @@ extern "C" D64QT5_API int DBaseQtInitializeGui(const char *title)
     return 1;
 }
 
+extern "C" D64QT5_API int DBaseQtPrologInitialize(const char *title, int darkMode)
+{
+    if (g_prolog_window && !g_shutdown_requested) {
+        g_prolog_window->show();
+        g_prolog_window->raise();
+        g_prolog_window->activateWindow();
+        if (g_prolog_input)
+            g_prolog_input->setFocus(Qt::OtherFocusReason);
+        return 1;
+    }
+
+    DBaseQtSetWorkstationMode(0);
+    if (!DBaseQtInitializeGui(title))
+        return 0;
+
+    g_prolog_dark_mode = prolog_dark_mode_from_environment(darkMode);
+    g_prolog_window = new DBaseWfmMainWindow();
+    g_prolog_window->setObjectName(QStringLiteral("d64PrologWindow"));
+    g_prolog_window->setProperty("d64PrologWindow", true);
+    g_prolog_window->setProperty("d64PrologDark", g_prolog_dark_mode);
+    g_prolog_window->setWindowTitle(
+        title && *title
+            ? QString::fromUtf8(title)
+            : QStringLiteral("Prolog - (c) 2026 by Jens Kallup")
+    );
+    g_prolog_window->setClientGeometry(200, 160, 820, 540);
+
+    QWidget *client = g_prolog_window->clientArea();
+    g_prolog_output = new QPlainTextEdit(client);
+    g_prolog_output->setObjectName(QStringLiteral("d64PrologOutput"));
+    g_prolog_output->setReadOnly(true);
+    g_prolog_output->setUndoRedoEnabled(false);
+    g_prolog_output->setLineWrapMode(QPlainTextEdit::NoWrap);
+
+    g_prolog_input = new DBasePrologHistoryEdit(client);
+    g_prolog_input->setObjectName(QStringLiteral("d64PrologInput"));
+    g_prolog_input->setPlaceholderText(QStringLiteral("Prolog-Abfrage eingeben ..."));
+
+    QFont fixed(QStringLiteral("Consolas"), 10);
+    fixed.setStyleHint(QFont::Monospace);
+    fixed.setFixedPitch(true);
+    g_prolog_output->setFont(fixed);
+    g_prolog_input->setFont(fixed);
+
+    if (g_prolog_dark_mode) {
+        g_prolog_window->setStyleSheet(
+            QStringLiteral(
+                "QWidget#dbaseWfmClientArea{background:#151515;}"
+                "QPlainTextEdit#d64PrologOutput{background:#0d0d0d;color:#eeeeee;border:1px solid #666666;padding:4px;}"
+                "QLineEdit#d64PrologInput{background:#181818;color:#ffffff;border:1px solid #707070;padding:3px;}"
+                "QLineEdit#d64PrologInput:focus{border:1px solid #bcbcbc;}"
+            )
+        );
+    } else {
+        g_prolog_window->setStyleSheet(
+            QStringLiteral(
+                "QWidget#dbaseWfmClientArea{background:#eeeeee;}"
+                "QPlainTextEdit#d64PrologOutput{background:#ffffff;color:#111111;border:1px solid #9a9a9a;padding:4px;}"
+                "QLineEdit#d64PrologInput{background:#ffffff;color:#111111;border:1px solid #8a8a8a;padding:3px;}"
+                "QLineEdit#d64PrologInput:focus{border:1px solid #555555;}"
+            )
+        );
+    }
+
+    g_prolog_layout_filter = new DBasePrologLayoutFilter(g_prolog_window);
+    client->installEventFilter(g_prolog_layout_filter);
+    layout_prolog_frontend();
+
+    g_wfm_forms.append(g_prolog_window);
+    g_prolog_window->show();
+    g_prolog_window->raise();
+    g_prolog_window->activateWindow();
+    g_prolog_input->setFocus(Qt::OtherFocusReason);
+    if (g_app)
+        g_app->processEvents(QEventLoop::AllEvents);
+    return 1;
+}
+
+extern "C" D64QT5_API void DBaseQtPrologWrite(
+    const char *text,
+    int length,
+    int style)
+{
+    if (!g_prolog_output || !text || length <= 0 || g_shutdown_requested)
+        return;
+
+    const QString value = QString::fromLocal8Bit(text, length);
+    QTextCursor cursor = g_prolog_output->textCursor();
+    cursor.movePosition(QTextCursor::End);
+    QTextCharFormat format;
+    if (style == 1) {
+        format.setForeground(g_prolog_dark_mode ? QColor(145, 145, 145) : QColor(110, 110, 110));
+        format.setFontWeight(QFont::Normal);
+    } else {
+        format.setForeground(g_prolog_dark_mode ? QColor(238, 238, 238) : QColor(20, 20, 20));
+        format.setFontWeight(QFont::Normal);
+    }
+    cursor.insertText(value, format);
+    g_prolog_output->setTextCursor(cursor);
+    g_prolog_output->ensureCursorVisible();
+    if (g_app)
+        g_app->processEvents(QEventLoop::AllEvents);
+}
+
+extern "C" D64QT5_API int DBaseQtPrologReadLine(char *buffer, int capacity)
+{
+    if (!buffer || capacity <= 0 || !g_prolog_window || !g_prolog_input)
+        return -1;
+    if (g_shutdown_requested || !g_prolog_window->isVisible())
+        return -1;
+
+    buffer[0] = '\0';
+    QString submittedText;
+    bool submitted = false;
+    bool closed = false;
+
+    QEventLoop loop;
+    const QMetaObject::Connection entered = QObject::connect(
+        g_prolog_input,
+        &QLineEdit::returnPressed,
+        &loop,
+        [&]() {
+            submittedText = g_prolog_input->text();
+            g_prolog_input->remember(submittedText);
+            g_prolog_input->clear();
+            submitted = true;
+            loop.quit();
+        }
+    );
+
+    QTimer closePoll;
+    closePoll.setInterval(40);
+    QObject::connect(&closePoll, &QTimer::timeout, &loop, [&]() {
+        if (g_shutdown_requested || !g_prolog_window || !g_prolog_window->isVisible()) {
+            closed = true;
+            loop.quit();
+        }
+    });
+    closePoll.start();
+
+    g_prolog_input->setEnabled(true);
+    g_prolog_input->setFocus(Qt::OtherFocusReason);
+    loop.exec();
+    QObject::disconnect(entered);
+
+    if (closed || !submitted)
+        return -1;
+
+    const QByteArray bytes = submittedText.toLocal8Bit();
+    const int count = qMin(capacity - 1, bytes.size());
+    if (count > 0)
+        std::memcpy(buffer, bytes.constData(), static_cast<std::size_t>(count));
+    buffer[count] = '\0';
+    return count;
+}
+
+extern "C" D64QT5_API void DBaseQtPrologShutdown(void)
+{
+    // DBaseQtShutdown performs the common Qt/runtime cleanup and, for a normal
+    // direct process, terminates only after all widgets were destroyed.
+    DBaseQtShutdown();
+}
+
 extern "C" D64QT5_API int DBaseQtInitialize(const char *title)
 {
     if (g_window)
@@ -9535,6 +9878,10 @@ extern "C" D64QT5_API void DBaseQtShutdown(void)
         }
     }
     g_wfm_forms.clear();
+    g_prolog_window = nullptr;
+    g_prolog_output = nullptr;
+    g_prolog_input = nullptr;
+    g_prolog_layout_filter = nullptr;
 
     delete g_window;
     g_window = nullptr;

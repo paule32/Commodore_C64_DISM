@@ -132,6 +132,15 @@ D64QT5_API int  DBaseQtExec(void);
 D64QT5_API int  DBaseQtShutdownRequested(void);
 D64QT5_API void DBaseQtShutdown(void);
 
+/* Stage 295: native in-process PROLOG Qt5 frontend.
+ * These helpers are resolved by name at runtime by generated PROLOG images,
+ * so console-mode EXEs do not acquire a hard Qt5 dependency.
+ */
+D64QT5_API int DBaseQtPrologInitialize(const char *title, int darkMode);
+D64QT5_API void DBaseQtPrologWrite(const char *text, int length, int style);
+D64QT5_API int DBaseQtPrologReadLine(char *buffer, int capacity);
+D64QT5_API void DBaseQtPrologShutdown(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -1,0 +1,941 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Created with Inkscape (http://www.inkscape.org/) -->
+<svg
+   xmlns:dc="http://purl.org/dc/elements/1.1/"
+   xmlns:cc="http://web.resource.org/cc/"
+   xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+   xmlns:svg="http://www.w3.org/2000/svg"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:xlink="http://www.w3.org/1999/xlink"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   width="330"
+   height="260"
+   id="svg5448"
+   sodipodi:version="0.32"
+   inkscape:version="0.45.1"
+   version="1.0"
+   sodipodi:docbase="/home/filip/p/ucebnice_el"
+   sodipodi:docname="ttl_inside_7400.svg"
+   inkscape:output_extension="org.inkscape.output.svg.inkscape"
+   inkscape:export-filename="/home/filip/s/pze/Uloha8/ttl_inside_7490.png"
+   inkscape:export-xdpi="150"
+   inkscape:export-ydpi="150">
+  <defs
+     id="defs5450">
+    <linearGradient
+       inkscape:collect="always"
+       id="linearGradient4423">
+      <stop
+         style="stop-color:#ff6600;stop-opacity:1;"
+         offset="0"
+         id="stop4425" />
+      <stop
+         style="stop-color:#ff6600;stop-opacity:0;"
+         offset="1"
+         id="stop4427" />
+    </linearGradient>
+    <marker
+       inkscape:stockid="Arrow1Mend"
+       orient="auto"
+       refY="0"
+       refX="0"
+       id="Arrow1Mend"
+       style="overflow:visible">
+      <path
+         id="path3643"
+         d="M 0,0 L 5,-5 L -12.5,0 L 5,5 L 0,0 z "
+         style="fill-rule:evenodd;stroke:#000000;stroke-width:1pt;marker-start:none"
+         transform="matrix(-0.4,0,0,-0.4,-4,0)" />
+    </marker>
+    <marker
+       inkscape:stockid="TriangleOutM"
+       orient="auto"
+       refY="0"
+       refX="0"
+       id="TriangleOutM"
+       style="overflow:visible">
+      <path
+         id="path3551"
+         d="M 5.77,0 L -2.88,5 L -2.88,-5 L 5.77,0 z "
+         style="fill-rule:evenodd;stroke:#000000;stroke-width:1pt;marker-start:none"
+         transform="scale(0.4,0.4)" />
+    </marker>
+    <marker
+       inkscape:stockid="TriangleOutS"
+       orient="auto"
+       refY="0"
+       refX="0"
+       id="TriangleOutS"
+       style="overflow:visible">
+      <path
+         id="path3548"
+         d="M 5.77,0 L -2.88,5 L -2.88,-5 L 5.77,0 z "
+         style="fill-rule:evenodd;stroke:#000000;stroke-width:1pt;marker-start:none"
+         transform="scale(0.2,0.2)" />
+    </marker>
+    <marker
+       inkscape:stockid="Arrow2Mend"
+       orient="auto"
+       refY="0"
+       refX="0"
+       id="Arrow2Mend"
+       style="overflow:visible">
+      <path
+         id="path3625"
+         style="font-size:12px;fill-rule:evenodd;stroke-width:0.625;stroke-linejoin:round"
+         d="M 8.7185878,4.0337352 L -2.2072895,0.016013256 L 8.7185884,-4.0017078 C 6.97309,-1.6296469 6.9831476,1.6157441 8.7185878,4.0337352 z "
+         transform="scale(-0.6,-0.6)" />
+    </marker>
+    <marker
+       inkscape:stockid="Arrow2Send"
+       orient="auto"
+       refY="0"
+       refX="0"
+       id="Arrow2Send"
+       style="overflow:visible">
+      <path
+         id="path3619"
+         style="font-size:12px;fill-rule:evenodd;stroke-width:0.625;stroke-linejoin:round"
+         d="M 8.7185878,4.0337352 L -2.2072895,0.016013256 L 8.7185884,-4.0017078 C 6.97309,-1.6296469 6.9831476,1.6157441 8.7185878,4.0337352 z "
+         transform="matrix(-0.3,0,0,-0.3,0.69,0)" />
+    </marker>
+    <marker
+       inkscape:stockid="Arrow1Send"
+       orient="auto"
+       refY="0"
+       refX="0"
+       id="Arrow1Send"
+       style="overflow:visible">
+      <path
+         id="path3637"
+         d="M 0,0 L 5,-5 L -12.5,0 L 5,5 L 0,0 z "
+         style="fill-rule:evenodd;stroke:#000000;stroke-width:1pt;marker-start:none"
+         transform="matrix(-0.2,0,0,-0.2,-1.2,0)" />
+    </marker>
+    <radialGradient
+       inkscape:collect="always"
+       xlink:href="#linearGradient4423"
+       id="radialGradient4429"
+       cx="329.58322"
+       cy="314.35028"
+       fx="329.58322"
+       fy="314.35028"
+       r="21.449848"
+       gradientTransform="matrix(1,0,0,1.0000027,0,-8.4040814e-4)"
+       gradientUnits="userSpaceOnUse" />
+    <radialGradient
+       inkscape:collect="always"
+       xlink:href="#linearGradient4423"
+       id="radialGradient4447"
+       gradientUnits="userSpaceOnUse"
+       gradientTransform="matrix(1,0,0,1.0000027,0,-8.4040814e-4)"
+       cx="329.58322"
+       cy="314.35028"
+       fx="329.58322"
+       fy="314.35028"
+       r="21.449848" />
+    <radialGradient
+       inkscape:collect="always"
+       xlink:href="#linearGradient4423"
+       id="radialGradient4453"
+       gradientUnits="userSpaceOnUse"
+       gradientTransform="matrix(1,0,0,1.0000027,0,-8.4040814e-4)"
+       cx="329.58322"
+       cy="314.35028"
+       fx="329.58322"
+       fy="314.35028"
+       r="21.449848" />
+    <radialGradient
+       inkscape:collect="always"
+       xlink:href="#linearGradient4423"
+       id="radialGradient4459"
+       gradientUnits="userSpaceOnUse"
+       gradientTransform="matrix(1,0,0,1.0000027,0,-8.4040814e-4)"
+       cx="329.58322"
+       cy="314.35028"
+       fx="329.58322"
+       fy="314.35028"
+       r="21.449848" />
+    <radialGradient
+       inkscape:collect="always"
+       xlink:href="#linearGradient4423"
+       id="radialGradient4465"
+       gradientUnits="userSpaceOnUse"
+       gradientTransform="matrix(1,0,0,1.0000027,0,-8.4040814e-4)"
+       cx="329.58322"
+       cy="314.35028"
+       fx="329.58322"
+       fy="314.35028"
+       r="21.449848" />
+    <radialGradient
+       inkscape:collect="always"
+       xlink:href="#linearGradient4423"
+       id="radialGradient4471"
+       gradientUnits="userSpaceOnUse"
+       gradientTransform="matrix(1,0,0,1.0000027,0,-8.4040814e-4)"
+       cx="329.58322"
+       cy="314.35028"
+       fx="329.58322"
+       fy="314.35028"
+       r="21.449848" />
+    <radialGradient
+       inkscape:collect="always"
+       xlink:href="#linearGradient4423"
+       id="radialGradient4477"
+       gradientUnits="userSpaceOnUse"
+       gradientTransform="matrix(1,0,0,1.0000027,0,-8.4040814e-4)"
+       cx="329.58322"
+       cy="314.35028"
+       fx="329.58322"
+       fy="314.35028"
+       r="21.449848" />
+  </defs>
+  <sodipodi:namedview
+     id="base"
+     pagecolor="white"
+     bordercolor="#00a0cc"
+     borderopacity="1"
+     gridtolerance="10000"
+     guidetolerance="10"
+     objecttolerance="10"
+     inkscape:pageopacity="0"
+     inkscape:pageshadow="2"
+     inkscape:zoom="2.12311"
+     inkscape:cx="243.95283"
+     inkscape:cy="130.81013"
+     inkscape:document-units="mm"
+     inkscape:current-layer="layer1"
+     width="330px"
+     height="260px"
+     showborder="true"
+     borderlayer="false"
+     inkscape:showpageshadow="false"
+     showgrid="true"
+     gridspacingx="2mm"
+     gridspacingy="2mm"
+     grid_units="mm"
+     inkscape:grid-points="true"
+     inkscape:grid-bbox="false"
+     inkscape:window-width="1280"
+     inkscape:window-height="957"
+     inkscape:window-x="0"
+     inkscape:window-y="0"
+     inkscape:object-paths="false"
+     inkscape:guide-bbox="true"
+     showguides="false"
+     units="mm" />
+  <metadata
+     id="metadata5453">
+    <rdf:RDF>
+      <cc:Work
+         rdf:about="">
+        <dc:format>image/svg+xml</dc:format>
+        <dc:type
+           rdf:resource="http://purl.org/dc/dcmitype/StillImage" />
+      </cc:Work>
+    </rdf:RDF>
+  </metadata>
+  <g
+     inkscape:label="Layer 1"
+     inkscape:groupmode="layer"
+     id="layer1"
+     transform="translate(-19.885819,-71.436101)"
+     style="opacity:1;display:inline">
+    <rect
+       style="opacity:1;color:#000000;fill:#666666;fill-opacity:1;fill-rule:nonzero;stroke:#000000;stroke-width:1.77199996;stroke-linecap:butt;stroke-linejoin:round;marker:none;marker-start:none;marker-mid:none;marker-end:none;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;visibility:visible;display:inline;overflow:visible"
+       id="rect3251"
+       width="0"
+       height="3.5433071"
+       x="354.33072"
+       y="251.88977"
+       transform="translate(102.2244,62.7973)"
+       ry="0" />
+    <g
+       style="opacity:1;display:inline"
+       id="g4018"
+       transform="matrix(-1,0,0,-1,932.3256,599.256)" />
+    <path
+       style="opacity:1;color:#000000;fill:#000000;fill-opacity:1;fill-rule:nonzero;stroke:#000000;stroke-width:0;stroke-linecap:butt;stroke-linejoin:bevel;marker:none;marker-start:none;marker-mid:none;marker-end:none;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;visibility:visible;display:inline;overflow:visible;enable-background:accumulate"
+       d="M 659.05512,173.62205 L 666.14173,173.62205"
+       id="path4298"
+       transform="translate(-0.4881985,59.612259)" />
+    <path
+       style="color:#000000;fill:none;fill-opacity:1;fill-rule:nonzero;stroke:#980101;stroke-width:3.54330707;stroke-linecap:butt;stroke-linejoin:bevel;marker:none;marker-start:none;marker-mid:none;marker-end:none;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;visibility:visible;display:inline;overflow:visible;enable-background:accumulate"
+       d="M 41.141947,133.01092 L 41.141947,118.83768 L 69.488387,118.83768 L 69.488387,133.01092"
+       id="path4300"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150" />
+    <path
+       style="color:#000000;fill:none;fill-opacity:1;fill-rule:nonzero;stroke:#000000;stroke-width:3.54330707;stroke-linecap:butt;stroke-linejoin:bevel;marker:none;marker-start:none;marker-mid:none;marker-end:none;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;visibility:visible;display:inline;overflow:visible;enable-background:accumulate"
+       d="M 83.661627,133.01092 L 83.661627,118.83768 L 112.00807,118.83768 L 112.00807,133.01092"
+       id="path4302"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150" />
+    <path
+       style="color:#000000;fill:none;fill-opacity:1;fill-rule:nonzero;stroke:#000000;stroke-width:3.54330707;stroke-linecap:butt;stroke-linejoin:bevel;marker:none;marker-start:none;marker-mid:none;marker-end:none;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;visibility:visible;display:inline;overflow:visible;enable-background:accumulate"
+       d="M 126.18131,133.01092 L 126.18131,118.83768 L 154.52775,118.83768 L 154.52775,133.01092"
+       id="path4304"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150" />
+    <path
+       style="color:#000000;fill:none;fill-opacity:1;fill-rule:nonzero;stroke:#000000;stroke-width:3.54330707;stroke-linecap:butt;stroke-linejoin:bevel;marker:none;marker-start:none;marker-mid:none;marker-end:none;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;visibility:visible;display:inline;overflow:visible;enable-background:accumulate"
+       d="M 168.70103,133.01092 L 168.70103,118.83768 L 197.04747,118.83768 L 197.04747,133.01092"
+       id="path4306"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150" />
+    <path
+       style="color:#000000;fill:none;fill-opacity:1;fill-rule:nonzero;stroke:#000000;stroke-width:3.54330707;stroke-linecap:butt;stroke-linejoin:bevel;marker:none;marker-start:none;marker-mid:none;marker-end:none;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;visibility:visible;display:inline;overflow:visible;enable-background:accumulate"
+       d="M 211.22071,133.01092 L 211.22071,118.83768 L 239.56715,118.83768 L 239.56715,133.01092"
+       id="path4308"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150" />
+    <path
+       style="color:#000000;fill:none;fill-opacity:1;fill-rule:nonzero;stroke:#000000;stroke-width:3.54330707;stroke-linecap:butt;stroke-linejoin:bevel;marker:none;marker-start:none;marker-mid:none;marker-end:none;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;visibility:visible;display:inline;overflow:visible;enable-background:accumulate"
+       d="M 253.74039,133.01092 L 253.74039,118.83768 L 282.08683,118.83768 L 282.08683,133.01092"
+       id="path4310"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150" />
+    <path
+       style="color:#000000;fill:none;fill-opacity:1;fill-rule:nonzero;stroke:#000000;stroke-width:3.54330707;stroke-linecap:butt;stroke-linejoin:bevel;marker:none;marker-start:none;marker-mid:none;marker-end:none;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;visibility:visible;display:inline;overflow:visible;enable-background:accumulate"
+       d="M 296.26007,133.01092 L 296.26007,118.83768 L 324.60651,118.83768 L 324.60651,133.01092"
+       id="path4312"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150" />
+    <path
+       style="color:#000000;fill:none;fill-opacity:1;fill-rule:nonzero;stroke:#000000;stroke-width:3.54330707;stroke-linecap:butt;stroke-linejoin:bevel;marker:none;marker-start:none;marker-mid:none;marker-end:none;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;visibility:visible;display:inline;overflow:visible;enable-background:accumulate"
+       d="M 41.145627,274.74316 L 41.145627,288.9164 L 69.492067,288.9164 L 69.492067,274.74316"
+       id="path4335"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150" />
+    <path
+       style="color:#000000;fill:none;fill-opacity:1;fill-rule:nonzero;stroke:#000000;stroke-width:3.54330707;stroke-linecap:butt;stroke-linejoin:bevel;marker:none;marker-start:none;marker-mid:none;marker-end:none;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;visibility:visible;display:inline;overflow:visible;enable-background:accumulate"
+       d="M 83.665307,274.74316 L 83.665307,288.9164 L 112.01175,288.9164 L 112.01175,274.74316"
+       id="path4337"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150" />
+    <path
+       style="color:#000000;fill:none;fill-opacity:1;fill-rule:nonzero;stroke:#000000;stroke-width:3.54330707;stroke-linecap:butt;stroke-linejoin:bevel;marker:none;marker-start:none;marker-mid:none;marker-end:none;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;visibility:visible;display:inline;overflow:visible;enable-background:accumulate"
+       d="M 126.18499,274.74316 L 126.18499,288.9164 L 154.53143,288.9164 L 154.53143,274.74316"
+       id="path4339"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150" />
+    <path
+       style="color:#000000;fill:none;fill-opacity:1;fill-rule:nonzero;stroke:#000000;stroke-width:3.54330707;stroke-linecap:butt;stroke-linejoin:bevel;marker:none;marker-start:none;marker-mid:none;marker-end:none;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;visibility:visible;display:inline;overflow:visible;enable-background:accumulate"
+       d="M 168.70471,274.74316 L 168.70471,288.9164 L 197.05115,288.9164 L 197.05115,274.74316"
+       id="path4341"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150" />
+    <path
+       style="color:#000000;fill:none;fill-opacity:1;fill-rule:nonzero;stroke:#000000;stroke-width:3.54330707;stroke-linecap:butt;stroke-linejoin:bevel;marker:none;marker-start:none;marker-mid:none;marker-end:none;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;visibility:visible;display:inline;overflow:visible;enable-background:accumulate"
+       d="M 211.22439,274.74316 L 211.22439,288.9164 L 239.57083,288.9164 L 239.57083,274.74316"
+       id="path4343"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150" />
+    <path
+       style="color:#000000;fill:none;fill-opacity:1;fill-rule:nonzero;stroke:#000000;stroke-width:3.54330707;stroke-linecap:butt;stroke-linejoin:bevel;marker:none;marker-start:none;marker-mid:none;marker-end:none;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;visibility:visible;display:inline;overflow:visible;enable-background:accumulate"
+       d="M 253.74407,274.74316 L 253.74407,288.9164 L 282.09051,288.9164 L 282.09051,274.74316"
+       id="path4345"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150" />
+    <path
+       style="color:#000000;fill:none;fill-opacity:1;fill-rule:nonzero;stroke:#013397;stroke-width:3.54330707;stroke-linecap:butt;stroke-linejoin:bevel;marker:none;marker-start:none;marker-mid:none;marker-end:none;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;visibility:visible;display:inline;overflow:visible;enable-background:accumulate"
+       d="M 296.26375,274.74316 L 296.26375,288.9164 L 324.61019,288.9164 L 324.61019,274.74316"
+       id="path4347"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150" />
+    <rect
+       style="color:#000000;fill:none;fill-opacity:1;fill-rule:nonzero;stroke:#000000;stroke-width:3.5433023;stroke-linecap:square;stroke-linejoin:bevel;marker:none;marker-start:none;marker-mid:none;marker-end:none;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;visibility:visible;display:inline;overflow:visible"
+       id="rect3481"
+       width="141.73225"
+       height="312.14548"
+       x="-274.74316"
+       y="26.972433"
+       transform="matrix(0,-1,1,0,0,0)"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150" />
+    <text
+       xml:space="preserve"
+       style="font-size:27.99998474px;font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;text-align:start;line-height:100%;writing-mode:lr-tb;text-anchor:start;fill:#000000;fill-opacity:1;stroke:none;stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;stroke-opacity:1;display:inline;font-family:FreeSans"
+       x="41.14566"
+       y="317.26282"
+       id="text2931"
+       sodipodi:linespacing="100%"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150"><tspan
+         sodipodi:role="line"
+         id="tspan2933"
+         x="41.14566"
+         y="317.26282">A</tspan></text>
+    <text
+       xml:space="preserve"
+       style="font-size:17.99999046px;font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;text-align:start;line-height:100%;writing-mode:lr-tb;text-anchor:start;fill:#000000;fill-opacity:1;stroke:none;stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;stroke-opacity:1;display:inline;font-family:FreeSans"
+       x="55.318878"
+       y="324.34949"
+       id="text2935"
+       sodipodi:linespacing="100%"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150"><tspan
+         sodipodi:role="line"
+         x="55.318878"
+         y="324.34949"
+         id="tspan2937"> 1</tspan></text>
+    <text
+       xml:space="preserve"
+       style="font-size:27.99998474px;font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;text-align:start;line-height:100%;writing-mode:lr-tb;text-anchor:start;fill:#000000;fill-opacity:1;stroke:none;stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;stroke-opacity:1;display:inline;font-family:FreeSans"
+       x="83.665337"
+       y="317.26282"
+       id="text2939"
+       sodipodi:linespacing="100%"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150"><tspan
+         sodipodi:role="line"
+         id="tspan2941"
+         x="83.665337"
+         y="317.26282">B</tspan></text>
+    <text
+       xml:space="preserve"
+       style="font-size:17.99999046px;font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;text-align:start;line-height:100%;writing-mode:lr-tb;text-anchor:start;fill:#000000;fill-opacity:1;stroke:none;stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;stroke-opacity:1;display:inline;font-family:FreeSans"
+       x="97.83857"
+       y="324.34949"
+       id="text2943"
+       sodipodi:linespacing="100%"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150"><tspan
+         sodipodi:role="line"
+         x="97.83857"
+         y="324.34949"
+         id="tspan2945"> 1</tspan></text>
+    <text
+       xml:space="preserve"
+       style="font-size:27.99998474px;font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;text-align:start;line-height:100%;writing-mode:lr-tb;text-anchor:start;fill:#000000;fill-opacity:1;stroke:none;stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;stroke-opacity:1;display:inline;font-family:FreeSans"
+       x="126.18504"
+       y="317.26282"
+       id="text2997"
+       sodipodi:linespacing="100%"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150"><tspan
+         sodipodi:role="line"
+         id="tspan2999"
+         x="126.18504"
+         y="317.26282">C</tspan></text>
+    <text
+       xml:space="preserve"
+       style="font-size:17.99999046px;font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;text-align:start;line-height:100%;writing-mode:lr-tb;text-anchor:start;fill:#000000;fill-opacity:1;stroke:none;stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;stroke-opacity:1;display:inline;font-family:FreeSans"
+       x="140.35826"
+       y="324.34943"
+       id="text3001"
+       sodipodi:linespacing="100%"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150"><tspan
+         sodipodi:role="line"
+         x="140.35826"
+         y="324.34943"
+         id="tspan3003"> 1</tspan></text>
+    <text
+       xml:space="preserve"
+       style="font-size:27.99998474px;font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;text-align:start;line-height:100%;writing-mode:lr-tb;text-anchor:start;fill:#000000;fill-opacity:1;stroke:none;stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;stroke-opacity:1;display:inline;font-family:FreeSans"
+       x="168.70473"
+       y="317.26282"
+       id="text3005"
+       sodipodi:linespacing="100%"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150"><tspan
+         sodipodi:role="line"
+         id="tspan3007"
+         x="168.70473"
+         y="317.26282">A</tspan></text>
+    <text
+       xml:space="preserve"
+       style="font-size:27.99998474px;font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;text-align:start;line-height:100%;writing-mode:lr-tb;text-anchor:start;fill:#000000;fill-opacity:1;stroke:none;stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;stroke-opacity:1;display:inline;font-family:FreeSans"
+       x="211.22441"
+       y="317.26282"
+       id="text3009"
+       sodipodi:linespacing="100%"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150"><tspan
+         sodipodi:role="line"
+         id="tspan3011"
+         x="211.22441"
+         y="317.26282">B</tspan></text>
+    <text
+       xml:space="preserve"
+       style="font-size:27.99998474px;font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;text-align:start;line-height:100%;writing-mode:lr-tb;text-anchor:start;fill:#000000;fill-opacity:1;stroke:none;stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;stroke-opacity:1;display:inline;font-family:FreeSans"
+       x="253.74406"
+       y="317.26282"
+       id="text3013"
+       sodipodi:linespacing="100%"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150"><tspan
+         sodipodi:role="line"
+         id="tspan3015"
+         x="253.74406"
+         y="317.26282">C</tspan></text>
+    <text
+       xml:space="preserve"
+       style="font-size:17.99999046px;font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;text-align:start;line-height:100%;writing-mode:lr-tb;text-anchor:start;fill:#000000;fill-opacity:1;stroke:none;stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;stroke-opacity:1;display:inline;font-family:FreeSans"
+       x="182.87796"
+       y="324.34949"
+       id="text3017"
+       sodipodi:linespacing="100%"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150"><tspan
+         sodipodi:role="line"
+         x="182.87796"
+         y="324.34949"
+         id="tspan3019"> 2</tspan></text>
+    <text
+       xml:space="preserve"
+       style="font-size:17.99999046px;font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;text-align:start;line-height:100%;writing-mode:lr-tb;text-anchor:start;fill:#000000;fill-opacity:1;stroke:none;stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;stroke-opacity:1;display:inline;font-family:FreeSans"
+       x="225.39766"
+       y="324.34949"
+       id="text3021"
+       sodipodi:linespacing="100%"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150"><tspan
+         sodipodi:role="line"
+         x="225.39766"
+         y="324.34949"
+         id="tspan3023"> 2</tspan></text>
+    <text
+       xml:space="preserve"
+       style="font-size:17.99999046px;font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;text-align:start;line-height:100%;writing-mode:lr-tb;text-anchor:start;fill:#000000;fill-opacity:1;stroke:none;stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;stroke-opacity:1;display:inline;font-family:FreeSans"
+       x="267.9173"
+       y="324.34943"
+       id="text3025"
+       sodipodi:linespacing="100%"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150"><tspan
+         sodipodi:role="line"
+         x="267.9173"
+         y="324.34943"
+         id="tspan3027"> 2</tspan></text>
+    <text
+       xml:space="preserve"
+       style="font-size:20px;font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;text-align:start;line-height:100%;writing-mode:lr-tb;text-anchor:start;fill:#013397;fill-opacity:1;stroke:none;stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;stroke-opacity:1;display:inline;font-family:FreeSans"
+       x="289.17715"
+       y="310.17621"
+       id="text3077"
+       sodipodi:linespacing="100%"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150"><tspan
+         sodipodi:role="line"
+         id="tspan3079"
+         x="289.17715"
+         y="310.17621">GND</tspan></text>
+    <text
+       xml:space="preserve"
+       style="font-size:27.99998474px;font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;text-align:start;line-height:100%;writing-mode:lr-tb;text-anchor:start;fill:#980101;fill-opacity:1;stroke:none;stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;stroke-opacity:1;display:inline;font-family:FreeSans"
+       x="34.059048"
+       y="104.66444"
+       id="text3081"
+       sodipodi:linespacing="100%"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150"><tspan
+         sodipodi:role="line"
+         id="tspan3083"
+         x="34.059048"
+         y="104.66444">U</tspan></text>
+    <text
+       xml:space="preserve"
+       style="font-size:17.99999046px;font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;text-align:start;line-height:100%;writing-mode:lr-tb;text-anchor:start;fill:#980101;fill-opacity:1;stroke:none;stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;stroke-opacity:1;display:inline;font-family:FreeSans"
+       x="48.232269"
+       y="111.75111"
+       id="text3085"
+       sodipodi:linespacing="100%"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150"><tspan
+         sodipodi:role="line"
+         x="48.232269"
+         y="111.75111"
+         id="tspan3087"> CC</tspan></text>
+    <text
+       xml:space="preserve"
+       style="font-size:27.99998474px;font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;text-align:start;line-height:100%;writing-mode:lr-tb;text-anchor:start;fill:#000000;fill-opacity:1;stroke:none;stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;stroke-opacity:1;display:inline;font-family:FreeSans"
+       x="83.665329"
+       y="104.66447"
+       id="text3097"
+       sodipodi:linespacing="100%"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150"><tspan
+         sodipodi:role="line"
+         id="tspan3099"
+         x="83.665329"
+         y="104.66447">A</tspan></text>
+    <text
+       xml:space="preserve"
+       style="font-size:17.99999046px;font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;text-align:start;line-height:100%;writing-mode:lr-tb;text-anchor:start;fill:#000000;fill-opacity:1;stroke:none;stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;stroke-opacity:1;display:inline;font-family:FreeSans"
+       x="97.838547"
+       y="111.75114"
+       id="text3101"
+       sodipodi:linespacing="100%"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150"><tspan
+         sodipodi:role="line"
+         x="97.838547"
+         y="111.75114"
+         id="tspan3103"> 3</tspan></text>
+    <text
+       xml:space="preserve"
+       style="font-size:27.99998474px;font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;text-align:start;line-height:100%;writing-mode:lr-tb;text-anchor:start;fill:#000000;fill-opacity:1;stroke:none;stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;stroke-opacity:1;display:inline;font-family:FreeSans"
+       x="126.18503"
+       y="104.66447"
+       id="text3105"
+       sodipodi:linespacing="100%"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150"><tspan
+         sodipodi:role="line"
+         id="tspan3107"
+         x="126.18503"
+         y="104.66447">B</tspan></text>
+    <text
+       xml:space="preserve"
+       style="font-size:17.99999046px;font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;text-align:start;line-height:100%;writing-mode:lr-tb;text-anchor:start;fill:#000000;fill-opacity:1;stroke:none;stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;stroke-opacity:1;display:inline;font-family:FreeSans"
+       x="140.35826"
+       y="111.75114"
+       id="text3109"
+       sodipodi:linespacing="100%"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150"><tspan
+         sodipodi:role="line"
+         x="140.35826"
+         y="111.75114"
+         id="tspan3111"> 3</tspan></text>
+    <text
+       xml:space="preserve"
+       style="font-size:27.99998474px;font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;text-align:start;line-height:100%;writing-mode:lr-tb;text-anchor:start;fill:#000000;fill-opacity:1;stroke:none;stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;stroke-opacity:1;display:inline;font-family:FreeSans"
+       x="168.70471"
+       y="104.66447"
+       id="text3113"
+       sodipodi:linespacing="100%"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150"><tspan
+         sodipodi:role="line"
+         id="tspan3115"
+         x="168.70471"
+         y="104.66447">C</tspan></text>
+    <text
+       xml:space="preserve"
+       style="font-size:17.99999046px;font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;text-align:start;line-height:100%;writing-mode:lr-tb;text-anchor:start;fill:#000000;fill-opacity:1;stroke:none;stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;stroke-opacity:1;display:inline;font-family:FreeSans"
+       x="182.87794"
+       y="111.7511"
+       id="text3117"
+       sodipodi:linespacing="100%"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150"><tspan
+         sodipodi:role="line"
+         x="182.87794"
+         y="111.7511"
+         id="tspan3119"> 3</tspan></text>
+    <text
+       xml:space="preserve"
+       style="font-size:27.99998474px;font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;text-align:start;line-height:100%;writing-mode:lr-tb;text-anchor:start;fill:#000000;fill-opacity:1;stroke:none;stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;stroke-opacity:1;display:inline;font-family:FreeSans"
+       x="211.22441"
+       y="104.66447"
+       id="text3121"
+       sodipodi:linespacing="100%"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150"><tspan
+         sodipodi:role="line"
+         id="tspan3123"
+         x="211.22441"
+         y="104.66447">A</tspan></text>
+    <text
+       xml:space="preserve"
+       style="font-size:27.99998474px;font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;text-align:start;line-height:100%;writing-mode:lr-tb;text-anchor:start;fill:#000000;fill-opacity:1;stroke:none;stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;stroke-opacity:1;display:inline;font-family:FreeSans"
+       x="253.74406"
+       y="104.66447"
+       id="text3125"
+       sodipodi:linespacing="100%"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150"><tspan
+         sodipodi:role="line"
+         id="tspan3127"
+         x="253.74406"
+         y="104.66447">B</tspan></text>
+    <text
+       xml:space="preserve"
+       style="font-size:27.99998474px;font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;text-align:start;line-height:100%;writing-mode:lr-tb;text-anchor:start;fill:#000000;fill-opacity:1;stroke:none;stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;stroke-opacity:1;display:inline;font-family:FreeSans"
+       x="296.26376"
+       y="104.66447"
+       id="text3129"
+       sodipodi:linespacing="100%"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150"><tspan
+         sodipodi:role="line"
+         id="tspan3131"
+         x="296.26376"
+         y="104.66447">C</tspan></text>
+    <text
+       xml:space="preserve"
+       style="font-size:17.99999046px;font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;text-align:start;line-height:100%;writing-mode:lr-tb;text-anchor:start;fill:#000000;fill-opacity:1;stroke:none;stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;stroke-opacity:1;display:inline;font-family:FreeSans"
+       x="225.39764"
+       y="111.75114"
+       id="text3133"
+       sodipodi:linespacing="100%"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150"><tspan
+         sodipodi:role="line"
+         x="225.39764"
+         y="111.75114"
+         id="tspan3135"> 4</tspan></text>
+    <text
+       xml:space="preserve"
+       style="font-size:17.99999046px;font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;text-align:start;line-height:100%;writing-mode:lr-tb;text-anchor:start;fill:#000000;fill-opacity:1;stroke:none;stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;stroke-opacity:1;display:inline;font-family:FreeSans"
+       x="267.91733"
+       y="111.75114"
+       id="text3137"
+       sodipodi:linespacing="100%"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150"><tspan
+         sodipodi:role="line"
+         x="267.91733"
+         y="111.75114"
+         id="tspan3139"> 4</tspan></text>
+    <text
+       xml:space="preserve"
+       style="font-size:17.99999046px;font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;text-align:start;line-height:100%;writing-mode:lr-tb;text-anchor:start;fill:#000000;fill-opacity:1;stroke:none;stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;stroke-opacity:1;display:inline;font-family:FreeSans"
+       x="310.43698"
+       y="111.7511"
+       id="text3141"
+       sodipodi:linespacing="100%"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150"><tspan
+         sodipodi:role="line"
+         x="310.43698"
+         y="111.7511"
+         id="tspan3143"> 4</tspan></text>
+    <path
+       style="opacity:1;color:#000000;fill:none;fill-opacity:1;fill-rule:nonzero;stroke:#000000;stroke-width:3.54330707;stroke-linecap:round;stroke-linejoin:miter;marker:none;marker-start:none;marker-mid:none;marker-end:none;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;visibility:visible;display:inline;overflow:visible;enable-background:accumulate"
+       d="M 90.751961,218.0503 L 90.751961,246.06002 L 104.92517,246.06072 C 126.18507,246.06178 126.18507,218.05206 104.92517,218.051 L 90.751961,218.0503 z "
+       id="path3617"
+       sodipodi:nodetypes="ccssc" />
+    <path
+       style="opacity:1;color:#000000;fill:none;fill-opacity:1;fill-rule:nonzero;stroke:#000000;stroke-width:3.54330707;stroke-linecap:square;stroke-linejoin:miter;marker:none;marker-start:none;marker-mid:none;marker-end:none;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;visibility:visible;display:inline;overflow:visible;enable-background:accumulate"
+       d="M 133.27165,232.22353 L 140.35825,232.22285 L 140.35826,274.74317"
+       id="path3620"
+       sodipodi:nodetypes="ccc" />
+    <path
+       style="opacity:1;color:#000000;fill:none;fill-opacity:1;fill-rule:nonzero;stroke:#000000;stroke-width:3.54330707;stroke-linecap:round;stroke-linejoin:miter;marker:none;marker-start:none;marker-mid:none;marker-end:none;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;visibility:visible;display:inline;overflow:visible;enable-background:accumulate"
+       d="M 90.751961,225.13691 L 55.318917,225.13623 L 55.318889,274.74317"
+       id="path3622"
+       sodipodi:nodetypes="ccc" />
+    <path
+       style="opacity:1;color:#000000;fill:none;fill-opacity:1;fill-rule:nonzero;stroke:#000000;stroke-width:3.54330707;stroke-linecap:round;stroke-linejoin:miter;marker:none;marker-start:none;marker-mid:none;marker-end:none;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;visibility:visible;display:inline;overflow:visible;enable-background:accumulate"
+       d="M 90.751933,239.31014 L 76.578732,239.31014 L 76.578732,260.56994 L 97.838575,260.56994 L 97.838575,274.74317"
+       id="path3624"
+       sodipodi:nodetypes="ccccc" />
+    <path
+       sodipodi:type="arc"
+       style="opacity:1;color:#000000;fill:none;fill-opacity:1;fill-rule:nonzero;stroke:#000000;stroke-width:3.07223177;stroke-linecap:round;stroke-linejoin:bevel;marker:none;marker-start:none;marker-mid:none;marker-end:none;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;visibility:visible;display:inline;overflow:visible;enable-background:accumulate"
+       id="path3626"
+       sodipodi:cx="81.496063"
+       sodipodi:cy="134.64568"
+       sodipodi:rx="3.5433071"
+       sodipodi:ry="3.5433071"
+       d="M 85.03937 134.64568 A 3.5433071 3.5433071 0 1 1  77.952756,134.64568 A 3.5433071 3.5433071 0 1 1  85.03937 134.64568 z"
+       transform="matrix(1.1533334,0,0,1.1533334,32.192847,76.932864)" />
+    <path
+       style="opacity:1;color:#000000;fill:none;fill-opacity:1;fill-rule:nonzero;stroke:#000000;stroke-width:3.54330707;stroke-linecap:square;stroke-linejoin:miter;marker:none;marker-start:none;marker-mid:none;marker-end:none;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;visibility:visible;display:inline;overflow:visible;enable-background:accumulate"
+       d="M 260.83072,232.22421 L 267.91732,232.22353 L 267.91732,274.74317"
+       id="path4368"
+       sodipodi:nodetypes="ccc" />
+    <path
+       style="opacity:1;color:#000000;fill:none;fill-opacity:1;fill-rule:nonzero;stroke:#000000;stroke-width:3.54330707;stroke-linecap:round;stroke-linejoin:miter;marker:none;marker-start:none;marker-mid:none;marker-end:none;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;visibility:visible;display:inline;overflow:visible;enable-background:accumulate"
+       d="M 218.31102,225.13691 L 182.87798,225.13623 L 182.87795,274.74317"
+       id="path4370"
+       sodipodi:nodetypes="ccc" />
+    <path
+       style="opacity:1;color:#000000;fill:none;fill-opacity:1;fill-rule:nonzero;stroke:#000000;stroke-width:3.54330707;stroke-linecap:round;stroke-linejoin:miter;marker:none;marker-start:none;marker-mid:none;marker-end:none;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;visibility:visible;display:inline;overflow:visible;enable-background:accumulate"
+       d="M 218.31099,239.31014 L 204.13779,239.31014 L 204.13779,260.56994 L 225.39764,260.56994 L 225.39764,274.74317"
+       id="path4372"
+       sodipodi:nodetypes="ccccc" />
+    <path
+       style="opacity:1;color:#000000;fill:none;fill-opacity:1;fill-rule:nonzero;stroke:#000000;stroke-width:3.54330707;stroke-linecap:square;stroke-linejoin:miter;marker:none;marker-start:none;marker-mid:none;marker-end:none;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;visibility:visible;display:inline;overflow:visible;enable-background:accumulate"
+       d="M 175.79133,175.52992 L 182.87793,175.5306 L 182.87794,133.01093"
+       id="path4374"
+       sodipodi:nodetypes="ccc" />
+    <path
+       style="opacity:1;color:#000000;fill:none;fill-opacity:1;fill-rule:nonzero;stroke:#000000;stroke-width:3.54330707;stroke-linecap:round;stroke-linejoin:miter;marker:none;marker-start:none;marker-mid:none;marker-end:none;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;visibility:visible;display:inline;overflow:visible;enable-background:accumulate"
+       d="M 133.27163,182.61654 L 97.838575,182.61723 L 97.838575,133.01093"
+       id="path4376"
+       sodipodi:nodetypes="ccc" />
+    <path
+       style="opacity:1;color:#000000;fill:none;fill-opacity:1;fill-rule:nonzero;stroke:#000000;stroke-width:3.54330707;stroke-linecap:round;stroke-linejoin:miter;marker:none;marker-start:none;marker-mid:none;marker-end:none;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;visibility:visible;display:inline;overflow:visible;enable-background:accumulate"
+       d="M 133.27165,168.444 L 119.09845,168.444 L 119.09843,147.18412 L 140.35827,147.18412 L 140.35827,133.01089"
+       id="path4378"
+       sodipodi:nodetypes="ccccc" />
+    <path
+       style="opacity:1;color:#000000;fill:none;fill-opacity:1;fill-rule:nonzero;stroke:#000000;stroke-width:3.54330707;stroke-linecap:square;stroke-linejoin:miter;marker:none;marker-start:none;marker-mid:none;marker-end:none;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;visibility:visible;display:inline;overflow:visible;enable-background:accumulate"
+       d="M 303.3504,175.52993 L 310.437,175.53061 L 310.43699,133.01089"
+       id="path4380"
+       sodipodi:nodetypes="ccc" />
+    <path
+       style="opacity:1;color:#000000;fill:none;fill-opacity:1;fill-rule:nonzero;stroke:#000000;stroke-width:3.54330707;stroke-linecap:round;stroke-linejoin:miter;marker:none;marker-start:none;marker-mid:none;marker-end:none;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;visibility:visible;display:inline;overflow:visible;enable-background:accumulate"
+       d="M 260.83067,182.61655 L 225.39763,182.61723 L 225.39763,133.01089"
+       id="path4382"
+       sodipodi:nodetypes="ccc" />
+    <path
+       style="opacity:1;color:#000000;fill:none;fill-opacity:1;fill-rule:nonzero;stroke:#000000;stroke-width:3.54330707;stroke-linecap:round;stroke-linejoin:miter;marker:none;marker-start:none;marker-mid:none;marker-end:none;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;visibility:visible;display:inline;overflow:visible;enable-background:accumulate"
+       d="M 260.8307,168.444 L 246.6575,168.444 L 246.65747,147.18412 L 267.91731,147.18412 L 267.91731,133.01089"
+       id="path4384"
+       sodipodi:nodetypes="ccccc" />
+    <path
+       style="opacity:1;color:#000000;fill:none;fill-opacity:1;fill-rule:nonzero;stroke:#000000;stroke-width:3.54330707;stroke-linecap:round;stroke-linejoin:miter;marker:none;marker-start:none;marker-mid:none;marker-end:none;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;visibility:visible;display:inline;overflow:visible;enable-background:accumulate"
+       d="M 218.31105,218.38638 L 218.31105,246.3961 L 232.48425,246.3968 C 253.74415,246.39786 253.74415,218.38814 232.48425,218.38708 L 218.31105,218.38638 z "
+       id="path4386"
+       sodipodi:nodetypes="ccssc" />
+    <path
+       sodipodi:type="arc"
+       style="opacity:1;color:#000000;fill:none;fill-opacity:1;fill-rule:nonzero;stroke:#000000;stroke-width:3.07223177;stroke-linecap:round;stroke-linejoin:bevel;marker:none;marker-start:none;marker-mid:none;marker-end:none;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;visibility:visible;display:inline;overflow:visible;enable-background:accumulate"
+       id="path4388"
+       sodipodi:cx="81.496063"
+       sodipodi:cy="134.64568"
+       sodipodi:rx="3.5433071"
+       sodipodi:ry="3.5433071"
+       d="M 85.03937 134.64568 A 3.5433071 3.5433071 0 1 1  77.952756,134.64568 A 3.5433071 3.5433071 0 1 1  85.03937 134.64568 z"
+       transform="matrix(1.1533334,0,0,1.1533334,159.75193,77.268944)" />
+    <path
+       style="opacity:1;color:#000000;fill:none;fill-opacity:1;fill-rule:nonzero;stroke:#000000;stroke-width:3.54330707;stroke-linecap:round;stroke-linejoin:miter;marker:none;marker-start:none;marker-mid:none;marker-end:none;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;visibility:visible;display:inline;overflow:visible;enable-background:accumulate"
+       d="M 260.8307,161.35738 L 260.8307,189.3671 L 275.0039,189.3678 C 296.2638,189.36886 296.2638,161.35914 275.0039,161.35808 L 260.8307,161.35738 z "
+       id="path4390"
+       sodipodi:nodetypes="ccssc" />
+    <path
+       sodipodi:type="arc"
+       style="opacity:1;color:#000000;fill:none;fill-opacity:1;fill-rule:nonzero;stroke:#000000;stroke-width:3.07223177;stroke-linecap:round;stroke-linejoin:bevel;marker:none;marker-start:none;marker-mid:none;marker-end:none;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;visibility:visible;display:inline;overflow:visible;enable-background:accumulate"
+       id="path4392"
+       sodipodi:cx="81.496063"
+       sodipodi:cy="134.64568"
+       sodipodi:rx="3.5433071"
+       sodipodi:ry="3.5433071"
+       d="M 85.03937 134.64568 A 3.5433071 3.5433071 0 1 1  77.952756,134.64568 A 3.5433071 3.5433071 0 1 1  85.03937 134.64568 z"
+       transform="matrix(1.1533334,0,0,1.1533334,202.27159,20.239947)" />
+    <path
+       style="opacity:1;color:#000000;fill:none;fill-opacity:1;fill-rule:nonzero;stroke:#000000;stroke-width:3.54330707;stroke-linecap:round;stroke-linejoin:miter;marker:none;marker-start:none;marker-mid:none;marker-end:none;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;visibility:visible;display:inline;overflow:visible;enable-background:accumulate"
+       d="M 133.27167,161.35738 L 133.27167,189.3671 L 147.44487,189.3678 C 168.70477,189.36886 168.70477,161.35914 147.44487,161.35808 L 133.27167,161.35738 z "
+       id="path4394"
+       sodipodi:nodetypes="ccssc" />
+    <path
+       sodipodi:type="arc"
+       style="opacity:1;color:#000000;fill:none;fill-opacity:1;fill-rule:nonzero;stroke:#000000;stroke-width:3.07223177;stroke-linecap:round;stroke-linejoin:bevel;marker:none;marker-start:none;marker-mid:none;marker-end:none;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;visibility:visible;display:inline;overflow:visible;enable-background:accumulate"
+       id="path4396"
+       sodipodi:cx="81.496063"
+       sodipodi:cy="134.64568"
+       sodipodi:rx="3.5433071"
+       sodipodi:ry="3.5433071"
+       d="M 85.03937 134.64568 A 3.5433071 3.5433071 0 1 1  77.952756,134.64568 A 3.5433071 3.5433071 0 1 1  85.03937 134.64568 z"
+       transform="matrix(1.1533334,0,0,1.1533334,74.712585,20.239251)" />
+    <text
+       xml:space="preserve"
+       style="font-size:27.99998474px;font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;text-align:center;line-height:100%;writing-mode:lr-tb;text-anchor:middle;opacity:1;fill:#000000;fill-opacity:1;stroke:none;stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;stroke-opacity:1;display:inline;font-family:FreeSans"
+       x="183.03008"
+       y="213.69102"
+       id="text4416"
+       sodipodi:linespacing="100%"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150"><tspan
+         sodipodi:role="line"
+         id="tspan4418"
+         x="183.03007"
+         y="213.69102">7400</tspan></text>
+    <text
+       xml:space="preserve"
+       style="font-size:17.99999046px;font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;text-align:start;line-height:100%;writing-mode:lr-tb;text-anchor:start;opacity:1;fill:#000000;fill-opacity:1;stroke:none;stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;stroke-opacity:1;display:inline;font-family:FreeSans"
+       x="26.972433"
+       y="296.00302"
+       id="text5467"
+       sodipodi:linespacing="100%"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150"><tspan
+         sodipodi:role="line"
+         x="26.972433"
+         y="296.00302"
+         id="tspan5469">1</tspan></text>
+    <text
+       xml:space="preserve"
+       style="font-size:17.99999046px;font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;text-align:start;line-height:100%;writing-mode:lr-tb;text-anchor:start;opacity:1;fill:#000000;fill-opacity:1;stroke:none;stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;stroke-opacity:1;display:inline;font-family:FreeSans"
+       x="19.885818"
+       y="125.92429"
+       id="text5471"
+       sodipodi:linespacing="100%"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150"><tspan
+         sodipodi:role="line"
+         x="19.885818"
+         y="125.92429"
+         id="tspan5473">14</tspan></text>
+    <text
+       xml:space="preserve"
+       style="font-size:17.99999046px;font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;text-align:start;line-height:100%;writing-mode:lr-tb;text-anchor:start;opacity:1;fill:#000000;fill-opacity:1;stroke:none;stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;stroke-opacity:1;display:inline;font-family:FreeSans"
+       x="331.69684"
+       y="125.92429"
+       id="text5475"
+       sodipodi:linespacing="100%"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150"><tspan
+         sodipodi:role="line"
+         x="331.69684"
+         y="125.92429"
+         id="tspan5477">8</tspan></text>
+    <text
+       xml:space="preserve"
+       style="font-size:17.99999046px;font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;text-align:start;line-height:100%;writing-mode:lr-tb;text-anchor:start;opacity:1;fill:#000000;fill-opacity:1;stroke:none;stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;stroke-opacity:1;display:inline;font-family:FreeSans"
+       x="331.69684"
+       y="296.00302"
+       id="text5479"
+       sodipodi:linespacing="100%"
+       inkscape:export-filename="/home/filip/p/ucebnice_el/ttl_pokus.png"
+       inkscape:export-xdpi="150"
+       inkscape:export-ydpi="150"><tspan
+         sodipodi:role="line"
+         x="331.69684"
+         y="296.00302"
+         id="tspan5481">7</tspan></text>
+  </g>
+</svg>

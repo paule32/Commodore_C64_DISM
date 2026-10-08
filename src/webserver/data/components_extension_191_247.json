@@ -1,0 +1,164 @@
+{
+  "components": [
+    {
+      "id": "74LS191",
+      "name": "74LS191",
+      "description": "Synchroner 4-Bit-Binär-Up/Down-Zähler",
+      "category": "Zähler",
+      "family": "74LS",
+      "type": "4-bit Binary Up/Down Counter",
+      "package": "DIP16",
+      "file": "74LS191.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS192",
+      "name": "74LS192",
+      "description": "Synchroner BCD-Up/Down-Zähler mit getrennten Takten",
+      "category": "Zähler",
+      "family": "74LS",
+      "type": "BCD Up/Down Counter",
+      "package": "DIP16",
+      "file": "74LS192.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS193",
+      "name": "74LS193",
+      "description": "Synchroner 4-Bit-Binär-Up/Down-Zähler mit getrennten Takten",
+      "category": "Zähler",
+      "family": "74LS",
+      "type": "Binary Up/Down Counter",
+      "package": "DIP16",
+      "file": "74LS193.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS194",
+      "name": "74LS194",
+      "description": "Universelles bidirektionales 4-Bit-Schieberegister",
+      "category": "Schieberegister",
+      "family": "74LS",
+      "type": "Universal Shift Register",
+      "package": "DIP16",
+      "file": "74LS194.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS221",
+      "name": "74LS221",
+      "description": "Zwei monostabile Multivibratoren mit Schmitt-Trigger-Eingängen",
+      "category": "Zeitglieder",
+      "family": "74LS",
+      "type": "Dual Monostable",
+      "package": "DIP16",
+      "file": "74LS221.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS240",
+      "name": "74LS240",
+      "description": "Acht invertierende Bus-/Leitungstreiber mit 3-State-Ausgängen",
+      "category": "Puffer",
+      "family": "74LS",
+      "type": "Octal Inverting 3-State Buffer",
+      "package": "DIP20",
+      "file": "74LS240.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS241",
+      "name": "74LS241",
+      "description": "Acht nichtinvertierende Bus-/Leitungstreiber mit 3-State-Ausgängen",
+      "category": "Puffer",
+      "family": "74LS",
+      "type": "Octal 3-State Buffer",
+      "package": "DIP20",
+      "file": "74LS241.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS244",
+      "name": "74LS244",
+      "description": "Acht nichtinvertierende Puffer/Leitungstreiber mit 3-State-Ausgängen",
+      "category": "Puffer",
+      "family": "74LS",
+      "type": "Octal 3-State Buffer",
+      "package": "DIP20",
+      "file": "74LS244.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS245",
+      "name": "74LS245",
+      "description": "Bidirektionaler 8-Bit-Bus-Transceiver mit 3-State-Ausgängen",
+      "category": "Bus",
+      "family": "74LS",
+      "type": "Octal Bus Transceiver",
+      "package": "DIP20",
+      "file": "74LS245.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    },
+    {
+      "id": "74LS247",
+      "name": "74LS247",
+      "description": "BCD-zu-7-Segment-Decoder/Treiber mit Open-Collector-Ausgängen",
+      "category": "Display",
+      "family": "74LS",
+      "type": "BCD to 7-Segment Decoder",
+      "package": "DIP16",
+      "file": "74LS247.svg",
+      "rotations": [
+        "0",
+        "90",
+        "180",
+        "270"
+      ]
+    }
+  ]
+}
