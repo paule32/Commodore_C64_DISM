@@ -8,7 +8,7 @@ PrimaryDockLayout = {"paired":true,"area":1,"orientation":2,"first":"right_dock"
 
 [Session.Geometry]
 Version = 2
-MainWindow = {"x":232,"y":110,"width":1037,"height":800,"maximized":false,"fullscreen":false,"qt_geometry":"AdnQywADAAAAAADoAAAAbgAABPQAAAONAAAA6AAAAG4AAAT0AAADjQAAAAAAAAAAB4AAAADoAAAAbgAABPQAAAON"}
+MainWindow = {"x":450,"y":104,"width":1037,"height":800,"maximized":false,"fullscreen":false,"qt_geometry":"AdnQywADAAAAAAHCAAAAaAAABc4AAAOHAAABwgAAAGgAAAXOAAADhwAAAAAAAAAAB4AAAAHCAAAAaAAABc4AAAOH"}
 CentralArea = {"x":266,"y":110,"width":768,"height":552}
 PrimaryDockArea = {"area":1,"orientation":2,"first":"right_dock","second":"left_dock","sizes":[552,298],"area_width":320,"central_width":768,"separator_x":322}
 FileSystemDock = {"visible":false,"floating":false,"area":1,"x":3,"y":364,"width":320,"height":298}
@@ -17,7 +17,11 @@ ProtocolDock = {"visible":true,"floating":false,"area":8,"x":3,"y":666,"width":1
 
 [Session.DBase.ColumnWidths]
 Title = Daten-Spaltenbreiten nach DBF und Feldname
-Item0001 = {"path":"woerter.dbf","widths":{"VERB":48,"SUBSTANTIV":59,"SINGULAR":53,"PLURAL":48,"DER":55,"DIE":61}}
+Item0001 = {"path":"woerter.dbf","widths":{"VERB":48,"SUBSTANTIV":68,"SINGULAR":63,"PLURAL":57,"DER":48,"DIE":48,"DAS":45,"MALE":46,"FEMALE":45,"ID":57}}
+
+[Session.DBase.IDCounters]
+Title = Letzte verwendete Auto-Increment-ID je DBF
+Item0001 = {"path":"woerter.dbf","last_id":13}
 
 [Session.C64.Editors]
 Title = Offene C64 BASIC Editoren

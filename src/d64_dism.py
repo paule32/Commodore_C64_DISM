@@ -46946,6 +46946,8 @@ PROJECT_DBASE_FORMS_KEY = "__dbase_forms__"
 PROJECT_DBASE_TABLES_KEY = "__dbase_tables__"
 # Stage 302: Spaltenbreiten des Daten-Grids pro DBF und Projekt.
 PROJECT_DBASE_DATA_WIDTHS_KEY = "__dbase_data_column_widths__"
+# Stage 305: Monotoner Auto-Increment-Zaehler fuer jede DBF je Projekt.
+PROJECT_DBASE_ID_COUNTERS_KEY = "__dbase_table_id_counters__"
 
 def _dbase_table_width_key(path) -> str:
     if not path:
@@ -46954,6 +46956,58 @@ def _dbase_table_width_key(path) -> str:
         return str(Path(path).expanduser().resolve()).casefold()
     except (OSError, ValueError):
         return str(path).casefold()
+
+def _dbase_auto_id_field(fields):
+    """Nur Feld ID mit dBase-Typ DEZIMAL (= N) wird automatisch belegt."""
+    for spec in fields:
+        if (str(spec.name or "").casefold() == "id"
+                and str(spec.field_type or "").upper()[:1] == "N"):
+            return spec
+    return None
+
+
+def _dbase_max_existing_id(fields, records) -> int:
+    """Hoechste bereits genutzte ID, unabhaengig von Zeilenposition/Loeschflag.
+
+    Dezimale Werte werden ganzzahlig abgerundet; der naechste Counter ist
+    damit trotzdem strikt groesser als alle vorhandenen positiven IDs.
+    """
+    spec = _dbase_auto_id_field(fields)
+    if spec is None:
+        return 0
+    highest = 0
+    for record in records or ():
+        try:
+            _deleted, values = record
+            lookup = next((v for k, v in values.items()
+                           if str(k).casefold() == "id"), None)
+            if lookup is None or str(lookup).strip() == "":
+                continue
+            number = Decimal(str(lookup).strip())
+            if number.is_finite() and number > highest:
+                highest = int(number)
+        except (ValueError, TypeError, ArithmeticError, AttributeError):
+            continue
+    return highest
+
+
+def _dbase_id_counter_file_value(path) -> int:
+    """Liest den vorhandenen DBF-Maximalwert; keine Mutation der DBF."""
+    table = read_dbase_dbf(Path(path))
+    return _dbase_max_existing_id(table.fields, table.records)
+
+
+def _dbase_table_counter_entries(entries):
+    """Alle DBF-Ressourcen des Projekts, inklusive Pascal-PE32/PE64-Tabellen."""
+    seen = set()
+    for key in (PROJECT_DBASE_TABLES_KEY, *PROJECT_PASCAL_TABLE_ENTRY_KEYS.values()):
+        for entry in entries.get(key, ()) or ():
+            path = str(entry.get("path", "") or "").strip()
+            identity = _dbase_table_width_key(path)
+            if path and identity not in seen:
+                seen.add(identity)
+                yield path, identity
+
 
 PROJECT_DBASE_QUERIES_KEY = "__dbase_queries__"
 PROJECT_DBASE_REPORTS_KEY = "__dbase_reports__"
@@ -47797,6 +47851,7 @@ def empty_project_entries() -> Dict[str, List[Dict[str, str]]]:
     entries[PROJECT_SESSION_GEOMETRY_KEY] = []
     entries[PROJECT_C64_LAST_BASIC_FILE_KEY] = []
     entries[PROJECT_DBASE_DATA_WIDTHS_KEY] = []
+    entries[PROJECT_DBASE_ID_COUNTERS_KEY] = []
     for _dbase_key in PROJECT_DBASE_ENTRY_KEYS:
         entries[_dbase_key] = []
     # Stage 174: separate Ziel-/Rollenlisten für Pascal.
@@ -48069,6 +48124,25 @@ def format_project_ini(
                 parser[section][f"Item{index:04d}"] = json.dumps(
                     {"path": _project_storage_path(path_text, project_path),
                      "widths": clean}, ensure_ascii=False, separators=(",", ":"))
+
+    # Stage 305: Pro DBF ein persistenter, niemals beim Sortieren/Loeschen
+    # zurueckgesetzter letzter ID-Wert. Pfade relativ zur jeweiligen .pro.
+    _id_entries = entries.get(PROJECT_DBASE_ID_COUNTERS_KEY, ())
+    if _id_entries:
+        section = "Session.DBase.IDCounters"
+        parser[section] = {"Title": "Letzte verwendete Auto-Increment-ID je DBF"}
+        for index, entry in enumerate(_id_entries, 1):
+            path_text = str(entry.get("path", "") or "").strip()
+            if not path_text:
+                continue
+            try:
+                last_id = max(0, int(entry.get("last_id", 0)))
+            except (ValueError, TypeError):
+                continue
+            parser[section][f"Item{index:04d}"] = json.dumps(
+                {"path": _project_storage_path(path_text, project_path),
+                 "last_id": last_id}, ensure_ascii=False, separators=(",", ":")
+            )
 
     # Stage ASM 70: zuletzt geöffnete BASIC-Datei separat merken. Die offene
     # Editorliste enthält weiterhin alle Tabs; dieser Wert ist die MRU-Referenz.
@@ -48693,6 +48767,26 @@ def parse_project_ini(text: str, project_path: Path) -> Dict[str, List[Dict[str,
                 entries[PROJECT_DBASE_DATA_WIDTHS_KEY].append({
                     "path": _project_loaded_path(path_text, Path(project_path)),
                     "widths": clean,
+                })
+
+    # Stage 305: ID-Counter aus Projekt wiederherstellen (absolut pro DBF).
+    section = "Session.DBase.IDCounters"
+    if parser.has_section(section):
+        for name, serialized in parser.items(section):
+            if not name.casefold().startswith("item"):
+                continue
+            try:
+                entry = json.loads(serialized)
+                if not isinstance(entry, dict):
+                    continue
+                path_text = str(entry.get("path", "") or "").strip()
+                last_id = max(0, int(entry.get("last_id", 0)))
+            except (TypeError, ValueError):
+                continue
+            if path_text:
+                entries[PROJECT_DBASE_ID_COUNTERS_KEY].append({
+                    "path": _project_loaded_path(path_text, Path(project_path)),
+                    "last_id": last_id,
                 })
 
     # Stage ASM 70: explizite Fenster-/Dockgeometrien laden.
@@ -81386,6 +81480,7 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             self._updating = False
             self._dark_mode = False
             self._delete_confirmation_active = False
+            self.auto_id_allocator = None
             # Stage 303: Nur ein tatsaechlicher Mausklick/-zug am Header
             # darf Spaltenbreiten als Benutzerpraeferenz speichern.
             self._user_resizing_column = False
@@ -82313,6 +82408,26 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                 )
             )
 
+            # Stage 305: Zaehler VOR dem Einfuegen reservieren und direkt
+            # im Projekt persistieren. Keine Wiederverwendung geloeschter IDs.
+            auto_field = _dbase_auto_id_field(self._fields)
+            auto_number = None
+            if auto_field is not None:
+                try:
+                    if callable(self.auto_id_allocator):
+                        auto_number = int(self.auto_id_allocator(
+                            auto_field, self.records()))
+                    else:
+                        auto_number = _dbase_max_existing_id(
+                            self._fields, self.records()) + 1
+                    if auto_number <= 0 or len(str(auto_number)) > int(auto_field.length):
+                        raise ValueError("Das ID-Feld ist fuer die naechste ID zu schmal.")
+                except (OSError, ValueError, TypeError) as exc:
+                    self.validation_failed.emit(
+                        tr("Neuer Datensatz: ID konnte nicht reserviert werden: {error}")
+                        .format(error=exc))
+                    return
+
             self._updating = True
             try:
                 self.insertRow(row)
@@ -82321,9 +82436,12 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                 ):
                     field_spec = self.field_for_column(column)
                     value = (
-                        self._default_value_for_field(field_spec)
-                        if field_spec is not None
-                        else ""
+                        str(auto_number)
+                        if (auto_number is not None and field_spec is not None
+                            and field_spec.name.casefold() == "id"
+                            and field_spec.field_type.upper()[:1] == "N")
+                        else (self._default_value_for_field(field_spec)
+                              if field_spec is not None else "")
                     )
                     self.setItem(
                         row,
@@ -82340,6 +82458,15 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                     )
             finally:
                 self._updating = False
+
+            # Tabellen, deren einzige editierbare Zelle die Auto-ID ist,
+            # haben keinen Nutzdaten-Editor: den angelegten Record speichern.
+            if not any(str(spec.field_type).upper()[:1] not in {"L"}
+                       and not (auto_number is not None
+                                and str(spec.name).casefold() == "id")
+                       for spec in self._fields):
+                self.records_changed.emit()
+                return
 
             # Stage 296: Der neue Datensatz wird sofort zur Eingabe geöffnet.
             # Gespeichert wird er erst beim Schließen des Zell-Editors.
@@ -82358,7 +82485,10 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                 return
             editable_column = next(
                 (column for column, spec in enumerate(self._fields)
-                 if str(spec.field_type).upper()[:1] != "L"),
+                 if str(spec.field_type).upper()[:1] != "L"
+                 and not (self.auto_id_allocator is not None
+                          and _dbase_auto_id_field(self._fields) is not None
+                          and str(spec.name).casefold() == "id")),
                 None,
             )
             if editable_column is None:
@@ -83080,6 +83210,8 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
 
         title_changed = pyqtSignal(str)
         column_widths_changed = pyqtSignal(str, object)
+        # Stage 305: Reservierung im Hauptfenster und Max-ID-Aktualisierung.
+        id_counter_observed = pyqtSignal(str, int)
 
         def __init__(self, table_number: int, parent=None):
             super().__init__(parent)
@@ -83091,6 +83223,7 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             self._dark_mode = False
             self._data_autosave_active = False
             self._column_width_preferences = {}
+            self._auto_id_reserver = None
             self._restoring_column_widths = False
             # Stage 300: lokale Tabellen-Designer-Shortcuts und die
             # Ctrl+F,U/D-Sequenz fuer Sortieren nach Loslassen von Ctrl.
@@ -83190,6 +83323,27 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                 self._inner_tab_changed
             )
             self._install_table_shortcuts()
+
+        def set_auto_id_reserver(self, callback) -> None:
+            self._auto_id_reserver = callback
+            if self.data_grid is not None:
+                self.data_grid.auto_id_allocator = self._reserve_auto_id
+
+        def _reserve_auto_id(self, field_spec, records):
+            if self.dbf_path is None:
+                return _dbase_max_existing_id(self._current_field_definitions(), records) + 1
+            if callable(self._auto_id_reserver):
+                return int(self._auto_id_reserver(
+                    self.dbf_path, field_spec,
+                    _dbase_max_existing_id(self._current_field_definitions(), records)))
+            return _dbase_max_existing_id(self._current_field_definitions(), records) + 1
+
+        def _report_saved_id_counter(self, fields, records, *, path=None) -> None:
+            target = path if path is not None else self.dbf_path
+            if target is None or _dbase_auto_id_field(fields) is None:
+                return
+            self.id_counter_observed.emit(str(target),
+                                          _dbase_max_existing_id(fields, records))
 
         def set_column_width_preferences(self, preferences) -> None:
             self._column_width_preferences = preferences
@@ -83600,6 +83754,7 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
 
             self.data_page = page
             self.data_grid = data_grid
+            data_grid.auto_id_allocator = self._reserve_auto_id
             self.data_navigation_panel = navigation
 
             self.first_record_button.clicked.connect(
@@ -83806,6 +83961,7 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             finally:
                 self._data_autosave_active = False
 
+            self._report_saved_id_counter(fields, self.loaded_records)
             self._show_data_status(
                 tr("Datensatz {row} automatisch gespeichert.").format(
                     row=row + 1
@@ -83850,6 +84006,7 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             finally:
                 self._data_autosave_active = False
 
+            self._report_saved_id_counter(fields, self.loaded_records)
             self._show_data_status(
                 tr("Tabellendaten automatisch gespeichert."),
                 2500,
@@ -83901,6 +84058,7 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                 )
                 return
 
+            self._report_saved_id_counter(fields, records)
             self.title_changed.emit(
                 self.display_name()
             )
@@ -83983,6 +84141,7 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                         new_width_key, dict(previous_widths)
                     )
             self.dbf_path = path
+            self._report_saved_id_counter(fields, records, path=path)
 
             # Der äußere Tabellen-Tab bekommt den gespeicherten Namen.
             self.title_changed.emit(
@@ -84057,6 +84216,7 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                 self.loaded_records,
             )
             self._restore_data_column_widths()
+            self._report_saved_id_counter(table.fields, table.records)
 
             self._show_data_status(
                 tr("DBF geladen: {path}").format(
@@ -84106,6 +84266,8 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             super().__init__(parent)
             self._table_counter = 0
             self._project_column_widths = {}
+            self._auto_id_reserver = None
+            self._id_counter_observer = None
             layout = QVBoxLayout(self)
             layout.setContentsMargins(0, 0, 0, 0)
             self.table_tabs = QTabWidget(self)
@@ -84129,10 +84291,21 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                 if isinstance(page, DBaseTablePage):
                     page.set_column_width_preferences(preferences)
 
+        def set_project_auto_id_callbacks(self, reserver, observer) -> None:
+            self._auto_id_reserver = reserver
+            self._id_counter_observer = observer
+            for index in range(self.table_tabs.count()):
+                page = self.table_tabs.widget(index)
+                if isinstance(page, DBaseTablePage):
+                    page.set_auto_id_reserver(reserver)
+
         def add_new_table(self) -> DBaseTablePage:
             self._table_counter += 1
             page = DBaseTablePage(self._table_counter, self.table_tabs)
             page.set_column_width_preferences(self._project_column_widths)
+            page.set_auto_id_reserver(self._auto_id_reserver)
+            if callable(self._id_counter_observer):
+                page.id_counter_observed.connect(self._id_counter_observer)
             page.column_widths_changed.connect(self.table_column_widths_changed.emit)
             page.set_dark_mode(bool(getattr(self, "_dark_mode", False)))
             index = self.table_tabs.addTab(page, page.display_name())
@@ -102593,6 +102766,7 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.dbase_table_designer_dock = None
             self.dbase_table_designer_widget = None
             self.project_dbase_data_column_widths = {}
+            self.project_dbase_id_counters = {}
             self._dbase_width_autosave_timer = QTimer(self)
             self._dbase_width_autosave_timer.setSingleShot(True)
             self._dbase_width_autosave_timer.setInterval(850)
@@ -111248,6 +111422,56 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 self.set_project_modified(True)
                 self._dbase_width_autosave_timer.start()
 
+        def _observe_dbase_table_id(self, path, last_id) -> None:
+            """Beim externen/manuellen Aendern nie einen hoeheren Wert verlieren."""
+            key = _dbase_table_width_key(path)
+            if not key or self.current_project_path is None:
+                return
+            new_value = max(0, int(last_id))
+            if new_value > self.project_dbase_id_counters.get(key, 0):
+                self.project_dbase_id_counters[key] = new_value
+                self.set_project_modified(True)
+                if not self.save_project():
+                    self.log(f"ID-Counter fuer {path} konnte nicht gespeichert werden.")
+
+        def _reserve_dbase_table_id(self, path, field_spec, current_max):
+            """Vergibt monotone IDs und reserviert sie vor der Grid-Zeile."""
+            key = _dbase_table_width_key(path)
+            if not key or _dbase_auto_id_field([field_spec]) is None:
+                raise ValueError("Kein gueltiges ID-DECIMAL-Feld vorhanden")
+            current = max(int(current_max), self.project_dbase_id_counters.get(key, 0))
+            if Path(path).is_file():
+                # Falls die DBF inzwischen extern geaendert wurde, nie doppeln.
+                current = max(current, _dbase_id_counter_file_value(path))
+            next_id = current + 1
+            if len(str(next_id)) > int(field_spec.length):
+                raise ValueError("ID-Ueberlauf: Feldbreite reicht nicht aus")
+            if self.current_project_path is not None:
+                previous = self.project_dbase_id_counters.get(key)
+                self.project_dbase_id_counters[key] = next_id
+                if not self.save_project():
+                    if previous is None:
+                        self.project_dbase_id_counters.pop(key, None)
+                    else:
+                        self.project_dbase_id_counters[key] = previous
+                    raise OSError("ID-Counter konnte nicht in der Projektdatei reserviert werden")
+            return next_id
+
+        def _initialize_dbase_table_id_counters(self, entries):
+            """Projektladen: gespeicherte Counter mit allen DBF-IDs abgleichen."""
+            old = dict(self.project_dbase_id_counters)
+            updated = {}
+            for path, key in _dbase_table_counter_entries(entries):
+                last_id = max(0, int(old.get(key, 0)))
+                if Path(path).is_file():
+                    try:
+                        last_id = max(last_id, _dbase_id_counter_file_value(path))
+                    except (OSError, ValueError) as exc:
+                        self.log(f"DBF-ID-Counter konnte nicht ermittelt werden: {path}: {exc}")
+                updated[key] = last_id
+            self.project_dbase_id_counters = updated
+            return updated != old
+
         def _focused_dbase_table_page(self):
             # Nur wenn der Tastaturfokus tatsächlich im Tabellen-Designer liegt.
             designer = getattr(self, "dbase_table_designer_widget", None)
@@ -111297,6 +111521,8 @@ QMenu#green_beige_popup_menu::indicator:checked {{
 
             designer = DBaseTableDesignerWidget(page)
             designer.set_project_column_widths(self.project_dbase_data_column_widths)
+            designer.set_project_auto_id_callbacks(
+                self._reserve_dbase_table_id, self._observe_dbase_table_id)
             designer.table_column_widths_changed.connect(
                 self._on_dbase_data_column_widths_changed
             )
@@ -123196,6 +123422,25 @@ border: 2px solid #2a69aa;
                 for key, widths in self.project_dbase_data_column_widths.items()
                 if widths
             ]
+            # Stage 305: Zu jeder registrierten DBF den letzten vergebenen
+            # ID-Wert schreiben; 0 auch fuer Tabellen ohne ID-DECIMAL-Feld.
+            entry_paths = list(_dbase_table_counter_entries(entries))
+            # Bei neu ins Projekt aufgenommenen DBFs den Maximalwert
+            # sofort beim ersten Projektspeichern ermitteln; niemals 0
+            # ueber eine bereits vorhandene hoehere DBF-ID schreiben.
+            for table_path, identity in entry_paths:
+                if identity not in self.project_dbase_id_counters:
+                    initial = 0
+                    if Path(table_path).is_file():
+                        try:
+                            initial = _dbase_id_counter_file_value(table_path)
+                        except (OSError, ValueError) as exc:
+                            self.log(f"ID-Counter fuer neue DBF nicht lesbar: {table_path}: {exc}")
+                    self.project_dbase_id_counters[identity] = initial
+            entries[PROJECT_DBASE_ID_COUNTERS_KEY] = [
+                {"path": path, "last_id": int(self.project_dbase_id_counters.get(key, 0))}
+                for path, key in entry_paths
+            ]
             return entries
 
         def project_has_entries(self) -> bool:
@@ -123389,6 +123634,7 @@ border: 2px solid #2a69aa;
             """Projektbindung entfernen; Workspace und offene Editor-Tabs bleiben."""
             self._dbase_width_autosave_timer.stop()
             self.project_dbase_data_column_widths = {}
+            self.project_dbase_id_counters = {}
             designer = getattr(self, "dbase_table_designer_widget", None)
             if designer is not None:
                 designer.set_project_column_widths(self.project_dbase_data_column_widths)
@@ -123528,6 +123774,7 @@ border: 2px solid #2a69aa;
                 return
             self._dbase_width_autosave_timer.stop()
             self.project_dbase_data_column_widths = {}
+            self.project_dbase_id_counters = {}
             designer = getattr(self, "dbase_table_designer_widget", None)
             if designer is not None:
                 designer.set_project_column_widths(self.project_dbase_data_column_widths)
@@ -124128,6 +124375,12 @@ border: 2px solid #2a69aa;
             designer = getattr(self, "dbase_table_designer_widget", None)
             if designer is not None:
                 designer.set_project_column_widths(self.project_dbase_data_column_widths)
+            self.project_dbase_id_counters = {
+                _dbase_table_width_key(item.get("path")): max(0, int(item.get("last_id", 0)))
+                for item in entries.get(PROJECT_DBASE_ID_COUNTERS_KEY, ())
+                if item.get("path")
+            }
+            counters_modified = self._initialize_dbase_table_id_counters(entries)
             self.current_project_path = resolved
             self.project_path_edit.setText(str(resolved))
             # Stage ASM 29: Ein geladenes Projekt mit dBase-Ressourcen behält
@@ -124241,6 +124494,10 @@ border: 2px solid #2a69aa;
             if bool(prefer_table_workspace):
                 self._activate_recent_project_table_workspace(entries)
 
+            if counters_modified:
+                # Erst NACH restoreState(), sonst wird der alte Projekt-ViewState
+                # durch einen halbfertigen Fensterzustand ueberschrieben.
+                QTimer.singleShot(0, self.save_project)
             self.statusBar().showMessage(f"Projekt geöffnet: {resolved.name}")
             self.log(f"Projekt geöffnet: {resolved}")
             self._remember_recent_project(resolved)
