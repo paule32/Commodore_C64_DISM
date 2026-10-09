@@ -221,7 +221,7 @@ class DBaseCallStatement:
 
 
 @dataclass(frozen=True)
-class DBaseCondition:
+class DBaseCondition(DBaseExpression):
     left: DBaseExpression
     operator: str
     right: DBaseExpression
@@ -231,7 +231,7 @@ class DBaseCondition:
 
 @dataclass(frozen=True)
 class DBaseIfBranch:
-    condition: Optional[DBaseCondition]
+    condition: Optional[DBaseExpression]
     body: Tuple[object, ...]
     line: int
     column: int
@@ -1656,6 +1656,17 @@ def _tokenize_dbase_statement(
         if matched_comparison:
             continue
 
+        # dBase dot-delimited logical operators; case-insensitive and atomic.
+        # Test before NUMBER: '.not.' must never be scanned as a fractional number.
+        dot_operator = re.match(r"\.(AND|OR|NOT|XOR)\.", text[index:], re.I)
+        if dot_operator is not None:
+            raw = dot_operator.group(0)
+            tokens.append(DBaseToken("LOGIC_" + dot_operator.group(1).upper(),
+                                     raw, raw.casefold(), token_line, token_column, token_offset))
+            index += len(raw)
+            column += len(raw)
+            continue
+
         if char == "?":
             tokens.append(DBaseToken("QMARK", "?", None, token_line, token_column, token_offset))
             index += 1
@@ -1699,6 +1710,12 @@ def _tokenize_dbase_statement(
         match = _NUMBER_RE.match(text, index)
         if match is not None:
             raw = match.group(0)
+            # 0.AND. / 1.OR. without whitespace: the final dot is the
+            # beginning of an operator, not the decimal separator.
+            if raw.endswith(".") and re.match(
+                r"\.(?:AND|OR|XOR|NOT)\.", text[index + len(raw) - 1:], re.I
+            ):
+                raw = raw[:-1]
             try:
                 value = Decimal(raw)
             except InvalidOperation as exc:
@@ -1709,7 +1726,7 @@ def _tokenize_dbase_statement(
                     filename=filename,
                 ) from exc
             tokens.append(DBaseToken("NUMBER", raw, value, token_line, token_column, token_offset))
-            index = match.end()
+            index += len(raw)
             column += len(raw)
             continue
 
@@ -2064,7 +2081,46 @@ class _DBaseExpressionParser:
             )
 
     def parse_expression(self) -> DBaseExpression:
-        return self.parse_additive()
+        return self.parse_logical_or()
+
+    def _parse_logical_chain(self, operand_parser, kind: str) -> DBaseExpression:
+        expression = operand_parser()
+        while self.current.kind == kind:
+            operator = self.current
+            self.index += 1
+            right = operand_parser()
+            expression = DBaseBinaryExpression(
+                line=operator.line, column=operator.column,
+                operator=operator.text.casefold(), left=expression, right=right,
+            )
+        return expression
+
+    def parse_logical_or(self) -> DBaseExpression:
+        return self._parse_logical_chain(self.parse_logical_xor, "LOGIC_OR")
+
+    def parse_logical_xor(self) -> DBaseExpression:
+        return self._parse_logical_chain(self.parse_logical_and, "LOGIC_XOR")
+
+    def parse_logical_and(self) -> DBaseExpression:
+        return self._parse_logical_chain(self.parse_logical_not, "LOGIC_AND")
+
+    def parse_logical_not(self) -> DBaseExpression:
+        if self.current.kind == "LOGIC_NOT":
+            token = self.current
+            self.index += 1
+            return DBaseUnaryExpression(line=token.line, column=token.column,
+                operator=".not.", operand=self.parse_logical_not())
+        return self.parse_comparison()
+
+    def parse_comparison(self) -> DBaseExpression:
+        left = self.parse_additive()
+        if self.current.kind not in _COMPARISON_TOKEN_KINDS:
+            return left
+        token = self.current
+        self.index += 1
+        right = self.parse_additive()
+        return DBaseCondition(line=token.line, column=token.column, left=left,
+                              operator=_COMPARISON_OPERATOR_MAP[token.kind], right=right)
 
     def parse_additive(self) -> DBaseExpression:
         expression = self.parse_multiplicative()
@@ -2281,62 +2337,17 @@ def _expression_from_token_slice(
 
 
 def _parse_dbase_condition(
-    tokens: Tuple[DBaseToken, ...],
-    *,
-    filename: str,
-    keyword: str,
-) -> DBaseCondition:
-    """Parst ``IF/ELSEIF <expr> <vergleich> <expr>`` ohne THEN."""
+    tokens: Tuple[DBaseToken, ...], *, filename: str, keyword: str,
+) -> DBaseExpression:
+    """Parse a complete boolean IF/ELSEIF expression with normal precedence."""
     first = tokens[0]
     body = tuple(token for token in tokens[1:] if token.kind != "EOF")
     if not body:
         raise DBaseCompilerError(
             f"Nach {keyword.upper()} wird eine Bedingung erwartet.",
-            line=first.line,
-            column=first.column,
-            filename=filename,
+            line=first.line, column=first.column, filename=filename,
         )
-
-    depth = 0
-    comparison_index = -1
-    comparison_token: Optional[DBaseToken] = None
-    for index, token in enumerate(body):
-        if token.kind == "LPAREN":
-            depth += 1
-            continue
-        if token.kind == "RPAREN":
-            depth = max(0, depth - 1)
-            continue
-        if depth == 0 and token.kind in _COMPARISON_TOKEN_KINDS:
-            if comparison_token is not None:
-                raise DBaseCompilerError(
-                    "Eine IF-Bedingung darf genau einen Vergleichsoperator enthalten.",
-                    line=token.line,
-                    column=token.column,
-                    filename=filename,
-                )
-            comparison_index = index
-            comparison_token = token
-
-    if comparison_token is None:
-        raise DBaseCompilerError(
-            "IF/ELSEIF erwartet einen Vergleichsoperator: <, <=, =, ==, >, >=, <>, # oder !=.",
-            line=first.line,
-            column=first.column,
-            filename=filename,
-        )
-
-    left_tokens = body[:comparison_index]
-    right_tokens = body[comparison_index + 1:]
-    left = _expression_from_token_slice(left_tokens, filename=filename, fallback=comparison_token)
-    right = _expression_from_token_slice(right_tokens, filename=filename, fallback=comparison_token)
-    return DBaseCondition(
-        left=left,
-        operator=_COMPARISON_OPERATOR_MAP[comparison_token.kind],
-        right=right,
-        line=comparison_token.line,
-        column=comparison_token.column,
-    )
+    return _expression_from_token_slice(body, filename=filename, fallback=first)
 
 
 def parse_dbase_statements(
@@ -2863,6 +2874,28 @@ class _DBaseProgramAnalyzer:
             )
 
         elif isinstance(expression, DBaseCallExpression):
+            # Stage 309: ISMOUSE() ist ein dynamischer Windows-Systemaufruf.
+            # Nie konstant falten oder als benutzerdefiniertes externes Symbol behandeln.
+            if expression.name.casefold() == "ismouse":
+                if expression.arguments:
+                    raise DBaseCompilerError(
+                        "ISMOUSE() erwartet keine Parameter.",
+                        line=expression.line, column=expression.column,
+                        filename=self.filename,
+                    )
+                info = _DBaseExpressionInfo(kind="number", constant_value=None, dynamic=True)
+                expression_info[expression] = info
+                return info
+            if expression.name.casefold() == "iskeyboard":
+                if expression.arguments:
+                    raise DBaseCompilerError(
+                        "ISKEYBOARD() erwartet keine Parameter.",
+                        line=expression.line, column=expression.column,
+                        filename=self.filename,
+                    )
+                info = _DBaseExpressionInfo(kind="number", constant_value=None, dynamic=True)
+                expression_info[expression] = info
+                return info
             if expression.name == "$":
                 operands = [self.analyze_expression(arg, symbols=symbols,
                     expression_info=expression_info, call_bindings=call_bindings)
@@ -3028,8 +3061,30 @@ class _DBaseProgramAnalyzer:
             constant = None
             if operand.constant_value is not None:
                 value = Decimal(operand.constant_value.value)
-                constant = DBaseValue("number", value if expression.operator == "+" else -value)
+                constant = DBaseValue("number", (
+                    Decimal(0 if value else 1) if expression.operator == ".not."
+                    else value if expression.operator == "+" else -value
+                ))
             info = _DBaseExpressionInfo("number", constant, operand.dynamic)
+
+        elif isinstance(expression, DBaseCondition):
+            left = self.analyze_expression(expression.left, symbols=symbols,
+                                           expression_info=expression_info, call_bindings=call_bindings)
+            right = self.analyze_expression(expression.right, symbols=symbols,
+                                            expression_info=expression_info, call_bindings=call_bindings)
+            if not ((left.kind == right.kind == "number") or
+                    (left.kind in _STRING_KINDS and right.kind in _STRING_KINDS)):
+                raise DBaseCompilerError(
+                    "IF-Vergleich erwartet zwei numerische Werte oder zwei Textwerte (String/Char).",
+                    line=expression.line, column=expression.column, filename=self.filename,
+                )
+            constant = None
+            if left.constant_value is not None and right.constant_value is not None:
+                truth = _compare_dbase_values(left.constant_value, right.constant_value,
+                     expression.operator, line=expression.line, column=expression.column,
+                     filename=self.filename)
+                constant = DBaseValue("number", Decimal(int(truth)))
+            info = _DBaseExpressionInfo("number", constant, left.dynamic or right.dynamic)
 
         elif isinstance(expression, DBaseBinaryExpression):
             left = self.analyze_expression(
@@ -3045,7 +3100,25 @@ class _DBaseProgramAnalyzer:
                 call_bindings=call_bindings,
             )
             operator = expression.operator
-            if operator == "+" and (left.kind in _STRING_KINDS or right.kind in _STRING_KINDS):
+            if operator in {".and.", ".or.", ".xor."}:
+                if left.kind != "number" or right.kind != "number":
+                    raise DBaseCompilerError(
+                        f"Logischer Operator '{operator}' erwartet zwei numerische/Boolesche Werte.",
+                        line=expression.line, column=expression.column, filename=self.filename)
+                constant = None
+                if left.constant_value is not None and right.constant_value is not None:
+                    a = bool(Decimal(left.constant_value.value))
+                    b = bool(Decimal(right.constant_value.value))
+                    result = ((a and b) if operator == ".and."
+                              else (a or b) if operator == ".or." else a != b)
+                    constant = DBaseValue("number", Decimal(int(result)))
+                elif left.constant_value is not None:
+                    # Preserve short-circuit constant information.
+                    a = bool(Decimal(left.constant_value.value))
+                    if (operator == ".and." and not a) or (operator == ".or." and a):
+                        constant = DBaseValue("number", Decimal(int(a)))
+                info = _DBaseExpressionInfo("number", constant, left.dynamic or right.dynamic)
+            elif operator == "+" and (left.kind in _STRING_KINDS or right.kind in _STRING_KINDS):
                 constant = None
                 if left.constant_value is not None and right.constant_value is not None:
                     constant = DBaseValue(
@@ -3181,34 +3254,19 @@ class _DBaseProgramAnalyzer:
         return merged
 
     def analyze_condition(
-        self,
-        condition: DBaseCondition,
-        *,
-        symbols: Mapping[str, _DBaseSymbolState],
+        self, condition: DBaseExpression, *, symbols: Mapping[str, _DBaseSymbolState],
         expression_info: Dict[DBaseExpression, _DBaseExpressionInfo],
         call_bindings: Dict[DBaseCallExpression, _DBaseCallBinding],
     ) -> Optional[bool]:
-        left = self.analyze_expression(
-            condition.left, symbols=symbols, expression_info=expression_info,
-            call_bindings=call_bindings,
-        )
-        right = self.analyze_expression(
-            condition.right, symbols=symbols, expression_info=expression_info,
-            call_bindings=call_bindings,
-        )
-        numeric = left.kind == "number" and right.kind == "number"
-        textual = left.kind in _STRING_KINDS and right.kind in _STRING_KINDS
-        if not numeric and not textual:
+        info = self.analyze_expression(condition, symbols=symbols,
+             expression_info=expression_info, call_bindings=call_bindings)
+        if info.kind != "number":
             raise DBaseCompilerError(
-                "IF-Vergleich erwartet zwei numerische Werte oder zwei Textwerte (String/Char).",
-                line=condition.line, column=condition.column, filename=self.filename,
-            )
-        if left.constant_value is None or right.constant_value is None:
+                "IF/ELSEIF erwartet einen booleschen oder numerischen Ausdruck.",
+                line=condition.line, column=condition.column, filename=self.filename)
+        if info.constant_value is None:
             return None
-        return _compare_dbase_values(
-            left.constant_value, right.constant_value, condition.operator,
-            line=condition.line, column=condition.column, filename=self.filename,
-        )
+        return bool(Decimal(info.constant_value.value))
 
 
     def _analyze_routine_sequence(
@@ -3565,19 +3623,12 @@ class _DBaseProgramAnalyzer:
                 continue
             raise AssertionError(type(statement))
 
-    def _condition_constant(self, condition: DBaseCondition) -> Optional[bool]:
-        left = self.expression_info.get(condition.left)
-        right = self.expression_info.get(condition.right)
-        if left is None or right is None or left.constant_value is None or right.constant_value is None:
+    def _condition_constant(self, condition: DBaseExpression) -> Optional[bool]:
+        info = self.expression_info.get(condition)
+        if info is None or info.constant_value is None:
             return None
-        return _compare_dbase_values(
-            left.constant_value,
-            right.constant_value,
-            condition.operator,
-            line=condition.line,
-            column=condition.column,
-            filename=self.filename,
-        )
+        return bool(Decimal(info.constant_value.value))
+
 
     def _preview_top_sequence(
         self,
@@ -3732,6 +3783,22 @@ def _evaluate_dbase_expression(
             )
         return value
     if isinstance(expression, DBaseCallExpression):
+        if expression.name.casefold() == "ismouse":
+            if expression.arguments:
+                raise DBaseCompilerError("ISMOUSE() erwartet keine Parameter.",
+                    line=expression.line, column=expression.column, filename=filename)
+            # Zur Laufzeit abfragen: die Python-/Kompilationsvorschau darf
+            # niemals den Mausstatus des Build-Rechners einfrieren.
+            raise DBaseCompilerError(
+                "ISMOUSE() wird erst in der erzeugten Windows-EXE ausgewertet.",
+                line=expression.line, column=expression.column, filename=filename)
+        if expression.name.casefold() == "iskeyboard":
+            if expression.arguments:
+                raise DBaseCompilerError("ISKEYBOARD() erwartet keine Parameter.",
+                    line=expression.line, column=expression.column, filename=filename)
+            raise DBaseCompilerError(
+                "ISKEYBOARD() wird erst in der erzeugten Windows-EXE ausgewertet.",
+                line=expression.line, column=expression.column, filename=filename)
         if expression.name == "$":
             operands = [_evaluate_dbase_expression(arg, filename=filename,
                 variables=env, call_resolver=call_resolver) for arg in expression.arguments]
@@ -3783,6 +3850,14 @@ def _evaluate_dbase_expression(
             column=expression.column,
             filename=filename,
         )
+    if isinstance(expression, DBaseCondition):
+        left = _evaluate_dbase_expression(expression.left, filename=filename,
+                        variables=env, call_resolver=call_resolver)
+        right = _evaluate_dbase_expression(expression.right, filename=filename,
+                        variables=env, call_resolver=call_resolver)
+        return DBaseValue("number", Decimal(int(_compare_dbase_values(left, right,
+               expression.operator, line=expression.line, column=expression.column,
+               filename=filename))))
     if isinstance(expression, DBaseUnaryExpression):
         operand = _evaluate_dbase_expression(
             expression.operand, filename=filename, variables=env, call_resolver=call_resolver
@@ -3795,8 +3870,27 @@ def _evaluate_dbase_expression(
                 filename=filename,
             )
         value = Decimal(operand.value)
-        return DBaseValue("number", value if expression.operator == "+" else -value)
+        return DBaseValue("number", Decimal(int(not bool(value)))
+               if expression.operator == ".not."
+               else value if expression.operator == "+" else -value)
     if isinstance(expression, DBaseBinaryExpression):
+        if expression.operator in {".and.", ".or.", ".xor."}:
+            left = _evaluate_dbase_expression(expression.left, filename=filename,
+                       variables=env, call_resolver=call_resolver)
+            if left.kind != "number":
+                raise DBaseCompilerError("Logischer Operator erwartet eine Zahl.",
+                       line=expression.line, column=expression.column, filename=filename)
+            a = bool(Decimal(left.value))
+            if (expression.operator == ".and." and not a) or (expression.operator == ".or." and a):
+                return DBaseValue("number", Decimal(int(a)))
+            right = _evaluate_dbase_expression(expression.right, filename=filename,
+                        variables=env, call_resolver=call_resolver)
+            if right.kind != "number":
+                raise DBaseCompilerError("Logischer Operator erwartet eine Zahl.",
+                       line=expression.line, column=expression.column, filename=filename)
+            b = bool(Decimal(right.value))
+            return DBaseValue("number", Decimal(int(a != b if expression.operator == ".xor."
+                    else a and b if expression.operator == ".and." else a or b)))
         left = _evaluate_dbase_expression(
             expression.left, filename=filename, variables=env, call_resolver=call_resolver
         )
@@ -3864,13 +3958,10 @@ class _DBaseEvaluator:
             call_resolver=self._resolve_call,
         )
 
-    def _eval_condition(self, condition: DBaseCondition, scope: Mapping[str, DBaseValue]) -> bool:
-        left = self._eval_expr(condition.left, scope)
-        right = self._eval_expr(condition.right, scope)
-        return _compare_dbase_values(
-            left, right, condition.operator,
-            line=condition.line, column=condition.column, filename=self.filename,
-        )
+    def _eval_condition(self, condition: DBaseExpression, scope: Mapping[str, DBaseValue]) -> bool:
+        value = self._eval_expr(condition, scope)
+        return bool(Decimal(value.value))
+
 
     def _resolve_call(self, call: DBaseCallExpression, env: Mapping[str, DBaseValue]) -> DBaseValue:
         definition = self.routines.get(call.name.casefold())
@@ -4187,6 +4278,20 @@ class _DBaseCodeGenerator:
     def emit_numeric_expression(self, expression: DBaseExpression) -> None:
         info = self.current_expression_info[expression]
 
+        if (isinstance(expression, DBaseCondition) or
+            (isinstance(expression, DBaseUnaryExpression) and expression.operator == ".not.") or
+            (isinstance(expression, DBaseBinaryExpression) and
+             expression.operator in {".and.", ".or.", ".xor."})):
+            false_label = self.new_label("logic_false")
+            end_label = self.new_label("logic_end")
+            self.emit_condition_jump_false(expression, false_label)
+            self.emit(f"    fld qword ptr [{self.double_literal(Decimal(1))}]")
+            self.emit(f"    jmp {end_label}")
+            self.emit(f"{false_label}:")
+            self.emit("    fldz")
+            self.emit(f"{end_label}:")
+            return
+
         if isinstance(expression, DBaseLiteralExpression):
             label = self.double_literal(Decimal(expression.value))
             self.emit(f"    fld qword ptr [{label}]")
@@ -4199,6 +4304,35 @@ class _DBaseCodeGenerator:
             return
 
         if isinstance(expression, DBaseCallExpression):
+            if expression.name.casefold() == "iskeyboard":
+                from .keyboard_detection import emit_keyboard_probe
+                for instruction in emit_keyboard_probe(
+                    is64=self.is64,
+                    label_prefix=self.new_label("iskeyboard"),
+                    has_shadow_space=False,
+                ):
+                    self.emit(instruction)
+                self.emit("    mov dword ptr [__dbase_temp_number], eax")
+                self.emit("    fild dword ptr [__dbase_temp_number]")
+                return
+            if expression.name.casefold() == "ismouse":
+                # GetSystemMetrics(SM_MOUSEPRESENT=19) liefert BOOL in EAX.
+                # Windows PE32: __stdcall (callee bereinigt den Stack).
+                # Windows PE64: Microsoft-x64-ABI mit Shadow Space.
+                if self.is64:
+                    self.emit("    mov ecx, 19")
+                    self.emit("    sub rsp, 40")
+                    self.emit("    call GetSystemMetrics")
+                    self.emit("    add rsp, 40")
+                else:
+                    self.emit("    push 19")
+                    self.emit("    call GetSystemMetrics")
+                self.emit("    test eax, eax")
+                self.emit("    setne al")
+                self.emit("    movzx eax, al")
+                self.emit("    mov dword ptr [__dbase_temp_number], eax")
+                self.emit("    fild dword ptr [__dbase_temp_number]")
+                return
             if expression.name.casefold() == "int":
                 # Operand nach ST0 laden und mit temporaer gesetztem x87-RC
                 # (11b = truncate toward zero) runden. Danach den ursprueng-
@@ -4310,7 +4444,46 @@ class _DBaseCodeGenerator:
             self.emit("    call __dbase_console_write")
             self.emit("    add esp, 8")
 
+    def _emit_runtime_output_choice(self, writer) -> None:
+        """Decide the ?/?? channel at execution time (shared across routines).
+
+        An explicit SET DEBUG ON/OFF overrides SET FORMAT TO SCREEN/CONSOLE.
+        With no override, SET FORMAT determines the channel.  The visibility
+        flag prevents every print fragment from re-showing the QDialog.
+        """
+        override_ready = self.new_label("output_override_ready")
+        console_label = self.new_label("output_console")
+        show_done = self.new_label("output_show_done")
+        end_label = self.new_label("output_done")
+
+        self.emit("    cmp dword ptr [__dbase_output_debug_override], -1")
+        self.emit(f"    jne {override_ready}")
+        self.emit("    cmp dword ptr [__dbase_output_format_screen], 0")
+        self.emit(f"    je {console_label}")
+        self.emit(f"    jmp {show_done}")
+        self.emit(f"{override_ready}:")
+        self.emit("    cmp dword ptr [__dbase_output_debug_override], 0")
+        self.emit(f"    je {console_label}")
+
+        self.emit(f"{show_done}:")
+        already_visible = self.new_label("output_already_visible")
+        self.emit("    cmp dword ptr [__dbase_output_debug_visible], 0")
+        self.emit(f"    jne {already_visible}")
+        self.emit("    mov dword ptr [__dbase_output_debug_visible], 1")
+        self.emit_qt_call1_int("DBaseQtSetDebugVisible", 1)
+        self.emit(f"{already_visible}:")
+        writer("debug")
+        self.emit(f"    jmp {end_label}")
+        self.emit(f"{console_label}:")
+        writer("console")
+        self.emit(f"{end_label}:")
+
     def emit_write_static(self, label: str, length: int, target: str) -> None:
+        if target == "runtime":
+            self._emit_runtime_output_choice(
+                lambda chosen: self.emit_write_static(label, length, chosen)
+            )
+            return
         if target == "console":
             # Auch eine leere ??-Ausgabe muss die lazy Console erzeugen.
             self.emit_native_console_write(label, int(length))
@@ -4331,6 +4504,11 @@ class _DBaseCodeGenerator:
             self.emit("    add esp, 8")
 
     def emit_write_variable_text(self, var_label: str, target: str) -> None:
+        if target == "runtime":
+            self._emit_runtime_output_choice(
+                lambda chosen: self.emit_write_variable_text(var_label, chosen)
+            )
+            return
         if target == "console":
             self.emit_native_console_write(
                 f"{var_label}_ptr", f"{var_label}_len", pointer_is_memory=True
@@ -4385,6 +4563,14 @@ class _DBaseCodeGenerator:
 
     def emit_write_number_from_st0(self, target: str) -> None:
         self.emit_format_number_from_st0()
+        if target == "runtime":
+            # Die x87-Zahl wird exakt einmal formatiert, bevor ein eventuell
+            # in einer FUNCTION veraenderter Debugzustand ausgewertet wird.
+            self.emit("    mov dword ptr [__dbase_console_number_len], edx")
+            self._emit_runtime_output_choice(
+                lambda chosen: self._emit_runtime_formatted_number(chosen)
+            )
+            return
         if target == "console":
             # EDX enthaelt nach emit_format_number_from_st0 die Textlaenge.
             # In einen Slot sichern, weil emit_native_console_write eine
@@ -4407,6 +4593,25 @@ class _DBaseCodeGenerator:
             self.emit("    push dword ptr [__dbase_format_buffer]")
             self.emit(f"    call {function}")
             self.emit("    add esp, 8")
+
+    def _emit_runtime_formatted_number(self, target: str) -> None:
+        if target == "console":
+            self.emit_native_console_write(
+                "__dbase_format_buffer", "__dbase_console_number_len",
+                pointer_is_memory=True,
+            )
+        else:
+            if self.is64:
+                self.emit("    mov rcx, qword ptr [__dbase_format_buffer]")
+                self.emit("    mov edx, dword ptr [__dbase_console_number_len]")
+                self.emit("    sub rsp, 40")
+                self.emit("    call DBaseQtAppendDebug")
+                self.emit("    add rsp, 40")
+            else:
+                self.emit("    push dword ptr [__dbase_console_number_len]")
+                self.emit("    push dword ptr [__dbase_format_buffer]")
+                self.emit("    call DBaseQtAppendDebug")
+                self.emit("    add esp, 8")
 
     def emit_heap_copy_buffer_to_slot(self, buffer_label: str, destination: str) -> None:
         # EDX enthaelt die Nutzlaenge.
@@ -4639,7 +4844,46 @@ class _DBaseCodeGenerator:
     def emit_call_statement(self, statement: DBaseCallStatement) -> None:
         self.emit_user_call(statement.call)
 
-    def emit_condition_jump_false(self, condition: DBaseCondition, false_label: str) -> None:
+    def emit_condition_jump_true(self, condition: DBaseExpression, true_label: str) -> None:
+        skip_label = self.new_label("logic_not_true")
+        self.emit_condition_jump_false(condition, skip_label)
+        self.emit(f"    jmp {true_label}")
+        self.emit(f"{skip_label}:")
+
+    def emit_condition_jump_false(self, condition: DBaseExpression, false_label: str) -> None:
+        if isinstance(condition, DBaseUnaryExpression) and condition.operator == ".not.":
+            self.emit_condition_jump_true(condition.operand, false_label)
+            return
+        if isinstance(condition, DBaseBinaryExpression):
+            op = condition.operator
+            if op == ".and.":
+                self.emit_condition_jump_false(condition.left, false_label)
+                self.emit_condition_jump_false(condition.right, false_label)
+                return
+            if op == ".or.":
+                success = self.new_label("logic_or_true")
+                self.emit_condition_jump_true(condition.left, success)
+                self.emit_condition_jump_false(condition.right, false_label)
+                self.emit(f"{success}:")
+                return
+            if op == ".xor.":
+                left_false = self.new_label("logic_xor_left_false")
+                done = self.new_label("logic_xor_done")
+                self.emit_condition_jump_false(condition.left, left_false)
+                self.emit_condition_jump_true(condition.right, false_label)
+                self.emit(f"    jmp {done}")
+                self.emit(f"{left_false}:")
+                self.emit_condition_jump_false(condition.right, false_label)
+                self.emit(f"{done}:")
+                return
+        if not isinstance(condition, DBaseCondition):
+            # Nonzero numeric expression is logically true.
+            self.emit_numeric_expression(condition)
+            self.emit("    fldz")
+            self.emit("    fucomip st0, st1")
+            self.emit("    fstp st0")
+            self.emit(f"    je {false_label}")
+            return
         left_info = self.current_expression_info[condition.left]
         right_info = self.current_expression_info[condition.right]
         numeric = left_info.kind == "number" and right_info.kind == "number"
@@ -4840,9 +5084,21 @@ class _DBaseCodeGenerator:
                 self.emit_assignment(statement)
             elif isinstance(statement, DBaseSetFormatStatement):
                 format_target = statement.target
+                self.emit(
+                    "    mov dword ptr [__dbase_output_format_screen], "
+                    + ("1" if statement.target == "screen" else "0")
+                )
             elif isinstance(statement, DBaseSetDebugStatement):
                 debug_override = bool(statement.enabled)
                 debug_visible = bool(statement.enabled)
+                self.emit(
+                    "    mov dword ptr [__dbase_output_debug_override], "
+                    + ("1" if statement.enabled else "0")
+                )
+                self.emit(
+                    "    mov dword ptr [__dbase_output_debug_visible], "
+                    + ("1" if statement.enabled else "0")
+                )
                 self.emit_qt_call1_int("DBaseQtSetDebugVisible", 1 if debug_visible else 0)
             elif isinstance(statement, DBaseSetColorStatement):
                 label, length = self.text_literal(statement.spec)
@@ -4873,14 +5129,13 @@ class _DBaseCodeGenerator:
                     debug_visible=debug_visible,
                 )
             elif isinstance(statement, DBasePrintStatement):
-                output_target = _effective_output_target(format_target, debug_override)
-                if output_target == "debug" and not debug_visible:
-                    self.emit_qt_call1_int("DBaseQtSetDebugVisible", 1)
-                    debug_visible = True
-                self.emit_print_expression(statement.expression, output_target)
+                # Runtimezustand statt Compilerzustand: SET DEBUG in einer
+                # FUNCTION/PROCEDURE oder class::Callback gilt anschliessend
+                # genauso fuer das aufrufende Hauptprogramm und .prg-Dateien.
+                self.emit_print_expression(statement.expression, "runtime")
                 if statement.newline:
                     newline_label, newline_len = self.text_literal("\r\n")
-                    self.emit_write_static(newline_label, newline_len, output_target)
+                    self.emit_write_static(newline_label, newline_len, "runtime")
                 self.emit_qt_call0("DBaseQtProcessEvents")
             elif isinstance(statement, DBaseReturnStatement):
                 if not routine_end_label:
@@ -5241,6 +5496,14 @@ class _DBaseCodeGenerator:
         # hinter dem Formular liegen. Das Console-HWND wird deshalb explizit
         # sichtbar gemacht und einmal nach vorn geholt.
         self.emit('import GetConsoleWindow, "kernel32.dll", "GetConsoleWindow"')
+        if any(isinstance(expr, DBaseCallExpression)
+               and expr.name.casefold() == "ismouse"
+               for expr in self.analysis.expression_info):
+            self.emit('import GetSystemMetrics, "user32.dll", "GetSystemMetrics"')
+        if any(isinstance(expr, DBaseCallExpression)
+               and expr.name.casefold() == "iskeyboard"
+               for expr in self.analysis.expression_info):
+            self.emit('import GetRawInputDeviceList, "user32.dll", "GetRawInputDeviceList"')
         self.emit('import ShowWindow, "user32.dll", "ShowWindow"')
         self.emit('import SetWindowPos, "user32.dll", "SetWindowPos"')
         self.emit('import SetForegroundWindow, "user32.dll", "SetForegroundWindow"')
@@ -5412,6 +5675,9 @@ class _DBaseCodeGenerator:
             nul = label in {title_label, console_title_label}
             self.data_lines.extend(_db_lines(label, payload, nul_terminate=nul))
         self.data_lines.extend([
+            # -1 = noch keine explizite SET DEBUG-Anweisung; in diesem Fall
+            # wirkt SET FORMAT TO SCREEN/CONSOLE weiter wie bisher.
+            "__dbase_output_debug_override:", "    dd -1",
             "__dbase_console_out_name:",
             "    db 67, 79, 78, 79, 85, 84, 36, 0",  # CONOUT$\0
             # Stage 114: Der Workstation-Runner erkennt damit native dBase-
@@ -5432,6 +5698,8 @@ class _DBaseCodeGenerator:
             "__dbase_call_number:", "    resq 1",
             "__dbase_format_buffer:", "    resq 1" if self.is64 else "    resd 1",
             "__dbase_exit_code:", "    resd 1",
+            "__dbase_output_format_screen:", "    resd 1",
+            "__dbase_output_debug_visible:", "    resd 1",
             "__dbase_console_ready:", "    resd 1",
             "__dbase_console_handle:", "    resq 1" if self.is64 else "    resd 1",
             "__dbase_console_window:", "    resq 1" if self.is64 else "    resd 1",
@@ -6012,23 +6280,13 @@ def _dbase_parse_property_expression(
 
 
 def _dbase_constant_condition_value(
-    condition: DBaseCondition,
-    *,
-    env: Mapping[str, DBaseValue],
-    routines: Mapping[str, DBaseRoutineDefinition],
-    filename: str,
+    condition: DBaseExpression, *, env: Mapping[str, DBaseValue],
+    routines: Mapping[str, DBaseRoutineDefinition], filename: str,
     call_stack: Tuple[str, ...],
 ) -> bool:
-    left = _dbase_constant_expression_value(
-        condition.left, env=env, routines=routines, filename=filename, call_stack=call_stack
-    )
-    right = _dbase_constant_expression_value(
-        condition.right, env=env, routines=routines, filename=filename, call_stack=call_stack
-    )
-    return _compare_dbase_values(
-        left, right, condition.operator,
-        line=condition.line, column=condition.column, filename=filename,
-    )
+    value = _dbase_constant_expression_value(condition, env=env, routines=routines,
+                                             filename=filename, call_stack=call_stack)
+    return bool(Decimal(value.value))
 
 
 def _dbase_constant_function_value(
@@ -6161,6 +6419,14 @@ def _dbase_constant_expression_value(
         return _dbase_constant_function_value(
             definition, args, env=env, routines=routines, filename=filename, call_stack=call_stack
         )
+    if isinstance(expression, DBaseCondition):
+        left = _dbase_constant_expression_value(expression.left, env=env, routines=routines,
+                                                filename=filename, call_stack=call_stack)
+        right = _dbase_constant_expression_value(expression.right, env=env, routines=routines,
+                                                 filename=filename, call_stack=call_stack)
+        return DBaseValue("number", Decimal(int(_compare_dbase_values(left, right,
+              expression.operator, line=expression.line, column=expression.column,
+              filename=filename))))
     if isinstance(expression, DBaseUnaryExpression):
         operand = _dbase_constant_expression_value(
             expression.operand, env=env, routines=routines, filename=filename, call_stack=call_stack
@@ -6171,8 +6437,27 @@ def _dbase_constant_expression_value(
                 line=expression.line, column=expression.column, filename=filename,
             )
         value = Decimal(operand.value)
-        return DBaseValue("number", value if expression.operator == "+" else -value)
+        return DBaseValue("number", Decimal(int(not bool(value)))
+               if expression.operator == ".not."
+               else value if expression.operator == "+" else -value)
     if isinstance(expression, DBaseBinaryExpression):
+        if expression.operator in {".and.", ".or.", ".xor."}:
+            left = _dbase_constant_expression_value(expression.left, env=env, routines=routines,
+                                                     filename=filename, call_stack=call_stack)
+            if left.kind != "number":
+                raise DBaseCompilerError("Logischer Operator erwartet numerischen Wert.",
+                                         line=expression.line, column=expression.column, filename=filename)
+            a = bool(Decimal(left.value))
+            if (expression.operator == ".and." and not a) or (expression.operator == ".or." and a):
+                return DBaseValue("number", Decimal(int(a)))
+            right = _dbase_constant_expression_value(expression.right, env=env, routines=routines,
+                                                      filename=filename, call_stack=call_stack)
+            if right.kind != "number":
+                raise DBaseCompilerError("Logischer Operator erwartet numerischen Wert.",
+                                         line=expression.line, column=expression.column, filename=filename)
+            b = bool(Decimal(right.value))
+            return DBaseValue("number", Decimal(int(a != b if expression.operator == ".xor."
+                    else a and b if expression.operator == ".and." else a or b)))
         left = _dbase_constant_expression_value(
             expression.left, env=env, routines=routines, filename=filename, call_stack=call_stack
         )
@@ -7449,6 +7734,7 @@ def compile_dbase_to_assembly(
         "dBase-Ausbaustufe 24: Konsolen-Scrollbars und reservierte Leerzeile entfallen; menuFile verwendet String-Ausdruecke und bei leerem menuFile wird ein Standard-Dateimenue erzeugt.",
         "dBase-Ausbaustufe 25: new SESSION() oeffnet den rastergebundenen Windows-Login-Dialog; LOGINSESSION liefert den globalen 0/1-Status und bis zum Login bleiben nur Login/Beenden aktiv.",
         "dBase-Ausbaustufe 30: DATABASE-Objekte mit LOCAL ... AS DATABASE, Session-Bindung, Pfad/Name/Anmeldedaten/Alias sowie OPEN/CLOSE/COMMIT und ACTIVE-Lifecycle.",
+        "Stage 306: dBase .NOT., .AND., .XOR. und .OR. in IF/ELSEIF und numerischen Ausdruecken; Klammern, short-circuit fuer AND/OR und 0/1-Boolwerte.",
         "dBase-Ausbaustufe 29: Schliessen des Hauptfensters beendet alle Dialog-Eventloops und fuehrt den generierten Code ueber einen gemeinsamen Shutdown-/VirtualFree-Cleanup-Pfad.",
     )
     return DBaseCompileResult(

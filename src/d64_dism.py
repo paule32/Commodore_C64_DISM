@@ -308,6 +308,7 @@ import urllib.request
 import urllib.parse
 import zipfile
 import faulthandler
+import xml.etree.ElementTree as ET
 
 import locale
 import gettext
@@ -10203,6 +10204,76 @@ def write_resource_coff(
     coff += _coff_section_symbol(b".rsrc$02", 2, len(sec2), 0)
     coff += struct.pack("<I", 4)  # empty COFF string table
     return bytes(coff)
+
+
+def project_manifest_payload(manifest_settings, project_directory):
+    """Load and validate the selected manifest, preserving existing resources."""
+    cfg = normalize_manifest_settings(manifest_settings)
+    if not cfg["linkEnabled"]:
+        return None
+    value = str(cfg["linkFile"] or "").strip()
+    if not value:
+        raise ResourceCompilerError(
+            "Mit Manifest Linken ist aktiviert, aber keine Manifestdatei ausgewählt."
+        )
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = Path(project_directory) / path
+    path = path.resolve()
+    if not path.is_file():
+        raise ResourceCompilerError(f"Manifestdatei nicht gefunden: {path}")
+    raw = path.read_bytes()
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError as exc:
+        raise ResourceCompilerError(f"Ungültige Manifest-XML-Datei {path}: {exc}") from exc
+    if root.tag.rsplit("}", 1)[-1].lower() != "assembly":
+        raise ResourceCompilerError("Das Manifest benötigt ein assembly-Wurzelelement.")
+    return raw
+
+
+def embed_project_manifest_resource(executable, manifest_settings, project_directory, *, dll=False):
+    """Embed Windows RT_MANIFEST in the linked PE, preserving other resources.
+
+    Win32 BeginUpdateResource/UpdateResource/EndUpdateResource handles existing
+    .rsrc sections, preserving icons/version info and works with PE32/PE32+.
+    No external build tools or C/C++ recompilation are necessary.  Call before
+    Authenticode signing because modifying PE resources invalidates signatures.
+    """
+    payload = project_manifest_payload(manifest_settings, project_directory)
+    if payload is None:
+        return False
+    if os.name != "nt":
+        raise ResourceCompilerError("Manifest-Linken benötigt Windows (UpdateResourceW).")
+    from ctypes import wintypes
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    begin = kernel32.BeginUpdateResourceW
+    begin.argtypes = (wintypes.LPCWSTR, wintypes.BOOL)
+    begin.restype = wintypes.HANDLE
+    update = kernel32.UpdateResourceW
+    update.argtypes = (wintypes.HANDLE, ctypes.c_void_p, ctypes.c_void_p,
+                       wintypes.WORD, ctypes.c_void_p, wintypes.DWORD)
+    update.restype = wintypes.BOOL
+    end = kernel32.EndUpdateResourceW
+    end.argtypes = (wintypes.HANDLE, wintypes.BOOL)
+    end.restype = wintypes.BOOL
+    handle = begin(str(executable), False)
+    if not handle:
+        raise OSError(ctypes.get_last_error(), "BeginUpdateResourceW fehlgeschlagen")
+    committed = False
+    try:
+        buffer = ctypes.create_string_buffer(payload)
+        if not update(handle, ctypes.c_void_p(RT_MANIFEST),
+                      ctypes.c_void_p(2 if dll else 1), 0x0409,
+                      ctypes.cast(buffer, ctypes.c_void_p), len(payload)):
+            raise OSError(ctypes.get_last_error(), "UpdateResourceW: RT_MANIFEST fehlgeschlagen")
+        if not end(handle, False):
+            raise OSError(ctypes.get_last_error(), "EndUpdateResourceW fehlgeschlagen")
+        committed = True
+    finally:
+        if not committed:
+            end(handle, True)
+    return True
 
 
 def save_resource_coff(path: Union[str, os.PathLike], entries: Iterable[ResourceEntry], *, machine="x86") -> Path:
@@ -47288,6 +47359,7 @@ PROJECT_WINDOWS_PE64_PROLOG_WITH_DESCRIPTORS_KEY = "__windows_pe64_prolog_with_d
 # Die Einstellung wird in beiden Windows-Architektur-Tabs gespiegelt, ist aber
 # bewusst nur einmal pro Projekt gespeichert, damit Pascal-/dBase-Editoren
 # unabhängig vom gerade gewählten PE-Ziel gleich aussehen.
+PROJECT_WINDOWS_ASSEMBLER_TOOLTIPS_KEY = "__windows_assembler_tooltips__"
 PROJECT_WINDOWS_EDITOR_FONT_FAMILY_KEY = "__windows_editor_font_family__"
 PROJECT_WINDOWS_EDITOR_FONT_SIZE_KEY = "__windows_editor_font_size__"
 PROJECT_WINDOWS_EDITOR_FOREGROUND_KEY = "__windows_editor_foreground__"
@@ -47744,6 +47816,9 @@ def normalize_manifest_settings(value=None):
         "identity": {key: str(identity.get(key, default)) for key, default in IDENTITY_DEFAULTS.items()},
         "compatibility": {},
         "longPathAware": str(value.get("longPathAware", True)).lower() in {"true", "1", "yes"},
+        # Stage 311: external manifest is linked as an RT_MANIFEST resource.
+        "linkEnabled": str(value.get("linkEnabled", False)).lower() in {"true", "1", "yes"},
+        "linkFile": str(value.get("linkFile", "") or ""),
     }
     for name, guid in SUPPORTED_OS:
         entry = compatibility.get(name, {})
@@ -47852,6 +47927,7 @@ def empty_project_entries() -> Dict[str, List[Dict[str, str]]]:
     entries[PROJECT_C64_LAST_BASIC_FILE_KEY] = []
     entries[PROJECT_DBASE_DATA_WIDTHS_KEY] = []
     entries[PROJECT_DBASE_ID_COUNTERS_KEY] = []
+    entries[PROJECT_WINDOWS_ASSEMBLER_TOOLTIPS_KEY] = [{"value": "true"}]
     for _dbase_key in PROJECT_DBASE_ENTRY_KEYS:
         entries[_dbase_key] = []
     # Stage 174: separate Ziel-/Rollenlisten für Pascal.
@@ -48600,6 +48676,16 @@ def format_project_ini(
             ),
             ensure_ascii=False,
             sort_keys=True,
+        ),
+    }
+
+    # Stage 311: the project-wide assembler hover-help preference.
+    parser["Settings.Windows.Environment.Input"] = {
+        "Title": "Windows Umgebung Eingabe",
+        "AssemblerToolTipps": (
+            "true" if _project_bool_entry(
+                entries, PROJECT_WINDOWS_ASSEMBLER_TOOLTIPS_KEY, True
+            ) else "false"
         ),
     }
 
@@ -49369,6 +49455,15 @@ def parse_project_ini(text: str, project_path: Path) -> Dict[str, List[Dict[str,
                 sort_keys=True,
             )
         }]
+
+    # Stage 311: old projects without an input page retain enabled tooltips.
+    input_section = "Settings.Windows.Environment.Input"
+    entries[PROJECT_WINDOWS_ASSEMBLER_TOOLTIPS_KEY] = [{
+        "value": "true" if _parse_project_bool(
+            parser.get(input_section, "AssemblerToolTipps", fallback="true")
+            if parser.has_section(input_section) else "true", True
+        ) else "false"
+    }]
 
     # Stage ASM 48: C=64 Optimizerprofile laden.
     if parser.has_section("Settings.C64"):
@@ -61002,10 +61097,25 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             anchor = QRect(left, top, max(1, right - left), max(1, bottom - top + 1))
             return (info, operand, semantic), anchor
 
+        def _assembler_tooltips_allowed(self) -> bool:
+            """Projektvorgabe fuer *alle* ASM-Tipp-Overlays (Hover, Klick, Caret)."""
+            return bool(getattr(self.window(), "project_assembler_tooltips_enabled", True))
+
+        def _hide_instruction_help(self) -> None:
+            self._instruction_help_hover_active = False
+            self._instruction_help_anchor_rect = None
+            self.instruction_help_frame.hide()
+
         def _schedule_instruction_help_update(self) -> None:
+            if not self._assembler_tooltips_allowed():
+                self._hide_instruction_help()
+                return
             QTimer.singleShot(0, self._update_instruction_help)
 
         def _update_instruction_help(self) -> None:
+            if not self._assembler_tooltips_allowed():
+                self._hide_instruction_help()
+                return
             # Solange die Maus direkt ueber einem Mnemonic steht, hat die
             # Hover-Hilfe Vorrang.  Cursorbewegungen duerfen sie nicht durch
             # eine Hilfe fuer eine andere Position ersetzen.
@@ -61027,6 +61137,9 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             *,
             anchor_rect: Optional[QRect] = None,
         ) -> None:
+            if not self._assembler_tooltips_allowed():
+                self._hide_instruction_help()
+                return
             if context is None:
                 self.instruction_help_frame.hide()
                 return
@@ -61721,8 +61834,13 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
         def mouseMoveEvent(self, event) -> None:
             # Stage ASM 3: Live-Hilfe nur auf den sichtbaren Opcode-Buchstaben.
             # Operand, Kommentar und freier Zeilenbereich sind keine Treffer.
-            hover = self._assembler_instruction_info_at_point(event.pos())
-            if hover is not None:
+            main = self.window()
+            tooltips_allowed = self._assembler_tooltips_allowed()
+            hover = (self._assembler_instruction_info_at_point(event.pos())
+                     if tooltips_allowed else None)
+            if not tooltips_allowed:
+                self._hide_instruction_help()
+            elif hover is not None:
                 context, anchor = hover
                 self._instruction_help_hover_active = True
                 self._show_instruction_help_context(
@@ -98245,6 +98363,30 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             general_layout.addLayout(radio_layout)
             self.long_path_true.setChecked(True)
             layout.addWidget(self.general_group)
+
+            self.link_group = QGroupBox("Manifest einbetten", body)
+            link_layout = QVBoxLayout(self.link_group)
+            self.link_enabled_checkbox = QCheckBox("Mit Manifest Linken", self.link_group)
+            self.link_enabled_checkbox.setObjectName("project_manifest_link_enabled")
+            link_layout.addWidget(self.link_enabled_checkbox)
+            self.link_path_row = QWidget(self.link_group)
+            link_path_layout = QHBoxLayout(self.link_path_row)
+            link_path_layout.setContentsMargins(0, 0, 0, 0)
+            self.link_browse_button = QPushButton("…", self.link_path_row)
+            self.link_browse_button.setToolTip("Manifestdatei öffnen")
+            self.link_browse_button.setFixedWidth(36)
+            self.link_file_edit = QLineEdit(self.link_path_row)
+            self.link_file_edit.setObjectName("project_manifest_link_path")
+            self.link_file_edit.setPlaceholderText("Pfad zu einer vorhandenen .manifest-Datei")
+            link_path_layout.addWidget(self.link_browse_button)
+            link_path_layout.addWidget(self.link_file_edit, 1)
+            link_layout.addWidget(self.link_path_row)
+            layout.addWidget(self.link_group)
+            self.link_enabled_checkbox.toggled.connect(self._link_enabled_changed)
+            self.link_file_edit.textChanged.connect(self._link_file_changed)
+            self.link_browse_button.clicked.connect(self._choose_link_file)
+            self.link_path_row.setEnabled(False)
+
             self.export_button = QPushButton("Manifest speichern …", body)
             self.export_button.setToolTip("Als XML-Datei exportieren, z. B. MeineAnwendung.exe.manifest")
             layout.addWidget(self.export_button, 0, Qt.AlignLeft)
@@ -98271,6 +98413,9 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                     item.setCheckState(Qt.Checked if self._data["compatibility"][item.text()]["checked"] else Qt.Unchecked)
                 self.long_path_true.setChecked(self._data["longPathAware"])
                 self.long_path_false.setChecked(not self._data["longPathAware"])
+                self.link_enabled_checkbox.setChecked(self._data["linkEnabled"])
+                self.link_file_edit.setText(self._data["linkFile"])
+                self.link_path_row.setEnabled(self._data["linkEnabled"])
                 self._os_selected(self.os_list.currentItem(), None)
             finally:
                 self._syncing = False
@@ -98278,6 +98423,25 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
         def _notify(self):
             if not self._syncing:
                 self.settingsChanged.emit(self.settings())
+
+        def _link_enabled_changed(self, enabled):
+            self.link_path_row.setEnabled(bool(enabled))
+            if not self._syncing:
+                self._data["linkEnabled"] = bool(enabled)
+                self._notify()
+
+        def _link_file_changed(self, value):
+            if not self._syncing:
+                self._data["linkFile"] = str(value)
+                self._notify()
+
+        def _choose_link_file(self):
+            filename, _ = QFileDialog.getOpenFileName(
+                self, "Manifestdatei öffnen", self.link_file_edit.text().strip(),
+                "Windows Manifest (*.manifest *.xml);;Alle Dateien (*)"
+            )
+            if filename:
+                self.link_file_edit.setText(filename)
 
         def _identity_changed(self, _text):
             if not self._syncing:
@@ -98592,6 +98756,12 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             # Stage 198: Umgebung ist nur noch der Hauptknoten. Die bisherige
             # Umgebung-Seite liegt unter Workstation; Editor erhaelt eine
             # eigene, scrollbar aufgebaute Konfigurationsseite.
+            self.environment_input_item = QTreeWidgetItem(
+                self.nodes["umgebung"], ["Eingabe"]
+            )
+            self.environment_input_item.setData(
+                0, Qt.UserRole, "environment.input"
+            )
             self.environment_editor_item = QTreeWidgetItem(
                 self.nodes["umgebung"], ["Editor"]
             )
@@ -98665,6 +98835,31 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             )
             placeholder_layout.addStretch(1)
             self.stack.addWidget(self.placeholder)
+
+            # Stage 311: Umgebung -> Eingabe
+            self.environment_input_scroll = QScrollArea(self.stack)
+            self.environment_input_scroll.setObjectName(
+                f"project_windows_{target_tag}_environment_input"
+            )
+            self.environment_input_scroll.setWidgetResizable(True)
+            self.environment_input_scroll.setFrameShape(QFrame.NoFrame)
+            input_body = QWidget(self.environment_input_scroll)
+            input_layout = QVBoxLayout(input_body)
+            tools_group = QGroupBox("Hilfsmittel:", input_body)
+            tools_layout = QVBoxLayout(tools_group)
+            self.assembler_tooltips_checkbox = QCheckBox("Assembler ToolTipps", tools_group)
+            self.assembler_tooltips_checkbox.setObjectName(
+                f"project_windows_{target_tag}_assembler_tooltips"
+            )
+            self.assembler_tooltips_checkbox.setChecked(
+                bool(getattr(self.owner, "project_assembler_tooltips_enabled", True))
+            )
+            tools_layout.addWidget(self.assembler_tooltips_checkbox)
+            input_layout.addWidget(tools_group)
+            input_layout.addStretch(1)
+            self.environment_input_scroll.setWidget(input_body)
+            self.stack.addWidget(self.environment_input_scroll)
+            self.assembler_tooltips_checkbox.toggled.connect(self._assembler_tooltips_changed)
 
             # Umgebung -> Workstation (Stage 198: eigene ScrollArea)
             self.workstation_scroll = QScrollArea(self.stack)
@@ -99568,6 +99763,59 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.manifest_page.settingsChanged.connect(self._manifest_changed)
             self.stack.addWidget(self.manifest_page)
 
+            # Stage 312: echte, bidirektional synchronisierte Steuerelement-Kopien.
+            # Die Originalseiten verbleiben IMMER im Stack; kein reparenting von
+            # QScrollArea/QWidget. Die Gruppen auf den Root-Seiten sind ausfuellbar.
+            self._overview_sources = {
+                "umgebung": (
+                    ("Eingabe", self.environment_input_scroll),
+                    ("Editor", self.editor_scroll),
+                    ("Workstation", self.workstation_scroll),
+                ),
+                "compiler": (
+                    ("Eingabe-Verzeichnis", self.input_directories_page),
+                    ("Ausgabe-Verzeichnis", self.output_directory_page),
+                ),
+                "linker": (
+                    ("Optionen", self.linker_options_scroll),
+                    ("Optimierung", self.linker_optimization_scroll),
+                    ("Signierung", self.signing_page),
+                    ("Manifest", self.manifest_page),
+                ),
+            }
+            self._overview_widgets = {}
+            self._overview_pairs = []
+            self._overview_sync_queued = False
+            for overview_key, overview_sources in self._overview_sources.items():
+                overview_scroll = QScrollArea(self.stack)
+                overview_scroll.setWidgetResizable(True)
+                overview_scroll.setFrameShape(QFrame.NoFrame)
+                overview_scroll.setObjectName(
+                    f"project_windows_{target_tag}_{overview_key}_overview"
+                )
+                overview_body = QWidget(overview_scroll)
+                overview_layout = QVBoxLayout(overview_body)
+                overview_layout.setContentsMargins(10, 8, 10, 8)
+                overview_layout.setSpacing(10)
+                for heading, original_page in overview_sources:
+                    group = QGroupBox(heading, overview_body)
+                    group.setObjectName(
+                        f"project_windows_{target_tag}_{overview_key}_overview_"
+                        + heading.casefold().replace("-", "_")
+                    )
+                    page_body = (original_page.widget()
+                                 if isinstance(original_page, QScrollArea)
+                                 else original_page)
+                    if page_body is not None and page_body.layout() is not None:
+                        group.setLayout(self._overview_clone_layout(
+                            page_body.layout(), group
+                        ))
+                    overview_layout.addWidget(group)
+                overview_layout.addStretch(1)
+                overview_scroll.setWidget(overview_body)
+                self.stack.addWidget(overview_scroll)
+                self._overview_widgets[overview_key] = overview_scroll
+            self._overview_refresh()
 
             self.splitter.setStretchFactor(0, 0)
             self.splitter.setStretchFactor(1, 1)
@@ -99667,14 +99915,293 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.tree.setCurrentItem(self.compiler_input_directories_item)
             self._tree_changed(self.compiler_input_directories_item, None)
 
+        def _assembler_tooltips_changed(self, enabled):
+            if self._syncing:
+                return
+            callback = getattr(self.owner, "set_project_assembler_tooltips", None)
+            if callback is not None:
+                callback(bool(enabled))
+
+        def set_assembler_tooltips(self, enabled):
+            blocked = self.assembler_tooltips_checkbox.blockSignals(True)
+            try:
+                self.assembler_tooltips_checkbox.setChecked(bool(enabled))
+            finally:
+                self.assembler_tooltips_checkbox.blockSignals(blocked)
+
+        # Stage 312: synchronisierte Abbildungen der echten Unterseiten.
+        # Keine Modelldaten werden kopiert oder separat persistiert. Jeder Edit
+        # leitet zum Original-Control und dessen bestehenden Signals/Slots weiter.
+        def _overview_refresh_later(self, *_args):
+            if self._overview_sync_queued:
+                return
+            self._overview_sync_queued = True
+            QTimer.singleShot(0, self._overview_refresh)
+
+        def _overview_refresh(self):
+            self._overview_sync_queued = False
+            for original, mirror in self._overview_pairs:
+                self._overview_sync_control(original, mirror)
+
+        def _overview_sync_control(self, source, mirror):
+            old = mirror.blockSignals(True)
+            try:
+                mirror.setEnabled(source.isEnabled())
+                mirror.setToolTip(source.toolTip())
+                # isHidden() erkennt nur explizites hide(), nicht unsichtbare
+                # Vorfahren (z.B. die inaktive Unterseite im QStackedWidget).
+                mirror.setVisible(not source.isHidden())
+                if isinstance(source, QGroupBox):
+                    mirror.setTitle(source.title())
+                    mirror.setCheckable(source.isCheckable())
+                    if source.isCheckable():
+                        mirror.setChecked(source.isChecked())
+                elif isinstance(source, QLabel):
+                    mirror.setText(source.text())
+                    mirror.setWordWrap(source.wordWrap())
+                    mirror.setTextFormat(source.textFormat())
+                    if source.pixmap() is not None:
+                        mirror.setPixmap(source.pixmap())
+                elif isinstance(source, QLineEdit):
+                    if mirror.text() != source.text():
+                        mirror.setText(source.text())
+                    mirror.setReadOnly(source.isReadOnly())
+                    mirror.setPlaceholderText(source.placeholderText())
+                    mirror.setMaxLength(source.maxLength())
+                elif isinstance(source, QComboBox):
+                    src_items = [(source.itemText(i), source.itemData(i))
+                                 for i in range(source.count())]
+                    dst_items = [(mirror.itemText(i), mirror.itemData(i))
+                                 for i in range(mirror.count())]
+                    if src_items != dst_items:
+                        mirror.clear()
+                        for i, (name, data) in enumerate(src_items):
+                            mirror.addItem(source.itemIcon(i), name, data)
+                    if mirror.currentIndex() != source.currentIndex():
+                        mirror.setCurrentIndex(source.currentIndex())
+                    if source.isEditable() and mirror.currentText() != source.currentText():
+                        mirror.setEditText(source.currentText())
+                elif isinstance(source, QListWidget):
+                    different = source.count() != mirror.count()
+                    if not different:
+                        for i in range(source.count()):
+                            src_item, dst_item = source.item(i), mirror.item(i)
+                            if (src_item.text() != dst_item.text() or
+                                    src_item.checkState() != dst_item.checkState() or
+                                    src_item.flags() != dst_item.flags()):
+                                different = True
+                                break
+                    if different:
+                        mirror.clear()
+                        for i in range(source.count()):
+                            src_item = source.item(i)
+                            item = QListWidgetItem(src_item.text(), mirror)
+                            item.setFlags(src_item.flags())
+                            item.setCheckState(src_item.checkState())
+                            item.setData(Qt.UserRole, src_item.data(Qt.UserRole))
+                            item.setIcon(src_item.icon())
+                    if mirror.currentRow() != source.currentRow():
+                        mirror.setCurrentRow(source.currentRow())
+                elif isinstance(source, (QCheckBox, QRadioButton)):
+                    mirror.setText(source.text())
+                    mirror.setChecked(source.isChecked())
+                elif isinstance(source, (QSpinBox, QDoubleSpinBox)):
+                    mirror.setRange(source.minimum(), source.maximum())
+                    mirror.setSingleStep(source.singleStep())
+                    mirror.setPrefix(source.prefix())
+                    mirror.setSuffix(source.suffix())
+                    if isinstance(source, QDoubleSpinBox):
+                        mirror.setDecimals(source.decimals())
+                    mirror.setValue(source.value())
+                elif isinstance(source, QPushButton):
+                    mirror.setText(source.text())
+                    mirror.setIcon(source.icon())
+                    mirror.setCheckable(source.isCheckable())
+                    if source.isCheckable():
+                        mirror.setChecked(source.isChecked())
+                if source.styleSheet() != mirror.styleSheet():
+                    mirror.setStyleSheet(source.styleSheet())
+            finally:
+                mirror.blockSignals(old)
+
+        def _overview_register_pair(self, source, mirror):
+            self._overview_pairs.append((source, mirror))
+            # Eingaben auf dem Root folgen exakt dem originalen Signalweg.
+            if isinstance(source, QLineEdit):
+                mirror.textEdited.connect(lambda value, s=source: s.setText(value))
+                mirror.editingFinished.connect(lambda s=source: s.editingFinished.emit())
+                mirror.returnPressed.connect(lambda s=source: s.returnPressed.emit())
+                source.textChanged.connect(self._overview_refresh_later)
+                source.editingFinished.connect(self._overview_refresh_later)
+            elif isinstance(source, QComboBox):
+                mirror.currentIndexChanged.connect(
+                    lambda index, s=source: s.setCurrentIndex(index))
+                if source.isEditable():
+                    mirror.editTextChanged.connect(
+                        lambda value, s=source: s.setEditText(value))
+                    source.editTextChanged.connect(self._overview_refresh_later)
+                source.currentIndexChanged.connect(self._overview_refresh_later)
+                source.model().rowsInserted.connect(self._overview_refresh_later)
+                source.model().rowsRemoved.connect(self._overview_refresh_later)
+            elif isinstance(source, QListWidget):
+                mirror.currentRowChanged.connect(
+                    lambda row, s=source: s.setCurrentRow(row))
+                mirror.itemChanged.connect(
+                    lambda item, s=source, m=mirror:
+                    (s.item(m.row(item)).setCheckState(item.checkState())
+                     if 0 <= m.row(item) < s.count() else None))
+                source.currentRowChanged.connect(self._overview_refresh_later)
+                source.itemChanged.connect(self._overview_refresh_later)
+                source.model().rowsInserted.connect(self._overview_refresh_later)
+                source.model().rowsRemoved.connect(self._overview_refresh_later)
+            elif isinstance(source, (QCheckBox, QGroupBox)):
+                if source.isCheckable() or isinstance(source, QCheckBox):
+                    mirror.toggled.connect(
+                        lambda value, s=source: s.setChecked(bool(value)))
+                    source.toggled.connect(self._overview_refresh_later)
+            elif isinstance(source, QRadioButton):
+                # Die originalen QButtonGroups verwalten die Exklusivitaet.
+                # Eine geklonte Radiogruppe darf fremde Gruppen nicht verbinden.
+                mirror.setAutoExclusive(False)
+                mirror.clicked.connect(lambda _checked=False, s=source: s.click())
+                source.toggled.connect(self._overview_refresh_later)
+            elif isinstance(source, (QSpinBox, QDoubleSpinBox)):
+                mirror.valueChanged.connect(lambda value, s=source: s.setValue(value))
+                source.valueChanged.connect(self._overview_refresh_later)
+            elif isinstance(source, QPushButton):
+                mirror.clicked.connect(lambda _checked=False, s=source: s.click())
+                source.toggled.connect(self._overview_refresh_later) if source.isCheckable() else None
+            self._overview_sync_control(source, mirror)
+            return mirror
+
+        def _overview_clone_widget(self, source, parent):
+            if isinstance(source, QGroupBox):
+                target = QGroupBox(source.title(), parent)
+            elif isinstance(source, QLineEdit):
+                target = QLineEdit(parent)
+                if source.validator() is not None:
+                    target.setValidator(source.validator())
+                target.setEchoMode(source.echoMode())
+            elif isinstance(source, QComboBox):
+                target = QComboBox(parent)
+                target.setEditable(source.isEditable())
+            elif isinstance(source, QListWidget):
+                target = QListWidget(parent)
+                target.setSelectionMode(source.selectionMode())
+                target.setMinimumHeight(max(110, source.minimumHeight()))
+            elif isinstance(source, QCheckBox):
+                target = QCheckBox(parent)
+            elif isinstance(source, QRadioButton):
+                target = QRadioButton(parent)
+            elif isinstance(source, QDoubleSpinBox):
+                target = QDoubleSpinBox(parent)
+            elif isinstance(source, QSpinBox):
+                target = QSpinBox(parent)
+            elif isinstance(source, QPushButton):
+                target = QPushButton(parent)
+                target.setMinimumWidth(min(source.minimumWidth(), 160))
+                if source.maximumWidth() < 16777215:
+                    target.setMaximumWidth(source.maximumWidth())
+            elif isinstance(source, QLabel):
+                target = QLabel(parent)
+                target.setAlignment(source.alignment())
+            elif isinstance(source, QFrame):
+                target = QFrame(parent)
+                target.setFrameShape(source.frameShape())
+                target.setFrameShadow(source.frameShadow())
+            else:
+                target = QWidget(parent)
+            target.setObjectName((source.objectName() or source.__class__.__name__)
+                                 + "_overview")
+            target.setSizePolicy(source.sizePolicy())
+            target.setMinimumHeight(source.minimumHeight())
+            target.setToolTip(source.toolTip())
+            if source.layout() is not None:
+                target.setLayout(self._overview_clone_layout(source.layout(), target))
+            if isinstance(source, (QGroupBox, QLabel, QLineEdit, QComboBox,
+                                   QListWidget, QCheckBox, QRadioButton,
+                                   QSpinBox, QDoubleSpinBox, QPushButton, QFrame)):
+                self._overview_register_pair(source, target)
+            return target
+
+        def _overview_clone_layout(self, source_layout, parent):
+            if isinstance(source_layout, QFormLayout):
+                result = QFormLayout()
+            elif isinstance(source_layout, QGridLayout):
+                result = QGridLayout()
+            elif isinstance(source_layout, QHBoxLayout):
+                result = QHBoxLayout()
+            else:
+                result = QVBoxLayout()
+            result.setContentsMargins(*source_layout.getContentsMargins())
+            result.setSpacing(source_layout.spacing())
+
+            def _item_content(item):
+                if item is None:
+                    return None
+                if item.widget() is not None:
+                    return self._overview_clone_widget(item.widget(), parent)
+                if item.layout() is not None:
+                    return self._overview_clone_layout(item.layout(), parent)
+                return None
+
+            if isinstance(source_layout, QFormLayout):
+                for row in range(source_layout.rowCount()):
+                    span = source_layout.itemAt(row, QFormLayout.SpanningRole)
+                    if span is not None:
+                        obj = _item_content(span)
+                        if obj is not None:
+                            result.addRow(obj)
+                        continue
+                    label = _item_content(source_layout.itemAt(row, QFormLayout.LabelRole))
+                    field = _item_content(source_layout.itemAt(row, QFormLayout.FieldRole))
+                    if label is not None and field is not None:
+                        result.addRow(label, field)
+                    elif field is not None:
+                        result.addRow(field)
+                    elif label is not None:
+                        result.addRow(label)
+            elif isinstance(source_layout, QGridLayout):
+                for i in range(source_layout.count()):
+                    obj = _item_content(source_layout.itemAt(i))
+                    if obj is None:
+                        continue
+                    row, col, row_span, col_span = source_layout.getItemPosition(i)
+                    if isinstance(obj, QLayout):
+                        result.addLayout(obj, row, col, row_span, col_span)
+                    else:
+                        result.addWidget(obj, row, col, row_span, col_span)
+                for i in range(source_layout.columnCount()):
+                    result.setColumnStretch(i, source_layout.columnStretch(i))
+            else:
+                for i in range(source_layout.count()):
+                    item = source_layout.itemAt(i)
+                    obj = _item_content(item)
+                    if obj is None:
+                        if item.spacerItem() is not None:
+                            result.addStretch(1)
+                        continue
+                    if isinstance(obj, QLayout):
+                        result.addLayout(obj)
+                    else:
+                        result.addWidget(obj, source_layout.stretch(i))
+            return result
+
         def _tree_changed(self, current, _previous) -> None:
             key = str(current.data(0, Qt.UserRole) or "") if current is not None else ""
-            if key == "environment.editor":
+            if key in self._overview_widgets:
+                # Auch bei programmatisch blockierten Settings-Signalen aktuell.
+                self._overview_refresh()
+                self.stack.setCurrentWidget(self._overview_widgets[key])
+                return
+            if key == "environment.input":
+                page = self.environment_input_scroll
+            elif key == "environment.editor":
                 page = self.editor_scroll
             elif key == "environment.workstation":
                 page = self.workstation_scroll
             elif key == "umgebung":
-                page = self.placeholder
+                page = self._overview_widgets["umgebung"]
             elif key == "compiler.input_directories":
                 page = self.input_directories_page
             elif key == "compiler.output_directory":
@@ -99684,7 +100211,7 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             elif key == "compiler.prolog":
                 page = self.placeholder
             elif key == "linker":
-                page = self.linker_page
+                page = self._overview_widgets["linker"]
             elif key == "linker.options":
                 page = self.linker_options_scroll
             elif key == "linker.optimization":
@@ -102628,6 +103155,87 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
 
 
 
+    class D64OperationPreludeDialog(QDialog):
+        """Stage 324: Wiederverwendbarer, nicht-blockierend geöffneter Vorspann.
+
+        Der Aufrufer beginnt die eigentliche GUI-Arbeit mit QTimer.singleShot,
+        NACHDEM dieses Fenster in einem Event-Loop-Durchlauf gezeichnet wurde.
+        Qt-Widgets/QGraphicsScenes bleiben ausschließlich im GUI-Thread.
+        """
+
+        def __init__(self, parent: QWidget, title: str, message: str, *, dark: bool = True):
+            super().__init__(parent)
+            self.setObjectName("d64OperationPreludeDialog")
+            self.setProperty("d64LocalizationKey", "operation.prelude.dialog")
+            self.setWindowTitle("Vorspann")
+            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+            self.setWindowModality(Qt.WindowModal)
+            self.setFixedSize(355, 122)
+            self.setAttribute(Qt.WA_DeleteOnClose, False)
+
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(14, 12, 14, 12)
+            layout.setSpacing(8)
+            heading = QLabel(title, self)
+            heading.setObjectName("d64OperationPreludeTitle")
+            heading.setProperty("d64LocalizationKey", "operation.prelude.title")
+            heading.setFont(QFont(heading.font().family(), 11, QFont.Bold))
+            message_label = QLabel(message, self)
+            message_label.setObjectName("d64OperationPreludeMessage")
+            message_label.setProperty("d64LocalizationKey", "operation.prelude.message")
+            message_label.setWordWrap(True)
+            progress = QProgressBar(self)
+            progress.setObjectName("d64OperationPreludeProgress")
+            progress.setRange(0, 0)  # rechenintensiver Schritt, keine Prozentangabe
+            progress.setTextVisible(False)
+            progress.setFixedHeight(8)
+            layout.addWidget(heading)
+            layout.addWidget(message_label)
+            layout.addStretch(1)
+            layout.addWidget(progress)
+
+            if dark:
+                self.setStyleSheet("""
+                    QDialog#d64OperationPreludeDialog {
+                        background:#202020; color:#ffffff;
+                        border:1px solid #656565; border-radius:7px;
+                    }
+                    QLabel { color:#f4f4f4; background:transparent; }
+                    QLabel#d64OperationPreludeMessage { color:#c9c9c9; }
+                    QProgressBar#d64OperationPreludeProgress {
+                        background:#303030; border:1px solid #505050;
+                        border-radius:3px;
+                    }
+                    QProgressBar#d64OperationPreludeProgress::chunk {
+                        background:#254c86; border-radius:2px;
+                    }
+                """)
+            else:
+                self.setStyleSheet("""
+                    QDialog#d64OperationPreludeDialog {
+                        background:#f6f6f6; color:#171717;
+                        border:1px solid #999999; border-radius:7px;
+                    }
+                    QLabel { color:#171717; background:transparent; }
+                    QLabel#d64OperationPreludeMessage { color:#505050; }
+                    QProgressBar#d64OperationPreludeProgress {
+                        background:#dedede; border:1px solid #bdbdbd;
+                        border-radius:3px;
+                    }
+                    QProgressBar#d64OperationPreludeProgress::chunk {
+                        background:#466fa8; border-radius:2px;
+                    }
+                """)
+
+        def showEvent(self, event) -> None:
+            super().showEvent(event)
+            if self.parentWidget() is not None:
+                p = self.parentWidget()
+                center = p.mapToGlobal(p.rect().center())
+                self.move(center.x() - self.width() // 2,
+                          center.y() - self.height() // 2)
+
+
     class ExplorerWindow(QMainWindow):
         # Stage 232: Thread-Rueckmeldung des VICE Binary Monitor Debugtransfers.
         vice_debug_finished = pyqtSignal(object, bool, str, object)
@@ -102859,6 +103467,7 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 "pe32": False,
                 "pe64": False,
             }
+            self.project_assembler_tooltips_enabled = True
             self.project_windows_manifests = {
                 "pe32": normalize_manifest_settings(),
                 "pe64": normalize_manifest_settings(),
@@ -103027,7 +103636,7 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.scrollbar_arrow_assets = self._create_scrollbar_arrow_assets()
             self.project_checkbox_assets = self._create_project_checkbox_assets()
 
-            self.setWindowTitle("Qt5 D64- und Dateisystem-Explorer")
+            self.setWindowTitle("DB=64 (c) 2026 by Jens Kallup - paule32")
             self.setWindowIcon(
                 self.style().standardIcon(QStyle.SP_ComputerIcon)
             )
@@ -106477,8 +107086,27 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             document.custom_display_name = (
                 Path(path).name if path is not None else "Form1.wfm"
             )
-            document.raw_editor.setPlainText(source)
-            document.raw_editor.document().setModified(False)
+            editor = document.raw_editor
+            previous = editor.toPlainText()
+            if previous != source:
+                from d64dbase.source_roundtrip import remap_source_offset
+                position = editor.textCursor().position()
+                anchor = editor.textCursor().anchor()
+                had_focus = editor.hasFocus()
+                vertical = editor.verticalScrollBar().value()
+                horizontal = editor.horizontalScrollBar().value()
+                new_position = remap_source_offset(previous, source, position)
+                new_anchor = remap_source_offset(previous, source, anchor)
+                editor.setPlainText(source)
+                cursor = editor.textCursor()
+                cursor.setPosition(new_anchor)
+                cursor.setPosition(new_position, QTextCursor.KeepAnchor)
+                editor.setTextCursor(cursor)
+                editor.verticalScrollBar().setValue(vertical)
+                editor.horizontalScrollBar().setValue(horizontal)
+                if had_focus:
+                    editor.setFocus(Qt.OtherFocusReason)
+            editor.document().setModified(False)
             document.update_syntax_highlighting()
             self._refresh_dbase_form_source_outline()
             return source
@@ -106535,6 +107163,8 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 self.log("WFM-Quellcode noch nicht synchronisiert: " + str(exc))
                 return False
 
+            from d64dbase.source_roundtrip import wfm_header_lines
+            scene.wfm_source_header = "\n".join(wfm_header_lines(source))
             scene.wfm_methods = list(getattr(parsed, "methods", []) or [])
             scene.form_window_item.wfm_events = dict(
                 getattr(parsed, "events", {}) or {}
@@ -106825,6 +107455,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 "DBaseQtSetWorkstationMode",
                 "DBaseQtSetDebugTheme",
                 "DBaseQtInitializeGui",
+                "DBaseQtSetDebugVisible",
                 "DBaseQtExec",
                 "DBaseQtShutdown",
                 "DBaseQtFormCreate",
@@ -106860,6 +107491,18 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 for line in list(getattr(method, "body", []) or [])
             )
 
+            # Stage 309: GetSystemMetrics wird nur importiert, wenn ein
+            # Formular-Methodenblock ISMOUSE() tatsaechlich verwendet.
+            uses_ismouse = any(
+                re.search(r"(?i)\bismouse\s*\(", str(source_line or ""))
+                for source_method in list(getattr(model, "methods", []) or [])
+                for source_line in list(getattr(source_method, "body", []) or [])
+            )
+            uses_iskeyboard = any(
+                re.search(r"(?i)\biskeyboard\s*\(", str(source_line or ""))
+                for source_method in list(getattr(model, "methods", []) or [])
+                for source_line in list(getattr(source_method, "body", []) or [])
+            )
             assembly = str(base.assembly)
 
             # Stage 121: Runtime-Imports nicht mehr an einen bestimmten
@@ -106881,6 +107524,15 @@ QMenu#green_beige_popup_menu::indicator:checked {{
 
             if uses_beep:
                 declaration = 'import Beep, "kernel32.dll", "Beep"'
+                if declaration not in assembly:
+                    missing_imports.append(declaration + "\n")
+
+            if uses_ismouse:
+                declaration = 'import GetSystemMetrics, "user32.dll", "GetSystemMetrics"'
+                if declaration not in assembly:
+                    missing_imports.append(declaration + "\n")
+            if uses_iskeyboard:
+                declaration = 'import GetRawInputDeviceList, "user32.dll", "GetRawInputDeviceList"'
                 if declaration not in assembly:
                     missing_imports.append(declaration + "\n")
 
@@ -108137,6 +108789,59 @@ QMenu#green_beige_popup_menu::indicator:checked {{
 
                 return resolve(expression)
 
+            def emit_wfm_ismouse_numeric(out):
+                """Windows SM_MOUSEPRESENT (19), liefert 0 oder 1 in ST(0).
+
+                PE64-WFM-Callbacks besitzen schon einen 40/56-Byte-Frame
+                mit 32 Byte Shadow Space; hier kein weiteres sub rsp,40.
+                """
+                if is64:
+                    out.extend(["    mov ecx, 19", "    call GetSystemMetrics"])
+                else:
+                    out.extend(["    push 19", "    call GetSystemMetrics"])
+                out.extend([
+                    "    test eax, eax", "    setne al", "    movzx eax, al",
+                    "    mov dword ptr [__dbase_temp_number], eax",
+                    "    fild dword ptr [__dbase_temp_number]",
+                ])
+
+            def emit_wfm_iskeyboard_numeric(out):
+                """Dynamische Raw-Input-Tastaturerkennung, 0/1 in ST(0)."""
+                from d64dbase.keyboard_detection import emit_keyboard_probe
+                out.extend(emit_keyboard_probe(
+                    is64=is64,
+                    label_prefix=wfm_flow_label("iskeyboard"),
+                    has_shadow_space=is64,
+                ))
+                out.extend([
+                    "    mov dword ptr [__dbase_temp_number], eax",
+                    "    fild dword ptr [__dbase_temp_number]",
+                ])
+
+            def emit_wfm_iskeyboard_slot(out, destination):
+                emit_wfm_iskeyboard_numeric(out)
+                out.extend([
+                    f"    fstp qword ptr [{memory_number_label(destination)}]",
+                    f"    mov dword ptr [{memory_type_label(destination)}], {WFM_VALUE_INTEGER}",
+                    f"    mov dword ptr [{memory_length_label(destination)}], 0",
+                ])
+                if is64:
+                    out.append(f"    mov qword ptr [{memory_pointer_label(destination)}], 0")
+                else:
+                    out.append(f"    mov dword ptr [{memory_pointer_label(destination)}], 0")
+
+            def emit_wfm_ismouse_slot(out, destination):
+                emit_wfm_ismouse_numeric(out)
+                out.extend([
+                    f"    fstp qword ptr [{memory_number_label(destination)}]",
+                    f"    mov dword ptr [{memory_type_label(destination)}], {WFM_VALUE_INTEGER}",
+                    f"    mov dword ptr [{memory_length_label(destination)}], 0",
+                ])
+                if is64:
+                    out.append(f"    mov qword ptr [{memory_pointer_label(destination)}], 0")
+                else:
+                    out.append(f"    mov dword ptr [{memory_pointer_label(destination)}], 0")
+
             def emit_wfm_memory_store(
                 out,
                 expression_text,
@@ -108149,6 +108854,24 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 destination_key = destination_name.casefold()
                 destination = memory_slot(destination_name)
                 expression_text = str(expression_text or "").strip()
+
+                if re.match(r"(?i)^iskeyboard\s*\(", expression_text):
+                    if not re.fullmatch(r"(?i)iskeyboard\s*\(\s*\)", expression_text):
+                        raise AssemblerError(
+                            f"{filename}: ISKEYBOARD() erwartet keine Parameter."
+                        )
+                    emit_wfm_iskeyboard_slot(out, destination)
+                    runtime_memory_kinds[destination_key] = "integer"
+                    return True
+
+                if re.match(r"(?i)^ismouse\s*\(", expression_text):
+                    if not re.fullmatch(r"(?i)ismouse\s*\(\s*\)", expression_text):
+                        raise AssemblerError(
+                            f"{filename}: ISMOUSE() erwartet keine Parameter."
+                        )
+                    emit_wfm_ismouse_slot(out, destination)
+                    runtime_memory_kinds[destination_key] = "integer"
+                    return True
 
                 upper_slot = emit_wfm_upper_expression(out, expression_text)
                 if upper_slot is not None:
@@ -108245,6 +108968,43 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                         return True
 
                 return False
+
+            def emit_wfm_debug_visibility(out, enabled):
+                """Apply SET DEBUG at runtime, not while the FORM is parsed.
+
+                All methods, event callbacks and header instructions use the
+                same exported QDialog control and preserve the native ABI.
+                """
+                out.append("    ; Stage 318: SET DEBUG " + ("ON" if enabled else "OFF"))
+                if is64:
+                    # WFM method frames already reserve 40/56 bytes of shadow
+                    # space; the standalone entry needs its own 40-byte frame.
+                    out.extend([
+                        f"    mov ecx, {1 if enabled else 0}",
+                        "    call DBaseQtSetDebugVisible",
+                    ])
+                else:
+                    out.extend([
+                        f"    push {1 if enabled else 0}",
+                        "    call DBaseQtSetDebugVisible",
+                        "    add esp, 4",
+                    ])
+
+            def wfm_entry_debug_preamble():
+                """Run SET DEBUG from lines above CLASS / WFM header."""
+                result = []
+                for line_no, enabled in getattr(model, "debug_preamble", ()):
+                    result.append(f"    ; WFM preamble line {line_no}")
+                    if is64:
+                        result.extend([
+                            f"    mov ecx, {1 if enabled else 0}",
+                            "    sub rsp, 40",
+                            "    call DBaseQtSetDebugVisible",
+                            "    add rsp, 40",
+                        ])
+                    else:
+                        emit_wfm_debug_visibility(result, enabled)
+                return result
 
             def emit_wfm_console_buffer(
                 out,
@@ -108618,6 +109378,138 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                         if str(scan_name).casefold() not in WFM_RESERVED_MEMORY_NAMES:
                             memory_slot(scan_name)
 
+            # Stage 308: WFM-Methoden verwenden den dBase-Ausdrucksparser aus
+            # Stage 306 auch fuer echte Laufzeit-IF/ELSEIF/ELSE/ENDIF-Bloecke.
+            from d64dbase.compiler import (
+                _tokenize_dbase_statement, _DBaseExpressionParser,
+                DBaseLiteralExpression, DBaseIdentifierExpression,
+                DBaseUnaryExpression, DBaseBinaryExpression, DBaseCondition,
+                DBaseCallExpression,
+            )
+            wfm_flow_label_index = 0
+
+            def wfm_flow_label(kind):
+                nonlocal wfm_flow_label_index
+                wfm_flow_label_index += 1
+                return f"__dbase_wfm_flow_{kind}_{wfm_flow_label_index}"
+
+            def parse_wfm_condition(text):
+                expression = str(text or "").strip()
+                # Optionales THEN nur als letztes separates Wort akzeptieren.
+                expression = re.sub(r"(?i)\s+THEN\s*$", "", expression)
+                if not expression:
+                    raise AssemblerError(f"{filename}: WFM-IF: Bedingung fehlt")
+                try:
+                    tokens = _tokenize_dbase_statement(
+                        expression, filename=filename, base_offset=0, source=expression)
+                    parser = _DBaseExpressionParser(tokens, filename=filename)
+                    node = parser.parse_expression()
+                    parser._expect_eof()
+                    return node
+                except Exception as exc:
+                    raise AssemblerError(
+                        f"{filename}: WFM-Bedingung '{expression}': {exc}"
+                    ) from exc
+
+            def emit_wfm_numeric_condition_value(out, node):
+                """Laesst exakt einen numerischen x87-Wert in ST(0)."""
+                if isinstance(node, DBaseCallExpression) and node.name.casefold() == "iskeyboard":
+                    if node.arguments:
+                        raise AssemblerError(
+                            f"{filename}: ISKEYBOARD() erwartet keine Parameter."
+                        )
+                    emit_wfm_iskeyboard_numeric(out)
+                    return
+                if isinstance(node, DBaseCallExpression) and node.name.casefold() == "ismouse":
+                    if node.arguments:
+                        raise AssemblerError(
+                            f"{filename}: ISMOUSE() erwartet keine Parameter."
+                        )
+                    emit_wfm_ismouse_numeric(out)
+                    return
+                if isinstance(node, DBaseLiteralExpression) and node.value_type == 'number':
+                    out.append(f"    fld qword ptr [{number_constant(node.value)}]")
+                    return
+                if isinstance(node, DBaseIdentifierExpression):
+                    name = node.name.casefold()
+                    if name in ('true', 'false'):
+                        out.append(f"    fld qword ptr [{number_constant(int(name == 'true'))}]")
+                        return
+                    # WFM-Variablen sind formularweite, typisierte Slots. Ein
+                    # uninitialisierter Slot hat einen numerischen Wert von 0.
+                    slot = memory_slot(node.name)
+                    if runtime_memory_kinds.get(name) in ('string', 'object'):
+                        raise AssemblerError(
+                            f"{filename}: WFM-IF erwartet numerische Variable: {node.name}"
+                        )
+                    out.append(f"    fld qword ptr [{memory_number_label(slot)}]")
+                    return
+                if isinstance(node, DBaseUnaryExpression) and node.operator in ('+', '-'):
+                    emit_wfm_numeric_condition_value(out, node.operand)
+                    if node.operator == '-':
+                        out.append('    fchs')
+                    return
+                if isinstance(node, DBaseBinaryExpression) and node.operator in ('+', '-', '*', '/'):
+                    emit_wfm_numeric_condition_value(out, node.left)
+                    emit_wfm_numeric_condition_value(out, node.right)
+                    instruction = {'+': 'faddp', '-': 'fsubp', '*': 'fmulp', '/': 'fdivp'}[node.operator]
+                    out.append(f'    {instruction}')
+                    return
+                raise AssemblerError(
+                    f"{filename}: WFM-IF numerischer Ausdruck noch nicht unterstuetzt: {node!r}"
+                )
+
+            def emit_wfm_condition_true(out, node, true_label):
+                not_true = wfm_flow_label('not_true')
+                emit_wfm_condition_false(out, node, not_true)
+                out.append(f'    jmp {true_label}')
+                out.append(f'{not_true}:')
+
+            def emit_wfm_condition_false(out, node, false_label):
+                # Derselbe Vorrang/dieselbe Kurzschluss-Semantik wie Stage 306.
+                if isinstance(node, DBaseUnaryExpression) and node.operator == '.not.':
+                    emit_wfm_condition_true(out, node.operand, false_label)
+                    return
+                if isinstance(node, DBaseBinaryExpression):
+                    if node.operator == '.and.':
+                        emit_wfm_condition_false(out, node.left, false_label)
+                        emit_wfm_condition_false(out, node.right, false_label)
+                        return
+                    if node.operator == '.or.':
+                        accepted = wfm_flow_label('or_true')
+                        emit_wfm_condition_true(out, node.left, accepted)
+                        emit_wfm_condition_false(out, node.right, false_label)
+                        out.append(f'{accepted}:')
+                        return
+                    if node.operator == '.xor.':
+                        left_false = wfm_flow_label('xor_left_false')
+                        done = wfm_flow_label('xor_done')
+                        emit_wfm_condition_false(out, node.left, left_false)
+                        emit_wfm_condition_true(out, node.right, false_label)
+                        out.append(f'    jmp {done}')
+                        out.append(f'{left_false}:')
+                        emit_wfm_condition_false(out, node.right, false_label)
+                        out.append(f'{done}:')
+                        return
+                if isinstance(node, DBaseCondition):
+                    emit_wfm_numeric_condition_value(out, node.left)
+                    emit_wfm_numeric_condition_value(out, node.right)
+                    # ST0 = right, ST1 = left; Vergleichsrichtung invertiert.
+                    out.extend(['    fucomip st0, st1', '    fstp st0'])
+                    false_jump = {
+                        '<':'jbe', '<=':'jb', '==':'jne',
+                        '>':'jae', '>=':'ja', '!=':'je',
+                    }.get(node.operator)
+                    if false_jump is None:
+                        raise AssemblerError(
+                            f"{filename}: WFM-IF Vergleich unbekannt: {node.operator}"
+                        )
+                    out.append(f'    {false_jump} {false_label}')
+                    return
+                emit_wfm_numeric_condition_value(out, node)
+                out.extend(['    fldz', '    fucomip st0, st1', '    fstp st0',
+                            f'    je {false_label}'])
+
             callback_lines = []
             for procedure in sorted(
                 required_procedures,
@@ -108684,6 +109576,8 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                         ])
 
                 body_lines = list(getattr(method, "body", []) or [])
+                flow_stack = []
+                procedure_exit_label = wfm_flow_label('method_exit')
                 in_block_comment = False
                 # Jede Prozedur startet mit der im WFM definierten Geometrie.
                 # Mehrere Zuweisungen innerhalb derselben Prozedur bauen
@@ -108707,6 +109601,52 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                             in_block_comment = True
                         continue
                     if statement.startswith("//") or statement.startswith("**"):
+                        continue
+
+                    # Stage 308: lokale Laufzeit-Kontrollflussstruktur statt
+                    # eines rein linearen Event-Assemblers.
+                    if_match = re.fullmatch(r"(?is)IF\s+(.+)", statement)
+                    if if_match:
+                        next_branch = wfm_flow_label('if_false')
+                        finish = wfm_flow_label('if_end')
+                        callback_lines.append(f'    ; {statement}')
+                        emit_wfm_condition_false(
+                            callback_lines, parse_wfm_condition(if_match.group(1)), next_branch)
+                        flow_stack.append({'next': next_branch, 'end': finish,
+                                           'else': False, 'line': body_index + 1})
+                        continue
+                    elseif_match = re.fullmatch(r"(?is)(?:ELSEIF|ELIF)\s+(.+)", statement)
+                    if elseif_match:
+                        if not flow_stack or flow_stack[-1]['else']:
+                            raise AssemblerError(f'{filename}: WFM-Prozedur {procedure}: ELSEIF ohne offenes IF')
+                        frame = flow_stack[-1]
+                        callback_lines.extend([f"    jmp {frame['end']}", f"{frame['next']}:"])
+                        frame['next'] = wfm_flow_label('elseif_false')
+                        emit_wfm_condition_false(
+                            callback_lines, parse_wfm_condition(elseif_match.group(1)), frame['next'])
+                        continue
+                    if re.fullmatch(r"(?i)ELSE", statement):
+                        if not flow_stack or flow_stack[-1]['else']:
+                            raise AssemblerError(f'{filename}: WFM-Prozedur {procedure}: ELSE ohne offenes IF')
+                        frame = flow_stack[-1]
+                        callback_lines.extend([f"    jmp {frame['end']}", f"{frame['next']}:"])
+                        frame['next'] = None
+                        frame['else'] = True
+                        continue
+                    if re.fullmatch(r"(?i)ENDIF", statement):
+                        if not flow_stack:
+                            raise AssemblerError(f'{filename}: WFM-Prozedur {procedure}: ENDIF ohne IF')
+                        frame = flow_stack.pop()
+                        if frame['next'] is not None:
+                            callback_lines.append(f"{frame['next']}:")
+                        callback_lines.append(f"{frame['end']}:")
+                        continue
+
+                    debug_match = re.fullmatch(r"(?i)SET\s+DEBUG\s+(ON|OFF)", statement)
+                    if debug_match:
+                        emit_wfm_debug_visibility(
+                            callback_lines, debug_match.group(1).casefold() == "on"
+                        )
                         continue
 
                     # Stage 201: typisierte dBase-Memory-Variable:
@@ -108850,10 +109790,12 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                                     + return_expr
                                 )
                             callback_lines.append(f"    mov eax, {value}")
-                        break
+                        callback_lines.append(f"    jmp {procedure_exit_label}")
+                        continue
 
                     if re.match(r"(?i)^exit\s*$", statement):
-                        break
+                        callback_lines.append(f"    jmp {procedure_exit_label}")
+                        continue
 
                     print_match = re.match(
                         r"^(\?\?|\?)\s+(.+)$",
@@ -108861,6 +109803,30 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     )
                     if print_match:
                         print_expression = str(print_match.group(2) or "").strip()
+                        if re.match(r"(?i)^iskeyboard\s*\(", print_expression):
+                            if not re.fullmatch(r"(?i)iskeyboard\s*\(\s*\)", print_expression):
+                                raise AssemblerError(
+                                    f"{filename}: ISKEYBOARD() erwartet keine Parameter."
+                                )
+                            print_slot = memory_slot("__wfm_iskeyboard_print")
+                            emit_wfm_iskeyboard_slot(callback_lines, print_slot)
+                            emit_wfm_memory_print(
+                                callback_lines, print_slot, statement,
+                                print_match.group(1) != "??",
+                            )
+                            continue
+                        if re.match(r"(?i)^ismouse\s*\(", print_expression):
+                            if not re.fullmatch(r"(?i)ismouse\s*\(\s*\)", print_expression):
+                                raise AssemblerError(
+                                    f"{filename}: ISMOUSE() erwartet keine Parameter."
+                                )
+                            print_slot = memory_slot("__wfm_ismouse_print")
+                            emit_wfm_ismouse_slot(callback_lines, print_slot)
+                            emit_wfm_memory_print(
+                                callback_lines, print_slot, statement,
+                                print_match.group(1) != "??",
+                            )
+                            continue
                         upper_slot = emit_wfm_upper_expression(callback_lines, print_expression)
                         if upper_slot is not None:
                             emit_wfm_memory_print(callback_lines, upper_slot, statement,
@@ -108973,24 +109939,24 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                         called = method_map.get(called_name.casefold())
                         if called is not None:
                             callback_lines.append(f"    ; {statement}")
-                            target = procedure_label(called_name)
+                            called_target = procedure_label(called_name)
                             pass_sender = bool(call_match.group(2))
                             if is64:
                                 if pass_sender:
                                     callback_lines.append(
                                         "    mov rcx, qword ptr [rsp+32]"
                                     )
-                                callback_lines.append(f"    call {target}")
+                                callback_lines.append(f"    call {called_target}")
                             else:
                                 if pass_sender:
                                     callback_lines.extend([
                                         "    mov eax, dword ptr [esp+4]",
                                         "    push eax",
-                                        f"    call {target}",
+                                        f"    call {called_target}",
                                         "    add esp, 4",
                                     ])
                                 else:
-                                    callback_lines.append(f"    call {target}")
+                                    callback_lines.append(f"    call {called_target}")
                             continue
 
                     line_hint = int(
@@ -109005,6 +109971,13 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                         "implementiert: " + statement
                     )
 
+                if flow_stack:
+                    opened = flow_stack[-1]
+                    raise AssemblerError(
+                        f"{filename}: WFM-Prozedur {procedure}: ENDIF fehlt "
+                        f"(IF bei Methoden-Zeile {opened['line']})."
+                    )
+                callback_lines.append(f'{procedure_exit_label}:')
                 if is64:
                     callback_lines.extend([
                         f"    add rsp, {callback_stack_size}",
@@ -109077,6 +110050,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     "    call ExitProcess",
                     "__dbase_wfm_format_buffer_ok:",
                     "    mov qword ptr [__dbase_format_buffer], rax",
+                    *wfm_entry_debug_preamble(),
                     body.rstrip("\n"),
                     *init_call_lines,
                     f"    mov rcx, qword ptr [{form_slot}]",
@@ -109147,6 +110121,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     "    call ExitProcess",
                     "__dbase_wfm_format_buffer_ok:",
                     "    mov dword ptr [__dbase_format_buffer], eax",
+                    *wfm_entry_debug_preamble(),
                     body.rstrip("\n"),
                     *init_call_lines,
                     f"    push dword ptr [{form_slot}]",
@@ -109800,6 +110775,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     scene.removeItem(item)
             scene._component_counters.clear()
             scene._control_clipboard = None
+            scene.wfm_source_header = ""
             # Keine visuellen Root-Werte aus der vorherigen WFM uebernehmen.
             scene.form_window_item.reset_visual_properties()
 
@@ -109986,6 +110962,77 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             }
             item._apply_widget_style()
 
+        def run_with_operation_prelude(
+            self,
+            title: str,
+            message: str,
+            operation,
+            completed=None,
+        ) -> bool:
+            """Zeigt einen Vorspann und führt anschließend eine GUI-Aktion aus.
+
+            Für spätere Aufgaben wiederverwendbar. Der lange GUI-Vorgang
+            startet erst nach einem Event-Loop-Durchlauf (nicht im showEvent).
+            Das Fenster wird auch im Fehlerfall sicher geschlossen.
+            """
+            if getattr(self, "_operation_prelude", None) is not None:
+                return False  # Doppelaufrufe während laufendem Öffnen vermeiden
+
+            prelude = D64OperationPreludeDialog(
+                self, title, message,
+                dark=bool(getattr(self, "dark_mode_enabled", True)),
+            )
+            self._operation_prelude = prelude
+            prelude.show()  # show(), NICHT exec_(): der Event-Loop darf nicht blockieren
+
+            def finish_prelude():
+                if getattr(self, "_operation_prelude", None) is prelude:
+                    self._operation_prelude = None
+                prelude.hide()
+                prelude.deleteLater()
+
+            def perform_operation():
+                ok = False
+                failure = None
+                try:
+                    # Alle QGraphicsScene-/QDockWidget-Zugriffe bleiben im GUI-Thread.
+                    ok = bool(operation())
+                    if ok and completed is not None:
+                        completed()
+                except Exception as exc:
+                    failure = exc
+                finally:
+                    # WFM-Dock wird bereits von operation() eingeblendet.
+                    # Den Vorspann erst im nächsten Paint-Zyklus entfernen.
+                    if ok and failure is None:
+                        QTimer.singleShot(40, finish_prelude)
+                    else:
+                        finish_prelude()
+                if failure is not None:
+                    self.show_error("Vorgang fehlgeschlagen", str(failure))
+
+            # Kurze Anzeigepause nur zum ersten Zeichnen des Vorspanns.
+            # Kein processEvents() innerhalb lang laufender UI-Operationen.
+            QTimer.singleShot(40, perform_operation)
+            return True
+
+        def open_project_wfm_with_prelude(self, path: Path) -> bool:
+            """Projektblatt *.wfm mit sichtbarem Vorspann laden."""
+            path = Path(path)
+
+            def completed():
+                self._remember_recent_file(path)
+                self.statusBar().showMessage(
+                    f"{path.name}: Formular-Designer geöffnet", 6000
+                )
+
+            return self.run_with_operation_prelude(
+                "Formular-Designer",
+                f"{path.name} wird geladen …",
+                lambda: self.open_dbase_form_file(path),
+                completed,
+            )
+
         def open_dbase_form_file(self, path: Path) -> bool:
             try:
                 path = Path(path).expanduser().resolve()
@@ -110011,6 +111058,8 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             scene.wfm_class_name = str(model.class_name)
             scene.wfm_declared_properties = dict(model.declared_properties)
             scene.wfm_font_objects = dict(getattr(model, "font_objects", {}) or {})
+            from d64dbase.source_roundtrip import wfm_header_lines
+            scene.wfm_source_header = "\n".join(wfm_header_lines(source))
             scene.wfm_methods = list(getattr(model, "methods", []) or [])
             scene.wfm_form_left = int(round(float(self._wfm_prop_ci(model.properties, "Left", 200))))
             scene.wfm_form_top = int(round(float(self._wfm_prop_ci(model.properties, "Top", 200))))
@@ -110053,6 +111102,10 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             self.dbase_form_modified = False
             if self.dbase_form_build_document is not None:
                 self.dbase_form_build_document.assembler_panel.hide()
+                # Der noch geöffnete alte WFM-Quelltext darf beim Einlesen
+                # einer anderen Form nicht als neue, editierte Quelle über
+                # deren Header und Methoden zurückgemergt werden.
+                self.dbase_form_build_document.raw_editor.document().setModified(False)
             self._sync_dbase_form_source()
             self.show_dbase_form_designer()
             self.statusBar().showMessage(f"WFM-Formular geöffnet: {path.name}")
@@ -110192,12 +111245,16 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     ])
                 lines.append(indent + "ENDWITH")
 
-            lines = [
-                "** END HEADER -- do not remove this line",
+            from d64dbase.source_roundtrip import wfm_header_lines, wfm_method_source_lines
+            source_header = wfm_header_lines(getattr(scene, "wfm_source_header", ""))
+            lines = list(source_header) if source_header else [
+                "** END HEADER -- do not remove this line"
+            ]
+            lines.extend([
                 f"// Generated on {now}", "//", "PARAMETER bmodal", "LOCAL B",
                 f"B = NEW {class_name}(51,4)", "B.Init(121,2)", "B.Open()", "",
                 f"CLASS {class_name} OF FORM",
-            ]
+            ])
             for key, value in dict(getattr(scene, "wfm_declared_properties", {}) or {}).items():
                 lines.append(f"    PROPERTY {key} = {render_value(value)}")
 
@@ -110374,16 +111431,13 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 parameter_text = (
                     "(" + ", ".join(parameters) + ")" if parameters else ""
                 )
-                lines.append(f"    {kind} {name}{parameter_text}")
-                body = list(getattr(method, "body", []) or [])
-                if body:
-                    for body_line in body:
-                        lines.append("        " + str(body_line).strip())
-                elif str(getattr(method, "return_expr", "") or ""):
-                    lines.append("        return " + str(method.return_expr))
-                else:
-                    lines.append("        return")
-                lines.append("")
+                # Stage 307: originale PROCEDURE/FUNCTION-Zeilen beibehalten.
+                # Insbesondere IF/ELSE/ENDIF, Tabs und Leerzeilen nicht neu
+                # einruecken oder per strip() verflachen.
+                method_lines = wfm_method_source_lines(method)
+                lines.extend(method_lines)
+                if not method_lines or method_lines[-1].strip():
+                    lines.append("")
                 emitted.add(name.casefold())
 
             for kind, name, ret, default_parameters in (
@@ -112118,6 +113172,8 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 panel.page_for_target(_target).manifest_page.set_settings(
                     self.project_windows_manifests.get(_target)
                 )
+            for _page in panel.windows_pages.values():
+                _page.set_assembler_tooltips(self.project_assembler_tooltips_enabled)
             panel.set_editor_settings(
                 self.editor_font_family or self._default_editor_font_family(),
                 self.editor_font_size,
@@ -112187,6 +113243,10 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 dock_states.append((dock, bool(dock.isVisible())))
             state = {
                 "central": bool(central is not None and central.isVisible()),
+                "central_width_limits": (
+                    (int(central.minimumWidth()), int(central.maximumWidth()))
+                    if central is not None else None
+                ),
                 "docks": dock_states,
             }
 
@@ -112199,10 +113259,12 @@ QMenu#green_beige_popup_menu::indicator:checked {{
 
             if central is not None:
                 central.hide()
+                # Qt otherwise reserves the hidden central widget's minimum size.
+                central.setMinimumWidth(0)
+                central.setMaximumWidth(0)
             project_dock = getattr(self, "right_dock", None)
             if project_dock is not None:
-                project_dock.show()
-                project_dock.raise_()
+                project_dock.hide()
 
         def _restore_project_settings_workspace(self) -> None:
             if not self._project_settings_workspace_active:
@@ -112213,6 +113275,10 @@ QMenu#green_beige_popup_menu::indicator:checked {{
 
             central = self.centralWidget()
             if central is not None:
+                limits = state.get("central_width_limits")
+                if limits is not None:
+                    central.setMinimumWidth(int(limits[0]))
+                    central.setMaximumWidth(int(limits[1]))
                 central.setVisible(bool(state.get("central", True)))
 
             for dock, visible in state.get("docks", ()):
@@ -112237,6 +113303,24 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 QTimer.singleShot(0, self._restore_project_settings_workspace)
 
         def show_project_settings_dock(self, _checked: bool = False) -> None:
+            """Stage 325: Vorspann vor dem Aufbau der Projekt-Einstellungen.
+
+            Die eigentliche Dock- und Einstellungslogik bleibt in der
+            synchronen Hilfsmethode; sie wird erst nach dem ersten Zeichnen
+            des nicht-modal geöffneten Vorspanns aufgerufen.
+            """
+            def open_settings() -> bool:
+                self._show_project_settings_dock_impl()
+                dock = getattr(self, "project_settings_dock", None)
+                return dock is not None and dock.isVisible()
+
+            self.run_with_operation_prelude(
+                "Projekt-Einstellungen",
+                "Projekt-Einstellungen werden geladen …",
+                open_settings,
+            )
+
+        def _show_project_settings_dock_impl(self) -> None:
             # Stage ASM 61: Die aktuelle Hauptfensterbreite ist verbindlich.
             # Projekt-Einstellungen muessen sich in diese Breite einpassen und
             # bei Platzmangel horizontal/vertikal scrollen.
@@ -112319,6 +113403,8 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 self.project_settings_panel.page_for_target(_target).manifest_page.set_settings(
                     self.project_windows_manifests.get(_target)
                 )
+            for _page in self.project_settings_panel.windows_pages.values():
+                _page.set_assembler_tooltips(self.project_assembler_tooltips_enabled)
             self.project_settings_panel.set_editor_settings(
                 self.editor_font_family or self._default_editor_font_family(),
                 self.editor_font_size,
@@ -112369,11 +113455,14 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 [max(260, _window_width_before_project_settings)],
                 Qt.Horizontal,
             )
+            # Stage 311: project information and filesystem stay hidden until
+            # the settings workspace closes. Use the entire remaining area.
             right = getattr(self, "right_dock", None)
             if right is not None:
-                right.show()
-                right.raise_()
-            self.resizeDocks([self.project_settings_dock], [100000], Qt.Vertical)
+                right.hide()
+            self.resizeDocks([self.project_settings_dock],
+                             [max(260, _window_height_before_project_settings)],
+                             Qt.Vertical)
 
             current = (
                 self.document_tabs.currentWidget()
@@ -113678,6 +114767,22 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 if self.current_project_path is not None:
                     self.save_project()
 
+        def set_project_assembler_tooltips(self, enabled, *, mark_modified=True):
+            enabled = bool(enabled)
+            changed = self.project_assembler_tooltips_enabled != enabled
+            self.project_assembler_tooltips_enabled = enabled
+            panel = getattr(self, "project_settings_panel", None)
+            if panel is not None:
+                for page in panel.windows_pages.values():
+                    page.set_assembler_tooltips(enabled)
+            if not enabled:
+                for editor in self.findChildren(SourceTextEdit):
+                    editor._hide_instruction_help()
+            if changed and mark_modified:
+                self.set_project_modified(True)
+                if self.current_project_path is not None:
+                    self.save_project()
+
         def set_project_editor_settings(
             self,
             font_family: str,
@@ -113760,6 +114865,8 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     page.set_settings(data)
             if changed and mark_modified:
                 self.set_project_modified(True)
+                if self.current_project_path is not None:
+                    self.save_project()
 
         def set_project_windows_debug_theme(
             self,
@@ -117343,7 +118450,7 @@ border: 2px solid #2a69aa;
             )
             if document is self.current_document():
                 self.setWindowTitle(
-                    f"{document.display_name}{marker} - Qt5 D64-Explorer"
+                    "DB=64 (c) 2026 by Jens Kallup - paule32"
                 )
 
         def _current_document_changed(self, _index: int) -> None:
@@ -117361,7 +118468,7 @@ border: 2px solid #2a69aa;
                 self._restore_c64_keyboard_layout_snapshot()
 
             if document is None:
-                self.setWindowTitle("Qt5 D64- und Dateisystem-Explorer")
+                self.setWindowTitle("DB=64 (c) 2026 by Jens Kallup - paule32")
                 self._update_editor_status_panels()
                 return
 
@@ -118984,6 +120091,9 @@ border: 2px solid #2a69aa;
                     ).casefold()
                     is_library = source_kind == "library"
                     is_form = source_kind == "form"
+                    # Manifest resources are committed to the linked PE before
+                    # Authenticode signing; the current internal COFF linker does
+                    # not yet merge .rsrc$01/.rsrc$02 resource sections.
                     linker = link_coff64_inputs if is64 else link_coff32_inputs
                     if is_prolog_build:
                         document.set_prolog_build_progress(58, "Link-Eingaben vorbereiten")
@@ -119071,6 +120181,17 @@ border: 2px solid #2a69aa;
                 )
                 self._write_assembled_program(output_path, program_data)
                 if document.build_target in {"pe32", "pe64"}:
+                    project_base = (
+                        self.current_project_path.parent
+                        if self.current_project_path is not None
+                        else (document.path.parent if document.path else self.current_directory)
+                    )
+                    embed_project_manifest_resource(
+                        output_path,
+                        self.project_windows_manifests.get(document.build_target),
+                        project_base,
+                        dll=(str(getattr(document, "generated_source_kind", "program")).casefold() == "library"),
+                    )
                     if not self._sign_windows_output_if_enabled(output_path, document.build_target):
                         if is_prolog_build:
                             document.finish_prolog_build_progress(False, "Signieren fehlgeschlagen")
@@ -119079,7 +120200,7 @@ border: 2px solid #2a69aa;
                     # Stage 295: best-effort deployment of the direct Qt5 runtime.
                     # A missing runtime must not make console-only builds fail.
                     self._prepare_prolog_qt5_runtime(output_path, show_error=False)
-            except OSError as exc:
+            except (OSError, ResourceCompilerError) as exc:
                 if is_prolog_build:
                     document.finish_prolog_build_progress(False, "Ausgabefehler")
                 message = (
@@ -119637,6 +120758,17 @@ border: 2px solid #2a69aa;
                     program_data = program.prg
                 self._write_assembled_program(output_path, program_data)
                 if document.build_target in {"pe32", "pe64"}:
+                    project_base = (
+                        self.current_project_path.parent
+                        if self.current_project_path is not None
+                        else (document.path.parent if document.path else self.current_directory)
+                    )
+                    embed_project_manifest_resource(
+                        output_path,
+                        self.project_windows_manifests.get(document.build_target),
+                        project_base,
+                        dll=(str(getattr(document, "generated_source_kind", "program")).casefold() == "library"),
+                    )
                     if not self._sign_windows_output_if_enabled(output_path, document.build_target):
                         return False
             except (AssemblerError, AmigaAssemblerError, PE32AssemblerError, PE64AssemblerError) as exc:
@@ -119645,7 +120777,7 @@ border: 2px solid #2a69aa;
                 self.show_error("Assemblerfehler", message)
                 self.statusBar().showMessage("Assemblieren fehlgeschlagen")
                 return False
-            except OSError as exc:
+            except (OSError, ResourceCompilerError) as exc:
                 message = (
                     "Das Zielprogramm konnte nicht gespeichert werden:\n"
                     f"{output_path}\n\n{exc}"
@@ -122250,6 +123382,10 @@ border: 2px solid #2a69aa;
                 _editor_color_profile_entries[0].get("value", {})
                 if _editor_color_profile_entries else {}
             )
+            self.set_project_assembler_tooltips(
+                _project_bool_entry(values, PROJECT_WINDOWS_ASSEMBLER_TOOLTIPS_KEY, True),
+                mark_modified=False,
+            )
             self.set_project_editor_settings(
                 (
                     _editor_family_entries[0].get("value", "")
@@ -123183,6 +124319,9 @@ border: 2px solid #2a69aa;
                 entries[_settings["manifest_key"]] = [normalize_manifest_settings(
                     self.project_windows_manifests.get(_target)
                 )]
+            entries[PROJECT_WINDOWS_ASSEMBLER_TOOLTIPS_KEY] = [{
+                "value": "true" if self.project_assembler_tooltips_enabled else "false"
+            }]
             entries[PROJECT_WINDOWS_EDITOR_FONT_FAMILY_KEY] = [{
                 "value": str(self.editor_font_family or "")
             }]
@@ -127448,11 +128587,7 @@ QFileDialog QComboBox QAbstractItemView {
                             f"{path.name}: dBase-Texteditor geöffnet", 6000
                         )
                 elif role == "forms":
-                    if self.open_dbase_form_file(path):
-                        self._remember_recent_file(path)
-                        self.statusBar().showMessage(
-                            f"{path.name}: Formular-Designer geöffnet", 6000
-                        )
+                    self.open_project_wfm_with_prelude(path)
                 elif role == "tables":
                     if self.open_dbase_table_file(path):
                         self._remember_recent_file(path)
@@ -129364,7 +130499,7 @@ QFileDialog QComboBox QAbstractItemView {
 
     app.setOrganizationName(ExplorerWindow.ORGANIZATION)
     app.setApplicationName(ExplorerWindow.APPLICATION)
-    app.setApplicationDisplayName("Qt5 D64-Explorer")
+    app.setApplicationDisplayName("DB=64 (c) 2026 by Jens Kallup - paule32")
 
     c64_font_path = Path(__file__).resolve().with_name("C64Pro.ttf")
     c64_font_id = QFontDatabase.addApplicationFont(str(c64_font_path))

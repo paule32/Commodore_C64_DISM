@@ -20,6 +20,8 @@ DESTDIR = release
 SOURCES += workstation_runner.cpp \
            d64_workstation.cpp
 
-HEADERS += d64_workstation.h
+HEADERS += d64_debug_context_menu.hpp \
+           d64_workstation.h \
+           d64_debug_title_surface.hpp
 
-win32:LIBS += -luser32 -lgdi32 -lshell32
+win32:LIBS += -luser32 -lgdi32 -lshell32 -ladvapi32

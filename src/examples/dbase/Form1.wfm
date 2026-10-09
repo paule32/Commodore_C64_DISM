@@ -1,5 +1,8 @@
+local A = 9
+local C = 4
+
 ** END HEADER -- do not remove this line
-// Generated on 26.09.2026
+// Generated on 09.10.2026
 //
 PARAMETER bmodal
 LOCAL B
@@ -180,6 +183,20 @@ CLASS Form1 OF FORM
     function __main__
         return 7
 
+    procedure TestAndNotXor
+        IF A > 0 .AND. C < 10
+            ? "Beide Bedingungen erfüllt"
+        ELSE
+            ? "Bedingung nicht erfüllt"
+        ENDIF
+        IF .NOT. (A = 0 .OR. C >= 10)
+            ? "NOT und OR funktionieren"
+        ENDIF
+        IF (A > 0) .XOR. (C < 0)
+            ? "Genau eine Bedingung ist wahr"
+        ENDIF
+    return
+
     procedure PushButton1_onClick(Sender)
         STORE 101.42 TO Ausdruck
         Ausdruck = 101.42
@@ -192,6 +209,40 @@ CLASS Form1 OF FORM
         STORE "Zeichenstring" TO SpeicherVar
         ? "4: " + SpeicherVar
         ? "5: " + !($(SpeicherVar, 8, 6))
+        TestAndNotXor()
+
+STORE ismouse() TO HatMaus
+
+IF HatMaus = 1
+    ? "Eine Maus ist vorhanden."
+ELSE
+    ? "Keine Maus erkannt."
+ENDIF
+
+IF ismouse() .AND. HatMaus = 1
+    ? "Maus kann verwendet werden."
+ENDIF
+
+? ismouse()
+
+
+STORE iskeyboard() TO HatTastatur
+
+IF HatTastatur = 1
+    ? "Eine Tastatur ist vorhanden."
+ELSE
+    ? "Keine Tastatur erkannt."
+ENDIF
+
+IF iskeyboard() .AND. ismouse()
+    ? "Maus und Tastatur sind vorhanden."
+ENDIF
+
+IF .NOT. iskeyboard()
+    ? "Keine Tastatur gefunden."
+ENDIF
+
+? iskeyboard()
         return
 
 ENDCLASS

@@ -65,7 +65,7 @@ returnStatement
     ;
 
 condition
-    : expression comparisonOperator expression
+    : expression
     ;
 
 comparisonOperator
@@ -142,7 +142,28 @@ objectPath
     ;
 
 expression
-    : additiveExpression
+    : logicalOrExpression
+    ;
+
+logicalOrExpression
+    : logicalXorExpression (LOGIC_OR logicalXorExpression)*
+    ;
+
+logicalXorExpression
+    : logicalAndExpression (LOGIC_XOR logicalAndExpression)*
+    ;
+
+logicalAndExpression
+    : logicalNotExpression (LOGIC_AND logicalNotExpression)*
+    ;
+
+logicalNotExpression
+    : LOGIC_NOT logicalNotExpression
+    | comparisonExpression
+    ;
+
+comparisonExpression
+    : additiveExpression (comparisonOperator additiveExpression)?
     ;
 
 additiveExpression

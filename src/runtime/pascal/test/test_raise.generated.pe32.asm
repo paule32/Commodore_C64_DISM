@@ -17,7 +17,7 @@ extern SetConsoleMode
 extern WriteFile
 extern lstrlenA
 extern wsprintfA
-import _jit_object_instance_new, "libd64_runtime.dll", "jit_object_instance_new"
+import _calloc, "msvcrt.dll", "calloc"
 import _GetModuleHandleA@4, "kernel32.dll", "GetModuleHandleA"
 import _ExitProcess@4, "kernel32.dll", "ExitProcess"
 import _GetWindowLongA@8, "user32.dll", "GetWindowLongA"
@@ -39,6 +39,7 @@ import _DispatchMessageA@4, "user32.dll", "DispatchMessageA"
 import _DefWindowProcA@16, "user32.dll", "DefWindowProcA"
 import _MessageBoxA@16, "user32.dll", "MessageBoxA"
 import _PostQuitMessage@4, "user32.dll", "PostQuitMessage"
+import _jit_object_instance_new, "libd64_runtime.dll", "jit_object_instance_new"
 import _jit_object_instance_free, "libd64_runtime.dll", "jit_object_instance_free"
 import _jit_object_free, "libd64_runtime.dll", "jit_object_free"
 import _jit_object_class_type, "libd64_runtime.dll", "jit_object_class_type"
@@ -56,9 +57,10 @@ import _jit_exception_push, "libd64_runtime.dll", "_jit_exception_push"
 import _jit_exception_pop, "libd64_runtime.dll", "_jit_exception_pop"
 _start:
     call __pas_console_init
-    push __pas_vmt_tfoo
-    call _jit_object_instance_new
-    add esp, 4
+    push 21
+    push 1
+    call _calloc
+    add esp, 8
     push eax
     mov ecx, __pas_ctor_result__ctor_tfoo_0_33_33
     pop eax
@@ -110,9 +112,10 @@ __pas_try_handler_3:
     call _jit_raise
     add esp, 8
 __pas_try_end_4:
-    push __pas_vmt_tapplication
-    call _jit_object_instance_new
-    add esp, 4
+    push 5
+    push 1
+    call _calloc
+    add esp, 8
     push eax
     mov ecx, __pas_ctor_result__ctor_tapplication_4_34_34
     pop eax
@@ -279,7 +282,7 @@ __pas_global_globalwindowproc:
     push eax
     mov ecx, __pas_local_global_globalwindowproc_appform_10
     mov ecx, dword ptr [ecx]
-    add ecx, 12
+    add ecx, 9
     pop eax
     mov dword ptr [ecx], eax
     mov ecx, __pas_local_global_globalwindowproc_appform_10
@@ -369,7 +372,7 @@ __pas_if_end_6:
     push eax
     mov ecx, __pas_local_global_globalwindowproc_appform_10
     mov ecx, dword ptr [ecx]
-    add ecx, 12
+    add ecx, 9
     pop eax
     mov dword ptr [ecx], eax
     mov ecx, __pas_local_global_globalwindowproc_appform_10
@@ -772,7 +775,7 @@ __pas_method_exception_create:
     mov eax, dword ptr [ecx]
     push eax
     mov ecx, esi
-    add ecx, 4
+    add ecx, 1
     pop eax
     mov dword ptr [ecx], eax
     mov esp, ebp
@@ -808,7 +811,7 @@ __pas_method_twindow_create:
     mov eax, __pas_string_1
     push eax
     mov ecx, esi
-    add ecx, 4
+    add ecx, 1
     pop eax
     mov dword ptr [ecx], eax
     xor eax, eax
@@ -816,7 +819,7 @@ __pas_method_twindow_create:
     call _GetModuleHandleA@4
     push eax
     mov ecx, esi
-    add ecx, 8
+    add ecx, 5
     pop eax
     mov dword ptr [ecx], eax
     mov eax, 3
@@ -843,7 +846,7 @@ __pas_method_twindow_create:
     pop eax
     mov dword ptr [ecx], eax
     mov ecx, esi
-    add ecx, 8
+    add ecx, 5
     mov eax, dword ptr [ecx]
     push eax
     mov ecx, __pas_local_twindow_create_winclass_25
@@ -888,7 +891,7 @@ __pas_method_twindow_create:
     pop eax
     mov dword ptr [ecx], eax
     mov ecx, esi
-    add ecx, 4
+    add ecx, 1
     mov eax, dword ptr [ecx]
     push eax
     mov ecx, __pas_local_twindow_create_winclass_25
@@ -939,7 +942,7 @@ __pas_if_end_24:
     mov eax, esi
     push eax
     mov ecx, esi
-    add ecx, 8
+    add ecx, 5
     mov eax, dword ptr [ecx]
     push eax
     mov eax, 0
@@ -957,11 +960,11 @@ __pas_if_end_24:
     mov eax, 13565952
     push eax
     mov ecx, esi
-    add ecx, 16
+    add ecx, 13
     mov eax, dword ptr [ecx]
     push eax
     mov ecx, esi
-    add ecx, 4
+    add ecx, 1
     mov eax, dword ptr [ecx]
     push eax
     mov eax, 0
@@ -969,14 +972,14 @@ __pas_if_end_24:
     call _CreateWindowExA@48
     push eax
     mov ecx, esi
-    add ecx, 12
+    add ecx, 9
     pop eax
     mov dword ptr [ecx], eax
     mov eax, __pas_string_5
     call __pas_print_string
     call __pas_print_newline
     mov ecx, esi
-    add ecx, 12
+    add ecx, 9
     mov eax, dword ptr [ecx]
     push eax
     mov eax, 0
@@ -1038,7 +1041,7 @@ __pas_method_twindow_gethandle:
     pop eax
     mov dword ptr [ecx], eax
     mov ecx, esi
-    add ecx, 12
+    add ecx, 9
     mov eax, dword ptr [ecx]
     push eax
     mov ecx, __pas_result_twindow_gethandle_result_31
@@ -1095,7 +1098,7 @@ __pas_method_tform_create:
     mov eax, __pas_string_10
     push eax
     mov ecx, esi
-    add ecx, 36
+    add ecx, 33
     pop eax
     mov dword ptr [ecx], eax
     mov esp, ebp
@@ -1123,9 +1126,10 @@ __pas_method_tapplication_create:
     mov eax, __pas_string_11
     call __pas_print_string
     call __pas_print_newline
-    push __pas_vmt_tform
-    call _jit_object_instance_new
-    add esp, 4
+    push 37
+    push 1
+    call _calloc
+    add esp, 8
     push eax
     mov ecx, __pas_ctor_result__ctor_tform_26_35_35
     pop eax
@@ -1140,22 +1144,22 @@ __pas_method_tapplication_create:
     mov eax, dword ptr [ecx]
     push eax
     mov ecx, esi
-    add ecx, 4
+    add ecx, 1
     pop eax
     mov dword ptr [ecx], eax
     mov eax, 10
     push eax
     mov ecx, esi
-    add ecx, 4
+    add ecx, 1
     mov ecx, dword ptr [ecx]
-    add ecx, 12
+    add ecx, 9
     mov eax, dword ptr [ecx]
     push eax
     call _ShowWindow@8
     mov ecx, esi
-    add ecx, 4
+    add ecx, 1
     mov ecx, dword ptr [ecx]
-    add ecx, 12
+    add ecx, 9
     mov eax, dword ptr [ecx]
     push eax
     call _UpdateWindow@4
@@ -1170,7 +1174,7 @@ __pas_method_tapplication_destroy:
     mov ebp, esp
     push esi
     mov ecx, esi
-    add ecx, 4
+    add ecx, 1
     mov eax, dword ptr [ecx]
     mov esi, eax
     call __pas_method_tobject_free
@@ -1260,23 +1264,23 @@ __pas_method_tfoo_create:
     mov eax, dword ptr [ecx]
     push eax
     mov ecx, esi
-    add ecx, 4
+    add ecx, 1
     pop eax
     mov dword ptr [ecx], eax
     mov eax, __pas_string_20
     push eax
     mov ecx, esi
-    add ecx, 8
+    add ecx, 5
     pop eax
     mov dword ptr [ecx], eax
     fld qword ptr [__pas_double_0]
     mov ecx, esi
-    add ecx, 12
+    add ecx, 9
     fstp qword ptr [ecx]
     mov eax, __pas_string_21
     push eax
     mov ecx, esi
-    add ecx, 20
+    add ecx, 17
     pop eax
     mov dword ptr [ecx], eax
     mov esp, ebp
@@ -1334,90 +1338,6 @@ __pas_method_tfoo_show:
     call __pas_print_newline
     push esi
     call __pas_method_tfaz_show
-    pop esi
-    mov esp, ebp
-    pop ebp
-    ret
-
-; Stage 240: cdecl JitDestroyProc -> Exception.Destroy
-__pas_vmt_destroy_exception:
-    push ebp
-    mov ebp, esp
-    push esi
-    mov esi, dword ptr [ebp+8]
-    call __pas_method_tobject_destroy
-    pop esi
-    mov esp, ebp
-    pop ebp
-    ret
-
-; Stage 240: cdecl JitDestroyProc -> TApplication.Destroy
-__pas_vmt_destroy_tapplication:
-    push ebp
-    mov ebp, esp
-    push esi
-    mov esi, dword ptr [ebp+8]
-    call __pas_method_tapplication_destroy
-    pop esi
-    mov esp, ebp
-    pop ebp
-    ret
-
-; Stage 240: cdecl JitDestroyProc -> TFaz.Destroy
-__pas_vmt_destroy_tfaz:
-    push ebp
-    mov ebp, esp
-    push esi
-    mov esi, dword ptr [ebp+8]
-    call __pas_method_tfaz_destroy
-    pop esi
-    mov esp, ebp
-    pop ebp
-    ret
-
-; Stage 240: cdecl JitDestroyProc -> TFoo.Destroy
-__pas_vmt_destroy_tfoo:
-    push ebp
-    mov ebp, esp
-    push esi
-    mov esi, dword ptr [ebp+8]
-    call __pas_method_tfoo_destroy
-    pop esi
-    mov esp, ebp
-    pop ebp
-    ret
-
-; Stage 240: cdecl JitDestroyProc -> TForm.Destroy
-__pas_vmt_destroy_tform:
-    push ebp
-    mov ebp, esp
-    push esi
-    mov esi, dword ptr [ebp+8]
-    call __pas_method_tform_destroy
-    pop esi
-    mov esp, ebp
-    pop ebp
-    ret
-
-; Stage 240: cdecl JitDestroyProc -> TObject.Destroy
-__pas_vmt_destroy_tobject:
-    push ebp
-    mov ebp, esp
-    push esi
-    mov esi, dword ptr [ebp+8]
-    call __pas_method_tobject_destroy
-    pop esi
-    mov esp, ebp
-    pop ebp
-    ret
-
-; Stage 240: cdecl JitDestroyProc -> TWindow.Destroy
-__pas_vmt_destroy_twindow:
-    push ebp
-    mov ebp, esp
-    push esi
-    mov esi, dword ptr [ebp+8]
-    call __pas_method_twindow_destroy
     pop esi
     mov esp, ebp
     pop ebp
@@ -1508,65 +1428,6 @@ __pas_range_message: db 82, 97, 110, 103, 101, 32, 101, 114, 114, 111, 114, 13, 
 
 ; IEEE-754 Double-Literale
 __pas_double_0: dd 2061584302, 1074376212
-
-; Stage 240: Pascal class runtime metadata / JitVmt (PE32)
-__pas_classname_exception: db 69, 120, 99, 101, 112, 116, 105, 111, 110, 0
-__pas_classname_tapplication: db 84, 65, 112, 112, 108, 105, 99, 97, 116, 105, 111, 110, 0
-__pas_classname_tfaz: db 84, 70, 97, 122, 0
-__pas_classname_tfoo: db 84, 70, 111, 111, 0
-__pas_classname_tform: db 84, 70, 111, 114, 109, 0
-__pas_classname_tobject: db 84, 79, 98, 106, 101, 99, 116, 0
-__pas_classname_twindow: db 84, 87, 105, 110, 100, 111, 119, 0
-align 4
-__pas_vmt_exception:
-    dd __pas_vmt_tobject
-    dd __pas_classname_exception
-    dd 8
-    dd 0
-    dd 0
-    dd __pas_vmt_destroy_exception
-__pas_vmt_tapplication:
-    dd __pas_vmt_tobject
-    dd __pas_classname_tapplication
-    dd 8
-    dd 0
-    dd 0
-    dd __pas_vmt_destroy_tapplication
-__pas_vmt_tfaz:
-    dd __pas_vmt_tobject
-    dd __pas_classname_tfaz
-    dd 4
-    dd 0
-    dd 0
-    dd __pas_vmt_destroy_tfaz
-__pas_vmt_tfoo:
-    dd __pas_vmt_tfaz
-    dd __pas_classname_tfoo
-    dd 24
-    dd 0
-    dd 0
-    dd __pas_vmt_destroy_tfoo
-__pas_vmt_tform:
-    dd __pas_vmt_twindow
-    dd __pas_classname_tform
-    dd 40
-    dd 0
-    dd 0
-    dd __pas_vmt_destroy_tform
-__pas_vmt_tobject:
-    dd 0
-    dd __pas_classname_tobject
-    dd 4
-    dd 0
-    dd 0
-    dd __pas_vmt_destroy_tobject
-__pas_vmt_twindow:
-    dd __pas_vmt_tobject
-    dd __pas_classname_twindow
-    dd 20
-    dd 0
-    dd 0
-    dd __pas_vmt_destroy_twindow
 
 ; Pascal-Variablen
 __pas_var_foo_0: dd 0 ; Foo: TFoo

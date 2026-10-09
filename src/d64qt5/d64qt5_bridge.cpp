@@ -94,7 +94,16 @@
 # include <algorithm>
 # include <cstdint>
 # include <functional>
+# include <atomic>
+# include <condition_variable>
+# include <deque>
+# include <mutex>
+# include <thread>
+# include <utility>
 
+# include "d64_debug_title_surface.hpp"
+# include "d64_debug_navy_scrollbar.hpp"
+# include "d64_debug_context_menu.hpp"
 # include "d64_dbase_runtime.hpp"
 # include "d64_runtime_abi.hpp"
 
@@ -109,6 +118,9 @@
 // Sowohl Helfer im anonymen Namespace als auch die exportierten Runtime-
 // Funktionen verwenden damit dieselbe spaetere globale static-Definition.
 static void destroy_wfm_output_dialog();
+#ifdef _WIN32
+static void stop_wfm_output_sender();
+#endif
 
 namespace {
 #ifdef _WIN32
@@ -118,6 +130,9 @@ constexpr std::uint32_t D64_WORKSTATION_OUTPUT_NEWLINE       = 0x00000001u;
 constexpr std::uint32_t D64_WORKSTATION_OUTPUT_THEME_PRESENT = 0x00000002u;
 constexpr std::uint32_t D64_WORKSTATION_OUTPUT_THEME_LIGHT   = 0x00000004u;
 constexpr std::uint32_t D64_WORKSTATION_OUTPUT_THEME_DARK    = 0x00000008u;
+// Stage 318: Reine Steuernachrichten (0 Textbytes) an den Runner.
+constexpr std::uint32_t D64_WORKSTATION_OUTPUT_DEBUG_SHOW    = 0x00000020u;
+constexpr std::uint32_t D64_WORKSTATION_OUTPUT_DEBUG_HIDE    = 0x00000040u;
 struct D64WorkstationOutputHeader {
     std::uint32_t magic;
     std::uint32_t flags;
@@ -198,6 +213,9 @@ SessionNode         * g_active_login_session    = nullptr;
 bool g_login_session        = false;
 
 bool g_debug_visible        = false;
+// Stage 320: SET DEBUG OFF vor dem ersten FormOpen darf durch den
+// Standalone-Start nicht versehentlich in ON umgewandelt werden.
+bool g_debug_visibility_explicit = false;
 bool g_program_finished     = false;
 bool g_default_menu_created = false;
 
@@ -566,7 +584,7 @@ protected:
     {
         if (
             event && event->button() == Qt::LeftButton && host_ &&
-            host_->isActiveWindow() && !host_->isMaximized()
+            !host_->isMaximized()
         ) {
             resizing_ = true;
             pressGlobal_ = event->globalPos();
@@ -884,9 +902,9 @@ protected:
 
     void drawResizeChrome(QPainter &painter)
     {
-        if (isMaximized())
-            return;
-
+        // Stage 323: Auch maximiert bleiben alle vier 3px-Rahmen sichtbar.
+        // In denselben Pixeln wie im Normalzustand zeichnen (0..2), ohne
+        // einen zusaetzlichen Margin oder ein verschobenes Titelband.
         const int r = frameSize();
         const QColor resizeLine(105, 105, 105);
         painter.fillRect(QRect(0, 0, width(), r), resizeLine);
@@ -896,7 +914,9 @@ protected:
 
         // Acht klar erkennbare Resize-Stellen, aber weiterhin nur aus
         // 3-Pixel-Linien aufgebaut: vier Ecken plus vier Kantenmitten.
-        if (!isActiveWindow())
+        // Aktive Resize-Grips nur zeigen, solange Resize moeglich ist.
+        // Der reine Rahmen bleibt maximiert sichtbar.
+        if (isMaximized() || !isActiveWindow())
             return;
 
         const QColor activeLine(185, 185, 185);
@@ -6942,6 +6962,12 @@ void request_runtime_shutdown()
     g_owner_hidden_active_window.clear();
 
 #ifdef _WIN32
+    // Stage 321: GUI-Abbau niemals mit nachlaufenden QMetaObject-
+    // Callbacks des Pipe-Workers mischen.
+    stop_wfm_output_sender();
+#endif
+
+#ifdef _WIN32
     /*
      * OWNER: D64WorkstationBeginLeave() beendet zuerst alle Child-Prozesse
      * und loest den Keyboard-Guard. Panels/Desktop bleiben bis FinalizeLeave
@@ -7542,7 +7568,27 @@ bool split_windows_login_name(
 // Stage 121: Diese Deklaration muss im selben (globalen) Namespace wie die
 // Implementierung weiter unten stehen. Eine Deklaration im anonymen Namespace
 // erzeugt ein zweites Symbol und macht unqualifizierte Aufrufe mehrdeutig.
-static bool send_wfm_output_to_workstation(const QByteArray &utf8, bool newline);
+// Stage 321: Der Desktop-OWNER ist kein zuverlaessiger Proxy fuer
+// "vom Runner gestartet". Auch manuell gestartete JOINED-EXEs besitzen
+// keinen DOW1-Empfaenger. Nur Kinder des Runners erben dieses Kennzeichen.
+static bool dbase_use_runner_debug_pipe()
+{
+    if (!g_workstation_mode_enabled || D64WorkstationOwnsDesktop())
+        return false;
+    wchar_t marker[8] = {};
+    const DWORD length = GetEnvironmentVariableW(
+        L"D64_WORKSTATION_DEBUG_OUTPUT", marker,
+        static_cast<DWORD>(sizeof(marker) / sizeof(marker[0])));
+    return length == 1 && marker[0] == L'1';
+}
+
+static bool dbase_use_local_workstation_debug()
+{
+    return g_workstation_mode_enabled && !dbase_use_runner_debug_pipe();
+}
+
+static bool send_wfm_output_to_workstation(const QByteArray &utf8, bool newline, int debugVisibility = -1);
+static void stop_wfm_output_sender();
 #endif
 
 // Stage 143: WFM-Debug/Output kann im direkten Modus als lokales Qt-Fenster
@@ -7550,6 +7596,300 @@ static bool send_wfm_output_to_workstation(const QByteArray &utf8, bool newline)
 static void show_wfm_output_dialog(QWidget *reference);
 static void append_wfm_output(const QString &value, bool newline);
 static void apply_wfm_debug_theme();
+
+// Stage 315: Einheitliche eigene Chrome fuer das lokale DEBUG-Fenster.
+// Frameless wird einmal im Konstruktor gesetzt (kein HWND-Reset bei
+// Themewechsel); Dark/Light beeinflussen ausschliesslich Farbe und Inhalt.
+// 3px sichtbarer Rand, 5px Maus-Fangzone auf allen vier Seiten und Ecken.
+// Das Debug-Fenster ist unabhaengig vom WFM-Hauptfenster und darf dieses
+// durch Minimieren/Maximieren/Schliessen nicht beenden.
+class DBaseDebugOutputDialog final : public QDialog
+{
+public:
+    explicit DBaseDebugOutputDialog(QWidget *parent = nullptr) : QDialog(parent)
+    {
+        setWindowFlags(Qt::Window | Qt::FramelessWindowHint |
+                       Qt::WindowSystemMenuHint | Qt::WindowMinMaxButtonsHint |
+                       Qt::WindowCloseButtonHint);
+        setWindowTitle(QStringLiteral("Debug"));
+        setMouseTracking(true);
+        setAttribute(Qt::WA_Hover, true);
+        setMinimumSize(340, 170);
+        titleSurface_ = new D64DebugTitleSurface(titleHeight(), false, this);
+#ifdef _WIN32
+        const int hits[12] = {
+            HTTOPLEFT, HTTOP, HTTOPRIGHT, HTLEFT, HTRIGHT,
+            HTBOTTOMLEFT, HTBOTTOM, HTBOTTOMRIGHT,
+            HTTOP, HTBOTTOM, HTLEFT, HTRIGHT
+        };
+        for (int i = 0; i < 12; ++i)
+            resizeHandles_[i] = new DBaseWfmResizeHandle(this, hits[i]);
+#endif
+    }
+
+    static constexpr int borderSize() { return 3; }
+    static constexpr int titleHeight() { return 34; }
+    static constexpr int buttonWidth() { return 46; }
+    static constexpr int clientInset() { return borderSize() + 1; }
+    static constexpr int clientTop() { return titleHeight() + clientInset(); }
+
+    void setDarkChrome(bool enabled)
+    {
+        darkChrome_ = enabled;
+        // Die komplette QDialog-Flaeche ist dunkel: nicht nur der Titel.
+        // Palette als Fallback, falls ein Windows-Qt-Style Teile der QSS nicht malt.
+        QPalette pal = palette();
+        const QColor background = enabled ? QColor(23,23,23) : QColor(240,240,240);
+        const QColor foreground = enabled ? QColor(237,237,237) : QColor(17,17,17);
+        pal.setColor(QPalette::Window, background);
+        pal.setColor(QPalette::WindowText, foreground);
+        pal.setColor(QPalette::Base, enabled ? QColor(16,16,16) : Qt::white);
+        pal.setColor(QPalette::Text, foreground);
+        setPalette(pal);
+        setAutoFillBackground(true);
+        if (titleSurface_) { titleSurface_->setDarkChrome(enabled); titleSurface_->raise(); }
+        // Nie setWindowFlags() auf einer sichtbaren Qt-Dialoginstanz aufrufen:
+        // sonst baut Qt das native HWND um, verliert Chrome/Fokus und kann
+        // die per Button sichtbaren Fensterzustaende beeintraechtigen.
+        if (QLayout *l = layout()) {
+            l->setContentsMargins(clientInset(), clientTop(),
+                                  clientInset(), clientInset());
+        }
+        syncResizeHandles();
+        update();
+    }
+
+protected:
+    QRect minRect() const
+    { return QRect(width()-3*buttonWidth(), borderSize(), buttonWidth(), titleHeight()-borderSize()); }
+    QRect maxRect() const
+    { return QRect(width()-2*buttonWidth(), borderSize(), buttonWidth(), titleHeight()-borderSize()); }
+    QRect closeRect() const
+    { return QRect(width()-buttonWidth(), borderSize(), buttonWidth(), titleHeight()-borderSize()); }
+
+#ifdef _WIN32
+    bool nativeEvent(const QByteArray &type, void *message, long *result) override
+    {
+        MSG *msg = static_cast<MSG *>(message);
+        if (msg && (msg->message == WM_SETTINGCHANGE || msg->message == WM_THEMECHANGED)) {
+            // Das System darf waehrend einer laufenden EXE das App-Theme aendern.
+            // Nach der Windows-Nachricht den Registrywert erneut abfragen.
+            QTimer::singleShot(0, []() { apply_wfm_debug_theme(); });
+        }
+        if (msg && msg->message == WM_GETMINMAXINFO && msg->lParam) {
+            if (g_workstation_mode_enabled) {
+                D64WorkstationConstrainMaximizeInfo(reinterpret_cast<void *>(msg->lParam));
+            } else {
+                MONITORINFO monitor = {};
+                monitor.cbSize = sizeof(monitor);
+                HMONITOR hmon = MonitorFromWindow(msg->hwnd, MONITOR_DEFAULTTONEAREST);
+                if (hmon && GetMonitorInfoW(hmon, &monitor)) {
+                    MINMAXINFO *mmi = reinterpret_cast<MINMAXINFO *>(msg->lParam);
+                    mmi->ptMaxPosition.x = monitor.rcWork.left - monitor.rcMonitor.left;
+                    mmi->ptMaxPosition.y = monitor.rcWork.top - monitor.rcMonitor.top;
+                    mmi->ptMaxSize.x = monitor.rcWork.right - monitor.rcWork.left;
+                    mmi->ptMaxSize.y = monitor.rcWork.bottom - monitor.rcWork.top;
+                }
+            }
+            if (result) *result = 0;
+            return true;
+        }
+        if (msg && msg->message == WM_NCHITTEST) {
+            const QPoint pos = mapFromGlobal(QCursor::pos());
+            // Die eigenen QWidget-Handles empfangen die Qt-Mausereignisse,
+            // einschliesslich der vier durchgaengigen Randstreifen.
+            for (auto *handle : resizeHandles_) {
+                if (handle && handle->isVisible() && handle->geometry().contains(pos)) {
+                    if (result) *result = HTCLIENT;
+                    return true;
+                }
+            }
+            if (minRect().contains(pos) || maxRect().contains(pos) || closeRect().contains(pos)) {
+                if (result) *result = HTCLIENT;
+                return true;
+            }
+            if (pos.y() >= borderSize() && pos.y() < titleHeight()) {
+                // Titel-Widget verarbeitet Qt5-Mausdrag/Buttons/Doppelklick selbst.
+                if (result) *result = HTCLIENT;
+                return true;
+            }
+        }
+        return QDialog::nativeEvent(type, message, result);
+    }
+#endif
+
+    void paintEvent(QPaintEvent *event) override
+    {
+        QDialog::paintEvent(event);
+        // Die Kindkomponente D64DebugTitleSurface malt Verlauf, Debug-Text
+        // und alle drei Icons; hier nur der 3px-Rahmen (unter dem Kind).
+        if (!isMaximized()) {
+            QPainter painter(this);
+            const QColor frame = darkChrome_ ? QColor(105,105,105) : QColor(130,130,130);
+            constexpr int k = borderSize();
+            painter.fillRect(0, 0, width(), k, frame);
+            painter.fillRect(0, height()-k, width(), k, frame);
+            painter.fillRect(0, k, k, qMax(0,height()-2*k), frame);
+            painter.fillRect(width()-k, k, k, qMax(0,height()-2*k), frame);
+        }
+    }
+
+    void mouseMoveEvent(QMouseEvent *event) override
+    {
+        if (event) {
+            const QPoint p = event->pos();
+            const int hovered = minRect().contains(p) ? 1 :
+                maxRect().contains(p) ? 2 : closeRect().contains(p) ? 3 : 0;
+            if (hoverButton_ != hovered) {
+                hoverButton_ = hovered;
+                if (titleSurface_) titleSurface_->setHoverButton(hovered);
+            }
+        }
+        QDialog::mouseMoveEvent(event);
+    }
+    void mousePressEvent(QMouseEvent *event) override
+    {
+        if (event && event->button() == Qt::LeftButton) {
+            const QPoint p = event->pos();
+            if (closeRect().contains(p)) { hide(); event->accept(); return; }
+            if (minRect().contains(p)) { showMinimized(); event->accept(); return; }
+            if (maxRect().contains(p)) {
+                isMaximized() ? showNormal() : showMaximized();
+                event->accept(); return;
+            }
+        }
+        QDialog::mousePressEvent(event);
+    }
+    void mouseDoubleClickEvent(QMouseEvent *event) override
+    {
+        if (event && event->button() == Qt::LeftButton) {
+            const QPoint p = event->pos();
+            if (minRect().contains(p) || maxRect().contains(p) || closeRect().contains(p)) {
+                // Der erste Klick hat die Aktion bereits ausgefuehrt.
+                // Keine zweite Aktion beim DoubleClick ausloesen.
+                event->accept();
+                return;
+            }
+            if (p.y() >= borderSize() && p.y() < titleHeight()) {
+                isMaximized() ? showNormal() : showMaximized();
+                event->accept(); return;
+            }
+        }
+        QDialog::mouseDoubleClickEvent(event);
+    }
+    void leaveEvent(QEvent *event) override
+    {
+        if (hoverButton_) {
+            hoverButton_ = 0;
+            if (titleSurface_) titleSurface_->setHoverButton(0);
+        }
+        QDialog::leaveEvent(event);
+    }
+    void resizeEvent(QResizeEvent *event) override
+    {
+        QDialog::resizeEvent(event);
+        if (titleSurface_) titleSurface_->syncGeometry(isMaximized());
+        syncResizeHandles();
+    }
+    void showEvent(QShowEvent *event) override
+    {
+        QDialog::showEvent(event);
+        if (titleSurface_) titleSurface_->syncGeometry(isMaximized());
+        syncResizeHandles();
+    }
+    void changeEvent(QEvent *event) override
+    {
+        QDialog::changeEvent(event);
+        if (event && (event->type() == QEvent::ActivationChange ||
+                      event->type() == QEvent::WindowStateChange)) {
+            if (titleSurface_) titleSurface_->syncGeometry(isMaximized());
+            syncResizeHandles(); update();
+        }
+    }
+
+private:
+    void syncResizeHandles()
+    {
+#ifdef _WIN32
+        const bool active = isVisible() && !isMaximized();
+        const int s = 5, cx = width()/2, cy = height()/2;
+        const QRect zones[12] = {
+            QRect(0,0,s,s), QRect(cx-s/2,0,s,s), QRect(width()-s,0,s,s),
+            QRect(0,cy-s/2,s,s), QRect(width()-s,cy-s/2,s,s),
+            QRect(0,height()-s,s,s), QRect(cx-s/2,height()-s,s,s),
+            QRect(width()-s,height()-s,s,s),
+            QRect(s,0,qMax(0,width()-2*s),s),
+            QRect(s,height()-s,qMax(0,width()-2*s),s),
+            QRect(0,s,s,qMax(0,height()-2*s)),
+            QRect(width()-s,s,s,qMax(0,height()-2*s))
+        };
+        // Zuerst die vier Seiten, dann acht Ecken/Mittelpunkte nach oben.
+        for (int i=8; i<12; ++i) {
+            resizeHandles_[i]->setGeometry(zones[i]);
+            resizeHandles_[i]->setVisible(active);
+            if (active) resizeHandles_[i]->raise();
+        }
+        for (int i=0; i<8; ++i) {
+            resizeHandles_[i]->setGeometry(zones[i]);
+            resizeHandles_[i]->setVisible(active);
+            if (active) resizeHandles_[i]->raise();
+        }
+#endif
+    }
+    bool darkChrome_ = false;
+    int hoverButton_ = 0;
+    D64DebugTitleSurface *titleSurface_ = nullptr;
+    DBaseWfmResizeHandle *resizeHandles_[12] = {};
+};
+
+// Win32-Registry direkt lesen. Qt-5/QSettings kann bei relativen Root-Pfaden
+// auf verschiedenen 32/64-Bit-Installationen uneinheitlich aufloesen.
+// App-Theme ist fuer Anwendungsfenster entscheidend, System-Theme ist Fallback.
+static bool dbase_windows_apps_dark_mode()
+{
+#ifdef _WIN32
+    HKEY key = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER,
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+        0, KEY_QUERY_VALUE, &key) == ERROR_SUCCESS) {
+        const wchar_t *names[] = { L"AppsUseLightTheme", L"SystemUsesLightTheme" };
+        for (const wchar_t *name : names) {
+            DWORD value = 1;
+            DWORD type = 0, size = sizeof(value);
+            const LONG code = RegQueryValueExW(key, name, nullptr, &type,
+                                              reinterpret_cast<LPBYTE>(&value), &size);
+            if (code == ERROR_SUCCESS && type == REG_DWORD && size == sizeof(value)) {
+                RegCloseKey(key);
+                return value == 0;
+            }
+        }
+        RegCloseKey(key);
+    }
+#endif
+    return false; // aeltere Windows-Versionen ohne Personalisierungswert
+}
+
+
+static bool dbase_effective_debug_dark_mode()
+{
+    if (g_debug_theme_mode == 2) return true;
+    if (g_debug_theme_mode == 1) return false;
+    return dbase_windows_apps_dark_mode();
+}
+
+static QString dbase_debug_navy_scrollbars()
+{
+    return QStringLiteral(
+        "QScrollBar:vertical {background:#06152b;width:16px;margin:16px 0 16px 0;border:1px solid #244d7a;}"
+        "QScrollBar::handle:vertical {background:#0b2f63;min-height:24px;border:1px solid #416d9c;}"
+        "QScrollBar::sub-line:vertical,QScrollBar::add-line:vertical {background:#061b3a;height:16px;}"
+        "QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical {background:#06152b;}"
+        "QScrollBar:horizontal {background:#06152b;height:16px;margin:0 16px 0 16px;border:1px solid #244d7a;}"
+        "QScrollBar::handle:horizontal {background:#0b2f63;min-width:24px;border:1px solid #416d9c;}"
+        "QScrollBar::sub-line:horizontal,QScrollBar::add-line:horizontal {background:#061b3a;width:16px;}"
+        "QScrollBar::add-page:horizontal,QScrollBar::sub-page:horizontal {background:#06152b;}"
+    );
+}
 
 extern "C" D64QT5_API void DBaseQtSetWorkstationMode(int enabled)
 {
@@ -7615,6 +7955,7 @@ extern "C" D64QT5_API int DBaseQtInitializeGui(const char *title)
     }
 
     g_wfm_gui_mode = true;
+    g_debug_visibility_explicit = false;
     g_shutdown_requested = false;
     g_shutdown_in_progress = false;
     g_exit_authorized = false;
@@ -7805,6 +8146,7 @@ extern "C" D64QT5_API int DBaseQtInitialize(const char *title)
         return 1;
 
     g_wfm_gui_mode = false;
+    g_debug_visibility_explicit = false;
 
     QApplication *existing = qobject_cast<QApplication *>(QCoreApplication::instance());
 
@@ -8092,6 +8434,15 @@ extern "C" D64QT5_API void DBaseQtShowWindow(void)
     if (g_app)
         g_app->processEvents();
 #ifdef _WIN32
+    // Stage 320: Start aus cmd/PowerShell ohne IDE-Runner: die erzeugte EXE
+    // besitzt den Workstation-Desktop selbst und muss ihren DEBUG-QDialog
+    // selbst zeigen. Bei JOINED bleibt ausschliesslich der Runner zustaendig.
+    if (dbase_use_local_workstation_debug()) {
+        if (!g_debug_visibility_explicit)
+            g_debug_visible = true;
+        if (g_debug_visible)
+            show_wfm_output_dialog(g_window);
+    }
     if (g_workstation_mode_enabled && D64WorkstationIsVisible())
         D64WorkstationInstallKeyboardGuard(workstation_hwnd);
 #endif
@@ -8105,34 +8456,51 @@ extern "C" D64QT5_API void DBaseQtProcessEvents(void)
 
 extern "C" D64QT5_API void DBaseQtSetDebugVisible(int visible)
 {
-    // Stage 143: DBaseQtInitializeGui() besitzt absichtlich kein verstecktes
-    // Console-Hauptfenster. Im direkten Nicht-Workstation-Modus ist deshalb
-    // der lokale WFM-Ausgabe-/Debugdialog die sichtbare DEBUG-Oberflaeche.
-    if (g_wfm_gui_mode) {
-        g_debug_visible = visible != 0;
+    // Stage 320: Diese Entscheidung ist auch vor FormOpen/ShowWindow gueltig.
+    g_debug_visibility_explicit = true;
+    g_debug_visible = visible != 0;
 #ifdef _WIN32
-        if (!g_workstation_mode_enabled) {
-            if (visible)
+    if (g_workstation_mode_enabled) {
+        if (dbase_use_local_workstation_debug()) {
+            // Standalone EXE: keine Runner-Pipe und kein 2-s-Timeout pro
+            // Ausgabefragment. Das eigene QDialog ist der sichtbare Debugkanal.
+            if (g_debug_visible)
+                show_wfm_output_dialog(nullptr);
+            else if (g_wfm_output_dialog)
+                g_wfm_output_dialog->hide();
+            return;
+        }
+        // IDE/Runner-Prozess: nur der zentrale Runner besitzt das Debugfenster.
+        // Nie im WFM-Event-Thread auf eine Named Pipe warten.
+        if (!send_wfm_output_to_workstation(QByteArray(), false, visible ? 1 : 0)) {
+            if (g_debug_visible)
                 show_wfm_output_dialog(nullptr);
             else if (g_wfm_output_dialog)
                 g_wfm_output_dialog->hide();
         }
-#else
-        if (visible)
-            show_wfm_output_dialog(nullptr);
-        else if (g_wfm_output_dialog)
-            g_wfm_output_dialog->hide();
+        return;
+    }
+#endif
+    if (g_wfm_gui_mode) {
+#ifdef _WIN32
+        if (!g_workstation_mode_enabled) {
+#endif
+            if (visible)
+                show_wfm_output_dialog(nullptr);
+            else if (g_wfm_output_dialog)
+                g_wfm_output_dialog->hide();
+#ifdef _WIN32
+        }
 #endif
         if (g_app)
             g_app->processEvents();
         return;
     }
-
+    // Normaler .prg-/Konsolenmodus behält den bestehenden DEBUG-Tab.
     if (visible)
         install_debug_tab(true);
     else
         remove_debug_tab();
-
     if (g_app)
         g_app->processEvents();
 }
@@ -8140,33 +8508,54 @@ extern "C" D64QT5_API void DBaseQtSetDebugVisible(int visible)
 extern "C" D64QT5_API void DBaseQtAppendConsole(const char *text, int length)
 {
 #ifdef _WIN32
-    if (g_wfm_gui_mode && text && length > 0) {
+    if (g_wfm_gui_mode && g_workstation_mode_enabled &&
+        dbase_use_runner_debug_pipe() && text && length > 0) {
         const QByteArray utf8(text, length);
         if (send_wfm_output_to_workstation(utf8, false))
             return;
     }
 #endif
+    // Stage 320: Bei einem eigenstaendigen WFM-Workstation-OWNER existiert
+    // kein g_console und kein zentraler Runner. Den lokalen QDialog nutzen.
+    if (g_wfm_gui_mode && text && length > 0) {
+        append_wfm_output(QString::fromUtf8(text, length), false);
+        return;
+    }
     select_console();
     append_text(g_console, text, length);
 }
 
 extern "C" D64QT5_API void DBaseQtAppendDebug(const char *text, int length)
 {
+#ifdef _WIN32
+    // Stage 318: Auch eine normale .prg-Datei, die Workstation Mode benutzt,
+    // muss Debug-Text in denselben Runner-QDialog schreiben koennen wie WFM.
+    // Bei fehlender Pipe bleibt der lokale Qt-Debug-Tab als Fallback erhalten.
+    if (g_workstation_mode_enabled && !g_wfm_gui_mode && text && length > 0) {
+        if (dbase_use_runner_debug_pipe() &&
+            send_wfm_output_to_workstation(QByteArray(text, length), false))
+            return;
+        if (dbase_use_local_workstation_debug()) {
+            // Die EXE ist Workstation-Owner: Ausgabe in denselben lokalen
+            // QDialog wie WFM. So funktioniert SET DEBUG ON auch in .prg.
+            append_wfm_output(QString::fromUtf8(text, length), false);
+            return;
+        }
+    }
+#endif
     if (g_wfm_gui_mode && text && length > 0) {
         const QByteArray utf8(text, length);
 #ifdef _WIN32
         // Nur eine tatsaechlich als Workstation kompilierte Anwendung darf
         // DEBUG-Ausgabe an den Runner schicken. Eine direkt gestartete EXE
         // bleibt auch dann lokal, wenn zufaellig eine Workstation-Pipe existiert.
-        if (g_workstation_mode_enabled) {
+        if (dbase_use_runner_debug_pipe()) {
             if (send_wfm_output_to_workstation(utf8, false))
                 return;
         }
 #endif
-        g_debug_visible = true;
+        // Die Ausgabe darf ein explizites SET DEBUG OFF nicht aufheben.
         append_wfm_output(QString::fromUtf8(utf8), false);
-        if (g_app)
-            g_app->processEvents(QEventLoop::ExcludeUserInputEvents);
         return;
     }
 
@@ -9070,6 +9459,23 @@ extern "C" D64QT5_API void DBaseQtTimerSetActive(
 }
 
 #ifdef _WIN32
+// Stage 321: Das PE/WFM-Callback darf NIEMALS im Qt-GUI-Thread
+// auf eine Named Pipe warten. FIFO bewahrt Text- und ON/OFF-Reihenfolge.
+struct D64QueuedDebugPacket {
+    QByteArray utf8;
+    bool newline = false;
+    int visibility = -1;
+    int theme = 0;
+};
+
+static std::mutex g_debug_sender_mutex;
+static std::condition_variable g_debug_sender_signal;
+static std::deque<D64QueuedDebugPacket> g_debug_sender_packets;
+static std::thread g_debug_sender_thread;
+static bool g_debug_sender_stop = false;
+static std::size_t g_debug_sender_pending_bytes = 0;
+constexpr std::size_t D64_DEBUG_QUEUE_CAPACITY = 8u * 1024u * 1024u;
+
 static bool write_workstation_pipe_exact(HANDLE pipe, const void *data, DWORD size)
 {
     const BYTE *cursor = static_cast<const BYTE *>(data);
@@ -9083,105 +9489,181 @@ static bool write_workstation_pipe_exact(HANDLE pipe, const void *data, DWORD si
     return true;
 }
 
-static bool send_wfm_output_to_workstation(const QByteArray &utf8, bool newline)
+static bool deliver_workstation_packet(const D64QueuedDebugPacket &packet)
 {
-    // Stage 125:
-    // Jede ?/??-Ausgabe ist momentan eine eigene kurze Pipe-Verbindung. Der
-    // Runner schliesst nach einem Paket seine Pipe-Instanz und legt direkt
-    // danach die naechste an. Zwei unmittelbar aufeinander folgende PRINTs
-    // koennen deshalb genau zwischen DisconnectNamedPipe/CloseHandle und dem
-    // naechsten CreateNamedPipe landen. Windows meldet in diesem kleinen
-    // Zeitfenster je nach Timing ERROR_PIPE_BUSY *oder* ERROR_FILE_NOT_FOUND.
-    //
-    // Nicht auf den lokalen Qt-Fallback ausweichen, solange der Runner seine
-    // Pipe nur kurz neu aufbaut. Stattdessen bis zu zwei Sekunden erneut
-    // verbinden. Damit bleiben auch mehrere direkt folgende Zeilen garantiert
-    // im zentralen Workstation-Ausgabefenster und in ihrer Reihenfolge.
     HANDLE pipe = INVALID_HANDLE_VALUE;
-    const ULONGLONG deadline = GetTickCount64() + 2000ULL;
-
-    for (;;) {
+    // Nur der Hintergrundthread wartet. Nie mehrere Sekunden pro Textteil.
+    const ULONGLONG deadline = GetTickCount64() + 250ULL;
+    do {
         pipe = CreateFileW(
-            D64_WORKSTATION_RUNNER_PIPE,
-            GENERIC_WRITE,
-            0,
-            nullptr,
-            OPEN_EXISTING,
-            0,
-            nullptr
-        );
+            D64_WORKSTATION_RUNNER_PIPE, GENERIC_WRITE, 0, nullptr,
+            OPEN_EXISTING, 0, nullptr);
         if (pipe != INVALID_HANDLE_VALUE)
             break;
-
         const DWORD error = GetLastError();
         if (error != ERROR_PIPE_BUSY && error != ERROR_FILE_NOT_FOUND)
             return false;
         if (GetTickCount64() >= deadline)
             return false;
-
-        if (error == ERROR_PIPE_BUSY) {
-            // WaitNamedPipe kann ebenfalls fehlschlagen, wenn der Runner die
-            // alte Instanz gerade geschlossen und die neue noch nicht erzeugt
-            // hat. Der Schleifendurchlauf probiert CreateFile deshalb in jedem
-            // Fall erneut.
-            WaitNamedPipeW(D64_WORKSTATION_RUNNER_PIPE, 250);
-        } else {
-            Sleep(10);
-        }
-    }
+        if (error == ERROR_PIPE_BUSY)
+            WaitNamedPipeW(D64_WORKSTATION_RUNNER_PIPE, 10);
+        else
+            Sleep(1);
+    } while (true);
 
     D64WorkstationOutputHeader header{};
     header.magic = D64_WORKSTATION_OUTPUT_MAGIC;
-    header.flags = newline ? D64_WORKSTATION_OUTPUT_NEWLINE : 0u;
-    // Stage 144: Das in die EXE eingebettete Debug-Theme reist mit jeder
-    // Workstation-Ausgabe zum Runner. Damit funktioniert die Einstellung auch
-    // dann, wenn die EXE ausserhalb von d64_dism gestartet wird.
+    header.flags = packet.newline ? D64_WORKSTATION_OUTPUT_NEWLINE : 0u;
+    if (packet.visibility == 1)
+        header.flags |= D64_WORKSTATION_OUTPUT_DEBUG_SHOW;
+    else if (packet.visibility == 0)
+        header.flags |= D64_WORKSTATION_OUTPUT_DEBUG_HIDE;
     header.flags |= D64_WORKSTATION_OUTPUT_THEME_PRESENT;
-    if (g_debug_theme_mode == 1)
+    if (packet.theme == 1)
         header.flags |= D64_WORKSTATION_OUTPUT_THEME_LIGHT;
-    else if (g_debug_theme_mode == 2)
+    else if (packet.theme == 2)
         header.flags |= D64_WORKSTATION_OUTPUT_THEME_DARK;
-    header.textBytes = static_cast<std::uint32_t>(utf8.size());
+    header.textBytes = static_cast<std::uint32_t>(packet.utf8.size());
     header.processId = GetCurrentProcessId();
-
     bool ok = write_workstation_pipe_exact(pipe, &header, sizeof(header));
-    if (ok && !utf8.isEmpty()) {
-        ok = write_workstation_pipe_exact(
-            pipe,
-            utf8.constData(),
-            static_cast<DWORD>(utf8.size())
-        );
-    }
+    if (ok && !packet.utf8.isEmpty())
+        ok = write_workstation_pipe_exact(pipe, packet.utf8.constData(), header.textBytes);
     CloseHandle(pipe);
     return ok;
 }
+
+static void local_debug_fallback(const D64QueuedDebugPacket &packet)
+{
+    QApplication *app = g_app;
+    if (!app)
+        return;
+    // Ueber Qt queued connection auf den GUI-Thread zurueck. Hier kein QWidget
+    // direkt aus dem Pipe-Thread beruehren.
+    QMetaObject::invokeMethod(app, [packet]() {
+        if (g_shutdown_requested)
+            return;
+        // Ein unerwartet fehlender Runner muss das lokale Debug-Fenster
+        // genauso wie ein Standalone-Start bei default sichtbar machen.
+        if (!g_debug_visibility_explicit)
+            g_debug_visible = true;
+        if (packet.visibility >= 0) {
+            // Nur den aktuell gueltigen GUI-Zustand anwenden: eine spaeter
+            // verarbeitete OFF-Nachricht darf nicht durch altes ON kippen.
+            if (g_debug_visible)
+                show_wfm_output_dialog(nullptr);
+            else if (g_wfm_output_dialog)
+                g_wfm_output_dialog->hide();
+        }
+        if (!packet.utf8.isEmpty() || packet.newline)
+            append_wfm_output(QString::fromUtf8(packet.utf8), packet.newline);
+    }, Qt::QueuedConnection);
+}
+
+static void debug_sender_loop()
+{
+    // Nach einer unterbrochenen Runner-Verbindung dieselbe Ausgabequelle
+    // konsequent lokal verwenden; kein neuer 250ms-Timeout je Fragment.
+    bool runnerAvailable = true;
+    for (;;) {
+        D64QueuedDebugPacket packet;
+        {
+            std::unique_lock<std::mutex> lock(g_debug_sender_mutex);
+            g_debug_sender_signal.wait(lock, []() {
+                return g_debug_sender_stop || !g_debug_sender_packets.empty();
+            });
+            if (g_debug_sender_stop)
+                break;
+            packet = std::move(g_debug_sender_packets.front());
+            g_debug_sender_packets.pop_front();
+            g_debug_sender_pending_bytes -= static_cast<std::size_t>(packet.utf8.size());
+        }
+        if (runnerAvailable && !deliver_workstation_packet(packet))
+            runnerAvailable = false;
+        if (!runnerAvailable)
+            local_debug_fallback(packet);
+    }
+}
+
+static bool send_wfm_output_to_workstation(
+    const QByteArray &utf8, bool newline, int debugVisibility)
+{
+    if (!dbase_use_runner_debug_pipe())
+        return false;
+    D64QueuedDebugPacket packet{};
+    packet.utf8 = utf8;
+    packet.newline = newline;
+    packet.visibility = debugVisibility;
+    packet.theme = g_debug_theme_mode;
+    {
+        std::lock_guard<std::mutex> lock(g_debug_sender_mutex);
+        if (g_shutdown_requested)
+            return false;
+        if (g_debug_sender_stop && !g_debug_sender_thread.joinable())
+            g_debug_sender_stop = false;
+        const std::size_t size = static_cast<std::size_t>(packet.utf8.size());
+        // Rueckstau darf weder Speicher unbegrenzt verbrauchen noch die
+        // GUI blockieren. Bei Ueberlauf wird lokal ausgegeben.
+        if (size > D64_DEBUG_QUEUE_CAPACITY ||
+            g_debug_sender_pending_bytes > D64_DEBUG_QUEUE_CAPACITY - size)
+            return false;
+        if (!g_debug_sender_thread.joinable())
+            g_debug_sender_thread = std::thread(&debug_sender_loop);
+        g_debug_sender_pending_bytes += size;
+        g_debug_sender_packets.push_back(std::move(packet));
+    }
+    g_debug_sender_signal.notify_one();
+    return true;
+}
+
+static void stop_wfm_output_sender()
+{
+    {
+        std::lock_guard<std::mutex> lock(g_debug_sender_mutex);
+        g_debug_sender_stop = true;
+        g_debug_sender_packets.clear();
+        g_debug_sender_pending_bytes = 0;
+    }
+    g_debug_sender_signal.notify_all();
+    if (g_debug_sender_thread.joinable())
+        g_debug_sender_thread.join();
+}
 #endif
+
+static int g_wfm_applied_debug_dark = -1;
 
 static void apply_wfm_debug_theme()
 {
     if (!g_wfm_output_dialog)
         return;
 
-    if (g_debug_theme_mode == 2) {
-        g_wfm_output_dialog->setStyleSheet(QStringLiteral(
+    const bool dark = dbase_effective_debug_dark_mode();
+    if (g_wfm_applied_debug_dark == static_cast<int>(dark))
+        return;
+    g_wfm_applied_debug_dark = static_cast<int>(dark);
+    auto *debugDialog = static_cast<DBaseDebugOutputDialog *>(g_wfm_output_dialog);
+    debugDialog->setDarkChrome(dark);
+    if (g_wfm_output_edit)
+        static_cast<D64DebugOutputTextEdit *>(g_wfm_output_edit)->setDebugContextDark(dark);
+    QString style;
+    if (dark) {
+        style = QStringLiteral(
             "QDialog#dbaseWorkstationOutputDialog{background:#171717;color:#ededed;}"
+            "QDialog#dbaseWorkstationOutputDialog QWidget#qt_scrollarea_viewport{background:#101010;color:#ededed;}"
             "QPlainTextEdit#dbaseWorkstationOutput{"
-            "background:#0f0f0f;color:#ededed;border:1px solid #555555;"
-            "selection-background-color:#35546f;selection-color:#ffffff;}"
-        ));
-    } else if (g_debug_theme_mode == 1) {
-        g_wfm_output_dialog->setStyleSheet(QStringLiteral(
-            "QDialog#dbaseWorkstationOutputDialog{background:#ececec;color:#111111;}"
+            "background:#101010;color:#e8e8e8;border:1px solid #315581;"
+            "selection-background-color:#0b2f63;selection-color:#ffffff;}"
+        );
+    } else {
+        style = QStringLiteral(
+            "QDialog#dbaseWorkstationOutputDialog{background:#f0f0f0;color:#111111;}"
             "QPlainTextEdit#dbaseWorkstationOutput{"
             "background:#ffffff;color:#111111;border:1px solid #b0b0b0;"
             "selection-background-color:#cfe4f7;selection-color:#000000;}"
-        ));
-    } else {
-        // Default = Qt-/Systemdarstellung wie vor Stage 144.
-        g_wfm_output_dialog->setStyleSheet(QString());
+        );
     }
-
-    g_wfm_output_dialog->update();
+    // Stage 313: Beide Scrollbalken navyblau, auch horizontal.
+    debugDialog->setStyleSheet(style + dbase_debug_navy_scrollbars());
+    debugDialog->update();
     if (g_wfm_output_edit)
         g_wfm_output_edit->viewport()->update();
 }
@@ -9193,6 +9675,7 @@ static void destroy_wfm_output_dialog()
     QDialog *dialog = g_wfm_output_dialog;
     g_wfm_output_dialog = nullptr;
     g_wfm_output_edit = nullptr;
+    g_wfm_applied_debug_dark = -1;
     g_debug_visible = false;
 
     if (!dialog)
@@ -9205,33 +9688,48 @@ static void destroy_wfm_output_dialog()
 
 static void ensure_wfm_output_dialog()
 {
-    if (!g_app || !g_wfm_gui_mode || g_shutdown_requested)
+    // Standalone Workstation-Owner nutzt denselben QDialog auch fuer .prg.
+    // Im JOINED-Modus darf kein zweites lokales DEBUG-Fenster entstehen.
+    if (!g_app || g_shutdown_requested)
         return;
+#ifdef _WIN32
+    // Bei Ausfall der Runner-Pipe ist ein lokaler Fallback auch im
+    // JOINED-Prozess noetig. Angelegt wird er nur nach Transportfehler.
+    if (!g_wfm_gui_mode && !g_workstation_mode_enabled)
+        return;
+#else
+    if (!g_wfm_gui_mode)
+        return;
+#endif
     if (g_wfm_output_dialog && g_wfm_output_edit)
         return;
 
-    g_wfm_output_dialog = new QDialog(nullptr);
+    g_wfm_output_dialog = new DBaseDebugOutputDialog(nullptr);
+    g_wfm_applied_debug_dark = -1;
     g_wfm_output_dialog->setObjectName(QStringLiteral("dbaseWorkstationOutputDialog"));
-    g_wfm_output_dialog->setWindowTitle(QStringLiteral("dBase Ausgabe"));
+    g_wfm_output_dialog->setWindowTitle(QStringLiteral("Debug"));
     g_wfm_output_dialog->setModal(false);
     g_wfm_output_dialog->setAttribute(Qt::WA_DeleteOnClose, false);
-    g_wfm_output_dialog->setWindowFlags(
-        Qt::Window |
-        Qt::WindowTitleHint |
-        Qt::WindowSystemMenuHint |
-        Qt::WindowMinMaxButtonsHint |
-        Qt::WindowCloseButtonHint
-    );
     g_wfm_output_dialog->resize(640, 300);
 
     auto *layout = new QVBoxLayout(g_wfm_output_dialog);
-    layout->setContentsMargins(4, 4, 4, 4);
+    layout->setContentsMargins(
+        DBaseDebugOutputDialog::clientInset(),
+        DBaseDebugOutputDialog::clientTop(),
+        DBaseDebugOutputDialog::clientInset(),
+        DBaseDebugOutputDialog::clientInset()
+    );
     layout->setSpacing(0);
 
-    g_wfm_output_edit = new QPlainTextEdit(g_wfm_output_dialog);
+    g_wfm_output_edit = new D64DebugOutputTextEdit(g_wfm_output_dialog);
     g_wfm_output_edit->setObjectName(QStringLiteral("dbaseWorkstationOutput"));
     g_wfm_output_edit->setReadOnly(true);
     g_wfm_output_edit->setLineWrapMode(QPlainTextEdit::NoWrap);
+    // Den Navy-Look beibehalten; gelbe Pfeile nach dem QSS-Paint zeichnen.
+    g_wfm_output_edit->setVerticalScrollBar(
+        new D64DebugNavyScrollBar(Qt::Vertical, g_wfm_output_edit));
+    g_wfm_output_edit->setHorizontalScrollBar(
+        new D64DebugNavyScrollBar(Qt::Horizontal, g_wfm_output_edit));
     g_wfm_output_edit->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     g_wfm_output_edit->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     g_wfm_output_edit->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
@@ -9300,6 +9798,13 @@ static void show_wfm_output_dialog(QWidget *reference)
         return;
 #endif
 
+    // Bei default das Windows-App-Theme vor jedem Anzeigen neu lesen.
+    // Bei Light/Dark bleibt die ausdrueckliche Projektauswahl bindend.
+    apply_wfm_debug_theme();
+    // Bei laufender Ausgabe weder das Fenster verschieben noch per raise()
+    // permanent den Fokus des Formulars stehlen.
+    if (g_wfm_output_dialog->isVisible())
+        return;
     position_wfm_output_dialog(reference);
     g_wfm_output_dialog->show();
     g_wfm_output_dialog->raise();
@@ -9333,7 +9838,10 @@ static void append_wfm_output(const QString &value, bool newline)
         scroll->setValue(qMin(oldScrollValue, scroll->maximum()));
     }
 
-    show_wfm_output_dialog(nullptr);
+    // Stage 318: OFF verwahrt bereits empfangenen Text, blendet aber
+    // den Qt-Dialog weder jetzt noch bei spaeteren Writes wieder ein.
+    if (g_debug_visible)
+        show_wfm_output_dialog(nullptr);
 }
 
 extern "C" D64QT5_API void DBaseQtConsoleWrite(
@@ -9345,7 +9853,7 @@ extern "C" D64QT5_API void DBaseQtConsoleWrite(
 
     if (g_wfm_gui_mode) {
 #ifdef _WIN32
-        if (g_workstation_mode_enabled) {
+        if (dbase_use_runner_debug_pipe()) {
             const QByteArray utf8 = value.toUtf8();
             if (send_wfm_output_to_workstation(utf8, newline != 0))
                 return;
@@ -9359,8 +9867,9 @@ extern "C" D64QT5_API void DBaseQtConsoleWrite(
         // Eventqueue nicht abgearbeitet werden: sonst kann derselbe Event-
         // Callback reentrant werden, bevor der Ausdruck vollstaendig ist.
         // Erst das abschliessende Fragment (newline != 0) gibt Ereignisse frei.
-        if (newline && g_app)
-            g_app->processEvents(QEventLoop::ExcludeUserInputEvents);
+        // Der Qt-Eventloop laeuft nach der Rueckkehr aus dem Callback weiter.
+        // processEvents() hier kann Events rekursiv ausfuehren oder repaint-
+        // Sichtbarkeits-Operationen verschachteln und die GUI ausbremsen.
         return;
     }
 
@@ -9806,6 +10315,22 @@ extern "C" D64QT5_API void DBaseQtFormOpen(void *handle)
     if (g_app)
         g_app->processEvents();
 
+    // Stage 325: Auch beim normalen, NICHT-Workstation-Start von Form1.exe
+    // den lokalen Qt5-Debug-QDialog standardmaessig anzeigen. Nur ein echter
+    // Runner-Kindprozess verwendet stattdessen das zentrale Runner-Fenster.
+    // Ein vorangestelltes SET DEBUG OFF bleibt ausdruecklich vorrangig.
+#ifdef _WIN32
+    const bool useLocalDebug = !g_workstation_mode_enabled ||
+                               dbase_use_local_workstation_debug();
+#else
+    const bool useLocalDebug = true;
+#endif
+    if (useLocalDebug) {
+        if (!g_debug_visibility_explicit)
+            g_debug_visible = true;
+        if (g_debug_visible)
+            show_wfm_output_dialog(form);
+    }
 #ifdef _WIN32
     if (g_workstation_mode_enabled && D64WorkstationIsVisible())
         D64WorkstationInstallKeyboardGuard(formHwnd);
@@ -9864,6 +10389,11 @@ extern "C" D64QT5_API void DBaseQtShutdown(void)
     // die kommende TABLE-/DBF-Schicht benutzt denselben zentralen Hook.
     close_runtime_data_files();
 
+#ifdef _WIN32
+    // Stage 321: Vor QApplication-/DLL-Abbau den Pipe-Worker beenden.
+    stop_wfm_output_sender();
+#endif
+
     // Stage 144: idempotent; beim Hauptfenster-Close wurde der Dialog bereits
     // in close_runtime_application_windows() zerstoert. Expliziter Shutdown
     // benutzt denselben Helfer.
@@ -9912,6 +10442,7 @@ extern "C" D64QT5_API void DBaseQtShutdown(void)
     g_active_login_session = nullptr;
     g_login_session = false;
     g_debug_visible = false;
+    g_debug_visibility_explicit = false;
     g_program_finished = false;
     g_default_menu_created = false;
     g_font_point_size = 10;

@@ -82,6 +82,9 @@ class DBaseWfmForm:
     font_ref: str = ""
     font_objects: Dict[str, DBaseWfmFontObject] = field(default_factory=dict)
     methods: List[DBaseWfmMethod] = field(default_factory=list)
+    # Stage 318: executable SET DEBUG instructions in the user-defined
+    # source preamble, including lines before the WFM END HEADER marker.
+    debug_preamble: List[Tuple[int, bool]] = field(default_factory=list)
     events: Dict[str, str] = field(default_factory=dict)
     constructor_args: Tuple[object, ...] = ()
     init_args: Tuple[object, ...] = ()
@@ -304,8 +307,14 @@ def parse_dbase_wfm(source: str, *, filename: str = "<WFM>") -> DBaseWfmForm:
         )
 
     model = DBaseWfmForm(class_name=class_name, source=text, filename=filename)
-    for raw in raw_lines[:class_start]:
+    for line_index, raw in enumerate(raw_lines[:class_start], 1):
         code = raw.split("//", 1)[0].strip()
+        if not code or code.startswith("**") or code.startswith("/*"):
+            continue
+        visibility = re.fullmatch(r"(?i)SET\s+DEBUG\s+(ON|OFF)", code)
+        if visibility:
+            model.debug_preamble.append((line_index, visibility.group(1).casefold() == "on"))
+            continue
         m = re.match(rf"(?i)^\w+\s*=\s*NEW\s+{re.escape(class_name)}\s*\((.*)\)\s*$", code)
         if m:
             model.constructor_args = tuple(_wfm_value(x) for x in _wfm_split_args(m.group(1)))
@@ -467,9 +476,15 @@ def parse_dbase_wfm(source: str, *, filename: str = "<WFM>") -> DBaseWfmForm:
         line_no = idx + 1
         idx += 1
         if not code or code.startswith("**"):
+            # Stage 307: source-only blank lines and comments inside methods
+            # must survive loading/saving a FORM without being reformatted.
+            if current_method is not None:
+                current_method.source_lines.append(raw)
+                current_method.body.append(raw)
             continue
 
-        # Method body: ends implicitly at next procedure/function or ENDCLASS.
+        # Method body ends at the next procedure/function or ENDCLASS,
+        # not at RETURN (RETURN is also allowed inside IF branches).
         method_match = re.match(
             r"(?i)^(procedure|function)\s+([A-Za-z_]\w*)"
             r"\s*(?:\(([^)]*)\))?\s*$",
@@ -487,21 +502,20 @@ def parse_dbase_wfm(source: str, *, filename: str = "<WFM>") -> DBaseWfmForm:
                 kind=method_match.group(1).lower(),
                 parameters=params,
                 order=method_order,
-                source_lines=[raw.rstrip()],
+                source_lines=[raw],
                 source_start_line=line_no,
             )
             model.methods.append(current_method)
             with_stack.clear()
             continue
         if current_method is not None:
-            current_method.source_lines.append(raw.rstrip())
+            current_method.source_lines.append(raw)
             mret = re.match(r"(?i)^return(?:\s+(.+))?$", code)
             if mret:
                 current_method.return_expr = (mret.group(1) or "").strip()
                 current_method.body.append(code)
-                current_method = None
                 continue
-            current_method.body.append(raw.rstrip())
+            current_method.body.append(raw)
             continue
 
         m = re.match(r"(?i)^PROPERTY\s+([A-Za-z_]\w*)\s*=\s*(.+)$", code)

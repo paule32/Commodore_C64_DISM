@@ -448,7 +448,10 @@ bool prepare_ready_event()
         return true;
     }
 
-    const DWORD wait = WaitForSingleObject(g_workstation_ready_event, 10000);
+    // Stage 321: Ein lebender, aber blockierter OWNER darf neue EXEs nicht
+    // zehn Sekunden vor dem ersten Form-Paint festhalten. Nach 2s folgt
+    // unten die Mutex-Uebernahmepruefung oder ein klarer Startfehler.
+    const DWORD wait = WaitForSingleObject(g_workstation_ready_event, 2000);
     if (wait == WAIT_OBJECT_0)
         return true;
 
@@ -1170,7 +1173,7 @@ bool create_exit_window()
         WS_POPUP,
         0,
         0,
-        WORKSTATION_PANEL_WIDTH,
+        WORKSTATION_PANEL_WIDTH + WORKSTATION_PANEL_GAP,
         panelHeight,
         nullptr,
         nullptr,
@@ -1190,7 +1193,7 @@ bool create_exit_window()
         HWND_TOPMOST,
         0,
         0,
-        WORKSTATION_PANEL_WIDTH,
+        WORKSTATION_PANEL_WIDTH + WORKSTATION_PANEL_GAP,
         panelHeight,
         SWP_NOACTIVATE | SWP_SHOWWINDOW
     );
@@ -1807,7 +1810,7 @@ bool D64WorkstationActivate(HWND mainWindow)
         HWND_TOPMOST,
         0,
         0,
-        WORKSTATION_PANEL_WIDTH,
+        WORKSTATION_PANEL_WIDTH + WORKSTATION_PANEL_GAP,
         panelHeight,
         SWP_NOACTIVATE | SWP_SHOWWINDOW
     );

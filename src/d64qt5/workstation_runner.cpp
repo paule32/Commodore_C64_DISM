@@ -8,6 +8,8 @@
 // in the existing d64_workstation.cpp (OWNER/JOINED/Desktop/Panel/EXIT).
 // ---------------------------------------------------------------------------
 #include "d64_workstation.h"
+#include "d64_debug_title_surface.hpp"
+#include "d64_debug_context_menu.hpp"
 
 #ifdef _WIN32
 #  define WIN32_LEAN_AND_MEAN
@@ -23,7 +25,9 @@
 #include <QCursor>
 #include <QLinearGradient>
 #include <QMouseEvent>
+#include <QMoveEvent>
 #include <QPainter>
+#include <QPalette>
 #include <QPaintEvent>
 #include <QPolygon>
 #include <QProxyStyle>
@@ -78,6 +82,8 @@ constexpr std::uint32_t RUNNER_OUTPUT_THEME_PRESENT       = 0x00000002u;
 constexpr std::uint32_t RUNNER_OUTPUT_THEME_LIGHT         = 0x00000004u;
 constexpr std::uint32_t RUNNER_OUTPUT_THEME_DARK          = 0x00000008u;
 constexpr std::uint32_t RUNNER_OUTPUT_LATIN1              = 0x00000010u;
+constexpr std::uint32_t RUNNER_OUTPUT_DEBUG_SHOW          = 0x00000020u;
+constexpr std::uint32_t RUNNER_OUTPUT_DEBUG_HIDE          = 0x00000040u;
 constexpr UINT WM_RUNNER_LAUNCH = WM_APP + 0x321;
 constexpr UINT WM_RUNNER_EXIT   = WM_APP + 0x322;
 constexpr UINT WM_RUNNER_OUTPUT = WM_APP + 0x323;
@@ -116,6 +122,7 @@ struct OutputMessage {
     bool latin1 = false;
     DWORD processId = 0;
     int debugThemeMode = -1;
+    int debugVisibility = -1; // -1 = Text, 0 = SET DEBUG OFF, 1 = ON
 };
 
 // Stage 129: Echte, transparente Maus-Handles fuer die acht sichtbaren
@@ -145,7 +152,7 @@ protected:
     {
         if (
             event && event->button() == Qt::LeftButton && host_ &&
-            host_->isActiveWindow() && !host_->isMaximized()
+            !host_->isMaximized()
         ) {
             resizing_ = true;
             pressGlobal_ = event->globalPos();
@@ -536,6 +543,8 @@ private:
     }
 };
 
+void apply_workstation_output_debug_theme(int mode);
+
 class WorkstationOutputDialog final : public QDialog
 {
 public:
@@ -551,6 +560,7 @@ public:
             Qt::WindowMinMaxButtonsHint |
             Qt::WindowStaysOnTopHint
         );
+        titleSurface_ = new D64DebugTitleSurface(titleHeight(), true, this);
         createResizeHandles();
         syncResizeHandles();
     }
@@ -558,6 +568,23 @@ public:
     // Stage 128: Sichtbar bleibt der Resizer exakt 3 Pixel stark. Die
     // Maus-Hit-Zone ist davon bewusst getrennt und groesser, damit die
     // schlanken Linien auch bei hoher DPI-Skalierung sicher greifbar bleiben.
+    void setDarkChrome(bool dark)
+    {
+        darkChrome_ = dark;
+        QPalette pal = palette();
+        const QColor background = dark ? QColor(23,23,23) : QColor(236,236,236);
+        const QColor foreground = dark ? QColor(237,237,237) : QColor(32,32,32);
+        pal.setColor(QPalette::Window, background);
+        pal.setColor(QPalette::WindowText, foreground);
+        pal.setColor(QPalette::Base, dark ? QColor(23,23,23) : Qt::white);
+        pal.setColor(QPalette::Text, foreground);
+        setPalette(pal);
+        setAutoFillBackground(true);
+        if (titleSurface_) { titleSurface_->setDarkChrome(dark); titleSurface_->raise(); }
+        syncResizeHandles(); // Cursor-Fangzonen muessen ueber der Titeloberflaeche liegen.
+        update();
+    }
+
     static constexpr int borderSize() { return 3; }
     static constexpr int resizeHitSize() { return 10; }
     static constexpr int resizeCatchSize() { return 5; }
@@ -657,6 +684,9 @@ protected:
     bool nativeEvent(const QByteArray &eventType, void *message, long *result) override
     {
         MSG *msg = static_cast<MSG *>(message);
+        if (msg && (msg->message == WM_SETTINGCHANGE || msg->message == WM_THEMECHANGED)) {
+            QTimer::singleShot(0, []() { apply_workstation_output_debug_theme(-1); });
+        }
         if (msg && msg->message == WM_GETMINMAXINFO && msg->lParam) {
             D64WorkstationConstrainMaximizeInfo(reinterpret_cast<void *>(msg->lParam));
             if (result) *result = 0;
@@ -673,16 +703,19 @@ protected:
             const QPoint p = mapFromGlobal(QCursor::pos());
             // Stage 130: Die acht 5x5-Catch-Widgets muessen Client-Mausereignisse
             // bekommen. Deshalb hier bewusst HTCLIENT statt HTLEFT/HTTOP/... .
-            if (resizeHitCode(p) != HTNOWHERE) {
-                if (result) *result = HTCLIENT;
-                return true;
+            for (auto *handle : resizeHandles_) {
+                if (handle && handle->isVisible() && handle->geometry().contains(p)) {
+                    if (result) *result = HTCLIENT;
+                    return true;
+                }
             }
             if (closeButtonRect().contains(p) || maxButtonRect().contains(p) || minButtonRect().contains(p)) {
                 if (result) *result = HTCLIENT;
                 return true;
             }
             if (p.y() >= 0 && p.y() < titleHeight()) {
-                if (result) *result = HTCAPTION;
+                // Qt5-Titelwidget steuert Ziehen, Buttons und Doppelklick.
+                if (result) *result = HTCLIENT;
                 return true;
             }
         }
@@ -734,54 +767,41 @@ protected:
     void paintEvent(QPaintEvent *event) override
     {
         QDialog::paintEvent(event);
+        // Titel/Buttons werden separat durch D64DebugTitleSurface gezeichnet.
         QPainter painter(this);
-        painter.setRenderHint(QPainter::Antialiasing, false);
-
-        QLinearGradient gradient(0, 0, width(), 0);
-        gradient.setColorAt(0.0, QColor(68, 68, 68));
-        gradient.setColorAt(1.0, QColor(14, 14, 14));
-        painter.fillRect(QRect(0, 0, width(), titleHeight()), gradient);
-
-        const QRect minRect = minButtonRect();
-        const QRect maxRect = maxButtonRect();
-        const QRect closeRect = closeButtonRect();
-        if (hoverButton_ == 1) painter.fillRect(minRect, QColor(0, 90, 185));
-        if (hoverButton_ == 2) painter.fillRect(maxRect, QColor(0, 145, 70));
-        if (hoverButton_ == 3) painter.fillRect(closeRect, QColor(205, 35, 35));
-
-        QRect iconRect(8, 6, 20, 20);
-        painter.setPen(QPen(QColor(230, 230, 230), 1));
-        painter.setBrush(QColor(0, 115, 80));
-        painter.drawRoundedRect(iconRect, 3, 3);
-        QFont iconFont(QStringLiteral("Segoe UI"), 7, QFont::Bold);
-        painter.setFont(iconFont);
-        painter.setPen(Qt::white);
-        painter.drawText(iconRect, Qt::AlignCenter, QStringLiteral("db"));
-
-        painter.setFont(QFont(QStringLiteral("Segoe UI"), 9));
-        painter.setPen(QColor(235, 235, 235));
-        const QRect titleRect(34, 0, qMax(0, width() - 34 - 3 * buttonWidth()), titleHeight());
-        painter.drawText(titleRect, Qt::AlignVCenter | Qt::AlignLeft, windowTitle());
-
-        QFont glyph(QStringLiteral("Segoe MDL2 Assets"), 10);
-        painter.setFont(glyph);
-        painter.setPen(QColor(238, 238, 238));
-        painter.drawText(minRect, Qt::AlignCenter, QString(QChar(0xE921)));
-        painter.drawText(maxRect, Qt::AlignCenter, QString(QChar(isMaximized() ? 0xE923 : 0xE922)));
-        painter.drawText(closeRect, Qt::AlignCenter, QString(QChar(0xE8BB)));
-
         drawResizeChrome(painter);
     }
 
     void resizeEvent(QResizeEvent *event) override
     {
         QDialog::resizeEvent(event);
+        if (titleSurface_) titleSurface_->syncGeometry(isMaximized());
         syncResizeHandles();
+    }
+
+    // Stage 317: Eigene Qt5-Titel-Drags rufen QWidget::move() direkt auf.
+    // Dabei gibt es kein WM_MOVING. Die bestehenden Workstation-Panel-Grenzen
+    // darum auch bei Qt-Moves explizit respektieren, ohne Rekursion.
+    void moveEvent(QMoveEvent *event) override
+    {
+        QDialog::moveEvent(event);
+#ifdef _WIN32
+        if (!adjustingWorkstationMove_ && isVisible() && !isMaximized()) {
+            RECT r = { x(), y(), x() + width(), y() + height() };
+            D64WorkstationConstrainMovingRect(&r);
+            if (r.left != x() || r.top != y()) {
+                adjustingWorkstationMove_ = true;
+                move(r.left, r.top);
+                adjustingWorkstationMove_ = false;
+            }
+        }
+#endif
     }
 
     void showEvent(QShowEvent *event) override
     {
         QDialog::showEvent(event);
+        if (titleSurface_) titleSurface_->syncGeometry(isMaximized());
         syncResizeHandles();
     }
 
@@ -798,7 +818,7 @@ protected:
         }
         if (hover != hoverButton_) {
             hoverButton_ = hover;
-            update(QRect(width() - 3 * buttonWidth(), 0, 3 * buttonWidth(), titleHeight()));
+            if (titleSurface_) titleSurface_->setHoverButton(hover);
         }
         QDialog::mouseMoveEvent(event);
     }
@@ -811,21 +831,8 @@ protected:
             return;
         }
 #endif
-        QDialog::mousePressEvent(event);
-    }
-
-    void leaveEvent(QEvent *event) override
-    {
-        unsetCursor();
-        if (hoverButton_ != 0) {
-            hoverButton_ = 0;
-            update(QRect(width() - 3 * buttonWidth(), 0, 3 * buttonWidth(), titleHeight()));
-        }
-        QDialog::leaveEvent(event);
-    }
-
-    void mouseDoubleClickEvent(QMouseEvent *event) override
-    {
+        // Stage 316: Die gezeichneten Fenster-Icons muessen auch mit einem
+        // einfachen Linksklick funktionieren; der Doppelklick bleibt erhalten.
         if (event && event->button() == Qt::LeftButton) {
             const QPoint p = event->pos();
             if (closeButtonRect().contains(p)) {
@@ -844,6 +851,35 @@ protected:
                 return;
             }
         }
+        QDialog::mousePressEvent(event);
+    }
+
+    void leaveEvent(QEvent *event) override
+    {
+        unsetCursor();
+        if (hoverButton_ != 0) {
+            hoverButton_ = 0;
+            if (titleSurface_) titleSurface_->setHoverButton(0);
+        }
+        QDialog::leaveEvent(event);
+    }
+
+    void mouseDoubleClickEvent(QMouseEvent *event) override
+    {
+        if (event && event->button() == Qt::LeftButton) {
+            const QPoint p = event->pos();
+            if (closeButtonRect().contains(p) || minButtonRect().contains(p) ||
+                maxButtonRect().contains(p)) {
+                // Buttonaktion wurde bereits mit dem ersten Klick ausgeloest.
+                event->accept();
+                return;
+            }
+            if (p.y() >= borderSize() && p.y() < titleHeight()) {
+                isMaximized() ? showNormal() : showMaximized();
+                event->accept();
+                return;
+            }
+        }
         QDialog::mouseDoubleClickEvent(event);
     }
 
@@ -851,6 +887,7 @@ protected:
     {
         QDialog::changeEvent(event);
         if (event && (event->type() == QEvent::ActivationChange || event->type() == QEvent::WindowStateChange)) {
+            if (titleSurface_) titleSurface_->syncGeometry(isMaximized());
             syncResizeHandles();
             update();
         }
@@ -875,6 +912,10 @@ private:
         HandleBottomLeft,
         HandleBottom,
         HandleBottomRight,
+        HandleTopStrip,
+        HandleBottomStrip,
+        HandleLeftStrip,
+        HandleRightStrip,
         ResizeHandleCount
     };
 
@@ -883,7 +924,8 @@ private:
 #ifdef _WIN32
         const int codes[ResizeHandleCount] = {
             HTTOPLEFT, HTTOP, HTTOPRIGHT, HTLEFT,
-            HTRIGHT, HTBOTTOMLEFT, HTBOTTOM, HTBOTTOMRIGHT
+            HTRIGHT, HTBOTTOMLEFT, HTBOTTOM, HTBOTTOMRIGHT,
+            HTTOP, HTBOTTOM, HTLEFT, HTRIGHT
         };
         for (int i = 0; i < ResizeHandleCount; ++i)
             resizeHandles_[i] = new WorkstationResizeHandle(this, codes[i]);
@@ -893,7 +935,7 @@ private:
     void syncResizeHandles()
     {
 #ifdef _WIN32
-        const bool enabled = isVisible() && isActiveWindow() && !isMaximized();
+        const bool enabled = isVisible() && !isMaximized();
         const int s = resizeCatchSize();
         const int cx = width() / 2;
         const int cy = height() / 2;
@@ -906,7 +948,11 @@ private:
             QRect(qMax(0, width() - s), cy - s / 2, s, s),
             QRect(0, qMax(0, height() - s), s, s),
             QRect(cx - s / 2, qMax(0, height() - s), s, s),
-            QRect(qMax(0, width() - s), qMax(0, height() - s), s, s)
+            QRect(qMax(0, width() - s), qMax(0, height() - s), s, s),
+            QRect(s, 0, qMax(0, width() - 2*s), s),
+            QRect(s, qMax(0, height() - s), qMax(0, width() - 2*s), s),
+            QRect(0, s, s, qMax(0, height() - 2*s)),
+            QRect(qMax(0, width() - s), s, s, qMax(0, height() - 2*s))
         };
 
         for (int i = 0; i < ResizeHandleCount; ++i) {
@@ -915,13 +961,19 @@ private:
             resizeHandles_[i]->setGeometry(rects[i]);
             resizeHandles_[i]->setEnabled(enabled);
             resizeHandles_[i]->setVisible(enabled);
-            if (enabled)
-                resizeHandles_[i]->raise();
+        }
+        // Ecken und mittige 5px-Griffe liegen ueber den Seitenstreifen.
+        if (enabled) {
+            for (int i = 8; i < ResizeHandleCount; ++i) resizeHandles_[i]->raise();
+            for (int i = 0; i < 8; ++i) resizeHandles_[i]->raise();
         }
 #endif
     }
 
+    bool darkChrome_ = true;
+    bool adjustingWorkstationMove_ = false;
     int hoverButton_ = 0;
+    D64DebugTitleSurface *titleSurface_ = nullptr;
     WorkstationResizeHandle *resizeHandles_[ResizeHandleCount] = {};
 };
 
@@ -1153,6 +1205,24 @@ bool g_exit_confirmed = false;
 ULONGLONG g_exit_prompt_suppress_until = 0;
 // Stage 144: 0=default (Workstation-Theme folgen), 1=light, 2=dark.
 int g_output_debug_theme_mode = 0;
+// Stage 318: Sichtbarkeit ist ein expliziter Runtimezustand. Nur ON oder
+// ein neuer Programmstart duerfen ein mit OFF verborgenes Fenster zeigen.
+bool g_output_visibility_enabled = true;
+// Stage 319: UI-Theme nur bei tatsaechlicher Aenderung erneut anwenden.
+// Ein vollstaendiges setStyleSheet() je WriteLn war extrem teuer.
+int g_last_applied_output_theme_mode = -1;
+int g_last_applied_output_dark_mode = -1;
+
+// Stage 319: DOW1-Nachrichten werden in einem kurzen Zeitfenster gesammelt,
+// damit Qt-Textlayout, Scrollbars und Fenstermalerei nicht pro Byte/Fragment
+// ausgefuehrt werden muessen. Aenderungen an SET DEBUG ON/OFF leeren die
+// Queue vorher, damit deren Reihenfolge erhalten bleibt.
+QString g_pending_output_text;
+bool g_pending_output_flush_scheduled = false;
+// Stage 320: Nach Programmstart ist das Debug-Fenster einmalig aktiv
+// vorzuziehen, bevor die gebuendelte Textausgabe in den QTimer geht.
+// Kein teures Raise fuer jedes der folgenden Textfragmente.
+bool g_output_reveal_on_next_write = true;
 
 // Der DB-Button repraesentiert das zuletzt an den Runner uebergebene
 // Hauptprogramm. Dadurch kann das Programm nach einem normalen Schliessen
@@ -1187,13 +1257,38 @@ QString workstation_debug_scrollbar_style_sheet()
     );
 }
 
+// Stage 315: Default folgt dem Windows-App-Theme, NICHT der separaten
+// Workstation-Panel-Farbe. Explizite Debug-Radiobuttons bleiben vorrangig.
+bool workstation_windows_apps_dark_mode()
+{
+#ifdef _WIN32
+    HKEY key = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER,
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+        0, KEY_QUERY_VALUE, &key) == ERROR_SUCCESS) {
+        const wchar_t *names[] = { L"AppsUseLightTheme", L"SystemUsesLightTheme" };
+        for (const wchar_t *name : names) {
+            DWORD value = 1, type = 0, size = sizeof(value);
+            const LONG code = RegQueryValueExW(key, name, nullptr, &type,
+                                              reinterpret_cast<LPBYTE>(&value), &size);
+            if (code == ERROR_SUCCESS && type == REG_DWORD && size == sizeof(value)) {
+                RegCloseKey(key);
+                return value == 0;
+            }
+        }
+        RegCloseKey(key);
+    }
+#endif
+    return false;
+}
+
 bool workstation_debug_uses_dark_theme()
 {
     if (g_output_debug_theme_mode == 1)
         return false;
     if (g_output_debug_theme_mode == 2)
         return true;
-    return D64WorkstationDarkMode();
+    return workstation_windows_apps_dark_mode();
 }
 
 void apply_workstation_output_theme(bool darkMode)
@@ -1201,12 +1296,15 @@ void apply_workstation_output_theme(bool darkMode)
     if (!g_output_dialog || !g_output_edit)
         return;
 
+    g_output_dialog->setDarkChrome(darkMode);
+    static_cast<D64DebugOutputTextEdit *>(g_output_edit)->setDebugContextDark(darkMode);
     QString style;
     if (darkMode) {
         // Stage 278: Dark-Mode an den Beenden-Dialog angleichen:
         // gleiche Grundflaeche, gleiche gelb/beige Textfarbe und Navy-Akzente.
         style = QStringLiteral(
-            "QDialog#d64WorkstationOutputDialog { background:#171717; }"
+            "QDialog#d64WorkstationOutputDialog { background:#171717; color:#ededed; }"
+            "QDialog#d64WorkstationOutputDialog QWidget#qt_scrollarea_viewport { background:#171717; }"
             "QPlainTextEdit#d64WorkstationOutput {"
             " background:#171717; color:#d2ca87; border:1px solid #315581;"
             " padding:2px;"
@@ -1235,12 +1333,21 @@ void apply_workstation_output_debug_theme(int mode)
     if (mode >= 0 && mode <= 2)
         g_output_debug_theme_mode = mode;
 
-    if (g_output_debug_theme_mode == 1)
-        apply_workstation_output_theme(false);
-    else if (g_output_debug_theme_mode == 2)
-        apply_workstation_output_theme(true);
-    else
-        apply_workstation_output_theme(D64WorkstationDarkMode());
+    // Stage 319: Mit jeder dBase-/WFM-Ausgabe wird das gewaehlte Theme
+    // erneut im DOW1-Paket uebermittelt. Das soll nicht pro Ausgabe
+    // setStyleSheet(), update() und ein komplettes Qt-Repolish ausloesen.
+    // Im default-Modus wird Windows weiterhin bei jedem Aufruf abgefragt;
+    // ein echter Windows-Theme-Wechsel wird dadurch sofort uebernommen.
+    const bool dark = workstation_debug_uses_dark_theme();
+    if (!g_output_dialog || !g_output_edit)
+        return;
+    if (g_last_applied_output_theme_mode == g_output_debug_theme_mode &&
+        g_last_applied_output_dark_mode == static_cast<int>(dark))
+        return;
+
+    g_last_applied_output_theme_mode = g_output_debug_theme_mode;
+    g_last_applied_output_dark_mode = static_cast<int>(dark);
+    apply_workstation_output_theme(dark);
 }
 
 void workstation_theme_changed(bool darkMode)
@@ -1254,12 +1361,16 @@ void create_workstation_output_dialog()
     if (g_output_dialog && g_output_edit)
         return;
 
+    // Ein neu angelegter Dialog muss sein Theme immer erstmalig erhalten.
+    g_last_applied_output_theme_mode = -1;
+    g_last_applied_output_dark_mode = -1;
+
     // Stage 116 compatibility marker: g_output_dialog = new QDialog(nullptr);
     g_output_dialog = new WorkstationOutputDialog(nullptr);
     g_output_dialog->setObjectName(QStringLiteral("d64WorkstationOutputDialog"));
     // Stage 271: gemeinsamer DEBUG-Ausgabekanal fuer dBase/WFM und
     // generische Pascal/C-Programme im Workstation Mode.
-    g_output_dialog->setWindowTitle(QStringLiteral("D64 Workstation DEBUG"));
+    g_output_dialog->setWindowTitle(QStringLiteral("Debug"));
     g_output_dialog->setModal(false);
     g_output_dialog->setAttribute(Qt::WA_DeleteOnClose, false);
     g_output_dialog->resize(680, 300);
@@ -1273,7 +1384,7 @@ void create_workstation_output_dialog()
     );
     layout->setSpacing(0);
 
-    g_output_edit = new QPlainTextEdit(g_output_dialog);
+    g_output_edit = new D64DebugOutputTextEdit(g_output_dialog);
     g_output_edit->setObjectName(QStringLiteral("d64WorkstationOutput"));
     g_output_edit->setReadOnly(true);
     g_output_edit->setPlaceholderText(
@@ -1411,6 +1522,10 @@ void ensure_workstation_output_dialog_on_screen()
 
 void ensure_workstation_output_dialog_visible()
 {
+    // Stage 318: Dieser Guard ist auch fuer den 500-ms-Watchdog und
+    // alle alten Start-/Output-Pfade verbindlich.
+    if (!g_output_visibility_enabled)
+        return;
     create_workstation_output_dialog();
     if (!g_output_dialog)
         return;
@@ -1499,6 +1614,42 @@ void start_child_standard_output_capture(
     }).detach();
 }
 
+// Stage 319: GUI nur alle ca. 16 ms statt fuer jedes einzelne Pipe-Paket
+// aktualisieren. Der HWND-Nachrichtenhandler darf nie auf Paint/Scroll warten.
+void flush_workstation_output_text()
+{
+    g_pending_output_flush_scheduled = false;
+    if (!g_output_edit || g_pending_output_text.isEmpty()) {
+        g_pending_output_text.clear();
+        return;
+    }
+
+    QString text;
+    text.swap(g_pending_output_text);
+    QScrollBar *scroll = g_output_edit->verticalScrollBar();
+    const bool followTail = !scroll || scroll->value() >= scroll->maximum() - 2;
+    const int oldValue = scroll ? scroll->value() : 0;
+
+    QTextCursor cursor = g_output_edit->textCursor();
+    cursor.movePosition(QTextCursor::End);
+    cursor.insertText(text);
+
+    if (followTail) {
+        g_output_edit->setTextCursor(cursor);
+        g_output_edit->ensureCursorVisible();
+    } else if (scroll) {
+        scroll->setValue(qMin(oldValue, scroll->maximum()));
+    }
+
+    // Ein verborgener Dialog darf durch neue Textausgabe nicht erscheinen.
+    // Beim sichtbaren Dialog ist keinerlei Raise/TopMost pro Paket noetig;
+    // die bestehenden 500-ms-Watchdogs sichern seine Lage bei Bedarf.
+    if (g_output_visibility_enabled && g_output_dialog &&
+        !g_output_dialog->isVisible()) {
+        ensure_workstation_output_dialog_visible();
+    }
+}
+
 void append_workstation_output(const OutputMessage &message)
 {
     create_workstation_output_dialog();
@@ -1508,33 +1659,50 @@ void append_workstation_output(const OutputMessage &message)
     if (message.debugThemeMode >= 0)
         apply_workstation_output_debug_theme(message.debugThemeMode);
 
-    QScrollBar *scroll = g_output_edit->verticalScrollBar();
-    const bool followTail = !scroll || scroll->value() >= scroll->maximum() - 2;
-    const int oldValue = scroll ? scroll->value() : 0;
+    if (message.debugVisibility >= 0) {
+        // Reihenfolge garantieren: alle vorangegangenen Texte zuerst rendern.
+        flush_workstation_output_text();
+        g_output_visibility_enabled = message.debugVisibility != 0;
+        if (g_output_visibility_enabled) {
+            g_output_reveal_on_next_write = true;
+            ensure_workstation_output_dialog_visible();
+        } else {
+            g_output_dialog->hide();
+        }
+        if (message.text.empty() && !message.newline)
+            return;
+    }
 
-    QTextCursor cursor = g_output_edit->textCursor();
-    cursor.movePosition(QTextCursor::End);
     if (!message.text.empty()) {
         const int textSize = static_cast<int>(message.text.size());
-        cursor.insertText(
-            message.latin1
-                ? QString::fromLatin1(message.text.data(), textSize)
-                : QString::fromUtf8(message.text.data(), textSize)
-        );
+        g_pending_output_text += message.latin1
+            ? QString::fromLatin1(message.text.data(), textSize)
+            : QString::fromUtf8(message.text.data(), textSize);
     }
     if (message.newline)
-        cursor.insertText(QStringLiteral("\n"));
-    g_output_edit->setTextCursor(cursor);
+        g_pending_output_text += QLatin1Char('\n');
 
-    if (followTail) {
-        cursor.movePosition(QTextCursor::End);
-        g_output_edit->setTextCursor(cursor);
-        g_output_edit->ensureCursorVisible();
-    } else if (scroll) {
-        scroll->setValue(qMin(oldValue, scroll->maximum()));
+    if (g_pending_output_text.isEmpty())
+        return;
+
+    // Stage 320: Bereits das ERSTE DOW1-Textpaket muss das QDialog zeigen,
+    // nicht erst der 16-ms-Timeout. Das wirkt auch auf direkt per CLI an
+    // einen bereits residenten Runner uebergebene Programme.
+    if (g_output_visibility_enabled && g_output_reveal_on_next_write) {
+        g_output_reveal_on_next_write = false;
+        ensure_workstation_output_dialog_visible();
     }
 
-    ensure_workstation_output_dialog_visible();
+    // Grosses Burst-Paket unmittelbar ausgeben, sonst maximal eine
+    // GUI-Aktualisierung pro Bildintervall einplanen.
+    if (g_pending_output_text.size() >= 64 * 1024) {
+        flush_workstation_output_text();
+    } else if (!g_pending_output_flush_scheduled) {
+        g_pending_output_flush_scheduled = true;
+        QTimer::singleShot(16, QApplication::instance(), []() {
+            flush_workstation_output_text();
+        });
+    }
 }
 
 UINT workstation_global_shutdown_message()
@@ -2535,7 +2703,22 @@ bool switch_to_workstation_desktop()
     if (!desktop)
         return false;
 
-    const BOOL ok = SwitchDesktop(desktop);
+    // Stage 322: Desktop-Umschalten ist teuer (Synchronisation mit
+    // Desktop-Kompositor/Input). Nur umschalten, wenn der sichtbare
+    // Eingabedesktop tatsaechlich ein anderer ist.
+    bool alreadyActive = false;
+    HDESK input = OpenInputDesktop(0, FALSE, DESKTOP_READOBJECTS);
+    if (input) {
+        wchar_t name[128] = {};
+        DWORD length = 0;
+        if (GetUserObjectInformationW(input, UOI_NAME, name,
+                sizeof(name), &length) &&
+            _wcsicmp(name, desktopName) == 0) {
+            alreadyActive = true;
+        }
+        CloseDesktop(input);
+    }
+    const BOOL ok = alreadyActive ? TRUE : SwitchDesktop(desktop);
     CloseDesktop(desktop);
     return ok != FALSE;
 }
@@ -2727,35 +2910,13 @@ bool wait_for_runner_output_pipe_ready(DWORD timeoutMs)
 
 bool prepare_debug_window_before_child_start()
 {
-    // Stage 273: Diese Funktion ist die verbindliche Startbarriere. Erst wenn
-    // der Workstation-Desktop aktiv, das DEBUG-Fenster sichtbar/gezeichnet und
-    // die DOW1-Pipe empfangsbereit ist, darf der Hauptthread der Ziel-EXE laufen.
-    switch_to_workstation_desktop();
+    // Stage 322: Workstation und DEBUG-Dialog sind zu diesem Zeitpunkt
+    // bereits sichtbar. Keine mehrfachen synchronen RedrawWindow() /
+    // UpdateWindow() / processEvents() in der Startbarriere. Die Pipe
+    // muss empfangsbereit sein, bevor das Kind loslaufen darf.
+    if (!switch_to_workstation_desktop())
+        return false;
     ensure_workstation_output_dialog_visible();
-
-#ifdef _WIN32
-    if (g_output_dialog) {
-        const HWND outputHwnd =
-            reinterpret_cast<HWND>(g_output_dialog->winId());
-        if (outputHwnd && IsWindow(outputHwnd)) {
-            ShowWindow(outputHwnd, SW_SHOWNORMAL);
-            SetWindowPos(
-                outputHwnd,
-                HWND_TOPMOST,
-                0, 0, 0, 0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE
-            );
-            RedrawWindow(
-                outputHwnd, nullptr, nullptr,
-                RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN
-            );
-            UpdateWindow(outputHwnd);
-        }
-    }
-#endif
-
-    QCoreApplication::sendPostedEvents();
-    QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
     return wait_for_runner_output_pipe_ready(1500);
 }
 
@@ -2782,6 +2943,12 @@ bool launch_program(const LaunchRequest &request)
         ensure_workstation_output_dialog_visible();
         return true;
     }
+
+    // Stage 318: Fuer ein NEUES Programm startet die Debug-Sichtbarkeit
+    // neutral wie bisher. Ein laufender Prozess behaelt bei DB-Reaktivierung
+    // hingegen sein vorheriges SET DEBUG OFF.
+    g_output_visibility_enabled = true;
+    g_output_reveal_on_next_write = true;
 
     // Stage 273: Nicht nur "show before launch_program", sondern eine echte
     // Startbarriere vor CreateProcess/ResumeThread. So kann selbst ein sehr
@@ -3034,9 +3201,9 @@ bool launch_program(const LaunchRequest &request)
     // ausgefuehrt.
     switch_to_workstation_desktop();
     ensure_workstation_output_dialog_visible();
-    QCoreApplication::sendPostedEvents();
-    QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
-
+    // Stage 322: Der Qt-Eventloop ist bereits aktiv. Ein verschachteltes
+    // processEvents() mitten in der Kindprozess-Erzeugung kann Fenster-
+    // Ereignisse reentrant ausfuehren und verzoegert die Freigabe.
     const DWORD resumeResult = ResumeThread(processInfo.hThread);
     CloseHandle(processInfo.hThread);
     if (resumeResult == static_cast<DWORD>(-1)) {
@@ -3044,58 +3211,41 @@ bool launch_program(const LaunchRequest &request)
         return false;
     }
 
-    /*
-     * Stage 254:
-     * CreateProcessW() allein garantiert bei einem generischen GUI-Target
-     * nicht, dass das erste Top-Level-HWND schon existiert bzw. sichtbar ist.
-     * Bei --gui warten wir auf die GUI-Initialisierung und suchen danach das
-     * Fenster des neuen Prozesses auf D64Workstation. Sobald es existiert,
-     * wird es restauriert, sichtbar gemacht und aktiviert.
-     *
-     * Kein Compiler/Make-Aufruf und keine Runtime-Injektion in die Ziel-EXE.
-     */
+    // Stage 322: Ein gepacktes WFM-EXE gibt seine Import-Marker nicht
+    // zwingend preis. Generische Fenstererkennung deshalb asynchron via Qt:
+    // weder WaitForInputIdle(1500) noch bis zu 3 Sekunden Sleep/EnumWindows
+    // duerfen die Ereignisschleife des Workstation-Runners blockieren.
     if (!request.consoleMode) {
-        switch_to_workstation_desktop();
-
         if (!wfmQtOutput) {
-            /*
-             * Generische GUI-Programme weiterhin synchron suchen/aktivieren.
-             * WFM-Qt-Programme aktivieren ihr Formular selbst in
-             * DBaseQtFormOpen. Bei ihnen darf der Runner-GUI-Thread hier
-             * nicht blockieren, damit das zuvor gezeigte Debugfenster
-             * sichtbar und repaint-faehig bleibt.
-             */
-            WaitForInputIdle(processInfo.hProcess, 1500);
-
-            const DWORD deadline = GetTickCount() + 3000;
-            for (;;) {
-                if (WaitForSingleObject(processInfo.hProcess, 0) == WAIT_OBJECT_0)
-                    break;
-
-                if (activate_child_windows(processInfo.dwProcessId))
-                    break;
-
-                if (static_cast<LONG>(GetTickCount() - deadline) >= 0)
-                    break;
-
-                Sleep(25);
-            }
-
-            // Der Konstruktor kann bereits vor DBaseQtFormOpen ein ?/??
-            // ausfuehren. In diesem Fall ist die Console schon vorhanden,
-            // wenn das Formular erstmals aktiviert wird.
-            if (!lazyDBaseConsole && !g_children.empty())
-                discover_child_console_window(g_children.back());
+            const DWORD pid = processInfo.dwProcessId;
+            const DWORD started = GetTickCount();
+            QTimer *activationTimer = new QTimer(QApplication::instance());
+            activationTimer->setInterval(50);
+            QObject::connect(activationTimer, &QTimer::timeout,
+                QApplication::instance(), [activationTimer, pid, started]() {
+                // Qt-WFM kann seine eigene Workstation-Aktivierung bereits
+                // durchgefuehrt haben. Bei generischen Programmen wird das
+                // erste Hauptfenster weiterhin erkannt und aktiviert.
+                bool running = false;
+                for (const ChildProcess &entry : g_children) {
+                    if (entry.pid == pid && entry.process &&
+                        WaitForSingleObject(entry.process, 0) == WAIT_TIMEOUT) {
+                        running = true;
+                        break;
+                    }
+                }
+                const bool timedOut =
+                    static_cast<DWORD>(GetTickCount() - started) >= 3000;
+                if (!running || timedOut || activate_child_windows(pid)) {
+                    activationTimer->stop();
+                    activationTimer->deleteLater();
+                }
+            });
+            activationTimer->start();
         } else {
-            // Stage 123: WFM hat den Debugdialog bereits vor ResumeThread.
-            // Keine WaitForInputIdle-/HWND-Poll-Schleife im Qt-GUI-Thread.
             ensure_workstation_output_dialog_visible();
         }
     } else {
-        /*
-         * Auch eine neu gestartete Console-Anwendung muss auf der sichtbaren
-         * Workstation landen, wenn zuvor ein anderer Desktop aktiv war.
-         */
         switch_to_workstation_desktop();
     }
 
@@ -3415,6 +3565,15 @@ void pipe_server_loop()
                         output->latin1 =
                             (header.flags & RUNNER_OUTPUT_LATIN1) != 0;
                         output->processId = static_cast<DWORD>(header.cwdBytes);
+                        // Nur exakt eines der beiden Bits darf die
+                        // Sichtbarkeit veraendern; alte DOW1-Pakete bleiben
+                        // weiterhin reine Textausgaben.
+                        const bool showRequested =
+                            (header.flags & RUNNER_OUTPUT_DEBUG_SHOW) != 0;
+                        const bool hideRequested =
+                            (header.flags & RUNNER_OUTPUT_DEBUG_HIDE) != 0;
+                        if (showRequested != hideRequested)
+                            output->debugVisibility = showRequested ? 1 : 0;
                         if ((header.flags & RUNNER_OUTPUT_THEME_PRESENT) != 0) {
                             if ((header.flags & RUNNER_OUTPUT_THEME_DARK) != 0)
                                 output->debugThemeMode = 2;
@@ -3480,7 +3639,8 @@ void pipe_server_loop()
             }
         }
 
-        FlushFileBuffers(pipe);
+        // Stage 319: Inbound-only DOW1/Launch-Pipe besitzt keine
+        // ausgehenden Daten, die FlushFileBuffers() abwarten muesste.
         DisconnectNamedPipe(pipe);
         CloseHandle(pipe);
     }
@@ -3875,6 +4035,7 @@ int main(int, char **)
     (void)qtLoopResult;
 
     begin_leave_once();
+    flush_workstation_output_text();
     if (g_output_dialog) {
         g_output_dialog->hide();
         delete g_output_dialog;

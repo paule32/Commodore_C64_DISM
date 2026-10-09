@@ -69,6 +69,11 @@ OFF       : [Oo][Ff][Ff];
 SCREEN    : [Ss][Cc][Rr][Ee][Ee][Nn];
 CONSOLE   : [Cc][Oo][Nn][Ss][Oo][Ll][Ee];
 
+LOGIC_AND : '.' [Aa][Nn][Dd] '.';
+LOGIC_OR  : '.' [Oo][Rr] '.';
+LOGIC_NOT : '.' [Nn][Oo][Tt] '.';
+LOGIC_XOR : '.' [Xx][Oo][Rr] '.';
+
 QUESTION2 : '??';
 QUESTION  : '?';
 SCOPE     : '::';

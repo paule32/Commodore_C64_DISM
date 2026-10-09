@@ -18,7 +18,10 @@ DEFINES += D64QT5_BRIDGE_EXPORTS
 SOURCES += d64qt5_bridge.cpp   \
            d64_workstation.cpp
 
-HEADERS += d64qt5_bridge.h \
+HEADERS += d64_debug_context_menu.hpp \
+           d64_debug_title_surface.hpp \
+           d64_debug_navy_scrollbar.hpp \
+           d64qt5_bridge.h \
            d64_workstation.h \
            d64_dbase_runtime.hpp \
            d64_dbase_case_tables.inc \

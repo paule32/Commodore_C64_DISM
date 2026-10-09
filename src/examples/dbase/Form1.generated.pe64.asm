@@ -1,115 +1,131 @@
-bits 32
+bits 64
 
-import DBaseQtSetWorkstationMode, "libd64_qt5.dll", "#6"
-import DBaseQtSetDebugTheme, "libd64_qt5.dll", "#62"
-import DBaseQtInitialize, "libd64_qt5.dll", "#7"
-import DBaseQtShowWindow, "libd64_qt5.dll", "#9"
-import DBaseQtProcessEvents, "libd64_qt5.dll", "#10"
-import DBaseQtSetDebugVisible, "libd64_qt5.dll", "#11"
-import DBaseQtAppendConsole, "libd64_qt5.dll", "#12"
-import DBaseQtAppendDebug, "libd64_qt5.dll", "#13"
-import DBaseQtSetOutputColor, "libd64_qt5.dll", "#15"
-import DBaseQtClearScreen, "libd64_qt5.dll", "#16"
-import DBaseQtClearScreenChar, "libd64_qt5.dll", "#17"
-import DBaseQtClearScreenColor, "libd64_qt5.dll", "#18"
-import DBaseQtSetBorderColor, "libd64_qt5.dll", "#19"
-import DBaseQtMarkProgramFinished, "libd64_qt5.dll", "#58"
-import DBaseQtExec, "libd64_qt5.dll", "#59"
-import DBaseQtShutdownRequested, "libd64_qt5.dll", "#60"
-import DBaseQtShutdown, "libd64_qt5.dll", "#61"
-import DBaseQtMenuCreate, "libd64_qt5.dll", "#35"
-import DBaseQtMenuSetText, "libd64_qt5.dll", "#36"
-import DBaseQtMenuSetSeparator, "libd64_qt5.dll", "#37"
-import DBaseQtMenuSetShortcut, "libd64_qt5.dll", "#38"
-import DBaseQtMenuSetOnClick, "libd64_qt5.dll", "#39"
-import DBaseQtEnsureDefaultMenu, "libd64_qt5.dll", "#34"
-import DBaseQtSetColorNormal, "libd64_qt5.dll", "#14"
-import DBaseQtSessionCreate, "libd64_qt5.dll", "#20"
-import DBaseQtGetLoginSession, "libd64_qt5.dll", "#21"
-import DBaseQtSessionLogin, "libd64_qt5.dll", "#22"
-import DBaseQtDatabaseCreate, "libd64_qt5.dll", "#23"
-import DBaseQtDatabaseSetPath, "libd64_qt5.dll", "#24"
-import DBaseQtDatabaseSetDatabaseName, "libd64_qt5.dll", "#25"
-import DBaseQtDatabaseSetUserName, "libd64_qt5.dll", "#26"
-import DBaseQtDatabaseSetPassword, "libd64_qt5.dll", "#27"
-import DBaseQtDatabaseSetAlias, "libd64_qt5.dll", "#28"
-import DBaseQtDatabaseSetSession, "libd64_qt5.dll", "#29"
-import DBaseQtDatabaseSetActive, "libd64_qt5.dll", "#30"
-import DBaseQtDatabaseOpen, "libd64_qt5.dll", "#31"
-import DBaseQtDatabaseClose, "libd64_qt5.dll", "#32"
-import DBaseQtDatabaseCommit, "libd64_qt5.dll", "#33"
-import __dbase_gcvt, "msvcrt.dll", "#448"
-import __dbase_malloc, "msvcrt.dll", "#1291"
-import __dbase_memcpy, "msvcrt.dll", "#1303"
-import __dbase_memcmp, "msvcrt.dll", "#1302"
-import ExitProcess, "kernel32.dll", "#392"
-import VirtualAlloc, "kernel32.dll", "#1546"
-import VirtualFree, "kernel32.dll", "#1549"
-import AllocConsole, "kernel32.dll", "#26"
-import FreeConsole, "kernel32.dll", "#467"
-import GetStdHandle, "kernel32.dll", "#772"
-import CreateFileA, "kernel32.dll", "#230"
-import GetConsoleScreenBufferInfo, "kernel32.dll", "#557"
-import SetConsoleScreenBufferSize, "kernel32.dll", "#1342"
-import SetConsoleOutputCP, "kernel32.dll", "#1339"
-import SetConsoleTitleA, "kernel32.dll", "#1344"
-import GetConsoleWindow, "kernel32.dll", "#562"
-import ShowWindow, "user32.dll", "#2413"
-import SetWindowPos, "user32.dll", "#2394"
-import SetForegroundWindow, "user32.dll", "#2326"
-import WriteFile, "kernel32.dll", "#1622"
-import DBaseQtInitializeGui, "libd64_qt5.dll", "#8"
-import DBaseQtFormCreate, "libd64_qt5.dll", "#40"
-import DBaseQtControlCreateEx, "libd64_qt5.dll", "#42"
-import DBaseQtWidgetSetGeometry, "libd64_qt5.dll", "#49"
-import DBaseQtWidgetSetProperty, "libd64_qt5.dll", "#51"
-import DBaseQtWidgetSetFont, "libd64_qt5.dll", "#56"
-import DBaseQtObjectBindEvent, "libd64_qt5.dll", "#43"
-import DBaseQtTimerCreate, "libd64_qt5.dll", "#45"
-import DBaseQtFormOpen, "libd64_qt5.dll", "#57"
-import DBaseQtConsoleWrite, "libd64_qt5.dll", "#48"
-import GetSystemMetrics, "user32.dll", "#1963"
-import GetRawInputDeviceList, "user32.dll", "#1947"
-import __dbase_upper_buffer, "libd64_qt5.dll", "#4"
+import DBaseQtSetWorkstationMode, "libd64_qt5.dll", "DBaseQtSetWorkstationMode"
+import DBaseQtSetDebugTheme, "libd64_qt5.dll", "DBaseQtSetDebugTheme"
+import DBaseQtInitialize, "libd64_qt5.dll", "DBaseQtInitialize"
+import DBaseQtShowWindow, "libd64_qt5.dll", "DBaseQtShowWindow"
+import DBaseQtProcessEvents, "libd64_qt5.dll", "DBaseQtProcessEvents"
+import DBaseQtSetDebugVisible, "libd64_qt5.dll", "DBaseQtSetDebugVisible"
+import DBaseQtAppendConsole, "libd64_qt5.dll", "DBaseQtAppendConsole"
+import DBaseQtAppendDebug, "libd64_qt5.dll", "DBaseQtAppendDebug"
+import DBaseQtSetOutputColor, "libd64_qt5.dll", "DBaseQtSetOutputColor"
+import DBaseQtClearScreen, "libd64_qt5.dll", "DBaseQtClearScreen"
+import DBaseQtClearScreenChar, "libd64_qt5.dll", "DBaseQtClearScreenChar"
+import DBaseQtClearScreenColor, "libd64_qt5.dll", "DBaseQtClearScreenColor"
+import DBaseQtSetBorderColor, "libd64_qt5.dll", "DBaseQtSetBorderColor"
+import DBaseQtMarkProgramFinished, "libd64_qt5.dll", "DBaseQtMarkProgramFinished"
+import DBaseQtExec, "libd64_qt5.dll", "DBaseQtExec"
+import DBaseQtShutdownRequested, "libd64_qt5.dll", "DBaseQtShutdownRequested"
+import DBaseQtShutdown, "libd64_qt5.dll", "DBaseQtShutdown"
+import DBaseQtMenuCreate, "libd64_qt5.dll", "DBaseQtMenuCreate"
+import DBaseQtMenuSetText, "libd64_qt5.dll", "DBaseQtMenuSetText"
+import DBaseQtMenuSetSeparator, "libd64_qt5.dll", "DBaseQtMenuSetSeparator"
+import DBaseQtMenuSetShortcut, "libd64_qt5.dll", "DBaseQtMenuSetShortcut"
+import DBaseQtMenuSetOnClick, "libd64_qt5.dll", "DBaseQtMenuSetOnClick"
+import DBaseQtEnsureDefaultMenu, "libd64_qt5.dll", "DBaseQtEnsureDefaultMenu"
+import DBaseQtSetColorNormal, "libd64_qt5.dll", "DBaseQtSetColorNormal"
+import DBaseQtSessionCreate, "libd64_qt5.dll", "DBaseQtSessionCreate"
+import DBaseQtGetLoginSession, "libd64_qt5.dll", "DBaseQtGetLoginSession"
+import DBaseQtSessionLogin, "libd64_qt5.dll", "DBaseQtSessionLogin"
+import DBaseQtDatabaseCreate, "libd64_qt5.dll", "DBaseQtDatabaseCreate"
+import DBaseQtDatabaseSetPath, "libd64_qt5.dll", "DBaseQtDatabaseSetPath"
+import DBaseQtDatabaseSetDatabaseName, "libd64_qt5.dll", "DBaseQtDatabaseSetDatabaseName"
+import DBaseQtDatabaseSetUserName, "libd64_qt5.dll", "DBaseQtDatabaseSetUserName"
+import DBaseQtDatabaseSetPassword, "libd64_qt5.dll", "DBaseQtDatabaseSetPassword"
+import DBaseQtDatabaseSetAlias, "libd64_qt5.dll", "DBaseQtDatabaseSetAlias"
+import DBaseQtDatabaseSetSession, "libd64_qt5.dll", "DBaseQtDatabaseSetSession"
+import DBaseQtDatabaseSetActive, "libd64_qt5.dll", "DBaseQtDatabaseSetActive"
+import DBaseQtDatabaseOpen, "libd64_qt5.dll", "DBaseQtDatabaseOpen"
+import DBaseQtDatabaseClose, "libd64_qt5.dll", "DBaseQtDatabaseClose"
+import DBaseQtDatabaseCommit, "libd64_qt5.dll", "DBaseQtDatabaseCommit"
+import __dbase_gcvt, "msvcrt.dll", "_gcvt"
+import __dbase_malloc, "msvcrt.dll", "malloc"
+import __dbase_memcpy, "msvcrt.dll", "memcpy"
+import __dbase_memcmp, "msvcrt.dll", "memcmp"
+import ExitProcess, "kernel32.dll", "ExitProcess"
+import VirtualAlloc, "kernel32.dll", "VirtualAlloc"
+import VirtualFree, "kernel32.dll", "VirtualFree"
+import AllocConsole, "kernel32.dll", "AllocConsole"
+import FreeConsole, "kernel32.dll", "FreeConsole"
+import GetStdHandle, "kernel32.dll", "GetStdHandle"
+import CreateFileA, "kernel32.dll", "CreateFileA"
+import GetConsoleScreenBufferInfo, "kernel32.dll", "GetConsoleScreenBufferInfo"
+import SetConsoleScreenBufferSize, "kernel32.dll", "SetConsoleScreenBufferSize"
+import SetConsoleOutputCP, "kernel32.dll", "SetConsoleOutputCP"
+import SetConsoleTitleA, "kernel32.dll", "SetConsoleTitleA"
+import GetConsoleWindow, "kernel32.dll", "GetConsoleWindow"
+import ShowWindow, "user32.dll", "ShowWindow"
+import SetWindowPos, "user32.dll", "SetWindowPos"
+import SetForegroundWindow, "user32.dll", "SetForegroundWindow"
+import WriteFile, "kernel32.dll", "WriteFile"
+import DBaseQtInitializeGui, "libd64_qt5.dll", "DBaseQtInitializeGui"
+import DBaseQtFormCreate, "libd64_qt5.dll", "DBaseQtFormCreate"
+import DBaseQtControlCreateEx, "libd64_qt5.dll", "DBaseQtControlCreateEx"
+import DBaseQtWidgetSetGeometry, "libd64_qt5.dll", "DBaseQtWidgetSetGeometry"
+import DBaseQtWidgetSetProperty, "libd64_qt5.dll", "DBaseQtWidgetSetProperty"
+import DBaseQtWidgetSetFont, "libd64_qt5.dll", "DBaseQtWidgetSetFont"
+import DBaseQtObjectBindEvent, "libd64_qt5.dll", "DBaseQtObjectBindEvent"
+import DBaseQtTimerCreate, "libd64_qt5.dll", "DBaseQtTimerCreate"
+import DBaseQtFormOpen, "libd64_qt5.dll", "DBaseQtFormOpen"
+import DBaseQtConsoleWrite, "libd64_qt5.dll", "DBaseQtConsoleWrite"
+import GetSystemMetrics, "user32.dll", "GetSystemMetrics"
+import GetRawInputDeviceList, "user32.dll", "GetRawInputDeviceList"
+import __dbase_upper_buffer, "libd64_qt5.dll", "DBaseUpperBuffer"
 global _start
 entry _start
 
 section .text
 
 _start:
-    push 1
+    mov ecx, 0
+    sub rsp, 40
     call DBaseQtSetWorkstationMode
-    add esp, 4
-    push 0
+    add rsp, 40
+    mov ecx, 0
+    sub rsp, 40
     call DBaseQtSetDebugTheme
-    add esp, 4
-    push __dbase_text_0
+    add rsp, 40
+    mov rcx, __dbase_text_0
+    sub rsp, 40
     call DBaseQtInitialize
-    add esp, 4
+    add rsp, 40
     test eax, eax
     jne __dbase_qt_init_ok_2
-    push 1
+    mov ecx, 1
+    sub rsp, 40
     call ExitProcess
 __dbase_qt_init_ok_2:
-    push 4
-    push 12288
-    push 96
-    push 0
+    xor ecx, ecx
+    mov edx, 96
+    mov r8d, 12288
+    mov r9d, 4
+    sub rsp, 40
     call VirtualAlloc
-    test eax, eax
+    add rsp, 40
+    test rax, rax
     jne __dbase_format_buffer_alloc_ok_3
+    sub rsp, 40
     call DBaseQtShutdown
-    push 1
+    add rsp, 40
+    mov ecx, 1
+    sub rsp, 40
     call ExitProcess
 __dbase_format_buffer_alloc_ok_3:
-    mov dword ptr [__dbase_format_buffer], eax
-    push 0
+    mov qword ptr [__dbase_format_buffer], rax
+    mov ecx, 0
+    sub rsp, 40
     call DBaseQtSetDebugVisible
-    add esp, 4
+    add rsp, 40
+    sub rsp, 40
     call DBaseQtEnsureDefaultMenu
     call DBaseQtShowWindow
+    add rsp, 40
+    sub rsp, 40
     call DBaseQtProcessEvents
+    add rsp, 40
+    sub rsp, 40
     call DBaseQtShutdownRequested
+    add rsp, 40
     test eax, eax
     jne __dbase_program_cleanup_1
     cmp dword ptr [__dbase_output_debug_override], -1
@@ -124,72 +140,98 @@ __dbase_output_show_done_6:
     cmp dword ptr [__dbase_output_debug_visible], 0
     jne __dbase_output_already_visible_8
     mov dword ptr [__dbase_output_debug_visible], 1
-    push 1
+    mov ecx, 1
+    sub rsp, 40
     call DBaseQtSetDebugVisible
-    add esp, 4
+    add rsp, 40
 __dbase_output_already_visible_8:
     jmp __dbase_output_done_7
 __dbase_output_console_5:
-    push 0
-    push __dbase_text_2
+    mov rcx, __dbase_text_2
+    mov edx, 0
+    sub rsp, 8
     call __dbase_console_write
-    add esp, 8
+    add rsp, 8
 __dbase_output_done_7:
+    sub rsp, 40
     call DBaseQtProcessEvents
+    add rsp, 40
+    sub rsp, 40
     call DBaseQtShutdownRequested
+    add rsp, 40
     test eax, eax
     jne __dbase_program_cleanup_1
+    sub rsp, 40
     call DBaseQtMarkProgramFinished
+    add rsp, 40
+    sub rsp, 40
     call DBaseQtExec
+    add rsp, 40
     mov dword ptr [__dbase_exit_code], eax
 __dbase_program_cleanup_1:
+    sub rsp, 40
     call DBaseQtShutdown
+    add rsp, 40
+    sub rsp, 8
     call __dbase_console_shutdown
-    mov eax, dword ptr [__dbase_format_buffer]
-    test eax, eax
+    add rsp, 8
+    mov rcx, qword ptr [__dbase_format_buffer]
+    test rcx, rcx
     je __dbase_format_buffer_free_done_9
-    push 32768
-    push 0
-    push eax
+    xor edx, edx
+    mov r8d, 32768
+    sub rsp, 40
     call VirtualFree
+    add rsp, 40
 __dbase_format_buffer_free_done_9:
-    mov dword ptr [__dbase_format_buffer], 0
-    push dword ptr [__dbase_exit_code]
+    mov qword ptr [__dbase_format_buffer], 0
+    mov ecx, dword ptr [__dbase_exit_code]
+    sub rsp, 40
     call ExitProcess
 
 ; Stage 109: lazy Win32 console for dBase ? / ??
 __dbase_console_ensure:
     cmp dword ptr [__dbase_console_ready], 0
     jne __dbase_console_ensure_done
+    sub rsp, 40
     call AllocConsole
-    push 0
-    push 0
-    push 3
-    push 0
-    push 3
-    push 3221225472
-    push __dbase_console_out_name
+    add rsp, 40
+    sub rsp, 56
+    mov rcx, __dbase_console_out_name
+    mov edx, 3221225472
+    mov r8d, 3
+    xor r9d, r9d
+    mov qword ptr [rsp+32], 3
+    mov qword ptr [rsp+40], 0
+    mov qword ptr [rsp+48], 0
     call CreateFileA
-    test eax, eax
+    add rsp, 56
+    test rax, rax
     je __dbase_console_handle_fallback
-    cmp eax, -1
+    cmp rax, -1
     je __dbase_console_handle_fallback
-    mov dword ptr [__dbase_console_handle], eax
+    mov qword ptr [__dbase_console_handle], rax
     jmp __dbase_console_handle_ready
 __dbase_console_handle_fallback:
-    push -11
+    mov ecx, -11
+    sub rsp, 40
     call GetStdHandle
-    test eax, eax
+    add rsp, 40
+    test rax, rax
     je __dbase_console_ensure_done
-    cmp eax, -1
+    cmp rax, -1
     je __dbase_console_ensure_done
-    mov dword ptr [__dbase_console_handle], eax
+    mov qword ptr [__dbase_console_handle], rax
 __dbase_console_handle_ready:
-    push 1252
+    mov ecx, 1252
+    sub rsp, 40
     call SetConsoleOutputCP
-    push __dbase_console_info
-    push dword ptr [__dbase_console_handle]
+    add rsp, 40
+    mov rcx, qword ptr [__dbase_console_handle]
+    mov rdx, __dbase_console_info
+    sub rsp, 40
     call GetConsoleScreenBufferInfo
+    add rsp, 40
     test eax, eax
     je __dbase_console_buffer_fallback
     mov edx, dword ptr [__dbase_console_info]
@@ -199,58 +241,71 @@ __dbase_console_handle_ready:
 __dbase_console_buffer_fallback:
     mov edx, 32768080
 __dbase_console_buffer_ready:
-    push edx
-    push dword ptr [__dbase_console_handle]
+    mov rcx, qword ptr [__dbase_console_handle]
+    sub rsp, 40
     call SetConsoleScreenBufferSize
-    push __dbase_text_1
+    add rsp, 40
+    mov rcx, __dbase_text_1
+    sub rsp, 40
     call SetConsoleTitleA
+    add rsp, 40
+    sub rsp, 40
     call GetConsoleWindow
-    test eax, eax
+    add rsp, 40
+    test rax, rax
     je __dbase_console_window_ready
-    mov dword ptr [__dbase_console_window], eax
-    push 5
-    push eax
+    mov qword ptr [__dbase_console_window], rax
+    mov rcx, rax
+    mov edx, 5
+    sub rsp, 40
     call ShowWindow
-    push 67
-    push 0
-    push 0
-    push 0
-    push 0
-    push -1
-    push dword ptr [__dbase_console_window]
+    add rsp, 40
+    mov rcx, qword ptr [__dbase_console_window]
+    mov rdx, -1
+    xor r8d, r8d
+    xor r9d, r9d
+    sub rsp, 56
+    mov qword ptr [rsp+32], 0
+    mov qword ptr [rsp+40], 0
+    mov dword ptr [rsp+48], 67
     call SetWindowPos
-    push dword ptr [__dbase_console_window]
+    add rsp, 56
+    mov rcx, qword ptr [__dbase_console_window]
+    sub rsp, 40
     call SetForegroundWindow
+    add rsp, 40
 __dbase_console_window_ready:
     mov dword ptr [__dbase_console_ready], 1
 __dbase_console_ensure_done:
     ret
 
 __dbase_console_write:
-    push ebp
-    mov ebp, esp
+    sub rsp, 56
+    mov qword ptr [rsp+40], rcx
+    mov dword ptr [rsp+48], edx
     call __dbase_console_ensure
     cmp dword ptr [__dbase_console_ready], 0
     je __dbase_console_write_done
-    cmp dword ptr [ebp+12], 0
+    cmp dword ptr [rsp+48], 0
     je __dbase_console_write_done
-    push 0
-    push __dbase_console_written
-    push dword ptr [ebp+12]
-    push dword ptr [ebp+8]
-    push dword ptr [__dbase_console_handle]
+    mov rcx, qword ptr [__dbase_console_handle]
+    mov rdx, qword ptr [rsp+40]
+    mov r8d, dword ptr [rsp+48]
+    mov r9, __dbase_console_written
+    mov qword ptr [rsp+32], 0
     call WriteFile
 __dbase_console_write_done:
-    mov esp, ebp
-    pop ebp
+    add rsp, 56
     ret
 
 __dbase_console_shutdown:
     cmp dword ptr [__dbase_console_ready], 0
     je __dbase_console_shutdown_done
+    sub rsp, 40
     call FreeConsole
-    mov dword ptr [__dbase_console_handle], 0
-    mov dword ptr [__dbase_console_window], 0
+    add rsp, 40
+    mov qword ptr [__dbase_console_handle], 0
+    mov qword ptr [__dbase_console_window], 0
     mov dword ptr [__dbase_console_ready], 0
 __dbase_console_shutdown_done:
     ret
@@ -283,7 +338,7 @@ __dbase_int_cw_trunc:
 __dbase_call_number:
     resq 1
 __dbase_format_buffer:
-    resd 1
+    resq 1
 __dbase_exit_code:
     resd 1
 __dbase_output_format_screen:
@@ -293,9 +348,9 @@ __dbase_output_debug_visible:
 __dbase_console_ready:
     resd 1
 __dbase_console_handle:
-    resd 1
+    resq 1
 __dbase_console_window:
-    resd 1
+    resq 1
 __dbase_console_written:
     resd 1
 __dbase_console_number_len:
@@ -309,111 +364,138 @@ __dbase_text_2:
 .section .text
 .entry __d64_wfm_entry
 __d64_wfm_entry:
-    mov eax, __dbase_wfm_qt_output_marker
-    push 1
+    mov rax, __dbase_wfm_qt_output_marker
+    mov ecx, 0
+    sub rsp, 40
     call DBaseQtSetWorkstationMode
-    add esp, 4
-    push 0
+    add rsp, 40
+    mov ecx, 0
+    sub rsp, 40
     call DBaseQtSetDebugTheme
-    add esp, 4
-    push __dbase_wfm_text_0
+    add rsp, 40
+    mov rcx, __dbase_wfm_text_0
+    sub rsp, 40
     call DBaseQtInitializeGui
-    add esp, 4
-    push 4
-    push 12288
-    push 96
-    push 0
+    add rsp, 40
+    xor ecx, ecx
+    mov edx, 96
+    mov r8d, 12288
+    mov r9d, 4
+    sub rsp, 40
     call VirtualAlloc
-    test eax, eax
+    add rsp, 40
+    test rax, rax
     jne __dbase_wfm_format_buffer_ok
-    push 1
+    mov ecx, 1
+    sub rsp, 40
     call ExitProcess
 __dbase_wfm_format_buffer_ok:
-    mov dword ptr [__dbase_format_buffer], eax
-    push 5
-    push __dbase_wfm_text_0
+    mov qword ptr [__dbase_format_buffer], rax
+    mov rcx, __dbase_wfm_text_0
+    mov edx, 5
+    sub rsp, 40
     call DBaseQtFormCreate
-    add esp, 8
-    mov dword ptr [__dbase_wfm_form], eax
-    push 480
-    push 640
-    push 20
-    push 10
-    push dword ptr [__dbase_wfm_form]
+    add rsp, 40
+    mov qword ptr [__dbase_wfm_form], rax
+    mov rcx, qword ptr [__dbase_wfm_form]
+    mov edx, 10
+    mov r8d, 20
+    mov r9d, 640
+    sub rsp, 48
+    mov dword ptr [rsp+32], 480
     call DBaseQtWidgetSetGeometry
-    add esp, 20
-    push 1
-    push 0
-    push 0
-    push 1
-    push 12
-    push 8
-    push __dbase_wfm_text_1
-    push dword ptr [__dbase_wfm_form]
+    add rsp, 48
+    mov rcx, qword ptr [__dbase_wfm_form]
+    mov rdx, __dbase_wfm_text_1
+    mov r8d, 8
+    mov r9d, 12
+    sub rsp, 72
+    mov dword ptr [rsp+32], 1
+    mov dword ptr [rsp+40], 0
+    mov dword ptr [rsp+48], 0
+    mov dword ptr [rsp+56], 1
     call DBaseQtWidgetSetFont
-    add esp, 32
-    push 35
-    push __dbase_wfm_property_table_0
-    push dword ptr [__dbase_wfm_form]
+    add rsp, 72
+    mov rcx, qword ptr [__dbase_wfm_form]
+    mov rdx, __dbase_wfm_property_table_0
+    mov r8d, 35
+    sub rsp, 40
     call __dbase_wfm_set_properties_packed
-    add esp, 12
-    push 7
-    push __dbase_wfm_text_58
-    push dword ptr [__dbase_wfm_form]
-    push 10
-    push __dbase_wfm_text_57
+    add rsp, 40
+    mov rcx, __dbase_wfm_text_57
+    mov edx, 10
+    mov r8, qword ptr [__dbase_wfm_form]
+    mov r9, __dbase_wfm_text_58
+    sub rsp, 48
+    mov dword ptr [rsp+32], 7
     call DBaseQtControlCreateEx
-    add esp, 20
-    mov dword ptr [__dbase_wfm_obj_THIS_PushButton1], eax
-    push 85
-    push 174
-    push 40
-    push 30
-    push dword ptr [__dbase_wfm_obj_THIS_PushButton1]
+    add rsp, 48
+    mov qword ptr [__dbase_wfm_obj_THIS_PushButton1], rax
+    mov rcx, qword ptr [__dbase_wfm_obj_THIS_PushButton1]
+    mov edx, 30
+    mov r8d, 40
+    mov r9d, 174
+    sub rsp, 48
+    mov dword ptr [rsp+32], 85
     call DBaseQtWidgetSetGeometry
-    add esp, 20
-    push 1
-    push 0
-    push 0
-    push 1
-    push 9
-    push 5
-    push __dbase_wfm_text_59
-    push dword ptr [__dbase_wfm_obj_THIS_PushButton1]
+    add rsp, 48
+    mov rcx, qword ptr [__dbase_wfm_obj_THIS_PushButton1]
+    mov rdx, __dbase_wfm_text_59
+    mov r8d, 5
+    mov r9d, 9
+    sub rsp, 72
+    mov dword ptr [rsp+32], 1
+    mov dword ptr [rsp+40], 0
+    mov dword ptr [rsp+48], 0
+    mov dword ptr [rsp+56], 1
     call DBaseQtWidgetSetFont
-    add esp, 32
-    push 34
-    push __dbase_wfm_property_table_1
-    push dword ptr [__dbase_wfm_obj_THIS_PushButton1]
+    add rsp, 72
+    mov rcx, qword ptr [__dbase_wfm_obj_THIS_PushButton1]
+    mov rdx, __dbase_wfm_property_table_1
+    mov r8d, 34
+    sub rsp, 40
     call __dbase_wfm_set_properties_packed
-    add esp, 12
-    push __dbase_wfm_proc_PushButton1_onClick
-    push 7
-    push __dbase_wfm_text_74
-    push dword ptr [__dbase_wfm_obj_THIS_PushButton1]
+    add rsp, 40
+    mov rcx, qword ptr [__dbase_wfm_obj_THIS_PushButton1]
+    mov rdx, __dbase_wfm_text_74
+    mov r8d, 7
+    mov r9, __dbase_wfm_proc_PushButton1_onClick
+    sub rsp, 40
     call DBaseQtObjectBindEvent
-    add esp, 16
-    push 4
-    push 51
+    add rsp, 40
+    sub rsp, 40
+    mov rcx, 51
+    mov rdx, 4
     call __dbase_wfm_proc___init__
-    add esp, 8
-    push dword ptr [__dbase_wfm_form]
+    add rsp, 40
+    mov rcx, qword ptr [__dbase_wfm_form]
+    sub rsp, 40
     call DBaseQtFormOpen
-    add esp, 4
+    add rsp, 40
+    sub rsp, 40
     call __dbase_wfm_proc___main__
+    add rsp, 40
+    sub rsp, 40
     call DBaseQtExec
+    add rsp, 40
+    sub rsp, 40
     call __dbase_wfm_proc___del__
+    add rsp, 40
+    sub rsp, 40
     call DBaseQtShutdown
-    mov eax, dword ptr [__dbase_format_buffer]
-    test eax, eax
+    add rsp, 40
+    mov rcx, qword ptr [__dbase_format_buffer]
+    test rcx, rcx
     je __dbase_wfm_format_buffer_free_done
-    push 32768
-    push 0
-    push eax
+    xor edx, edx
+    mov r8d, 32768
+    sub rsp, 40
     call VirtualFree
-    mov dword ptr [__dbase_format_buffer], 0
+    add rsp, 40
+    mov qword ptr [__dbase_format_buffer], 0
 __dbase_wfm_format_buffer_free_done:
-    push 0
+    xor ecx, ecx
+    sub rsp, 40
     call ExitProcess
 
 ; Stage 133: WFM Event-/Methoden-Code
@@ -423,8 +505,10 @@ __dbase_wfm_format_buffer_free_done:
 ; WFM PROCEDURE/FUNCTION MASCHINENCODE: __del__
 ; ------------------------------------------------------------
 __dbase_wfm_proc___del__:
+    sub rsp, 40
     jmp __dbase_wfm_flow_method_exit_1
 __dbase_wfm_flow_method_exit_1:
+    add rsp, 40
     ret
 ; END WFM PROCEDURE/FUNCTION: __del__
 
@@ -433,16 +517,14 @@ __dbase_wfm_flow_method_exit_1:
 ; WFM PROCEDURE/FUNCTION MASCHINENCODE: __init__
 ; ------------------------------------------------------------
 __dbase_wfm_proc___init__:
-    mov eax, dword ptr [esp+4]
-    mov dword ptr [__dbase_wfm_param___init___p1], eax
-    mov eax, dword ptr [esp+8]
-    mov dword ptr [__dbase_wfm_param___init___p2], eax
+    sub rsp, 40
+    mov qword ptr [__dbase_wfm_param___init___p1], rcx
+    mov qword ptr [__dbase_wfm_param___init___p2], rdx
     ; ? "p1 = " + p1
-    push 0
-    push 5
-    push __dbase_wfm_output_text_75
+    mov rcx, __dbase_wfm_output_text_75
+    mov edx, 5
+    mov r8d, 0
     call DBaseQtConsoleWrite
-    add esp, 12
     cmp dword ptr [__dbase_wfm_mem_p1_type], 0
     je __dbase_wfm_print_null_0
     cmp dword ptr [__dbase_wfm_mem_p1_type], 3
@@ -457,61 +539,52 @@ __dbase_wfm_proc___init__:
 __dbase_wfm_print_number_0:
     fld qword ptr [__dbase_wfm_mem_p1_num]
     fstp qword ptr [__dbase_temp_number]
-    push dword ptr [__dbase_format_buffer]
-    push 15
-    push dword ptr [__dbase_temp_number_hi]
-    push dword ptr [__dbase_temp_number]
+    movsd xmm0, qword ptr [__dbase_temp_number]
+    mov edx, 15
+    mov r8, qword ptr [__dbase_format_buffer]
     call __dbase_gcvt
-    add esp, 16
-    mov ecx, dword ptr [__dbase_format_buffer]
+    mov rcx, qword ptr [__dbase_format_buffer]
     xor edx, edx
 __dbase_wfm_strlen_0:
-    movzx eax, byte ptr [ecx]
+    movzx eax, byte ptr [rcx]
     test eax, eax
     je __dbase_wfm_strlen_done_0
-    inc ecx
+    inc rcx
     inc edx
     jmp __dbase_wfm_strlen_0
 __dbase_wfm_strlen_done_0:
-    push 1
-    push edx
-    push dword ptr [__dbase_format_buffer]
+    mov rcx, qword ptr [__dbase_format_buffer]
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
     jmp __dbase_wfm_print_done_0
 __dbase_wfm_print_string_0:
-    mov eax, dword ptr [__dbase_wfm_mem_p1_ptr]
-    test eax, eax
+    mov rcx, qword ptr [__dbase_wfm_mem_p1_ptr]
+    test rcx, rcx
     je __dbase_wfm_print_null_0
-    push 1
-    push dword ptr [__dbase_wfm_mem_p1_len]
-    push eax
+    mov edx, dword ptr [__dbase_wfm_mem_p1_len]
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
     jmp __dbase_wfm_print_done_0
 __dbase_wfm_print_object_0:
-    mov eax, dword ptr [__dbase_wfm_mem_p1_ptr]
-    test eax, eax
+    mov rax, qword ptr [__dbase_wfm_mem_p1_ptr]
+    test rax, rax
     je __dbase_wfm_print_null_0
-    push 1
-    push 8
-    push __dbase_wfm_output_text_77
+    mov rcx, __dbase_wfm_output_text_77
+    mov edx, 8
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
     jmp __dbase_wfm_print_done_0
 __dbase_wfm_print_null_0:
-    push 1
-    push 6
-    push __dbase_wfm_output_text_76
+    mov rcx, __dbase_wfm_output_text_76
+    mov edx, 6
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
 __dbase_wfm_print_done_0:
     ; ? "p2 = " + p2
-    push 0
-    push 5
-    push __dbase_wfm_output_text_78
+    mov rcx, __dbase_wfm_output_text_78
+    mov edx, 5
+    mov r8d, 0
     call DBaseQtConsoleWrite
-    add esp, 12
     cmp dword ptr [__dbase_wfm_mem_p2_type], 0
     je __dbase_wfm_print_null_1
     cmp dword ptr [__dbase_wfm_mem_p2_type], 3
@@ -526,57 +599,50 @@ __dbase_wfm_print_done_0:
 __dbase_wfm_print_number_1:
     fld qword ptr [__dbase_wfm_mem_p2_num]
     fstp qword ptr [__dbase_temp_number]
-    push dword ptr [__dbase_format_buffer]
-    push 15
-    push dword ptr [__dbase_temp_number_hi]
-    push dword ptr [__dbase_temp_number]
+    movsd xmm0, qword ptr [__dbase_temp_number]
+    mov edx, 15
+    mov r8, qword ptr [__dbase_format_buffer]
     call __dbase_gcvt
-    add esp, 16
-    mov ecx, dword ptr [__dbase_format_buffer]
+    mov rcx, qword ptr [__dbase_format_buffer]
     xor edx, edx
 __dbase_wfm_strlen_1:
-    movzx eax, byte ptr [ecx]
+    movzx eax, byte ptr [rcx]
     test eax, eax
     je __dbase_wfm_strlen_done_1
-    inc ecx
+    inc rcx
     inc edx
     jmp __dbase_wfm_strlen_1
 __dbase_wfm_strlen_done_1:
-    push 1
-    push edx
-    push dword ptr [__dbase_format_buffer]
+    mov rcx, qword ptr [__dbase_format_buffer]
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
     jmp __dbase_wfm_print_done_1
 __dbase_wfm_print_string_1:
-    mov eax, dword ptr [__dbase_wfm_mem_p2_ptr]
-    test eax, eax
+    mov rcx, qword ptr [__dbase_wfm_mem_p2_ptr]
+    test rcx, rcx
     je __dbase_wfm_print_null_1
-    push 1
-    push dword ptr [__dbase_wfm_mem_p2_len]
-    push eax
+    mov edx, dword ptr [__dbase_wfm_mem_p2_len]
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
     jmp __dbase_wfm_print_done_1
 __dbase_wfm_print_object_1:
-    mov eax, dword ptr [__dbase_wfm_mem_p2_ptr]
-    test eax, eax
+    mov rax, qword ptr [__dbase_wfm_mem_p2_ptr]
+    test rax, rax
     je __dbase_wfm_print_null_1
-    push 1
-    push 8
-    push __dbase_wfm_output_text_80
+    mov rcx, __dbase_wfm_output_text_80
+    mov edx, 8
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
     jmp __dbase_wfm_print_done_1
 __dbase_wfm_print_null_1:
-    push 1
-    push 6
-    push __dbase_wfm_output_text_79
+    mov rcx, __dbase_wfm_output_text_79
+    mov edx, 6
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
 __dbase_wfm_print_done_1:
     jmp __dbase_wfm_flow_method_exit_2
 __dbase_wfm_flow_method_exit_2:
+    add rsp, 40
     ret
 ; END WFM PROCEDURE/FUNCTION: __init__
 
@@ -585,9 +651,11 @@ __dbase_wfm_flow_method_exit_2:
 ; WFM PROCEDURE/FUNCTION MASCHINENCODE: __main__
 ; ------------------------------------------------------------
 __dbase_wfm_proc___main__:
+    sub rsp, 40
     mov eax, 7
     jmp __dbase_wfm_flow_method_exit_3
 __dbase_wfm_flow_method_exit_3:
+    add rsp, 40
     ret
 ; END WFM PROCEDURE/FUNCTION: __main__
 
@@ -596,20 +664,20 @@ __dbase_wfm_flow_method_exit_3:
 ; WFM PROCEDURE/FUNCTION MASCHINENCODE: PushButton1_onClick
 ; ------------------------------------------------------------
 __dbase_wfm_proc_PushButton1_onClick:
-    mov eax, dword ptr [esp+4]
-    mov dword ptr [__dbase_wfm_param_PushButton1_onClick_Sender], eax
+    sub rsp, 40
+    mov qword ptr [__dbase_wfm_param_PushButton1_onClick_Sender], rcx
     ; STORE 101.42 TO Ausdruck
     fld qword ptr [__dbase_wfm_numconst_0]
     fstp qword ptr [__dbase_wfm_mem_Ausdruck_num]
     mov dword ptr [__dbase_wfm_mem_Ausdruck_type], 2
     mov dword ptr [__dbase_wfm_mem_Ausdruck_len], 0
-    mov dword ptr [__dbase_wfm_mem_Ausdruck_ptr], 0
+    mov qword ptr [__dbase_wfm_mem_Ausdruck_ptr], 0
     ; Ausdruck = 101.42
     fld qword ptr [__dbase_wfm_numconst_1]
     fstp qword ptr [__dbase_wfm_mem_Ausdruck_num]
     mov dword ptr [__dbase_wfm_mem_Ausdruck_type], 2
     mov dword ptr [__dbase_wfm_mem_Ausdruck_len], 0
-    mov dword ptr [__dbase_wfm_mem_Ausdruck_ptr], 0
+    mov qword ptr [__dbase_wfm_mem_Ausdruck_ptr], 0
     ; ? Ausdruck
     cmp dword ptr [__dbase_wfm_mem_Ausdruck_type], 0
     je __dbase_wfm_print_null_2
@@ -625,54 +693,46 @@ __dbase_wfm_proc_PushButton1_onClick:
 __dbase_wfm_print_number_2:
     fld qword ptr [__dbase_wfm_mem_Ausdruck_num]
     fstp qword ptr [__dbase_temp_number]
-    push dword ptr [__dbase_format_buffer]
-    push 15
-    push dword ptr [__dbase_temp_number_hi]
-    push dword ptr [__dbase_temp_number]
+    movsd xmm0, qword ptr [__dbase_temp_number]
+    mov edx, 15
+    mov r8, qword ptr [__dbase_format_buffer]
     call __dbase_gcvt
-    add esp, 16
-    mov ecx, dword ptr [__dbase_format_buffer]
+    mov rcx, qword ptr [__dbase_format_buffer]
     xor edx, edx
 __dbase_wfm_strlen_2:
-    movzx eax, byte ptr [ecx]
+    movzx eax, byte ptr [rcx]
     test eax, eax
     je __dbase_wfm_strlen_done_2
-    inc ecx
+    inc rcx
     inc edx
     jmp __dbase_wfm_strlen_2
 __dbase_wfm_strlen_done_2:
-    push 1
-    push edx
-    push dword ptr [__dbase_format_buffer]
+    mov rcx, qword ptr [__dbase_format_buffer]
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
     jmp __dbase_wfm_print_done_2
 __dbase_wfm_print_string_2:
-    mov eax, dword ptr [__dbase_wfm_mem_Ausdruck_ptr]
-    test eax, eax
+    mov rcx, qword ptr [__dbase_wfm_mem_Ausdruck_ptr]
+    test rcx, rcx
     je __dbase_wfm_print_null_2
-    push 1
-    push dword ptr [__dbase_wfm_mem_Ausdruck_len]
-    push eax
+    mov edx, dword ptr [__dbase_wfm_mem_Ausdruck_len]
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
     jmp __dbase_wfm_print_done_2
 __dbase_wfm_print_object_2:
-    mov eax, dword ptr [__dbase_wfm_mem_Ausdruck_ptr]
-    test eax, eax
+    mov rax, qword ptr [__dbase_wfm_mem_Ausdruck_ptr]
+    test rax, rax
     je __dbase_wfm_print_null_2
-    push 1
-    push 8
-    push __dbase_wfm_output_text_82
+    mov rcx, __dbase_wfm_output_text_82
+    mov edx, 8
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
     jmp __dbase_wfm_print_done_2
 __dbase_wfm_print_null_2:
-    push 1
-    push 6
-    push __dbase_wfm_output_text_81
+    mov rcx, __dbase_wfm_output_text_81
+    mov edx, 6
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
 __dbase_wfm_print_done_2:
     ; STORE INT(Ausdruck) TO Ausdruck
     cmp dword ptr [__dbase_wfm_mem_Ausdruck_type], 1
@@ -681,23 +741,23 @@ __dbase_wfm_print_done_2:
     je __dbase_wfm_int_numeric_3
     mov dword ptr [__dbase_wfm_mem_Ausdruck_type], 0
     mov dword ptr [__dbase_wfm_mem_Ausdruck_len], 0
-    mov dword ptr [__dbase_wfm_mem_Ausdruck_ptr], 0
+    mov qword ptr [__dbase_wfm_mem_Ausdruck_ptr], 0
     jmp __dbase_wfm_int_done_3
 __dbase_wfm_int_numeric_3:
     fld qword ptr [__dbase_wfm_mem_Ausdruck_num]
-    sub esp, 8
-    fnstcw word ptr [esp]
-    mov eax, dword ptr [esp]
+    sub rsp, 8
+    fnstcw word ptr [rsp]
+    mov eax, dword ptr [rsp]
     or eax, 0x0C00
-    mov dword ptr [esp+4], eax
-    fldcw word ptr [esp+4]
+    mov dword ptr [rsp+4], eax
+    fldcw word ptr [rsp+4]
     frndint
-    fldcw word ptr [esp]
-    add esp, 8
+    fldcw word ptr [rsp]
+    add rsp, 8
     fstp qword ptr [__dbase_wfm_mem_Ausdruck_num]
     mov dword ptr [__dbase_wfm_mem_Ausdruck_type], 1
     mov dword ptr [__dbase_wfm_mem_Ausdruck_len], 0
-    mov dword ptr [__dbase_wfm_mem_Ausdruck_ptr], 0
+    mov qword ptr [__dbase_wfm_mem_Ausdruck_ptr], 0
 __dbase_wfm_int_done_3:
     ; ? Ausdruck
     cmp dword ptr [__dbase_wfm_mem_Ausdruck_type], 0
@@ -714,83 +774,70 @@ __dbase_wfm_int_done_3:
 __dbase_wfm_print_number_4:
     fld qword ptr [__dbase_wfm_mem_Ausdruck_num]
     fstp qword ptr [__dbase_temp_number]
-    push dword ptr [__dbase_format_buffer]
-    push 15
-    push dword ptr [__dbase_temp_number_hi]
-    push dword ptr [__dbase_temp_number]
+    movsd xmm0, qword ptr [__dbase_temp_number]
+    mov edx, 15
+    mov r8, qword ptr [__dbase_format_buffer]
     call __dbase_gcvt
-    add esp, 16
-    mov ecx, dword ptr [__dbase_format_buffer]
+    mov rcx, qword ptr [__dbase_format_buffer]
     xor edx, edx
 __dbase_wfm_strlen_3:
-    movzx eax, byte ptr [ecx]
+    movzx eax, byte ptr [rcx]
     test eax, eax
     je __dbase_wfm_strlen_done_3
-    inc ecx
+    inc rcx
     inc edx
     jmp __dbase_wfm_strlen_3
 __dbase_wfm_strlen_done_3:
-    push 1
-    push edx
-    push dword ptr [__dbase_format_buffer]
+    mov rcx, qword ptr [__dbase_format_buffer]
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
     jmp __dbase_wfm_print_done_4
 __dbase_wfm_print_string_4:
-    mov eax, dword ptr [__dbase_wfm_mem_Ausdruck_ptr]
-    test eax, eax
+    mov rcx, qword ptr [__dbase_wfm_mem_Ausdruck_ptr]
+    test rcx, rcx
     je __dbase_wfm_print_null_4
-    push 1
-    push dword ptr [__dbase_wfm_mem_Ausdruck_len]
-    push eax
+    mov edx, dword ptr [__dbase_wfm_mem_Ausdruck_len]
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
     jmp __dbase_wfm_print_done_4
 __dbase_wfm_print_object_4:
-    mov eax, dword ptr [__dbase_wfm_mem_Ausdruck_ptr]
-    test eax, eax
+    mov rax, qword ptr [__dbase_wfm_mem_Ausdruck_ptr]
+    test rax, rax
     je __dbase_wfm_print_null_4
-    push 1
-    push 8
-    push __dbase_wfm_output_text_84
+    mov rcx, __dbase_wfm_output_text_84
+    mov edx, 8
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
     jmp __dbase_wfm_print_done_4
 __dbase_wfm_print_null_4:
-    push 1
-    push 6
-    push __dbase_wfm_output_text_83
+    mov rcx, __dbase_wfm_output_text_83
+    mov edx, 6
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
 __dbase_wfm_print_done_4:
     ; ? "1: " + 101.42
-    push 0
-    push 3
-    push __dbase_wfm_output_text_85
+    mov rcx, __dbase_wfm_output_text_85
+    mov edx, 3
+    mov r8d, 0
     call DBaseQtConsoleWrite
-    add esp, 12
-    push 1
-    push 6
-    push __dbase_wfm_output_text_86
+    mov rcx, __dbase_wfm_output_text_86
+    mov edx, 6
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
     ; ? "2: " + INT(101.42)
-    push 0
-    push 3
-    push __dbase_wfm_output_text_87
+    mov rcx, __dbase_wfm_output_text_87
+    mov edx, 3
+    mov r8d, 0
     call DBaseQtConsoleWrite
-    add esp, 12
-    push 1
-    push 3
-    push __dbase_wfm_output_text_88
+    mov rcx, __dbase_wfm_output_text_88
+    mov edx, 3
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
     ; ? "3: " + Ausdruck
-    push 0
-    push 3
-    push __dbase_wfm_output_text_89
+    mov rcx, __dbase_wfm_output_text_89
+    mov edx, 3
+    mov r8d, 0
     call DBaseQtConsoleWrite
-    add esp, 12
     cmp dword ptr [__dbase_wfm_mem_Ausdruck_type], 0
     je __dbase_wfm_print_null_5
     cmp dword ptr [__dbase_wfm_mem_Ausdruck_type], 3
@@ -805,65 +852,57 @@ __dbase_wfm_print_done_4:
 __dbase_wfm_print_number_5:
     fld qword ptr [__dbase_wfm_mem_Ausdruck_num]
     fstp qword ptr [__dbase_temp_number]
-    push dword ptr [__dbase_format_buffer]
-    push 15
-    push dword ptr [__dbase_temp_number_hi]
-    push dword ptr [__dbase_temp_number]
+    movsd xmm0, qword ptr [__dbase_temp_number]
+    mov edx, 15
+    mov r8, qword ptr [__dbase_format_buffer]
     call __dbase_gcvt
-    add esp, 16
-    mov ecx, dword ptr [__dbase_format_buffer]
+    mov rcx, qword ptr [__dbase_format_buffer]
     xor edx, edx
 __dbase_wfm_strlen_4:
-    movzx eax, byte ptr [ecx]
+    movzx eax, byte ptr [rcx]
     test eax, eax
     je __dbase_wfm_strlen_done_4
-    inc ecx
+    inc rcx
     inc edx
     jmp __dbase_wfm_strlen_4
 __dbase_wfm_strlen_done_4:
-    push 1
-    push edx
-    push dword ptr [__dbase_format_buffer]
+    mov rcx, qword ptr [__dbase_format_buffer]
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
     jmp __dbase_wfm_print_done_5
 __dbase_wfm_print_string_5:
-    mov eax, dword ptr [__dbase_wfm_mem_Ausdruck_ptr]
-    test eax, eax
+    mov rcx, qword ptr [__dbase_wfm_mem_Ausdruck_ptr]
+    test rcx, rcx
     je __dbase_wfm_print_null_5
-    push 1
-    push dword ptr [__dbase_wfm_mem_Ausdruck_len]
-    push eax
+    mov edx, dword ptr [__dbase_wfm_mem_Ausdruck_len]
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
     jmp __dbase_wfm_print_done_5
 __dbase_wfm_print_object_5:
-    mov eax, dword ptr [__dbase_wfm_mem_Ausdruck_ptr]
-    test eax, eax
+    mov rax, qword ptr [__dbase_wfm_mem_Ausdruck_ptr]
+    test rax, rax
     je __dbase_wfm_print_null_5
-    push 1
-    push 8
-    push __dbase_wfm_output_text_91
+    mov rcx, __dbase_wfm_output_text_91
+    mov edx, 8
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
     jmp __dbase_wfm_print_done_5
 __dbase_wfm_print_null_5:
-    push 1
-    push 6
-    push __dbase_wfm_output_text_90
+    mov rcx, __dbase_wfm_output_text_90
+    mov edx, 6
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
 __dbase_wfm_print_done_5:
     ; STORE "Zeichenstring" TO SpeicherVar
-    mov dword ptr [__dbase_wfm_mem_SpeicherVar_ptr], __dbase_wfm_output_text_92
+    mov rax, __dbase_wfm_output_text_92
+    mov qword ptr [__dbase_wfm_mem_SpeicherVar_ptr], rax
     mov dword ptr [__dbase_wfm_mem_SpeicherVar_len], 13
     mov dword ptr [__dbase_wfm_mem_SpeicherVar_type], 3
     ; ? "4: " + SpeicherVar
-    push 0
-    push 3
-    push __dbase_wfm_output_text_93
+    mov rcx, __dbase_wfm_output_text_93
+    mov edx, 3
+    mov r8d, 0
     call DBaseQtConsoleWrite
-    add esp, 12
     cmp dword ptr [__dbase_wfm_mem_SpeicherVar_type], 0
     je __dbase_wfm_print_null_6
     cmp dword ptr [__dbase_wfm_mem_SpeicherVar_type], 3
@@ -878,86 +917,77 @@ __dbase_wfm_print_done_5:
 __dbase_wfm_print_number_6:
     fld qword ptr [__dbase_wfm_mem_SpeicherVar_num]
     fstp qword ptr [__dbase_temp_number]
-    push dword ptr [__dbase_format_buffer]
-    push 15
-    push dword ptr [__dbase_temp_number_hi]
-    push dword ptr [__dbase_temp_number]
+    movsd xmm0, qword ptr [__dbase_temp_number]
+    mov edx, 15
+    mov r8, qword ptr [__dbase_format_buffer]
     call __dbase_gcvt
-    add esp, 16
-    mov ecx, dword ptr [__dbase_format_buffer]
+    mov rcx, qword ptr [__dbase_format_buffer]
     xor edx, edx
 __dbase_wfm_strlen_5:
-    movzx eax, byte ptr [ecx]
+    movzx eax, byte ptr [rcx]
     test eax, eax
     je __dbase_wfm_strlen_done_5
-    inc ecx
+    inc rcx
     inc edx
     jmp __dbase_wfm_strlen_5
 __dbase_wfm_strlen_done_5:
-    push 1
-    push edx
-    push dword ptr [__dbase_format_buffer]
+    mov rcx, qword ptr [__dbase_format_buffer]
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
     jmp __dbase_wfm_print_done_6
 __dbase_wfm_print_string_6:
-    mov eax, dword ptr [__dbase_wfm_mem_SpeicherVar_ptr]
-    test eax, eax
+    mov rcx, qword ptr [__dbase_wfm_mem_SpeicherVar_ptr]
+    test rcx, rcx
     je __dbase_wfm_print_null_6
-    push 1
-    push dword ptr [__dbase_wfm_mem_SpeicherVar_len]
-    push eax
+    mov edx, dword ptr [__dbase_wfm_mem_SpeicherVar_len]
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
     jmp __dbase_wfm_print_done_6
 __dbase_wfm_print_object_6:
-    mov eax, dword ptr [__dbase_wfm_mem_SpeicherVar_ptr]
-    test eax, eax
+    mov rax, qword ptr [__dbase_wfm_mem_SpeicherVar_ptr]
+    test rax, rax
     je __dbase_wfm_print_null_6
-    push 1
-    push 8
-    push __dbase_wfm_output_text_95
+    mov rcx, __dbase_wfm_output_text_95
+    mov edx, 8
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
     jmp __dbase_wfm_print_done_6
 __dbase_wfm_print_null_6:
-    push 1
-    push 6
-    push __dbase_wfm_output_text_94
+    mov rcx, __dbase_wfm_output_text_94
+    mov edx, 6
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
 __dbase_wfm_print_done_6:
     cmp dword ptr [__dbase_wfm_mem_SpeicherVar_type], 3
     je __wfm_upper_7_valid
-    push 13
+    mov ecx, 13
     call ExitProcess
 __wfm_upper_7_valid:
     fld qword ptr [__dbase_wfm_numconst_2]
     fstp qword ptr [__dbase_wfm_mem___string_arg_9_num]
     mov dword ptr [__dbase_wfm_mem___string_arg_9_type], 2
     mov dword ptr [__dbase_wfm_mem___string_arg_9_len], 0
-    mov dword ptr [__dbase_wfm_mem___string_arg_9_ptr], 0
+    mov qword ptr [__dbase_wfm_mem___string_arg_9_ptr], 0
     fld qword ptr [__dbase_wfm_numconst_3]
     fstp qword ptr [__dbase_wfm_mem___string_arg_10_num]
     mov dword ptr [__dbase_wfm_mem___string_arg_10_type], 2
     mov dword ptr [__dbase_wfm_mem___string_arg_10_len], 0
-    mov dword ptr [__dbase_wfm_mem___string_arg_10_ptr], 0
+    mov qword ptr [__dbase_wfm_mem___string_arg_10_ptr], 0
     mov eax, dword ptr [__dbase_wfm_mem_SpeicherVar_len]
     add eax, 1
-    push eax
+    mov ecx, eax
     call __dbase_malloc
-    add esp, 4
-    test eax, eax
+    test rax, rax
     jne __wfm_upper_8_allocated
-    push 8
+    mov ecx, 8
     call ExitProcess
 __wfm_upper_8_allocated:
-    mov dword ptr [__dbase_wfm_mem___string_arg_8_ptr], eax
-    push ebx
-    push esi
-    push edi
-    push ebp
-    sub esp, 16
+    mov qword ptr [__dbase_wfm_mem___string_arg_8_ptr], rax
+    push rbx
+    push rsi
+    push rdi
+    push rbp
+    sub rsp, 16
     xor ebx, ebx
     mov eax, dword ptr [__dbase_wfm_mem___string_arg_9_num+4]
     test eax, eax
@@ -967,15 +997,15 @@ __wfm_upper_8_allocated:
     mov ebx, 2147483647
     jmp __wfm_upper_8_start_done
 __wfm_upper_8_start_convert:
-    fnstcw word ptr [esp]
-    movzx eax, word ptr [esp]
+    fnstcw word ptr [rsp]
+    movzx eax, word ptr [rsp]
     or eax, 0x0C00
-    mov dword ptr [esp+4], eax
-    fldcw word ptr [esp+4]
+    mov dword ptr [rsp+4], eax
+    fldcw word ptr [rsp+4]
     fld qword ptr [__dbase_wfm_mem___string_arg_9_num]
-    fistp dword ptr [esp+8]
-    fldcw word ptr [esp]
-    mov ebx, dword ptr [esp+8]
+    fistp dword ptr [rsp+8]
+    fldcw word ptr [rsp]
+    mov ebx, dword ptr [rsp+8]
 __wfm_upper_8_start_done:
     test ebx, ebx
     je __wfm_upper_8_start_ready
@@ -990,26 +1020,26 @@ __wfm_upper_8_start_ready:
     mov ecx, 2147483647
     jmp __wfm_upper_8_count_done
 __wfm_upper_8_count_convert:
-    fnstcw word ptr [esp]
-    movzx eax, word ptr [esp]
+    fnstcw word ptr [rsp]
+    movzx eax, word ptr [rsp]
     or eax, 0x0C00
-    mov dword ptr [esp+4], eax
-    fldcw word ptr [esp+4]
+    mov dword ptr [rsp+4], eax
+    fldcw word ptr [rsp+4]
     fld qword ptr [__dbase_wfm_mem___string_arg_10_num]
-    fistp dword ptr [esp+8]
-    fldcw word ptr [esp]
-    mov ecx, dword ptr [esp+8]
+    fistp dword ptr [rsp+8]
+    fldcw word ptr [rsp]
+    mov ecx, dword ptr [rsp+8]
 __wfm_upper_8_count_done:
-    add esp, 16
-    mov esi, dword ptr [__dbase_wfm_mem_SpeicherVar_ptr]
-    mov edi, dword ptr [__dbase_wfm_mem___string_arg_8_ptr]
+    add rsp, 16
+    mov rsi, qword ptr [__dbase_wfm_mem_SpeicherVar_ptr]
+    mov rdi, qword ptr [__dbase_wfm_mem___string_arg_8_ptr]
     mov edx, dword ptr [__dbase_wfm_mem_SpeicherVar_len]
 __wfm_upper_8_loop:
     test edx, edx
     je __wfm_upper_8_done
     test ecx, ecx
     je __wfm_upper_8_done
-    movzx eax, byte ptr [esi]
+    movzx eax, byte ptr [rsi]
     mov ebp, 1
     cmp eax, 194
     jb __wfm_upper_8_width
@@ -1030,65 +1060,61 @@ __wfm_upper_8_bounded:
     sub edx, ebp
     test ebx, ebx
     je __wfm_upper_8_copy
-    add esi, ebp
+    add rsi, rbp
     dec ebx
     jmp __wfm_upper_8_loop
 __wfm_upper_8_copy:
-    movzx eax, byte ptr [esi]
-    mov byte ptr [edi], al
-    inc esi
-    inc edi
+    movzx eax, byte ptr [rsi]
+    mov byte ptr [rdi], al
+    inc rsi
+    inc rdi
     dec ebp
     jne __wfm_upper_8_copy
     dec ecx
     jmp __wfm_upper_8_loop
 __wfm_upper_8_done:
-    mov byte ptr [edi], 0
-    sub edi, dword ptr [__dbase_wfm_mem___string_arg_8_ptr]
+    mov byte ptr [rdi], 0
+    sub rdi, qword ptr [__dbase_wfm_mem___string_arg_8_ptr]
     mov dword ptr [__dbase_wfm_mem___string_arg_8_len], edi
     mov dword ptr [__dbase_wfm_mem___string_arg_8_type], 3
-    pop ebp
-    pop edi
-    pop esi
-    pop ebx
+    pop rbp
+    pop rdi
+    pop rsi
+    pop rbx
     mov eax, dword ptr [__dbase_wfm_mem___string_arg_8_len]
     mov ecx, eax
     add eax, ecx
     add eax, ecx
     add eax, 1
-    push eax
+    mov ecx, eax
     call __dbase_malloc
-    add esp, 4
-    test eax, eax
+    test rax, rax
     jne __wfm_upper_11_allocated
-    push 8
+    mov ecx, 8
     call ExitProcess
 __wfm_upper_11_allocated:
-    mov dword ptr [__dbase_wfm_mem___string_arg_11_ptr], eax
-    mov ecx, dword ptr [__dbase_wfm_mem___string_arg_8_len]
-    mov edx, ecx
-    add edx, ecx
-    add edx, ecx
+    mov qword ptr [__dbase_wfm_mem___string_arg_11_ptr], rax
+    mov rcx, qword ptr [__dbase_wfm_mem___string_arg_11_ptr]
+    mov edx, dword ptr [__dbase_wfm_mem___string_arg_8_len]
+    mov eax, edx
+    add edx, eax
+    add edx, eax
     add edx, 1
-    push ecx
-    push dword ptr [__dbase_wfm_mem___string_arg_8_ptr]
-    push edx
-    push dword ptr [__dbase_wfm_mem___string_arg_11_ptr]
+    mov r8, qword ptr [__dbase_wfm_mem___string_arg_8_ptr]
+    mov r9d, dword ptr [__dbase_wfm_mem___string_arg_8_len]
     call __dbase_upper_buffer
-    add esp, 16
     cmp eax, -1
     jne __wfm_upper_11_converted
-    push 13
+    mov ecx, 13
     call ExitProcess
 __wfm_upper_11_converted:
     mov dword ptr [__dbase_wfm_mem___string_arg_11_len], eax
     mov dword ptr [__dbase_wfm_mem___string_arg_11_type], 3
     ; ? "5: " + !($(SpeicherVar, 8, 6))
-    push 0
-    push 3
-    push __dbase_wfm_output_text_96
+    mov rcx, __dbase_wfm_output_text_96
+    mov edx, 3
+    mov r8d, 0
     call DBaseQtConsoleWrite
-    add esp, 12
     cmp dword ptr [__dbase_wfm_mem___string_arg_11_type], 0
     je __dbase_wfm_print_null_12
     cmp dword ptr [__dbase_wfm_mem___string_arg_11_type], 3
@@ -1103,58 +1129,50 @@ __wfm_upper_11_converted:
 __dbase_wfm_print_number_12:
     fld qword ptr [__dbase_wfm_mem___string_arg_11_num]
     fstp qword ptr [__dbase_temp_number]
-    push dword ptr [__dbase_format_buffer]
-    push 15
-    push dword ptr [__dbase_temp_number_hi]
-    push dword ptr [__dbase_temp_number]
+    movsd xmm0, qword ptr [__dbase_temp_number]
+    mov edx, 15
+    mov r8, qword ptr [__dbase_format_buffer]
     call __dbase_gcvt
-    add esp, 16
-    mov ecx, dword ptr [__dbase_format_buffer]
+    mov rcx, qword ptr [__dbase_format_buffer]
     xor edx, edx
 __dbase_wfm_strlen_6:
-    movzx eax, byte ptr [ecx]
+    movzx eax, byte ptr [rcx]
     test eax, eax
     je __dbase_wfm_strlen_done_6
-    inc ecx
+    inc rcx
     inc edx
     jmp __dbase_wfm_strlen_6
 __dbase_wfm_strlen_done_6:
-    push 1
-    push edx
-    push dword ptr [__dbase_format_buffer]
+    mov rcx, qword ptr [__dbase_format_buffer]
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
     jmp __dbase_wfm_print_done_12
 __dbase_wfm_print_string_12:
-    mov eax, dword ptr [__dbase_wfm_mem___string_arg_11_ptr]
-    test eax, eax
+    mov rcx, qword ptr [__dbase_wfm_mem___string_arg_11_ptr]
+    test rcx, rcx
     je __dbase_wfm_print_null_12
-    push 1
-    push dword ptr [__dbase_wfm_mem___string_arg_11_len]
-    push eax
+    mov edx, dword ptr [__dbase_wfm_mem___string_arg_11_len]
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
     jmp __dbase_wfm_print_done_12
 __dbase_wfm_print_object_12:
-    mov eax, dword ptr [__dbase_wfm_mem___string_arg_11_ptr]
-    test eax, eax
+    mov rax, qword ptr [__dbase_wfm_mem___string_arg_11_ptr]
+    test rax, rax
     je __dbase_wfm_print_null_12
-    push 1
-    push 8
-    push __dbase_wfm_output_text_98
+    mov rcx, __dbase_wfm_output_text_98
+    mov edx, 8
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
     jmp __dbase_wfm_print_done_12
 __dbase_wfm_print_null_12:
-    push 1
-    push 6
-    push __dbase_wfm_output_text_97
+    mov rcx, __dbase_wfm_output_text_97
+    mov edx, 6
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
 __dbase_wfm_print_done_12:
     ; TestAndNotXor()
     call __dbase_wfm_proc_TestAndNotXor
-    push 19
+    mov ecx, 19
     call GetSystemMetrics
     test eax, eax
     setne al
@@ -1164,7 +1182,7 @@ __dbase_wfm_print_done_12:
     fstp qword ptr [__dbase_wfm_mem_HatMaus_num]
     mov dword ptr [__dbase_wfm_mem_HatMaus_type], 1
     mov dword ptr [__dbase_wfm_mem_HatMaus_len], 0
-    mov dword ptr [__dbase_wfm_mem_HatMaus_ptr], 0
+    mov qword ptr [__dbase_wfm_mem_HatMaus_ptr], 0
     ; IF HatMaus = 1
     fld qword ptr [__dbase_wfm_mem_HatMaus_num]
     fld qword ptr [__dbase_wfm_numconst_4]
@@ -1172,22 +1190,20 @@ __dbase_wfm_print_done_12:
     fstp st0
     jne __dbase_wfm_flow_if_false_5
     ; ? "Eine Maus ist vorhanden."
-    push 1
-    push 24
-    push __dbase_wfm_output_text_99
+    mov rcx, __dbase_wfm_output_text_99
+    mov edx, 24
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
     jmp __dbase_wfm_flow_if_end_6
 __dbase_wfm_flow_if_false_5:
     ; ? "Keine Maus erkannt."
-    push 1
-    push 19
-    push __dbase_wfm_output_text_100
+    mov rcx, __dbase_wfm_output_text_100
+    mov edx, 19
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
 __dbase_wfm_flow_if_end_6:
     ; IF ismouse() .AND. HatMaus = 1
-    push 19
+    mov ecx, 19
     call GetSystemMetrics
     test eax, eax
     setne al
@@ -1204,14 +1220,13 @@ __dbase_wfm_flow_if_end_6:
     fstp st0
     jne __dbase_wfm_flow_if_false_7
     ; ? "Maus kann verwendet werden."
-    push 1
-    push 27
-    push __dbase_wfm_output_text_101
+    mov rcx, __dbase_wfm_output_text_101
+    mov edx, 27
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
 __dbase_wfm_flow_if_false_7:
 __dbase_wfm_flow_if_end_8:
-    push 19
+    mov ecx, 19
     call GetSystemMetrics
     test eax, eax
     setne al
@@ -1221,7 +1236,7 @@ __dbase_wfm_flow_if_end_8:
     fstp qword ptr [__dbase_wfm_mem___wfm_ismouse_print_num]
     mov dword ptr [__dbase_wfm_mem___wfm_ismouse_print_type], 1
     mov dword ptr [__dbase_wfm_mem___wfm_ismouse_print_len], 0
-    mov dword ptr [__dbase_wfm_mem___wfm_ismouse_print_ptr], 0
+    mov qword ptr [__dbase_wfm_mem___wfm_ismouse_print_ptr], 0
     ; ? ismouse()
     cmp dword ptr [__dbase_wfm_mem___wfm_ismouse_print_type], 0
     je __dbase_wfm_print_null_13
@@ -1237,115 +1252,103 @@ __dbase_wfm_flow_if_end_8:
 __dbase_wfm_print_number_13:
     fld qword ptr [__dbase_wfm_mem___wfm_ismouse_print_num]
     fstp qword ptr [__dbase_temp_number]
-    push dword ptr [__dbase_format_buffer]
-    push 15
-    push dword ptr [__dbase_temp_number_hi]
-    push dword ptr [__dbase_temp_number]
+    movsd xmm0, qword ptr [__dbase_temp_number]
+    mov edx, 15
+    mov r8, qword ptr [__dbase_format_buffer]
     call __dbase_gcvt
-    add esp, 16
-    mov ecx, dword ptr [__dbase_format_buffer]
+    mov rcx, qword ptr [__dbase_format_buffer]
     xor edx, edx
 __dbase_wfm_strlen_7:
-    movzx eax, byte ptr [ecx]
+    movzx eax, byte ptr [rcx]
     test eax, eax
     je __dbase_wfm_strlen_done_7
-    inc ecx
+    inc rcx
     inc edx
     jmp __dbase_wfm_strlen_7
 __dbase_wfm_strlen_done_7:
-    push 1
-    push edx
-    push dword ptr [__dbase_format_buffer]
+    mov rcx, qword ptr [__dbase_format_buffer]
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
     jmp __dbase_wfm_print_done_13
 __dbase_wfm_print_string_13:
-    mov eax, dword ptr [__dbase_wfm_mem___wfm_ismouse_print_ptr]
-    test eax, eax
+    mov rcx, qword ptr [__dbase_wfm_mem___wfm_ismouse_print_ptr]
+    test rcx, rcx
     je __dbase_wfm_print_null_13
-    push 1
-    push dword ptr [__dbase_wfm_mem___wfm_ismouse_print_len]
-    push eax
+    mov edx, dword ptr [__dbase_wfm_mem___wfm_ismouse_print_len]
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
     jmp __dbase_wfm_print_done_13
 __dbase_wfm_print_object_13:
-    mov eax, dword ptr [__dbase_wfm_mem___wfm_ismouse_print_ptr]
-    test eax, eax
+    mov rax, qword ptr [__dbase_wfm_mem___wfm_ismouse_print_ptr]
+    test rax, rax
     je __dbase_wfm_print_null_13
-    push 1
-    push 8
-    push __dbase_wfm_output_text_103
+    mov rcx, __dbase_wfm_output_text_103
+    mov edx, 8
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
     jmp __dbase_wfm_print_done_13
 __dbase_wfm_print_null_13:
-    push 1
-    push 6
-    push __dbase_wfm_output_text_102
+    mov rcx, __dbase_wfm_output_text_102
+    mov edx, 6
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
 __dbase_wfm_print_done_13:
-    sub esp, 12
-    mov dword ptr [esp], 0
-    mov dword ptr [esp+4], 0
-    mov dword ptr [esp+8], 0
-    lea eax, [esp]
-    push 8
-    push eax
-    push 0
+    sub rsp, 64
+    mov dword ptr [rsp+32], 0
+    mov qword ptr [rsp+40], 0
+    mov dword ptr [rsp+48], 0
+    xor ecx, ecx
+    lea rdx, [rsp+32]
+    mov r8d, 16
     call GetRawInputDeviceList
     cmp eax, 4294967295
     je __dbase_wfm_flow_iskeyboard_9_done
-    mov edx, dword ptr [esp]
+    mov edx, dword ptr [rsp+32]
     test edx, edx
     jz __dbase_wfm_flow_iskeyboard_9_done
-    cmp edx, 536870911
+    cmp edx, 268435455
     ja __dbase_wfm_flow_iskeyboard_9_done
-    shl edx, 3
-    push 4
-    push 12288
-    push edx
-    push 0
+    shl rdx, 4
+    xor ecx, ecx
+    mov r8d, 12288
+    mov r9d, 4
     call VirtualAlloc
-    test eax, eax
+    test rax, rax
     jz __dbase_wfm_flow_iskeyboard_9_done
-    mov dword ptr [esp+4], eax
-    lea edx, [esp]
-    push 8
-    push edx
-    push eax
+    mov qword ptr [rsp+40], rax
+    mov rcx, rax
+    lea rdx, [rsp+32]
+    mov r8d, 16
     call GetRawInputDeviceList
     cmp eax, 4294967295
     je __dbase_wfm_flow_iskeyboard_9_release
     test eax, eax
     jz __dbase_wfm_flow_iskeyboard_9_release
-    mov ecx, eax
-    mov edx, dword ptr [esp+4]
+    mov r10d, eax
+    mov r11, qword ptr [rsp+40]
 __dbase_wfm_flow_iskeyboard_9_scan:
-    cmp dword ptr [edx+4], 1
+    cmp dword ptr [r11+8], 1
     je __dbase_wfm_flow_iskeyboard_9_present
-    add edx, 8
-    dec ecx
+    add r11, 16
+    dec r10d
     jnz __dbase_wfm_flow_iskeyboard_9_scan
     jmp __dbase_wfm_flow_iskeyboard_9_release
 __dbase_wfm_flow_iskeyboard_9_present:
-    mov dword ptr [esp+8], 1
+    mov dword ptr [rsp+48], 1
 __dbase_wfm_flow_iskeyboard_9_release:
-    mov eax, dword ptr [esp+4]
-    push 32768
-    push 0
-    push eax
+    mov rcx, qword ptr [rsp+40]
+    xor edx, edx
+    mov r8d, 32768
     call VirtualFree
 __dbase_wfm_flow_iskeyboard_9_done:
-    mov eax, dword ptr [esp+8]
-    add esp, 12
+    mov eax, dword ptr [rsp+48]
+    add rsp, 64
     mov dword ptr [__dbase_temp_number], eax
     fild dword ptr [__dbase_temp_number]
     fstp qword ptr [__dbase_wfm_mem_HatTastatur_num]
     mov dword ptr [__dbase_wfm_mem_HatTastatur_type], 1
     mov dword ptr [__dbase_wfm_mem_HatTastatur_len], 0
-    mov dword ptr [__dbase_wfm_mem_HatTastatur_ptr], 0
+    mov qword ptr [__dbase_wfm_mem_HatTastatur_ptr], 0
     ; IF HatTastatur = 1
     fld qword ptr [__dbase_wfm_mem_HatTastatur_num]
     fld qword ptr [__dbase_wfm_numconst_6]
@@ -1353,82 +1356,76 @@ __dbase_wfm_flow_iskeyboard_9_done:
     fstp st0
     jne __dbase_wfm_flow_if_false_10
     ; ? "Eine Tastatur ist vorhanden."
-    push 1
-    push 28
-    push __dbase_wfm_output_text_104
+    mov rcx, __dbase_wfm_output_text_104
+    mov edx, 28
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
     jmp __dbase_wfm_flow_if_end_11
 __dbase_wfm_flow_if_false_10:
     ; ? "Keine Tastatur erkannt."
-    push 1
-    push 23
-    push __dbase_wfm_output_text_105
+    mov rcx, __dbase_wfm_output_text_105
+    mov edx, 23
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
 __dbase_wfm_flow_if_end_11:
     ; IF iskeyboard() .AND. ismouse()
-    sub esp, 12
-    mov dword ptr [esp], 0
-    mov dword ptr [esp+4], 0
-    mov dword ptr [esp+8], 0
-    lea eax, [esp]
-    push 8
-    push eax
-    push 0
+    sub rsp, 64
+    mov dword ptr [rsp+32], 0
+    mov qword ptr [rsp+40], 0
+    mov dword ptr [rsp+48], 0
+    xor ecx, ecx
+    lea rdx, [rsp+32]
+    mov r8d, 16
     call GetRawInputDeviceList
     cmp eax, 4294967295
     je __dbase_wfm_flow_iskeyboard_14_done
-    mov edx, dword ptr [esp]
+    mov edx, dword ptr [rsp+32]
     test edx, edx
     jz __dbase_wfm_flow_iskeyboard_14_done
-    cmp edx, 536870911
+    cmp edx, 268435455
     ja __dbase_wfm_flow_iskeyboard_14_done
-    shl edx, 3
-    push 4
-    push 12288
-    push edx
-    push 0
+    shl rdx, 4
+    xor ecx, ecx
+    mov r8d, 12288
+    mov r9d, 4
     call VirtualAlloc
-    test eax, eax
+    test rax, rax
     jz __dbase_wfm_flow_iskeyboard_14_done
-    mov dword ptr [esp+4], eax
-    lea edx, [esp]
-    push 8
-    push edx
-    push eax
+    mov qword ptr [rsp+40], rax
+    mov rcx, rax
+    lea rdx, [rsp+32]
+    mov r8d, 16
     call GetRawInputDeviceList
     cmp eax, 4294967295
     je __dbase_wfm_flow_iskeyboard_14_release
     test eax, eax
     jz __dbase_wfm_flow_iskeyboard_14_release
-    mov ecx, eax
-    mov edx, dword ptr [esp+4]
+    mov r10d, eax
+    mov r11, qword ptr [rsp+40]
 __dbase_wfm_flow_iskeyboard_14_scan:
-    cmp dword ptr [edx+4], 1
+    cmp dword ptr [r11+8], 1
     je __dbase_wfm_flow_iskeyboard_14_present
-    add edx, 8
-    dec ecx
+    add r11, 16
+    dec r10d
     jnz __dbase_wfm_flow_iskeyboard_14_scan
     jmp __dbase_wfm_flow_iskeyboard_14_release
 __dbase_wfm_flow_iskeyboard_14_present:
-    mov dword ptr [esp+8], 1
+    mov dword ptr [rsp+48], 1
 __dbase_wfm_flow_iskeyboard_14_release:
-    mov eax, dword ptr [esp+4]
-    push 32768
-    push 0
-    push eax
+    mov rcx, qword ptr [rsp+40]
+    xor edx, edx
+    mov r8d, 32768
     call VirtualFree
 __dbase_wfm_flow_iskeyboard_14_done:
-    mov eax, dword ptr [esp+8]
-    add esp, 12
+    mov eax, dword ptr [rsp+48]
+    add rsp, 64
     mov dword ptr [__dbase_temp_number], eax
     fild dword ptr [__dbase_temp_number]
     fldz
     fucomip st0, st1
     fstp st0
     je __dbase_wfm_flow_if_false_12
-    push 19
+    mov ecx, 19
     call GetSystemMetrics
     test eax, eax
     setne al
@@ -1440,68 +1437,63 @@ __dbase_wfm_flow_iskeyboard_14_done:
     fstp st0
     je __dbase_wfm_flow_if_false_12
     ; ? "Maus und Tastatur sind vorhanden."
-    push 1
-    push 33
-    push __dbase_wfm_output_text_106
+    mov rcx, __dbase_wfm_output_text_106
+    mov edx, 33
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
 __dbase_wfm_flow_if_false_12:
 __dbase_wfm_flow_if_end_13:
     ; IF .NOT. iskeyboard()
-    sub esp, 12
-    mov dword ptr [esp], 0
-    mov dword ptr [esp+4], 0
-    mov dword ptr [esp+8], 0
-    lea eax, [esp]
-    push 8
-    push eax
-    push 0
+    sub rsp, 64
+    mov dword ptr [rsp+32], 0
+    mov qword ptr [rsp+40], 0
+    mov dword ptr [rsp+48], 0
+    xor ecx, ecx
+    lea rdx, [rsp+32]
+    mov r8d, 16
     call GetRawInputDeviceList
     cmp eax, 4294967295
     je __dbase_wfm_flow_iskeyboard_18_done
-    mov edx, dword ptr [esp]
+    mov edx, dword ptr [rsp+32]
     test edx, edx
     jz __dbase_wfm_flow_iskeyboard_18_done
-    cmp edx, 536870911
+    cmp edx, 268435455
     ja __dbase_wfm_flow_iskeyboard_18_done
-    shl edx, 3
-    push 4
-    push 12288
-    push edx
-    push 0
+    shl rdx, 4
+    xor ecx, ecx
+    mov r8d, 12288
+    mov r9d, 4
     call VirtualAlloc
-    test eax, eax
+    test rax, rax
     jz __dbase_wfm_flow_iskeyboard_18_done
-    mov dword ptr [esp+4], eax
-    lea edx, [esp]
-    push 8
-    push edx
-    push eax
+    mov qword ptr [rsp+40], rax
+    mov rcx, rax
+    lea rdx, [rsp+32]
+    mov r8d, 16
     call GetRawInputDeviceList
     cmp eax, 4294967295
     je __dbase_wfm_flow_iskeyboard_18_release
     test eax, eax
     jz __dbase_wfm_flow_iskeyboard_18_release
-    mov ecx, eax
-    mov edx, dword ptr [esp+4]
+    mov r10d, eax
+    mov r11, qword ptr [rsp+40]
 __dbase_wfm_flow_iskeyboard_18_scan:
-    cmp dword ptr [edx+4], 1
+    cmp dword ptr [r11+8], 1
     je __dbase_wfm_flow_iskeyboard_18_present
-    add edx, 8
-    dec ecx
+    add r11, 16
+    dec r10d
     jnz __dbase_wfm_flow_iskeyboard_18_scan
     jmp __dbase_wfm_flow_iskeyboard_18_release
 __dbase_wfm_flow_iskeyboard_18_present:
-    mov dword ptr [esp+8], 1
+    mov dword ptr [rsp+48], 1
 __dbase_wfm_flow_iskeyboard_18_release:
-    mov eax, dword ptr [esp+4]
-    push 32768
-    push 0
-    push eax
+    mov rcx, qword ptr [rsp+40]
+    xor edx, edx
+    mov r8d, 32768
     call VirtualFree
 __dbase_wfm_flow_iskeyboard_18_done:
-    mov eax, dword ptr [esp+8]
-    add esp, 12
+    mov eax, dword ptr [rsp+48]
+    add rsp, 64
     mov dword ptr [__dbase_temp_number], eax
     fild dword ptr [__dbase_temp_number]
     fldz
@@ -1511,73 +1503,68 @@ __dbase_wfm_flow_iskeyboard_18_done:
     jmp __dbase_wfm_flow_if_false_15
 __dbase_wfm_flow_not_true_17:
     ; ? "Keine Tastatur gefunden."
-    push 1
-    push 24
-    push __dbase_wfm_output_text_107
+    mov rcx, __dbase_wfm_output_text_107
+    mov edx, 24
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
 __dbase_wfm_flow_if_false_15:
 __dbase_wfm_flow_if_end_16:
-    sub esp, 12
-    mov dword ptr [esp], 0
-    mov dword ptr [esp+4], 0
-    mov dword ptr [esp+8], 0
-    lea eax, [esp]
-    push 8
-    push eax
-    push 0
+    sub rsp, 64
+    mov dword ptr [rsp+32], 0
+    mov qword ptr [rsp+40], 0
+    mov dword ptr [rsp+48], 0
+    xor ecx, ecx
+    lea rdx, [rsp+32]
+    mov r8d, 16
     call GetRawInputDeviceList
     cmp eax, 4294967295
     je __dbase_wfm_flow_iskeyboard_19_done
-    mov edx, dword ptr [esp]
+    mov edx, dword ptr [rsp+32]
     test edx, edx
     jz __dbase_wfm_flow_iskeyboard_19_done
-    cmp edx, 536870911
+    cmp edx, 268435455
     ja __dbase_wfm_flow_iskeyboard_19_done
-    shl edx, 3
-    push 4
-    push 12288
-    push edx
-    push 0
+    shl rdx, 4
+    xor ecx, ecx
+    mov r8d, 12288
+    mov r9d, 4
     call VirtualAlloc
-    test eax, eax
+    test rax, rax
     jz __dbase_wfm_flow_iskeyboard_19_done
-    mov dword ptr [esp+4], eax
-    lea edx, [esp]
-    push 8
-    push edx
-    push eax
+    mov qword ptr [rsp+40], rax
+    mov rcx, rax
+    lea rdx, [rsp+32]
+    mov r8d, 16
     call GetRawInputDeviceList
     cmp eax, 4294967295
     je __dbase_wfm_flow_iskeyboard_19_release
     test eax, eax
     jz __dbase_wfm_flow_iskeyboard_19_release
-    mov ecx, eax
-    mov edx, dword ptr [esp+4]
+    mov r10d, eax
+    mov r11, qword ptr [rsp+40]
 __dbase_wfm_flow_iskeyboard_19_scan:
-    cmp dword ptr [edx+4], 1
+    cmp dword ptr [r11+8], 1
     je __dbase_wfm_flow_iskeyboard_19_present
-    add edx, 8
-    dec ecx
+    add r11, 16
+    dec r10d
     jnz __dbase_wfm_flow_iskeyboard_19_scan
     jmp __dbase_wfm_flow_iskeyboard_19_release
 __dbase_wfm_flow_iskeyboard_19_present:
-    mov dword ptr [esp+8], 1
+    mov dword ptr [rsp+48], 1
 __dbase_wfm_flow_iskeyboard_19_release:
-    mov eax, dword ptr [esp+4]
-    push 32768
-    push 0
-    push eax
+    mov rcx, qword ptr [rsp+40]
+    xor edx, edx
+    mov r8d, 32768
     call VirtualFree
 __dbase_wfm_flow_iskeyboard_19_done:
-    mov eax, dword ptr [esp+8]
-    add esp, 12
+    mov eax, dword ptr [rsp+48]
+    add rsp, 64
     mov dword ptr [__dbase_temp_number], eax
     fild dword ptr [__dbase_temp_number]
     fstp qword ptr [__dbase_wfm_mem___wfm_iskeyboard_print_num]
     mov dword ptr [__dbase_wfm_mem___wfm_iskeyboard_print_type], 1
     mov dword ptr [__dbase_wfm_mem___wfm_iskeyboard_print_len], 0
-    mov dword ptr [__dbase_wfm_mem___wfm_iskeyboard_print_ptr], 0
+    mov qword ptr [__dbase_wfm_mem___wfm_iskeyboard_print_ptr], 0
     ; ? iskeyboard()
     cmp dword ptr [__dbase_wfm_mem___wfm_iskeyboard_print_type], 0
     je __dbase_wfm_print_null_14
@@ -1593,57 +1580,50 @@ __dbase_wfm_flow_iskeyboard_19_done:
 __dbase_wfm_print_number_14:
     fld qword ptr [__dbase_wfm_mem___wfm_iskeyboard_print_num]
     fstp qword ptr [__dbase_temp_number]
-    push dword ptr [__dbase_format_buffer]
-    push 15
-    push dword ptr [__dbase_temp_number_hi]
-    push dword ptr [__dbase_temp_number]
+    movsd xmm0, qword ptr [__dbase_temp_number]
+    mov edx, 15
+    mov r8, qword ptr [__dbase_format_buffer]
     call __dbase_gcvt
-    add esp, 16
-    mov ecx, dword ptr [__dbase_format_buffer]
+    mov rcx, qword ptr [__dbase_format_buffer]
     xor edx, edx
 __dbase_wfm_strlen_8:
-    movzx eax, byte ptr [ecx]
+    movzx eax, byte ptr [rcx]
     test eax, eax
     je __dbase_wfm_strlen_done_8
-    inc ecx
+    inc rcx
     inc edx
     jmp __dbase_wfm_strlen_8
 __dbase_wfm_strlen_done_8:
-    push 1
-    push edx
-    push dword ptr [__dbase_format_buffer]
+    mov rcx, qword ptr [__dbase_format_buffer]
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
     jmp __dbase_wfm_print_done_14
 __dbase_wfm_print_string_14:
-    mov eax, dword ptr [__dbase_wfm_mem___wfm_iskeyboard_print_ptr]
-    test eax, eax
+    mov rcx, qword ptr [__dbase_wfm_mem___wfm_iskeyboard_print_ptr]
+    test rcx, rcx
     je __dbase_wfm_print_null_14
-    push 1
-    push dword ptr [__dbase_wfm_mem___wfm_iskeyboard_print_len]
-    push eax
+    mov edx, dword ptr [__dbase_wfm_mem___wfm_iskeyboard_print_len]
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
     jmp __dbase_wfm_print_done_14
 __dbase_wfm_print_object_14:
-    mov eax, dword ptr [__dbase_wfm_mem___wfm_iskeyboard_print_ptr]
-    test eax, eax
+    mov rax, qword ptr [__dbase_wfm_mem___wfm_iskeyboard_print_ptr]
+    test rax, rax
     je __dbase_wfm_print_null_14
-    push 1
-    push 8
-    push __dbase_wfm_output_text_109
+    mov rcx, __dbase_wfm_output_text_109
+    mov edx, 8
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
     jmp __dbase_wfm_print_done_14
 __dbase_wfm_print_null_14:
-    push 1
-    push 6
-    push __dbase_wfm_output_text_108
+    mov rcx, __dbase_wfm_output_text_108
+    mov edx, 6
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
 __dbase_wfm_print_done_14:
     jmp __dbase_wfm_flow_method_exit_4
 __dbase_wfm_flow_method_exit_4:
+    add rsp, 40
     ret
 ; END WFM PROCEDURE/FUNCTION: PushButton1_onClick
 
@@ -1652,6 +1632,7 @@ __dbase_wfm_flow_method_exit_4:
 ; WFM PROCEDURE/FUNCTION MASCHINENCODE: TestAndNotXor
 ; ------------------------------------------------------------
 __dbase_wfm_proc_TestAndNotXor:
+    sub rsp, 40
     ; IF A > 0 .AND. C < 10
     fld qword ptr [__dbase_wfm_mem_A_num]
     fld qword ptr [__dbase_wfm_numconst_7]
@@ -1664,19 +1645,17 @@ __dbase_wfm_proc_TestAndNotXor:
     fstp st0
     jbe __dbase_wfm_flow_if_false_21
     ; ? "Beide Bedingungen erfüllt"
-    push 1
-    push 26
-    push __dbase_wfm_output_text_110
+    mov rcx, __dbase_wfm_output_text_110
+    mov edx, 26
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
     jmp __dbase_wfm_flow_if_end_22
 __dbase_wfm_flow_if_false_21:
     ; ? "Bedingung nicht erfüllt"
-    push 1
-    push 24
-    push __dbase_wfm_output_text_111
+    mov rcx, __dbase_wfm_output_text_111
+    mov edx, 24
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
 __dbase_wfm_flow_if_end_22:
     ; IF .NOT. (A = 0 .OR. C >= 10)
     fld qword ptr [__dbase_wfm_mem_A_num]
@@ -1695,11 +1674,10 @@ __dbase_wfm_flow_or_true_26:
     jmp __dbase_wfm_flow_if_false_23
 __dbase_wfm_flow_not_true_25:
     ; ? "NOT und OR funktionieren"
-    push 1
-    push 24
-    push __dbase_wfm_output_text_112
+    mov rcx, __dbase_wfm_output_text_112
+    mov edx, 24
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
 __dbase_wfm_flow_if_false_23:
 __dbase_wfm_flow_if_end_24:
     ; IF (A > 0) .XOR. (C < 0)
@@ -1724,50 +1702,45 @@ __dbase_wfm_flow_xor_left_false_30:
     jbe __dbase_wfm_flow_if_false_28
 __dbase_wfm_flow_xor_done_31:
     ; ? "Genau eine Bedingung ist wahr"
-    push 1
-    push 29
-    push __dbase_wfm_output_text_113
+    mov rcx, __dbase_wfm_output_text_113
+    mov edx, 29
+    mov r8d, 1
     call DBaseQtConsoleWrite
-    add esp, 12
 __dbase_wfm_flow_if_false_28:
 __dbase_wfm_flow_if_end_29:
     jmp __dbase_wfm_flow_method_exit_20
 __dbase_wfm_flow_method_exit_20:
+    add rsp, 40
     ret
 ; END WFM PROCEDURE/FUNCTION: TestAndNotXor
 
-; Stage 224: local packed WFM property decoder (PE32)
+; Stage 224: local packed WFM property decoder (PE32+)
 .section .text
 __dbase_wfm_set_properties_packed:
-    push ebp
-    mov ebp, esp
-    push ebx
-    push esi
-    push edi
-    mov ebx, dword ptr [ebp+8]
-    mov esi, dword ptr [ebp+12]
-    mov edi, dword ptr [ebp+16]
+    sub rsp, 72
+    mov qword ptr [rsp+40], rcx
+    mov qword ptr [rsp+48], rdx
+    mov dword ptr [rsp+56], r8d
 __dbase_wfm_set_properties_packed_loop:
-    test edi, edi
+    cmp dword ptr [rsp+56], 0
     jle __dbase_wfm_set_properties_packed_done
-    movzx eax, byte ptr [esi]
-    push eax
-    push dword ptr [esi+1]
-    movzx eax, byte ptr [esi+5]
-    push eax
-    push dword ptr [esi+6]
-    push ebx
+    mov r10, qword ptr [rsp+48]
+    mov rcx, qword ptr [rsp+40]
+    movzx eax, byte ptr [r10]
+    mov r9, qword ptr [r10+1]
+    movzx r8d, byte ptr [r10+9]
+    mov rdx, qword ptr [r10+10]
+    mov dword ptr [rsp+32], eax
     call DBaseQtWidgetSetProperty
-    add esp, 20
-    add esi, 10
-    dec edi
+    mov r10, qword ptr [rsp+48]
+    add r10, 18
+    mov qword ptr [rsp+48], r10
+    mov eax, dword ptr [rsp+56]
+    dec eax
+    mov dword ptr [rsp+56], eax
     jmp __dbase_wfm_set_properties_packed_loop
 __dbase_wfm_set_properties_packed_done:
-    pop edi
-    pop esi
-    pop ebx
-    mov esp, ebp
-    pop ebp
+    add rsp, 72
     ret
 
 ; Stage 127 WFM initialized data
@@ -2007,282 +1980,282 @@ __dbase_wfm_output_text_113:
 ; record = db valueLength, ptr valuePtr, db nameLength, ptr namePtr
 __dbase_wfm_property_table_0:
     db 4
-    dd __dbase_wfm_text_3
+    dq __dbase_wfm_text_3
     db 4
-    dd __dbase_wfm_text_2
+    dq __dbase_wfm_text_2
     db 5
-    dd __dbase_wfm_text_0
+    dq __dbase_wfm_text_0
     db 4
-    dd __dbase_wfm_text_4
+    dq __dbase_wfm_text_4
     db 9
-    dd __dbase_wfm_text_6
+    dq __dbase_wfm_text_6
     db 9
-    dd __dbase_wfm_text_5
+    dq __dbase_wfm_text_5
     db 7
-    dd __dbase_wfm_text_8
+    dq __dbase_wfm_text_8
     db 9
-    dd __dbase_wfm_text_7
+    dq __dbase_wfm_text_7
     db 17
-    dd __dbase_wfm_text_10
+    dq __dbase_wfm_text_10
     db 13
-    dd __dbase_wfm_text_9
+    dq __dbase_wfm_text_9
     db 1
-    dd __dbase_wfm_text_12
+    dq __dbase_wfm_text_12
     db 10
-    dd __dbase_wfm_text_11
+    dq __dbase_wfm_text_11
     db 2
-    dd __dbase_wfm_text_14
+    dq __dbase_wfm_text_14
     db 13
-    dd __dbase_wfm_text_13
+    dq __dbase_wfm_text_13
     db 2
-    dd __dbase_wfm_text_16
+    dq __dbase_wfm_text_16
     db 14
-    dd __dbase_wfm_text_15
+    dq __dbase_wfm_text_15
     db 5
-    dd __dbase_wfm_text_18
+    dq __dbase_wfm_text_18
     db 11
-    dd __dbase_wfm_text_17
+    dq __dbase_wfm_text_17
     db 1
-    dd __dbase_wfm_text_20
+    dq __dbase_wfm_text_20
     db 11
-    dd __dbase_wfm_text_19
+    dq __dbase_wfm_text_19
     db 7
-    dd __dbase_wfm_text_22
+    dq __dbase_wfm_text_22
     db 11
-    dd __dbase_wfm_text_21
+    dq __dbase_wfm_text_21
     db 7
-    dd __dbase_wfm_text_24
+    dq __dbase_wfm_text_24
     db 11
-    dd __dbase_wfm_text_23
+    dq __dbase_wfm_text_23
     db 1
-    dd __dbase_wfm_text_26
+    dq __dbase_wfm_text_26
     db 15
-    dd __dbase_wfm_text_25
+    dq __dbase_wfm_text_25
     db 1
-    dd __dbase_wfm_text_20
+    dq __dbase_wfm_text_20
     db 15
-    dd __dbase_wfm_text_27
+    dq __dbase_wfm_text_27
     db 1
-    dd __dbase_wfm_text_29
+    dq __dbase_wfm_text_29
     db 15
-    dd __dbase_wfm_text_28
+    dq __dbase_wfm_text_28
     db 1
-    dd __dbase_wfm_text_31
+    dq __dbase_wfm_text_31
     db 15
-    dd __dbase_wfm_text_30
+    dq __dbase_wfm_text_30
     db 3
-    dd __dbase_wfm_text_33
+    dq __dbase_wfm_text_33
     db 10
-    dd __dbase_wfm_text_32
+    dq __dbase_wfm_text_32
     db 6
-    dd __dbase_wfm_text_35
+    dq __dbase_wfm_text_35
     db 15
-    dd __dbase_wfm_text_34
+    dq __dbase_wfm_text_34
     db 1
-    dd __dbase_wfm_text_29
+    dq __dbase_wfm_text_29
     db 14
-    dd __dbase_wfm_text_36
+    dq __dbase_wfm_text_36
     db 7
-    dd __dbase_wfm_text_38
+    dq __dbase_wfm_text_38
     db 15
-    dd __dbase_wfm_text_37
+    dq __dbase_wfm_text_37
     db 3
-    dd __dbase_wfm_text_33
+    dq __dbase_wfm_text_33
     db 9
-    dd __dbase_wfm_text_39
+    dq __dbase_wfm_text_39
     db 5
-    dd __dbase_wfm_text_18
+    dq __dbase_wfm_text_18
     db 14
-    dd __dbase_wfm_text_40
+    dq __dbase_wfm_text_40
     db 1
-    dd __dbase_wfm_text_20
+    dq __dbase_wfm_text_20
     db 13
-    dd __dbase_wfm_text_41
+    dq __dbase_wfm_text_41
     db 7
-    dd __dbase_wfm_text_22
+    dq __dbase_wfm_text_22
     db 14
-    dd __dbase_wfm_text_42
+    dq __dbase_wfm_text_42
     db 3
-    dd __dbase_wfm_text_33
+    dq __dbase_wfm_text_33
     db 11
-    dd __dbase_wfm_text_43
+    dq __dbase_wfm_text_43
     db 5
-    dd __dbase_wfm_text_18
+    dq __dbase_wfm_text_18
     db 16
-    dd __dbase_wfm_text_44
+    dq __dbase_wfm_text_44
     db 1
-    dd __dbase_wfm_text_20
+    dq __dbase_wfm_text_20
     db 15
-    dd __dbase_wfm_text_45
+    dq __dbase_wfm_text_45
     db 7
-    dd __dbase_wfm_text_22
+    dq __dbase_wfm_text_22
     db 16
-    dd __dbase_wfm_text_46
+    dq __dbase_wfm_text_46
     db 3
-    dd __dbase_wfm_text_33
+    dq __dbase_wfm_text_33
     db 12
-    dd __dbase_wfm_text_47
+    dq __dbase_wfm_text_47
     db 5
-    dd __dbase_wfm_text_18
+    dq __dbase_wfm_text_18
     db 17
-    dd __dbase_wfm_text_48
+    dq __dbase_wfm_text_48
     db 1
-    dd __dbase_wfm_text_20
+    dq __dbase_wfm_text_20
     db 16
-    dd __dbase_wfm_text_49
+    dq __dbase_wfm_text_49
     db 7
-    dd __dbase_wfm_text_22
+    dq __dbase_wfm_text_22
     db 17
-    dd __dbase_wfm_text_50
+    dq __dbase_wfm_text_50
     db 3
-    dd __dbase_wfm_text_52
+    dq __dbase_wfm_text_52
     db 9
-    dd __dbase_wfm_text_51
+    dq __dbase_wfm_text_51
     db 7
-    dd __dbase_wfm_text_54
+    dq __dbase_wfm_text_54
     db 14
-    dd __dbase_wfm_text_53
+    dq __dbase_wfm_text_53
     db 7
-    dd __dbase_wfm_text_56
+    dq __dbase_wfm_text_56
     db 14
-    dd __dbase_wfm_text_55
+    dq __dbase_wfm_text_55
 __dbase_wfm_property_table_1:
     db 11
-    dd __dbase_wfm_text_60
+    dq __dbase_wfm_text_60
     db 4
-    dd __dbase_wfm_text_4
+    dq __dbase_wfm_text_4
     db 7
-    dd __dbase_wfm_text_61
+    dq __dbase_wfm_text_61
     db 9
-    dd __dbase_wfm_text_5
+    dq __dbase_wfm_text_5
     db 7
-    dd __dbase_wfm_text_62
+    dq __dbase_wfm_text_62
     db 9
-    dd __dbase_wfm_text_7
+    dq __dbase_wfm_text_7
     db 4
-    dd __dbase_wfm_text_63
+    dq __dbase_wfm_text_63
     db 13
-    dd __dbase_wfm_text_9
+    dq __dbase_wfm_text_9
     db 1
-    dd __dbase_wfm_text_64
+    dq __dbase_wfm_text_64
     db 10
-    dd __dbase_wfm_text_11
+    dq __dbase_wfm_text_11
     db 2
-    dd __dbase_wfm_text_65
+    dq __dbase_wfm_text_65
     db 13
-    dd __dbase_wfm_text_13
+    dq __dbase_wfm_text_13
     db 2
-    dd __dbase_wfm_text_66
+    dq __dbase_wfm_text_66
     db 14
-    dd __dbase_wfm_text_15
+    dq __dbase_wfm_text_15
     db 6
-    dd __dbase_wfm_text_67
+    dq __dbase_wfm_text_67
     db 11
-    dd __dbase_wfm_text_17
+    dq __dbase_wfm_text_17
     db 1
-    dd __dbase_wfm_text_31
+    dq __dbase_wfm_text_31
     db 11
-    dd __dbase_wfm_text_19
+    dq __dbase_wfm_text_19
     db 7
-    dd __dbase_wfm_text_68
+    dq __dbase_wfm_text_68
     db 11
-    dd __dbase_wfm_text_21
+    dq __dbase_wfm_text_21
     db 7
-    dd __dbase_wfm_text_69
+    dq __dbase_wfm_text_69
     db 11
-    dd __dbase_wfm_text_23
+    dq __dbase_wfm_text_23
     db 1
-    dd __dbase_wfm_text_64
+    dq __dbase_wfm_text_64
     db 15
-    dd __dbase_wfm_text_25
+    dq __dbase_wfm_text_25
     db 1
-    dd __dbase_wfm_text_64
+    dq __dbase_wfm_text_64
     db 15
-    dd __dbase_wfm_text_27
+    dq __dbase_wfm_text_27
     db 1
-    dd __dbase_wfm_text_64
+    dq __dbase_wfm_text_64
     db 15
-    dd __dbase_wfm_text_28
+    dq __dbase_wfm_text_28
     db 1
-    dd __dbase_wfm_text_64
+    dq __dbase_wfm_text_64
     db 15
-    dd __dbase_wfm_text_30
+    dq __dbase_wfm_text_30
     db 3
-    dd __dbase_wfm_text_33
+    dq __dbase_wfm_text_33
     db 10
-    dd __dbase_wfm_text_32
+    dq __dbase_wfm_text_32
     db 6
-    dd __dbase_wfm_text_67
+    dq __dbase_wfm_text_67
     db 15
-    dd __dbase_wfm_text_34
+    dq __dbase_wfm_text_34
     db 1
-    dd __dbase_wfm_text_31
+    dq __dbase_wfm_text_31
     db 14
-    dd __dbase_wfm_text_36
+    dq __dbase_wfm_text_36
     db 7
-    dd __dbase_wfm_text_68
+    dq __dbase_wfm_text_68
     db 15
-    dd __dbase_wfm_text_37
+    dq __dbase_wfm_text_37
     db 3
-    dd __dbase_wfm_text_33
+    dq __dbase_wfm_text_33
     db 9
-    dd __dbase_wfm_text_39
+    dq __dbase_wfm_text_39
     db 6
-    dd __dbase_wfm_text_67
+    dq __dbase_wfm_text_67
     db 14
-    dd __dbase_wfm_text_40
+    dq __dbase_wfm_text_40
     db 1
-    dd __dbase_wfm_text_31
+    dq __dbase_wfm_text_31
     db 13
-    dd __dbase_wfm_text_41
+    dq __dbase_wfm_text_41
     db 7
-    dd __dbase_wfm_text_68
+    dq __dbase_wfm_text_68
     db 14
-    dd __dbase_wfm_text_42
+    dq __dbase_wfm_text_42
     db 3
-    dd __dbase_wfm_text_70
+    dq __dbase_wfm_text_70
     db 11
-    dd __dbase_wfm_text_43
+    dq __dbase_wfm_text_43
     db 6
-    dd __dbase_wfm_text_71
+    dq __dbase_wfm_text_71
     db 16
-    dd __dbase_wfm_text_44
+    dq __dbase_wfm_text_44
     db 1
-    dd __dbase_wfm_text_31
+    dq __dbase_wfm_text_31
     db 15
-    dd __dbase_wfm_text_45
+    dq __dbase_wfm_text_45
     db 7
-    dd __dbase_wfm_text_68
+    dq __dbase_wfm_text_68
     db 16
-    dd __dbase_wfm_text_46
+    dq __dbase_wfm_text_46
     db 3
-    dd __dbase_wfm_text_33
+    dq __dbase_wfm_text_33
     db 12
-    dd __dbase_wfm_text_47
+    dq __dbase_wfm_text_47
     db 6
-    dd __dbase_wfm_text_67
+    dq __dbase_wfm_text_67
     db 17
-    dd __dbase_wfm_text_48
+    dq __dbase_wfm_text_48
     db 1
-    dd __dbase_wfm_text_31
+    dq __dbase_wfm_text_31
     db 16
-    dd __dbase_wfm_text_49
+    dq __dbase_wfm_text_49
     db 7
-    dd __dbase_wfm_text_68
+    dq __dbase_wfm_text_68
     db 17
-    dd __dbase_wfm_text_50
+    dq __dbase_wfm_text_50
     db 3
-    dd __dbase_wfm_text_72
+    dq __dbase_wfm_text_72
     db 9
-    dd __dbase_wfm_text_51
+    dq __dbase_wfm_text_51
     db 7
-    dd __dbase_wfm_text_73
+    dq __dbase_wfm_text_73
     db 14
-    dd __dbase_wfm_text_53
+    dq __dbase_wfm_text_53
     db 7
-    dd __dbase_wfm_text_56
+    dq __dbase_wfm_text_56
     db 14
-    dd __dbase_wfm_text_55
+    dq __dbase_wfm_text_55
 
 ; Stage 192: WFM numeric STORE constants
 __dbase_wfm_numconst_0:
@@ -2317,17 +2290,17 @@ __dbase_wfm_numconst_13:
 ; Stage 223 WFM zero-initialized storage
 .section .bss
 __dbase_wfm_form:
-    resd 1
+    resq 1
 __dbase_wfm_obj_THIS_PushButton1:
-    resd 1
+    resq 1
 
 ; Stage 223: WFM runtime parameter slots (.bss)
 __dbase_wfm_param___init___p1:
-    resd 1
+    resq 1
 __dbase_wfm_param___init___p2:
-    resd 1
+    resq 1
 __dbase_wfm_param_PushButton1_onClick_Sender:
-    resd 1
+    resq 1
 
 ; Stage 223: typed dBase WFM memory variables (.bss)
 __dbase_wfm_mem_Ausdruck_type:
@@ -2335,7 +2308,7 @@ __dbase_wfm_mem_Ausdruck_type:
 __dbase_wfm_mem_Ausdruck_num:
     resq 1
 __dbase_wfm_mem_Ausdruck_ptr:
-    resd 1
+    resq 1
 __dbase_wfm_mem_Ausdruck_len:
     resd 1
 __dbase_wfm_mem_SpeicherVar_type:
@@ -2343,7 +2316,7 @@ __dbase_wfm_mem_SpeicherVar_type:
 __dbase_wfm_mem_SpeicherVar_num:
     resq 1
 __dbase_wfm_mem_SpeicherVar_ptr:
-    resd 1
+    resq 1
 __dbase_wfm_mem_SpeicherVar_len:
     resd 1
 __dbase_wfm_mem_HatMaus_type:
@@ -2351,7 +2324,7 @@ __dbase_wfm_mem_HatMaus_type:
 __dbase_wfm_mem_HatMaus_num:
     resq 1
 __dbase_wfm_mem_HatMaus_ptr:
-    resd 1
+    resq 1
 __dbase_wfm_mem_HatMaus_len:
     resd 1
 __dbase_wfm_mem_HatTastatur_type:
@@ -2359,7 +2332,7 @@ __dbase_wfm_mem_HatTastatur_type:
 __dbase_wfm_mem_HatTastatur_num:
     resq 1
 __dbase_wfm_mem_HatTastatur_ptr:
-    resd 1
+    resq 1
 __dbase_wfm_mem_HatTastatur_len:
     resd 1
 __dbase_wfm_mem_p1_type:
@@ -2367,7 +2340,7 @@ __dbase_wfm_mem_p1_type:
 __dbase_wfm_mem_p1_num:
     resq 1
 __dbase_wfm_mem_p1_ptr:
-    resd 1
+    resq 1
 __dbase_wfm_mem_p1_len:
     resd 1
 __dbase_wfm_mem_p2_type:
@@ -2375,7 +2348,7 @@ __dbase_wfm_mem_p2_type:
 __dbase_wfm_mem_p2_num:
     resq 1
 __dbase_wfm_mem_p2_ptr:
-    resd 1
+    resq 1
 __dbase_wfm_mem_p2_len:
     resd 1
 __dbase_wfm_mem___string_arg_7_type:
@@ -2383,7 +2356,7 @@ __dbase_wfm_mem___string_arg_7_type:
 __dbase_wfm_mem___string_arg_7_num:
     resq 1
 __dbase_wfm_mem___string_arg_7_ptr:
-    resd 1
+    resq 1
 __dbase_wfm_mem___string_arg_7_len:
     resd 1
 __dbase_wfm_mem___string_arg_8_type:
@@ -2391,7 +2364,7 @@ __dbase_wfm_mem___string_arg_8_type:
 __dbase_wfm_mem___string_arg_8_num:
     resq 1
 __dbase_wfm_mem___string_arg_8_ptr:
-    resd 1
+    resq 1
 __dbase_wfm_mem___string_arg_8_len:
     resd 1
 __dbase_wfm_mem___string_arg_9_type:
@@ -2399,7 +2372,7 @@ __dbase_wfm_mem___string_arg_9_type:
 __dbase_wfm_mem___string_arg_9_num:
     resq 1
 __dbase_wfm_mem___string_arg_9_ptr:
-    resd 1
+    resq 1
 __dbase_wfm_mem___string_arg_9_len:
     resd 1
 __dbase_wfm_mem___string_arg_10_type:
@@ -2407,7 +2380,7 @@ __dbase_wfm_mem___string_arg_10_type:
 __dbase_wfm_mem___string_arg_10_num:
     resq 1
 __dbase_wfm_mem___string_arg_10_ptr:
-    resd 1
+    resq 1
 __dbase_wfm_mem___string_arg_10_len:
     resd 1
 __dbase_wfm_mem___string_arg_11_type:
@@ -2415,7 +2388,7 @@ __dbase_wfm_mem___string_arg_11_type:
 __dbase_wfm_mem___string_arg_11_num:
     resq 1
 __dbase_wfm_mem___string_arg_11_ptr:
-    resd 1
+    resq 1
 __dbase_wfm_mem___string_arg_11_len:
     resd 1
 __dbase_wfm_mem___wfm_ismouse_print_type:
@@ -2423,7 +2396,7 @@ __dbase_wfm_mem___wfm_ismouse_print_type:
 __dbase_wfm_mem___wfm_ismouse_print_num:
     resq 1
 __dbase_wfm_mem___wfm_ismouse_print_ptr:
-    resd 1
+    resq 1
 __dbase_wfm_mem___wfm_ismouse_print_len:
     resd 1
 __dbase_wfm_mem___wfm_iskeyboard_print_type:
@@ -2431,7 +2404,7 @@ __dbase_wfm_mem___wfm_iskeyboard_print_type:
 __dbase_wfm_mem___wfm_iskeyboard_print_num:
     resq 1
 __dbase_wfm_mem___wfm_iskeyboard_print_ptr:
-    resd 1
+    resq 1
 __dbase_wfm_mem___wfm_iskeyboard_print_len:
     resd 1
 __dbase_wfm_mem_A_type:
@@ -2439,7 +2412,7 @@ __dbase_wfm_mem_A_type:
 __dbase_wfm_mem_A_num:
     resq 1
 __dbase_wfm_mem_A_ptr:
-    resd 1
+    resq 1
 __dbase_wfm_mem_A_len:
     resd 1
 __dbase_wfm_mem_C_type:
@@ -2447,6 +2420,6 @@ __dbase_wfm_mem_C_type:
 __dbase_wfm_mem_C_num:
     resq 1
 __dbase_wfm_mem_C_ptr:
-    resd 1
+    resq 1
 __dbase_wfm_mem_C_len:
     resd 1
