@@ -367,8 +367,8 @@ __dbase_wfm_format_buffer_ok:
     mov dword ptr [__dbase_wfm_obj_THIS_PushButton1], eax
     push 85
     push 174
-    push 40
-    push 30
+    push 28
+    push 23
     push dword ptr [__dbase_wfm_obj_THIS_PushButton1]
     call DBaseQtWidgetSetGeometry
     add esp, 20
@@ -590,6 +590,94 @@ __dbase_wfm_proc___main__:
 __dbase_wfm_flow_method_exit_3:
     ret
 ; END WFM PROCEDURE/FUNCTION: __main__
+
+
+; ------------------------------------------------------------
+; WFM PROCEDURE/FUNCTION MASCHINENCODE: CheckLower
+; ------------------------------------------------------------
+__dbase_wfm_proc_CheckLower:
+    mov eax, dword ptr [esp+4]
+    mov dword ptr [__dbase_wfm_param_CheckLower_c], eax
+    mov dword ptr [__dbase_wfm_mem___wfm_arg_CheckLower_c_type], 3
+    mov eax, dword ptr [__dbase_wfm_param_CheckLower_c]
+    mov dword ptr [__dbase_wfm_mem___wfm_arg_CheckLower_c_ptr], eax
+    mov eax, dword ptr [esp+8]
+    mov dword ptr [__dbase_wfm_mem___wfm_arg_CheckLower_c_len], eax
+    cmp dword ptr [__dbase_wfm_mem___wfm_arg_CheckLower_c_type], 3
+    je __dbase_wfm_flow_char_case_valid_5
+    fldz
+    jmp __dbase_wfm_flow_char_case_end_6
+__dbase_wfm_flow_char_case_valid_5:
+    mov edx, dword ptr [__dbase_wfm_mem___wfm_arg_CheckLower_c_ptr]
+    test edx, edx
+    je __dbase_wfm_flow_islower_7_false
+    cmp dword ptr [__dbase_wfm_mem___wfm_arg_CheckLower_c_len], 1
+    je __dbase_wfm_flow_islower_7_one_byte
+    cmp dword ptr [__dbase_wfm_mem___wfm_arg_CheckLower_c_len], 2
+    jne __dbase_wfm_flow_islower_7_false
+    movzx eax, byte ptr [edx]
+    cmp eax, 194
+    jb __dbase_wfm_flow_islower_7_false
+    cmp eax, 223
+    ja __dbase_wfm_flow_islower_7_false
+    and eax, 31
+    shl eax, 6
+    movzx ecx, byte ptr [edx+1]
+    cmp ecx, 128
+    jb __dbase_wfm_flow_islower_7_false
+    cmp ecx, 191
+    ja __dbase_wfm_flow_islower_7_false
+    and ecx, 63
+    or eax, ecx
+    jmp __dbase_wfm_flow_islower_7_value_ready
+__dbase_wfm_flow_islower_7_one_byte:
+    movzx eax, byte ptr [edx]
+    cmp eax, 127
+    ja __dbase_wfm_flow_islower_7_false
+__dbase_wfm_flow_islower_7_value_ready:
+    cmp eax, 97
+    jb __dbase_wfm_flow_islower_7_next_0
+    cmp eax, 122
+    jbe __dbase_wfm_flow_islower_7_true
+__dbase_wfm_flow_islower_7_next_0:
+    cmp eax, 170
+    je __dbase_wfm_flow_islower_7_true
+    cmp eax, 181
+    je __dbase_wfm_flow_islower_7_true
+    cmp eax, 186
+    je __dbase_wfm_flow_islower_7_true
+    cmp eax, 223
+    jb __dbase_wfm_flow_islower_7_next_4
+    cmp eax, 246
+    jbe __dbase_wfm_flow_islower_7_true
+__dbase_wfm_flow_islower_7_next_4:
+    cmp eax, 248
+    jb __dbase_wfm_flow_islower_7_next_5
+    cmp eax, 255
+    jbe __dbase_wfm_flow_islower_7_true
+__dbase_wfm_flow_islower_7_next_5:
+    cmp eax, 339
+    je __dbase_wfm_flow_islower_7_true
+    cmp eax, 353
+    je __dbase_wfm_flow_islower_7_true
+    cmp eax, 382
+    je __dbase_wfm_flow_islower_7_true
+    cmp eax, 402
+    je __dbase_wfm_flow_islower_7_true
+__dbase_wfm_flow_islower_7_false:
+    mov dword ptr [__dbase_temp_number], 0
+    jmp __dbase_wfm_flow_islower_7_done
+__dbase_wfm_flow_islower_7_true:
+    mov dword ptr [__dbase_temp_number], 1
+__dbase_wfm_flow_islower_7_done:
+    fild dword ptr [__dbase_temp_number]
+__dbase_wfm_flow_char_case_end_6:
+    fistp dword ptr [__dbase_temp_number]
+    mov eax, dword ptr [__dbase_temp_number]
+    jmp __dbase_wfm_flow_method_exit_4
+__dbase_wfm_flow_method_exit_4:
+    ret
+; END WFM PROCEDURE/FUNCTION: CheckLower
 
 
 ; ------------------------------------------------------------
@@ -1170,22 +1258,22 @@ __dbase_wfm_print_done_12:
     fld qword ptr [__dbase_wfm_numconst_4]
     fucomip st0, st1
     fstp st0
-    jne __dbase_wfm_flow_if_false_5
+    jne __dbase_wfm_flow_if_false_9
     ; ? "Eine Maus ist vorhanden."
     push 1
     push 24
     push __dbase_wfm_output_text_99
     call DBaseQtConsoleWrite
     add esp, 12
-    jmp __dbase_wfm_flow_if_end_6
-__dbase_wfm_flow_if_false_5:
+    jmp __dbase_wfm_flow_if_end_10
+__dbase_wfm_flow_if_false_9:
     ; ? "Keine Maus erkannt."
     push 1
     push 19
     push __dbase_wfm_output_text_100
     call DBaseQtConsoleWrite
     add esp, 12
-__dbase_wfm_flow_if_end_6:
+__dbase_wfm_flow_if_end_10:
     ; IF ismouse() .AND. HatMaus = 1
     push 19
     call GetSystemMetrics
@@ -1197,20 +1285,20 @@ __dbase_wfm_flow_if_end_6:
     fldz
     fucomip st0, st1
     fstp st0
-    je __dbase_wfm_flow_if_false_7
+    je __dbase_wfm_flow_if_false_11
     fld qword ptr [__dbase_wfm_mem_HatMaus_num]
     fld qword ptr [__dbase_wfm_numconst_5]
     fucomip st0, st1
     fstp st0
-    jne __dbase_wfm_flow_if_false_7
+    jne __dbase_wfm_flow_if_false_11
     ; ? "Maus kann verwendet werden."
     push 1
     push 27
     push __dbase_wfm_output_text_101
     call DBaseQtConsoleWrite
     add esp, 12
-__dbase_wfm_flow_if_false_7:
-__dbase_wfm_flow_if_end_8:
+__dbase_wfm_flow_if_false_11:
+__dbase_wfm_flow_if_end_12:
     push 19
     call GetSystemMetrics
     test eax, eax
@@ -1296,12 +1384,12 @@ __dbase_wfm_print_done_13:
     push 0
     call GetRawInputDeviceList
     cmp eax, 4294967295
-    je __dbase_wfm_flow_iskeyboard_9_done
+    je __dbase_wfm_flow_iskeyboard_13_done
     mov edx, dword ptr [esp]
     test edx, edx
-    jz __dbase_wfm_flow_iskeyboard_9_done
+    jz __dbase_wfm_flow_iskeyboard_13_done
     cmp edx, 536870911
-    ja __dbase_wfm_flow_iskeyboard_9_done
+    ja __dbase_wfm_flow_iskeyboard_13_done
     shl edx, 3
     push 4
     push 12288
@@ -1309,7 +1397,7 @@ __dbase_wfm_print_done_13:
     push 0
     call VirtualAlloc
     test eax, eax
-    jz __dbase_wfm_flow_iskeyboard_9_done
+    jz __dbase_wfm_flow_iskeyboard_13_done
     mov dword ptr [esp+4], eax
     lea edx, [esp]
     push 8
@@ -1317,27 +1405,27 @@ __dbase_wfm_print_done_13:
     push eax
     call GetRawInputDeviceList
     cmp eax, 4294967295
-    je __dbase_wfm_flow_iskeyboard_9_release
+    je __dbase_wfm_flow_iskeyboard_13_release
     test eax, eax
-    jz __dbase_wfm_flow_iskeyboard_9_release
+    jz __dbase_wfm_flow_iskeyboard_13_release
     mov ecx, eax
     mov edx, dword ptr [esp+4]
-__dbase_wfm_flow_iskeyboard_9_scan:
+__dbase_wfm_flow_iskeyboard_13_scan:
     cmp dword ptr [edx+4], 1
-    je __dbase_wfm_flow_iskeyboard_9_present
+    je __dbase_wfm_flow_iskeyboard_13_present
     add edx, 8
     dec ecx
-    jnz __dbase_wfm_flow_iskeyboard_9_scan
-    jmp __dbase_wfm_flow_iskeyboard_9_release
-__dbase_wfm_flow_iskeyboard_9_present:
+    jnz __dbase_wfm_flow_iskeyboard_13_scan
+    jmp __dbase_wfm_flow_iskeyboard_13_release
+__dbase_wfm_flow_iskeyboard_13_present:
     mov dword ptr [esp+8], 1
-__dbase_wfm_flow_iskeyboard_9_release:
+__dbase_wfm_flow_iskeyboard_13_release:
     mov eax, dword ptr [esp+4]
     push 32768
     push 0
     push eax
     call VirtualFree
-__dbase_wfm_flow_iskeyboard_9_done:
+__dbase_wfm_flow_iskeyboard_13_done:
     mov eax, dword ptr [esp+8]
     add esp, 12
     mov dword ptr [__dbase_temp_number], eax
@@ -1351,103 +1439,23 @@ __dbase_wfm_flow_iskeyboard_9_done:
     fld qword ptr [__dbase_wfm_numconst_6]
     fucomip st0, st1
     fstp st0
-    jne __dbase_wfm_flow_if_false_10
+    jne __dbase_wfm_flow_if_false_14
     ; ? "Eine Tastatur ist vorhanden."
     push 1
     push 28
     push __dbase_wfm_output_text_104
     call DBaseQtConsoleWrite
     add esp, 12
-    jmp __dbase_wfm_flow_if_end_11
-__dbase_wfm_flow_if_false_10:
+    jmp __dbase_wfm_flow_if_end_15
+__dbase_wfm_flow_if_false_14:
     ; ? "Keine Tastatur erkannt."
     push 1
     push 23
     push __dbase_wfm_output_text_105
     call DBaseQtConsoleWrite
     add esp, 12
-__dbase_wfm_flow_if_end_11:
+__dbase_wfm_flow_if_end_15:
     ; IF iskeyboard() .AND. ismouse()
-    sub esp, 12
-    mov dword ptr [esp], 0
-    mov dword ptr [esp+4], 0
-    mov dword ptr [esp+8], 0
-    lea eax, [esp]
-    push 8
-    push eax
-    push 0
-    call GetRawInputDeviceList
-    cmp eax, 4294967295
-    je __dbase_wfm_flow_iskeyboard_14_done
-    mov edx, dword ptr [esp]
-    test edx, edx
-    jz __dbase_wfm_flow_iskeyboard_14_done
-    cmp edx, 536870911
-    ja __dbase_wfm_flow_iskeyboard_14_done
-    shl edx, 3
-    push 4
-    push 12288
-    push edx
-    push 0
-    call VirtualAlloc
-    test eax, eax
-    jz __dbase_wfm_flow_iskeyboard_14_done
-    mov dword ptr [esp+4], eax
-    lea edx, [esp]
-    push 8
-    push edx
-    push eax
-    call GetRawInputDeviceList
-    cmp eax, 4294967295
-    je __dbase_wfm_flow_iskeyboard_14_release
-    test eax, eax
-    jz __dbase_wfm_flow_iskeyboard_14_release
-    mov ecx, eax
-    mov edx, dword ptr [esp+4]
-__dbase_wfm_flow_iskeyboard_14_scan:
-    cmp dword ptr [edx+4], 1
-    je __dbase_wfm_flow_iskeyboard_14_present
-    add edx, 8
-    dec ecx
-    jnz __dbase_wfm_flow_iskeyboard_14_scan
-    jmp __dbase_wfm_flow_iskeyboard_14_release
-__dbase_wfm_flow_iskeyboard_14_present:
-    mov dword ptr [esp+8], 1
-__dbase_wfm_flow_iskeyboard_14_release:
-    mov eax, dword ptr [esp+4]
-    push 32768
-    push 0
-    push eax
-    call VirtualFree
-__dbase_wfm_flow_iskeyboard_14_done:
-    mov eax, dword ptr [esp+8]
-    add esp, 12
-    mov dword ptr [__dbase_temp_number], eax
-    fild dword ptr [__dbase_temp_number]
-    fldz
-    fucomip st0, st1
-    fstp st0
-    je __dbase_wfm_flow_if_false_12
-    push 19
-    call GetSystemMetrics
-    test eax, eax
-    setne al
-    movzx eax, al
-    mov dword ptr [__dbase_temp_number], eax
-    fild dword ptr [__dbase_temp_number]
-    fldz
-    fucomip st0, st1
-    fstp st0
-    je __dbase_wfm_flow_if_false_12
-    ; ? "Maus und Tastatur sind vorhanden."
-    push 1
-    push 33
-    push __dbase_wfm_output_text_106
-    call DBaseQtConsoleWrite
-    add esp, 12
-__dbase_wfm_flow_if_false_12:
-__dbase_wfm_flow_if_end_13:
-    ; IF .NOT. iskeyboard()
     sub esp, 12
     mov dword ptr [esp], 0
     mov dword ptr [esp+4], 0
@@ -1507,17 +1515,27 @@ __dbase_wfm_flow_iskeyboard_18_done:
     fldz
     fucomip st0, st1
     fstp st0
-    je __dbase_wfm_flow_not_true_17
-    jmp __dbase_wfm_flow_if_false_15
-__dbase_wfm_flow_not_true_17:
-    ; ? "Keine Tastatur gefunden."
+    je __dbase_wfm_flow_if_false_16
+    push 19
+    call GetSystemMetrics
+    test eax, eax
+    setne al
+    movzx eax, al
+    mov dword ptr [__dbase_temp_number], eax
+    fild dword ptr [__dbase_temp_number]
+    fldz
+    fucomip st0, st1
+    fstp st0
+    je __dbase_wfm_flow_if_false_16
+    ; ? "Maus und Tastatur sind vorhanden."
     push 1
-    push 24
-    push __dbase_wfm_output_text_107
+    push 33
+    push __dbase_wfm_output_text_106
     call DBaseQtConsoleWrite
     add esp, 12
-__dbase_wfm_flow_if_false_15:
-__dbase_wfm_flow_if_end_16:
+__dbase_wfm_flow_if_false_16:
+__dbase_wfm_flow_if_end_17:
+    ; IF .NOT. iskeyboard()
     sub esp, 12
     mov dword ptr [esp], 0
     mov dword ptr [esp+4], 0
@@ -1528,12 +1546,12 @@ __dbase_wfm_flow_if_end_16:
     push 0
     call GetRawInputDeviceList
     cmp eax, 4294967295
-    je __dbase_wfm_flow_iskeyboard_19_done
+    je __dbase_wfm_flow_iskeyboard_22_done
     mov edx, dword ptr [esp]
     test edx, edx
-    jz __dbase_wfm_flow_iskeyboard_19_done
+    jz __dbase_wfm_flow_iskeyboard_22_done
     cmp edx, 536870911
-    ja __dbase_wfm_flow_iskeyboard_19_done
+    ja __dbase_wfm_flow_iskeyboard_22_done
     shl edx, 3
     push 4
     push 12288
@@ -1541,7 +1559,7 @@ __dbase_wfm_flow_if_end_16:
     push 0
     call VirtualAlloc
     test eax, eax
-    jz __dbase_wfm_flow_iskeyboard_19_done
+    jz __dbase_wfm_flow_iskeyboard_22_done
     mov dword ptr [esp+4], eax
     lea edx, [esp]
     push 8
@@ -1549,27 +1567,97 @@ __dbase_wfm_flow_if_end_16:
     push eax
     call GetRawInputDeviceList
     cmp eax, 4294967295
-    je __dbase_wfm_flow_iskeyboard_19_release
+    je __dbase_wfm_flow_iskeyboard_22_release
     test eax, eax
-    jz __dbase_wfm_flow_iskeyboard_19_release
+    jz __dbase_wfm_flow_iskeyboard_22_release
     mov ecx, eax
     mov edx, dword ptr [esp+4]
-__dbase_wfm_flow_iskeyboard_19_scan:
+__dbase_wfm_flow_iskeyboard_22_scan:
     cmp dword ptr [edx+4], 1
-    je __dbase_wfm_flow_iskeyboard_19_present
+    je __dbase_wfm_flow_iskeyboard_22_present
     add edx, 8
     dec ecx
-    jnz __dbase_wfm_flow_iskeyboard_19_scan
-    jmp __dbase_wfm_flow_iskeyboard_19_release
-__dbase_wfm_flow_iskeyboard_19_present:
+    jnz __dbase_wfm_flow_iskeyboard_22_scan
+    jmp __dbase_wfm_flow_iskeyboard_22_release
+__dbase_wfm_flow_iskeyboard_22_present:
     mov dword ptr [esp+8], 1
-__dbase_wfm_flow_iskeyboard_19_release:
+__dbase_wfm_flow_iskeyboard_22_release:
     mov eax, dword ptr [esp+4]
     push 32768
     push 0
     push eax
     call VirtualFree
-__dbase_wfm_flow_iskeyboard_19_done:
+__dbase_wfm_flow_iskeyboard_22_done:
+    mov eax, dword ptr [esp+8]
+    add esp, 12
+    mov dword ptr [__dbase_temp_number], eax
+    fild dword ptr [__dbase_temp_number]
+    fldz
+    fucomip st0, st1
+    fstp st0
+    je __dbase_wfm_flow_not_true_21
+    jmp __dbase_wfm_flow_if_false_19
+__dbase_wfm_flow_not_true_21:
+    ; ? "Keine Tastatur gefunden."
+    push 1
+    push 24
+    push __dbase_wfm_output_text_107
+    call DBaseQtConsoleWrite
+    add esp, 12
+__dbase_wfm_flow_if_false_19:
+__dbase_wfm_flow_if_end_20:
+    sub esp, 12
+    mov dword ptr [esp], 0
+    mov dword ptr [esp+4], 0
+    mov dword ptr [esp+8], 0
+    lea eax, [esp]
+    push 8
+    push eax
+    push 0
+    call GetRawInputDeviceList
+    cmp eax, 4294967295
+    je __dbase_wfm_flow_iskeyboard_23_done
+    mov edx, dword ptr [esp]
+    test edx, edx
+    jz __dbase_wfm_flow_iskeyboard_23_done
+    cmp edx, 536870911
+    ja __dbase_wfm_flow_iskeyboard_23_done
+    shl edx, 3
+    push 4
+    push 12288
+    push edx
+    push 0
+    call VirtualAlloc
+    test eax, eax
+    jz __dbase_wfm_flow_iskeyboard_23_done
+    mov dword ptr [esp+4], eax
+    lea edx, [esp]
+    push 8
+    push edx
+    push eax
+    call GetRawInputDeviceList
+    cmp eax, 4294967295
+    je __dbase_wfm_flow_iskeyboard_23_release
+    test eax, eax
+    jz __dbase_wfm_flow_iskeyboard_23_release
+    mov ecx, eax
+    mov edx, dword ptr [esp+4]
+__dbase_wfm_flow_iskeyboard_23_scan:
+    cmp dword ptr [edx+4], 1
+    je __dbase_wfm_flow_iskeyboard_23_present
+    add edx, 8
+    dec ecx
+    jnz __dbase_wfm_flow_iskeyboard_23_scan
+    jmp __dbase_wfm_flow_iskeyboard_23_release
+__dbase_wfm_flow_iskeyboard_23_present:
+    mov dword ptr [esp+8], 1
+__dbase_wfm_flow_iskeyboard_23_release:
+    mov eax, dword ptr [esp+4]
+    push 32768
+    push 0
+    push eax
+    call VirtualFree
+__dbase_wfm_flow_iskeyboard_23_done:
     mov eax, dword ptr [esp+8]
     add esp, 12
     mov dword ptr [__dbase_temp_number], eax
@@ -1642,8 +1730,107 @@ __dbase_wfm_print_null_14:
     call DBaseQtConsoleWrite
     add esp, 12
 __dbase_wfm_print_done_14:
-    jmp __dbase_wfm_flow_method_exit_4
-__dbase_wfm_flow_method_exit_4:
+    ; STORE 'A' TO Zeichen
+    mov dword ptr [__dbase_wfm_mem_Zeichen_ptr], __dbase_wfm_output_text_110
+    mov dword ptr [__dbase_wfm_mem_Zeichen_len], 1
+    mov dword ptr [__dbase_wfm_mem_Zeichen_type], 3
+    ; IF ISUPPER(Zeichen)
+    cmp dword ptr [__dbase_wfm_mem_Zeichen_type], 3
+    je __dbase_wfm_flow_char_case_valid_26
+    fldz
+    jmp __dbase_wfm_flow_char_case_end_27
+__dbase_wfm_flow_char_case_valid_26:
+    mov edx, dword ptr [__dbase_wfm_mem_Zeichen_ptr]
+    test edx, edx
+    je __dbase_wfm_flow_isupper_28_false
+    cmp dword ptr [__dbase_wfm_mem_Zeichen_len], 1
+    je __dbase_wfm_flow_isupper_28_one_byte
+    cmp dword ptr [__dbase_wfm_mem_Zeichen_len], 2
+    jne __dbase_wfm_flow_isupper_28_false
+    movzx eax, byte ptr [edx]
+    cmp eax, 194
+    jb __dbase_wfm_flow_isupper_28_false
+    cmp eax, 223
+    ja __dbase_wfm_flow_isupper_28_false
+    and eax, 31
+    shl eax, 6
+    movzx ecx, byte ptr [edx+1]
+    cmp ecx, 128
+    jb __dbase_wfm_flow_isupper_28_false
+    cmp ecx, 191
+    ja __dbase_wfm_flow_isupper_28_false
+    and ecx, 63
+    or eax, ecx
+    jmp __dbase_wfm_flow_isupper_28_value_ready
+__dbase_wfm_flow_isupper_28_one_byte:
+    movzx eax, byte ptr [edx]
+    cmp eax, 127
+    ja __dbase_wfm_flow_isupper_28_false
+__dbase_wfm_flow_isupper_28_value_ready:
+    cmp eax, 65
+    jb __dbase_wfm_flow_isupper_28_next_0
+    cmp eax, 90
+    jbe __dbase_wfm_flow_isupper_28_true
+__dbase_wfm_flow_isupper_28_next_0:
+    cmp eax, 192
+    jb __dbase_wfm_flow_isupper_28_next_1
+    cmp eax, 214
+    jbe __dbase_wfm_flow_isupper_28_true
+__dbase_wfm_flow_isupper_28_next_1:
+    cmp eax, 216
+    jb __dbase_wfm_flow_isupper_28_next_2
+    cmp eax, 222
+    jbe __dbase_wfm_flow_isupper_28_true
+__dbase_wfm_flow_isupper_28_next_2:
+    cmp eax, 338
+    je __dbase_wfm_flow_isupper_28_true
+    cmp eax, 352
+    je __dbase_wfm_flow_isupper_28_true
+    cmp eax, 376
+    je __dbase_wfm_flow_isupper_28_true
+    cmp eax, 381
+    je __dbase_wfm_flow_isupper_28_true
+__dbase_wfm_flow_isupper_28_false:
+    mov dword ptr [__dbase_temp_number], 0
+    jmp __dbase_wfm_flow_isupper_28_done
+__dbase_wfm_flow_isupper_28_true:
+    mov dword ptr [__dbase_temp_number], 1
+__dbase_wfm_flow_isupper_28_done:
+    fild dword ptr [__dbase_temp_number]
+__dbase_wfm_flow_char_case_end_27:
+    fldz
+    fucomip st0, st1
+    fstp st0
+    je __dbase_wfm_flow_if_false_24
+    ; ? "Grossbuchstabe erkannt"
+    push 1
+    push 22
+    push __dbase_wfm_output_text_111
+    call DBaseQtConsoleWrite
+    add esp, 12
+__dbase_wfm_flow_if_false_24:
+__dbase_wfm_flow_if_end_25:
+    ; IF CheckLower('z')
+    push 1
+    push __dbase_wfm_text_112
+    call __dbase_wfm_proc_CheckLower
+    add esp, 8
+    mov dword ptr [__dbase_temp_number], eax
+    fild dword ptr [__dbase_temp_number]
+    fldz
+    fucomip st0, st1
+    fstp st0
+    je __dbase_wfm_flow_if_false_29
+    ; ? "Kleinbuchstabe erkannt"
+    push 1
+    push 22
+    push __dbase_wfm_output_text_113
+    call DBaseQtConsoleWrite
+    add esp, 12
+__dbase_wfm_flow_if_false_29:
+__dbase_wfm_flow_if_end_30:
+    jmp __dbase_wfm_flow_method_exit_8
+__dbase_wfm_flow_method_exit_8:
     ret
 ; END WFM PROCEDURE/FUNCTION: PushButton1_onClick
 
@@ -1657,82 +1844,82 @@ __dbase_wfm_proc_TestAndNotXor:
     fld qword ptr [__dbase_wfm_numconst_7]
     fucomip st0, st1
     fstp st0
-    jae __dbase_wfm_flow_if_false_21
+    jae __dbase_wfm_flow_if_false_32
     fld qword ptr [__dbase_wfm_mem_C_num]
     fld qword ptr [__dbase_wfm_numconst_8]
     fucomip st0, st1
     fstp st0
-    jbe __dbase_wfm_flow_if_false_21
+    jbe __dbase_wfm_flow_if_false_32
     ; ? "Beide Bedingungen erfüllt"
     push 1
     push 26
-    push __dbase_wfm_output_text_110
+    push __dbase_wfm_output_text_114
     call DBaseQtConsoleWrite
     add esp, 12
-    jmp __dbase_wfm_flow_if_end_22
-__dbase_wfm_flow_if_false_21:
+    jmp __dbase_wfm_flow_if_end_33
+__dbase_wfm_flow_if_false_32:
     ; ? "Bedingung nicht erfüllt"
     push 1
     push 24
-    push __dbase_wfm_output_text_111
+    push __dbase_wfm_output_text_115
     call DBaseQtConsoleWrite
     add esp, 12
-__dbase_wfm_flow_if_end_22:
+__dbase_wfm_flow_if_end_33:
     ; IF .NOT. (A = 0 .OR. C >= 10)
     fld qword ptr [__dbase_wfm_mem_A_num]
     fld qword ptr [__dbase_wfm_numconst_9]
     fucomip st0, st1
     fstp st0
-    jne __dbase_wfm_flow_not_true_27
-    jmp __dbase_wfm_flow_or_true_26
-__dbase_wfm_flow_not_true_27:
+    jne __dbase_wfm_flow_not_true_38
+    jmp __dbase_wfm_flow_or_true_37
+__dbase_wfm_flow_not_true_38:
     fld qword ptr [__dbase_wfm_mem_C_num]
     fld qword ptr [__dbase_wfm_numconst_10]
     fucomip st0, st1
     fstp st0
-    ja __dbase_wfm_flow_not_true_25
-__dbase_wfm_flow_or_true_26:
-    jmp __dbase_wfm_flow_if_false_23
-__dbase_wfm_flow_not_true_25:
+    ja __dbase_wfm_flow_not_true_36
+__dbase_wfm_flow_or_true_37:
+    jmp __dbase_wfm_flow_if_false_34
+__dbase_wfm_flow_not_true_36:
     ; ? "NOT und OR funktionieren"
     push 1
     push 24
-    push __dbase_wfm_output_text_112
+    push __dbase_wfm_output_text_116
     call DBaseQtConsoleWrite
     add esp, 12
-__dbase_wfm_flow_if_false_23:
-__dbase_wfm_flow_if_end_24:
+__dbase_wfm_flow_if_false_34:
+__dbase_wfm_flow_if_end_35:
     ; IF (A > 0) .XOR. (C < 0)
     fld qword ptr [__dbase_wfm_mem_A_num]
     fld qword ptr [__dbase_wfm_numconst_11]
     fucomip st0, st1
     fstp st0
-    jae __dbase_wfm_flow_xor_left_false_30
+    jae __dbase_wfm_flow_xor_left_false_41
     fld qword ptr [__dbase_wfm_mem_C_num]
     fld qword ptr [__dbase_wfm_numconst_12]
     fucomip st0, st1
     fstp st0
-    jbe __dbase_wfm_flow_not_true_32
-    jmp __dbase_wfm_flow_if_false_28
-__dbase_wfm_flow_not_true_32:
-    jmp __dbase_wfm_flow_xor_done_31
-__dbase_wfm_flow_xor_left_false_30:
+    jbe __dbase_wfm_flow_not_true_43
+    jmp __dbase_wfm_flow_if_false_39
+__dbase_wfm_flow_not_true_43:
+    jmp __dbase_wfm_flow_xor_done_42
+__dbase_wfm_flow_xor_left_false_41:
     fld qword ptr [__dbase_wfm_mem_C_num]
     fld qword ptr [__dbase_wfm_numconst_13]
     fucomip st0, st1
     fstp st0
-    jbe __dbase_wfm_flow_if_false_28
-__dbase_wfm_flow_xor_done_31:
+    jbe __dbase_wfm_flow_if_false_39
+__dbase_wfm_flow_xor_done_42:
     ; ? "Genau eine Bedingung ist wahr"
     push 1
     push 29
-    push __dbase_wfm_output_text_113
+    push __dbase_wfm_output_text_117
     call DBaseQtConsoleWrite
     add esp, 12
-__dbase_wfm_flow_if_false_28:
-__dbase_wfm_flow_if_end_29:
-    jmp __dbase_wfm_flow_method_exit_20
-__dbase_wfm_flow_method_exit_20:
+__dbase_wfm_flow_if_false_39:
+__dbase_wfm_flow_if_end_40:
+    jmp __dbase_wfm_flow_method_exit_31
+__dbase_wfm_flow_method_exit_31:
     ret
 ; END WFM PROCEDURE/FUNCTION: TestAndNotXor
 
@@ -1924,6 +2111,8 @@ __dbase_wfm_text_73:
     db 35, 49, 49, 49, 49, 49, 49, 92, 48
 __dbase_wfm_text_74:
     db 79, 110, 67, 108, 105, 99, 107, 92, 48
+__dbase_wfm_text_112:
+    db 122, 92, 48
 __dbase_wfm_output_text_75:
     db 112, 49, 32, 61, 32
 __dbase_wfm_output_text_76:
@@ -1995,12 +2184,18 @@ __dbase_wfm_output_text_108:
 __dbase_wfm_output_text_109:
     db 60, 111, 98, 106, 101, 99, 116, 62
 __dbase_wfm_output_text_110:
-    db 66, 101, 105, 100, 101, 32, 66, 101, 100, 105, 110, 103, 117, 110, 103, 101, 110, 32, 101, 114, 102, 195, 188, 108, 108, 116
+    db 65
 __dbase_wfm_output_text_111:
-    db 66, 101, 100, 105, 110, 103, 117, 110, 103, 32, 110, 105, 99, 104, 116, 32, 101, 114, 102, 195, 188, 108, 108, 116
-__dbase_wfm_output_text_112:
-    db 78, 79, 84, 32, 117, 110, 100, 32, 79, 82, 32, 102, 117, 110, 107, 116, 105, 111, 110, 105, 101, 114, 101, 110
+    db 71, 114, 111, 115, 115, 98, 117, 99, 104, 115, 116, 97, 98, 101, 32, 101, 114, 107, 97, 110, 110, 116
 __dbase_wfm_output_text_113:
+    db 75, 108, 101, 105, 110, 98, 117, 99, 104, 115, 116, 97, 98, 101, 32, 101, 114, 107, 97, 110, 110, 116
+__dbase_wfm_output_text_114:
+    db 66, 101, 105, 100, 101, 32, 66, 101, 100, 105, 110, 103, 117, 110, 103, 101, 110, 32, 101, 114, 102, 195, 188, 108, 108, 116
+__dbase_wfm_output_text_115:
+    db 66, 101, 100, 105, 110, 103, 117, 110, 103, 32, 110, 105, 99, 104, 116, 32, 101, 114, 102, 195, 188, 108, 108, 116
+__dbase_wfm_output_text_116:
+    db 78, 79, 84, 32, 117, 110, 100, 32, 79, 82, 32, 102, 117, 110, 107, 116, 105, 111, 110, 105, 101, 114, 101, 110
+__dbase_wfm_output_text_117:
     db 71, 101, 110, 97, 117, 32, 101, 105, 110, 101, 32, 66, 101, 100, 105, 110, 103, 117, 110, 103, 32, 105, 115, 116, 32, 119, 97, 104, 114
 
 ; Stage 223: compact WFM property blocks
@@ -2326,6 +2521,8 @@ __dbase_wfm_param___init___p1:
     resd 1
 __dbase_wfm_param___init___p2:
     resd 1
+__dbase_wfm_param_CheckLower_c:
+    resd 1
 __dbase_wfm_param_PushButton1_onClick_Sender:
     resd 1
 
@@ -2362,6 +2559,14 @@ __dbase_wfm_mem_HatTastatur_ptr:
     resd 1
 __dbase_wfm_mem_HatTastatur_len:
     resd 1
+__dbase_wfm_mem_Zeichen_type:
+    resd 1
+__dbase_wfm_mem_Zeichen_num:
+    resq 1
+__dbase_wfm_mem_Zeichen_ptr:
+    resd 1
+__dbase_wfm_mem_Zeichen_len:
+    resd 1
 __dbase_wfm_mem_p1_type:
     resd 1
 __dbase_wfm_mem_p1_num:
@@ -2377,6 +2582,14 @@ __dbase_wfm_mem_p2_num:
 __dbase_wfm_mem_p2_ptr:
     resd 1
 __dbase_wfm_mem_p2_len:
+    resd 1
+__dbase_wfm_mem___wfm_arg_CheckLower_c_type:
+    resd 1
+__dbase_wfm_mem___wfm_arg_CheckLower_c_num:
+    resq 1
+__dbase_wfm_mem___wfm_arg_CheckLower_c_ptr:
+    resd 1
+__dbase_wfm_mem___wfm_arg_CheckLower_c_len:
     resd 1
 __dbase_wfm_mem___string_arg_7_type:
     resd 1

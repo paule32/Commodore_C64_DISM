@@ -2,7 +2,7 @@ local A = 9
 local C = 4
 
 ** END HEADER -- do not remove this line
-// Generated on 09.10.2026
+// Generated on 10.10.2026
 //
 PARAMETER bmodal
 LOCAL B
@@ -106,8 +106,8 @@ CLASS Form1 OF FORM
     THIS.PushButton1 = NEW PUSHBUTTON(THIS, "Button1")
     WITH (THIS.PushButton1)
         Name = "PushButton1"
-        Left = 30
-        Top = 40
+        Left = 23
+        Top = 28
         Width = 174
         Height = 85
 
@@ -211,38 +211,43 @@ CLASS Form1 OF FORM
         ? "5: " + !($(SpeicherVar, 8, 6))
         TestAndNotXor()
 
-STORE ismouse() TO HatMaus
+        STORE ismouse() TO HatMaus
+        IF HatMaus = 1
+            ? "Eine Maus ist vorhanden."
+        ELSE
+            ? "Keine Maus erkannt."
+        ENDIF
+        IF ismouse() .AND. HatMaus = 1
+            ? "Maus kann verwendet werden."
+        ENDIF
+        ? ismouse()
+        
 
-IF HatMaus = 1
-    ? "Eine Maus ist vorhanden."
-ELSE
-    ? "Keine Maus erkannt."
-ENDIF
+        STORE iskeyboard() TO HatTastatur
+        IF HatTastatur = 1
+            ? "Eine Tastatur ist vorhanden."
+        ELSE
+            ? "Keine Tastatur erkannt."
+        ENDIF
+        IF iskeyboard() .AND. ismouse()
+            ? "Maus und Tastatur sind vorhanden."
+        ENDIF
+        IF .NOT. iskeyboard()
+            ? "Keine Tastatur gefunden."
+        ENDIF
+        ? iskeyboard()
+        
 
-IF ismouse() .AND. HatMaus = 1
-    ? "Maus kann verwendet werden."
-ENDIF
+        STORE 'A' TO Zeichen
+        IF ISUPPER(Zeichen)
+            ? "Grossbuchstabe erkannt"
+        ENDIF
+        IF CheckLower('z')
+            ? "Kleinbuchstabe erkannt"
+        ENDIF
+    return
 
-? ismouse()
-
-
-STORE iskeyboard() TO HatTastatur
-
-IF HatTastatur = 1
-    ? "Eine Tastatur ist vorhanden."
-ELSE
-    ? "Keine Tastatur erkannt."
-ENDIF
-
-IF iskeyboard() .AND. ismouse()
-    ? "Maus und Tastatur sind vorhanden."
-ENDIF
-
-IF .NOT. iskeyboard()
-    ? "Keine Tastatur gefunden."
-ENDIF
-
-? iskeyboard()
-        return
+    FUNCTION CheckLower(c)
+    RETURN ISLOWER(c)
 
 ENDCLASS

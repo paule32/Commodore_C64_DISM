@@ -30,6 +30,13 @@ HEADERS += d64_debug_context_menu.hpp \
 
 DEF_FILE = d64qt5_bridge.def
 
+QMAKE_CFLAGS   += -fno-ident -fno-record-gcc-switches \
+                  -ffunction-sections -fdata-sections \
+                  -Wl,--gc-sections
+
+QMAKE_CXXFLAGS += -fno-ident -fno-record-gcc-switches \
+                  -ffunction-sections -fdata-sections \
+                  -Wl,--gc-sections
 win32 {
     debug {
         TARGET  = libd64_qt5d

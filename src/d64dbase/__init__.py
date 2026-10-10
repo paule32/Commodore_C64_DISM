@@ -107,3 +107,6 @@ __all__ = [
     "scan_dbase_comments",
     "strip_dbase_comments",
 ]
+
+# Stage 334: dBase TObject inheritance metadata
+from .class_model import DBaseClassError, DBaseClassInfo, DBaseClassRegistry, parse_dbase_class_metadata

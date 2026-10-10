@@ -75,6 +75,7 @@ class DBaseWfmControl:
 @dataclass
 class DBaseWfmForm:
     class_name: str
+    base_class: str = "FORM"
     properties: Dict[str, object] = field(default_factory=dict)
     declared_properties: Dict[str, object] = field(default_factory=dict)
     controls: List[DBaseWfmControl] = field(default_factory=list)
@@ -307,6 +308,9 @@ def parse_dbase_wfm(source: str, *, filename: str = "<WFM>") -> DBaseWfmForm:
         )
 
     model = DBaseWfmForm(class_name=class_name, source=text, filename=filename)
+    from .class_model import parse_dbase_class_metadata
+    model.class_registry = parse_dbase_class_metadata(text)
+    model.base_class = model.class_registry.get(model.class_name).parent
     for line_index, raw in enumerate(raw_lines[:class_start], 1):
         code = raw.split("//", 1)[0].strip()
         if not code or code.startswith("**") or code.startswith("/*"):

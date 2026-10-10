@@ -1219,6 +1219,12 @@ int g_last_applied_output_dark_mode = -1;
 // Queue vorher, damit deren Reihenfolge erhalten bleibt.
 QString g_pending_output_text;
 bool g_pending_output_flush_scheduled = false;
+// Stage 328: Keep BOTH refresh timers paused while the context menu is open.
+// The Win32 housekeeping timer continues (child cleanup still matters), but
+// its DEBUG-specific foreground operations are guarded separately.
+bool g_output_context_menu_active = false;
+QTimer *g_output_flush_timer = nullptr;
+QTimer *g_output_watchdog_timer = nullptr;  // owned by main()'s stack
 // Stage 320: Nach Programmstart ist das Debug-Fenster einmalig aktiv
 // vorzuziehen, bevor die gebuendelte Textausgabe in den QTimer geht.
 // Kein teures Raise fuer jedes der folgenden Textfragmente.
@@ -1332,6 +1338,10 @@ void apply_workstation_output_debug_theme(int mode)
 {
     if (mode >= 0 && mode <= 2)
         g_output_debug_theme_mode = mode;
+    // Do not repolish the QDialog while a QMenu is in its nested event loop.
+    // The latest mode is applied once the menu has been dismissed.
+    if (g_output_context_menu_active)
+        return;
 
     // Stage 319: Mit jeder dBase-/WFM-Ausgabe wird das gewaehlte Theme
     // erneut im DOW1-Paket uebermittelt. Das soll nicht pro Ausgabe
@@ -1354,6 +1364,41 @@ void workstation_theme_changed(bool darkMode)
 {
     Q_UNUSED(darkMode)
     apply_workstation_output_debug_theme(g_output_debug_theme_mode);
+}
+
+void flush_workstation_output_text();
+void ensure_workstation_output_dialog_visible();
+
+void workstation_debug_context_menu_state(bool active)
+{
+    g_output_context_menu_active = active;
+    if (active) {
+        // Stop the 500-ms Qt foreground watchdog and the coalesced output
+        // timer. Neither may move, raise or repaint the debug window while
+        // the popup is open (Qt QMenu::exec runs its own event loop).
+        if (g_output_watchdog_timer)
+            g_output_watchdog_timer->stop();
+        if (g_output_flush_timer)
+            g_output_flush_timer->stop();
+        g_pending_output_flush_scheduled = false;
+        return;
+    }
+
+    apply_workstation_output_debug_theme(-1);
+    if (g_output_watchdog_timer && !g_leave_started)
+        g_output_watchdog_timer->start();
+
+    if (!g_output_visibility_enabled) {
+        if (g_output_dialog)
+            g_output_dialog->hide();
+    } else if (g_output_dialog && !g_output_dialog->isVisible()) {
+        ensure_workstation_output_dialog_visible();
+    }
+    // Buffered text is only painted AFTER the menu action has completed.
+    if (g_output_flush_timer && !g_pending_output_text.isEmpty()) {
+        g_pending_output_flush_scheduled = true;
+        g_output_flush_timer->start(16);
+    }
 }
 
 void create_workstation_output_dialog()
@@ -1385,6 +1430,13 @@ void create_workstation_output_dialog()
     layout->setSpacing(0);
 
     g_output_edit = new D64DebugOutputTextEdit(g_output_dialog);
+    auto *debugEdit = static_cast<D64DebugOutputTextEdit *>(g_output_edit);
+    debugEdit->setContextMenuStateHandler(&workstation_debug_context_menu_state);
+    debugEdit->setDebugClearHandler([]() {
+        // Old, not yet rendered DOW1 packets must not be shown again after
+        // Bereinigen. Later packets remain ordinary live debug output.
+        g_pending_output_text.clear();
+    });
     g_output_edit->setObjectName(QStringLiteral("d64WorkstationOutput"));
     g_output_edit->setReadOnly(true);
     g_output_edit->setPlaceholderText(
@@ -1423,6 +1475,14 @@ void create_workstation_output_dialog()
     g_output_edit->document()->setMaximumBlockCount(500);
     g_output_edit->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     layout->addWidget(g_output_edit, 1);
+    // Reusable, cancellable 16-ms timer (unlike the old singleShot).
+    if (!g_output_flush_timer) {
+        g_output_flush_timer = new QTimer(QApplication::instance());
+        g_output_flush_timer->setSingleShot(true);
+        QObject::connect(g_output_flush_timer, &QTimer::timeout, []() {
+            flush_workstation_output_text();
+        });
+    }
     apply_workstation_output_debug_theme(g_output_debug_theme_mode);
 
     QRect workArea;
@@ -1522,6 +1582,11 @@ void ensure_workstation_output_dialog_on_screen()
 
 void ensure_workstation_output_dialog_visible()
 {
+    // Stage 328: Raising the parent Qt dialog steals focus from its popup.
+    // The Win32 500-ms watchdog also calls this function; keep it inert
+    // until QMenu::exec() and the chosen QAction have finished.
+    if (g_output_context_menu_active)
+        return;
     // Stage 318: Dieser Guard ist auch fuer den 500-ms-Watchdog und
     // alle alten Start-/Output-Pfade verbindlich.
     if (!g_output_visibility_enabled)
@@ -1619,6 +1684,8 @@ void start_child_standard_output_capture(
 void flush_workstation_output_text()
 {
     g_pending_output_flush_scheduled = false;
+    if (g_output_context_menu_active)
+        return; // preserve queued text until the menu has fully closed
     if (!g_output_edit || g_pending_output_text.isEmpty()) {
         g_pending_output_text.clear();
         return;
@@ -1661,12 +1728,15 @@ void append_workstation_output(const OutputMessage &message)
 
     if (message.debugVisibility >= 0) {
         // Reihenfolge garantieren: alle vorangegangenen Texte zuerst rendern.
-        flush_workstation_output_text();
+        if (!g_output_context_menu_active)
+            flush_workstation_output_text();
         g_output_visibility_enabled = message.debugVisibility != 0;
         if (g_output_visibility_enabled) {
             g_output_reveal_on_next_write = true;
-            ensure_workstation_output_dialog_visible();
-        } else {
+            if (!g_output_context_menu_active)
+                ensure_workstation_output_dialog_visible();
+        } else if (!g_output_context_menu_active) {
+            // Defer hiding until the menu action has finished.
             g_output_dialog->hide();
         }
         if (message.text.empty() && !message.newline)
@@ -1682,7 +1752,7 @@ void append_workstation_output(const OutputMessage &message)
     if (message.newline)
         g_pending_output_text += QLatin1Char('\n');
 
-    if (g_pending_output_text.isEmpty())
+    if (g_pending_output_text.isEmpty() || g_output_context_menu_active)
         return;
 
     // Stage 320: Bereits das ERSTE DOW1-Textpaket muss das QDialog zeigen,
@@ -1699,9 +1769,10 @@ void append_workstation_output(const OutputMessage &message)
         flush_workstation_output_text();
     } else if (!g_pending_output_flush_scheduled) {
         g_pending_output_flush_scheduled = true;
-        QTimer::singleShot(16, QApplication::instance(), []() {
+        if (g_output_flush_timer)
+            g_output_flush_timer->start(16);
+        else
             flush_workstation_output_text();
-        });
     }
 }
 
@@ -3223,6 +3294,10 @@ bool launch_program(const LaunchRequest &request)
             activationTimer->setInterval(50);
             QObject::connect(activationTimer, &QTimer::timeout,
                 QApplication::instance(), [activationTimer, pid, started]() {
+                // Never activate another top-level window while the user
+                // is choosing an action from the DEBUG popup.
+                if (g_output_context_menu_active)
+                    return;
                 // Qt-WFM kann seine eigene Workstation-Aktivierung bereits
                 // durchgefuehrt haben. Bei generischen Programmen wird das
                 // erste Hauptfenster weiterhin erkannt und aktiviert.
@@ -3826,7 +3901,8 @@ LRESULT CALLBACK runner_window_proc(
             // dem ersten Formularfenster entstehen. Deshalb alle 500 ms neue
             // Consolen der laufenden Kindprozesse entdecken und genau beim
             // ersten Auftauchen sichtbar machen.
-            discover_child_console_windows();
+            if (!g_output_context_menu_active)
+                discover_child_console_windows();
 
             // Stage 272: Erst NACH der Console-Behandlung den DEBUG-Dialog
             // nach oben holen. Beide Fenster koennen TOPMOST sein; in der
@@ -3990,6 +4066,7 @@ int main(int, char **)
     // bzw. versteckt, wird er wieder eingeblendet.
     QTimer outputDialogWatchdog;
     outputDialogWatchdog.setInterval(500);
+    g_output_watchdog_timer = &outputDialogWatchdog;
     QObject::connect(&outputDialogWatchdog, &QTimer::timeout, []() {
         if (!g_leave_started)
             ensure_workstation_output_dialog_visible();
@@ -4036,6 +4113,9 @@ int main(int, char **)
 
     begin_leave_once();
     flush_workstation_output_text();
+    g_output_watchdog_timer = nullptr;
+    if (g_output_flush_timer)
+        g_output_flush_timer->stop();
     if (g_output_dialog) {
         g_output_dialog->hide();
         delete g_output_dialog;

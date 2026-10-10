@@ -130,3 +130,5 @@ src/webserver/vectors/TTL_74xx_Erweiterung_390_bis_688_komplett.zip
 src/webserver/vectors/TTL_74xx_Erweiterung_90_bis_157_komplett.zip
 src/webserver/vectors/TTL_74xx_SVG_Paket_mit_Rotationen.zip
 src/runtime/win32/libasmjit.32.def
+src/examples/dbase/Unbenannt_4.txt
+src/examples/dbase/unbenannt_1.prg

@@ -485,6 +485,7 @@ try:
         QRadioButton,
         QScrollArea,
         QScrollBar,
+        QShortcut,
         QSlider,
         QSizePolicy,
         QSpinBox,
@@ -40560,6 +40561,11 @@ def _pe_import_specs_with_local_ordinals(
 
     for symbol, raw_spec in import_specs.items():
         dll, member = _pe_import_spec_parts(raw_spec)
+        # Stage 343: Sprach-Runtime nie nach Ordinal binden, auch nicht
+        # bei einer globalen Optimierung der PE-Importtabellen.
+        if str(dll).casefold() == "retro_speech.dll" and not isinstance(member, int):
+            result[str(symbol)] = (dll, member)
+            continue
         if isinstance(member, int):
             # Preserve Stage-213 fallback metadata when an already converted
             # #Ordinal import passes through another linker layer.
@@ -40709,6 +40715,14 @@ def rewrite_pe_assembly_imports_to_ordinals(
         member_value: object = (
             int(ordinal_text, 10) if ordinal_text.isdigit() else member
         )
+        # Stage 343: Die Retro-Speech-Runtime besitzt eine erweiterbare
+        # stdcall-C-ABI. Ihre Funktionsnamen sind stabil, die Export-Ordinale
+        # koennen sich bei jedem MinGW32-Neubuild verschieben. Sie bleiben
+        # deshalb selbst bei aktivierter Projektoption "Ordinalimporte" echte
+        # Import-by-Name-Eintraege. Vor allem darf eine alte DLL aus examples/
+        # die dBase-Kompilierung nicht mehr blockieren.
+        if dll.casefold() == "retro_speech.dll":
+            continue
         key = f"__d64_import_line_{index}"
         imports[key] = (dll, member_value)
         line_imports[index] = (key, symbol, member_value)
@@ -68149,9 +68163,12 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 self.views.setCurrentWidget(self.source_page)
             elif (
                 self.path is not None
+                and not self.language_override
                 and self.path.suffix.lower() in self.BINARY_EXTENSIONS
             ):
                 self.views.setCurrentWidget(self.hex_editor)
+            elif self.language_override == "dbase":
+                self.views.setCurrentWidget(self.source_page)
 
             layout.addWidget(self.views)
             layout.addWidget(self.prolog_build_progress)
@@ -69107,9 +69124,12 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.dbase_uses_debug_output = bool(visible)
 
         def configure_dbase_output_tabs(self, *, inspect_source: bool = True) -> None:
-            # Keine dBase-Ausgabetabs mehr in d64_dism. "Hinweise" bleibt wie
-            # bei den anderen Compilersprachen sichtbar.
-            self._set_tab_visible_for_widget(self.hints_editor, True)
+            # Stage 337: dBase ist reiner Quelltexteditor. Hex und Hinweise
+            # gehoeren zu den C64-/generischen Dokumentansichten.
+            self._set_tab_visible_for_widget(self.hints_editor, not self.is_dbase_document)
+            self._set_tab_visible_for_widget(self.hex_editor, not self.is_dbase_document)
+            if self.is_dbase_document and self.views.currentWidget() in (self.hints_editor, self.hex_editor):
+                self.views.setCurrentWidget(self.source_page)
 
         def clear_dbase_output(self) -> None:
             return
@@ -69198,6 +69218,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 self.raw_editor.setFocus()
             elif (
                 self.path is not None
+                and not self.language_override
                 and self.path.suffix.lower() in self.BINARY_EXTENSIONS
             ):
                 self.views.setCurrentWidget(self.hex_editor)
@@ -71903,12 +71924,17 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             painter.end()
         return QIcon(pix)
 
+    from d64_custom_brush import D64CustomBrushDialog, pattern_pixmap as _d64_custom_pattern_pixmap, validated_pattern as _d64_custom_validated_pattern
+    from d64_brush_catalog import load_catalog as _brush_load, register_pattern as _brush_register, library_path as _brush_path
+    DBASE_FORM_CUSTOM_STYLE = len(DBASE_FORM_BRUSH_PATTERNS) + 1
+
     def _dbase_form_pattern_pixmap(
         style_index: int,
         background,
         foreground,
         cut_width: int = 100,
         cut_height: int = 100,
+        custom_data=None,
     ) -> QPixmap:
         """Erzeugt eine recolorierbare Pattern-Kachel aus der eingebetteten Maske.
 
@@ -71918,6 +71944,11 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
         die ursprüngliche Kachelgröße skaliert.
         """
         index = int(style_index)
+        if index == DBASE_FORM_CUSTOM_STYLE and custom_data is not None:
+            try:
+                return _d64_custom_pattern_pixmap(custom_data)
+            except (ValueError, KeyError, TypeError):
+                pass
         bg = QColor(background)
         fg = QColor(foreground)
         cut_w = max(10, min(100, int(cut_width)))
@@ -72166,6 +72197,10 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             self.brush_gradient = "none"
             self.brush_cut_width = 100
             self.brush_cut_height = 100
+            self.brush_custom_width = 16
+            self.brush_custom_height = 16
+            self.brush_custom_file = ""
+            self.brush_custom_data = None
             self.background_color = QColor(self.DEFAULT_CLIENT_COLOR)
             self.foreground_color = QColor("#303030")
 
@@ -72496,6 +72531,10 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             self.brush_gradient = "none"
             self.brush_cut_width = 100
             self.brush_cut_height = 100
+            self.brush_custom_width = 16
+            self.brush_custom_height = 16
+            self.brush_custom_file = ""
+            self.brush_custom_data = None
             self.background_color = QColor(self.DEFAULT_CLIENT_COLOR)
             self.foreground_color = QColor("#303030")
             app_font = QFont(QApplication.font())
@@ -72561,7 +72600,7 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             self._property_changed()
 
         def set_brush_style(self, style_index: int) -> None:
-            self.brush_style = max(0, min(int(style_index), len(DBASE_FORM_BRUSH_PATTERNS)))
+            self.brush_style = max(0, min(int(style_index), DBASE_FORM_CUSTOM_STYLE))
             self._property_changed()
 
         def set_brush_cut_width(self, value: int) -> None:
@@ -72828,6 +72867,7 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                     client_brush = QBrush(_dbase_form_pattern_pixmap(
                         self.brush_style, bg, fg,
                         self.brush_cut_width, self.brush_cut_height,
+                        getattr(self, "brush_custom_data", None),
                     ))
                 else:
                     client_brush = QBrush(bg)
@@ -72923,6 +72963,94 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             self.form_window_item.set_form_size(
                 self.wfm_form_width, self.wfm_form_height, constrain_children=False
             )
+
+            # Stage 333: bounded full-form undo/redo snapshots.
+            self._history_states = []
+            self._history_index = -1
+            self._history_restoring = False
+            self._history_timer = QTimer(self)
+            self._history_timer.setInterval(120)
+            self._history_timer.timeout.connect(self._history_capture)
+            self._history_timer.start()
+
+        def _history_snapshot(self):
+            form = self.form_window_item
+            snapshot = self._snapshot_control(form)
+            if snapshot is None:
+                return None
+            return {
+                "form": copy.deepcopy(snapshot),
+                "counters": dict(self._component_counters),
+                "class_name": str(self.wfm_class_name),
+                "form_geometry": [int(self.wfm_form_left), int(self.wfm_form_top),
+                                  int(self.wfm_form_width), int(self.wfm_form_height)],
+            }
+
+        def _history_capture(self):
+            if self._history_restoring:
+                return
+            state = self._history_snapshot()
+            if state is None:
+                return
+            if self._history_index >= 0 and state == self._history_states[self._history_index]:
+                return
+            del self._history_states[self._history_index + 1:]
+            self._history_states.append(state)
+            if len(self._history_states) > 64:
+                self._history_states.pop(0)
+            self._history_index = len(self._history_states) - 1
+
+        def _history_restore(self, state):
+            self._history_restoring = True
+            try:
+                self.clearSelection()
+                root = self.form_window_item
+                # Do not call delete_control: it removes source event methods.
+                for child in list(root.childItems()):
+                    if isinstance(child, DBaseFormControlItem):
+                        self.removeItem(child)
+                payload = copy.deepcopy(state["form"])
+                self._apply_snapshot_properties(root, payload)
+                for child_payload in payload.get("children", []):
+                    geo = child_payload.get("geometry") or {}
+                    point = root.mapToScene(QPointF(float(geo.get("left", 0)),
+                                                     float(geo.get("top", 0))))
+                    self._paste_snapshot(child_payload, point)
+                self._component_counters = dict(state["counters"])
+                self.wfm_class_name = state["class_name"]
+                (self.wfm_form_left, self.wfm_form_top,
+                 self.wfm_form_width, self.wfm_form_height) = state["form_geometry"]
+                self.clearSelection()
+                root.setSelected(True)
+                host = self.parent()
+                if host is not None:
+                    if hasattr(host, "dbase_form_property_panel") and host.dbase_form_property_panel:
+                        host.dbase_form_property_panel._selection_changed()
+                    if hasattr(host, "_sync_dbase_form_source"):
+                        host._sync_dbase_form_source()
+                    host.dbase_form_modified = True
+            finally:
+                self._history_restoring = False
+
+        def history_undo(self):
+            self._history_capture()
+            if self._history_index <= 0:
+                return False
+            self._history_index -= 1
+            self._history_restore(self._history_states[self._history_index])
+            return True
+
+        def history_redo(self):
+            if self._history_index >= len(self._history_states) - 1:
+                return False
+            self._history_index += 1
+            self._history_restore(self._history_states[self._history_index])
+            return True
+
+        def history_reset(self):
+            self._history_states.clear()
+            self._history_index = -1
+            self._history_capture()
 
         def drawBackground(self, painter: QPainter, rect: QRectF) -> None:
             # Die äußere Arbeitsfläche bleibt bewusst dunkler als die
@@ -73088,6 +73216,11 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                     getattr(item, "foreground_color", QColor("#000000")), "#FF000000"
                 ),
                 "brush_style": int(getattr(item, "brush_style", 0)),
+                "brush_custom_width": int(getattr(item, "brush_custom_width", 16)),
+                "brush_custom_height": int(getattr(item, "brush_custom_height", 16)),
+                "brush_custom_file": str(getattr(item, "brush_custom_file", "")),
+                "brush_custom_data": getattr(item, "brush_custom_data", None),
+                "brush_catalog_id": getattr(item, "brush_catalog_id", ""),
                 "brush_gradient": str(getattr(item, "brush_gradient", "none")),
                 "brush_cut_width": int(getattr(item, "brush_cut_width", 100)),
                 "brush_cut_height": int(getattr(item, "brush_cut_height", 100)),
@@ -73157,6 +73290,11 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                 item.set_component_name(copied_name)
             item.set_background_color(QColor(payload.get("background", "#FFFFFF")))
             item.set_foreground_color(QColor(payload.get("foreground", "#000000")))
+            item.brush_custom_width = int(payload.get("brush_custom_width", 16))
+            item.brush_custom_height = int(payload.get("brush_custom_height", 16))
+            item.brush_custom_file = str(payload.get("brush_custom_file", ""))
+            item.brush_custom_data = payload.get("brush_custom_data")
+            item.brush_catalog_id = payload.get("brush_catalog_id", "")
             item.set_brush_style(int(payload.get("brush_style", 0)))
             if hasattr(item, "set_brush_gradient"):
                 item.set_brush_gradient(str(payload.get("brush_gradient", "none")))
@@ -73552,6 +73690,10 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             self.brush_gradient = "none"
             self.brush_cut_width = 100
             self.brush_cut_height = 100
+            self.brush_custom_width = 16
+            self.brush_custom_height = 16
+            self.brush_custom_file = ""
+            self.brush_custom_data = None
 
             self.control_widget = self._create_control_widget()
             self.control_widget.setObjectName(self.component_name)
@@ -73809,6 +73951,7 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                     tile = _dbase_form_pattern_pixmap(
                         self.brush_style, self.background_color, self.foreground_color,
                         self.brush_cut_width, self.brush_cut_height,
+                        getattr(self, "brush_custom_data", None),
                     )
                     painter.fillRect(self.boundingRect(), QBrush(tile))
 
@@ -74159,7 +74302,8 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                     palette.setBrush(role, gradient_brush)
             elif int(self.brush_style) > 0:
                 texture = QBrush(_dbase_form_pattern_pixmap(
-                    self.brush_style, bg, fg, self.brush_cut_width, self.brush_cut_height
+                    self.brush_style, bg, fg, self.brush_cut_width, self.brush_cut_height,
+                    getattr(self, "brush_custom_data", None)
                 ))
                 for role in (QPalette.Window, QPalette.Button, QPalette.Base, QPalette.AlternateBase):
                     palette.setBrush(role, texture)
@@ -74228,7 +74372,7 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             return True
 
         def set_brush_style(self, style_index: int) -> None:
-            value = max(0, min(int(style_index), len(DBASE_FORM_BRUSH_PATTERNS)))
+            value = max(0, min(int(style_index), DBASE_FORM_CUSTOM_STYLE))
             if value == int(self.brush_style):
                 return
             previous = int(self.brush_style)
@@ -74727,6 +74871,9 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             self.brush_style_combo.addItem("Ohne Muster", 0)
             for style_index, (style_name, _encoded) in enumerate(DBASE_FORM_BRUSH_PATTERNS, 1):
                 self.brush_style_combo.addItem(style_name, style_index)
+            self.brush_style_combo.addItem("Custom", DBASE_FORM_CUSTOM_STYLE)
+            self._brush_catalog_entries = []
+            self._reload_brush_catalog()
             self.property_tree.setItemWidget(self.style_root, 1, self.brush_style_combo)
             self._property_widgets.append(self.brush_style_combo)
 
@@ -74745,6 +74892,24 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             self.brush_cut_height_spin.setSuffix(" %")
             self.brush_cut_height_spin.setValue(100)
             self._add_widget_property("Cut Height", self.brush_cut_height_spin, parent_item=self.style_root)
+
+            self.brush_custom_width_spin = QSpinBox(self.property_tree)
+            self.brush_custom_width_spin.setObjectName("dbase_form_brush_custom_width")
+            self.brush_custom_width_spin.setRange(1, 128)
+            self.brush_custom_width_spin.setValue(16)
+            self._add_widget_property("Cust. Width", self.brush_custom_width_spin, parent_item=self.style_root)
+            self.brush_custom_height_spin = QSpinBox(self.property_tree)
+            self.brush_custom_height_spin.setObjectName("dbase_form_brush_custom_height")
+            self.brush_custom_height_spin.setRange(1, 128)
+            self.brush_custom_height_spin.setValue(16)
+            self._add_widget_property("Cust. Height", self.brush_custom_height_spin, parent_item=self.style_root)
+            self.brush_custom_file_edit = QLineEdit(self.property_tree)
+            self.brush_custom_file_edit.setObjectName("dbase_form_brush_custom_file")
+            self.brush_custom_file_edit.setReadOnly(True)
+            self.brush_custom_file_edit.setPlaceholderText("Keine JSON-Datei")
+            self._add_widget_property("Cust. File", self.brush_custom_file_edit, parent_item=self.style_root)
+            self.brush_custom_width_spin.valueChanged.connect(self._brush_custom_dimension_changed)
+            self.brush_custom_height_spin.valueChanged.connect(self._brush_custom_dimension_changed)
 
             self._style_brush_root()
             self._refresh_brush_style_icons(QColor("#000000"), QColor("#FFFFFF"), 100, 100)
@@ -75176,6 +75341,22 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                 f"QPushButton:hover {{ border:1px solid {'#FFFF00' if dark_mode else '#000080'}; }}"
             )
 
+        def _reload_brush_catalog(self):
+            combo = self.brush_style_combo
+            while combo.count() > DBASE_FORM_CUSTOM_STYLE + 1:
+                combo.removeItem(combo.count() - 1)
+            try:
+                self._brush_catalog_entries = _brush_load()
+            except (OSError, ValueError, TypeError) as exc:
+                self._brush_catalog_entries = []
+                print(f"BRUSH: brush.json: {exc}")
+            for entry in self._brush_catalog_entries:
+                index = combo.count()
+                combo.addItem(f"{entry['name']} ({entry['width']}×{entry['height']})", index)
+                combo.setItemData(index, entry['id'], Qt.UserRole + 1)
+                combo.setItemIcon(index, QIcon(_d64_custom_pattern_pixmap(entry).scaled(
+                    72, 36, Qt.KeepAspectRatio, Qt.FastTransformation)))
+
         def _refresh_brush_style_icons(
             self,
             background=None,
@@ -75194,6 +75375,14 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             solid = QPixmap(72, 36)
             solid.fill(bg)
             self.brush_style_combo.setItemIcon(0, QIcon(solid))
+            custom_item = getattr(self, "_selected_item", None)
+            if custom_item and getattr(custom_item, "brush_custom_data", None):
+                try:
+                    thumbnail = _d64_custom_pattern_pixmap(custom_item.brush_custom_data).scaled(
+                        72, 36, Qt.KeepAspectRatio, Qt.FastTransformation)
+                    self.brush_style_combo.setItemIcon(DBASE_FORM_CUSTOM_STYLE, QIcon(thumbnail))
+                except (TypeError, ValueError, KeyError):
+                    pass
             for style_index in range(1, len(DBASE_FORM_BRUSH_PATTERNS) + 1):
                 self.brush_style_combo.setItemIcon(
                     style_index,
@@ -75783,7 +75972,16 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                 self._refresh_brush_gradient_icons(item.background_color, item.foreground_color)
                 gradient_index = self.brush_gradient_combo.findData(str(getattr(item,"brush_gradient","none")))
                 self.brush_gradient_combo.setCurrentIndex(gradient_index if gradient_index >= 0 else 0)
-                self.brush_style_combo.setCurrentIndex(int(item.brush_style))
+                _match = -1
+                for _idx in range(DBASE_FORM_CUSTOM_STYLE + 1, self.brush_style_combo.count()):
+                    if self.brush_style_combo.itemData(_idx, Qt.UserRole + 1) == getattr(item, 'brush_catalog_id', None):
+                        _match = _idx
+                        break
+                self.brush_style_combo.setCurrentIndex(
+                    _match if _match >= 0 else int(item.brush_style))
+                self.brush_custom_width_spin.setValue(int(getattr(item, "brush_custom_width", 16)))
+                self.brush_custom_height_spin.setValue(int(getattr(item, "brush_custom_height", 16)))
+                self.brush_custom_file_edit.setText(str(getattr(item, "brush_custom_file", "")))
                 index = self.font_combo.findText(item.font_family, Qt.MatchFixedString)
                 if index >= 0:
                     self.font_combo.setCurrentIndex(index)
@@ -75890,7 +76088,96 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                 style_index = int(style_index)
             except (TypeError, ValueError):
                 style_index = int(combo_index)
+            if style_index > DBASE_FORM_CUSTOM_STYLE:
+                entry_id = self.brush_style_combo.itemData(int(combo_index), Qt.UserRole + 1)
+                entry = next((e for e in self._brush_catalog_entries if e['id'] == entry_id), None)
+                if entry is None:
+                    return
+                item = self._selected_item
+                item.brush_custom_data = _d64_custom_validated_pattern(entry)
+                item.brush_custom_width = entry['width']
+                item.brush_custom_height = entry['height']
+                item.brush_custom_file = str(_brush_path())
+                item.brush_catalog_id = entry_id
+                item.set_brush_gradient('none')
+                item.set_brush_style(DBASE_FORM_CUSTOM_STYLE)
+                item._apply_widget_style()
+                item.update()
+                self._syncing = True
+                try:
+                    self.brush_custom_width_spin.setValue(entry['width'])
+                    self.brush_custom_height_spin.setValue(entry['height'])
+                    self.brush_custom_file_edit.setText(str(_brush_path()))
+                finally:
+                    self._syncing = False
+                return
+            if style_index == DBASE_FORM_CUSTOM_STYLE:
+                item = self._selected_item
+                editor = D64CustomBrushDialog(
+                    getattr(item, "brush_custom_width", 16),
+                    getattr(item, "brush_custom_height", 16),
+                    getattr(item, "brush_custom_data", None),
+                    getattr(item, "brush_custom_file", ""), self,
+                )
+                if editor.exec_() != QDialog.Accepted:
+                    self._syncing = True
+                    try:
+                        previous = self.brush_style_combo.findData(int(item.brush_style))
+                        self.brush_style_combo.setCurrentIndex(max(0, previous))
+                    finally:
+                        self._syncing = False
+                    return
+                item.brush_custom_width = editor.data["width"]
+                item.brush_custom_height = editor.data["height"]
+                item.brush_custom_file = editor.file_path
+                item.brush_custom_data = editor.data
+                try:
+                    _record = _brush_register(Path(editor.file_path).stem or 'Custom', editor.data,
+                                              identifier=getattr(item, 'brush_catalog_id', None))
+                    item.brush_catalog_id = _record['id']
+                    self._syncing = True
+                    try:
+                        self._reload_brush_catalog()
+                    finally:
+                        self._syncing = False
+                except (OSError, ValueError, TypeError) as exc:
+                    print(f"BRUSH: Katalog konnte nicht gespeichert werden: {exc}")
+                if hasattr(item, "set_brush_gradient"):
+                    item.set_brush_gradient("none")
+                self._syncing = True
+                try:
+                    self.brush_custom_width_spin.setValue(item.brush_custom_width)
+                    self.brush_custom_height_spin.setValue(item.brush_custom_height)
+                    self.brush_custom_file_edit.setText(item.brush_custom_file)
+                finally:
+                    self._syncing = False
             self._selected_item.set_brush_style(style_index)
+            if style_index == DBASE_FORM_CUSTOM_STYLE:
+                if hasattr(self._selected_item, "_apply_widget_style"):
+                    self._selected_item._apply_widget_style()
+                self._selected_item.update()
+
+        def _brush_custom_dimension_changed(self, _value: int) -> None:
+            if self._syncing or self._selected_item is None:
+                return
+            item = self._selected_item
+            width = self.brush_custom_width_spin.value()
+            height = self.brush_custom_height_spin.value()
+            previous = getattr(item, "brush_custom_data", None)
+            from d64_custom_brush import empty_pattern
+            result = empty_pattern(width, height)
+            if previous:
+                result["palette"] = list(previous["palette"])
+                for y in range(min(height, previous["height"])):
+                    for x in range(min(width, previous["width"])):
+                        result["pixels"][y][x] = previous["pixels"][y][x]
+            item.brush_custom_data = result
+            item.brush_custom_width = width
+            item.brush_custom_height = height
+            if hasattr(item, "_apply_widget_style"):
+                item._apply_widget_style()
+            if hasattr(item, "update"):
+                item.update()
 
         def _brush_cut_width_changed(self, value: int) -> None:
             if self._syncing or self._selected_item is None:
@@ -106548,6 +106835,15 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             if button1 is not None:
                 button1.setSelected(True)
                 button1.setFocus(Qt.OtherFocusReason)
+            scene.history_reset()
+
+            # Only active in the designer and its properties, not source editors.
+            for shortcut_parent in (view, property_panel):
+                for key, callback in (("Ctrl+Z", scene.history_undo),
+                                      ("Ctrl+Y", scene.history_redo)):
+                    shortcut = QShortcut(QKeySequence(key), shortcut_parent)
+                    shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+                    shortcut.activated.connect(callback)
 
             property_dock = QDockWidget("dBase Formular - Eigenschaften", self)
             property_dock.setObjectName("dbase_form_property_dock")
@@ -108855,6 +109151,12 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 destination = memory_slot(destination_name)
                 expression_text = str(expression_text or "").strip()
 
+                if re.match(r"(?i)^is(?:upper|lower)\s*\(", expression_text):
+                    case_expr = parse_wfm_condition(expression_text)
+                    emit_wfm_char_case_slot(out, case_expr, destination)
+                    runtime_memory_kinds[destination_key] = "integer"
+                    return True
+
                 if re.match(r"(?i)^iskeyboard\s*\(", expression_text):
                     if not re.fullmatch(r"(?i)iskeyboard\s*\(\s*\)", expression_text):
                         raise AssemblerError(
@@ -109411,8 +109713,191 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                         f"{filename}: WFM-Bedingung '{expression}': {exc}"
                     ) from exc
 
+            # Stage 327: local WFM FUNCTION parameters that represent an
+            # explicitly length-delimited UTF-8 character/string.  These are
+            # separate from form-wide STORE variables and never rely on NUL.
+            wfm_function_text_slots = {}
+
+            def wfm_function_text_slot(method):
+                params = wfm_method_parameters(method)
+                if len(params) != 1:
+                    raise AssemblerError(
+                        f"{filename}: WFM-Funktion {method.name}: "
+                        "dieser Text-Parameterpfad erwartet genau einen Parameter."
+                    )
+                key = method.name.casefold()
+                if key not in wfm_function_text_slots:
+                    wfm_function_text_slots[key] = memory_slot(
+                        "__wfm_arg_" + method.name + "_" + params[0]
+                    )
+                return wfm_function_text_slots[key]
+
+            def current_wfm_parameter_text_slot(name):
+                # `procedure` is the method currently being emitted.
+                current = method_map.get(str(procedure).casefold())
+                if current is None or str(getattr(current, 'kind', '')).casefold() != 'function':
+                    return None
+                params = wfm_method_parameters(current)
+                if len(params) == 1 and params[0].casefold() == name.casefold():
+                    return wfm_function_text_slot(current)
+                return None
+
+            def emit_wfm_function_numeric(out, expression):
+                """Call a WFM FUNCTION from IF and push its integer BOOL onto x87.
+
+                Parameter passing for one UTF-8 text value is (pointer, byte
+                length); the callee returns its numeric result in EAX.  A
+                function without parameters follows the existing WFM ABI.
+                """
+                if not isinstance(expression, DBaseCallExpression):
+                    return False
+                method = method_map.get(expression.name.casefold())
+                if method is None:
+                    raise AssemblerError(
+                        f"{filename}: WFM-Funktion '{expression.name}' nicht gefunden. "
+                        "Funktionen in einem WFM-IF muessen in derselben "
+                        "FORM-Klasse definiert sein."
+                    )
+                if str(getattr(method, 'kind', '')).casefold() != 'function':
+                    raise AssemblerError(
+                        f"{filename}: WFM-IF: '{expression.name}' ist "
+                        "eine PROCEDURE, keine FUNCTION."
+                    )
+                params = wfm_method_parameters(method)
+                if len(expression.arguments) != len(params):
+                    raise AssemblerError(
+                        f"{filename}: WFM-Funktion {method.name} erwartet "
+                        f"{len(params)} Parameter, erhalten: {len(expression.arguments)}."
+                    )
+                if len(params) > 1:
+                    raise AssemblerError(
+                        f"{filename}: WFM-Funktion {method.name}: "
+                        "IF-Aufrufe mit mehr als einem Parameter sind "
+                        "im WFM-Assembler noch nicht implementiert."
+                    )
+                if params:
+                    arg = expression.arguments[0]
+                    if isinstance(arg, DBaseLiteralExpression) and arg.value_type in ('char', 'string'):
+                        name, size = text_label(str(arg.value))
+                        if is64:
+                            out.extend([f'    mov rcx, {name}', f'    mov edx, {size}'])
+                        else:
+                            out.extend([f'    push {size}', f'    push {name}'])
+                    elif isinstance(arg, DBaseIdentifierExpression):
+                        source = current_wfm_parameter_text_slot(arg.name)
+                        if source is None:
+                            source = memory_slot(arg.name)
+                            key = arg.name.casefold()
+                            if runtime_memory_kinds.get(key) in ('integer', 'float', 'object'):
+                                raise AssemblerError(
+                                    f"{filename}: {method.name}(...) erwartet einen Textwert: {arg.name}."
+                                )
+                        valid = wfm_flow_label('arg_is_text')
+                        ready = wfm_flow_label('arg_ready')
+                        out.append(f'    cmp dword ptr [{memory_type_label(source)}], {WFM_VALUE_STRING}')
+                        out.append(f'    je {valid}')
+                        if is64:
+                            out.extend(['    xor ecx, ecx', '    xor edx, edx'])
+                        else:
+                            out.extend(['    push 0', '    push 0'])
+                        out.extend([f'    jmp {ready}', f'{valid}:'])
+                        if is64:
+                            out.extend([
+                                f'    mov rcx, qword ptr [{memory_pointer_label(source)}]',
+                                f'    mov edx, dword ptr [{memory_length_label(source)}]',
+                            ])
+                        else:
+                            out.extend([
+                                f'    push dword ptr [{memory_length_label(source)}]',
+                                f'    push dword ptr [{memory_pointer_label(source)}]',
+                            ])
+                        out.append(f'{ready}:')
+                    else:
+                        raise AssemblerError(
+                            f"{filename}: {method.name}(...) erwartet ein "
+                            "Zeichenliteral oder eine WFM-Textvariable."
+                        )
+                out.append(f'    call {procedure_label(method.name)}')
+                if params and not is64:
+                    out.append('    add esp, 8')
+                # The callee returns EAX=0/1; the IF comparison uses x87.
+                out.extend([
+                    '    mov dword ptr [__dbase_temp_number], eax',
+                    '    fild dword ptr [__dbase_temp_number]',
+                ])
+                return True
+
+            def emit_wfm_char_case_numeric(out, node):
+                """Stage 326: ISUPPER/ISLOWER in WFM-Eventcode (UTF-8-Slots).
+
+                WFM-Strings sind im Gegensatz zu PRG-Slots UTF-8-kodiert.
+                Die gemeinsamen Character-Praedikate decodieren hier einen
+                einzelnen UTF-8-Codepoint, statt Byte-Laenge 1 zu verlangen.
+                """
+                from d64dbase.compiler import (
+                    DBaseCallExpression, DBaseLiteralExpression,
+                    DBaseIdentifierExpression,
+                )
+                from d64dbase.char_case import emit_char_case_check
+                if not isinstance(node, DBaseCallExpression) or node.name.casefold() not in {"isupper", "islower"}:
+                    return False
+                name = node.name.upper()
+                if len(node.arguments) != 1:
+                    raise AssemblerError(f"{filename}: {name}(...) erwartet genau ein Zeichen.")
+                argument = node.arguments[0]
+                if isinstance(argument, DBaseLiteralExpression):
+                    if argument.value_type not in {"char", "string"}:
+                        raise AssemblerError(f"{filename}: {name}(...) erwartet Char/String.")
+                    slot = memory_slot(wfm_flow_label("char_case_value"))
+                    label, length = console_text_label(str(argument.value))
+                    emit_wfm_string_payload(out, slot, label, length)
+                elif isinstance(argument, DBaseIdentifierExpression):
+                    key = argument.name.casefold()
+                    kind = runtime_memory_kinds.get(key)
+                    if kind in {"integer", "float", "object"}:
+                        raise AssemblerError(f"{filename}: {name}(...) erwartet Char/String.")
+                    slot = current_wfm_parameter_text_slot(argument.name)
+                    if slot is None:
+                        slot = memory_slot(argument.name)
+                    # Ein nicht initialisierter/anders typisierter Variantwert
+                    # darf keinesfalls als Textpointer gelesen werden.
+                    valid = wfm_flow_label("char_case_valid")
+                    end = wfm_flow_label("char_case_end")
+                    out.extend([
+                        f"    cmp dword ptr [{slot}_type], {WFM_VALUE_STRING}",
+                        f"    je {valid}",
+                        "    fldz",
+                        f"    jmp {end}",
+                        f"{valid}:",
+                    ])
+                else:
+                    raise AssemblerError(
+                        f"{filename}: {name}(...) erwartet ein Zeichenliteral "
+                        "oder eine WFM-Textvariable."
+                    )
+                out.extend(emit_char_case_check(
+                    slot, is64=is64, label_prefix=wfm_flow_label(name.casefold()),
+                    upper=(name == "ISUPPER"), encoding="utf8",
+                ))
+                if isinstance(argument, DBaseIdentifierExpression):
+                    out.append(f"{end}:")
+                return True
+
+            def emit_wfm_char_case_slot(out, node, destination):
+                if not emit_wfm_char_case_numeric(out, node):
+                    return False
+                out.extend([
+                    f"    fstp qword ptr [{memory_number_label(destination)}]",
+                    f"    mov dword ptr [{memory_type_label(destination)}], {WFM_VALUE_INTEGER}",
+                    f"    mov dword ptr [{memory_length_label(destination)}], 0",
+                    f"    mov {ptr} ptr [{memory_pointer_label(destination)}], 0",
+                ])
+                return True
+
             def emit_wfm_numeric_condition_value(out, node):
                 """Laesst exakt einen numerischen x87-Wert in ST(0)."""
+                if emit_wfm_char_case_numeric(out, node):
+                    return
                 if isinstance(node, DBaseCallExpression) and node.name.casefold() == "iskeyboard":
                     if node.arguments:
                         raise AssemblerError(
@@ -109426,6 +109911,9 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                             f"{filename}: ISMOUSE() erwartet keine Parameter."
                         )
                     emit_wfm_ismouse_numeric(out)
+                    return
+                if isinstance(node, DBaseCallExpression):
+                    emit_wfm_function_numeric(out, node)
                     return
                 if isinstance(node, DBaseLiteralExpression) and node.value_type == 'number':
                     out.append(f"    fld qword ptr [{number_constant(node.value)}]")
@@ -109573,6 +110061,35 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                         callback_lines.extend([
                             f"    mov eax, dword ptr [esp+{4 + parameter_index * 4}]",
                             f"    mov dword ptr [{slot_name}], eax",
+                        ])
+
+                # FUNCTION f(text): the WFM expression caller passes a pointer
+                # plus an explicit UTF-8 byte count.  Materialize a typed slot
+                # so RETURN ISLOWER(text) / ISUPPER(text) can use the existing
+                # UTF-8 predicate, without reading an untyped ABI pointer.
+                if (
+                    str(getattr(method, 'kind', '')).casefold() == 'function'
+                    and len(method_parameters) == 1
+                ):
+                    argument_slot = wfm_function_text_slot(method)
+                    # Pointer is already saved in the legacy parameter slot;
+                    # EDX/[esp+8] still contains the byte length here.
+                    param_ptr = parameter_slot(procedure, method_parameters[0])
+                    callback_lines.extend([
+                        f'    mov dword ptr [{memory_type_label(argument_slot)}], {WFM_VALUE_STRING}',
+                    ])
+                    if is64:
+                        callback_lines.extend([
+                            f'    mov rax, qword ptr [{param_ptr}]',
+                            f'    mov qword ptr [{memory_pointer_label(argument_slot)}], rax',
+                            f'    mov dword ptr [{memory_length_label(argument_slot)}], edx',
+                        ])
+                    else:
+                        callback_lines.extend([
+                            f'    mov eax, dword ptr [{param_ptr}]',
+                            f'    mov dword ptr [{memory_pointer_label(argument_slot)}], eax',
+                            '    mov eax, dword ptr [esp+8]',
+                            f'    mov dword ptr [{memory_length_label(argument_slot)}], eax',
                         ])
 
                 body_lines = list(getattr(method, "body", []) or [])
@@ -109782,13 +110299,24 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                             elif return_expr.casefold() in {".f.", "false"}:
                                 value = 0
 
+                            if value is None and re.match(r"(?i)^is(?:upper|lower)\s*\(", return_expr):
+                                case_expr = parse_wfm_condition(return_expr)
+                                emit_wfm_char_case_numeric(callback_lines, case_expr)
+                                callback_lines.extend([
+                                    "    fistp dword ptr [__dbase_temp_number]",
+                                    "    mov eax, dword ptr [__dbase_temp_number]",
+                                    f"    jmp {procedure_exit_label}",
+                                ])
+                                continue
                             if value is None:
-                                raise AssemblerError(
-                                    f"{filename}: WFM-Prozedur {procedure}: "
-                                    "RETURN-Ausdruck noch nicht als "
-                                    "Event-Assembler implementiert: "
-                                    + return_expr
-                                )
+                                return_node = parse_wfm_condition(return_expr)
+                                emit_wfm_numeric_condition_value(callback_lines, return_node)
+                                callback_lines.extend([
+                                    "    fistp dword ptr [__dbase_temp_number]",
+                                    "    mov eax, dword ptr [__dbase_temp_number]",
+                                    f"    jmp {procedure_exit_label}",
+                                ])
+                                continue
                             callback_lines.append(f"    mov eax, {value}")
                         callback_lines.append(f"    jmp {procedure_exit_label}")
                         continue
@@ -109803,6 +110331,15 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     )
                     if print_match:
                         print_expression = str(print_match.group(2) or "").strip()
+                        if re.match(r"(?i)^is(?:upper|lower)\s*\(", print_expression):
+                            case_expr = parse_wfm_condition(print_expression)
+                            print_slot = memory_slot(wfm_flow_label("case_print"))
+                            emit_wfm_char_case_slot(callback_lines, case_expr, print_slot)
+                            emit_wfm_memory_print(
+                                callback_lines, print_slot, statement,
+                                print_match.group(1) != "??",
+                            )
+                            continue
                         if re.match(r"(?i)^iskeyboard\s*\(", print_expression):
                             if not re.fullmatch(r"(?i)iskeyboard\s*\(\s*\)", print_expression):
                                 raise AssemblerError(
@@ -110845,6 +111382,29 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     item.set_brush_style(int(pattern))
                 except (TypeError, ValueError):
                     pass
+            custom_file = self._wfm_prop_ci(props, "BrushCustomFile", None)
+            custom_width = self._wfm_prop_ci(props, "BrushCustomWidth", None)
+            custom_height = self._wfm_prop_ci(props, "BrushCustomHeight", None)
+            item.brush_catalog_id = str(self._wfm_prop_ci(props, "BrushCustomId", "") or "")
+            if custom_width is not None:
+                item.brush_custom_width = max(1, min(128, int(custom_width)))
+            if custom_height is not None:
+                item.brush_custom_height = max(1, min(128, int(custom_height)))
+            if custom_file:
+                item.brush_custom_file = str(custom_file)
+                try:
+                    from pathlib import Path as _CustomPath
+                    import json as _custom_json
+                    _loaded = _custom_json.loads(_CustomPath(item.brush_custom_file).read_text(encoding="utf-8"))
+                    if isinstance(_loaded, dict) and _loaded.get('format') == 'd64-brush-library-v1':
+                        _entry = next((e for e in _loaded.get('patterns', [])
+                                       if e.get('id') == item.brush_catalog_id), None)
+                        if _entry:
+                            item.brush_custom_data = _d64_custom_validated_pattern(_entry)
+                    else:
+                        item.brush_custom_data = _d64_custom_validated_pattern(_loaded)
+                except (OSError, ValueError, KeyError, TypeError):
+                    pass
             cut_width = self._wfm_prop_ci(props, "BrushCutWidth", None)
             cut_height = self._wfm_prop_ci(props, "BrushCutHeight", None)
             if cut_width is not None and hasattr(item, "set_brush_cut_width"):
@@ -111107,6 +111667,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 # deren Header und Methoden zurückgemergt werden.
                 self.dbase_form_build_document.raw_editor.document().setModified(False)
             self._sync_dbase_form_source()
+            scene.history_reset()  # Neue Datei: keine alten Formularzustaende.
             self.show_dbase_form_designer()
             self.statusBar().showMessage(f"WFM-Formular geöffnet: {path.name}")
             return True
@@ -111207,6 +111768,10 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     "",
                     indent + "    WITH (THIS.Style)",
                     indent + f"        Pattern = {int(getattr(item, 'brush_style', 0))}",
+                    indent + f"        CustomWidth = {int(getattr(item, 'brush_custom_width', 16))}",
+                    indent + f"        CustomHeight = {int(getattr(item, 'brush_custom_height', 16))}",
+                    indent + "        CustomFile = " + self._wfm_quote(str(getattr(item, 'brush_custom_file', ''))),
+                    indent + "        CustomId = " + self._wfm_quote(str(getattr(item, 'brush_catalog_id', ''))),
                     indent + f"        CutWidth = {int(getattr(item, 'brush_cut_width', 100))}",
                     indent + f"        CutHeight = {int(getattr(item, 'brush_cut_height', 100))}",
                     indent + "    ENDWITH",
@@ -117714,9 +118279,10 @@ border: 2px solid #2a69aa;
             self._ensure_project_for_new_document()
             directory = self._project_new_file_directory()
             used = {name.casefold() for name in self._project_existing_names()}
-            number = 1
+            # Stage 335: Erstes Blatt unbenannt.prg, danach kollisionsfreie Namen.
+            number = 0
             while True:
-                filename = f"Unbenannt_{number}.prg"
+                filename = "unbenannt.prg" if number == 0 else f"unbenannt_{number}.prg"
                 if filename.casefold() not in used and not (directory / filename).exists():
                     break
                 number += 1
@@ -118630,11 +119196,22 @@ border: 2px solid #2a69aa;
                     suggested_name += ".txt"
                 initial = str(self.current_directory / suggested_name)
 
-            filename, _selected_filter = QFileDialog.getSaveFileName(
-                self,
-                "Datei speichern unter",
-                initial,
-                (
+            # Stage 335: Nur der dBase-Editor bekommt die eigenständigen
+            # Quelltextfilter. Andere Editor-Typen behalten ihre Dateiformate.
+            is_dbase_editor = (
+                str(getattr(document, "language_override", "") or "").casefold() == "dbase"
+                or (document.path is not None and document.path.suffix.casefold() in {".dbase", ".dbp"})
+            )
+            if is_dbase_editor:
+                filters = (
+                    "dBase-Programme (*.prg);;"
+                    "dBase-Formulare (*.wfm);;"
+                    "SQL-Dateien (*.sql);;"
+                    "Textdateien (*.txt);;"
+                    "Alle Dateien (*.*)"
+                )
+            else:
+                filters = (
                     "BASIC-Dateien (*.bas *.basic);;"
                     "C-Dateien (*.c *.h);;"
                     "LISP-Dateien (*.lisp *.lsp);;"
@@ -118645,7 +119222,9 @@ border: 2px solid #2a69aa;
                     "Textdateien (*.txt);;"
                     "Binärdateien (*.prg *.amiga *.adf *.ram *.bin);;"
                     "Alle Dateien (*)"
-                ),
+                )
+            filename, _selected_filter = QFileDialog.getSaveFileName(
+                self, "Datei speichern unter", initial, filters,
             )
             return Path(filename).resolve() if filename else None
 
@@ -121370,6 +121949,62 @@ border: 2px solid #2a69aa;
             # Der dBase-Compiler legt Stringliterale als Windows-1252 ab.
             return raw.decode("cp1252", errors="replace")
 
+        def _prepare_dbase_speech_runtime(self, output_path: Path) -> bool:
+            """Stage 342: deliver a PE32 speech DLL with the required C ABI."""
+            output_path = Path(output_path).resolve()
+            destination = output_path.parent / "retro_speech.dll"
+            required = {
+                "speechinitialize", "speechsetmix", "speechsetpitch",
+                "speechsetspeed", "speechsetexpression", "speechsetarticulation",
+                "speechspeak", "speechspeakcp1252", "speechshutdown",
+            }
+
+            def compatible(candidate: Path) -> bool:
+                try:
+                    exports = _pe_export_name_ordinals(candidate, IMAGE_FILE_MACHINE_I386)
+                    missing = required - {str(k).casefold() for k in exports}
+                    if missing and candidate.is_file():
+                        self.log(
+                            f"DBASE SPEECH RUNTIME: {candidate} unvollstaendig "
+                            f"(fehlende Exporte: {', '.join(sorted(missing))})"
+                        )
+                    return not missing
+                except (OSError, ValueError, TypeError):
+                    return False
+
+            if destination.is_file() and compatible(destination):
+                self.log(f"DBASE SPEECH RUNTIME: {destination}")
+                return True
+            base_dir = Path(__file__).resolve().parent
+            candidates = (
+                self.current_directory / "retro_speech.dll",
+                self.current_directory / "speech" / "bin" / "retro_speech.dll",
+                base_dir / "speech" / "bin" / "retro_speech.dll",
+                base_dir / "retro_speech.dll",
+            )
+            for candidate in candidates:
+                try:
+                    candidate = Path(candidate).resolve()
+                    if candidate == destination or not candidate.is_file() or not compatible(candidate):
+                        continue
+                    shutil.copy2(candidate, destination)
+                    self.log(f"DBASE SPEECH RUNTIME: {candidate} -> {destination}")
+                    return True
+                except OSError as exc:
+                    self.log(f"DBASE SPEECH RUNTIME: {candidate}: {exc}")
+
+            self.show_error(
+                "retro_speech.dll fehlt oder ist inkompatibel",
+                "Dieses dBase-Programm verwendet SET SPEECH / SAY. Die passende "
+                "Windows-PE32-DLL muss neben der EXE liegen.\n\n"
+                "Erzeuge die aktuelle DLL unter MSYS2 MINGW32 mit "
+                "python speech/build_pe32.py und lege sie im "
+                "Arbeitsverzeichnis oder in speech/bin ab.\n"
+                "Erforderliche Exporte: SpeechInitialize, SpeechSpeak, "
+                "SpeechSpeakCP1252 sowie SpeechSet* und SpeechShutdown.",
+            )
+            return False
+
         def _launch_dbase_qt5_gui(
             self,
             document: DocumentEditor,
@@ -122148,6 +122783,18 @@ border: 2px solid #2a69aa;
             if document.build_target == "amiga":
                 return self._launch_amiga_document(document, output_path)
             if document.build_target in {"pe32", "pe64"}:
+                # Stage 343: Runtime-Pruefung auch fuer Workstation-Starts,
+                # nicht nur fuer den direkten Qt5-Start. Fehlende/alte DLLs
+                # werden vor dem Start durch die aktuelle speech/bin-Version
+                # ersetzt (sofern diese vorhanden und kompatibel ist).
+                if (
+                    document.is_dbase_document
+                    and document.build_target == "pe32"
+                    and '"retro_speech.dll"'
+                    in document.generated_assembly_editor.toPlainText()
+                ):
+                    if not self._prepare_dbase_speech_runtime(output_path):
+                        return False
                 target_key = self._project_windows_target_key(
                     document.build_target
                 )
@@ -126954,6 +127601,10 @@ border: 2px solid #2a69aa;
         def _show_project_dbase_group_menu(self, item: QTreeWidgetItem, position) -> None:
             role = str(item.data(0, Qt.UserRole + 306) or "").casefold()
             menu = QMenu(self.project_tree)
+            # Stage 335: Nur im dBase-Programme/Programme-Knoten als erste Aktion.
+            new_program_action = None
+            if role == "programs":
+                new_program_action = menu.addAction("Neu Programm-Datei")
             # Stage ASM 76: Der Etikettenknoten verwendet die vom Benutzer
             # gewünschte kurze Aktion "Hinzufügen". Die übrigen dBase-
             # Ressourcenknoten behalten ihre bisherige Beschriftung.
@@ -126969,17 +127620,165 @@ border: 2px solid #2a69aa;
             selected = menu.exec_(
                 self.project_tree.viewport().mapToGlobal(position)
             )
-            if selected is add_action:
+            if new_program_action is not None and selected is new_program_action:
+                self._create_new_dbase_program_item(use_template=False)
+                item.setExpanded(True)
+            elif selected is add_action:
                 self.add_project_dbase_entries(item)
             elif clear_action is not None and selected is clear_action:
                 self.clear_project_dbase_group(item)
             elif selected is toggle_action:
                 item.setExpanded(not item.isExpanded())
 
+        def _show_dbase_rename_collision_warning(self) -> None:
+            """Dark-Mode-Warnung mit eigener Verlaufstitelleiste und 3-Pixel-Rahmen."""
+            dialog = QDialog(self)
+            dialog.setObjectName("dbaseRenameCollisionWarning")
+            dialog.setWindowTitle("Warnung")
+            dialog.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+            dialog.setModal(True)
+            dialog.setFixedSize(490, 150)
+            dialog.setStyleSheet(
+                "QDialog#dbaseRenameCollisionWarning { background:#222222;"
+                " border:3px solid #707070; color:white; }"
+                "QLabel#dbaseRenameCollisionText { color:white; background:transparent; }"
+                "QPushButton#dbaseRenameCollisionOk { color:white; background:#383838;"
+                " border:1px solid #777777; border-radius:3px; padding:5px 20px; }"
+                "QPushButton#dbaseRenameCollisionOk:hover { background:#505050; }"
+            )
+            outer = QVBoxLayout(dialog)
+            outer.setContentsMargins(3, 3, 3, 3)
+            outer.setSpacing(10)
+            header = DBaseTableDialogTitleBar(dialog, "Warnung", dark_mode=True)
+            header.setObjectName("dbaseRenameCollisionTitleBar")
+            outer.addWidget(header)
+            message = QLabel("Warnung: Datei mit gleichen Namen existiert bereits!", dialog)
+            message.setObjectName("dbaseRenameCollisionText")
+            message.setAlignment(Qt.AlignCenter)
+            outer.addWidget(message, 1)
+            buttons = QHBoxLayout()
+            buttons.addStretch(1)
+            ok_button = QPushButton("OK", dialog)
+            ok_button.setObjectName("dbaseRenameCollisionOk")
+            ok_button.setDefault(True)
+            ok_button.clicked.connect(dialog.accept)
+            buttons.addWidget(ok_button)
+            buttons.addStretch(1)
+            outer.addLayout(buttons)
+            outer.addSpacing(8)
+            dialog.exec_()
+
+        def _begin_dbase_program_rename(self, item: QTreeWidgetItem) -> None:
+            """Stage 338: modaler Eingabedialog statt fehleranfälligem Tree-Inline-Editor."""
+            if str(item.data(0, Qt.UserRole + 306) or "").casefold() != "programs":
+                return
+            old_name = item.text(0)
+            dialog = QDialog(self)
+            dialog.setObjectName("dbaseProgramRenameDialog")
+            dialog.setWindowTitle("dBase-Programm umbenennen")
+            dialog.setModal(True)
+            dialog.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+            dialog.setMinimumWidth(440)
+            dialog.setStyleSheet(
+                "QDialog#dbaseProgramRenameDialog { background:#222222;"
+                " border:3px solid #707070; color:white; }"
+                "QLabel#dbaseProgramRenameLabel { color:white; background:transparent; }"
+                "QLineEdit#dbaseProgramRenameInput { background:#303030; color:white;"
+                " border:1px solid #808080; border-radius:3px; padding:6px; }"
+                "QPushButton#dbaseProgramRenameOk, QPushButton#dbaseProgramRenameCancel {"
+                " background:#383838; color:white; border:1px solid #777777;"
+                " border-radius:3px; padding:5px 18px; min-width:85px; }"
+                "QPushButton:hover { background:#505050; }"
+            )
+            layout = QVBoxLayout(dialog)
+            layout.setContentsMargins(3, 3, 3, 12)
+            layout.setSpacing(12)
+            layout.addWidget(DBaseTableDialogTitleBar(dialog, "Programm umbenennen", dark_mode=True))
+            label = QLabel("Dateiname:", dialog)
+            label.setObjectName("dbaseProgramRenameLabel")
+            layout.addWidget(label)
+            name_edit = QLineEdit(old_name, dialog)
+            name_edit.setObjectName("dbaseProgramRenameInput")
+            name_edit.selectAll()
+            layout.addWidget(name_edit)
+            buttons = QHBoxLayout()
+            buttons.addStretch(1)
+            ok_button = QPushButton("Ok", dialog)
+            ok_button.setObjectName("dbaseProgramRenameOk")
+            ok_button.setDefault(True)
+            ok_button.clicked.connect(dialog.accept)
+            buttons.addWidget(ok_button)
+            cancel_button = QPushButton("Abbrechen", dialog)
+            cancel_button.setObjectName("dbaseProgramRenameCancel")
+            cancel_button.clicked.connect(dialog.reject)
+            buttons.addWidget(cancel_button)
+            layout.addLayout(buttons)
+            name_edit.returnPressed.connect(dialog.accept)
+            name_edit.setFocus(Qt.OtherFocusReason)
+            if dialog.exec_() == QDialog.Accepted:
+                self._commit_dbase_program_rename(item, name_edit.text(), old_name)
+
+        def _commit_dbase_program_rename(
+            self, item: QTreeWidgetItem, proposed_name: str, old_name: str
+        ) -> None:
+            """Datei, Projektblatt und offene Dokumente konsistent umbenennen."""
+            proposed = proposed_name.strip()
+            old_path = Path(str(item.data(0, Qt.UserRole + 302) or ""))
+            if not proposed or Path(proposed).name != proposed or proposed in {".", ".."} or any(
+                c in proposed for c in '<>:"/\\|?*'
+            ):
+                item.setText(0, old_name)
+                self.show_error("Ungültiger Programmname", "Bitte einen gültigen Dateinamen angeben.")
+                return
+            if not Path(proposed).suffix:
+                proposed += old_path.suffix
+            if Path(proposed).suffix.casefold() != ".prg":
+                item.setText(0, old_name)
+                self.show_error("Ungültiger Programmname", "Erlaubt sind .prg-Dateien.")
+                return
+            if proposed == old_path.name:
+                return
+            target = old_path.with_name(proposed)
+            try:
+                collision = any(
+                    entry.name.casefold() == proposed.casefold()
+                    and entry.name.casefold() != old_path.name.casefold()
+                    for entry in old_path.parent.iterdir()
+                ) if old_path.parent.is_dir() else False
+                # Auch identischer Name mit anderer Schreibweise auf Windows darf
+                # kein fremdes Dokument überschreiben.
+                if collision or (target.exists() and target != old_path):
+                    item.setText(0, old_name)
+                    self._show_dbase_rename_collision_warning()
+                    return
+                old_path.rename(target)
+            except OSError as exc:
+                item.setText(0, old_name)
+                self.show_error("Umbenennen fehlgeschlagen", str(exc))
+                return
+            target = target.resolve()
+            item.setText(0, target.name)
+            item.setData(0, Qt.UserRole + 302, str(target))
+            item.setToolTip(0, str(target))
+            item.setIcon(0, self.icon_provider.icon(QFileInfo(str(target))))
+            document = self._find_open_document(old_path)
+            if document is not None:
+                document.path = target
+                document.custom_display_name = None
+                document.update_syntax_highlighting()
+                document.invalidate_assembly_result("Dateiname geändert")
+                self._update_document_tab(document)
+            self.set_project_modified(True)
+            if self.current_project_path is not None:
+                self.save_project()
+            self.statusBar().showMessage(f"dBase-Datei umbenannt: {old_name} → {target.name}", 6000)
+            self.log(f"dBase-Datei umbenannt: {old_path} -> {target}")
+
         def _show_project_dbase_file_menu(self, item: QTreeWidgetItem, position) -> None:
             role = str(item.data(0, Qt.UserRole + 306) or "").casefold()
             menu = QMenu(self.project_tree)
             open_action = menu.addAction("Öffnen")
+            rename_action = menu.addAction("Umbenennen") if role == "programs" else None
             add_action = None
             if role == "labels":
                 # Auch auf einem Etiketten-Blatt kann direkt ein weiteres
@@ -126993,6 +127792,8 @@ border: 2px solid #2a69aa;
             )
             if selected is open_action:
                 self.open_project_item(item)
+            elif rename_action is not None and selected is rename_action:
+                self._begin_dbase_program_rename(item)
             elif add_action is not None and selected is add_action:
                 parent = item.parent()
                 if parent is not None:

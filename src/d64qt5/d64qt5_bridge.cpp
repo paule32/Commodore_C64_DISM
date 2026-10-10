@@ -9668,6 +9668,11 @@ static void apply_wfm_debug_theme()
         g_wfm_output_edit->viewport()->update();
 }
 
+// Also keep a local WFM output editor stable while its menu is displayed.
+static bool g_wfm_debug_context_menu_active = false;
+static QString g_wfm_context_pending_text;
+static void append_wfm_output(const QString &value, bool newline);
+
 static void destroy_wfm_output_dialog()
 {
     // Zeiger zuerst loesen, damit close()/Signale waehrend des Abbaus keine
@@ -9677,6 +9682,8 @@ static void destroy_wfm_output_dialog()
     g_wfm_output_edit = nullptr;
     g_wfm_applied_debug_dark = -1;
     g_debug_visible = false;
+    g_wfm_debug_context_menu_active = false;
+    g_wfm_context_pending_text.clear();
 
     if (!dialog)
         return;
@@ -9722,6 +9729,18 @@ static void ensure_wfm_output_dialog()
     layout->setSpacing(0);
 
     g_wfm_output_edit = new D64DebugOutputTextEdit(g_wfm_output_dialog);
+    auto *debugEdit = static_cast<D64DebugOutputTextEdit *>(g_wfm_output_edit);
+    debugEdit->setContextMenuStateHandler([](bool active) {
+        g_wfm_debug_context_menu_active = active;
+        if (!active && !g_wfm_context_pending_text.isEmpty()) {
+            QString pending;
+            pending.swap(g_wfm_context_pending_text);
+            append_wfm_output(pending, false);
+        }
+    });
+    debugEdit->setDebugClearHandler([]() {
+        g_wfm_context_pending_text.clear();
+    });
     g_wfm_output_edit->setObjectName(QStringLiteral("dbaseWorkstationOutput"));
     g_wfm_output_edit->setReadOnly(true);
     g_wfm_output_edit->setLineWrapMode(QPlainTextEdit::NoWrap);
@@ -9815,6 +9834,15 @@ static void append_wfm_output(const QString &value, bool newline)
     ensure_wfm_output_dialog();
     if (!g_wfm_output_edit)
         return;
+
+    // QMenu::exec() runs a nested Qt event loop. Never move the text cursor,
+    // scroll or raise the output window while the user chooses a command.
+    if (g_wfm_debug_context_menu_active) {
+        g_wfm_context_pending_text += value;
+        if (newline)
+            g_wfm_context_pending_text += QLatin1Char('\n');
+        return;
+    }
 
     QScrollBar *scroll = g_wfm_output_edit->verticalScrollBar();
     const bool followTail = !scroll || scroll->value() >= scroll->maximum() - 2;

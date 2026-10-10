@@ -9,6 +9,10 @@
 #include <QPlainTextEdit>
 #include <QTextCursor>
 #include <QTextDocument>
+#include <QScrollBar>
+
+#include <functional>
+#include <utility>
 
 // Read-only DEBUG output remains a QPlainTextEdit, including its built-in
 // Ctrl+C and Ctrl+A keyboard handling. Only the popup is customized.
@@ -20,6 +24,20 @@ public:
     {
         setContextMenuPolicy(Qt::DefaultContextMenu);
         setProperty("d64DebugContextMenuLocalization", true);
+    }
+
+    // Runtime/Runner can pause their output repaint and foreground watchdog
+    // for the complete lifespan of the popup, including QAction callbacks.
+    void setContextMenuStateHandler(std::function<void(bool)> callback)
+    {
+        contextMenuStateHandler_ = std::move(callback);
+    }
+
+    // Called BEFORE clearing the editor so that buffered runner output is
+    // discarded and does not immediately reappear after the popup closes.
+    void setDebugClearHandler(std::function<void()> callback)
+    {
+        clearHandler_ = std::move(callback);
     }
 
     void setDebugContextDark(bool dark)
@@ -38,6 +56,31 @@ protected:
         // Stable selectors for future localization and independent QSS.
         menu.setObjectName(QStringLiteral("d64DebugContextMenu"));
         menu.setProperty("d64LocalizationKey", QStringLiteral("debug.context.menu"));
+
+        // Stage 328: first command clears the document AND any pending
+        // asynchronous output. Stable identifiers support later localization.
+        QAction *clearAction = menu.addAction(QStringLiteral("Bereinigen"));
+        clearAction->setObjectName(QStringLiteral("d64DebugContextClear"));
+        clearAction->setProperty("d64LocalizationKey", QStringLiteral("debug.context.clear"));
+        QObject::connect(clearAction, &QAction::triggered, this, [this]() {
+            if (clearHandler_)
+                clearHandler_();
+            clear();
+            QTextCursor cursor = textCursor();
+            cursor.movePosition(QTextCursor::Start);
+            setTextCursor(cursor);
+            if (QScrollBar *vertical = verticalScrollBar())
+                vertical->setValue(vertical->minimum());
+            if (QScrollBar *horizontal = horizontalScrollBar())
+                horizontal->setValue(horizontal->minimum());
+            // Both bars already use ScrollBarAsNeeded: the empty document
+            // naturally removes them; never force-hide the widgets because
+            // later DEBUG output must make them visible again when needed.
+            updateGeometry();
+            viewport()->update();
+        });
+        QAction *clearSeparator = menu.addSeparator();
+        clearSeparator->setObjectName(QStringLiteral("d64DebugContextClearSeparator"));
 
         // QAction titles contain ONLY the labels; Qt draws shortcuts in
         // the dedicated right-hand column of QMenu automatically.
@@ -66,6 +109,7 @@ protected:
                 "background:transparent;padding:6px 24px 6px 12px;}"
                 "QMenu#d64DebugContextMenu::item:selected{background:#0b2f63;color:#ffffff;}"
                 "QMenu#d64DebugContextMenu::item:disabled{color:#808080;}"
+                "QMenu#d64DebugContextMenu::separator{height:1px;background:#515151;margin:4px 7px;}"
             ));
         } else {
             menu.setStyleSheet(QStringLiteral(
@@ -75,13 +119,23 @@ protected:
                 "background:transparent;padding:6px 24px 6px 12px;}"
                 "QMenu#d64DebugContextMenu::item:selected{background:#c4daf3;color:#101010;}"
                 "QMenu#d64DebugContextMenu::item:disabled{color:#808080;}"
+                "QMenu#d64DebugContextMenu::separator{height:1px;background:#b6b6b6;margin:4px 7px;}"
             ));
         }
 
+        // exec() runs a nested Qt event loop. Inform the Runner BEFORE it
+        // starts so its 500-ms foreground watchdog cannot close the popup;
+        // resume only AFTER QAction::triggered has completed.
+        if (contextMenuStateHandler_)
+            contextMenuStateHandler_(true);
         menu.exec(event->globalPos());
+        if (contextMenuStateHandler_)
+            contextMenuStateHandler_(false);
         event->accept();
     }
 
 private:
     bool darkContextMenu_ = false;
+    std::function<void(bool)> contextMenuStateHandler_;
+    std::function<void()> clearHandler_;
 };

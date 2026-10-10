@@ -186,6 +186,21 @@ class DBaseSetDebugStatement:
 
 
 @dataclass(frozen=True)
+class DBaseSetSpeechStatement:
+    option: str
+    value: Union[int, str]
+    line: int
+    column: int
+
+
+@dataclass(frozen=True)
+class DBaseSayStatement:
+    expression: DBaseExpression
+    line: int
+    column: int
+
+
+@dataclass(frozen=True)
 class DBaseSetColorStatement:
     spec: str
     line: int
@@ -1929,6 +1944,18 @@ class _DBaseExpressionParser:
                 column=first.column,
             )
 
+        # Stage 342: SAY accepts a dBase string expression.
+        if first.kind == "IDENT" and str(first.value).casefold() == "say":
+            self.index += 1
+            if self.current.kind == "EOF":
+                raise DBaseCompilerError(
+                    'SAY erwartet einen String-Ausdruck.',
+                    line=first.line, column=first.column, filename=self.filename,
+                )
+            expression = self.parse_expression()
+            self._expect_eof()
+            return DBaseSayStatement(expression, first.line, first.column)
+
         if first.kind == "IDENT" and str(first.value).casefold() == "clear":
             self.index += 1
             target = self.current
@@ -1955,7 +1982,7 @@ class _DBaseExpressionParser:
             command = self.current
             if command.kind != "IDENT":
                 raise DBaseCompilerError(
-                    "Nach SET wird FORMAT, DEBUG, COLOR oder BORDERCOLOR erwartet.",
+                    "Nach SET wird FORMAT, DEBUG, SPEECH, COLOR oder BORDERCOLOR erwartet.",
                     line=command.line,
                     column=command.column,
                     filename=self.filename,
@@ -1995,6 +2022,59 @@ class _DBaseExpressionParser:
                     line=first.line,
                     column=first.column,
                 )
+            if keyword == "speech":
+                action = self.current
+                if action.kind != "IDENT":
+                    raise DBaseCompilerError(
+                        "SET SPEECH erwartet ON, OFF, MODE, MIX, PITCH oder SPEED.",
+                        line=action.line, column=action.column, filename=self.filename,
+                    )
+                option = str(action.value).casefold()
+                self.index += 1
+                if option in {"on", "off"}:
+                    self._expect_eof()
+                    return DBaseSetSpeechStatement("state", option, first.line, first.column)
+                if option == "mode":
+                    mode = self.current
+                    if mode.kind != "IDENT" or str(mode.value).casefold() not in {"hybrid", "c64", "amiga"}:
+                        raise DBaseCompilerError(
+                            "SET SPEECH MODE erwartet HYBRID, C64 oder AMIGA.",
+                            line=mode.line, column=mode.column, filename=self.filename,
+                        )
+                    self.index += 1
+                    self._expect_eof()
+                    return DBaseSetSpeechStatement("mode", str(mode.value).casefold(), first.line, first.column)
+                limits = {"mix": (0, 100), "pitch": (70, 260), "speed": (50, 200)}
+                if option not in limits:
+                    raise DBaseCompilerError(
+                        "SET SPEECH erwartet ON, OFF, MODE, MIX, PITCH oder SPEED.",
+                        line=action.line, column=action.column, filename=self.filename,
+                    )
+                value = self.current
+                if value.kind != "NUMBER":
+                    raise DBaseCompilerError(
+                        f"SET SPEECH {option.upper()} erwartet eine ganze Zahl.",
+                        line=value.line, column=value.column, filename=self.filename,
+                    )
+                try:
+                    parsed = Decimal(str(value.value))
+                    if parsed != parsed.to_integral_value():
+                        raise ValueError
+                    number = int(parsed)
+                except (ValueError, TypeError, InvalidOperation):
+                    raise DBaseCompilerError(
+                        f"SET SPEECH {option.upper()} erwartet eine ganze Zahl.",
+                        line=value.line, column=value.column, filename=self.filename,
+                    )
+                self.index += 1
+                self._expect_eof()
+                low, high = limits[option]
+                if not low <= number <= high:
+                    raise DBaseCompilerError(
+                        f"SET SPEECH {option.upper()} erwartet {low} bis {high}.",
+                        line=value.line, column=value.column, filename=self.filename,
+                    )
+                return DBaseSetSpeechStatement(option, number, first.line, first.column)
             if keyword == "bordercolor":
                 self._expect_keyword("to", "Nach SET BORDERCOLOR wird TO erwartet.")
                 if self.current.kind == "EOF":
@@ -2038,7 +2118,7 @@ class _DBaseExpressionParser:
                     column=first.column,
                 )
             raise DBaseCompilerError(
-                "Nach SET wird FORMAT, DEBUG, COLOR oder BORDERCOLOR erwartet.",
+                "Nach SET wird FORMAT, DEBUG, SPEECH, COLOR oder BORDERCOLOR erwartet.",
                 line=command.line,
                 column=command.column,
                 filename=self.filename,
@@ -2046,7 +2126,7 @@ class _DBaseExpressionParser:
 
         raise DBaseCompilerError(
             "Erwartet wird '?' oder '??', eine Variablenzuweisung, ein Member-Aufruf, "
-            "RETURN, CLEAR SCREEN, SET FORMAT TO ..., SET DEBUG ON/OFF, "
+            "RETURN, CLEAR SCREEN, SAY <text>, SET SPEECH ..., SET FORMAT TO ..., SET DEBUG ON/OFF, "
             "SET COLOR TO ... oder SET BORDERCOLOR TO ... .",
             line=first.line,
             column=first.column,
@@ -2874,6 +2954,40 @@ class _DBaseProgramAnalyzer:
             )
 
         elif isinstance(expression, DBaseCallExpression):
+            # Stage 326: Einzelzeichen-Pruefung; numerischer Boolwert 0 oder 1.
+            # Char und einzeichenlange Strings sind erlaubt. Dynamische Strings
+            # mit einer anderen Laenge ergeben zur Laufzeit FALSE.
+            if expression.name.casefold() in {"isupper", "islower"}:
+                function = expression.name.upper()
+                if len(expression.arguments) != 1:
+                    raise DBaseCompilerError(
+                        f"{function}(...) erwartet genau ein Zeichen.",
+                        line=expression.line, column=expression.column,
+                        filename=self.filename,
+                    )
+                argument = expression.arguments[0]
+                operand = self.analyze_expression(
+                    argument, symbols=symbols, expression_info=expression_info,
+                    call_bindings=call_bindings,
+                )
+                if operand.kind not in _STRING_KINDS:
+                    raise DBaseCompilerError(
+                        f"{function}(...) erwartet ein Zeichen (Char/String), keinen numerischen Wert.",
+                        line=argument.line, column=argument.column,
+                        filename=self.filename,
+                    )
+                from .char_case import is_char_case
+                constant = (None if operand.constant_value is None else DBaseValue(
+                    "number", Decimal(int(is_char_case(
+                        str(operand.constant_value.value),
+                        upper=(expression.name.casefold() == "isupper"),
+                    )))
+                ))
+                info = _DBaseExpressionInfo(
+                    kind="number", constant_value=constant, dynamic=operand.dynamic,
+                )
+                expression_info[expression] = info
+                return info
             # Stage 309: ISMOUSE() ist ein dynamischer Windows-Systemaufruf.
             # Nie konstant falten oder als benutzerdefiniertes externes Symbol behandeln.
             if expression.name.casefold() == "ismouse":
@@ -3287,6 +3401,19 @@ class _DBaseProgramAnalyzer:
                     instance=instance,
                 )
                 continue
+            if isinstance(statement, DBaseSayStatement):
+                symbols = self._merged_symbols(self.global_symbols, local_symbols)
+                info = self.analyze_expression(
+                    statement.expression, symbols=symbols,
+                    expression_info=instance.expression_info,
+                    call_bindings=instance.call_bindings,
+                )
+                if info.kind not in {"string", "char"}:
+                    raise DBaseCompilerError(
+                        "SAY erwartet einen String oder Char.",
+                        line=statement.line, column=statement.column, filename=self.filename,
+                    )
+                continue
             if isinstance(statement, DBasePrintStatement):
                 symbols = self._merged_symbols(self.global_symbols, local_symbols)
                 self.analyze_expression(
@@ -3410,7 +3537,7 @@ class _DBaseProgramAnalyzer:
                     )
                     self._validate_clear_screen_expression(expression, info)
                 continue
-            if isinstance(statement, (DBaseSetFormatStatement, DBaseSetDebugStatement, DBaseSetColorStatement)):
+            if isinstance(statement, (DBaseSetFormatStatement, DBaseSetDebugStatement, DBaseSetColorStatement, DBaseSetSpeechStatement)):
                 continue
             if isinstance(statement, DBaseRoutineDefinition):
                 continue
@@ -3534,6 +3661,17 @@ class _DBaseProgramAnalyzer:
                     global_symbols=globals_work,
                 )
                 continue
+            if isinstance(statement, DBaseSayStatement):
+                info = self.analyze_expression(
+                    statement.expression, symbols=globals_work,
+                    expression_info=self.expression_info, call_bindings=self.call_bindings,
+                )
+                if info.kind not in {"string", "char"}:
+                    raise DBaseCompilerError(
+                        "SAY erwartet einen String oder Char.",
+                        line=statement.line, column=statement.column, filename=self.filename,
+                    )
+                continue
             if isinstance(statement, DBasePrintStatement):
                 self.analyze_expression(
                     statement.expression,
@@ -3619,7 +3757,7 @@ class _DBaseProgramAnalyzer:
                     )
                     self._validate_clear_screen_expression(expression, info)
                 continue
-            if isinstance(statement, (DBaseSetFormatStatement, DBaseSetDebugStatement, DBaseSetColorStatement)):
+            if isinstance(statement, (DBaseSetFormatStatement, DBaseSetDebugStatement, DBaseSetColorStatement, DBaseSetSpeechStatement)):
                 continue
             raise AssertionError(type(statement))
 
@@ -3649,6 +3787,11 @@ class _DBaseProgramAnalyzer:
                 continue
             if isinstance(statement, DBaseSetDebugStatement):
                 debug_override = bool(statement.enabled)
+                continue
+            if isinstance(statement, DBaseSetSpeechStatement):
+                continue
+            if isinstance(statement, DBaseSayStatement):
+                # Audio wird erst zur Laufzeit erzeugt, nicht im Text-Transcript.
                 continue
             if isinstance(statement, DBaseSetColorStatement):
                 continue
@@ -3783,6 +3926,26 @@ def _evaluate_dbase_expression(
             )
         return value
     if isinstance(expression, DBaseCallExpression):
+        if expression.name.casefold() in {"isupper", "islower"}:
+            function = expression.name.upper()
+            if len(expression.arguments) != 1:
+                raise DBaseCompilerError(
+                    f"{function}(...) erwartet genau ein Zeichen.",
+                    line=expression.line, column=expression.column, filename=filename,
+                )
+            operand = _evaluate_dbase_expression(
+                expression.arguments[0], filename=filename,
+                variables=env, call_resolver=call_resolver,
+            )
+            if operand.kind not in _STRING_KINDS:
+                raise DBaseCompilerError(
+                    f"{function}(...) erwartet ein Zeichen (Char/String), keinen numerischen Wert.",
+                    line=expression.line, column=expression.column, filename=filename,
+                )
+            from .char_case import is_char_case
+            return DBaseValue("number", Decimal(int(is_char_case(
+                str(operand.value), upper=(expression.name.casefold() == "isupper")
+            ))))
         if expression.name.casefold() == "ismouse":
             if expression.arguments:
                 raise DBaseCompilerError("ISMOUSE() erwartet keine Parameter.",
@@ -4095,7 +4258,7 @@ class _DBaseEvaluator:
             if isinstance(statement, DBaseClearScreenStatement):
                 self.output.clear()
                 continue
-            if isinstance(statement, (DBaseSetFormatStatement, DBaseSetDebugStatement, DBaseSetColorStatement, DBaseSetBorderColorStatement)):
+            if isinstance(statement, (DBaseSetFormatStatement, DBaseSetDebugStatement, DBaseSetColorStatement, DBaseSetBorderColorStatement, DBaseSetSpeechStatement, DBaseSayStatement)):
                 continue
             raise AssertionError(type(statement))
 
@@ -4139,6 +4302,13 @@ class _DBaseCodeGenerator:
         debug_theme: str = "default",
     ) -> None:
         self.statements = statements
+        def has_speech(seq):
+            return any(isinstance(item, (DBaseSetSpeechStatement, DBaseSayStatement))
+                       or isinstance(item, DBaseRoutineDefinition) and has_speech(item.body)
+                       or isinstance(item, DBaseIfStatement) and any(has_speech(branch.body) for branch in item.branches)
+                       for item in seq)
+        self.uses_speech = has_speech(statements)
+        self.speech_utf8_literals: Dict[bytes, str] = {}
         self.analysis = analysis
         self.target = target
         self.filename = filename
@@ -4304,6 +4474,23 @@ class _DBaseCodeGenerator:
             return
 
         if isinstance(expression, DBaseCallExpression):
+            if expression.name.casefold() in {"isupper", "islower"}:
+                # Statische Literale sind bereits bei der Analyse gefaltet.
+                # Fuer Variable/FUNCTION werden Ptr und Laenge des Werts
+                # zur Laufzeit geprueft und dann das Codepage-Zeichen getestet.
+                from .char_case import emit_char_case_check
+                if info.constant_value is not None:
+                    self.emit(f"    fld qword ptr [{self.double_literal(Decimal(info.constant_value.value))}]")
+                else:
+                    source = self.new_storage_slot("char_case")
+                    self.emit_store_expression_to_slot(expression.arguments[0], source)
+                    for instruction in emit_char_case_check(
+                        source, is64=self.is64,
+                        label_prefix=self.new_label(expression.name.casefold()),
+                        upper=(expression.name.casefold() == "isupper"),
+                    ):
+                        self.emit(instruction)
+                return
             if expression.name.casefold() == "iskeyboard":
                 from .keyboard_detection import emit_keyboard_probe
                 for instruction in emit_keyboard_probe(
@@ -5067,6 +5254,87 @@ class _DBaseCodeGenerator:
             self.emit("    call DBaseQtSetBorderColor")
             self.emit("    add esp, 8")
 
+    # Stage 342: speech is imported only for programs actually using it.
+    def emit_speech_apply(self) -> None:
+        for fn, var in (("SpeechSetMix", "mix"), ("SpeechSetPitch", "pitch"),
+                        ("SpeechSetSpeed", "speed"), ("SpeechSetExpression", "expression"),
+                        ("SpeechSetArticulation", "articulation")):
+            self.emit(f"    push dword ptr [__dbase_speech_{var}]")
+            self.emit(f"    call {fn}")     # Win32 __stdcall: DLL cleans 4 bytes.
+
+    def emit_set_speech(self, statement: DBaseSetSpeechStatement) -> None:
+        if statement.option == "state":
+            if statement.value == "on":
+                done = self.new_label("speech_on_done")
+                self.emit("    cmp dword ptr [__dbase_speech_ready], 0")
+                self.emit(f"    jne {done}")
+                self.emit("    push 22050")
+                self.emit("    call SpeechInitialize")
+                self.emit("    mov dword ptr [__dbase_speech_ready], eax")
+                self.emit("    test eax, eax")
+                self.emit(f"    je {done}")
+                self.emit_speech_apply()
+                self.emit(f"{done}:")
+            else:
+                self.emit_speech_shutdown()
+            return
+        if statement.option == "mode":
+            # Keep the same preset values as speech/retro_speech_demo.c.
+            profiles = {"c64": (15, 130, 105, 38, 90),
+                        "hybrid": (55, 125, 100, 65, 65),
+                        "amiga": (85, 125, 100, 85, 45)}
+            mix, pitch, speed, expression, articulation = profiles[str(statement.value)]
+            values = (("mix", mix, "SpeechSetMix"),
+                      ("pitch", pitch, "SpeechSetPitch"),
+                      ("speed", speed, "SpeechSetSpeed"),
+                      ("expression", expression, "SpeechSetExpression"),
+                      ("articulation", articulation, "SpeechSetArticulation"))
+        else:
+            values = ((statement.option, int(statement.value),
+                       {"mix":"SpeechSetMix", "pitch":"SpeechSetPitch", "speed":"SpeechSetSpeed"}[statement.option]),)
+        for key, value, fn in values:
+            self.emit(f"    mov dword ptr [__dbase_speech_{key}], {value}")
+            skip = self.new_label("speech_setting_skip")
+            self.emit("    cmp dword ptr [__dbase_speech_ready], 0")
+            self.emit(f"    je {skip}")
+            self.emit(f"    push {value}")
+            self.emit(f"    call {fn}")
+            self.emit(f"{skip}:")
+
+    def emit_speech_shutdown(self) -> None:
+        done = self.new_label("speech_shutdown_done")
+        self.emit("    cmp dword ptr [__dbase_speech_ready], 0")
+        self.emit(f"    je {done}")
+        self.emit("    call SpeechShutdown")
+        self.emit("    mov dword ptr [__dbase_speech_ready], 0")
+        self.emit(f"{done}:")
+
+    def emit_say(self, statement: DBaseSayStatement) -> None:
+        info = self.current_expression_info[statement.expression]
+        if info.kind not in {"string", "char"}:
+            raise DBaseCompilerError("SAY erwartet einen String oder Char.",
+                                     statement.line, statement.column, self.filename)
+        done = self.new_label("speech_say_done")
+        self.emit("    cmp dword ptr [__dbase_speech_ready], 0")
+        self.emit(f"    je {done}")
+        if info.constant_value is not None:
+            payload = str(info.constant_value.value).encode("utf-8")
+            label = self.speech_utf8_literals.get(payload)
+            if label is None:
+                label = self.new_label("speech_utf8")
+                self.speech_utf8_literals[payload] = label
+            self.emit(f"    push {label}")
+            self.emit("    call SpeechSpeak")
+        else:
+            # dBase string slots hold CP1252 bytes with a length. The DLL
+            # helper performs a bounded CP1252 -> UTF-8 conversion.
+            slot = self.new_storage_slot("speech_text")
+            self.emit_store_expression_to_slot(statement.expression, slot)
+            self.emit(f"    push dword ptr [{slot}_len]")
+            self.emit(f"    push dword ptr [{slot}_ptr]")
+            self.emit("    call SpeechSpeakCP1252")
+        self.emit(f"{done}:")
+
     def _emit_statement_sequence(
         self,
         sequence: Tuple[object, ...],
@@ -5100,6 +5368,10 @@ class _DBaseCodeGenerator:
                     + ("1" if statement.enabled else "0")
                 )
                 self.emit_qt_call1_int("DBaseQtSetDebugVisible", 1 if debug_visible else 0)
+            elif isinstance(statement, DBaseSetSpeechStatement):
+                self.emit_set_speech(statement)
+            elif isinstance(statement, DBaseSayStatement):
+                self.emit_say(statement)
             elif isinstance(statement, DBaseSetColorStatement):
                 label, length = self.text_literal(statement.spec)
                 if self.is64:
@@ -5469,6 +5741,11 @@ class _DBaseCodeGenerator:
             "DBaseQtShutdown",
         ):
             self.emit(f'import {symbol}, "libd64_qt5.dll", "{symbol}"')
+        if self.uses_speech:
+            for symbol in ("SpeechInitialize", "SpeechSetMix", "SpeechSetPitch",
+                           "SpeechSetSpeed", "SpeechSetExpression", "SpeechSetArticulation",
+                           "SpeechSpeak", "SpeechSpeakCP1252", "SpeechShutdown"):
+                self.emit(f'import {symbol}, "retro_speech.dll", "{symbol}"')
         # Die Runtime-Helfer werden absichtlich immer importiert. Damit koennen
         # spezialisierte FUNCTION-Instanzen auch Zahl->Text und dynamische
         # String-Konkatenation verwenden, selbst wenn im Hauptprogramm kein ?
@@ -5615,6 +5892,8 @@ class _DBaseCodeGenerator:
         # eines Dialogs/ProcessEvents landen hier. Dadurch werden Qt-Runtime
         # und der VirtualAlloc-Puffer garantiert ueber denselben Pfad abgebaut.
         self.emit(f"{self.program_cleanup_label}:")
+        if self.uses_speech:
+            self.emit_speech_shutdown()
         self.emit_qt_call0("DBaseQtShutdown")
         # AllocConsole gehoert zur GUI-Lebensdauer und wird zusammen mit ihr
         # wieder abgebaut. War nie eine ?/??-Ausgabe aktiv, ist dies ein No-op.
@@ -5662,6 +5941,12 @@ class _DBaseCodeGenerator:
         self.emit_native_console_runtime(console_title_label)
 
         self.data_lines = ["", "section .data", ""]
+        for payload, label in self.speech_utf8_literals.items():
+            self.data_lines.extend(_db_lines(label, payload, nul_terminate=True))
+        if self.uses_speech:
+            for key, default in (("mix", 55), ("pitch", 125), ("speed", 100),
+                                 ("expression", 60), ("articulation", 65)):
+                self.data_lines.extend((f"__dbase_speech_{key}:", f"    dd {default}"))
         for raw, label in self.double_literals.items():
             low, high = struct.unpack("<II", raw)
             self.data_lines.extend([f"{label}:", f"    dd {low}, {high}"])
@@ -5707,6 +5992,8 @@ class _DBaseCodeGenerator:
             "__dbase_console_number_len:", "    resd 1",
             "__dbase_console_info:", "    resd 8",
         ]
+        if self.uses_speech:
+            self.bss_lines.extend(("__dbase_speech_ready:", "    resd 1"))
         for label in empty_string_bss:
             self.bss_lines.extend([f"{label}:", "    resb 1"])
 
@@ -5811,6 +6098,16 @@ def compile_dbase_to_assembly(
         filename=filename,
         target=frontend.target,
     )
+    def speech_used(seq):
+        return any(isinstance(item, (DBaseSetSpeechStatement, DBaseSayStatement))
+                   or isinstance(item, DBaseRoutineDefinition) and speech_used(item.body)
+                   or isinstance(item, DBaseIfStatement) and any(speech_used(branch.body) for branch in item.branches)
+                   for item in seq)
+    if frontend.target == "pe64" and speech_used(statements):
+        raise DBaseCompilerError(
+            "SET SPEECH und SAY benoetigen derzeit PE32: retro_speech.dll ist eine 32-Bit-DLL.",
+            filename=filename,
+        )
     analysis = _analyze_program(statements, filename=filename)
     assembly = _DBaseCodeGenerator(
         statements,
@@ -5928,6 +6225,8 @@ __all__ = [
     "DBaseAssignmentStatement",
     "DBaseSetFormatStatement",
     "DBaseSetDebugStatement",
+    "DBaseSetSpeechStatement",
+    "DBaseSayStatement",
     "DBaseSetColorStatement",
     "DBaseClearScreenStatement",
     "DBaseSetBorderColorStatement",
@@ -6364,7 +6663,7 @@ def _dbase_constant_function_value(
             # Ausgaben, SET-Anweisungen und reine Aufrufe sind keine sichere
             # Compile-Time-Grundlage fuer einen Dateipfad.
             if isinstance(statement, (DBasePrintStatement, DBaseSetFormatStatement,
-                                      DBaseSetDebugStatement, DBaseSetColorStatement,
+                                      DBaseSetDebugStatement, DBaseSetColorStatement, DBaseSetSpeechStatement, DBaseSayStatement,
                                       DBaseClearScreenStatement, DBaseSetBorderColorStatement,
                                       DBaseCallStatement)):
                 raise DBaseCompilerError(
