@@ -2026,7 +2026,7 @@ class _DBaseExpressionParser:
                 action = self.current
                 if action.kind != "IDENT":
                     raise DBaseCompilerError(
-                        "SET SPEECH erwartet ON, OFF, MODE, MIX, PITCH oder SPEED.",
+                        "SET SPEECH erwartet ON, OFF, MODE, MIX, PITCH, SPEED, FLUENCY, EXPRESSION oder ARTICULATION.",
                         line=action.line, column=action.column, filename=self.filename,
                     )
                 option = str(action.value).casefold()
@@ -2036,18 +2036,20 @@ class _DBaseExpressionParser:
                     return DBaseSetSpeechStatement("state", option, first.line, first.column)
                 if option == "mode":
                     mode = self.current
-                    if mode.kind != "IDENT" or str(mode.value).casefold() not in {"hybrid", "c64", "amiga"}:
+                    if mode.kind != "IDENT" or str(mode.value).casefold() not in {"hybrid", "c64", "amiga", "piper", "samples"}:
                         raise DBaseCompilerError(
-                            "SET SPEECH MODE erwartet HYBRID, C64 oder AMIGA.",
+                            "SET SPEECH MODE erwartet HYBRID, C64, AMIGA, PIPER oder SAMPLES.",
                             line=mode.line, column=mode.column, filename=self.filename,
                         )
                     self.index += 1
                     self._expect_eof()
                     return DBaseSetSpeechStatement("mode", str(mode.value).casefold(), first.line, first.column)
-                limits = {"mix": (0, 100), "pitch": (70, 260), "speed": (50, 200)}
+                limits = {"mix": (0, 100), "pitch": (70, 260), "speed": (50, 200),
+                          "fluency": (0, 100), "expression": (0, 100),
+                          "articulation": (0, 100)}
                 if option not in limits:
                     raise DBaseCompilerError(
-                        "SET SPEECH erwartet ON, OFF, MODE, MIX, PITCH oder SPEED.",
+                        "SET SPEECH erwartet ON, OFF, MODE, MIX, PITCH, SPEED, FLUENCY, EXPRESSION oder ARTICULATION.",
                         line=action.line, column=action.column, filename=self.filename,
                     )
                 value = self.current
@@ -5256,9 +5258,11 @@ class _DBaseCodeGenerator:
 
     # Stage 342: speech is imported only for programs actually using it.
     def emit_speech_apply(self) -> None:
+        self.emit("    push dword ptr [__dbase_speech_backend]")
+        self.emit("    call SpeechSetBackend")
         for fn, var in (("SpeechSetMix", "mix"), ("SpeechSetPitch", "pitch"),
                         ("SpeechSetSpeed", "speed"), ("SpeechSetExpression", "expression"),
-                        ("SpeechSetArticulation", "articulation")):
+                        ("SpeechSetArticulation", "articulation"), ("SpeechSetFluency", "fluency")):
             self.emit(f"    push dword ptr [__dbase_speech_{var}]")
             self.emit(f"    call {fn}")     # Win32 __stdcall: DLL cleans 4 bytes.
 
@@ -5279,19 +5283,33 @@ class _DBaseCodeGenerator:
                 self.emit_speech_shutdown()
             return
         if statement.option == "mode":
+            # Piper synthesizes complete sentences; SAMPLES reads prepared SPC WAV samples.
+            backend = 1 if str(statement.value) == "piper" else 2 if str(statement.value) == "samples" else 0
+            self.emit(f"    mov dword ptr [__dbase_speech_backend], {backend}")
+            skip = self.new_label("speech_backend_skip")
+            self.emit("    cmp dword ptr [__dbase_speech_ready], 0")
+            self.emit(f"    je {skip}")
+            self.emit(f"    push {backend}")
+            self.emit("    call SpeechSetBackend")
+            self.emit(f"{skip}:")
+            if backend in (1, 2):
+                return
             # Keep the same preset values as speech/retro_speech_demo.c.
-            profiles = {"c64": (15, 130, 105, 38, 90),
-                        "hybrid": (55, 125, 100, 65, 65),
-                        "amiga": (85, 125, 100, 85, 45)}
-            mix, pitch, speed, expression, articulation = profiles[str(statement.value)]
+            profiles = {"c64": (15, 130, 105, 38, 90, 25),
+                        "hybrid": (55, 125, 100, 65, 60, 75),
+                        "amiga": (85, 125, 100, 80, 35, 100)}
+            mix, pitch, speed, expression, articulation, fluency = profiles[str(statement.value)]
             values = (("mix", mix, "SpeechSetMix"),
                       ("pitch", pitch, "SpeechSetPitch"),
                       ("speed", speed, "SpeechSetSpeed"),
                       ("expression", expression, "SpeechSetExpression"),
-                      ("articulation", articulation, "SpeechSetArticulation"))
+                      ("articulation", articulation, "SpeechSetArticulation"),
+                      ("fluency", fluency, "SpeechSetFluency"))
         else:
             values = ((statement.option, int(statement.value),
-                       {"mix":"SpeechSetMix", "pitch":"SpeechSetPitch", "speed":"SpeechSetSpeed"}[statement.option]),)
+                       {"mix":"SpeechSetMix", "pitch":"SpeechSetPitch", "speed":"SpeechSetSpeed",
+                        "fluency":"SpeechSetFluency", "expression":"SpeechSetExpression",
+                        "articulation":"SpeechSetArticulation"}[statement.option]),)
         for key, value, fn in values:
             self.emit(f"    mov dword ptr [__dbase_speech_{key}], {value}")
             skip = self.new_label("speech_setting_skip")
@@ -5742,9 +5760,9 @@ class _DBaseCodeGenerator:
         ):
             self.emit(f'import {symbol}, "libd64_qt5.dll", "{symbol}"')
         if self.uses_speech:
-            for symbol in ("SpeechInitialize", "SpeechSetMix", "SpeechSetPitch",
+            for symbol in ("SpeechInitialize", "SpeechSetBackend", "SpeechSetMix", "SpeechSetPitch",
                            "SpeechSetSpeed", "SpeechSetExpression", "SpeechSetArticulation",
-                           "SpeechSpeak", "SpeechSpeakCP1252", "SpeechShutdown"):
+                           "SpeechSetFluency", "SpeechSpeak", "SpeechSpeakCP1252", "SpeechShutdown"):
                 self.emit(f'import {symbol}, "retro_speech.dll", "{symbol}"')
         # Die Runtime-Helfer werden absichtlich immer importiert. Damit koennen
         # spezialisierte FUNCTION-Instanzen auch Zahl->Text und dynamische
@@ -5944,8 +5962,8 @@ class _DBaseCodeGenerator:
         for payload, label in self.speech_utf8_literals.items():
             self.data_lines.extend(_db_lines(label, payload, nul_terminate=True))
         if self.uses_speech:
-            for key, default in (("mix", 55), ("pitch", 125), ("speed", 100),
-                                 ("expression", 60), ("articulation", 65)):
+            for key, default in (("backend", 0), ("mix", 55), ("pitch", 125), ("speed", 100),
+                                 ("expression", 60), ("articulation", 65), ("fluency", 75)):
                 self.data_lines.extend((f"__dbase_speech_{key}:", f"    dd {default}"))
         for raw, label in self.double_literals.items():
             low, high = struct.unpack("<II", raw)

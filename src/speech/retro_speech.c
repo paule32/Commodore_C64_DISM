@@ -4,15 +4,23 @@
  */
 #define _USE_MATH_DEFINES
 #include "retro_speech.h"
+#include "spc_reader.c" /* Stage 356: portable indexed SPC decoder, single-TU build */
 #include <ctype.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #ifdef _WIN32
+#include <wchar.h>
+#endif
+#ifdef _WIN32
 #include <windows.h>
 #include <mmsystem.h>
 #endif
+
+static int32_t g_speech_backend = 0; /* 0 = formant, 1 = Piper, 2 = SPC samples */
+static RS_Spc *g_speech_container = NULL;
+static uint32_t g_sample_rate = 0;
 
 #define RS_PI 3.14159265358979323846
 #define RS_MAX_PHONES 2048
@@ -65,10 +73,62 @@ static const Phone phones[] = {
     {"P", 450, 1700, 3000, 0, 0.85f, 70, 1},
     {"T", 400, 2250, 3400, 0, 0.9f, 70, 1},
     {"K", 500, 1900, 3000, 0, 0.9f, 76, 1},
-    {"_", 500, 1500, 2500, 0, 0, 135, 0},
+    {"_", 500, 1500, 2500, 0, 0, 105, 0},
     {".", 500, 1500, 2500, 0, 0, 250, 0},
     {"?", 500, 1500, 2500, 0, 0, 260, 0},
-    {"!", 500, 1500, 2500, 0, 0, 225, 0}
+    {"!", 500, 1500, 2500, 0, 0, 225, 0},
+    /* Stage 353: 40 new, individually parameterized phonetic variants.
+     * These are not all separate German phonemes; some are allophones,
+     * syllabic consonants or loanword/foreign-language sounds. */
+    /*  1.. 8  Long tense oral vowels (colon = sustained vowel). */
+    {"A:",  820, 1270, 2780, 1.00f, 0.012f, 190, 0},
+    {"E:",  420, 2100, 2900, 1.00f, 0.009f, 185, 0},
+    {"I:",  270, 2420, 3180, 1.00f, 0.008f, 185, 0},
+    {"O:",  460,  870, 2650, 1.00f, 0.010f, 185, 0},
+    {"U:",  315,  760, 2180, 1.00f, 0.010f, 190, 0},
+    {"AE:", 540, 1830, 2750, 1.00f, 0.012f, 185, 0},
+    {"OE:", 370, 1580, 2530, 1.00f, 0.012f, 185, 0},
+    {"UE:", 315, 1820, 2530, 1.00f, 0.012f, 185, 0},
+    /*  9..15  Short, lax vowel realizations. */
+    {"A0",  760, 1420, 2660, 0.94f, 0.028f,  78, 0},
+    {"E0",  620, 1790, 2630, 0.92f, 0.026f,  75, 0},
+    {"I0",  450, 1990, 2770, 0.92f, 0.027f,  74, 0},
+    {"O0",  580,  995, 2580, 0.94f, 0.025f,  80, 0},
+    {"U0",  425, 1040, 2240, 0.92f, 0.028f,  78, 0},
+    {"OE0", 555, 1560, 2490, 0.92f, 0.028f,  82, 0},
+    {"UE0", 440, 1760, 2450, 0.91f, 0.030f,  82, 0},
+    /* 16..19  Approximate nasalized vowels for names and loanwords. */
+    {"AN",  655, 1150, 2430, 0.86f, 0.070f, 145, 0},
+    {"EN",  540, 1430, 2470, 0.86f, 0.072f, 145, 0},
+    {"ON",  480,  900, 2280, 0.86f, 0.071f, 145, 0},
+    {"UN",  400, 1500, 2410, 0.86f, 0.072f, 145, 0},
+    /* 20..22  Rhotic variants including reduced German -er. */
+    {"RY",  405, 1320, 2130, 0.65f, 0.230f,  85, 0},
+    {"RX",  485, 1700, 2480, 0.18f, 0.720f,  82, 0},
+    {"ER",  540, 1420, 2480, 0.78f, 0.035f,  95, 0},
+    /* 23..25  Syllabic nasal allophones. */
+    {"M=",  295, 1060, 2150, 0.78f, 0.015f, 115, 0},
+    {"N=",  315, 1440, 2400, 0.78f, 0.018f, 115, 0},
+    {"NG=", 330, 1420, 2340, 0.76f, 0.024f, 118, 0},
+    /* 26..29  Affricates treated as one timed segment. */
+    {"TS",  390, 3190, 4700, 0.04f, 0.970f, 114, 1},
+    {"TSH", 440, 2300, 3700, 0.04f, 0.940f, 121, 1},
+    {"DSH", 475, 2040, 3300, 0.39f, 0.680f, 122, 1},
+    {"PF",  510, 1820, 3080, 0.02f, 0.925f, 118, 1},
+    /* 30..32  Distinct sibilant/frication variants. */
+    {"ZH",  475, 2250, 3670, 0.48f, 0.575f, 103, 0},
+    {"SHH", 445, 2440, 3920, 0.00f, 0.980f, 160, 0},
+    {"SS",  355, 3510, 5080, 0.00f, 1.000f, 150, 0},
+    /* 33..36  Loanword/foreign-language consonants. */
+    {"TH",  520, 2050, 3100, 0.00f, 0.760f, 104, 0},
+    {"DH",  475, 1740, 2790, 0.50f, 0.400f,  98, 0},
+    {"WW",  380, 1020, 2300, 0.75f, 0.025f, 100, 0},
+    {"NY",  320, 1850, 2860, 0.76f, 0.025f, 110, 0},
+    /* 37..40  Aspirated and velar-fricative realizations. */
+    {"PH",  430, 1640, 2890, 0.00f, 0.910f,  96, 1},
+    {"THP", 400, 2270, 3490, 0.00f, 0.950f,  94, 1},
+    {"KH",  485, 1770, 2870, 0.00f, 0.930f, 103, 1},
+    {"GH",  455, 1480, 2630, 0.48f, 0.580f, 108, 0}
 };
 #define PHONE_COUNT (sizeof(phones)/sizeof(phones[0]))
 
@@ -78,6 +138,7 @@ static int g_pitch = 125;
 static int g_speed = 100;
 static int g_expression = 60; /* 0=flat, 100=animated pitch */
 static int g_articulation = 65; /* 0=soft transitions, 100=crisp consonants */
+static int g_fluency = 75; /* 0=legacy-like articulated, 100=connected, Amiga-oriented */
 static int g_error = 0;
 static volatile int g_stop = 0;
 
@@ -88,7 +149,7 @@ static const Phone *lookup(const char *name) {
         if (!strcmp(phones[i].token, name)) return &phones[i];
     return NULL;
 }
-typedef struct { const Phone *phone; int duration; int stress; } Segment;
+typedef struct { const Phone *phone; int duration; int stress; int word_start; } Segment;
 typedef struct { Segment seg[RS_MAX_PHONES]; int n; } Utterance;
 static int append(Utterance *u, const char *token) {
     const Phone *p = lookup(token);
@@ -96,6 +157,7 @@ static int append(Utterance *u, const char *token) {
     u->seg[u->n].phone = p;
     u->seg[u->n].duration = p->ms;
     u->seg[u->n].stress = 0;
+    u->seg[u->n].word_start = 0;
     ++u->n;
     return 1;
 }
@@ -143,43 +205,207 @@ static int normalize(const char *src, char out[RS_MAX_TEXT]) {
 
 typedef struct { const char *word, *sequence; } Lexicon;
 static const Lexicon lexicon[] = {
-    {"hallo", "H A L O"},
-    {"ich", "I CH"},
-    {"bin", "B I N"},
+    {"ich", "I0 CH"},
+    {"bin", "B I0 N"},
     {"dein", "D AI N"},
-    {"sprachcomputer", "SH P R A X K O M P J U T @ R"},
-    {"computer", "K O M P J U T @ R"},
-    {"welt", "V E L T"},
-    {"guten", "G U T @ N"},
+    {"welt", "V E0 L T"},
+    {"guten", "G U: T N="},
     {"tag", "T A G"},
     {"ein", "AI N"},
     {"eine", "AI N @"},
-    {"ist", "I S T"},
     {"das", "D A S"},
     {"und", "U N T"},
-    {"der", "D E R"},
-    {"die", "D i"},
-    {"du", "D U"},
-    {"wir", "V i R"},
+    {"der", "D E: R"},
+    {"die", "D I:"},
+    {"du", "D U:"},
+    {"wir", "V I: R"},
     {"spreche", "SH P R E CH @"},
-    {"sprechen", "SH P R E CH @ N"},
-    {"sprache", "SH P R A X @"},
+    {"sprache", "SH P R A: X @"},
     {"danke", "D A NG K @"},
-    {"bitte", "B I T @"},
     {"ja", "J A"},
     {"nein", "N AI N"},
     {"test", "T E S T"},
-    {"stimme", "SH T I M @"},
-    {"roboter", "R O B O T @ R"},
     {"willkommen", "V I L K O M @ N"},
-    {"morgen", "M O R G @ N"},
-    {"heute", "H OI T @"},
     {"mein", "M AI N"},
     {"meine", "M AI N @"},
-    {"zeit", "T S AI T"},
-    {"stimmen", "SH T I M @ N"},
+    {"zeit", "TS AI T"},
     {"synthesizer", "Z UE N T E Z AI Z @ R"},
-    {"computerstimme", "K O M P J U T @ R SH T I M @"}
+    {"computerstimme", "K O M P J U T @ R SH T I0 M @"},
+    {"{hnlich", "AE: N L I0 CH"},
+    {"schule", "SH U: L @"},
+    {"sch|n", "SH OE: N"},
+    {"gr}n", "G R UE: N"},
+    {"tisch", "T I0 SH"},
+    {"katze", "K A0 TS @"},
+    {"pfanne", "PF A0 N @"},
+    {"deutsch", "D OI TSH"},
+    {"dschungel", "DSH U0 NG @ L"},
+    {"sehr", "Z E: R"},
+    {"mehr", "M E: R"},
+    {"sehen", "Z E: N="},
+    /* Stage 354: common German connected-speech vocabulary; expressions are
+     * sequences of existing phone tokens, not recordings of whole words. */
+    {"hallo", "H A L O"}, /* retained historical reading */
+    {"gutenabend", "G U: T N= A: B N T"},
+    {"abend", "A: B N T"},
+    {"gute", "G U: T @"},
+    {"guter", "G U: T ER"},
+    {"gutes", "G U: T @ S"},
+    {"liebe", "L I: B @"},
+    {"lieber", "L I: B ER"},
+    {"lieben", "L I: B N="},
+    {"freund", "F R OI N T"},
+    {"freunde", "F R OI N D @"},
+    {"freundlich", "F R OI N T L I0 CH"},
+    {"sch|nen", "SH OE: N N="},
+    {"wunderbar", "V U0 N D ER B A: R"},
+    {"prima", "P R I: M A:"},
+    {"super", "Z U: P ER"},
+    {"toll", "T O0 L"},
+    {"gut", "G U: T"},
+    {"schlecht", "SH L E0 CH T"},
+    {"richtig", "R I0 CH T I0 CH"},
+    {"falsch", "F A0 L SH"},
+    {"dann", "D A0 N"},
+    {"wenn", "V E0 N"},
+    {"weil", "V AI L"},
+    {"aber", "A: B ER"},
+    {"auch", "AU X"},
+    {"nicht", "N I0 CH T"},
+    {"noch", "N O0 X"},
+    {"schon", "SH O: N"},
+    {"jetzt", "J E0 TS T"},
+    {"gleich", "G L AI CH"},
+    {"hier", "H I: ER"},
+    {"dort", "D O: R T"},
+    {"heute", "H OI T @"}, /* stable */
+    {"gestern", "G E0 S T ER N"},
+    {"morgen", "M O: R G N="}, /* updated long vowel */
+    {"sp{ter", "SH P AE: T ER"},
+    {"fr}her", "F R UE: ER"},
+    {"immer", "I0 M ER"},
+    {"manchmal", "M A0 N CH M A: L"},
+    {"wieder", "V I: D ER"},
+    {"weiter", "V AI T ER"},
+    {"fertig", "F E0 R T I0 CH"},
+    {"bitte", "B I0 T @"}, /* common */
+    {"dankesch|n", "D A0 NG K @ SH OE: N"},
+    {"entschuldigung", "E0 N T SH U0 L D I0 G U0 NG"},
+    {"auf", "AU F"},
+    {"aus", "AU S"},
+    {"mit", "M I0 T"},
+    {"ohne", "O: N @"},
+    {"f}r", "F UE: R"},
+    {"von", "F O0 N"},
+    {"zu", "TS U:"},
+    {"zum", "TS U0 M"},
+    {"zur", "TS U: ER"},
+    {"im", "I0 M"},
+    {"am", "A0 M"},
+    {"an", "A0 N"},
+    {"in", "I0 N"},
+    {"ist", "I0 S T"}, /* no independent pause between short words */
+    {"sind", "Z I0 N T"},
+    {"war", "V A: R"},
+    {"wird", "V I0 R T"},
+    {"werden", "V E: R D N="},
+    {"haben", "H A: B N="},
+    {"habe", "H A: B @"},
+    {"hast", "H A0 S T"},
+    {"hat", "H A0 T"},
+    {"kann", "K A0 N"},
+    {"k|nnen", "K OE0 N N="},
+    {"muss", "M U0 S"},
+    {"m}ssen", "M UE0 S N="},
+    {"m|chte", "M OE0 CH T @"},
+    {"m|chten", "M OE0 CH T N="},
+    {"will", "V I0 L"},
+    {"wollen", "V O0 L N="},
+    {"soll", "Z O0 L"},
+    {"sollen", "Z O0 L N="},
+    {"machen", "M A0 X N="},
+    {"gemacht", "G @ M A0 X T"},
+    {"arbeiten", "A: R B AI T N="},
+    {"arbeit", "A: R B AI T"},
+    {"lesen", "L E: Z N="},
+    {"schreiben", "SH R AI B N="},
+    {"h|ren", "H OE: R N="},
+    {"sagen", "Z A: G N="},
+    {"sprechen", "SH P R E0 CH N="},
+    {"gesprochen", "G @ SH P R O0 X N="},
+    {"lernen", "L E0 R N N="},
+    {"wissen", "V I0 S N="},
+    {"verstehen", "F ER SH T E: N="},
+    {"verstand", "F ER SH T A0 N T"},
+    {"fragen", "F R A: G N="},
+    {"frage", "F R A: G @"},
+    {"antwort", "A0 N T V O0 R T"},
+    {"antworten", "A0 N T V O0 R T N="},
+    {"verbindung", "F ER B I0 N D U0 NG"},
+    {"sprachausgabe", "SH P R A: X AU S G A: B @"},
+    {"sprachcomputer", "SH P R A: X K O0 M P J U: T ER"},
+    {"sprachsynthese", "SH P R A: X Z UE0 N T E: Z @"},
+    {"sprachsynthesizer", "SH P R A: X Z UE0 N T E: Z AI Z ER"},
+    {"synthese", "Z UE0 N T E: Z @"},
+    {"aussprache", "AU S SH P R A: X @"},
+    {"stimme", "SH T I0 M @"},
+    {"stimmen", "SH T I0 M N="},
+    {"klang", "K L A0 NG"},
+    {"laut", "L AU T"},
+    {"laute", "L AU T @"},
+    {"leise", "L AI Z @"},
+    {"lautst{rke", "L AU T SH T AE R K @"},
+    {"tempo", "T E0 M P O:"},
+    {"langsam", "L A0 NG Z A: M"},
+    {"schnell", "SH N E0 L"},
+    {"fl}ssig", "F L UE0 S I0 CH"},
+    {"deutlich", "D OI T L I0 CH"},
+    {"deutsche", "D OI T SH @"},
+    {"deutschland", "D OI T SH L A0 N T"},
+    {"amiga", "A: M I: G A:"},
+    {"commodore", "K O0 M O0 D O: R"},
+    {"computer", "K O0 M P J U: T ER"},
+    {"programm", "P R O: G R A0 M"},
+    {"programme", "P R O: G R A0 M @"},
+    {"programmieren", "P R O: G R A0 M I: R N="},
+    {"compiler", "K O0 M P AI L ER"},
+    {"datei", "D A: T AI"},
+    {"dateien", "D A: T AI @ N"},
+    {"daten", "D A: T N="},
+    {"datenbank", "D A: T N= B A0 NG K"},
+    {"fenster", "F E0 N S T ER"},
+    {"bildschirm", "B I0 L T SH I0 R M"},
+    {"tastatur", "T A0 S T A: T U: R"},
+    {"maus", "M AU S"},
+    {"men}", "M E0 N UE:"},
+    {"editor", "E0 D I: T O: R"},
+    {"projekt", "P R O: J E0 K T"},
+    {"einstellungen", "AI N SH T E0 L U0 NG N="},
+    {"starten", "SH T A: R T N="},
+    {"start", "SH T A: R T"},
+    {"stoppen", "SH T O0 P N="},
+    {"beenden", "B @ E0 N D N="},
+    {"laden", "L A: D N="},
+    {"speichern", "SH P AI CH ER N"},
+    {"ge|ffnet", "G @ OE0 F N @ T"},
+    {"geschlossen", "G @ SH L O0 S N="},
+    {"fertiggestellt", "F E0 R T I0 CH G @ SH T E0 L T"},
+    {"fehler", "F E: L ER"},
+    {"warnung", "V A: R N U0 NG"},
+    {"hinweis", "H I0 N V AI S"},
+    {"erfolg", "ER F O0 L K"},
+    {"funktion", "F U0 NG K TS J O: N"},
+    {"funktionen", "F U0 NG K TS J O: N N="},
+    {"windows", "V I0 N D O: S"},
+    {"system", "Z UE0 S T E: M"},
+    {"technologie", "T E0 X N O0 L O: G I:"},
+    {"mensch", "M E0 N SH"},
+    {"menschen", "M E0 N SH N="},
+    {"maschine", "M A: SH I: N @"},
+    {"roboter", "R O: B O: T ER"},
+    {"k}nstlich", "K UE0 N S T L I0 CH"},
+    {"intelligenz", "I0 N T E0 L I0 G E0 N TS"},
+    {"gutenmorgen", "G U: T N= M O: R G N="}
 };
 
 static int starts(const char *s, const char *p) {
@@ -194,7 +420,14 @@ static int is_vowel(const Phone *p) {
             !strcmp(t,"O") || !strcmp(t,"o") ||
             !strcmp(t,"U") || !strcmp(t,"u") ||
             !strcmp(t,"AE") || !strcmp(t,"OE") || !strcmp(t,"UE") ||
-            !strcmp(t,"AI") || !strcmp(t,"AU") || !strcmp(t,"OI"));
+            !strcmp(t,"AI") || !strcmp(t,"AU") || !strcmp(t,"OI") ||
+            !strcmp(t,"A:") || !strcmp(t,"E:") || !strcmp(t,"I:") ||
+            !strcmp(t,"O:") || !strcmp(t,"U:") || !strcmp(t,"AE:") ||
+            !strcmp(t,"OE:") || !strcmp(t,"UE:") ||
+            !strcmp(t,"A0") || !strcmp(t,"E0") || !strcmp(t,"I0") ||
+            !strcmp(t,"O0") || !strcmp(t,"U0") || !strcmp(t,"OE0") ||
+            !strcmp(t,"UE0") || !strcmp(t,"AN") || !strcmp(t,"EN") ||
+            !strcmp(t,"ON") || !strcmp(t,"UN") || !strcmp(t,"ER"));
 }
 static int reduced_word(const char *word) {
     static const char *const reduced[]={"ich","bin","dein","das","die",
@@ -221,7 +454,7 @@ static void stress_word(Utterance *u, int begin, const char *word) {
     }
     if (position>=0) {
         u->seg[position].stress=1;
-        u->seg[position].duration+=18;
+        u->seg[position].duration+=12;
     }
 }
 static int translate_word(Utterance *u, const char *word) {
@@ -231,6 +464,7 @@ static int translate_word(Utterance *u, const char *word) {
         if (!strcmp(word, lexicon[i].word)) {
             if (!append_list(u, lexicon[i].sequence)) return 0;
             stress_word(u,begin,word);
+            if (begin < u->n) u->seg[begin].word_start = 1;
             return 1;
         }
     n = strlen(word);
@@ -238,38 +472,59 @@ static int translate_word(Utterance *u, const char *word) {
         const char *s = word + i;
         const char *token = NULL;
         size_t count = 1;
-        if (starts(s, "sch")) { token="SH"; count=3; }
+        if (starts(s, "dsch")) { token="DSH"; count=4; }
+        else if (starts(s, "tsch")) { token="TSH"; count=4; }
+        else if (starts(s, "sch")) { token="SH"; count=3; }
         else if (starts(s, "ch")) { token=(i && (word[i-1]=='a' || word[i-1]=='o' || word[i-1]=='u')) ? "X" : "CH"; count=2; }
         else if (starts(s, "ei") || starts(s, "ai")) { token="AI"; count=2; }
         else if (starts(s, "au")) { token="AU"; count=2; }
         else if (starts(s, "eu") || (s[0]=='{' && s[1]=='u')) { token="OI"; count=2; }
-        else if (starts(s, "ie")) { token="i"; count=2; }
+        else if (starts(s, "ie")) { token="I:"; count=2; }
         else if (starts(s, "ck")) { token="K"; count=2; }
-        else if (starts(s, "pf")) { if (!append(u,"P")) return 0; token="F"; count=2; }
+        else if (starts(s, "pf")) { token="PF"; count=2; }
         else if (starts(s, "ph")) { token="F"; count=2; }
         else if (starts(s, "th")) { token="T"; count=2; }
-        else if (starts(s, "er") && i+2==n) { token="@"; count=2; }
+        else if (starts(s, "er") && i+2==n) { token="ER"; count=2; }
         else if (starts(s, "en") && i+2==n && n>3) {
-            if (!append(u,"@")) return 0;
-            token="N"; count=2;
+            /* Reduced final -en, often syllabic /n/ after consonants. */
+            if (i>0 && !strchr("aeiou{|}", word[i-1])) {
+                token="N=";
+            } else {
+                if (!append(u,"@")) return 0;
+                token="N";
+            }
+            count=2;
         }
-        else if (starts(s, "aa")) { token="a"; count=2; }
-        else if (starts(s, "ee")) { token="e"; count=2; }
-        else if (starts(s, "oo")) { token="o"; count=2; }
-        else if (i>0 && *s=='h' && i+1<n && strchr("aeiou{|}",word[i-1])
-                 && strchr("aeiou{|}",word[i+1])) {i+=1;continue;}
+        else if (starts(s, "aa")) { token="A:"; count=2; }
+        else if (starts(s, "ee")) { token="E:"; count=2; }
+        else if (starts(s, "oo")) { token="O:"; count=2; }
+        else if (i+1<n && s[1]=='h' && strchr("aeiou{|}",s[0]) &&
+                 (i+2==n || !strchr("aeiou{|}",s[2]))) {
+            switch (s[0]) {
+                case 'a': token="A:"; break;
+                case 'e': token="E:"; break;
+                case 'i': token="I:"; break;
+                case 'o': token="O:"; break;
+                case 'u': token="U:"; break;
+                case '{': token="AE:"; break;
+                case '|': token="OE:"; break;
+                case '}': token="UE:"; break;
+                default: break;
+            }
+            count=2;
+        }
         else if (starts(s, "ng")) { token="NG"; count=2; }
         else if (starts(s, "qu")) { if (!append(u,"K")) return 0; token="V"; count=2; }
-        else if (starts(s, "tz") || starts(s, "ts")) { if (!append(u,"T")) return 0; token="S"; count=2; }
+        else if (starts(s, "tz") || starts(s, "ts")) { token="TS"; count=2; }
         else if (i==0 && starts(s,"sp")) { token="SH"; count=1; }
         else if (i==0 && starts(s,"st")) { token="SH"; count=1; }
         else {
             switch (*s) {
-                case 'a': token="A"; break; case 'e': token=(i==n-1) ? "@" : "E"; break;
-                case 'i': token="I"; break; case 'o': token="O"; break;
-                case 'u': token="U"; break; case '{': token="AE"; break;
-                case '|': token="OE"; break; case '}': token="UE"; break;
-                case '~': token="S"; break;
+                case 'a': token="A0"; break; case 'e': token=(i==n-1) ? "@" : "E0"; break;
+                case 'i': token="I0"; break; case 'o': token="O0"; break;
+                case 'u': token="U0"; break; case '{': token="AE"; break;
+                case '|': token="OE0"; break; case '}': token="UE0"; break;
+                case '~': token="SS"; break;
                 case 'b': token="B"; break; case 'c': token="K"; break;
                 case 'd': token="D"; break; case 'f': token="F"; break;
                 case 'g': token="G"; break; case 'h': token="H"; break;
@@ -292,6 +547,7 @@ static int translate_word(Utterance *u, const char *word) {
         i += count;
     }
     stress_word(u,begin,word);
+    if (begin < u->n) u->seg[begin].word_start = 1;
     return 1;
 }
 static int from_text(const char *text, Utterance *u) {
@@ -315,12 +571,10 @@ static int from_text(const char *text, Utterance *u) {
             if (!append(u,mark)) return 0;
         } else if (normalized[i] == ',' || normalized[i] == ';' || normalized[i] == ':') {
             if (!append(u,"_")) return 0;
-        } else if (normalized[i]==' ' && u->n && normalized[i+1] && normalized[i+1]!=' '
-                   && u->seg[u->n-1].phone->v+u->seg[u->n-1].phone->n > 0) {
-            /* A short inter-word pause helps the retro voice remain legible. */
-            if (!append(u,"_")) return 0;
-            u->seg[u->n-1].duration = 36;
         }
+        /* Stage 354: normal whitespace is a word boundary, NOT silence.
+         * The following word_start marker allows prosodic articulation
+         * without the repeated 36 ms gaps that made phrases choppy. */
         ++i;
     }
     return u->n != 0;
@@ -397,7 +651,8 @@ static uint32_t synth(const Utterance *u, int16_t *pcm, uint32_t capacity) {
     const double pitch_alpha=1.0-exp(-1.0/(0.013*g_rate));
     const double express=g_expression/100.0;
     const double articulate=g_articulation/100.0;
-    const double transition_samples=(0.038-0.027*articulate)*g_rate;
+    const double fluency=g_fluency/100.0;
+    const double transition_samples=(0.034-0.021*articulate+0.016*fluency)*g_rate;
     Resonator rs[3]={{0,0},{0,0},{0,0}};
     if (!need) { err(3); return 0; }
     if (!pcm) {g_error=0;return need;}
@@ -409,8 +664,6 @@ static uint32_t synth(const Utterance *u, int16_t *pcm, uint32_t capacity) {
         const Phone *prev=p>0?u->seg[p-1].phone:q;
         const Phone *next=p+1<u->n?u->seg[p+1].phone:q;
         uint32_t len=samples_for(seg), i;
-        double voiced_neighbours=(q->v>0.5 && prev->v>0.5);
-        double voiced_next=(q->v>0.5 && next->v>0.5);
         if (p==0 || p>phrase_end) {
             int k;
             phrase_end=p;
@@ -431,12 +684,22 @@ static uint32_t synth(const Utterance *u, int16_t *pcm, uint32_t capacity) {
         }
         for (i=0;i<len;++i) {
             double t=(double)i/(double)(len?len:1);
-            double blend=ease(i/transition_samples);
-            double f1=prev->f1+(q->f1-prev->f1)*blend;
-            double f2=prev->f2+(q->f2-prev->f2)*blend;
-            double f3=prev->f3+(q->f3-prev->f3)*blend;
-            double v=prev->v+(q->v-prev->v)*blend;
-            double noisy=prev->n+(q->n-prev->n)*blend;
+            double incoming=1.0-ease(i/transition_samples);
+            double outgoing=0.0;
+            double f1, f2, f3, v, noisy;
+            if (next->v+next->n>0.0 && q->v+q->n>0.0 && len>3)
+                outgoing=ease(((double)i-((double)len-transition_samples)) /
+                              transition_samples) * (0.24+0.21*fluency);
+            /* Coarticulation operates on both ends of a segment, blending
+             * formant trajectories before the NEXT segment begins. Stage 353
+             * only moved the spectrum after the previous segment ended. */
+            if (prev->v+prev->n==0.0) incoming=0.0;
+            if (q->v+q->n==0.0) {incoming=0.0; outgoing=0.0;}
+            f1=q->f1+incoming*(prev->f1-q->f1)+outgoing*(next->f1-q->f1);
+            f2=q->f2+incoming*(prev->f2-q->f2)+outgoing*(next->f2-q->f2);
+            f3=q->f3+incoming*(prev->f3-q->f3)+outgoing*(next->f3-q->f3);
+            v=q->v+incoming*(prev->v-q->v)+outgoing*(next->v-q->v);
+            noisy=q->n+incoming*(prev->n-q->n)+outgoing*(next->n-q->n);
             double phrase_t=(double)phrase_elapsed/(double)phrase_total;
             double contour, accent, target_pitch, white, high, pulse;
             double input, wave, env, rough, c64, value;
@@ -448,21 +711,26 @@ static uint32_t synth(const Utterance *u, int16_t *pcm, uint32_t capacity) {
                 contour=0.13-0.20*phrase_t;
             else
                 contour=0.065-0.18*phrase_t;
-            accent=seg->stress ? 0.16*ease(t/0.27)*(1.0-ease((t-0.70)/0.29)) : 0.0;
+            accent=seg->stress ? (0.11-0.035*fluency)*ease(t/0.24)*
+                            (1.0-ease((t-0.68)/0.28)) : 0.0;
             target_pitch=g_pitch*(1.0+express*(contour+accent+
                      0.013*sin(2.0*RS_PI*4.1*(double)out/g_rate)));
             smoothed_pitch+=pitch_alpha*(target_pitch-smoothed_pitch);
             phase+=smoothed_pitch/g_rate;
             if (phase>=1.0) phase-=1.0;
             pulse=phase<0.12?(1.0-phase/0.12):-0.061;
+            pulse=(1.0-0.48*fluency)*pulse+0.48*fluency*(
+                     0.60*sin(2.0*RS_PI*phase)+
+                     0.28*sin(4.0*RS_PI*phase)+
+                     0.12*sin(6.0*RS_PI*phase));
             white=(int32_t)noise_next(&rng)/2147483648.0;
             low_noise=.86*low_noise+.14*white;
             high=white-low_noise;
             /* Non-speech gaps are silent without carried formant excitation. */
             input=v*pulse*1.15+noisy*high*(0.40+0.36*articulate);
             if (q->burst) {
-                if (t<.14) input=high*q->n*(0.92+0.34*articulate);
-                else if (t<.30) input*=.35;
+                if (t<.10) input=high*q->n*(0.80+0.30*articulate);
+                else if (t<.19) input*=.55;
             }
             wave=.94*formant(&rs[0],input,f1,120,g_rate)
                 +.53*formant(&rs[1],input,f2,180,g_rate)
@@ -470,11 +738,14 @@ static uint32_t synth(const Utterance *u, int16_t *pcm, uint32_t capacity) {
             wave+=(0.10+0.075*articulate)*noisy*high;
             /* Avoid a complete fade-out at boundaries of neighbouring vowels
              * and other voiced phonemes. Prevent clicks at word/phrase edges. */
-            env=(voiced_neighbours?0.86+0.14*ease(i/(.007*g_rate)):
-                 ease(i/(.005*g_rate)));
-            env*=(voiced_next?0.86+0.14*ease((len-i)/(.009*g_rate)):
-                  ease((len-i)/(.008*g_rate)));
-            if (!q->v && !q->n) env*=0.0;
+            env=1.0;
+            if (prev->v+prev->n==0.0)
+                env*=ease(i/(.007*g_rate));
+            else if (seg->word_start && fluency<0.50)
+                env*=0.96+0.04*ease(i/(.006*g_rate));
+            if (next->v+next->n==0.0)
+                env*=ease((len-i)/(.010*g_rate));
+            if (q->v+q->n==0.0) env=0.0;
             rough=clamp(wave*env*0.82,-1,1);
             c64=floor(rough*48.0+0.5)/48.0;
             value=rough*(g_mix/100.0)+c64*(1.0-g_mix/100.0);
@@ -514,6 +785,20 @@ int32_t RS_CALL SpeechSetArticulation(int32_t percent) {
     if (percent<0 || percent>100) return err(1);
     g_articulation=percent;g_error=0;return 1;
 }
+int32_t RS_CALL SpeechSetFluency(int32_t percent) {
+    if (percent<0 || percent>100) return err(1);
+    g_fluency=percent;g_error=0;return 1;
+}
+int32_t RS_CALL SpeechSetBackend(int32_t backend) {
+    if (backend != 0 && backend != 1 && backend != 2) return err(1);
+    g_speech_backend=backend; g_error=0; return 1;
+}
+int32_t RS_CALL SpeechGetPhonemeCount(void) {return (int32_t)PHONE_COUNT;}
+const char *RS_CALL SpeechGetPhonemeToken(int32_t index) {
+    if (index<0 || (size_t)index>=PHONE_COUNT) {err(1);return NULL;}
+    g_error=0;
+    return phones[index].token;
+}
 int32_t RS_CALL SpeechGetSampleRate(void) {return g_rate;}
 int32_t RS_CALL SpeechGetLastError(void) {return g_error;}
 const char *RS_CALL SpeechGetLastErrorText(void) {
@@ -525,9 +810,127 @@ const char *RS_CALL SpeechGetLastErrorText(void) {
       case 4: return "Output buffer too small";
       case 5: return "Audio playback unavailable";
       case 6: return "Unable to write WAV file";
+      case 7: return "Piper offline voice package is missing or invalid";
+      case 8: return "Piper speech generation failed or timed out";
+      case 9: return rs_spc_error();
       default: return "Unknown error";
     }
 }
+
+/* Stage 356: name-indexed SPC sample backend. Load explicitly via
+ * SpeechLoadContainer() or lazily from D64_SPEECH_CONTAINER / speech.spc.
+ * Missing words deliberately return an error: silently falling back to the
+ * synthesizer would make the sample voice inconsistent. */
+int32_t RS_CALL SpeechLoadContainer(const char *path) {
+    RS_Spc *next=rs_spc_open(path);
+    if(!next)return err(9);
+    rs_spc_close(g_speech_container);
+    g_speech_container=next;
+    g_sample_rate=0;
+    g_error=0;return 1;
+}
+int32_t RS_CALL SpeechUnloadContainer(void) {
+    rs_spc_close(g_speech_container);
+    g_speech_container=NULL;
+    g_sample_rate=0;g_error=0;return 1;
+}
+int32_t RS_CALL SpeechGetContainerEntryCount(void) {
+    return rs_spc_entry_count(g_speech_container);
+}
+const char *RS_CALL SpeechGetContainerEntryName(int32_t index) {
+    return rs_spc_entry_name(g_speech_container,index);
+}
+int32_t RS_CALL SpeechGetLastSampleRate(void) {return (int32_t)g_sample_rate;}
+static int rs_ensure_container(void) {
+    const char *explicit_path;
+    if(g_speech_container)return 1;
+    explicit_path=getenv("D64_SPEECH_CONTAINER");
+    if(explicit_path&&*explicit_path)return SpeechLoadContainer(explicit_path);
+    if(SpeechLoadContainer("speech.spc"))return 1;
+#ifdef _WIN32
+    {
+        char path[MAX_PATH];
+        char *slash;
+        DWORD n=GetModuleFileNameA(NULL,path,(DWORD)sizeof(path));
+        if(n&&n<sizeof(path)){
+            slash=strrchr(path,'\\');
+            if(!slash)slash=strrchr(path,'/');
+            if(slash && (size_t)(slash-path)+strlen("\\speech.spc")<sizeof(path)) {
+                strcpy(slash+1,"speech.spc");
+                if(SpeechLoadContainer(path))return 1;
+            }
+        }
+    }
+#endif
+    return err(9);
+}
+uint32_t RS_CALL SpeechRenderSample(const char *name,int16_t *pcm,uint32_t capacity){
+    int16_t *decoded=NULL;
+    uint32_t frames=0,rate=0;
+    if(!rs_ensure_container())return 0;
+    if(!rs_spc_decode(g_speech_container,name,&decoded,&frames,&rate))return err(9);
+    g_sample_rate=rate;
+    if(pcm){
+        if(capacity<frames){free(decoded);return err(4);}
+        memcpy(pcm,decoded,(size_t)frames*2);
+    }
+    free(decoded);g_error=0;
+    return frames;
+}
+static int rs_samples_text(const char *text,int16_t **out,uint32_t *out_frames,uint32_t *out_rate) {
+    const unsigned char *p=(const unsigned char*)text;
+    int16_t *joined=NULL;
+    uint32_t filled=0,rate=0;
+    size_t words=0;
+    if(!text||!*text||strlen(text)>RS_MAX_TEXT)return err(2);
+    if(!rs_ensure_container())return 0;
+    while(*p){
+        char key[256];
+        size_t k=0;
+        int16_t *part=NULL;
+        uint32_t n=0,r=0,gap=0,new_size;
+        while(*p && !((*p>='a'&&*p<='z')||(*p>='A'&&*p<='Z')||
+                       (*p>='0'&&*p<='9')||(*p>=128)))++p;
+        if(!*p)break;
+        while(*p && ((*p>='a'&&*p<='z')||(*p>='A'&&*p<='Z')||
+                      (*p>='0'&&*p<='9')||(*p>=128))) {
+            if(k>=sizeof(key)-1){free(joined);return err(2);}
+            key[k++]=(char)*p++;
+        }
+        key[k]=0;
+        if(!rs_spc_decode(g_speech_container,key,&part,&n,&r)){
+            free(joined);return err(9);
+        }
+        if(!rate)rate=r;
+        if(rate!=r){free(part);free(joined);return err(9);}
+        gap=words?rate/40:0; /* 25ms between words, no synthetic syllable splits */
+        if(n>SPC_MAX_FRAMES||filled>SPC_MAX_FRAMES-gap||n>SPC_MAX_FRAMES-filled-gap){
+            free(part);free(joined);return err(3);
+        }
+        new_size=filled+gap+n;
+        {
+            int16_t *grown=(int16_t*)realloc(joined,(size_t)(new_size?new_size:1)*2);
+            if(!grown){free(part);free(joined);return err(3);}
+            joined=grown;
+        }
+        if(gap){memset(joined+filled,0,(size_t)gap*2);filled+=gap;}
+        /* A short linear fade removes clicks from hard-cut sample boundaries. */
+        {
+            uint32_t i,fade=rate/200; /* 5 ms */
+            if(fade>n/2)fade=n/2;
+            for(i=0;i<fade;i++){
+                part[i]=(int16_t)((int32_t)part[i]*i/(fade?fade:1));
+                part[n-1-i]=(int16_t)((int32_t)part[n-1-i]*i/(fade?fade:1));
+            }
+        }
+        memcpy(joined+filled,part,(size_t)n*2);
+        filled+=n;words++;free(part);
+    }
+    if(!words){free(joined);return err(2);}
+    *out=joined;*out_frames=filled;*out_rate=rate;
+    g_sample_rate=rate;g_error=0;return 1;
+}
+
 static uint32_t render(const char *s,int16_t *pcm,uint32_t cap,int direct) {
     Utterance *u=(Utterance*)malloc(sizeof(Utterance));
     uint32_t result;
@@ -551,14 +954,197 @@ static void put_u16(FILE *f,uint32_t v) {
 static void put_u32(FILE *f,uint32_t v) {
     put_u16(f,v&65535); put_u16(f,v>>16);
 }
-int32_t RS_CALL SpeechSaveWav(const char *wav_path,const char *text) {
-    uint32_t n=SpeechRenderText(text,NULL,0), i;
+
+/* Stage 355: Optional Windows Piper bridge; no additional DSP library or
+ * Python interpreter is needed at runtime.  Piper and the model are NOT
+ * distributed with the project and must be installed independently.
+ * Generated WAVs are cached in the user's LOCALAPPDATA/TEMP directory.
+ * The formant implementation is left intact as backend 0. */
+#ifdef _WIN32
+#define RS_PIPER_PATH 4096
+static int rs_file_exists_w(const wchar_t *path) {
+    DWORD flags=GetFileAttributesW(path);
+    return flags != INVALID_FILE_ATTRIBUTES && !(flags & FILE_ATTRIBUTE_DIRECTORY);
+}
+static int rs_dir_exists_w(const wchar_t *path) {
+    DWORD flags=GetFileAttributesW(path);
+    return flags != INVALID_FILE_ATTRIBUTES && (flags & FILE_ATTRIBUTE_DIRECTORY);
+}
+static int rs_valid_wav_w(const wchar_t *path) {
+    HANDLE handle;
+    char header[12];
+    DWORD nread=0;
+    DWORD size;
+    if (!rs_file_exists_w(path)) return 0;
+    handle=CreateFileW(path,GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE,NULL,
+                       OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,NULL);
+    if (handle==INVALID_HANDLE_VALUE) return 0;
+    size=GetFileSize(handle,NULL);
+    if (size<44 || size==INVALID_FILE_SIZE ||
+        !ReadFile(handle,header,sizeof(header),&nread,NULL) || nread!=sizeof(header)) {
+        CloseHandle(handle);return 0;
+    }
+    CloseHandle(handle);
+    return memcmp(header,"RIFF",4)==0 && memcmp(header+8,"WAVE",4)==0;
+}
+static int rs_join_w(wchar_t *out, size_t cap, const wchar_t *base, const wchar_t *name) {
+    size_t n=wcslen(base), m=wcslen(name);
+    if (n+m+2 >= cap) return 0;
+    wcscpy(out,base);
+    if (n && base[n-1]!=L'\\' && base[n-1]!=L'/') wcscat(out,L"\\");
+    wcscat(out,name); return 1;
+}
+static int rs_find_piper(wchar_t *home, size_t cap, wchar_t *exe,
+                          wchar_t *model) {
+    wchar_t base[RS_PIPER_PATH], probe[RS_PIPER_PATH], candidate[RS_PIPER_PATH];
+    DWORD length=GetEnvironmentVariableW(L"D64_PIPER_HOME",base,RS_PIPER_PATH);
+    unsigned int i;
+    if (length && length<RS_PIPER_PATH) {
+        if (!rs_join_w(exe,cap,base,L"piper.exe") || !rs_file_exists_w(exe)) return 0;
+        wcscpy(home,base);
+    } else {
+        length=GetModuleFileNameW(NULL,base,RS_PIPER_PATH);
+        if (!length || length>=RS_PIPER_PATH) return 0;
+        while (length && base[length-1]!=L'\\' && base[length-1]!=L'/') --length;
+        base[length]=0;
+        for (i=0;i<4;++i) {
+            const wchar_t *subdir=i==0?L"piper":i==1?L"speech\\piper":
+                                  i==2?L"..\\piper":L"..\\speech\\piper";
+            if (!rs_join_w(probe,RS_PIPER_PATH,base,subdir)) continue;
+            if (!rs_join_w(candidate,RS_PIPER_PATH,probe,L"piper.exe")) continue;
+            if (rs_file_exists_w(candidate)) {
+                wcscpy(home,probe); wcscpy(exe,candidate); break;
+            }
+        }
+        if (i==4) return 0;
+    }
+    /* Prefer the highest-quality voice, accept smaller installed variants. */
+    for (i=0;i<3;++i) {
+        const wchar_t *file=i==0?L"de_DE-thorsten-high.onnx":
+                            i==1?L"de_DE-thorsten-medium.onnx":
+                                 L"de_DE-thorsten-low.onnx";
+        if (!rs_join_w(model,cap,home,file)) return 0;
+        if (rs_file_exists_w(model)) {
+            wchar_t config[RS_PIPER_PATH];
+            if (swprintf(config,RS_PIPER_PATH,L"%ls.json",model)>0 &&
+                rs_file_exists_w(config)) return 1;
+        }
+    }
+    return 0;
+}
+static unsigned long long rs_hash_text(const char *text,const wchar_t *model) {
+    /* FNV-1a: hash both the utterance and the selected model path. */
+    unsigned long long hash=14695981039346656037ULL;
+    const unsigned char *p=(const unsigned char *)text;
+    const wchar_t *m=model;
+    while (*p) {hash^=*p++;hash*=1099511628211ULL;}
+    while (*m) {hash^=(unsigned int)(*m++);hash*=1099511628211ULL;}
+    return hash;
+}
+static int rs_piper_cache_path(wchar_t *out,size_t cap,
+                               const char *text,const wchar_t *model) {
+    wchar_t root[RS_PIPER_PATH],folder[RS_PIPER_PATH];
+    DWORD n=GetEnvironmentVariableW(L"LOCALAPPDATA",root,RS_PIPER_PATH);
+    if (!n || n>=RS_PIPER_PATH) {
+        n=GetTempPathW(RS_PIPER_PATH,root);
+        if (!n || n>=RS_PIPER_PATH) return 0;
+    }
+    if (!rs_join_w(folder,RS_PIPER_PATH,root,L"d64_dism_speech_cache")) return 0;
+    if (!rs_dir_exists_w(folder)) CreateDirectoryW(folder,NULL);
+    if (!rs_dir_exists_w(folder)) return 0;
+    {
+        wchar_t name[80];
+        unsigned long long hash=rs_hash_text(text,model);
+        if (swprintf(name,80,L"piper_%08lx%08lx.wav",
+                     (unsigned long)(hash>>32),(unsigned long)(hash&0xffffffffULL))<=0) return 0;
+        return rs_join_w(out,cap,folder,name);
+    }
+}
+static int rs_piper_generate(const char *text,wchar_t *result,size_t cap) {
+    wchar_t home[RS_PIPER_PATH],exe[RS_PIPER_PATH],model[RS_PIPER_PATH];
+    wchar_t command[RS_PIPER_PATH*3],tmp[RS_PIPER_PATH],temp_dir[RS_PIPER_PATH];
+    wchar_t tmp_wav[RS_PIPER_PATH];
+    SECURITY_ATTRIBUTES sa;
+    STARTUPINFOW si;
+    PROCESS_INFORMATION pi;
+    HANDLE child_stdin_read=NULL,child_stdin_write=NULL,devnull=INVALID_HANDLE_VALUE;
+    DWORD written=0,exit_code=1,wait_result;
+    BOOL started;
+    size_t n;
+    if (!text || !*text || strlen(text)>=RS_MAX_TEXT) return err(2);
+    if (!rs_find_piper(home,RS_PIPER_PATH,exe,model)) return err(7);
+    if (!rs_piper_cache_path(result,cap,text,model)) return err(6);
+    if (rs_valid_wav_w(result)) return 1; /* complete sentence reuse */
+    if (!GetTempPathW(RS_PIPER_PATH,temp_dir)) return err(6);
+    if (!GetTempFileNameW(temp_dir,L"d64",0,tmp)) return err(6);
+    wcscpy(tmp_wav,tmp);
+    n=wcslen(tmp_wav);
+    if (n>4) wcscpy(tmp_wav+n-4,L".wav");
+    DeleteFileW(tmp);
+    ZeroMemory(&sa,sizeof(sa)); sa.nLength=sizeof(sa);sa.bInheritHandle=TRUE;
+    if (!CreatePipe(&child_stdin_read,&child_stdin_write,&sa,0)) return err(8);
+    SetHandleInformation(child_stdin_write,HANDLE_FLAG_INHERIT,0);
+    devnull=CreateFileW(L"NUL",GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,
+                        &sa,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,NULL);
+    if (devnull==INVALID_HANDLE_VALUE) {
+        CloseHandle(child_stdin_read);CloseHandle(child_stdin_write);return err(8);
+    }
+    ZeroMemory(&si,sizeof(si)); si.cb=sizeof(si);
+    si.dwFlags=STARTF_USESTDHANDLES;
+    si.hStdInput=child_stdin_read;
+    si.hStdOutput=devnull;si.hStdError=devnull;
+    ZeroMemory(&pi,sizeof(pi));
+    if (swprintf(command,RS_PIPER_PATH*3,L"\"%ls\" --model \"%ls\" --output_file \"%ls\"",
+                 exe,model,tmp_wav)<=0) {
+        CloseHandle(child_stdin_read);CloseHandle(child_stdin_write);
+        CloseHandle(devnull);return err(8);
+    }
+    started=CreateProcessW(exe,command,NULL,NULL,TRUE,CREATE_NO_WINDOW,
+                           NULL,home,&si,&pi);
+    CloseHandle(child_stdin_read);
+    CloseHandle(devnull);
+    if (!started) {CloseHandle(child_stdin_write);return err(8);}
+    WriteFile(child_stdin_write,text,(DWORD)strlen(text),&written,NULL);
+    WriteFile(child_stdin_write,"\n",1,&written,NULL);
+    CloseHandle(child_stdin_write);
+    wait_result=WaitForSingleObject(pi.hProcess,120000);
+    if (wait_result==WAIT_TIMEOUT) TerminateProcess(pi.hProcess,1);
+    if (wait_result==WAIT_OBJECT_0) GetExitCodeProcess(pi.hProcess,&exit_code);
+    CloseHandle(pi.hThread);CloseHandle(pi.hProcess);
+    if (wait_result!=WAIT_OBJECT_0 || exit_code!=0 || !rs_valid_wav_w(tmp_wav)) {
+        DeleteFileW(tmp_wav);return err(8);
+    }
+    if (!MoveFileExW(tmp_wav,result,MOVEFILE_REPLACE_EXISTING|MOVEFILE_COPY_ALLOWED)) {
+        DeleteFileW(tmp_wav);return err(6);
+    }
+    g_error=0;return 1;
+}
+static int32_t rs_piper_speak(const char *text) {
+    wchar_t wav[RS_PIPER_PATH];
+    if (!rs_piper_generate(text,wav,RS_PIPER_PATH)) return 0;
+    if (!PlaySoundW(wav,NULL,SND_FILENAME|SND_SYNC|SND_NODEFAULT)) return err(5);
+    g_error=0;return 1;
+}
+static int32_t rs_piper_save(const char *path,const char *text) {
+    wchar_t wav[RS_PIPER_PATH],dest[RS_PIPER_PATH];
+    if (!path || !*path) return err(1);
+    if (!rs_piper_generate(text,wav,RS_PIPER_PATH)) return 0;
+    if (!MultiByteToWideChar(CP_ACP,0,path,-1,dest,RS_PIPER_PATH)) return err(1);
+    if (!CopyFileW(wav,dest,FALSE)) return err(6);
+    g_error=0;return 1;
+}
+#endif /* _WIN32 */
+
+static int32_t save_wav_impl(const char *wav_path,const char *text,int direct) {
+    uint32_t n=direct?SpeechRenderPhonemes(text,NULL,0):SpeechRenderText(text,NULL,0), i;
     int16_t *samples;
     FILE *f;
     if (!n || !wav_path) return err(n?1:g_error);
     samples=(int16_t*)malloc((size_t)n*sizeof(int16_t));
     if (!samples) return err(3);
-    if (SpeechRenderText(text,samples,n)!=n) {free(samples);return 0;}
+    if ((direct?SpeechRenderPhonemes(text,samples,n):SpeechRenderText(text,samples,n))!=n) {
+        free(samples);return 0;
+    }
     f=fopen(wav_path,"wb");
     if (!f) {free(samples);return err(6);}
     fwrite("RIFF",1,4,f); put_u32(f,36+n*2);
@@ -570,6 +1156,39 @@ int32_t RS_CALL SpeechSaveWav(const char *wav_path,const char *text) {
     if (fclose(f)!=0) return err(6);
     g_error=0;
     return 1;
+}
+
+static int32_t rs_save_sample_sentence(const char *path,const char *text){
+    int16_t *pcm=NULL;
+    uint32_t frames=0,rate=0,i;
+    FILE *file;
+    if(!path||!*path)return err(1);
+    if(!rs_samples_text(text,&pcm,&frames,&rate))return 0;
+    file=fopen(path,"wb");
+    if(!file){free(pcm);return err(6);}
+    fwrite("RIFF",1,4,file);put_u32(file,36+frames*2);
+    fwrite("WAVEfmt ",1,8,file);put_u32(file,16);put_u16(file,1);put_u16(file,1);
+    put_u32(file,rate);put_u32(file,rate*2);put_u16(file,2);put_u16(file,16);
+    fwrite("data",1,4,file);put_u32(file,frames*2);
+    for(i=0;i<frames;i++)put_u16(file,(uint16_t)pcm[i]);
+    free(pcm);
+    if(fclose(file)!=0)return err(6);
+    g_error=0;return 1;
+}
+
+int32_t RS_CALL SpeechSaveWav(const char *wav_path,const char *text) {
+    if (g_speech_backend == 2) return rs_save_sample_sentence(wav_path,text);
+    if (g_speech_backend == 1) {
+#ifdef _WIN32
+        return rs_piper_save(wav_path,text);
+#else
+        (void)wav_path; (void)text; return err(7);
+#endif
+    }
+    return save_wav_impl(wav_path,text,0);
+}
+int32_t RS_CALL SpeechSavePhonemesWav(const char *wav_path,const char *phonemes) {
+    return save_wav_impl(wav_path,phonemes,1);
 }
 static int32_t speak(const char *s,int direct) {
 #ifdef _WIN32
@@ -609,7 +1228,53 @@ static int32_t speak(const char *s,int direct) {
     (void)s; (void)direct; return err(5);
 #endif
 }
-int32_t RS_CALL SpeechSpeak(const char *text) {return speak(text,0);}
+
+#ifdef _WIN32
+static int32_t rs_play_sample_text(const char *text){
+    int16_t *pcm=NULL;
+    uint32_t frames=0,rate=0;
+    HWAVEOUT device=NULL;
+    WAVEFORMATEX fmt;
+    WAVEHDR hdr;
+    MMRESULT mm;
+    if(!rs_samples_text(text,&pcm,&frames,&rate))return 0;
+    memset(&fmt,0,sizeof(fmt));
+    fmt.wFormatTag=WAVE_FORMAT_PCM;fmt.nChannels=1;fmt.nSamplesPerSec=rate;
+    fmt.wBitsPerSample=16;fmt.nBlockAlign=2;fmt.nAvgBytesPerSec=rate*2;
+    mm=waveOutOpen(&device,WAVE_MAPPER,&fmt,0,0,CALLBACK_NULL);
+    if(mm!=MMSYSERR_NOERROR){free(pcm);return err(5);}
+    memset(&hdr,0,sizeof(hdr));hdr.lpData=(LPSTR)pcm;hdr.dwBufferLength=frames*2;
+    mm=waveOutPrepareHeader(device,&hdr,sizeof(hdr));
+    if(mm==MMSYSERR_NOERROR)mm=waveOutWrite(device,&hdr,sizeof(hdr));
+    if(mm==MMSYSERR_NOERROR){
+        while(!(hdr.dwFlags&WHDR_DONE)){
+            if(g_stop)waveOutReset(device);
+            Sleep(10);
+        }
+    }else waveOutReset(device);
+    if(hdr.dwFlags&WHDR_PREPARED)waveOutUnprepareHeader(device,&hdr,sizeof(hdr));
+    waveOutClose(device);free(pcm);
+    return mm==MMSYSERR_NOERROR?(g_error=0,1):err(5);
+}
+#endif
+
+int32_t RS_CALL SpeechSpeak(const char *text) {
+    if (g_speech_backend == 2) {
+#ifdef _WIN32
+        return rs_play_sample_text(text);
+#else
+        (void)text;return err(5);
+#endif
+    }
+    if (g_speech_backend == 1) {
+#ifdef _WIN32
+        return rs_piper_speak(text);
+#else
+        (void)text; return err(7);
+#endif
+    }
+    return speak(text,0);
+}
 /* Stage 342: CP1252 dBase string slots -> UTF-8, no external converters.
  * Never trust a missing NUL terminator or the caller-provided length. */
 int32_t RS_CALL SpeechSpeakCP1252(const char *text, uint32_t length) {
@@ -647,4 +1312,4 @@ int32_t RS_CALL SpeechSpeakCP1252(const char *text, uint32_t length) {
 }
 int32_t RS_CALL SpeechSpeakPhonemes(const char *text) {return speak(text,1);}
 int32_t RS_CALL SpeechStop(void) {g_stop=1; return 1;}
-void RS_CALL SpeechShutdown(void) {g_stop=1;}
+void RS_CALL SpeechShutdown(void) {g_stop=1;SpeechUnloadContainer();}

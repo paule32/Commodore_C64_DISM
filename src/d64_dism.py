@@ -55,6 +55,12 @@
 #  * Stage 136: Lernen->Mathematik mit Zahlenmauer-Dock und 2x5 QGraphicsScene-Aufgaben.
 #  * Stage 38: Lernen->Memory mit 42 Karten, 21 Rechenpaaren und ausgeblendeten Treffern.
 #  * Stage 263: Lernen->Keyboard mit Musik-Dock, 4 Notensystemen und 88-Tasten-Piano.
+#  * Stage 364: Grundwissen -> Algebra/Geometrie; Zinsrechnung als Formel-Kacheln
+#    IM bestehenden Mathematik-Dock (temporär volle Dock-Fläche).
+#  * Stage 360: Zwei getrennte Einheitskreis-Docks; statische QPainter-Winkeltafel in Hell/Dunkel.
+#  * Stage 362: Berechnungsfelder für alle 19 Flächen-/Volumenfiguren, validierter Rechner
+#    und dunkel/hell thematisierter 3px-Fehlerdialog.
+#  * Stage 361: Fakten/3D-Figuren, Formeln und teiltransparente Dark-Mode-3D-Materialien.
 #  * Stage 277: Einheitskreis-Animation auf volle 360 Grad erweitert; Graphen max. 25 % Fensterbreite.
 #  * Stage 287: Projekt-Einstellungen -> Compiler -> Prolog -> Optimierung mit optionalem
 #    "with descriptors"; strukturell gleiche Clause-Builder teilen Templates/Descriptoren.
@@ -184,6 +190,9 @@
 #    untere Wurzelfaltung folgt nahezu der Unterkante des Radikanden.
 #  * Stage 259 GEO: Lernen->Deutsch->Geographie mit eingebetteter Deutschlandkarte und Bundesland-Hover.
 #  * Stage 260 GEO: Deutschland-PNG Base85 lazy in deutschland.py; Modul/Qt-Kartenressourcen werden beim Dock-Schliessen freigegeben.
+#  * Stage 344 GEO: Lernen->Geographie->Deutschland/England; England-Karte lazy in england.py, eigenes Vollflaechen-Dock und gemeinsamer Zoom.
+#  * Stage 346 GEO: Frankreich nun als Untermenue Landkarte/Fluesse; nur eine bereinigte Frankreich-Landkarte im Asset, Fluesse als 2-Pixel-Overlay-Pfade.
+#  * Stage 349 GEO: Frankreich-Fluesse aus echten GSHHG/WDBII-Flussgeometrien statt handgezeichneter SVG-Polylinien; Georeferenzierung per Stadtmarkern.
 #  * Stage 261 GEO: Dark-Mode schwarz, Ansicht->Zoom/Strg+Mausrad, Wappen-Tooltip; Wappen lazy in deutschland_wappen.py.
 #  * Stage 259: C64-ProgressBar wird vor Workerstart garantiert gezeichnet; Live-Repaint,
 #               verzögerter Threadstart und Mindestanzeigezeit bis/bei 100 %.
@@ -514,6 +523,11 @@ try:
         QWidgetAction,
     )
     from PyQt5.QtPrintSupport import QPrinter, QPrintDialog
+    try:
+        from PyQt5.QtSvg import QGraphicsSvgItem, QSvgRenderer
+    except Exception:
+        QGraphicsSvgItem = None
+        QSvgRenderer = None
 except ImportError as exc:
     print(
         "PyQt5 ist nicht installiert.\n"
@@ -8073,6 +8087,611 @@ class GermanyMapDock(QDockWidget):
             self.map_view.release_resources()
         finally:
             super().closeEvent(event)
+
+
+
+# ---------------------------------------------------------------------------
+# Stage 344 GEO: England-Lernkarte mit lazy geladenem Benutzer-PNG.
+# Gleiches Vollflaechen-Dock und gleiche Zoomsteuerung wie Deutschland,
+# ohne den Bildinhalt oder die Kartenbeschriftungen umzudeuten.
+# ---------------------------------------------------------------------------
+def _load_england_module():
+    import england
+    return england
+
+
+def _free_england_module(module=None):
+    try:
+        loaded = module if module is not None else sys.modules.get("england")
+        if loaded is not None:
+            loaded.ENGLAND_MAP_IMAGE_B85 = b""
+    finally:
+        sys.modules.pop("england", None)
+        gc.collect()
+
+
+class EnglandMapView(QGraphicsView):
+    """Die historische England-Referenzkarte mit STRG+Mausrad-Zoom."""
+
+    zoomChanged = pyqtSignal(int)
+    MIN_ZOOM_PERCENT = 50
+    MAX_ZOOM_PERCENT = 400
+    WHEEL_ZOOM_STEP = 20
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("england_geography_view")
+        self._scene = QGraphicsScene(self)
+        self.setScene(self._scene)
+        self.setFrameShape(QFrame.NoFrame)
+        self.setAlignment(Qt.AlignCenter)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setTransformationAnchor(QGraphicsView.AnchorViewCenter)
+        self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
+        self.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        self._zoom_percent = 100
+        self._released = False
+        self._england_module = _load_england_module()
+        try:
+            data = _d64info_base64.b85decode(self._england_module.ENGLAND_MAP_IMAGE_B85)
+            pixmap = QPixmap()
+            if not pixmap.loadFromData(data, "PNG"):
+                raise RuntimeError("Die eingebettete England-Karte konnte nicht geladen werden.")
+            self._map_size = QSizeF(float(pixmap.width()), float(pixmap.height()))
+            self._map_item = self._scene.addPixmap(pixmap)
+            self._scene.setSceneRect(QRectF(0.0, 0.0, self._map_size.width(), self._map_size.height()))
+        except Exception:
+            module = self._england_module
+            self._england_module = None
+            _free_england_module(module)
+            raise
+        QTimer.singleShot(0, self.fit_map)
+
+    @property
+    def zoom_percent(self):
+        return int(self._zoom_percent)
+
+    def set_dark_mode(self, enabled):
+        # Die im Originalbild enthaltene blaue Nordsee bleibt auch im
+        # Dark-Mode unveraendert; nur die freie Dockflaeche wird umgefaerbt.
+        color = "#000000" if enabled else "#ffffff"
+        self.setBackgroundBrush(QBrush(QColor(color)))
+        self.viewport().setStyleSheet("background:" + color + ";")
+        self.viewport().update()
+
+    def _map_rect(self):
+        if self._released or self._map_size.isEmpty():
+            return QRectF()
+        rect = QRectF(0.0, 0.0, self._map_size.width(), self._map_size.height())
+        rect.adjust(-5.0, -5.0, 5.0, 5.0)
+        return rect
+
+    def _apply_zoom(self):
+        rect = self._map_rect()
+        if rect.isEmpty():
+            return
+        self.resetTransform()
+        self.fitInView(rect, Qt.KeepAspectRatio)
+        factor = float(self._zoom_percent) / 100.0
+        if abs(factor - 1.0) > 0.0001:
+            self.scale(factor, factor)
+
+    def set_zoom_percent(self, percent):
+        percent = max(self.MIN_ZOOM_PERCENT, min(self.MAX_ZOOM_PERCENT, int(percent)))
+        if percent == self._zoom_percent:
+            self._apply_zoom()
+            return
+        self._zoom_percent = percent
+        self._apply_zoom()
+        self.zoomChanged.emit(int(percent))
+
+    def fit_map(self):
+        self._apply_zoom()
+
+    def wheelEvent(self, event):
+        if event.modifiers() & Qt.ControlModifier:
+            delta = event.angleDelta().y()
+            if delta:
+                step = self.WHEEL_ZOOM_STEP if delta > 0 else -self.WHEEL_ZOOM_STEP
+                self.set_zoom_percent(self._zoom_percent + step)
+            event.accept()
+            return
+        super().wheelEvent(event)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._apply_zoom()
+        if self._show_rivers and self._active_river_overlay is not None and not self._river_info_label.isHidden():
+            center = self.viewport().rect().center()
+            self._reposition_river_overlay(center)
+
+    def mouseMoveEvent(self, event):
+        if self._show_rivers and not self._released:
+            river = self._find_river_at_scene_pos(self.mapToScene(event.pos()))
+            if river is not None:
+                self.viewport().setCursor(Qt.PointingHandCursor)
+                self._show_river_overlay(river, event.pos())
+            else:
+                self.viewport().unsetCursor()
+                self._hide_river_overlay()
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event):
+        self.viewport().unsetCursor()
+        self._hide_river_overlay()
+        super().leaveEvent(event)
+
+    def release_resources(self):
+        if self._released:
+            return
+        self._released = True
+        self._scene.clear()
+        self._scene.setSceneRect(QRectF())
+        self._map_item = None
+        self._map_size = QSizeF()
+        module = self._england_module
+        self._england_module = None
+        _free_england_module(module)
+
+
+class EnglandMapDock(QDockWidget):
+    def __init__(self, parent=None):
+        super().__init__("England", parent)
+        self.setObjectName("england_geography_dock")
+        self.setFeatures(
+            QDockWidget.DockWidgetMovable
+            | QDockWidget.DockWidgetFloatable
+            | QDockWidget.DockWidgetClosable
+        )
+        self.setAllowedAreas(Qt.AllDockWidgetAreas)
+        self.setMinimumSize(0, 0)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
+        self.map_view = EnglandMapView(self)
+        self.setWidget(self.map_view)
+        self.set_dark_mode(bool(getattr(parent, "dark_mode_enabled", False)))
+
+    def set_dark_mode(self, enabled):
+        dark = bool(enabled)
+        self.setStyleSheet(
+            "QDockWidget#england_geography_dock { background:#000000; }"
+            if dark else
+            "QDockWidget#england_geography_dock { background:#ffffff; }"
+        )
+        if self.map_view is not None:
+            self.map_view.set_dark_mode(dark)
+
+    def closeEvent(self, event):
+        try:
+            self.map_view.release_resources()
+        finally:
+            super().closeEvent(event)
+
+
+# ---------------------------------------------------------------------------
+# Stage 345 GEO: Frankreich-Lernkarte mit lazy geladenem Benutzer-PNG.
+# Gleiches Vollflaechen-Dock und gleiche Zoomsteuerung wie Deutschland,
+# ohne den Bildinhalt oder die Kartenbeschriftungen umzudeuten.
+# ---------------------------------------------------------------------------
+def _load_france_module():
+    import france
+    return france
+
+
+def _free_france_module(module=None):
+    try:
+        loaded = module if module is not None else sys.modules.get("france")
+        if loaded is not None:
+            loaded.FRANCE_MAP_IMAGE_B85 = b""
+            loaded.FRANCE_RIVER_OVERLAY_SVG_B85 = b""
+    finally:
+        sys.modules.pop("france", None)
+        gc.collect()
+
+
+# Stage 348: Die Fluss-Overlays fuer Frankreich werden nicht mehr als
+# grob approximierte Python-Punktlisten erzeugt, sondern als eingebettete
+# SVG-Vektorgrafik ueber die Basiskarte gelegt. Dadurch bleibt die Lage der
+# Fluesse stabil und kann spaeter leichter verfeinert oder ausgetauscht werden.
+
+
+class FranceMapView(QGraphicsView):
+    """Die Frankreich-Referenzkarte mit optionalen 3-Pixel-Fluss-Overlays und River-Hover-Infos."""
+
+    zoomChanged = pyqtSignal(int)
+    MIN_ZOOM_PERCENT = 50
+    MAX_ZOOM_PERCENT = 400
+    WHEEL_ZOOM_STEP = 20
+
+    def __init__(self, parent=None, show_rivers=False):
+        super().__init__(parent)
+        self._show_rivers = bool(show_rivers)
+        self.setObjectName("france_rivers_geography_view" if self._show_rivers else "france_landkarte_geography_view")
+        self._scene = QGraphicsScene(self)
+        self.setScene(self._scene)
+        self.setFrameShape(QFrame.NoFrame)
+        self.setAlignment(Qt.AlignCenter)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setTransformationAnchor(QGraphicsView.AnchorViewCenter)
+        self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
+        self.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        self.setRenderHint(QPainter.Antialiasing, True)
+        self.setMouseTracking(True)
+        self.viewport().setMouseTracking(True)
+        self._zoom_percent = 100
+        self._released = False
+        self._river_items = []
+        self._river_svg_item = None
+        self._river_svg_renderer = None
+        self._river_hover_data = []
+        self._tributary_items_by_river = {}
+        self._visible_tributary_river = ""
+        self._active_river_overlay = None
+        self._active_river_name = ""
+        self._river_info_label = QLabel(self.viewport())
+        self._river_info_label.setObjectName("france_river_info_overlay")
+        self._river_info_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self._river_info_label.setWordWrap(True)
+        self._river_info_label.hide()
+        self._river_info_label.setStyleSheet(
+            "QLabel#france_river_info_overlay {"
+            "background: rgba(15, 20, 30, 220);"
+            "color: white;"
+            "border: 1px solid rgba(120, 170, 255, 210);"
+            "border-radius: 6px;"
+            "padding: 8px;"
+            "font-size: 11pt;"
+            "}"
+        )
+        self._france_module = _load_france_module()
+        try:
+            data = _d64info_base64.b85decode(self._france_module.FRANCE_MAP_IMAGE_B85)
+            pixmap = QPixmap()
+            if not pixmap.loadFromData(data, "PNG"):
+                raise RuntimeError("Die eingebettete Frankreich-Karte konnte nicht geladen werden.")
+            self._map_size = QSizeF(float(pixmap.width()), float(pixmap.height()))
+            self._map_item = self._scene.addPixmap(pixmap)
+            self._scene.setSceneRect(QRectF(0.0, 0.0, self._map_size.width(), self._map_size.height()))
+            if self._show_rivers:
+                self._build_river_hover_data()
+                self._create_river_overlay_items()
+                self._create_tributary_overlay_items()
+        except Exception:
+            module = self._france_module
+            self._france_module = None
+            _free_france_module(module)
+            raise
+        QTimer.singleShot(0, self.fit_map)
+
+    @property
+    def zoom_percent(self):
+        return int(self._zoom_percent)
+
+    def set_dark_mode(self, enabled):
+        color = "#000000" if enabled else "#ffffff"
+        self.setBackgroundBrush(QBrush(QColor(color)))
+        self.viewport().setStyleSheet("background:" + color + ";")
+        self.viewport().update()
+
+    def _build_river_hover_data(self):
+        self._river_hover_data = []
+        raw_data = getattr(self._france_module, "FRANCE_RIVER_HOVER_DATA", []) or []
+        width = float(self._map_size.width())
+        height = float(self._map_size.height())
+        for entry in raw_data:
+            points = []
+            for px, py in entry.get("points", []):
+                points.append((float(px) * width, float(py) * height))
+            if len(points) < 2:
+                continue
+            tributaries = []
+            for tributary in (entry.get("tributaries", []) or []):
+                tpoints = []
+                for px, py in tributary.get("points", []):
+                    tpoints.append((float(px) * width, float(py) * height))
+                if len(tpoints) < 2:
+                    continue
+                tributaries.append({
+                    "name": str(tributary.get("name", "") or "").strip(),
+                    "points": tpoints,
+                })
+            self._river_hover_data.append({
+                "name": str(entry.get("name", "") or "").strip(),
+                "source": str(entry.get("source", "") or "").strip(),
+                "mouth": str(entry.get("mouth", "") or "").strip(),
+                "length_km": entry.get("length_km", None),
+                "points": points,
+                "tributaries": tributaries,
+            })
+
+    def _create_river_overlay_items(self):
+        self._river_items = []
+        self._river_svg_renderer = None
+        self._river_svg_item = None
+        if QGraphicsSvgItem is None or QSvgRenderer is None:
+            raise RuntimeError(
+                "Das Frankreich-Fluss-Overlay benötigt PyQt5.QtSvg (QSvgRenderer)."
+            )
+        svg_b85 = getattr(self._france_module, "FRANCE_RIVER_OVERLAY_SVG_B85", None)
+        if not svg_b85:
+            raise RuntimeError("Das eingebettete Frankreich-Fluss-SVG fehlt.")
+        try:
+            svg_text = _d64info_base64.b85decode(svg_b85).decode("utf-8")
+            svg_text = svg_text.replace('stroke-width="2"', 'stroke-width="3"')
+            renderer = QSvgRenderer(QByteArray(svg_text.encode("utf-8")), self)
+            if not renderer.isValid():
+                raise RuntimeError("Das eingebettete Frankreich-Fluss-SVG ist ungültig.")
+            item = QGraphicsSvgItem()
+            item.setSharedRenderer(renderer)
+            default_size = renderer.defaultSize()
+            if default_size.width() > 0 and default_size.height() > 0:
+                sx = float(self._map_size.width()) / float(default_size.width())
+                sy = float(self._map_size.height()) / float(default_size.height())
+                item.setTransform(QTransform.fromScale(sx, sy))
+            item.setPos(0.0, 0.0)
+            item.setZValue(50.0)
+            self._scene.addItem(item)
+            self._river_svg_renderer = renderer
+            self._river_svg_item = item
+            self._river_items.append(item)
+        except Exception:
+            self._river_svg_renderer = None
+            self._river_svg_item = None
+            self._river_items = []
+            raise
+
+    def _create_tributary_overlay_items(self):
+        self._tributary_items_by_river = {}
+        pen = QPen(QColor(70, 160, 255, 230))
+        pen.setWidth(3)
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        for river in self._river_hover_data:
+            river_name = str(river.get("name", "") or "")
+            items = []
+            for tributary in (river.get("tributaries", []) or []):
+                points = tributary.get("points", [])
+                if len(points) < 2:
+                    continue
+                path = QPainterPath(QPointF(points[0][0], points[0][1]))
+                for x, y in points[1:]:
+                    path.lineTo(float(x), float(y))
+                item = QGraphicsPathItem(path)
+                item.setPen(pen)
+                item.setBrush(QBrush(Qt.NoBrush))
+                item.setZValue(65.0)
+                item.setVisible(False)
+                self._scene.addItem(item)
+                items.append(item)
+            if items:
+                self._tributary_items_by_river[river_name] = items
+
+    def _hide_all_tributary_items(self):
+        for items in self._tributary_items_by_river.values():
+            for item in items:
+                item.setVisible(False)
+        self._visible_tributary_river = ""
+
+    def _show_tributaries_for_river(self, river_name):
+        river_name = str(river_name or "")
+        if self._visible_tributary_river == river_name:
+            return
+        self._hide_all_tributary_items()
+        for item in self._tributary_items_by_river.get(river_name, []):
+            item.setVisible(True)
+        self._visible_tributary_river = river_name
+
+    @staticmethod
+    def _point_segment_distance(px, py, x1, y1, x2, y2):
+        dx = x2 - x1
+        dy = y2 - y1
+        if abs(dx) < 1e-9 and abs(dy) < 1e-9:
+            return ((px - x1) ** 2 + (py - y1) ** 2) ** 0.5
+        t = ((px - x1) * dx + (py - y1) * dy) / float(dx * dx + dy * dy)
+        if t < 0.0:
+            t = 0.0
+        elif t > 1.0:
+            t = 1.0
+        qx = x1 + t * dx
+        qy = y1 + t * dy
+        return ((px - qx) ** 2 + (py - qy) ** 2) ** 0.5
+
+    def _river_hit_threshold_scene(self):
+        scale = max(0.001, float(self.transform().m11()))
+        return max(6.0, 14.0 / scale)
+
+    def _find_river_at_scene_pos(self, scene_pos):
+        if not self._show_rivers or not self._river_hover_data:
+            return None
+        px = float(scene_pos.x())
+        py = float(scene_pos.y())
+        threshold = self._river_hit_threshold_scene()
+        best = None
+        best_dist = None
+        for river in self._river_hover_data:
+            segment_sets = [river.get("points", [])]
+            for tributary in (river.get("tributaries", []) or []):
+                segment_sets.append(tributary.get("points", []))
+            for points in segment_sets:
+                for idx in range(len(points) - 1):
+                    x1, y1 = points[idx]
+                    x2, y2 = points[idx + 1]
+                    dist = self._point_segment_distance(px, py, x1, y1, x2, y2)
+                    if dist <= threshold and (best_dist is None or dist < best_dist):
+                        best = river
+                        best_dist = dist
+        return best
+
+    def _river_overlay_text(self, river):
+        lines = ["<b>{}</b>".format(html.escape(str(river.get("name", "") or "")))]
+        source = str(river.get("source", "") or "").strip()
+        mouth = str(river.get("mouth", "") or "").strip()
+        length_km = river.get("length_km", None)
+        if source:
+            lines.append("Quelle: {}".format(html.escape(source)))
+        if mouth:
+            lines.append("Mündung: {}".format(html.escape(mouth)))
+        if length_km not in (None, ""):
+            lines.append("Länge: ca. {} km".format(html.escape(str(length_km))))
+        tributaries = [str(t.get("name", "") or "").strip() for t in (river.get("tributaries", []) or [])]
+        tributaries = [name for name in tributaries if name]
+        if tributaries:
+            lines.append("Nebenflüsse: {}".format(html.escape(", ".join(tributaries))))
+        return "<br>".join(lines)
+
+    def _reposition_river_overlay(self, viewport_pos):
+        if self._river_info_label.isHidden():
+            return
+        margin = 14
+        pos = QPoint(int(viewport_pos.x()) + margin, int(viewport_pos.y()) + margin)
+        hint = self._river_info_label.sizeHint()
+        x = pos.x()
+        y = pos.y()
+        max_x = max(0, self.viewport().width() - hint.width() - 8)
+        max_y = max(0, self.viewport().height() - hint.height() - 8)
+        if x > max_x:
+            x = max(0, int(viewport_pos.x()) - hint.width() - margin)
+        if y > max_y:
+            y = max(0, int(viewport_pos.y()) - hint.height() - margin)
+        self._river_info_label.move(x, y)
+
+    def _show_river_overlay(self, river, viewport_pos):
+        name = str(river.get("name", "") or "")
+        if name != self._active_river_name:
+            self._river_info_label.setText(self._river_overlay_text(river))
+            self._river_info_label.adjustSize()
+            self._active_river_name = name
+        self._show_tributaries_for_river(name)
+        self._active_river_overlay = river
+        self._reposition_river_overlay(viewport_pos)
+        self._river_info_label.show()
+        self._river_info_label.raise_()
+
+    def _hide_river_overlay(self):
+        self._active_river_overlay = None
+        self._active_river_name = ""
+        self._hide_all_tributary_items()
+        self._river_info_label.hide()
+
+    def _map_rect(self):
+        if self._released or self._map_size.isEmpty():
+            return QRectF()
+        rect = QRectF(0.0, 0.0, self._map_size.width(), self._map_size.height())
+        rect.adjust(-5.0, -5.0, 5.0, 5.0)
+        return rect
+
+    def _apply_zoom(self):
+        rect = self._map_rect()
+        if rect.isEmpty():
+            return
+        self.resetTransform()
+        self.fitInView(rect, Qt.KeepAspectRatio)
+        factor = float(self._zoom_percent) / 100.0
+        if abs(factor - 1.0) > 0.0001:
+            self.scale(factor, factor)
+
+    def set_zoom_percent(self, percent):
+        percent = max(self.MIN_ZOOM_PERCENT, min(self.MAX_ZOOM_PERCENT, int(percent)))
+        if percent == self._zoom_percent:
+            self._apply_zoom()
+            return
+        self._zoom_percent = percent
+        self._apply_zoom()
+        self.zoomChanged.emit(int(percent))
+
+    def fit_map(self):
+        self._apply_zoom()
+
+    def wheelEvent(self, event):
+        if event.modifiers() & Qt.ControlModifier:
+            delta = event.angleDelta().y()
+            if delta:
+                step = self.WHEEL_ZOOM_STEP if delta > 0 else -self.WHEEL_ZOOM_STEP
+                self.set_zoom_percent(self._zoom_percent + step)
+            event.accept()
+            return
+        super().wheelEvent(event)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._apply_zoom()
+        if self._show_rivers and self._active_river_overlay is not None and not self._river_info_label.isHidden():
+            self._reposition_river_overlay(self.viewport().rect().center())
+
+    def mouseMoveEvent(self, event):
+        if self._show_rivers and not self._released:
+            river = self._find_river_at_scene_pos(self.mapToScene(event.pos()))
+            if river is not None:
+                self.viewport().setCursor(Qt.PointingHandCursor)
+                self._show_river_overlay(river, event.pos())
+            else:
+                self.viewport().unsetCursor()
+                self._hide_river_overlay()
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event):
+        self.viewport().unsetCursor()
+        self._hide_river_overlay()
+        super().leaveEvent(event)
+
+    def release_resources(self):
+        if self._released:
+            return
+        self._released = True
+        self._hide_river_overlay()
+        self._river_hover_data = []
+        self._tributary_items_by_river = {}
+        self._visible_tributary_river = ""
+        self._river_items = []
+        self._river_svg_item = None
+        self._river_svg_renderer = None
+        self._scene.clear()
+        self._scene.setSceneRect(QRectF())
+        self._map_item = None
+        self._map_size = QSizeF()
+        module = self._france_module
+        self._france_module = None
+        _free_france_module(module)
+
+
+class FranceMapDock(QDockWidget):
+    def __init__(self, parent=None, title="Frankreich", show_rivers=False, object_name="france_geography_dock"):
+        super().__init__(title, parent)
+        self._show_rivers = bool(show_rivers)
+        self.setObjectName(object_name)
+        self.setFeatures(
+            QDockWidget.DockWidgetMovable
+            | QDockWidget.DockWidgetFloatable
+            | QDockWidget.DockWidgetClosable
+        )
+        self.setAllowedAreas(Qt.AllDockWidgetAreas)
+        self.setMinimumSize(0, 0)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
+        self.map_view = FranceMapView(self, show_rivers=self._show_rivers)
+        self.setWidget(self.map_view)
+        self.set_dark_mode(bool(getattr(parent, "dark_mode_enabled", False)))
+
+    def set_dark_mode(self, enabled):
+        dark = bool(enabled)
+        name = self.objectName() or "france_geography_dock"
+        self.setStyleSheet(
+            f"QDockWidget#{name} {{ background:#000000; }}"
+            if dark else
+            f"QDockWidget#{name} {{ background:#ffffff; }}"
+        )
+        if self.map_view is not None:
+            self.map_view.set_dark_mode(dark)
+
+    def closeEvent(self, event):
+        try:
+            self.map_view.release_resources()
+        finally:
+            super().closeEvent(event)
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -94236,6 +94855,489 @@ QPushButton {{ min-height: 28px; padding: 4px 12px; }}'''
             )
 
 
+    # Stage 363: alternative Eingangs- und Ergebnisgrößen für alle 19 Figuren.
+    # Kein Eingabefeld ist Pflicht: die Regeln lösen vorwärts und rückwärts,
+    # sofern die verfügbaren Informationen das Ergebnis eindeutig bestimmen.
+    _GEOMETRY_INPUTS = {
+        'area_rectangle': (('a', 'Länge a'), ('b', 'Breite b'), ('A', 'Fläche A'), ('U', 'Umfang U'), ('d', 'Diagonale d')),
+        'area_square': (('a', 'Seite a'), ('A', 'Fläche A'), ('U', 'Umfang U'), ('d', 'Diagonale d')),
+        'area_triangle': (('g', 'Grundseite g'), ('h', 'Höhe h'), ('a', 'Seite a'), ('b', 'Seite b'), ('c', 'Seite c'), ('A', 'Fläche A'), ('U', 'Umfang U')),
+        'area_circle': (('r', 'Radius r'), ('d', 'Durchmesser d'), ('A', 'Fläche A'), ('U', 'Umfang U')),
+        'area_semicircle': (('r', 'Radius r'), ('d', 'Durchmesser d'), ('A', 'Fläche A'), ('U', 'Umfang U')),
+        'area_ellipse': (('a', 'Große Halbachse a'), ('b', 'Kleine Halbachse b'), ('A', 'Fläche A'), ('U', 'Umfang U (Näherung)')),
+        'area_rhombus': (('e', 'Diagonale e'), ('f', 'Diagonale f'), ('a', 'Seite a'), ('h', 'Höhe h'), ('A', 'Fläche A'), ('U', 'Umfang U')),
+        'area_trapezoid': (('a', 'Grundseite a'), ('c', 'Grundseite c'), ('b', 'Seite b'), ('d', 'Seite d'), ('h', 'Höhe h'), ('m', 'Mittellinie m'), ('A', 'Fläche A'), ('U', 'Umfang U')),
+        'volume_cube': (('a', 'Kantenlänge a'), ('d', 'Raumdiagonale d'), ('G', 'Grundfläche G'), ('O', 'Oberfläche O'), ('V', 'Volumen V')),
+        'volume_rectangular': (('l', 'Länge l'), ('b', 'Breite b'), ('h', 'Höhe h'), ('d', 'Raumdiagonale d'), ('G', 'Grundfläche G'), ('M', 'Mantelfläche M'), ('O', 'Oberfläche O'), ('V', 'Volumen V')),
+        'volume_cylinder': (('r', 'Radius r'), ('d', 'Durchmesser d'), ('h', 'Höhe h'), ('U', 'Grundumfang U'), ('G', 'Grundfläche G'), ('M', 'Mantelfläche M'), ('O', 'Oberfläche O'), ('V', 'Volumen V')),
+        'volume_sphere': (('r', 'Radius r'), ('d', 'Durchmesser d'), ('O', 'Oberfläche O'), ('V', 'Volumen V')),
+        'volume_hemisphere': (('r', 'Radius r'), ('d', 'Durchmesser d'), ('G', 'Grundfläche G'), ('M', 'Mantelfläche M'), ('O', 'Oberfläche O (mit Boden)'), ('V', 'Volumen V')),
+        'volume_ellipsoid': (('a', 'Halbachse X a'), ('b', 'Halbachse Y b'), ('c', 'Halbachse Z c'), ('O', 'Oberfläche O (Näherung)'), ('V', 'Volumen V')),
+        'volume_cone': (('r', 'Radius r'), ('d', 'Durchmesser d'), ('h', 'Höhe h'), ('s', 'Mantellinie s'), ('U', 'Grundumfang U'), ('G', 'Grundfläche G'), ('M', 'Mantelfläche M'), ('O', 'Oberfläche O'), ('V', 'Volumen V')),
+        'volume_frustum': (('R', 'Großer Radius R'), ('r', 'Kleiner Radius r'), ('h', 'Höhe h'), ('s', 'Mantellinie s'), ('G1', 'Große Grundfläche G1'), ('G2', 'Kleine Grundfläche G2'), ('M', 'Mantelfläche M'), ('O', 'Oberfläche O'), ('V', 'Volumen V')),
+        'volume_square_pyramid': (('a', 'Grundkante a'), ('h', 'Höhe h'), ('s', 'Seitenhöhe s'), ('G', 'Grundfläche G'), ('M', 'Mantelfläche M'), ('O', 'Oberfläche O'), ('V', 'Volumen V')),
+        'volume_rectangular_pyramid': (('l', 'Länge l'), ('b', 'Breite b'), ('h', 'Höhe h'), ('G', 'Grundfläche G'), ('M', 'Mantelfläche M'), ('O', 'Oberfläche O'), ('V', 'Volumen V')),
+        'volume_triangular_prism': (('b', 'Dreiecksgrundseite b'), ('h', 'Dreieckshöhe h'), ('l', 'Prismenlänge l'), ('p', 'Dreiecksumfang p'), ('G', 'Grundfläche G'), ('M', 'Mantelfläche M'), ('O', 'Oberfläche O'), ('V', 'Volumen V')),
+    }
+
+    def _solve_geometry_fact(fact_key: str, raw_inputs: dict):
+        """Löst eindeutig bestimmbaren Größen aus beliebigen Teilangaben.
+
+        Gibt (Größen, vom Benutzer vorgegebene Symbolmenge) zurück.
+        Überbestimmte widersprüchliche Angaben, negative Radikanden,
+        ungültige Werte und unzureichende Angaben werden abgelehnt.
+        """
+        import re
+        specs = _GEOMETRY_INPUTS.get(fact_key)
+        if specs is None:
+            raise ValueError('Unbekannte Geometriefigur')
+        v, supplied = {}, set()
+        for key, _placeholder in specs:
+            text = str(raw_inputs.get(key, '')).strip()
+            if not text:
+                continue
+            if not re.fullmatch(r'(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)', text):
+                raise ValueError('Ungültige Zahl')
+            x = float(text)
+            if not math.isfinite(x) or x <= 0:
+                raise ValueError('Alle Angaben müssen positiv und endlich sein')
+            v[key] = x
+            supplied.add(key)
+        if not supplied:
+            raise ValueError('Es fehlen Daten')
+
+        rules = []  # (Ergebnisname, abhängige Größen, Berechnungsfunktion)
+
+        def rule(target, dependencies, fn):
+            rules.append((target, tuple(dependencies), fn))
+
+        def mono(target, coefficient=1.0, **powers):
+            """K = factor * a^m * b^n (und eindeutige Umkehrungen)."""
+            def forward(z, factor=coefficient, terms=powers):
+                value = factor
+                for name, power in terms.items():
+                    value *= z[name] ** power
+                return value
+            rule(target, powers, forward)
+            for unknown, power in powers.items():
+                def inverse(z, unknown=unknown, power=power,
+                            target=target, factor=coefficient, terms=powers):
+                    divisor = factor
+                    for name, exponent in terms.items():
+                        if name != unknown:
+                            divisor *= z[name] ** exponent
+                    return (z[target] / divisor) ** (1.0 / power)
+                rule(unknown, (target,) + tuple(k for k in powers if k != unknown), inverse)
+
+        def linear(target, terms):
+            """K = c1*a + c2*b ... mit Umkehrung pro einzelner Unbekannten."""
+            rule(target, terms, lambda z, terms=terms: sum(z[k] * c for k, c in terms.items()))
+            for unknown, coefficient in terms.items():
+                rule(unknown, (target,) + tuple(k for k in terms if k != unknown),
+                     lambda z, t=target, u=unknown, c=coefficient, terms=terms:
+                         (z[t] - sum(z[k] * w for k, w in terms.items() if k != u)) / c)
+
+        def pythagoras(hyp, *legs):
+            rule(hyp, legs, lambda z, legs=legs: math.sqrt(sum(z[k] ** 2 for k in legs)))
+            for leg in legs:
+                rule(leg, (hyp,) + tuple(k for k in legs if k != leg),
+                     lambda z, h=hyp, leg=leg, legs=legs: math.sqrt(
+                         z[h] ** 2 - sum(z[k] ** 2 for k in legs if k != leg)))
+
+        pi = math.pi
+        if fact_key == 'area_rectangle':
+            mono('A', 1, a=1, b=1)
+            linear('U', {'a': 2, 'b': 2})
+            pythagoras('d', 'a', 'b')
+            rule('d', ('U', 'A'), lambda z: math.sqrt(z['U'] ** 2 / 4 - 2*z['A']))
+            rule('A', ('U', 'd'), lambda z: (z['U'] ** 2 / 4 - z['d'] ** 2) / 2)
+        elif fact_key == 'area_square':
+            mono('A', 1, a=2)
+            mono('U', 4, a=1)
+            mono('d', math.sqrt(2), a=1)
+        elif fact_key == 'area_triangle':
+            mono('A', .5, g=1, h=1)
+            linear('U', {'a':1, 'b':1, 'c':1})
+            # g ist die als Grundseite gewählte Seite c.
+            mono('g', 1, c=1)
+            def heron(z):
+                a, b, c = z['a'], z['b'], z['c']
+                if a+b <= c or b+c <= a or a+c <= b:
+                    raise ValueError('Dreieck-Ungleichung verletzt')
+                s = (a+b+c)/2
+                return math.sqrt(s*(s-a)*(s-b)*(s-c))
+            rule('A', ('a','b','c'), heron)
+        elif fact_key in ('area_circle','area_semicircle'):
+            mono('d', 2, r=1)
+            mono('A', pi if fact_key=='area_circle' else pi/2, r=2)
+            mono('U', 2*pi if fact_key=='area_circle' else (pi+2), r=1)
+        elif fact_key == 'area_ellipse':
+            mono('A', pi, a=1, b=1)
+            rule('U', ('a','b'), lambda z: pi*(3*(z['a']+z['b']) -
+                math.sqrt((3*z['a']+z['b'])*(z['a']+3*z['b']))))
+        elif fact_key == 'area_rhombus':
+            mono('A', .5, e=1, f=1)
+            mono('A', 1, a=1, h=1)
+            mono('U', 4, a=1)
+            rule('a', ('e','f'), lambda z: math.hypot(z['e'],z['f'])/2)
+            rule('e', ('a','f'), lambda z: math.sqrt(4*z['a']**2-z['f']**2))
+            rule('f', ('a','e'), lambda z: math.sqrt(4*z['a']**2-z['e']**2))
+        elif fact_key == 'area_trapezoid':
+            linear('U', {'a':1,'b':1,'c':1,'d':1})
+            linear('m', {'a':.5, 'c':.5})
+            mono('A', 1, m=1, h=1)
+        elif fact_key == 'volume_cube':
+            mono('G', 1, a=2)
+            mono('O', 6, a=2)
+            mono('V', 1, a=3)
+            mono('d', math.sqrt(3), a=1)
+        elif fact_key == 'volume_rectangular':
+            mono('G', 1, l=1, b=1)
+            mono('V', 1, G=1, h=1)
+            mono('V', 1, l=1, b=1, h=1)
+            pythagoras('d', 'l','b','h')
+            rule('O', ('l','b','h'), lambda z: 2*(z['l']*z['b']+z['l']*z['h']+z['b']*z['h']))
+            for side,x,y in [('l','b','h'),('b','l','h'),('h','l','b')]:
+                rule(side, ('O',x,y), lambda z,x=x,y=y: (z['O']/2 - z[x]*z[y])/(z[x]+z[y]))
+            rule('M', ('l','b','h'), lambda z: 2*(z['l']+z['b'])*z['h'])
+            rule('O', ('G','M'), lambda z: 2*z['G']+z['M'])
+            rule('M', ('O','G'), lambda z: z['O']-2*z['G'])
+            rule('G', ('O','M'), lambda z: (z['O']-z['M'])/2)
+        elif fact_key == 'volume_cylinder':
+            mono('d', 2, r=1)
+            mono('U', 2*pi, r=1)
+            mono('G', pi, r=2)
+            mono('M', 2*pi, r=1, h=1)
+            mono('V', pi, r=2, h=1)
+            mono('V', 1, G=1, h=1)
+            linear('O', {'G':2,'M':1})
+        elif fact_key in ('volume_sphere','volume_hemisphere'):
+            mono('d', 2, r=1)
+            mono('V', 4*pi/3 if fact_key=='volume_sphere' else 2*pi/3, r=3)
+            mono('O', 4*pi if fact_key=='volume_sphere' else 3*pi, r=2)
+            if fact_key=='volume_hemisphere':
+                mono('G', pi, r=2)
+                mono('M', 2*pi, r=2)
+                linear('O', {'G':1,'M':1})
+        elif fact_key == 'volume_ellipsoid':
+            mono('V', 4*pi/3, a=1,b=1,c=1)
+            # Knud-Thomsen-Näherung; keine willkürliche Rückrechnung aus O.
+            p = 1.6075
+            rule('O', ('a','b','c'), lambda z: 4*pi*((
+                (z['a']*z['b'])**p+(z['a']*z['c'])**p+(z['b']*z['c'])**p
+            )/3)**(1/p))
+        elif fact_key == 'volume_cone':
+            mono('d', 2, r=1)
+            mono('U', 2*pi, r=1)
+            mono('G', pi, r=2)
+            mono('M', pi, r=1, s=1)
+            mono('V', pi/3, r=2, h=1)
+            mono('V', 1/3, G=1, h=1)
+            linear('O', {'G':1,'M':1})
+            pythagoras('s', 'r', 'h')
+        elif fact_key == 'volume_frustum':
+            mono('G1', pi, R=2)
+            mono('G2', pi, r=2)
+            def frustum_volume(z):
+                return pi*z['h']*(z['R']**2+z['R']*z['r']+z['r']**2)/3
+            rule('V',('R','r','h'),frustum_volume)
+            rule('h',('V','R','r'),lambda z: 3*z['V']/(pi*(z['R']**2+z['R']*z['r']+z['r']**2)))
+            rule('s',('R','r','h'),lambda z: math.hypot(z['R']-z['r'],z['h']))
+            rule('h',('R','r','s'),lambda z: math.sqrt(z['s']**2-(z['R']-z['r'])**2))
+            rule('M',('R','r','s'),lambda z: pi*(z['R']+z['r'])*z['s'])
+            linear('O', {'G1':1,'G2':1,'M':1})
+        elif fact_key == 'volume_square_pyramid':
+            mono('G',1,a=2)
+            mono('V',1/3,G=1,h=1)
+            mono('V',1/3,a=2,h=1)
+            mono('M',2,a=1,s=1)
+            linear('O', {'G':1,'M':1})
+            rule('s',('h','a'),lambda z: math.hypot(z['h'],z['a']/2))
+            rule('h',('s','a'),lambda z: math.sqrt(z['s']**2-(z['a']/2)**2))
+            rule('a',('s','h'),lambda z: 2*math.sqrt(z['s']**2-z['h']**2))
+        elif fact_key == 'volume_rectangular_pyramid':
+            mono('G',1,l=1,b=1)
+            mono('V',1/3,G=1,h=1)
+            mono('V',1/3,l=1,b=1,h=1)
+            rule('M',('l','b','h'),lambda z: z['l']*math.hypot(z['h'],z['b']/2)+
+                z['b']*math.hypot(z['h'],z['l']/2))
+            linear('O', {'G':1,'M':1})
+        elif fact_key == 'volume_triangular_prism':
+            mono('G',.5,b=1,h=1)
+            mono('V',1,G=1,l=1)
+            mono('V',.5,b=1,h=1,l=1)
+            mono('M',1,p=1,l=1)
+            linear('O', {'G':2,'M':1})
+
+        # Bis zum Fixpunkt propagieren, ohne eingegebene Werte zu überschreiben.
+        # Die vielen Hilfsgrößen bleiben optional; nur eindeutige Gleichungen
+        # werden angewandt. Überbestimmte widersprüchliche Eingaben sind Fehler.
+        for _ in range(len(specs)*6):
+            changed = False
+            for target, depends, fn in rules:
+                if not all(x in v for x in depends):
+                    continue
+                try:
+                    result = float(fn(v))
+                except (ValueError, OverflowError, ZeroDivisionError):
+                    raise ValueError('Widersprüchliche oder geometrisch unmögliche Maße') from None
+                if not math.isfinite(result) or result <= 0:
+                    raise ValueError('Widersprüchliche oder geometrisch unmögliche Maße')
+                if target in v:
+                    if not math.isclose(v[target], result, rel_tol=1e-6, abs_tol=1e-8):
+                        raise ValueError('Eingaben widersprechen einander')
+                else:
+                    v[target] = result
+                    changed = True
+            if not changed:
+                break
+        if fact_key == 'volume_frustum' and 'R' in v and 'r' in v and v['R'] < v['r']:
+            raise ValueError('Großer Radius kleiner als kleiner Radius')
+        if fact_key == 'area_rectangle' and 'U' in v and 'A' in v:
+            # Für ein echtes Rechteck gilt stets U >= 4 * sqrt(A).
+            if v['U'] ** 2 < 16 * v['A'] * (1-1e-9):
+                raise ValueError('Umfang und Fläche geometrisch unmöglich')
+        if fact_key == 'area_rhombus' and 'a' in v and 'h' in v:
+            if v['h'] > v['a'] * (1+1e-9):
+                raise ValueError('Rhombushöhe kann nicht größer als Seite sein')
+        if not any(key not in supplied for key in v):
+            # Sind mindestens zwei zueinander passende Angaben vorhanden,
+            # darf die gültige Fläche / das gültige Volumen bestätigt werden.
+            # Eine einzelne eingegebene Ergebniszahl wäre dagegen trivial.
+            primary = 'A' if fact_key.startswith('area_') else 'V'
+            if len(supplied) < 2 or primary not in v:
+                raise ValueError('Nicht genügend Informationen für eine Berechnung')
+        return v, supplied
+
+    def _calculate_geometry_fact(fact_key: str, raw_inputs: dict):
+        """Kompatible Flächen-/Volumenfunktion (alte Stage-362-Schnittstelle)."""
+        values, _ = _solve_geometry_fact(fact_key, raw_inputs)
+        target = 'A' if fact_key.startswith('area_') else 'V'
+        if target not in values:
+            raise ValueError('Fläche oder Volumen nicht eindeutig berechenbar')
+        return target, values[target]
+
+
+    class GeometryErrorTitleBar(QFrame):
+        """Verschiebbare, echte Titelzeile für den rahmenlosen Fehlerdialog."""
+
+        def __init__(self, dialog, dark_mode=True):
+            super().__init__(dialog)
+            self.dialog = dialog
+            self._drag_offset = None
+            self.setObjectName('geometry_error_title_bar')
+            self.setFixedHeight(39)
+            self.setCursor(Qt.SizeAllCursor)
+            title_layout = QHBoxLayout(self)
+            title_layout.setContentsMargins(12, 0, 5, 0)
+            title_layout.setSpacing(5)
+            title = QLabel('Berechnungsfehler', self)
+            title.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            title.setObjectName('geometry_error_title_label')
+            title_layout.addWidget(title)
+            title_layout.addStretch(1)
+            close_button = QToolButton(self)
+            close_button.setObjectName('geometry_error_close')
+            close_button.setText('✕')
+            close_button.setToolTip('Schließen')
+            close_button.setCursor(Qt.ArrowCursor)
+            close_button.clicked.connect(dialog.reject)
+            title_layout.addWidget(close_button)
+            self.close_button = close_button
+            if dark_mode:
+                stops, fg = ('#030406', '#555e68'), '#f5f7fb'
+            else:
+                stops, fg = ('#d1dbe6', '#ffffff'), '#1d2932'
+            self.setStyleSheet(f"""
+                QFrame#geometry_error_title_bar {{
+                    background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+                              stop:0 {stops[0]},stop:1 {stops[1]});
+                    border: none; border-bottom: 1px solid #808a94;
+                }}
+                QLabel#geometry_error_title_label {{ color: {fg}; font-weight: bold;
+                    font-size: 13px; background: transparent; }}
+                QToolButton#geometry_error_close {{ color: {fg}; border: none;
+                    background: transparent; font-size: 18px; }}
+                QToolButton#geometry_error_close:hover {{ background: #8d5057; }}
+            """)
+
+        def mousePressEvent(self, event):
+            if event.button() == Qt.LeftButton:
+                self._drag_offset = event.globalPos() - self.dialog.frameGeometry().topLeft()
+                event.accept()
+            else:
+                super().mousePressEvent(event)
+
+        def mouseMoveEvent(self, event):
+            if self._drag_offset is not None and event.buttons() & Qt.LeftButton:
+                self.dialog.move(event.globalPos() - self._drag_offset)
+                event.accept()
+            else:
+                super().mouseMoveEvent(event)
+
+        def mouseReleaseEvent(self, event):
+            self._drag_offset = None
+            super().mouseReleaseEvent(event)
+
+
+    class GeometryDataErrorDialog(QDialog):
+        """Stage 363: 3px-Rand, verschiebbare Verlauf-Titelleiste, X und OK."""
+
+        def __init__(self, dark_mode=True, parent=None):
+            super().__init__(parent)
+            self.setObjectName('geometry_data_error_dialog')
+            self.setWindowTitle('Berechnungsfehler')
+            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+            self.setModal(True)
+            self.setMinimumWidth(370)
+            dark_mode = bool(dark_mode)
+            fg = '#f5f7fb' if dark_mode else '#1d2932'
+            border = '#8c99a6' if dark_mode else '#4c5661'
+            bg = '#151c25' if dark_mode else '#f6f8fb'
+            self.setStyleSheet(f"""
+                QDialog#geometry_data_error_dialog {{
+                    border: 3px solid {border}; background: {bg};
+                    color: {fg};
+                }}
+                QLabel {{ background: transparent; color: {fg}; }}
+                QPushButton {{ color: {fg}; background: transparent;
+                    border: 1px solid {border}; border-radius: 5px;
+                    min-height: 28px; padding: 3px 15px; }}
+                QPushButton:hover {{ background: #505b67; }}
+            """)
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(3, 3, 3, 12)
+            layout.setSpacing(12)
+            self.title_bar = GeometryErrorTitleBar(self, dark_mode)
+            layout.addWidget(self.title_bar)
+            message = QLabel('Daten Fehlen bzw. sind nicht gültig', self)
+            message.setWordWrap(True)
+            message.setAlignment(Qt.AlignCenter)
+            layout.addWidget(message)
+            buttons = QHBoxLayout()
+            buttons.setContentsMargins(14, 0, 14, 0)
+            buttons.addStretch(1)
+            ok_button = QPushButton('OK', self)
+            ok_button.setObjectName('geometry_error_ok')
+            ok_button.setDefault(True)
+            ok_button.clicked.connect(self.accept)
+            buttons.addWidget(ok_button)
+            layout.addLayout(buttons)
+
+
+    class GeometryCalculatorPanel(QWidget):
+        """Mehrzeiliger, linksbündiger Eingabebereich für alle 19 Figuren."""
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.setObjectName('geometry_calculator_panel')
+            self._dark_mode = True
+            self._fact_key = None
+            self._saved_values = {}
+            self.inputs = {}
+            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            outer = QVBoxLayout(self)
+            # Die 10px kommen ausschließlich vom übergeordneten Seitenlayout.
+            outer.setContentsMargins(0, 6, 0, 6)
+            outer.setSpacing(8)
+            self.input_layout = QGridLayout()
+            self.input_layout.setContentsMargins(0, 0, 0, 0)
+            self.input_layout.setHorizontalSpacing(8)
+            self.input_layout.setVerticalSpacing(7)
+            outer.addLayout(self.input_layout)
+            actions = QHBoxLayout()
+            actions.setContentsMargins(0, 0, 0, 0)
+            actions.setSpacing(8)
+            self.calculate_button = QPushButton('Berechnen', self)
+            self.calculate_button.setObjectName('geometry_calculate_button')
+            self.calculate_button.clicked.connect(self.calculate)
+            actions.addWidget(self.calculate_button, 0)
+            self.result_edit = QLineEdit(self)
+            self.result_edit.setObjectName('geometry_calculate_result')
+            self.result_edit.setPlaceholderText('Lösung')
+            self.result_edit.setReadOnly(True)
+            self.result_edit.setMinimumWidth(260)
+            actions.addWidget(self.result_edit, 1)
+            outer.addLayout(actions)
+            self.set_dark_mode(True)
+
+        def set_dark_mode(self, enabled: bool):
+            self._dark_mode = bool(enabled)
+            if self._dark_mode:
+                bg, fg, edge, input_bg = '#0e2539', '#f0f6fc', '#51728d', '#0b1927'
+                placeholder, btn = '#aabbd0', '#204d70'
+            else:
+                bg, fg, edge, input_bg = '#f6f9fd', '#223342', '#8a9caa', '#ffffff'
+                placeholder, btn = '#687786', '#d5e8f7'
+            self.setStyleSheet(f"""
+                QWidget#geometry_calculator_panel {{ background: {bg}; border: none; }}
+                QLineEdit {{ color: {fg}; background: {input_bg};
+                    border: 1px solid {edge}; border-radius: 5px;
+                    min-height: 29px; padding: 3px 7px; }}
+                QLineEdit::placeholder {{ color: {placeholder}; }}
+                QLineEdit:read-only {{ background: {bg}; }}
+                QPushButton {{ background: {btn}; color: {fg};
+                    border: 1px solid {edge}; border-radius: 5px;
+                    min-height: 29px; padding: 3px 14px; font-weight: bold; }}
+                QPushButton:hover {{ border-color: {fg}; }}
+            """)
+
+        def activate_fact(self, fact_key: str):
+            if fact_key not in _GEOMETRY_INPUTS:
+                raise KeyError(fact_key)
+            if self._fact_key:
+                self._saved_values[self._fact_key] = {
+                    key: field.text() for key, field in self.inputs.items()
+                }
+            self._fact_key = fact_key
+            while self.input_layout.count():
+                child = self.input_layout.takeAt(0)
+                if child.widget() is not None:
+                    child.widget().deleteLater()
+            self.inputs = {}
+            saved = self._saved_values.get(fact_key, {})
+            for index, (symbol, placeholder) in enumerate(_GEOMETRY_INPUTS[fact_key]):
+                field = QLineEdit(self)
+                field.setObjectName('geometry_input_' + symbol)
+                field.setPlaceholderText(placeholder)
+                field.setToolTip(f'{placeholder} ({symbol})')
+                field.setAccessibleName(placeholder)
+                field.setMinimumWidth(125)
+                field.setValidator(QRegularExpressionValidator(
+                    QRegularExpression(r'(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)?'), field))
+                field.setText(saved.get(symbol, ''))
+                field.textChanged.connect(self.result_edit.clear)
+                self.input_layout.addWidget(field, index // 4, index % 4)
+                self.inputs[symbol] = field
+            self.result_edit.clear()
+
+        def calculate(self):
+            try:
+                values, supplied = _solve_geometry_fact(
+                    self._fact_key,
+                    {key: field.text() for key, field in self.inputs.items()})
+            except (ValueError, OverflowError, KeyError):
+                self.result_edit.clear()
+                GeometryDataErrorDialog(self._dark_mode, self).exec_()
+                return
+            # Im Ergebnis stehen alle eindeutig berechneten, nicht vom
+            # Benutzer eingegebenen Größen – Fläche/Volumen zuerst.
+            fields = _GEOMETRY_INPUTS[self._fact_key]
+            wanted = 'A' if self._fact_key.startswith('area_') else 'V'
+            order = [wanted] + [key for key, _ in fields if key != wanted]
+            computed = [(key, values[key]) for key in order
+                        if key in values and key not in supplied]
+            if not computed and wanted in values and len(supplied) >= 2:
+                computed = [(wanted, values[wanted])]
+            if not computed:
+                self.result_edit.clear()
+                GeometryDataErrorDialog(self._dark_mode, self).exec_()
+                return
+            result = ';  '.join(f'{key} = {number:.10g}' for key, number in computed)
+            self.result_edit.setText(result)
+            self.result_edit.setToolTip(result)
+
+
     class VolumeFactWidget(QWidget):
         """Zeichnet Volumenformeln mit einfacher räumlicher 3D-Ansicht."""
 
@@ -94346,7 +95448,7 @@ QPushButton {{ min-height: 28px; padding: 4px 12px; }}'''
                     "panel_text": QColor("#edf5ff"),
                     "accent": QColor("#ffe567"),
                     "line": QColor("#d8e9f7"),
-                    "hidden": QColor("#a6bfd3"),
+                    "hidden": QColor("#527087"),
                     "formula_bg": QColor("#13324e"),
                     "legend_bg": QColor("#0f2941"),
                     "shadow": QColor(0, 0, 0, 58),
@@ -94410,10 +95512,32 @@ QPushButton {{ min-height: 28px; padding: 4px 12px; }}'''
                 painter.setPen(colors["panel_text"])
                 painter.setFont(QFont("Sans Serif", 10))
                 painter.drawText(QRectF(row.left() + 38, row.top(), row.width() - 46, row.height()), Qt.AlignLeft | Qt.AlignVCenter, label)
+            # Flächen: zusätzliche allgemeine Beziehungen und Umstellungen.
+            calculations = spec.get('calculations', ())
+            if calculations:
+                calc_top = item_top + len(spec['legend']) * 28 + 10
+                painter.setFont(QFont('Sans Serif', 10, QFont.Bold))
+                painter.setPen(colors['accent'])
+                painter.drawText(QRectF(rect.left() + 18, calc_top, rect.width() - 36, 24),
+                                 Qt.AlignLeft | Qt.AlignVCenter, 'Weitere Berechnungen')
+                painter.setFont(QFont('Times New Roman', 11))
+                for i, formula in enumerate(calculations):
+                    row = QRectF(rect.left() + 18, calc_top + 27 + i * 32, rect.width() - 36, 28)
+                    painter.setPen(QPen(colors['line'], 0.7))
+                    painter.setBrush(colors['legend_bg'])
+                    painter.drawRoundedRect(row, 5, 5)
+                    painter.setPen(colors['panel_text'])
+                    painter.drawText(QRectF(row.left() + 7, row.top(), row.width() - 14, row.height()),
+                                     Qt.AlignVCenter | Qt.AlignLeft | Qt.TextWordWrap, formula)
             painter.restore()
 
         def _shape_fill(self, spec):
             base = QColor(spec["color"])
+            if self._dark_mode:
+                # Materialfarbe statt heller Pastelltöne: verdeckte Rückseiten
+                # schimmern durch die teilweise transparenten Vorderflächen.
+                base = base.darker(200)
+                base.setAlpha(225)
             return base
 
         def _draw_shadow(self, painter, bounds: QRectF, colors):
@@ -94475,14 +95599,15 @@ QPushButton {{ min-height: 28px; padding: 4px 12px; }}'''
             front = [(x, y), (x + s, y), (x + s, y + s), (x, y + s)]
             back = [(x + dx, y + dy), (x + s + dx, y + dy), (x + s + dx, y + s + dy), (x + dx, y + s + dy)]
             self._draw_shadow(painter, rect, colors)
-            self._fill_poly(painter, back, self._mix(base, 108), colors["line"])
-            self._fill_poly(painter, [(x + s, y), (x + s + dx, y + dy), (x + s + dx, y + s + dy), (x + s, y + s)], self._mix(base, 92), colors["line"])
-            self._fill_poly(painter, front, self._mix(base, 118), colors["line"])
+            self._fill_poly(painter, back, self._mix(base, 75), colors["hidden"])
+            self._fill_poly(painter, [(x, y), (x + dx, y + dy), (x + s + dx, y + dy), (x + s, y)], self._mix(base, 128), colors["line"])
+            self._fill_poly(painter, [(x + s, y), (x + s + dx, y + dy), (x + s + dx, y + s + dy), (x + s, y + s)], self._mix(base, 87), colors["line"])
+            self._fill_poly(painter, front, self._mix(base, 113), colors["line"])
             for pa, pb in zip(front, back):
                 painter.setPen(QPen(colors["line"], 1.2))
                 painter.drawLine(QPointF(*pa), QPointF(*pb))
-            self._draw_hidden(painter, QPointF(x, y), QPointF(x + dx, y + dy), colors)
-            self._draw_hidden(painter, QPointF(x, y), QPointF(x, y + s), colors)
+            self._draw_hidden(painter, QPointF(x + dx, y + dy), QPointF(x + dx, y + s + dy), colors)
+            self._draw_hidden(painter, QPointF(x, y + s), QPointF(x + dx, y + s + dy), colors)
             self._draw_dimension(painter, QPointF(x, y + s + 26), QPointF(x + s, y + s + 26), "a", colors, QPointF(0, -2))
             self._draw_dimension(painter, QPointF(x + s + dx + 18, y + dy), QPointF(x + s + dx + 18, y + s + dy), "a", colors, QPointF(10, 0))
             self._draw_dimension(painter, QPointF(x + s + 12, y + s + 12), QPointF(x + s + dx + 12, y + s + dy + 12), "a", colors, QPointF(2, -8))
@@ -94495,13 +95620,16 @@ QPushButton {{ min-height: 28px; padding: 4px 12px; }}'''
             front = [(x, y), (x + w, y), (x + w, y + h), (x, y + h)]
             back = [(x + dx, y + dy), (x + w + dx, y + dy), (x + w + dx, y + h + dy), (x + dx, y + h + dy)]
             self._draw_shadow(painter, rect, colors)
-            self._fill_poly(painter, back, self._mix(base, 106), colors["line"])
-            self._fill_poly(painter, [(x + w, y), (x + w + dx, y + dy), (x + w + dx, y + h + dy), (x + w, y + h)], self._mix(base, 92), colors["line"])
-            self._fill_poly(painter, front, self._mix(base, 114), colors["line"])
+            self._fill_poly(painter, back, self._mix(base, 75), colors["hidden"])
+            self._fill_poly(painter, [(x, y), (x + dx, y + dy), (x + w + dx, y + dy), (x + w, y)], self._mix(base, 128), colors["line"])
+            self._fill_poly(painter, [(x + w, y), (x + w + dx, y + dy), (x + w + dx, y + h + dy), (x + w, y + h)], self._mix(base, 87), colors["line"])
+            self._fill_poly(painter, front, self._mix(base, 112), colors["line"])
             for pa, pb in zip(front, back):
                 painter.setPen(QPen(colors["line"], 1.2))
                 painter.drawLine(QPointF(*pa), QPointF(*pb))
             self._draw_hidden(painter, QPointF(x, y), QPointF(x + dx, y + dy), colors)
+            self._draw_hidden(painter, QPointF(x + dx, y + dy), QPointF(x + dx, y + h + dy), colors)
+            self._draw_hidden(painter, QPointF(x, y + h), QPointF(x + dx, y + h + dy), colors)
             self._draw_dimension(painter, QPointF(x, y + h + 26), QPointF(x + w, y + h + 26), "l", colors)
             self._draw_dimension(painter, QPointF(x + w + dx + 18, y + dy), QPointF(x + w + dx + 18, y + h + dy), "h", colors, QPointF(10, 0))
             self._draw_dimension(painter, QPointF(x + w + 8, y + h + 8), QPointF(x + w + dx + 8, y + h + dy + 8), "b", colors, QPointF(0, -10))
@@ -94517,12 +95645,18 @@ QPushButton {{ min-height: 28px; padding: 4px 12px; }}'''
             right = cx + w / 2
             self._draw_shadow(painter, rect, colors)
             painter.setPen(QPen(colors["line"], 1.4))
-            painter.setBrush(self._mix(base, 110))
-            painter.drawEllipse(QRectF(left, top, w, ellipse_h))
-            painter.setBrush(self._mix(base, 96))
-            painter.drawRect(QRectF(left, top + ellipse_h / 2, w, h - ellipse_h))
-            painter.setBrush(self._mix(base, 102))
+            # Hintere Bodenfläche zuerst zeichnen, dann halbtransparenten
+            # Körper und zuletzt die obere elliptische Deckfläche.
+            painter.setBrush(self._mix(base, 77))
             painter.drawEllipse(QRectF(left, top + h - ellipse_h, w, ellipse_h))
+            side = QLinearGradient(left, top, right, top)
+            side.setColorAt(0.0, self._mix(base, 117))
+            side.setColorAt(0.5, self._mix(base, 96))
+            side.setColorAt(1.0, self._mix(base, 70))
+            painter.setBrush(side)
+            painter.drawRect(QRectF(left, top + ellipse_h / 2, w, h - ellipse_h))
+            painter.setBrush(self._mix(base, 128))
+            painter.drawEllipse(QRectF(left, top, w, ellipse_h))
             self._draw_hidden(painter, QPointF(left, top + h - ellipse_h / 2), QPointF(right, top + h - ellipse_h / 2), colors)
             painter.drawLine(QPointF(left, top + ellipse_h / 2), QPointF(left, top + h - ellipse_h / 2))
             painter.drawLine(QPointF(right, top + ellipse_h / 2), QPointF(right, top + h - ellipse_h / 2))
@@ -94722,7 +95856,11 @@ QPushButton {{ min-height: 28px; padding: 4px 12px; }}'''
             gradient.setColorAt(1.0, colors["bg2"])
             painter.fillRect(self.rect(), gradient)
 
-            spec = self.FACTS.get(self._fact_key, self.FACTS["volume_cube"])
+            # Lazy fallback: die Flächen-Unterklasse besitzt keinen
+            # volume_cube-Schlüssel; dict.get() wertet Defaults sofort aus.
+            spec = self.FACTS.get(self._fact_key)
+            if spec is None:
+                spec = next(iter(self.FACTS.values()))
             margin = 18.0
             info_rect = QRectF(margin, margin, min(300.0, self.width() * 0.33), self.height() - margin * 2)
             draw_rect = QRectF(info_rect.right() + 18, margin, self.width() - info_rect.width() - margin * 3, self.height() - margin * 2)
@@ -94730,6 +95868,148 @@ QPushButton {{ min-height: 28px; padding: 4px 12px; }}'''
             self._draw_shape(painter, draw_rect, colors, spec)
             painter.end()
 
+
+    class AreaFactWidget(VolumeFactWidget):
+        """Stage 361: Ebenen Figuren und Flächenformeln, vollständig mit QPainter."""
+
+        FACTS = {
+            'area_rectangle': dict(title='Rechteck', formula='A = a · b',
+                legend=(('A', 'Flächeninhalt'), ('a', 'Länge'), ('b', 'Breite')),
+                calculations=('U = 2 · (a + b)', 'a = A / b', 'b = A / a', 'd = √(a² + b²)'),
+                drawer='rectangle', color='#8bc4ec'),
+            'area_square': dict(title='Quadrat', formula='A = a²',
+                legend=(('A', 'Flächeninhalt'), ('a', 'Seitenlänge')),
+                calculations=('U = 4 · a', 'a = √A', 'd = a · √2'),
+                drawer='square', color='#a8d3b8'),
+            'area_triangle': dict(title='Dreieck', formula='A = (g · h) / 2',
+                legend=(('A', 'Flächeninhalt'), ('g', 'Grundseite'), ('h', 'zugehörige Höhe'), ('a–c', 'Seitenlängen')),
+                calculations=('U = a + b + c', 'g = 2 · A / h', 'h = 2 · A / g',
+                              'A = √(s(s−a)(s−b)(s−c)), s = U/2'),
+                drawer='triangle', color='#e1b1cf'),
+            'area_circle': dict(title='Kreis', formula='A = π · r²',
+                legend=(('A', 'Flächeninhalt'), ('r', 'Radius'), ('d', 'Durchmesser')),
+                calculations=('U = 2 · π · r = π · d', 'r = √(A / π)', 'd = 2 · r'),
+                drawer='circle', color='#e7c38a'),
+            'area_semicircle': dict(title='Halbkreis', formula='A = (π · r²) / 2',
+                legend=(('A', 'Flächeninhalt'), ('r', 'Radius'), ('d', 'Durchmesser')),
+                calculations=('U = π · r + 2 · r', 'r = √(2 · A / π)', 'd = 2 · r'),
+                drawer='semicircle', color='#a3bcf2'),
+            'area_ellipse': dict(title='Ellipse', formula='A = π · a · b',
+                legend=(('A', 'Flächeninhalt'), ('a', 'große Halbachse'), ('b', 'kleine Halbachse')),
+                calculations=('U ≈ π [3(a+b) − √((3a+b)(a+3b))]', 'a = A / (π · b)',
+                              'b = A / (π · a)'),
+                drawer='ellipse', color='#b7ade5'),
+            'area_rhombus': dict(title='Rhombus', formula='A = (e · f) / 2',
+                legend=(('A', 'Flächeninhalt'), ('e', 'erste Diagonale'), ('f', 'zweite Diagonale'), ('a', 'Seitenlänge'), ('h', 'Höhe')),
+                calculations=('A = a · h', 'U = 4 · a', 'h = A / a', 'e = 2 · A / f'),
+                drawer='rhombus', color='#91d7ce'),
+            'area_trapezoid': dict(title='Trapez', formula='A = (a + c) · h / 2',
+                legend=(('A', 'Flächeninhalt'), ('a,c', 'parallele Grundseiten'), ('b,d', 'andere Seiten'), ('h', 'Höhe')),
+                calculations=('U = a + b + c + d', 'h = 2 · A / (a + c)',
+                              'm = (a + c) / 2', 'A = m · h'),
+                drawer='trapezoid', color='#dbb99d'),
+        }
+
+        def __init__(self, parent=None):
+            # Basiskonstruktor VolumeFactWidget erwartet volume_cube und
+            # greift sonst auf das überlagerte Flächen-FACTS zu.
+            QWidget.__init__(self, parent)
+            self._dark_mode = True
+            self._fact_key = 'area_rectangle'
+            self._title = self.FACTS[self._fact_key]['title']
+            self.setMinimumSize(820, 520)
+            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        def _draw_shape(self, painter, rect: QRectF, colors, spec):
+            """Zeichnung im normierten Koordinatensystem: unabhängig von Dockgröße."""
+            painter.save()
+            factor = max(0.01, min(rect.width() / 510.0, rect.height() / 385.0))
+            painter.translate(rect.center())
+            painter.scale(factor, factor)
+            base = self._shape_fill(spec)
+            front = self._mix(base, 118)
+            line = colors['line']
+            guide = colors['guide']
+            painter.setPen(QPen(line, 2.0))
+            painter.setBrush(front)
+
+            def segment(x1, y1, x2, y2, dashed=False):
+                painter.save()
+                painter.setPen(QPen(guide, 1.3, Qt.DashLine if dashed else Qt.SolidLine))
+                painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+                painter.restore()
+
+            def label(text, x, y, width=50):
+                painter.save()
+                painter.setPen(colors['accent'])
+                painter.setFont(QFont('Sans Serif', 12, QFont.Bold))
+                painter.drawText(QRectF(x - width / 2, y - 12, width, 24), Qt.AlignCenter, text)
+                painter.restore()
+
+            def polygon(points):
+                painter.setPen(QPen(line, 2.0))
+                painter.setBrush(front)
+                painter.drawPolygon(self._poly_from(points))
+
+            shape = spec['drawer']
+            if shape == 'rectangle':
+                painter.drawRect(QRectF(-140, -95, 280, 190))
+                self._draw_dimension(painter, QPointF(-140, 126), QPointF(140, 126), 'a', colors)
+                self._draw_dimension(painter, QPointF(173, -95), QPointF(173, 95), 'b', colors, QPointF(14, 0))
+            elif shape == 'square':
+                painter.drawRect(QRectF(-105, -105, 210, 210))
+                self._draw_dimension(painter, QPointF(-105, 136), QPointF(105, 136), 'a', colors)
+                self._draw_dimension(painter, QPointF(140, -105), QPointF(140, 105), 'a', colors, QPointF(14, 0))
+            elif shape == 'triangle':
+                polygon([(-150, 103), (152, 103), (24, -121)])
+                segment(24, -121, 24, 103, True)
+                painter.save()
+                painter.setPen(QPen(guide, 1.3))
+                painter.setBrush(Qt.NoBrush)
+                painter.drawRect(QRectF(24, 91, 12, 12))
+                painter.restore()
+                self._draw_dimension(painter, QPointF(-150, 140), QPointF(152, 140), 'g', colors)
+                label('h', 42, -3)
+            elif shape == 'circle':
+                painter.drawEllipse(QPointF(0, 0), 121, 121)
+                segment(0, 0, 121, 0)
+                label('r', 61, -17)
+                painter.drawEllipse(QPointF(0, 0), 3.3, 3.3)
+            elif shape == 'semicircle':
+                # Halbkreis oberhalb des waagerechten Durchmessers.
+                # Kubische Bezier-Näherung bleibt bei Größenänderung sauber.
+                path = QPainterPath(QPointF(-145, 80))
+                path.cubicTo(QPointF(-145, -113), QPointF(145, -113), QPointF(145, 80))
+                path.lineTo(QPointF(-145, 80))
+                painter.drawPath(path)
+                segment(0, 80, 145, 80)
+                label('r', 72, 63)
+            elif shape == 'ellipse':
+                painter.drawEllipse(QRectF(-156, -94, 312, 188))
+                segment(-156, 0, 156, 0, True)
+                segment(0, -94, 0, 94, True)
+                label('a', 79, -17)
+                label('b', 19, -48)
+                painter.drawEllipse(QPointF(0, 0), 3.3, 3.3)
+            elif shape == 'rhombus':
+                polygon([(0, -128), (159, 0), (0, 128), (-159, 0)])
+                segment(-159, 0, 159, 0, True)
+                segment(0, -128, 0, 128, True)
+                label('e', 88, -17)
+                label('f', 20, -57)
+                label('a', 108, -77)
+            elif shape == 'trapezoid':
+                polygon([(-172, 104), (169, 104), (100, -101), (-83, -101)])
+                segment(-83, -101, -83, 104, True)
+                painter.save()
+                painter.setPen(QPen(guide, 1.1))
+                painter.setBrush(Qt.NoBrush)
+                painter.drawRect(QRectF(-83, 92, 12, 12))
+                painter.restore()
+                self._draw_dimension(painter, QPointF(-172, 142), QPointF(169, 142), 'a', colors)
+                self._draw_dimension(painter, QPointF(-83, -132), QPointF(100, -132), 'c', colors)
+                label('h', -104, 5)
+            painter.restore()
 
     class PrimeSearchThread(QThread):
         """Stage ASM 156: parallele Suche nach Primzahlen und Primzahl-Konstellationen."""
@@ -96512,8 +97792,383 @@ QToolButton:hover {{ background: {selection}; }}"""
             self.stop_animation()
 
 
+    class UnitCircleReferenceWidget(QWidget):
+        """Stage 360: eigenstaendige STATISCHE QPainter-Einheitskreis-Tafel.
+
+        Diese Klasse zeichnet die 16 Winkel mitsamt Gradzahl, Bogenmass und
+        exakten Sinus-/Kosinus-Koordinaten. Weder Referenzbild noch QPixmap
+        werden benutzt. Die animierte UnitCircleLearningWidget bleibt separat.
+        """
+
+        CANVAS_WIDTH = 1200.0
+        CANVAS_HEIGHT = 1060.0
+        CENTER_X = 600.0
+        CENTER_Y = 530.0
+        RADIUS = 345.0
+        ANGLES = (0, 30, 45, 60, 90, 120, 135, 150,
+                  180, 210, 225, 240, 270, 300, 315, 330)
+        # Wert in Bogenmass: einfache Zahlen oder (Zaehler, Nenner).
+        RADIAN_LABELS = (
+            '0', ('π', '6'), ('π', '4'), ('π', '3'), ('π', '2'),
+            ('2π', '3'), ('3π', '4'), ('5π', '6'), 'π',
+            ('7π', '6'), ('5π', '4'), ('4π', '3'), ('3π', '2'),
+            ('5π', '3'), ('7π', '4'), ('11π', '6'),
+        )
+        # x=cos(theta), y=sin(theta). Brueche werden durch QPainter
+        # mit horizontalem Bruchstrich und echten Wurzelzeichen gesetzt.
+        COORDINATES = (
+            ('1', '0'), ('√3/2', '1/2'), ('√2/2', '√2/2'),
+            ('1/2', '√3/2'), ('0', '1'), ('-1/2', '√3/2'),
+            ('-√2/2', '√2/2'), ('-√3/2', '1/2'),
+            ('-1', '0'), ('-√3/2', '-1/2'), ('-√2/2', '-√2/2'),
+            ('-1/2', '-√3/2'), ('0', '-1'), ('1/2', '-√3/2'),
+            ('√2/2', '-√2/2'), ('√3/2', '-1/2'),
+        )
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.setObjectName('unit_circle_reference_widget')
+            self.setMinimumSize(0, 0)
+            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            self._dark_mode = False
+            self.setAttribute(Qt.WA_OpaquePaintEvent, True)
+
+        def sizeHint(self):
+            return QSize(1100, 930)
+
+        def set_dark_mode(self, enabled: bool) -> None:
+            self._dark_mode = bool(enabled)
+            self.update()
+
+        @staticmethod
+        def _point(cx, cy, radius, degree):
+            angle = math.radians(degree)
+            return QPointF(cx + radius * math.cos(angle),
+                           cy - radius * math.sin(angle))
+
+        @staticmethod
+        def _font(painter, size, bold=False):
+            font = QFont(painter.font())
+            # Die aktuelle Systemschrift mit Qt-Glyphenfallback nutzen.
+            font.setPixelSize(int(size))
+            font.setBold(bool(bold))
+            painter.setFont(font)
+
+        @classmethod
+        def _measure_piece(cls, painter, piece, font_size):
+            cls._font(painter, font_size)
+            if '/' not in piece:
+                return QFontMetricsF(painter.font()).horizontalAdvance(piece)
+            numerator, denominator = piece.split('/', 1)
+            return max(QFontMetricsF(painter.font()).horizontalAdvance(numerator),
+                       QFontMetricsF(painter.font()).horizontalAdvance(denominator)) + 8.0
+
+        @classmethod
+        def _draw_piece(cls, painter, text, x, y, size, ink):
+            """Malt einen mathematischen Baustein um die vertikale Mitte y."""
+            width = cls._measure_piece(painter, text, size)
+            painter.setPen(ink)
+            if '/' not in text:
+                painter.drawText(QRectF(x, y - 23.0, width, 46.0),
+                                 Qt.AlignCenter, text)
+                return width
+            numerator, denominator = text.split('/', 1)
+            cls._font(painter, size)
+            painter.drawText(QRectF(x, y - 31.0, width, 24.0),
+                             Qt.AlignCenter, numerator)
+            painter.setPen(QPen(ink, 1.6))
+            painter.drawLine(QPointF(x + 3.0, y - 2.0),
+                             QPointF(x + width - 3.0, y - 2.0))
+            painter.setPen(ink)
+            cls._font(painter, max(15, size - 3))
+            painter.drawText(QRectF(x, y + 0.0, width, 24.0),
+                             Qt.AlignCenter, denominator)
+            return width
+
+        @classmethod
+        def _draw_coordinate(cls, painter, center, x_value, y_value, ink):
+            pieces = ('(', x_value, ',', y_value, ')')
+            sizes = (23, 24, 23, 24, 23)
+            widths = [cls._measure_piece(painter, value, size)
+                      for value, size in zip(pieces, sizes)]
+            gap = 2.0
+            total = sum(widths) + gap * (len(pieces) - 1)
+            cursor = center.x() - total / 2.0
+            for piece, size, width in zip(pieces, sizes, widths):
+                cls._draw_piece(painter, piece, cursor, center.y(), size, ink)
+                cursor += width + gap
+
+        @classmethod
+        def _draw_radian(cls, painter, center, value, ink):
+            if isinstance(value, tuple):
+                numerator, denominator = value
+                cls._font(painter, 25)
+                width = max(QFontMetricsF(painter.font()).horizontalAdvance(numerator),
+                            QFontMetricsF(painter.font()).horizontalAdvance(denominator)) + 8.0
+                x = center.x() - width / 2.0
+                painter.setPen(ink)
+                painter.drawText(QRectF(x, center.y() - 32.0, width, 25.0),
+                                 Qt.AlignCenter, numerator)
+                painter.setPen(QPen(ink, 1.8))
+                painter.drawLine(QPointF(x + 2.0, center.y() - 3.0),
+                                 QPointF(x + width - 2.0, center.y() - 3.0))
+                painter.setPen(ink)
+                cls._font(painter, 20)
+                painter.drawText(QRectF(x, center.y(), width, 26.0),
+                                 Qt.AlignCenter, denominator)
+            else:
+                cls._font(painter, 27)
+                painter.setPen(ink)
+                painter.drawText(QRectF(center.x() - 26.0, center.y() - 20.0,
+                                        52.0, 40.0), Qt.AlignCenter, value)
+
+        def paintEvent(self, event):
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            painter.setRenderHint(QPainter.TextAntialiasing, True)
+
+            # Forderung: echte Schwarz/Weiss-Inversion im Dark-Mode.
+            background = QColor('#000000') if self._dark_mode else QColor('#ffffff')
+            foreground = QColor('#ffffff') if self._dark_mode else QColor('#000000')
+            guide = QColor('#9a9a9a') if self._dark_mode else QColor('#858585')
+            painter.fillRect(self.rect(), background)
+
+            w = float(max(1, self.width()))
+            h = float(max(1, self.height()))
+            scale = min(w / self.CANVAS_WIDTH, h / self.CANVAS_HEIGHT)
+            # Das gleiche Vektormotiv bleibt auch beim Dock-Resize zentriert.
+            painter.translate((w - self.CANVAS_WIDTH * scale) / 2.0,
+                              (h - self.CANVAS_HEIGHT * scale) / 2.0)
+            painter.scale(scale, scale)
+            cx, cy, radius = self.CENTER_X, self.CENTER_Y, self.RADIUS
+
+            # Zarte, gleichmaessig ueber 360 Grad verteilte Strahlen.
+            painter.setPen(QPen(guide, 1.3))
+            for degree in self.ANGLES:
+                endpoint = self._point(cx, cy, radius - 17.0, degree)
+                painter.drawLine(QPointF(cx, cy), endpoint)
+
+            # Hauptachsen, mit Markierungen an allen vier Kardinalpunkten.
+            painter.setPen(QPen(guide, 2.2))
+            painter.drawLine(QPointF(cx - radius - 22.0, cy),
+                             QPointF(cx + radius + 22.0, cy))
+            painter.drawLine(QPointF(cx, cy - radius - 22.0),
+                             QPointF(cx, cy + radius + 22.0))
+
+            painter.setBrush(QBrush(Qt.NoBrush))
+            painter.setPen(QPen(foreground, 5.0))
+            painter.drawEllipse(QPointF(cx, cy), radius, radius)
+            painter.setPen(QPen(foreground, 2.4))
+            painter.setBrush(QBrush(foreground))
+            painter.drawEllipse(QPointF(cx, cy), 2.4, 2.4)
+            painter.setBrush(QBrush(Qt.NoBrush))
+
+            # Innere Ebene: Gradzahl; mittlere Ebene: Bogenmass.
+            # Aeussere Ebene: geordnete Paare (cos, sin).
+            for degree, radian, coords in zip(self.ANGLES,
+                                              self.RADIAN_LABELS,
+                                              self.COORDINATES):
+                degree_position = self._point(cx, cy, 225.0, degree)
+                self._font(painter, 22)
+                painter.setPen(foreground)
+                painter.drawText(QRectF(degree_position.x() - 45.0,
+                                        degree_position.y() - 20.0,
+                                        90.0, 40.0),
+                                 Qt.AlignCenter, f'{degree}°')
+
+                radian_position = self._point(cx, cy, 307.0, degree)
+                self._draw_radian(painter, radian_position, radian, foreground)
+
+                coords_position = self._point(cx, cy, 456.0, degree)
+                self._draw_coordinate(painter, coords_position,
+                                      coords[0], coords[1], foreground)
+            painter.end()
+
+
+    class InterestCalculationFactWidget(QWidget):
+        """Stage 364: Prozentrechnung als Kacheln INNERHALB des Mathematik-Docks."""
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.setObjectName('interest_calculation_fact')
+            self.setMinimumWidth(790)
+            self._cards = []
+            self._dark_mode = False
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(20, 20, 20, 24)
+            layout.setSpacing(16)
+
+            title = QLabel('Zinsrechnung – Prozentrechnung', self)
+            title.setObjectName('interest_main_title')
+            font = QFont(title.font())
+            font.setPointSize(19)
+            font.setBold(True)
+            title.setFont(font)
+            layout.addWidget(title)
+
+            explanation = self._tile()
+            terms = QVBoxLayout(explanation)
+            terms.setContentsMargins(18, 14, 18, 14)
+            terms.setSpacing(8)
+            for text in (
+                'Prozentsatz   =  p    --->  Anteil in Prozent',
+                'Grundwert     =  G    --->  das Ganze',
+                'Prozentwert   =  W    --->  Teil des Ganzen',
+            ):
+                label = QLabel(text, explanation)
+                label.setObjectName('interest_definition')
+                label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                terms.addWidget(label)
+            layout.addWidget(explanation)
+
+            layout.addWidget(self._section_title('Grundformeln'))
+            formulas = QGridLayout()
+            formulas.setSpacing(14)
+            for index, (caption, symbol, upper, lower, suffix) in enumerate((
+                ('Grundwert berechnen', 'G', 'W', 'p', '× 100'),
+                ('Prozentwert berechnen', 'W', 'G × p', '100', ''),
+                ('Prozentsatz berechnen', 'p', 'W', 'G', '× 100'),
+            )):
+                formulas.addWidget(
+                    self._formula_tile(caption, symbol, upper, lower, suffix), 0, index
+                )
+                formulas.setColumnStretch(index, 1)
+            layout.addLayout(formulas)
+
+            layout.addWidget(self._section_title('Rechenbeispiele'))
+            examples = QGridLayout()
+            examples.setSpacing(14)
+            examples.addWidget(self._example_tile('Prozentwert:', (
+                ('G = 30 €', '100 % = 30 €'),
+                ('W = ?', '1 % = 0,30 €'),
+                ('p = 40 %', '40 % = 12,00 €'),
+            )), 0, 0)
+            examples.addWidget(self._example_tile('Grundwert:', (
+                ('W = 15 €', '30 % = 15 €'),
+                ('p = 30 %', '1 % = 0,50 €'),
+                ('G = ?', '100 % = 50 €'),
+            )), 0, 1)
+            examples.addWidget(self._example_tile('Prozentsatz:', (
+                ('G = 50 €', '100 % = 50 €'),
+                ('W = 15 €', '2 % = 1 €'),
+                ('p = ?', '30 % = 15 €'),
+            )), 1, 0)
+            examples.setColumnStretch(0, 1)
+            examples.setColumnStretch(1, 1)
+            layout.addLayout(examples)
+            layout.addStretch(1)
+            self.set_dark_mode(False)
+
+        def _tile(self):
+            card = QFrame(self)
+            card.setObjectName('interest_tile')
+            card.setProperty('interestCard', True)
+            card.setFrameShape(QFrame.NoFrame)
+            self._cards.append(card)
+            return card
+
+        def _section_title(self, text):
+            label = QLabel(text, self)
+            label.setObjectName('interest_section_heading')
+            font = QFont(label.font())
+            font.setBold(True)
+            font.setPointSize(13)
+            label.setFont(font)
+            return label
+
+        def _formula_tile(self, caption, symbol, upper, lower, suffix):
+            card = self._tile()
+            box = QVBoxLayout(card)
+            box.setContentsMargins(12, 12, 12, 16)
+            box.setSpacing(12)
+            heading = QLabel(caption, card)
+            heading.setObjectName('interest_card_heading')
+            heading.setAlignment(Qt.AlignCenter)
+            box.addWidget(heading)
+            formula_row = QHBoxLayout()
+            formula_row.setSpacing(8)
+            formula_row.setAlignment(Qt.AlignCenter)
+            result = QLabel(symbol + ' =', card)
+            result.setObjectName('interest_math_label')
+            formula_row.addWidget(result)
+            fraction = QWidget(card)
+            fraction_column = QVBoxLayout(fraction)
+            fraction_column.setContentsMargins(0, 0, 0, 0)
+            fraction_column.setSpacing(2)
+            numerator = QLabel(upper, fraction)
+            numerator.setObjectName('interest_math_label')
+            numerator.setAlignment(Qt.AlignCenter)
+            denominator = QLabel(lower, fraction)
+            denominator.setObjectName('interest_math_label')
+            denominator.setAlignment(Qt.AlignCenter)
+            fraction_line = QFrame(fraction)
+            fraction_line.setObjectName('interest_fraction_bar')
+            fraction_line.setFixedHeight(2)
+            fraction_line.setMinimumWidth(65)
+            fraction_column.addWidget(numerator)
+            fraction_column.addWidget(fraction_line)
+            fraction_column.addWidget(denominator)
+            formula_row.addWidget(fraction)
+            if suffix:
+                multiply = QLabel(suffix, card)
+                multiply.setObjectName('interest_math_label')
+                formula_row.addWidget(multiply)
+            box.addLayout(formula_row)
+            return card
+
+        def _example_tile(self, title, rows):
+            card = self._tile()
+            box = QVBoxLayout(card)
+            box.setContentsMargins(16, 14, 16, 16)
+            box.setSpacing(8)
+            heading = QLabel(title, card)
+            heading.setObjectName('interest_card_heading')
+            heading_font = QFont(heading.font())
+            heading_font.setBold(True)
+            heading.setFont(heading_font)
+            box.addWidget(heading)
+            grid = QGridLayout()
+            grid.setHorizontalSpacing(16)
+            grid.setVerticalSpacing(10)
+            for index, (left, right) in enumerate(rows):
+                for col, value in enumerate((left, right)):
+                    label = QLabel(value, card)
+                    label.setObjectName('interest_example_value')
+                    label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                    grid.addWidget(label, index, col)
+            grid.setColumnStretch(0, 1)
+            grid.setColumnStretch(1, 1)
+            box.addLayout(grid)
+            return card
+
+        def set_dark_mode(self, enabled):
+            self._dark_mode = bool(enabled)
+            background = '#111925' if enabled else '#f6f8fc'
+            tile = '#1c2a3a' if enabled else '#ffffff'
+            text = '#ebf4ff' if enabled else '#172a46'
+            muted = '#acc9e3' if enabled else '#385a7f'
+            border = '#3f607b' if enabled else '#c9d9ed'
+            accent = '#8bc9ff' if enabled else '#17609f'
+            self.setStyleSheet("""
+                QWidget#interest_calculation_fact { background: %s; color: %s; }
+                QFrame[interestCard="true"] {
+                    background: %s; border: 1px solid %s; border-radius: 12px;
+                }
+                QLabel { background: transparent; border: none; color: %s; }
+                QLabel#interest_main_title, QLabel#interest_section_heading,
+                QLabel#interest_card_heading { color: %s; }
+                QLabel#interest_definition { color: %s; font-size: 15px; }
+                QLabel#interest_math_label { color: %s; font-size: 24px; font-weight: bold; }
+                QLabel#interest_example_value { color: %s; font-size: 15px; }
+                QFrame#interest_fraction_bar { background: %s; border: none; }
+            """ % (background, text, tile, border, text, accent, text, text, muted, accent))
+            self.update()
+
+
     class MathematicsLearningDockWidget(QWidget):
         """Lern-Workspace mit linksseitigen Tabs und rechts eingebetteter Szene."""
+
+        interest_focus_changed = pyqtSignal(bool)
 
         def __init__(self, parent=None):
             super().__init__(parent)
@@ -96685,10 +98340,46 @@ QToolButton:hover {{ background: {selection}; }}"""
             self.fibonacci_spiral_scroll = _add_fact_scroll_page(
                 self.fibonacci_spiral_widget, 'fibonacci_spiral_scroll_area'
             )
+            self.interest_calculation_widget = InterestCalculationFactWidget()
+            self.interest_calculation_scroll = _add_fact_scroll_page(
+                self.interest_calculation_widget, 'interest_calculation_scroll_area'
+            )
+            # Inhalt über die volle verfügbare Breite zeichnen; bei schmalem
+            # Dock horizontal scrollen, statt Formel-Kacheln zusammenzustauchen.
+            self.interest_calculation_widget.setMinimumWidth(790)
+            # Stage 362: die Zeichen-Widgets bleiben unverändert, der
+            # interaktive Rechner liegt unter der jeweiligen rechten Figur.
+            # Die ScrollArea isoliert die Seiten-Mindestmaße vom Hauptfenster.
+            def _add_geometry_fact_page(canvas, scroll_name):
+                holder = QWidget(self.content_stack)
+                holder.setObjectName(scroll_name + '_content')
+                column = QVBoxLayout(holder)
+                column.setContentsMargins(0, 0, 0, 0)
+                column.setSpacing(4)
+                canvas.setMinimumHeight(520)
+                column.addWidget(canvas, 1)
+                row = QHBoxLayout()
+                # Exakt 10px linker Abstand zur rechten Fakten-Ansicht.
+                row.setContentsMargins(10, 0, 10, 12)
+                row.setSpacing(0)
+                calculator = GeometryCalculatorPanel(holder)
+                calculator.setMinimumWidth(650)
+                row.addWidget(calculator, 1, Qt.AlignLeft)
+                column.addLayout(row)
+                scroll = _add_fact_scroll_page(holder, scroll_name)
+                holder.setMinimumSize(800, 760)
+                return scroll, calculator
+
+            self.area_fact_widget = AreaFactWidget()
+            self.area_fact_scroll, self.area_calculator = _add_geometry_fact_page(
+                self.area_fact_widget, 'area_fact_scroll_area'
+            )
             self.volume_fact_widget = VolumeFactWidget()
-            self.volume_fact_scroll = _add_fact_scroll_page(
+            self.volume_fact_scroll, self.volume_calculator = _add_geometry_fact_page(
                 self.volume_fact_widget, 'volume_fact_scroll_area'
             )
+            self.area_calculator.activate_fact('area_rectangle')
+            self.volume_calculator.activate_fact('volume_cube')
             self.prime_solver_widget = PrimeSolverFactWidget()
             self.prime_solver_scroll = _add_fact_scroll_page(
                 self.prime_solver_widget, 'prime_solver_scroll_area'
@@ -96744,12 +98435,53 @@ QToolButton:hover {{ background: {selection}; }}"""
             self.facts_tree.clear()
             self._fact_items = {}
 
+            grundwissen = QTreeWidgetItem(['Grundwissen'])
+            grundwissen_font = grundwissen.font(0)
+            grundwissen_font.setBold(True)
+            grundwissen.setFont(0, grundwissen_font)
+            grundwissen.setFlags(grundwissen.flags() & ~Qt.ItemIsSelectable)
+            self.facts_tree.addTopLevelItem(grundwissen)
+
+            algebra = QTreeWidgetItem(['Algebra'])
+            algebra_font = algebra.font(0)
+            algebra_font.setBold(True)
+            algebra.setFont(0, algebra_font)
+            algebra.setFlags(algebra.flags() & ~Qt.ItemIsSelectable)
+            grundwissen.addChild(algebra)
+            interest = QTreeWidgetItem(['Zinsrechnung'])
+            interest.setData(0, Qt.UserRole, 'interest_calculation')
+            algebra.addChild(interest)
+            algebra.setExpanded(True)
+            self._fact_items['interest_calculation'] = interest
+
+            geometry = QTreeWidgetItem(['Geometrie'])
+            geometry_font = geometry.font(0)
+            geometry_font.setBold(True)
+            geometry.setFont(0, geometry_font)
+            geometry.setFlags(geometry.flags() & ~Qt.ItemIsSelectable)
+            grundwissen.addChild(geometry)
+            geometry.setExpanded(True)
+
+            flaechen = QTreeWidgetItem(['Flächen'])
+            flaechen_font = flaechen.font(0)
+            flaechen_font.setBold(True)
+            flaechen.setFont(0, flaechen_font)
+            flaechen.setFlags(flaechen.flags() & ~Qt.ItemIsSelectable)
+            geometry.addChild(flaechen)
+            for key, spec in AreaFactWidget.FACTS.items():
+                item = QTreeWidgetItem([spec['title']])
+                item.setData(0, Qt.UserRole, key)
+                flaechen.addChild(item)
+                self._fact_items[key] = item
+            flaechen.setExpanded(True)
+
             volume = QTreeWidgetItem(['Volumen'])
             volume_font = volume.font(0)
             volume_font.setBold(True)
             volume.setFont(0, volume_font)
             volume.setFlags(volume.flags() & ~Qt.ItemIsSelectable)
-            self.facts_tree.addTopLevelItem(volume)
+            geometry.addChild(volume)
+            grundwissen.setExpanded(True)
 
             volume_entries = [
                 ('volume_cube', 'Würfel'),
@@ -96810,7 +98542,7 @@ QToolButton:hover {{ background: {selection}; }}"""
             self._fact_items['cantor_diagonal_argument'] = diagonal
             self._fact_items['pascal_triangle'] = pascal
             self._fact_items['fibonacci_spiral'] = fibonacci
-            self.facts_tree.setCurrentItem(self._fact_items['volume_cube'])
+            self.facts_tree.setCurrentItem(self._fact_items['area_rectangle'])
 
         def _populate_games_tree(self) -> None:
             self.games_tree.clear()
@@ -96926,7 +98658,11 @@ QStackedWidget#learning_content_stack {{
             self.cantor_diagonal_widget.set_dark_mode(enabled)
             self.pascal_triangle_widget.set_dark_mode(enabled)
             self.fibonacci_spiral_widget.set_dark_mode(enabled)
+            self.interest_calculation_widget.set_dark_mode(enabled)
             self.volume_fact_widget.set_dark_mode(enabled)
+            self.area_fact_widget.set_dark_mode(enabled)
+            self.volume_calculator.set_dark_mode(enabled)
+            self.area_calculator.set_dark_mode(enabled)
             self.prime_solver_widget.set_dark_mode(enabled)
             self.numbers_wall_widget.set_dark_mode(enabled)
             self.arithmetic_widget.set_dark_mode(enabled)
@@ -96954,8 +98690,11 @@ QStackedWidget#learning_content_stack {{
 
             # Fakten ist Tab 0; Spiele ist durch Stage 142 Tab 1.
             self.left_tabs.setCurrentIndex(0)
+            self.interest_focus_changed.emit(fact_key == 'interest_calculation')
 
-            if fact_key == 'cantor_diagonal_argument':
+            if fact_key == 'interest_calculation':
+                self.content_stack.setCurrentWidget(self.interest_calculation_scroll)
+            elif fact_key == 'cantor_diagonal_argument':
                 self.content_stack.setCurrentWidget(self.cantor_diagonal_scroll)
                 self.cantor_diagonal_widget.activate_fact(fact_key, title)
                 self.cantor_diagonal_widget.rows_spin.setFocus(
@@ -96983,10 +98722,16 @@ QStackedWidget#learning_content_stack {{
             elif fact_key == 'prime_numbers':
                 self.content_stack.setCurrentWidget(self.prime_solver_scroll)
                 self.prime_solver_widget.activate_fact(fact_key, title)
+            elif fact_key.startswith('area_'):
+                self.content_stack.setCurrentWidget(self.area_fact_scroll)
+                self.area_fact_widget.activate_fact(fact_key, title)
+                self.area_calculator.activate_fact(fact_key)
+                self.area_calculator.inputs[next(iter(self.area_calculator.inputs))].setFocus(Qt.OtherFocusReason)
             elif fact_key.startswith('volume_'):
                 self.content_stack.setCurrentWidget(self.volume_fact_scroll)
                 self.volume_fact_widget.activate_fact(fact_key, title)
-                self.volume_fact_widget.setFocus(Qt.OtherFocusReason)
+                self.volume_calculator.activate_fact(fact_key)
+                self.volume_calculator.inputs[next(iter(self.volume_calculator.inputs))].setFocus(Qt.OtherFocusReason)
 
         def _handle_game_double_click(self, item: QTreeWidgetItem, _column: int) -> None:
             if item is None:
@@ -96999,6 +98744,7 @@ QStackedWidget#learning_content_stack {{
             self.open_game(game_key, title)
 
         def open_game(self, game_key: str, title: str = '') -> None:
+            self.interest_focus_changed.emit(False)
             game_key = str(game_key or '').strip()
             if not title and game_key in self._game_items:
                 title = str(self._game_items[game_key].text(0) or '').strip()
@@ -103872,6 +105618,9 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             # Stage 276: eigener Vollflaechen-Lernbereich fuer den Einheitskreis.
             self.unit_circle_dock = None
             self.unit_circle_widget = None
+            self.unit_circle_reference_dock = None
+            self.unit_circle_reference_widget = None
+            self._unit_circle_workspace_dock = None
             self._unit_circle_workspace_active = False
             self._unit_circle_workspace_hidden_docks = []
             self._unit_circle_workspace_replaced_central_widget = False
@@ -103904,6 +105653,8 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self._music_workspace_active = False
             self._math_learning_workspace_active = False
             self._math_learning_hidden_docks = []
+            self._math_interest_focus_active = False
+            self._math_interest_extra_docks = []
             self._math_learning_replaced_filesystem_dock = False
             self._math_learning_replaced_central_widget = False
             self._localize_replaced_filesystem_dock = False
@@ -104946,7 +106697,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             )
             self.html_editor_action.triggered.connect(self.show_html_editor_dock)
 
-            self.germany_geography_action = QAction("Geographie", self)
+            self.germany_geography_action = QAction("Deutschland", self)
             self.germany_geography_action.setObjectName("germany_geography_action")
             self.germany_geography_action.setStatusTip(
                 "Deutschland-Karte mit Bundesländern, Hauptstädten und größeren Städten öffnen"
@@ -104955,19 +106706,60 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 self.show_germany_geography_dock
             )
 
+            self.england_geography_action = QAction("England", self)
+            self.england_geography_action.setObjectName("england_geography_action")
+            self.england_geography_action.setStatusTip(
+                "Historische politische England-Karte aus der Bildvorlage öffnen"
+            )
+            self.england_geography_action.triggered.connect(
+                self.show_england_geography_dock
+            )
+
+            self.france_geography_action = QAction("Frankreich", self)
+            self.france_geography_action.setObjectName("france_geography_action")
+            self.france_geography_action.setStatusTip(
+                "Frankreich-Untermenü mit Landkarte und Flüssen"
+            )
+
+            self.france_landkarte_geography_action = QAction("Landkarte", self)
+            self.france_landkarte_geography_action.setObjectName("france_landkarte_geography_action")
+            self.france_landkarte_geography_action.setStatusTip(
+                "Frankreich-Landkarte mit Regionen und Städten öffnen"
+            )
+            self.france_landkarte_geography_action.triggered.connect(
+                self.show_france_geography_dock
+            )
+
+            self.france_rivers_geography_action = QAction("Flüsse", self)
+            self.france_rivers_geography_action.setObjectName("france_rivers_geography_action")
+            self.france_rivers_geography_action.setStatusTip(
+                "Frankreich-Landkarte mit 2-Pixel-Fluss-Overlay öffnen"
+            )
+            self.france_rivers_geography_action.triggered.connect(
+                self.show_france_rivers_geography_dock
+            )
+
             self.math_learning_action = QAction("Arbeitsfläche", self)
             self.math_learning_action.setStatusTip(
                 "Den Mathematik-Arbeitsbereich im freien Dock-Bereich öffnen"
             )
             self.math_learning_action.triggered.connect(self.show_math_learning_dock)
 
-            self.unit_circle_action = QAction("Einheitskreis", self)
+            self.unit_circle_action = QAction("Einheits-Kreis - 1", self)
             self.unit_circle_action.setObjectName("unit_circle_action")
             self.unit_circle_action.setStatusTip(
                 "Animierten Einheitskreis mit synchronen Sinus-/Kosinus-Kurven öffnen"
             )
             self.unit_circle_action.triggered.connect(
                 self.show_unit_circle_learning_dock
+            )
+            self.unit_circle_reference_action = QAction("Einheits-Kreis - 2", self)
+            self.unit_circle_reference_action.setObjectName("unit_circle_reference_action")
+            self.unit_circle_reference_action.setStatusTip(
+                "Statischen Einheitskreis mit Winkeln, Bogenmass und exakten Koordinaten öffnen"
+            )
+            self.unit_circle_reference_action.triggered.connect(
+                self.show_unit_circle_reference_dock
             )
 
             self.math_formula_designer_action = QAction("Formel-Designer", self)
@@ -105507,12 +107299,12 @@ QMenu#green_beige_popup_menu::indicator:checked {{
         def _restore_unit_circle_workspace(self) -> None:
             if not getattr(self, '_unit_circle_workspace_active', False):
                 return
-
             self._unit_circle_workspace_active = False
+            self._unit_circle_workspace_dock = None
 
-            widget = getattr(self, 'unit_circle_widget', None)
-            if widget is not None:
-                widget.stop_animation()
+            animated = getattr(self, 'unit_circle_widget', None)
+            if animated is not None:
+                animated.stop_animation()
 
             if self._unit_circle_workspace_replaced_central_widget:
                 central = self.centralWidget()
@@ -105530,26 +107322,40 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     pass
 
         def _prepare_unit_circle_workspace(self, unit_dock) -> None:
+            # Die beiden Einheitskreise sind unabhaengige Docks, nutzen jedoch
+            # denselben isolierten Lernbereich. Umschalten veraendert NICHT
+            # den gespeicherten Dockzustand der restlichen IDE.
             if getattr(self, '_unit_circle_workspace_active', False):
+                previous = getattr(self, '_unit_circle_workspace_dock', None)
+                if previous is not unit_dock:
+                    if previous is not None:
+                        blocked = previous.blockSignals(True)
+                        try:
+                            previous.hide()
+                        finally:
+                            previous.blockSignals(blocked)
+                    animated = getattr(self, 'unit_circle_widget', None)
+                    if animated is not None:
+                        animated.stop_animation()
+                    self._unit_circle_workspace_dock = unit_dock
                 return
 
             self._unit_circle_workspace_hidden_docks = []
+            circle_docks = (getattr(self, 'unit_circle_dock', None),
+                            getattr(self, 'unit_circle_reference_dock', None))
             for candidate in self.findChildren(QDockWidget):
                 if candidate is unit_dock:
                     continue
                 if candidate is not None and candidate.isVisible():
-                    self._unit_circle_workspace_hidden_docks.append(candidate)
-
-            # Beim programmgesteuerten Ausblenden werden die Visibility-
-            # Signale blockiert. So kann kein anderer Workspace waehrend des
-            # Wechsels seine Docks sofort wieder einblenden.
-            for candidate in list(self._unit_circle_workspace_hidden_docks):
-                try:
+                    # Gegebenenfalls sichtbaren zweiten Einheitskreis nicht
+                    # beim Schliessen als IDE-Dock wiederherstellen.
+                    if candidate not in circle_docks:
+                        self._unit_circle_workspace_hidden_docks.append(candidate)
                     blocked = candidate.blockSignals(True)
-                    candidate.hide()
-                    candidate.blockSignals(blocked)
-                except RuntimeError:
-                    pass
+                    try:
+                        candidate.hide()
+                    finally:
+                        candidate.blockSignals(blocked)
 
             central = self.centralWidget()
             self._unit_circle_workspace_replaced_central_widget = bool(
@@ -105559,31 +107365,29 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 central.hide()
 
             self._unit_circle_workspace_active = True
+            self._unit_circle_workspace_dock = unit_dock
 
-        def _unit_circle_dock_visibility_changed(self, visible: bool) -> None:
-            dock = getattr(self, 'unit_circle_dock', None)
-            widget = getattr(self, 'unit_circle_widget', None)
+        def _unit_circle_dock_visibility_changed(self, visible: bool, dock=None) -> None:
+            dock = dock if dock is not None else getattr(self, 'unit_circle_dock', None)
             if dock is None:
                 return
-
             if visible:
                 self._prepare_unit_circle_workspace(dock)
-                if widget is not None:
-                    widget.start_animation()
+                if dock is getattr(self, 'unit_circle_dock', None):
+                    animated = getattr(self, 'unit_circle_widget', None)
+                    if animated is not None:
+                        animated.start_animation()
                 QTimer.singleShot(0, self._expand_unit_circle_learning_dock)
-            else:
+            elif dock is getattr(self, '_unit_circle_workspace_dock', None):
                 self._restore_unit_circle_workspace()
 
         def _expand_unit_circle_learning_dock(self) -> None:
-            dock = getattr(self, 'unit_circle_dock', None)
+            dock = getattr(self, '_unit_circle_workspace_dock', None)
             if dock is None or not dock.isVisible() or dock.isFloating():
                 return
-
-            # Keine anderen Docks sind sichtbar. Damit bekommt das Lernmodul
-            # horizontal und vertikal die komplette freie Dockflaeche.
             self.resizeDocks([dock], [100000], Qt.Horizontal)
             self.resizeDocks([dock], [100000], Qt.Vertical)
-            widget = getattr(self, 'unit_circle_widget', None)
+            widget = dock.widget()
             if widget is not None:
                 widget.setMinimumSize(0, 0)
                 widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -105596,7 +107400,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             if dock is not None and widget is not None:
                 return dock, widget
 
-            dock = QDockWidget('Einheitskreis', self)
+            dock = QDockWidget('Einheits-Kreis - 1', self)
             dock.setObjectName('unit_circle_learning_dock')
             dock.setFeatures(self._dock_features())
             dock.setAllowedAreas(
@@ -105614,9 +107418,10 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             widget.set_dark_mode(self.dark_mode_enabled)
             dock.setWidget(widget)
             dock.hide()
-
             self.addDockWidget(Qt.LeftDockWidgetArea, dock)
-            dock.visibilityChanged.connect(self._unit_circle_dock_visibility_changed)
+            dock.visibilityChanged.connect(
+                lambda visible: self._unit_circle_dock_visibility_changed(visible, dock)
+            )
 
             self.unit_circle_dock = dock
             self.unit_circle_widget = widget
@@ -105626,20 +107431,59 @@ QMenu#green_beige_popup_menu::indicator:checked {{
         def show_unit_circle_learning_dock(self, _checked: bool = False) -> None:
             dock, widget = self._ensure_unit_circle_learning_dock()
             self._prepare_unit_circle_workspace(dock)
-
             dock.show()
             dock.raise_()
             widget.start_animation()
             self._expand_unit_circle_learning_dock()
             QTimer.singleShot(0, self._expand_unit_circle_learning_dock)
-
             self.statusBar().showMessage(
-                'Einheitskreis-Lernanimation geöffnet – QPainter / Sinus / Kosinus'
+                'Einheits-Kreis - 1: Lernanimation geöffnet – QPainter / Sinus / Kosinus'
+            )
+
+        def _ensure_unit_circle_reference_dock(self):
+            dock = getattr(self, 'unit_circle_reference_dock', None)
+            widget = getattr(self, 'unit_circle_reference_widget', None)
+            if dock is not None and widget is not None:
+                return dock, widget
+            dock = QDockWidget('Einheits-Kreis - 2', self)
+            dock.setObjectName('unit_circle_reference_dock')
+            dock.setFeatures(self._dock_features())
+            dock.setAllowedAreas(
+                Qt.LeftDockWidgetArea
+                | Qt.RightDockWidgetArea
+                | Qt.TopDockWidgetArea
+                | Qt.BottomDockWidgetArea
+            )
+            dock.setMinimumSize(0, 0)
+            dock.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            widget = UnitCircleReferenceWidget(dock)
+            widget.set_dark_mode(self.dark_mode_enabled)
+            dock.setWidget(widget)
+            dock.hide()
+            self.addDockWidget(Qt.LeftDockWidgetArea, dock)
+            dock.visibilityChanged.connect(
+                lambda visible: self._unit_circle_dock_visibility_changed(visible, dock)
+            )
+            self.unit_circle_reference_dock = dock
+            self.unit_circle_reference_widget = widget
+            self._assign_widget_property_ids(dock)
+            return dock, widget
+
+        def show_unit_circle_reference_dock(self, _checked: bool = False) -> None:
+            dock, widget = self._ensure_unit_circle_reference_dock()
+            self._prepare_unit_circle_workspace(dock)
+            dock.show()
+            dock.raise_()
+            self._expand_unit_circle_learning_dock()
+            QTimer.singleShot(0, self._expand_unit_circle_learning_dock)
+            self.statusBar().showMessage(
+                'Einheits-Kreis - 2: QPainter-Tafel mit Grad, Bogenmass und Koordinaten geöffnet'
             )
 
         def _restore_math_learning_workspace(self) -> None:
             if not getattr(self, '_math_learning_workspace_active', False):
                 return
+            self._set_math_interest_focus(False)
             self._math_learning_workspace_active = False
 
             if self._math_learning_replaced_central_widget:
@@ -105657,6 +107501,40 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                         candidate.show()
                 except RuntimeError:
                     pass
+
+        def _set_math_interest_focus(self, enabled: bool) -> None:
+            """Zinsrechnung füllt dasselbe Mathematik-Dock; alle anderen Docks werden versteckt."""
+            enabled = bool(enabled)
+            if enabled == getattr(self, '_math_interest_focus_active', False):
+                return
+            dock = getattr(self, 'math_learning_dock', None)
+            if dock is None:
+                return
+            if enabled:
+                self._math_interest_extra_docks = []
+                for candidate in self.findChildren(QDockWidget):
+                    if candidate is dock or not candidate.isVisible():
+                        continue
+                    self._math_interest_extra_docks.append(candidate)
+                    # Bei den anderen Docks keine Workspace-Umschaltung auslösen.
+                    was_blocked = candidate.blockSignals(True)
+                    try:
+                        candidate.hide()
+                    finally:
+                        candidate.blockSignals(was_blocked)
+                self._math_interest_focus_active = True
+            else:
+                self._math_interest_focus_active = False
+                previously_visible = list(getattr(self, '_math_interest_extra_docks', []))
+                self._math_interest_extra_docks = []
+                for candidate in previously_visible:
+                    try:
+                        if candidate is not None:
+                            candidate.show()
+                    except RuntimeError:
+                        pass
+            self._enforce_math_learning_height_limit()
+            QTimer.singleShot(0, self._expand_math_learning_dock)
 
         def _prepare_math_learning_workspace(self, math_dock) -> None:
             if getattr(self, '_math_learning_workspace_active', False):
@@ -105727,7 +107605,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             )
             dock.setMaximumSize(
                 16777215,
-                self.MAX_MATH_DOCK_HEIGHT,
+                (16777215 if getattr(self, '_math_interest_focus_active', False) else self.MAX_MATH_DOCK_HEIGHT),
             )
 
             if widget is not None:
@@ -105737,7 +107615,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 )
                 widget.setMaximumSize(
                     16777215,
-                    self.MAX_MATH_DOCK_HEIGHT,
+                    (16777215 if getattr(self, '_math_interest_focus_active', False) else self.MAX_MATH_DOCK_HEIGHT),
                 )
 
             if floating:
@@ -105752,10 +107630,10 @@ QMenu#green_beige_popup_menu::indicator:checked {{
 
                 # Nur dann eingreifen, wenn die 900-px-Grenze überschritten
                 # wurde. Jede kleinere vom Benutzer gewählte Größe bleibt.
-                if dock.height() > self.MAX_MATH_DOCK_HEIGHT:
+                if dock.height() > (16777215 if getattr(self, '_math_interest_focus_active', False) else self.MAX_MATH_DOCK_HEIGHT):
                     dock.resize(
                         dock.width(),
-                        self.MAX_MATH_DOCK_HEIGHT,
+                        (16777215 if getattr(self, '_math_interest_focus_active', False) else self.MAX_MATH_DOCK_HEIGHT),
                     )
             else:
                 # Angedockt darf Qt die verfügbare Dock-Fläche frei verteilen.
@@ -105771,7 +107649,8 @@ QMenu#green_beige_popup_menu::indicator:checked {{
         def _enforce_math_learning_height_limit(self) -> None:
             """Stage 151: Mathe-Dock max. 900 px, kleinere Floating-Größen bleiben unangetastet."""
             window_maximum = int(self.MAX_WINDOW_HEIGHT)
-            math_maximum = int(self.MAX_MATH_DOCK_HEIGHT)
+            math_maximum = (16777215 if getattr(self, '_math_interest_focus_active', False)
+                            else int(self.MAX_MATH_DOCK_HEIGHT))
 
             # Hauptfenster behält seine eigene Obergrenze von 1000 Pixel.
             self.setMaximumHeight(window_maximum)
@@ -105827,7 +107706,8 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             self.resizeDocks([dock], [100000], Qt.Horizontal)
             self.resizeDocks(
                 [dock],
-                [self.MAX_MATH_DOCK_HEIGHT],
+                [100000 if getattr(self, '_math_interest_focus_active', False)
+                 else self.MAX_MATH_DOCK_HEIGHT],
                 Qt.Vertical,
             )
             widget = getattr(self, 'math_learning_widget', None)
@@ -105859,6 +107739,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             widget.setMaximumSize(16777215, self.MAX_MATH_DOCK_HEIGHT)
             widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
             widget.set_dark_mode(self.dark_mode_enabled)
+            widget.interest_focus_changed.connect(self._set_math_interest_focus)
             dock.setWidget(widget)
             dock.hide()
             self.addDockWidget(Qt.LeftDockWidgetArea, dock)
@@ -112135,8 +114016,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             return min(values, key=lambda candidate: abs(candidate - int(value)))
 
         def _sync_e_baukasten_view_control_checks(self) -> None:
-            germany_dock = getattr(self, "germany_geography_dock", None)
-            if germany_dock is not None and germany_dock.isVisible():
+            if self._visible_geography_dock() is not None:
                 self._sync_germany_zoom_control_checks()
                 return
 
@@ -115971,9 +117851,15 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             learning_menu.addAction(self.math_memory_action)
             learning_menu.addSeparator()
             
-            deutsch_menu = learning_menu.addMenu("Deutsch")
-            deutsch_menu.setObjectName("learning_deutsch_menu")
-            deutsch_menu.addAction(self.germany_geography_action)
+            # Stage 344: Geographie als eigener Lernbereich statt unter Deutsch.
+            geography_menu = learning_menu.addMenu("Geographie")
+            geography_menu.setObjectName("learning_geography_menu")
+            geography_menu.addAction(self.germany_geography_action)
+            geography_menu.addAction(self.england_geography_action)
+            self.france_geography_menu = geography_menu.addMenu("Frankreich")
+            self.france_geography_menu.setObjectName("learning_geography_france_menu")
+            self.france_geography_menu.addAction(self.france_landkarte_geography_action)
+            self.france_geography_menu.addAction(self.france_rivers_geography_action)
 
             computer_menu = learning_menu.addMenu("Computer")
             mouse_menu = computer_menu.addMenu("Maus")
@@ -115993,6 +117879,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             geometry_menu = math_menu.addMenu("Geometrie")
             geometry_menu.setObjectName("learning_geometry_menu")
             geometry_menu.addAction(self.unit_circle_action)
+            geometry_menu.addAction(self.unit_circle_reference_action)
 
             math_menu.addSeparator()
             math_menu.addAction(self.math_numbers_wall_100_action)
@@ -116075,9 +117962,9 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 dock._formula_zoom_visibility_connected = True
 
         def _restore_context_zoom_after_formula(self):
-            germany_dock = getattr(self, "germany_geography_dock", None)
-            if germany_dock is not None and germany_dock.isVisible():
-                self._bind_germany_zoom_controls(germany_dock)
+            geography_dock = self._visible_geography_dock()
+            if geography_dock is not None:
+                self._bind_germany_zoom_controls(geography_dock)
                 return
 
             e_dock = getattr(self, "e_baukasten_dock", None)
@@ -116186,6 +118073,37 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     "bietet VICE-Zeile/Auswahl/Programm/Programm+RUN/Reset"
                 )
 
+        def _visible_geography_dock(self):
+            """Aktives Karten-Dock fuer Ansicht->Zoom und Kontextwechsel."""
+            active = getattr(self, "_active_geography_dock", None)
+            try:
+                if active is not None and active.isVisible():
+                    return active
+            except RuntimeError:
+                pass
+            for name in ("france_rivers_geography_dock", "france_landkarte_geography_dock", "france_geography_dock", "england_geography_dock", "germany_geography_dock"):
+                dock = getattr(self, name, None)
+                try:
+                    if dock is not None and dock.isVisible():
+                        return dock
+                except RuntimeError:
+                    pass
+            return None
+
+        def _activate_geography_workspace(self, dock):
+            """Länder wechseln, ohne den ursprünglichen Dock-Snapshot zu verlieren."""
+            former = self._visible_geography_dock()
+            if former is not None and former is not dock:
+                # Das Ausblenden des alten Landes darf nicht das komplette
+                # zuvor gespeicherte Hauptfensterlayout wiederherstellen.
+                blocked = former.blockSignals(True)
+                try:
+                    former.hide()
+                finally:
+                    former.blockSignals(blocked)
+            self._prepare_germany_geography_workspace(dock)
+            self._active_geography_dock = dock
+
         def _prepare_germany_geography_workspace(self, dock):
             """Alle anderen Docks ausblenden, ohne die Hauptfenstergröße zu ändern."""
             if getattr(self, "_germany_geography_workspace_active", False):
@@ -116242,8 +118160,8 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             self._germany_geography_central_was_visible = False
 
         def _sync_germany_zoom_control_checks(self, _value=None):
-            dock = getattr(self, "germany_geography_dock", None)
-            if dock is None or not dock.isVisible():
+            dock = self._visible_geography_dock()
+            if dock is None:
                 return
             current = int(dock.map_view.zoom_percent)
             actions = getattr(self, "e_baukasten_zoom_actions", {})
@@ -116298,19 +118216,24 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 menu.setEnabled(False)
 
         def _germany_geography_visibility_changed(self, visible):
+            dock = getattr(self, "germany_geography_dock", None)
             if visible:
-                dock = getattr(self, "germany_geography_dock", None)
                 if dock is not None:
+                    self._active_geography_dock = dock
                     dock.set_dark_mode(self.dark_mode_enabled)
                     self._bind_germany_zoom_controls(dock)
                 QTimer.singleShot(0, self._expand_germany_geography_dock)
                 QTimer.singleShot(50, self._expand_germany_geography_dock)
-            else:
+            elif getattr(self, "_active_geography_dock", None) is dock:
+                self._active_geography_dock = None
                 self._disable_germany_zoom_controls()
                 self._restore_germany_geography_workspace()
 
         def _germany_geography_dock_destroyed(self, _obj=None):
-            self._disable_germany_zoom_controls()
+            if getattr(self, "_active_geography_dock", None) is getattr(self, "germany_geography_dock", None):
+                self._active_geography_dock = None
+                self._disable_germany_zoom_controls()
+                self._restore_germany_geography_workspace()
             self.germany_geography_dock = None
             _free_deutschland_module()
             _free_deutschland_wappen_module()
@@ -116357,17 +118280,23 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 self._germany_geography_visibility_changed
             )
             dock.destroyed.connect(self._germany_geography_dock_destroyed)
-            self.addDockWidget(Qt.LeftDockWidgetArea, dock)
-            dock.hide()
+            # Stage 344: Beim erstmaligen Andocken darf visibilityChanged
+            # den aktiven Karten-Workspace nicht vorzeitig zuruecksetzen.
+            was_blocked = dock.blockSignals(True)
+            try:
+                self.addDockWidget(Qt.LeftDockWidgetArea, dock)
+                dock.hide()
+            finally:
+                dock.blockSignals(was_blocked)
 
             self.germany_geography_dock = dock
             self._assign_widget_property_ids(dock)
             return dock
 
         def show_germany_geography_dock(self, _checked=False):
-            """Lernen -> Deutsch -> Geographie: Deutschland im Vollflächen-Dock."""
+            """Lernen -> Geographie -> Deutschland im Vollflächen-Dock."""
             dock = self._ensure_germany_geography_dock()
-            self._prepare_germany_geography_workspace(dock)
+            self._activate_geography_workspace(dock)
 
             if dock.isFloating():
                 dock.setFloating(False)
@@ -116382,6 +118311,248 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             self.statusBar().showMessage(
                 "Deutschland geöffnet — Ansicht -> Zoom oder STRG+Mausrad zum Zoomen"
             )
+
+        def _england_geography_visibility_changed(self, visible):
+            dock = getattr(self, "england_geography_dock", None)
+            if visible:
+                if dock is not None:
+                    self._active_geography_dock = dock
+                    dock.set_dark_mode(self.dark_mode_enabled)
+                    self._bind_germany_zoom_controls(dock)
+                QTimer.singleShot(0, self._expand_england_geography_dock)
+                QTimer.singleShot(50, self._expand_england_geography_dock)
+            elif getattr(self, "_active_geography_dock", None) is dock:
+                self._active_geography_dock = None
+                self._disable_germany_zoom_controls()
+                self._restore_germany_geography_workspace()
+
+        def _england_geography_dock_destroyed(self, _obj=None):
+            if getattr(self, "_active_geography_dock", None) is getattr(self, "england_geography_dock", None):
+                self._active_geography_dock = None
+                self._disable_germany_zoom_controls()
+                self._restore_germany_geography_workspace()
+            self.england_geography_dock = None
+            _free_england_module()
+
+        def _expand_england_geography_dock(self):
+            dock = getattr(self, "england_geography_dock", None)
+            if dock is None or not dock.isVisible():
+                return
+            try:
+                self.resizeDocks([dock], [100000], Qt.Horizontal)
+                self.resizeDocks([dock], [100000], Qt.Vertical)
+            except Exception:
+                pass
+            dock.setMinimumSize(0, 0)
+            dock.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            dock.map_view.fit_map()
+
+        def _ensure_england_geography_dock(self):
+            dock = getattr(self, "england_geography_dock", None)
+            if dock is not None:
+                return dock
+            dock = EnglandMapDock(self)
+            try:
+                dock.setTitleBarWidget(DockTitleBar(dock))
+            except Exception:
+                pass
+            dock.set_dark_mode(self.dark_mode_enabled)
+            dock.map_view.zoomChanged.connect(self._sync_germany_zoom_control_checks)
+            dock.visibilityChanged.connect(self._england_geography_visibility_changed)
+            dock.destroyed.connect(self._england_geography_dock_destroyed)
+            # Keine vorzeitigen Show/Hide-Callbacks beim Dock-Aufbau.
+            was_blocked = dock.blockSignals(True)
+            try:
+                self.addDockWidget(Qt.LeftDockWidgetArea, dock)
+                dock.hide()
+            finally:
+                dock.blockSignals(was_blocked)
+            self.england_geography_dock = dock
+            self._assign_widget_property_ids(dock)
+            return dock
+
+        def show_england_geography_dock(self, _checked=False):
+            """Lernen -> Geographie -> England mit der Original-Referenzkarte."""
+            dock = self._ensure_england_geography_dock()
+            self._activate_geography_workspace(dock)
+            if dock.isFloating():
+                dock.setFloating(False)
+            self.addDockWidget(Qt.LeftDockWidgetArea, dock)
+            dock.set_dark_mode(self.dark_mode_enabled)
+            dock.show()
+            dock.raise_()
+            self._bind_germany_zoom_controls(dock)
+            self._expand_england_geography_dock()
+            QTimer.singleShot(0, dock.map_view.fit_map)
+            QTimer.singleShot(60, dock.map_view.fit_map)
+            self.statusBar().showMessage(
+                "England geöffnet — Ansicht -> Zoom oder STRG+Mausrad zum Zoomen"
+            )
+
+        def _france_geography_visibility_changed(self, visible):
+            dock = getattr(self, "france_landkarte_geography_dock", None)
+            if visible:
+                if dock is not None:
+                    self._active_geography_dock = dock
+                    dock.set_dark_mode(self.dark_mode_enabled)
+                    self._bind_germany_zoom_controls(dock)
+                QTimer.singleShot(0, self._expand_france_geography_dock)
+                QTimer.singleShot(50, self._expand_france_geography_dock)
+            elif getattr(self, "_active_geography_dock", None) is dock:
+                self._active_geography_dock = None
+                self._disable_germany_zoom_controls()
+                self._restore_germany_geography_workspace()
+
+        def _france_rivers_geography_visibility_changed(self, visible):
+            dock = getattr(self, "france_rivers_geography_dock", None)
+            if visible:
+                if dock is not None:
+                    self._active_geography_dock = dock
+                    dock.set_dark_mode(self.dark_mode_enabled)
+                    self._bind_germany_zoom_controls(dock)
+                QTimer.singleShot(0, self._expand_france_rivers_geography_dock)
+                QTimer.singleShot(50, self._expand_france_rivers_geography_dock)
+            elif getattr(self, "_active_geography_dock", None) is dock:
+                self._active_geography_dock = None
+                self._disable_germany_zoom_controls()
+                self._restore_germany_geography_workspace()
+
+        def _france_geography_dock_destroyed(self, _obj=None):
+            if getattr(self, "_active_geography_dock", None) is getattr(self, "france_landkarte_geography_dock", None):
+                self._active_geography_dock = None
+                self._disable_germany_zoom_controls()
+                self._restore_germany_geography_workspace()
+            self.france_landkarte_geography_dock = None
+            self.france_geography_dock = None
+            _free_france_module()
+
+        def _france_rivers_geography_dock_destroyed(self, _obj=None):
+            if getattr(self, "_active_geography_dock", None) is getattr(self, "france_rivers_geography_dock", None):
+                self._active_geography_dock = None
+                self._disable_germany_zoom_controls()
+                self._restore_germany_geography_workspace()
+            self.france_rivers_geography_dock = None
+            _free_france_module()
+
+        def _expand_france_geography_dock(self):
+            dock = getattr(self, "france_landkarte_geography_dock", None)
+            if dock is None or not dock.isVisible():
+                return
+            try:
+                self.resizeDocks([dock], [100000], Qt.Horizontal)
+                self.resizeDocks([dock], [100000], Qt.Vertical)
+            except Exception:
+                pass
+            dock.setMinimumSize(0, 0)
+            dock.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            dock.map_view.fit_map()
+
+        def _expand_france_rivers_geography_dock(self):
+            dock = getattr(self, "france_rivers_geography_dock", None)
+            if dock is None or not dock.isVisible():
+                return
+            try:
+                self.resizeDocks([dock], [100000], Qt.Horizontal)
+                self.resizeDocks([dock], [100000], Qt.Vertical)
+            except Exception:
+                pass
+            dock.setMinimumSize(0, 0)
+            dock.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            dock.map_view.fit_map()
+
+        def _ensure_france_geography_dock(self):
+            dock = getattr(self, "france_landkarte_geography_dock", None)
+            if dock is not None:
+                return dock
+            dock = FranceMapDock(
+                self,
+                title="Frankreich - Landkarte",
+                show_rivers=False,
+                object_name="france_landkarte_geography_dock",
+            )
+            try:
+                dock.setTitleBarWidget(DockTitleBar(dock))
+            except Exception:
+                pass
+            dock.set_dark_mode(self.dark_mode_enabled)
+            dock.map_view.zoomChanged.connect(self._sync_germany_zoom_control_checks)
+            dock.visibilityChanged.connect(self._france_geography_visibility_changed)
+            dock.destroyed.connect(self._france_geography_dock_destroyed)
+            was_blocked = dock.blockSignals(True)
+            try:
+                self.addDockWidget(Qt.LeftDockWidgetArea, dock)
+                dock.hide()
+            finally:
+                dock.blockSignals(was_blocked)
+            self.france_landkarte_geography_dock = dock
+            self.france_geography_dock = dock
+            self._assign_widget_property_ids(dock)
+            return dock
+
+        def _ensure_france_rivers_geography_dock(self):
+            dock = getattr(self, "france_rivers_geography_dock", None)
+            if dock is not None:
+                return dock
+            dock = FranceMapDock(
+                self,
+                title="Frankreich - Flüsse",
+                show_rivers=True,
+                object_name="france_rivers_geography_dock",
+            )
+            try:
+                dock.setTitleBarWidget(DockTitleBar(dock))
+            except Exception:
+                pass
+            dock.set_dark_mode(self.dark_mode_enabled)
+            dock.map_view.zoomChanged.connect(self._sync_germany_zoom_control_checks)
+            dock.visibilityChanged.connect(self._france_rivers_geography_visibility_changed)
+            dock.destroyed.connect(self._france_rivers_geography_dock_destroyed)
+            was_blocked = dock.blockSignals(True)
+            try:
+                self.addDockWidget(Qt.LeftDockWidgetArea, dock)
+                dock.hide()
+            finally:
+                dock.blockSignals(was_blocked)
+            self.france_rivers_geography_dock = dock
+            self._assign_widget_property_ids(dock)
+            return dock
+
+        def show_france_geography_dock(self, _checked=False):
+            """Lernen -> Geographie -> Frankreich -> Landkarte."""
+            dock = self._ensure_france_geography_dock()
+            self._activate_geography_workspace(dock)
+            if dock.isFloating():
+                dock.setFloating(False)
+            self.addDockWidget(Qt.LeftDockWidgetArea, dock)
+            dock.set_dark_mode(self.dark_mode_enabled)
+            dock.show()
+            dock.raise_()
+            self._bind_germany_zoom_controls(dock)
+            self._expand_france_geography_dock()
+            QTimer.singleShot(0, dock.map_view.fit_map)
+            QTimer.singleShot(60, dock.map_view.fit_map)
+            self.statusBar().showMessage(
+                "Frankreich -> Landkarte geöffnet — Ansicht -> Zoom oder STRG+Mausrad zum Zoomen"
+            )
+
+        def show_france_rivers_geography_dock(self, _checked=False):
+            """Lernen -> Geographie -> Frankreich -> Flüsse."""
+            dock = self._ensure_france_rivers_geography_dock()
+            self._activate_geography_workspace(dock)
+            if dock.isFloating():
+                dock.setFloating(False)
+            self.addDockWidget(Qt.LeftDockWidgetArea, dock)
+            dock.set_dark_mode(self.dark_mode_enabled)
+            dock.show()
+            dock.raise_()
+            self._bind_germany_zoom_controls(dock)
+            self._expand_france_rivers_geography_dock()
+            QTimer.singleShot(0, dock.map_view.fit_map)
+            QTimer.singleShot(60, dock.map_view.fit_map)
+            self.statusBar().showMessage(
+                "Frankreich -> Flüsse geöffnet — Ansicht -> Zoom oder STRG+Mausrad zum Zoomen"
+            )
+
 
         def show_chemie_learning_dock(self):
             controller = getattr(self, "_periodic_table_controller", None)
@@ -117318,15 +119489,17 @@ border: 2px solid #2a69aa;
                     widget.set_dark_mode(enabled)
                 elif isinstance(widget, UnitCircleLearningWidget):
                     widget.set_dark_mode(enabled)
+                elif isinstance(widget, UnitCircleReferenceWidget):
+                    widget.set_dark_mode(enabled)
                 elif isinstance(widget, FormulaDesignerWidget):
                     widget.set_dark_mode(enabled)
                 elif isinstance(widget, MusicKeyboardDockWidget):
                     widget.set_dark_mode(enabled)
                 elif isinstance(widget, InstrumentDockWidget):
                     widget.set_dark_mode(enabled)
-                elif isinstance(widget, GermanyMapDock):
+                elif isinstance(widget, (GermanyMapDock, EnglandMapDock, FranceMapDock)):
                     widget.set_dark_mode(enabled)
-                elif isinstance(widget, GermanyMapView):
+                elif isinstance(widget, (GermanyMapView, EnglandMapView, FranceMapView)):
                     widget.set_dark_mode(enabled)
                 elif isinstance(widget, GermanyStateToolTip):
                     widget.set_dark_mode(enabled)

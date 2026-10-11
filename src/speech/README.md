@@ -180,3 +180,208 @@ Die Sprachengine ist weiterhin nicht thread-safe; `SpeechSpeak()` blockiert
 bis zur Beendigung. Direkte dBase-Aufrufe sind noch nicht implementiert.
 
 Tests: `python -m unittest test_stage341_speech_finetune test_stage339_retro_speech test_stage340_speech_pe32_imports -v`
+
+## Stage 353 – 40 zusätzliche Phonem- und Allophonvarianten
+
+Stage 352 enthielt 41 Tokens, inklusive vier Pausen-/Satzzeichen.
+Stage 353 erweitert die Synthesizer-Tabelle um **genau 40 neue Laute**
+(81 Tokens insgesamt). Einige davon sind separate Phoneme in anderen
+Sprachen; etliche sind **Lautvarianten/Allophone**, nicht 40 zusätzliche
+bedeutungsunterscheidende deutsche Phoneme.
+
+### Neue Tokens (ASCII, Groß-/Kleinschreibung beachten)
+
+| Kategorie | Tokens | Anzahl |
+| --- | --- | ---: |
+| Lange Vokale | `A: E: I: O: U: AE: OE: UE:` | 8 |
+| Kurze/laxe Vokale | `A0 E0 I0 O0 U0 OE0 UE0` | 7 |
+| Nasalvokal-Annäherungen | `AN EN ON UN` | 4 |
+| R-Varianten/vokalisches R | `RY RX ER` | 3 |
+| Silbische Nasale | `M= N= NG=` | 3 |
+| Affrikaten | `TS TSH DSH PF` | 4 |
+| Reibelaute | `ZH SHH SS` | 3 |
+| Zusätzliche Fremdsprachenlaute | `TH DH WW NY` | 4 |
+| Behauchte/velare Varianten | `PH THP KH GH` | 4 |
+| **Zusammen** | | **40** |
+
+Alle 40 Einträge besitzen individuell definierte Formantfrequenzen,
+Stimm-/Rauschanteile und Lautdauern. Nasalierte und behauchte Varianten
+sind eine **formantbasierte Retro-Annäherung**, keine phonetisch präzise
+Sprachaufnahme. Direkte Lauteinträge sind über `SpeechRenderPhonemes`
+und `SpeechSpeakPhonemes` verfügbar.
+
+Die automatische deutsche Textumsetzung erkennt jetzt zusätzlich die
+kombinierten Laute `tsch` (`TSH`), `dsch` (`DSH`), `pf` (`PF`),
+`ts`/`tz` (`TS`), `ie` (`I:`), `aa`/`ee`/`oo` und Dehnungs-`h`;
+wo passend werden `ER`, `N=` oder kurze Vokalvarianten verwendet.
+Die Text-zu-Laut-Regeln bleiben heuristisch und bilden nicht alle
+regionalen Varianten und Fremdwörter korrekt ab.
+
+### Neue optionale DLL-Exporte
+
+Die bestehende ABI bleibt erhalten. Neu sind diese
+`__stdcall`-Exporte (auch ohne @N-Alias fuer den eigenen PE32-Linker):
+
+```c
+int32_t SpeechGetPhonemeCount(void);                /* Ergebnis: 81 */
+const char *SpeechGetPhonemeToken(int32_t index);    /* Index 0..80 */
+int32_t SpeechSavePhonemesWav(const char *path,
+                             const char *phoneme_sequence);
+```
+
+Der zurückgegebene Token-Zeiger gehört der DLL; er darf nicht freigegeben
+werden. Ungültige Indizes liefern `NULL` und Fehler 1.
+
+### Testen unter MSYS2 MINGW32
+
+```bash
+cd speech
+python build_pe32.py
+./bin/retro_speech_demo.exe --list-phonemes
+./bin/retro_speech_demo.exe --no-play --phonemes "PF A0 N @ _ DSH U0 NG @ L" --wav phoneme_test.wav
+./bin/retro_speech_demo.exe --text "Deutsch, schön und grün!"
+```
+
+Der DLL-Build benötigt kein `mingw32-make`. Der PE32-Build und die
+Windows-waveOut-Wiedergabe müssen weiterhin unter Windows getestet
+werden. Ein Host-Linux-Build mit strikten Warnungsflags sowie
+WAV-/Dynamiktests sind im Stage353-Test enthalten.
+
+## Stage 354 – Wortschatz und flüssigere Amiga-orientierte Aussprache
+
+Stage 354 entfernt die 36-ms-Pausen zwischen normalen Wörtern und verbessert
+Lautübergänge sowie die harmonische Stimmanregung. Das deutsche
+Aussprachewörterbuch umfasst nun **199 eindeutige Einträge** (ohne WAV-Samples).
+
+Neue additive DLL-Funktion:
+
+```c
+int32_t SpeechSetFluency(int32_t percent); /* 0..100, Default 75 */
+```
+
+Die Demo akzeptiert `--fluency 0..100`; Presets `c64/hybrid/amiga`
+verwenden 25/75/100. Für eine weichere Retro-Stimme:
+
+```sh
+python speech/build_pe32.py
+speech/bin/retro_speech_demo.exe --preset amiga --fluency 100 \
+   --text "Guten Morgen. Willkommen beim Amiga."
+```
+
+Neue dBase-Befehle: `SET SPEECH FLUENCY n`, `SET SPEECH ARTICULATION n`,
+`SET SPEECH EXPRESSION n`. Bei `SET SPEECH MODE AMIGA` wird `FLUENCY=100`
+automatisch eingestellt. Zum Linken muss die neue `retro_speech.dll` neben
+der PE32-Anwendung vorhanden sein. Es ist weiterhin eine experimentelle,
+synthetische Retro-Stimme und **keine echte Amiga-Narrator-Emulation**.
+
+## Stage 355: Fertige deutsche Offline-Stimme mit Piper/Thorsten
+
+Ab Stage 355 kann die PE32-Runtime optional statt der bisherigen Formantsynthese
+**Piper TTS** mit der deutschen **Thorsten-Voice** verwenden. Der neue Betriebsmodus
+ist ausdrücklich kein Phonem-WAV-Schnipsel-System: Piper erzeugt vollständige,
+zusammenhängende deutsche Sätze, die als fertige WAV-Dateien gespeichert und
+bei der nächsten wortgleichen Anfrage aus dem Cache abgespielt werden.
+
+Das Paket wird **nicht** zusammen mit den d64_dism-Quellen ausgeliefert. Es umfasst
+- die externe Windows-x64-Piper-Laufzeit mit allen zugehörigen DLLs/Daten;
+- ein deutsches ONNX-Sprachmodell (empfohlen: `de_DE-thorsten-high`, ca. 114 MB);
+- seine zugehörige `*.onnx.json` und die Lizenz-/Modellkarte.
+
+Die ältere Piper-Binary `rhasspy/piper` 2023.11.14-2 ist MIT-lizenziert;
+Thorsten-Voice-Datensätze sind laut Model Card CC0. Bei anderweitigen
+Versionen müssen deren eigene Lizenzen separat berücksichtigt werden.
+
+### Einrichtung unter Windows 11 x64
+
+In der Projektwurzel (einmalig Internet erforderlich):
+
+```console
+python speech/install_piper_voice.py --quality high
+```
+
+Das Skript lädt die externe Piper-Windows-Laufzeit und das deutsche Modell
+in `speech/piper/`. Es benötigt während der Installation Python, danach beim
+Abspielen **kein Python**. Wer die Downloads selbst durchgeführt hat, kann
+die Dateien manuell in ein Verzeichnis mit `piper.exe` und dem Modell legen.
+**Das komplette Piper-Paket** muss zusammenbleiben, einschließlich der
+mitgelieferten DLLs und `espeak-ng-data`-Dateien.
+
+Für ein vom Projekt ausgegebenes Form1.exe sollte das Verzeichnis `piper/`
+**neben Form1.exe** liegen. Alternative: die Umgebungsvariable
+`D64_PIPER_HOME` auf den Ordner mit `piper.exe` setzen. In der Demo unter
+`speech/bin/` wird außerdem das benachbarte `speech/piper/` erkannt.
+
+### dBase-Syntax
+
+```dbase
+SET SPEECH MODE PIPER
+SET SPEECH ON
+SAY "Guten Morgen! Ich bin dein deutscher Sprachcomputer."
+SET SPEECH MODE AMIGA
+SAY "Zurück zur bisherigen Retro-Stimme."
+SET SPEECH OFF
+```
+
+`SET SPEECH MODE SAMPLES` ist ein Alias für `PIPER`, da der Modus vollständige
+WAV-Samples aus dem vorbereiteten Modell erzeugt und wiederverwendet.
+`SET SPEECH MODE C64`, `HYBRID` und `AMIGA` schalten zurück auf die originale
+Phonem-/Formantsynthese.
+
+### DLL-Export / Demo
+
+- `SpeechSetBackend(0)` aktiviert die vorhandene Formantsynthese;
+- `SpeechSetBackend(1)` verwendet das installierte Piper-Sprachmodell;
+- `SpeechSpeak()` und `SpeechSpeakCP1252()` verwenden den ausgewählten Modus;
+- `SpeechSaveWav()` erstellt in Piper-Modus eine WAV aus dem kompletten Text;
+- `SpeechRenderText()` / `SpeechRenderPhonemes()` bleiben weiterhin die
+  bestehenden Formant-/Phonem-PCM-APIs, auch im Piper-Modus.
+
+Demo nach Neuaufbau mit `python speech/build_pe32.py` in MINGW32:
+
+```console
+speech/bin/retro_speech_demo.exe --backend piper --text "Guten Morgen!" --wav hallo.wav --no-play
+speech/bin/retro_speech_demo.exe --backend piper --text "Guten Morgen!" --wav hallo.wav
+```
+
+Der Cache liegt unter `%LOCALAPPDATA%/d64_dism_speech_cache/` (ersatzweise
+TEMP) und bewahrt zusammengehörige Satz-WAVs auf; ein bereits bekannter Satz
+benötigt dadurch keinen erneuten Modelllauf. Nach Modellwechsel kann man
+veraltete WAVs dort manuell löschen.
+
+### Grenzen
+
+- Windows 11 **x64** erforderlich für die angebotene Piper-Windows-amd64-Binary;
+  der aufrufende dBase-Prozess bzw. `retro_speech.dll` darf trotzdem PE32 sein.
+- Nur Windows-Piper ist implementiert; die Linux-C99-Tests prüfen die
+  neue API, nicht die native Windows-Wiedergabe.
+- Die Piper-WAV-Erzeugung und WinMM-Wiedergabe sind derzeit **synchron**.
+  Bei GUI-Aufrufen muss ein Worker-Thread verwendet werden, um das
+  Hauptfenster nicht zu blockieren; eine zweite Anfrage darf außerdem nicht
+  parallel dieselbe Instanz unkoordiniert verwenden.
+- Piper benötigt beim ersten Satz Modelllade- und Berechnungszeit. Ein
+  weiterer Aufruf desselben Satzes wird über den Cache schneller.
+- Wenn Piper oder die Modelldatei fehlen, liefert die Sprach-DLL Fehler 7,
+  bei einem fehlgeschlagenen Piper-Aufruf Fehler 8. Es erfolgt **kein
+  stillschweigender Rückfall auf die schlecht verständliche Stimme**.
+- Die frei einstellbaren bisherigen Formantregler `MIX`, `ARTICULATION`,
+  `PITCH`, `FLUENCY` usw. ändern den Piper-Modellklang nicht unmittelbar.
+
+## Stage 356: SPC1-Sprachcontainer und IMA-ADPCM
+
+Die Sprach-DLL kann nun direkt einen `.spc`-Container von `speechConvert.py` lesen.
+Mit `SET SPEECH MODE SAMPLES` wird **Backend 2 (Sample-Container)** gewählt,
+während `SET SPEECH MODE PIPER` Backend 1 beibehält. Die gewünschten Wörter
+müssen im Container hinterlegt sein (ansonsten Fehlercode 9). Der Container
+wird über `D64_SPEECH_CONTAINER`, `speech.spc` im Arbeitsverzeichnis oder
+neben der EXE gefunden. Anwendungsprogramme können `SpeechLoadContainer(path)`
+aufrufen. Weitere Exporte: `SpeechUnloadContainer`, `SpeechRenderSample`,
+`SpeechGetLastSampleRate`, `SpeechGetContainerEntryCount`,
+`SpeechGetContainerEntryName`.
+
+`--gzip/-gz` speichert WAV-Payloads optional zusätzlich komprimiert; die
+Kennzeichnung erfolgt pro Container-Eintrag im Codec-Byte (`0x80`). Dafür
+muss im 32-Bit-Windows-Prozess eine passende `zlib1.dll` verfügbar sein.
+Ungepackte Einträge benötigen keine zlib-DLL. WAV-PCM16 und Mono-IMA-ADPCM
+werden ohne externe Audio-Decoder verarbeitet. MP3 und Ogg sind im nativen
+Containerleser derzeit nur als nicht abspielbare Einträge erkennbar.
+Details: `STAGE356_SPC_GZIP_NATIVE_DECODER.md`.

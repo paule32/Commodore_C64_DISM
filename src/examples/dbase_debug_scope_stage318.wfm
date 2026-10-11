@@ -1,0 +1,21 @@
+// User preamble ahead of generated WFM header
+SET DEBUG OFF
+** END HEADER -- do not remove this line
+SET DEBUG ON
+Form1 = NEW Form1()
+CLASS Form1 OF FORM
+    PROCEDURE __main__()
+        SET DEBUG OFF
+        ? "WFM __main__ OFF"
+        SET DEBUG ON
+        ? "WFM __main__ ON"
+        MakeHidden()
+        ? "WFM after subroutine"
+        RETURN
+    PROCEDURE MakeHidden()
+        SET DEBUG OFF
+        RETURN
+    FUNCTION SwitchBack()
+        SET DEBUG ON
+        RETURN 1
+ENDCLASS
