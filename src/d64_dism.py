@@ -344,6 +344,7 @@ except ImportError:
 from dataclasses import dataclass, field, replace
 from decimal     import Decimal, localcontext
 from fractions   import Fraction
+from fraction_math_help import FractionHelpWidget  # Stage 368: QPainter-Bruchhilfen
 from pathlib     import Path
 from typing      import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
@@ -8200,27 +8201,10 @@ class EnglandMapView(QGraphicsView):
         super().wheelEvent(event)
 
     def resizeEvent(self, event):
+        # England besitzt keine Fluss-Overlays. Nur den Kartenausschnitt
+        # mit der vorhandenen Zoomstufe an die neue Viewportgroesse anpassen.
         super().resizeEvent(event)
         self._apply_zoom()
-        if self._show_rivers and self._active_river_overlay is not None and not self._river_info_label.isHidden():
-            center = self.viewport().rect().center()
-            self._reposition_river_overlay(center)
-
-    def mouseMoveEvent(self, event):
-        if self._show_rivers and not self._released:
-            river = self._find_river_at_scene_pos(self.mapToScene(event.pos()))
-            if river is not None:
-                self.viewport().setCursor(Qt.PointingHandCursor)
-                self._show_river_overlay(river, event.pos())
-            else:
-                self.viewport().unsetCursor()
-                self._hide_river_overlay()
-        super().mouseMoveEvent(event)
-
-    def leaveEvent(self, event):
-        self.viewport().unsetCursor()
-        self._hide_river_overlay()
-        super().leaveEvent(event)
 
     def release_resources(self):
         if self._released:
@@ -98165,6 +98149,305 @@ QToolButton:hover {{ background: {selection}; }}"""
             self.update()
 
 
+    class BasicMathRulesFactWidget(QWidget):
+        """Stage 366: Rechengesetze mit Grundrechenarten und Teilbarkeitsregeln."""
+
+        ARITHMETIC_CARDS = (
+            ('Addition / addieren', 'Summand  +  Summand  =  Summe', '2  +  3  =  5'),
+            ('Subtraktion / subtrahieren', 'Minuend  -  Subtrahend  =  Differenz', '9  -  8  =  1'),
+            ('Multiplikation / multiplizieren', 'Faktor  ·  Faktor  =  Produkt', '5  *  7  =  35'),
+            ('Division / dividieren', 'Dividend  :  Divisor  =  Quotient', '27  :  9  =  3'),
+        )
+
+        DIVISIBILITY_CARDS = (
+            {
+                'number': '2',
+                'rule': 'wenn die letzte Ziffer gerade oder 0 ist',
+                'good': ('10 : 2', '28 : 2'),
+                'bad': ('17 : 2', '35 : 2'),
+                'color': '#F7F0B4',
+            },
+            {
+                'number': '3',
+                'rule': 'wenn die Quersumme durch 3 teilbar ist',
+                'good': ('171 : 3', '1+7+1=9'),
+                'bad': ('163 : 3', '1+6+3=10'),
+                'color': '#DCECA9',
+            },
+            {
+                'number': '4',
+                'rule': 'wenn die letzten zwei Ziffern durch 4 teilbar (oder 00) sind',
+                'good': ('116 : 4', '700 : 4'),
+                'bad': ('107 : 4', '315 : 4'),
+                'color': '#CFEBD9',
+            },
+            {
+                'number': '5',
+                'rule': 'wenn die letzte Ziffer 5 oder 0 ist',
+                'good': ('140 : 5', '815 : 5'),
+                'bad': ('207 : 5', '532 : 5'),
+                'color': '#F5DDC2',
+            },
+            {
+                'number': '6',
+                'rule': 'wenn die letzte Ziffer gerade oder 0 ist und die Quersumme durch 3 teilbar ist',
+                'good': ('102 : 6', '1+0+2=3'),
+                'bad': ('202 : 6', '2+0+2=4'),
+                'color': '#D9E6B4',
+            },
+            {
+                'number': '8',
+                'rule': 'wenn die letzten drei Ziffern durch 8 teilbar (oder 000) sind',
+                'good': ('3120 : 8', '120÷8=15'),
+                'bad': ('4102 : 8', '102÷8=12,75'),
+                'color': '#E9D7E4',
+            },
+            {
+                'number': '9',
+                'rule': 'wenn die Quersumme durch 9 teilbar ist',
+                'good': ('594 : 9', '5+9+4=18'),
+                'bad': ('336 : 9', '3+3+6=12'),
+                'color': '#BCE3FB',
+            },
+            {
+                'number': '10',
+                'rule': 'wenn die letzte Ziffer 0 ist',
+                'good': ('80 : 10', '650 : 10'),
+                'bad': ('217 : 10', '135 : 10'),
+                'color': '#F8DCC2',
+            },
+        )
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.setObjectName('basic_math_rules_fact')
+            self._dark_mode = True
+            self._mode = 'basic_arithmetic'
+            self.setMinimumWidth(760)
+
+        def set_dark_mode(self, enabled: bool) -> None:
+            self._dark_mode = bool(enabled)
+            self.update()
+
+        def activate_fact(self, fact_key: str, _title: str = '') -> None:
+            self._mode = str(fact_key or 'basic_arithmetic')
+            self.update()
+
+        def _colors(self):
+            if self._dark_mode:
+                return {
+                    'bg': QColor('#0f141b'),
+                    'panel': QColor('#16212d'),
+                    'panel2': QColor('#1d2b3a'),
+                    'border': QColor('#44617d'),
+                    'text': QColor('#eef6ff'),
+                    'muted': QColor('#bfd3e8'),
+                    'accent': QColor('#8ecbff'),
+                    'ok': QColor('#56d06f'),
+                    'bad': QColor('#ff8575'),
+                    'tile_fallback': QColor('#263747'),
+                }
+            return {
+                'bg': QColor('#f7f4ee'),
+                'panel': QColor('#fffdf8'),
+                'panel2': QColor('#f8f1e2'),
+                'border': QColor('#c8b8a3'),
+                'text': QColor('#2a2720'),
+                'muted': QColor('#6b5949'),
+                'accent': QColor('#9a463d'),
+                'ok': QColor('#3aa85b'),
+                'bad': QColor('#c54d40'),
+                'tile_fallback': QColor('#efe2c5'),
+            }
+
+        def paintEvent(self, event):
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            colors = self._colors()
+            painter.fillRect(self.rect(), colors['bg'])
+            if self._mode == 'divisibility_rules':
+                self._paint_divisibility(painter, colors)
+            elif self._mode == 'powers_rules':
+                self._paint_placeholder(
+                    painter, colors, 'Potenzen', (
+                        'a² = a · a',
+                        'a³ = a · a · a',
+                        'a^m · a^n = a^(m+n)',
+                        'a^m : a^n = a^(m-n)   (a ≠ 0)',
+                        '(a^m)^n = a^(m·n)',
+                    )
+                )
+            elif self._mode == 'calculation_rules':
+                self._paint_placeholder(
+                    painter, colors, 'Rechengesetze', (
+                        'Kommutativgesetz: a + b = b + a   |   a · b = b · a',
+                        'Assoziativgesetz: (a + b) + c = a + (b + c)',
+                        'Assoziativgesetz: (a · b) · c = a · (b · c)',
+                        'Distributivgesetz: a · (b + c) = a · b + a · c',
+                        'Punktrechnung vor Strichrechnung',
+                    )
+                )
+            else:
+                self._paint_basic_arithmetic(painter, colors)
+            painter.end()
+            super().paintEvent(event)
+
+        def _paint_basic_arithmetic(self, painter: QPainter, colors: dict) -> None:
+            margin = 26
+            width = max(360, self.width() - (margin * 2))
+            y = 26
+            self._draw_page_title(painter, QRectF(margin, y, width, 36), 'Grundrechen-Arten', colors)
+            y += 48
+            gap = 16
+            card_h = 132
+            for title, subtitle, example in self.ARITHMETIC_CARDS:
+                rect = QRectF(margin, y, width, card_h)
+                self._draw_formula_card(painter, rect, title, subtitle, example, colors)
+                y += card_h + gap
+            self.setMinimumHeight(int(y + 20))
+
+        def _paint_divisibility(self, painter: QPainter, colors: dict) -> None:
+            margin = 24
+            page_w = max(640, self.width() - (margin * 2))
+            y = 22
+            self._draw_page_title(painter, QRectF(margin, y, page_w, 40), 'Teilbarkeitsregeln', colors)
+            y += 46
+            self._font(painter, 18, True)
+            painter.setPen(colors['accent'])
+            painter.drawText(QRectF(margin, y, page_w, 34), Qt.AlignCenter, 'Eine Zahl ist')
+            y += 44
+            gap_x = 18
+            gap_y = 18
+            col_w = (page_w - gap_x) / 2.0
+            card_h = 168
+            for index, spec in enumerate(self.DIVISIBILITY_CARDS):
+                row = index // 2
+                col = index % 2
+                rect = QRectF(margin + col * (col_w + gap_x),
+                              y + row * (card_h + gap_y),
+                              col_w, card_h)
+                self._draw_divisibility_card(painter, rect, spec, colors)
+            total_h = y + 4 * (card_h + gap_y) + 16
+            self.setMinimumHeight(int(total_h))
+
+        def _paint_placeholder(self, painter: QPainter, colors: dict, title: str, lines) -> None:
+            margin = 30
+            rect = QRectF(margin, 26, max(400, self.width() - (margin * 2)), max(280, self.height() - 52))
+            path = QPainterPath()
+            path.addRoundedRect(rect, 18, 18)
+            painter.fillPath(path, QBrush(colors['panel']))
+            painter.setPen(QPen(colors['border'], 2))
+            painter.drawPath(path)
+            self._draw_page_title(painter, QRectF(rect.x(), rect.y() + 10, rect.width(), 34), title, colors)
+            self._font(painter, 14, False)
+            painter.setPen(colors['text'])
+            text_rect = QRectF(rect.x() + 28, rect.y() + 64, rect.width() - 56, rect.height() - 90)
+            painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignTop, '\n\n'.join(lines))
+            self.setMinimumHeight(int(rect.bottom() + 24))
+
+        def _draw_page_title(self, painter: QPainter, rect: QRectF, title: str, colors: dict) -> None:
+            self._font(painter, 20, True)
+            painter.setPen(colors['accent'])
+            painter.drawText(rect, Qt.AlignCenter, title)
+
+        def _draw_formula_card(self, painter: QPainter, rect: QRectF, title: str, subtitle: str, example: str, colors: dict) -> None:
+            path = QPainterPath()
+            path.addRoundedRect(rect, 16, 16)
+            painter.fillPath(path, QBrush(colors['panel']))
+            painter.setPen(QPen(colors['border'], 2))
+            painter.drawPath(path)
+            self._font(painter, 16, True)
+            painter.setPen(colors['accent'])
+            painter.drawText(QRectF(rect.x() + 16, rect.y() + 14, rect.width() - 32, 30), Qt.AlignCenter, title)
+            self._font(painter, 12, False)
+            painter.setPen(colors['text'])
+            painter.drawText(QRectF(rect.x() + 24, rect.y() + 52, rect.width() - 48, 24), Qt.AlignCenter, subtitle)
+            self._font(painter, 18, True)
+            painter.setPen(colors['muted'])
+            painter.drawText(QRectF(rect.x() + 24, rect.y() + 84, rect.width() - 48, 28), Qt.AlignCenter, example)
+
+        def _draw_divisibility_card(self, painter: QPainter, rect: QRectF, spec: dict, colors: dict) -> None:
+            base = QColor(spec.get('color', '#efe2c5'))
+            if self._dark_mode:
+                base = self._mix(base, QColor('#1c2430'), 0.72)
+            path = QPainterPath()
+            path.addRoundedRect(rect, 16, 16)
+            painter.fillPath(path, QBrush(base))
+            painter.setPen(QPen(colors['border'], 2))
+            painter.drawPath(path)
+            self._font(painter, 11, False)
+            painter.setPen(colors['text'])
+            painter.drawText(QRectF(rect.x() + 14, rect.y() + 10, rect.width() * 0.34, 24), Qt.AlignCenter, 'durch')
+            self._font(painter, 22, True)
+            painter.drawText(QRectF(rect.x() + rect.width() * 0.34, rect.y() + 4, rect.width() * 0.18, 32), Qt.AlignCenter, spec['number'])
+            self._font(painter, 11, False)
+            painter.drawText(QRectF(rect.x() + rect.width() * 0.54, rect.y() + 10, rect.width() * 0.28, 24), Qt.AlignCenter, 'teilbar')
+            self._font(painter, 11, False)
+            painter.drawText(QRectF(rect.x() + 16, rect.y() + 36, rect.width() - 32, 42), Qt.TextWordWrap | Qt.AlignLeft | Qt.AlignTop, '• ' + spec['rule'])
+            self._font(painter, 10, True)
+            painter.drawText(QRectF(rect.x() + 16, rect.y() + 82, rect.width() - 32, 18), Qt.AlignLeft | Qt.AlignVCenter, 'Beispiel:')
+            inner_y = rect.y() + 102
+            inner_h = rect.height() - 116
+            inner_gap = 12
+            inner_w = (rect.width() - 44 - inner_gap) / 2.0
+            good_rect = QRectF(rect.x() + 16, inner_y, inner_w, inner_h)
+            bad_rect = QRectF(good_rect.right() + inner_gap, inner_y, inner_w, inner_h)
+            self._draw_example_box(painter, good_rect, spec['good'], True, colors)
+            self._draw_example_box(painter, bad_rect, spec['bad'], False, colors)
+
+        def _draw_example_box(self, painter: QPainter, rect: QRectF, lines, valid: bool, colors: dict) -> None:
+            fill = colors['panel2'] if self._dark_mode else QColor('#fffaf0')
+            path = QPainterPath()
+            path.addRoundedRect(rect, 12, 12)
+            painter.fillPath(path, QBrush(fill))
+            painter.setPen(QPen(self._mix(colors['border'], QColor('#ffffff'), 0.15), 1.6))
+            painter.drawPath(path)
+            icon_area = QRectF(rect.x() + rect.width() - 42, rect.y() + 6, 34, rect.height() - 12)
+            text_rect = QRectF(rect.x() + 10, rect.y() + 6, rect.width() - 54, rect.height() - 12)
+            self._font(painter, 11, False)
+            painter.setPen(colors['text'])
+            painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter, str(lines[0]) + '\n' + str(lines[1]))
+            if valid:
+                self._draw_check_icon(painter, icon_area, colors['ok'])
+            else:
+                self._draw_cross_icon(painter, icon_area, colors['bad'])
+
+        def _draw_check_icon(self, painter: QPainter, rect: QRectF, color: QColor) -> None:
+            painter.save()
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            painter.setPen(QPen(color, 4.2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            p1 = QPointF(rect.x() + rect.width() * 0.15, rect.y() + rect.height() * 0.58)
+            p2 = QPointF(rect.x() + rect.width() * 0.42, rect.y() + rect.height() * 0.82)
+            p3 = QPointF(rect.x() + rect.width() * 0.86, rect.y() + rect.height() * 0.20)
+            painter.drawLine(p1, p2)
+            painter.drawLine(p2, p3)
+            painter.restore()
+
+        def _draw_cross_icon(self, painter: QPainter, rect: QRectF, color: QColor) -> None:
+            painter.save()
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            painter.setPen(QPen(color, 4.2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            painter.drawLine(QPointF(rect.x() + rect.width() * 0.18, rect.y() + rect.height() * 0.20),
+                             QPointF(rect.x() + rect.width() * 0.82, rect.y() + rect.height() * 0.80))
+            painter.drawLine(QPointF(rect.x() + rect.width() * 0.82, rect.y() + rect.height() * 0.20),
+                             QPointF(rect.x() + rect.width() * 0.18, rect.y() + rect.height() * 0.80))
+            painter.restore()
+
+        def _mix(self, a: QColor, b: QColor, t: float) -> QColor:
+            t = max(0.0, min(1.0, float(t)))
+            return QColor(
+                int(a.red() * (1.0 - t) + b.red() * t),
+                int(a.green() * (1.0 - t) + b.green() * t),
+                int(a.blue() * (1.0 - t) + b.blue() * t),
+            )
+
+        def _font(self, painter: QPainter, size: int, bold: bool = False) -> None:
+            font = QFont(painter.font())
+            font.setPointSize(int(size))
+            font.setBold(bool(bold))
+            painter.setFont(font)
+
+
     class MathematicsLearningDockWidget(QWidget):
         """Lern-Workspace mit linksseitigen Tabs und rechts eingebetteter Szene."""
 
@@ -98347,6 +98630,24 @@ QToolButton:hover {{ background: {selection}; }}"""
             # Inhalt über die volle verfügbare Breite zeichnen; bei schmalem
             # Dock horizontal scrollen, statt Formel-Kacheln zusammenzustauchen.
             self.interest_calculation_widget.setMinimumWidth(790)
+            # Stage 367: Vor dem ersten Aufruf von set_dark_mode() müssen
+            # sowohl Zeichen-Widget als auch Scroll-Seite existieren.
+            # Stage 366 ergänzte zwar den Zugriff in set_dark_mode/open_fact,
+            # hatte aber die tatsächliche Instanziierung ausgelassen.
+            self.basic_math_rules_widget = BasicMathRulesFactWidget()
+            self.basic_math_rules_scroll = _add_fact_scroll_page(
+                self.basic_math_rules_widget, 'basic_math_rules_scroll_area'
+            )
+            # Breite nach _add_fact_scroll_page() setzen: die Hilfsfunktion
+            # setzt die Mindestgröße des eingebetteten Widgets zurück.
+            self.basic_math_rules_widget.setMinimumWidth(760)
+            # Stage 368: Das Fractions-Widget muss bereits vor dem ersten
+            # set_dark_mode()-Aufruf existieren (vgl. Stage-367-Korrektur).
+            self.fraction_help_widget = FractionHelpWidget()
+            self.fraction_help_scroll = _add_fact_scroll_page(
+                self.fraction_help_widget, 'fraction_help_scroll_area'
+            )
+            self.fraction_help_widget.setMinimumWidth(930)
             # Stage 362: die Zeichen-Widgets bleiben unverändert, der
             # interaktive Rechner liegt unter der jeweiligen rechten Figur.
             # Die ScrollArea isoliert die Seiten-Mindestmaße vom Hauptfenster.
@@ -98441,6 +98742,44 @@ QToolButton:hover {{ background: {selection}; }}"""
             grundwissen.setFont(0, grundwissen_font)
             grundwissen.setFlags(grundwissen.flags() & ~Qt.ItemIsSelectable)
             self.facts_tree.addTopLevelItem(grundwissen)
+
+            rules = QTreeWidgetItem(['Rechengesetze'])
+            rules_font = rules.font(0)
+            rules_font.setBold(True)
+            rules.setFont(0, rules_font)
+            rules.setFlags(rules.flags() & ~Qt.ItemIsSelectable)
+            grundwissen.addChild(rules)
+            for key, title in (
+                ('basic_arithmetic', 'Grundrechen-Arten'),
+                ('divisibility_rules', 'Teilbarkeit'),
+                ('powers_rules', 'Potenzen'),
+                ('calculation_rules', 'Rechengesetze'),
+            ):
+                item = QTreeWidgetItem([title])
+                item.setData(0, Qt.UserRole, key)
+                rules.addChild(item)
+                self._fact_items[key] = item
+            # Stage 368: Das Blatt Teilbarkeit erhaelt eine Hierarchie
+            # fuer die Bruch-Merkblaetter; die vorhandenen Rechengesetze
+            # und die anderen Mathematik-Seiten bleiben unveraendert.
+            teilbarkeit = self._fact_items['divisibility_rules']
+            brueche = QTreeWidgetItem(['Brüche'])
+            brueche.setData(0, Qt.UserRole, 'fraction_overview')
+            teilbarkeit.addChild(brueche)
+            self._fact_items['fraction_overview'] = brueche
+            for fraction_key, fraction_name in (
+                ('fraction_add', 'Brüche addieren'),
+                ('fraction_subtract', 'Brüche subtrahieren'),
+                ('fraction_multiply', 'Brüche multiplizieren'),
+                ('fraction_divide', 'Brüche dividieren'),
+            ):
+                fraction_item = QTreeWidgetItem([fraction_name])
+                fraction_item.setData(0, Qt.UserRole, fraction_key)
+                brueche.addChild(fraction_item)
+                self._fact_items[fraction_key] = fraction_item
+            teilbarkeit.setExpanded(True)
+            brueche.setExpanded(True)
+            rules.setExpanded(True)
 
             algebra = QTreeWidgetItem(['Algebra'])
             algebra_font = algebra.font(0)
@@ -98659,6 +98998,8 @@ QStackedWidget#learning_content_stack {{
             self.pascal_triangle_widget.set_dark_mode(enabled)
             self.fibonacci_spiral_widget.set_dark_mode(enabled)
             self.interest_calculation_widget.set_dark_mode(enabled)
+            self.basic_math_rules_widget.set_dark_mode(enabled)
+            self.fraction_help_widget.set_dark_mode(enabled)
             self.volume_fact_widget.set_dark_mode(enabled)
             self.area_fact_widget.set_dark_mode(enabled)
             self.volume_calculator.set_dark_mode(enabled)
@@ -98694,6 +99035,12 @@ QStackedWidget#learning_content_stack {{
 
             if fact_key == 'interest_calculation':
                 self.content_stack.setCurrentWidget(self.interest_calculation_scroll)
+            elif fact_key in ('basic_arithmetic', 'divisibility_rules', 'powers_rules', 'calculation_rules'):
+                self.content_stack.setCurrentWidget(self.basic_math_rules_scroll)
+                self.basic_math_rules_widget.activate_fact(fact_key, title)
+            elif fact_key in ('fraction_overview', 'fraction_add', 'fraction_subtract', 'fraction_multiply', 'fraction_divide'):
+                self.content_stack.setCurrentWidget(self.fraction_help_scroll)
+                self.fraction_help_widget.activate_fact(fact_key, title)
             elif fact_key == 'cantor_diagonal_argument':
                 self.content_stack.setCurrentWidget(self.cantor_diagonal_scroll)
                 self.cantor_diagonal_widget.activate_fact(fact_key, title)
