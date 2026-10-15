@@ -9,6 +9,8 @@ import re
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from .optimizer import C64BasicOptimizer, normalize_print_strategy
+from .call_reducer import reduce_runtime_calls
+from c64_software_sprite import SoftwareSpriteScene, load_software_sprite_sheet
 
 
 class C64BasicError(Exception):
@@ -42,6 +44,83 @@ class C64BasicScreenResource:
     primary: bytes
     secondary: bytes
     warnings: Tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class C64BasicSpriteResource:
+    """Host-Sprite-Bitmap fuer LOAD SPRITE (kein Disketten-LOAD)."""
+
+    path: Path
+    address: int
+    data: bytes
+
+
+def c64_basic_sprite_command(statement: str):
+    """Liefert (optionale Zeilennummer, Host-Dateiname, C64-Adresse).
+
+    Die Erweiterung ist bewusst auf konstante Namen/Adressen beschraenkt:
+    der Windows-Rechner liest die Datei, nicht das C64-KERNAL.
+    """
+    text = str(statement or "").strip()
+    match = re.fullmatch(
+        r'(?is)(?:(\d+)\s+)?(?:LOAD\s+SPRITE|LOADSPRITE)\s+'
+        r'"((?:""|[^"])*)"\s*(?:,\s*(\$[0-9a-f]+|0x[0-9a-f]+|\d+))?\s*',
+        text,
+    )
+    if match is None:
+        return None
+    address_text = match.group(3)
+    if address_text is None:
+        address = 0x3000
+    elif address_text.startswith('$'):
+        address = int(address_text[1:], 16)
+    elif address_text.lower().startswith('0x'):
+        address = int(address_text, 16)
+    else:
+        address = int(address_text, 10)
+    return (int(match.group(1)) if match.group(1) else None,
+            match.group(2).replace('""', '"'), address)
+
+
+def load_c64_basic_sprite_resource(
+    file_name: str, source_filename: str, *, address: int = 0x3000,
+    line: Optional[int] = None,
+) -> C64BasicSpriteResource:
+    """Liest rohe VIC-II-Sprites (63/64 B) oder ein vorbereitetes PRG.
+
+    PRG-Adressen werden nur dann erkannt, wenn die Datei exakt aus einem
+    zweibyte-Header und 64-Byte-Sprite-Datensaetzen besteht. Es werden nur
+    lokale Dateien aus dem Quellverzeichnis akzeptiert.
+    """
+    if not isinstance(file_name, str) or not file_name or any(c in file_name for c in ('/', '\\', '\x00')) or file_name in ('.', '..'):
+        raise C64BasicError(f'Ungueltiger Host-Sprite-Dateiname: {file_name!r}.', line)
+    if not 0 <= int(address) <= 0xFFFF or int(address) % 64:
+        raise C64BasicError('LOAD SPRITE: Zieladresse muss innerhalb $0000..$FFFF und durch 64 teilbar sein.', line)
+    base = Path(source_filename).resolve().parent if source_filename else Path.cwd()
+    path = base / file_name
+    if not path.is_file() and base.is_dir():
+        path = next((candidate for candidate in base.iterdir()
+                     if candidate.is_file() and candidate.name.casefold() == file_name.casefold()), path)
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise C64BasicError(f'LOAD SPRITE: Host-Datei fehlt oder ist nicht lesbar: {path}: {exc}', line) from exc
+    if len(raw) >= 66 and (len(raw) - 2) % 64 == 0:
+        header = int.from_bytes(raw[:2], 'little')
+        if header != address:
+            raise C64BasicError(
+                f'LOAD SPRITE: Datei hat PRG-Ladeadresse ${header:04X}, verlangt ist ${address:04X}.', line
+            )
+        data = raw[2:]
+    elif len(raw) >= 64 and len(raw) % 64 == 0:
+        data = raw
+    elif len(raw) >= 63 and len(raw) % 63 == 0:
+        data = b''.join(raw[pos:pos+63] + b'\x00' for pos in range(0, len(raw), 63))
+    else:
+        raise C64BasicError('LOAD SPRITE: Erwartet 63 oder 64 Bytes pro Sprite (oder PRG mit Ladeheader).', line)
+    if not data or len(data) >= 0x10000 or address + len(data) >= 0x10000:
+        raise C64BasicError('LOAD SPRITE: Bilddaten passen nicht in den 64-KiB-C64-Speicher.', line)
+    return C64BasicSpriteResource(path.resolve(), address, bytes(data))
 
 
 @dataclass(frozen=True)
@@ -397,6 +476,19 @@ def _petscii_bytes(text: str) -> bytes:
     return bytes(payload)
 
 
+def _petscii_filename_bytes(text: str) -> bytes:
+    """Host-Editor-Filename -> C64 PETSCII for a BASIC LOAD literal.
+
+    ASCII 'a'..'z' are not the unshifted PETSCII letters used by
+    default C64 BASIC and the D64 directory.  Explicit Direct-PETSCII
+    glyphs (U+E000..U+E0FF) must remain untouched.
+    This is *only* for filenames, not PRINT or user string values.
+    """
+    return bytes(_petscii_bytes(''.join(
+        char.upper() if 'a' <= char <= 'z' else char for char in text
+    )))
+
+
 def _encode_cbm_float(value: Decimal) -> bytes:
     """Kodiert einen Python-Decimalwert in das kompakte 5-Byte-CBM-Format."""
     if not value.is_finite():
@@ -748,6 +840,8 @@ class _BasicCompiler:
         *,
         optimizer_enabled: bool = True,
         optimizer_strategy: str = "direct",
+        sta_reducer: bool = False,
+        call_reducer: bool = False,
     ):
         self.source = source
         self.filename = filename
@@ -776,12 +870,27 @@ class _BasicCompiler:
         # umgesetzt und schalten LOAD SCREEN automatisch in 320x200-HiRes.
         self.screen_resources: Dict[str, Tuple[str, str, bytes, bytes]] = {}
         self.screen_resource_order: List[str] = []
+        self.sprite_resources: Dict[Tuple[str, int], Tuple[str, C64BasicSpriteResource]] = {}
+        self.sprite_resource_order: List[Tuple[str, int]] = []
+        # Stage 417: linear software sprite scene; compiler produces byte-exact
+        # VIC-II multicolour bitmap deltas and recompostes surviving sprites.
+        self.soft_scene = SoftwareSpriteScene()
+        self.soft_used = False
+        self.soft_enabled = False
+        self.soft_screen_on = False
+
         self.screen_runtime_needed = False
         self.pixel_screen_runtime_needed = False
+        self.load_runtime_needed = False
         self.total_array_bytes = 0
         self.optimizer_enabled = bool(optimizer_enabled)
         self.optimizer_strategy = normalize_print_strategy(optimizer_strategy)
         self.optimizer = C64BasicOptimizer()
+        # Stage 418: separates the sprite STA reducer from text-optimizer policies.
+        self.call_reducer = bool(call_reducer)
+        self.call_reducer_stats = (0, 0)
+        self.sta_reducer = bool(sta_reducer)
+        self.sta_reducer_tables: List[Tuple[str, bytes]] = []
 
     def new_label(self, prefix: str) -> str:
         self.label_counter += 1
@@ -817,10 +926,12 @@ class _BasicCompiler:
         return self.string_variables[key]
 
     def add_string_literal(self, text: str) -> str:
-        # Immutable Stringliterale können sicher zusammengelegt werden. Das ist
-        # insbesondere für String-Thunks wichtig: mehrfach verwendeter Text
-        # erhält ein gemeinsames Zielsymbol.
-        payload = _petscii_bytes(text)
+        # Normale BASIC-Literale unverändert übernehmen: PRINT und String-
+        # Vergleiche dürfen keine implizite Dateinamen-Normalisierung erhalten.
+        return self.add_literal_bytes(_petscii_bytes(text))
+
+    def add_literal_bytes(self, payload: bytes) -> str:
+        # Dedupliziere anhand der tatsächlichen Bytefolge, nicht des Quelltexts.
         existing = self._string_literal_by_payload.get(payload)
         if existing is not None:
             return existing
@@ -1733,8 +1844,8 @@ class _BasicCompiler:
         if len(parts) == 4:
             self.compile_string_expression_to(parts[3], "__basic_string_expr", line)
             self.emit("    lda __basic_string_expr")
-            self.emit("    ldx #<__basic_string_expr+1")
-            self.emit("    ldy #>__basic_string_expr+1")
+            self.emit("    ldx #<(__basic_string_expr+1)")
+            self.emit("    ldy #>(__basic_string_expr+1)")
         else:
             self.emit("    lda #$00")
             self.emit("    tax")
@@ -1789,6 +1900,290 @@ class _BasicCompiler:
         self.screen_resources[key] = resource
         self.screen_resource_order.append(key)
         return resource
+
+    def compile_load(self, tail: str, line: int) -> None:
+        """BASIC V2 LOAD: KERNAL LOAD fuer PRG-Dateien (nicht LOAD SCREEN).
+
+        SETNAM / SETLFS / LOAD werden zur LAUFZEIT auf dem C64 aufgerufen.
+        Mit Sekundaeradresse 1 wird die zweibyte Ladeadresse des PRG benutzt.
+        Insbesondere werden hier keine Hostdateien beim Kompilieren gelesen.
+        """
+        parts = _split_top_level(tail, ",")
+        if not 1 <= len(parts) <= 3 or any(not part for part in parts):
+            raise C64BasicError(
+                'LOAD-Syntax: LOAD "DATEINAME"[,GERAET[,SEKUNDAERADRESSE]].', line
+            )
+
+        # BASIC V2: Standardgeraet 1 (Datasette), Standardsekundaeradresse 0.
+        # Die KERNAL-Parameter muessen ausgewertet sein, BEVOR SETNAM und
+        # SETLFS ausgefuehrt werden, da die Ausdruecke ROM-Routinen aufrufen.
+        self.load_runtime_needed = True
+        if len(parts) >= 2:
+            self.compile_numeric_text(parts[1], line)
+            self.emit("    jsr __basic_fac_to_int")
+            self.emit("    sta __basic_device")
+        else:
+            self.emit("    lda #$01")
+            self.emit("    sta __basic_device")
+        if len(parts) == 3:
+            self.compile_numeric_text(parts[2], line)
+            self.emit("    jsr __basic_fac_to_int")
+            self.emit("    sta __basic_secondary")
+        else:
+            self.emit("    lda #$00")
+            self.emit("    sta __basic_secondary")
+
+        # Die Compiler-ShortStrings haben 1 Laengenbyte und anschliessende
+        # PETSCII-Zeichen; KERNAL SETNAM erwartet genau diese Datenadresse.
+        name = parts[0].strip()
+        literal = re.fullmatch(r'"((?:""|[^"])*)"', name, flags=re.S)
+        if literal is not None:
+            # Stage 410: Die D64-Direinträge enthalten PETSCII $41-$5A;
+            # rohes Host-ASCII 'sprites.spr' ($73...) passt nicht dazu.
+            # Nur LOAD-Dateinamen normalisieren, normale PRINT-Strings nicht.
+            filename = literal.group(1).replace('""', '"')
+            symbol = self.add_literal_bytes(_petscii_filename_bytes(filename))
+            self.emit(f"    lda {symbol}")
+            self.emit(f"    ldx #<({symbol}+1)")
+            self.emit(f"    ldy #>({symbol}+1)")
+        else:
+            self.compile_string_expression_to(name, "__basic_string_expr", line)
+            # Variable/Verkettung: es ist ein temporärer Puffer und kein
+            # Benutzerstring. Wie beim VICE-Keyboardfeed Host-ASCII a-z auf
+            # die übliche C64-PETSCII-Buchstabenbelegung abbilden.
+            self.emit("    jsr __basic_load_normalize_name")
+            self.emit("    lda __basic_string_expr")
+            self.emit("    ldx #<(__basic_string_expr+1)")
+            self.emit("    ldy #>(__basic_string_expr+1)")
+        self.emit("    jsr $FFBD")             # SETNAM
+        self.emit("    lda #$01")              # logische Dateinummer
+        self.emit("    ldx __basic_device")
+        self.emit("    ldy __basic_secondary")
+        self.emit("    jsr $FFBA")             # SETLFS
+        self.emit("    lda #$00")              # 0 = LOAD, nicht VERIFY
+        self.emit("    ldx #$01")              # BASIC-Start $0801 bei SA=0
+        self.emit("    ldy #$08")              # bei SA=1: Ladeadresse aus PRG
+        self.emit("    jsr $FFD5")             # LOAD
+        success = self.new_label("load_success")
+        self.emit(f"    bcc {success}")
+        self.emit("    jmp __basic_load_failed")
+        self.emit(f"{success}:")
+
+    def _soft_error(self, text: str, line: int) -> None:
+        raise C64BasicError(text, line)
+
+    def _soft_constant(self, text: str, line: int, label: str) -> int:
+        match = re.fullmatch(r'\s*(\$[0-9a-f]+|0x[0-9a-f]+|\d+)\s*', text, re.I)
+        if not match:
+            self._soft_error(f'{label} muss in Stage 417 eine konstante ganze Zahl sein.', line)
+        val = match.group(1)
+        return int(val[1:], 16) if val.startswith('$') else int(val, 0) if val.lower().startswith('0x') else int(val)
+
+    @staticmethod
+    def _sta_reducer_encode(modifications: List[Tuple[int, int]]) -> bytes:
+        """Lossless (length, address, payload) stream: positive = literal;
+        negative length = repeated byte. Each run has max. 127 addresses.
+        Terminator is a single zero length byte.
+        """
+        out = bytearray()
+        i = 0
+        n = len(modifications)
+        while i < n:
+            # Group only physically adjacent addresses; never write gaps.
+            end = i + 1
+            while end < n and modifications[end][0] == modifications[end - 1][0] + 1:
+                end += 1
+            while i < end:
+                # Repeated bytes are run-length encoded, other bytes literal.
+                length = 1
+                while (i + length < end and length < 127
+                       and modifications[i + length][1] == modifications[i][1]):
+                    length += 1
+                if length >= 3:
+                    address, value = modifications[i]
+                    out.extend((256 - length, address & 255, address >> 8, value))
+                    i += length
+                    continue
+                start = i
+                i += 1
+                while i < end and i - start < 127:
+                    look = 1
+                    while (i + look < end and look < 3
+                           and modifications[i + look][1] == modifications[i][1]):
+                        look += 1
+                    if look >= 3:
+                        break
+                    i += 1
+                address = modifications[start][0]
+                out.extend((i - start, address & 255, address >> 8))
+                out.extend(value for _, value in modifications[start:i])
+        out.append(0)
+        return bytes(out)
+
+    def _soft_emit_deltas(self, planes) -> None:
+        modifications = self.soft_scene.commit(planes)
+        self.emit(f'    ; Software-Sprite: {len(modifications)} VIC-II-Bytes aktualisiert')
+        if not modifications:
+            return
+        if self.sta_reducer:
+            table = self._sta_reducer_encode(modifications)
+            direct_size = 3 * len(modifications) + 2 * sum(
+                i == 0 or value != modifications[i - 1][1]
+                for i, (_address, value) in enumerate(modifications)
+            )
+            # Runtime costs ~100 bytes, once per PRG. Avoid bloating tiny edits
+            # and sparse/difficult updates. Do not alter write order or values.
+            runtime_cost = 105 if not self.sta_reducer_tables else 0
+            if len(table) + 7 + runtime_cost < direct_size:
+                label = self.new_label('sta_reducer_table')
+                self.sta_reducer_tables.append((label, table))
+                self.emit(f'    ; STA reducer: {len(table)} Tabellenbytes statt ca. {direct_size} Codebytes')
+                self.emit(f'    lda #<{label}')
+                self.emit(f'    ldy #>{label}')
+                self.emit('    jsr __basic_sta_reducer_apply')
+                return
+        # Legacy path, also used when reducer would cost more than inline STA.
+        previous_value = None
+        for address, value in modifications:
+            if value != previous_value:
+                self.emit(f'    lda #${value:02X}')
+                previous_value = value
+            self.emit(f'    sta ${address:04X}')
+
+    def emit_sta_reducer_runtime(self) -> None:
+        """Interpreter for compressed VIC memory deltas; $FB-$FE are scratch."""
+        if not self.sta_reducer_tables:
+            return
+        self.emit('')
+        self.emit('; ---- STA reducer: RLE / Literal-Lookup fuer VIC-II-Deltas ----')
+        self.emit('__basic_sta_reducer_apply:')
+        for op in (
+            'sta $FB', 'sty $FC',
+            '__basic_sta_reducer_next:',
+            'ldy #$00', 'lda ($FB),y', 'beq __basic_sta_reducer_done',
+            'tax', 'jsr __basic_sta_reducer_inc_src',
+            'lda ($FB),y', 'sta $FD', 'jsr __basic_sta_reducer_inc_src',
+            'lda ($FB),y', 'sta $FE', 'jsr __basic_sta_reducer_inc_src',
+            'txa', 'bmi __basic_sta_reducer_fill',
+            '__basic_sta_reducer_literal:',
+            'lda ($FB),y', 'sta ($FD),y',
+            'jsr __basic_sta_reducer_inc_src', 'jsr __basic_sta_reducer_inc_dst',
+            'dex', 'bne __basic_sta_reducer_literal',
+            'jmp __basic_sta_reducer_next',
+            '__basic_sta_reducer_fill:',
+            'eor #$FF', 'tax', 'inx',
+            'lda ($FB),y', 'sta __basic_sta_reducer_value',
+            'jsr __basic_sta_reducer_inc_src',
+            '__basic_sta_reducer_fill_loop:',
+            'lda __basic_sta_reducer_value', 'sta ($FD),y',
+            'jsr __basic_sta_reducer_inc_dst',
+            'dex', 'bne __basic_sta_reducer_fill_loop',
+            'jmp __basic_sta_reducer_next',
+            '__basic_sta_reducer_inc_src:',
+            'inc $FB', 'bne __basic_sta_reducer_src_ok', 'inc $FC',
+            '__basic_sta_reducer_src_ok:', 'rts',
+            '__basic_sta_reducer_inc_dst:',
+            'inc $FD', 'bne __basic_sta_reducer_dst_ok', 'inc $FE',
+            '__basic_sta_reducer_dst_ok:', 'rts',
+            '__basic_sta_reducer_done:', 'rts',
+        ):
+            self.emit(op if op.endswith(':') else '    ' + op)
+
+    def compile_soft_screen(self, tail: str, line: int) -> None:
+        mode = tail.strip().upper()
+        if mode == 'WAIT':
+            if not self.soft_screen_on:
+                self._soft_error('SCREEN WAIT erwartet SCREEN ON.', line)
+            self.emit('    jsr __basic_soft_screen_wait')
+        elif mode == 'ON':
+            self.soft_screen_on = True
+            self.soft_scene.reset()
+            self.emit('    jsr __basic_soft_screen_on')
+        elif mode == 'OFF':
+            if not self.soft_screen_on:
+                self._soft_error('SCREEN OFF ohne vorheriges SCREEN ON.', line)
+            self.soft_screen_on = False
+            self.soft_scene.reset()
+            self.emit('    jsr __basic_soft_screen_off')
+        else:
+            self._soft_error('SCREEN erwartet ON, WAIT oder OFF.', line)
+
+    def compile_soft_sprite(self, tail: str, line: int) -> None:
+        match = re.match(r'(?is)^SOFTWARE\s+(ON|OFF)\s*$', tail)
+        if match:
+            self.soft_enabled = match.group(1).upper() == 'ON'
+            return
+        match = re.match(r'(?is)^(DRAW|ERASE)\s+(.+)$', tail)
+        if not match:
+            self._soft_error('SPRITE erwartet SOFTWARE ON/OFF, DRAW N,X,Y oder ERASE N.', line)
+        if not self.soft_enabled or not self.soft_screen_on:
+            self._soft_error('SPRITE DRAW/ERASE erwartet SCREEN ON und SPRITE SOFTWARE ON.', line)
+        cmd, args = match.group(1).upper(), _split_top_level(match.group(2), ',')
+        try:
+            if cmd == 'DRAW':
+                if len(args) != 3:
+                    self._soft_error('SPRITE DRAW erwartet Nummer, X und Y.', line)
+                number, x, y = (self._soft_constant(token, line, name) for token, name in zip(args, ('Sprite-Nummer', 'X', 'Y')))
+                planes = self.soft_scene.move(number, x, y)
+            else:
+                if len(args) != 1:
+                    self._soft_error('SPRITE ERASE erwartet genau eine Sprite-Nummer.', line)
+                number = self._soft_constant(args[0], line, 'Sprite-Nummer')
+                planes = self.soft_scene.erase(number)
+        except (ValueError, OSError) as exc:
+            self._soft_error(str(exc), line)
+        self._soft_emit_deltas(planes)
+
+    def compile_load_sprite(self, tail: str, line: int) -> None:
+        spec = c64_basic_sprite_command('LOAD SPRITE ' + tail)
+        if spec is None:
+            raise C64BasicError(
+                'LOAD SPRITE erwartet LOAD SPRITE "datei.spr"[,ADRESSE], z. B. "$3000".', line
+            )
+        _, filename, address = spec
+        if self.soft_used:
+            base = Path(self.filename).resolve().parent if self.filename else Path.cwd()
+            path = base / filename
+            if not path.is_file() and base.is_dir():
+                path = next((candidate for candidate in base.iterdir()
+                             if candidate.is_file() and candidate.name.casefold() == filename.casefold()), path)
+            if not path.is_file() or filename in ('.', '..') or '/' in filename or '\\' in filename:
+                self._soft_error(f'LOAD SPRITE: Host-Datei fehlt oder ungültiger Name: {filename}', line)
+            try:
+                self.soft_scene.sheet = load_software_sprite_sheet(path)
+            except (OSError, ValueError) as exc:
+                self._soft_error(f'LOAD SPRITE: {exc}', line)
+            self.soft_scene.visible.clear()
+            if path.suffix.casefold() in ('.bmsprite', '.bmspr'):
+                if address != 0x3000:
+                    self._soft_error('LOAD SPRITE .bmsprite verwendet keine C64-RAM-Adresse; zweiten Parameter weglassen.', line)
+                self.emit(f'    ; LOAD SPRITE: {path.name} mit {len(self.soft_scene.sheet.sprites)} Software-Sprites vorbereitet')
+                return
+        resource = load_c64_basic_sprite_resource(filename, self.filename, address=address, line=line)
+        key = (str(resource.path).casefold(), resource.address)
+        existing = self.sprite_resources.get(key)
+        if existing is None:
+            label = self.new_label('sprite_resource')
+            self.sprite_resources[key] = (label, resource)
+            self.sprite_resource_order.append(key)
+        else:
+            label = existing[0]
+        # Self-contained standalone PRG: per 6510-Loop in C64 RAM kopieren.
+        # Der hostseitige Remote-Monitor wird NUR beim BASIC-Debugtransfer
+        # verwendet, wo der originale BASIC-V2-Interpreter laeuft.
+        self.emit(f'    lda #<{label}_data')
+        self.emit('    sta $FB')
+        self.emit(f'    lda #>{label}_data')
+        self.emit('    sta $FC')
+        self.emit(f'    lda #${resource.address & 255:02X}')
+        self.emit('    sta $FD')
+        self.emit(f'    lda #${resource.address >> 8:02X}')
+        self.emit('    sta $FE')
+        self.emit(f'    lda #${len(resource.data) & 255:02X}')
+        self.emit('    sta __basic_sprite_rem')
+        self.emit(f'    lda #${len(resource.data) >> 8:02X}')
+        self.emit('    sta __basic_sprite_pages')
+        self.emit('    jsr __basic_sprite_copy')
 
     def compile_load_screen(self, tail: str, line: int) -> None:
         match = re.fullmatch(r'\s*"((?:""|[^"])*)"\s*', tail, flags=re.S)
@@ -1856,11 +2251,24 @@ class _BasicCompiler:
 
         if keyword == "REM" or statement.startswith("'"):
             return
+        if self.soft_used and keyword == 'SCREEN':
+            self.compile_soft_screen(tail, line)
+            return
+        if self.soft_used and keyword == 'SPRITE':
+            self.compile_soft_sprite(tail, line)
+            return
+        if keyword == "LOADSPRITE" or (keyword == "LOAD" and re.match(r"(?is)^SPRITE\b", tail)):
+            sprite_tail = tail if keyword == "LOADSPRITE" else re.sub(r"(?is)^SPRITE\b", "", tail, count=1).strip()
+            self.compile_load_sprite(sprite_tail, line)
+            return
         if keyword in {"LOADSCREEN", "SCREENLOAD"}:
             self.compile_load_screen(tail, line)
             return
         if keyword == "LOAD" and re.match(r"(?is)^SCREEN\b", tail):
             self.compile_load_screen(re.sub(r"(?is)^SCREEN\b", "", tail, count=1).strip(), line)
+            return
+        if keyword == "LOAD":
+            self.compile_load(tail, line)
             return
         if keyword == "PRINT":
             self.compile_print(tail, line)
@@ -2132,9 +2540,14 @@ class _BasicCompiler:
         self.emit("")
         self.emit("; FAC-/Integer-Konvertierung")
         self.emit("__basic_fac_to_int:")
-        self.emit("    jsr $B1AA")              # FACINX: Y=low, A=high
-        self.emit("    tax")
-        self.emit("    tya")
+        # QINT converts FAC to a signed 32-bit integer in $62-$65.
+        # The lower 16 bits are $64 (high) and $65 (low).  FACINX
+        # ($B1AA) is unsuitable here: it rejects positive numbers
+        # >= 32768, including VIC-II POKE addresses $D000-$DFFF.
+        # All compiler call sites expect A=low byte and X=high byte.
+        self.emit("    jsr $BC9B")             # QINT: FAC -> 32-bit integer
+        self.emit("    lda $65")               # low byte
+        self.emit("    ldx $64")               # high byte
         self.emit("    rts")
         self.emit("__basic_int_to_fac:")
         self.emit("    tay")                    # input A=low, X=high
@@ -2441,9 +2854,9 @@ class _BasicCompiler:
         self.emit("    ldy #>__basic_float_zero")
         self.emit("    jmp $BBA2")
         self.emit("__basic_field_to_float_nonempty:")
-        self.emit("    lda #<__basic_field_buffer+1")
+        self.emit("    lda #<(__basic_field_buffer+1)")
         self.emit("    sta $22")
-        self.emit("    lda #>__basic_field_buffer+1")
+        self.emit("    lda #>(__basic_field_buffer+1)")
         self.emit("    sta $23")
         self.emit("    lda __basic_field_buffer")
         self.emit("    jmp $B7B5")
@@ -2612,6 +3025,168 @@ class _BasicCompiler:
             self.emit("    sta $D016")
             self.emit("    rts")
             self.emit("")
+        if self.sprite_resource_order:
+            self.emit("; LOAD SPRITE: eingebettete Hostdatei zur Laufzeit nach RAM kopieren")
+            self.emit("__basic_sprite_copy:")
+            self.emit("    ldx __basic_sprite_pages")
+            self.emit("__basic_sprite_copy_pages:")
+            self.emit("    cpx #$00")
+            self.emit("    beq __basic_sprite_copy_tail")
+            self.emit("    ldy #$00")
+            self.emit("__basic_sprite_copy_page_loop:")
+            self.emit("    lda ($FB),y")
+            self.emit("    sta ($FD),y")
+            self.emit("    iny")
+            self.emit("    bne __basic_sprite_copy_page_loop")
+            self.emit("    inc $FC")
+            self.emit("    inc $FE")
+            self.emit("    dex")
+            self.emit("    jmp __basic_sprite_copy_pages")
+            self.emit("__basic_sprite_copy_tail:")
+            self.emit("    ldy #$00")
+            self.emit("__basic_sprite_copy_tail_loop:")
+            self.emit("    cpy __basic_sprite_rem")
+            self.emit("    beq __basic_sprite_copy_done")
+            self.emit("    lda ($FB),y")
+            self.emit("    sta ($FD),y")
+            self.emit("    iny")
+            self.emit("    bne __basic_sprite_copy_tail_loop")
+            self.emit("__basic_sprite_copy_done:")
+            self.emit("    rts")
+            self.emit("")
+        if self.soft_used:
+            self.emit('')
+            self.emit('; Stage 417: echte VIC-II Multicolor-Bitmap Bank 1, $6000/$4400, Farben $D800')
+            self.emit('; Sichert Farb-RAM bei $4800-$4BE7 und stellt die VIC-Register wieder her.')
+            self.emit('__basic_soft_screen_on:')
+            self.emit('    lda __basic_soft_screen_active')
+            self.emit('    bne __basic_soft_screen_clear')
+            for label, address in (('bank', '$DD00'), ('d011', '$D011'), ('d016', '$D016'), ('d018', '$D018'), ('d021', '$D021')):
+                self.emit(f'    lda {address}')
+                self.emit(f'    sta __basic_soft_old_{label}')
+            self.emit('    ldx #$00')
+            self.emit('__basic_soft_save_colour:')
+            for i in range(4):
+                self.emit(f'    lda ${0xD800+i*256:04X},x')
+                self.emit(f'    sta ${0x4800+i*256:04X},x')
+            self.emit('    inx')
+            self.emit('    bne __basic_soft_save_colour')
+            self.emit('    lda #$01')
+            self.emit('    sta __basic_soft_screen_active')
+            self.emit('__basic_soft_screen_clear:')
+            self.emit('    lda $DD00')
+            self.emit('    and #$FC')
+            self.emit('    ora #$02')
+            self.emit('    sta $DD00')
+            self.emit('    lda #$18')
+            self.emit('    sta $D018')
+            self.emit('    lda $D011')
+            self.emit('    ora #$20')
+            self.emit('    sta $D011')
+            self.emit('    lda $D016')
+            self.emit('    ora #$10')
+            self.emit('    sta $D016')
+            self.emit('    lda #$00')
+            self.emit('    sta $D021')
+            if self.sta_reducer:
+                # Stage 419: STA reducer can also shrink the static, 40-page
+                # screen-clear loop. The single absolute,X STA is patched to
+                # each successive 256-byte page; no 40-instruction unrolling.
+                # Code is in C64 writable RAM, not ROM, and the operand is reset
+                # before *each* call to support repeated SCREEN ON instructions.
+                # Three bands exactly match the previous loop:
+                # $6000-$7FFF (32 pages), $4400-$47FF (4), $D800-$DBFF (4).
+                self.emit('    jsr __basic_soft_zero_clear')
+                self.emit('    rts')
+                self.emit('__basic_soft_zero_clear:')
+                for high, pages in ((0x60, 32), (0x44, 4), (0xD8, 4)):
+                    self.emit(f'    lda #${high:02X}')
+                    self.emit(f'    ldy #${pages:02X}')
+                    self.emit('    jsr __basic_soft_zero_pages')
+                self.emit('    rts')
+                self.emit('; Seitenweises Loeschen: ein selbstmodifizierendes STA abs,X')
+                self.emit('__basic_soft_zero_pages:')
+                self.emit('    sta __basic_soft_zero_store+2')
+                self.emit('__basic_soft_zero_page:')
+                self.emit('    ldx #$00')
+                self.emit('    lda #$00')
+                self.emit('__basic_soft_zero_loop:')
+                self.emit('__basic_soft_zero_store:')
+                self.emit('    sta $6000,x')
+                self.emit('    inx')
+                self.emit('    bne __basic_soft_zero_loop')
+                self.emit('    inc __basic_soft_zero_store+2')
+                self.emit('    dey')
+                self.emit('    bne __basic_soft_zero_page')
+                self.emit('    rts')
+            else:
+                # Byte-identical output to Stage 418 with reducer unchecked.
+                self.emit('    ldx #$00')
+                self.emit('__basic_soft_zero_loop:')
+                self.emit('    lda #$00')
+                for i in range(32):
+                    self.emit(f'    sta ${0x6000+i*256:04X},x')
+                for i in range(4):
+                    self.emit(f'    sta ${0x4400+i*256:04X},x')
+                    self.emit(f'    sta ${0xD800+i*256:04X},x')
+                self.emit('    inx')
+                self.emit('    bne __basic_soft_zero_loop')
+                self.emit('    rts')
+            self.emit('__basic_soft_screen_wait:')
+            self.emit('    jsr $FFE4')
+            self.emit('    beq __basic_soft_screen_wait')
+            self.emit('    rts')
+            self.emit('__basic_soft_screen_off:')
+            self.emit('    lda __basic_soft_screen_active')
+            self.emit('    beq __basic_soft_screen_off_done')
+            self.emit('    ldx #$00')
+            self.emit('__basic_soft_restore_colour:')
+            for i in range(4):
+                self.emit(f'    lda ${0x4800+i*256:04X},x')
+                self.emit(f'    sta ${0xD800+i*256:04X},x')
+            self.emit('    inx')
+            self.emit('    bne __basic_soft_restore_colour')
+            for label, address in (('bank', '$DD00'), ('d011', '$D011'), ('d016', '$D016'), ('d018', '$D018'), ('d021', '$D021')):
+                self.emit(f'    lda __basic_soft_old_{label}')
+                self.emit(f'    sta {address}')
+            self.emit('    lda #$00')
+            self.emit('    sta __basic_soft_screen_active')
+            self.emit('__basic_soft_screen_off_done:')
+            self.emit('    rts')
+        if self.load_runtime_needed:
+            # Konvertiere dynamische LOAD-Dateinamen im Scratch-ShortString.
+            # Literal-Dateinamen wurden schon zur Compilezeit kodiert.
+            # Y=0..Laenge-1, wertvolle Daten in Variablen bleiben unverändert.
+            self.emit("; Host-ASCII a-z -> unshifted C64 PETSCII A-Z")
+            self.emit("__basic_load_normalize_name:")
+            self.emit("    ldy #$00")
+            self.emit("__basic_load_name_loop:")
+            self.emit("    cpy __basic_string_expr")
+            self.emit("    beq __basic_load_name_done")
+            self.emit("    lda __basic_string_expr+1,y")
+            self.emit("    cmp #$61")
+            self.emit("    bcc __basic_load_name_next")
+            self.emit("    cmp #$7B")
+            self.emit("    bcs __basic_load_name_next")
+            self.emit("    and #$DF")
+            self.emit("    sta __basic_string_expr+1,y")
+            self.emit("__basic_load_name_next:")
+            self.emit("    iny")
+            self.emit("    bne __basic_load_name_loop")
+            self.emit("__basic_load_name_done:")
+            self.emit("    rts")
+            self.emit("; KERNAL LOAD liefert Carry=1 und Fehlernummer in A")
+            self.emit("__basic_load_failed:")
+            self.emit("    pha")
+            self.emit("    lda #<__basic_error_load")
+            self.emit("    ldy #>__basic_error_load")
+            self.emit("    jsr __basic_print_z")
+            self.emit("    pla")
+            self.emit("    ldx #$00")
+            self.emit("    jsr __basic_int_to_fac")
+            self.emit("    jsr __basic_print_float")
+            self.emit("    jsr __basic_newline")
+            self.emit("    jmp __basic_abort")
         self.emit("__basic_bad_subscript:")
         self.emit("    lda #<__basic_error_bad_subscript")
         self.emit("    ldy #>__basic_error_bad_subscript")
@@ -2648,6 +3223,14 @@ class _BasicCompiler:
         # geschrieben. __basic_init_cbss löscht diesen RAM vor der ersten
         # BASIC-Zeile.
         self.emit("")
+        if self.sta_reducer_tables:
+            self.emit("; ---- STA reducer: komprimierte Lookup-Tabellen -------------------")
+            for label, payload in self.sta_reducer_tables:
+                self.emit(f"{label}:")
+                for pos in range(0, len(payload), 20):
+                    chunk = payload[pos:pos + 20]
+                    self.emit("    .byte " + ", ".join(f"${value:02X}" for value in chunk))
+            self.emit("")
         self.emit("; ---- Fließkommakonstanten im kompakten CBM-5-Byte-Format ----------")
         # Stabile Aliasnamen für Runtime und Tests.
         zero_symbol = self.float_constant(Decimal(0))
@@ -2677,6 +3260,8 @@ class _BasicCompiler:
         self.emit("__basic_data_end: .byte $FF")
         self.emit('__basic_error_bad_subscript: .byte "?BAD SUBSCRIPT ERROR", $0D, $00')
         self.emit('__basic_error_out_of_data: .byte "?OUT OF DATA ERROR", $0D, $00')
+        if self.load_runtime_needed:
+            self.emit('__basic_error_load: .byte "?LOAD ERROR ", $00')
 
         if self.screen_resource_order:
             self.emit("")
@@ -2705,6 +3290,16 @@ class _BasicCompiler:
                         self.emit(f"    .byte {values}")
 
         self.emit("")
+        if self.sprite_resource_order:
+            self.emit("; ---- LOAD SPRITE: eingebettete VIC-II-Sprite-Rohdaten -------------")
+            for key in self.sprite_resource_order:
+                label, resource = self.sprite_resources[key]
+                self.emit(f'; Host-Sprite {resource.path.name}; Ziel ${resource.address:04X}; {len(resource.data)} Bytes')
+                self.emit(f'{label}_data:')
+                for index in range(0, len(resource.data), 20):
+                    chunk = resource.data[index:index+20]
+                    self.emit('    .byte ' + ', '.join(f'${b:02X}' for b in chunk))
+
         self.emit("; ---- Ende des physisch im PRG gespeicherten Images ----------------")
         self.emit("__basic_image_end:")
         self.emit("")
@@ -2744,11 +3339,28 @@ class _BasicCompiler:
         ):
             self.emit(f"{symbol}: .cbss 256")
 
+        if self.sta_reducer_tables:
+            self.emit('__basic_sta_reducer_value: .cbss 1')
+        if self.soft_used:
+            for label in ('active', 'old_bank', 'old_d011', 'old_d016', 'old_d018', 'old_d021'):
+                self.emit(f'__basic_soft_screen_{label}: .cbss 1' if label == 'active' else f'__basic_soft_{label}: .cbss 1')
+        if self.sprite_resource_order:
+            self.emit("__basic_sprite_rem: .cbss 1")
+            self.emit("__basic_sprite_pages: .cbss 1")
         self.emit("__basic_cbss_end:")
 
     def compile(self) -> C64BasicCompileResult:
         parsed = self.parse_source()
         self.prepare_program(parsed)
+        self.soft_used = any(re.match(r'(?is)^\s*SPRITE\s+(?:SOFTWARE|DRAW|ERASE)\b|^\s*SCREEN\s+(?:ON|WAIT|OFF)\b', stmt)
+                             for _, statements in parsed for stmt in statements)
+        if self.soft_used:
+            # Static compile-time scene-deltas must not be put in an unknown
+            # control-flow order: reject rather than producing wrong pictures.
+            for number, statements in parsed:
+                for stmt in statements:
+                    if re.match(r'(?is)^\s*(IF|FOR|NEXT|GOTO|GOSUB|RETURN|ON)\b', stmt):
+                        raise C64BasicError('SPRITE SOFTWARE Stage 417: vorerst nur lineare BASIC-Abläufe (keine Sprünge/Schleifen).', number)
         # Runtime benötigt diese Konstanten unabhängig vom Quelltext.
         self.float_constant(Decimal(0))
         self.float_constant(Decimal(1))
@@ -2772,7 +3384,16 @@ class _BasicCompiler:
         for number, statements in parsed:
             self.emit(f"__basic_line_{number}:")
             for statement in statements:
-                self.compile_statement(statement, number)
+                try:
+                    self.compile_statement(statement, number)
+                except C64BasicError as exc:
+                    # Stage 414: Die GUI benoetigt die *wirklich* beim Parser
+                    # eingetroffene Anweisung, nicht den optisch gerenderten
+                    # Inhalt des Editors. Gerade C64-Pro-Zeichen und
+                    # Zeilennummern im Gutter koennen sonst Fehler verdecken.
+                    if not hasattr(exc, "source_statement"):
+                        exc.source_statement = statement
+                    raise
         if self.for_stack:
             context = self.for_stack[-1]
             raise C64BasicError(
@@ -2796,8 +3417,14 @@ class _BasicCompiler:
             )
 
         self.resolve_auto_print_literals()
+        runtime_start = len(self.lines)
         self.emit_runtime()
+        self.emit_sta_reducer_runtime()
         self.emit_print_literal_thunks()
+        if self.call_reducer:
+            reduced = reduce_runtime_calls(self.lines, runtime_start, len(self.lines))
+            self.lines = list(reduced.lines)
+            self.call_reducer_stats = (reduced.removed_instructions, reduced.removed_labels)
         self.emit_storage()
         self.emit("end")
         optimizer_stats = self.optimizer.stats
@@ -2806,7 +3433,9 @@ class _BasicCompiler:
             "Variablen mit %-Suffix und Integerarrays verwenden 16-Bit-Ganzzahlen.",
             "Strings verwenden 256-Byte-ShortString-Slots: 1 Längenbyte (0..255) plus bis zu 255 Zeichen.",
             "Nullinitialisierte Variablen, Arrays und Runtime-Puffer liegen im C64-CBSS hinter dem PRG und werden beim Start per 6510-Schleife gelöscht.",
-            "OPEN/CLOSE/CMD/PRINT#/INPUT#/GET# verwenden die C64-KERNAL-Sprungtabelle.",
+            "OPEN/CLOSE/CMD/PRINT#/INPUT#/GET# und LOAD verwenden die C64-KERNAL-Sprungtabelle; LOAD mit Sekundaeradresse 1 laedt eine PRG-Datei an deren gespeicherte Ladeadresse (Laufwerk muss am C64/VICE verfuegbar sein).",
+            "LOAD SPRITE 'name.spr'[,ADRESSE] liest die Host-Binärdaten bei der Übersetzung, bettet sie in das PRG ein und kopiert sie zur Laufzeit nach $3000 bzw. zur angegebenen Adresse; kein Laufwerk-8-Zugriff.",
+            "SPRITE SOFTWARE Stage 417: SCREEN ON/WAIT/OFF, SPRITE SOFTWARE ON/OFF, SPRITE DRAW N,X,Y, SPRITE ERASE N in linearer BASIC-Folge; Multicolor 160x200 (X gerade), max. drei Farben + Hintergrund pro 8x8-Zelle.",
             "LOAD SCREEN erkennt Textscreens und 320x200-Pixelscreens automatisch. Text wird nach $0400/$D800 geladen; *.px16/*.pixel/*.pix wird in VIC-II-HiRes umgesetzt, nach $E000/$C400 geladen und schaltet den 320x200-Bitmapmodus ein.",
             (
                 "Optimizer: "
@@ -2819,6 +3448,11 @@ class _BasicCompiler:
                 f"inline={optimizer_stats.inline_pointer_prints}, "
                 f"thunk={optimizer_stats.string_thunk_prints}."
             ),
+            "CALL reducer: " + ("aktiv" if self.call_reducer else "deaktiviert")
+            + f"; {self.call_reducer_stats[0]} ungenutzte ASM-Anweisungen und "
+              f"{self.call_reducer_stats[1]} Labels entfernt.",
+            "STA reducer: " + ("aktiv" if self.sta_reducer else "deaktiviert")
+            + f"; {len(self.sta_reducer_tables)} komprimierte Sprite-Lookup-Tabelle(n).",
             "Der erzeugte ASM-Code kann im ASM-Tab geprüft und anschließend assembliert werden.",
         )
         return C64BasicCompileResult(
@@ -2835,6 +3469,8 @@ def compile_basic_to_assembly(
     target: str = "c64",
     optimizer_enabled: bool = True,
     optimizer_strategy: str = "direct",
+    sta_reducer: bool = False,
+    call_reducer: bool = False,
 ) -> C64BasicCompileResult:
     if str(target).strip().casefold() not in {"c64", "c-64", "commodore64"}:
         raise C64BasicError(
@@ -2845,4 +3481,6 @@ def compile_basic_to_assembly(
         str(filename),
         optimizer_enabled=bool(optimizer_enabled),
         optimizer_strategy=optimizer_strategy,
+        sta_reducer=sta_reducer,
+        call_reducer=call_reducer,
     ).compile()

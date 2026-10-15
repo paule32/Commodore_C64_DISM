@@ -1778,9 +1778,9 @@ _CONTROL_DEFAULTS = {
 # koennen in der GUI weder umbenannt noch geloescht werden.
 # ---------------------------------------------------------------------------
 PROJECT_CATEGORIES: Tuple[Tuple[str, str, Tuple[str, ...]], ...] = (
-    # Stage 255: erster normaler Hauptknoten -> direkt unter Bookmarks.
-    ("c64"              , "Commodore C= 64", (".prg",)),
+    # Stage 387: BASIC ist ein Root; der C64-Projektzweig ist sein Unterknoten.
     ("basic"            , "BASIC - Programme", (".bas", ".basic")),
+    ("c64"              , "Commodore C= 64", (".prg",)),
     ("assembler"        , "Assembler-Programme", (".asm", ".s", ".a65", ".m68k", ".inc")),
     ("pascal"           , "Pascal-Programme", (".pas", ".pp")),
     ("c"                , "C-Programme", (".c", ".h")),
@@ -2893,6 +2893,42 @@ def install_periodic_table(main_window, title_bar_factory=None):
         )
         main_window._periodic_table_controller = controller
     return controller
+
+
+class ChemistryWorkbenchController(PeriodicTableController):
+    """Stage 386: Chemie-Baukasten mit derselben Vollflaechen-Docklogik."""
+
+    def _create_dock(self):
+        # Erst bei Wahl des Menuepunkts wird die PyQt5-Arbeitsflaeche geladen.
+        from chemistry_workbench import ChemistryWorkbenchWidget
+
+        dock = QDockWidget('Chemie - Baukasten', self.main_window)
+        dock.setObjectName('chemistry_baukasten_dock')
+        dock.setAllowedAreas(Qt.AllDockWidgetAreas)
+        dock.setFeatures(
+            QDockWidget.DockWidgetClosable
+            | QDockWidget.DockWidgetMovable
+            | QDockWidget.DockWidgetFloatable
+        )
+        dock.setMinimumSize(0, 0)
+        dock.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        if callable(self.title_bar_factory):
+            dock.setTitleBarWidget(self.title_bar_factory(dock))
+        dock.canvas = ChemistryWorkbenchWidget(dock)
+        dock.canvas.set_dark_mode(bool(getattr(self.main_window, 'dark_mode_enabled', True)))
+        dock.setWidget(dock.canvas)
+        dock.hide()
+        self.main_window.addDockWidget(Qt.LeftDockWidgetArea, dock)
+        dock.visibilityChanged.connect(self._dock_visibility_changed)
+        dock.dockLocationChanged.connect(self._dock_location_changed)
+        dock.topLevelChanged.connect(self._dock_top_level_changed)
+        self.dock = dock
+        return dock
+
+    def show_chemistry_workbench(self):
+        self.show_periodic_table()
+        if self.dock is not None:
+            self.dock.canvas.set_dark_mode(bool(getattr(self.main_window, 'dark_mode_enabled', True)))
 
 
 # ---------------------------------------------------------------------------
@@ -9996,6 +10032,13 @@ __d64pack_boot:
     tya
     pha
     sei
+    ; D64PACK: 6510-Binärarithmetik erzwingen. Beim Eintritt über
+    ; BASIC SYS kann das Decimal-Flag gesetzt sein. Der LZ/RLE-
+    ; Entpacker verwendet ADC; im BCD-Modus entstünden beschädigte
+    ; Programmbytes und fehlerhafte Rücksprungadressen.
+    ; Der ursprüngliche P-Status wurde vorab mit PHP gesichert und
+    ; wird am Ende des Entpackens über PLP wiederhergestellt.
+    cld
     lda $01
     pha
     lda $F7
@@ -13616,6 +13659,12 @@ class D64Image:
         return hashlib.sha256(self.raw).hexdigest()
 
 
+# Stage 390: Erst NACH Abschluss der ersten D64Image-Klasse sichern.
+# Die spaetere GUI-D64Image-Klasse ueberschreibt sonst nur den globalen Namen;
+# das d64info-/DISM-Modul verwendet weiterhin die hier definierte Klasse.
+_D64INFO_IMAGE_CLASS = D64Image
+
+
 def find_basic_sys_entry(
     program_data: bytes,
     load_address: int,
@@ -16563,7 +16612,7 @@ def write_complete_startup_report(
     return output_path
 
 
-def parse_arguments(argv: list[str]) -> argparse.Namespace:
+def parse_dinfo_arguments(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Zeigt Geometrie, BAM-Kopfdaten und Verzeichnis eines "
@@ -16756,7 +16805,7 @@ def parse_arguments(argv: list[str]) -> argparse.Namespace:
 
 
 def dinfo_main(argv: list[str] | None = None) -> int:
-    args = parse_arguments(sys.argv[1:] if argv is None else argv)
+    args = parse_dinfo_arguments(sys.argv[1:] if argv is None else argv)
 
     if args.overwrite and not args.extract_prg:
         print(
@@ -16798,7 +16847,7 @@ def dinfo_main(argv: list[str] | None = None) -> int:
         return 2
 
     try:
-        image = D64Image(args.image)
+        image = _D64INFO_IMAGE_CLASS(args.image)
 
         if args.show_startup:
             write_complete_startup_report(
@@ -32707,8 +32756,83 @@ def _build_c64_petscii_to_c64pro_codepoint() -> Dict[int, int]:
     return mapping
 
 
+# Stage 393: Die PETSCII-Belegung liegt als vollstaendige 256-Byte-JSON-Map
+# neben d64_dism.py. Bei fehlender/beschaedigter JSON bleibt die bisherige
+# Stage-392-Tabelle als sicherer Fallback erhalten.
+C64_PETSCII_MAP_FILENAME = "C64Pro.petscii.json"
+
+
+def _parse_c64_petscii_map_byte(key) -> int:
+    if isinstance(key, bool):
+        raise ValueError("Bool ist kein PETSCII-Byte")
+    text = str(key).strip()
+    if text.startswith("$"):
+        result = int(text[1:], 16)
+    elif text.lower().startswith("0x"):
+        result = int(text, 16)
+    else:
+        result = int(text, 10)
+    if not 0 <= result <= 255:
+        raise ValueError(f"PETSCII-Byte ausserhalb 0..255: {key}")
+    return result
+
+
+def _parse_c64_petscii_unicode(value) -> int:
+    if isinstance(value, bool):
+        raise ValueError("Bool ist kein Unicode-Codepoint")
+    if isinstance(value, int):
+        result = value
+    else:
+        text = str(value).strip()
+        if text.upper().startswith("U+"):
+            result = int(text[2:], 16)
+        elif text.lower().startswith("0x"):
+            result = int(text, 16)
+        else:
+            raise ValueError(f"Erwarte U+XXXX oder 0xXXXX: {value!r}")
+    if not (0 <= result <= 0x10FFFF) or 0xD800 <= result <= 0xDFFF:
+        raise ValueError(f"Ungueltiger Unicode-Codepoint: {value}")
+    return result
+
+
+def load_c64_petscii_unicode_map(path: Optional[Path] = None) -> Dict[int, int]:
+    """Laedt eine 256-Eintraege-Tabelle; bei Problemen unveraenderte Defaults.
+
+    JSON-Key: Byte als 0x00..0xFF oder 0..255; Wert: U+XXXX.
+    Unvollstaendige/duplizierte Maps werden verworfen, nie still gemischt.
+    """
+    fallback = _build_c64_petscii_to_c64pro_codepoint()
+    if path is None:
+        # Im PyInstaller-onedir-Build bleibt die editierbare Map neben der EXE.
+        # Im normalen Python-Start liegt sie neben d64_dism.py.
+        base = (
+            Path(sys.executable).resolve().parent
+            if getattr(sys, "frozen", False)
+            else Path(__file__).resolve().parent
+        )
+        path = base / C64_PETSCII_MAP_FILENAME
+    try:
+        with Path(path).open("r", encoding="utf-8-sig") as stream:
+            document = json.load(stream)
+        entries = document["petscii_to_unicode"]
+        if not isinstance(entries, dict):
+            raise ValueError("petscii_to_unicode muss ein Objekt sein")
+        result = {}
+        for key, value in entries.items():
+            byte = _parse_c64_petscii_map_byte(key)
+            if byte in result:
+                raise ValueError(f"Mehrfacher PETSCII-Byte-Key: {byte:02X}")
+            result[byte] = _parse_c64_petscii_unicode(value)
+        if set(result) != set(range(256)):
+            raise ValueError("Die PETSCII-Map muss alle 256 Bytes enthalten")
+        return result
+    except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
+        print(f"C64 PETSCII MAP: {path}: {exc}; verwende interne Tabelle")
+        return fallback
+
+
 C64_PETSCII_TO_C64PRO_CODEPOINT: Dict[int, int] = (
-    _build_c64_petscii_to_c64pro_codepoint()
+    load_c64_petscii_unicode_map()
 )
 
 # Unicode-Zeichen-Map fuer die eigentliche QPainter-Ausgabe.
@@ -32739,6 +32863,12 @@ VICE_BINARY_MONITOR_MEMORY_SET = 0x02
 VICE_BINARY_MONITOR_KEYBOARD_FEED = 0x72
 VICE_BINARY_MONITOR_PING = 0x81
 VICE_BINARY_MONITOR_EXIT = 0xAA
+# Stage 395: official VICE binary monitor commands (API v2).
+VICE_BINARY_MONITOR_REGISTERS_AVAILABLE = 0x83
+VICE_BINARY_MONITOR_REGISTERS_SET = 0x32
+VICE_BINARY_MONITOR_REGISTER_INFO = 0x31
+VICE_BINARY_MONITOR_ADVANCE_INSTRUCTIONS = 0x71
+VICE_BINARY_MONITOR_RESOURCE_SET = 0x52
 
 
 class ViceBinaryMonitorError(RuntimeError):
@@ -32775,8 +32905,16 @@ def c64_basic_text_to_petscii(text: str) -> bytes:
     robuste Upper/Graphics-PETSCII-Teilmenge abgebildet; der Compilerpfad wird
     dadurch nicht beruehrt.
     """
+    # Im C64-BASIC-Editor sind TABs ein reines Layoutzeichen. Die VICE-
+    # Tastatur-API erwartet dagegen PETSCII und kann Unicode TAB (U+0009)
+    # nicht als druckbaren Text entgegennehmen. Nur den Uebertragungsstrom
+    # normalisieren, niemals den Editorinhalt oder die BASIC-Datei aendern.
+    # Ein Leerzeichen haelt lange REM-Zeilen moeglichst kurz (C64: 80 Zeichen).
     output = bytearray()
     for char in str(text or ""):
+        if char == "\t":
+            output.append(0x20)
+            continue
         codepoint = ord(char)
         if 0xE000 <= codepoint <= 0xE0FF:
             output.append(codepoint - 0xE000)
@@ -32909,7 +33047,10 @@ class ViceBinaryMonitorClient:
                 )
             return body
 
-    def command(self, command_type: int, body: bytes = b"") -> bytes:
+    def command(
+        self, command_type: int, body: bytes = b"", *,
+        response_type: Optional[int] = None,
+    ) -> bytes:
         self.connect()
         payload = bytes(body)
         request_id = self._request_id & 0xFFFFFFFF
@@ -32927,7 +33068,8 @@ class ViceBinaryMonitorClient:
             raise ViceBinaryMonitorError(
                 f"VICE Binary Monitor: Senden fehlgeschlagen ({exc})"
             ) from exc
-        return self._read_response(request_id, int(command_type) & 0xFF)
+        expected_type = command_type if response_type is None else response_type
+        return self._read_response(request_id, int(expected_type) & 0xFF)
 
     def ping(self) -> None:
         self.command(VICE_BINARY_MONITOR_PING)
@@ -33038,6 +33180,18 @@ class ViceBinaryMonitorClient:
             address, bytes((int(value) & 0xFF,)), side_effects=True
         )
 
+    def load_sprite_resource(self, address: int, data: bytes) -> None:
+        """Uebertraegt die bereits dekodierten Host-Sprites in den C64-RAM.
+
+        Keine PRG-Ladeadresse als Nutzdaten und kein Grafikmoduswechsel:
+        Sprite-Pointer/Enable/Farben kontrolliert weiterhin das BASIC-Programm.
+        """
+        address = int(address)
+        payload = bytes(data)
+        if not payload or len(payload) % 64 or address % 64 or address + len(payload) > 0x10000:
+            raise ViceBinaryMonitorError('LOAD SPRITE: ungueltige Adresse oder Sprite-Datenlaenge.')
+        self.write_memory(address, payload)
+
     def load_screen_resource(
         self,
         kind: str,
@@ -33079,6 +33233,53 @@ class ViceBinaryMonitorClient:
             f"Unbekannte LOAD-SCREEN-Ressourcenart fuer VICE: {kind!r}."
         )
 
+    def set_vice_resource(self, name: str, value) -> None:
+        """Set VICE resource through the binary remote monitor API v2."""
+        encoded_name = name.encode('ascii')
+        if not 1 <= len(encoded_name) <= 255:
+            raise ViceBinaryMonitorError('Ungueltiger VICE-Ressourcenname.')
+        if isinstance(value, int):
+            kind, payload = 1, struct.pack('<i', value)
+        else:
+            kind, payload = 0, str(value).encode('utf-8')
+        if not 0 <= len(payload) <= 255:
+            raise ViceBinaryMonitorError(
+                'VICE-Ressourcenwert ist zu lang (maximal 255 Bytes).'
+            )
+        self.command(
+            VICE_BINARY_MONITOR_RESOURCE_SET,
+            bytes((kind, len(encoded_name))) + encoded_name + bytes((len(payload),)) + payload,
+        )
+
+    def configure_virtual_drive8(self, directory: Path) -> None:
+        """Expose staged sprites through VICE's KERNAL filesystem traps.
+
+        - FileSystemDevice8 selects the host directory as backend.
+        - TrapDevice8 (VICE >= 3.10) / VirtualDevice8 (older VICE)
+          enables KERNAL traps. BusDevice8/IECDevice8 are NOT equivalent.
+        - True Drive Emulation must not intercept the LOAD request.
+        """
+        directory = Path(directory).resolve()
+        if not directory.is_dir():
+            raise ViceBinaryMonitorError(
+                f'VICE Laufwerk 8: Verzeichnis fehlt: {directory}'
+            )
+        self.set_vice_resource('FSDevice8Dir', str(directory))
+        self.set_vice_resource('FileSystemDevice8', 1)
+        self.set_vice_resource('FSDevice8HideCBMFiles', 0)
+        self.set_vice_resource('Drive8TrueEmulation', 0)
+        for name in ('TrapDevice8', 'VirtualDevice8'):
+            try:
+                self.set_vice_resource(name, 1)
+                return
+            except ViceBinaryMonitorError:
+                continue
+        raise ViceBinaryMonitorError(
+            'VICE Laufwerk 8: Weder TrapDevice8 noch VirtualDevice8 '
+            'wird unterstuetzt. KERNAL LOAD kann das Hostverzeichnis '
+            'nicht erreichen. Bitte VICE-Version/Konfiguration pruefen.'
+        )
+
     def keyboard_feed(self, petscii: bytes) -> None:
         data = bytes(petscii)
         if len(data) > 255:
@@ -33097,6 +33298,71 @@ class ViceBinaryMonitorClient:
         data = c64_basic_text_to_petscii(str(text).rstrip("\r\n") + "\r")
         self.keyboard_feed(data)
         self.resume()
+
+    def set_program_counter(self, address: int) -> None:
+        """Findet die VICE-Register-ID fuer PC dynamisch (keine feste ID)."""
+        address = int(address)
+        if not 0 <= address <= 0xFFFF:
+            raise ViceBinaryMonitorError("VICE-PC muss im Bereich $0000..$FFFF liegen.")
+        listing = self.command(VICE_BINARY_MONITOR_REGISTERS_AVAILABLE, b"\x00")
+        if len(listing) < 2:
+            raise ViceBinaryMonitorError("VICE meldet keine CPU-Register.")
+        count = struct.unpack_from("<H", listing)[0]
+        pos = 2
+        pc_id = None
+        for _ in range(count):
+            if pos >= len(listing):
+                raise ViceBinaryMonitorError("VICE-Registerliste ist abgeschnitten.")
+            size = listing[pos]
+            end = pos + 1 + size
+            if size < 3 or end > len(listing):
+                raise ViceBinaryMonitorError("VICE-Registereintrag ist ungueltig.")
+            name_length = listing[pos + 3]
+            if 3 + name_length > size:
+                raise ViceBinaryMonitorError("VICE-Registername ist ungueltig.")
+            name = listing[pos + 4:pos + 4 + name_length].decode(
+                "ascii", "replace"
+            ).strip().casefold()
+            if name == "pc":
+                pc_id = listing[pos + 1]
+                break
+            pos = end
+        if pc_id is None:
+            raise ViceBinaryMonitorError("VICE meldet kein PC-Register fuer die Haupt-CPU.")
+        body = b"\x00" + struct.pack("<H", 1) + bytes((3, pc_id)) + struct.pack("<H", address)
+        self.command(
+            VICE_BINARY_MONITOR_REGISTERS_SET,
+            body,
+            response_type=VICE_BINARY_MONITOR_REGISTER_INFO,
+        )
+
+    def advance_instructions(self, count: int, *, step_over: bool = True) -> None:
+        """Fuehrt count CPU-Instruktionen aus und haelt danach im Monitor."""
+        count = int(count)
+        if not 1 <= count <= 0xFFFF:
+            raise ViceBinaryMonitorError("VICE erwartet 1..65535 Instruktionen.")
+        self.command(
+            VICE_BINARY_MONITOR_ADVANCE_INSTRUCTIONS,
+            bytes((1 if step_over else 0,)) + struct.pack("<H", count),
+        )
+
+
+def c64_vice_prg_memory_image(prg: bytes, entry_address: int) -> Tuple[int, bytes, int]:
+    """Entfernt den PRG-Loadheader und validiert den 64-KiB-RAM-Bereich."""
+    raw = bytes(prg)
+    if len(raw) < 3:
+        raise ViceBinaryMonitorError("C64-PRG besitzt keinen Ladeheader oder keine Nutzdaten.")
+    load_address = int.from_bytes(raw[:2], "little")
+    payload = raw[2:]
+    if load_address + len(payload) > 0x10000:
+        raise ViceBinaryMonitorError(
+            "C64-PRG ueberlaeuft den 16-Bit-Adressraum: "
+            f"${load_address:04X} + {len(payload)} Bytes."
+        )
+    entry = int(entry_address)
+    if not 0 <= entry <= 0xFFFF:
+        raise ViceBinaryMonitorError("Ungueltige C64-Einsprungadresse.")
+    return load_address, payload, entry
 
 
 # ---------------------------------------------------------------------------
@@ -47463,7 +47729,7 @@ def detect_d64_layout(file_size: int) -> Tuple[int, int, bool]:
 # ---------------------------------------------------------------------------
 # Konvertiert die für D64-Namen übliche PETSCII-Teilmenge.
 # ---------------------------------------------------------------------------
-def petscii_to_text(data: bytes) -> str:
+def petscii_to_text(data: bytes, *, strip_padding: bool = True) -> str:
     result = []
     for value in data:
         if value in (0x00, 0xA0):
@@ -47476,7 +47742,8 @@ def petscii_to_text(data: bytes) -> str:
             result.append(chr(value - 0x80))
         else:
             result.append("·")
-    return "".join(result).rstrip()
+    decoded = "".join(result)
+    return decoded.rstrip() if strip_padding else decoded
 
 
 @dataclass(frozen=True)
@@ -47805,6 +48072,18 @@ PROJECT_PASCAL_TABLE_SECTIONS: Dict[str, str] = {
     "pe64": "Category.pascal.pe64.tables",
 }
 
+# Stage 404: Neue Sprite-Dateien sind echte 63/64-Byte-VIC-II-Rohdaten.
+# Historische .c64sprite-JSON-Dateien werden ausschliesslich zum Import gelesen.
+# Stage 416: 16-Farben-Bitmap-Sprites getrennt vom VIC-II-Rohsprite-Format.
+from c64_bitmap_sprite_editor import C64BitmapSpriteEditorDialog
+from c64_sprite_codec import (
+    default_sprite_meta, normalize_meta, normalize_palette,
+    synchronize_shared_sprite_colors, vicii_sprite_color_registers,
+    sprite_pixel, set_sprite_pixel,
+    decode_raw_sprites, encode_raw_sprites,
+    palette_from_bytes, save_document, load_document,
+)
+
 # Stage 150: Microsoft-Windows-Ressourcen sind fuer alle Windows-faehigen
 # Sprachzweige zielgebunden. Die Dateien bleiben .rc/.res-Projektressourcen;
 # der interne Compiler kann daraus standardkonforme COFF32-/COFF64-Objekte
@@ -47816,6 +48095,38 @@ PROJECT_WINDOWS_RESOURCE_EXTENSIONS: Tuple[str, ...] = (".rc", ".res")
 PROJECT_NODE_WINDOWS_TARGET = "windows_target"
 PROJECT_NODE_RESOURCE_ROOT = "windows_resource_root"
 PROJECT_NODE_RESOURCE_FILE = "windows_resource_file"
+# Stage 387: separate C64-Zielzweige und BASIC-Ressourcen (keine Windows-RC-Dateien).
+PROJECT_NODE_C64_TARGET = "c64_target"
+PROJECT_NODE_C64_SOURCE_FILE = "c64_source_file"
+PROJECT_NODE_C64_RESOURCE_ROOT = "c64_resource_root"
+PROJECT_NODE_C64_RESOURCE_FILE = "c64_resource_file"
+PROJECT_C64_RESOURCE_ENTRY_KEY = "__basic_c64_resources__"
+PROJECT_C64_RESOURCE_SECTION = "Category.basic.c64.resources"
+# Stage 396: eigenstaendiger Projektknoten fuer C64-Sprite-Projekte.
+PROJECT_NODE_C64_SPRITES_ROOT = "c64_sprites_root"
+PROJECT_NODE_C64_SPRITE_FILE = "c64_sprite_file"
+PROJECT_C64_SPRITES_ENTRY_KEY = "__c64_sprites__"
+PROJECT_C64_SPRITES_SECTION = "Category.c64.sprites"
+PROJECT_C64_SPRITE_EXTENSIONS = (".spr", ".sprite", ".bin", ".c64sprite", ".bmsprite", ".bmspr")
+PROJECT_C64_SOURCE_KEYS = {
+    language: f"__{language}_c64_sources__" for language in ("assembler", "pascal", "c")
+}
+PROJECT_C64_SOURCE_SECTIONS = {
+    language: f"Category.{language}.c64" for language in PROJECT_C64_SOURCE_KEYS
+}
+# Der Dateityp wird beim Hinzufuegen explicit gespeichert: .bin ist nicht eindeutig.
+PROJECT_C64_RESOURCE_TYPES = {
+    "palettes": ("Paletten", (".pal", ".palette", ".bin"), "C64-Paletten (*.pal *.palette *.bin)"),
+    "sprites": ("Sprites", (".spr", ".sprite", ".bin", ".c64sprite"), "C64-Sprites (*.spr *.sprite *.bin *.c64sprite)"),
+    "pixel_screens": ("Pixel-Screens", (".px16", ".pixel", ".pix", ".bin"), "C64-Pixel-Screens (*.px16 *.pixel *.pix *.bin)"),
+    "text_screens": ("Text-Screens", (".scr", ".screen", ".bin", ".json"), "C64-Text-Screens (*.scr *.screen *.bin *.json)"),
+    "character_maps": ("Zeichen Maps", (".chr", ".charset", ".rom", ".bin"), "C64-Zeichen Maps (*.chr *.charset *.rom *.bin)"),
+}
+PROJECT_C64_SOURCE_EXTENSIONS = {
+    "assembler": (".asm", ".s", ".a65", ".inc"),
+    "pascal": (".pas", ".pp"),
+    "c": (".c", ".h"),
+}
 PROJECT_WINDOWS_RESOURCE_ENTRY_KEYS: Dict[Tuple[str, str], str] = {
     (language, target): f"__{language}_{target}_resources__"
     for language in PROJECT_WINDOWS_RESOURCE_LANGUAGES
@@ -48186,22 +48497,55 @@ PROJECT_C64_OPTIMIZER_PROFILES = {
     "68000": {
         "enabled_key": "__c64_68000_optimizer_enabled__",
         "strategy_key": "__c64_68000_optimizer_strategy__",
+        "sta_reducer_key": "__c64_68000_sta_reducer__",
+        "call_reducer_key": "__c64_68000_call_reducer__",
         "section": "Settings.C64.68000.Compiler.Optimizer",
+    },
+    "68010": {
+        "enabled_key": "__c64_68010_optimizer_enabled__",
+        "strategy_key": "__c64_68010_optimizer_strategy__",
+        "sta_reducer_key": "__c64_68010_sta_reducer__",
+        "call_reducer_key": "__c64_68010_call_reducer__",
+        "section": "Settings.C64.68010.Compiler.Optimizer",
     },
     "68020": {
         "enabled_key": "__c64_68020_optimizer_enabled__",
         "strategy_key": "__c64_68020_optimizer_strategy__",
+        "sta_reducer_key": "__c64_68020_sta_reducer__",
+        "call_reducer_key": "__c64_68020_call_reducer__",
         "section": "Settings.C64.68020.Compiler.Optimizer",
     },
     "68030": {
         "enabled_key": "__c64_68030_optimizer_enabled__",
         "strategy_key": "__c64_68030_optimizer_strategy__",
+        "sta_reducer_key": "__c64_68030_sta_reducer__",
+        "call_reducer_key": "__c64_68030_call_reducer__",
         "section": "Settings.C64.68030.Compiler.Optimizer",
     },
 }
 PROJECT_C64_OPTIMIZER_STRATEGIES = (
     "direct", "inline_pointer", "string_thunk", "auto"
 )
+
+# Stage 400: projektbezogene Auswahl des C64-BASIC-Dialekts.
+# Die Einstellung wird gespeichert, die Simon-BASIC-Compilererweiterung
+# ist davon getrennt und wird hier absichtlich noch nicht aktiviert.
+PROJECT_C64_BASIC_DIALECT_PROFILES = {
+    profile: {
+        "dialect_key": f"__c64_{profile}_basic_dialect__",
+        "section": f"Settings.C64.{profile}.Compiler.BASIC",
+    }
+    for profile in ("68000", "68010", "68020", "68030")
+}
+PROJECT_C64_BASIC_DIALECTS = ("basic_v2", "simon_basic")
+
+
+def _normalize_project_c64_basic_dialect(value: str) -> str:
+    name = str(value or "basic_v2").strip().casefold().replace("-", "_").replace(" ", "_")
+    if name in ("simon", "simons", "simons_basic", "simon_basic"):
+        return "simon_basic"
+    return "basic_v2"
+
 
 # Stage ASM 50: C64 Self-Extracting Image Packer. Auto ist ausschließlich
 # eine explizite Projekteinstellung; RLE/LZ werden nie wegen der Dateigröße
@@ -48214,7 +48558,7 @@ PROJECT_C64_PACKER_PROFILES = {
         "include_decruncher_source_key": f"__c64_{profile}_packer_include_decruncher_source__",
         "section": f"Settings.C64.{profile}.Compiler.ImagePacker",
     }
-    for profile in ("68000", "68020", "68030")
+    for profile in ("68000", "68010", "68020", "68030")
 }
 PROJECT_C64_PACKER_MODES = ("none", "rle", "lz", "auto")
 PROJECT_C64_PACKER_SEARCH_MODES = ("fast", "balanced", "maximum")
@@ -48228,7 +48572,7 @@ PROJECT_C64_ENVIRONMENT_PROFILES = {
         "keyboard_layout_key": f"__c64_{profile}_keyboard_layout__",
         "section": f"Settings.C64.{profile}.Environment",
     }
-    for profile in ("68000", "68020", "68030")
+    for profile in ("68000", "68010", "68020", "68030")
 }
 PROJECT_C64_KEYBOARD_LAYOUTS = ("qwertz", "qwerty")
 
@@ -48245,7 +48589,7 @@ PROJECT_C64_SPEECH_PROFILES = {
         "port_key": f"__c64_{profile}_speech_port__",
         "section": f"Settings.C64.{profile}.Environment.SpeechOutput",
     }
-    for profile in ("68000", "68020", "68030")
+    for profile in ("68000", "68010", "68020", "68030")
 }
 PROJECT_C64_SPEECH_MODES = ("internal_samples", "internal_phoneme", "vice_streaming")
 PROJECT_C64_SPEECH_SAMPLE_RATES = (4000, 8000)
@@ -48531,6 +48875,10 @@ def empty_project_entries() -> Dict[str, List[Dict[str, str]]]:
     # hält diese Hierarchie in der *.pro-Datei getrennt von normalen C-Dateien.
     entries[PROJECT_C_ARCHIVES_KEY] = []
     entries[PROJECT_PROLOG_KNOWLEDGE_KEY] = []
+    entries[PROJECT_C64_RESOURCE_ENTRY_KEY] = []
+    entries[PROJECT_C64_SPRITES_ENTRY_KEY] = []
+    for _key in PROJECT_C64_SOURCE_KEYS.values():
+        entries[_key] = []
     entries[PROJECT_BREAKPOINTS_KEY] = []
     entries[PROJECT_BOOKMARKS_KEY] = []
     # Stage ASM 63: Arbeitsverzeichnis (Pfadfeld/current_directory) und
@@ -48600,9 +48948,13 @@ def empty_project_entries() -> Dict[str, List[Dict[str, str]]]:
         )
     }]
     entries[PROJECT_C64_OPTIMIZER_ACTIVE_PROFILE_KEY] = [{"value": "68000"}]
+    for _profile_settings in PROJECT_C64_BASIC_DIALECT_PROFILES.values():
+        entries[_profile_settings["dialect_key"]] = [{"value": "basic_v2"}]
     for _profile_settings in PROJECT_C64_OPTIMIZER_PROFILES.values():
         entries[_profile_settings["enabled_key"]] = [{"value": "true"}]
         entries[_profile_settings["strategy_key"]] = [{"value": "direct"}]
+        entries[_profile_settings["sta_reducer_key"]] = [{"value": "false"}]
+        entries[_profile_settings["call_reducer_key"]] = [{"value": "false"}]
     for _profile_settings in PROJECT_C64_PACKER_PROFILES.values():
         entries[_profile_settings["enabled_key"]] = [{"value": "false"}]
         entries[_profile_settings["mode_key"]] = [{"value": "none"}]
@@ -48894,6 +49246,39 @@ def format_project_ini(
                 ensure_ascii=False,
                 separators=(",", ":"),
             )
+    # Stage 387: C64-Assets gehoeren exklusiv zu BASIC -> Commodore C= 64.
+    parser[PROJECT_C64_RESOURCE_SECTION] = {"Title": "C64 Ressourcen"}
+    for index, entry in enumerate(entries.get(PROJECT_C64_RESOURCE_ENTRY_KEY, ()), 1):
+        kind = str(entry.get("kind", "")).strip().casefold()
+        path = str(entry.get("path", "")).strip()
+        if kind not in PROJECT_C64_RESOURCE_TYPES or not path:
+            continue
+        payload = {"title": str(entry.get("title", "") or Path(path).name),
+                   "path": _project_storage_path(path, project_path), "kind": kind}
+        parser[PROJECT_C64_RESOURCE_SECTION][f"Item{index:04d}"] = json.dumps(
+            payload, ensure_ascii=False, separators=(",", ":"))
+    parser[PROJECT_C64_SPRITES_SECTION] = {"Title": "C= 64 Sprites"}
+    sprite_index = 0
+    for sprite_entry in entries.get(PROJECT_C64_SPRITES_ENTRY_KEY, ()):
+        sprite_path = str(sprite_entry.get("path", "")).strip()
+        if not sprite_path:
+            continue  # ungespeicherte Blätter sind nicht als Phantomdatei persistent
+        sprite_index += 1
+        parser[PROJECT_C64_SPRITES_SECTION][f"Item{sprite_index:04d}"] = json.dumps(
+            {"title": str(sprite_entry.get("title", "") or Path(sprite_path).name),
+             "path": _project_storage_path(sprite_path, project_path)},
+            ensure_ascii=False, separators=(",", ":"))
+    for language, entry_key in PROJECT_C64_SOURCE_KEYS.items():
+        section = PROJECT_C64_SOURCE_SECTIONS[language]
+        parser[section] = {"Title": f"Commodore C= 64 ({language})"}
+        for index, entry in enumerate(entries.get(entry_key, ()), 1):
+            path = str(entry.get("path", "")).strip()
+            if path:
+                parser[section][f"Item{index:04d}"] = json.dumps({
+                    "title": str(entry.get("title", "") or Path(path).name),
+                    "path": _project_storage_path(path, project_path),
+                }, ensure_ascii=False, separators=(",", ":"))
+
     # Stage ASM 29: dBase-Unterknoten außer Programme separat speichern.
     for _role, _title, _extensions, _entry_key in PROJECT_DBASE_GROUPS:
         if _entry_key == "dbase":
@@ -49330,6 +49715,19 @@ def format_project_ini(
             "Title": f"C=64 {_profile} Compiler Optimizer",
             "Enabled": "true" if _enabled else "false",
             "Strategy": _strategy,
+            "STAReducer": "true" if _project_bool_entry(entries, _profile_settings["sta_reducer_key"], False) else "false",
+            "CALLReducer": "true" if _project_bool_entry(entries, _profile_settings["call_reducer_key"], False) else "false",
+        }
+
+    # Stage 400: BASIC-Dialekt per C64-Profil dauerhaft speichern.
+    for _profile, _settings in PROJECT_C64_BASIC_DIALECT_PROFILES.items():
+        _stored = entries.get(_settings["dialect_key"], ())
+        _dialect = _normalize_project_c64_basic_dialect(
+            _stored[0].get("value", "basic_v2") if _stored else "basic_v2"
+        )
+        parser[_settings["section"]] = {
+            "Title": f"C=64 {_profile} BASIC Dialekt",
+            "Dialect": _dialect,
         }
 
     # Stage ASM 60: C64-Umgebung / optionale Bildschirmtastatur und Layout.
@@ -49581,6 +49979,56 @@ def parse_project_ini(text: str, project_path: Path) -> Dict[str, List[Dict[str,
                     "path": loaded_path,
                 }
             )
+
+    # Stage 387: eigene Projektabschnitte; aeltere Projekte besitzen sie nicht.
+    for section, entry_key, is_resource in (
+        [(PROJECT_C64_RESOURCE_SECTION, PROJECT_C64_RESOURCE_ENTRY_KEY, True)]
+        + [(PROJECT_C64_SOURCE_SECTIONS[language], key, False)
+           for language, key in PROJECT_C64_SOURCE_KEYS.items()]
+    ):
+        if not parser.has_section(section):
+            continue
+        for name, raw in sorted(parser.items(section), key=lambda pair: pair[0].casefold()):
+            if not name.casefold().startswith("item"):
+                continue
+            try:
+                payload = json.loads(raw)
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            path = str(payload.get("path", "")).strip()
+            kind = str(payload.get("kind", "")).strip().casefold()
+            if not path or (is_resource and kind not in PROJECT_C64_RESOURCE_TYPES):
+                continue
+            restored = _project_loaded_path(path, Path(project_path))
+            entry = {"title": str(payload.get("title", "") or Path(restored).name),
+                     "path": restored}
+            if is_resource:
+                entry["kind"] = kind
+            entries[entry_key].append(entry)
+
+    # Stage 396: C64-Sprite-Blätter eigenständig laden; alte .pro bleiben gültig.
+    if parser.has_section(PROJECT_C64_SPRITES_SECTION):
+        for item_name, raw in sorted(parser.items(PROJECT_C64_SPRITES_SECTION),
+                                     key=lambda pair: pair[0].casefold()):
+            if not item_name.casefold().startswith("item"):
+                continue
+            try:
+                payload = json.loads(raw)
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            path_text = str(payload.get("path", "")).strip()
+            if not path_text:
+                continue
+            restored = _project_loaded_path(path_text, Path(project_path))
+            if Path(restored).suffix.casefold() in PROJECT_C64_SPRITE_EXTENSIONS:
+                entries[PROJECT_C64_SPRITES_ENTRY_KEY].append({
+                    "title": str(payload.get("title", "") or Path(restored).name),
+                    "path": restored,
+                })
 
     # Stage ASM 29: dBase-Ressourcen aus den festen Unterknoten laden.
     for _role, _title, _extensions, _entry_key in PROJECT_DBASE_GROUPS:
@@ -50104,6 +50552,27 @@ def parse_project_ini(text: str, project_path: Path) -> Dict[str, List[Dict[str,
             {"value": "true" if _enabled else "false"}
         ]
         entries[_profile_settings["strategy_key"]] = [{"value": _strategy}]
+        entries[_profile_settings["sta_reducer_key"]] = [{
+            "value": "true" if _parse_project_bool(
+                parser.get(_section, "STAReducer", fallback="false"), False
+            ) else "false"
+        }]
+        entries[_profile_settings["call_reducer_key"]] = [{
+            "value": "true" if _parse_project_bool(
+                parser.get(_section, "CALLReducer", fallback="false"), False
+            ) else "false"
+        }]
+
+    # Stage 400: BASIC-Dialekt aus bestehenden Projektdateien lesen;
+    # fehlt der Abschnitt, bleibt die Voreinstellung BASIC V2 erhalten.
+    for _profile, _settings in PROJECT_C64_BASIC_DIALECT_PROFILES.items():
+        _section = _settings["section"]
+        if parser.has_section(_section):
+            entries[_settings["dialect_key"]] = [{
+                "value": _normalize_project_c64_basic_dialect(
+                    parser.get(_section, "Dialect", fallback="basic_v2")
+                )
+            }]
 
     # Stage ASM 60: C64-Umgebung / Bildschirmtastatur und Layout laden.
     for _profile, _profile_settings in PROJECT_C64_ENVIRONMENT_PROFILES.items():
@@ -56564,7 +57033,7 @@ def run_gui(
                 rel = self.file_path
             return str(rel).replace("\\", "/")
 
-    class ResourceBuilderToolWindow(QDialog):
+    class ResourceBuilderToolWindow(QWidget):
         FILTERS = {
             "ALL" : None,
             "ICO" : [".ico"],
@@ -60872,6 +61341,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
         # Stage 232: Debugbefehle des C64-BASIC-Editors an den VICE
         # Binary Remote Monitor weiterreichen.
         basic_vice_requested = pyqtSignal(str)
+        assembler_vice_requested = pyqtSignal(str)
         find_requested = pyqtSignal(object)
         find_next_requested = pyqtSignal(object)
         breakpoints_changed = pyqtSignal()
@@ -60903,6 +61373,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             # QTextBlock user data. They are painted in the gutter and are
             # materialized only when the file is saved/compiled.
             self._basic_line_number_mode = False
+            self._c64_assembler_vice_menu_enabled = False
             self._basic_line_update_guard = False
             self._basic_gutter_font = None
             self._basic_first_overflow_block = -1
@@ -61097,7 +61568,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
 
         def load_basic_editor_source(self, source: str) -> None:
             from c64basic.editor_model import (
-                assign_missing_basic_numbers,
+                reconcile_basic_line_numbering,
                 split_numbered_basic_source,
                 wrap_basic_lines,
             )
@@ -61109,7 +61580,9 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 numbers,
                 max_columns=self._basic_max_columns,
             )
-            numbers = assign_missing_basic_numbers(numbers)
+            lines, numbers, _ = reconcile_basic_line_numbering(
+                lines, numbers, max_columns=self._basic_max_columns
+            )
 
             self._basic_line_update_guard = True
             try:
@@ -61275,17 +61748,61 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
         def _basic_reconcile_line_numbers(self) -> None:
             if not self._basic_line_number_mode:
                 return
-            from c64basic.editor_model import assign_missing_basic_numbers
+            from c64basic.editor_model import (
+                C64BasicLineNumberError,
+                assign_missing_basic_numbers,
+                reconcile_basic_line_numbering,
+            )
 
             blocks = []
             numbers = []
+            lines = []
             block = self.document().firstBlock()
             while block.isValid():
                 blocks.append(block)
+                lines.append(block.text())
                 numbers.append(self._basic_block_line_number(block))
                 block = block.next()
 
-            assigned = assign_missing_basic_numbers(numbers)
+            try:
+                updated_lines, assigned, _mapping = reconcile_basic_line_numbering(
+                    lines, numbers, max_columns=self._basic_max_columns
+                )
+            except C64BasicLineNumberError:
+                # Genuine overflow (> 65535 lines) or an 80-column violation
+                # remains visible in red; it must never corrupt source text.
+                updated_lines = lines
+                assigned = assign_missing_basic_numbers(numbers)
+
+            if updated_lines != lines:
+                # Rewrite only branch references affected by renumbering.
+                # Do not setPlainText(): that would discard undo history,
+                # current cursor, breakpoints and QTextBlock metadata.
+                previous_guard = self._basic_line_update_guard
+                self._basic_line_update_guard = True
+                previous_cursor = QTextCursor(self.textCursor())
+                edit = QTextCursor(self.document())
+                edit.beginEditBlock()
+                try:
+                    for index in range(len(lines) - 1, -1, -1):
+                        if lines[index] == updated_lines[index]:
+                            continue
+                        block = self.document().findBlockByNumber(index)
+                        edit.setPosition(block.position())
+                        edit.setPosition(
+                            block.position() + len(block.text()), QTextCursor.KeepAnchor
+                        )
+                        edit.insertText(updated_lines[index])
+                finally:
+                    edit.endEditBlock()
+                    self._basic_line_update_guard = previous_guard
+                self.setTextCursor(previous_cursor)
+                blocks = []
+                block = self.document().firstBlock()
+                while block.isValid():
+                    blocks.append(block)
+                    block = block.next()
+
             overflow_blocks = []
             for index, (block, number) in enumerate(zip(blocks, assigned)):
                 data = block.userData()
@@ -62487,63 +63004,66 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 QTimer.singleShot(0, self._update_instruction_help)
 
         def contextMenuEvent(self, event) -> None:
-            operand_context = self._assembler_operand_context_at_point(
-                event.pos()
-            )
+            operand_context = self._assembler_operand_context_at_point(event.pos())
             standard_menu = self.createStandardContextMenu()
+            is_basic = bool(self._basic_line_number_mode)
+            is_asm = bool(
+                self._c64_assembler_vice_menu_enabled
+                and self._assembler_target == "c64"
+                and not is_basic
+            )
 
-            if self._basic_line_number_mode:
-                # Stage 232: Der VICE-Debugblock wird VOR das unveraenderte
-                # Standardmenue (Cut/Copy/Paste/...) gesetzt. Die zweite
-                # Separatorlinie trennt ihn klar vom Qt-Standardmenue.
+            if is_basic or is_asm:
+                # Stage 395: gleiche VICE-Kommandostruktur fuer BASIC und ASM.
+                # Der oberste Eintrag "Ausfuehren" ist jetzt selbst auswaehlbar.
                 menu = QMenu(self)
-                heading = menu.addAction("Ausführen")
-                heading.setEnabled(False)
-                heading_font = QFont(heading.font())
+                run_action = menu.addAction("Ausführen")
+                heading_font = QFont(run_action.font())
                 heading_font.setBold(True)
-                heading.setFont(heading_font)
+                run_action.setFont(heading_font)
                 menu.addSeparator()
 
                 line_action = menu.addAction("Zeile in VICE ausführen")
                 selection_action = menu.addAction("Auswahl in VICE ausführen")
                 program_action = menu.addAction("Programm an VICE übertragen")
-                run_action = menu.addAction("Programm übertragen + RUN")
-                reset_action = menu.addAction("VICE BASIC zurücksetzen")
-
-                line_action.setToolTip(
-                    "Debug: aktuelle BASIC-Zeile ueber VICE Binary Remote Monitor ausfuehren"
+                program_run_action = menu.addAction(
+                    "Programm übertragen + START" if is_asm
+                    else "Programm übertragen + RUN"
                 )
-                selection_action.setToolTip(
-                    "Debug: markierten BASIC-Text ueber VICE Binary Remote Monitor ausfuehren"
-                )
-                program_action.setToolTip(
-                    "Debug: nummeriertes BASIC-Programm ueber Keyboard Feed nach VICE uebertragen"
-                )
-                run_action.setToolTip(
-                    "Debug: BASIC-Programm uebertragen und danach RUN senden"
-                )
-                reset_action.setToolTip(
-                    "Debug: NEW an den BASIC-Interpreter in VICE senden"
+                reset_action = menu.addAction(
+                    "VICE Monitor fortsetzen" if is_asm
+                    else "VICE BASIC zurücksetzen"
                 )
 
                 line_action.setEnabled(bool(self.textCursor().block().text().strip()))
                 selection_action.setEnabled(self.textCursor().hasSelection())
-
-                line_action.triggered.connect(
-                    lambda checked=False: self.basic_vice_requested.emit("line")
+                emitter = (
+                    self.assembler_vice_requested if is_asm
+                    else self.basic_vice_requested
                 )
-                selection_action.triggered.connect(
-                    lambda checked=False: self.basic_vice_requested.emit("selection")
-                )
-                program_action.triggered.connect(
-                    lambda checked=False: self.basic_vice_requested.emit("program")
-                )
-                run_action.triggered.connect(
-                    lambda checked=False: self.basic_vice_requested.emit("program_run")
-                )
-                reset_action.triggered.connect(
-                    lambda checked=False: self.basic_vice_requested.emit("reset")
-                )
+                for action, operation in (
+                    (run_action, "run" if is_asm else "program_run"),
+                    (line_action, "line"),
+                    (selection_action, "selection"),
+                    (program_action, "program"),
+                    (program_run_action, "run" if is_asm else "program_run"),
+                    (reset_action, "resume" if is_asm else "reset"),
+                ):
+                    action.triggered.connect(
+                        lambda checked=False, op=operation, sig=emitter: sig.emit(op)
+                    )
+                if is_asm:
+                    line_action.setToolTip("Assemblierte Instruktion in VICE einzeln ausführen; danach im Monitor anhalten")
+                    selection_action.setToolTip("Markierte MOS6510-Instruktionen in VICE schrittweise ausführen")
+                    program_action.setToolTip("Erzeugte PRG-Nutzbytes direkt in den C64-RAM übertragen")
+                    program_run_action.setToolTip("PRG-Bytes übertragen, PC auf den Einsprung setzen und C64 starten")
+                    reset_action.setToolTip("VICE-Monitor verlassen und CPU-Lauf fortsetzen")
+                else:
+                    line_action.setToolTip("Aktuelle BASIC-Zeile über VICE Binary Remote Monitor ausführen")
+                    selection_action.setToolTip("Markierten BASIC-Text über VICE Binary Remote Monitor ausführen")
+                    program_action.setToolTip("BASIC-Programm über Keyboard Feed nach VICE übertragen")
+                    program_run_action.setToolTip("BASIC-Programm übertragen und danach RUN senden")
+                    reset_action.setToolTip("NEW an den BASIC-Interpreter in VICE senden")
 
                 menu.addSeparator()
                 for action in standard_menu.actions():
@@ -63197,7 +63717,597 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                         )
 
 
-    class C64CharacterEditorDialog(QDialog):
+    # Stage 396: dockbarer VIC-II-Sprite-Builder mit 16-Farben-Palette.
+    # C64-Rohsprites bleiben hardwarekonform 63/64 Bytes pro 24x21 Bitmap.
+    class C64SpriteCanvas(QWidget):
+        pixelsChanged = pyqtSignal()
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.sprite_data = bytearray(63)
+            self.meta = default_sprite_meta()
+            self.palette_entries = [list(entry) for entry in C64_CHARACTER_PALETTE]
+            self.zoom = 18
+            self.brush = 1
+            self.drawing_value = None
+            self.setMouseTracking(True)
+            self.setCursor(Qt.CrossCursor)
+            self._resize_canvas()
+
+        def _pixel_size(self):
+            x_factor = (2 if self.meta['mode'] == 'multicolor' else 1)
+            return (self.zoom * x_factor * (2 if self.meta['expand_x'] else 1),
+                    self.zoom * (2 if self.meta['expand_y'] else 1))
+
+        def _resize_canvas(self):
+            dx, dy = self._pixel_size()
+            self.setFixedSize(self.meta['width'] * dx + 1,
+                              self.meta['height'] * dy + 1)
+            self.update()
+
+        def set_data(self, data, meta=None):
+            self.sprite_data = bytearray(bytes(data)[:63].ljust(63, b'\0'))
+            if meta is not None:
+                self.meta = normalize_meta(meta)
+            self._resize_canvas()
+
+        def set_palette(self, palette):
+            self.palette_entries = normalize_palette(palette)
+            self.update()
+
+        def set_color_registers(self, meta):
+            """Farben live übernehmen, ohne Bitmap oder Rastergröße zu verändern.
+
+            set_data()/set_meta() normalisieren in eine *eigene* Metadatenkopie.
+            Farbänderungen am Editor-Modell müssen deshalb ausdrücklich in die
+            Zeichenfläche übertragen werden, sonst bleiben Pixel alte Farben.
+            """
+            for key in ('sprite_color', 'multicolor_1', 'multicolor_2'):
+                self.meta[key] = int(meta[key])
+            self.update()
+
+        def set_meta(self, meta):
+            self.meta = normalize_meta(meta)
+            self._resize_canvas()
+
+        def set_zoom(self, zoom):
+            self.zoom = max(4, min(32, int(zoom)))
+            self._resize_canvas()
+
+        def _at(self, point):
+            dx, dy = self._pixel_size()
+            x, y = point.x() // dx, point.y() // dy
+            if 0 <= x < self.meta['width'] and 0 <= y < self.meta['height']:
+                return x, y
+            return None
+
+        def _draw(self, point):
+            pos = self._at(point)
+            if pos is None or self.drawing_value is None:
+                return
+            x, y = pos
+            value = self.brush if self.drawing_value else 0
+            if set_sprite_pixel(self.sprite_data, x, y, value, self.meta['mode']):
+                self.pixelsChanged.emit()
+                self.update()
+
+        def mousePressEvent(self, event):
+            if event.button() not in (Qt.LeftButton, Qt.RightButton):
+                return
+            self.drawing_value = event.button() == Qt.LeftButton
+            self._draw(event.pos())
+
+        def mouseMoveEvent(self, event):
+            if self.drawing_value is not None:
+                self._draw(event.pos())
+
+        def mouseReleaseEvent(self, event):
+            self.drawing_value = None
+
+        def paintEvent(self, event):
+            painter = QPainter(self)
+            painter.fillRect(self.rect(), QColor('#1A2134'))
+            dx, dy = self._pixel_size()
+            colors = self.palette_entries
+            keys = ('background', 'multicolor_1', 'sprite_color', 'multicolor_2')
+            for y in range(self.meta['height']):
+                for x in range(self.meta['width']):
+                    value = sprite_pixel(self.sprite_data, x, y, self.meta['mode'])
+                    if value == 0:
+                        color = QColor('#333C51' if (x+y) % 2 else '#46536B')
+                    else:
+                        key = keys[value] if self.meta['mode'] == 'multicolor' else 'sprite_color'
+                        color = QColor(colors[self.meta[key]][1])
+                    painter.fillRect(x * dx + 1, y * dy + 1,
+                                     max(1, dx - 1), max(1, dy - 1), color)
+            painter.end()
+
+
+    class C64SpriteEditorDialog(QWidget):
+        """Stage 396: dockbarer C64-Sprite-Builder (HiRes/Multicolor).
+
+        Die 16 Palettefarben sind waehbar, jedoch hat ein VIC-II-HiRes-Sprite
+        nur EINE Deckfarbe und ein Multicolor-Sprite DREI Deckfarben.
+        Neue Dokumente werden als originale VIC-II-Binaerdaten in .spr
+        gespeichert (64 Bytes je Sprite, optionaler 63-Byte-Import/Export).
+        Alte .c64sprite-JSON-Dateien bleiben als Importquelle lesbar,
+        werden beim Speichern jedoch in .spr umgewandelt.
+        """
+        def __init__(self, parent, *, initial_directory: Path, initial_path=None):
+            super().__init__(parent)
+            self.setObjectName('c64_sprite_builder')
+            self.setWindowTitle('C64 Sprite Builder')
+            self.initial_directory = Path(initial_directory)
+            self.current_path = None
+            self.record_size = 64
+            self.sprites = [bytearray(64)]
+            self.metas = [default_sprite_meta()]
+            self.palette_entries = [list(entry) for entry in C64_CHARACTER_PALETTE]
+            self.modified = False
+            self._updating_controls = False
+            self._build_ui()
+            self._switch_sprite(1)
+            if initial_path is not None:
+                QTimer.singleShot(0, lambda: self.load_file(Path(initial_path)))
+
+        def _build_ui(self):
+            outer = QVBoxLayout(self)
+            outer.setContentsMargins(8, 8, 8, 8)
+            file_bar = QHBoxLayout()
+            self.new_button = QPushButton('Neues Sprite', self)
+            self.load_button = QPushButton('Öffnen …', self)
+            self.save_button = QPushButton('Speichern', self)
+            self.save_as_button = QPushButton('Speichern unter …', self)
+            self.palette_load_button = QPushButton('Palette laden …', self)
+            for button in (self.new_button, self.load_button, self.save_button,
+                           self.save_as_button, self.palette_load_button):
+                file_bar.addWidget(button)
+            file_bar.addStretch(1)
+            outer.addLayout(file_bar)
+            self.path_label = QLabel('Neues Sprite (.spr) – noch nicht gespeichert', self)
+            self.path_label.setWordWrap(True)
+            self.path_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            outer.addWidget(self.path_label)
+
+            content = QHBoxLayout()
+            outer.addLayout(content, 1)
+            scroll = QScrollArea(self)
+            scroll.setObjectName('c64_sprite_canvas_scroll')
+            scroll.setWidgetResizable(False)
+            scroll.setAlignment(Qt.AlignCenter)
+            scroll.setMinimumSize(220, 190)
+            scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            self.canvas = C64SpriteCanvas(scroll)
+            scroll.setWidget(self.canvas)
+            content.addWidget(scroll, 1)
+
+            controls_widget = QWidget(self)
+            controls_widget.setMaximumWidth(345)
+            controls_widget.setMinimumWidth(255)
+            side = QVBoxLayout(controls_widget)
+            side.setContentsMargins(4, 0, 4, 0)
+            content.addWidget(controls_widget, 0)
+
+            properties = QGroupBox('Sprite-Einstellungen', controls_widget)
+            form = QFormLayout(properties)
+            self.sprite_number = QSpinBox(properties)
+            self.sprite_number.setRange(1, 1)
+            form.addRow('Sprite-Nr.:', self.sprite_number)
+            self.mode_combo = QComboBox(properties)
+            self.mode_combo.addItems(['HiRes (24 × 21)', 'Multicolor (12 × 21)'])
+            form.addRow('VIC-II-Modus:', self.mode_combo)
+            self.width_spin = QSpinBox(properties)
+            self.width_spin.setRange(1, 24)
+            self.height_spin = QSpinBox(properties)
+            self.height_spin.setRange(1, 21)
+            form.addRow('Rasterbreite:', self.width_spin)
+            form.addRow('Rasterhöhe:', self.height_spin)
+            self.expand_x_box = QCheckBox('Horizontal 2×', properties)
+            self.expand_y_box = QCheckBox('Vertikal 2×', properties)
+            form.addRow('C64-Größe:', self.expand_x_box)
+            form.addRow('', self.expand_y_box)
+            self.zoom_spin = QSpinBox(properties)
+            self.zoom_spin.setRange(4, 32)
+            self.zoom_spin.setValue(18)
+            self.zoom_spin.setSuffix(' px')
+            form.addRow('Editor-Zoom:', self.zoom_spin)
+            side.addWidget(properties)
+
+            colors_box = QGroupBox('16 C64-Palettenfarben', controls_widget)
+            colors_layout = QVBoxLayout(colors_box)
+            colors_layout.addWidget(QLabel(
+                'Jede der 16 Farben kann einem VIC-II-Farbregister zugeordnet werden.',
+                colors_box))
+            brush_row = QFormLayout()
+            self.brush_combo = QComboBox(colors_box)
+            self.brush_combo.setToolTip(
+                'Wähle den Hardware-Pixelwert, den die linke Maustaste ins Sprite zeichnet. '
+                'Rechtsklick zeichnet transparent.')
+            brush_row.addRow('Zeichnen mit:', self.brush_combo)
+            colors_layout.addLayout(brush_row)
+
+            # Hardware-Farbregister: $D025/$D026 global, $D027+n pro Sprite.
+            # Jede Combo bietet 0..15; die Bitmaps selbst bleiben 1 bzw. 2 bpp.
+            register_form = QFormLayout()
+            self.color_register_combos = {}
+            for key, label in (
+                ('multicolor_1', 'MC 1 · $D025 (alle Sprites):'),
+                ('sprite_color', 'Sprite · $D027 + Nr.:'),
+                ('multicolor_2', 'MC 2 · $D026 (alle Sprites):'),
+            ):
+                combo = QComboBox(colors_box)
+                combo.setObjectName('c64_sprite_' + key + '_register')
+                combo.setToolTip('Hardware-Farbregister: C64-Farbwert von 0 bis 15')
+                combo.currentIndexChanged.connect(
+                    lambda value, role=key: self._register_color_changed(role, value))
+                self.color_register_combos[key] = combo
+                register_form.addRow(label, combo)
+            colors_layout.addLayout(register_form)
+            colors_layout.addWidget(QLabel(
+                'Multicolor: vier Pixelwerte (transparent, MC 1, Sprite, MC 2). '
+                'MC 1 und MC 2 sind für alle 8 C64-Sprites gemeinsam.', colors_box))
+            colors_layout.addWidget(QLabel(
+                'Palette für den oben ausgewählten Zeichenwert festlegen:', colors_box))
+            palette_grid = QGridLayout()
+            self.palette_buttons = []
+            for i in range(16):
+                button = QPushButton(str(i), colors_box)
+                button.setFixedHeight(29)
+                button.setMinimumWidth(33)
+                button.clicked.connect(lambda _checked=False, index=i: self._palette_clicked(index))
+                palette_grid.addWidget(button, i // 4, i % 4)
+                self.palette_buttons.append(button)
+            colors_layout.addLayout(palette_grid)
+            side.addWidget(colors_box)
+            self.info_label = QLabel(
+                'Echte C64-Hardware: HiRes = 1 Farbe; Multicolor = 3 Farben '
+                'aus der 16er-Palette (plus transparent).\n'
+                'Originaldateien (.spr/.bin): 63/64 Bytes pro Sprite. '
+                'Palette, Farbregister und Modus sind keine Bitmap-Daten und '
+                'werden nicht mitgespeichert.\n'
+                'Rechtsklick auf das Raster löscht Pixel.', controls_widget)
+            self.info_label.setWordWrap(True)
+            side.addWidget(self.info_label)
+            side.addStretch(1)
+
+            self.new_button.clicked.connect(self.add_sprite)
+            self.load_button.clicked.connect(self.load_dialog)
+            self.palette_load_button.clicked.connect(self.load_palette_dialog)
+            self.save_button.clicked.connect(self.save)
+            self.save_as_button.clicked.connect(self.save_as)
+            self.sprite_number.valueChanged.connect(self._switch_sprite)
+            self.mode_combo.currentIndexChanged.connect(self._mode_changed)
+            for widget in (self.width_spin, self.height_spin, self.zoom_spin):
+                widget.valueChanged.connect(self._controls_changed)
+            self.expand_x_box.toggled.connect(self._controls_changed)
+            self.expand_y_box.toggled.connect(self._controls_changed)
+            self.brush_combo.currentIndexChanged.connect(self._brush_changed)
+            self.canvas.pixelsChanged.connect(self._pixels_changed)
+            self._update_palette_buttons()
+
+        def _mark_modified(self, state=True):
+            self.modified = bool(state)
+            self.setWindowTitle('C64 Sprite Builder' + (' *' if self.modified else ''))
+
+        def _current_index(self):
+            return max(0, self.sprite_number.value() - 1)
+
+        def _current_meta(self):
+            return self.metas[self._current_index()]
+
+        def _register_color_changed(self, key, index):
+            """Assign one of 16 VIC-II colours to a REAL hardware register."""
+            if self._updating_controls or not 0 <= index <= 15:
+                return
+            self._set_vicii_color(key, index)
+
+        def _set_vicii_color(self, key, index):
+            meta = self._current_meta()
+            changed = False
+            if key in ('multicolor_1', 'multicolor_2'):
+                # $D025/$D026 are globally shared; no per-sprite MC palettes!
+                changed = synchronize_shared_sprite_colors(
+                    self.metas, **{key: index})
+            elif meta[key] != index:
+                meta[key] = index
+                changed = True
+            if changed:
+                self._mark_modified()
+            self._update_palette_buttons()
+
+        def _update_palette_buttons(self):
+            current = self._current_meta() if self.metas else default_sprite_meta()
+            role = self.brush_combo.currentIndex()
+            role_map = (None, 'multicolor_1', 'sprite_color', 'multicolor_2')
+            brush_key = (('sprite_color' if role == 1 else None)
+                         if current['mode'] == 'hires'
+                         else role_map[role] if 0 <= role <= 3 else None)
+            selected = current[brush_key] if brush_key else -1
+            for i, button in enumerate(self.palette_buttons):
+                name, color = self.palette_entries[i]
+                rgb = QColor(color)
+                text_color = '#111111' if rgb.lightness() >= 130 else '#FFFFFF'
+                button.setText(str(i))
+                button.setToolTip(f'{i}: {name} ({color}) – als Hardwarefarbe verwenden')
+                border = '3px solid #E8A643' if i == selected else '1px solid #727E91'
+                button.setStyleSheet(
+                    f'QPushButton{{background:{color};color:{text_color};border:{border};}}')
+            for key, combo in self.color_register_combos.items():
+                # Updating palette labels must never fire a colour-change signal.
+                combo.blockSignals(True)
+                try:
+                    combo.clear()
+                    for i, (name, rgb) in enumerate(self.palette_entries):
+                        combo.addItem(f'{i:02d} · {name}')
+                        combo.setItemData(i, QColor(rgb), Qt.DecorationRole)
+                    combo.setCurrentIndex(current[key])
+                    combo.setEnabled(
+                        current['mode'] == 'multicolor' or key == 'sprite_color')
+                finally:
+                    combo.blockSignals(False)
+
+            # "Zeichnen mit" zeigt ab sofort die tatsächliche Registerfarbe.
+            # Der Index bleibt der 1-/2-Bit-Hardware-Pixelwert (kein RGB-Wert).
+            for i in range(self.brush_combo.count()):
+                key = (('sprite_color' if i == 1 else None)
+                       if current['mode'] == 'hires'
+                       else role_map[i] if 0 <= i < len(role_map) else None)
+                if key is None:
+                    self.brush_combo.setItemData(i, QColor('#46536B'), Qt.DecorationRole)
+                    self.brush_combo.setItemData(i, 'Transparent (Pixelwert 0)', Qt.ToolTipRole)
+                else:
+                    number = current[key]
+                    name, rgb = self.palette_entries[number]
+                    self.brush_combo.setItemData(i, QColor(rgb), Qt.DecorationRole)
+                    self.brush_combo.setItemData(
+                        i, f'{name} (Farbe {number}, {rgb}) – Register {key}',
+                        Qt.ToolTipRole)
+
+            self.canvas.set_palette(self.palette_entries)
+            # Stage 398: Frühere Version aktualisierte nur die *Palette*.
+            # Die Canvas-Metadaten waren nach einem Registerwechsel veraltet!
+            self.canvas.set_color_registers(current)
+
+        def _palette_clicked(self, index):
+            meta = self._current_meta()
+            if meta['mode'] == 'hires':
+                # Eine gewählte Farbe soll direkt als Zeichenfarbe nutzbar sein,
+                # selbst wenn zuvor "Transparent" als Pinsel eingestellt war.
+                if self.brush_combo.currentIndex() == 0:
+                    self.brush_combo.setCurrentIndex(1)
+                key = 'sprite_color'
+            else:
+                role = self.brush_combo.currentIndex()
+                if role == 0:
+                    # Transparent has no colour register. Select sprite colour.
+                    self.brush_combo.setCurrentIndex(2)
+                    role = 2
+                key = (None, 'multicolor_1', 'sprite_color', 'multicolor_2')[role]
+            self._set_vicii_color(key, index)
+
+        def _brush_changed(self, _index=None):
+            role = self.brush_combo.currentIndex()
+            self.canvas.brush = (1 if self._current_meta()['mode'] == 'hires'
+                                 else role)
+            self._update_palette_buttons()
+
+        def _switch_sprite(self, number):
+            index = int(number) - 1
+            if not 0 <= index < len(self.sprites):
+                return
+            meta = self.metas[index]
+            self._updating_controls = True
+            try:
+                mode = meta['mode']
+                self.mode_combo.setCurrentIndex(1 if mode == 'multicolor' else 0)
+                self.width_spin.setMaximum(12 if mode == 'multicolor' else 24)
+                self.width_spin.setValue(meta['width'])
+                self.height_spin.setValue(meta['height'])
+                self.expand_x_box.setChecked(meta['expand_x'])
+                self.expand_y_box.setChecked(meta['expand_y'])
+                self.brush_combo.clear()
+                self.brush_combo.addItems(
+                    ['Transparent', 'Multicolor 1', 'Spritefarbe', 'Multicolor 2']
+                    if mode == 'multicolor' else ['Transparent', 'Spritefarbe'])
+                self.brush_combo.setCurrentIndex(2 if mode == 'multicolor' else 1)
+                self.canvas.set_data(self.sprites[index], meta)
+                self.canvas.brush = 2 if mode == 'multicolor' else 1
+                self.canvas.set_zoom(self.zoom_spin.value())
+            finally:
+                self._updating_controls = False
+            self._update_palette_buttons()
+
+        def _mode_changed(self, _index=None):
+            if self._updating_controls:
+                return
+            meta = self._current_meta()
+            mode = 'multicolor' if self.mode_combo.currentIndex() == 1 else 'hires'
+            if mode != meta['mode']:
+                meta['mode'] = mode
+                meta['width'] = min(meta['width'], 12 if mode == 'multicolor' else 24)
+                self._mark_modified()
+            self._switch_sprite(self.sprite_number.value())
+
+        def _controls_changed(self, _value=None):
+            if self._updating_controls:
+                return
+            meta = self._current_meta()
+            new = {'width': self.width_spin.value(), 'height': self.height_spin.value(),
+                   'expand_x': self.expand_x_box.isChecked(),
+                   'expand_y': self.expand_y_box.isChecked()}
+            if any(meta[k] != v for k, v in new.items()):
+                meta.update(new)
+                self._mark_modified()
+            self.canvas.set_meta(meta)
+            self.canvas.set_zoom(self.zoom_spin.value())
+
+        def _pixels_changed(self):
+            self.sprites[self._current_index()][:63] = self.canvas.sprite_data
+            self._mark_modified()
+
+        def _confirm_discard(self):
+            if not self.modified:
+                return True
+            answer = QMessageBox.question(
+                self, 'Ungespeicherte Sprites', 'Sprite-Projekt wurde geändert. Speichern?',
+                QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
+                QMessageBox.Save)
+            if answer == QMessageBox.Cancel:
+                return False
+            return answer != QMessageBox.Save or self.save()
+
+        def add_sprite(self):
+            self.sprites.append(bytearray(self.record_size))
+            new_meta = default_sprite_meta()
+            if self.metas:
+                for key in ('multicolor_1', 'multicolor_2'):
+                    new_meta[key] = self.metas[0][key]
+            self.metas.append(new_meta)
+            self.sprite_number.setMaximum(len(self.sprites))
+            self.sprite_number.setValue(len(self.sprites))
+            self._mark_modified()
+
+        def new_sprite_document(self):
+            """Neue unabhängige 24x21-Sprite-Datei ohne Dateipfad starten."""
+            self.sprites = [bytearray(64)]
+            self.metas = [default_sprite_meta()]
+            self.record_size = 64
+            self.palette_entries = [list(entry) for entry in C64_CHARACTER_PALETTE]
+            self.current_path = None
+            self.sprite_number.setMaximum(1)
+            self.sprite_number.setValue(1)
+            self._switch_sprite(1)
+            self._update_palette_buttons()
+            self.path_label.setText("Neues Sprite (.spr) – noch nicht gespeichert")
+            self._c64_sprite_tree_item = None
+            self._mark_modified(False)
+
+        def load_palette_dialog(self):
+            start = str(self.initial_directory)
+            filename, _filter = QFileDialog.getOpenFileName(
+                self, 'C64-Palette laden', start,
+                'C64-Paletten (*.pal *.palette *.bin);;Alle Dateien (*.*)')
+            if filename:
+                self.load_palette(Path(filename))
+
+        def load_palette(self, path):
+            try:
+                palette = palette_from_bytes(Path(path).read_bytes(),
+                                             [name for name, _color in C64_CHARACTER_PALETTE])
+            except (OSError, ValueError) as exc:
+                QMessageBox.critical(self, 'C64-Palette', str(exc))
+                return False
+            self.palette_entries = palette
+            self._update_palette_buttons()
+            self._mark_modified()
+            return True
+
+        def load_dialog(self):
+            if not self._confirm_discard():
+                return
+            start = str(self.current_path.parent if self.current_path else self.initial_directory)
+            filename, _filter = QFileDialog.getOpenFileName(
+                self, 'C64-Sprites laden (VIC-II-Binärformat)', start,
+                'C64-Sprites (*.spr *.sprite *.bin);;'
+                'Alte Sprite-Projekte – nur Import (*.c64sprite);;Alle Dateien (*.*)')
+            if filename:
+                self.load_file(Path(filename), already_confirmed=True)
+
+        def load_file(self, path: Path, already_confirmed=False):
+            if not already_confirmed and not self._confirm_discard():
+                return False
+            try:
+                path = Path(path).expanduser().resolve()
+                if path.suffix.casefold() == '.c64sprite':
+                    sprites, metas, palette, record_size = load_document(path)
+                else:
+                    sprites, record_size = decode_raw_sprites(path.read_bytes())
+                    metas = [default_sprite_meta() for _ in sprites]
+                    palette = [list(entry) for entry in C64_CHARACTER_PALETTE]
+            except (OSError, ValueError, KeyError, TypeError, UnicodeError) as exc:
+                QMessageBox.critical(self, 'Sprite-Datei konnte nicht geladen werden', str(exc))
+                return False
+            self.sprites = sprites
+            self.metas = metas
+            self.record_size = record_size
+            self.palette_entries = palette
+            self.current_path = path
+            self.initial_directory = path.parent
+            self.sprite_number.setMaximum(len(sprites))
+            self.sprite_number.setValue(1)
+            self._switch_sprite(1)
+            if path.suffix.casefold() == '.c64sprite':
+                self.path_label.setText(
+                    f'{path} – älteres JSON-Projekt geladen; '
+                    'nächstes Speichern erfolgt als binäre .spr-Datei')
+            else:
+                self.path_label.setText(f'{path} – {len(sprites)} Sprite(s) (VIC-II-Rohdaten)')
+            self._mark_modified(False)
+            owner = getattr(self, "project_owner", None)
+            if owner is not None:
+                owner._register_c64_sprite_editor_file(self, path)
+            return True
+
+        def save(self):
+            # .c64sprite war in Stage 396 ein JSON-Container. Niemals wieder
+            # JSON schreiben: bestehende Altdateien nur lesen und nach .spr
+            # konvertieren, ohne das Original zu überschreiben.
+            if (self.current_path is None or
+                    self.current_path.suffix.casefold() == '.c64sprite'):
+                return self.save_as()
+            try:
+                if self.current_path.suffix.casefold() not in ('.spr', '.sprite', '.bin'):
+                    raise ValueError('Für Hardware-Sprites sind nur .spr, .sprite oder .bin erlaubt')
+                data = encode_raw_sprites(self.sprites, self.record_size)
+                self.current_path.write_bytes(data)
+            except (OSError, ValueError, TypeError) as exc:
+                QMessageBox.critical(self, 'C64-Sprites speichern', str(exc))
+                return False
+            self.path_label.setText(
+                f'{self.current_path} – {len(self.sprites)} Sprite(s), '
+                f'{self.record_size} Bytes/Sprite (VIC-II-Binärformat)')
+            self._mark_modified(False)
+            owner = getattr(self, 'project_owner', None)
+            if owner is not None:
+                owner._register_c64_sprite_editor_file(self, self.current_path)
+                # Bestehender Ressourcen-Zweig bleibt kompatibel.
+                owner._add_project_c64_resource_entry('sprites', self.current_path)
+            return True
+
+        def save_as(self):
+            start = (self.current_path.with_suffix('.spr')
+                     if self.current_path else self.initial_directory / 'sprites.spr')
+            filename, selected_filter = QFileDialog.getSaveFileName(
+                self, 'VIC-II-Sprites als Binärdatei speichern', str(start),
+                'C64 Sprite-Rohdaten (*.spr);;'
+                'Sprite-Rohdaten (*.sprite);;Binärdateien (*.bin)')
+            if not filename:
+                return False
+            path = Path(filename)
+            if not path.suffix:
+                extension = ('.sprite' if '*.sprite' in selected_filter
+                             else '.bin' if '*.bin' in selected_filter else '.spr')
+                path = path.with_suffix(extension)
+            if path.suffix.casefold() not in ('.spr', '.sprite', '.bin'):
+                QMessageBox.critical(
+                    self, 'Ungültiges Sprite-Dateiformat',
+                    'Bitte .spr, .sprite oder .bin wählen. '
+                    'Das frühere .c64sprite-JSON-Format ist nur noch lesbar.')
+                return False
+            old = self.current_path
+            self.current_path = path.expanduser().resolve()
+            if not self.save():
+                self.current_path = old
+                return False
+            return True
+
+        def closeEvent(self, event):
+            if self._confirm_discard():
+                event.accept()
+            else:
+                event.ignore()
+
+    class C64CharacterEditorDialog(QWidget):
         def __init__(
             self,
             parent: QWidget,
@@ -63208,7 +64318,6 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             super().__init__(parent)
             self.setObjectName("c64_character_editor_dialog")
             self.setWindowTitle("C64 Character-Editor")
-            self.setModal(False)
             self.resize(1120, 760)
 
             self.initial_directory = Path(initial_directory)
@@ -63780,7 +64889,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 event.ignore()
 
 
-    class C64PaletteEditorDialog(QDialog):
+    class C64PaletteEditorDialog(QWidget):
         def __init__(
             self,
             parent: QWidget,
@@ -63791,7 +64900,6 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             super().__init__(parent)
             self.setObjectName("c64_palette_editor_dialog")
             self.setWindowTitle("C64 Paletten-Editor")
-            self.setModal(False)
             self.resize(900, 650)
 
             self.initial_directory = Path(initial_directory)
@@ -64439,7 +65547,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.update()
 
 
-    class C64TextScreenEditorDialog(QDialog):
+    class C64TextScreenEditorDialog(QWidget):
         def __init__(
             self,
             parent: QWidget,
@@ -64450,7 +65558,6 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             super().__init__(parent)
             self.setObjectName("c64_text_screen_editor_dialog")
             self.setWindowTitle("C64 Text-Bildschirm-Editor")
-            self.setModal(False)
             self.resize(1280, 820)
             self.initial_directory = Path(initial_directory)
             self.current_path = None
@@ -65058,7 +66165,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.update()
 
 
-    class C64PixelScreenEditorDialog(QDialog):
+    class C64PixelScreenEditorDialog(QWidget):
         TOOL_NAMES = (
             ("Pencil", "Stift"),
             ("Eraser", "Radierer"),
@@ -65080,7 +66187,6 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             super().__init__(parent)
             self.setObjectName("c64_pixel_screen_editor_dialog")
             self.setWindowTitle("C64 Pixel-Bildschirm-Editor")
-            self.setModal(False)
             self.resize(1320, 860)
             self.initial_directory = Path(initial_directory)
             self.current_path = None
@@ -65517,6 +66623,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
 
             self._data = bytearray()
             self._modified = False
+            self._read_only = False  # Stage 393: erzeugtes Programm, keine Quelle
             self._cursor_index = 0
             self._active_nibble = 0
             self._selection_anchor = None
@@ -65548,6 +66655,10 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
 
         def data(self) -> bytes:
             return bytes(self._data)
+
+        def set_read_only(self, read_only: bool) -> None:
+            self._read_only = bool(read_only)
+            self.viewport().update()
 
         def set_data(self, data: bytes, *, modified: bool = False) -> None:
             self._data = bytearray(data)
@@ -66089,6 +67200,8 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 )
 
         def cut_selection(self) -> None:
+            if self._read_only:
+                return
             selection = self._selection_range()
             if selection is None:
                 return
@@ -66105,6 +67218,8 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.dataChanged.emit()
 
         def paste_bytes(self) -> None:
+            if self._read_only:
+                return
             pasted = self._parse_clipboard_bytes(
                 QApplication.clipboard().text()
             )
@@ -66134,6 +67249,8 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
         # Ersetzt genau ein Byte und synchronisiert beide Ansichten.
         # ---------------------------------------------------------------
         def _replace_byte(self, index: int, byte_value: int) -> None:
+            if self._read_only:
+                return
             if index < 0 or index >= len(self._data):
                 return
 
@@ -66185,15 +67302,17 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             save_as_action = menu.addAction("Speichern unter...")
 
             copy_action.setEnabled(selection_exists)
-            cut_action.setEnabled(selection_exists)
+            cut_action.setEnabled(selection_exists and not self._read_only)
             paste_action.setEnabled(
-                bool(
+                not self._read_only and bool(
                     self._parse_clipboard_bytes(
                         QApplication.clipboard().text()
                     )
                 )
             )
-            petscii_action.setEnabled(byte_index is not None)
+            petscii_action.setEnabled(byte_index is not None and not self._read_only)
+            save_action.setEnabled(not self._read_only)
+            save_as_action.setEnabled(not self._read_only)
 
             copy_action.triggered.connect(self.copy_selection)
             cut_action.triggered.connect(self.cut_selection)
@@ -66232,6 +67351,8 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.viewport().update()
 
         def _replace_nibble(self, digit: int) -> None:
+            if self._read_only:
+                return
             if not self._data:
                 self._data.append(0)
                 self._cursor_index = 0
@@ -67915,6 +69036,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
         build_generated_requested = pyqtSignal(object)
         # Stage 232: VICE-BASIC-Debugaktion inklusive zugehoerigem Dokument.
         basic_vice_requested = pyqtSignal(object, str)
+        assembler_vice_requested = pyqtSignal(object, str)
         find_requested = pyqtSignal(object, object)
         find_next_requested = pyqtSignal(object, object)
         # Stage ASM 58: C64-BASIC-Gutter vollstaendig neu nummerieren und
@@ -67969,6 +69091,8 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.encoding                = encoding
             self.newline                 = newline
             self._syncing_views          = False
+            self._hex_build_preview_path: Optional[Path] = None
+            self._hex_build_input_bytes: Optional[bytes] = None
             self.binary_disassembly_mode = bool(binary_disassembly_mode)
             # Stage 256: .prg-Dateien werden unabhängig vom Öffnungsweg als
             # C64-Binärprogramme behandelt. Der Rohdaten-Tab zeigt das
@@ -68183,6 +69307,9 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.raw_editor.basic_vice_requested.connect(
                 lambda operation: self.basic_vice_requested.emit(self, operation)
             )
+            self.raw_editor.assembler_vice_requested.connect(
+                lambda operation: self.assembler_vice_requested.emit(self, operation)
+            )
             self.raw_editor.find_requested.connect(
                 lambda editor: self.find_requested.emit(self, editor)
             )
@@ -68192,6 +69319,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.raw_editor.breakpoints_changed.connect(
                 self._source_breakpoints_changed
             )
+            self.raw_editor._c64_assembler_vice_menu_enabled = self.is_assembler_document
             if self.effective_suffix in self.BASIC_EXTENSIONS:
                 self.raw_editor.set_basic_editor_mode(
                     True,
@@ -69781,7 +70909,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 # already write the same numbered representation that will be
                 # shown in the BASIC gutter immediately after the save.
                 from c64basic.editor_model import (
-                    assign_missing_basic_numbers,
+                    reconcile_basic_line_numbering,
                     serialize_numbered_basic_source,
                     split_numbered_basic_source,
                     wrap_basic_lines,
@@ -69790,7 +70918,9 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                     self.raw_editor.toPlainText()
                 )
                 lines, numbers = wrap_basic_lines(lines, numbers, max_columns=80)
-                numbers = assign_missing_basic_numbers(numbers)
+                lines, numbers, _ = reconcile_basic_line_numbering(
+                    lines, numbers, max_columns=80
+                )
                 return serialize_numbered_basic_source(
                     lines, numbers, newline=self.newline
                 )
@@ -69806,6 +70936,10 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             return self.raw_editor.toPlainText()
 
         def data_for_saving(self, target_suffix: Optional[str] = None) -> bytes:
+            if self._hex_build_preview_path is not None:
+                if self.binary_disassembly_mode and self._data_source == "hex":
+                    return bytes(self._hex_build_input_bytes or b"")
+                return self.text_for_saving(target_suffix).encode(self.encoding)
             if self._data_source == "hex":
                 return self.hex_editor.data()
             return self.text_for_saving(target_suffix).encode(self.encoding)
@@ -69856,6 +70990,18 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
         def _raw_text_changed(self) -> None:
             if self._syncing_views:
                 return
+            # Ein Build-Snapshot ist nur gueltig bis zur naechsten Quellaenderung.
+            if self._hex_build_preview_path is not None and self.binary_disassembly_mode:
+                # Die angezeigten Ausgabe-Bytes sind niemals die Eingabedatei.
+                if self._hex_build_input_bytes is not None:
+                    self._syncing_views = True
+                    try:
+                        self.hex_editor.set_data(self._hex_build_input_bytes, modified=False)
+                    finally:
+                        self._syncing_views = False
+            self._hex_build_preview_path = None
+            self._hex_build_input_bytes = None
+            self.hex_editor.set_read_only(False)
             self.invalidate_assembly_result("Quelltext geändert")
             # Stage 78: beim dokumentierten Binary-Disassembly ist der
             # Rohdaten-Tab eine bearbeitbare ASM-Sicht auf unveraenderte
@@ -69909,8 +71055,41 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                     "Assemblercode geändert"
                 )
 
+        def show_assembled_hex_bytes(self, data: bytes, path: Path) -> None:
+            """Stage 393: zeigt die erzeugte Programmdatei, NICHT Quelltext-Bytes.
+
+            Die Hex-Ansicht ist fuer Build-Ergebnisse bewusst read-only. Andere
+            Tabs, der Speichermodus und der Modifiziert-Status bleiben gleich.
+            """
+            if self._hex_build_preview_path is None:
+                self._hex_build_input_bytes = (
+                    self.hex_editor.data()
+                    if self.binary_disassembly_mode and self._data_source == "hex"
+                    else None
+                )
+            self._hex_build_preview_path = Path(path).resolve()
+            self._syncing_views = True
+            try:
+                self.hex_editor.set_data(bytes(data), modified=False)
+                self.hex_editor.set_read_only(True)
+                self.hex_editor.verticalScrollBar().setValue(0)
+                self.hex_editor.horizontalScrollBar().setValue(0)
+                self.hex_editor._cursor_index = 0
+                self.hex_editor.viewport().update()
+            finally:
+                self._syncing_views = False
+            index = self.views.indexOf(self.hex_editor)
+            if index >= 0:
+                # Stage 394: Hex-Daten aktualisieren, aber den aktiven Editor
+                # (ASM/BASIC) und dessen Tastaturfokus nicht wechseln.
+                self.views.setTabVisible(index, True)
+            self.hex_editor.setToolTip(
+                f"Erzeugtes Programm (schreibgeschuetzt): {path}\n"
+                f"{len(data)} Bytes; PETSCII-Map: {C64_PETSCII_MAP_FILENAME}"
+            )
+
         def _hex_data_changed(self) -> None:
-            if self._syncing_views:
+            if self._syncing_views or self._hex_build_preview_path is not None:
                 return
             data = self.hex_editor.data()
 
@@ -70000,6 +71179,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 self._syncing_build_target = False
 
             self.raw_editor.set_assembler_target(normalized)
+            self.raw_editor._c64_assembler_vice_menu_enabled = self.is_assembler_document
             self.generated_assembly_editor.set_assembler_target(normalized)
             self.raw_editor.set_amiga_profile(
                 self.amiga_cpu_model, self.amiga_fpu_model
@@ -70931,7 +72111,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
 
             try:
                 with redirect_stdout(standard_output), redirect_stderr(error_output):
-                    exit_code = int(_D64INFO_MODULE.main(self.arguments))
+                    exit_code = int(dinfo_main(self.arguments))
             except Exception as exc:
                 print(
                     f"Fehler: {type(exc).__name__}: {exc}",
@@ -98150,7 +99330,67 @@ QToolButton:hover {{ background: {selection}; }}"""
 
 
     class BasicMathRulesFactWidget(QWidget):
-        """Stage 366: Rechengesetze mit Grundrechenarten und Teilbarkeitsregeln."""
+        """Rechengesetze, Potenzen und eine Übersicht gängiger Matrixarten."""
+
+        MATRIX_TYPES = (
+            ('matrix_row', 'Zeilenmatrix', 'Eine Matrix mit genau einer Zeile.', '[ 1  2  3 ]'),
+            ('matrix_column', 'Spaltenmatrix', 'Eine Matrix mit genau einer Spalte.', '[ 1 ; 2 ; 3 ]'),
+            ('matrix_rectangular', 'Rechteckmatrix', 'Eine Matrix mit unterschiedlich vielen Zeilen und Spalten.', '[ 1  2  3 ; 4  5  6 ]'),
+            ('matrix_square', 'Quadratische Matrix', 'Gleich viele Zeilen und Spalten (n × n).', '[ 1  2 ; 3  4 ]'),
+            ('matrix_zero', 'Nullmatrix', 'Alle Einträge sind null.', '[ 0  0 ; 0  0 ]'),
+            ('matrix_one', 'Einsmatrix', 'Alle Einträge sind eins; nicht mit der Einheitsmatrix verwechseln.', '[ 1  1 ; 1  1 ]'),
+            ('matrix_identity', 'Einheitsmatrix', 'Auf der Hauptdiagonale Einsen, sonst Nullen.', '[ 1  0 ; 0  1 ]'),
+            ('matrix_diagonal', 'Diagonalmatrix', 'Außerhalb der Hauptdiagonale stehen nur Nullen.', '[ 2  0 ; 0  5 ]'),
+            ('matrix_scalar', 'Skalarmatrix', 'Diagonalmatrix mit identischen Diagonaleinträgen.', '[ 3  0 ; 0  3 ]'),
+            ('matrix_upper_triangular', 'Obere Dreiecksmatrix', 'Unterhalb der Hauptdiagonale nur Nullen.', '[ 1  2 ; 0  3 ]'),
+            ('matrix_lower_triangular', 'Untere Dreiecksmatrix', 'Oberhalb der Hauptdiagonale nur Nullen.', '[ 1  0 ; 2  3 ]'),
+            ('matrix_symmetric', 'Symmetrische Matrix', 'Transponieren verändert sie nicht: Aᵀ = A.', '[ 1  2 ; 2  3 ]'),
+            ('matrix_skew_symmetric', 'Schiefsymmetrische Matrix', 'Es gilt Aᵀ = −A.', '[ 0  2 ; −2  0 ]'),
+            ('matrix_hermitian', 'Hermitesche Matrix', 'Komplexe Matrix mit Aᴴ = A.', '[ 1  i ; −i  2 ]'),
+            ('matrix_skew_hermitian', 'Schiefhermitesche Matrix', 'Komplexe Matrix mit Aᴴ = −A.', '[ 0  i ; i  0 ]'),
+            ('matrix_orthogonal', 'Orthogonale Matrix', 'Reelle Matrix mit AᵀA = I.', '[ 0  −1 ; 1  0 ]'),
+            ('matrix_unitary', 'Unitäre Matrix', 'Komplexe Matrix mit AᴴA = I.', '[ i  0 ; 0  1 ]'),
+            ('matrix_normal', 'Normale Matrix', 'Komplexe Matrix mit AᴴA = AAᴴ.', '[ 1  0 ; 0  i ]'),
+            ('matrix_invertible', 'Invertierbare Matrix', 'Quadratische Matrix mit einer inversen Matrix A⁻¹.', '[ 1  2 ; 3  4 ]'),
+            ('matrix_singular', 'Singuläre Matrix', 'Quadratische Matrix ohne Inverse (Determinante null).', '[ 1  2 ; 2  4 ]'),
+            ('matrix_positive_definite', 'Positiv definite Matrix', 'Symmetrisch/hermitesch mit xᴴAx > 0 für x ≠ 0.', '[ 2  0 ; 0  3 ]'),
+            ('matrix_positive_semidefinite', 'Positiv semidefinite Matrix', 'Symmetrisch/hermitesch mit xᴴAx ≥ 0.', '[ 1  0 ; 0  0 ]'),
+            ('matrix_idempotent', 'Idempotente Matrix', 'Es gilt A² = A.', '[ 1  0 ; 0  0 ]'),
+            ('matrix_involutory', 'Involutorische Matrix', 'Es gilt A² = I.', '[ 0  1 ; 1  0 ]'),
+            ('matrix_nilpotent', 'Nilpotente Matrix', 'Für ein k gilt Aᵏ = 0.', '[ 0  1 ; 0  0 ]'),
+            ('matrix_permutation', 'Permutationsmatrix', 'Genau eine Eins in jeder Zeile und Spalte.', '[ 0  1 ; 1  0 ]'),
+            ('matrix_binary', 'Binärmatrix', 'Alle Einträge sind 0 oder 1.', '[ 1  0 ; 1  1 ]'),
+            ('matrix_sparse', 'Dünnbesetzte Matrix', 'Die Mehrzahl der Einträge ist null.', '[ 0  0  1 ; 0  0  0 ]'),
+            ('matrix_dense', 'Dichtbesetzte Matrix', 'Viele oder fast alle Einträge sind ungleich null.', '[ 1  2 ; 3  4 ]'),
+            ('matrix_band', 'Bandmatrix', 'Nur in einem Band um die Hauptdiagonale können Werte stehen.', '[ 1  2  0 ; 3  4  5 ; 0  6  7 ]'),
+            ('matrix_tridiagonal', 'Tridiagonalmatrix', 'Einträge nur auf Haupt- und zwei Nebendiagonalen.', '[ 1  2  0 ; 3  4  5 ; 0  6  7 ]'),
+            ('matrix_toeplitz', 'Toeplitz-Matrix', 'Auf jeder Diagonalen sind die Einträge konstant.', '[ 1  2  3 ; 4  1  2 ; 5  4  1 ]'),
+            ('matrix_hankel', 'Hankel-Matrix', 'Auf jeder Gegendiagonalen sind die Einträge konstant.', '[ 1  2  3 ; 2  3  4 ; 3  4  5 ]'),
+            ('matrix_vandermonde', 'Vandermonde-Matrix', 'Zeilen enthalten aufsteigende Potenzen eines Stützpunkts.', '[ 1  2  4 ; 1  3  9 ]'),
+            ('matrix_block', 'Blockmatrix', 'In rechteckige Teilmatrizen zerlegte Matrix.', '[ A  B ; C  D ]'),
+            ('matrix_stochastic', 'Stochastische Matrix', 'Nichtnegative Einträge; hier summiert sich jede Zeile zu 1.', '[ 0,7  0,3 ; 0,2  0,8 ]'),
+            ('matrix_doubly_stochastic', 'Doppelt stochastische Matrix', 'Nichtnegative Einträge; jede Zeilen- und Spaltensumme ist 1.', '[ 0,7  0,3 ; 0,3  0,7 ]'),
+            ('matrix_circulant', 'Zirkulante Matrix', 'Jede Zeile ist eine zyklische Verschiebung der vorherigen.', '[ 1  2  3 ; 3  1  2 ; 2  3  1 ]'),
+        )
+
+        # Stage 380: Vorzeichenregeln als separate Lernblätter.
+        SIGN_RULE_CARDS = {
+            'sign_mul_minus_minus': ('Minus MUL Minus', 'Zwei negative Faktoren ergeben ein positives Produkt.', ('(−3) · (−4) = +12', '(−7) · (−2) = +14')),
+            'sign_mul_minus_plus': ('Minus MUL Plus', 'Ein negativer und ein positiver Faktor ergeben ein negatives Produkt.', ('(−3) · (+4) = −12', '(−7) · (+2) = −14')),
+            'sign_mul_plus_minus': ('Plus MUL Minus', 'Ein positiver und ein negativer Faktor ergeben ein negatives Produkt.', ('(+3) · (−4) = −12', '(+7) · (−2) = −14')),
+            'sign_mul_plus_plus': ('Plus MUL Plus', 'Zwei positive Faktoren ergeben ein positives Produkt.', ('(+3) · (+4) = +12', '(+7) · (+2) = +14')),
+            'sign_div_minus_minus': ('Minus DIV Minus', 'Zwei negative Zahlen ergeben bei der Division einen positiven Quotienten (Divisor ≠ 0).', ('(−12) : (−3) = +4', '(−20) : (−5) = +4')),
+            'sign_div_minus_plus': ('Minus DIV Plus', 'Ein negativer Dividend und ein positiver Divisor ergeben einen negativen Quotienten.', ('(−12) : (+3) = −4', '(−20) : (+5) = −4')),
+            'sign_div_plus_minus': ('Plus DIV Minus', 'Ein positiver Dividend und ein negativer Divisor ergeben einen negativen Quotienten.', ('(+12) : (−3) = −4', '(+20) : (−5) = −4')),
+            'sign_div_plus_plus': ('Plus DIV Plus', 'Zwei positive Zahlen ergeben bei der Division einen positiven Quotienten.', ('(+12) : (+3) = +4', '(+20) : (+5) = +4')),
+        }
+        ROOT_RULES = (
+            ('Produktregel', '√a · √b = √(a · b)   (a, b ≥ 0)', '√4 · √9 = √36 = 6'),
+            ('Quotientenregel', '√a : √b = √(a : b)   (a ≥ 0, b > 0)', '√36 : √4 = √9 = 3'),
+            ('Quadrat und Wurzel', '(√a)² = a   (a ≥ 0)', '(√7)² = 7'),
+            ('Wurzel aus einem Quadrat', '√(a²) = |a|', '√((−5)²) = 5'),
+            ('Verschachtelte Wurzel', '√(√a) = ⁴√a   (a ≥ 0)', '√(√16) = √4 = 2'),
+        )
 
         ARITHMETIC_CARDS = (
             ('Addition / addieren', 'Summand  +  Summand  =  Summe', '2  +  3  =  5'),
@@ -98158,6 +99398,30 @@ QToolButton:hover {{ background: {selection}; }}"""
             ('Multiplikation / multiplizieren', 'Faktor  ·  Faktor  =  Produkt', '5  *  7  =  35'),
             ('Division / dividieren', 'Dividend  :  Divisor  =  Quotient', '27  :  9  =  3'),
         )
+
+        # Bestehende Inhalte der Stage-366-Sammelseite, nur neu einsortiert.
+        RELOCATED_LAWS = {
+            'law_commutative': (
+                'Kommutativ-Gesetz',
+                ('Kommutativgesetz: a + b = b + a   |   a · b = b · a',),
+            ),
+            'law_associative_add': (
+                'Assoziativ-Gesetz Addition',
+                ('Assoziativgesetz: (a + b) + c = a + (b + c)',),
+            ),
+            'law_associative_multiply': (
+                'Assoziativ-Geset Multiplikation',
+                ('Assoziativgesetz: (a · b) · c = a · (b · c)',),
+            ),
+            'law_distributive': (
+                'Distributiv-Gesetz',
+                ('Distributivgesetz: a · (b + c) = a · b + a · c',),
+            ),
+            'order_of_operations': (
+                'Punkt- vor Strich-Rechnung',
+                ('Punktrechnung vor Strichrechnung',),
+            ),
+        }
 
         DIVISIBILITY_CARDS = (
             {
@@ -98272,25 +99536,119 @@ QToolButton:hover {{ background: {selection}; }}"""
                     painter, colors, 'Potenzen', (
                         'a² = a · a',
                         'a³ = a · a · a',
-                        'a^m · a^n = a^(m+n)',
-                        'a^m : a^n = a^(m-n)   (a ≠ 0)',
-                        '(a^m)^n = a^(m·n)',
+                        'aᵐ · aⁿ = a⁽ᵐ⁺ⁿ⁾',
+                        'aᵐ : aⁿ = a⁽ᵐ⁻ⁿ⁾   (a ≠ 0)',
+                        '(aᵐ)ⁿ = a⁽ᵐ·ⁿ⁾',
                     )
                 )
+            elif self._mode == 'sign_rules':
+                self._paint_sign_rules(painter, colors)
+            elif self._mode in self.SIGN_RULE_CARDS:
+                self._paint_sign_rule(painter, colors, self.SIGN_RULE_CARDS[self._mode])
+            elif self._mode == 'root_rules':
+                self._paint_root_rules(painter, colors)
+            elif self._mode.startswith('matrix_'):
+                spec = next((entry for entry in self.MATRIX_TYPES if entry[0] == self._mode), None)
+                if spec is not None:
+                    self._paint_matrix_type(painter, colors, spec)
+            elif self._mode in self.RELOCATED_LAWS:
+                # Stage 369: Die bereits vorhandenen Rechengesetze wurden
+                # in eigene Blätter unter "Potenzen" bzw. "Grundrechen-Arten"
+                # UMSORTIERT. Keine doppelte Sammelseite mehr im Faktenbaum.
+                caption, formulas = self.RELOCATED_LAWS[self._mode]
+                self._paint_placeholder(painter, colors, caption, formulas)
             elif self._mode == 'calculation_rules':
+                # API-Kompatibilität für bereits vorhandene Aufrufer. Das
+                # bisherige Sammelblatt existiert nicht mehr im Faktenbaum.
                 self._paint_placeholder(
-                    painter, colors, 'Rechengesetze', (
-                        'Kommutativgesetz: a + b = b + a   |   a · b = b · a',
-                        'Assoziativgesetz: (a + b) + c = a + (b + c)',
-                        'Assoziativgesetz: (a · b) · c = a · (b · c)',
-                        'Distributivgesetz: a · (b + c) = a · b + a · c',
-                        'Punktrechnung vor Strichrechnung',
-                    )
+                    painter, colors, 'Rechengesetze',
+                    tuple(formula for _title, formulas in self.RELOCATED_LAWS.values()
+                          for formula in formulas),
                 )
             else:
                 self._paint_basic_arithmetic(painter, colors)
             painter.end()
             super().paintEvent(event)
+
+        def _paint_sign_rules(self, painter: QPainter, colors: dict) -> None:
+            """Stage 381: acht Regeln zusammengefasst; Kacheln 143 statt 122 px."""
+            margin = 26
+            width = max(360, self.width() - margin * 2)
+            self._draw_page_title(painter, QRectF(margin, 22, width, 42),
+                                  'Vorzeichen-Regeln', colors)
+            y = 76
+            card_h = 143  # Stage 381: bisher 122 px, +21 px
+            card_gap = 15
+            for title, explanation, examples in self.SIGN_RULE_CARDS.values():
+                rect = QRectF(margin, y, width, card_h)
+                path = QPainterPath()
+                path.addRoundedRect(rect, 16, 16)
+                painter.fillPath(path, QBrush(colors['panel']))
+                painter.setPen(QPen(colors['border'], 2))
+                painter.drawPath(path)
+                self._font(painter, 15, True)
+                painter.setPen(colors['accent'])
+                painter.drawText(QRectF(rect.x()+16, rect.y()+10, rect.width()-32, 26),
+                                 Qt.AlignCenter, title)
+                self._font(painter, 11, False)
+                painter.setPen(colors['text'])
+                painter.drawText(QRectF(rect.x()+20, rect.y()+40, rect.width()-40, 38),
+                                 Qt.TextWordWrap | Qt.AlignHCenter | Qt.AlignVCenter, explanation)
+                self._font(painter, 12, False)
+                painter.setPen(colors['text'])
+                problem = '    |    '.join(eq.split(' = ', 1)[0] + ' = ?' for eq in examples)
+                painter.drawText(QRectF(rect.x()+20, rect.y()+82, rect.width()-40, 22),
+                                 Qt.AlignCenter, 'Beispiele: ' + problem)
+                self._font(painter, 12, True)
+                painter.setPen(QColor('#ffd700'))
+                solutions = '    |    '.join(eq for eq in examples)
+                painter.drawText(QRectF(rect.x()+20, rect.y()+112, rect.width()-40, 24),
+                                 Qt.AlignCenter, 'Lösungen: ' + solutions)
+                y += card_h + card_gap
+            self.setMinimumHeight(int(y + 24))
+
+        def _paint_sign_rule(self, painter: QPainter, colors: dict, spec) -> None:
+            """Bestehende API für direkte Aufrufer einzelner Regeln."""
+            title, explanation, examples = spec
+            margin = 26
+            width = max(360, self.width() - 2 * margin)
+            self._draw_page_title(painter, QRectF(margin, 22, width, 42), title, colors)
+            self._font(painter, 13)
+            painter.setPen(colors['text'])
+            painter.drawText(QRectF(margin+16, 72, width-32, 64),
+                             Qt.TextWordWrap | Qt.AlignLeft | Qt.AlignTop, explanation)
+            y = 152
+            for index, equation in enumerate(examples, start=1):
+                lhs, rhs = equation.split(' = ', 1)
+                rect = QRectF(margin, y, width, 143)
+                self._draw_formula_card(painter, rect, f'Beispiel {index}',
+                                        lhs + ' = ?', '', colors)
+                self._font(painter, 14, True)
+                painter.setPen(QColor('#ffd700'))
+                painter.drawText(QRectF(rect.x()+24, rect.y()+112, rect.width()-48, 24),
+                                 Qt.AlignCenter, 'Lösung: ' + rhs)
+                y += 159
+            self.setMinimumHeight(int(y + 24))
+
+        def _paint_root_rules(self, painter: QPainter, colors: dict) -> None:
+            margin = 26
+            width = max(360, self.width() - margin * 2)
+            self._draw_page_title(painter, QRectF(margin, 22, width, 42), 'Wurzel-Gesetze', colors)
+            y = 76
+            for title, rule, example in self.ROOT_RULES:
+                # Stage 382: Die Kachel ist 26 px höher als in Stage 381.
+                # Dadurch liegen Regel, Beispiel und gelbe Lösung nicht mehr
+                # übereinander; der bisherige 14-px-Abstand zur Folgekachel
+                # bleibt erhalten.
+                rect = QRectF(margin, y, width, 142)
+                self._draw_formula_card(painter, rect, title, rule, example, colors)
+                self._font(painter, 12, True)
+                painter.setPen(QColor('#ffd700'))
+                painter.drawText(QRectF(rect.x() + 20, rect.y() + 114,
+                                        rect.width() - 40, 24), Qt.AlignCenter,
+                                 'Lösung: ' + example.split(' = ')[-1])
+                y += 156
+            self.setMinimumHeight(int(y + 24))
 
         def _paint_basic_arithmetic(self, painter: QPainter, colors: dict) -> None:
             margin = 26
@@ -98329,6 +99687,267 @@ QToolButton:hover {{ background: {selection}; }}"""
                 self._draw_divisibility_card(painter, rect, spec, colors)
             total_h = y + 4 * (card_h + gap_y) + 16
             self.setMinimumHeight(int(total_h))
+
+        def _paint_matrix_type(self, painter: QPainter, colors: dict, spec) -> None:
+            _key, title, description, example = spec
+            margin = 24
+            panel_x = float(margin)
+            panel_y = 22.0
+            panel_w = float(max(500, self.width() - (margin * 2)))
+            text_x = panel_x + 24.0
+            text_w = panel_w - 48.0
+
+            # Erst das komplette Layout bestimmen, danach die Eltern-Kachel
+            # zeichnen: keine Beispielrechnung darf außerhalb liegen.
+            description_y = panel_y + 58.0
+            matrix_y = description_y + 48.0 + 10.0
+            matrix_text = self._format_matrix_example(example)
+            matrix_box_h = max(112.0, 50.0 + 19.0 * len(matrix_text.splitlines()))
+            matrix_box = QRectF(text_x, matrix_y, text_w, matrix_box_h)
+            calc_heading_y = matrix_box.bottom() + 12.0
+            calc_start_y = calc_heading_y + 28.0
+            calc_h = 274.0  # Stage 386: 32 px hoeher als Stage 385
+            calc_gap = 10.0
+            bottom_pad = 22.0
+
+            examples = self._matrix_calculation_examples(spec[0], matrix_text)
+            # Zwei Rechnungen nur, wenn der verfügbare Bereich bereits groß
+            # genug ist; andernfalls eine und die Eltern-Kachel erweitern.
+            available_h = max(0.0, float(self.height()) - panel_y - 24.0)
+            required_two = (calc_start_y - panel_y) + 2.0 * (calc_h + calc_gap) + bottom_pad
+            show_two = len(examples) > 1 and available_h >= required_two
+            examples_to_draw = examples[:2 if show_two else 1]
+            content_bottom = calc_start_y + len(examples_to_draw) * (calc_h + calc_gap)
+            required_panel_h = content_bottom - panel_y + bottom_pad
+            panel_h = max(340.0, available_h, required_panel_h)
+            rect = QRectF(panel_x, panel_y, panel_w, panel_h)
+
+            path = QPainterPath()
+            path.addRoundedRect(rect, 18, 18)
+            painter.fillPath(path, QBrush(colors['panel']))
+            painter.setPen(QPen(colors['border'], 2))
+            painter.drawPath(path)
+            self._draw_page_title(painter, QRectF(rect.x(), rect.y() + 10, rect.width(), 34), title, colors)
+            self._font(painter, 14, False)
+            painter.setPen(colors['text'])
+            description_rect = QRectF(text_x, description_y, text_w, 48)
+            painter.drawText(description_rect, Qt.TextWordWrap | Qt.AlignLeft | Qt.AlignTop, description)
+            self._draw_matrix_example_box(painter, matrix_box, 'Matrixform', matrix_text, colors)
+
+            if examples_to_draw:
+                self._font(painter, 12, True)
+                painter.setPen(colors['accent'])
+                painter.drawText(QRectF(text_x, calc_heading_y, text_w, 22), Qt.AlignLeft | Qt.AlignVCenter, 'Beispiel-Rechnung:')
+                y = calc_start_y
+                for heading, formula in examples_to_draw:
+                    calc_box = QRectF(text_x, y, text_w, calc_h)
+                    self._draw_matrix_calculation_box(painter, calc_box, heading, formula, colors)
+                    y = calc_box.bottom() + calc_gap
+
+            self.setMinimumHeight(int(rect.bottom() + 24))
+
+        def _draw_matrix_example_box(self, painter: QPainter, rect: QRectF, heading: str, text: str, colors: dict) -> None:
+            fill = colors['panel2'] if self._dark_mode else QColor('#fffaf0')
+            path = QPainterPath()
+            path.addRoundedRect(rect, 14, 14)
+            painter.fillPath(path, QBrush(fill))
+            painter.setPen(QPen(self._mix(colors['border'], QColor('#ffffff'), 0.15), 1.6))
+            painter.drawPath(path)
+            self._font(painter, 11, True)
+            painter.setPen(colors['accent'])
+            painter.drawText(QRectF(rect.x() + 12, rect.y() + 10, rect.width() - 24, 18), Qt.AlignLeft | Qt.AlignVCenter, heading)
+            font = QFont(painter.font())
+            font.setPointSize(12)
+            font.setBold(False)
+            font.setFamily('Courier New')
+            font.setStyleHint(QFont.TypeWriter)
+            painter.setFont(font)
+            painter.setPen(colors['text'])
+            painter.drawText(QRectF(rect.x() + 14, rect.y() + 34, rect.width() - 28, rect.height() - 44), Qt.AlignLeft | Qt.AlignTop, text)
+
+        @staticmethod
+        def _align_matrix_rows(text: str) -> str:
+            """Matrix-Folgezeilen auf die oeffnende Klammer der ersten Zeile ausrichten."""
+            output = []
+            column = 0
+            for line in str(text).splitlines():
+                stripped = line.lstrip()
+                if stripped.startswith('[') and column:
+                    output.append(' ' * column + stripped)
+                    continue
+                output.append(line)
+                if '[' in line:
+                    column = line.index('[')
+                elif stripped:
+                    column = 0
+            return '\n'.join(output)
+
+        def _draw_matrix_calculation_box(self, painter: QPainter, rect: QRectF,
+                                         heading: str, text: str, colors: dict) -> None:
+            """Aufgabe oben, Lösung unten in Gelb (Stage 378)."""
+            fill = colors['panel2'] if self._dark_mode else QColor('#fffaf0')
+            path = QPainterPath()
+            path.addRoundedRect(rect, 14, 14)
+            painter.fillPath(path, QBrush(fill))
+            painter.setPen(QPen(colors['border'], 1.6))
+            painter.drawPath(path)
+            self._font(painter, 11, True)
+            painter.setPen(colors['accent'])
+            painter.drawText(QRectF(rect.x()+12, rect.y()+10, rect.width()-24, 20),
+                             Qt.AlignLeft | Qt.AlignVCenter, heading)
+
+            marker = '\n§§SOLUTION§§\n'
+            if marker in str(text):
+                task, answer = str(text).split(marker, 1)
+            else:
+                lines = str(text).splitlines()
+                if len(lines) > 1:
+                    task = '\n'.join(lines[:-1])
+                    answer = lines[-1]
+                elif '=' in str(text):
+                    lhs, rhs = str(text).split('=', 1)
+                    task, answer = lhs.strip() + ' = ?', rhs.strip()
+                else:
+                    task, answer = heading, str(text)
+
+            font = QFont(painter.font())
+            font.setFamily('Courier New')
+            font.setStyleHint(QFont.TypeWriter)
+            font.setPointSize(12)
+            font.setBold(False)
+            painter.setFont(font)
+            fm = painter.fontMetrics()
+            line_height = max(17, fm.lineSpacing())
+            answer_lines = max(1, len(str(answer).splitlines()))
+            task_top = rect.y() + 38
+            answer_h = max(28, answer_lines * line_height + 6)
+            answer_top = rect.bottom() - 16 - answer_h
+            task_h = max(24, answer_top - task_top - 12)
+            painter.setPen(colors['text'])
+            painter.drawText(QRectF(rect.x()+14, task_top, rect.width()-28, task_h),
+                             Qt.AlignLeft | Qt.AlignTop, self._align_matrix_rows(task))
+            painter.setPen(QColor('#ffd700'))
+            painter.drawText(QRectF(rect.x()+14, answer_top, rect.width()-28, answer_h),
+                             Qt.AlignLeft | Qt.AlignTop, self._align_matrix_rows(answer))
+
+        def _format_matrix_example(self, example: str) -> str:
+            raw = str(example).strip()
+            if raw.startswith('[') and raw.endswith(']'):
+                raw = raw[1:-1].strip()
+            rows = []
+            for row_text in raw.split(';'):
+                row_text = row_text.strip()
+                if not row_text:
+                    continue
+                parts = [part.strip() for part in row_text.replace(',', ' ').split() if part.strip()]
+                rows.append('[ ' + ', '.join(parts) + ' ]')
+            return '\n'.join(rows) if rows else str(example)
+
+        def _parse_displayed_matrix(self, formatted_example: str):
+            rows = []
+            for line in str(formatted_example).splitlines():
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                if stripped.startswith('[') and stripped.endswith(']'):
+                    stripped = stripped[1:-1].strip()
+                parts = [part.strip() for part in stripped.split(',') if part.strip()]
+                if parts:
+                    rows.append(parts)
+            return rows
+
+        def _compute_matrix_value_sum(self, a: str, b: str):
+            def _parse_number(text: str):
+                raw = text.strip().replace('−', '-')
+                if not raw:
+                    return None
+                normalized = raw.replace(',', '.')
+                try:
+                    value = float(normalized)
+                except ValueError:
+                    return None
+                if value.is_integer():
+                    return int(value)
+                return value
+
+            av = _parse_number(a)
+            bv = _parse_number(b)
+            if av is not None and bv is not None:
+                result = av + bv
+                if isinstance(result, float) and result.is_integer():
+                    result = int(result)
+                return str(result).replace('.', ',')
+            return f'{a} + {b}'
+
+        def _build_matrix_addition_solution(self, formatted_example: str):
+            rows = self._parse_displayed_matrix(formatted_example)
+            if not rows:
+                return 'A = [ ]\nB = [ ]\n§§SOLUTION§§\nA + B = [ ]'
+            display_rows = ['[ ' + ', '.join(row) + ' ]' for row in rows]
+            expr_rows = []
+            result_rows = []
+            for row in rows:
+                expr_rows.append('[ ' + ', '.join(f'{value} + {value}' for value in row) + ' ]')
+                result_rows.append('[ ' + ', '.join(self._compute_matrix_value_sum(value, value) for value in row) + ' ]')
+            task = '\n'.join(['A = ' + display_rows[0]] + display_rows[1:])
+            task += '\n' + '\n'.join(['B = ' + display_rows[0]] + display_rows[1:])
+            answer = 'A + B = ' + expr_rows[0]
+            if len(expr_rows) > 1:
+                answer += '\n' + '\n'.join(expr_rows[1:])
+            answer += '\n= ' + result_rows[0]
+            if len(result_rows) > 1:
+                answer += '\n' + '\n'.join(result_rows[1:])
+            return task + '\n§§SOLUTION§§\n' + answer
+
+        def _matrix_calculation_examples(self, key: str, formatted_example: str):
+            generic_addition = ('Addition', self._build_matrix_addition_solution(formatted_example))
+            examples = {
+                'matrix_row': [
+                    ('Multiplikation mit einem Skalar', 'A = ' + formatted_example + '\n§§SOLUTION§§\n2 · A = [ 2, 4, 6 ]'),
+                    generic_addition,
+                ],
+                'matrix_column': [
+                    ('Transponieren', 'A = ' + formatted_example + '\n§§SOLUTION§§\nAᵀ = [ 1, 2, 3 ]'),
+                    ('Addition', 'A = [ 1 ]\n[ 2 ]\n[ 3 ]\nB = [ 4 ]\n[ 5 ]\n[ 6 ]\n§§SOLUTION§§\nA + B = [ 1 + 4 ]\n[ 2 + 5 ]\n[ 3 + 6 ]\n= [ 5 ]\n[ 7 ]\n[ 9 ]'),
+                ],
+                'matrix_square': [
+                    generic_addition,
+                    ('Determinante', 'A = ' + formatted_example + '\n§§SOLUTION§§\ndet(A) = 1 · 4 − 2 · 3 = −2'),
+                ],
+                'matrix_identity': [
+                    ('Neutralität', 'A · I = A\n§§SOLUTION§§\nI · A = A'),
+                    ('Potenz', 'I² = I\n§§SOLUTION§§\nI · I = I'),
+                ],
+                'matrix_zero': [
+                    ('Addition', 'A + 0 = A\n§§SOLUTION§§\nDie Nullmatrix verändert keinen Eintrag.'),
+                    ('Multiplikation', 'A · 0 = 0\n§§SOLUTION§§\nJeder Eintrag wird zu 0.'),
+                ],
+                'matrix_diagonal': [
+                    ('Multiplikation', '[ 2, 0 ]\n[ 0, 5 ] · [ 1 ]\n[ 1 ]\n§§SOLUTION§§\n= [ 2 ]\n[ 5 ]'),
+                    ('Determinante', 'det(A) = 2 · 5\n§§SOLUTION§§\ndet(A) = 10'),
+                ],
+                'matrix_scalar': [
+                    ('Vielfaches der Einheitsmatrix', 'A = 3I\n§§SOLUTION§§\nA² = 9I'),
+                    generic_addition,
+                ],
+                'matrix_permutation': [
+                    ('Vertauschen von Zeilen', 'P · [ a ]\n[ b ]\n§§SOLUTION§§\n= [ b ]\n[ a ]'),
+                    ('Inverse', 'P⁻¹ = Pᵀ\n§§SOLUTION§§\nDie Inverse ist die Transponierte.'),
+                ],
+                'matrix_stochastic': [
+                    ('Zeilensumme', '0,7 + 0,3\n0,2 + 0,8\n§§SOLUTION§§\n= 1\n= 1'),
+                    ('Übergang', 'pₙ₊₁ = pₙ · A\n§§SOLUTION§§\nDie neue Verteilung entsteht durch Matrixmultiplikation.'),
+                ],
+                'matrix_doubly_stochastic': [
+                    ('Zeilen- und Spaltensumme', '0,7 + 0,3\n0,3 + 0,7\n§§SOLUTION§§\n= 1\n= 1'),
+                    ('Mittelwert-Erhaltung', 'Gleichverteilungen bleiben erhalten.\n§§SOLUTION§§\nZeilen- und Spaltensummen sind jeweils 1.'),
+                ],
+                'matrix_circulant': [
+                    ('Zyklische Verschiebung', 'A = ' + formatted_example + '\n§§SOLUTION§§\nJede Zeile entsteht durch zyklisches Verschieben.'),
+                    generic_addition,
+                ],
+            }
+            return examples.get(key, [generic_addition, ('Skalarmultiplikation', '2 · A\n§§SOLUTION§§\nJeden Eintrag mit 2 multiplizieren.')])
 
         def _paint_placeholder(self, painter: QPainter, colors: dict, title: str, lines) -> None:
             margin = 30
@@ -98448,10 +100067,249 @@ QToolButton:hover {{ background: {selection}; }}"""
             painter.setFont(font)
 
 
+    class MathMagic37FactWidget(QWidget):
+        """Stage 383: Das 37-Zahlenmuster als echte, kopierbare Qt-Schrift.
+
+        Kein QPixmap und keine Bilddatei: jede Gleichung ist ein QLabel mit
+        explizit gesetzter Schriftart Times New Roman. Die bestehende
+        Fakten-QScrollArea uebernimmt das Scrollen bei kleinen Fenstern.
+        """
+
+        EQUATIONS = tuple(
+            f'{digit * 111} / ({digit}+{digit}+{digit}) = 37'
+            for digit in range(1, 10)
+        )
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.setObjectName('math_magic_37_page')
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(16, 16, 16, 16)
+            layout.setSpacing(0)
+
+            self.formulas_panel = QFrame(self)
+            self.formulas_panel.setObjectName('math_magic_37_formulas')
+            formulas_layout = QVBoxLayout(self.formulas_panel)
+            formulas_layout.setContentsMargins(18, 20, 18, 20)
+            formulas_layout.setSpacing(6)
+            self.equation_labels = []
+            for equation in self.EQUATIONS:
+                label = QLabel(equation, self.formulas_panel)
+                label.setObjectName('math_magic_37_equation')
+                font = QFont('Times New Roman', 31)
+                font.setItalic(True)
+                font.setBold(True)
+                label.setFont(font)
+                label.setAlignment(Qt.AlignCenter)
+                label.setMinimumHeight(62)
+                label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                formulas_layout.addWidget(label)
+                self.equation_labels.append(label)
+            layout.addWidget(self.formulas_panel, 1)
+
+            self.caption_label = QLabel('THIS IS MAGIC', self)
+            self.caption_label.setObjectName('math_magic_37_caption')
+            caption_font = QFont('Times New Roman', 31)
+            caption_font.setBold(True)
+            self.caption_label.setFont(caption_font)
+            self.caption_label.setAlignment(Qt.AlignCenter)
+            self.caption_label.setMinimumHeight(94)
+            self.caption_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            layout.addWidget(self.caption_label)
+
+            # Inhalt scrollt im vorhandenen Fakten-QScrollArea und vergroessert
+            # nicht die Mindestgroesse des Hauptfensters.
+            self.setMinimumSize(580, 790)
+            self.set_dark_mode(True)
+
+        def set_dark_mode(self, enabled):
+            # Stage 384: Im Dark-Mode gilt auch fuer den eigentlichen
+            # Textbereich ein dunkler Hintergrund mit weisser Schrift.
+            background = '#151e2b' if enabled else '#f8f6f1'
+            panel = '#1c2939' if enabled else '#ffffff'
+            caption = '#233348' if enabled else '#eae4dc'
+            foreground = '#ffffff' if enabled else '#181818'
+            self.setStyleSheet('''
+                QWidget#math_magic_37_page { background: %s; }
+                QFrame#math_magic_37_formulas { background: %s; border: none; }
+                QLabel#math_magic_37_equation {
+                    background: transparent; border: none; color: %s;
+                }
+                QLabel#math_magic_37_caption {
+                    background: %s; border: none; color: %s;
+                }
+            ''' % (background, panel, foreground, caption, foreground))
+
+
+    class MathMagic88FactWidget(QWidget):
+        """Stage 384: 88-Zahlenmuster, rein als Times-New-Roman-Qt-Text.
+
+        Weder Pixelgrafik noch Bildresource: Ueberschrift, acht Gleichungen
+        und Schlusszeile sind markierbare, skalierbare Text-Labels.
+        """
+
+        EQUATIONS = tuple(
+            f'{"".join(str(d) for d in range(9, 9 - count, -1))} × 9 + {8 - count} = {"8" * (count + 1)}'
+            for count in range(1, 9)
+        )
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.setObjectName('math_magic_88_page')
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(16, 16, 16, 16)
+            layout.setSpacing(8)
+
+            self.formulas_panel = QFrame(self)
+            self.formulas_panel.setObjectName('math_magic_88_formulas')
+            formulas_layout = QVBoxLayout(self.formulas_panel)
+            formulas_layout.setContentsMargins(16, 18, 16, 18)
+            formulas_layout.setSpacing(6)
+
+            self.title_label = QLabel('The Beauty of Mathematics', self.formulas_panel)
+            self.title_label.setObjectName('math_magic_88_title')
+            title_font = QFont('Times New Roman', 32)
+            title_font.setBold(True)
+            self.title_label.setFont(title_font)
+            self.title_label.setAlignment(Qt.AlignCenter)
+            self.title_label.setMinimumHeight(74)
+            self.title_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            formulas_layout.addWidget(self.title_label)
+
+            self.equation_labels = []
+            for equation in self.EQUATIONS:
+                label = QLabel(equation, self.formulas_panel)
+                label.setObjectName('math_magic_88_equation')
+                font = QFont('Times New Roman', 30)
+                font.setBold(True)
+                label.setFont(font)
+                label.setAlignment(Qt.AlignCenter)
+                label.setMinimumHeight(70)
+                label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                formulas_layout.addWidget(label)
+                self.equation_labels.append(label)
+            layout.addWidget(self.formulas_panel, 1)
+
+            self.caption_label = QLabel("Brilliant, isn't it?", self)
+            self.caption_label.setObjectName('math_magic_88_caption')
+            caption_font = QFont('Times New Roman', 31)
+            caption_font.setBold(True)
+            self.caption_label.setFont(caption_font)
+            self.caption_label.setAlignment(Qt.AlignCenter)
+            self.caption_label.setMinimumHeight(88)
+            self.caption_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            layout.addWidget(self.caption_label)
+
+            self.setMinimumSize(720, 840)
+            self.set_dark_mode(True)
+
+        def set_dark_mode(self, enabled):
+            background = '#151e2b' if enabled else '#f8f6f1'
+            panel = '#1c2939' if enabled else '#ffffff'
+            caption = '#233348' if enabled else '#eae4dc'
+            foreground = '#ffffff' if enabled else '#181818'
+            self.setStyleSheet('''
+                QWidget#math_magic_88_page { background: %s; }
+                QFrame#math_magic_88_formulas { background: %s; border: none; }
+                QLabel#math_magic_88_title,
+                QLabel#math_magic_88_equation {
+                    background: transparent; border: none; color: %s;
+                }
+                QLabel#math_magic_88_caption {
+                    background: %s; border: none; color: %s;
+                }
+            ''' % (background, panel, foreground, caption, foreground))
+
+
+    class MathAmazingFactWidget(QWidget):
+        """Stage 385: Das 8er-Zahlenmuster als nativer Times-New-Roman-Text.
+
+        Nur die eigentliche Ueberschrift und die neun Formeln aus der Vorlage:
+        keine Werbezeile, Logos oder importierten Pixelgrafiken.
+        """
+
+        EQUATIONS = (
+            '1 × 8 + 1 = 9',
+            '12 × 8 + 2 = 98',
+            '123 × 8 + 3 = 987',
+            '1234 × 8 + 4 = 9876',
+            '12345 × 8 + 5 = 98765',
+            '123456 × 8 + 6 = 987654',
+            '1234567 × 8 + 7 = 9876543',
+            '12345678 × 8 + 8 = 98765432',
+            '123456789 × 8 + 9 = 987654321',
+        )
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.setObjectName('math_amazing_page')
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(16, 16, 16, 16)
+            layout.setSpacing(0)
+
+            self.formulas_panel = QFrame(self)
+            self.formulas_panel.setObjectName('math_amazing_formulas')
+            formulas_layout = QVBoxLayout(self.formulas_panel)
+            formulas_layout.setContentsMargins(22, 24, 22, 24)
+            formulas_layout.setSpacing(9)
+
+            self.title_label = QLabel("It's Amazing!", self.formulas_panel)
+            self.title_label.setObjectName('math_amazing_title')
+            font = QFont('Times New Roman', 34)
+            font.setBold(True)
+            self.title_label.setFont(font)
+            self.title_label.setAlignment(Qt.AlignCenter)
+            self.title_label.setMinimumHeight(98)
+            self.title_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            formulas_layout.addWidget(self.title_label)
+
+            self.equation_labels = []
+            for equation in self.EQUATIONS:
+                label = QLabel(equation, self.formulas_panel)
+                label.setObjectName('math_amazing_equation')
+                font = QFont('Times New Roman', 29)
+                font.setBold(True)
+                label.setFont(font)
+                label.setTextFormat(Qt.RichText)
+                label.setAlignment(Qt.AlignCenter)
+                label.setMinimumHeight(63)
+                label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                formulas_layout.addWidget(label)
+                self.equation_labels.append(label)
+            layout.addWidget(self.formulas_panel, 1)
+            self.setMinimumSize(720, 830)
+            self.set_dark_mode(True)
+
+        def set_dark_mode(self, enabled):
+            background = '#151e2b' if enabled else '#f8f6f1'
+            panel = '#1c2939' if enabled else '#ffffff'
+            foreground = '#ffffff' if enabled else '#181818'
+            highlight = '#ff7474' if enabled else '#ad2222'
+            self.setStyleSheet("""
+                QWidget#math_amazing_page { background: %s; }
+                QFrame#math_amazing_formulas { background: %s; border: none; }
+                QLabel#math_amazing_title {
+                    background: transparent; border: none; color: %s;
+                }
+                QLabel#math_amazing_equation {
+                    background: transparent; border: none; color: %s;
+                }
+            """ % (background, panel, highlight, foreground))
+            # Nur die '8' als Multiplikator wird wie in der Referenz betont.
+            # Das QLabel rendert dabei weiterhin Text, kein Bitmap.
+            for equation, label in zip(self.EQUATIONS, self.equation_labels):
+                label.setText(
+                    equation.replace(
+                        '× 8 +', '× <span style="color:%s;">8</span> +' % highlight
+                    )
+                )
+
+
     class MathematicsLearningDockWidget(QWidget):
         """Lern-Workspace mit linksseitigen Tabs und rechts eingebetteter Szene."""
 
         interest_focus_changed = pyqtSignal(bool)
+        close_requested = pyqtSignal()
 
         def __init__(self, parent=None):
             super().__init__(parent)
@@ -98581,6 +100439,12 @@ QToolButton:hover {{ background: {selection}; }}"""
             )
             info_layout.addWidget(self.info_browser, 1)
             self.left_tabs.addTab(info_tab, 'Informationen')
+            # Stage 373: Schliessen in der Tab-Leiste, nicht im Tab-Inhalt.
+            self.math_close_button = QPushButton('Schließen', self.left_tabs)
+            self.math_close_button.setObjectName('math_learning_close_button')
+            self.math_close_button.setToolTip('Mathematik-Docking-Fenster schließen')
+            self.math_close_button.clicked.connect(self.close_requested.emit)
+            self.left_tabs.setCornerWidget(self.math_close_button, Qt.TopRightCorner)
 
             self.content_stack = QStackedWidget(splitter)
             self.content_stack.setObjectName('learning_content_stack')
@@ -98641,6 +100505,24 @@ QToolButton:hover {{ background: {selection}; }}"""
             # Breite nach _add_fact_scroll_page() setzen: die Hilfsfunktion
             # setzt die Mindestgröße des eingebetteten Widgets zurück.
             self.basic_math_rules_widget.setMinimumWidth(760)
+            # Stage 383: neun Gleichungen der 37-Mathe-Magie als Times-New-Roman-Text.
+            self.math_magic_37_widget = MathMagic37FactWidget()
+            self.math_magic_37_scroll = _add_fact_scroll_page(
+                self.math_magic_37_widget, 'math_magic_37_scroll_area'
+            )
+            self.math_magic_37_widget.setMinimumSize(580, 790)
+            # Stage 384: eigenstaendige 88-Textseite direkt neben der 37.
+            self.math_magic_88_widget = MathMagic88FactWidget()
+            self.math_magic_88_scroll = _add_fact_scroll_page(
+                self.math_magic_88_widget, 'math_magic_88_scroll_area'
+            )
+            self.math_magic_88_widget.setMinimumSize(720, 840)
+            # Stage 385: Neun 8er-Zahlenmuster, Times New Roman, kein Bild.
+            self.math_amazing_widget = MathAmazingFactWidget()
+            self.math_amazing_scroll = _add_fact_scroll_page(
+                self.math_amazing_widget, 'math_amazing_scroll_area'
+            )
+            self.math_amazing_widget.setMinimumSize(720, 830)
             # Stage 368: Das Fractions-Widget muss bereits vor dem ersten
             # set_dark_mode()-Aufruf existieren (vgl. Stage-367-Korrektur).
             self.fraction_help_widget = FractionHelpWidget()
@@ -98753,12 +100635,51 @@ QToolButton:hover {{ background: {selection}; }}"""
                 ('basic_arithmetic', 'Grundrechen-Arten'),
                 ('divisibility_rules', 'Teilbarkeit'),
                 ('powers_rules', 'Potenzen'),
-                ('calculation_rules', 'Rechengesetze'),
             ):
                 item = QTreeWidgetItem([title])
                 item.setData(0, Qt.UserRole, key)
                 rules.addChild(item)
                 self._fact_items[key] = item
+                if key == 'basic_arithmetic':
+                    item.setChildIndicatorPolicy(QTreeWidgetItem.DontShowIndicatorWhenChildless)
+                    item.setFlags(item.flags() | Qt.ItemNeverHasChildren)
+                    for topic_key, topic_title in (
+                        ('order_of_operations', 'Punkt-vor-Strich-Rechnung'),
+                        ('sign_rules', 'Vorzeichen-Regeln'),
+                    ):
+                        topic = QTreeWidgetItem([topic_title])
+                        topic.setData(0, Qt.UserRole, topic_key)
+                        topic.setChildIndicatorPolicy(QTreeWidgetItem.DontShowIndicatorWhenChildless)
+                        topic.setFlags(topic.flags() | Qt.ItemNeverHasChildren)
+                        rules.addChild(topic)
+                        self._fact_items[topic_key] = topic
+
+            # Wurzel-Gesetze direkt unter Potenzen als gleichrangiges Blatt.
+            root_item = QTreeWidgetItem(['Wurzel-Gesetze'])
+            root_item.setData(0, Qt.UserRole, 'root_rules')
+            root_item.setChildIndicatorPolicy(QTreeWidgetItem.DontShowIndicatorWhenChildless)
+            root_item.setFlags(root_item.flags() | Qt.ItemNeverHasChildren)
+            rules.addChild(root_item)
+            self._fact_items['root_rules'] = root_item
+
+            for law_key, law_title in (
+                ('law_commutative', 'Kommutativ-Gesetz'),
+                ('law_associative_add', 'Assoziativ-Gesetz Addition'),
+                ('law_associative_multiply', 'Assoziativ-Geset Multiplikation'),
+                ('law_distributive', 'Distributiv-Gesetz'),
+            ):
+                # Stage 371: Das Gesetz ist ein BLATT neben "Potenzen", kein
+                # aufklappbarer Zwischenknoten. In Qt5 explizit beide Hinweise
+                # setzen, damit auch Tree-Styles keinen leeren Expander zeigen.
+                law_item = QTreeWidgetItem([law_title])
+                law_item.setData(0, Qt.UserRole, law_key)
+                law_item.setChildIndicatorPolicy(
+                    QTreeWidgetItem.DontShowIndicatorWhenChildless
+                )
+                law_item.setFlags(law_item.flags() | Qt.ItemNeverHasChildren)
+                rules.addChild(law_item)
+                self._fact_items[law_key] = law_item
+
             # Stage 368: Das Blatt Teilbarkeit erhaelt eine Hierarchie
             # fuer die Bruch-Merkblaetter; die vorhandenen Rechengesetze
             # und die anderen Mathematik-Seiten bleiben unveraendert.
@@ -98842,6 +100763,30 @@ QToolButton:hover {{ background: {selection}; }}"""
                 self._fact_items[key] = item
             volume.setExpanded(True)
 
+            # Stage 374: weitere Grundwissen-Kategorie nach Benutzervorgabe.
+            trigometrie = QTreeWidgetItem(['Trigometrie'])
+            trigometrie_font = trigometrie.font(0)
+            trigometrie_font.setBold(True)
+            trigometrie.setFont(0, trigometrie_font)
+            trigometrie.setFlags(trigometrie.flags() & ~Qt.ItemIsSelectable)
+            grundwissen.addChild(trigometrie)
+
+            # Stage 374: Matrizen als eigener Hauptknoten neben Grundwissen.
+            matrices = QTreeWidgetItem(['Matrizen'])
+            matrices_font = matrices.font(0)
+            matrices_font.setBold(True)
+            matrices.setFont(0, matrices_font)
+            matrices.setFlags(matrices.flags() & ~Qt.ItemIsSelectable)
+            self.facts_tree.addTopLevelItem(matrices)
+            for matrix_key, matrix_title, _description, _example in BasicMathRulesFactWidget.MATRIX_TYPES:
+                matrix_item = QTreeWidgetItem([matrix_title])
+                matrix_item.setData(0, Qt.UserRole, matrix_key)
+                matrix_item.setChildIndicatorPolicy(QTreeWidgetItem.DontShowIndicatorWhenChildless)
+                matrix_item.setFlags(matrix_item.flags() | Qt.ItemNeverHasChildren)
+                matrices.addChild(matrix_item)
+                self._fact_items[matrix_key] = matrix_item
+            matrices.setExpanded(True)
+
             zahlen = QTreeWidgetItem(['Zahlen'])
             zahlen_font = zahlen.font(0)
             zahlen_font.setBold(True)
@@ -98849,11 +100794,44 @@ QToolButton:hover {{ background: {selection}; }}"""
             zahlen.setFlags(zahlen.flags() & ~Qt.ItemIsSelectable)
             self.facts_tree.addTopLevelItem(zahlen)
 
+            # Stage 374: Platzhalter-Kategorie; Lernseite folgt separat.
+            wahrscheinlichkeit = QTreeWidgetItem(['Wahrscheinlichkeit'])
+            wahrscheinlichkeit.setChildIndicatorPolicy(QTreeWidgetItem.DontShowIndicatorWhenChildless)
+            wahrscheinlichkeit.setFlags((wahrscheinlichkeit.flags() | Qt.ItemNeverHasChildren) & ~Qt.ItemIsSelectable)
+            zahlen.addChild(wahrscheinlichkeit)
+
             primzahlen = QTreeWidgetItem(['Primzahlen'])
             primzahlen.setData(0, Qt.UserRole, 'prime_numbers')
             zahlen.addChild(primzahlen)
             zahlen.setExpanded(True)
             self._fact_items['prime_numbers'] = primzahlen
+
+            # Stage 383: Zahlen -> Lustiges zu Mathe -> 37.
+            lustiges = QTreeWidgetItem(['Lustiges zu Mathe'])
+            lustiges_font = lustiges.font(0)
+            lustiges_font.setBold(True)
+            lustiges.setFont(0, lustiges_font)
+            lustiges.setFlags(lustiges.flags() & ~Qt.ItemIsSelectable)
+            zahlen.addChild(lustiges)
+            magic_37 = QTreeWidgetItem(['37'])
+            magic_37.setData(0, Qt.UserRole, 'math_magic_37')
+            magic_37.setChildIndicatorPolicy(QTreeWidgetItem.DontShowIndicatorWhenChildless)
+            magic_37.setFlags(magic_37.flags() | Qt.ItemNeverHasChildren)
+            lustiges.addChild(magic_37)
+            lustiges.setExpanded(True)
+            self._fact_items['math_magic_37'] = magic_37
+            magic_88 = QTreeWidgetItem(['88'])
+            magic_88.setData(0, Qt.UserRole, 'math_magic_88')
+            magic_88.setChildIndicatorPolicy(QTreeWidgetItem.DontShowIndicatorWhenChildless)
+            magic_88.setFlags(magic_88.flags() | Qt.ItemNeverHasChildren)
+            lustiges.addChild(magic_88)
+            self._fact_items['math_magic_88'] = magic_88
+            magic_amazing = QTreeWidgetItem(['Amazing'])
+            magic_amazing.setData(0, Qt.UserRole, 'math_amazing')
+            magic_amazing.setChildIndicatorPolicy(QTreeWidgetItem.DontShowIndicatorWhenChildless)
+            magic_amazing.setFlags(magic_amazing.flags() | Qt.ItemNeverHasChildren)
+            lustiges.addChild(magic_amazing)
+            self._fact_items['math_amazing'] = magic_amazing
 
             cantor = QTreeWidgetItem(['Cantor'])
             cantor_font = cantor.font(0)
@@ -98999,6 +100977,9 @@ QStackedWidget#learning_content_stack {{
             self.fibonacci_spiral_widget.set_dark_mode(enabled)
             self.interest_calculation_widget.set_dark_mode(enabled)
             self.basic_math_rules_widget.set_dark_mode(enabled)
+            self.math_magic_37_widget.set_dark_mode(enabled)
+            self.math_magic_88_widget.set_dark_mode(enabled)
+            self.math_amazing_widget.set_dark_mode(enabled)
             self.fraction_help_widget.set_dark_mode(enabled)
             self.volume_fact_widget.set_dark_mode(enabled)
             self.area_fact_widget.set_dark_mode(enabled)
@@ -99035,7 +101016,19 @@ QStackedWidget#learning_content_stack {{
 
             if fact_key == 'interest_calculation':
                 self.content_stack.setCurrentWidget(self.interest_calculation_scroll)
-            elif fact_key in ('basic_arithmetic', 'divisibility_rules', 'powers_rules', 'calculation_rules'):
+            elif fact_key == 'math_magic_37':
+                self.content_stack.setCurrentWidget(self.math_magic_37_scroll)
+            elif fact_key == 'math_magic_88':
+                self.content_stack.setCurrentWidget(self.math_magic_88_scroll)
+            elif fact_key == 'math_amazing':
+                self.content_stack.setCurrentWidget(self.math_amazing_scroll)
+            elif fact_key in (
+                'basic_arithmetic', 'divisibility_rules', 'powers_rules',
+                'law_commutative', 'law_associative_add',
+                'law_associative_multiply', 'law_distributive',
+                'order_of_operations', 'calculation_rules', 'root_rules', 'sign_rules',
+                *BasicMathRulesFactWidget.SIGN_RULE_CARDS.keys(),
+            ) or fact_key.startswith('matrix_'):
                 self.content_stack.setCurrentWidget(self.basic_math_rules_scroll)
                 self.basic_math_rules_widget.activate_fact(fact_key, title)
             elif fact_key in ('fraction_overview', 'fraction_add', 'fraction_subtract', 'fraction_multiply', 'fraction_divide'):
@@ -103586,6 +105579,8 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.environment_item.setExpanded(True)
             self.compiler_item = QTreeWidgetItem(self.tree, ["Compiler"])
             self.compiler_item.setData(0, Qt.UserRole, "compiler")
+            self.compiler_basic_item = QTreeWidgetItem(self.compiler_item, ["BASIC"])
+            self.compiler_basic_item.setData(0, Qt.UserRole, "compiler.basic")
             self.compiler_input_item = QTreeWidgetItem(self.compiler_item, ["Eingabe-Verzeichnis"])
             self.compiler_input_item.setData(0, Qt.UserRole, "compiler.input_directory")
             self.compiler_output_item = QTreeWidgetItem(self.compiler_item, ["Ausgabe-Verzeichnis"])
@@ -103753,6 +105748,32 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.stack.addWidget(self.speech_page)
             self.pages["environment.speech"] = self.speech_page
 
+            # Stage 400: BASIC-Dialekt. Exklusive Radiobuttons in einer GroupBox.
+            self.basic_page = QWidget(self.stack)
+            basic_layout = QVBoxLayout(self.basic_page)
+            basic_layout.setContentsMargins(14, 12, 14, 12)
+            basic_layout.setSpacing(8)
+            self.basic_dialect_groupbox = QGroupBox("Dialekt", self.basic_page)
+            self.basic_dialect_groupbox.setObjectName("c64_basic_dialect_groupbox")
+            basic_group_layout = QVBoxLayout(self.basic_dialect_groupbox)
+            basic_group_layout.setContentsMargins(14, 16, 14, 14)
+            self.basic_dialect_group = QButtonGroup(self.basic_dialect_groupbox)
+            self.basic_dialect_group.setExclusive(True)
+            self.basic_dialect_buttons = {}
+            for _index, (_dialect, _title) in enumerate((
+                ("basic_v2", "BASIC V2"),
+                ("simon_basic", "Simon BASIC"),
+            )):
+                _button = QRadioButton(_title, self.basic_dialect_groupbox)
+                _button.setObjectName(f"c64_basic_dialect_{_dialect}_radio")
+                self.basic_dialect_group.addButton(_button, _index)
+                self.basic_dialect_buttons[_dialect] = _button
+                basic_group_layout.addWidget(_button)
+            basic_layout.addWidget(self.basic_dialect_groupbox, 0, Qt.AlignTop)
+            basic_layout.addStretch(1)
+            self.stack.addWidget(self.basic_page)
+            self.pages["compiler.basic"] = self.basic_page
+
             add_placeholder("compiler", "Wähle eine Compiler-Unteroption in der TreeList aus.")
             add_placeholder("compiler.input_directory", f"C=64 Profil {self.profile}: Compiler Eingabe-Verzeichnis")
             add_placeholder("compiler.output_directory", f"C=64 Profil {self.profile}: Compiler Ausgabe-Verzeichnis")
@@ -103767,6 +105788,21 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             group_layout.setSpacing(8)
             self.optimizer_enabled_checkbox = QCheckBox("Enable Optimizer", self.optimizer_group)
             group_layout.addWidget(self.optimizer_enabled_checkbox)
+            self.sta_reducer_checkbox = QCheckBox("STA reducer", self.optimizer_group)
+            self.sta_reducer_checkbox.setObjectName("c64_sta_reducer_checkbox")
+            self.sta_reducer_checkbox.setToolTip(
+                "Lange STA-Folgen fuer Software-Sprites als kompakte RLE-/Literal-Tabellen "
+                "mit einer gemeinsamen MOS6510-Routine ausgeben. "
+                "Unabhaengig von der PRINT-Optimizer-Strategie."
+            )
+            group_layout.addWidget(self.sta_reducer_checkbox)
+            self.call_reducer_checkbox = QCheckBox("CALL reducer", self.optimizer_group)
+            self.call_reducer_checkbox.setObjectName("c64_call_reducer_checkbox")
+            self.call_reducer_checkbox.setToolTip(
+                "Entfernt nicht erreichbare MOS6510-Runtime-Routinen durch eine "
+                "konservative JSR/JMP/Kontrollflussanalyse; getrennt vom STA reducer."
+            )
+            group_layout.addWidget(self.call_reducer_checkbox)
             self.strategy_group = QButtonGroup(self.optimizer_group)
             self.strategy_buttons = {}
             for index, (strategy, label) in enumerate(self.STRATEGY_LABELS):
@@ -103878,7 +105914,11 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 radio.toggled.connect(self._speech_changed)
             self.speech_host_combo.currentTextChanged.connect(self._speech_changed)
             self.speech_port_spin.valueChanged.connect(self._speech_changed)
+            for radio in self.basic_dialect_buttons.values():
+                radio.toggled.connect(self._basic_dialect_changed)
             self.optimizer_enabled_checkbox.toggled.connect(self._optimizer_changed)
+            self.sta_reducer_checkbox.toggled.connect(self._sta_reducer_changed)
+            self.call_reducer_checkbox.toggled.connect(self._call_reducer_changed)
             for radio in self.strategy_buttons.values():
                 radio.toggled.connect(self._optimizer_changed)
             self.packer_enabled_checkbox.toggled.connect(self._packer_changed)
@@ -103889,7 +105929,10 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 radio.toggled.connect(self._packer_changed)
             self.set_screen_keyboard(False, "qwertz")
             self.set_speech_settings("internal_samples", 8000, 4, "turbo232", "localhost", 6464)
+            self.set_basic_dialect("basic_v2")
             self.set_optimizer(True, "direct")
+            self.set_sta_reducer(False)
+            self.set_call_reducer(False)
             self.set_packer(False, "none", "balanced", True)
             self.tree.setCurrentItem(self.compiler_optimizer_item)
 
@@ -103996,6 +106039,27 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                     self.speech_port(),
                 )
 
+        def basic_dialect(self) -> str:
+            for dialect, radio in self.basic_dialect_buttons.items():
+                if radio.isChecked():
+                    return dialect
+            return "basic_v2"
+
+        def set_basic_dialect(self, dialect: str) -> None:
+            dialect = _normalize_project_c64_basic_dialect(dialect)
+            self._syncing = True
+            try:
+                self.basic_dialect_buttons[dialect].setChecked(True)
+            finally:
+                self._syncing = False
+
+        def _basic_dialect_changed(self, checked=False) -> None:
+            if self._syncing or not checked:
+                return
+            callback = getattr(self.owner, "set_project_c64_basic_dialect", None)
+            if callable(callback):
+                callback(self.profile, self.basic_dialect())
+
         def optimizer_enabled(self) -> bool:
             return bool(self.optimizer_enabled_checkbox.isChecked())
 
@@ -104015,6 +106079,40 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                     radio.setEnabled(bool(enabled))
             finally:
                 self._syncing = False
+
+        def sta_reducer_enabled(self) -> bool:
+            return bool(self.sta_reducer_checkbox.isChecked())
+
+        def set_sta_reducer(self, enabled: bool) -> None:
+            self._syncing = True
+            try:
+                self.sta_reducer_checkbox.setChecked(bool(enabled))
+            finally:
+                self._syncing = False
+
+        def call_reducer_enabled(self) -> bool:
+            return bool(self.call_reducer_checkbox.isChecked())
+
+        def set_call_reducer(self, enabled: bool) -> None:
+            self._syncing = True
+            try:
+                self.call_reducer_checkbox.setChecked(bool(enabled))
+            finally:
+                self._syncing = False
+
+        def _call_reducer_changed(self, enabled=False) -> None:
+            if self._syncing:
+                return
+            callback = getattr(self.owner, "set_project_c64_call_reducer", None)
+            if callable(callback):
+                callback(self.profile, bool(enabled))
+
+        def _sta_reducer_changed(self, enabled=False) -> None:
+            if self._syncing:
+                return
+            callback = getattr(self.owner, "set_project_c64_sta_reducer", None)
+            if callable(callback):
+                callback(self.profile, bool(enabled))
 
         def _optimizer_changed(self, _checked=False) -> None:
             enabled = self.optimizer_enabled()
@@ -104141,7 +106239,7 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.c64_arch_tabs.setObjectName("project_settings_c64_architecture_tabs")
             c64_layout.addWidget(self.c64_arch_tabs, 1)
             self.c64_pages = {}
-            for _profile in ("68000", "68020", "68030"):
+            for _profile in ("68000", "68010", "68020", "68030"):
                 _page = C64CompilerSettingsPage(owner, _profile, self.c64_arch_tabs)
                 self.c64_arch_tabs.addTab(_page, _profile)
                 self.c64_pages[_profile] = _page
@@ -104310,11 +106408,40 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 "QWidget#project_settings_panel QGroupBox::title { color: " + color + "; }"
             )
 
+        def set_c64_basic_dialect(self, profile: str, dialect: str) -> None:
+            page = self.c64_pages.get(str(profile))
+            if page is not None:
+                page.set_basic_dialect(dialect)
+
+        def c64_basic_dialect(self, profile: str) -> str:
+            page = self.c64_pages.get(str(profile))
+            if page is None:
+                return "basic_v2"
+            return page.basic_dialect()
+
         def set_c64_optimizer(self, profile: str, enabled: bool, strategy: str) -> None:
             profile = str(profile)
             page = self.c64_pages.get(profile)
             if page is not None:
                 page.set_optimizer(enabled, strategy)
+
+        def set_c64_call_reducer(self, profile: str, enabled: bool) -> None:
+            page = self.c64_pages.get(str(profile))
+            if page is not None:
+                page.set_call_reducer(enabled)
+
+        def c64_call_reducer(self, profile: str) -> bool:
+            page = self.c64_pages.get(str(profile))
+            return page.call_reducer_enabled() if page is not None else False
+
+        def set_c64_sta_reducer(self, profile: str, enabled: bool) -> None:
+            page = self.c64_pages.get(str(profile))
+            if page is not None:
+                page.set_sta_reducer(enabled)
+
+        def c64_sta_reducer(self, profile: str) -> bool:
+            page = self.c64_pages.get(str(profile))
+            return page.sta_reducer_enabled() if page is not None else False
 
         def c64_optimizer(self, profile: str) -> Tuple[bool, str]:
             profile = str(profile)
@@ -105616,6 +107743,23 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                           center.y() - self.height() // 2)
 
 
+    class C64ToolEditorDock(QDockWidget):
+        """Stage 388: Dock-Host fuer C64-Editoren und den Resource Alias Builder.
+
+        Die Editor-Widgets bleiben reines QWidget. Insbesondere beim Schliessen
+        ueber die benutzerdefinierte Dock-Titelleiste wird andernfalls das
+        closeEvent des eingebetteten Widgets *nicht* aufgerufen.
+        """
+
+        def closeEvent(self, event: QCloseEvent) -> None:
+            editor = getattr(self, "editor_widget", None)
+            confirm = getattr(editor, "_confirm_discard", None)
+            if callable(confirm) and not confirm():
+                event.ignore()
+                return
+            super().closeEvent(event)
+
+
     class ExplorerWindow(QMainWindow):
         # Stage 232: Thread-Rueckmeldung des VICE Binary Monitor Debugtransfers.
         vice_debug_finished = pyqtSignal(object, bool, str, object)
@@ -105857,47 +108001,56 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 "pe64": {"normal": "default", "workstation": "default"},
             }
             self.project_c64_active_profile = "68000"
+            self.project_c64_basic_dialect: Dict[str, str] = {
+                profile: "basic_v2" for profile in PROJECT_C64_BASIC_DIALECT_PROFILES
+            }
             self.project_c64_screen_keyboard: Dict[str, bool] = {
-                "68000": False, "68020": False, "68030": False,
+                "68000": False, "68010": False, "68020": False, "68030": False,
             }
             self.project_c64_keyboard_layout: Dict[str, str] = {
-                "68000": "qwertz", "68020": "qwertz", "68030": "qwertz",
+                "68000": "qwertz", "68010": "qwertz", "68020": "qwertz", "68030": "qwertz",
             }
             self.project_c64_speech_mode: Dict[str, str] = {
-                "68000": "internal_samples", "68020": "internal_samples", "68030": "internal_samples",
+                "68000": "internal_samples", "68010": "internal_samples", "68020": "internal_samples", "68030": "internal_samples",
             }
             self.project_c64_speech_sample_rate: Dict[str, int] = {
-                "68000": 8000, "68020": 8000, "68030": 8000,
+                "68000": 8000, "68010": 8000, "68020": 8000, "68030": 8000,
             }
             self.project_c64_speech_quality: Dict[str, int] = {
-                "68000": 4, "68020": 4, "68030": 4,
+                "68000": 4, "68010": 4, "68020": 4, "68030": 4,
             }
             self.project_c64_speech_vice_interface: Dict[str, str] = {
-                "68000": "turbo232", "68020": "turbo232", "68030": "turbo232",
+                "68000": "turbo232", "68010": "turbo232", "68020": "turbo232", "68030": "turbo232",
             }
             self.project_c64_speech_host: Dict[str, str] = {
-                "68000": "localhost", "68020": "localhost", "68030": "localhost",
+                "68000": "localhost", "68010": "localhost", "68020": "localhost", "68030": "localhost",
             }
             self.project_c64_speech_port: Dict[str, int] = {
-                "68000": 6464, "68020": 6464, "68030": 6464,
+                "68000": 6464, "68010": 6464, "68020": 6464, "68030": 6464,
             }
             self.project_c64_optimizer_enabled: Dict[str, bool] = {
-                "68000": True, "68020": True, "68030": True,
+                "68000": True, "68010": True, "68020": True, "68030": True,
             }
             self.project_c64_optimizer_strategy: Dict[str, str] = {
-                "68000": "direct", "68020": "direct", "68030": "direct",
+                "68000": "direct", "68010": "direct", "68020": "direct", "68030": "direct",
+            }
+            self.project_c64_sta_reducer: Dict[str, bool] = {
+                "68000": False, "68010": False, "68020": False, "68030": False,
+            }
+            self.project_c64_call_reducer: Dict[str, bool] = {
+                "68000": False, "68010": False, "68020": False, "68030": False,
             }
             self.project_c64_packer_enabled: Dict[str, bool] = {
-                "68000": False, "68020": False, "68030": False,
+                "68000": False, "68010": False, "68020": False, "68030": False,
             }
             self.project_c64_packer_mode: Dict[str, str] = {
-                "68000": "none", "68020": "none", "68030": "none",
+                "68000": "none", "68010": "none", "68020": "none", "68030": "none",
             }
             self.project_c64_packer_search: Dict[str, str] = {
-                "68000": "balanced", "68020": "balanced", "68030": "balanced",
+                "68000": "balanced", "68010": "balanced", "68020": "balanced", "68030": "balanced",
             }
             self.project_c64_packer_include_decruncher_source: Dict[str, bool] = {
-                "68000": True, "68020": True, "68030": True,
+                "68000": True, "68010": True, "68020": True, "68030": True,
             }
             self._project_settings_workspace_active = False
             self._project_settings_workspace_state = {}
@@ -105922,6 +108075,14 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.dism_vice_path = str(
                 self.settings.value("dism/vice_path", "") or ""
             )
+            # Stage 407: explicit VICE resource file and host drive 8;
+            # never silently replace them with a Windows C:\Temp staging path.
+            self.dism_vice_settings_path = str(
+                self.settings.value("dism/vice_settings_path", "") or ""
+            )
+            self.dism_vice_drive8_path = str(
+                self.settings.value("dism/vice_drive8_path", "") or ""
+            )
             self.winuae_path = str(
                 self.settings.value("emulator/winuae_path", "") or ""
             )
@@ -105935,6 +108096,16 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.palette_editor_dialog = None
             self.text_screen_editor_dialog = None
             self.pixel_screen_editor_dialog = None
+            self.sprite_editor_dialog = None
+            # Stage 388: Ein QDockWidget je C64-Editor bzw. Resource Alias Builder.
+            self._c64_tool_docks = {}
+            # Stage 391: Die vier C64-Bild-/Zeicheneditoren ersetzen temporaer
+            # das linke Dateisystem und die zentrale Dokumentflaeche. Die
+            # Projekt-TreeList bleibt zum Wechseln der Ressourcen zugaenglich.
+            self._c64_resource_workspace_active = False
+            self._c64_resource_workspace_dock = None
+            self._c64_resource_workspace_hidden_docks = []
+            self._c64_resource_workspace_central_state = None
 
             # Stage 162: ein einziger nicht-modaler Suchdialog wird zwischen
             # allen SourceTextEdit-Instanzen wiederverwendet.
@@ -105962,6 +108133,7 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.doxygen_dock = None
             self.math_learning_dock = None
             self.math_learning_widget = None
+            self._chemistry_workbench_controller = None
             # Stage 276: eigener Vollflaechen-Lernbereich fuer den Einheitskreis.
             self.unit_circle_dock = None
             self.unit_circle_widget = None
@@ -107325,6 +109497,12 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             )
             self.dism_vice_action.triggered.connect(self.choose_dism_vice)
             self._update_dism_vice_action_text()
+            self.dism_vice_settings_action = QAction("VICE-Einstellungen (vice.ini) ...", self)
+            self.dism_vice_settings_action.triggered.connect(self.choose_dism_vice_settings)
+            self.dism_vice_drive8_action = QAction("VICE-Laufwerk 8 (Verzeichnis) ...", self)
+            self.dism_vice_drive8_action.triggered.connect(self.choose_dism_vice_drive8)
+            self.dism_vice_reset_paths_action = QAction("VICE-Pfadzuordnungen zurücksetzen", self)
+            self.dism_vice_reset_paths_action.triggered.connect(self.reset_dism_vice_paths)
 
             self.winuae_action = QAction("WinUAE", self)
             self.winuae_action.setStatusTip(
@@ -107511,6 +109689,17 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     f"{label} mit der bisherigen Vorlage anlegen",
                 )
 
+            # Stage 396: direkter Einstieg in den dockbaren Sprite-Builder.
+            self.new_c64_sprite_builder_action = self._make_compact_new_action(
+                "Sprite Editor", self.new_c64_sprite_project,
+                "C64-Sprites mit 16-Farben-Palette im Docking-Fenster erstellen",
+            )
+            # Stage 416: eigener Editor mit echten 16 Farbwerten PRO Pixel.
+            self.new_c64_bitmap_sprite_action = self._make_compact_new_action(
+                "Bitmap Sprite Editor", self.new_c64_bitmap_sprite_project,
+                "Bitmap-Sprites frei mit allen 16 C64-Farben je Pixel zeichnen",
+            )
+
             self.compact_new_legacy_actions = {
                 "windows_pe32": (
                     language_action("Pascal-Programm", "pascal", "pe32"),
@@ -107528,10 +109717,10 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     language_action("Assembler-Programm", "assembler", "amiga"),
                 ),
                 "c64": (
-                    language_action("BASIC-Programm", "basic", "c64"),
+                    language_action("BASIC - Programm", "basic", "c64"),
                     language_action("Pascal-Programm", "pascal", "c64"),
                     language_action("C-Programm", "c", "c64"),
-                    language_action("Assembler-Programm", "assembler", "c64"),
+                    language_action("Assembler Programm", "assembler", "c64"),
                 ),
                 "prolog": (),
                 "logo": (),
@@ -107574,7 +109763,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 ("windows_pe32", "Windows PE32"),
                 ("windows_pe64", "Windows PE32+"),
                 ("amiga500", "Amiga 500 ADF"),
-                ("c64", "C= 64 mk68x"),
+                ("c64", "C= 64 m68k"),
                 ("prolog", "PROLOG"),
                 ("logo", "LOGO"),
                 ("dbase", "dBase"),
@@ -107588,6 +109777,10 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 submenu.addAction(actions["project"])
                 submenu.addAction(actions["application"])
                 submenu.addAction(actions["program"])
+                if profile_key == "c64":
+                    submenu.addSeparator()
+                    submenu.addAction(self.new_c64_bitmap_sprite_action)
+                    submenu.addAction(self.new_c64_sprite_builder_action)
                 if profile_key == "dbase":
                     submenu.addSeparator()
                     submenu.addAction(actions["form"])
@@ -107632,10 +109825,9 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 e_baukasten_mode=e_baukasten_mode,
             )
 
-        def resource_dialog(self) -> None:
-            res_window = ResourceBuilderToolWindow(self)
-            res_window.exec_()
-            return
+        def resource_dialog(self, _checked: bool = False) -> None:
+            """Resource Alias Builder als wiederverwendbares Dock zeigen."""
+            self._show_c64_tool_dock("alias_builder")
             
 
         # -------------------------------------------------------------------
@@ -108087,6 +110279,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
             widget.set_dark_mode(self.dark_mode_enabled)
             widget.interest_focus_changed.connect(self._set_math_interest_focus)
+            widget.close_requested.connect(dock.close)
             dock.setWidget(widget)
             dock.hide()
             self.addDockWidget(Qt.LeftDockWidgetArea, dock)
@@ -114285,6 +116478,10 @@ QMenu#green_beige_popup_menu::indicator:checked {{
         # Docking-Fenster ausser dem Projekt-/Informations-Dock rechts.
         # -------------------------------------------------------------------
         def _close_docks_except_project(self, keep_dock=None, keep_docks=()) -> None:
+            # Stage 391: Ein anderer Workspace uebernimmt das Hauptfenster.
+            # Vorher die temporaer gesperrte zentrale Breite zurueckgeben.
+            if getattr(self, "_c64_resource_workspace_active", False):
+                self._restore_c64_resource_workspace()
             project_dock = getattr(self, "right_dock", None)
 
             # Stage 299: Der Tabellen-Designer kann als zentrale Dokumentseite
@@ -115988,10 +118185,20 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     self.project_c64_speech_host.get(_profile, "localhost"),
                     self.project_c64_speech_port.get(_profile, 6464),
                 )
+                panel.set_c64_basic_dialect(
+                    _profile,
+                    self.project_c64_basic_dialect.get(_profile, "basic_v2"),
+                )
                 panel.set_c64_optimizer(
                     _profile,
                     self.project_c64_optimizer_enabled.get(_profile, True),
                     self.project_c64_optimizer_strategy.get(_profile, "direct"),
+                )
+                panel.set_c64_sta_reducer(
+                    _profile, self.project_c64_sta_reducer.get(_profile, False)
+                )
+                panel.set_c64_call_reducer(
+                    _profile, self.project_c64_call_reducer.get(_profile, False)
                 )
                 panel.set_c64_packer(
                     _profile,
@@ -116219,10 +118426,20 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     self.project_c64_speech_host.get(_profile, "localhost"),
                     self.project_c64_speech_port.get(_profile, 6464),
                 )
+                self.project_settings_panel.set_c64_basic_dialect(
+                    _profile,
+                    self.project_c64_basic_dialect.get(_profile, "basic_v2"),
+                )
                 self.project_settings_panel.set_c64_optimizer(
                     _profile,
                     self.project_c64_optimizer_enabled.get(_profile, True),
                     self.project_c64_optimizer_strategy.get(_profile, "direct"),
+                )
+                self.project_settings_panel.set_c64_sta_reducer(
+                    _profile, self.project_c64_sta_reducer.get(_profile, False)
+                )
+                self.project_settings_panel.set_c64_call_reducer(
+                    _profile, self.project_c64_call_reducer.get(_profile, False)
                 )
                 self.project_settings_panel.set_c64_packer(
                     _profile,
@@ -117008,6 +119225,27 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 if self.current_project_path is not None:
                     self.save_project()
 
+        def set_project_c64_basic_dialect(
+            self, profile: str, dialect: str, *, mark_modified: bool = True
+        ) -> None:
+            profile = str(profile or "68000").strip()
+            if profile not in PROJECT_C64_BASIC_DIALECT_PROFILES:
+                profile = "68000"
+            dialect = _normalize_project_c64_basic_dialect(dialect)
+            old = _normalize_project_c64_basic_dialect(
+                self.project_c64_basic_dialect.get(profile, "basic_v2")
+            )
+            self.project_c64_basic_dialect[profile] = dialect
+            panel = getattr(self, "project_settings_panel", None)
+            if panel is not None and hasattr(panel, "c64_pages"):
+                page = panel.c64_pages.get(profile)
+                if page is not None and page.basic_dialect() != dialect:
+                    page.set_basic_dialect(dialect)
+            if old != dialect and mark_modified:
+                self.set_project_modified(True)
+                if self.current_project_path is not None:
+                    self.save_project()
+
         def set_project_c64_optimizer_settings(
             self,
             profile: str,
@@ -117040,6 +119278,52 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 self.set_project_modified(True)
                 if self.current_project_path is not None:
                     self.save_project()
+
+        def set_project_c64_call_reducer(
+            self, profile: str, enabled: bool, *, mark_modified: bool = True
+        ) -> None:
+            profile = str(profile or "68000").strip()
+            if profile not in PROJECT_C64_OPTIMIZER_PROFILES:
+                profile = "68000"
+            enabled = bool(enabled)
+            changed = self.project_c64_call_reducer.get(profile, False) != enabled
+            self.project_c64_call_reducer[profile] = enabled
+            panel = getattr(self, "project_settings_panel", None)
+            if panel is not None and hasattr(panel, "c64_pages"):
+                page = panel.c64_pages.get(profile)
+                if page is not None and page.call_reducer_enabled() != enabled:
+                    page.set_call_reducer(enabled)
+            if changed and mark_modified:
+                self.set_project_modified(True)
+                if self.current_project_path is not None:
+                    self.save_project()
+
+        def _project_c64_call_reducer_configuration(self) -> bool:
+            profile = str(getattr(self, "project_c64_active_profile", "68000") or "68000")
+            return bool(self.project_c64_call_reducer.get(profile, False))
+
+        def set_project_c64_sta_reducer(
+            self, profile: str, enabled: bool, *, mark_modified: bool = True
+        ) -> None:
+            profile = str(profile or "68000").strip()
+            if profile not in PROJECT_C64_OPTIMIZER_PROFILES:
+                profile = "68000"
+            enabled = bool(enabled)
+            changed = self.project_c64_sta_reducer.get(profile, False) != enabled
+            self.project_c64_sta_reducer[profile] = enabled
+            panel = getattr(self, "project_settings_panel", None)
+            if panel is not None and hasattr(panel, "c64_pages"):
+                page = panel.c64_pages.get(profile)
+                if page is not None and page.sta_reducer_enabled() != enabled:
+                    page.set_sta_reducer(enabled)
+            if changed and mark_modified:
+                self.set_project_modified(True)
+                if self.current_project_path is not None:
+                    self.save_project()
+
+        def _project_c64_sta_reducer_configuration(self) -> bool:
+            profile = str(getattr(self, "project_c64_active_profile", "68000") or "68000")
+            return bool(self.project_c64_sta_reducer.get(profile, False))
 
         def _project_c64_optimizer_configuration(self) -> Tuple[bool, str, str]:
             profile = str(getattr(self, "project_c64_active_profile", "68000") or "68000")
@@ -118161,6 +120445,9 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             self.dism_menu.addAction(self.dism_disassemble_action)
             self.dism_menu.addAction(self.dism_ram_image_action)
             self.dism_menu.addAction(self.dism_vice_action)
+            self.dism_menu.addAction(self.dism_vice_settings_action)
+            self.dism_menu.addAction(self.dism_vice_drive8_action)
+            self.dism_menu.addAction(self.dism_vice_reset_paths_action)
             self.dism_menu.addAction(self.winuae_action)
             self.dism_menu.addSeparator()
             
@@ -118217,6 +120504,10 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             self.chemie_menu   = learning_menu.addMenu("Chemie")
             self.chemie_action = self.chemie_menu.addAction("Perioden-System der Elemente")
             self.chemie_action.triggered.connect(self.show_chemie_learning_dock)
+            self.chemie_baukasten_action = self.chemie_menu.addAction('Baukasten')
+            self.chemie_baukasten_action.setObjectName('chemistry_baukasten_action')
+            self.chemie_baukasten_action.setStatusTip('Chemie-Baukasten mit 40 Elementen und Reaktionsbeispielen öffnen')
+            self.chemie_baukasten_action.triggered.connect(self.show_chemie_baukasten_dock)
             
             math_menu = learning_menu.addMenu("Mathe")
             math_menu.setObjectName("learning_math_menu")
@@ -118911,6 +121202,19 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 self._periodic_table_controller = controller
             controller.show_periodic_table()
 
+        def show_chemie_baukasten_dock(self):
+            """Lernen -> Chemie -> Baukasten; neues chemisches Lern-Dock."""
+            controller = getattr(self, '_chemistry_workbench_controller', None)
+            if controller is None:
+                controller = ChemistryWorkbenchController(
+                    self, title_bar_factory=DockTitleBar,
+                )
+                self._chemistry_workbench_controller = controller
+            controller.show_chemistry_workbench()
+            self.statusBar().showMessage(
+                'Chemie-Baukasten geöffnet: Zwei der 40 Elemente auswählen oder hineinziehen.'
+            )
+
         def _favorite_editor_name(
             self, document: DocumentEditor, editor: SourceTextEdit
         ) -> str:
@@ -119057,6 +121361,54 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 self.log(f"VICE ausgewählt: {self.dism_vice_path}")
             elif not self.dism_vice_path:
                 self.dism_vice_action.setChecked(False)
+
+        def choose_dism_vice_settings(self, _checked: bool = False) -> None:
+            """Select an existing VICE vice.ini, e.g. T:\\settings\\vice.ini."""
+            current = self.dism_vice_settings_path
+            start = str(Path(current).parent if current else self.current_directory)
+            chosen, _ = QFileDialog.getOpenFileName(
+                self, "VICE-Konfigurationsdatei auswählen", start,
+                "VICE-Einstellungen (vice.ini *.ini);;Alle Dateien (*)",
+            )
+            if chosen:
+                self.dism_vice_settings_path = str(Path(chosen).resolve())
+                self.settings.setValue('dism/vice_settings_path', self.dism_vice_settings_path)
+                self.log('VICE SETTINGS: ' + self.dism_vice_settings_path)
+
+        def choose_dism_vice_drive8(self, _checked: bool = False) -> None:
+            """The user controls FSDevice8Dir, never C:\\Temp implicitly."""
+            current = self.dism_vice_drive8_path
+            start = str(Path(current) if current else self.current_directory)
+            chosen = QFileDialog.getExistingDirectory(
+                self, "Verzeichnis für virtuelles VICE-Laufwerk 8 wählen", start,
+            )
+            if chosen:
+                self.dism_vice_drive8_path = str(Path(chosen).resolve())
+                self.settings.setValue('dism/vice_drive8_path', self.dism_vice_drive8_path)
+                self.log('VICE DRIVE8 EINSTELLUNG: ' + self.dism_vice_drive8_path)
+
+        def reset_dism_vice_paths(self, _checked: bool = False) -> None:
+            """Use the VICE defaults; stage sprites only in the project."""
+            self.dism_vice_settings_path = ''
+            self.dism_vice_drive8_path = ''
+            self.settings.remove('dism/vice_settings_path')
+            self.settings.remove('dism/vice_drive8_path')
+            self.log('VICE SETTINGS: eigene Pfade zurückgesetzt; Standardkonfiguration aktiv.')
+
+        def _vice_launch_config_options(self) -> list:
+            from c64_vice_assets import c64_vice_configuration_command_options
+            return c64_vice_configuration_command_options(self.dism_vice_settings_path)
+
+        def _vice_sprite_stage_directory(self) -> Optional[Path]:
+            """Explicit path wins; otherwise keep the path stored in vice.ini."""
+            from c64_vice_assets import c64_vice_ini_drive8_directory
+            if self.dism_vice_drive8_path:
+                folder = Path(self.dism_vice_drive8_path).expanduser().resolve()
+            else:
+                folder = c64_vice_ini_drive8_directory(self.dism_vice_settings_path)
+            if folder is not None and not folder.is_dir():
+                raise FileNotFoundError(f'VICE Laufwerk 8: Verzeichnis fehlt: {folder}')
+            return folder
 
         def _update_winuae_action_text(self) -> None:
             if self.winuae_path:
@@ -119854,6 +122206,14 @@ border: 2px solid #2a69aa;
                     widget.set_dark_mode(enabled)
                 elif isinstance(widget, DockSnapOverlay):
                     widget.set_dark_mode(enabled)
+
+            # Stage 386: auch die eigenstaendige Chemie-Arbeitsflaeche
+            # bei laufender Dark-/Light-Mode-Umschaltung aktualisieren.
+            chemistry_controller = getattr(self, '_chemistry_workbench_controller', None)
+            chemistry_dock = (getattr(chemistry_controller, 'dock', None)
+                              if chemistry_controller is not None else None)
+            if chemistry_dock is not None:
+                chemistry_dock.canvas.set_dark_mode(enabled)
 
             project_settings_panel = getattr(self, "project_settings_panel", None)
             if project_settings_panel is not None:
@@ -120845,6 +123205,82 @@ border: 2px solid #2a69aa;
                 use_template=use_template,
             )
 
+        def _new_unsaved_c64_source_document(
+            self, language: str, *, use_template: bool = True,
+            under_c64_target: bool = False,
+        ) -> Optional[DocumentEditor]:
+            """Stage 394: C64-Vorlage zunächst nur im Speicher und Projektbaum.
+
+            Ein Dateipfad wird ausschließlich beim ersten Speichern festgelegt.
+            Unbenannte Blätter werden deshalb nicht als kaputte Pfade in die
+            projektgebundene INI geschrieben.
+            """
+            language = str(language).casefold()
+            if language not in {"basic", "assembler"}:
+                return None
+            self._ensure_project_for_new_document()
+            if language == "basic":
+                # Stage 399: Ein Rechtsklick auf BASIC -> Commodore C= 64
+                # erzeugt das neue Blatt direkt in diesem Unterknoten. Die
+                # bisherigen Datei->Neu-Aufrufe behalten ihren BASIC-Root.
+                root = (self.project_c64_target_nodes.get("basic")
+                        if under_c64_target else self.project_root_items.get("basic"))
+                extension = ".bas"
+                template = (
+                    '10 REM NEUES C64 BASIC-PROGRAMM\n'
+                    '20 PRINT "HALLO C64"\n'
+                    '30 END\n'
+                )
+            else:
+                root = self.project_c64_target_nodes.get("assembler")
+                extension = ".asm"
+                template = (
+                    '; Neues MOS-6510-Assemblerprogramm\n'
+                    '.org $080D\n'
+                    '.entry start\n\n'
+                    'start:\n'
+                    '    rts\n'
+                )
+            if root is None:
+                self.show_error("C64-Projekt", "Der Projektzweig wurde nicht gefunden.")
+                return None
+            used = {str(name).casefold() for name in self._project_existing_names()}
+            directory = self._project_new_file_directory()
+            number = 1
+            while True:
+                filename = f"Unbenannt_{number}{extension}"
+                if filename.casefold() not in used and not (directory / filename).exists():
+                    break
+                number += 1
+            document = self.new_document(text=template if use_template else "", display_name=filename)
+            if language == "basic":
+                # Beim QWidget-Aufbau war der Name noch nicht gesetzt; den
+                # BASIC-Zeilennummern-Gutter explizit mit Vorlage initialisieren.
+                document.raw_editor.set_basic_editor_mode(
+                    True, initial_source=template if use_template else ""
+                )
+                document._apply_source_editor_font()
+            document.set_build_target("c64")
+            document.update_syntax_highlighting()
+            document.mark_saved()
+            document._is_new_c64_project_file = True
+            item = QTreeWidgetItem(root, [filename])
+            item.setData(0, Qt.UserRole + 301, language)
+            item.setData(0, Qt.UserRole + 303,
+                         PROJECT_NODE_C64_SOURCE_FILE
+                         if language == "assembler" or under_c64_target else "")
+            item.setData(0, Qt.UserRole + 305, "c64")
+            item.setData(0, Qt.UserRole + 307, True)  # neu: kein Dateipfad
+            item.setToolTip(0, "Neu – noch nicht gespeichert (Strg+S: Speichern unter)")
+            document._c64_project_tree_item = item
+            root.setExpanded(True)
+            self.project_tree.setCurrentItem(item)
+            self.set_project_modified(True)
+            self._update_document_tab(document)
+            document.focus_preferred_editor()
+            self.statusBar().showMessage(f"Neues C64-{language}-Programm: {filename}", 6000)
+            return document
+
         def new_source_document(
             self,
             language: str,
@@ -120871,6 +123307,8 @@ border: 2px solid #2a69aa;
                 "text": "text_files",
             }
             category_key = category_map.get(key, "text_files")
+            if str(target or "").casefold() == "c64" and key in {"basic", "assembler"}:
+                return self._new_unsaved_c64_source_document(key, use_template=use_template)
             if category_key == "dbase":
                 child = self._create_new_dbase_program_item(
                     use_template=use_template
@@ -121244,125 +123682,322 @@ border: 2px solid #2a69aa;
         def _c64_disassembly_thread_finished(self, job_key: int) -> None:
             self._c64_disassembly_jobs.pop(int(job_key), None)
 
-        def show_character_editor(
-            self,
-            _checked: bool = False,
-            *,
-            initial_path: Optional[Path] = None,
+        def show_sprite_editor(
+            self, _checked: bool = False, *, initial_path: Optional[Path] = None,
         ) -> None:
-            dialog = self.character_editor_dialog
-            if dialog is None or dialog.isHidden():
-                dialog = C64CharacterEditorDialog(
-                    self,
-                    initial_directory=self.current_directory,
-                    initial_path=initial_path,
-                )
-                dialog.setAttribute(Qt.WA_DeleteOnClose, True)
-                dialog.destroyed.connect(
-                    lambda _object=None: setattr(
-                        self,
-                        "character_editor_dialog",
-                        None,
-                    )
-                )
-                self.character_editor_dialog = dialog
-            elif initial_path is not None:
-                dialog.load_file(Path(initial_path))
+            """Stage 396: Sprite Builder als C64-Ressourcen-Dock öffnen."""
+            self._show_c64_tool_dock("sprites", initial_path=initial_path)
 
-            dialog.show()
-            dialog.raise_()
-            dialog.activateWindow()
-            self.statusBar().showMessage("C64 Character-Editor geöffnet")
+        # -------------------------------------------------------------------
+        # Stage 391: C64-Ressourcen im vollen freien Hauptfensterbereich.
+        # Das horizontale Hauptfenster-Trennelement links vom Dock verschwindet,
+        # weil Dateisystem-Dock und zentraler Dokumentbereich temporaer
+        # ausgeblendet werden. Interne Werkzeugpaletten bleiben erhalten.
+        # -------------------------------------------------------------------
+        def _prepare_c64_resource_workspace(self, dock: QDockWidget) -> None:
+            if dock is None or dock.isFloating():
+                return
+            if self._c64_resource_workspace_active:
+                previous = self._c64_resource_workspace_dock
+                if previous is not dock:
+                    if previous is not None:
+                        try:
+                            blocked = previous.blockSignals(True)
+                            try:
+                                previous.hide()
+                            finally:
+                                previous.blockSignals(blocked)
+                        except RuntimeError:
+                            pass
+                    self._c64_resource_workspace_dock = dock
+                return
+
+            # Der Projektbaum rechts bleibt bedienbar, damit der Benutzer
+            # weitere .chr/.scr/.px16/.pal-Blaetter anklicken kann. Ein
+            # zuvor ausgeblendetes Projekt-/Protokoll-Dock wird nicht erzwungen.
+            keep = {dock, getattr(self, "right_dock", None),
+                    getattr(self, "bottom_dock", None)}
+            self._c64_resource_workspace_hidden_docks = []
+            for candidate in self.findChildren(QDockWidget):
+                if candidate in keep or not candidate.isVisible():
+                    continue
+                self._c64_resource_workspace_hidden_docks.append(candidate)
+                blocked = candidate.blockSignals(True)
+                try:
+                    candidate.hide()
+                finally:
+                    candidate.blockSignals(blocked)
+
+            central = self.centralWidget()
+            if central is not None:
+                self._c64_resource_workspace_central_state = (
+                    bool(central.isVisible()),
+                    int(central.minimumWidth()),
+                    int(central.maximumWidth()),
+                )
+                central.hide()
+                # Nur hide() reicht bei QMainWindow nicht: die zentrale
+                # Mindestbreite kann einen leeren Splitter reservieren.
+                central.setMinimumWidth(0)
+                central.setMaximumWidth(0)
+            else:
+                self._c64_resource_workspace_central_state = None
+            self._c64_resource_workspace_dock = dock
+            self._c64_resource_workspace_active = True
+
+        def _restore_c64_resource_workspace(self) -> None:
+            if not self._c64_resource_workspace_active:
+                return
+            self._c64_resource_workspace_active = False
+            self._c64_resource_workspace_dock = None
+
+            state = self._c64_resource_workspace_central_state
+            self._c64_resource_workspace_central_state = None
+            central = self.centralWidget()
+            if central is not None and state is not None:
+                was_visible, minimum, maximum = state
+                central.setMinimumWidth(minimum)
+                central.setMaximumWidth(maximum)
+                central.setVisible(was_visible)
+
+            previous_docks = list(self._c64_resource_workspace_hidden_docks)
+            self._c64_resource_workspace_hidden_docks = []
+            for candidate in previous_docks:
+                try:
+                    blocked = candidate.blockSignals(True)
+                    try:
+                        candidate.show()
+                    finally:
+                        candidate.blockSignals(blocked)
+                except RuntimeError:
+                    pass
+
+        def _expand_c64_resource_workspace(self, dock: QDockWidget) -> None:
+            if (not self._c64_resource_workspace_active
+                    or dock is not self._c64_resource_workspace_dock
+                    or not dock.isVisible() or dock.isFloating()):
+                return
+            try:
+                self.resizeDocks(
+                    [dock], [max(480, self.width() - 24)], Qt.Horizontal
+                )
+                dock.updateGeometry()
+            except RuntimeError:
+                pass
+
+        def _c64_resource_dock_visibility_changed(
+            self, visible: bool, dock: QDockWidget,
+        ) -> None:
+            if visible:
+                if not dock.isFloating():
+                    self._prepare_c64_resource_workspace(dock)
+                    QTimer.singleShot(
+                        0, lambda d=dock: self._expand_c64_resource_workspace(d)
+                    )
+            elif dock is self._c64_resource_workspace_dock:
+                self._restore_c64_resource_workspace()
+
+        def _c64_resource_dock_floating_changed(
+            self, floating: bool, dock: QDockWidget,
+        ) -> None:
+            if floating and dock is self._c64_resource_workspace_dock:
+                # Frei bewegliches Dock braucht die normale IDE darunter.
+                self._restore_c64_resource_workspace()
+            elif not floating and dock.isVisible():
+                self._prepare_c64_resource_workspace(dock)
+                QTimer.singleShot(
+                    0, lambda d=dock: self._expand_c64_resource_workspace(d)
+                )
+
+        def _show_c64_tool_dock(
+            self, kind: str, *, initial_path: Optional[Path] = None,
+        ) -> bool:
+            """Stage 388: Gemeinsamer Dock-Lifecycle fuer bestehende C64-Tools.
+
+            Andere Dateien werden nur nach erfolgreicher Rueckfrage geladen;
+            die gleiche Datei wird nicht erneut geladen (dirty state bleibt).
+            Das Schliessen per X, Editor-Schliessen und Hauptfenster-Schliessen
+            respektiert die _confirm_discard-Logik des jeweiligen Editors.
+            """
+            definitions = {
+                "characters": (
+                    C64CharacterEditorDialog, "C64 Zeichen-Tabellen-Editor",
+                    "character_editor_dialog", "c64_character_editor_dock",
+                    "C64 Character-Editor geöffnet",
+                ),
+                "sprites": (
+                    C64SpriteEditorDialog, "C64 Sprite Builder",
+                    "sprite_editor_dialog", "c64_sprite_builder_dock",
+                    "C64 Sprite Builder geöffnet",
+                ),
+                "bitmap_sprites": (
+                    C64BitmapSpriteEditorDialog, "C64 Bitmap Sprite Editor",
+                    "bitmap_sprite_editor_dialog", "c64_bitmap_sprite_editor_dock",
+                    "C64 Bitmap Sprite Editor geöffnet",
+                ),
+                "palettes": (
+                    C64PaletteEditorDialog, "C64 Paletten-Editor",
+                    "palette_editor_dialog", "c64_palette_editor_dock",
+                    "C64 Paletten-Editor geöffnet",
+                ),
+                "text_screen": (
+                    C64TextScreenEditorDialog, "C64 Text-Bildschirm-Editor",
+                    "text_screen_editor_dialog", "c64_text_screen_editor_dock",
+                    "C64 Text-Bildschirm-Editor geöffnet",
+                ),
+                "pixel_screen": (
+                    C64PixelScreenEditorDialog, "C64 Pixel-Bildschirm-Editor",
+                    "pixel_screen_editor_dialog", "c64_pixel_screen_editor_dock",
+                    "C64 Pixel-Bildschirm-Editor geöffnet",
+                ),
+                "alias_builder": (
+                    ResourceBuilderToolWindow, "Resourcen-Alias-Builder",
+                    "resource_builder_window", "c64_resource_alias_builder_dock",
+                    "Resourcen-Alias-Builder geöffnet",
+                ),
+            }
+            editor_type, title, editor_attr, object_name, message = definitions[kind]
+            dock = self._c64_tool_docks.get(kind)
+            if dock is not None:
+                editor = dock.editor_widget
+                if initial_path is not None:
+                    new_path = Path(initial_path).resolve()
+                    old_path = getattr(editor, "current_path", None)
+                    if old_path is None or Path(old_path).resolve() != new_path:
+                        if not editor.load_file(new_path):
+                            return False
+            else:
+                if kind == "alias_builder":
+                    editor = editor_type(self, self)
+                else:
+                    editor_kwargs = {"initial_directory": self.current_directory}
+                    if kind == "bitmap_sprites":
+                        editor_kwargs["palette"] = C64_CHARACTER_PALETTE
+                    editor = editor_type(self, **editor_kwargs)
+                    if kind in ("sprites", "bitmap_sprites"):
+                        editor.project_owner = self
+                    if initial_path is not None and not editor.load_file(
+                        Path(initial_path).resolve()
+                    ):
+                        editor.deleteLater()
+                        return False
+
+                dock = C64ToolEditorDock(title, self)
+                dock.setObjectName(object_name)
+                dock.setFeatures(self._dock_features())
+                dock.setAllowedAreas(
+                    Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea
+                    | Qt.TopDockWidgetArea | Qt.BottomDockWidgetArea
+                )
+                dock.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+                dock.setMinimumSize(240, 180)
+
+                # Auch breite Pixel-/Zeichentabellen duerfen die Hauptfenster-
+                # Geometrie nicht erzwingen: bei Bedarf separat scrollen.
+                scroll = QScrollArea(dock)
+                scroll.setObjectName(object_name + "_scroll")
+                scroll.setWidgetResizable(True)
+                scroll.setFrameShape(QFrame.NoFrame)
+                scroll.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+                scroll.setMinimumSize(0, 0)
+                editor.setMinimumSize(0, 0)
+                editor.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+                scroll.setWidget(editor)
+                dock.setWidget(scroll)
+                dock.editor_widget = editor
+
+                # Bearbeitungsstatus (*) und Fenstertitel synchronisieren.
+                # Im Editor bleibt setWindowTitle unveraendert erhalten.
+                editor.windowTitleChanged.connect(dock.setWindowTitle)
+                if kind != "alias_builder":
+                    dock.setWindowTitle(editor.windowTitle())
+                dock.setTitleBarWidget(DockTitleBar(dock))
+                if hasattr(editor, "close_button"):
+                    try:
+                        editor.close_button.clicked.disconnect()
+                    except (TypeError, RuntimeError):
+                        pass
+                    editor.close_button.clicked.connect(
+                        lambda _checked=False, current=dock: current.close()
+                    )
+
+                # Nach dem Schliessen nicht versehentlich den alten Dialog
+                # erneut benutzen; Qt beseitigt Dock und Inhalt gemeinsam.
+                dock.setAttribute(Qt.WA_DeleteOnClose, True)
+                self._c64_tool_docks[kind] = dock
+                setattr(self, editor_attr, editor)
+                dock.destroyed.connect(
+                    lambda _obj=None, key=kind, attr=editor_attr:
+                        self._c64_tool_dock_destroyed(key, attr)
+                )
+                # Stage 391: Links andocken, dort das Dateisystem
+                # temporaer ausblenden. So belegt der Bild-/Zeicheneditor
+                # den Bereich bis zum rechts verbliebenen Projektbaum.
+                self.addDockWidget(
+                    Qt.RightDockWidgetArea if kind == "alias_builder"
+                    else Qt.LeftDockWidgetArea, dock
+                )
+                # Die vier Bildschirm-/Zeichen-Docks bekommen einen
+                # exklusiven Arbeitsbereich, der Alias-Builder nicht.
+                if kind != "alias_builder":
+                    dock.visibilityChanged.connect(
+                        lambda visible, current=dock:
+                            self._c64_resource_dock_visibility_changed(visible, current)
+                    )
+                    dock.topLevelChanged.connect(
+                        lambda floating, current=dock:
+                            self._c64_resource_dock_floating_changed(floating, current)
+                    )
+                    dock.dockLocationChanged.connect(
+                        lambda _area, current=dock:
+                            QTimer.singleShot(0, lambda d=current:
+                                self._expand_c64_resource_workspace(d))
+                    )
+                self._assign_widget_property_ids(dock)
+
+            if kind != "alias_builder" and not dock.isFloating():
+                # Bei bereits sichtbaren Docks feuert show() kein Signal.
+                self._prepare_c64_resource_workspace(dock)
+            dock.show()
+            dock.raise_()
+            if kind != "alias_builder":
+                QTimer.singleShot(
+                    0, lambda d=dock: self._expand_c64_resource_workspace(d)
+                )
+            if dock.isFloating():
+                dock.activateWindow()
+            editor.setFocus(Qt.OtherFocusReason)
+            self.statusBar().showMessage(message)
+            return True
+
+        def _c64_tool_dock_destroyed(self, kind: str, editor_attr: str) -> None:
+            """QDockWidget (WA_DeleteOnClose) und Editor-Referenz entfernen."""
+            deleted = self._c64_tool_docks.pop(kind, None)
+            if kind in ("sprites", "bitmap_sprites"):
+                self._cleanup_pending_sprite_leaves(kind)
+            if deleted is self._c64_resource_workspace_dock:
+                self._restore_c64_resource_workspace()
+            setattr(self, editor_attr, None)
+
+        def show_character_editor(
+            self, _checked: bool = False, *, initial_path: Optional[Path] = None,
+        ) -> None:
+            self._show_c64_tool_dock("characters", initial_path=initial_path)
 
         def show_palette_editor(
-            self,
-            _checked: bool = False,
-            *,
-            initial_path: Optional[Path] = None,
+            self, _checked: bool = False, *, initial_path: Optional[Path] = None,
         ) -> None:
-            dialog = self.palette_editor_dialog
-            if dialog is None or dialog.isHidden():
-                dialog = C64PaletteEditorDialog(
-                    self,
-                    initial_directory=self.current_directory,
-                    initial_path=initial_path,
-                )
-                dialog.setAttribute(Qt.WA_DeleteOnClose, True)
-                dialog.destroyed.connect(
-                    lambda _object=None: setattr(
-                        self,
-                        "palette_editor_dialog",
-                        None,
-                    )
-                )
-                self.palette_editor_dialog = dialog
-            elif initial_path is not None:
-                dialog.load_file(Path(initial_path))
-
-            dialog.show()
-            dialog.raise_()
-            dialog.activateWindow()
-            self.statusBar().showMessage("C64 Paletten-Editor geöffnet")
+            self._show_c64_tool_dock("palettes", initial_path=initial_path)
 
         def show_text_screen_editor(
-            self,
-            _checked: bool = False,
-            *,
-            initial_path: Optional[Path] = None,
+            self, _checked: bool = False, *, initial_path: Optional[Path] = None,
         ) -> None:
-            dialog = self.text_screen_editor_dialog
-            if dialog is None or dialog.isHidden():
-                dialog = C64TextScreenEditorDialog(
-                    self,
-                    initial_directory=self.current_directory,
-                    initial_path=initial_path,
-                )
-                dialog.setAttribute(Qt.WA_DeleteOnClose, True)
-                dialog.destroyed.connect(
-                    lambda _object=None: setattr(
-                        self,
-                        "text_screen_editor_dialog",
-                        None,
-                    )
-                )
-                self.text_screen_editor_dialog = dialog
-            elif initial_path is not None:
-                dialog.load_file(Path(initial_path))
-
-            dialog.show()
-            dialog.raise_()
-            dialog.activateWindow()
-            self.statusBar().showMessage("C64 Text-Bildschirm-Editor geöffnet")
+            self._show_c64_tool_dock("text_screen", initial_path=initial_path)
 
         def show_pixel_screen_editor(
-            self,
-            _checked: bool = False,
-            *,
-            initial_path: Optional[Path] = None,
+            self, _checked: bool = False, *, initial_path: Optional[Path] = None,
         ) -> None:
-            dialog = self.pixel_screen_editor_dialog
-            if dialog is None or dialog.isHidden():
-                dialog = C64PixelScreenEditorDialog(
-                    self,
-                    initial_directory=self.current_directory,
-                    initial_path=initial_path,
-                )
-                dialog.setAttribute(Qt.WA_DeleteOnClose, True)
-                dialog.destroyed.connect(
-                    lambda _object=None: setattr(
-                        self,
-                        "pixel_screen_editor_dialog",
-                        None,
-                    )
-                )
-                self.pixel_screen_editor_dialog = dialog
-            elif initial_path is not None:
-                dialog.load_file(Path(initial_path))
-
-            dialog.show()
-            dialog.raise_()
-            dialog.activateWindow()
-            self.statusBar().showMessage("C64 Pixel-Bildschirm-Editor geöffnet")
+            self._show_c64_tool_dock("pixel_screen", initial_path=initial_path)
 
         def _add_document_tab(self, document: DocumentEditor) -> None:
             index = self.document_tabs.addTab(document, document.display_name)
@@ -121415,6 +124050,9 @@ border: 2px solid #2a69aa;
             )
             document.basic_vice_requested.connect(
                 self._handle_basic_vice_debug_request
+            )
+            document.assembler_vice_requested.connect(
+                self._handle_assembler_vice_debug_request
             )
             document.build_generated_requested.connect(
                 self.build_and_run_generated_assembly_document
@@ -121716,6 +124354,31 @@ border: 2px solid #2a69aa;
                     suggested_name += ".txt"
                 initial = str(self.current_directory / suggested_name)
 
+            # Stage 394: bei C64-Neudokumenten Formatwahl begrenzen und
+            # Datei-/Verzeichniswahl im ersten Speichern-unter anbieten.
+            if getattr(document, "_is_new_c64_project_file", False):
+                suffix = Path(document.display_name).suffix.casefold()
+                default_suffix = ".bas" if suffix in {".bas", ".basic"} else ".asm"
+                initial = str(self._project_new_file_directory() / document.display_name)
+                filter_text = (
+                    "C64 BASIC-Dateien (*.bas *.basic)"
+                    if default_suffix == ".bas" else
+                    "C64 Assembler-Dateien (*.asm *.s *.a65)"
+                )
+                filename, _selected = QFileDialog.getSaveFileName(
+                    self, "C64-Programm erstmals speichern unter", initial, filter_text,
+                )
+                if not filename:
+                    return None
+                target = Path(filename).expanduser()
+                if not target.suffix:
+                    target = target.with_suffix(default_suffix)
+                permitted = {".bas", ".basic"} if default_suffix == ".bas" else {".asm", ".s", ".a65"}
+                if target.suffix.casefold() not in permitted:
+                    self.show_error("Ungültiger Dateityp", "Erlaubte Erweiterungen: " + ", ".join(sorted(permitted)))
+                    return None
+                return target.resolve()
+
             # Stage 335: Nur der dBase-Editor bekommt die eigenständigen
             # Quelltextfilter. Andere Editor-Typen behalten ihre Dateiformate.
             is_dbase_editor = (
@@ -121769,6 +124432,21 @@ border: 2px solid #2a69aa;
                     self.statusBar().showMessage("Speichern abgebrochen")
                     return False
 
+            # Ein neu erzeugtes C64-Blatt darf niemals eine schon vorhandene
+            # Datei überschreiben (auch nicht durch Save-Dialog-Bestätigung).
+            if getattr(document, "_is_new_c64_project_file", False):
+                try:
+                    collision = target.exists() or any(
+                        entry.name.casefold() == target.name.casefold()
+                        for entry in target.parent.iterdir()
+                    ) if target.parent.is_dir() else target.exists()
+                except OSError as exc:
+                    self.show_error("Dateiprüfung fehlgeschlagen", str(exc))
+                    return False
+                if collision:
+                    self.show_error("Datei bereits vorhanden", f"Die Datei existiert bereits:\n{target}\n\nSpeichern nicht möglich.")
+                    return False
+
             conflicting = self._find_open_document(target)
             if conflicting is not None and conflicting is not document:
                 self.show_error(
@@ -121815,6 +124493,17 @@ border: 2px solid #2a69aa;
 
             document.path = target.resolve()
             document.custom_display_name = None
+            new_c64_item = getattr(document, "_c64_project_tree_item", None)
+            if getattr(document, "_is_new_c64_project_file", False) and new_c64_item is not None:
+                new_c64_item.setText(0, document.path.name)
+                new_c64_item.setData(0, Qt.UserRole + 302, str(document.path))
+                new_c64_item.setData(0, Qt.UserRole + 307, False)
+                new_c64_item.setToolTip(0, str(document.path))
+                new_c64_item.setIcon(0, self.icon_provider.icon(QFileInfo(str(document.path))))
+                document._is_new_c64_project_file = False
+                self.set_project_modified(True)
+                if self.current_project_path is not None:
+                    self.save_project()
             if document.source_language() == "basic":
                 self._last_opened_c64_basic_path = Path(document.path)
             if save_disassembly_source:
@@ -121981,6 +124670,27 @@ border: 2px solid #2a69aa;
                     )
                 )
             )
+
+        def _refresh_assembled_hex_view(
+            self, document: DocumentEditor, output_path: Path,
+        ) -> None:
+            """Stage 393: bindet den Hex-Viewer an die *geschriebene* Ausgabe.
+
+            Erfolgreicher C64-.prg-Build zeigt Dateibytes inkl. 2-Byte-Header;
+            bei anderen Zielen wird ebenso die finale Ausgabe angezeigt.
+            Im Fehlerfall den letzten Puffer unveraendert lassen.
+            """
+            if not isinstance(document, DocumentEditor):
+                return
+            path = Path(output_path)
+            try:
+                image = path.read_bytes()
+            except OSError as exc:
+                self.log(f"HEX REFRESH: {path}: {exc}")
+                return
+            document.show_assembled_hex_bytes(image, path)
+            self.log(f"HEX REFRESH: {path.name}: {len(image)} Bytes")
+            self._update_editor_status_panels()
 
         @staticmethod
         def _write_assembled_program(path: Path, data: bytes) -> None:
@@ -122215,9 +124925,28 @@ border: 2px solid #2a69aa;
             """C64 BASIC -> editierbarer MOS-6510-Assemblercode."""
             if document.build_target != "c64":
                 document.set_build_target("c64")
+            source = ""
+            compiler_location = "unbekannt"
             try:
                 from c64basic import C64BasicError, compile_basic_to_assembly
+                import c64basic.compiler as _c64_basic_compiler_impl
+                compiler_location = str(getattr(_c64_basic_compiler_impl, "__file__", "(gebuendelt)"))
                 source = document.basic_source_for_compiler()
+                # Stage 414: Hilfe bei einem Konflikt zwischen sichtbarem
+                # C64-Editor und tatsaechlich geladenem BASIC-Compiler.
+                sprite_statements = [
+                    line for line in source.splitlines()
+                    if re.match(r"(?i)^\s*(?:\d+\s+)?LOAD\s*SPRITE\b", line)
+                ]
+                if sprite_statements:
+                    supported = callable(getattr(_c64_basic_compiler_impl, "c64_basic_sprite_command", None))
+                    self.log(f"C64 BASIC COMPILER: {compiler_location}; LOAD SPRITE={'ja' if supported else 'NEIN'}")
+                    self.log(f"C64 BASIC EINGABE: {sprite_statements[0]!r}")
+                    if not supported:
+                        raise C64BasicError(
+                            "Der geladene BASIC-Compiler kennt LOAD SPRITE nicht. "
+                            f"Pruefe compiler.py und den gestarteten d64_dism-Stand: {compiler_location}"
+                        )
                 assembly_path = self._basic_assembly_output_path(document)
                 _optimizer_enabled, _optimizer_strategy, _optimizer_profile = (
                     self._project_c64_optimizer_configuration()
@@ -122228,6 +124957,8 @@ border: 2px solid #2a69aa;
                     target="c64",
                     optimizer_enabled=_optimizer_enabled,
                     optimizer_strategy=_optimizer_strategy,
+                    sta_reducer=self._project_c64_sta_reducer_configuration(),
+                    call_reducer=self._project_c64_call_reducer_configuration(),
                 )
                 self.statusBar().showMessage(
                     "C64 BASIC Optimizer: "
@@ -122239,6 +124970,23 @@ border: 2px solid #2a69aa;
             except (ImportError, C64BasicError, ValueError) as exc:
                 message = str(exc)
                 error_line = getattr(exc, "line", 0) or 0
+                # Stage 414: Fehlerquelle transparent machen. Bisher war bei
+                # "Variable oder Arrayelement erwartet" nicht zu sehen,
+                # welche Anweisung der Parser wirklich verarbeitet hat.
+                statement = getattr(exc, "source_statement", None)
+                physical = next(
+                    (line for line in source.splitlines()
+                     if re.match(rf"^\s*{error_line}\s+", line)),
+                    None,
+                ) if error_line else None
+                if statement is not None:
+                    message += f"\nParser-Anweisung: {statement!r}"
+                    self.log(f"C64 BASIC PARSERFEHLER: {statement!r}")
+                if physical is not None:
+                    message += f"\nQuelltext im Compiler: {physical!r}"
+                    self.log(f"C64 BASIC FEHLERZEILE {error_line}: {physical!r}")
+                if source and (statement is not None or physical is not None):
+                    message += f"\nCompiler-Modul: {compiler_location}"
                 document.show_assembly_error(
                     message,
                     error_line,
@@ -123429,6 +126177,7 @@ border: 2px solid #2a69aa;
             )
             if output_path.parent == self.current_directory:
                 self.populate_file_list()
+            self._refresh_assembled_hex_view(document, output_path)
             if is_prolog_build:
                 document.finish_prolog_build_progress(True, "Erfolgreich assembliert")
                 self._show_message_box(
@@ -123982,6 +126731,7 @@ border: 2px solid #2a69aa;
             )
             if output_path.parent == self.current_directory:
                 self.populate_file_list()
+            self._refresh_assembled_hex_view(document, output_path)
             return True
 
         def _capture_vice_host_window_size(self):
@@ -124119,6 +126869,299 @@ border: 2px solid #2a69aa;
                 f"Unbekannte VICE-BASIC-Debugaktion: {operation!r}"
             )
 
+        @staticmethod
+        def _assembler_vice_step_plan(source: str, operation: str, editor) -> Tuple[bytes, int, int]:
+            """Quellzeilen -> echte Instruktionsadressen des ungepackten PRG.
+
+            Nicht die Auswahl isoliert assemblieren: Labels/Absolute Adressen
+            muessen zum vollstaendigen Quelltext passen. Ein verzweigter
+            Kontrollfluss kann von der Auswahl abweichen (Debug-Stepping).
+            """
+            program = assemble_mos6510_source(source)
+            statements = _parse_assembler_source(source)
+            layout = _converged_assembler_layout(statements)
+            cursor = editor.textCursor()
+            if operation == "line":
+                first = last = cursor.blockNumber() + 1
+            else:
+                if not cursor.hasSelection():
+                    raise ViceBinaryMonitorError("Im Assembler-Editor ist nichts markiert.")
+                first = editor.document().findBlock(cursor.selectionStart()).blockNumber() + 1
+                last_pos = max(cursor.selectionStart(), cursor.selectionEnd() - 1)
+                last = editor.document().findBlock(last_pos).blockNumber() + 1
+            instructions = [
+                item for item in layout.items
+                if first <= item.statement.line <= last
+                and item.statement.kind == "instruction"
+            ]
+            if not instructions:
+                raise ViceBinaryMonitorError("Die gewaehlte Zeile/Auswahl enthaelt keine MOS6510-Instruktion.")
+            if len(instructions) > 0xFFFF:
+                raise ViceBinaryMonitorError("Zu viele Instruktionen fuer VICE-Step.")
+            load, payload, _ = c64_vice_prg_memory_image(program.prg, program.entry_address)
+            return program.prg, instructions[0].address, len(instructions)
+
+        def _handle_assembler_vice_debug_request(
+            self, document: DocumentEditor, operation: str,
+        ) -> None:
+            """Stage 395: MOS6510-PRG via VICE Binary Monitor in RAM / CPU."""
+            if not isinstance(document, DocumentEditor) or not document.is_assembler_document:
+                return
+            if document.build_target != "c64":
+                self.show_error("VICE Assembler", "VICE kann hier nur C64-MOS6510-Assembler ausfuehren.")
+                return
+            operation = str(operation or "").strip().casefold()
+            if operation not in {"line", "selection", "program", "run", "resume"}:
+                self.show_error("VICE Assembler", f"Unbekannte Aktion: {operation}")
+                return
+            # Alles, was Qt-Objekte beruehrt, findet im Hauptthread statt.
+            # Der Worker bekommt nur unveraenderliche Bytes/Adressen.
+            try:
+                step_count = 0
+                if operation in {"line", "selection"}:
+                    prg_data, entry_address, step_count = self._assembler_vice_step_plan(
+                        document.raw_editor.toPlainText(), operation, document.raw_editor
+                    )
+                elif operation == "resume":
+                    prg_data, entry_address = b"", 0
+                else:
+                    current_digest = hashlib.sha256(
+                        document.raw_editor.toPlainText().encode("utf-8")
+                    ).hexdigest()
+                    path = document.assembled_program_path
+                    if (
+                        path is None or not path.is_file()
+                        or document.assembled_target != "c64"
+                        or document.assembled_input_kind != "source"
+                        or document.assembled_source_digest != current_digest
+                    ):
+                        if not self.assemble_document(document):
+                            return
+                        path = document.assembled_program_path
+                    if path is None or document.assembled_program is None:
+                        raise ViceBinaryMonitorError("Kein assembliertes C64-Programm verfuegbar.")
+                    prg_data = path.read_bytes()
+                    entry_address = document.assembled_program.entry_address
+                if operation != "resume":
+                    load_address, payload, entry_address = c64_vice_prg_memory_image(
+                        prg_data, entry_address
+                    )
+                else:
+                    load_address, payload = 0, b""
+            except (AssemblerError, ViceBinaryMonitorError, OSError) as exc:
+                self.show_error("VICE Assembler", str(exc))
+                return
+
+            monitor_running = self._vice_binary_monitor_probe()
+            vice_path = None
+            if not monitor_running:
+                vice_path = self._resolve_vice_for_program_start()
+                if vice_path is None:
+                    return
+            vice_window_size = self._capture_vice_host_window_size()
+            self._vice_debug_window_size = vice_window_size
+            labels = {
+                "line": "Assembler-Zeile einzeln ausführen",
+                "selection": "Assembler-Auswahl schrittweise ausführen",
+                "program": "PRG-Bytes an VICE übertragen",
+                "run": "PRG-Bytes übertragen und ausführen",
+                "resume": "VICE Monitor fortsetzen",
+            }
+            description = labels[operation]
+            self.statusBar().showMessage(f"VICE ASM: {description} ...")
+            self.log(
+                f"VICE ASM: {description}; "
+                f"{len(payload)} Bytes ab ${load_address:04X}; PC ${entry_address:04X}"
+            )
+
+            def worker():
+                spawned_process = None
+                try:
+                    if not monitor_running:
+                        command = [
+                            str(vice_path), *self._vice_launch_config_options(),
+                            "-binarymonitor", "-binarymonitoraddress",
+                            f"ip4://{VICE_BINARY_MONITOR_HOST}:{VICE_BINARY_MONITOR_PORT}",
+                        ]
+                        options = {
+                            "cwd": str(Path(vice_path).resolve().parent),
+                            "stdin": subprocess.DEVNULL,
+                            "stdout": subprocess.DEVNULL,
+                            "stderr": subprocess.DEVNULL,
+                        }
+                        if os.name == "nt" and hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
+                            options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+                        spawned_process = subprocess.Popen(command, **options)
+                        deadline = time.monotonic() + 8.0
+                        while time.monotonic() < deadline:
+                            if spawned_process.poll() is not None:
+                                raise ViceBinaryMonitorError(
+                                    "VICE wurde vor dem Start des Binary Monitors beendet."
+                                )
+                            try:
+                                with ViceBinaryMonitorClient(timeout=0.35) as probe:
+                                    probe.ping()
+                                break
+                            except ViceBinaryMonitorError:
+                                time.sleep(0.15)
+                        else:
+                            raise ViceBinaryMonitorError(
+                                "VICE Binary Monitor auf 127.0.0.1:6502 nicht erreichbar."
+                            )
+                        time.sleep(0.85)
+                    with ViceBinaryMonitorClient(timeout=2.5) as client:
+                        if operation == "resume":
+                            client.resume()
+                        else:
+                            client.write_memory(load_address, payload)
+                            if operation in {"run", "line", "selection"}:
+                                client.set_program_counter(entry_address)
+                                if operation == "run":
+                                    client.resume()
+                                else:
+                                    client.advance_instructions(step_count)
+                    result = (
+                        f"{description}: ${load_address:04X}-"
+                        f"${load_address + len(payload) - 1:04X}; "
+                        f"Einsprung ${entry_address:04X}; "
+                        + (f"{step_count} Step(s), Monitor angehalten" if step_count else "OK")
+                    ) if operation != "resume" else "VICE Monitor fortgesetzt"
+                    self.vice_debug_finished.emit(document, True, result, spawned_process)
+                except (OSError, ViceBinaryMonitorError) as exc:
+                    self.vice_debug_finished.emit(document, False, str(exc), spawned_process)
+
+            thread = threading.Thread(
+                target=worker, name="d64-vice-assembler-debug", daemon=True
+            )
+            self._vice_debug_threads = [
+                item for item in self._vice_debug_threads if item.is_alive()
+            ]
+            self._vice_debug_threads.append(thread)
+            thread.start()
+            self._schedule_vice_host_window_size_restore(vice_window_size)
+
+        def _stage_c64_basic_sprite_dependencies(
+            self,
+            document: DocumentEditor,
+            *, extra_directory: Optional[Path] = None,
+        ) -> Optional[Path]:
+            """Stage literal LOAD *.spr,8,1 dependencies on VICE device 8."""
+            from c64_vice_assets import prepare_c64_vice_sprite_drive
+            roots = [extra_directory] if extra_directory is not None else []
+            # Sprite-Dateien koennen in der Projekt-TreeList in separaten
+            # Ordnern eingetragen sein; diese Verzeichnisse ebenfalls suchen.
+            for attr in ('project_c64_sprites_root', 'project_c64_resource_root'):
+                root = getattr(self, attr, None)
+                if root is None:
+                    continue
+                for index in range(root.childCount()):
+                    entry = root.child(index)
+                    filename = str(entry.data(0, Qt.UserRole + 302) or '').strip()
+                    if filename:
+                        roots.append(Path(filename).parent)
+            return prepare_c64_vice_sprite_drive(
+                document.basic_source_for_compiler(), document.path,
+                search_dirs=roots, stage_root=self._vice_sprite_stage_directory(),
+            )
+
+        def _stage_c64_generated_basic_sprite_dependencies(
+            self,
+            document: DocumentEditor,
+            *,
+            extra_directory: Optional[Path] = None,
+        ) -> Optional[Path]:
+            """Stage assets when a separately opened *.generated.asm is run.
+
+            Stage 402 only handled an active BASIC editor. An independently
+            opened generated assembler file is still a BASIC compiler output,
+            and its LOAD statements need the exact same virtual drive.
+            """
+            from c64_vice_assets import (
+                c64_generated_asm_basic_source,
+                prepare_c64_vice_sprite_drive,
+            )
+
+            asm_path = getattr(document, 'path', None)
+            if asm_path is None:
+                return None
+            assembly_text = document.raw_editor.toPlainText()
+            if not assembly_text.lstrip().startswith(';') or (
+                'C64 BASIC Compiler output:' not in assembly_text[:1024]
+            ):
+                return None
+            basic_path = c64_generated_asm_basic_source(
+                Path(asm_path),
+                output_directory=extra_directory,
+                assembly_source=assembly_text,
+            )
+            if basic_path is None:
+                self.log(
+                    'VICE DRIVE8 HINWEIS: Zu generierter BASIC-Assemblerdatei '
+                    f'{asm_path} wurde keine .bas/.basic-Quelldatei gefunden; '
+                    'Sprite-LOAD-Dateien werden nicht automatisch bereitgestellt.'
+                )
+                return None
+            roots = [extra_directory] if extra_directory is not None else []
+            for attr in ('project_c64_sprites_root', 'project_c64_resource_root'):
+                root = getattr(self, attr, None)
+                if root is None:
+                    continue
+                for index in range(root.childCount()):
+                    entry = root.child(index)
+                    filename = str(entry.data(0, Qt.UserRole + 302) or '').strip()
+                    if filename:
+                        roots.append(Path(filename).parent)
+            return prepare_c64_vice_sprite_drive(
+                basic_path.read_text(encoding='utf-8-sig', errors='replace'),
+                basic_path,
+                search_dirs=roots, stage_root=self._vice_sprite_stage_directory(),
+            )
+
+        def _stage_c64_sprite_disk(
+            self,
+            document: DocumentEditor,
+            sprite_drive: Path,
+            *,
+            program_path: Optional[Path] = None,
+        ) -> tuple[Path, Optional[str]]:
+            """Stage 409: real writable 1541 disk, not a host filesystem trap.
+
+            The exact LOAD dependencies are taken from the originating BASIC
+            source; unrelated .spr files in a shared host folder are ignored.
+            """
+            from c64_vice_assets import (
+                c64_basic_sprite_load_names, c64_generated_asm_basic_source,
+            )
+            from c64_d64_disk import prepare_c64_sprite_disk
+            if document.is_basic_document:
+                source = document.basic_source_for_compiler()
+            else:
+                asm_path = getattr(document, 'path', None)
+                if asm_path is None:
+                    raise ValueError('VICE D64: Pfad der erzeugten ASM-Datei fehlt.')
+                source_file = c64_generated_asm_basic_source(
+                    Path(asm_path), output_directory=(program_path.parent if program_path else None),
+                    assembly_source=document.raw_editor.toPlainText(),
+                )
+                if source_file is None:
+                    raise FileNotFoundError('VICE D64: zugehoerige BASIC-Quelle fehlt.')
+                source = source_file.read_text(encoding='utf-8-sig', errors='replace')
+            names = c64_basic_sprite_load_names(source)
+            # A derived file name must fit the Commodore DOS 16-char limit.
+            # Keep normal paths like Sprite_A unchanged whenever possible.
+            program_label = None
+            if program_path is not None:
+                import re as _re
+                # PETSCII $5F is a LEFT ARROW, not an ASCII underscore.
+                # Prefer visually readable C64 filenames for generated PRGs.
+                program_label = _re.sub(r'[^A-Za-z0-9.-]', '-', Path(program_path).stem).upper()[:16]
+                if not program_label:
+                    program_label = 'PROGRAM'
+            return prepare_c64_sprite_disk(
+                sprite_drive, names=names,
+                program_path=program_path, program_name=program_label,
+            )
+
         def _handle_basic_vice_debug_request(
             self,
             document: DocumentEditor,
@@ -124134,11 +127177,51 @@ border: 2px solid #2a69aa;
                 self.show_error("VICE BASIC Debug", str(exc))
                 return
 
-            # Wenn bereits ein Binary Monitor lauscht, wird kein weiterer VICE-
-            # Prozess gestartet. Andernfalls wird der konfigurierte x64sc/x64
-            # mit dem Debugmonitor auf 127.0.0.1:6502 gestartet.
+            # Stage 417: no pretending that the stock BASIC-V2 interpreter
+            # understands SOFTWARE sprite commands. Native MOS6510 compiler
+            # implements these currently; the BASIC remote feed does not.
+            if any(re.match(r'(?is)^\s*(?:\d+\s+)?(?:SPRITE\s+(?:SOFTWARE|DRAW|ERASE)|SCREEN\s+(?:ON|WAIT|OFF))\b', line)
+                   for line in commands):
+                self.show_error(
+                    'VICE BASIC Debug - Bitmap Software-Sprites',
+                    'SPRITE SOFTWARE, SPRITE DRAW/ERASE und SCREEN ON/WAIT/OFF '
+                    'benoetigen die kompilierte 6510-Runtime. '
+                    'Bitte BASIC mit Compile -> Assemble -> Start ausfuehren. '
+                    'Die direkte BASIC-V2-Debuguebertragung unterstuetzt diese '
+                    'Anweisungen noch nicht.',
+                )
+                return
+
+            try:
+                sprite_drive = self._stage_c64_basic_sprite_dependencies(document)
+            except (OSError, ValueError) as exc:
+                self.show_error('VICE BASIC Sprite-Datei', str(exc))
+                return
+
+            # Build disk before emitting any BASIC line. A pre-existing VICE
+            # cannot be safely attached via API-v2 resource setting (FSDevice8Dir
+            # does NOT attach D64 images). Never silently use a wrong drive.
+            sprite_disk = None
+            if sprite_drive is not None:
+                try:
+                    sprite_disk, _ = self._stage_c64_sprite_disk(document, sprite_drive)
+                except (OSError, ValueError) as exc:
+                    self.show_error('VICE BASIC Sprite-D64', str(exc))
+                    return
+                self.log(f'VICE D64: Diskettenimage erstellt: {sprite_disk}')
             vice_path = None
             monitor_running = self._vice_binary_monitor_probe()
+            if monitor_running and sprite_disk is not None and (
+                getattr(self, '_vice_debug_attached_d64', None) != str(sprite_disk)
+            ):
+                self.show_error(
+                    'VICE D64-Laufwerk 8',
+                    'Ein VICE-Binary-Monitor ist bereits aktiv. Das neue D64 kann '
+                    'nicht mit der Ressourcenumschaltung fuer Host-Verzeichnisse '
+                    'eingelegt werden. Bitte VICE beenden und den BASIC-Transfer '
+                    'erneut ueber d64_dism starten.\n\nImage: ' + str(sprite_disk),
+                )
+                return
             if not monitor_running:
                 vice_path = self._resolve_vice_for_program_start()
                 if vice_path is None:
@@ -124171,11 +127254,15 @@ border: 2px solid #2a69aa;
                 try:
                     if not monitor_running:
                         command = [
-                            str(vice_path),
+                            str(vice_path), *self._vice_launch_config_options(),
                             "-binarymonitor",
                             "-binarymonitoraddress",
                             f"ip4://{VICE_BINARY_MONITOR_HOST}:{VICE_BINARY_MONITOR_PORT}",
                         ]
+                        if sprite_disk is not None:
+                            from c64_d64_disk import c64_vice_d64_command_options
+                            command.extend(c64_vice_d64_command_options(sprite_disk))
+                            self.log('VICE D64 ATTACH: -8 ' + str(sprite_disk))
                         options = {
                             "cwd": str(Path(vice_path).resolve().parent),
                             "stdin": subprocess.DEVNULL,
@@ -124187,6 +127274,7 @@ border: 2px solid #2a69aa;
                         ):
                             options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
                         spawned_process = subprocess.Popen(command, **options)
+                        self._vice_debug_attached_d64 = str(sprite_disk) if sprite_disk else None
 
                         deadline = time.monotonic() + 8.0
                         connected = False
@@ -124213,9 +127301,39 @@ border: 2px solid #2a69aa;
                         time.sleep(0.85)
 
                     loaded_screens = 0
+                    loaded_sprites = 0
                     screen_warnings = []
                     with ViceBinaryMonitorClient(timeout=2.5) as client:
+                        # -8 attached the real disk at VICE process start.
+                        # Never call configure_virtual_drive8(): it would
+                        # DETACH the D64 by switching to host filesystem mode.
                         for index, basic_line in enumerate(commands):
+                            from c64basic import c64_basic_sprite_command
+                            sprite_command = c64_basic_sprite_command(basic_line)
+                            if sprite_command is not None:
+                                line_number, sprite_name, sprite_address = sprite_command
+                                from c64basic import C64BasicError, load_c64_basic_sprite_resource
+                                try:
+                                    sprite_resource = load_c64_basic_sprite_resource(
+                                        sprite_name, source_filename, address=sprite_address,
+                                        line=line_number,
+                                    )
+                                except C64BasicError as exc:
+                                    raise ViceBinaryMonitorError(str(exc)) from exc
+                                client.load_sprite_resource(sprite_resource.address, sprite_resource.data)
+                                loaded_sprites += 1
+                                self.log('VICE LOAD SPRITE: HOST/WINDOWS -> VICE BINARY MONITOR: ' + str(sprite_resource.path)
+                                         + f' -> ${sprite_address:04X} ({len(sprite_resource.data)} Bytes)')
+                                # Kompilierte Syntax ist kein BASIC-V2-Keyword.
+                                # Halte Sprungziele beim Debugtransfer als REM gueltig.
+                                if line_number is not None:
+                                    client.feed_basic_line(f'{line_number} REM LOAD SPRITE HOST')
+                                else:
+                                    client.resume()
+                                # Der CPU-Keyboard-Feed braucht Zeit bis zur naechsten Zeile.
+                                if index + 1 < len(commands):
+                                    time.sleep(0.09)
+                                continue
                             screen_command = c64_basic_debug_load_screen(basic_line)
                             if screen_command is not None:
                                 line_number, screen_name = screen_command
@@ -124252,11 +127370,15 @@ border: 2px solid #2a69aa;
                             if index + 1 < len(commands):
                                 time.sleep(0.09)
 
-                    extra = (
+                    extra = ('; Sprite-Dateien auf VICE-Laufwerk 8 bereitgestellt'
+                             if sprite_drive is not None else '')
+                    extra += (
                         f"; {loaded_screens} LOAD-SCREEN-Ressource(n) direkt "
                         "ueber Binary Monitor geladen"
                         if loaded_screens else ""
                     )
+                    if loaded_sprites:
+                        extra += f'; {loaded_sprites} Host-Sprite-Datei(en) via Binary Monitor uebertragen'
                     if screen_warnings:
                         extra += "; " + " | ".join(screen_warnings)
                     self.vice_debug_finished.emit(
@@ -124305,7 +127427,10 @@ border: 2px solid #2a69aa;
 
             text = str(message or "")
             if success:
-                self.log("VICE BASIC DEBUG OK: " + text)
+                prefix = "VICE ASM DEBUG" if (
+                    isinstance(document, DocumentEditor) and document.is_assembler_document
+                ) else "VICE BASIC DEBUG"
+                self.log(prefix + " OK: " + text)
                 # Stage 238: Die vollstaendige Debugmeldung bleibt im Log und
                 # Tooltip. Der temporaere StatusBar-Text bleibt bewusst kurz,
                 # damit auch die QStatusBar keine neue Mindestbreite anfordert.
@@ -124318,11 +127443,14 @@ border: 2px solid #2a69aa;
                 self._vice_debug_window_size = None
                 return
 
-            self.log("VICE BASIC DEBUG FEHLER: " + text)
+            prefix = "VICE ASM DEBUG" if (
+                isinstance(document, DocumentEditor) and document.is_assembler_document
+            ) else "VICE BASIC DEBUG"
+            self.log(prefix + " FEHLER: " + text)
             self.statusBar().showMessage("VICE BASIC Debug fehlgeschlagen", 7000)
             self._schedule_vice_host_window_size_restore(vice_window_size)
             self._vice_debug_window_size = None
-            self.show_error("VICE BASIC Debug", text)
+            self.show_error("VICE Assembler" if prefix == "VICE ASM DEBUG" else "VICE BASIC Debug", text)
 
         def _resolve_vice_for_program_start(self) -> Optional[Path]:
             if self.dism_vice_path:
@@ -125442,18 +128570,66 @@ border: 2px solid #2a69aa;
             vice_path = self._resolve_vice_for_program_start()
             if vice_path is None:
                 return False
+            sprite_drive = None
+            if document.is_basic_document or document.is_assembler_document:
+                try:
+                    if document.is_basic_document:
+                        sprite_drive = self._stage_c64_basic_sprite_dependencies(
+                            document, extra_directory=output_path.parent,
+                        )
+                    else:
+                        sprite_drive = self._stage_c64_generated_basic_sprite_dependencies(
+                            document, extra_directory=output_path.parent,
+                        )
+                except (OSError, ValueError) as exc:
+                    self.show_error('VICE BASIC Sprite-Datei', str(exc))
+                    return False
+                if sprite_drive is not None:
+                    self.log(
+                        'VICE DRIVE8: virtuelles Sprite-Verzeichnis '
+                        f'{sprite_drive}; Dateien: '
+                        + ', '.join(sorted(entry.name for entry in sprite_drive.iterdir()
+                                           if entry.is_file()))
+                    )
+
+            sprite_disk = None
+            disk_program_name = None
+            if sprite_drive is not None:
+                try:
+                    sprite_disk, disk_program_name = self._stage_c64_sprite_disk(
+                        document, sprite_drive, program_path=output_path,
+                    )
+                except (OSError, ValueError) as exc:
+                    self.show_error('VICE BASIC Sprite-D64', str(exc))
+                    return False
+                self.log(f'VICE D64: Laufwerk 8 = {sprite_disk}; Startprogramm = {disk_program_name}')
+            self.log('VICE SETTINGS: ' + (self.dism_vice_settings_path or 'VICE-Standarddatei'))
 
             # Stage 238: F2/Start darf beim Erzeugen des externen VICE-Fensters
             # die aktuelle d64_dism-Fenstergroesse nicht veraendern.
             vice_window_size = self._capture_vice_host_window_size()
 
-            command = [
-                str(vice_path),
-                "-autostartprgmode",
-                "1",
-                "-autostart",
-                str(output_path),
-            ]
+            try:
+                vice_config_args = self._vice_launch_config_options()
+            except OSError as exc:
+                self.show_error('VICE-Konfiguration', str(exc))
+                return False
+            if sprite_disk is not None:
+                # Stage 412: The PRG is the FIRST directory entry in our D64.
+                # Explicit ``image.d64:SPRITE_A`` is passed through VICE's
+                # ASCII->PETSCII command-line conversion, which can turn a
+                # mixed Windows/PETSCII name into graphic characters. The
+                # first-file autostart instead uses the filename bytes as
+                # read from the D64 itself, without an extra text conversion.
+                from c64_d64_disk import c64_vice_d64_autostart_options
+                command = [str(vice_path), *vice_config_args,
+                           *c64_vice_d64_autostart_options(sprite_disk)]
+                self.log('VICE D64 AUTOSTART: erste PRG-Datei aus dem D64-Verzeichnis; '
+                         'kein umkodierter Programmname als Kommandozeilenparameter')
+            else:
+                command = [str(vice_path), *vice_config_args,
+                           '-autostartprgmode', '1',
+                           '-autostart', str(output_path)]
             options = {
                 "cwd": str(output_path.parent),
                 "stdin": subprocess.DEVNULL,
@@ -125644,7 +128820,7 @@ border: 2px solid #2a69aa;
             return True
 
         def _confirm_close_document(self, document: DocumentEditor) -> bool:
-            if not document.is_modified:
+            if not document.is_modified and not getattr(document, "_is_new_c64_project_file", False):
                 return True
 
             answer = self._show_message_box(
@@ -125708,6 +128884,14 @@ border: 2px solid #2a69aa;
                         document.dbase_process.waitForFinished(500)
                 except RuntimeError:
                     pass
+            # Ein verworfenes, noch nie gespeichertes C64-Dokument darf kein
+            # dauerhaftes Phantomblatt ohne Pfad im Projektbaum hinterlassen.
+            if getattr(document, "_is_new_c64_project_file", False):
+                pending = getattr(document, "_c64_project_tree_item", None)
+                parent = pending.parent() if pending is not None else None
+                if parent is not None:
+                    parent.takeChild(parent.indexOfChild(pending))
+                    self.set_project_modified(True)
             self.document_tabs.removeTab(index)
             document.deleteLater()
             self._refresh_favorites_menu()
@@ -126122,6 +129306,7 @@ border: 2px solid #2a69aa;
                 self.show_project_context_menu
             )
             self.project_tree.itemDoubleClicked.connect(self.open_project_item)
+            self.project_tree.itemClicked.connect(self._on_project_c64_leaf_clicked)
             self.project_tree.itemChanged.connect(self._on_project_item_changed)
 
             self.reset_project_tree()
@@ -126611,6 +129796,13 @@ border: 2px solid #2a69aa;
                     _value("port_key", "6464"),
                     mark_modified=False,
                 )
+            for _profile, _settings in PROJECT_C64_BASIC_DIALECT_PROFILES.items():
+                _records = values.get(_settings["dialect_key"], ())
+                self.set_project_c64_basic_dialect(
+                    _profile,
+                    _records[0].get("value", "basic_v2") if _records else "basic_v2",
+                    mark_modified=False,
+                )
             for _profile, _profile_settings in PROJECT_C64_OPTIMIZER_PROFILES.items():
                 _enabled = _project_bool_entry(
                     values, _profile_settings["enabled_key"], True
@@ -126622,6 +129814,16 @@ border: 2px solid #2a69aa;
                 )
                 self.set_project_c64_optimizer_settings(
                     _profile, _enabled, _strategy, mark_modified=False
+                )
+                self.set_project_c64_sta_reducer(
+                    _profile,
+                    _project_bool_entry(values, _profile_settings["sta_reducer_key"], False),
+                    mark_modified=False,
+                )
+                self.set_project_c64_call_reducer(
+                    _profile,
+                    _project_bool_entry(values, _profile_settings["call_reducer_key"], False),
+                    mark_modified=False,
                 )
             for _profile, _profile_settings in PROJECT_C64_PACKER_PROFILES.items():
                 _enabled = _project_bool_entry(
@@ -126662,6 +129864,9 @@ border: 2px solid #2a69aa;
             # Stage 150: (Sprache, Ziel) -> Windows-Ziel/Resourcen-Knoten.
             self.project_windows_target_nodes = {}
             self.project_resource_nodes = {}
+            self.project_c64_target_nodes = {}
+            self.project_c64_resource_root = None
+            self.project_c64_sprites_root = None
             self.project_dbase_group_nodes = {}
             self.project_pascal_unit_namespace_nodes = {}
             self._project_pascal_entry_sequence = {}
@@ -126705,11 +129910,47 @@ border: 2px solid #2a69aa;
                 _marker_root.setExpanded(True)
 
             for key, title, _extensions in PROJECT_CATEGORIES:
-                root = QTreeWidgetItem(self.project_tree, [title])
+                # Bestehende Category.c64 fuer *.pro beibehalten, aber die
+                # bisherige Top-Level-Zeile unter BASIC verschieben.
+                if key == "c64":
+                    root = QTreeWidgetItem(self.project_root_items["basic"], [title])
+                    root.setData(0, Qt.UserRole + 303, PROJECT_NODE_C64_TARGET)
+                    root.setData(0, Qt.UserRole + 305, "basic")
+                    self.project_c64_target_nodes["basic"] = root
+                    resource_root = QTreeWidgetItem(root, ["Ressourcen"])
+                    resource_root.setData(0, Qt.UserRole + 301, "c64")
+                    resource_root.setData(0, Qt.UserRole + 303, PROJECT_NODE_C64_RESOURCE_ROOT)
+                    resource_root.setIcon(0, folder_icon)
+                    resource_root.setToolTip(0, "C64-Paletten, Sprites, Pixel-/Text-Screens und Zeichen Maps")
+                    self.project_c64_resource_root = resource_root
+                    for entry in values.get(PROJECT_C64_RESOURCE_ENTRY_KEY, ()):
+                        path = str(entry.get("path", "")).strip()
+                        if path:
+                            self._add_project_c64_resource_entry(
+                                str(entry.get("kind", "")), Path(path),
+                                title=str(entry.get("title", "")), mark_modified=False)
+                    resource_root.setExpanded(True)
+                else:
+                    root = QTreeWidgetItem(self.project_tree, [title])
                 root.setData(0, Qt.UserRole + 301, key)
                 root.setIcon(0, folder_icon)
-                root.setToolTip(0, "Geschützte Projektkategorie")
+                root.setToolTip(0, "Geschützter Projektknoten")
                 self.project_root_items[key] = root
+                if key in PROJECT_C64_SOURCE_KEYS:
+                    c64_target = QTreeWidgetItem(root, ["Commodore C= 64"])
+                    c64_target.setData(0, Qt.UserRole + 301, key)
+                    c64_target.setData(0, Qt.UserRole + 303, PROJECT_NODE_C64_TARGET)
+                    c64_target.setData(0, Qt.UserRole + 305, key)
+                    c64_target.setIcon(0, folder_icon)
+                    c64_target.setToolTip(0, "C64-Quellprogramme; Rechtsklick zum Hinzufuegen")
+                    self.project_c64_target_nodes[key] = c64_target
+                    for entry in values.get(PROJECT_C64_SOURCE_KEYS[key], ()):
+                        path = str(entry.get("path", "")).strip()
+                        if path:
+                            self._add_project_c64_source_entry(
+                                key, Path(path), title=str(entry.get("title", "")),
+                                mark_modified=False)
+                    c64_target.setExpanded(True)
 
                 if key == "c":
                     archive_root = QTreeWidgetItem(root, ["Archive"])
@@ -126888,6 +130129,22 @@ border: 2px solid #2a69aa;
                         )
                 root.setExpanded(True)
 
+            # Stage 396: eigenstaendiger Ordner neben den Sprachkategorien.
+            sprite_root = QTreeWidgetItem(self.project_tree, ["C= 64 Sprites"])
+            sprite_root.setData(0, Qt.UserRole + 303, PROJECT_NODE_C64_SPRITES_ROOT)
+            sprite_root.setIcon(0, folder_icon)
+            sprite_root.setToolTip(0,
+                "C64 Hardware- und Bitmap-Sprites; Rechtsklick für Neues Bitmap Sprite, "
+                "Neues Sprite oder Dateien hinzufügen")
+            self.project_c64_sprites_root = sprite_root
+            for sprite_entry in values.get(PROJECT_C64_SPRITES_ENTRY_KEY, ()):
+                sprite_path = str(sprite_entry.get("path", "")).strip()
+                if sprite_path:
+                    self._add_project_c64_sprite_entry(
+                        Path(sprite_path), title=str(sprite_entry.get("title", "")),
+                        mark_modified=False)
+            sprite_root.setExpanded(True)
+
             for knowledge in values.get(PROJECT_PROLOG_KNOWLEDGE_KEY, ()):
                 path_value = str(knowledge.get("path", "")).strip()
                 if path_value:
@@ -126921,6 +130178,250 @@ border: 2px solid #2a69aa;
                 self.project_archive_root.setExpanded(True)
             self.project_tree.blockSignals(False)
             self._restore_project_markers_for_open_documents()
+
+        def _add_project_c64_sprite_entry(
+            self, path: Optional[Path] = None, *, title: str = "",
+            mark_modified: bool = True, bitmap: bool = False,
+        ) -> Optional[QTreeWidgetItem]:
+            """Sprite-Datei oder noch ungespeichertes Sprite als Blatt anlegen."""
+            root = getattr(self, "project_c64_sprites_root", None)
+            if root is None:
+                return None
+            resolved = Path(path).expanduser().resolve() if path else None
+            if resolved is not None and resolved.suffix.casefold() not in PROJECT_C64_SPRITE_EXTENSIONS:
+                return None
+            bitmap = (resolved.suffix.casefold() in (".bmsprite", ".bmspr")
+                      if resolved is not None else bool(bitmap))
+            path_text = str(resolved) if resolved is not None else ""
+            if path_text:
+                for index in range(root.childCount()):
+                    existing = root.child(index)
+                    if str(existing.data(0, Qt.UserRole + 302) or "").casefold() == path_text.casefold():
+                        return existing
+            if not title and resolved is None:
+                used = {root.child(i).text(0).casefold() for i in range(root.childCount())}
+                number = 1
+                if bitmap:
+                    while f"Bitmap_Sprite_{number}.bmsprite".casefold() in used:
+                        number += 1
+                    title = f"Bitmap_Sprite_{number}.bmsprite"
+                else:
+                    while f"Sprite_{number}.spr".casefold() in used:
+                        number += 1
+                    title = f"Sprite_{number}.spr"
+            item = QTreeWidgetItem(root, [title or resolved.name])
+            item.setData(0, Qt.UserRole + 301, "c64")
+            item.setData(0, Qt.UserRole + 302, path_text)
+            item.setData(0, Qt.UserRole + 303, PROJECT_NODE_C64_SPRITE_FILE)
+            item.setData(0, Qt.UserRole + 313, "bitmap" if bitmap else "hardware")
+            item.setData(0, Qt.UserRole + 312, not bool(path_text))
+            item.setToolTip(0, path_text or "Neues Sprite: noch nicht gespeichert")
+            item.setIcon(0, self.style().standardIcon(QStyle.SP_FileIcon)
+                         if not path_text else self.icon_provider.icon(QFileInfo(path_text)))
+            root.setExpanded(True)
+            if mark_modified:
+                self.set_project_modified(True)
+            return item
+
+        def _register_c64_sprite_editor_file(self, editor, path: Path) -> None:
+            """Datei-/Blatt-Kopplung nach Öffnen oder Speichern synchronisieren."""
+            path = Path(path).expanduser().resolve()
+            old_item = getattr(editor, "_c64_sprite_tree_item", None)
+            bitmap = isinstance(editor, C64BitmapSpriteEditorDialog)
+            root = getattr(self, "project_c64_sprites_root", None)
+            if root is None:
+                return
+            if (old_item is not None
+                    and old_item.parent() is root
+                    and not str(old_item.data(0, Qt.UserRole + 302) or "")):
+                # Ungespeichertes Blatt bekommt erst jetzt den echten Dateipfad.
+                for i in range(root.childCount()):
+                    other = root.child(i)
+                    if (other is not old_item and
+                            str(other.data(0, Qt.UserRole + 302) or "").casefold()
+                            == str(path).casefold()):
+                        root.takeChild(root.indexOfChild(old_item))
+                        editor._c64_sprite_tree_item = other
+                        self.set_project_modified(True)
+                        return
+                old_item.setText(0, path.name)
+                old_item.setData(0, Qt.UserRole + 302, str(path))
+                old_item.setData(0, Qt.UserRole + 313, "bitmap" if bitmap else "hardware")
+                old_item.setData(0, Qt.UserRole + 312, False)
+                old_item.setToolTip(0, str(path))
+                old_item.setIcon(0, self.icon_provider.icon(QFileInfo(str(path))))
+                editor._c64_sprite_tree_item = old_item
+                self.set_project_modified(True)
+            else:
+                # Save As eines bestehenden Blattes erzeugt einen neuen Eintrag.
+                editor._c64_sprite_tree_item = self._add_project_c64_sprite_entry(path, bitmap=bitmap)
+
+        def _cleanup_pending_sprite_leaves(self, kind: Optional[str] = None) -> None:
+            """Beim Schließen verworfene ungespeicherte Blätter entfernen."""
+            root = getattr(self, "project_c64_sprites_root", None)
+            if root is None:
+                return
+            removed = False
+            for index in range(root.childCount() - 1, -1, -1):
+                child = root.child(index)
+                child_kind = str(child.data(0, Qt.UserRole + 313) or "hardware")
+                if (child.data(0, Qt.UserRole + 312)
+                        and not child.data(0, Qt.UserRole + 302)
+                        and (kind is None or child_kind == (
+                            "bitmap" if kind == "bitmap_sprites" else "hardware"))):
+                    root.takeChild(index)
+                    removed = True
+            if removed:
+                self.set_project_modified(True)
+
+        def new_c64_sprite_project(self, _checked=False) -> None:
+            """Neues Sprite direkt als Blatt und in einem Dock öffnen."""
+            dock = getattr(self, "_c64_tool_docks", {}).get("sprites")
+            if dock is not None:
+                editor = dock.editor_widget
+                if not editor._confirm_discard():
+                    return
+                # Alter ungespeicherter Entwurf wird verworfen oder gespeichert.
+                self._cleanup_pending_sprite_leaves("sprites")
+                editor.new_sprite_document()
+                dock.show()
+                dock.raise_()
+            else:
+                if not self._show_c64_tool_dock("sprites"):
+                    return
+                editor = self._c64_tool_docks["sprites"].editor_widget
+            item = self._add_project_c64_sprite_entry()
+            editor._c64_sprite_tree_item = item
+            if item is not None:
+                self.project_tree.setCurrentItem(item)
+                self.project_tree.scrollToItem(item)
+
+        def new_c64_bitmap_sprite_project(self, _checked=False) -> None:
+            """Stage 416: Bitmap-Sprite-Blatt erzeugen und eigenen Dockeditor öffnen."""
+            dock = getattr(self, "_c64_tool_docks", {}).get("bitmap_sprites")
+            if dock is not None:
+                editor = dock.editor_widget
+                if not editor._confirm_discard():
+                    return
+                self._cleanup_pending_sprite_leaves("bitmap_sprites")
+                editor.new_sprite_document()
+                dock.show()
+                dock.raise_()
+            else:
+                if not self._show_c64_tool_dock("bitmap_sprites"):
+                    return
+                editor = self._c64_tool_docks["bitmap_sprites"].editor_widget
+            item = self._add_project_c64_sprite_entry(bitmap=True)
+            editor._c64_sprite_tree_item = item
+            if item is not None:
+                self.project_tree.setCurrentItem(item)
+                self.project_tree.scrollToItem(item)
+
+        def add_project_c64_sprite_files(self) -> None:
+            filenames, _filter = QFileDialog.getOpenFileNames(
+                self, "C64 Sprite-Dateien zum Projekt hinzufügen",
+                str(self.current_directory),
+                "C64-Sprites (*.spr *.sprite *.bin *.c64sprite *.bmsprite *.bmspr)")
+            for filename in filenames:
+                self._add_project_c64_sprite_entry(Path(filename))
+
+        def _show_project_c64_sprites_menu(self, item: QTreeWidgetItem, position) -> None:
+            menu = QMenu(self.project_tree)
+            kind = self._project_item_kind(item)
+            if kind == PROJECT_NODE_C64_SPRITES_ROOT:
+                bitmap_action = menu.addAction("Neues Bitmap Sprite")
+                new_action = menu.addAction("Neues Sprite")
+                add_action = menu.addAction("Sprite-Dateien hinzufügen …")
+                toggle = menu.addAction("Knoten schließen" if item.isExpanded()
+                                        else "Knoten öffnen")
+                action = menu.exec_(self.project_tree.viewport().mapToGlobal(position))
+                if action is bitmap_action:
+                    self.new_c64_bitmap_sprite_project()
+                elif action is new_action:
+                    self.new_c64_sprite_project()
+                elif action is add_action:
+                    self.add_project_c64_sprite_files()
+                elif action is toggle:
+                    item.setExpanded(not item.isExpanded())
+            elif kind == PROJECT_NODE_C64_SPRITE_FILE:
+                bitmap = str(item.data(0, Qt.UserRole + 313) or "") == "bitmap"
+                open_action = menu.addAction(
+                    "Im Bitmap Sprite Editor öffnen" if bitmap else "Im Sprite-Builder öffnen")
+                save_action = menu.addAction("Speichern unter …") if item.data(0, Qt.UserRole + 312) else None
+                remove_action = menu.addAction("Aus Projekt entfernen")
+                action = menu.exec_(self.project_tree.viewport().mapToGlobal(position))
+                if action is open_action:
+                    self.open_project_item(item)
+                elif save_action is not None and action is save_action:
+                    self.open_project_item(item)
+                    editor_kind = "bitmap_sprites" if bitmap else "sprites"
+                    dock = getattr(self, "_c64_tool_docks", {}).get(editor_kind)
+                    if dock is not None:
+                        dock.editor_widget.save_as()
+                elif action is remove_action:
+                    parent = item.parent()
+                    if parent is not None:
+                        parent.takeChild(parent.indexOfChild(item))
+                        self.set_project_modified(True)
+
+        def _add_project_c64_resource_entry(
+            self, kind: str, path: Path, *, title: str = "",
+            mark_modified: bool = True,
+        ) -> Optional[QTreeWidgetItem]:
+            """Fuegt ein typisiertes Blatt zu BASIC/C64/Ressourcen hinzu."""
+            kind = str(kind).strip().casefold()
+            spec = PROJECT_C64_RESOURCE_TYPES.get(kind)
+            root = getattr(self, "project_c64_resource_root", None)
+            if root is None or spec is None:
+                return None
+            path = Path(path).expanduser().resolve()
+            if path.suffix.casefold() not in spec[1]:
+                return None
+            text = str(path)
+            for index in range(root.childCount()):
+                existing = root.child(index)
+                if str(existing.data(0, Qt.UserRole + 302) or "").casefold() == text.casefold():
+                    # Ein Projekt-Blatt darf nur einen eindeutigen Typ besitzen.
+                    return existing if str(existing.data(0, Qt.UserRole + 306)) == kind else None
+            item = QTreeWidgetItem(root, [title.strip() or path.name])
+            item.setData(0, Qt.UserRole + 301, "c64")
+            item.setData(0, Qt.UserRole + 302, text)
+            item.setData(0, Qt.UserRole + 303, PROJECT_NODE_C64_RESOURCE_FILE)
+            item.setData(0, Qt.UserRole + 306, kind)
+            item.setIcon(0, self.icon_provider.icon(QFileInfo(text)))
+            item.setToolTip(0, f"{spec[0]}: {text}")
+            root.setExpanded(True)
+            if mark_modified:
+                self.set_project_modified(True)
+            return item
+
+        def _add_project_c64_source_entry(
+            self, language: str, path: Path, *, title: str = "",
+            mark_modified: bool = True,
+        ) -> Optional[QTreeWidgetItem]:
+            language = str(language).casefold()
+            root = getattr(self, "project_c64_target_nodes", {}).get(language)
+            if root is None or language not in PROJECT_C64_SOURCE_KEYS:
+                return None
+            path = Path(path).expanduser().resolve()
+            if path.suffix.casefold() not in PROJECT_C64_SOURCE_EXTENSIONS[language]:
+                return None
+            text = str(path)
+            for index in range(root.childCount()):
+                child = root.child(index)
+                if str(child.data(0, Qt.UserRole + 302) or "").casefold() == text.casefold():
+                    return child
+            item = QTreeWidgetItem(root, [title.strip() or path.name])
+            item.setData(0, Qt.UserRole + 301, language)
+            item.setData(0, Qt.UserRole + 302, text)
+            item.setData(0, Qt.UserRole + 303, PROJECT_NODE_C64_SOURCE_FILE)
+            item.setData(0, Qt.UserRole + 305, "c64")
+            item.setToolTip(0, text)
+            item.setIcon(0, self.icon_provider.icon(QFileInfo(text)))
+            root.setExpanded(True)
+            if mark_modified:
+                self.set_project_modified(True)
+            return item
 
         def _add_project_resource_entry(
             self,
@@ -126987,6 +130488,12 @@ border: 2px solid #2a69aa;
             child = QTreeWidgetItem(root, [display_title])
             child.setData(0, Qt.UserRole + 301, category_key)
             child.setData(0, Qt.UserRole + 302, path_text)
+            # Stage 399: C64-BASIC-Quellen werden in Category.c64
+            # gespeichert und nach Projekt-Neuladen als klickbares Blatt
+            # mit dem bereits bestehenden C64-Editor-Handler aufgebaut.
+            if category_key == "c64" and resolved.suffix.casefold() in {".bas", ".basic"}:
+                child.setData(0, Qt.UserRole + 303, PROJECT_NODE_C64_SOURCE_FILE)
+                child.setData(0, Qt.UserRole + 305, "c64")
             child.setToolTip(0, path_text)
             child.setIcon(0, self.icon_provider.icon(QFileInfo(path_text)))
             root.setExpanded(True)
@@ -127247,6 +130754,43 @@ border: 2px solid #2a69aa;
                                 "path": path_value,
                             }
                         )
+
+            # Stage 387: C64-Quellzweige / BASIC-Ressourcen gesondert persistieren.
+            for language, entry_key in PROJECT_C64_SOURCE_KEYS.items():
+                root = getattr(self, "project_c64_target_nodes", {}).get(language)
+                if root is None:
+                    continue
+                for index in range(root.childCount()):
+                    child = root.child(index)
+                    if self._project_item_kind(child) != PROJECT_NODE_C64_SOURCE_FILE:
+                        continue
+                    path = str(child.data(0, Qt.UserRole + 302) or "").strip()
+                    if path:
+                        entries[entry_key].append({"title": child.text(0), "path": path})
+            root = getattr(self, "project_c64_resource_root", None)
+            if root is not None:
+                for index in range(root.childCount()):
+                    child = root.child(index)
+                    if self._project_item_kind(child) != PROJECT_NODE_C64_RESOURCE_FILE:
+                        continue
+                    path = str(child.data(0, Qt.UserRole + 302) or "").strip()
+                    kind = str(child.data(0, Qt.UserRole + 306) or "").casefold()
+                    if path and kind in PROJECT_C64_RESOURCE_TYPES:
+                        entries[PROJECT_C64_RESOURCE_ENTRY_KEY].append({
+                            "title": child.text(0), "path": path, "kind": kind,
+                        })
+
+            # Stage 396: dedizierte Sprite-Dateien (ohne Phantom-/Leerpfade).
+            root = getattr(self, "project_c64_sprites_root", None)
+            if root is not None:
+                for index in range(root.childCount()):
+                    sprite_item = root.child(index)
+                    if self._project_item_kind(sprite_item) != PROJECT_NODE_C64_SPRITE_FILE:
+                        continue
+                    sprite_path = str(sprite_item.data(0, Qt.UserRole + 302) or "").strip()
+                    if sprite_path:
+                        entries[PROJECT_C64_SPRITES_ENTRY_KEY].append({
+                            "title": sprite_item.text(0), "path": sprite_path})
 
             # Stage ASM 29: feste dBase-Unterknoten getrennt persistieren.
             for _role, _title, _extensions, _entry_key in PROJECT_DBASE_GROUPS:
@@ -127533,6 +131077,12 @@ border: 2px solid #2a69aa;
                 entries[_profile_settings["vice_interface_key"]] = [{"value": _normalize_project_c64_speech_vice_interface(self.project_c64_speech_vice_interface.get(_profile, "turbo232"))}]
                 entries[_profile_settings["host_key"]] = [{"value": _normalize_project_c64_speech_host(self.project_c64_speech_host.get(_profile, "localhost"))}]
                 entries[_profile_settings["port_key"]] = [{"value": str(_normalize_project_c64_speech_port(self.project_c64_speech_port.get(_profile, 6464)))}]
+            for _profile, _settings in PROJECT_C64_BASIC_DIALECT_PROFILES.items():
+                entries[_settings["dialect_key"]] = [{
+                    "value": _normalize_project_c64_basic_dialect(
+                        self.project_c64_basic_dialect.get(_profile, "basic_v2")
+                    )
+                }]
             for _profile, _profile_settings in PROJECT_C64_OPTIMIZER_PROFILES.items():
                 entries[_profile_settings["enabled_key"]] = [{
                     "value": (
@@ -127545,6 +131095,12 @@ border: 2px solid #2a69aa;
                     "value": _normalize_project_c64_optimizer_strategy(
                         self.project_c64_optimizer_strategy.get(_profile, "direct")
                     )
+                }]
+                entries[_profile_settings["sta_reducer_key"]] = [{
+                    "value": "true" if self.project_c64_sta_reducer.get(_profile, False) else "false"
+                }]
+                entries[_profile_settings["call_reducer_key"]] = [{
+                    "value": "true" if self.project_c64_call_reducer.get(_profile, False) else "false"
                 }]
             for _profile, _profile_settings in PROJECT_C64_PACKER_PROFILES.items():
                 entries[_profile_settings["enabled_key"]] = [{
@@ -130053,6 +133609,10 @@ border: 2px solid #2a69aa;
             compile_action = menu.addAction("Kompilieren")
             compile_action.setShortcut(QKeySequence("F2"))
             open_action = menu.addAction("Öffnen")
+            rename_action = menu.addAction("Umbenennen") if (
+                str(item.data(0, Qt.UserRole + 301) or "").casefold()
+                in {"basic", "assembler", "c64"}
+            ) else None
             menu.addSeparator()
             remove_action = menu.addAction("Aus Projekt entfernen")
             selected = menu.exec_(
@@ -130062,6 +133622,8 @@ border: 2px solid #2a69aa;
                 self.compile_selected_project_sources(preferred_item=item)
             elif selected is open_action:
                 self.open_project_item(item)
+            elif rename_action is not None and selected is rename_action:
+                self._begin_dbase_program_rename(item, c64_language="source")
             elif selected is remove_action:
                 self.delete_selected_project_leaves(preferred_item=item)
 
@@ -130188,32 +133750,48 @@ border: 2px solid #2a69aa;
             outer.addSpacing(8)
             dialog.exec_()
 
-        def _begin_dbase_program_rename(self, item: QTreeWidgetItem) -> None:
-            """Stage 338: modaler Eingabedialog statt fehleranfälligem Tree-Inline-Editor."""
-            if str(item.data(0, Qt.UserRole + 306) or "").casefold() != "programs":
+        def _begin_dbase_program_rename(
+            self, item: QTreeWidgetItem, *, c64_language: str = "",
+        ) -> None:
+            """Gemeinsamer vorhandener Umbenennen-Dialog für dBase / C64."""
+            if not c64_language and str(item.data(0, Qt.UserRole + 306) or "").casefold() != "programs":
                 return
             old_name = item.text(0)
             dialog = QDialog(self)
             dialog.setObjectName("dbaseProgramRenameDialog")
-            dialog.setWindowTitle("dBase-Programm umbenennen")
+            dialog.setWindowTitle("C64-Programm umbenennen" if c64_language else "dBase-Programm umbenennen")
             dialog.setModal(True)
             dialog.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
             dialog.setMinimumWidth(440)
-            dialog.setStyleSheet(
-                "QDialog#dbaseProgramRenameDialog { background:#222222;"
-                " border:3px solid #707070; color:white; }"
-                "QLabel#dbaseProgramRenameLabel { color:white; background:transparent; }"
-                "QLineEdit#dbaseProgramRenameInput { background:#303030; color:white;"
-                " border:1px solid #808080; border-radius:3px; padding:6px; }"
-                "QPushButton#dbaseProgramRenameOk, QPushButton#dbaseProgramRenameCancel {"
-                " background:#383838; color:white; border:1px solid #777777;"
-                " border-radius:3px; padding:5px 18px; min-width:85px; }"
-                "QPushButton:hover { background:#505050; }"
-            )
+            dark = bool(self.dark_mode_enabled)
+            if dark:
+                dialog.setStyleSheet(
+                    "QDialog#dbaseProgramRenameDialog { background:#222222;"
+                    " border:3px solid #707070; color:white; }"
+                    "QLabel#dbaseProgramRenameLabel { color:white; background:transparent; }"
+                    "QLineEdit#dbaseProgramRenameInput { background:#303030; color:white;"
+                    " border:1px solid #808080; border-radius:3px; padding:6px; }"
+                    "QPushButton#dbaseProgramRenameOk, QPushButton#dbaseProgramRenameCancel {"
+                    " background:#383838; color:white; border:1px solid #777777;"
+                    " border-radius:3px; padding:5px 18px; min-width:85px; }"
+                    "QPushButton:hover { background:#505050; }"
+                )
+            else:
+                dialog.setStyleSheet(
+                    "QDialog#dbaseProgramRenameDialog { background:#f2f2f2;"
+                    " border:3px solid #9a9a9a; color:#202020; }"
+                    "QLabel#dbaseProgramRenameLabel { color:#202020; background:transparent; }"
+                    "QLineEdit#dbaseProgramRenameInput { background:#ffffff; color:#202020;"
+                    " border:1px solid #999999; border-radius:3px; padding:6px; }"
+                    "QPushButton#dbaseProgramRenameOk, QPushButton#dbaseProgramRenameCancel {"
+                    " background:#e5e5e5; color:#202020; border:1px solid #999999;"
+                    " border-radius:3px; padding:5px 18px; min-width:85px; }"
+                    "QPushButton:hover { background:#d4e3f3; }"
+                )
             layout = QVBoxLayout(dialog)
             layout.setContentsMargins(3, 3, 3, 12)
             layout.setSpacing(12)
-            layout.addWidget(DBaseTableDialogTitleBar(dialog, "Programm umbenennen", dark_mode=True))
+            layout.addWidget(DBaseTableDialogTitleBar(dialog, "Programm umbenennen", dark_mode=dark))
             label = QLabel("Dateiname:", dialog)
             label.setObjectName("dbaseProgramRenameLabel")
             layout.addWidget(label)
@@ -130236,7 +133814,72 @@ border: 2px solid #2a69aa;
             name_edit.returnPressed.connect(dialog.accept)
             name_edit.setFocus(Qt.OtherFocusReason)
             if dialog.exec_() == QDialog.Accepted:
-                self._commit_dbase_program_rename(item, name_edit.text(), old_name)
+                if c64_language:
+                    self._commit_c64_program_rename(item, name_edit.text())
+                else:
+                    self._commit_dbase_program_rename(item, name_edit.text(), old_name)
+
+        def _commit_c64_program_rename(self, item: QTreeWidgetItem, proposed: str) -> bool:
+            """Stage 394: Datei physisch, Projektpfad und Editor gemeinsam ändern."""
+            old_text = str(item.data(0, Qt.UserRole + 302) or "").strip()
+            if not old_text:
+                self.show_error("Umbenennen nicht möglich", "Zuerst die neue Datei speichern.")
+                return False
+            old_path = Path(old_text).expanduser().resolve()
+            name = str(proposed).strip()
+            if (not name or name in {".", ".."} or name != Path(name).name
+                    or any(ch in name for ch in '<>:"/\\|?*')
+                    or name.endswith((".", " "))):
+                self.show_error("Ungültiger Dateiname", "Bitte einen gültigen Dateinamen ohne Pfad eingeben.")
+                return False
+            if not Path(name).suffix:
+                name += old_path.suffix
+            allowed = (set(PROJECT_C64_SOURCE_EXTENSIONS["assembler"])
+                       if str(item.data(0, Qt.UserRole + 301) or "").casefold() == "assembler"
+                       else {".bas", ".basic", ".prg"})
+            if Path(name).suffix.casefold() not in allowed:
+                self.show_error("Ungültiger Dateityp", "Erlaubte Erweiterungen: " + ", ".join(sorted(allowed)))
+                return False
+            target = old_path.with_name(name)
+            if name == old_path.name:
+                return True
+            try:
+                if not old_path.is_file():
+                    raise FileNotFoundError(f"Datei nicht gefunden: {old_path}")
+                # Windows-Dateisysteme sind üblicherweise case-insensitive;
+                # ein anderer Eintrag gleichen Namens ist immer eine Kollision.
+                collisions = [entry for entry in old_path.parent.iterdir()
+                              if entry.name.casefold() == name.casefold()
+                              and entry.name.casefold() != old_path.name.casefold()]
+                if collisions or (target.exists() and not target.samefile(old_path)):
+                    self.show_error("Datei bereits vorhanden", f"Die Datei existiert bereits:\n{target}\n\nUmbenennen nicht möglich.")
+                    return False
+                if not os.access(old_path, os.W_OK) or not os.access(old_path.parent, os.W_OK):
+                    raise PermissionError(f"Kein Schreibzugriff auf {old_path} oder das Verzeichnis")
+                old_path.rename(target)
+            except OSError as exc:
+                self.show_error("Umbenennen nicht möglich", f"Die Datei kann nicht umbenannt/geschrieben werden:\n{old_path}\n\n{exc}")
+                return False
+            target = target.resolve()
+            document = self._find_open_document(old_path)
+            if document is not None:
+                document.path = target
+                document.custom_display_name = None
+                document.update_syntax_highlighting()
+                document.invalidate_assembly_result("Quelldatei umbenannt")
+                self._update_document_tab(document)
+            self._replace_project_path_reference(old_path, target)
+            item.setText(0, target.name)
+            item.setToolTip(0, str(target))
+            item.setIcon(0, self.icon_provider.icon(QFileInfo(str(target))))
+            self.set_project_modified(True)
+            if self.current_project_path is not None:
+                self.save_project()
+            if old_path.parent == self.current_directory or target.parent == self.current_directory:
+                self.populate_file_list()
+            self.statusBar().showMessage(f"Datei umbenannt: {old_path.name} → {target.name}", 6000)
+            self.log(f"C64-Programm umbenannt: {old_path} -> {target}")
+            return True
 
         def _commit_dbase_program_rename(
             self, item: QTreeWidgetItem, proposed_name: str, old_name: str
@@ -130767,6 +134410,167 @@ QFileDialog QComboBox QAbstractItemView {
             elif selected is remove_action:
                 self.remove_project_resource_file(item)
 
+        def add_project_c64_files(self, language: str) -> None:
+            language = str(language).casefold()
+            root = self.project_c64_target_nodes.get(language)
+            if root is None:
+                return
+            extensions = PROJECT_C64_SOURCE_EXTENSIONS[language]
+            patterns = " ".join("*" + ext for ext in extensions)
+            initial = str(self.current_project_path.parent if self.current_project_path else self.current_directory)
+            filenames, _ = QFileDialog.getOpenFileNames(
+                self, f"C64-{language}-Programme hinzufügen", initial,
+                f"C64-Quelltexte ({patterns});;Alle Dateien (*.*)")
+            count = 0
+            for filename in filenames:
+                path = Path(filename)
+                if path.suffix.casefold() not in extensions:
+                    continue
+                before = root.childCount()
+                self._add_project_c64_source_entry(language, path)
+                count += root.childCount() != before
+            if count:
+                self.statusBar().showMessage(f"{count} C64-Quellprogramm(e) eingefügt", 6000)
+
+        def add_project_c64_resources(self, kind: str) -> None:
+            kind = str(kind).casefold()
+            spec = PROJECT_C64_RESOURCE_TYPES.get(kind)
+            root = getattr(self, "project_c64_resource_root", None)
+            if spec is None or root is None:
+                return
+            initial = str(self.current_project_path.parent if self.current_project_path else self.current_directory)
+            filenames, _ = QFileDialog.getOpenFileNames(
+                self, f"C64-{spec[0]} hinzufügen", initial,
+                spec[2] + ";;Alle Dateien (*.*)")
+            count = 0
+            for filename in filenames:
+                path = Path(filename)
+                if path.suffix.casefold() not in spec[1]:
+                    continue
+                before = root.childCount()
+                added = self._add_project_c64_resource_entry(kind, path)
+                if added is None:
+                    self.statusBar().showMessage(
+                        f"Ressource bereits unter einem anderen Typ zugeordnet: {path.name}", 7000)
+                else:
+                    count += root.childCount() != before
+            if count:
+                root.setExpanded(True)
+                self.statusBar().showMessage(f"{count} C64-Ressource(n) eingefügt", 6000)
+
+        def _show_project_c64_menu(self, item: QTreeWidgetItem, position) -> None:
+            kind = self._project_item_kind(item)
+            menu = QMenu(self.project_tree)
+            if kind == PROJECT_NODE_C64_RESOURCE_ROOT:
+                adding = menu.addMenu("Hinzufügen")
+                actions = {
+                    adding.addAction("C64 " + spec[0] + " …"): type_key
+                    for type_key, spec in PROJECT_C64_RESOURCE_TYPES.items()
+                }
+                toggle = menu.addAction("Knoten schließen" if item.isExpanded() else "Knoten öffnen")
+                action = menu.exec_(self.project_tree.viewport().mapToGlobal(position))
+                if action in actions:
+                    self.add_project_c64_resources(actions[action])
+                elif action is toggle:
+                    item.setExpanded(not item.isExpanded())
+                return
+            if kind == PROJECT_NODE_C64_TARGET:
+                language = str(item.data(0, Qt.UserRole + 305) or "basic").casefold()
+                # Stage 399: der erste Kontextmenueeintrag erstellt eine
+                # ungespeicherte C64-BASIC-Vorlage direkt in diesem Zweig.
+                new_basic = (menu.addAction("Neues BASIC Programm")
+                             if language == "basic" else None)
+                if language == "basic":
+                    add = menu.addAction("C64 BASIC-Programm hinzufügen …")
+                else:
+                    add = menu.addAction("C64-Quellprogramm hinzufügen …")
+                toggle = menu.addAction("Knoten schließen" if item.isExpanded() else "Knoten öffnen")
+                action = menu.exec_(self.project_tree.viewport().mapToGlobal(position))
+                if new_basic is not None and action is new_basic:
+                    self._new_unsaved_c64_source_document(
+                        "basic", use_template=True, under_c64_target=True)
+                elif action is add:
+                    if language == "basic":
+                        self.add_project_entries(item)
+                    else:
+                        self.add_project_c64_files(language)
+                elif action is toggle:
+                    item.setExpanded(not item.isExpanded())
+                return
+            # Auch ältere Category.c64-BASIC-PRG-Blätter besitzen keinen
+            # speziellen Node-Kind-Wert, gehören aber zu C64-Programmen.
+            classic_c64_leaf = (
+                not kind and item.parent() is not None
+                and self._project_item_kind(item.parent()) == PROJECT_NODE_C64_TARGET
+                and str(item.data(0, Qt.UserRole + 302) or "").strip()
+            )
+            if kind in {PROJECT_NODE_C64_RESOURCE_FILE, PROJECT_NODE_C64_SOURCE_FILE} or classic_c64_leaf:
+                open_action = menu.addAction("Im Editor öffnen")
+                rename_action = (menu.addAction("Umbenennen")
+                                 if kind != PROJECT_NODE_C64_RESOURCE_FILE else None)
+                remove_action = menu.addAction("Aus Projekt entfernen")
+                action = menu.exec_(self.project_tree.viewport().mapToGlobal(position))
+                if action is open_action:
+                    self.open_project_item(item)
+                elif rename_action is not None and action is rename_action:
+                    self._begin_dbase_program_rename(item, c64_language="source")
+                elif action is remove_action:
+                    parent = item.parent()
+                    if parent is not None:
+                        parent.takeChild(parent.indexOfChild(item))
+                        self.set_project_modified(True)
+                return
+
+        def _on_project_c64_leaf_clicked(self, item: QTreeWidgetItem, _column: int = 0) -> None:
+            # Stage 387: C64-Blaetter bereits per einfachem Linksklick oeffnen.
+            # Mehrfachauswahl mit Shift/Strg bleibt davon unberuehrt.
+            if QApplication.keyboardModifiers() & (Qt.ShiftModifier | Qt.ControlModifier):
+                return
+            if self._project_item_kind(item) == PROJECT_NODE_C64_SPRITE_FILE:
+                self.open_project_item(item)
+                return
+            if bool(item.data(0, Qt.UserRole + 307)):
+                self._activate_unsaved_c64_leaf(item)
+                return
+            if self._project_item_kind(item) in {
+                PROJECT_NODE_C64_RESOURCE_FILE, PROJECT_NODE_C64_SOURCE_FILE,
+            }:
+                self.open_project_item(item)
+
+        def _activate_unsaved_c64_leaf(self, item: QTreeWidgetItem) -> bool:
+            if not bool(item.data(0, Qt.UserRole + 307)):
+                return False
+            for index in range(self.document_tabs.count()):
+                document = self.document_tabs.widget(index)
+                if (isinstance(document, DocumentEditor)
+                        and getattr(document, "_c64_project_tree_item", None) is item):
+                    self.document_tabs.setCurrentWidget(document)
+                    document.focus_preferred_editor()
+                    return True
+            # Blatt eines bereits geschlossenen ungespeicherten Dokuments
+            # ohne Phantomdatei aus dem Projektbaum entfernen.
+            parent = item.parent()
+            if parent is not None:
+                parent.takeChild(parent.indexOfChild(item))
+            return False
+
+        def open_project_c64_resource(self, item: QTreeWidgetItem) -> None:
+            path = Path(str(item.data(0, Qt.UserRole + 302) or ""))
+            kind = str(item.data(0, Qt.UserRole + 306) or "").casefold()
+            if not path.is_file():
+                self.show_error("C64-Ressource nicht gefunden", f"Datei nicht gefunden:\n{path}")
+                return
+            editors = {
+                "palettes": self.show_palette_editor,
+                "sprites": self.show_sprite_editor,
+                "pixel_screens": self.show_pixel_screen_editor,
+                "text_screens": self.show_text_screen_editor,
+                "character_maps": self.show_character_editor,
+            }
+            handler = editors.get(kind)
+            if handler is not None:
+                handler(initial_path=path)
+
         def show_project_context_menu(self, position) -> None:
             item = self.project_tree.itemAt(position)
             if item is None:
@@ -130781,6 +134585,21 @@ QFileDialog QComboBox QAbstractItemView {
                 self.project_tree.clearSelection()
                 item.setSelected(True)
             kind = self._project_item_kind(item)
+            if self._project_item_kind(item) in {
+                PROJECT_NODE_C64_SPRITES_ROOT, PROJECT_NODE_C64_SPRITE_FILE,
+            }:
+                self._show_project_c64_sprites_menu(item, position)
+                return
+            if bool(item.data(0, Qt.UserRole + 307)):
+                menu = QMenu(self.project_tree)
+                edit_action = menu.addAction("Im Editor öffnen")
+                save_action = menu.addAction("Speichern unter …")
+                action = menu.exec_(self.project_tree.viewport().mapToGlobal(position))
+                if action is edit_action:
+                    self._activate_unsaved_c64_leaf(item)
+                elif action is save_action and self._activate_unsaved_c64_leaf(item):
+                    self.save_current_document()
+                return
             if kind in {PROJECT_NODE_MARKER_ROOT, PROJECT_NODE_MARKER_FILE, PROJECT_NODE_MARKER_LINE}:
                 menu = QMenu(self.project_tree)
                 if kind == PROJECT_NODE_MARKER_LINE:
@@ -130824,6 +134643,14 @@ QFileDialog QComboBox QAbstractItemView {
                 )
                 if selected is toggle_action:
                     item.setExpanded(not item.isExpanded())
+                return
+            if kind in {PROJECT_NODE_C64_TARGET, PROJECT_NODE_C64_RESOURCE_ROOT,
+                        PROJECT_NODE_C64_RESOURCE_FILE, PROJECT_NODE_C64_SOURCE_FILE} or (
+                item.parent() is not None
+                and self._project_item_kind(item.parent()) == PROJECT_NODE_C64_TARGET
+                and str(item.data(0, Qt.UserRole + 302) or "").strip()
+            ):
+                self._show_project_c64_menu(item, position)
                 return
             if kind == PROJECT_NODE_WINDOWS_TARGET:
                 menu = QMenu(self.project_tree)
@@ -130923,6 +134750,8 @@ QFileDialog QComboBox QAbstractItemView {
                     PROJECT_NODE_PASCAL_TABLE_ROOT,
                     PROJECT_NODE_WINDOWS_TARGET,
                     PROJECT_NODE_RESOURCE_ROOT,
+                    PROJECT_NODE_C64_TARGET,
+                    PROJECT_NODE_C64_RESOURCE_ROOT,
                 }
             )
             clear_action.setEnabled(removable_count > 0)
@@ -131575,7 +135404,8 @@ QFileDialog QComboBox QAbstractItemView {
 
         def add_project_entries(self, item: QTreeWidgetItem) -> None:
             """Fügt vorhandene Dateien in die angewählte Projektkategorie ein."""
-            root = item if item.parent() is None else item.parent()
+            root = (item if self._project_item_kind(item) == PROJECT_NODE_C64_TARGET
+                    else item if item.parent() is None else item.parent())
             category_key = str(root.data(0, Qt.UserRole + 301) or "other")
             extensions = PROJECT_CATEGORY_EXTENSIONS.get(category_key, ())
             if extensions:
@@ -131622,6 +135452,11 @@ QFileDialog QComboBox QAbstractItemView {
                     PROJECT_NODE_ARCHIVE_ROOT,
                     PROJECT_NODE_PROLOG_KNOWLEDGE_ROOT,
                     PROJECT_NODE_PASCAL_TARGET,
+                    PROJECT_NODE_C64_TARGET,
+                    PROJECT_NODE_C64_RESOURCE_ROOT,
+                    PROJECT_NODE_WINDOWS_TARGET,
+                    PROJECT_NODE_RESOURCE_ROOT,
+                    PROJECT_NODE_PASCAL_TABLE_ROOT,
                 }
             ]
             count = len(removable)
@@ -131737,6 +135572,8 @@ QFileDialog QComboBox QAbstractItemView {
                 PROJECT_NODE_PASCAL_UNIT_NAMESPACE,
                 PROJECT_NODE_PASCAL_TABLE_ROOT,
                 PROJECT_NODE_DBASE_GROUP,
+                PROJECT_NODE_C64_TARGET,
+                PROJECT_NODE_C64_RESOURCE_ROOT,
             }
             return [
                 item for item in selected
@@ -131851,11 +135688,54 @@ QFileDialog QComboBox QAbstractItemView {
             _column: int = 0,
         ) -> None:
             kind = self._project_item_kind(item)
+            if kind == PROJECT_NODE_C64_SPRITES_ROOT:
+                item.setExpanded(not item.isExpanded())
+                return
+            if kind == PROJECT_NODE_C64_SPRITE_FILE:
+                path_text = str(item.data(0, Qt.UserRole + 302) or "").strip()
+                bitmap = str(item.data(0, Qt.UserRole + 313) or "") == "bitmap"
+                editor_kind = "bitmap_sprites" if bitmap else "sprites"
+                if not path_text:
+                    dock = getattr(self, "_c64_tool_docks", {}).get(editor_kind)
+                    if dock is not None and getattr(
+                            dock.editor_widget, "_c64_sprite_tree_item", None) is item:
+                        dock.show()
+                        dock.raise_()
+                    else:
+                        self.show_error("Sprite nicht verfügbar",
+                            "Das noch ungespeicherte Sprite ist nicht mehr geöffnet.")
+                    return
+                path = Path(path_text)
+                if not path.is_file():
+                    self.show_error("C64-Sprite nicht gefunden", f"Datei nicht gefunden:\n{path}")
+                    return
+                if self._show_c64_tool_dock(editor_kind, initial_path=path):
+                    dock = self._c64_tool_docks.get(editor_kind)
+                    if dock is not None:
+                        dock.editor_widget._c64_sprite_tree_item = item
+                return
+            if bool(item.data(0, Qt.UserRole + 307)):
+                self._activate_unsaved_c64_leaf(item)
+                return
+            kind = self._project_item_kind(item)
             if kind == PROJECT_NODE_MARKER_LINE:
                 self._jump_to_project_marker(item)
                 return
             if kind in {PROJECT_NODE_MARKER_ROOT, PROJECT_NODE_MARKER_FILE}:
                 item.setExpanded(not item.isExpanded())
+                return
+            if kind in {PROJECT_NODE_C64_TARGET, PROJECT_NODE_C64_RESOURCE_ROOT}:
+                item.setExpanded(not item.isExpanded())
+                return
+            if kind == PROJECT_NODE_C64_RESOURCE_FILE:
+                self.open_project_c64_resource(item)
+                return
+            if kind == PROJECT_NODE_C64_SOURCE_FILE:
+                path = Path(str(item.data(0, Qt.UserRole + 302) or ""))
+                if path.is_file():
+                    self.open_document(path)
+                else:
+                    self.show_error("C64-Quellprogramm nicht gefunden", f"Datei nicht gefunden:\n{path}")
                 return
             if kind == PROJECT_NODE_WINDOWS_TARGET:
                 item.setExpanded(not item.isExpanded())
@@ -133750,6 +137630,14 @@ QFileDialog QComboBox QAbstractItemView {
             )
 
         def closeEvent(self, event: QCloseEvent) -> None:
+            # Stage 388: Das Hauptfenster schliesst Docks nicht zwingend
+            # einzeln. Ungespeicherte C64-Ressourcen trotzdem abfragen.
+            for dock in tuple(getattr(self, "_c64_tool_docks", {}).values()):
+                editor = getattr(dock, "editor_widget", None)
+                confirm = getattr(editor, "_confirm_discard", None)
+                if callable(confirm) and not confirm():
+                    event.ignore()
+                    return
             if self.project_modified:
                 if not self._confirm_project_replacement("Anwendung schließen"):
                     event.ignore()
@@ -134061,7 +137949,7 @@ def _c64_disassemble_mos6510_region_progressive(
     while offset < len(payload):
         address = (int(start_address) + offset) & 0xFFFF
         opcode = payload[offset]
-        operation = _D64INFO_MODULE.MOS6510_OPCODES.get(opcode)
+        operation = MOS6510_OPCODES.get(opcode)
 
         if operation is None:
             instruction = payload[offset : offset + 1]
@@ -134069,7 +137957,7 @@ def _c64_disassemble_mos6510_region_progressive(
             offset += 1
         else:
             mnemonic, mode = operation
-            size = int(_D64INFO_MODULE.MOS6510_MODE_SIZE[mode])
+            size = int(MOS6510_MODE_SIZE[mode])
             if offset + size > len(payload):
                 instruction = payload[offset:]
                 records.append((address, instruction, None, None))
@@ -134116,7 +138004,7 @@ def _c64_disassemble_mos6510_region_progressive(
             statement = f".byte ${instruction[0]:02X}"
             comment = "undokumentierter Opcode oder unvollständiges Datenbyte"
         else:
-            operand = _D64INFO_MODULE.mos6510_operand(
+            operand = mos6510_operand(
                 mode,
                 instruction[1:],
                 address,
@@ -134155,7 +138043,7 @@ def _c64_listing_records(
             total_size=total_size,
         )
     else:
-        source_lines = _D64INFO_MODULE.disassemble_mos6510_region(
+        source_lines = disassemble_mos6510_region(
             bytes(code),
             int(start_address) & 0xFFFF,
         )
@@ -134419,12 +138307,12 @@ def _assembler_opcode_map() -> Dict[Tuple[str, str], int]:
     return {
         (mnemonic.upper(), mode): opcode
         for opcode, (mnemonic, mode)
-        in _D64INFO_MODULE.MOS6510_OPCODES.items()
+        in MOS6510_OPCODES.items()
     }
 
 
 def _assembler_mode_sizes() -> Dict[str, int]:
-    return dict(_D64INFO_MODULE.MOS6510_MODE_SIZE)
+    return dict(MOS6510_MODE_SIZE)
 
 
 def _strip_assembler_comment(line: str) -> str:

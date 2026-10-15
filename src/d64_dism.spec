@@ -15,9 +15,14 @@ BUNDLE_NAME = "d64_dism"
 # to Analysis(datas=...). They are copied to the bundle root after COLLECT.
 external_root_items = (
     (ROOT / "start.exe", "start.exe"),
-    (ROOT / "help", "help"),
-    (ROOT / "locales", "locales"),
-    (ROOT / "examples", "examples"),
+    (ROOT / "d64_workstation_runner.exe", "./_internal/d64_workstation_runner.exe"),
+    (ROOT / "libd64_qt5.dll", "./_internal/libd64_qt5.dll"),
+    (ROOT / "help", "./_internal/help"),
+    (ROOT / "locales", "./_internal/locales"),
+    (ROOT / "examples", "./_internal/examples"),
+    (ROOT / "periodic_elements.json", "./_internal/periodic_elements.json"),
+    # Stage 393: editierbare PETSCII-Map bleibt direkt neben der EXE.
+    (ROOT / "C64Pro.petscii.json", "C64Pro.petscii.json"),
 )
 
 for source, _target in external_root_items:
@@ -82,6 +87,13 @@ hiddenimports = [
     "pyodbc",
     # Stage ASM 50: optional at runtime from the C64 final image stage.
     "c64packer",
+    # Stage 409: runtime-imported D64 image writer for sprite dependencies.
+    "c64_d64_disk",
+    "c64_vice_assets",
+    # Stage 416: 16-Farben-Bitmap-Sprite-Editor und Binärformat.
+    "c64_software_sprite",
+    "c64_bitmap_sprite",
+    "c64_bitmap_sprite_editor",
 ]
 
 a = Analysis(

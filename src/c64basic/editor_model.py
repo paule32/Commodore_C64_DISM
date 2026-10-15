@@ -192,6 +192,71 @@ def assign_missing_basic_numbers(
     return result
 
 
+
+def reconcile_basic_line_numbering(
+    lines: Sequence[str],
+    numbers: Sequence[Optional[int]],
+    *,
+    preferred_step: int = 10,
+    maximum: int = MAX_BASIC_LINE_NUMBER,
+    max_columns: int = MAX_BASIC_COLUMNS,
+) -> Tuple[List[str], List[Optional[int]], dict]:
+    """Keep BASIC line metadata valid after inserting/splitting QTextBlocks.
+
+    Normally line numbers already fit between their two neighbours and do not
+    require changing source text.  Once a gap (e.g. 10..20) is exhausted,
+    assigning another number within that interval is impossible.  Rebalance
+    the complete *metadata* to 10,20,30,..., remapping literal branch targets
+    in the source so GOTO/GOSUB/THEN/RESTORE retain their meaning.
+
+    Qt stores the line number in QTextBlockUserData rather than in the source.
+    A split or paste can leave a missing/duplicate/out-of-order number, which
+    must not silently become the red "-----" gutter and fail at compile time.
+    """
+    source_lines = [str(item) for item in lines]
+    if len(source_lines) != len(numbers):
+        raise C64BasicLineNumberError(
+            "Interner BASIC-Editorfehler: Textzeilen und Gutter-Zeilen stimmen nicht überein."
+        )
+    assigned = assign_missing_basic_numbers(numbers, maximum=maximum)
+    previous = -1
+    ordered = True
+    for number in assigned:
+        if number is None or int(number) <= previous:
+            ordered = False
+            break
+        previous = int(number)
+    if ordered:
+        return source_lines, assigned, {}
+
+    fresh = sequential_basic_numbers(
+        len(source_lines), preferred_step=preferred_step, maximum=maximum
+    )
+    counts = {}
+    for old in numbers:
+        if old is not None:
+            value = int(old)
+            counts[value] = counts.get(value, 0) + 1
+    # Ambiguous duplicate labels cannot be rewritten safely.  Unique existing
+    # line-number targets, however, can be followed to their new positions.
+    mapping = {
+        int(old): int(new)
+        for old, new in zip(numbers, fresh)
+        if old is not None and counts[int(old)] == 1
+    }
+    updated_lines = [
+        rewrite_basic_line_references(line, mapping) for line in source_lines
+    ]
+    width = max(1, int(max_columns))
+    for physical, text in enumerate(updated_lines, 1):
+        if len(text) > width:
+            raise C64BasicLineNumberError(
+                f"Physische BASIC-Zeile {physical} würde nach der automatischen "
+                f"Neunummerierung {len(text)} Zeichen enthalten (maximal {width})."
+            )
+    return updated_lines, fresh, mapping
+
+
 def validate_basic_line_numbers(numbers: Sequence[Optional[int]]) -> None:
     seen = set()
     for physical, number in enumerate(numbers, 1):
