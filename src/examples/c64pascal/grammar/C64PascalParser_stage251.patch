@@ -1,0 +1,27 @@
+--- a/src/c64pascal/grammar/C64PascalParser.g4
++++ b/src/c64pascal/grammar/C64PascalParser.g4
+@@
+ block
+-    : declarationSection*
+-      (globalRoutineDeclaration | globalRoutineImplementation | methodImplementation)*
+-      compoundStatement
++    : blockItem*
++      compoundStatement
++    ;
++
++// Stage 251:
++// Global declaration sections and routine/method implementations may appear
++// in source order. This accepts e.g. a VAR block after TFoo.Show and before
++// the PROGRAM's main BEGIN.
++blockItem
++    : declarationSection
++    | globalRoutineDeclaration
++    | globalRoutineImplementation
++    | methodImplementation
+     ;
+@@
+ primaryExpression
+-    : integerLiteral
++    : REAL_LITERAL
++    | integerLiteral
+     | STRING_LITERAL

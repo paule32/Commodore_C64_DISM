@@ -1,0 +1,17 @@
+--- a/src/c64pascal/grammar/C64PascalParser.g4
++++ b/src/c64pascal/grammar/C64PascalParser.g4
+@@
+ primaryExpression
+-    : integerLiteral
++    : REAL_LITERAL
++    | integerLiteral
+     | STRING_LITERAL
+     | TRUE
+     | FALSE
+     | NIL
+     | typeCastExpression
+     | inheritedExpression
+     | designator LPAREN argumentList? RPAREN
+     | designator
+     | LPAREN expression RPAREN
+     ;

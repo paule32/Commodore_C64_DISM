@@ -345,6 +345,13 @@ from dataclasses import dataclass, field, replace
 from decimal     import Decimal, localcontext
 from fractions   import Fraction
 from fraction_math_help import FractionHelpWidget  # Stage 368: QPainter-Bruchhilfen
+from rotation_matrix_fact import RotationMatrixFactWidget  # Stage 421/422: Matrix-Rotationsseite
+from multiplication_matrix_fact import MultiplicationMatrixFactWidget  # Stage 422: Matrix-Multiplikation
+from number_sets_fact import NumberSetsFactWidget  # Stage 425: Zahlen-Mengen
+from roman_numerals_fact import RomanNumeralsFactWidget  # Stage 442: römische Zahlentafel als Qt-Text
+from trigonometry_right_triangle_fact import TrigonometryRightTriangleFactWidget  # Stage 426: Rechtwinkliges Dreieck
+from dbase_project_new import DBASE_NEW_MENU, DBASE_GROUP_NEW_MENU, is_dbase_program_text, create_dbase_project_file, can_open_dbase_project_file
+from d64_about_dialog import D64AboutDialog  # Stage 437: gemeinsame gerahmte Über-Dialoge
 from pathlib     import Path
 from typing      import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
@@ -458,6 +465,7 @@ try:
         QCompleter,
         QColorDialog,
         QDialog,
+        QDialogButtonBox,
         QDockWidget,
         QFileDialog,
         QFileIconProvider,
@@ -4989,11 +4997,10 @@ class FormulaCanvasItem(QGraphicsObject):
         self._sync_cursor_positions()
         self._collect_leaf_rects(new_layout)
 
-        if self.selected_path not in self._node_rects:
-            self.selected_path = _formula_find_path_for_leaf(
-                self.model,
-                self.active_leaf_id,
-            )
+        # Ein Textcursor allein gilt nicht als Auswahl im Formel-Designer.
+        if (self.selected_path is not None
+                and self.selected_path not in self._node_rects):
+            self.selected_path = None
         self.update()
 
     def boundingRect(self):
@@ -5433,6 +5440,10 @@ class FormulaCanvasItem(QGraphicsObject):
         modifiers = event.modifiers()
 
         if modifiers & Qt.ControlModifier:
+            if key == Qt.Key_C:
+                self.editor._copy_selected_to_clipboard()
+                event.accept()
+                return
             if key == Qt.Key_Z and not (modifiers & Qt.ShiftModifier):
                 self.editor.undo_formula()
                 event.accept()
@@ -5683,6 +5694,8 @@ class FormulaGraphicsView(QGraphicsView):
 
 class FormulaDesignerWidget(QWidget):
     """QGraphicsScene-basierter, struktureller mathematischer Formel-Designer."""
+
+    editStateChanged = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -6099,6 +6112,7 @@ class FormulaDesignerWidget(QWidget):
             self.redo_action.setEnabled(
                 0 <= self._history_index < len(self._history) - 1
             )
+        self.editStateChanged.emit()
 
     def _record_history(self):
         if self._history_restoring:
@@ -6204,6 +6218,7 @@ class FormulaDesignerWidget(QWidget):
             f"Tiefe {depth}/{FORMULA_DESIGNER_MAX_DEPTH}"
             f"   •   Zoom {self.view.zoom_percent}%"
         )
+        self.editStateChanged.emit()
 
     def _target_is_whole_formula(self):
         return self.target_combo.currentData() == "whole"
@@ -6347,17 +6362,28 @@ class FormulaDesignerWidget(QWidget):
             return None
         return _formula_get_node_at_path(self.model, path)
 
+    def _has_explicit_formula_selection(self):
+        path = self.canvas.selected_path
+        return (path is not None
+                and _formula_get_node_at_path(self.model, path) is not None)
+
     def _clipboard_has_formula(self):
+        """Nur strukturierte Formelobjekte, kein fremder Clipboard-Text."""
         mime = QApplication.clipboard().mimeData()
-        return bool(
-            mime is not None
-            and (
-                mime.hasFormat(FORMULA_DESIGNER_CLIPBOARD_MIME)
-                or mime.hasText()
-            )
-        )
+        if mime is None or not mime.hasFormat(FORMULA_DESIGNER_CLIPBOARD_MIME):
+            return False
+        try:
+            raw = bytes(mime.data(FORMULA_DESIGNER_CLIPBOARD_MIME)).decode("utf-8")
+            node = json.loads(raw)
+            _formula_validate_model(node)
+            return True
+        except (UnicodeDecodeError, ValueError, TypeError, RecursionError):
+            return False
 
     def _copy_selected_to_clipboard(self):
+        if not self._has_explicit_formula_selection():
+            QApplication.beep()
+            return False
         node = self._selected_node()
         if node is None:
             QApplication.beep()
@@ -6375,6 +6401,7 @@ class FormulaDesignerWidget(QWidget):
         )
         mime.setText(_formula_to_text(node))
         QApplication.clipboard().setMimeData(mime)
+        self.editStateChanged.emit()
         return True
 
     def delete_selected_object(self):
@@ -6419,6 +6446,9 @@ class FormulaDesignerWidget(QWidget):
         return self.delete_selected_object()
 
     def paste_selected_object(self):
+        if not self._has_explicit_formula_selection() or not self._clipboard_has_formula():
+            QApplication.beep()
+            return False
         mime = QApplication.clipboard().mimeData()
         if mime is None:
             QApplication.beep()
@@ -6466,13 +6496,6 @@ class FormulaDesignerWidget(QWidget):
             self.canvas.selected_path = tuple(path)
             self.model_changed(keep_focus=True)
             return True
-
-        # Reiner Text aus anderen Anwendungen wird an der Cursorposition
-        # eingefügt, sofern gerade ein Texteingabefeld aktiv ist.
-        if mime.hasText():
-            text = str(mime.text())
-            if text:
-                return self.insert_symbol_text(text)
 
         QApplication.beep()
         return False
@@ -6573,7 +6596,10 @@ class FormulaDesignerWidget(QWidget):
         # Stage 269: Farbe ist bewusst der ERSTE Eintrag.
         color_menu = menu.addMenu("Farbe")
         color_actions = {}
-        selected_node = self._selected_node()
+        selected_node = (
+            self._selected_node() if self._has_explicit_formula_selection()
+            else None
+        )
         selected_color = (
             str(selected_node.get("color", "")).lower()
             if isinstance(selected_node, dict)
@@ -6602,7 +6628,7 @@ class FormulaDesignerWidget(QWidget):
         color_menu.setEnabled(has_selection)
         cut_action.setEnabled(has_selection)
         delete_action.setEnabled(has_selection)
-        paste_action.setEnabled(self._clipboard_has_formula())
+        paste_action.setEnabled(has_selection and self._clipboard_has_formula())
 
         chosen = menu.exec_(screen_pos)
         if chosen in color_actions:
@@ -7121,6 +7147,7 @@ class FormulaDesignerController(QObject):
             title_bar_factory=self.title_bar_factory,
         )
         self.main_window.addDockWidget(Qt.TopDockWidgetArea, dock)
+        dock.hide()  # Unsichtbar, bevor der Workspace-Snapshot erzeugt wird.
         self.dock = dock
         return dock
 
@@ -7130,14 +7157,7 @@ class FormulaDesignerController(QObject):
         dock.show()
         dock.raise_()
 
-        # Top-/Bottom-Docks nutzen konstruktionsbedingt die gesamte freie Breite.
-        # Nur die interne Dockaufteilung ändern; die Hauptfenster-Geometrie bleibt unangetastet.
-        try:
-            self.main_window.resizeDocks([dock], [100000], Qt.Horizontal)
-            self.main_window.resizeDocks([dock], [560], Qt.Vertical)
-        except Exception:
-            pass
-
+        # Den gesamten Arbeitsbereich teilt der MainWindow-Workspace zu.
         QTimer.singleShot(0, dock.designer.focus_initial)
 
 
@@ -28352,6 +28372,7 @@ class DoxyGenToolWindow(QWidget):
         #self.trmo = share.locales.load_mo_from_resource(f":/locales/{self.lang}/doxygen.mo")
         
         self._build_ui()
+        apply_c64_tool_groupbox_theme(self, bool(getattr(parent.parent() if parent is not None else None, "dark_mode_enabled", False)))
         self._reload_project_list()
         
     def _build_ui(self):
@@ -34171,6 +34192,13 @@ def _parse_pe32_source_lines(
         if mnemonic == "mov" and len(operands) == 2:
             dst, src = operands
             dst_mem = _x86_memory_operand(dst, line)
+            src_mem = _x86_memory_operand(src, line)
+            if dst in _X86_REGISTERS8 and src_mem is not None:
+                if src_mem["size"] != "byte":
+                    raise PE32AssemblerError("MOV in 8-Bit-Register erwartet BYTE-Speicher.", line)
+                return 1 + _x86_rm_length(src, line)
+            if dst_mem is not None and dst_mem["size"] == "byte" and _x86_parse_int(src) is not None:
+                return 1 + _x86_rm_length(dst, line) + 1
             if dst_mem is not None and src in _X86_REGISTERS8:
                 return 1 + _x86_rm_length(dst, line)
             if dst_mem is not None and src in _X86_REGISTERS16:
@@ -34187,6 +34215,9 @@ def _parse_pe32_source_lines(
                 return 5
         if mnemonic == "lea" and len(operands) == 2 and operands[0] in _X86_REGISTERS:
             return 1 + _x86_rm_length(operands[1], line)
+        if mnemonic == "cmp" and len(operands) == 2 and operands[0] in _X86_REGISTERS8:
+            if _x86_parse_int(operands[1]) is not None:
+                return 2 if operands[0] == "al" else 3
         if mnemonic in {"xor", "and", "or", "test", "add", "sub", "cmp"} and len(operands) == 2:
             dst, src = operands
             if src in _X86_REGISTERS and _x86_is_rm32(dst, line):
@@ -34607,6 +34638,21 @@ def assemble_pe32_object_source(
             src_key = operands[1].casefold()
             dst_mem = _x86_memory_operand(operands[0], line_number)
             src_mem = _x86_memory_operand(operands[1], line_number)
+            if dst_key in _X86_REGISTERS8 and src_mem is not None:
+                if src_mem["size"] != "byte":
+                    raise PE32AssemblerError("MOV in 8-Bit-Register erwartet BYTE-Speicher.", line_number)
+                output.append(0x8A)  # MOV r8, r/m8
+                emit_rm_operand(_X86_REGISTERS8[dst_key], operands[1], line_number)
+                continue
+            if dst_mem is not None and dst_mem["size"] == "byte" and src_key not in _X86_REGISTERS8:
+                value = _x86_parse_int(operands[1])
+                if value is not None:
+                    if not -128 <= value <= 255:
+                        raise PE32AssemblerError("MOV BYTE erwartet eine 8-Bit-Konstante.", line_number)
+                    output.append(0xC6)  # MOV r/m8, imm8
+                    emit_rm_operand(0, operands[0], line_number)
+                    output.append(value & 0xFF)
+                    continue
             if dst_key in _X86_REGISTERS and src_mem is not None:
                 output.append(0x8B)
                 emit_rm_operand(_x86_reg(dst_key, line_number), operands[1], line_number)
@@ -34638,6 +34684,17 @@ def assemble_pe32_object_source(
             output.append(0x8D)
             emit_rm_operand(_x86_reg(operands[0], line_number), operands[1], line_number)
             continue
+        if mnemonic == "cmp" and len(operands) == 2 and operands[0].casefold() in _X86_REGISTERS8:
+            value = _x86_parse_int(operands[1])
+            if value is not None:
+                if not -128 <= value <= 255:
+                    raise PE32AssemblerError("CMP r8 erwartet eine 8-Bit-Konstante.", line_number)
+                key = operands[0].casefold()
+                if key == "al":
+                    output.extend((0x3C, value & 0xFF))  # CMP AL, imm8
+                else:
+                    output.extend((0x80, _x86_modrm(7, _X86_REGISTERS8[key]), value & 0xFF))
+                continue
         if mnemonic in {"add", "sub", "cmp", "xor", "and", "or", "test"} and len(operands) == 2:
             dst_key = operands[0].casefold()
             src_key = operands[1].casefold()
@@ -38049,6 +38106,23 @@ def _encode_pe64_instruction(text: str, line: int, offset: int, *, relocs: Optio
                 _x64_append_rm(out,b"\xFF",6,op,line,relocs=relocs,base_offset=offset); return bytes(out)
     if mnemonic == "mov" and len(ops)==2:
         dst,src=ops; dk=dst.casefold(); sk=src.casefold()
+        # Stage 446: WFM LEN/TRIM emits MOV AL, BYTE PTR [RSI].
+        # Preserve 8-bit width; encoding it with the 32-bit MOV opcode
+        # would overwrite adjacent data and corrupt the destination.
+        if dk in _X64_REG8:
+            reg = _X64_REG8[dk]
+            mem = _x64_memory_operand(src,line)
+            if mem is not None:
+                if mem["size"] != "byte":
+                    raise PE64AssemblerError("MOV 8-Bit-Register erwartet BYTE PTR.",line)
+                _x64_append_rm(out,b"\x8A",reg,src,line,
+                               force_rex=(reg>=4),relocs=relocs,base_offset=offset)
+                return bytes(out)
+            if sk in _X64_REG8:
+                sr = _X64_REG8[sk]
+                rex=_x64_rex(r=(reg>>3)&1,b=(sr>>3)&1,
+                             force=(reg>=4 or sr>=4))
+                return rex+b"\x8A"+bytes((0xC0|((reg&7)<<3)|(sr&7),))
         if dk in _X64_REG_CODE:
             dcode,dwidth=_x64_reg_info(dk,line)
             if sk in _X64_REG_CODE:
@@ -38087,6 +38161,20 @@ def _encode_pe64_instruction(text: str, line: int, offset: int, *, relocs: Optio
         reg,width=_x64_reg_info(ops[0],line); _x64_append_rm(out,b"\x8D",reg,ops[1],line,w=True,force_rex=reg>=8,relocs=relocs,base_offset=offset); return bytes(out)
     if mnemonic in {"add","sub","and","or","xor","cmp","test"} and len(ops)==2:
         dst,src=ops; dk=dst.casefold(); sk=src.casefold()
+        # Stage 446: CMP AL, 32 / CMP BL, 9 produced by string trimming.
+        if dk in _X64_REG8 and mnemonic == "cmp":
+            value = _x86_parse_int(src)
+            if value is not None:
+                if not 0 <= value <= 255:
+                    raise PE64AssemblerError("CMP BYTE-Immediate ausserhalb 0..255.",line)
+                if dk == "al":
+                    return b"\x3C"+bytes((value,))
+                reg = _X64_REG8[dk]
+                _x64_append_rm(out,b"\x80",7,dst,line,
+                               force_rex=reg>=4,relocs=relocs,base_offset=offset,
+                               rip_tail_bytes=1)
+                out.append(value)
+                return bytes(out)
         op_rr={"add":0x01,"or":0x09,"and":0x21,"sub":0x29,"xor":0x31,"cmp":0x39,"test":0x85}[mnemonic]
         if sk in _X64_REG_CODE and (dk in _X64_REG_CODE or _x64_memory_operand(dst,line) is not None):
             scode,swidth=_x64_reg_info(sk,line); w=swidth==64 or (dk in _X64_REG64) or ((_x64_memory_operand(dst,line) or {}).get("size")=="qword")
@@ -46636,15 +46724,35 @@ def format_c64_palette_output(
 
 # ---------------------------------------------------------------------------
 # C64-Textbildschirm- und Pixelbildschirm-Editoren.
-# Der Textbildschirm speichert 40x25 Zeichenbytes und 40x25 Farbbytes.
+# Der Textbildschirm speichert je Zelle ein Zeichen-, ein Hintergrund- und
+# ein Vordergrundfarbbyte (3 * 1000 Bytes; historische 1/2-Byte-Formate lesbar).
 # Der Pixelbildschirm verwendet eine plattformneutrale 320x200-Farbindex-
 # Flaeche mit 16 Farben; im Rohformat werden je zwei Pixel in einem Byte
 # zusammengefasst.
 # ---------------------------------------------------------------------------
+def apply_c64_tool_groupbox_theme(widget: QWidget, dark_mode: bool) -> None:
+    """Stage 440: Kontrast der GroupBox-Titel bei geöffneten Werkzeug-Docks.
+
+    Die vorhandene Box-Gestaltung bleibt erhalten; beim Umschalten in den
+    Light-Mode wird das ursprüngliche lokale Stylesheet wiederhergestellt.
+    """
+    for group in widget.findChildren(QGroupBox):
+        base = group.property("_d64_original_groupbox_stylesheet")
+        if base is None:
+            base = group.styleSheet()
+            group.setProperty("_d64_original_groupbox_stylesheet", base)
+        if dark_mode:
+            group.setStyleSheet(str(base or "") +
+                "\nQGroupBox { color: #ffffff; } QGroupBox::title { color: #ffffff; }")
+        else:
+            group.setStyleSheet(str(base or ""))
+
+
 C64_TEXT_SCREEN_COLUMNS = 40
 C64_TEXT_SCREEN_ROWS = 25
 C64_TEXT_SCREEN_CELL_COUNT = C64_TEXT_SCREEN_COLUMNS * C64_TEXT_SCREEN_ROWS
-C64_TEXT_SCREEN_FILE_SIZE = C64_TEXT_SCREEN_CELL_COUNT * 2
+C64_TEXT_SCREEN_FILE_SIZE = C64_TEXT_SCREEN_CELL_COUNT * 2  # Legacy: Zeichen + Vordergrund
+C64_TEXT_SCREEN_RGB_FILE_SIZE = C64_TEXT_SCREEN_CELL_COUNT * 3  # Zeichen + Hintergrund + Vordergrund
 C64_TEXT_SCREEN_JSON_FORMAT = "d64-c64-text-screen"
 C64_TEXT_SCREEN_JSON_VERSION = 1
 
@@ -46670,54 +46778,75 @@ def normalize_c64_text_screen_data(
     return chars, cols
 
 
+def normalize_c64_text_screen_layers(
+    characters: Sequence[int],
+    colors: Optional[Sequence[int]] = None,
+    backgrounds: Optional[Sequence[int]] = None,
+) -> Tuple[bytearray, bytearray, bytearray]:
+    """Zeichen, Hintergrund, Vordergrund; je 1000 Werte mit 0..15 Farben."""
+    chars, foregrounds = normalize_c64_text_screen_data(characters, colors)
+    background_values = bytearray(
+        [0] * C64_TEXT_SCREEN_CELL_COUNT if backgrounds is None
+        else (int(value) & 0x0F for value in backgrounds)
+    )
+    if len(background_values) != C64_TEXT_SCREEN_CELL_COUNT:
+        raise ValueError("Ein C64-Textbildschirm benötigt genau 1000 Hintergrundfarben.")
+    return chars, background_values, foregrounds
+
+
 def encode_c64_text_screen_data(
     characters: Sequence[int],
     colors: Sequence[int],
+    backgrounds: Optional[Sequence[int]] = None,
 ) -> bytes:
-    chars, cols = normalize_c64_text_screen_data(characters, colors)
-    return bytes(chars + cols)
+    """3000-Byte-Vollformat bei Übergabe von backgrounds, sonst Altformat."""
+    chars, bg, fg = normalize_c64_text_screen_layers(characters, colors, backgrounds)
+    return bytes(chars + bg + fg) if backgrounds is not None else bytes(chars + fg)
 
 
-def decode_c64_text_screen_data(data: bytes) -> Tuple[bytearray, bytearray]:
+def decode_c64_text_screen_data(
+    data: bytes, *, include_background: bool = False,
+):
+    """Akzeptiert alte 1000/2000- und neue 3000-Byte-Screen-Dateien."""
     payload = bytes(data)
-    if len(payload) == C64_TEXT_SCREEN_CELL_COUNT:
-        return normalize_c64_text_screen_data(payload, None)
-    if len(payload) == C64_TEXT_SCREEN_FILE_SIZE:
-        return normalize_c64_text_screen_data(
-            payload[:C64_TEXT_SCREEN_CELL_COUNT],
-            payload[C64_TEXT_SCREEN_CELL_COUNT:],
+    n = C64_TEXT_SCREEN_CELL_COUNT
+    if len(payload) == n:
+        chars, bg, fg = normalize_c64_text_screen_layers(payload)
+    elif len(payload) == n * 2:
+        chars, bg, fg = normalize_c64_text_screen_layers(payload[:n], payload[n:])
+    elif len(payload) == n * 3:
+        chars, bg, fg = normalize_c64_text_screen_layers(
+            payload[:n], payload[n * 2:n * 3], payload[n:n * 2]
         )
-    raise ValueError(
-        "Eine Bildschirmseite muss 1000 Bytes (nur Zeichen) oder "
-        "2000 Bytes (1000 Zeichen + 1000 Zellfarben) enthalten."
-    )
+    else:
+        raise ValueError(
+            "Eine Bildschirmseite muss 1000, 2000 oder 3000 Bytes enthalten "
+            "(Zeichen, optional Hintergrund und Vordergrund)."
+        )
+    return (chars, bg, fg) if include_background else (chars, fg)
 
 
 def encode_c64_text_screen_json(
     characters: Sequence[int],
     colors: Sequence[int],
+    backgrounds: Optional[Sequence[int]] = None,
 ) -> str:
-    """Verlustfreies Arbeitsformat des Screen-Designers.
-
-    Jede der 40x25 Zellen besitzt *ihr eigenes* Zeichen und *ihre eigene*
-    C64-Farbe.  Die explizite ``cells``-Struktur verhindert, dass Farben
-    versehentlich zeilenweise oder global interpretiert werden.
-    """
-    chars, cols = normalize_c64_text_screen_data(characters, colors)
+    """Verlustfreies Zellenformat, ab Version 2 mit drei Byte pro Zelle."""
+    chars, bg, fg = normalize_c64_text_screen_layers(characters, colors, backgrounds)
     rows = []
     for y in range(C64_TEXT_SCREEN_ROWS):
         row = []
         base = y * C64_TEXT_SCREEN_COLUMNS
         for x in range(C64_TEXT_SCREEN_COLUMNS):
             offset = base + x
-            row.append({
-                "character": int(chars[offset]),
-                "color": int(cols[offset]) & 0x0F,
-            })
+            cell = {"character": int(chars[offset]), "color": int(fg[offset])}
+            if backgrounds is not None:
+                cell["background"] = int(bg[offset])
+            row.append(cell)
         rows.append(row)
     payload = {
         "format": C64_TEXT_SCREEN_JSON_FORMAT,
-        "version": C64_TEXT_SCREEN_JSON_VERSION,
+        "version": 2 if backgrounds is not None else C64_TEXT_SCREEN_JSON_VERSION,
         "columns": C64_TEXT_SCREEN_COLUMNS,
         "rows": C64_TEXT_SCREEN_ROWS,
         "cells": rows,
@@ -46727,77 +46856,72 @@ def encode_c64_text_screen_json(
 
 def decode_c64_text_screen_json(
     source: Union[str, bytes, bytearray, Dict[str, Any]],
-) -> Tuple[bytearray, bytearray]:
+    *, include_background: bool = False,
+):
     if isinstance(source, dict):
         payload = source
     else:
-        if isinstance(source, (bytes, bytearray)):
-            text = bytes(source).decode("utf-8-sig")
-        else:
-            text = str(source)
+        text = bytes(source).decode("utf-8-sig") if isinstance(source, (bytes, bytearray)) else str(source)
         payload = json.loads(text)
     if not isinstance(payload, dict):
         raise ValueError("Das Screen-JSON muss ein Objekt enthalten.")
-
     columns = int(payload.get("columns", C64_TEXT_SCREEN_COLUMNS))
     rows_count = int(payload.get("rows", C64_TEXT_SCREEN_ROWS))
     if columns != C64_TEXT_SCREEN_COLUMNS or rows_count != C64_TEXT_SCREEN_ROWS:
         raise ValueError("Das Screen-JSON muss exakt 40 x 25 Zellen enthalten.")
-
     cells = payload.get("cells")
     if cells is not None:
         if not isinstance(cells, list) or len(cells) != C64_TEXT_SCREEN_ROWS:
             raise ValueError("Das Screen-JSON benötigt genau 25 Zellzeilen.")
-        chars = bytearray()
-        cols = bytearray()
+        chars, backgrounds, foregrounds = bytearray(), bytearray(), bytearray()
         for y, row in enumerate(cells):
             if not isinstance(row, list) or len(row) != C64_TEXT_SCREEN_COLUMNS:
-                raise ValueError(
-                    f"Screen-JSON: Zeile {y} benötigt genau 40 Zellen."
-                )
+                raise ValueError(f"Screen-JSON: Zeile {y} benötigt genau 40 Zellen.")
             for x, cell in enumerate(row):
                 if isinstance(cell, dict):
                     character = cell.get("character", cell.get("char", 32))
-                    color = cell.get("color", 1)
+                    fg = cell.get("foreground", cell.get("color", 1))
+                    bg = cell.get("background", 0)
                 elif isinstance(cell, (list, tuple)) and len(cell) >= 2:
-                    character, color = cell[0], cell[1]
+                    character, fg = cell[0], cell[1]
+                    bg = cell[2] if len(cell) > 2 else 0
                 else:
-                    raise ValueError(
-                        f"Screen-JSON: Zelle {x},{y} benötigt character und color."
-                    )
+                    raise ValueError(f"Screen-JSON: Zelle {x},{y} benötigt character und color.")
                 chars.append(int(character) & 0xFF)
-                cols.append(int(color) & 0x0F)
-        return normalize_c64_text_screen_data(chars, cols)
+                foregrounds.append(int(fg) & 0x0F)
+                backgrounds.append(int(bg) & 0x0F)
+    else:
+        chars = payload.get("characters")
+        foregrounds = payload.get("colors", payload.get("foregrounds"))
+        backgrounds = payload.get("backgrounds")
+        if chars is None or foregrounds is None:
+            raise ValueError("Das Screen-JSON enthält weder 'cells' noch 'characters'/'colors'.")
+    chars, bg, fg = normalize_c64_text_screen_layers(chars, foregrounds, backgrounds)
+    return (chars, bg, fg) if include_background else (chars, fg)
 
-    # Rückwärts-/Importkompatibilität: auch zwei flache Arrays akzeptieren.
-    characters = payload.get("characters")
-    colors = payload.get("colors")
-    if characters is None or colors is None:
-        raise ValueError(
-            "Das Screen-JSON enthält weder 'cells' noch 'characters'/'colors'."
-        )
-    return normalize_c64_text_screen_data(characters, colors)
 
-
-def load_c64_text_screen_file(path: Union[str, Path]) -> Tuple[bytearray, bytearray]:
+def load_c64_text_screen_file(
+    path: Union[str, Path], *, include_background: bool = False,
+):
     source_path = Path(path)
     data = source_path.read_bytes()
     if source_path.suffix.casefold() == ".json" or data.lstrip().startswith(b"{"):
-        return decode_c64_text_screen_json(data)
-    return decode_c64_text_screen_data(data)
+        return decode_c64_text_screen_json(data, include_background=include_background)
+    return decode_c64_text_screen_data(data, include_background=include_background)
 
 
 def save_c64_text_screen_file(
     path: Union[str, Path],
     characters: Sequence[int],
     colors: Sequence[int],
+    backgrounds: Optional[Sequence[int]] = None,
 ) -> int:
     target = Path(path)
     if target.suffix.casefold() == ".json":
-        text = encode_c64_text_screen_json(characters, colors)
+        text = encode_c64_text_screen_json(characters, colors, backgrounds)
         target.write_text(text, encoding="utf-8", newline="\n")
         return len(text.encode("utf-8"))
-    data = encode_c64_text_screen_data(characters, colors)
+    data = encode_c64_text_screen_data(characters, colors, backgrounds)
     target.write_bytes(data)
     return len(data)
 
@@ -46835,6 +46959,7 @@ def _format_asm_byte_rows(data: Sequence[int], width: int, comment: str) -> List
 def format_c64_text_screen_asm(
     characters: Sequence[int],
     colors: Sequence[int],
+    backgrounds: Optional[Sequence[int]] = None,
 ) -> str:
     chars, cols = normalize_c64_text_screen_data(characters, colors)
     lines = [
@@ -46845,12 +46970,17 @@ def format_c64_text_screen_asm(
     lines.append("")
     lines.append("C64TextScreenColors:")
     lines.extend(_format_asm_byte_rows(cols, 40, "Farbzeile"))
+    if backgrounds is not None:
+        _, bg, _ = normalize_c64_text_screen_layers(characters, colors, backgrounds)
+        lines.extend(["", "C64TextScreenBackgrounds:"])
+        lines.extend(_format_asm_byte_rows(bg, 40, "Hintergrundzeile"))
     return "\n".join(lines) + "\n"
 
 
 def format_c64_text_screen_c(
     characters: Sequence[int],
     colors: Sequence[int],
+    backgrounds: Optional[Sequence[int]] = None,
 ) -> str:
     chars, cols = normalize_c64_text_screen_data(characters, colors)
     lines = [
@@ -46867,12 +46997,21 @@ def format_c64_text_screen_c(
         values = ", ".join(f"0x{value:02X}" for value in cols[start:start + 40])
         lines.append(f"    {{ {values} }}{',' if row < 24 else ''}")
     lines.append("};")
+    if backgrounds is not None:
+        _, bg, _ = normalize_c64_text_screen_layers(characters, colors, backgrounds)
+        lines.extend(["", "const unsigned char C64TextScreenBackgrounds[25][40] = {"])
+        for row in range(25):
+            start = row * 40
+            values = ", ".join(f"0x{value:02X}" for value in bg[start:start + 40])
+            lines.append(f"    {{ {values} }}{',' if row < 24 else ''}")
+        lines.append("};")
     return "\n".join(lines) + "\n"
 
 
 def format_c64_text_screen_pascal(
     characters: Sequence[int],
     colors: Sequence[int],
+    backgrounds: Optional[Sequence[int]] = None,
 ) -> str:
     chars, cols = normalize_c64_text_screen_data(characters, colors)
     lines = [
@@ -46894,12 +47033,21 @@ def format_c64_text_screen_pascal(
         values = ", ".join(f"${value:02X}" for value in cols[start:start + 40])
         lines.append(f"        ({values}){',' if row < 24 else ''}")
     lines.append("    );")
+    if backgrounds is not None:
+        _, bg, _ = normalize_c64_text_screen_layers(characters, colors, backgrounds)
+        lines.extend(["", "    C64TextScreenBackgrounds: array[0..24, 0..39] of Byte = ("])
+        for row in range(25):
+            start = row * 40
+            values = ", ".join(f"${value:02X}" for value in bg[start:start + 40])
+            lines.append(f"        ({values}){',' if row < 24 else ''}")
+        lines.append("    );")
     return "\n".join(lines) + "\n"
 
 
 def format_c64_text_screen_basic(
     characters: Sequence[int],
     colors: Sequence[int],
+    backgrounds: Optional[Sequence[int]] = None,
 ) -> str:
     chars, cols = normalize_c64_text_screen_data(characters, colors)
     lines = [
@@ -46916,6 +47064,16 @@ def format_c64_text_screen_basic(
             values = ",".join(str(value) for value in data[start:start + 20])
             lines.append(f"{number} DATA {values}")
             number += 10
+    if backgrounds is not None:
+        _, bg, _ = normalize_c64_text_screen_layers(characters, colors, backgrounds)
+        lines[1] = "20 DIM SC(999):DIM CO(999):DIM BG(999)"
+        lines.insert(4, "45 FOR I=0 TO 999:READ BG(I):NEXT I")
+        lines.append(f"{number} REM HINTERGRUNDFARBEN")
+        number += 10
+        for start in range(0, 1000, 20):
+            values = ",".join(str(value) for value in bg[start:start + 20])
+            lines.append(f"{number} DATA {values}")
+            number += 10
     return "\n".join(lines) + "\n"
 
 
@@ -46923,15 +47081,16 @@ def format_c64_text_screen_output(
     characters: Sequence[int],
     colors: Sequence[int],
     format_name: str,
+    backgrounds: Optional[Sequence[int]] = None,
 ) -> str:
     output_format = normalize_c64_output_format(format_name)
     if output_format == "Assembler":
-        return format_c64_text_screen_asm(characters, colors)
+        return format_c64_text_screen_asm(characters, colors, backgrounds)
     if output_format == "Pascal":
-        return format_c64_text_screen_pascal(characters, colors)
+        return format_c64_text_screen_pascal(characters, colors, backgrounds)
     if output_format == "C":
-        return format_c64_text_screen_c(characters, colors)
-    return format_c64_text_screen_basic(characters, colors)
+        return format_c64_text_screen_c(characters, colors, backgrounds)
+    return format_c64_text_screen_basic(characters, colors, backgrounds)
 
 
 def normalize_c64_pixel_screen(pixels: Sequence[int]) -> bytearray:
@@ -57902,6 +58061,7 @@ def run_gui(
             self.setAttribute(Qt.WA_DeleteOnClose, False)
             
             self._build_ui()
+            apply_c64_tool_groupbox_theme(self, bool(getattr(main_window, "dark_mode_enabled", False)))
             self._load_state()
             self._apply_default_headers()
             
@@ -64329,6 +64489,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.character_items = {}
 
             self._create_ui()
+            apply_c64_tool_groupbox_theme(self, bool(getattr(parent, "dark_mode_enabled", False)))
             self._build_character_list()
             self._select_character(1)
             self._set_modified(False)
@@ -64910,6 +65071,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.palette_items = {}
 
             self._create_ui()
+            apply_c64_tool_groupbox_theme(self, bool(getattr(parent, "dark_mode_enabled", False)))
             self._build_palette_list()
             self._select_color(0)
             self._set_modified(False)
@@ -65338,6 +65500,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.setMinimumSize(720, 450)
             self._characters = bytearray([32] * C64_TEXT_SCREEN_CELL_COUNT)
             self._colors = bytearray([1] * C64_TEXT_SCREEN_CELL_COUNT)
+            self._backgrounds = bytearray(C64_TEXT_SCREEN_CELL_COUNT)
             self._brush_character = 65
             self._brush_color = 1
             self._color_only = False
@@ -65349,10 +65512,14 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
         def sizeHint(self) -> QSize:
             return QSize(880, 570)
 
-        def set_screen(self, characters: Sequence[int], colors: Sequence[int]) -> None:
-            chars, cols = normalize_c64_text_screen_data(characters, colors)
+        def set_screen(
+            self, characters: Sequence[int], colors: Sequence[int],
+            backgrounds: Optional[Sequence[int]] = None,
+        ) -> None:
+            chars, bg, fg = normalize_c64_text_screen_layers(characters, colors, backgrounds)
             self._characters = chars
-            self._colors = cols
+            self._backgrounds = bg
+            self._colors = fg
             self.update()
             self._emit_cursor()
 
@@ -65361,6 +65528,9 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
 
         def colors(self) -> bytearray:
             return bytearray(self._colors)
+
+        def backgrounds(self) -> bytearray:
+            return bytearray(self._backgrounds)
 
         def set_brush(self, character: int, color: int) -> None:
             self._brush_character = int(character) & 0xFF
@@ -65372,9 +65542,10 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
         def apply_color_to_current_cell(self, color: int) -> None:
             offset = self._offset(self._cursor_x, self._cursor_y)
             value = int(color) & 0x0F
-            if self._colors[offset] == value:
+            plane = self._backgrounds if self._color_only else self._colors
+            if plane[offset] == value:
                 return
-            self._colors[offset] = value
+            plane[offset] = value
             self.screenChanged.emit()
             self._emit_cursor()
             self.update()
@@ -65382,6 +65553,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
         def clear_screen(self, character: int = 32, color: int = 1) -> None:
             self._characters[:] = bytes([int(character) & 0xFF]) * C64_TEXT_SCREEN_CELL_COUNT
             self._colors[:] = bytes([int(color) & 0x0F]) * C64_TEXT_SCREEN_CELL_COUNT
+            self._backgrounds[:] = bytes(C64_TEXT_SCREEN_CELL_COUNT)
             self.screenChanged.emit()
             self.update()
             self._emit_cursor()
@@ -65428,23 +65600,18 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
 
         def _paint_cell(self, x: int, y: int, erase: bool = False) -> None:
             offset = self._offset(x, y)
-            if erase:
-                character = 32
-                color = 0
-            elif self._color_only:
-                # Stage 131: Farbe ist eine Eigenschaft *dieser Zelle*.
-                # Im Farbmodus bleibt das bereits gesetzte Zeichen erhalten.
-                character = self._characters[offset]
-                color = self._brush_color
+            if self._color_only:
+                # Nur Hintergrund ändern; Rechtsklick setzt ihn auf C64-Schwarz zurück.
+                background = 0 if erase else self._brush_color
+                changed = self._backgrounds[offset] != background
+                self._backgrounds[offset] = background
             else:
-                character = self._brush_character
-                color = self._brush_color
-            changed = (
-                self._characters[offset] != character
-                or self._colors[offset] != color
-            )
-            self._characters[offset] = character
-            self._colors[offset] = color
+                character = 32 if erase else self._brush_character
+                foreground = 0 if erase else self._brush_color
+                changed = (self._characters[offset] != character or
+                           self._colors[offset] != foreground)
+                self._characters[offset] = character
+                self._colors[offset] = foreground
             self._cursor_x = x
             self._cursor_y = y
             if changed:
@@ -65472,7 +65639,9 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                         cell_width + 0.5,
                         cell_height + 0.5,
                     )
-                    painter.fillRect(cell_rect, QColor(C64_CHARACTER_PALETTE[0][1]))
+                    painter.fillRect(cell_rect, QColor(
+                        C64_CHARACTER_PALETTE[self._backgrounds[offset] & 0x0F][1]
+                    ))
                     painter.setPen(QColor(C64_CHARACTER_PALETTE[self._colors[offset] & 0x0F][1]))
                     painter.drawText(
                         cell_rect,
@@ -65563,6 +65732,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.current_path = None
             self.modified = False
             self._create_ui()
+            apply_c64_tool_groupbox_theme(self, bool(getattr(parent, "dark_mode_enabled", False)))
             self.canvas.set_screen(
                 bytearray([32] * C64_TEXT_SCREEN_CELL_COUNT),
                 bytearray([1] * C64_TEXT_SCREEN_CELL_COUNT),
@@ -65585,7 +65755,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 file_row.addWidget(button)
             file_row.addStretch(1)
             root.addLayout(file_row)
-            self.path_label = QLabel("Neue Bildschirmseite – 1000 Zeichen + 1000 Farben", self)
+            self.path_label = QLabel("Neue Bildschirmseite – 1000 Zeichen + 1000 Hintergründe + 1000 Vordergründe", self)
             self.path_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
             root.addWidget(self.path_label)
 
@@ -65626,7 +65796,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             character_layout.addWidget(self.character_list)
             controls_layout.addWidget(character_box, 1)
 
-            color_box = QGroupBox("Zeichenfarbe", controls)
+            color_box = QGroupBox("Zeichen-/Hintergrundfarbe", controls)
             color_layout = QVBoxLayout(color_box)
             self.color_combo = QComboBox(color_box)
             for index, (name, color_name) in enumerate(C64_CHARACTER_PALETTE):
@@ -65636,11 +65806,11 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.color_combo.setCurrentIndex(1)
             color_layout.addWidget(self.color_combo)
             self.color_only_checkbox = QCheckBox(
-                "Nur Farbe zeichnen (Zeichen beibehalten)", color_box
+                "Nur Farbe zeichnen (Hintergrund, Zeichen beibehalten)", color_box
             )
             self.color_only_checkbox.setToolTip(
-                "Jede Zelle besitzt eine eigene Farbe. In diesem Modus wird nur "
-                "die Farbe der angeklickten Zelle geändert."
+                "Jede Zelle besitzt Zeichen-, Hintergrund- und Vordergrund-Byte. "
+                "In diesem Modus wird nur die Hintergrundfarbe geändert."
             )
             color_layout.addWidget(self.color_only_checkbox)
             self.apply_cell_color_button = QPushButton(
@@ -65723,7 +65893,8 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
 
         def _cursor_changed(self, x: int, y: int, character: int, color: int) -> None:
             self.status_label.setText(
-                f"Position {x:02d},{y:02d} – Zeichen ${character:02X} – Farbe {color}"
+                f"Position {x:02d},{y:02d} – Zeichen ${character:02X} – "
+                f"Hintergrund {self.canvas._backgrounds[y * 40 + x]} – Vordergrund {color}"
             )
 
         def _apply_current_cell_color(self) -> None:
@@ -65765,8 +65936,8 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 bytearray([32] * C64_TEXT_SCREEN_CELL_COUNT),
                 bytearray([1] * C64_TEXT_SCREEN_CELL_COUNT),
             )
-            self.path_label.setText("Neue Bildschirmseite – 1000 Zeichen + 1000 Farben")
-            self.status_label.setText("Neue leere Bildschirmseite angelegt")
+            self.path_label.setText("Neue Bildschirmseite – 1000 Zeichen + 1000 Hintergründe + 1000 Vordergründe")
+            self.status_label.setText("Neue leere Bildschirmseite mit 3 Byte pro Zelle angelegt")
             self._set_modified(False)
 
         def load_dialog(self) -> None:
@@ -65787,18 +65958,20 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             if not already_confirmed and not self._confirm_discard():
                 return False
             try:
-                chars, colors = load_c64_text_screen_file(path)
+                chars, backgrounds, colors = load_c64_text_screen_file(
+                    path, include_background=True
+                )
             except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
                 QMessageBox.critical(self, "Bildschirmseite konnte nicht geladen werden", str(exc))
                 return False
             self.current_path = Path(path).resolve()
             self.initial_directory = self.current_path.parent
-            self.canvas.set_screen(chars, colors)
+            self.canvas.set_screen(chars, colors, backgrounds)
             self.path_label.setText(str(self.current_path))
             file_kind = "JSON-Projekt" if self.current_path.suffix.casefold() == ".json" else "C64-Screen"
             self.status_label.setText(
                 f"{file_kind} geladen: {self.current_path.name} – "
-                "jede Zelle mit eigener Farbe"
+                "jede Zelle mit Hintergrund- und Vordergrundfarbe"
             )
             self._set_modified(False)
             return True
@@ -65811,6 +65984,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                     self.current_path,
                     self.canvas.characters(),
                     self.canvas.colors(),
+                    self.canvas.backgrounds(),
                 )
             except (OSError, ValueError, TypeError) as exc:
                 QMessageBox.critical(self, "Speichern fehlgeschlagen", str(exc))
@@ -65820,7 +65994,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             detail = (
                 f"{byte_count} Bytes"
                 if self.current_path.suffix.casefold() != ".json"
-                else "40 x 25 Zellen mit Zeichen + Farbe"
+                else "40 x 25 Zellen mit Zeichen, Hintergrund und Vordergrund"
             )
             self.status_label.setText(
                 f"{file_kind} gespeichert: {self.current_path.name} – {detail}"
@@ -65864,7 +66038,8 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             try:
                 target.write_bytes(
                     encode_c64_text_screen_data(
-                        self.canvas.characters(), self.canvas.colors()
+                        self.canvas.characters(), self.canvas.colors(),
+                        self.canvas.backgrounds()
                     )
                 )
             except (OSError, ValueError) as exc:
@@ -65872,7 +66047,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 return False
             self.initial_directory = target.parent
             self.status_label.setText(
-                f"C64-Screen exportiert: {target.name} – 1000 Zeichen + 1000 Zellfarben"
+                f"C64-Screen exportiert: {target.name} – 3000 Bytes (3 je Zelle)"
             )
             return True
 
@@ -65891,7 +66066,8 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             try:
                 target.write_text(
                     encode_c64_text_screen_json(
-                        self.canvas.characters(), self.canvas.colors()
+                        self.canvas.characters(), self.canvas.colors(),
+                        self.canvas.backgrounds()
                     ),
                     encoding="utf-8",
                     newline="\n",
@@ -65901,7 +66077,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 return False
             self.initial_directory = target.parent
             self.status_label.setText(
-                f"JSON exportiert: {target.name} – 40 x 25 individuelle Zellfarben"
+                f"JSON exportiert: {target.name} – 40 x 25 Zellen mit je 3 Werten"
             )
             return True
 
@@ -65931,6 +66107,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                         self.canvas.characters(),
                         self.canvas.colors(),
                         output_format,
+                        self.canvas.backgrounds(),
                     ),
                     encoding="utf-8",
                     newline="\n",
@@ -66192,6 +66369,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.current_path = None
             self.modified = False
             self._create_ui()
+            apply_c64_tool_groupbox_theme(self, bool(getattr(parent, "dark_mode_enabled", False)))
             self.canvas.set_pixels(bytearray(C64_PIXEL_SCREEN_PIXEL_COUNT))
             self._set_modified(False)
             if initial_path is not None:
@@ -72225,6 +72403,142 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             layout.addWidget(self.editor, 1)
             layout.addLayout(button_layout)
 
+    class ChmViewerTitleBar(QWidget):
+        """Stage 436: CHM-Fenstertitel mit Verlauf und drei Fensterbuttons."""
+
+        def __init__(self, dialog):
+            super().__init__(dialog)
+            self._dialog = dialog
+            self._dark_mode = bool(dialog.dark_mode_enabled)
+            self._drag_origin = None
+            self.setObjectName("chm_viewer_title_bar")
+            self.setFixedHeight(34)
+
+            row = QHBoxLayout(self)
+            row.setContentsMargins(10, 2, 3, 2)
+            row.setSpacing(2)
+            self.title_label = QLabel(dialog.windowTitle(), self)
+            self.title_label.setObjectName("chm_viewer_title_label")
+            row.addWidget(self.title_label, 1)
+
+            self.minimize_button = QToolButton(self)
+            self.minimize_button.setObjectName("chm_viewer_title_minimize")
+            self.minimize_button.setToolTip("Minimieren")
+            self.minimize_button.clicked.connect(dialog.showMinimized)
+            row.addWidget(self.minimize_button)
+
+            self.maximize_button = QToolButton(self)
+            self.maximize_button.setObjectName("chm_viewer_title_maximize")
+            self.maximize_button.clicked.connect(self.toggle_maximized)
+            row.addWidget(self.maximize_button)
+
+            self.close_button = QToolButton(self)
+            self.close_button.setObjectName("chm_viewer_title_close")
+            self.close_button.setToolTip("Schließen")
+            self.close_button.clicked.connect(dialog.reject)
+            row.addWidget(self.close_button)
+
+            for button in (self.minimize_button, self.maximize_button, self.close_button):
+                button.setFixedSize(32, 28)
+                button.setIconSize(QSize(16, 16))
+                button.setFocusPolicy(Qt.NoFocus)
+            dialog.windowTitleChanged.connect(self.title_label.setText)
+            self.set_dark_mode(self._dark_mode)
+
+        def _title_icon(self, symbol):
+            """Icons selbst zeichnen, damit sie auch im Dark-Mode hell sind."""
+            pixmap = QPixmap(18, 18)
+            pixmap.fill(Qt.transparent)
+            painter = QPainter(pixmap)
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            painter.setPen(QPen(QColor("#ffffff" if self._dark_mode else "#171717"),
+                                1.8, Qt.SolidLine, Qt.RoundCap))
+            if symbol == "minimize":
+                painter.drawLine(4, 13, 14, 13)
+            elif symbol == "maximize":
+                painter.drawRect(QRectF(4, 4, 10, 10))
+            elif symbol == "normal":
+                painter.drawRect(QRectF(4, 6, 9, 8))
+                painter.drawLine(7, 4, 14, 4)
+                painter.drawLine(14, 4, 14, 12)
+            else:
+                painter.drawLine(5, 5, 13, 13)
+                painter.drawLine(13, 5, 5, 13)
+            painter.end()
+            return QIcon(pixmap)
+
+        def set_dark_mode(self, enabled):
+            self._dark_mode = bool(enabled)
+            fg = "#ffffff" if enabled else "#151515"
+            hover = "#505050" if enabled else "#c5c5c5"
+            self.setStyleSheet(
+                "QWidget#chm_viewer_title_bar{background:transparent;border:0;}"
+                f"QLabel#chm_viewer_title_label{{color:{fg};background:transparent;"
+                "font-weight:600;border:0;}"
+                "QToolButton{background:transparent;border:0;border-radius:2px;}"
+                f"QToolButton:hover{{background:{hover};}}"
+                "QToolButton#chm_viewer_title_close:hover{background:#ba322a;}"
+            )
+            self.minimize_button.setIcon(self._title_icon("minimize"))
+            self.close_button.setIcon(self._title_icon("close"))
+            self.sync_maximize_button()
+            self.update()
+
+        def sync_maximize_button(self):
+            maximized = self._dialog.isMaximized()
+            self.maximize_button.setToolTip("Wiederherstellen" if maximized else "Maximieren")
+            self.maximize_button.setIcon(
+                self._title_icon("normal" if maximized else "maximize")
+            )
+
+        def toggle_maximized(self):
+            if self._dialog.isMaximized():
+                self._dialog.showNormal()
+            else:
+                self._dialog.showMaximized()
+            self.sync_maximize_button()
+
+        def paintEvent(self, event):
+            painter = QPainter(self)
+            if self._dark_mode:
+                gradient = QLinearGradient(0, 0, self.width(), 0)
+                gradient.setColorAt(0.0, QColor("#000000"))
+                gradient.setColorAt(1.0, QColor("#707070"))
+                painter.fillRect(self.rect(), gradient)
+            else:
+                painter.fillRect(self.rect(), QColor("#d9dde4"))
+            painter.end()
+            super().paintEvent(event)
+
+        def mousePressEvent(self, event):
+            if event.button() == Qt.LeftButton:
+                self._drag_origin = (
+                    event.globalPos() - self._dialog.frameGeometry().topLeft()
+                )
+                event.accept()
+                return
+            super().mousePressEvent(event)
+
+        def mouseMoveEvent(self, event):
+            if self._drag_origin is not None and event.buttons() & Qt.LeftButton:
+                if not self._dialog.isMaximized():
+                    self._dialog.move(event.globalPos() - self._drag_origin)
+                event.accept()
+                return
+            super().mouseMoveEvent(event)
+
+        def mouseReleaseEvent(self, event):
+            self._drag_origin = None
+            super().mouseReleaseEvent(event)
+
+        def mouseDoubleClickEvent(self, event):
+            if event.button() == Qt.LeftButton:
+                self.toggle_maximized()
+                event.accept()
+                return
+            super().mouseDoubleClickEvent(event)
+
+
     class ChmViewerDialog(QDialog):
         """In die D64-Anwendung integrierter CHM-Hilfedialog."""
 
@@ -72238,11 +72552,9 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.dark_mode_enabled = bool(dark_mode)
             self.setObjectName("chm_viewer_dialog")
             self.setWindowTitle("CHM Viewer")
-            self.setWindowFlags(
-                self.windowFlags()
-                | Qt.WindowMinMaxButtonsHint
-                | Qt.WindowSystemMenuHint
-            )
+            # Die nativen Windows-Titelsymbole werden durch drei eigene
+            # Schaltflächen ersetzt: Minimieren, Maximieren, Schließen.
+            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint | Qt.WindowSystemMenuHint)
             self.resize(1180, 760)
             self.setMinimumSize(800, 500)
 
@@ -72317,6 +72629,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
 
         def create_menu(self) -> None:
             self.menu_bar = QMenuBar(self)
+            self.menu_bar.setNativeMenuBar(False)
             file_menu = self.menu_bar.addMenu("Datei")
             file_menu.addAction(self.open_action)
             file_menu.addSeparator()
@@ -72403,13 +72716,18 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.splitter.setStretchFactor(1, 1)
 
             layout = QVBoxLayout(self)
-            layout.setContentsMargins(0, 0, 0, 0)
-            layout.setMenuBar(self.menu_bar)
+            layout.setContentsMargins(3, 3, 3, 3)
+            layout.setSpacing(0)
+            self.title_bar = ChmViewerTitleBar(self)
+            layout.addWidget(self.title_bar)
+            layout.addWidget(self.menu_bar)
             layout.addWidget(self.navigation_toolbar)
             layout.addWidget(self.splitter, 1)
 
         def create_statusbar(self) -> None:
             self.status_bar = QStatusBar(self)
+            # Das CHM-Fenster bleibt auch ohne native Rahmenleiste skalierbar.
+            self.status_bar.setSizeGripEnabled(True)
             self.file_status = QLabel("Keine CHM-Datei geöffnet", self)
             self.file_status.setSizePolicy(
                 QSizePolicy.Expanding,
@@ -72563,8 +72881,14 @@ QDialog#chm_viewer_dialog QScrollBar::right-arrow:horizontal {{
 }}
 '''
 
+            dialog_frame = "#788695" if self.dark_mode_enabled else "#8290a0"
+            dialog_background = "#182331" if self.dark_mode_enabled else "#f2f3f5"
             self.setStyleSheet(
                 f'''
+QDialog#chm_viewer_dialog {{
+    background: {dialog_background};
+    border: 3px solid {dialog_frame};
+}}
 QDialog#chm_viewer_dialog QScrollBar:vertical {{
     background: {track};
     width: 16px;
@@ -72805,6 +73129,8 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
         def set_dark_mode(self, enabled: bool) -> None:
             self.dark_mode_enabled = bool(enabled)
             self.apply_widget_scrollbar_theme()
+            if hasattr(self, "title_bar"):
+                self.title_bar.set_dark_mode(enabled)
             self.apply_content_theme()
 
         # ----- CHM laden ----------------------------------------------
@@ -73487,6 +73813,11 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             self.remove_favorite_button.setEnabled(
                 self.favorites_tab.tree.currentItem() is not None
             )
+
+        def changeEvent(self, event):
+            super().changeEvent(event)
+            if event.type() == QEvent.WindowStateChange and hasattr(self, "title_bar"):
+                self.title_bar.sync_maximize_button()
 
         def restore_state(self) -> None:
             geometry = self.settings.value("chm/window_geometry")
@@ -85168,6 +85499,316 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             super().mouseReleaseEvent(event)
 
 
+    class DBaseProjectWarningDialog(QDialog):
+        """Stage 434: modale, themenfähige dBASE-Warnung mit eigenem Rahmen."""
+
+        def __init__(self, parent, message: str, *, dark_mode: bool):
+            super().__init__(parent)
+            self.setObjectName("dbase_project_warning_dialog")
+            self.setWindowTitle("Warnung")
+            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint | Qt.WindowCloseButtonHint)
+            self.setModal(True)
+            self.setFixedSize(580, 168)
+            self._dark_mode = bool(dark_mode)
+            background = "#202630" if self._dark_mode else "#f2f4f7"
+            frame = "#75808e" if self._dark_mode else "#9aa5b3"
+            foreground = "#f4f7fc" if self._dark_mode else "#202936"
+            button = "#343e4d" if self._dark_mode else "#e5eaf0"
+
+            self.setStyleSheet(
+                "QDialog#dbase_project_warning_dialog {"
+                f"background:{background};border:3px solid {frame};color:{foreground};"
+                "}"
+                "QLabel#dbase_project_warning_text {background:transparent;"
+                f"color:{foreground};font-size:13px;"
+                "}"
+                "QPushButton#dbase_project_warning_ok {"
+                f"background:{button};color:{foreground};border:1px solid {frame};"
+                "border-radius:3px;padding:5px 22px;min-width:74px;"
+                "}"
+            )
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(3, 3, 3, 10)
+            layout.setSpacing(6)
+            self.title_bar = DBaseTableDialogTitleBar(
+                self, "Warnung", dark_mode=self._dark_mode
+            )
+            self.title_bar.setFixedHeight(40)
+            self.title_bar.close_button.setFixedSize(42, 36)
+            self.title_bar.close_button.setIconSize(QSize(32, 32))
+            self.title_bar.close_button.setIcon(
+                DBaseProjectOpenFileDialog._close_icon(self._dark_mode, 32)
+            )
+            layout.addWidget(self.title_bar)
+            self.message_label = QLabel(str(message), self)
+            self.message_label.setObjectName("dbase_project_warning_text")
+            self.message_label.setWordWrap(True)
+            self.message_label.setAlignment(Qt.AlignCenter)
+            layout.addWidget(self.message_label, 1)
+            self.ok_button = QPushButton("OK", self)
+            self.ok_button.setObjectName("dbase_project_warning_ok")
+            self.ok_button.setDefault(True)
+            self.ok_button.clicked.connect(self.accept)
+            action_layout = QHBoxLayout()
+            action_layout.addStretch(1)
+            action_layout.addWidget(self.ok_button)
+            action_layout.addStretch(1)
+            layout.addLayout(action_layout)
+
+
+    class DBaseProjectOpenFileDialog(QDialog):
+        """Stage 434: gemeinsamer 640x480-Browser zum Erstellen und Öffnen."""
+
+        def __init__(
+            self, parent, title: str, directory: str, name_filter: str,
+            *, default_name: str, default_suffix: str, dark_mode: bool,
+        ):
+            super().__init__(parent)
+            self.setObjectName("dbase_project_open_dialog")
+            self.setWindowTitle(title)
+            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint | Qt.WindowCloseButtonHint)
+            self.setModal(True)
+            self._dark_mode = bool(dark_mode)
+            self._default_suffix = str(default_suffix).lstrip(".")
+            self.operation = None             # 'create' oder 'open'
+            self._selected_file = ""
+            # X/Y mittig im Hauptfenster; die Anfangsgeometrie ist 640 x 480.
+            parent_rect = parent.frameGeometry() if parent is not None else None
+            x = (parent_rect.x() + (parent_rect.width() - 640) // 2
+                 if parent_rect is not None else 0)
+            y = (parent_rect.y() + (parent_rect.height() - 480) // 2
+                 if parent_rect is not None else 0)
+            self.setMinimumSize(640, 480)
+            self.setGeometry(x, y, 640, 480)
+
+            outer = QVBoxLayout(self)
+            outer.setContentsMargins(0, 0, 0, 0)
+            outer.setSpacing(0)
+            self.border_frame = QFrame(self)
+            self.border_frame.setObjectName("dbase_project_open_border")
+            outer.addWidget(self.border_frame)
+            framed_layout = QVBoxLayout(self.border_frame)
+            framed_layout.setContentsMargins(3, 3, 3, 3)
+            framed_layout.setSpacing(0)
+
+            # Schwarz-Grau-Verlauf und groß gezeichnetes Schließen-X.
+            self.title_bar = DBaseTableDialogTitleBar(
+                self, title, dark_mode=self._dark_mode
+            )
+            self.title_bar.setObjectName("dbase_project_open_titlebar")
+            self.title_bar.setFixedHeight(48)
+            self.title_bar.close_button.setFixedSize(49, 44)
+            self.title_bar.close_button.setIconSize(QSize(36, 36))
+            self.title_bar.close_button.setIcon(self._close_icon(self._dark_mode, 36))
+            self.title_bar.close_button.setToolTip("Schließen")
+            framed_layout.addWidget(self.title_bar)
+
+            self.file_dialog = QFileDialog(
+                self.border_frame, title, str(directory), name_filter
+            )
+            self.file_dialog.setObjectName("dbase_project_file_chooser")
+            self.file_dialog.setOption(QFileDialog.DontUseNativeDialog, True)
+            self.file_dialog.setAcceptMode(QFileDialog.AcceptOpen)
+            self.file_dialog.setFileMode(QFileDialog.AnyFile)
+            self.file_dialog.setViewMode(QFileDialog.Detail)
+            self.file_dialog.setDefaultSuffix(self._default_suffix)
+            self.file_dialog.selectFile(str(default_name))
+            self.file_dialog.setWindowFlags(Qt.Widget)
+            self.file_dialog.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            framed_layout.addWidget(self.file_dialog, 1)
+
+            # Interne Öffnen-/Abbrechen-Schaltflächen ausblenden; wir stellen
+            # alle drei Aktionen außerhalb des QFileDialog ausdrücklich bereit.
+            for button_box in self.file_dialog.findChildren(QDialogButtonBox):
+                button_box.hide()
+            self.file_dialog.accepted.connect(self._open_selected_file)
+            self.file_dialog.rejected.connect(self.reject)
+
+            # Navigations- und Ansichtsicons am oberen rechten Dateibrowser-Rand:
+            # gegenüber dem bisherigen Qt-Standard 16 -> 34 Pixel (+18).
+            for tool_name in (
+                "backButton", "forwardButton", "toParentButton", "newFolderButton",
+                "listModeButton", "detailModeButton",
+            ):
+                tool_button = self.file_dialog.findChild(QToolButton, tool_name)
+                if tool_button is not None:
+                    tool_button.setIconSize(QSize(34, 34))
+                    tool_button.setMinimumSize(38, 38)
+
+            controls = QWidget(self.border_frame)
+            controls.setObjectName("dbase_project_file_actions")
+            buttons_layout = QHBoxLayout(controls)
+            buttons_layout.setContentsMargins(8, 6, 8, 8)
+            buttons_layout.setSpacing(7)
+            buttons_layout.addStretch(1)
+            self.create_button = QPushButton("Erstellen", controls)
+            self.create_button.setObjectName("dbase_project_create_button")
+            self.create_button.clicked.connect(self._create_selected_file)
+            buttons_layout.addWidget(self.create_button)
+            self.open_button = QPushButton("Öffnen", controls)
+            self.open_button.setObjectName("dbase_project_open_button")
+            self.open_button.setDefault(True)
+            self.open_button.clicked.connect(self._open_selected_file)
+            buttons_layout.addWidget(self.open_button)
+            self.cancel_button = QPushButton("Abbrechen", controls)
+            self.cancel_button.setObjectName("dbase_project_cancel_button")
+            self.cancel_button.clicked.connect(self.reject)
+            buttons_layout.addWidget(self.cancel_button)
+            framed_layout.addWidget(controls)
+            self._apply_theme(parent)
+
+        @staticmethod
+        def _close_icon(dark_mode: bool, size: int = 36) -> QIcon:
+            """Skalierbares X mit 18 px größerer Darstellung als in Stage 432."""
+            pixmap = QPixmap(size, size)
+            pixmap.fill(Qt.transparent)
+            painter = QPainter(pixmap)
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            painter.setPen(QPen(QColor("#ffffff" if dark_mode else "#242424"),
+                                3.0, Qt.SolidLine, Qt.RoundCap))
+            margin = size * .25
+            painter.drawLine(QPointF(margin, margin),
+                             QPointF(size - margin, size - margin))
+            painter.drawLine(QPointF(size - margin, margin),
+                             QPointF(margin, size - margin))
+            painter.end()
+            return QIcon(pixmap)
+
+        def _candidate_path(self):
+            """Dateiname aus der Eingabe, inklusive aktuell gewähltem Ordner."""
+            name_edit = self.file_dialog.findChild(QLineEdit, "fileNameEdit")
+            typed = name_edit.text().strip().strip('"') if name_edit is not None else ""
+            if typed:
+                path = Path(typed).expanduser()
+                if not path.is_absolute():
+                    path = Path(self.file_dialog.directory().absolutePath()) / path
+            else:
+                names = self.file_dialog.selectedFiles()
+                if not names:
+                    return None
+                path = Path(names[0]).expanduser()
+            if not path.suffix and self._default_suffix:
+                path = path.with_suffix("." + self._default_suffix)
+            return path
+
+        def _warn(self, message: str):
+            warning = DBaseProjectWarningDialog(
+                self, message, dark_mode=self._dark_mode
+            )
+            warning.exec_()
+
+        def _create_selected_file(self):
+            path = self._candidate_path()
+            if path is None:
+                self._warn("Bitte geben Sie einen Dateinamen ein.")
+                return
+            if path.exists() or path.is_symlink():
+                self._warn("Die angegebene Datei existiert bereits")
+                return
+            if not path.parent.is_dir():
+                self._warn("Der angegebene Dateipfad ist nicht vorhanden.")
+                return
+            self.operation = "create"
+            self._selected_file = str(path)
+            self.accept()
+
+        def _open_selected_file(self):
+            path = self._candidate_path()
+            if path is None:
+                self._warn("Bitte wählen Sie eine Datei aus.")
+                return
+            if not can_open_dbase_project_file(path):
+                self._warn("Sie haben nicht die benötigten Rechte um die ausgewählte Datei zu öffnen/bearbeiten")
+                return
+            self.operation = "open"
+            self._selected_file = str(path)
+            self.accept()
+
+        def _apply_theme(self, parent):
+            if self._dark_mode:
+                background, frame, foreground = "#202630", "#75808e", "#f4f7fc"
+                field, alternate, header, header_edge = (
+                    "#171c24", "#222b37", "#303844", "#536172"
+                )
+                button, button_hover, selection = "#343e4d", "#414d5f", "#315a82"
+                self.file_dialog.setPalette(parent._dark_application_palette())
+            else:
+                background, frame, foreground = "#f2f4f7", "#9aa5b3", "#202936"
+                field, alternate, header, header_edge = (
+                    "#ffffff", "#edf1f6", "#dfe5ec", "#b7c2cf"
+                )
+                button, button_hover, selection = "#e5eaf0", "#d4e3f3", "#c3dcf5"
+                self.file_dialog.setPalette(parent.light_application_palette)
+
+            self.border_frame.setStyleSheet(
+                "QFrame#dbase_project_open_border {"
+                f"background:{background};border:3px solid {frame};" 
+                "}"
+            )
+            # Diese Styles werden auf dem QFileDialog selbst gesetzt, damit
+            # die Anwendungspalette einen nativen hellen Header nicht übersteuert.
+            self.file_dialog.setStyleSheet(f"""
+QFileDialog#dbase_project_file_chooser {{ background:{background};color:{foreground};border:0; }}
+QFileDialog QLabel, QFileDialog QCheckBox {{ color:{foreground};background:transparent; }}
+QFileDialog QLineEdit, QFileDialog QComboBox, QFileDialog QListView,
+QFileDialog QTreeView {{
+    background:{field};color:{foreground};alternate-background-color:{alternate};
+    selection-background-color:{selection};selection-color:{foreground};
+    border:1px solid {header_edge};
+}}
+QFileDialog QTreeView::item:selected, QFileDialog QListView::item:selected {{
+    background:{selection};color:{foreground};
+}}
+QFileDialog QHeaderView, QFileDialog QHeaderView::section {{
+    background:{header};color:{foreground};
+}}
+QFileDialog QHeaderView::section {{
+    border:0;border-right:1px solid {header_edge};
+    border-bottom:1px solid {header_edge};padding:5px 8px;font-weight:600;
+}}
+QFileDialog QTableCornerButton::section {{ background:{header};border:1px solid {header_edge}; }}
+QFileDialog QPushButton, QFileDialog QToolButton {{
+    background:{button};color:{foreground};border:1px solid {header_edge};
+    border-radius:3px;padding:5px 8px;
+}}
+QFileDialog QPushButton:hover, QFileDialog QToolButton:hover {{
+    background:{button_hover};
+}}
+QFileDialog QComboBox QAbstractItemView {{
+    background:{field};color:{foreground};selection-background-color:{selection};
+}}
+""")
+            self.findChild(QWidget, "dbase_project_file_actions").setStyleSheet(
+                "QWidget#dbase_project_file_actions {"
+                f"background:{background};border:0;"
+                "}"
+                "QPushButton {"
+                f"background:{button};color:{foreground};border:1px solid {header_edge};"
+                "border-radius:3px;padding:5px 12px;min-width:76px;"
+                "}"
+                "QPushButton:hover {"
+                f"background:{button_hover};"
+                "}"
+            )
+            # Qt benutzt für die Detailansicht einen QTreeView samt
+            # QHeaderView. Den Header zusätzlich direkt formatieren, da
+            # einzelne Windows/Qt5-Styles den Eltern-Selektor ignorieren.
+            for view in self.file_dialog.findChildren(QTreeView):
+                view.setAlternatingRowColors(True)
+                header_widget = view.header()
+                if header_widget is not None:
+                    header_widget.setStyleSheet(
+                        "QHeaderView::section {"
+                        f"background:{header};color:{foreground};"
+                        f"border:0;border-right:1px solid {header_edge};"
+                        f"border-bottom:1px solid {header_edge};"
+                        "padding:5px 8px;font-weight:600;}"
+                    )
+
+        def selectedFiles(self):
+            return [self._selected_file] if self._selected_file else []
+
+
     class DBaseTableDeleteConfirmDialog(QDialog):
         """Stage 301: modale, abbrechbare Löschbestätigung für DBF-Records."""
 
@@ -86995,7 +87636,13 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
 
             self._country_syncing = False
             self._load_desktop_properties()
-            self.setMinimumSize(720, 500)
+            # Stage 435: Der scrollbare Inhalt darf beim seitlichen Andocken
+            # keine feste Mindestbreite/Hoehe des QMainWindow erzwingen.
+            self.setMinimumSize(0, 0)
+            self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+            self.scroll_area.setMinimumSize(0, 0)
+            self.scroll_area.setSizeAdjustPolicy(QAbstractScrollArea.AdjustIgnored)
+            self.tabs.setMinimumSize(0, 0)
 
         def _close_host_dock(self):
             host = self._host_window
@@ -88062,6 +88709,8 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             extra_text: str = "",
             extra_callback=None,
             extra_widget=None,
+            show_float_button: bool = True,
+            close_callback=None,
         ):
             super().__init__(dock)
             self.dock = dock
@@ -88113,7 +88762,10 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             self.float_button.clicked.connect(
                 lambda _checked=False: dock.setFloating(not dock.isFloating())
             )
-            layout.addWidget(self.float_button)
+            if show_float_button:
+                layout.addWidget(self.float_button)
+            else:
+                self.float_button.hide()
 
             self.close_button = QToolButton(self)
             self.close_button.setObjectName("dock_title_close_button")
@@ -88121,7 +88773,9 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             self.close_button.setToolTip("Dock-Fenster schließen")
             self.close_button.setAutoRaise(True)
             self.close_button.clicked.connect(
-                lambda _checked=False: dock.close()
+                lambda _checked=False: (
+                    close_callback() if close_callback is not None else dock.close()
+                )
             )
             layout.addWidget(self.close_button)
 
@@ -100344,7 +100998,7 @@ QToolButton:hover {{ background: {selection}; }}"""
             facts_layout.setSpacing(6)
 
             self.facts_hint = QLabel(
-                'Doppelklick auf einen Fakt öffnet rechts die zugehörige Darstellung.',
+                'Ein Klick auf einen Knoten oder ein Blatt öffnet rechts die zugehörige Darstellung.',
                 facts_tab,
             )
             self.facts_hint.setWordWrap(True)
@@ -100355,6 +101009,7 @@ QToolButton:hover {{ background: {selection}; }}"""
             self.facts_tree.setHeaderHidden(True)
             self.facts_tree.setRootIsDecorated(True)
             self.facts_tree.setAlternatingRowColors(True)
+            self.facts_tree.itemClicked.connect(self._handle_fact_click)
             self.facts_tree.itemDoubleClicked.connect(
                 self._handle_fact_double_click
             )
@@ -100366,7 +101021,7 @@ QToolButton:hover {{ background: {selection}; }}"""
             games_layout.setContentsMargins(6, 6, 6, 6)
             games_layout.setSpacing(6)
             self.games_hint = QLabel(
-                'Doppelklick auf einen Eintrag startet das Lernspiel rechts in der Arbeitsfläche.',
+                'Ein Klick auf einen Knoten oder Eintrag startet rechts die zugehörige Arbeitsfläche.',
                 games_tab,
             )
             self.games_hint.setWordWrap(True)
@@ -100376,6 +101031,7 @@ QToolButton:hover {{ background: {selection}; }}"""
             self.games_tree.setHeaderHidden(True)
             self.games_tree.setRootIsDecorated(False)
             self.games_tree.setAlternatingRowColors(True)
+            self.games_tree.itemClicked.connect(self._handle_game_click)
             self.games_tree.itemDoubleClicked.connect(self._handle_game_double_click)
             games_layout.addWidget(self.games_tree, 1)
             self.left_tabs.addTab(games_tab, 'Spiele')
@@ -100498,6 +101154,20 @@ QToolButton:hover {{ background: {selection}; }}"""
             # sowohl Zeichen-Widget als auch Scroll-Seite existieren.
             # Stage 366 ergänzte zwar den Zugriff in set_dark_mode/open_fact,
             # hatte aber die tatsächliche Instanziierung ausgelassen.
+            self.number_sets_widget = NumberSetsFactWidget()
+            self.number_sets_scroll = _add_fact_scroll_page(
+                self.number_sets_widget, 'number_sets_scroll_area'
+            )
+            self.number_sets_widget.setMinimumSize(920, 560)
+            # Stage 442: QPlainTextEdit hat eigene Scrollleisten; nicht noch
+            # einmal in eine QScrollArea verschachteln.
+            self.roman_numerals_widget = RomanNumeralsFactWidget(self.content_stack)
+            self.content_stack.addWidget(self.roman_numerals_widget)
+            self.trigonometry_right_triangle_widget = TrigonometryRightTriangleFactWidget()
+            self.trigonometry_right_triangle_scroll = _add_fact_scroll_page(
+                self.trigonometry_right_triangle_widget, 'trigonometry_right_triangle_scroll_area'
+            )
+            self.trigonometry_right_triangle_widget.setMinimumSize(720, 1050)
             self.basic_math_rules_widget = BasicMathRulesFactWidget()
             self.basic_math_rules_scroll = _add_fact_scroll_page(
                 self.basic_math_rules_widget, 'basic_math_rules_scroll_area'
@@ -100505,6 +101175,17 @@ QToolButton:hover {{ background: {selection}; }}"""
             # Breite nach _add_fact_scroll_page() setzen: die Hilfsfunktion
             # setzt die Mindestgröße des eingebetteten Widgets zurück.
             self.basic_math_rules_widget.setMinimumWidth(760)
+            # Stage 421: eigenständige QPainter-Seite mit Originaldiagrammen.
+            self.multiplication_matrix_widget = MultiplicationMatrixFactWidget()
+            self.multiplication_matrix_scroll = _add_fact_scroll_page(
+                self.multiplication_matrix_widget, 'multiplication_matrix_scroll_area'
+            )
+            self.multiplication_matrix_widget.setMinimumSize(980, 1520)
+            self.rotation_matrix_widget = RotationMatrixFactWidget()
+            self.rotation_matrix_scroll = _add_fact_scroll_page(
+                self.rotation_matrix_widget, 'rotation_matrix_scroll_area'
+            )
+            self.rotation_matrix_widget.setMinimumSize(940, 1400)
             # Stage 383: neun Gleichungen der 37-Mathe-Magie als Times-New-Roman-Text.
             self.math_magic_37_widget = MathMagic37FactWidget()
             self.math_magic_37_scroll = _add_fact_scroll_page(
@@ -100630,6 +101311,13 @@ QToolButton:hover {{ background: {selection}; }}"""
             rules_font.setBold(True)
             rules.setFont(0, rules_font)
             rules.setFlags(rules.flags() & ~Qt.ItemIsSelectable)
+            number_sets = QTreeWidgetItem(['Zahlen-Mengen'])
+            number_sets.setData(0, Qt.UserRole, 'number_sets')
+            number_sets.setChildIndicatorPolicy(QTreeWidgetItem.DontShowIndicatorWhenChildless)
+            number_sets.setFlags(number_sets.flags() | Qt.ItemNeverHasChildren)
+            grundwissen.addChild(number_sets)
+            self._fact_items['number_sets'] = number_sets
+
             grundwissen.addChild(rules)
             for key, title in (
                 ('basic_arithmetic', 'Grundrechen-Arten'),
@@ -100733,7 +101421,7 @@ QToolButton:hover {{ background: {selection}; }}"""
                 item.setData(0, Qt.UserRole, key)
                 flaechen.addChild(item)
                 self._fact_items[key] = item
-            flaechen.setExpanded(True)
+            flaechen.setExpanded(False)
 
             volume = QTreeWidgetItem(['Volumen'])
             volume_font = volume.font(0)
@@ -100761,15 +101449,23 @@ QToolButton:hover {{ background: {selection}; }}"""
                 item.setData(0, Qt.UserRole, key)
                 volume.addChild(item)
                 self._fact_items[key] = item
-            volume.setExpanded(True)
+            volume.setExpanded(False)
 
-            # Stage 374: weitere Grundwissen-Kategorie nach Benutzervorgabe.
+            # Stage 374/426: weitere Grundwissen-Kategorie nach Benutzervorgabe.
             trigometrie = QTreeWidgetItem(['Trigometrie'])
             trigometrie_font = trigometrie.font(0)
             trigometrie_font.setBold(True)
             trigometrie.setFont(0, trigometrie_font)
             trigometrie.setFlags(trigometrie.flags() & ~Qt.ItemIsSelectable)
             grundwissen.addChild(trigometrie)
+
+            right_triangle_item = QTreeWidgetItem(['Rechtwinkliges Dreieck'])
+            right_triangle_item.setData(0, Qt.UserRole, 'trigonometry_right_triangle')
+            right_triangle_item.setChildIndicatorPolicy(QTreeWidgetItem.DontShowIndicatorWhenChildless)
+            right_triangle_item.setFlags(right_triangle_item.flags() | Qt.ItemNeverHasChildren)
+            trigometrie.addChild(right_triangle_item)
+            self._fact_items['trigonometry_right_triangle'] = right_triangle_item
+            trigometrie.setExpanded(True)
 
             # Stage 374: Matrizen als eigener Hauptknoten neben Grundwissen.
             matrices = QTreeWidgetItem(['Matrizen'])
@@ -100778,13 +101474,41 @@ QToolButton:hover {{ background: {selection}; }}"""
             matrices.setFont(0, matrices_font)
             matrices.setFlags(matrices.flags() & ~Qt.ItemIsSelectable)
             self.facts_tree.addTopLevelItem(matrices)
+            # Stage 421: bisherige 38 Matrixarten unverändert unter "Arten von . . .".
+            matrix_types_group = QTreeWidgetItem(['Arten von . . .'])
+            group_font = matrix_types_group.font(0)
+            group_font.setBold(True)
+            matrix_types_group.setFont(0, group_font)
+            matrix_types_group.setFlags(matrix_types_group.flags() & ~Qt.ItemIsSelectable)
+            matrices.addChild(matrix_types_group)
             for matrix_key, matrix_title, _description, _example in BasicMathRulesFactWidget.MATRIX_TYPES:
                 matrix_item = QTreeWidgetItem([matrix_title])
                 matrix_item.setData(0, Qt.UserRole, matrix_key)
                 matrix_item.setChildIndicatorPolicy(QTreeWidgetItem.DontShowIndicatorWhenChildless)
                 matrix_item.setFlags(matrix_item.flags() | Qt.ItemNeverHasChildren)
-                matrices.addChild(matrix_item)
+                matrix_types_group.addChild(matrix_item)
                 self._fact_items[matrix_key] = matrix_item
+            matrix_types_group.setExpanded(False)
+
+            matrix_calculation_group = QTreeWidgetItem(['Rechnen mit . . .'])
+            calc_font = matrix_calculation_group.font(0)
+            calc_font.setBold(True)
+            matrix_calculation_group.setFont(0, calc_font)
+            matrix_calculation_group.setFlags(matrix_calculation_group.flags() & ~Qt.ItemIsSelectable)
+            matrices.addChild(matrix_calculation_group)
+            multiplication_item = QTreeWidgetItem(['Multiplikation'])
+            multiplication_item.setData(0, Qt.UserRole, 'matrix_multiplication')
+            multiplication_item.setChildIndicatorPolicy(QTreeWidgetItem.DontShowIndicatorWhenChildless)
+            multiplication_item.setFlags(multiplication_item.flags() | Qt.ItemNeverHasChildren)
+            matrix_calculation_group.addChild(multiplication_item)
+            self._fact_items['matrix_multiplication'] = multiplication_item
+            rotation_item = QTreeWidgetItem(['Verschieben 3-D'])
+            rotation_item.setData(0, Qt.UserRole, 'matrix_rotation')
+            rotation_item.setChildIndicatorPolicy(QTreeWidgetItem.DontShowIndicatorWhenChildless)
+            rotation_item.setFlags(rotation_item.flags() | Qt.ItemNeverHasChildren)
+            matrix_calculation_group.addChild(rotation_item)
+            self._fact_items['matrix_rotation'] = rotation_item
+            matrix_calculation_group.setExpanded(True)
             matrices.setExpanded(True)
 
             zahlen = QTreeWidgetItem(['Zahlen'])
@@ -100793,6 +101517,14 @@ QToolButton:hover {{ background: {selection}; }}"""
             zahlen.setFont(0, zahlen_font)
             zahlen.setFlags(zahlen.flags() & ~Qt.ItemIsSelectable)
             self.facts_tree.addTopLevelItem(zahlen)
+
+            # Stage 442: kopierbare römische Zahlentafel nach der Referenz.
+            roman_item = QTreeWidgetItem(['Römische . . .'])
+            roman_item.setData(0, Qt.UserRole, 'roman_numerals')
+            roman_item.setChildIndicatorPolicy(QTreeWidgetItem.DontShowIndicatorWhenChildless)
+            roman_item.setFlags(roman_item.flags() | Qt.ItemNeverHasChildren)
+            zahlen.addChild(roman_item)
+            self._fact_items['roman_numerals'] = roman_item
 
             # Stage 374: Platzhalter-Kategorie; Lernseite folgt separat.
             wahrscheinlichkeit = QTreeWidgetItem(['Wahrscheinlichkeit'])
@@ -100859,6 +101591,19 @@ QToolButton:hover {{ background: {selection}; }}"""
             self._fact_items['cantor_diagonal_argument'] = diagonal
             self._fact_items['pascal_triangle'] = pascal
             self._fact_items['fibonacci_spiral'] = fibonacci
+            folder_icon = self.facts_tree.style().standardIcon(QStyle.SP_DirClosedIcon)
+            leaf_icon = self.facts_tree.style().standardIcon(QStyle.SP_FileIcon)
+
+            def _apply_learning_tree_icons(item):
+                if item is None:
+                    return
+                item.setIcon(0, folder_icon if item.childCount() else leaf_icon)
+                for index in range(item.childCount()):
+                    _apply_learning_tree_icons(item.child(index))
+
+            for index in range(self.facts_tree.topLevelItemCount()):
+                _apply_learning_tree_icons(self.facts_tree.topLevelItem(index))
+
             self.facts_tree.setCurrentItem(self._fact_items['area_rectangle'])
 
         def _populate_games_tree(self) -> None:
@@ -100976,7 +101721,12 @@ QStackedWidget#learning_content_stack {{
             self.pascal_triangle_widget.set_dark_mode(enabled)
             self.fibonacci_spiral_widget.set_dark_mode(enabled)
             self.interest_calculation_widget.set_dark_mode(enabled)
+            self.number_sets_widget.set_dark_mode(enabled)
+            self.roman_numerals_widget.set_dark_mode(enabled)
+            self.trigonometry_right_triangle_widget.set_dark_mode(enabled)
             self.basic_math_rules_widget.set_dark_mode(enabled)
+            self.multiplication_matrix_widget.set_dark_mode(enabled)
+            self.rotation_matrix_widget.set_dark_mode(enabled)
             self.math_magic_37_widget.set_dark_mode(enabled)
             self.math_magic_88_widget.set_dark_mode(enabled)
             self.math_amazing_widget.set_dark_mode(enabled)
@@ -100993,15 +101743,33 @@ QStackedWidget#learning_content_stack {{
             self.gorilla_parabola_widget.set_dark_mode(enabled)
             self.memory_widget.set_dark_mode(enabled)
 
-        def _handle_fact_double_click(self, item: QTreeWidgetItem, _column: int) -> None:
+        def _find_first_fact_descendant(self, item: QTreeWidgetItem):
+            if item is None:
+                return '', None
+            fact_key = str(item.data(0, Qt.UserRole) or '').strip()
+            if fact_key:
+                return fact_key, item
+            for index in range(item.childCount()):
+                child = item.child(index)
+                found_key, found_item = self._find_first_fact_descendant(child)
+                if found_key:
+                    return found_key, found_item
+            return '', None
+
+        def _handle_fact_click(self, item: QTreeWidgetItem, _column: int) -> None:
             if item is None:
                 return
-            fact_key = str(item.data(0, Qt.UserRole) or '')
+            fact_key, target_item = self._find_first_fact_descendant(item)
             if not fact_key:
                 item.setExpanded(not item.isExpanded())
                 return
-            title = str(item.text(0) or '').strip()
+            if item.childCount():
+                item.setExpanded(True)
+            title = str((target_item or item).text(0) or '').strip()
             self.open_fact(fact_key, title)
+
+        def _handle_fact_double_click(self, item: QTreeWidgetItem, _column: int) -> None:
+            self._handle_fact_click(item, _column)
 
         def open_fact(self, fact_key: str, title: str = '') -> None:
             fact_key = str(fact_key or '').strip()
@@ -101014,8 +101782,18 @@ QStackedWidget#learning_content_stack {{
             self.left_tabs.setCurrentIndex(0)
             self.interest_focus_changed.emit(fact_key == 'interest_calculation')
 
-            if fact_key == 'interest_calculation':
+            if fact_key == 'number_sets':
+                self.content_stack.setCurrentWidget(self.number_sets_scroll)
+            elif fact_key == 'roman_numerals':
+                self.content_stack.setCurrentWidget(self.roman_numerals_widget)
+            elif fact_key == 'trigonometry_right_triangle':
+                self.content_stack.setCurrentWidget(self.trigonometry_right_triangle_scroll)
+            elif fact_key == 'interest_calculation':
                 self.content_stack.setCurrentWidget(self.interest_calculation_scroll)
+            elif fact_key == 'matrix_multiplication':
+                self.content_stack.setCurrentWidget(self.multiplication_matrix_scroll)
+            elif fact_key == 'matrix_rotation':
+                self.content_stack.setCurrentWidget(self.rotation_matrix_scroll)
             elif fact_key == 'math_magic_37':
                 self.content_stack.setCurrentWidget(self.math_magic_37_scroll)
             elif fact_key == 'math_magic_88':
@@ -101073,15 +101851,33 @@ QStackedWidget#learning_content_stack {{
                 self.volume_calculator.activate_fact(fact_key)
                 self.volume_calculator.inputs[next(iter(self.volume_calculator.inputs))].setFocus(Qt.OtherFocusReason)
 
-        def _handle_game_double_click(self, item: QTreeWidgetItem, _column: int) -> None:
+        def _find_first_game_descendant(self, item: QTreeWidgetItem):
+            if item is None:
+                return '', None
+            game_key = str(item.data(0, Qt.UserRole) or '').strip()
+            if game_key:
+                return game_key, item
+            for index in range(item.childCount()):
+                child = item.child(index)
+                found_key, found_item = self._find_first_game_descendant(child)
+                if found_key:
+                    return found_key, found_item
+            return '', None
+
+        def _handle_game_click(self, item: QTreeWidgetItem, _column: int) -> None:
             if item is None:
                 return
-            game_key = str(item.data(0, Qt.UserRole) or '')
+            game_key, target_item = self._find_first_game_descendant(item)
             if not game_key:
                 item.setExpanded(not item.isExpanded())
                 return
-            title = str(item.text(0) or '').strip()
+            if item.childCount():
+                item.setExpanded(True)
+            title = str((target_item or item).text(0) or '').strip()
             self.open_game(game_key, title)
+
+        def _handle_game_double_click(self, item: QTreeWidgetItem, _column: int) -> None:
+            self._handle_game_click(item, _column)
 
         def open_game(self, game_key: str, title: str = '') -> None:
             self.interest_focus_changed.emit(False)
@@ -108106,6 +108902,10 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self._c64_resource_workspace_dock = None
             self._c64_resource_workspace_hidden_docks = []
             self._c64_resource_workspace_central_state = None
+            # Stage 438: gemeinsamer exklusiver Arbeitsbereich für C64-Editoren,
+            # Localize, Doxygen, HTML und den seitlichen Resourcen Builder.
+            self._exclusive_tool_workspace = None
+            self._exclusive_tool_workspace_transitioning = False
 
             # Stage 162: ein einziger nicht-modaler Suchdialog wird zwischen
             # allen SourceTextEdit-Instanzen wiederverwendet.
@@ -109825,6 +110625,202 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 e_baukasten_mode=e_baukasten_mode,
             )
 
+        # -------------------------------------------------------------------
+        # Stage 438: Exklusiver, reversibler Dock-Arbeitsbereich.
+        # Die Sichtbarkeit ALLER zuvor sichtbaren Docks, die Dock-Gruppierung
+        # (saveState) sowie der zentrale Arbeitsbereich werden gespeichert.
+        # Bei Wechsel zwischen Werkzeugen bleibt der allererste Snapshot aktiv.
+        # -------------------------------------------------------------------
+        def _activate_exclusive_tool_workspace(
+            self, dock: QDockWidget, *, beside_project: bool = False,
+        ) -> None:
+            if dock is None:
+                return
+            if self._exclusive_tool_workspace_transitioning:
+                return
+            project = getattr(self, "right_dock", None) if beside_project else None
+            keep = {dock}
+            if project is not None and project is not dock:
+                keep.add(project)
+
+            self._exclusive_tool_workspace_transitioning = True
+            try:
+                snapshot = self._exclusive_tool_workspace
+                if snapshot is None:
+                    central = self.centralWidget()
+                    central_info = None
+                    if central is not None:
+                        central_info = (
+                            central, bool(central.isVisible()),
+                            int(central.minimumWidth()), int(central.maximumWidth()),
+                            int(central.minimumHeight()), int(central.maximumHeight()),
+                        )
+                    # Nur die echten QMainWindow-Docks, nicht etwa verschachtelte
+                    # Docks eines Form-Designers, in den Zustand aufnehmen.
+                    docks = tuple(
+                        candidate for candidate in self.findChildren(QDockWidget)
+                        if candidate.parentWidget() is self
+                    )
+                    snapshot = {
+                        "owner": None,
+                        "state": QByteArray(self.saveState()),
+                        "geometry": self.geometry(),
+                        "was_maximized": bool(self.isMaximized()),
+                        "central": central_info,
+                        "visibility": {candidate: bool(candidate.isVisible())
+                                       for candidate in docks},
+                    }
+                    self._exclusive_tool_workspace = snapshot
+
+                previous = snapshot.get("owner")
+                if previous is not None and previous is not dock:
+                    if previous is getattr(self, "localize_dock", None):
+                        tool = getattr(self, "localize_tool_window", None)
+                        if tool is not None:
+                            try:
+                                tool._save_state()
+                            except Exception:
+                                pass
+
+                # Qt-Visibility-Callbacks dürfen keinen anderen Workspace
+                # restaurieren, während dessen Docks versteckt werden.
+                for candidate in self.findChildren(QDockWidget):
+                    if candidate.parentWidget() is not self or candidate in keep:
+                        continue
+                    if candidate.isVisible():
+                        was_blocked = candidate.blockSignals(True)
+                        try:
+                            candidate.hide()
+                        finally:
+                            candidate.blockSignals(was_blocked)
+
+                central_info = snapshot.get("central")
+                if central_info is not None:
+                    central = central_info[0]
+                    central.hide()
+                    central.setMinimumSize(0, 0)
+                    central.setMaximumSize(0, 0)
+
+                if dock.isFloating():
+                    dock.setFloating(False)
+                if beside_project and project is not None:
+                    area = self.dockWidgetArea(project)
+                    side = (Qt.LeftDockWidgetArea
+                            if area == Qt.RightDockWidgetArea
+                            else Qt.RightDockWidgetArea)
+                    self.addDockWidget(side, dock)
+                    # Nur für den Resourcen Builder bleibt das Projekt-Dock
+                    # sichtbar, auch wenn es vorher ausgeblendet war.
+                    project.show()
+                else:
+                    self.addDockWidget(Qt.LeftDockWidgetArea, dock)
+
+                dock.setMinimumSize(0, 0)
+                dock.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+                snapshot["owner"] = dock
+                snapshot["beside_project"] = bool(beside_project)
+            finally:
+                self._exclusive_tool_workspace_transitioning = False
+
+        def _expand_exclusive_tool_workspace(self, dock: QDockWidget) -> None:
+            snapshot = self._exclusive_tool_workspace
+            if (snapshot is None or snapshot.get("owner") is not dock
+                    or not dock.isVisible() or dock.isFloating()):
+                return
+            project = getattr(self, "right_dock", None)
+            reserved = (
+                max(0, int(project.width()))
+                if snapshot.get("beside_project") and project is not None
+                and project.isVisible() else 0
+            )
+            try:
+                self.resizeDocks(
+                    [dock], [max(1, int(self.width()) - reserved - 12)],
+                    Qt.Horizontal,
+                )
+                self.resizeDocks([dock], [max(1, int(self.height()) - 100)],
+                                 Qt.Vertical)
+                dock.updateGeometry()
+            except RuntimeError:
+                pass
+
+        def _exclusive_tool_workspace_visibility_changed(
+            self, visible: bool, dock: QDockWidget,
+        ) -> None:
+            if self._exclusive_tool_workspace_transitioning:
+                return
+            snapshot = self._exclusive_tool_workspace
+            if snapshot is None or snapshot.get("owner") is not dock:
+                return
+            if not visible:
+                self._restore_exclusive_tool_workspace(dock)
+            else:
+                QTimer.singleShot(
+                    0, lambda current=dock:
+                    self._expand_exclusive_tool_workspace(current),
+                )
+
+        def _restore_exclusive_tool_workspace(self, owner: QDockWidget) -> None:
+            snapshot = self._exclusive_tool_workspace
+            if (snapshot is None or snapshot.get("owner") is not owner
+                    or self._exclusive_tool_workspace_transitioning):
+                return
+            self._exclusive_tool_workspace_transitioning = True
+            # Bereits vor Qt.restoreState() zurücksetzen, damit Tool-Signale
+            # während des Restores keinen erneuten Restore auslösen.
+            self._exclusive_tool_workspace = None
+            try:
+                all_docks = [
+                    candidate for candidate in self.findChildren(QDockWidget)
+                    if candidate.parentWidget() is self
+                ]
+                blocked = [(candidate, candidate.blockSignals(True))
+                           for candidate in all_docks]
+                try:
+                    try:
+                        owner.hide()
+                    except RuntimeError:
+                        # Bei WA_DeleteOnClose ist das Dock ggf. bereits gelöscht.
+                        pass
+                    try:
+                        self.restoreState(snapshot["state"])
+                    except (RuntimeError, TypeError):
+                        pass
+                    # restoreState() alleine restauriert nicht immer alle
+                    # zuvor unsichtbaren Docks; expliziter Sichtbarkeitsabgleich.
+                    for candidate in all_docks:
+                        should_show = snapshot["visibility"].get(candidate, False)
+                        try:
+                            candidate.setVisible(bool(should_show))
+                        except RuntimeError:
+                            # Ein schließender C64-Editor darf den Restore der
+                            # übrigen Docks nicht unterbrechen.
+                            pass
+                finally:
+                    for candidate, was_blocked in blocked:
+                        try:
+                            candidate.blockSignals(was_blocked)
+                        except RuntimeError:
+                            pass
+
+                central_info = snapshot.get("central")
+                if central_info is not None:
+                    central, was_visible, min_w, max_w, min_h, max_h = central_info
+                    central.setMinimumWidth(min_w)
+                    central.setMaximumWidth(max_w)
+                    central.setMinimumHeight(min_h)
+                    central.setMaximumHeight(max_h)
+                    central.setVisible(was_visible)
+
+                # Keine automatische Vergrößerung/Verschiebung des Hauptfensters
+                # durch zuvor reservierte Mindestgrößen / Dock-Splitter.
+                if not snapshot.get("was_maximized"):
+                    geometry = snapshot.get("geometry")
+                    if geometry is not None and self.geometry() != geometry:
+                        self.setGeometry(geometry)
+            finally:
+                self._exclusive_tool_workspace_transitioning = False
+
         def resource_dialog(self, _checked: bool = False) -> None:
             """Resource Alias Builder als wiederverwendbares Dock zeigen."""
             self._show_c64_tool_dock("alias_builder")
@@ -110535,70 +111531,22 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             )
 
         def _localize_dock_visibility_changed(self, visible: bool) -> None:
-            """Replace the normal work area while Localize PO/MO is visible.
-
-            Stage 80 mirrors the knowledge-browser docking behaviour: the
-            filesystem dock and the central document tabs are hidden so the
-            Localize dock can consume the complete free QMainWindow area.
-            Right/bottom docks remain managed by Qt and are therefore still
-            available when visible.
-            """
-            if visible:
-                # Only one large left-side tool occupies this workspace at a
-                # time.  If the PROLOG knowledge browser is open, hide it
-                # first; its visibility handler may briefly restore the file
-                # dock/central widget, which are hidden again below.
-                knowledge_dock = getattr(self, "prolog_knowledge_dock", None)
-                if knowledge_dock is not None and knowledge_dock.isVisible():
-                    knowledge_dock.hide()
-
-                if hasattr(self, "left_dock") and self.left_dock.isVisible():
-                    self._localize_replaced_filesystem_dock = True
-                    self.left_dock.hide()
-
-                central = self.centralWidget()
-                if central is not None and central.isVisible():
-                    self._localize_replaced_central_widget = True
-                    central.hide()
-
-                QTimer.singleShot(0, self._expand_localize_dock)
-            else:
+            """Stage 438: Localize benutzt den gemeinsamen Vollflächenzustand."""
+            if not visible:
                 tool = getattr(self, "localize_tool_window", None)
                 if tool is not None:
                     try:
                         tool._save_state()
                     except Exception:
                         pass
-
-                if (
-                    self._localize_replaced_filesystem_dock
-                    and hasattr(self, "left_dock")
-                ):
-                    self.left_dock.show()
-                self._localize_replaced_filesystem_dock = False
-
-                if self._localize_replaced_central_widget:
-                    central = self.centralWidget()
-                    if central is not None:
-                        central.show()
-                self._localize_replaced_central_widget = False
+            self._exclusive_tool_workspace_visibility_changed(
+                visible, getattr(self, "localize_dock", None),
+            )
 
         def _expand_localize_dock(self) -> None:
-            dock = getattr(self, "localize_dock", None)
-            if dock is None or not dock.isVisible():
-                return
-
-            # With the central widget hidden, a deliberately huge requested
-            # size makes Qt give Localize every remaining pixel while still
-            # respecting any visible right/bottom docks.
-            self.resizeDocks([dock], [100000], Qt.Horizontal)
-            self.resizeDocks([dock], [100000], Qt.Vertical)
-            tool = getattr(self, "localize_tool_window", None)
-            if tool is not None:
-                tool.setMinimumSize(0, 0)
-                tool.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-                tool.updateGeometry()
-            self._assign_widget_property_ids(dock)
+            self._expand_exclusive_tool_workspace(
+                getattr(self, "localize_dock", None),
+            )
 
         def _ensure_localize_dock(self):
             dock = getattr(self, "localize_dock", None)
@@ -110629,93 +111577,27 @@ QMenu#green_beige_popup_menu::indicator:checked {{
 
         def localize_dialog(self) -> None:
             dock, tool = self._ensure_localize_dock()
-
-            # Replace the left filesystem view, as requested.
-            if hasattr(self, "left_dock"):
-                if self.left_dock.isVisible():
-                    self._localize_replaced_filesystem_dock = True
-                self.left_dock.hide()
-
+            self._activate_exclusive_tool_workspace(dock)
             dock.show()
             dock.raise_()
-            self._expand_localize_dock()
-            QTimer.singleShot(0, self._expand_localize_dock)
+            self._expand_exclusive_tool_workspace(dock)
+            QTimer.singleShot(0, lambda d=dock:
+                              self._expand_exclusive_tool_workspace(d))
             try:
                 tool.tabs.setFocus(Qt.OtherFocusReason)
             except Exception:
                 tool.setFocus(Qt.OtherFocusReason)
-            return
-            
+
         def _doxygen_dock_visibility_changed(self, visible: bool) -> None:
-            """Stage 115: Doxygen belegt den freien Platz links vom Projekt-Dock.
-
-            Das Dateisystem wird zuerst ausgeblendet. Danach wird die zentrale
-            Dokumentfläche verborgen, damit QMainWindow den kompletten freien
-            Bereich dem Doxygen-Dock geben kann. Projekt/Informationen und das
-            untere Protokoll-Dock bleiben von dieser Umschaltung unberührt.
-            """
-            if visible:
-                # Nur ein großflächiges Werkzeug soll die Arbeitsfläche belegen.
-                # Deren Hide-Handler können Dateisystem/Zentralfläche kurz
-                # wiederherstellen; deshalb werden diese anschließend nochmals
-                # verbindlich ausgeblendet.
-                for other_name in ("localize_dock", "prolog_knowledge_dock"):
-                    other = getattr(self, other_name, None)
-                    if other is not None and other is not self.doxygen_dock and other.isVisible():
-                        other.hide()
-
-                # Vorgabe: Dateisystem-Dock ZUERST ausblenden.
-                left = getattr(self, "left_dock", None)
-                if left is not None and left.isVisible():
-                    self._doxygen_replaced_filesystem_dock = True
-                    left.hide()
-
-                central = self.centralWidget()
-                if central is not None and central.isVisible():
-                    self._doxygen_replaced_central_widget = True
-                    central.hide()
-
-                # Das Projekt-/Informations-Dock soll rechts bestehen bleiben.
-                right = getattr(self, "right_dock", None)
-                if right is not None and not right.isVisible():
-                    right.show()
-
-                QTimer.singleShot(0, self._expand_doxygen_dock)
-            else:
-                if (
-                    self._doxygen_replaced_filesystem_dock
-                    and hasattr(self, "left_dock")
-                ):
-                    self.left_dock.show()
-                self._doxygen_replaced_filesystem_dock = False
-
-                if self._doxygen_replaced_central_widget:
-                    central = self.centralWidget()
-                    if central is not None:
-                        central.show()
-                self._doxygen_replaced_central_widget = False
+            """Stage 438: Doxygen nutzt denselben exklusiven Arbeitsbereich."""
+            self._exclusive_tool_workspace_visibility_changed(
+                visible, getattr(self, "doxygen_dock", None),
+            )
 
         def _expand_doxygen_dock(self) -> None:
-            """Gibt Doxygen jeden freien Pixel links vom rechten Projekt-Dock."""
-            dock = getattr(self, "doxygen_dock", None)
-            if dock is None or not dock.isVisible():
-                return
-
-            # Doxygen gehört in die linke Dock-Area. Bei verborgener zentraler
-            # Fläche reicht diese Area bis direkt an das rechte Projekt-Dock.
-            self.addDockWidget(Qt.LeftDockWidgetArea, dock)
-            self.resizeDocks([dock], [100000], Qt.Horizontal)
-            self.resizeDocks([dock], [100000], Qt.Vertical)
-
-            tool = getattr(self, "doxygen_tool_window", None)
-            if tool is not None:
-                try:
-                    tool.setMinimumSize(0, 0)
-                    tool.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-                    tool.updateGeometry()
-                except Exception:
-                    pass
-            self._assign_widget_property_ids(dock)
+            self._expand_exclusive_tool_workspace(
+                getattr(self, "doxygen_dock", None),
+            )
 
         def _ensure_doxygen_dock(self):
             """Erzeugt das Doxygen-Werkzeug einmalig als echtes QDockWidget.
@@ -110821,52 +111703,22 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 return None, None
 
         def show_doxygen_dock(self, _checked: bool = False) -> None:
-            """Öffnet Doxygen links vom Projekt-Dock auf maximaler Fläche."""
+            """Stage 438: Doxygen belegt die gesamte freie Arbeitsfläche."""
             dock, tool = self._ensure_doxygen_dock()
             if dock is None or tool is None:
                 return
-
-            # Vorgabe: Das Dateisystem muss bereits verschwunden sein, bevor
-            # Doxygen eingeblendet und in seinen Platz eingesetzt wird.
-            left = getattr(self, "left_dock", None)
-            if left is not None and left.isVisible():
-                self._doxygen_replaced_filesystem_dock = True
-                left.hide()
-
-            # Falls ein anderes Großflächen-Dock aktiv ist, zuerst schließen.
-            # Dessen Visibility-Handler darf danach die normale Arbeitsfläche
-            # restaurieren; wir blenden sie direkt vor Doxygen wieder aus.
-            for other_name in ("localize_dock", "prolog_knowledge_dock"):
-                other = getattr(self, other_name, None)
-                if other is not None and other is not dock and other.isVisible():
-                    other.hide()
-
-            left = getattr(self, "left_dock", None)
-            if left is not None and left.isVisible():
-                self._doxygen_replaced_filesystem_dock = True
-                left.hide()
-
-            central = self.centralWidget()
-            if central is not None and central.isVisible():
-                self._doxygen_replaced_central_widget = True
-                central.hide()
-
-            right = getattr(self, "right_dock", None)
-            if right is not None and not right.isVisible():
-                right.show()
-
-            self.addDockWidget(Qt.LeftDockWidgetArea, dock)
+            self._activate_exclusive_tool_workspace(dock)
             dock.show()
             dock.raise_()
-            self._expand_doxygen_dock()
-            QTimer.singleShot(0, self._expand_doxygen_dock)
-
+            self._expand_exclusive_tool_workspace(dock)
+            QTimer.singleShot(0, lambda d=dock:
+                              self._expand_exclusive_tool_workspace(d))
             try:
                 tool.setFocus(Qt.OtherFocusReason)
             except Exception:
                 pass
             self.statusBar().showMessage(
-                "Doxygen-Docking-Fenster links neben Projekt geöffnet"
+                "Doxygen-Docking-Fenster im freien Arbeitsbereich geöffnet"
             )
 
         def create_coff32_archive_dialog(self) -> None:
@@ -111499,6 +112351,15 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             designer_layout.addWidget(build_bar)
             designer_layout.addWidget(form_tabs, 1)
             designer_dock.setWidget(designer_host)
+            # Stage 436: Der Designer besitzt genau ein Titelsymbol (Schließen).
+            # Dieses beendet sowohl Designer- als auch Eigenschaften-Dock.
+            designer_dock.setTitleBarWidget(
+                DockTitleBar(
+                    designer_dock,
+                    show_float_button=False,
+                    close_callback=self._close_dbase_form_designer_pair,
+                )
+            )
 
             self.dbase_form_tabs = form_tabs
             self.dbase_form_source_page = source_page
@@ -113506,6 +114367,168 @@ QMenu#green_beige_popup_menu::indicator:checked {{
 
                 return resolve(expression)
 
+            def emit_wfm_stage443_string_builtin(out, expression):
+                """Stage 443: WFM-Laufzeitwerte fuer LEN/LTRIM/RTRIM/TRIM.
+
+                Anders als render_program_literal() wird eine Memory-Variable
+                hier erst bei Ausfuehrung des Event-Callbacks ausgelesen.
+                Rueckgabe: Variant-Slot oder None bei anderen Ausdruecken.
+                WFM speichert Texte als UTF-8 mit expliziter Byte-Laenge;
+                LEN zaehlt daher UTF-8-Zeichen, nicht UTF-8-Bytes.
+                """
+                from d64dbase.compiler import (
+                    DBaseCallExpression, DBaseIdentifierExpression,
+                    DBaseLiteralExpression, _evaluate_dbase_expression,
+                )
+                from d64dbase.string_length_trim import emit_trim_operation
+
+                names = {"len", "ltrim", "rtrim", "trim"}
+                if not isinstance(expression, DBaseCallExpression):
+                    return None
+                name = str(expression.name).casefold()
+                if name not in names:
+                    return None
+                if len(expression.arguments) != 1:
+                    raise AssemblerError(
+                        f"{filename}: WFM: {name.upper()}() erwartet genau "
+                        "einen String-Ausdruck."
+                    )
+
+                def new_slot(tag):
+                    nonlocal runtime_variant_label_index
+                    index = runtime_variant_label_index
+                    runtime_variant_label_index += 1
+                    return memory_slot(f"__wfm_{tag}_{index}")
+
+                def string_operand(node):
+                    if isinstance(node, DBaseIdentifierExpression):
+                        key = node.name.casefold()
+                        if runtime_memory_kinds.get(key) in {"integer", "float", "object"}:
+                            raise AssemblerError(
+                                f"{filename}: WFM-Stringfunktion erwartet Text: {node.name}"
+                            )
+                        parameter_slot = current_wfm_parameter_text_slot(node.name)
+                        return parameter_slot if parameter_slot is not None else memory_slot(node.name)
+                    if isinstance(node, DBaseCallExpression) and node.name.casefold() in names:
+                        if node.name.casefold() == "len":
+                            raise AssemblerError(
+                                f"{filename}: LEN() liefert eine Zahl, keinen String."
+                            )
+                        return emit_wfm_stage443_string_builtin(out, node)
+                    # Zeichenliterale und vollstaendig konstante Ausdruecke
+                    # mit dem bereits vorhandenen dBase-Evaluator auswerten.
+                    try:
+                        constant = _evaluate_dbase_expression(
+                            node, filename=filename, variables={}
+                        )
+                    except Exception as exc:
+                        raise AssemblerError(
+                            f"{filename}: WFM-Stringfunktion: dynamischer "
+                            "Ausdruck wird noch nicht unterstuetzt: "
+                            f"{node!r}"
+                        ) from exc
+                    if constant.kind not in {"string", "char"}:
+                        raise AssemblerError(
+                            f"{filename}: {name.upper()}() erwartet einen String."
+                        )
+                    slot = new_slot("text_literal")
+                    label, length = console_text_label(str(constant.value))
+                    emit_wfm_string_payload(out, slot, label, length)
+                    return slot
+
+                source_slot = string_operand(expression.arguments[0])
+                dest = new_slot(name)
+                valid = wfm_flow_label(name + "_valid")
+                done = wfm_flow_label(name + "_done")
+                out.extend([
+                    f"    cmp dword ptr [{memory_type_label(source_slot)}], {WFM_VALUE_STRING}",
+                    f"    je {valid}",
+                ])
+                if name != "len":
+                    # Eine uninitialisierte oder anders typisierte Variable
+                    # liefert einen leeren String, keinen ungueltigen Pointer.
+                    label, length = console_text_label("")
+                    emit_wfm_string_payload(out, dest, label, length)
+                    out.extend([f"    jmp {done}", f"{valid}:"])
+                    out.extend(emit_trim_operation(
+                        source_slot, dest, kind=name, is64=is64,
+                        prefix=wfm_flow_label("trim_" + name),
+                        string_type=WFM_VALUE_STRING,
+                        shadow_space_reserved=is64,
+                    ))
+                    out.append(f"{done}:")
+                    return dest
+
+                # UTF-8 codepoint count: start bytes are NOT 10xxxxxx.
+                # Die Laengenangabe begrenzt den Zugriff auch bei NUL-Bytes.
+                loop = wfm_flow_label("len_loop")
+                skip = wfm_flow_label("len_skip")
+                finish = wfm_flow_label("len_finish")
+                out.extend([
+                    "    xor ecx, ecx",
+                    f"    jmp {skip}",
+                    f"{valid}:",
+                ])
+                if is64:
+                    out.extend([
+                        f"    mov r8, qword ptr [{memory_pointer_label(source_slot)}]",
+                        f"    mov r9d, dword ptr [{memory_length_label(source_slot)}]",
+                        "    xor ecx, ecx",
+                        f"{loop}:",
+                        "    test r8, r8", f"    je {finish}",
+                        "    test r9d, r9d", f"    jz {finish}",
+                        "    movzx eax, byte ptr [r8]",
+                        "    and eax, 192", "    cmp eax, 128",
+                        f"    je {name}_{loop}_continuation",
+                        "    inc ecx",
+                        f"{name}_{loop}_continuation:",
+                        "    inc r8", "    dec r9d",
+                        f"    jmp {loop}",
+                    ])
+                else:
+                    out.extend([
+                        "    push esi",
+                        f"    mov esi, dword ptr [{memory_pointer_label(source_slot)}]",
+                        f"    mov edx, dword ptr [{memory_length_label(source_slot)}]",
+                        "    xor ecx, ecx",
+                        f"{loop}:",
+                        "    test esi, esi", f"    je {finish}",
+                        "    test edx, edx", f"    jz {finish}",
+                        "    movzx eax, byte ptr [esi]",
+                        "    and eax, 192", "    cmp eax, 128",
+                        f"    je {name}_{loop}_continuation",
+                        "    inc ecx",
+                        f"{name}_{loop}_continuation:",
+                        "    inc esi", "    dec edx",
+                        f"    jmp {loop}",
+                    ])
+                out.append(f"{finish}:")
+                if not is64:
+                    out.append("    pop esi")
+                out.extend([
+                    f"{skip}:",
+                    "    mov dword ptr [__dbase_temp_number], ecx",
+                    "    fild dword ptr [__dbase_temp_number]",
+                    f"    fstp qword ptr [{memory_number_label(dest)}]",
+                    f"    mov dword ptr [{memory_type_label(dest)}], {WFM_VALUE_INTEGER}",
+                    f"    mov dword ptr [{memory_length_label(dest)}], 0",
+                    f"    mov {ptr} ptr [{memory_pointer_label(dest)}], 0",
+                ])
+                return dest
+
+            def parse_wfm_stage443_builtin(text):
+                if re.search(r"(?i)\b(?:len|ltrim|rtrim|trim)\s*\(", str(text or "")) is None:
+                    return None
+                from d64dbase.compiler import (
+                    parse_dbase_statements, DBasePrintStatement,
+                )
+                parsed = parse_dbase_statements(
+                    "? " + str(text), filename=filename, target=target,
+                )
+                if len(parsed) == 1 and isinstance(parsed[0], DBasePrintStatement):
+                    return parsed[0].expression
+                return None
+
             def emit_wfm_ismouse_numeric(out):
                 """Windows SM_MOUSEPRESENT (19), liefert 0 oder 1 in ST(0).
 
@@ -113594,6 +114617,15 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                         )
                     emit_wfm_ismouse_slot(out, destination)
                     runtime_memory_kinds[destination_key] = "integer"
+                    return True
+
+                builtin_node = parse_wfm_stage443_builtin(expression_text)
+                builtin_slot = emit_wfm_stage443_string_builtin(out, builtin_node)
+                if builtin_slot is not None:
+                    emit_wfm_memory_copy(out, builtin_slot, destination)
+                    runtime_memory_kinds[destination_key] = (
+                        "integer" if str(builtin_node.name).casefold() == "len" else "string"
+                    )
                     return True
 
                 upper_slot = emit_wfm_upper_expression(out, expression_text)
@@ -113817,6 +114849,11 @@ QMenu#green_beige_popup_menu::indicator:checked {{
 
                 resolved = []
                 for part in parts:
+                    part_node = parse_wfm_stage443_builtin(part)
+                    builtin_slot = emit_wfm_stage443_string_builtin(out, part_node)
+                    if builtin_slot is not None:
+                        resolved.append(("memory", builtin_slot))
+                        continue
                     upper_slot = emit_wfm_upper_expression(out, part)
                     if upper_slot is not None:
                         resolved.append(("memory", upper_slot))
@@ -114334,6 +115371,15 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     emit_wfm_ismouse_numeric(out)
                     return
                 if isinstance(node, DBaseCallExpression):
+                    builtin = emit_wfm_stage443_string_builtin(out, node)
+                    if builtin is not None:
+                        if node.name.casefold() != "len":
+                            raise AssemblerError(
+                                f"{filename}: WFM: {node.name.upper()}() liefert "
+                                "einen String, keinen numerischen Wert."
+                            )
+                        out.append(f"    fld qword ptr [{memory_number_label(builtin)}]")
+                        return
                     emit_wfm_function_numeric(out, node)
                     return
                 if isinstance(node, DBaseLiteralExpression) and node.value_type == 'number':
@@ -114782,6 +115828,14 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                             emit_wfm_ismouse_slot(callback_lines, print_slot)
                             emit_wfm_memory_print(
                                 callback_lines, print_slot, statement,
+                                print_match.group(1) != "??",
+                            )
+                            continue
+                        builtin_node = parse_wfm_stage443_builtin(print_expression)
+                        builtin_slot = emit_wfm_stage443_string_builtin(callback_lines, builtin_node)
+                        if builtin_slot is not None:
+                            emit_wfm_memory_print(
+                                callback_lines, builtin_slot, statement,
                                 print_match.group(1) != "??",
                             )
                             continue
@@ -115645,6 +116699,20 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 dock = getattr(self, attr, None)
                 if dock is not None and bool(dock_state.get(name, False)):
                     dock.show()
+
+        def _close_dbase_form_designer_pair(self) -> None:
+            """Stage 436: Schließen im Designer beendet beide WFM-Docks.
+
+            Die bestehende visibilityChanged-Logik stellt anschließend den
+            zuvor sichtbaren Arbeitsbereich wieder her.
+            """
+            for dock in (
+                self.dbase_form_property_dock,
+                self.dbase_form_designer_dock,
+            ):
+                if dock is not None:
+                    dock.close()
+            self._dbase_form_dock_visibility_changed(False)
 
         def _dbase_form_dock_visibility_changed(self, _visible: bool) -> None:
             if not self._dbase_form_workspace_active:
@@ -117096,25 +118164,39 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea
                 | Qt.TopDockWidgetArea | Qt.BottomDockWidgetArea
             )
-            dock.setMinimumWidth(620)
-            dock.setMinimumHeight(420)
+            dock.setMinimumSize(0, 0)
             dock.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-            dock.setWidget(widget)
+            scroll = QScrollArea(dock)
+            scroll.setObjectName("html_editor_workspace_scroll")
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.NoFrame)
+            scroll.setMinimumSize(0, 0)
+            scroll.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+            widget.setMinimumSize(0, 0)
+            scroll.setWidget(widget)
+            dock.setWidget(scroll)
             dock.setTitleBarWidget(DockTitleBar(dock))
             self.addDockWidget(Qt.LeftDockWidgetArea, dock)
             self.html_editor_widget = widget
             self.html_editor_dock = dock
+            dock.visibilityChanged.connect(
+                lambda visible, current=dock:
+                    self._exclusive_tool_workspace_visibility_changed(visible, current)
+            )
             self._assign_widget_property_ids(dock)
             dock.hide()
 
         def show_html_editor_dock(self) -> None:
             self._ensure_html_editor_dock()
+            dock = self.html_editor_dock
             if self.html_editor_widget is not None:
                 self.html_editor_widget.set_dark_mode(self.dark_mode_enabled)
-            self.html_editor_dock.show()
-            self.html_editor_dock.raise_()
-            # Resize only the dock area; never resize the QMainWindow itself.
-            self.resizeDocks([self.html_editor_dock], [760], Qt.Horizontal)
+            self._activate_exclusive_tool_workspace(dock)
+            dock.show()
+            dock.raise_()
+            self._expand_exclusive_tool_workspace(dock)
+            QTimer.singleShot(0, lambda d=dock:
+                              self._expand_exclusive_tool_workspace(d))
             self.html_editor_widget.editor.setFocus(Qt.OtherFocusReason)
             self.statusBar().showMessage("HTML Editor geöffnet", 4000)
 
@@ -117913,21 +118995,88 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             dock.setObjectName("desktop_settings_dock")
             dock.setFeatures(self._dock_features())
             dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
-            dock.setMinimumWidth(720)
-            dock.setMinimumHeight(500)
-            dock.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            # Stage 435: keine feste 720x500-Mindestgroesse. Die Panel-Inhalte
+            # scrollen, statt das aeussere Hauptfenster aufzuziehen.
+            dock.setMinimumSize(0, 0)
+            dock.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
             dock.setWidget(panel)
             dock.setTitleBarWidget(DockTitleBar(dock))
 
-            self.addDockWidget(Qt.LeftDockWidgetArea, dock)
-            if getattr(self, "left_dock", None) is not None:
-                self.splitDockWidget(self.left_dock, dock, Qt.Horizontal)
+            # Bereits beim erstmaligen Erzeugen die dem Projekt-Dock
+            # gegenueberliegende Seite verwenden, niemals darueber/darunter.
+            project = getattr(self, "right_dock", None)
+            project_area = self.dockWidgetArea(project) if project is not None else Qt.RightDockWidgetArea
+            initial_area = (Qt.RightDockWidgetArea if project_area == Qt.LeftDockWidgetArea
+                            else Qt.LeftDockWidgetArea)
+            self.addDockWidget(initial_area, dock)
 
             self.settings_panel = panel
             self.settings_dock = dock
             self._assign_widget_property_ids(dock)
             dock.visibilityChanged.connect(self._settings_dock_visibility_changed)
+            dock.dockLocationChanged.connect(self._settings_dock_location_changed)
             dock.hide()
+
+        def _dock_desktop_properties_next_to_project(self) -> None:
+            """Desktop Properties stets horizontal NEBEN Projekt/Informationen.
+
+            Projekt links -> Desktop rechts, Projekt rechts -> Desktop links.
+            Die gegenueberliegende Dock-Area verhindert ein vertikales Stapeln
+            mit dem Projekt-Dock auch bei manuellen Dock-Bewegungen.
+            """
+            if bool(getattr(self, "_settings_dock_rearranging", False)):
+                return
+            if not bool(getattr(self, "_settings_workspace_active", False)):
+                return
+            dock = getattr(self, "settings_dock", None)
+            project = getattr(self, "right_dock", None)
+            if dock is None or project is None or project.isFloating():
+                return
+            project_area = self.dockWidgetArea(project)
+            if project_area not in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea):
+                return
+            target_area = (Qt.RightDockWidgetArea if project_area == Qt.LeftDockWidgetArea
+                           else Qt.LeftDockWidgetArea)
+            if dock.isFloating():
+                # Bewusst abgedockte Desktop Properties nicht zurueckziehen.
+                return
+            geometry_before = QRect(self.geometry())
+            window_state_before = self.windowState()
+            self._settings_dock_rearranging = True
+            try:
+                # Nur die Seite gegenueber dem Projekt-Dock ist zulaessig.
+                # Insbesondere wird kein Qt.Vertical-Split angelegt.
+                dock.setAllowedAreas(target_area)
+                if self.dockWidgetArea(dock) != target_area:
+                    self.addDockWidget(target_area, dock)
+                dock.show()
+                self._enforce_project_information_dock_width()
+                # Den verbleibenden horizontalen Bereich zuteilen; keine
+                # uebergrossen 100000px-Werte, kein vertikales resizeDocks.
+                available = max(1, int(self.width()) - int(project.width()) - 12)
+                self.resizeDocks([dock], [available], Qt.Horizontal)
+            finally:
+                self._settings_dock_rearranging = False
+                self._preserve_desktop_settings_window_geometry(
+                    geometry_before, window_state_before
+                )
+                QTimer.singleShot(
+                    0,
+                    lambda rect=geometry_before, state=window_state_before:
+                        self._preserve_desktop_settings_window_geometry(rect, state),
+                )
+
+        def _settings_dock_location_changed(self, area) -> None:
+            # Verhindert auch bei Drag&Drop ein vertikales Stapeln am Projekt.
+            if bool(getattr(self, "_settings_workspace_active", False)):
+                QTimer.singleShot(0, self._dock_desktop_properties_next_to_project)
+
+        def _preserve_desktop_settings_window_geometry(self, geometry, window_state) -> None:
+            """Dock-Reflow darf weder Position noch Groesse des Hauptfensters aendern."""
+            if window_state & (Qt.WindowMaximized | Qt.WindowFullScreen):
+                return
+            if self.geometry() != geometry:
+                self.setGeometry(geometry)
 
         def _enter_settings_workspace(self) -> None:
             if self._settings_workspace_active:
@@ -117977,10 +119126,12 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 if dock is not None and dock.isVisible():
                     dock.hide()
 
+            # Dateisystem-Dock temporaer ausblenden: Desktop Properties
+            # bekommt den gesamten freien seitlichen Bereich. Beim Schliessen
+            # wird der zuvor gespeicherte Sichtbarkeitszustand restauriert.
             left = managed_docks.get("left")
             if left is not None:
-                left.show()
-                left.raise_()
+                left.hide()
 
             right = managed_docks.get("right")
             if right is not None:
@@ -118005,6 +119156,8 @@ QMenu#green_beige_popup_menu::indicator:checked {{
         def _restore_settings_workspace(self) -> None:
             if not self._settings_workspace_active:
                 return
+            geometry_before = QRect(self.geometry())
+            window_state_before = self.windowState()
             state = dict(self._settings_workspace_state or {})
             self._settings_workspace_active = False
             self._settings_workspace_state = {}
@@ -118029,42 +119182,48 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     continue
                 if bool(dock_state.get(name, False)):
                     dock.show()
-                elif name == "left":
+                else:
                     dock.hide()
+            self._preserve_desktop_settings_window_geometry(
+                geometry_before, window_state_before
+            )
+            QTimer.singleShot(
+                0,
+                lambda rect=geometry_before, state=window_state_before:
+                    self._preserve_desktop_settings_window_geometry(rect, state),
+            )
 
         def _settings_dock_visibility_changed(self, visible: bool) -> None:
-            if self._settings_workspace_active and not bool(visible):
+            if (self._settings_workspace_active and not bool(visible)
+                    and not bool(getattr(self, "_settings_dock_rearranging", False))):
                 QTimer.singleShot(0, self._restore_settings_workspace)
 
         def show_settings_dock(self, _checked: bool = False) -> None:
+            # Hauptfenstergeometrie vor jeglicher Dock-Layout-Aenderung merken;
+            # weder Position noch Breite/Hoehe duerfen durch Qt wachsen.
+            geometry_before = QRect(self.geometry())
+            state_before = self.windowState()
             self._ensure_settings_dock()
             self._enter_settings_workspace()
             self.settings_panel._load_desktop_properties()
-            self.settings_dock.show()
-            self.settings_dock.raise_()
 
-            left = getattr(self, "left_dock", None)
-            if left is not None:
-                left.show()
-                self.resizeDocks(
-                    [left, self.settings_dock],
-                    [320, 100000],
-                    Qt.Horizontal,
-                )
-
-            # Stage 89: Desktop Properties darf die beiden normalen
-            # Informations-Docks nicht verdrängen. Sie werden beim Öffnen
-            # explizit eingeblendet und behalten ihren Dock-Bereich.
             right = getattr(self, "right_dock", None)
             if right is not None:
                 right.show()
-                right.raise_()
             bottom = getattr(self, "bottom_dock", None)
             if bottom is not None:
                 bottom.show()
 
-            self.resizeDocks([self.settings_dock], [100000], Qt.Vertical)
+            self._dock_desktop_properties_next_to_project()
+            self.settings_dock.show()
+            self.settings_dock.raise_()
             self.settings_panel.tabs.setFocus(Qt.OtherFocusReason)
+            self._preserve_desktop_settings_window_geometry(geometry_before, state_before)
+            QTimer.singleShot(
+                0,
+                lambda rect=geometry_before, state=state_before:
+                    self._preserve_desktop_settings_window_geometry(rect, state),
+            )
             self.statusBar().showMessage("Desktop-Einstellungen geöffnet")
 
         def _ensure_project_settings_dock(self) -> None:
@@ -120624,6 +121783,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
         def _formula_designer_visibility_changed(self, visible):
             controller = getattr(self, "_math_formula_designer_controller", None)
             dock = getattr(controller, "dock", None) if controller is not None else None
+            self._exclusive_tool_workspace_visibility_changed(bool(visible), dock)
             if visible and dock is not None:
                 self._bind_formula_zoom_controls(dock)
             else:
@@ -120632,6 +121792,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 # Rückgabe der Zoom-Aktionen verhindert, dass deren Bindung
                 # beim Wechsel vom Formel-Designer verloren geht.
                 QTimer.singleShot(0, self._restore_context_zoom_after_formula)
+            QTimer.singleShot(0, self._update_edit_actions)
 
         def show_math_formula_designer_dock(self):
             controller = getattr(self, "_math_formula_designer_controller", None)
@@ -120641,8 +121802,22 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     title_bar_factory=DockTitleBar,
                 )
                 self._math_formula_designer_controller = controller
+            dock = controller._create_dock()
+            if not getattr(dock, "_formula_workspace_connected", False):
+                dock.visibilityChanged.connect(self._formula_designer_visibility_changed)
+                dock.designer.editStateChanged.connect(self._update_edit_actions)
+                QApplication.clipboard().dataChanged.connect(self._update_edit_actions)
+                dock._formula_workspace_connected = True
+                # Die frühere Zoombindung darf den Sichtbarkeits-Slot nicht
+                # ein zweites Mal verbinden.
+                dock._formula_zoom_visibility_connected = True
+            self._activate_exclusive_tool_workspace(dock)
             controller.show()
-            self._bind_formula_zoom_controls(controller.dock)
+            self._expand_exclusive_tool_workspace(dock)
+            QTimer.singleShot(0, lambda d=dock:
+                              self._expand_exclusive_tool_workspace(d))
+            self._bind_formula_zoom_controls(dock)
+            self._update_edit_actions()
             self.statusBar().showMessage(
                 "Mathematischer Formel-Designer geöffnet — Ansicht -> Zoom und STRG+Mausrad aktiv"
             )
@@ -121324,6 +122499,28 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             self.toolbar.addAction(self.zoom_out_action)
             self.toolbar.addAction(self.theme_action)
 
+            # Stage 436: Hilfe, Lupe+ und Lupe- bekommen im Dark-Mode
+            # beim Hover graue Buttons UND schwarz gezeichnete Symbole.
+            self._main_toolbar_hover_buttons = {}
+            for action, symbol in (
+                (self.chm_viewer_action, "help"),
+                (self.zoom_in_action, "zoom_in"),
+                (self.zoom_out_action, "zoom_out"),
+            ):
+                button = self.toolbar.widgetForAction(action)
+                if button is None:
+                    continue
+                button.setObjectName("main_toolbar_" + symbol + "_button")
+                button.setAttribute(Qt.WA_Hover, True)
+                button.setStyleSheet(
+                    "QToolButton{background:transparent;border:1px solid transparent;"
+                    "border-radius:3px;}"
+                    "QToolButton:hover{background:#808080;color:#000000;"
+                    "border:1px solid #a0a0a0;}"
+                )
+                self._main_toolbar_hover_buttons[button] = (action, symbol)
+                button.installEventFilter(self)
+
             self.view_menu.addAction(self.toolbar.toggleViewAction())
 
         # ----- DISM -------------------------------------------------------
@@ -121604,7 +122801,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
 
         # ----- Dokument-Editor --------------------------------------------
 
-        def _toolbar_symbol_icon(self, symbol: str) -> QIcon:
+        def _toolbar_symbol_icon(self, symbol: str, *, hover: bool = False) -> QIcon:
             """Erzeugt skalierbare Toolbar-Symbole ohne externe Bilddateien."""
             pixmap = QPixmap(28, 28)
             pixmap.fill(Qt.transparent)
@@ -121616,8 +122813,8 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             if symbol in {"zoom_in", "zoom_out"}:
                 icon_color = (
                     QColor(238, 238, 238)
-                    if self.dark_mode_enabled
-                    else QColor(45, 45, 45)
+                    if self.dark_mode_enabled and not hover
+                    else QColor(0, 0, 0) if self.dark_mode_enabled else QColor(45, 45, 45)
                 )
                 painter.setPen(
                     QPen(icon_color, 2.2, Qt.SolidLine, Qt.RoundCap)
@@ -121631,8 +122828,8 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             elif symbol == "help":
                 icon_color = (
                     QColor(238, 238, 238)
-                    if self.dark_mode_enabled
-                    else QColor(45, 45, 45)
+                    if self.dark_mode_enabled and not hover
+                    else QColor(0, 0, 0) if self.dark_mode_enabled else QColor(45, 45, 45)
                 )
                 painter.setPen(QPen(icon_color, 2.0))
                 painter.setBrush(Qt.NoBrush)
@@ -122202,10 +123399,23 @@ border: 2px solid #2a69aa;
                     widget.set_dark_mode(enabled)
                 elif isinstance(widget, GermanyStateToolTip):
                     widget.set_dark_mode(enabled)
+                elif isinstance(widget, (
+                    C64CharacterEditorDialog, C64PaletteEditorDialog,
+                    C64TextScreenEditorDialog, C64PixelScreenEditorDialog,
+                    LocalizeToolWindow, DoxyGenToolWindow,
+                )):
+                    apply_c64_tool_groupbox_theme(widget, enabled)
                 elif isinstance(widget, DockTitleBar):
                     widget.set_dark_mode(enabled)
                 elif isinstance(widget, DockSnapOverlay):
                     widget.set_dark_mode(enabled)
+
+            for button, (action, symbol) in getattr(
+                self, "_main_toolbar_hover_buttons", {}
+            ).items():
+                action.setIcon(self._toolbar_symbol_icon(
+                    symbol, hover=enabled and button.underMouse()
+                ))
 
             # Stage 386: auch die eigenstaendige Chemie-Arbeitsflaeche
             # bei laufender Dark-/Light-Mode-Umschaltung aktualisieren.
@@ -122276,9 +123486,13 @@ border: 2px solid #2a69aa;
                     self.dark_mode_enabled
                 )
 
-            self.chm_viewer_action.setIcon(self._toolbar_symbol_icon("help"))
-            self.zoom_in_action.setIcon(self._toolbar_symbol_icon("zoom_in"))
-            self.zoom_out_action.setIcon(self._toolbar_symbol_icon("zoom_out"))
+            for button, (action, symbol) in getattr(
+                self, "_main_toolbar_hover_buttons", {}
+            ).items():
+                action.setIcon(self._toolbar_symbol_icon(
+                    symbol,
+                    hover=self.dark_mode_enabled and button.underMouse(),
+                ))
             self.dism_start_menu.setIcon(self._toolbar_symbol_icon("play"))
 
             if self.dark_mode_enabled:
@@ -122359,7 +123573,26 @@ border: 2px solid #2a69aa;
                     pass
             return False
 
+        def _active_formula_designer(self):
+            controller = getattr(self, "_math_formula_designer_controller", None)
+            dock = getattr(controller, "dock", None) if controller is not None else None
+            return dock.designer if dock is not None and dock.isVisible() else None
+
         def _run_current_text_command(self, command: str) -> None:
+            formula = self._active_formula_designer()
+            if formula is not None:
+                commands = {
+                    "undo": formula.undo_formula,
+                    "redo": formula.redo_formula,
+                    "copy": formula._copy_selected_to_clipboard,
+                    "cut": formula.cut_selected_object,
+                    "paste": formula.paste_selected_object,
+                }
+                handler = commands.get(command)
+                if handler is not None:
+                    handler()
+                self._update_edit_actions()
+                return
             widget = self._active_text_edit_widget()
             if widget is None:
                 return
@@ -122391,6 +123624,19 @@ border: 2px solid #2a69aa;
         def _update_edit_actions(self) -> None:
             """Bearbeiten-Aktionen passend zum aktuellen Editorzustand setzen."""
             if not hasattr(self, "undo_action"):
+                return
+            formula = self._active_formula_designer()
+            if formula is not None:
+                has_selection = formula._has_explicit_formula_selection()
+                self.undo_action.setEnabled(formula._history_index > 0)
+                self.redo_action.setEnabled(
+                    0 <= formula._history_index < len(formula._history) - 1
+                )
+                self.copy_action.setEnabled(has_selection)
+                self.cut_action.setEnabled(has_selection)
+                self.paste_action.setEnabled(
+                    has_selection and formula._clipboard_has_formula()
+                )
                 return
             widget = self._active_text_edit_widget()
             has_widget = widget is not None
@@ -123460,6 +124706,13 @@ border: 2px solid #2a69aa;
                 return False
 
             language_override = str(language_override or "").strip().casefold()
+            # Stage 431: Bei explizitem dBASE-Quelltextmodus muss eine PRG
+            # Text sein. C64-PRGs im C64-Zweig bleiben weiterhin binaer.
+            if language_override == "dbase" and path.suffix.casefold() == ".prg":
+                if not path.is_file() or not is_dbase_program_text(path):
+                    self.show_error("Ungültige Programm-Datei",
+                                    "Datei ist keine gültige Programm-Datei")
+                    return False
             # Stage ASM 29: .prg bleibt standardmaessig ein C64-Binaerprogramm.
             # Nur ein Blatt unter dBase-Programme -> Programme erzwingt den
             # dBase-Textmodus.
@@ -123937,9 +125190,19 @@ border: 2px solid #2a69aa;
                     Qt.RightDockWidgetArea if kind == "alias_builder"
                     else Qt.LeftDockWidgetArea, dock
                 )
-                # Die vier Bildschirm-/Zeichen-Docks bekommen einen
-                # exklusiven Arbeitsbereich, der Alias-Builder nicht.
-                if kind != "alias_builder":
+                # Stage 438: vier Zeichen-/Bildschirmeditoren sowie der
+                # Resourcen-Builder verwenden den gespeicherten Vollflächen-
+                # Arbeitsbereich. Sprite-Docks behalten ihren Stage-391-Lebenszyklus.
+                exclusive_kinds = (
+                    "characters", "palettes", "text_screen", "pixel_screen",
+                    "alias_builder",
+                )
+                if kind in exclusive_kinds:
+                    dock.visibilityChanged.connect(
+                        lambda visible, current=dock:
+                            self._exclusive_tool_workspace_visibility_changed(visible, current)
+                    )
+                else:
                     dock.visibilityChanged.connect(
                         lambda visible, current=dock:
                             self._c64_resource_dock_visibility_changed(visible, current)
@@ -123955,12 +125218,22 @@ border: 2px solid #2a69aa;
                     )
                 self._assign_widget_property_ids(dock)
 
-            if kind != "alias_builder" and not dock.isFloating():
-                # Bei bereits sichtbaren Docks feuert show() kein Signal.
+            if kind in ("characters", "palettes", "text_screen",
+                        "pixel_screen", "alias_builder"):
+                self._activate_exclusive_tool_workspace(
+                    dock, beside_project=(kind == "alias_builder"),
+                )
+            elif not dock.isFloating():
                 self._prepare_c64_resource_workspace(dock)
             dock.show()
             dock.raise_()
-            if kind != "alias_builder":
+            if kind in ("characters", "palettes", "text_screen",
+                        "pixel_screen", "alias_builder"):
+                self._expand_exclusive_tool_workspace(dock)
+                QTimer.singleShot(
+                    0, lambda d=dock: self._expand_exclusive_tool_workspace(d)
+                )
+            else:
                 QTimer.singleShot(
                     0, lambda d=dock: self._expand_c64_resource_workspace(d)
                 )
@@ -123977,6 +125250,9 @@ border: 2px solid #2a69aa;
                 self._cleanup_pending_sprite_leaves(kind)
             if deleted is self._c64_resource_workspace_dock:
                 self._restore_c64_resource_workspace()
+            if (deleted is not None and self._exclusive_tool_workspace is not None
+                    and self._exclusive_tool_workspace.get("owner") is deleted):
+                self._restore_exclusive_tool_workspace(deleted)
             setattr(self, editor_attr, None)
 
         def show_character_editor(
@@ -126027,6 +127303,14 @@ border: 2px solid #2a69aa;
                     else program.prg
                 )
                 self._write_assembled_program(output_path, program_data)
+                # Stage 446: before a linked EXE is reported successful, its
+                # architecture-matched console DLL must be in the same folder.
+                if (document.is_dbase_document
+                    and document.build_target in {"pe32", "pe64"}
+                    and output_path.suffix.casefold() in {".exe", ".dll"}
+                    and '"d64_dbase_console.dll"' in assembly_source):
+                    if not self._prepare_dbase_console_runtime(output_path, document.build_target):
+                        return False
                 if document.build_target in {"pe32", "pe64"}:
                     project_base = (
                         self.current_project_path.parent
@@ -126605,6 +127889,13 @@ border: 2px solid #2a69aa;
                         program, packer_stats = self._apply_c64_image_packer(program)
                     program_data = program.prg
                 self._write_assembled_program(output_path, program_data)
+                # Stage 446: also cover direct assembly (not only ASM-tab/F2).
+                if (document.is_dbase_document
+                    and document.build_target in {"pe32", "pe64"}
+                    and output_path.suffix.casefold() in {".exe", ".dll"}
+                    and '"d64_dbase_console.dll"' in source):
+                    if not self._prepare_dbase_console_runtime(output_path, document.build_target):
+                        return False
                 if document.build_target in {"pe32", "pe64"}:
                     project_base = (
                         self.current_project_path.parent
@@ -127597,6 +128888,35 @@ border: 2px solid #2a69aa;
             # Der dBase-Compiler legt Stringliterale als Windows-1252 ab.
             return raw.decode("cp1252", errors="replace")
 
+        def _prepare_dbase_console_runtime(self, output_path: Path, target: str) -> bool:
+            """Stage 446: PE32/PE32+ dBASE DLL, built and deployed without make.
+
+            WFM has its own Qt5 console bridge and does not import this DLL.
+            Deploy before direct start AND before Workstation Runner handoff.
+            """
+            try:
+                from d64dbase.console_runtime import deploy_runtime
+                installed = deploy_runtime(
+                    output_path, target,
+                    get_exports=_pe_export_name_ordinals,
+                    assemble32=assemble_pe32_object_source,
+                    coff32=write_coff32_object, link32=link_coff32_objects,
+                    assemble64=assemble_pe64_object_source,
+                    coff64=write_coff64_object, link64=link_coff64_objects,
+                )
+                self.log(f"DBASE CONSOLE DLL ({target}): {installed}")
+                return True
+            except (OSError, ValueError, PE32AssemblerError, PE64AssemblerError) as exc:
+                self.show_error(
+                    "dBASE Konsolen-DLL fehlt oder ist inkompatibel",
+                    "Die passende d64_dbase_console.dll konnte nicht neben "
+                    "der erzeugten EXE bereitgestellt werden.\n\n"
+                    f"Ziel: {target}\nEXE: {output_path}\nFehler: {exc}\n\n"
+                    "Prüfe die Datei d64dbase/bin/pe32 bzw. pe64. "
+                    "Die IDE kann die DLL auch mit der internen Toolchain erzeugen.",
+                )
+                return False
+
         def _prepare_dbase_speech_runtime(self, output_path: Path) -> bool:
             """Stage 342: deliver a PE32 speech DLL with the required C ABI."""
             output_path = Path(output_path).resolve()
@@ -128431,6 +129751,15 @@ border: 2px solid #2a69aa;
             if document.build_target == "amiga":
                 return self._launch_amiga_document(document, output_path)
             if document.build_target in {"pe32", "pe64"}:
+                # Start remains build-free: only the DLL is verified/deployed.
+                # Check the *actual linked binary* (not a possibly stale editor).
+                if document.is_dbase_document and output_path.suffix.casefold() == ".exe":
+                    try:
+                        needs_console = b"d64_dbase_console.dll" in output_path.read_bytes().lower()
+                    except OSError:
+                        needs_console = False
+                    if needs_console and not self._prepare_dbase_console_runtime(output_path, document.build_target):
+                        return False
                 # Stage 343: Runtime-Pruefung auch fuer Workstation-Starts,
                 # nicht nur fuer den direkten Qt5-Start. Fehlende/alte DLLs
                 # werden vor dem Start durch die aktuelle speech/bin-Version
@@ -129305,7 +130634,7 @@ border: 2px solid #2a69aa;
             self.project_tree.customContextMenuRequested.connect(
                 self.show_project_context_menu
             )
-            self.project_tree.itemDoubleClicked.connect(self.open_project_item)
+            self.project_tree.itemDoubleClicked.connect(self._on_project_item_double_clicked)
             self.project_tree.itemClicked.connect(self._on_project_c64_leaf_clicked)
             self.project_tree.itemChanged.connect(self._on_project_item_changed)
 
@@ -132461,6 +133790,7 @@ border: 2px solid #2a69aa;
                     encode_c64_text_screen_data(
                         bytearray([32] * C64_TEXT_SCREEN_CELL_COUNT),
                         bytearray([1] * C64_TEXT_SCREEN_CELL_COUNT),
+                        bytearray(C64_TEXT_SCREEN_CELL_COUNT),
                     )
                 )
                 return
@@ -133647,6 +134977,10 @@ border: 2px solid #2a69aa;
             )
             added = 0
             for filename in filenames:
+                if role == "programs" and not is_dbase_program_text(Path(filename)):
+                    self.show_error("Ungültige Programm-Datei",
+                                    "Datei ist keine gültige Programm-Datei")
+                    continue
                 child = self._add_project_dbase_entry(
                     role, Path(filename), title=Path(filename).name
                 )
@@ -133680,10 +135014,149 @@ border: 2px solid #2a69aa;
             if self.current_project_path is not None:
                 self.save_project()
 
+        def _new_dbase_project_file(
+            self, role: str, target: str = "", *, caption_override: str = ""
+        ) -> None:
+            """Stage 431: Dateiauswahl mit neuem oder vorhandenem Dateinamen.
+
+            Bestehende Dateien werden nie überschrieben. Neue Dateien werden
+            in einem für ihren Designer lesbaren Grundformat erzeugt.
+            """
+            spec = next(
+                (entry for entry in DBASE_NEW_MENU
+                 if entry[1] == role and entry[4] == target), None
+            )
+            if spec is None:
+                spec = DBASE_GROUP_NEW_MENU.get((role, target))
+            if spec is None:
+                return
+            caption, _role, extensions, default_name, _target = spec
+            if caption_override:
+                caption = str(caption_override)
+            base = (self.current_project_path.parent
+                    if self.current_project_path is not None
+                    else Path(self.current_directory))
+            patterns = " ".join(f"*{ext}" for ext in extensions)
+            # Stage 432: eigener frameless Open-File-Dialog mit
+            # 3-Pixel-Rahmen, Verlaufstitel, Schließen-X und Qt-Detailheader.
+            # Ein eingebetteter QFileDialog erlaubt weiter neue Dateinamen.
+            dialog = DBaseProjectOpenFileDialog(
+                self, caption, str(base),
+                f"{caption[6:]} ({patterns});;Alle Dateien (*)",
+                default_name=default_name,
+                default_suffix=extensions[0].lstrip("."),
+                dark_mode=self.dark_mode_enabled,
+            )
+            if dialog.exec_() != QDialog.Accepted:
+                return
+            operation = dialog.operation
+            if operation not in ("create", "open"):
+                return
+            selected = dialog.selectedFiles()
+            if not selected:
+                return
+            path = Path(selected[0]).expanduser()
+            if not path.suffix:
+                path = path.with_suffix(extensions[0])
+            if path.suffix.casefold() not in extensions:
+                self.show_error("Ungültige Dateiendung",
+                                f"Erlaubt sind: {', '.join(extensions)}")
+                return
+            try:
+                path = path.resolve()
+            except OSError as exc:
+                self.show_error("Dateipfad ungültig", str(exc))
+                return
+            # Ergebnis des Dialogs erneut pruefen (Dateisystem kann sich
+            # zwischen Tastenklick und dem Anlegen/Oeffnen veraendern).
+            if operation == "create" and (path.exists() or path.is_symlink()):
+                DBaseProjectWarningDialog(
+                    self, "Die angegebene Datei existiert bereits",
+                    dark_mode=self.dark_mode_enabled
+                ).exec_()
+                return
+            if operation == "open" and not can_open_dbase_project_file(path):
+                DBaseProjectWarningDialog(
+                    self, "Sie haben nicht die benötigten Rechte um die ausgewählte Datei zu öffnen/bearbeiten",
+                    dark_mode=self.dark_mode_enabled
+                ).exec_()
+                return
+            if path.exists() and not path.is_file():
+                self.show_error("Dateiauswahl", "Die Auswahl ist keine Datei.")
+                return
+            if role == "programs" and path.is_file() and not is_dbase_program_text(path):
+                self.show_error("Ungültige Programm-Datei",
+                                "Datei ist keine gültige Programm-Datei")
+                return
+            if operation == "create":
+                try:
+                    if role == "tables":
+                        create_dbase_project_file(
+                            path, role,
+                            table_writer=lambda output: write_dbase_dbf(
+                                output, [DBaseDBFField("ID", "N", 10, 0)]
+                            ),
+                        )
+                    else:
+                        create_dbase_project_file(path, role)
+                except FileExistsError:
+                    DBaseProjectWarningDialog(
+                        self, "Die angegebene Datei existiert bereits",
+                        dark_mode=self.dark_mode_enabled
+                    ).exec_()
+                    return
+                except (OSError, ValueError) as exc:
+                    self.show_error("dBASE-Datei konnte nicht angelegt werden", str(exc))
+                    return
+
+            self._ensure_project_for_new_document()
+            if role == "resources":
+                child = self._add_project_resource_entry(
+                    "dbase", target, path, title=path.name
+                )
+            else:
+                child = self._add_project_dbase_entry(role, path, title=path.name)
+            if child is None:
+                self.show_error("Projektdatei", "Der Zielknoten ist nicht verfügbar.")
+                return
+            ancestor = child.parent()
+            while ancestor is not None:
+                ancestor.setExpanded(True)
+                ancestor = ancestor.parent()
+            self.project_tree.setCurrentItem(child)
+            child.setSelected(True)
+            self.project_tree.scrollToItem(child)
+            if self.current_project_path is not None:
+                self.save_project()
+            self.open_project_item(child)
+            self.statusBar().showMessage(f"dBASE-Projektdatei: {path.name}", 6000)
+
+        def _show_project_dbase_root_menu(self, item: QTreeWidgetItem, position) -> None:
+            menu = QMenu(self.project_tree)
+            actions = {}
+            for caption, role, _extensions, _default, target in DBASE_NEW_MENU:
+                actions[menu.addAction(caption)] = (role, target)
+            menu.addSeparator()
+            toggle_action = menu.addAction(
+                "Knoten schließen" if item.isExpanded() else "Knoten öffnen"
+            )
+            selected = menu.exec_(self.project_tree.viewport().mapToGlobal(position))
+            if selected in actions:
+                role, target = actions[selected]
+                self._new_dbase_project_file(role, target)
+            elif selected is toggle_action:
+                item.setExpanded(not item.isExpanded())
+
         def _show_project_dbase_group_menu(self, item: QTreeWidgetItem, position) -> None:
             role = str(item.data(0, Qt.UserRole + 306) or "").casefold()
             menu = QMenu(self.project_tree)
-            # Stage 335: Nur im dBase-Programme/Programme-Knoten als erste Aktion.
+            # Stage 433: Neue Datei muss jeweils die erste Kontextmenüaktion
+            # sein; die bestehenden Hinzufügen-/Löschen-Aktionen bleiben.
+            new_file_action = None
+            new_file_spec = DBASE_GROUP_NEW_MENU.get((role, ""))
+            if new_file_spec is not None:
+                new_file_action = menu.addAction(new_file_spec[0])
+            # Stage 335: bisherige Spezialaktion für dBASE-Programme erhalten.
             new_program_action = None
             if role == "programs":
                 new_program_action = menu.addAction("Neu Programm-Datei")
@@ -133702,7 +135175,9 @@ border: 2px solid #2a69aa;
             selected = menu.exec_(
                 self.project_tree.viewport().mapToGlobal(position)
             )
-            if new_program_action is not None and selected is new_program_action:
+            if new_file_action is not None and selected is new_file_action:
+                self._new_dbase_project_file(role, caption_override=new_file_spec[0])
+            elif new_program_action is not None and selected is new_program_action:
                 self._create_new_dbase_program_item(use_template=False)
                 item.setExpanded(True)
             elif selected is add_action:
@@ -134521,6 +135996,18 @@ QFileDialog QComboBox QAbstractItemView {
                         self.set_project_modified(True)
                 return
 
+        def _on_project_item_double_clicked(self, item: QTreeWidgetItem, column: int = 0) -> None:
+            # Stage 431: dBASE-Blätter öffnen bereits bei Einfachklick.
+            # Doppelklick darf weder einen zweiten Designer starten noch
+            # einen zweiten Formular-Ladevorgang in die Queue stellen.
+            kind = self._project_item_kind(item)
+            if kind == PROJECT_NODE_DBASE_FILE or (
+                kind == PROJECT_NODE_RESOURCE_FILE
+                and str(item.data(0, Qt.UserRole + 301) or "").casefold() == "dbase"
+            ):
+                return
+            self.open_project_item(item, column)
+
         def _on_project_c64_leaf_clicked(self, item: QTreeWidgetItem, _column: int = 0) -> None:
             # Stage 387: C64-Blaetter bereits per einfachem Linksklick oeffnen.
             # Mehrfachauswahl mit Shift/Strg bleibt davon unberuehrt.
@@ -134532,9 +136019,14 @@ QFileDialog QComboBox QAbstractItemView {
             if bool(item.data(0, Qt.UserRole + 307)):
                 self._activate_unsaved_c64_leaf(item)
                 return
-            if self._project_item_kind(item) in {
+            kind = self._project_item_kind(item)
+            if kind in {
                 PROJECT_NODE_C64_RESOURCE_FILE, PROJECT_NODE_C64_SOURCE_FILE,
-            }:
+                PROJECT_NODE_DBASE_FILE,
+            } or (
+                kind == PROJECT_NODE_RESOURCE_FILE
+                and str(item.data(0, Qt.UserRole + 301) or "").casefold() == "dbase"
+            ):
                 self.open_project_item(item)
 
         def _activate_unsaved_c64_leaf(self, item: QTreeWidgetItem) -> bool:
@@ -134654,11 +136146,29 @@ QFileDialog QComboBox QAbstractItemView {
                 return
             if kind == PROJECT_NODE_WINDOWS_TARGET:
                 menu = QMenu(self.project_tree)
+                language = str(item.data(0, Qt.UserRole + 301) or "").casefold()
+                target = str(item.data(0, Qt.UserRole + 305) or "").casefold()
+                # Nur die Windows-Zielknoten unter dBASE bekommen die neue
+                # Ressourcendatei-Aktion, immer an erster Stelle.
+                new_resource_spec = (
+                    DBASE_GROUP_NEW_MENU.get(("resources", target))
+                    if language == "dbase" else None
+                )
+                new_resource_action = (
+                    menu.addAction(new_resource_spec[0])
+                    if new_resource_spec is not None else None
+                )
+                if new_resource_action is not None:
+                    menu.addSeparator()
                 toggle_action = menu.addAction(
                     "Knoten schließen" if item.isExpanded() else "Knoten öffnen"
                 )
                 selected = menu.exec_(self.project_tree.viewport().mapToGlobal(position))
-                if selected is toggle_action:
+                if new_resource_action is not None and selected is new_resource_action:
+                    self._new_dbase_project_file(
+                        "resources", target, caption_override=new_resource_spec[0]
+                    )
+                elif selected is toggle_action:
                     item.setExpanded(not item.isExpanded())
                 return
             if kind == PROJECT_NODE_RESOURCE_ROOT:
@@ -134692,15 +136202,7 @@ QFileDialog QComboBox QAbstractItemView {
                 item.parent() is None
                 and str(item.data(0, Qt.UserRole + 301) or "").casefold() == "dbase"
             ):
-                menu = QMenu(self.project_tree)
-                toggle_action = menu.addAction(
-                    "Knoten schließen" if item.isExpanded() else "Knoten öffnen"
-                )
-                selected = menu.exec_(
-                    self.project_tree.viewport().mapToGlobal(position)
-                )
-                if selected is toggle_action:
-                    item.setExpanded(not item.isExpanded())
+                self._show_project_dbase_root_menu(item, position)
                 return
             if kind == PROJECT_NODE_PASCAL_UNIT_NAMESPACE:
                 menu = QMenu(self.project_tree)
@@ -135986,6 +137488,9 @@ QFileDialog QComboBox QAbstractItemView {
             if area in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea):
                 self._enforce_project_information_dock_width()
                 QTimer.singleShot(0, self._enforce_project_information_dock_width)
+                if bool(getattr(self, "_settings_workspace_active", False)):
+                    # Projekt links/rechts umgedockt -> Desktop auf Gegenseite.
+                    QTimer.singleShot(0, self._dock_desktop_properties_next_to_project)
                 if bool(getattr(self, "_dbase_table_workspace_active", False)):
                     QTimer.singleShot(0, self._normalize_dbase_table_designer_docking)
 
@@ -136500,6 +138005,15 @@ QFileDialog QComboBox QAbstractItemView {
             return True
 
         def eventFilter(self, watched, event):
+            # Stage 436: Icon-Farbe beim Hover synchron mit der grauen Fläche.
+            hovered_actions = getattr(self, "_main_toolbar_hover_buttons", {})
+            action_symbol = hovered_actions.get(watched)
+            if action_symbol is not None and event.type() in (QEvent.Enter, QEvent.Leave):
+                action, symbol = action_symbol
+                action.setIcon(self._toolbar_symbol_icon(
+                    symbol, hover=(self.dark_mode_enabled and event.type() == QEvent.Enter)
+                ))
+
             # Stage 166: Das Schließen des E-Baukasten-Docks ist ein echter
             # Dokumentabschluss. Bei Änderungen entscheidet der Benutzer mit
             # Speichern / Nicht speichern / Abbrechen. Bei Abbrechen wird das
@@ -137527,24 +139041,20 @@ QFileDialog QComboBox QAbstractItemView {
             dialog.exec_()
 
         def show_about_dialog(self) -> None:
-            self._show_message_box(
-                QMessageBox.Information,
-                "Über Qt5 D64-Explorer",
-                "<b>Qt5 D64- und Dateisystem-Explorer</b><br><br>"
-                "PyQt5-Anwendung mit verschiebbaren Dock-Fenstern, "
-                "Dateifiltern, Texteditor mit Registerkarten und integriertem "
-                "Commodore-1541-D64-Verzeichnisleser.",
-                rich_text=True,
+            """Stage 437: C= 64 Disassembler mit gelbem/weißem Originaltext."""
+            dialog = D64AboutDialog(
+                self, about_qt=False,
+                dark_mode=self.application_dark_mode(self.dark_mode_enabled),
             )
+            dialog.exec_()
 
         def show_about_qt_dialog(self) -> None:
-            """Zeigt den originalen modalen Qt5-Dialog im aktuellen Theme."""
-            # aboutQt() erzeugt seinen QMessageBox intern. Timer laufen bereits
-            # im verschachtelten modalen Eventloop und können den originalen
-            # Qt-Dialog deshalb unmittelbar nach seiner Erzeugung thematisieren.
-            for delay in (0, 25, 100):
-                QTimer.singleShot(delay, lambda parent=self: _theme_original_about_qt_dialog(parent))
-            _DOXYGEN_QMESSAGEBOX_CLASS.aboutQt(self, "Über Qt5")
+            """Stage 437: Qt5- und PyQt-Laufzeitinformation mit identischem Rahmen."""
+            dialog = D64AboutDialog(
+                self, about_qt=True,
+                dark_mode=self.application_dark_mode(self.dark_mode_enabled),
+            )
+            dialog.exec_()
 
         def _restore_window_state(self) -> None:
             geometry = self.settings.value("window/geometry")

@@ -1,0 +1,16 @@
+// Stage 443: LEN() in WFM-Ereigniscode statt nur in .prg
+Form1 = NEW Form1()
+CLASS Form1 OF FORM
+    PROCEDURE PushButton1_onClick()
+        STORE "Ein String" TO Text
+        ? LEN("Ein String")
+        ? LEN(Text)
+        STORE LEN(Text) TO ZeichenAnzahl
+        ? "Laenge: " + LEN(Text)
+        ? ZeichenAnzahl
+        IF LEN(Text) > 0
+            ? "Text ist nicht leer"
+        ENDIF
+        ? LEN(TRIM("   Hallo Welt   "))
+        RETURN
+ENDCLASS

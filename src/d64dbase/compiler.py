@@ -2956,6 +2956,38 @@ class _DBaseProgramAnalyzer:
             )
 
         elif isinstance(expression, DBaseCallExpression):
+            # Stage 441: Stringlaenge und drei dynamische Trim-Builtins.
+            # Diese Namen sind absichtlich case-insensitive und werden NICHT
+            # als externe Qt/DLL-Funktionen oder User-FUNCTION behandelt.
+            if expression.name.casefold() in {"len", "ltrim", "rtrim", "trim"}:
+                name = expression.name.casefold()
+                if len(expression.arguments) != 1:
+                    raise DBaseCompilerError(
+                        f"{name.upper()}(...) erwartet genau einen String-Ausdruck.",
+                        line=expression.line, column=expression.column,
+                        filename=self.filename,
+                    )
+                argument = expression.arguments[0]
+                operand = self.analyze_expression(
+                    argument, symbols=symbols, expression_info=expression_info,
+                    call_bindings=call_bindings,
+                )
+                if operand.kind not in _STRING_KINDS:
+                    raise DBaseCompilerError(
+                        f"{name.upper()}(...) erwartet einen String/Char, keinen numerischen Wert.",
+                        line=argument.line, column=argument.column,
+                        filename=self.filename,
+                    )
+                from .string_length_trim import string_length, trim_string
+                result_kind = "number" if name == "len" else "string"
+                constant = None
+                if operand.constant_value is not None:
+                    text = str(operand.constant_value.value)
+                    constant = DBaseValue(result_kind,
+                        string_length(text) if name == "len" else trim_string(name, text))
+                info = _DBaseExpressionInfo(result_kind, constant, operand.dynamic)
+                expression_info[expression] = info
+                return info
             # Stage 326: Einzelzeichen-Pruefung; numerischer Boolwert 0 oder 1.
             # Char und einzeichenlange Strings sind erlaubt. Dynamische Strings
             # mit einer anderen Laenge ergeben zur Laufzeit FALSE.
@@ -3928,6 +3960,26 @@ def _evaluate_dbase_expression(
             )
         return value
     if isinstance(expression, DBaseCallExpression):
+        if expression.name.casefold() in {"len", "ltrim", "rtrim", "trim"}:
+            name = expression.name.casefold()
+            if len(expression.arguments) != 1:
+                raise DBaseCompilerError(
+                    f"{name.upper()}(...) erwartet genau einen String-Ausdruck.",
+                    line=expression.line, column=expression.column, filename=filename,
+                )
+            operand = _evaluate_dbase_expression(
+                expression.arguments[0], filename=filename,
+                variables=env, call_resolver=call_resolver,
+            )
+            if operand.kind not in _STRING_KINDS:
+                raise DBaseCompilerError(
+                    f"{name.upper()}(...) erwartet einen String/Char.",
+                    line=expression.line, column=expression.column, filename=filename,
+                )
+            from .string_length_trim import string_length, trim_string
+            text = str(operand.value)
+            return (DBaseValue("number", string_length(text)) if name == "len"
+                    else DBaseValue("string", trim_string(name, text)))
         if expression.name.casefold() in {"isupper", "islower"}:
             function = expression.name.upper()
             if len(expression.arguments) != 1:
@@ -4476,6 +4528,18 @@ class _DBaseCodeGenerator:
             return
 
         if isinstance(expression, DBaseCallExpression):
+            if expression.name.casefold() == "len":
+                if info.constant_value is not None:
+                    self.emit(f"    fld qword ptr [{self.double_literal(Decimal(info.constant_value.value))}]")
+                else:
+                    source = self.new_storage_slot("len_source")
+                    self.emit_store_expression_to_slot(expression.arguments[0], source)
+                    # Der dBASE-Stringslot speichert seine Byte-Laenge in
+                    # CP1252; dort entspricht ein Byte einem Zeichen.
+                    self.emit(f"    mov eax, dword ptr [{source}_len]")
+                    self.emit("    mov dword ptr [__dbase_temp_number], eax")
+                    self.emit("    fild dword ptr [__dbase_temp_number]")
+                return
             if expression.name.casefold() in {"isupper", "islower"}:
                 # Statische Literale sind bereits bei der Analyse gefaltet.
                 # Fuer Variable/FUNCTION werden Ptr und Laenge des Werts
@@ -4620,7 +4684,7 @@ class _DBaseCodeGenerator:
                 self.emit(f"    mov edx, {int(length)}")
             else:
                 self.emit(f"    mov edx, dword ptr [{length}]")
-            self.emit_internal_call("__dbase_console_write")
+            self.emit_qt_call0("DBaseConsoleWrite")
         else:
             if isinstance(length, int):
                 self.emit(f"    push {int(length)}")
@@ -4630,7 +4694,7 @@ class _DBaseCodeGenerator:
                 self.emit(f"    push dword ptr [{pointer}]")
             else:
                 self.emit(f"    push {pointer}")
-            self.emit("    call __dbase_console_write")
+            self.emit("    call DBaseConsoleWrite")
             self.emit("    add esp, 8")
 
     def _emit_runtime_output_choice(self, writer) -> None:
@@ -4918,6 +4982,21 @@ class _DBaseCodeGenerator:
             return
 
         if isinstance(expression, DBaseCallExpression):
+            if expression.name.casefold() in {"ltrim", "rtrim", "trim"}:
+                from .string_length_trim import emit_trim_operation
+                if info.constant_value is not None:
+                    self.emit_static_text_to_slot(str(info.constant_value.value),
+                                                  "string", destination)
+                    return
+                source = self.new_storage_slot("trim_source")
+                self.emit_store_expression_to_slot(expression.arguments[0], source)
+                for instruction in emit_trim_operation(
+                    source, destination, kind=expression.name.casefold(),
+                    is64=self.is64, prefix=self.new_label("trim"),
+                    string_type=_TYPE_STRING,
+                ):
+                    self.emit(instruction)
+                return
             if expression.name == "$":
                 from .string_substring import emit_substring_copy
                 slots = []
@@ -4989,8 +5068,8 @@ class _DBaseCodeGenerator:
             return
 
         if isinstance(expression, DBaseCallExpression):
-            if expression.name in {"!", "$"}:
-                slot = self.new_storage_slot("upper_print")
+            if expression.name in {"!", "$"} or expression.name.casefold() in {"ltrim", "rtrim", "trim"}:
+                slot = self.new_storage_slot("string_builtin_print")
                 self.emit_store_expression_to_slot(expression, slot)
                 self.emit_write_variable_text(slot, target)
                 return
@@ -5778,19 +5857,11 @@ class _DBaseCodeGenerator:
         self.emit('import ExitProcess, "kernel32.dll", "ExitProcess"')
         self.emit('import VirtualAlloc, "kernel32.dll", "VirtualAlloc"')
         self.emit('import VirtualFree, "kernel32.dll", "VirtualFree"')
-        # Stage 109: echte, lazy Win32-Konsole fuer ? / ??.
-        self.emit('import AllocConsole, "kernel32.dll", "AllocConsole"')
-        self.emit('import FreeConsole, "kernel32.dll", "FreeConsole"')
-        self.emit('import GetStdHandle, "kernel32.dll", "GetStdHandle"')
-        self.emit('import CreateFileA, "kernel32.dll", "CreateFileA"')
-        self.emit('import GetConsoleScreenBufferInfo, "kernel32.dll", "GetConsoleScreenBufferInfo"')
-        self.emit('import SetConsoleScreenBufferSize, "kernel32.dll", "SetConsoleScreenBufferSize"')
-        self.emit('import SetConsoleOutputCP, "kernel32.dll", "SetConsoleOutputCP"')
-        self.emit('import SetConsoleTitleA, "kernel32.dll", "SetConsoleTitleA"')
-        # Stage 113: AllocConsole kann auf dem separaten Workstation-Desktop
-        # hinter dem Formular liegen. Das Console-HWND wird deshalb explizit
-        # sichtbar gemacht und einmal nach vorn geholt.
-        self.emit('import GetConsoleWindow, "kernel32.dll", "GetConsoleWindow"')
+        # Stage 446: Native dBASE console management is provided by the
+        # architecture-matched d64_dbase_console.dll (no embedded Win32 API).
+        for exported in ("DBaseConsoleEnsure", "DBaseConsoleWrite",
+                         "DBaseConsoleShutdown", "DBaseConsoleSetTitle"):
+            self.emit(f'import {exported}, "d64_dbase_console.dll", "{exported}"')
         if any(isinstance(expr, DBaseCallExpression)
                and expr.name.casefold() == "ismouse"
                for expr in self.analysis.expression_info):
@@ -5799,10 +5870,6 @@ class _DBaseCodeGenerator:
                and expr.name.casefold() == "iskeyboard"
                for expr in self.analysis.expression_info):
             self.emit('import GetRawInputDeviceList, "user32.dll", "GetRawInputDeviceList"')
-        self.emit('import ShowWindow, "user32.dll", "ShowWindow"')
-        self.emit('import SetWindowPos, "user32.dll", "SetWindowPos"')
-        self.emit('import SetForegroundWindow, "user32.dll", "SetForegroundWindow"')
-        self.emit('import WriteFile, "kernel32.dll", "WriteFile"')
         for function in self.analysis.external_functions:
             self.emit(f"extern {function}")
         self.emit("global _start")
@@ -5814,7 +5881,6 @@ class _DBaseCodeGenerator:
 
         self.program_cleanup_label = self.new_label("program_cleanup")
         title_label, _ = self.text_literal("dBase Qt5 Console / DEBUG")
-        console_title_label, _ = self.text_literal("dBase Console [MODAL TEST]")
         # Stage 142: Workstation Mode ist Teil des erzeugten Windows-Programms.
         # Das Profil wird durch das aktuell gewählte PE32/PE32+-Ziel bestimmt.
         if self.is64:
@@ -5915,7 +5981,7 @@ class _DBaseCodeGenerator:
         self.emit_qt_call0("DBaseQtShutdown")
         # AllocConsole gehoert zur GUI-Lebensdauer und wird zusammen mit ihr
         # wieder abgebaut. War nie eine ?/??-Ausgabe aktiv, ist dies ein No-op.
-        self.emit_internal_call("__dbase_console_shutdown")
+        self.emit_qt_call0("DBaseConsoleShutdown")
 
         # Den per VirtualAlloc reservierten Formatpuffer wieder freigeben.
         if self.is64:
@@ -5956,7 +6022,7 @@ class _DBaseCodeGenerator:
         for instance in self.analysis.routine_instances:
             self.emit_routine_instance(instance)
 
-        self.emit_native_console_runtime(console_title_label)
+        # Stage 446: all console routines and their state reside in the DLL.
 
         self.data_lines = ["", "section .data", ""]
         for payload, label in self.speech_utf8_literals.items():
@@ -5975,14 +6041,12 @@ class _DBaseCodeGenerator:
             if not payload:
                 empty_string_bss.append(label)
                 continue
-            nul = label in {title_label, console_title_label}
+            nul = label == title_label
             self.data_lines.extend(_db_lines(label, payload, nul_terminate=nul))
         self.data_lines.extend([
             # -1 = noch keine explizite SET DEBUG-Anweisung; in diesem Fall
             # wirkt SET FORMAT TO SCREEN/CONSOLE weiter wie bisher.
             "__dbase_output_debug_override:", "    dd -1",
-            "__dbase_console_out_name:",
-            "    db 67, 79, 78, 79, 85, 84, 36, 0",  # CONOUT$\0
             # Stage 114: Der Workstation-Runner erkennt damit native dBase-
             # GUI-Programme, fuer die er vor dem Resume eine versteckte
             # Console auf dem D64Workstation-Desktop vorreservieren soll.
@@ -6003,12 +6067,7 @@ class _DBaseCodeGenerator:
             "__dbase_exit_code:", "    resd 1",
             "__dbase_output_format_screen:", "    resd 1",
             "__dbase_output_debug_visible:", "    resd 1",
-            "__dbase_console_ready:", "    resd 1",
-            "__dbase_console_handle:", "    resq 1" if self.is64 else "    resd 1",
-            "__dbase_console_window:", "    resq 1" if self.is64 else "    resd 1",
-            "__dbase_console_written:", "    resd 1",
             "__dbase_console_number_len:", "    resd 1",
-            "__dbase_console_info:", "    resd 8",
         ]
         if self.uses_speech:
             self.bss_lines.extend(("__dbase_speech_ready:", "    resd 1"))
