@@ -89,6 +89,7 @@
 
 # include <cmath>
 # include <cstdio>
+# include <cstdlib>
 # include <string>
 # include <vector>
 # include <algorithm>
@@ -110,6 +111,7 @@
 #ifdef _WIN32
 #  define WIN32_LEAN_AND_MEAN
 #  include <windows.h>
+#  include <shellapi.h>
 #  include <sql.h>
 #  include <sqlext.h>
 #endif
@@ -8390,6 +8392,40 @@ extern "C" D64QT5_API int DBaseQtInitialize(const char *title)
     return 1;
 }
 
+// Stage 462: shared PE32/PE32+ startup, WFM-GUI/console selection.
+// The output slot belongs to the calling EXE. The VirtualAlloc buffer is
+// released by DBaseQtRuntimeShutdown BEFORE DBaseQtShutdown can ExitProcess.
+extern "C" D64QT5_API int DBaseQtRuntimeStartup(
+    const char *title, int workstationMode, int debugTheme,
+    int guiMode, void **formatBuffer)
+{
+    if (!formatBuffer)
+        return 0;
+    *formatBuffer = nullptr;
+#ifdef _WIN32
+    void *buffer = ::VirtualAlloc(nullptr, 96u, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+#else
+    void *buffer = std::calloc(1u, 96u);
+#endif
+    if (!buffer)
+        return 0;
+
+    DBaseQtSetWorkstationMode(workstationMode);
+    DBaseQtSetDebugTheme(debugTheme);
+    const int initialized = guiMode ? DBaseQtInitializeGui(title)
+                                    : DBaseQtInitialize(title);
+    if (!initialized) {
+#ifdef _WIN32
+        ::VirtualFree(buffer, 0u, MEM_RELEASE);
+#else
+        std::free(buffer);
+#endif
+        return 0;
+    }
+    *formatBuffer = buffer;
+    return 1;
+}
+
 extern "C" D64QT5_API void DBaseQtShowWindow(void)
 {
     if (!g_window || g_shutdown_requested)
@@ -10305,6 +10341,199 @@ extern "C" D64QT5_API void DBaseQtWidgetSetFont(
     widget->setFont(font);
 }
 
+// Stage 461: binary WFM UI reader. Shares the existing JSON-to-widget
+// application path; only the transport encoding changes. Bounded readers
+// reject truncated, oversized, unknown-version or corrupt input.
+namespace {
+struct DBaseWuiBinaryReader {
+    const QByteArray &bytes;
+    int pos;
+    explicit DBaseWuiBinaryReader(const QByteArray &data) : bytes(data), pos(5) {}
+    bool byte(quint8 &value) {
+        if (pos >= bytes.size()) return false;
+        value = quint8(bytes.at(pos++));
+        return true;
+    }
+    bool varuint(quint32 &value) {
+        value = 0;
+        for (int shift = 0; shift <= 28; shift += 7) {
+            quint8 b = 0;
+            if (!byte(b) || (shift == 28 && b > 15)) return false;
+            value |= (quint32(b & 127u) << shift);
+            if (!(b & 128)) return true;
+        }
+        return false;
+    }
+    bool sint(qint32 &value) {
+        quint32 n = 0;
+        if (!varuint(n)) return false;
+        const qint64 converted = (n & 1u) ?
+            -(qint64(n >> 1) + 1) : qint64(n >> 1);
+        value = qint32(converted);
+        return true;
+    }
+};
+
+static bool dbase_wui_decode_binary(const QByteArray &bytes, QJsonDocument &result) {
+    if (bytes.size() < 5 || bytes.left(5) != QByteArray("WUIB\x01", 5))
+        return false;
+    DBaseWuiBinaryReader reader(bytes);
+    quint32 poolCount = 0;
+    if (!reader.varuint(poolCount) || poolCount > 1000000u) return false;
+    QVector<QString> pool;
+    pool.reserve(int(poolCount));
+    for (quint32 i = 0; i < poolCount; ++i) {
+        quint32 byteCount = 0;
+        if (!reader.varuint(byteCount) || byteCount > quint32(bytes.size() - reader.pos))
+            return false;
+        const QByteArray word = bytes.mid(reader.pos, int(byteCount));
+        reader.pos += int(byteCount);
+        pool.append(QString::fromUtf8(word.constData(), word.size()));
+    }
+    auto getString = [&reader, &pool](QString &out) -> bool {
+        quint32 index = 0;
+        if (!reader.varuint(index) || index >= quint32(pool.size())) return false;
+        out = pool.at(int(index));
+        return true;
+    };
+    QString form;
+    quint32 count = 0;
+    if (!getString(form) || !reader.varuint(count) || count > 100000u)
+        return false;
+    QJsonArray elements;
+    for (quint32 i = 0; i < count; ++i) {
+        QJsonObject entry;
+        QString path;
+        if (!getString(path)) return false;
+        entry.insert(QStringLiteral("path"), path);
+        QJsonArray geometry;
+        for (int j = 0; j < 4; ++j) {
+            qint32 coordinate = 0;
+            if (!reader.sint(coordinate)) return false;
+            geometry.append(int(coordinate));
+        }
+        entry.insert(QStringLiteral("geometry"), geometry);
+        quint8 hasFont = 0;
+        if (!reader.byte(hasFont) || hasFont > 1) return false;
+        if (hasFont) {
+            QString family;
+            qint32 size = 0;
+            quint8 flags = 0;
+            if (!getString(family) || !reader.sint(size) ||
+                !reader.byte(flags) || (flags & 0xf0)) return false;
+            QJsonObject font;
+            font.insert(QStringLiteral("family"), family);
+            font.insert(QStringLiteral("size"), int(size));
+            font.insert(QStringLiteral("bold"), bool(flags & 1));
+            font.insert(QStringLiteral("italic"), bool(flags & 2));
+            font.insert(QStringLiteral("underline"), bool(flags & 4));
+            font.insert(QStringLiteral("strikeout"), bool(flags & 8));
+            entry.insert(QStringLiteral("font"), font);
+        } else {
+            entry.insert(QStringLiteral("font"), QJsonValue::Null);
+        }
+        quint32 properties = 0;
+        if (!reader.varuint(properties) || properties > 100000u) return false;
+        QJsonObject props;
+        for (quint32 j = 0; j < properties; ++j) {
+            QString key, value;
+            if (!getString(key) || !getString(value)) return false;
+            props.insert(key, value);
+        }
+        entry.insert(QStringLiteral("properties"), props);
+        elements.append(entry);
+    }
+    if (reader.pos != bytes.size()) return false;
+    QJsonObject root;
+    root.insert(QStringLiteral("version"), 1);
+    root.insert(QStringLiteral("form"), form);
+    root.insert(QStringLiteral("elements"), elements);
+    result = QJsonDocument(root);
+    return true;
+}
+} // namespace
+
+// Stage 456: FORM and QWidget properties are kept as one JSON document in
+// the PE image.  The handles are populated by the existing native constructors;
+// event callback pointers remain native machine code and are not serialized.
+// `slotAddresses[i]` points to the corresponding WFM global handle slot.
+extern "C" D64QT5_API int DBaseQtFormApplyExternalUi(
+    const void *const *slotAddresses,
+    int slotCount,
+    const unsigned char *payload,
+    int payloadLength,
+    int compressed)
+{
+    if (!slotAddresses || slotCount <= 0 || slotCount > 100000 ||
+        !payload || payloadLength <= 0 || payloadLength > (64 * 1024 * 1024))
+        return 0;
+    QByteArray bytes(reinterpret_cast<const char *>(payload), payloadLength);
+    if (compressed) {
+        if (payloadLength < 6)
+            return 0;
+        const unsigned char *p = payload;
+        const quint32 uncompressedLength =
+            (quint32(p[0]) << 24) | (quint32(p[1]) << 16) |
+            (quint32(p[2]) << 8) | quint32(p[3]);
+        if (!uncompressedLength || uncompressedLength > 64u * 1024u * 1024u)
+            return 0;
+        bytes = qUncompress(bytes);
+        if (bytes.size() != int(uncompressedLength))
+            return 0;
+    }
+    QJsonDocument document;
+    if (bytes.startsWith(QByteArray("WUIB\x01", 5))) {
+        if (!dbase_wui_decode_binary(bytes, document))
+            return 0;
+    } else {
+        QJsonParseError error;
+        document = QJsonDocument::fromJson(bytes, &error);
+        if (error.error != QJsonParseError::NoError)
+            return 0;
+    }
+    if (!document.isObject())
+        return 0;
+    const QJsonObject root = document.object();
+    if (root.value(QStringLiteral("version")).toInt() != 1)
+        return 0;
+    const QJsonArray elements = root.value(QStringLiteral("elements")).toArray();
+    if (elements.size() != slotCount)
+        return 0;
+    for (int index = 0; index < slotCount; ++index) {
+        if (!slotAddresses[index])
+            return 0;
+        QWidget *widget = wfm_widget(*static_cast<void *const *>(
+            const_cast<void *>(slotAddresses[index])));
+        if (!widget)
+            return 0;
+        const QJsonObject entry = elements.at(index).toObject();
+        const QJsonArray geometry = entry.value(QStringLiteral("geometry")).toArray();
+        if (geometry.size() == 4)
+            DBaseQtWidgetSetGeometry(widget,
+                geometry.at(0).toInt(), geometry.at(1).toInt(),
+                geometry.at(2).toInt(), geometry.at(3).toInt());
+        const QJsonObject font = entry.value(QStringLiteral("font")).toObject();
+        if (!font.isEmpty()) {
+            const QByteArray family = font.value(QStringLiteral("family"))
+                .toString().toUtf8();
+            DBaseQtWidgetSetFont(widget, family.constData(), family.size(),
+                font.value(QStringLiteral("size")).toInt(9),
+                int(font.value(QStringLiteral("bold")).toBool()),
+                int(font.value(QStringLiteral("italic")).toBool()),
+                int(font.value(QStringLiteral("underline")).toBool()),
+                int(font.value(QStringLiteral("strikeout")).toBool()));
+        }
+        const QJsonObject properties = entry.value(QStringLiteral("properties")).toObject();
+        for (auto it = properties.constBegin(); it != properties.constEnd(); ++it) {
+            const QByteArray name = it.key().toUtf8();
+            const QByteArray value = it.value().toString().toUtf8();
+            DBaseQtWidgetSetProperty(widget, name.constData(), name.size(),
+                                      value.constData(), value.size());
+        }
+    }
+    return 1;
+}
+
 extern "C" D64QT5_API void DBaseQtFormOpen(void *handle)
 {
     QWidget *form = wfm_widget(handle);
@@ -10363,6 +10592,89 @@ extern "C" D64QT5_API void DBaseQtFormOpen(void *handle)
     if (g_workstation_mode_enabled && D64WorkstationIsVisible())
         D64WorkstationInstallKeyboardGuard(formHwnd);
 #endif
+}
+
+// Stage 463: B.ReadModal()/B.Open() mit optionalem Programmparameter.
+// Die Qt-Runtime startet mit einem kuenstlichen argv[]; fuer die Parameter
+// des tatsaechlichen Windows-Programms ist GetCommandLineW massgeblich.
+extern "C" D64QT5_API int DBaseQtWfmModalParameter(void)
+{
+#ifdef _WIN32
+    int count = 0;
+    LPWSTR *args = CommandLineToArgvW(GetCommandLineW(), &count);
+    if (!args)
+        return 0;
+    int modal = 0;  // PARAMETER bmodal: default = .F.
+    for (int index = 1; index < count; ++index) {
+        QString token = QString::fromWCharArray(args[index]).trimmed().toLower();
+        while (token.startsWith(QLatin1Char('-')) || token.startsWith(QLatin1Char('/')))
+            token.remove(0, 1);
+        // A bare first argument is the positional dBASE PARAMETER bmodal.
+        // Named forms (/bmodal, bmodal=.T.) are accepted as well.
+        if (index == 1 && (token == QStringLiteral(".t.") ||
+                           token == QStringLiteral("true") || token == QStringLiteral("1"))) {
+            modal = 1;
+        } else if (index == 1 && (token == QStringLiteral(".f.") ||
+                                  token == QStringLiteral("false") || token == QStringLiteral("0"))) {
+            modal = 0;
+        } else if (token == QStringLiteral("bmodal")) {
+            modal = 1;
+            if (index + 1 < count) {
+                const QString next = QString::fromWCharArray(args[index + 1]).trimmed().toLower();
+                if (next == QStringLiteral(".f.") || next == QStringLiteral("false") || next == QStringLiteral("0")) {
+                    modal = 0;
+                    ++index;
+                } else if (next == QStringLiteral(".t.") || next == QStringLiteral("true") || next == QStringLiteral("1")) {
+                    modal = 1;
+                    ++index;
+                }
+            }
+        } else if (token.startsWith(QStringLiteral("bmodal="))) {
+            const QString value = token.mid(7).trimmed();
+            modal = (value == QStringLiteral(".t.") || value == QStringLiteral("true") || value == QStringLiteral("1"));
+        }
+    }
+    LocalFree(args);
+    return modal;
+#else
+    return 0;
+#endif
+}
+
+extern "C" D64QT5_API int DBaseQtFormRun(void *handle, int modal)
+{
+    QWidget *form = wfm_widget(handle);
+    if (!g_app || !form || g_shutdown_requested)
+        return 0;
+    const bool modalRequested = modal != 0;
+    const bool ideLaunch = qgetenv("D64_WFM_IDE_LAUNCH") == QByteArray("1");
+    // Nonmodal extern: only dispatch pending events, then return to the
+    // caller for method cleanup and shutdown (no blocking event loop).
+    if (!modalRequested && !ideLaunch && !g_workstation_mode_enabled) {
+        g_app->processEvents();
+        return 0;
+    }
+    QPointer<QWidget> watched(form);
+    const Qt::WindowModality previousModality = form->windowModality();
+    if (modalRequested)
+        form->setWindowModality(Qt::ApplicationModal);
+    QEventLoop eventLoop;
+    QTimer watchdog;
+    watchdog.setInterval(25);
+    QObject::connect(&watchdog, &QTimer::timeout, &eventLoop, [&]() {
+        if (!watched || g_shutdown_requested ||
+            ((modalRequested || !g_workstation_mode_enabled) && !watched->isVisible())) {
+            eventLoop.quit();
+        }
+        // Im Workstation-Modus bleibt das Programm beim Fensterschliessen
+        // resident (X blendet es aus); erst Workstation-EXIT beendet es.
+    });
+    watchdog.start();
+    eventLoop.exec();
+    watchdog.stop();
+    if (watched && modalRequested)
+        watched->setWindowModality(previousModality);
+    return 0;
 }
 
 extern "C" D64QT5_API void DBaseQtMarkProgramFinished(void)
@@ -10534,4 +10846,20 @@ extern "C" D64QT5_API void DBaseQtShutdown(void)
     if (terminateProcessAfterShutdown)
         ExitProcess(0);
 #endif
+}
+
+// Stage 462: release format-buffer memory before legacy Qt shutdown.
+// DBaseQtShutdown may call ExitProcess(0) in direct mode and never return.
+extern "C" D64QT5_API void DBaseQtRuntimeShutdown(void **formatBuffer)
+{
+    if (formatBuffer && *formatBuffer) {
+        void *buffer = *formatBuffer;
+        *formatBuffer = nullptr;
+#ifdef _WIN32
+        ::VirtualFree(buffer, 0u, MEM_RELEASE);
+#else
+        std::free(buffer);
+#endif
+    }
+    DBaseQtShutdown();
 }

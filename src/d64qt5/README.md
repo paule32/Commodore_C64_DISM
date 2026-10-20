@@ -272,3 +272,21 @@ extension API:
 The extension exports use high ordinals in the DEF file but are deliberately
 excluded from the stable dBase/WFM ordinal-map hash. Rebuild `libd64_qt5.dll`
 after updating to Stage 295. Console-mode PROLOG executables do not load Qt.
+
+
+## Stage 459 – Ordinal-Map mit optionalen Qt5-Exporten
+
+Der Hash der stabilen 64 Kernexporte ist weiterhin
+`02c94324ebc9e8373c08011d0f8c5ba5aec95b158087092ed4e741877b1a7cd7`.
+Die Erweiterungen `DBaseQtFormApplyExternalUi` und `DBaseUtf8Substring`,
+`DBaseUtf8SubstringUpper`, `DBaseUtf8SubstringLower`, `DBaseUtf8Upper`,
+`DBaseUtf8Lower` (wie auch die `DBaseQtProlog*`-Funktionen) werden nur mit
+Funktionsnamen importiert. Sie dürfen den alten Ordinal-Map-Hash nicht ändern.
+
+Die IDE vergleicht deshalb den Hash ohne diese Erweiterungen und kontrolliert
+getrennt, ob eine für das aktuelle WFM benötigte Erweiterung in der DLL
+tatsächlich exportiert wird. Ein Projekt, das eine der neuen Funktionen
+verwendet, benötigt weiterhin eine entsprechend neu gebaute Qt5-DLL.
+
+Der Stage-458-Fehler zeigte erwartete `02c943...`, aber gefundene `4c919b...`,
+weil der IDE-Hashfilter die Stage-458-Funktionen nicht ausklammerte.

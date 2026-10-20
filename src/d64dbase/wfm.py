@@ -275,6 +275,76 @@ def _wfm_resolve_with(expr: str, stack: List[str]) -> str:
     return current + "." + target
 
 
+
+def wfm_executable_preamble(source: str, *, class_name: str) -> List[str]:
+    """Return executable top-level dBASE lines before CLASS OF FORM.
+
+    Preserve their original line positions. Only the designer-generated WFM
+    bootstrap (bmodal, B = NEW Form, B.ReadModal/B.Open) is filtered out: that
+    bootstrap is already implemented by the native WFM entry code. All other
+    top-level statements are compiled by the ordinary WFM statement emitter,
+    instead of being silently discarded as in Stage 465.
+    """
+    from .compiler import strip_dbase_comments
+
+    text = str(source).replace("\r\n", "\n").replace("\r", "\n")
+    lines = text.split("\n")
+    class_start = next((index for index, line in enumerate(lines)
+                        if re.fullmatch(r"(?i)\s*CLASS\s+" + re.escape(class_name)
+                                        + r"\s+OF\s+FORM\s*", line)), None)
+    if class_start is None:
+        return []
+
+    # Strip on the whole preamble so that multiline /* ... */ comments and
+    # quoted && / // are parsed just like in event procedures. The scanner
+    # keeps newlines, which yields accurate error locations.
+    preamble = strip_dbase_comments("\n".join(lines[:class_start]))
+    statements = preamble.split("\n")
+    if len(statements) < class_start:
+        statements.extend([""] * (class_start - len(statements)))
+
+    stripped = [statement.strip() for statement in statements]
+    skip = set()
+    constructor_names = {
+        match.group(1).casefold()
+        for statement in stripped
+        if (match := re.fullmatch(
+            r"(?i)([A-Za-z_]\w*)\s*=\s*NEW\s+"
+            + re.escape(class_name) + r"\s*\(.*\)", statement))
+    }
+    modal_if = re.compile(r"(?i)^IF\s+bmodal\s*(?:==|=)\s*\.T\.\s*$")
+    read_modal = re.compile(r"(?i)^([A-Za-z_]\w*)\.ReadModal\s*\(\s*\)\s*$")
+    open_form = re.compile(r"(?i)^([A-Za-z_]\w*)\.Open\s*\(\s*\)\s*$")
+
+    # Match the complete five-statement designer branch, allowing blank lines
+    # and comments between statements. A user's unrelated IF is never removed.
+    meaningful = [(idx, statement) for idx, statement in enumerate(stripped) if statement]
+    for pos, (idx, statement) in enumerate(meaningful):
+        if idx in skip or not modal_if.fullmatch(statement):
+            continue
+        block = meaningful[pos:pos + 5]
+        if len(block) != 5:
+            continue
+        read_match = read_modal.fullmatch(block[1][1])
+        open_match = open_form.fullmatch(block[3][1])
+        if (read_match and open_match
+                and read_match.group(1).casefold() in constructor_names
+                and read_match.group(1).casefold() == open_match.group(1).casefold()
+                and block[2][1].casefold() == "else"
+                and block[4][1].casefold() == "endif"):
+            skip.update(line_index for line_index, _ in block)
+
+    for idx, statement in enumerate(stripped):
+        if (re.fullmatch(r"(?i)PARAMETERS?\s+bmodal", statement)
+                or (re.fullmatch(r"(?i)LOCAL\s+([A-Za-z_]\w*)", statement)
+                    and statement.split()[-1].casefold() in constructor_names)
+                or re.fullmatch(r"(?i)([A-Za-z_]\w*)\s*=\s*NEW\s+"
+                                + re.escape(class_name) + r"\s*\(.*\)", statement)):
+            skip.add(idx)
+
+    return ["" if idx in skip else statement
+            for idx, statement in enumerate(statements)]
+
 def parse_dbase_wfm(source: str, *, filename: str = "<WFM>") -> DBaseWfmForm:
     """Parse dBase CLASS ... OF FORM including Stage-120 structured properties.
 

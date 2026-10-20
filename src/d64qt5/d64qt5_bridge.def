@@ -64,6 +64,16 @@ EXPORTS
     DBaseQtSetDebugTheme @62
     D64GetRuntimeAbiInfo @63
     DBaseQtWidgetSetProperties @64
+    DBaseQtFormApplyExternalUi @1005
+    DBaseUtf8Substring @1006
+    DBaseUtf8SubstringUpper @1007
+    DBaseUtf8SubstringLower @1008
+    DBaseUtf8Upper @1009
+    DBaseUtf8Lower @1010
+    DBaseQtRuntimeStartup @1011
+    DBaseQtRuntimeShutdown @1012
+    DBaseQtWfmModalParameter @1013
+    DBaseQtFormRun @1014
     DBaseQtPrologInitialize @1001
     DBaseQtPrologWrite @1002
     DBaseQtPrologReadLine @1003

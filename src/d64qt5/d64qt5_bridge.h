@@ -54,10 +54,32 @@ D64QT5_API unsigned int DBaseLowerBuffer(
     unsigned char *destination, unsigned int destinationCapacity,
     const unsigned char *source, unsigned int sourceLength);
 
+/* Stage 458: native UTF-8 substring/case conversion. One caller-owned buffer. */
+D64QT5_API unsigned int DBaseUtf8Substring(
+    unsigned char *dst, unsigned int cap, const unsigned char *src,
+    unsigned int len, const double *start, const double *count);
+D64QT5_API unsigned int DBaseUtf8SubstringUpper(
+    unsigned char *dst, unsigned int cap, const unsigned char *src,
+    unsigned int len, const double *start, const double *count);
+D64QT5_API unsigned int DBaseUtf8SubstringLower(
+    unsigned char *dst, unsigned int cap, const unsigned char *src,
+    unsigned int len, const double *start, const double *count);
+D64QT5_API unsigned int DBaseUtf8Upper(
+    unsigned char *dst, unsigned int cap, const unsigned char *src,
+    unsigned int len);
+D64QT5_API unsigned int DBaseUtf8Lower(
+    unsigned char *dst, unsigned int cap, const unsigned char *src,
+    unsigned int len);
+
 D64QT5_API void DBaseQtSetWorkstationMode(int enabled);
 D64QT5_API void DBaseQtSetDebugTheme(int themeMode);
 D64QT5_API int  DBaseQtInitialize(const char *title);
 D64QT5_API int  DBaseQtInitializeGui(const char *title);
+/* Stage 462: caller-owned 96-byte format buffer (out-slot is a pointer). */
+D64QT5_API int DBaseQtRuntimeStartup(
+    const char *title, int workstationMode, int debugTheme,
+    int guiMode, void **formatBuffer);
+D64QT5_API void DBaseQtRuntimeShutdown(void **formatBuffer);
 D64QT5_API void DBaseQtShowWindow(void);
 D64QT5_API void DBaseQtProcessEvents(void);
 D64QT5_API void DBaseQtSetDebugVisible(int visible);
@@ -126,6 +148,15 @@ D64QT5_API void DBaseQtWidgetSetFont(
     void *handle, const char *family, int familyLength, int pointSize,
     int bold, int italic, int underline, int strikeout
 );
+/* Stage 456: Form-JSON is embedded in the EXE (optionally qCompress). */
+D64QT5_API int DBaseQtFormApplyExternalUi(
+    const void *const *slotAddresses, int slotCount,
+    const unsigned char *payload, int payloadLength, int compressed
+);
+/* Stage 463: optional command line PARAMETER bmodal, and modal/nonmodal
+ * event processing with IDE/Workstation-aware lifetime. */
+D64QT5_API int DBaseQtWfmModalParameter(void);
+D64QT5_API int DBaseQtFormRun(void *handle, int modal);
 D64QT5_API void DBaseQtFormOpen(void *handle);
 D64QT5_API void DBaseQtMarkProgramFinished(void);
 D64QT5_API int  DBaseQtExec(void);

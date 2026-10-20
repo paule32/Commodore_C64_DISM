@@ -47,7 +47,19 @@ def main() -> int:
     # Stage 295: DBaseQtProlog* are optional name-resolved extension exports.
     # They intentionally do not participate in the stable dBase/WFM ordinal
     # ABI hash, so old generated applications remain compatible.
-    core_rows = [(ordinal, name) for ordinal, name in rows if not name.startswith("DBaseQtProlog")]
+    # Stage 459: these optional APIs are linked by name, not core ordinal.
+    # Keep the original 64-entry ABI digest unchanged when extensions grow.
+    optional_by_name = {
+        "DBaseQtFormApplyExternalUi", "DBaseUtf8Substring",
+        "DBaseUtf8SubstringUpper", "DBaseUtf8SubstringLower",
+        "DBaseUtf8Upper", "DBaseUtf8Lower",
+        "DBaseQtRuntimeStartup", "DBaseQtRuntimeShutdown",
+        "DBaseQtWfmModalParameter", "DBaseQtFormRun",
+    }
+    core_rows = [
+        (ordinal, name) for ordinal, name in rows
+        if not name.startswith("DBaseQtProlog") and name not in optional_by_name
+    ]
     canonical = "".join(f"{ordinal}:{name}\n" for ordinal, name in core_rows).encode("ascii")
     digest = hashlib.sha256(canonical).digest()
     byte_rows = []

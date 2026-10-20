@@ -1,9 +1,15 @@
-Stage 446 - d64_dbase_console.dll
+Stage 448 – einheitliche c64_dbase_runtime.dll
 
-pe32/d64_dbase_console.dll = 32-bit i386
-pe64/d64_dbase_console.dll = 64-bit AMD64
+pe32/c64_dbase_runtime.dll = Windows i386 (32 Bit)
+pe64/c64_dbase_runtime.dll = Windows AMD64 (64 Bit)
 
-Do NOT put both binaries into one executable directory. The dBASE compiler
-selects and validates the correct binary and copies it next to the linked EXE.
-It can also rebuild the binaries using its own internal assembler and PE linker
-if the prebuilt files are missing. No external make/gcc is used at build time.
+Exports:
+  DBaseConsoleEnsure / Write / Shutdown / SetTitle
+  DBaseCharIsLowerCP1252 / DBaseCharIsUpperCP1252
+  DBaseCharIsLowerUtf8 / DBaseCharIsUpperUtf8
+
+Neu erzeugen: bereits vorhandene Menüeinträge unter Werkzeuge sowie
+Projekt-Einstellungen -> PE32/PE32+ -> Umgebung -> dBASE Runtime DLL erstellen.
+Python-Buildpfad: d64dbase.runtime_builder.create_runtime_dll ->
+d64dbase.console_runtime.build_dll (interner COFF-Assembler/PE-Linker).
+Keine zusätzliche zweite Runtime-DLL und keine weiteren Menüeinträge nötig.

@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <cmath>
 #include "d64_dbase_case_tables.inc"
 
 namespace {
@@ -131,4 +132,93 @@ extern "C" D64QT5_API unsigned int DBaseLowerBuffer(
 {
     return dbase_case_buffer(destination,destinationCapacity,source,sourceLength,
         g_dbase_runtime_context.lowerTable,false);
+}
+
+
+// Stage 458: UTF-8 span and case APIs, without per-call generated x87 loops.
+// Start/count are pointers to the WFM numeric double slots (NULL count = end).
+// Results are byte lengths; UINT32_MAX means an invalid buffer/capacity.
+static std::uint32_t dbase_utf8_saturating_positive(const double *value)
+{
+    if (!value || !std::isfinite(*value) || *value <= 0.0) return 0;
+    if (*value >= 2147483647.0) return 2147483647u;
+    return static_cast<std::uint32_t>(*value);  // truncates towards zero
+}
+
+static std::uint32_t dbase_utf8_character_width(
+    const std::uint8_t *bytes, std::uint32_t remaining)
+{
+    if (!remaining) return 0;
+    const std::uint8_t first=bytes[0];
+    std::uint32_t n=1;
+    if (first >= 194u && first < 245u) {
+        n=first < 224u ? 2u : first < 240u ? 3u : 4u;
+    }
+    return n <= remaining ? n : 1u;
+}
+
+static std::uint32_t dbase_utf8_substring_operation(
+    unsigned char *destination, unsigned int capacity,
+    const unsigned char *source, unsigned int sourceLength,
+    const double *start, const double *count, int conversion)
+{
+    if (!destination || !capacity || (sourceLength && !source))
+        return DBASE_CASE_BUFFER_ERROR;
+    // Nonpositive positions refer to the first character (one-based dBase).
+    const std::uint32_t pos=dbase_utf8_saturating_positive(start);
+    std::uint32_t skip=pos > 0 ? pos-1u : 0u;
+    std::uint32_t take=count ? dbase_utf8_saturating_positive(count) : 0xFFFFFFFFu;
+    std::uint32_t index=0;
+    while (index < sourceLength && skip) {
+        index += dbase_utf8_character_width(source+index,sourceLength-index);
+        --skip;
+    }
+    const std::uint32_t first=index;
+    while (index < sourceLength && take) {
+        index += dbase_utf8_character_width(source+index,sourceLength-index);
+        --take;
+    }
+    const std::uint32_t byteCount=index-first;
+    if (!conversion) {
+        if (byteCount >= capacity) { destination[0]=0; return DBASE_CASE_BUFFER_ERROR; }
+        if (byteCount) std::memcpy(destination,source+first,byteCount);
+        destination[byteCount]=0;
+        return byteCount;
+    }
+    return dbase_case_buffer(destination,capacity,
+        byteCount ? source+first : nullptr,byteCount,
+        conversion > 0 ? g_dbase_runtime_context.upperTable :
+                         g_dbase_runtime_context.lowerTable,
+        conversion > 0);
+}
+
+extern "C" D64QT5_API unsigned int DBaseUtf8Substring(
+    unsigned char *dst, unsigned int cap, const unsigned char *src,
+    unsigned int len, const double *start, const double *count)
+{
+    return dbase_utf8_substring_operation(dst,cap,src,len,start,count,0);
+}
+extern "C" D64QT5_API unsigned int DBaseUtf8SubstringUpper(
+    unsigned char *dst, unsigned int cap, const unsigned char *src,
+    unsigned int len, const double *start, const double *count)
+{
+    return dbase_utf8_substring_operation(dst,cap,src,len,start,count,1);
+}
+extern "C" D64QT5_API unsigned int DBaseUtf8SubstringLower(
+    unsigned char *dst, unsigned int cap, const unsigned char *src,
+    unsigned int len, const double *start, const double *count)
+{
+    return dbase_utf8_substring_operation(dst,cap,src,len,start,count,-1);
+}
+extern "C" D64QT5_API unsigned int DBaseUtf8Upper(
+    unsigned char *dst, unsigned int cap, const unsigned char *src,
+    unsigned int len)
+{
+    return DBaseUpperBuffer(dst,cap,src,len);
+}
+extern "C" D64QT5_API unsigned int DBaseUtf8Lower(
+    unsigned char *dst, unsigned int cap, const unsigned char *src,
+    unsigned int len)
+{
+    return DBaseLowerBuffer(dst,cap,src,len);
 }

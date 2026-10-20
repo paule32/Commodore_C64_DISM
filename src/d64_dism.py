@@ -12069,6 +12069,57 @@ class ResourceRcHighlighter(QSyntaxHighlighter):
             start = self._block_start.search(text, end_pos)
 
 
+# Stage 463: German standard editing context menus for all source editors.
+# Translate ONLY QAction display texts; the existing triggered connections,
+# enabled state, actual QKeySequence shortcuts and separator QAction instances
+# are retained. The literal STRG label deliberately uses the Windows naming.
+_SOURCE_EDITOR_CONTEXT_TRANSLATIONS = {
+    "undo": ("Rückgängig", "STRG + Z"),
+    "redo": ("Wiederherstellen", "STRG + Y"),
+    "cut": ("Ausschneiden", "STRG + X"),
+    "copy": ("Kopieren", "STRG + C"),
+    "paste": ("Einfügen", "STRG + V"),
+    "delete": ("Löschen", ""),
+    "select all": ("Alles auswählen", "STRG + A"),
+}
+
+
+def _translate_source_editor_context_menu(menu):
+    """Germanise Qt's editing actions in-place, preserving separators/actions."""
+    for action in menu.actions():
+        if action is None or action.isSeparator():
+            continue
+        raw = str(action.text() or "")
+        label = raw.partition("\t")[0].replace("&", "").strip()
+        label = label.replace("…", "...")
+        if label.endswith("..."):
+            label = label[:-3].rstrip()
+        values = _SOURCE_EDITOR_CONTEXT_TRANSLATIONS.get(label.casefold())
+        if values is None:
+            continue
+        translated, key = values
+        # Keep the real QAction shortcut untouched. Qt accepts a literal
+        # shortcut presentation following TAB in the QAction text.
+        action.setText(translated + (("\t" + key) if key else ""))
+
+
+def _execute_german_source_editor_context_menu(editor, global_position):
+    menu = editor.createStandardContextMenu()
+    try:
+        _translate_source_editor_context_menu(menu)
+        menu.exec_(global_position)
+    finally:
+        menu.deleteLater()
+
+
+class GermanSourceEditorContextMenuMixin:
+    """Source editors without custom context menus share German Qt actions."""
+
+    def contextMenuEvent(self, event):
+        _execute_german_source_editor_context_menu(self, event.globalPos())
+        event.accept()
+
+
 class ResourceLineNumberArea(QWidget):
     """Left gutter used by :class:`ResourceCodeEditor`."""
 
@@ -12084,7 +12135,7 @@ class ResourceLineNumberArea(QWidget):
         self.editor.line_number_area_paint_event(event)
 
 
-class ResourceCodeEditor(QPlainTextEdit):
+class ResourceCodeEditor(GermanSourceEditorContextMenuMixin, QPlainTextEdit):
     """QPlainTextEdit with a scroll-synchronized line-number gutter."""
 
     def __init__(self, parent=None):
@@ -12432,6 +12483,24 @@ class WindowsResourceEditorWidget(QWidget):
         self.toolbar.addSeparator()
         self.act_refresh = add_action("Aktualisieren", self.refresh_resources, "Ressourcen neu einlesen")
 
+        # Stage 457: the six RC source templates live BELOW the existing
+        # compiler actions and always insert at the current source cursor.
+        self.template_toolbar = QToolBar("Ressourcen-Vorlagen", self)
+        self.template_toolbar.setObjectName("resource_editor_template_toolbar")
+        self.template_toolbar.setMovable(False)
+        self.template_toolbar.setFloatable(False)
+        self.resource_template_actions = {}
+        for label in ("Dialog", "Text", "Icon", "Bitmap", "Cursor", "RCDATA"):
+            action = QAction(label, self)
+            action.setObjectName("resource_template_" + label.casefold())
+            action.setStatusTip(f"{label}-Vorlage in den RC-Quelltext einfügen")
+            action.triggered.connect(
+                lambda _checked=False, resource_kind=label: self.insert_resource_template(resource_kind)
+            )
+            self.template_toolbar.addAction(action)
+            self.resource_template_actions[label] = action
+        root.addWidget(self.template_toolbar)
+
         info = QHBoxLayout()
         info.setSpacing(6)
         info.addWidget(QLabel("Datei:"))
@@ -12503,6 +12572,12 @@ class WindowsResourceEditorWidget(QWidget):
         self.hex_edit = QPlainTextEdit(self.tabs)
         self.hex_edit.setObjectName("resource_hex_editor")
         self.hex_edit.setReadOnly(True)
+        self.hex_edit.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.hex_edit.customContextMenuRequested.connect(
+            lambda position: _execute_german_source_editor_context_menu(
+                self.hex_edit, self.hex_edit.mapToGlobal(position)
+            )
+        )
         self.hex_edit.setLineWrapMode(QPlainTextEdit.NoWrap)
         self.hex_edit.setFont(self._editor_font())
         self.tabs.addTab(self.hex_edit, "Hex")
@@ -12522,6 +12597,29 @@ class WindowsResourceEditorWidget(QWidget):
 
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
+    def insert_resource_template(self, kind: str) -> bool:
+        """Insert an RC template into the source editor without discarding text."""
+        if self.source_edit.isReadOnly():
+            self._warning("Resourcen-Editor", "Binäre .res-Dateien sind schreibgeschützt. Bitte eine .rc-Datei öffnen oder neu anlegen.")
+            return False
+        from resource_rc_templates import insertable_rc_template
+
+        self.tabs.setCurrentIndex(0)
+        cursor = self.source_edit.textCursor()
+        source = self.source_edit.toPlainText()
+        # If the user selected text, replace that selection as a normal editor
+        # operation; the inserted declaration still gets its own RC lines.
+        position = cursor.selectionStart() if cursor.hasSelection() else cursor.position()
+        if cursor.hasSelection():
+            cursor.removeSelectedText()
+            source = self.source_edit.toPlainText()
+        cursor.insertText(insertable_rc_template(kind, source, position))
+        self.source_edit.setTextCursor(cursor)
+        self.source_edit.setFocus(Qt.OtherFocusReason)
+        self._dirty = True
+        self._set_status(f"{kind}-Vorlage in RC-Quelltext eingefügt")
+        return True
+
     def set_target(self, target: str):
         self.current_target = "pe64" if str(target).lower() in {"pe64", "x64", "amd64", "pe32+"} else "pe32"
         self.target_label.setText("Ziel: Windows PE32+" if self.current_target == "pe64" else "Ziel: Windows PE32")
@@ -12534,9 +12632,9 @@ class WindowsResourceEditorWidget(QWidget):
         if self._dark_mode:
             self.setStyleSheet("""
 WindowsResourceEditorWidget { background:#202020; color:#F2F2F2; }
-QToolBar#resource_editor_toolbar { background:#252525; border:1px solid #353535; spacing:3px; }
-QToolBar#resource_editor_toolbar QToolButton { color:#F5F5F5; background:#303030; border:1px solid #484848; padding:4px 8px; }
-QToolBar#resource_editor_toolbar QToolButton:hover { background:#3A3A3A; border-color:#6A6A6A; }
+QToolBar#resource_editor_toolbar, QToolBar#resource_editor_template_toolbar { background:#252525; border:1px solid #353535; spacing:3px; }
+QToolBar#resource_editor_toolbar QToolButton, QToolBar#resource_editor_template_toolbar QToolButton { color:#F5F5F5; background:#303030; border:1px solid #484848; padding:4px 8px; }
+QToolBar#resource_editor_toolbar QToolButton:hover, QToolBar#resource_editor_template_toolbar QToolButton:hover { background:#3A3A3A; border-color:#6A6A6A; }
 QTreeWidget#resource_tree, QTableWidget#resource_properties_grid,
 QPlainTextEdit#resource_source_editor, QPlainTextEdit#resource_hex_editor {
     background:#1E1E1E; color:#F2F2F2; alternate-background-color:#252525;
@@ -20755,7 +20853,7 @@ class ApacheConfigLineNumberArea(QWidget):
         self.editor.line_number_area_paint_event(event)
 
 
-class ApacheConfigTextEdit(QPlainTextEdit):
+class ApacheConfigTextEdit(GermanSourceEditorContextMenuMixin, QPlainTextEdit):
     def __init__(self, parent=None):
         super().__init__(parent)
         fixed = QFont("Consolas")
@@ -26902,7 +27000,7 @@ class LineNumberArea(QWidget):
         self.editor.lineNumberAreaPaintEvent(event)
 
 
-class DoxyCodeEditor(QPlainTextEdit):
+class DoxyCodeEditor(GermanSourceEditorContextMenuMixin, QPlainTextEdit):
     def __init__(self):
         super().__init__()
 
@@ -33661,6 +33759,22 @@ def windows_application_predefined_macros(mode: str, target: str = "pe32") -> Di
 # Assembler verwendet Intel-Syntax und erzeugt entweder ein PE32-Image oder
 # ein relocierbares Microsoft-COFF32-Objekt.
 # ---------------------------------------------------------------------------
+def _windows_asm_imports_dll(source: str, filename: str | Path,
+                             dll_name: str, include_dirs=()) -> bool:
+    """Check original *and included* ASM imports for runtime deployment."""
+    if dll_name.casefold() in str(source).casefold():
+        return True
+    if '%include' not in str(source).casefold():
+        return False
+    try:
+        text = preprocess_windows_asm(
+            source, filename=str(filename), include_dirs=include_dirs
+        ).source
+    except WindowsAsmMacroError:
+        return False  # assembler emits the actionable error earlier
+    return dll_name.casefold() in text.casefold()
+
+
 IMAGE_FILE_MACHINE_I386 = 0x014C
 IMAGE_REL_I386_DIR32 = 0x0006
 IMAGE_REL_I386_REL32 = 0x0014
@@ -33670,6 +33784,19 @@ PE32_SECTION_RVA = 0x00001000
 PE32_FILE_ALIGNMENT = 0x200
 PE32_SECTION_ALIGNMENT = 0x1000
 PE32_DOS_HEADER_SIZE = 0x40  # Stage216: PE-Signatur direkt hinter IMAGE_DOS_HEADER
+
+
+# Stage 470: shared pure-Python preprocessor (no NASM/external build tool).
+from windows_asm_macros import (
+    WindowsAsmMacroError, preprocess_windows_asm, externalize_windows_imports,
+)
+
+
+def _preprocess_windows_assembly(source: str, filename: str, error_class, include_dirs=()):
+    try:
+        return preprocess_windows_asm(source, filename=filename, include_dirs=include_dirs)
+    except WindowsAsmMacroError as exc:
+        raise error_class(str(exc), exc.line) from exc
 
 
 class PE32AssemblerError(Exception):
@@ -34259,7 +34386,7 @@ def _parse_pe32_source_lines(
         if mnemonic in {"fnstcw", "fldcw"} and len(operands) == 1:
             if _x86_memory_operand(operands[0], line) is not None:
                 return 1 + _x86_rm_length(operands[0], line)
-        if mnemonic in {"faddp", "fsubp", "fmulp", "fdivp", "fchs", "fldz", "fucomip", "frndint"}:
+        if mnemonic in {"faddp", "fsubp", "fmulp", "fdivp", "fchs", "fldz", "fld1", "fucomip", "frndint"}:
             return 2
         raise PE32AssemblerError(f"PE32-Assemblerbefehl nicht unterstützt: {text}", line)
 
@@ -34447,8 +34574,20 @@ def assemble_pe32_object_source(
     source: str,
     *,
     filename: str = "<PE32-Assembler>",
+    include_dirs=(),
 ) -> PE32ObjectProgram:
-    del filename
+    macro_result = _preprocess_windows_assembly(source, filename, PE32AssemblerError, include_dirs)
+    source = macro_result.source
+    try:
+        return _assemble_pe32_preprocessed(source, macro_result)
+    except PE32AssemblerError as exc:
+        if 1 <= exc.line <= len(macro_result.locations):
+            file, origin = macro_result.locations[exc.line - 1]
+            raise PE32AssemblerError(f"{file}:{origin}: {exc.message}", origin) from exc
+        raise
+
+
+def _assemble_pe32_preprocessed(source, macro_result) -> PE32ObjectProgram:
     (
         lines, labels, symbol_sections, entry_symbol, declared_externals,
         declared_imports, declared_exports, dll_name, bss_size,
@@ -34608,6 +34747,7 @@ def assemble_pe32_object_source(
         if mnemonic == "fdivp": output.extend((0xDE,0xF9)); continue
         if mnemonic == "fchs": output.extend((0xD9,0xE0)); continue
         if mnemonic == "fldz": output.extend((0xD9,0xEE)); continue
+        if mnemonic == "fld1": output.extend((0xD9,0xE8)); continue
         if mnemonic == "frndint": output.extend((0xD9,0xFC)); continue
         if mnemonic == "fucomip":
             if operands and [x.casefold().replace(" ","") for x in operands] != ["st0","st1"]:
@@ -36574,9 +36714,10 @@ def assemble_pe32_source(
     *,
     filename: str = "<PE32-Assembler>",
     gui: bool = False,
+    include_dirs=(),
 ) -> PE32Program:
     """Assembliert IA-32 und linkt bekannte Win32-Imports direkt in PE32."""
-    obj = assemble_pe32_object_source(source, filename=filename)
+    obj = assemble_pe32_object_source(source, filename=filename, include_dirs=include_dirs)
     linked = link_coff32_objects(
         (write_coff32_object(obj),),
         entry_symbol=obj.entry_symbol or "_start",
@@ -36761,9 +36902,10 @@ def assemble_pe32_coff_object(
     source: str,
     *,
     filename: str = "<PE32-Assembler>",
+    include_dirs=(),
 ) -> bytes:
     return write_coff32_object(
-        assemble_pe32_object_source(source, filename=filename)
+        assemble_pe32_object_source(source, filename=filename, include_dirs=include_dirs)
     )
 
 
@@ -38063,6 +38205,7 @@ def _encode_pe64_instruction(text: str, line: int, offset: int, *, relocs: Optio
     if mnemonic=="fdivp": return b"\xDE\xF9"
     if mnemonic=="fchs": return b"\xD9\xE0"
     if mnemonic=="fldz": return b"\xD9\xEE"
+    if mnemonic=="fld1": return b"\xD9\xE8"
     if mnemonic=="frndint": return b"\xD9\xFC"
     if mnemonic=="fucomip":
         if ops and [x.casefold().replace(" ","") for x in ops] != ["st0","st1"]: raise PE64AssemblerError("FUCOMIP unterstützt nur ST0, ST1.",line)
@@ -38325,8 +38468,8 @@ def write_coff64_object(obj: PE64ObjectProgram) -> bytes:
     return header+bytes(headers)+obj.code+metadata+bytes(rb)+bytes(syms)+st
 
 
-def assemble_pe64_coff_object(source: str, *, filename: str="<PE64-Assembler>") -> bytes:
-    return write_coff64_object(assemble_pe64_object_source(source,filename=filename))
+def assemble_pe64_coff_object(source: str, *, filename: str="<PE64-Assembler>", include_dirs=()) -> bytes:
+    return write_coff64_object(assemble_pe64_object_source(source,filename=filename,include_dirs=include_dirs))
 
 
 def parse_coff64_object(data: bytes) -> Coff64ParsedObject:
@@ -38577,8 +38720,8 @@ def link_coff64_inputs(paths: Sequence[Path], *, entry_symbol="_start", gui=Fals
     return link_coff64_objects(objects,entry_symbol=entry_symbol,gui=gui,dll=dll,imports=imports,exports=exports,dll_name=dll_name)
 
 
-def assemble_pe64_source(source: str, *, filename="<PE64-Assembler>", gui=False) -> PE64Program:
-    obj=assemble_pe64_object_source(source,filename=filename)
+def assemble_pe64_source(source: str, *, filename="<PE64-Assembler>", gui=False, include_dirs=()) -> PE64Program:
+    obj=assemble_pe64_object_source(source,filename=filename,include_dirs=include_dirs)
     return link_coff64_objects((write_coff64_object(obj),),entry_symbol=obj.entry_symbol or "_start",gui=gui)
 
 
@@ -38781,8 +38924,18 @@ def _parse_pe64_source(source: str):
     )
 
 
-def assemble_pe64_object_source(source: str, *, filename: str = "<PE64-Assembler>") -> PE64ObjectProgram:
-    del filename
+def assemble_pe64_object_source(source: str, *, filename: str = "<PE64-Assembler>", include_dirs=()) -> PE64ObjectProgram:
+    macro_result = _preprocess_windows_assembly(source, filename, PE64AssemblerError, include_dirs)
+    try:
+        return _assemble_pe64_preprocessed(macro_result.source)
+    except PE64AssemblerError as exc:
+        if 1 <= exc.line <= len(macro_result.locations):
+            file, origin = macro_result.locations[exc.line - 1]
+            raise PE64AssemblerError(f"{file}:{origin}: {exc.message}", origin) from exc
+        raise
+
+
+def _assemble_pe64_preprocessed(source: str) -> PE64ObjectProgram:
     lines, labels, symbol_sections, entry, externals, imports, exports, dll_name, bss_size = _parse_pe64_source(source)
     buffers = {".text": bytearray(), ".data": bytearray(), ".bss": bytearray()}
     relocs: List[PE64Relocation] = []
@@ -40643,6 +40796,40 @@ def _strip_unused_wfm_property_imports(assembly: str) -> str:
         re.IGNORECASE,
     )
     return "".join(line for line in lines if pattern.match(line) is None)
+# Stage 459: Only the fixed core ordinals participate in the ABI digest.
+# High-ordinal, name-only extensions must neither reject newer Qt5 DLLs nor
+# change the on-disk ABI contract of existing EXE images.
+D64_QT5_OPTIONAL_NAME_EXPORTS = frozenset({
+    "DBaseQtFormApplyExternalUi",
+    "DBaseUtf8Substring",
+    "DBaseUtf8SubstringUpper",
+    "DBaseUtf8SubstringLower",
+    "DBaseUtf8Upper",
+    "DBaseUtf8Lower",
+    "DBaseQtRuntimeStartup",
+    "DBaseQtRuntimeShutdown",
+    "DBaseQtWfmModalParameter",
+    "DBaseQtFormRun",
+})
+
+def _d64_qt5_optional_name_export(name: str) -> bool:
+    return str(name).startswith("DBaseQtProlog") or str(name) in D64_QT5_OPTIONAL_NAME_EXPORTS
+
+
+def _d64_qt5_required_name_exports(assembly: str) -> set:
+    """Return only Qt5 extension imports actually referenced by WFM ASM."""
+    required = set()
+    pattern = re.compile(
+        r'^\s*import\s+[^,\s]+\s*,\s*"libd64_qt5\.dll"\s*,\s*"([^"\r\n]+)"',
+        flags=re.IGNORECASE | re.MULTILINE,
+    )
+    for match in pattern.finditer(str(assembly or "")):
+        name = match.group(1)
+        if name in D64_QT5_OPTIONAL_NAME_EXPORTS:
+            required.add(name)
+    return required
+
+
 PE_D64_QT5_ORDINAL_MAP_HASH = bytes.fromhex(
     "02c94324ebc9e8373c08011d0f8c5ba5aec95b158087092ed4e741877b1a7cd7"
 )
@@ -40662,7 +40849,7 @@ def _d64_qt5_source_ordinal_map_hash() -> bytes:
             if not match:
                 return PE_D64_QT5_ORDINAL_MAP_HASH
             name = match.group(1)
-            if name.startswith("DBaseQtProlog"):
+            if _d64_qt5_optional_name_export(name):
                 continue
             rows.append((int(match.group(2)), name))
         rows.sort(key=lambda item: (item[0], item[1].casefold(), item[1]))
@@ -40862,16 +41049,15 @@ def _pe_import_packer_accepts(
 def _pe_export_ordinal_map_hash(ordinals: Dict[str, int]) -> bytes:
     """Stable SHA-256 over the core d64qt5 name->ordinal ABI mapping.
 
-    Stage 295 adds optional PROLOG GUI extension exports resolved strictly by
-    name. They are intentionally outside the stable ordinal ABI so extending
-    the in-process PROLOG frontend does not invalidate existing dBase/WFM
-    binaries.
+    Optional Qt5 PROLOG, external UI JSON, and UTF-8 string exports are
+    resolved strictly by name. They do not alter the stable 64-entry core
+    ordinal ABI of existing dBase/WFM binaries (Stage 459).
     """
     rows = sorted(
         (
             (int(ordinal), str(name))
             for name, ordinal in (ordinals or {}).items()
-            if not str(name).startswith("DBaseQtProlog")
+            if not _d64_qt5_optional_name_export(str(name))
         ),
         key=lambda item: (item[0], item[1].casefold(), item[1]),
     )
@@ -48590,6 +48776,15 @@ PROJECT_WINDOWS_TARGET_SETTINGS = {
         "debug_theme_normal_key": PROJECT_WINDOWS_PE32_DEBUG_THEME_NORMAL_KEY,
         "debug_theme_workstation_key": PROJECT_WINDOWS_PE32_DEBUG_THEME_WORKSTATION_KEY,
         "prolog_with_descriptors_key": PROJECT_WINDOWS_PE32_PROLOG_WITH_DESCRIPTORS_KEY,
+        "dbase_external_ui_key": "__windows_pe32_dbase_external_ui__",
+        "dbase_compress_json_key": "__windows_pe32_dbase_compress_json__",
+        "dbase_store_binary_key": "__windows_pe32_dbase_store_binary__",
+        "dbase_static_numeric_slots_key": "__windows_pe32_dbase_static_numeric_slots__",
+        "dbase_dynamic_typed_variables_key": "__windows_pe32_dbase_dynamic_typed_variables__",
+        "dbase_optimization_section": "Settings.Windows.32Bit.Compiler.dBASE.Optimierung",
+        "console_dll_directory_key": "__windows_pe32_console_dll_directory__",
+        "console_dll_pack_key": "__windows_pe32_console_dll_pack__",
+        "console_const_pool_key": "__windows_pe32_console_const_pool__",
         "environment_section": "Settings.Windows.32Bit.Environment",
         "input_section": "Settings.Windows.32Bit.Compiler.InputDirectories",
         "output_section": "Settings.Windows.32Bit.Compiler.OutputDirectory",
@@ -48630,6 +48825,15 @@ PROJECT_WINDOWS_TARGET_SETTINGS = {
         "debug_theme_normal_key": PROJECT_WINDOWS_PE64_DEBUG_THEME_NORMAL_KEY,
         "debug_theme_workstation_key": PROJECT_WINDOWS_PE64_DEBUG_THEME_WORKSTATION_KEY,
         "prolog_with_descriptors_key": PROJECT_WINDOWS_PE64_PROLOG_WITH_DESCRIPTORS_KEY,
+        "dbase_external_ui_key": "__windows_pe64_dbase_external_ui__",
+        "dbase_compress_json_key": "__windows_pe64_dbase_compress_json__",
+        "dbase_store_binary_key": "__windows_pe64_dbase_store_binary__",
+        "dbase_static_numeric_slots_key": "__windows_pe64_dbase_static_numeric_slots__",
+        "dbase_dynamic_typed_variables_key": "__windows_pe64_dbase_dynamic_typed_variables__",
+        "dbase_optimization_section": "Settings.Windows.64Bit.Compiler.dBASE.Optimierung",
+        "console_dll_directory_key": "__windows_pe64_console_dll_directory__",
+        "console_dll_pack_key": "__windows_pe64_console_dll_pack__",
+        "console_const_pool_key": "__windows_pe64_console_const_pool__",
         "environment_section": "Settings.Windows.64Bit.Environment",
         "input_section": "Settings.Windows.64Bit.Compiler.InputDirectories",
         "output_section": "Settings.Windows.64Bit.Compiler.OutputDirectory",
@@ -49087,9 +49291,17 @@ def empty_project_entries() -> Dict[str, List[Dict[str, str]]]:
         entries[_settings["ordinal_mismatch_action_key"]] = [{"value": "abort"}]
         entries[_settings["peb_resolver_enabled_key"]] = [{"value": "false"}]
         entries[_settings["workstation_mode_key"]] = [{"value": "false"}]
+        entries[_settings["console_dll_directory_key"]] = []
+        entries[_settings["console_dll_pack_key"]] = [{"value": "false"}]
+        entries[_settings["console_const_pool_key"]] = [{"value": "false"}]
         entries[_settings["debug_theme_normal_key"]] = [{"value": "default"}]
         entries[_settings["debug_theme_workstation_key"]] = [{"value": "default"}]
         entries[_settings["prolog_with_descriptors_key"]] = [{"value": "false"}]
+        entries[_settings["dbase_external_ui_key"]] = [{"value": "false"}]
+        entries[_settings["dbase_compress_json_key"]] = [{"value": "false"}]
+        entries[_settings["dbase_store_binary_key"]] = [{"value": "false"}]
+        entries[_settings["dbase_static_numeric_slots_key"]] = [{"value": "false"}]
+        entries[_settings["dbase_dynamic_typed_variables_key"]] = [{"value": "false"}]
         entries[_settings["manifest_key"]] = [normalize_manifest_settings()]
     entries[PROJECT_WINDOWS_EDITOR_FONT_FAMILY_KEY] = [{"value": ""}]
     entries[PROJECT_WINDOWS_EDITOR_FONT_SIZE_KEY] = [{"value": "9"}]
@@ -49630,6 +49842,14 @@ def format_project_ini(
         _prolog_with_descriptors = _project_bool_entry(
             entries, _settings["prolog_with_descriptors_key"], False
         )
+        parser[_settings["dbase_optimization_section"]] = {
+            "Title": f"Windows {_settings['title']} Compiler dBASE Optimierung",
+            "ExternalUIComponents": "true" if _project_bool_entry(entries, _settings["dbase_external_ui_key"], False) else "false",
+            "CompressJson": "true" if _project_bool_entry(entries, _settings["dbase_compress_json_key"], False) else "false",
+            "StoreBinaryData": "true" if _project_bool_entry(entries, _settings["dbase_store_binary_key"], False) else "false",
+            "StaticNumericInternalSlots": "true" if _project_bool_entry(entries, _settings["dbase_static_numeric_slots_key"], False) else "false",
+            "DynamicTypedVariables": "true" if _project_bool_entry(entries, _settings["dbase_dynamic_typed_variables_key"], False) else "false",
+        }
         parser[_settings["prolog_optimization_section"]] = {
             "Title": f"Windows {_settings['title']} Compiler Prolog Optimierung",
             "WithDescriptors": "true" if _prolog_with_descriptors else "false",
@@ -49652,11 +49872,23 @@ def format_project_ini(
             _debug_theme_workstation_entries[0].get("value", "default")
             if _debug_theme_workstation_entries else "default"
         )
+        _dll_directories = entries.get(_settings["console_dll_directory_key"], ())
+        _dll_directory = str(_dll_directories[0].get("path", "") or "").strip() if _dll_directories else ""
         parser[_settings["environment_section"]] = {
             "Title": f"Windows {_settings['title']} Umgebung",
             "WorkstationMode": "true" if _workstation_mode else "false",
             "DebugThemeNormal": _debug_theme_normal,
             "DebugThemeWorkstation": _debug_theme_workstation,
+            "DBaseRuntimeDLLDirectory": (
+                _project_storage_path_mode(_dll_directory, project_path, relative=True)
+                if _dll_directory else ""
+            ),
+            "DBaseRuntimeDLLPack": "true" if _project_bool_entry(
+                entries, _settings["console_dll_pack_key"], False
+            ) else "false",
+            "DBaseRuntimeConstPool": "true" if _project_bool_entry(
+                entries, _settings["console_const_pool_key"], False
+            ) else "false",
         }
 
         _pe_packing_enabled_value = _project_bool_entry(
@@ -50406,6 +50638,17 @@ def parse_project_ini(text: str, project_path: Path) -> Dict[str, List[Dict[str,
     for _target, _settings in PROJECT_WINDOWS_TARGET_SETTINGS.items():
         _input_section = _settings["input_section"]
         _output_section = _settings["output_section"]
+        _dbase_optimization_section = _settings["dbase_optimization_section"]
+        for _key, _field in (("dbase_external_ui_key", "ExternalUIComponents"),
+                             ("dbase_compress_json_key", "CompressJson"),
+                             ("dbase_store_binary_key", "StoreBinaryData"),
+                             ("dbase_static_numeric_slots_key", "StaticNumericInternalSlots"),
+                             ("dbase_dynamic_typed_variables_key", "DynamicTypedVariables")):
+            _enabled = (
+                parser.has_section(_dbase_optimization_section)
+                and _parse_project_bool(parser.get(_dbase_optimization_section, _field, fallback="false"), False)
+            )
+            entries[_settings[_key]] = [{"value": "true" if _enabled else "false"}]
         _prolog_optimization_section = _settings["prolog_optimization_section"]
         _prolog_with_descriptors = False
         if parser.has_section(_prolog_optimization_section):
@@ -50469,6 +50712,26 @@ def parse_project_ini(text: str, project_path: Path) -> Dict[str, List[Dict[str,
                 })
         if parser.has_section(_environment_section):
             _have_arch_settings = True
+            _dll_path = str(parser.get(
+                _environment_section, "DBaseRuntimeDLLDirectory", fallback=""
+            ) or "").strip()
+            entries[_settings["console_dll_directory_key"]] = (
+                [{"path": _project_loaded_path(_dll_path, Path(project_path))}]
+                if _dll_path else []
+            )
+            _dll_pack = _parse_project_bool(
+                parser.get(_environment_section, "DBaseRuntimeDLLPack", fallback="false"),
+                False,
+            )
+            entries[_settings["console_dll_pack_key"]] = [{
+                "value": "true" if _dll_pack else "false"
+            }]
+            _const_pool = _parse_project_bool(
+                parser.get(_environment_section, "DBaseRuntimeConstPool", fallback="false"), False,
+            )
+            entries[_settings["console_const_pool_key"]] = [{
+                "value": "true" if _const_pool else "false"
+            }]
             _workstation_mode = _parse_project_bool(
                 parser.get(
                     _environment_section,
@@ -57947,7 +58210,7 @@ def run_gui(
                 return
             super().mouseReleaseEvent(event)
 
-    class LocalizeCodeEditor(QPlainTextEdit):
+    class LocalizeCodeEditor(GermanSourceEditorContextMenuMixin, QPlainTextEdit):
         def __init__(self, parent=None):
             super().__init__(parent)
             self._line_number_area = _LocalizeLineNumberArea(self)
@@ -63166,6 +63429,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
         def contextMenuEvent(self, event) -> None:
             operand_context = self._assembler_operand_context_at_point(event.pos())
             standard_menu = self.createStandardContextMenu()
+            _translate_source_editor_context_menu(standard_menu)
             is_basic = bool(self._basic_line_number_mode)
             is_asm = bool(
                 self._c64_assembler_vice_menu_enabled
@@ -103957,6 +104221,18 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.compiler_output_directory_item.setData(
                 0, Qt.UserRole, "compiler.output_directory"
             )
+            # Stage 456: Compiler -> dBASE -> Optimierung (vor Prolog).
+            self.compiler_dbase_item = QTreeWidgetItem(
+                self.nodes["compiler"], ["dBASE"]
+            )
+            self.compiler_dbase_item.setData(0, Qt.UserRole, "compiler.dbase")
+            self.compiler_dbase_optimization_item = QTreeWidgetItem(
+                self.compiler_dbase_item, ["Optimierung"]
+            )
+            self.compiler_dbase_optimization_item.setData(
+                0, Qt.UserRole, "compiler.dbase.optimization"
+            )
+            self.compiler_dbase_item.setExpanded(True)
             # Stage 287: Compiler -> Prolog -> Optimierung.
             self.compiler_prolog_item = QTreeWidgetItem(
                 self.nodes["compiler"], ["Prolog"]
@@ -104025,10 +104301,61 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             )
             tools_layout.addWidget(self.assembler_tooltips_checkbox)
             input_layout.addWidget(tools_group)
+            # Stage 447: one architecture-specific runtime DLL builder per Windows profile.
+            runtime_group = QGroupBox("dBASE Runtime", input_body)
+            runtime_row = QHBoxLayout()
+            self.console_runtime_build_button = QPushButton("dBASE Runtime DLL erstellen", runtime_group)
+            self.console_runtime_build_button.setObjectName(
+                f"project_windows_{target_tag}_dbase_runtime_build")
+            self.console_runtime_directory_edit = QLineEdit(runtime_group)
+            self.console_runtime_directory_edit.setObjectName(
+                f"project_windows_{target_tag}_dbase_runtime_directory")
+            self.console_runtime_directory_edit.setPlaceholderText("Leer = aktuelles Arbeitsverzeichnis")
+            self.console_runtime_directory_edit.setText(str(
+                getattr(self.owner, "project_windows_console_dll_directories", {}).get(self.target, "")
+            ))
+            self.console_runtime_browse_button = QPushButton("...", runtime_group)
+            self.console_runtime_browse_button.setObjectName(
+                f"project_windows_{target_tag}_dbase_runtime_browse")
+            self.console_runtime_browse_button.setToolTip("Zielverzeichnis auswählen")
+            self.console_runtime_browse_button.setFixedWidth(36)
+            runtime_row.addWidget(self.console_runtime_build_button)
+            runtime_row.addWidget(self.console_runtime_directory_edit, 1)
+            runtime_row.addWidget(self.console_runtime_browse_button)
+            # Stage 450: loader-transparente Windows/NTFS-Dateikomprimierung.
+            self.console_runtime_pack_checkbox = QCheckBox("pack dll", runtime_group)
+            self.console_runtime_pack_checkbox.setObjectName(
+                f"project_windows_{target_tag}_dbase_runtime_pack")
+            self.console_runtime_pack_checkbox.setToolTip(
+                "Komprimiert die erzeugte DLL transparent auf einem NTFS-Laufwerk. "
+                "Die PE-Datei bleibt direkt durch Windows ladbar; "
+                "beim Kopieren auf andere Dateisysteme kann die Komprimierung entfallen.")
+            self.console_runtime_pack_checkbox.setChecked(bool(
+                getattr(self.owner, "project_windows_console_dll_pack", {}).get(self.target, False)
+            ))
+            runtime_column = QVBoxLayout(runtime_group)
+            runtime_column.addLayout(runtime_row)
+            runtime_column.addWidget(self.console_runtime_pack_checkbox)
+            self.console_runtime_const_pool_checkbox = QCheckBox("const pool", runtime_group)
+            self.console_runtime_const_pool_checkbox.setObjectName(
+                f"project_windows_{target_tag}_dbase_runtime_const_pool")
+            self.console_runtime_const_pool_checkbox.setToolTip(
+                "Wiederverwendet identische WFM-Double-Konstanten und verwendet "
+                "FLDZ/FLD1 fuer Vergleiche mit 0 beziehungsweise 1.")
+            self.console_runtime_const_pool_checkbox.setChecked(bool(
+                getattr(self.owner, "project_windows_console_const_pool", {}).get(self.target, False)
+            ))
+            runtime_column.addWidget(self.console_runtime_const_pool_checkbox)
+            input_layout.addWidget(runtime_group)
             input_layout.addStretch(1)
             self.environment_input_scroll.setWidget(input_body)
             self.stack.addWidget(self.environment_input_scroll)
             self.assembler_tooltips_checkbox.toggled.connect(self._assembler_tooltips_changed)
+            self.console_runtime_browse_button.clicked.connect(self._choose_console_runtime_directory)
+            self.console_runtime_directory_edit.editingFinished.connect(self._console_runtime_directory_changed)
+            self.console_runtime_build_button.clicked.connect(self._build_console_runtime_dll)
+            self.console_runtime_pack_checkbox.toggled.connect(self._console_runtime_pack_changed)
+            self.console_runtime_const_pool_checkbox.toggled.connect(self._console_runtime_const_pool_changed)
 
             # Umgebung -> Workstation (Stage 198: eigene ScrollArea)
             self.workstation_scroll = QScrollArea(self.stack)
@@ -104405,6 +104732,89 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             )
             output_layout.addStretch(1)
             self.stack.addWidget(self.output_directory_page)
+
+            # Stage 456: Compiler -> dBASE -> Optimierung / Visuelle Elemente.
+            self.dbase_optimization_page = QWidget(self.stack)
+            self.dbase_optimization_page.setObjectName(
+                f"project_windows_{target_tag}_dbase_optimization"
+            )
+            dbase_opt_layout = QVBoxLayout(self.dbase_optimization_page)
+            dbase_opt_layout.setContentsMargins(10, 8, 10, 8)
+            self.dbase_visual_group = QGroupBox(
+                "Visuelle Elemente", self.dbase_optimization_page
+            )
+            self.dbase_visual_group.setObjectName(
+                f"project_windows_{target_tag}_dbase_visual_group"
+            )
+            visual_layout = QVBoxLayout(self.dbase_visual_group)
+            self.dbase_external_ui_checkbox = QCheckBox(
+                "external UI components", self.dbase_visual_group
+            )
+            self.dbase_external_ui_checkbox.setObjectName(
+                f"project_windows_{target_tag}_dbase_external_ui_components"
+            )
+            self.dbase_external_ui_checkbox.setToolTip(
+                "Formulargeometrie, Schriftarten und Eigenschaften als JSON statt "
+                "als einzelne Assembler-Setter im EXE-Image speichern."
+            )
+            self.dbase_store_binary_checkbox = QCheckBox(
+                "store binary data", self.dbase_visual_group
+            )
+            self.dbase_store_binary_checkbox.setObjectName(
+                f"project_windows_{target_tag}_dbase_store_binary_data"
+            )
+            self.dbase_store_binary_checkbox.setToolTip(
+                "Eine .ui.bin-Datei aus dem Formular-JSON erstellen. Ist auch "
+                "compress json aktiv, werden zlib-JSON und zlib-BIN verglichen "
+                "und nur der kleinere Payload in die EXE gelinkt."
+            )
+            self.dbase_compress_json_checkbox = QCheckBox(
+                "compress json", self.dbase_visual_group
+            )
+            self.dbase_compress_json_checkbox.setObjectName(
+                f"project_windows_{target_tag}_dbase_compress_json"
+            )
+            self.dbase_compress_json_checkbox.setToolTip(
+                "Den UI-Payload mit zlib/Qt-qUncompress komprimieren; bei "
+                "store binary data gewinnt automatisch das kleinere Format."
+            )
+            visual_layout.addWidget(self.dbase_external_ui_checkbox)
+            visual_layout.addWidget(self.dbase_store_binary_checkbox)
+            visual_layout.addWidget(self.dbase_compress_json_checkbox)
+            dbase_opt_layout.addWidget(self.dbase_visual_group)
+            # Stage 460: two independently switchable WFM slot optimizations.
+            self.dbase_slot_group = QGroupBox(
+                "Variablen und Speicher", self.dbase_optimization_page
+            )
+            self.dbase_slot_group.setObjectName(
+                f"project_windows_{target_tag}_dbase_slot_group"
+            )
+            slot_layout = QVBoxLayout(self.dbase_slot_group)
+            self.dbase_static_numeric_slots_checkbox = QCheckBox(
+                "static numeric internal slots", self.dbase_slot_group
+            )
+            self.dbase_static_numeric_slots_checkbox.setObjectName(
+                f"project_windows_{target_tag}_dbase_static_numeric_slots"
+            )
+            self.dbase_static_numeric_slots_checkbox.setToolTip(
+                "Garantiert numerische WFM-Compiler-Slots mit festem Typ und "
+                "Null-Feldern einmalig in .data statt pro Aufruf initialisieren."
+            )
+            self.dbase_dynamic_typed_variables_checkbox = QCheckBox(
+                "dynamic typed variables", self.dbase_slot_group
+            )
+            self.dbase_dynamic_typed_variables_checkbox.setObjectName(
+                f"project_windows_{target_tag}_dbase_dynamic_typed_variables"
+            )
+            self.dbase_dynamic_typed_variables_checkbox.setToolTip(
+                "Wiederholte Zuweisungen und Variant-Kopien ueber gemeinsame "
+                "interne Runtime-Assembler-Routinen ausfuehren."
+            )
+            slot_layout.addWidget(self.dbase_static_numeric_slots_checkbox)
+            slot_layout.addWidget(self.dbase_dynamic_typed_variables_checkbox)
+            dbase_opt_layout.addWidget(self.dbase_slot_group)
+            dbase_opt_layout.addStretch(1)
+            self.stack.addWidget(self.dbase_optimization_page)
 
             # Stage 287: Compiler -> Prolog -> Optimierung
             self.prolog_optimization_scroll = QScrollArea(self.stack)
@@ -105001,6 +105411,13 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.output_directory_edit.editingFinished.connect(self._output_directory_edited)
             self.input_relative_checkbox.toggled.connect(self._input_relative_toggled)
             self.output_relative_checkbox.toggled.connect(self._output_relative_toggled)
+            self.dbase_external_ui_checkbox.toggled.connect(self._dbase_visual_changed)
+            self.dbase_store_binary_checkbox.toggled.connect(self._dbase_visual_changed)
+            self.dbase_compress_json_checkbox.toggled.connect(self._dbase_visual_changed)
+            self.dbase_static_numeric_slots_checkbox.toggled.connect(self._dbase_slots_changed)
+            self.dbase_dynamic_typed_variables_checkbox.toggled.connect(self._dbase_slots_changed)
+            self.dbase_store_binary_checkbox.setEnabled(False)
+            self.dbase_compress_json_checkbox.setEnabled(False)
             self.prolog_with_descriptors_checkbox.toggled.connect(
                 self._prolog_with_descriptors_toggled
             )
@@ -105083,6 +105500,72 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 )
             self.tree.setCurrentItem(self.compiler_input_directories_item)
             self._tree_changed(self.compiler_input_directories_item, None)
+
+        def set_console_runtime_directory(self, directory: str) -> None:
+            field = self.console_runtime_directory_edit
+            blocked = field.blockSignals(True)
+            try:
+                field.setText(str(directory or ""))
+            finally:
+                field.blockSignals(blocked)
+            self._overview_refresh_later()
+
+        def set_console_runtime_pack(self, enabled: bool) -> None:
+            field = self.console_runtime_pack_checkbox
+            blocked = field.blockSignals(True)
+            try:
+                field.setChecked(bool(enabled))
+            finally:
+                field.blockSignals(blocked)
+            self._overview_refresh_later()
+
+        def set_console_runtime_const_pool(self, enabled: bool) -> None:
+            field = self.console_runtime_const_pool_checkbox
+            blocked = field.blockSignals(True)
+            try:
+                field.setChecked(bool(enabled))
+            finally:
+                field.blockSignals(blocked)
+            self._overview_refresh_later()
+
+        def _console_runtime_const_pool_changed(self, enabled: bool) -> None:
+            if self._syncing:
+                return
+            callback = getattr(self.owner, "set_project_windows_console_const_pool", None)
+            if callable(callback):
+                callback(self.target, bool(enabled))
+
+        def _console_runtime_pack_changed(self, enabled: bool) -> None:
+            if self._syncing:
+                return
+            callback = getattr(self.owner, "set_project_windows_console_dll_pack", None)
+            if callable(callback):
+                callback(self.target, bool(enabled))
+
+        def _console_runtime_directory_changed(self) -> None:
+            text = self.console_runtime_directory_edit.text().strip()
+            callback = getattr(self.owner, "set_project_windows_console_dll_directory", None)
+            if callable(callback):
+                callback(self.target, text)
+
+        def _choose_console_runtime_directory(self) -> None:
+            current = self.console_runtime_directory_edit.text().strip()
+            start = (self.owner._project_windows_absolute_directory(current)
+                     if current else str(getattr(self.owner, "current_directory", Path.cwd())))
+            selected = QFileDialog.getExistingDirectory(
+                self, "dBASE Runtime DLL Zielverzeichnis", start,
+                QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks,
+            )
+            if selected:
+                self.console_runtime_directory_edit.setText(selected)
+                self._console_runtime_directory_changed()
+
+        def _build_console_runtime_dll(self) -> None:
+            # Commit a pending edit before building, including overview mirrors.
+            self._console_runtime_directory_changed()
+            build = getattr(self.owner, "create_dbase_runtime_dll", None)
+            if callable(build):
+                build(self.target, self.console_runtime_directory_edit.text().strip())
 
         def _assembler_tooltips_changed(self, enabled):
             if self._syncing:
@@ -105375,6 +105858,10 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 page = self.input_directories_page
             elif key == "compiler.output_directory":
                 page = self.output_directory_page
+            elif key == "compiler.dbase.optimization":
+                page = self.dbase_optimization_page
+            elif key == "compiler.dbase":
+                page = self.dbase_optimization_page
             elif key == "compiler.prolog.optimization":
                 page = self.prolog_optimization_scroll
             elif key == "compiler.prolog":
@@ -105677,6 +106164,64 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 color_profiles=settings["color_profiles"],
                 mark_modified=True,
             )
+
+        def dbase_visual_settings(self) -> dict:
+            return {
+                "external_ui_components": bool(self.dbase_external_ui_checkbox.isChecked()),
+                "compress_json": bool(self.dbase_compress_json_checkbox.isChecked()),
+                "store_binary_data": bool(self.dbase_store_binary_checkbox.isChecked()),
+            }
+
+        def set_dbase_visual_settings(self, external: bool, compress: bool,
+                                      store_binary: bool = False) -> None:
+            self._syncing = True
+            try:
+                self.dbase_external_ui_checkbox.setChecked(bool(external))
+                self.dbase_store_binary_checkbox.setChecked(bool(store_binary))
+                self.dbase_compress_json_checkbox.setChecked(bool(compress))
+                self.dbase_store_binary_checkbox.setEnabled(bool(external))
+                self.dbase_compress_json_checkbox.setEnabled(bool(external))
+            finally:
+                self._syncing = False
+
+        def _dbase_visual_changed(self, _checked: bool) -> None:
+            self.dbase_store_binary_checkbox.setEnabled(
+                self.dbase_external_ui_checkbox.isChecked()
+            )
+            self.dbase_compress_json_checkbox.setEnabled(
+                self.dbase_external_ui_checkbox.isChecked()
+            )
+            if self._syncing:
+                return
+            callback = getattr(self.owner, "set_project_windows_dbase_visual_settings", None)
+            if callback is not None:
+                options = self.dbase_visual_settings()
+                callback(self.target, options["external_ui_components"],
+                         options["compress_json"],
+                         store_binary=options["store_binary_data"], mark_modified=True)
+
+        def dbase_slot_settings(self) -> dict:
+            return {
+                "static_numeric_internal_slots": bool(self.dbase_static_numeric_slots_checkbox.isChecked()),
+                "dynamic_typed_variables": bool(self.dbase_dynamic_typed_variables_checkbox.isChecked()),
+            }
+
+        def set_dbase_slot_settings(self, static_numeric: bool, dynamic_typed: bool) -> None:
+            self._syncing = True
+            try:
+                self.dbase_static_numeric_slots_checkbox.setChecked(bool(static_numeric))
+                self.dbase_dynamic_typed_variables_checkbox.setChecked(bool(dynamic_typed))
+            finally:
+                self._syncing = False
+
+        def _dbase_slots_changed(self, _checked: bool) -> None:
+            if self._syncing:
+                return
+            callback = getattr(self.owner, "set_project_windows_dbase_slot_settings", None)
+            if callback is not None:
+                options = self.dbase_slot_settings()
+                callback(self.target, options["static_numeric_internal_slots"],
+                         options["dynamic_typed_variables"], mark_modified=True)
 
         def prolog_with_descriptors(self) -> bool:
             return bool(self.prolog_with_descriptors_checkbox.isChecked())
@@ -107051,6 +107596,15 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
         def page_for_target(self, target: str):
             return self.windows_pages[self._target_key(target)]
 
+        def set_console_runtime_directory(self, target: str, directory: str) -> None:
+            self.page_for_target(target).set_console_runtime_directory(directory)
+
+        def set_console_runtime_pack(self, target: str, enabled: bool) -> None:
+            self.page_for_target(target).set_console_runtime_pack(enabled)
+
+        def set_console_runtime_const_pool(self, target: str, enabled: bool) -> None:
+            self.page_for_target(target).set_console_runtime_const_pool(enabled)
+
         def paths(self, target: str = "pe32") -> Tuple[str, ...]:
             return self.page_for_target(target).paths()
 
@@ -107074,6 +107628,21 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
 
         def set_pe_packing_enabled(self, target: str, enabled: bool) -> None:
             self.page_for_target(target).set_pe_packing_enabled(enabled)
+
+        def dbase_visual_settings(self, target: str = "pe32") -> dict:
+            return self.page_for_target(target).dbase_visual_settings()
+
+        def set_dbase_visual_settings(self, target: str, external: bool,
+                                      compress: bool, store_binary: bool = False) -> None:
+            self.page_for_target(target).set_dbase_visual_settings(
+                external, compress, store_binary
+            )
+
+        def dbase_slot_settings(self, target: str = "pe32") -> dict:
+            return self.page_for_target(target).dbase_slot_settings()
+
+        def set_dbase_slot_settings(self, target: str, static_numeric: bool, dynamic_typed: bool) -> None:
+            self.page_for_target(target).set_dbase_slot_settings(static_numeric, dynamic_typed)
 
         def prolog_with_descriptors(self, target: str = "pe32") -> bool:
             return self.page_for_target(target).prolog_with_descriptors()
@@ -108682,6 +109251,7 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.dbase_form_source_page = None
             self.dbase_form_source_outline = None
             self.dbase_form_source_splitter = None
+            self.dbase_form_source_assembly_splitter = None
             self.dbase_form_assembly_page = None
             self.dbase_form_build_document = None
             self.dbase_form_compile_button = None
@@ -108754,6 +109324,17 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 "pe32": "",
                 "pe64": "",
             }
+            self.project_windows_console_dll_directories: Dict[str, str] = {
+                "pe32": "",
+                "pe64": "",
+            }
+            self.project_windows_console_dll_pack: Dict[str, bool] = {
+                "pe32": False,
+                "pe64": False,
+            }
+            self.project_windows_console_const_pool: Dict[str, bool] = {
+                "pe32": False, "pe64": False,
+            }
             self.project_windows_relative_paths: Dict[str, Dict[str, bool]] = {
                 "pe32": {"input": True, "output": True},
                 "pe64": {"input": True, "output": True},
@@ -108765,6 +109346,14 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.project_windows_pe_packing_enabled: Dict[str, bool] = {
                 "pe32": PE_PACKING_DEFAULT,
                 "pe64": PE_PACKING_DEFAULT,
+            }
+            self.project_windows_dbase_visual: Dict[str, dict] = {
+                "pe32": {"external_ui_components": False, "compress_json": False, "store_binary_data": False},
+                "pe64": {"external_ui_components": False, "compress_json": False, "store_binary_data": False},
+            }
+            self.project_windows_dbase_slots: Dict[str, dict] = {
+                "pe32": {"static_numeric_internal_slots": False, "dynamic_typed_variables": False},
+                "pe64": {"static_numeric_internal_slots": False, "dynamic_typed_variables": False},
             }
             self.project_windows_prolog_with_descriptors: Dict[str, bool] = {
                 "pe32": False,
@@ -109973,6 +110562,16 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             self.resource_action.setStatusTip("Create resource files for your Application.")
             self.resource_action.triggered.connect(self.resource_dialog)
 
+            # Stage 457: direct access to the dock-based RC/RES editor.
+            self.resource_editor_action = QAction("Resource Editor", self)
+            self.resource_editor_action.setObjectName("tools_resource_editor_action")
+            self.resource_editor_action.setStatusTip(
+                "Resource Editor öffnen und andere Docks außer Projekt / Informationen ausblenden"
+            )
+            self.resource_editor_action.triggered.connect(
+                lambda _checked=False: self.show_windows_resource_editor()
+            )
+
             # Stage 155: Server-Werkzeuge als eigene Docking-Fenster.
             self.bind9_server_action = QAction("DNS/DynDNS BIND9", self)
             self.bind9_server_action.setObjectName("bind9_server_action")
@@ -110015,6 +110614,15 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 "Visuellen WYSIWYG-HTML-Editor als Docking-Fenster öffnen"
             )
             self.html_editor_action.triggered.connect(self.show_html_editor_dock)
+
+            self.dbase_runtime_pe32_action = QAction("dBASE Runtime PE32 DLL erstellen", self)
+            self.dbase_runtime_pe32_action.setObjectName("tools_dbase_runtime_pe32_dll")
+            self.dbase_runtime_pe32_action.triggered.connect(
+                lambda _checked=False: self.create_dbase_runtime_dll("pe32"))
+            self.dbase_runtime_pe64_action = QAction("dBASE Runtime PE32+ DLL erstellen", self)
+            self.dbase_runtime_pe64_action.setObjectName("tools_dbase_runtime_pe64_dll")
+            self.dbase_runtime_pe64_action.triggered.connect(
+                lambda _checked=False: self.create_dbase_runtime_dll("pe64"))
 
             self.germany_geography_action = QAction("Deutschland", self)
             self.germany_geography_action.setObjectName("germany_geography_action")
@@ -112199,7 +112807,12 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             assembly_index = build_document.views.indexOf(assembly_page)
             if assembly_index >= 0:
                 build_document.views.removeTab(assembly_index)
-            assembly_page.setParent(None)
+            # Stage 469: Ein aus QTabWidget entferntes Page-Widget wird von Qt
+            # explizit versteckt. Die alte ASM-Tab-Seite bleibt deshalb nur
+            # als unsichtbarer Platzhalter beim Hilfs-DocumentEditor. Wir
+            # haengen stattdessen den eigentlichen ASM-Editor direkt um.
+            assembly_page.setParent(build_document)
+            assembly_page.hide()
 
             # Der Hilfs-DocumentEditor selbst bleibt unsichtbar. Seine
             # Compilerzustände/Signale werden weiterhin wiederverwendet.
@@ -112256,9 +112869,57 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             source_splitter.setStretchFactor(1, 1)
             source_splitter.setSizes((230, 900))
 
-            # Einziger sichtbarer Inhalt des Quellcode-Tabs. Stretch 1 sorgt
-            # dafuer, dass die komplette freie Tab-Flaeche genutzt wird.
-            source_layout.addWidget(source_splitter, 1)
+            # Stage 469: NICHT die zuvor aus QTabWidget entfernte (und damit
+            # versteckte) assembly_page in den Splitter setzen. Diese Ursache
+            # liess den ASM-Editor trotz vorhandenem Splitter verschwinden.
+            # Stattdessen den Original-Editor mit MiniMap, Syntax-Highlighter,
+            # F2 und bestehenden Signalverbindungen in einen NEUEN sichtbaren
+            # Host unter die beiden Quellcode-Panels umhaengen.
+            source_assembly_splitter = QSplitter(Qt.Vertical, source_page)
+            source_assembly_splitter.setObjectName(
+                "dbase_form_source_assembly_splitter"
+            )
+            source_assembly_splitter.setChildrenCollapsible(False)
+            source_assembly_splitter.setHandleWidth(7)
+            source_assembly_splitter.setSizePolicy(
+                QSizePolicy.Expanding, QSizePolicy.Expanding
+            )
+            source_splitter.setMinimumHeight(110)
+
+            assembly_host = QWidget(source_assembly_splitter)
+            assembly_host.setObjectName("dbase_form_assembly_host")
+            assembly_host.setMinimumHeight(110)
+            assembly_host.setSizePolicy(
+                QSizePolicy.Expanding, QSizePolicy.Expanding
+            )
+            assembly_host_layout = QVBoxLayout(assembly_host)
+            assembly_host_layout.setContentsMargins(0, 0, 0, 0)
+            assembly_host_layout.setSpacing(0)
+            assembly_heading = QLabel("Assembler", assembly_host)
+            assembly_heading.setObjectName("dbase_form_assembly_heading")
+            assembly_heading.setContentsMargins(6, 3, 6, 3)
+            assembly_host_layout.addWidget(assembly_heading)
+
+            asm_container = build_document.generated_assembly_editor_container
+            assembly_layout.removeWidget(asm_container)
+            asm_container.setParent(assembly_host)
+            asm_container.setSizePolicy(
+                QSizePolicy.Expanding, QSizePolicy.Expanding
+            )
+            assembly_host_layout.addWidget(asm_container, 1)
+
+            source_assembly_splitter.addWidget(source_splitter)
+            source_assembly_splitter.addWidget(assembly_host)
+            source_assembly_splitter.setStretchFactor(0, 2)
+            source_assembly_splitter.setStretchFactor(1, 1)
+            source_assembly_splitter.setSizes([620, 300])
+            source_layout.addWidget(source_assembly_splitter, 1)
+            # Nach setParent() ist das umgehaengte Widget bei Qt verborgen,
+            # selbst wenn dessen neuer Eltern-Container spaeter erscheint.
+            # Explizit zeigen; die komplette Gruppe wird bei Tabwechseln
+            # weiterhin mit dem Quellcode-Tab ein-/ausgeblendet.
+            asm_container.show()
+            assembly_host.show()
 
             designer_host = QWidget(designer_dock)
             designer_layout = QVBoxLayout(designer_host)
@@ -112337,6 +112998,14 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             build_document.raw_editor.textChanged.connect(
                 self._refresh_dbase_form_source_outline
             )
+            # Der Viewport empfaengt die Mouse-Events des QPlainTextEdit.
+            # Quellzeilen-Kommentare navigieren direkt in den oberen Editor.
+            build_document.generated_assembly_editor.viewport().setMouseTracking(
+                True
+            )
+            build_document.generated_assembly_editor.viewport().installEventFilter(
+                self
+            )
             # F2 im eingebetteten ASM-Editor: nur assemblieren + linken.
             build_document.build_generated_requested.connect(
                 lambda _document: self.assemble_dbase_form()
@@ -112365,10 +113034,11 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             self.dbase_form_source_page = source_page
             self.dbase_form_source_outline = source_outline
             self.dbase_form_source_splitter = source_splitter
+            self.dbase_form_source_assembly_splitter = source_assembly_splitter
             self._apply_dbase_form_source_outline_theme(
                 self.dark_mode_enabled
             )
-            self.dbase_form_assembly_page = assembly_page
+            self.dbase_form_assembly_page = assembly_host
             self.dbase_form_build_document = build_document
             self.dbase_form_compile_button = compile_button
             self.dbase_form_assemble_button = assemble_button
@@ -112480,21 +113150,11 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 )
 
         def _ensure_dbase_form_assembly_tab(self) -> None:
-            """Stage 158/161: ASM-Tab ohne interne Buildleiste links vor Quellcode."""
-            tabs = self.dbase_form_tabs
-            page = self.dbase_form_assembly_page
-            source_page = self.dbase_form_source_page
-            if tabs is None or page is None or source_page is None:
-                return
-            if tabs.indexOf(page) >= 0:
-                return
-            source_index = tabs.indexOf(source_page)
-            if source_index < 0:
-                source_index = tabs.count()
-            tabs.insertTab(source_index, page, "Assembler")
-            document = self.dbase_form_build_document
-            if document is not None:
-                document.generated_assembly_panel.hide()
+            """Kompatibilitaetsaufruf: seit Stage 467 existiert kein ASM-Tab."""
+            # Die Assembler-Seite ist bereits im vertikalen Quellcode-Splitter.
+            # Keinesfalls erneut in QTabWidget einfuegen (Qt wuerde sie aus
+            # ihrem bisherigen Elternwidget entfernen).
+            return
 
         def _refresh_dbase_form_source_outline(self) -> None:
             """Prozeduren, Funktionen und globale Variablen aus WFM anzeigen."""
@@ -112557,27 +113217,47 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             finally:
                 tree.blockSignals(False)
 
+        def _dbase_form_go_to_source_line(self, line_number: int) -> bool:
+            """Zum Original-WFM-Quelltext springen, mit Zeile und Fokus."""
+            document = self.dbase_form_build_document
+            if document is None or int(line_number) <= 0:
+                return False
+            if self.dbase_form_tabs is not None:
+                self.dbase_form_tabs.setCurrentWidget(self.dbase_form_source_page)
+            block = document.raw_editor.document().findBlockByNumber(
+                int(line_number) - 1
+            )
+            if not block.isValid():
+                return False
+            cursor = QTextCursor(block)
+            cursor.select(QTextCursor.LineUnderCursor)
+            document.raw_editor.setTextCursor(cursor)
+            document.raw_editor.centerCursor()
+            document.raw_editor.setFocus(Qt.OtherFocusReason)
+            return True
+
         def _dbase_form_source_outline_clicked(
             self,
             item: QTreeWidgetItem,
             _column: int,
         ) -> None:
             line_number = item.data(0, Qt.UserRole)
-            if not line_number:
-                return
+            if line_number:
+                self._dbase_form_go_to_source_line(int(line_number))
+
+        def _dbase_form_asm_source_line_at(self, position) -> int:
+            """Erkennt einen ; Quellcode Zeile: n -Link im WFM-Assembler."""
             document = self.dbase_form_build_document
             if document is None:
-                return
-            if self.dbase_form_tabs is not None:
-                self.dbase_form_tabs.setCurrentWidget(self.dbase_form_source_page)
-            block = document.raw_editor.document().findBlockByNumber(int(line_number) - 1)
-            if not block.isValid():
-                return
-            cursor = QTextCursor(block)
-            cursor.select(QTextCursor.LineUnderCursor)
-            document.raw_editor.setTextCursor(cursor)
-            document.raw_editor.centerCursor()
-            document.raw_editor.setFocus(Qt.OtherFocusReason)
+                return 0
+            editor = document.generated_assembly_editor
+            line = editor.cursorForPosition(position).block().text()
+            match = re.fullmatch(
+                r"\s*;\s*Quellcode Zeile:\s*(\d+)\s*",
+                line,
+                re.IGNORECASE,
+            )
+            return int(match.group(1)) if match else 0
 
         @staticmethod
         def _dbase_form_timer_default_procedure(item) -> str:
@@ -112696,14 +113376,16 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             if index == tabs.indexOf(self.dbase_form_source_page):
                 if self.dbase_form_build_document is not None:
                     self.dbase_form_build_document.assembler_panel.hide()
+                    # Stage 469: ASM-Editor nach Entfernen des alten ASM-Tabs
+                    # explizit im unteren vertikalen Splitter sichtbar halten.
+                    self.dbase_form_build_document.generated_assembly_editor_container.show()
+                if self.dbase_form_assembly_page is not None:
+                    self.dbase_form_assembly_page.show()
                 self._apply_dbase_form_source_outline_theme(
                     self.dark_mode_enabled
                 )
                 self._sync_dbase_form_source()
                 self._refresh_dbase_form_source_outline()
-            elif index == tabs.indexOf(self.dbase_form_assembly_page):
-                if self.dbase_form_build_document is not None:
-                    self.dbase_form_build_document.generated_assembly_panel.hide()
 
         def _merge_dbase_form_source_methods_events(
             self,
@@ -112973,6 +113655,24 @@ QMenu#green_beige_popup_menu::indicator:checked {{
 
             try:
                 model = parse_dbase_wfm(source, filename=filename)
+                # Stage 466: Oberhalb der Form-Klasse stehende Anweisungen
+                # (auch oberhalb des END HEADER-Markers) werden als echter
+                # Programmcode compiliert. Der automatisch erzeugte WFM-
+                # Bootstrap wird vom nativen GUI-Einstieg uebernommen.
+                from d64dbase.wfm import DBaseWfmMethod, wfm_executable_preamble
+                preamble = wfm_executable_preamble(
+                    source, class_name=model.class_name)
+                preamble_name = "__dbase_top_level__"
+                has_preamble = any(line.strip() for line in preamble)
+                if has_preamble:
+                    if model.method_by_name(preamble_name) is not None:
+                        raise AssemblerError(
+                            f"{filename}: reservierter WFM-Methodenname: "
+                            + preamble_name)
+                    startup_method = DBaseWfmMethod(
+                        name=preamble_name, kind="procedure", body=preamble)
+                    startup_method._wfm_top_level = True
+                    model.methods.insert(0, startup_method)
             except Exception as exc:
                 raise AssemblerError(str(exc)) from exc
             # Stage 121: Ein neutraler GUI-Ausdruck erzwingt auch bei älteren
@@ -112994,6 +113694,14 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             _dead_property_imports = bool(_object_opt.get("dead_property_imports", True))
             _empty_standard_strings = bool(_object_opt.get("empty_standard_strings", True))
             _cut_multiple_codes = bool(_object_opt.get("cut_multiple_codes", True))
+            _const_pool = bool(getattr(self, "project_windows_console_const_pool", {}).get(_opt_target, False))
+            _external_ui_options = getattr(self, "project_windows_dbase_visual", {}).get(_opt_target, {})
+            _external_ui = bool(_external_ui_options.get("external_ui_components", False))
+            _compress_json = _external_ui and bool(_external_ui_options.get("compress_json", False))
+            _store_binary = _external_ui and bool(_external_ui_options.get("store_binary_data", False))
+            _slot_optimization_options = getattr(self, "project_windows_dbase_slots", {}).get(_opt_target, {})
+            _static_numeric_slots = bool(_slot_optimization_options.get("static_numeric_internal_slots", False))
+            _dynamic_typed_variables = bool(_slot_optimization_options.get("dynamic_typed_variables", False))
             _property_defaults_abi = int(globals().get("DBASE_WFM_PROPERTY_DEFAULTS_ABI", 1))
             _property_default_fn = globals().get("_dbase_wfm_initial_property_is_default")
             if not callable(_property_default_fn):
@@ -113032,7 +113740,8 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             imports = (
                 "DBaseQtSetWorkstationMode",
                 "DBaseQtSetDebugTheme",
-                "DBaseQtInitializeGui",
+                "DBaseQtRuntimeStartup",
+                "DBaseQtRuntimeShutdown",
                 "DBaseQtSetDebugVisible",
                 "DBaseQtExec",
                 "DBaseQtShutdown",
@@ -113047,8 +113756,12 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 "DBaseQtTimerSetInterval",
                 "DBaseQtTimerSetActive",
                 "DBaseQtFormOpen",
+                "DBaseQtFormRun",
+                "DBaseQtWfmModalParameter",
                 "DBaseQtConsoleWrite",
             )
+            if _external_ui:
+                imports += ("DBaseQtFormApplyExternalUi",)
 
             # Stage 158: den neuen NonVisual-Export nur dann importieren,
             # wenn SESSION/DATABASE/QUERY/DATASOURCE tatsächlich vorkommen.
@@ -113113,6 +113826,12 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 declaration = 'import GetRawInputDeviceList, "user32.dll", "GetRawInputDeviceList"'
                 if declaration not in assembly:
                     missing_imports.append(declaration + "\n")
+                # ISKEYBOARD creates a temporary device list. Its allocation
+                # is unrelated to the Stage-462 shared format buffer.
+                for api in ("VirtualAlloc", "VirtualFree"):
+                    declaration = f'import {api}, "kernel32.dll", "{api}"'
+                    if declaration not in assembly:
+                        missing_imports.append(declaration + "\n")
 
             if missing_imports:
                 asm_lines = assembly.splitlines(keepends=True)
@@ -113199,9 +113918,17 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             # einem spaeteren Event wieder gelesen werden.
             runtime_memory_slots = {}
             runtime_memory_kinds = {}
+            # Stage 468: LOCAL values receive procedure-private typed slots.
+            # They are temporarily visible via the ordinary WFM expression
+            # emitter but never exported into another procedure's namespace.
+            runtime_local_slots = {}
             runtime_number_constants = []
             runtime_number_constant_index = 0
-            runtime_strlen_label_index = 0
+            runtime_static_numeric_slots = {}  # slot -> immutable numeric type code
+            dynamic_numeric_header_used = False
+            dynamic_variant_copy_used = False
+            runtime_number_constant_cache = {}
+            property_table_cache = {}
             runtime_variant_label_index = 0
 
             # Stage 201: WFM-Memory-Variablen besitzen einen Laufzeit-Typ.
@@ -113212,6 +113939,8 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             WFM_VALUE_FLOAT = 2
             WFM_VALUE_STRING = 3
             WFM_VALUE_OBJECT = 4
+            WFM_VALUE_LOGICAL = 5
+            WFM_VALUE_DATE = 6
 
             WFM_RESERVED_MEMORY_NAMES = {
                 "and", "case", "class", "do", "else", "endcase", "endclass",
@@ -113241,6 +113970,23 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 runtime_memory_kinds.setdefault(key, "variant")
                 return slot
 
+            _wfm_source_identifiers = {
+                name.casefold() for name in re.findall(r"[A-Za-z_]\w*", str(source))
+            }
+
+            def mark_static_numeric_slot(slot, type_code):
+                # Only compiler-owned values that can never become a string or object.
+                # An explicit WFM source reference with the same name can be
+                # changed by STORE; conservatively keep such aliases dynamic.
+                if _static_numeric_slots:
+                    memory_name = next((key for key, value in runtime_memory_slots.items()
+                                        if value == slot), "")
+                    if memory_name in _wfm_source_identifiers:
+                        return
+                    previous = runtime_static_numeric_slots.setdefault(slot, int(type_code))
+                    if previous != int(type_code):
+                        raise AssemblerError("WFM: conflicting numeric internal slot types")
+
             def memory_type_label(slot):
                 return f"{slot}_type"
 
@@ -113269,6 +114015,65 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     )
                 return target_name
 
+            def parse_wfm_local_declarations(statement_text):
+                """Parse LOCAL a, b=9, text="a,b" without splitting quoted commas.
+
+                The statement emitter supports regular dBASE expression RHSs;
+                only declaration boundaries are handled here.
+                """
+                match = re.fullmatch(r"(?is)LOCAL\s+(.+)", str(statement_text).strip())
+                if match is None:
+                    raise AssemblerError(
+                        f"{filename}: WFM-Prozedur {procedure}: LOCAL erwartet Variablennamen."
+                    )
+                items = []
+                start = 0
+                quote = None
+                depth = 0
+                source_decl = match.group(1)
+                index = 0
+                while index < len(source_decl):
+                    char = source_decl[index]
+                    if quote:
+                        if char == quote:
+                            if index + 1 < len(source_decl) and source_decl[index + 1] == quote:
+                                index += 2
+                                continue
+                            quote = None
+                    elif char in ('"', "'"):
+                        quote = char
+                    elif char == '(':
+                        depth += 1
+                    elif char == ')':
+                        depth -= 1
+                        if depth < 0:
+                            break
+                    elif char == ',' and depth == 0:
+                        items.append(source_decl[start:index].strip())
+                        start = index + 1
+                    index += 1
+                if quote or depth or index != len(source_decl):
+                    raise AssemblerError(
+                        f"{filename}: WFM-Prozedur {procedure}: ungueltige LOCAL-Deklaration: "
+                        + statement_text
+                    )
+                items.append(source_decl[start:].strip())
+                result = []
+                for item in items:
+                    parsed = re.fullmatch(
+                        r"(?s)([A-Za-z_]\w*)\s*(?:=\s*(.+))?", item
+                    )
+                    if parsed is None:
+                        raise AssemblerError(
+                            f"{filename}: WFM-Prozedur {procedure}: "
+                            f"ungueltige LOCAL-Deklaration: {item!r}"
+                        )
+                    name = validate_memory_destination(
+                        parsed.group(1), statement_text=statement_text
+                    )
+                    result.append((name, parsed.group(2)))
+                return result
+
             def normalize_wfm_memory_reference(value):
                 # Stage 196: unsichtbare Unicode-Formatzeichen aus dem
                 # WFM-Editor/Parser duerfen eine normale dBase-Memory-
@@ -113287,9 +114092,13 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 nonlocal runtime_number_constant_index
                 number = float(value)
                 bits = struct.unpack("<Q", struct.pack("<d", number))[0]
+                if _const_pool and bits in runtime_number_constant_cache:
+                    return runtime_number_constant_cache[bits]
                 label = f"__dbase_wfm_numconst_{runtime_number_constant_index}"
                 runtime_number_constant_index += 1
                 runtime_number_constants.append((label, bits))
+                if _const_pool:
+                    runtime_number_constant_cache[bits] = label
                 return label
 
             method_map = {
@@ -113385,7 +114194,15 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                         "    add esp, 8",
                     ]
 
-                # Historical parameterless __init__ remains source-compatible.
+                # Stage 463: Eine parameterlose __init__ akzeptiert keine
+                # Konstruktorargumente. Historische, variadische Signaturen
+                # (__init__(**args, argc)) bleiben weiterhin unterstuetzt.
+                if not parameters and constructor_args:
+                    raise AssemblerError(
+                        f"{filename}: procedure __init__ erwartet 0 Parameter, "
+                        f"NEW {model.class_name}(...) liefert aber "
+                        f"{len(constructor_args)} Argumente."
+                    )
                 if not parameters:
                     if is64:
                         return [
@@ -113594,9 +114411,14 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                         emit_property_record(slot, record)
                     return
 
-                table_label = f"__dbase_wfm_property_table_{property_table_index}"
-                property_table_index += 1
-                property_tables.append((table_label, tuple(records)))
+                # Stage 451: identical table content is shared between widgets.
+                table_key = tuple(records)
+                table_label = property_table_cache.get(table_key)
+                if table_label is None:
+                    table_label = f"__dbase_wfm_property_table_{property_table_index}"
+                    property_table_index += 1
+                    property_tables.append((table_label, table_key))
+                    property_table_cache[table_key] = table_label
                 if is64:
                     lines.extend([
                         f"    mov rcx, {ptr} ptr [{slot}]",
@@ -113757,10 +114579,12 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 self._dbase_wfm_int(form_props, "Width", 400),
                 self._dbase_wfm_int(form_props, "Height", 400),
             )
-            if not (_elide_defaults and _form_geometry == (200, 200, 400, 400)):
+            if not _external_ui and not (_elide_defaults and _form_geometry == (200, 200, 400, 400)):
                 emit_geometry(form_slot, *_form_geometry)
-            emit_font(form_slot, getattr(model, "font", None))
-            emit_property_block(
+            if not _external_ui:
+                emit_font(form_slot, getattr(model, "font", None))
+            if not _external_ui:
+                emit_property_block(
                 form_slot,
                 [
                     (key, value) for key, value in form_props.items()
@@ -113805,7 +114629,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 # NEW PUSHBUTTON(parent, "press me") entspricht damit in der
                 # Runtime einem echten QPushButton("press me", parent).
                 ctor_text = self._dbase_wfm_prop(props, "Text", "")
-                if _empty_standard_strings and str(ctor_text) == "":
+                if _external_ui or (_empty_standard_strings and str(ctor_text) == ""):
                     text_ctor_label, text_ctor_len = "0", 0
                 else:
                     text_ctor_label, text_ctor_len = text_label(ctor_text)
@@ -113840,13 +114664,15 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     self._dbase_wfm_int(props, "Width", 120),
                     self._dbase_wfm_int(props, "Height", 30),
                 )
-                if not (_elide_defaults and _control_geometry == (0, 0, 120, 30)):
+                if not _external_ui and not (_elide_defaults and _control_geometry == (0, 0, 120, 30)):
                     emit_geometry(slot, *_control_geometry)
                 value = self._dbase_wfm_prop(props, "Text", None)
-                if value is not None and str(value) != str(ctor_text):
+                if not _external_ui and value is not None and str(value) != str(ctor_text):
                     emit_text(slot, value)
-                emit_font(slot, getattr(control, "font", None))
-                emit_property_block(
+                if not _external_ui:
+                    emit_font(slot, getattr(control, "font", None))
+                if not _external_ui:
+                    emit_property_block(
                     slot,
                     [
                         (key, value) for key, value in props.items()
@@ -113860,6 +114686,56 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     getattr(control, "events", {}) or {}
                 ).items():
                     emit_event_binding(slot, event_name, procedure)
+
+            # Stage 456: statische FORM/Control-Eigenschaften als JSON-Payload.
+            external_ui_blob = b""
+            external_ui_slots = []
+            if _external_ui:
+                from d64dbase.wfm_external_ui import (
+                    encode_form_ui_smart, write_form_ui_json, write_form_ui_bin,
+                )
+                external_ui_slots = [form_slot] + [
+                    slot_for(item.path) for item in sorted(model.controls, key=lambda c: int(c.order))
+                    if str(item.class_name).casefold() not in {
+                        "timer", "session", "database", "sql", "query", "datasource", "table"
+                    }
+                ]
+                external_ui_blob, external_ui_json, _binary_blob, _selected_ui_format = (
+                    encode_form_ui_smart(model, store_binary=_store_binary,
+                                         compress=_compress_json)
+                )
+                # Lesbare .ui.json und (optional) selbststaendige .ui.bin Sidecars.
+                # Gelinkt wird nur der ausgewaehlte Payload; keine Zusatzdatei
+                # ist zum Start der EXE erforderlich.
+                write_form_ui_json(filename, external_ui_json)
+                if _store_binary:
+                    write_form_ui_bin(filename, external_ui_json)
+                lines.append(
+                    f"; WFM UI payload: {_selected_ui_format}, "
+                    f"{'zlib' if _compress_json else 'raw'}, "
+                    f"{len(external_ui_blob)} bytes"
+                )
+                if is64:
+                    lines.extend([
+                        "    mov rcx, __dbase_wfm_external_ui_slots",
+                        f"    mov edx, {len(external_ui_slots)}",
+                        "    mov r8, __dbase_wfm_external_ui_payload",
+                        f"    mov r9d, {len(external_ui_blob)}",
+                        "    sub rsp, 48",
+                        f"    mov dword ptr [rsp+32], {int(_compress_json)}",
+                        "    call DBaseQtFormApplyExternalUi",
+                        "    add rsp, 48",
+                    ])
+                else:
+                    lines.extend([
+                        f"    push {int(_compress_json)}",
+                        f"    push {len(external_ui_blob)}",
+                        "    push __dbase_wfm_external_ui_payload",
+                        f"    push {len(external_ui_slots)}",
+                        "    push __dbase_wfm_external_ui_slots",
+                        "    call DBaseQtFormApplyExternalUi",
+                        "    add esp, 20",
+                    ])
 
             # Stage 111: DBaseQtFormOpen darf den Konstruktor nicht mehr
             # vorwegnehmen. Der Form-/Control-Baum wird zuerst vollstaendig
@@ -114087,22 +114963,38 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 key = re.sub(r"\s+", "", str(name or "")).casefold()
                 return object_slots.get(key)
 
-            def emit_wfm_memory_null(out, destination):
+            def emit_wfm_numeric_header(out, destination, type_code):
+                """Set numeric variant header, preserving the existing PE32/PE64 slot ABI."""
+                nonlocal dynamic_numeric_header_used
+                if runtime_static_numeric_slots.get(destination) == int(type_code):
+                    return  # initialized once in .data; this slot is numeric forever
+                if _dynamic_typed_variables:
+                    dynamic_numeric_header_used = True
+                    out.extend([
+                        f"    mov {'rcx' if is64 else 'eax'}, {memory_type_label(destination)}",
+                        f"    mov edx, {int(type_code)}",
+                        "    call __dbase_wfm_assign_numeric_header",
+                    ])
+                    return
                 out.extend([
-                    f"    mov dword ptr [{memory_type_label(destination)}], "
-                    f"{WFM_VALUE_NULL}",
+                    f"    mov dword ptr [{memory_type_label(destination)}], {int(type_code)}",
                     f"    mov dword ptr [{memory_length_label(destination)}], 0",
+                    f"    mov {ptr} ptr [{memory_pointer_label(destination)}], 0",
                 ])
-                if is64:
-                    out.append(
-                        f"    mov qword ptr [{memory_pointer_label(destination)}], 0"
-                    )
-                else:
-                    out.append(
-                        f"    mov dword ptr [{memory_pointer_label(destination)}], 0"
-                    )
+
+            def emit_wfm_memory_null(out, destination):
+                emit_wfm_numeric_header(out, destination, WFM_VALUE_NULL)
 
             def emit_wfm_memory_copy(out, source, destination):
+                nonlocal dynamic_variant_copy_used
+                if _dynamic_typed_variables:
+                    dynamic_variant_copy_used = True
+                    out.extend([
+                        f"    mov {'rcx' if is64 else 'eax'}, {memory_type_label(source)}",
+                        f"    mov {'rdx' if is64 else 'edx'}, {memory_type_label(destination)}",
+                        "    call __dbase_wfm_copy_variant",
+                    ])
+                    return
                 # Alle Variant-Felder werden kopiert. Der numerische Payload
                 # bleibt als Double erhalten; String/Object verwenden ptr/len.
                 out.extend([
@@ -114128,20 +115020,10 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 out.extend([
                     f"    fld qword ptr [{const_label}]",
                     f"    fstp qword ptr [{memory_number_label(destination)}]",
-                    f"    mov dword ptr [{memory_type_label(destination)}], "
-                    f"{int(type_code)}",
-                    f"    mov dword ptr [{memory_length_label(destination)}], 0",
                 ])
-                if is64:
-                    out.append(
-                        f"    mov qword ptr [{memory_pointer_label(destination)}], 0"
-                    )
-                else:
-                    out.append(
-                        f"    mov dword ptr [{memory_pointer_label(destination)}], 0"
-                    )
+                emit_wfm_numeric_header(out, destination, type_code)
 
-            def emit_wfm_string_payload(out, destination, label, length):
+            def emit_wfm_string_payload(out, destination, label, length, type_code=WFM_VALUE_STRING):
                 if is64:
                     out.extend([
                         f"    mov rax, {label}",
@@ -114155,7 +115037,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     f"    mov dword ptr [{memory_length_label(destination)}], "
                     f"{int(length)}",
                     f"    mov dword ptr [{memory_type_label(destination)}], "
-                    f"{WFM_VALUE_STRING}",
+                    f"{type_code}",
                 ])
 
             def emit_wfm_object_payload(out, destination, object_slot):
@@ -114265,17 +115147,18 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             def emit_wfm_upper_expression(out, expression_text):
                 # Parse with the real expression parser, never strip parentheses
                 # by regex: nested calls and quoted parentheses stay intact.
-                if not str(expression_text).lstrip().startswith(("!", "$")):
+                if not (str(expression_text).lstrip().startswith(("!", "$")) or
+                        re.match(r"(?i)^\s*(?:upper|lower|ucase|lcase)\s*\(", str(expression_text))):
                     return None
                 from d64dbase.compiler import (parse_dbase_statements,
                     DBaseCallExpression, DBaseIdentifierExpression,
                     DBaseBinaryExpression, DBaseUnaryExpression,
                     _evaluate_dbase_expression)
-                from d64dbase.string_upper import emit_upper_copy
+                from d64dbase.wfm_string_runtime import emit_runtime_string_copy
                 parsed = parse_dbase_statements("? " + expression_text,
                     filename=filename, target=target)
                 expression = parsed[0].expression
-                if not isinstance(expression, DBaseCallExpression) or expression.name not in {"!", "$"}:
+                if not isinstance(expression, DBaseCallExpression) or expression.name.casefold() not in {"!", "$", "upper", "lower", "ucase", "lcase"}:
                     return None
 
                 def fresh_slot():
@@ -114309,25 +115192,35 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                         _, prefix = fresh_slot()
                         check_type(slot, numeric, prefix)
                         return slot
-                    if isinstance(node, DBaseCallExpression) and node.name in {"!", "$"}:
+                    if (isinstance(node, DBaseCallExpression) and
+                            node.name.casefold() in {"!", "$", "upper", "lower", "ucase", "lcase"}):
                         if numeric:
-                            raise AssemblerError(f"{filename}: $(...) erwartet numerische Position/Laenge.")
-                        source = resolve(node.arguments[0])
+                            raise AssemblerError(f"{filename}: String-Funktion erwartet numerische Position/Laenge nur fuer $(...).")
+                        operation = node.name.casefold()
+                        if operation != "$" and len(node.arguments) != 1:
+                            raise AssemblerError(f"{filename}: Gross-/Kleinschreibung erwartet einen String.")
+                        # Stage 458: !($(Text,Start,Count)) und LOWER($(...))
+                        # werden als EINE DLL-Funktion ausgefuehrt. Der sonst
+                        # benoetigte Zwischenstring wird nicht alloziert.
+                        child = node.arguments[0]
+                        combined = (operation != "$" and
+                                    isinstance(child, DBaseCallExpression) and
+                                    child.name == "$")
+                        subcall = child if combined else (node if operation == "$" else None)
+                        source = resolve(subcall.arguments[0] if subcall else child)
+                        start = (resolve(subcall.arguments[1], True) if subcall else None)
+                        count = (resolve(subcall.arguments[2], True)
+                                 if subcall and len(subcall.arguments) == 3 else None)
                         destination, prefix = fresh_slot()
-                        if node.name == "!":
-                            out.extend(emit_upper_copy(
-                                source, destination, is64, prefix, WFM_VALUE_STRING,
-                                shadow_space_reserved=is64,
-                            ))
-                        else:
-                            from d64dbase.string_substring import emit_substring_copy
-                            start = resolve(node.arguments[1], True)
-                            count = resolve(node.arguments[2], True) if len(node.arguments) == 3 else None
-                            out.extend(emit_substring_copy(
-                                source, start, count, destination,
-                                is64, prefix, WFM_VALUE_STRING,
-                                shadow_space_reserved=is64,
-                            ))
+                        action = ('substring' if operation == '$' else
+                                  'lower' if operation in {'lower', 'lcase'} else 'upper')
+                        if combined:
+                            action = 'substring_' + action
+                        out.extend(emit_runtime_string_copy(
+                            source, destination, is64, prefix, WFM_VALUE_STRING,
+                            operation=action, start=start, count=count,
+                            shadow_space_reserved=is64,
+                        ))
                         return destination
                     if numeric and isinstance(node, DBaseBinaryExpression):
                         left = resolve(node.left, True)
@@ -114398,7 +115291,10 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     nonlocal runtime_variant_label_index
                     index = runtime_variant_label_index
                     runtime_variant_label_index += 1
-                    return memory_slot(f"__wfm_{tag}_{index}")
+                    slot = memory_slot(f"__wfm_{tag}_{index}")
+                    if tag == "len":
+                        mark_static_numeric_slot(slot, WFM_VALUE_INTEGER)
+                    return slot
 
                 def string_operand(node):
                     if isinstance(node, DBaseIdentifierExpression):
@@ -114510,10 +115406,8 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     "    mov dword ptr [__dbase_temp_number], ecx",
                     "    fild dword ptr [__dbase_temp_number]",
                     f"    fstp qword ptr [{memory_number_label(dest)}]",
-                    f"    mov dword ptr [{memory_type_label(dest)}], {WFM_VALUE_INTEGER}",
-                    f"    mov dword ptr [{memory_length_label(dest)}], 0",
-                    f"    mov {ptr} ptr [{memory_pointer_label(dest)}], 0",
                 ])
+                emit_wfm_numeric_header(out, dest, WFM_VALUE_INTEGER)
                 return dest
 
             def parse_wfm_stage443_builtin(text):
@@ -114560,27 +115454,13 @@ QMenu#green_beige_popup_menu::indicator:checked {{
 
             def emit_wfm_iskeyboard_slot(out, destination):
                 emit_wfm_iskeyboard_numeric(out)
-                out.extend([
-                    f"    fstp qword ptr [{memory_number_label(destination)}]",
-                    f"    mov dword ptr [{memory_type_label(destination)}], {WFM_VALUE_INTEGER}",
-                    f"    mov dword ptr [{memory_length_label(destination)}], 0",
-                ])
-                if is64:
-                    out.append(f"    mov qword ptr [{memory_pointer_label(destination)}], 0")
-                else:
-                    out.append(f"    mov dword ptr [{memory_pointer_label(destination)}], 0")
+                out.append(f"    fstp qword ptr [{memory_number_label(destination)}]")
+                emit_wfm_numeric_header(out, destination, WFM_VALUE_INTEGER)
 
             def emit_wfm_ismouse_slot(out, destination):
                 emit_wfm_ismouse_numeric(out)
-                out.extend([
-                    f"    fstp qword ptr [{memory_number_label(destination)}]",
-                    f"    mov dword ptr [{memory_type_label(destination)}], {WFM_VALUE_INTEGER}",
-                    f"    mov dword ptr [{memory_length_label(destination)}], 0",
-                ])
-                if is64:
-                    out.append(f"    mov qword ptr [{memory_pointer_label(destination)}], 0")
-                else:
-                    out.append(f"    mov dword ptr [{memory_pointer_label(destination)}], 0")
+                out.append(f"    fstp qword ptr [{memory_number_label(destination)}]")
+                emit_wfm_numeric_header(out, destination, WFM_VALUE_INTEGER)
 
             def emit_wfm_memory_store(
                 out,
@@ -114594,6 +115474,17 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 destination_key = destination_name.casefold()
                 destination = memory_slot(destination_name)
                 expression_text = str(expression_text or "").strip()
+
+                # Stage 464: native WFM variant type inspection; the answer
+                # is a one-byte string and is never mistaken for a Qt import.
+                if re.match(r"(?i)^(?:type|vartype)\s*\(", expression_text):
+                    type_expr = parse_wfm_condition(expression_text)
+                    if not (isinstance(type_expr, DBaseCallExpression) and
+                            type_expr.name.casefold() in {"type", "vartype"}):
+                        raise AssemblerError(f"{filename}: Ungueltiger TYPE/VARTYPE-Ausdruck: {expression_text}")
+                    emit_wfm_type_slot(out, type_expr, destination)
+                    runtime_memory_kinds[destination_key] = "string"
+                    return True
 
                 if re.match(r"(?i)^is(?:upper|lower)\s*\(", expression_text):
                     case_expr = parse_wfm_condition(expression_text)
@@ -114709,6 +115600,22 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                         runtime_memory_kinds[destination_key] = (
                             "integer" if is_integer else "float"
                         )
+                        return True
+
+                    if kind == "logical":
+                        out.append(f"    ; {statement_text}")
+                        emit_wfm_numeric_payload(
+                            out, destination, number_constant(int(bool(value.value))),
+                            WFM_VALUE_LOGICAL)
+                        runtime_memory_kinds[destination_key] = "logical"
+                        return True
+
+                    if kind == "date":
+                        label, length = console_text_label(str(value.value))
+                        out.append(f"    ; {statement_text}")
+                        emit_wfm_string_payload(out, destination, label, length,
+                                                WFM_VALUE_DATE)
+                        runtime_memory_kinds[destination_key] = "date"
                         return True
 
                     if kind in {"string", "char"}:
@@ -114900,144 +115807,39 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 statement_text,
                 add_newline,
             ):
-                nonlocal runtime_variant_label_index
-                nonlocal runtime_strlen_label_index
+                """Stage 449: formatting is shared in c64_dbase_runtime.dll.
 
-                index = runtime_variant_label_index
-                runtime_variant_label_index += 1
-                null_branch = f"__dbase_wfm_print_null_{index}"
-                string_branch = f"__dbase_wfm_print_string_{index}"
-                object_branch = f"__dbase_wfm_print_object_{index}"
-                number_branch = f"__dbase_wfm_print_number_{index}"
-                done_branch = f"__dbase_wfm_print_done_{index}"
-
-                null_label, null_len = console_text_label("<null>")
-                object_label, object_len = console_text_label("<object>")
-
+                A packed WFM ValueSlot (type, number, pointer, byte length)
+                is passed without copying or changing the source slot.  The
+                runtime formats numbers with _gcvt, preserves existing UTF-8
+                strings, and supplies <null>/<object> fallbacks. Qt output and
+                the newline policy remain in the caller.
+                """
                 if str(statement_text or "").strip():
                     out.append(f"    ; {statement_text}")
-                out.extend([
-                    f"    cmp dword ptr [{memory_type_label(source)}], "
-                    f"{WFM_VALUE_NULL}",
-                    f"    je {null_branch}",
-                    f"    cmp dword ptr [{memory_type_label(source)}], "
-                    f"{WFM_VALUE_STRING}",
-                    f"    je {string_branch}",
-                    f"    cmp dword ptr [{memory_type_label(source)}], "
-                    f"{WFM_VALUE_OBJECT}",
-                    f"    je {object_branch}",
-                    f"    cmp dword ptr [{memory_type_label(source)}], "
-                    f"{WFM_VALUE_INTEGER}",
-                    f"    je {number_branch}",
-                    f"    cmp dword ptr [{memory_type_label(source)}], "
-                    f"{WFM_VALUE_FLOAT}",
-                    f"    je {number_branch}",
-                    f"    jmp {null_branch}",
-                    f"{number_branch}:",
-                    f"    fld qword ptr [{memory_number_label(source)}]",
-                    "    fstp qword ptr [__dbase_temp_number]",
-                ])
-
-                strlen_index = runtime_strlen_label_index
-                runtime_strlen_label_index += 1
-                strlen_loop = f"__dbase_wfm_strlen_{strlen_index}"
-                strlen_done = f"__dbase_wfm_strlen_done_{strlen_index}"
-
                 if is64:
                     out.extend([
-                        "    movsd xmm0, qword ptr [__dbase_temp_number]",
-                        "    mov edx, 15",
-                        "    mov r8, qword ptr [__dbase_format_buffer]",
-                        "    call __dbase_gcvt",
-                        "    mov rcx, qword ptr [__dbase_format_buffer]",
-                        "    xor edx, edx",
-                        f"{strlen_loop}:",
-                        "    movzx eax, byte ptr [rcx]",
-                        "    test eax, eax",
-                        f"    je {strlen_done}",
-                        "    inc rcx",
-                        "    inc edx",
-                        f"    jmp {strlen_loop}",
-                        f"{strlen_done}:",
-                        "    mov rcx, qword ptr [__dbase_format_buffer]",
+                        f"    mov rcx, {memory_type_label(source)}",
+                        "    mov rdx, qword ptr [__dbase_format_buffer]",
+                        "    mov r8, __dbase_wfm_format_result",
+                        "    call DBaseWfmFormatValue",
+                        "    mov rcx, qword ptr [__dbase_wfm_format_result]",
+                        "    mov edx, dword ptr [__dbase_wfm_format_result_len]",
                         f"    mov r8d, {1 if add_newline else 0}",
                         "    call DBaseQtConsoleWrite",
-                        f"    jmp {done_branch}",
-                        f"{string_branch}:",
-                        f"    mov rcx, qword ptr [{memory_pointer_label(source)}]",
-                        "    test rcx, rcx",
-                        f"    je {null_branch}",
-                        f"    mov edx, dword ptr [{memory_length_label(source)}]",
-                        f"    mov r8d, {1 if add_newline else 0}",
-                        "    call DBaseQtConsoleWrite",
-                        f"    jmp {done_branch}",
-                        f"{object_branch}:",
-                        f"    mov rax, qword ptr [{memory_pointer_label(source)}]",
-                        "    test rax, rax",
-                        f"    je {null_branch}",
-                        f"    mov rcx, {object_label}",
-                        f"    mov edx, {object_len}",
-                        f"    mov r8d, {1 if add_newline else 0}",
-                        "    call DBaseQtConsoleWrite",
-                        f"    jmp {done_branch}",
-                        f"{null_branch}:",
-                        f"    mov rcx, {null_label}",
-                        f"    mov edx, {null_len}",
-                        f"    mov r8d, {1 if add_newline else 0}",
-                        "    call DBaseQtConsoleWrite",
-                        f"{done_branch}:",
                     ])
                 else:
                     out.extend([
+                        "    push __dbase_wfm_format_result",
                         "    push dword ptr [__dbase_format_buffer]",
-                        "    push 15",
-                        "    push dword ptr [__dbase_temp_number_hi]",
-                        "    push dword ptr [__dbase_temp_number]",
-                        "    call __dbase_gcvt",
-                        "    add esp, 16",
-                        "    mov ecx, dword ptr [__dbase_format_buffer]",
-                        "    xor edx, edx",
-                        f"{strlen_loop}:",
-                        "    movzx eax, byte ptr [ecx]",
-                        "    test eax, eax",
-                        f"    je {strlen_done}",
-                        "    inc ecx",
-                        "    inc edx",
-                        f"    jmp {strlen_loop}",
-                        f"{strlen_done}:",
+                        f"    push {memory_type_label(source)}",
+                        "    call DBaseWfmFormatValue",
+                        "    add esp, 12",
                         f"    push {1 if add_newline else 0}",
-                        "    push edx",
-                        "    push dword ptr [__dbase_format_buffer]",
+                        "    push dword ptr [__dbase_wfm_format_result_len]",
+                        "    push dword ptr [__dbase_wfm_format_result]",
                         "    call DBaseQtConsoleWrite",
                         "    add esp, 12",
-                        f"    jmp {done_branch}",
-                        f"{string_branch}:",
-                        f"    mov eax, dword ptr [{memory_pointer_label(source)}]",
-                        "    test eax, eax",
-                        f"    je {null_branch}",
-                        f"    push {1 if add_newline else 0}",
-                        f"    push dword ptr [{memory_length_label(source)}]",
-                        "    push eax",
-                        "    call DBaseQtConsoleWrite",
-                        "    add esp, 12",
-                        f"    jmp {done_branch}",
-                        f"{object_branch}:",
-                        f"    mov eax, dword ptr [{memory_pointer_label(source)}]",
-                        "    test eax, eax",
-                        f"    je {null_branch}",
-                        f"    push {1 if add_newline else 0}",
-                        f"    push {object_len}",
-                        f"    push {object_label}",
-                        "    call DBaseQtConsoleWrite",
-                        "    add esp, 12",
-                        f"    jmp {done_branch}",
-                        f"{null_branch}:",
-                        f"    push {1 if add_newline else 0}",
-                        f"    push {null_len}",
-                        f"    push {null_label}",
-                        "    call DBaseQtConsoleWrite",
-                        "    add esp, 12",
-                        f"{done_branch}:",
                     ])
 
             def callback_literal(expression, method):
@@ -115336,6 +116138,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 out.extend(emit_char_case_check(
                     slot, is64=is64, label_prefix=wfm_flow_label(name.casefold()),
                     upper=(name == "ISUPPER"), encoding="utf8",
+                    has_shadow_space=is64,  # WFM method already reserves 40 bytes.
                 ))
                 if isinstance(argument, DBaseIdentifierExpression):
                     out.append(f"{end}:")
@@ -115344,12 +116147,8 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             def emit_wfm_char_case_slot(out, node, destination):
                 if not emit_wfm_char_case_numeric(out, node):
                     return False
-                out.extend([
-                    f"    fstp qword ptr [{memory_number_label(destination)}]",
-                    f"    mov dword ptr [{memory_type_label(destination)}], {WFM_VALUE_INTEGER}",
-                    f"    mov dword ptr [{memory_length_label(destination)}], 0",
-                    f"    mov {ptr} ptr [{memory_pointer_label(destination)}], 0",
-                ])
+                out.append(f"    fstp qword ptr [{memory_number_label(destination)}]")
+                emit_wfm_numeric_header(out, destination, WFM_VALUE_INTEGER)
                 return True
 
             def emit_wfm_numeric_condition_value(out, node):
@@ -115382,13 +116181,19 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                         return
                     emit_wfm_function_numeric(out, node)
                     return
-                if isinstance(node, DBaseLiteralExpression) and node.value_type == 'number':
-                    out.append(f"    fld qword ptr [{number_constant(node.value)}]")
+                if isinstance(node, DBaseLiteralExpression) and node.value_type in ('number', 'logical'):
+                    value = float(node.value)
+                    if _const_pool and value == 0.0 and str(node.value).strip() not in {'-0', '-0.0'}:
+                        out.append('    fldz')
+                    elif _const_pool and value == 1.0:
+                        out.append('    fld1')
+                    else:
+                        out.append(f"    fld qword ptr [{number_constant(node.value)}]")
                     return
                 if isinstance(node, DBaseIdentifierExpression):
                     name = node.name.casefold()
                     if name in ('true', 'false'):
-                        out.append(f"    fld qword ptr [{number_constant(int(name == 'true'))}]")
+                        out.append("    fld1" if name == "true" else "    fldz") if _const_pool else out.append(f"    fld qword ptr [{number_constant(int(name == 'true'))}]")
                         return
                     # WFM-Variablen sind formularweite, typisierte Slots. Ein
                     # uninitialisierter Slot hat einen numerischen Wert von 0.
@@ -115413,6 +116218,91 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 raise AssemblerError(
                     f"{filename}: WFM-IF numerischer Ausdruck noch nicht unterstuetzt: {node!r}"
                 )
+
+            def emit_wfm_type_ascii(out, node):
+                """Stage 464: returns ASCII N/C/O/U in EAX; PE32/PE64 compatible."""
+                from d64dbase.compiler import (
+                    DBaseCallExpression, DBaseIdentifierExpression,
+                    DBaseLiteralExpression, _dbase_type_query_name,
+                )
+                if isinstance(node, DBaseLiteralExpression):
+                    text = str(node.value)
+                    if node.value_type in ('string', 'char') and len(text) == 1:
+                        out.append(f"    mov eax, {ord(text.upper())}")
+                        return
+                    if node.value_type == 'number':
+                        out.append("    mov eax, 78")
+                        return
+                    if node.value_type == 'logical':
+                        out.append("    mov eax, 76")
+                        return
+                    if node.value_type == 'date':
+                        out.append("    mov eax, 68")
+                        return
+                    out.append("    mov eax, 0")
+                    return
+                if not isinstance(node, DBaseCallExpression) or node.name.casefold() not in {'type', 'vartype'}:
+                    raise AssemblerError(f"{filename}: TYPE/VARTYPE: Ausdruck nicht unterstuetzt: {node!r}")
+                if len(node.arguments) != 1:
+                    raise AssemblerError(f"{filename}: {node.name.upper()}(...) erwartet genau einen Parameter.")
+                arg = node.arguments[0]
+                name = None
+                if node.name.casefold() == 'type':
+                    name = _dbase_type_query_name(arg)
+                    if name is None:
+                        raise AssemblerError(f'{filename}: TYPE(...) erwartet einen Variablennamen als String, z.B. TYPE("xyz").')
+                elif isinstance(arg, DBaseIdentifierExpression):
+                    name = arg.name.casefold()
+                elif isinstance(arg, DBaseLiteralExpression):
+                    letter = {'number': 'N', 'string': 'C', 'char': 'C',
+                              'logical': 'L', 'date': 'D'}.get(arg.value_type, 'U')
+                    out.append(f"    mov eax, {ord(letter)}")
+                    return
+                else:
+                    raise AssemblerError(f"{filename}: VARTYPE(...) erwartet hier eine Variable oder ein Literal.")
+                slot = runtime_memory_slots.get(name)
+                if slot is None:
+                    out.append('    mov eax, 85')  # U (undefined)
+                    return
+                numeric = wfm_flow_label('type_numeric')
+                string = wfm_flow_label('type_string')
+                object_ = wfm_flow_label('type_object')
+                logical_ = wfm_flow_label('type_logical')
+                date_ = wfm_flow_label('type_date')
+                ready = wfm_flow_label('type_ready')
+                out.extend([
+                    f"    mov edx, dword ptr [{memory_type_label(slot)}]",
+                    f"    cmp edx, {WFM_VALUE_INTEGER}", f"    je {numeric}",
+                    f"    cmp edx, {WFM_VALUE_FLOAT}", f"    je {numeric}",
+                    f"    cmp edx, {WFM_VALUE_STRING}", f"    je {string}",
+                    f"    cmp edx, {WFM_VALUE_OBJECT}", f"    je {object_}",
+                    f"    cmp edx, {WFM_VALUE_LOGICAL}", f"    je {logical_}",
+                    f"    cmp edx, {WFM_VALUE_DATE}", f"    je {date_}",
+                    "    mov eax, 85", f"    jmp {ready}",
+                    f"{numeric}:", "    mov eax, 78", f"    jmp {ready}",
+                    f"{string}:", "    mov eax, 67", f"    jmp {ready}",
+                    f"{object_}:", "    mov eax, 79", f"    jmp {ready}",
+                    f"{logical_}:", "    mov eax, 76", f"    jmp {ready}",
+                    f"{date_}:", "    mov eax, 68", f"{ready}:",
+                ])
+
+            def emit_wfm_type_slot(out, node, destination):
+                emit_wfm_type_ascii(out, node)
+                done = wfm_flow_label('type_slot_done')
+                for letter in ('N', 'C', 'O', 'L', 'D'):
+                    next_label = wfm_flow_label('type_slot_next')
+                    text, _ = console_text_label(letter)
+                    out.extend([
+                        f"    cmp eax, {ord(letter)}", f"    jne {next_label}",
+                        f"    mov {'rax' if is64 else 'eax'}, {text}",
+                        f"    jmp {done}", f"{next_label}:",
+                    ])
+                text, _ = console_text_label('U')
+                out.extend([f"    mov {'rax' if is64 else 'eax'}, {text}",
+                            f"{done}:",
+                            f"    mov {ptr} ptr [{memory_pointer_label(destination)}], {'rax' if is64 else 'eax'}",
+                            f"    mov dword ptr [{memory_length_label(destination)}], 1",
+                            f"    mov dword ptr [{memory_type_label(destination)}], {WFM_VALUE_STRING}"])
 
             def emit_wfm_condition_true(out, node, true_label):
                 not_true = wfm_flow_label('not_true')
@@ -115447,6 +116337,25 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                         out.append(f'{done}:')
                         return
                 if isinstance(node, DBaseCondition):
+                    # Stage 464: IF TYPE("xyz") = "N", IF VARTYPE(x) <> "C".
+                    left_type = (isinstance(node.left, DBaseCallExpression) and
+                                 node.left.name.casefold() in {'type', 'vartype'})
+                    right_type = (isinstance(node.right, DBaseCallExpression) and
+                                  node.right.name.casefold() in {'type', 'vartype'})
+                    if left_type or right_type:
+                        emit_wfm_type_ascii(out, node.left)
+                        out.append('    push rax' if is64 else '    push eax')
+                        emit_wfm_type_ascii(out, node.right)
+                        out.append('    pop rcx' if is64 else '    pop ecx')
+                        out.append('    cmp ecx, eax')
+                        false_jump = {
+                            '<':'jge', '<=':'jg', '==':'jne',
+                            '>':'jle', '>=':'jl', '!=':'je',
+                        }.get(node.operator)
+                        if false_jump is None:
+                            raise AssemblerError(f"{filename}: WFM-TYPE Vergleich unbekannt: {node.operator}")
+                        out.append(f'    {false_jump} {false_label}')
+                        return
                     emit_wfm_numeric_condition_value(out, node.left)
                     emit_wfm_numeric_condition_value(out, node.right)
                     # ST0 = right, ST1 = left; Vergleichsrichtung invertiert.
@@ -115560,6 +116469,72 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                         ])
 
                 body_lines = list(getattr(method, "body", []) or [])
+                # Stage 465: Event-Code benutzt dieselbe dBASE-Kommentarsyntax
+                # wie der Konsolencompiler. Maskierung der gesamten Methode
+                # respektiert Quotes, verdoppelte Anfuehrungszeichen und
+                # Blockkommentare ueber mehrere Zeilen. Durch Erhalt der
+                # Zeilenumbrueche bleiben Meldungs-Zeilennummern stabil.
+                from d64dbase.compiler import strip_dbase_comments
+                body_lines = strip_dbase_comments(
+                    "\n".join(map(str, body_lines)), filename=filename
+                ).split("\n")
+                source_line_count = len(source.splitlines())
+                # Stage 468: dBASE LOCAL is scoped to its containing method.
+                # Discover all declarations before code emission so their names
+                # shadow global STORE variables throughout the whole method.
+                # Reuse the existing typed variant implementation for all
+                # reads, writes, TYPE/VARTYPE, and ?/?? output.
+                local_bindings = {}
+                for declaration_index, declaration_line in enumerate(body_lines):
+                    declaration_text = str(declaration_line).strip()
+                    if not re.match(r"(?i)^LOCAL(?:\s|$)", declaration_text):
+                        continue
+                    for local_name, unused_initializer in parse_wfm_local_declarations(
+                            declaration_text):
+                        key = local_name.casefold()
+                        if key in local_bindings:
+                            line_no = (declaration_index + 1 if
+                                       getattr(method, "_wfm_top_level", False) else
+                                       int(getattr(method, "source_start_line", 0) or 0)
+                                       + declaration_index + 1)
+                            raise AssemblerError(
+                                f"{filename}:{line_no}: WFM-Prozedur {procedure}: "
+                                f"LOCAL {local_name} mehrfach deklariert."
+                            )
+                        safe_proc = re.sub(r"[^A-Za-z0-9_]", "_", procedure.casefold())
+                        safe_name = re.sub(r"[^A-Za-z0-9_]", "_", key)
+                        slot_name = f"__dbase_wfm_local_{safe_proc}_{safe_name}"
+                        if slot_name in runtime_local_slots.values():
+                            raise AssemblerError(
+                                f"{filename}: WFM LOCAL Slot-Kollision: {slot_name}"
+                            )
+                        local_bindings[key] = slot_name
+                        runtime_local_slots[(procedure.casefold(), key)] = slot_name
+
+                saved_local_bindings = {
+                    key: (runtime_memory_slots.get(key), runtime_memory_kinds.get(key))
+                    for key in local_bindings
+                }
+                for key, slot_name in local_bindings.items():
+                    runtime_memory_slots[key] = slot_name
+                    runtime_memory_kinds[key] = "variant"
+                    # A LOCAL starts as NULL on *every* invocation. This also
+                    # prevents stale values in later click handlers/events.
+                    callback_lines.extend([
+                        f"    mov dword ptr [{memory_type_label(slot_name)}], 0",
+                        f"    mov dword ptr [{memory_length_label(slot_name)}], 0",
+                        f"    fldz",
+                        f"    fstp qword ptr [{memory_number_label(slot_name)}]",
+                    ])
+                    if is64:
+                        callback_lines.extend([
+                            "    xor eax, eax",
+                            f"    mov qword ptr [{memory_pointer_label(slot_name)}], rax",
+                        ])
+                    else:
+                        callback_lines.extend([
+                            f"    mov dword ptr [{memory_pointer_label(slot_name)}], 0",
+                        ])
                 flow_stack = []
                 procedure_exit_label = wfm_flow_label('method_exit')
                 in_block_comment = False
@@ -115586,6 +116561,20 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                         continue
                     if statement.startswith("//") or statement.startswith("**"):
                         continue
+
+                    # Stage 467: Quellcode-zu-ASM-Mapping.  Die WFM-Methode
+                    # beginnt mit der PROCEDURE/FUNCTION-Deklaration; body[0]
+                    # ist die folgende Quellzeile. Der Stage-466-Top-Level-Block
+                    # beginnt hingegen in Zeile 1 des gesamten Dokuments.
+                    source_line_number = int(
+                        getattr(method, "source_start_line", 0) or 0
+                    ) + body_index + 1
+                    if getattr(method, "_wfm_top_level", False):
+                        source_line_number = body_index + 1
+                    if 0 < source_line_number <= source_line_count:
+                        callback_lines.append(
+                            f"    ; Quellcode Zeile: {source_line_number}"
+                        )
 
                     # Stage 308: lokale Laufzeit-Kontrollflussstruktur statt
                     # eines rein linearen Event-Assemblers.
@@ -115624,6 +116613,25 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                         if frame['next'] is not None:
                             callback_lines.append(f"{frame['next']}:")
                         callback_lines.append(f"{frame['end']}:")
+                        continue
+
+                    # Stage 468: LOCAL a [= expr] [, b [= expr], ...].
+                    # Storage is allocated at method scope above. Initializers
+                    # execute at the original source position (also in IFs).
+                    if re.match(r"(?i)^LOCAL(?:\s|$)", statement):
+                        for local_name, initializer in parse_wfm_local_declarations(
+                                statement):
+                            if initializer is None:
+                                callback_lines.append(f"    ; LOCAL {local_name}")
+                                continue
+                            if not emit_wfm_memory_store(
+                                    callback_lines, initializer, local_name, statement):
+                                line_hint = source_line_number
+                                raise AssemblerError(
+                                    f"{filename}:{line_hint}: WFM-Prozedur {procedure}: "
+                                    f"LOCAL {local_name}: Initialisierer wird "
+                                    f"nicht unterstuetzt: {initializer}"
+                                )
                         continue
 
                     debug_match = re.fullmatch(r"(?i)SET\s+DEBUG\s+(ON|OFF)", statement)
@@ -115798,9 +116806,20 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     )
                     if print_match:
                         print_expression = str(print_match.group(2) or "").strip()
+                        if re.match(r"(?i)^(?:type|vartype)\s*\(", print_expression):
+                            type_expr = parse_wfm_condition(print_expression)
+                            if not (isinstance(type_expr, DBaseCallExpression) and
+                                    type_expr.name.casefold() in {'type', 'vartype'}):
+                                raise AssemblerError(f"{filename}: Ungueltiger TYPE/VARTYPE-Ausdruck: {print_expression}")
+                            type_slot = memory_slot(wfm_flow_label('type_print'))
+                            emit_wfm_type_slot(callback_lines, type_expr, type_slot)
+                            emit_wfm_memory_print(callback_lines, type_slot, statement,
+                                                  print_match.group(1) != '??')
+                            continue
                         if re.match(r"(?i)^is(?:upper|lower)\s*\(", print_expression):
                             case_expr = parse_wfm_condition(print_expression)
                             print_slot = memory_slot(wfm_flow_label("case_print"))
+                            mark_static_numeric_slot(print_slot, WFM_VALUE_INTEGER)
                             emit_wfm_char_case_slot(callback_lines, case_expr, print_slot)
                             emit_wfm_memory_print(
                                 callback_lines, print_slot, statement,
@@ -115813,6 +116832,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                                     f"{filename}: ISKEYBOARD() erwartet keine Parameter."
                                 )
                             print_slot = memory_slot("__wfm_iskeyboard_print")
+                            mark_static_numeric_slot(print_slot, WFM_VALUE_INTEGER)
                             emit_wfm_iskeyboard_slot(callback_lines, print_slot)
                             emit_wfm_memory_print(
                                 callback_lines, print_slot, statement,
@@ -115825,6 +116845,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                                     f"{filename}: ISMOUSE() erwartet keine Parameter."
                                 )
                             print_slot = memory_slot("__wfm_ismouse_print")
+                            mark_static_numeric_slot(print_slot, WFM_VALUE_INTEGER)
                             emit_wfm_ismouse_slot(callback_lines, print_slot)
                             emit_wfm_memory_print(
                                 callback_lines, print_slot, statement,
@@ -115974,7 +116995,9 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     line_hint = int(
                         getattr(method, "source_start_line", 0) or 0
                     )
-                    if line_hint:
+                    if getattr(method, "_wfm_top_level", False):
+                        line_hint = body_index + 1
+                    elif line_hint:
                         line_hint += body_index + 1
                     location = f"{filename}:{line_hint}" if line_hint else filename
                     raise AssemblerError(
@@ -115989,6 +117012,19 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                         f"{filename}: WFM-Prozedur {procedure}: ENDIF fehlt "
                         f"(IF bei Methoden-Zeile {opened['line']})."
                     )
+                # Stage 468: Restore the global name resolution before the
+                # next procedure is compiled. The local slots remain allocated
+                # in runtime_local_slots for emission into the final .bss.
+                for key, (previous_slot, previous_kind) in saved_local_bindings.items():
+                    if previous_slot is None:
+                        runtime_memory_slots.pop(key, None)
+                    else:
+                        runtime_memory_slots[key] = previous_slot
+                    if previous_kind is None:
+                        runtime_memory_kinds.pop(key, None)
+                    else:
+                        runtime_memory_kinds[key] = previous_kind
+
                 callback_lines.append(f'{procedure_exit_label}:')
                 if is64:
                     callback_lines.extend([
@@ -116018,6 +117054,19 @@ QMenu#green_beige_popup_menu::indicator:checked {{
 
             entry_label = "__d64_wfm_entry"
             init_call_lines = lifecycle_init_call_lines()
+            # Stage 463: Der generierte HEADER definiert bmodal als optionalen
+            # Programmparameter (Default .F.). ReadModal benutzt den nativen
+            # Parameterwert, Open die nichtmodale Variante. Fuer aeltere
+            # Dateien ohne explizite Headersteuerung bleibt Open der Default.
+            _wfm_header = str(source).split("CLASS", 1)[0]
+            _wfm_uses_modal_parameter = bool(
+                re.search(r"(?im)^\s*PARAMETER\s+bmodal\b", _wfm_header)
+                and re.search(r"(?i)\bReadModal\s*\(\s*\)", _wfm_header)
+            )
+            _wfm_forced_modal = bool(
+                not _wfm_uses_modal_parameter
+                and re.search(r"(?i)\bReadModal\s*\(\s*\)", _wfm_header)
+            )
             debug_theme_mode = {"default": 0, "light": 1, "dark": 2}.get(
                 _normalize_project_windows_debug_theme(debug_theme), 0
             )
@@ -116025,44 +117074,32 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             if is64:
                 lifecycle = "\n".join([
                     "",
-                    "; Stage 127: eigener WFM-GUI-Programmeinstieg",
+                    "; Stage 462: WFM DLL-Runtime-Startup/Shutdown fuer PE32+",
                     ".section .text",
                     f".entry {entry_label}",
                     f"{entry_label}:",
-                    # Stage 123: den WFM-Erkennungsmarker auch aus .text
-                    # referenzieren, damit ein PE-Writer unreferenzierte
-                    # .data-Symbole nicht still entfernen kann.
                     "    mov rax, __dbase_wfm_qt_output_marker",
-                    f"    mov ecx, {1 if workstation_mode else 0}",
-                    "    sub rsp, 40",
-                    "    call DBaseQtSetWorkstationMode",
-                    "    add rsp, 40",
-                    f"    mov ecx, {debug_theme_mode}",
-                    "    sub rsp, 40",
-                    "    call DBaseQtSetDebugTheme",
-                    "    add rsp, 40",
                     f"    mov rcx, {title_label}",
+                    f"    mov edx, {1 if workstation_mode else 0}",
+                    f"    mov r8d, {debug_theme_mode}",
+                    "    mov r9d, 1",  # GUI mode
+                    "    mov rax, __dbase_format_buffer",
                     "    sub rsp, 40",
-                    "    call DBaseQtInitializeGui",
+                    "    mov qword ptr [rsp+32], rax",
+                    "    call DBaseQtRuntimeStartup",
                     "    add rsp, 40",
-                    # Stage 201: eigener WFM-Entry umgeht den historischen
-                    # dBase-_start. Deshalb muss auch der _gcvt-Puffer hier
-                    # explizit alloziert werden.
-                    "    xor ecx, ecx",
-                    "    mov edx, 96",
-                    "    mov r8d, 12288",
-                    "    mov r9d, 4",
-                    "    sub rsp, 40",
-                    "    call VirtualAlloc",
-                    "    add rsp, 40",
-                    "    test rax, rax",
-                    "    jne __dbase_wfm_format_buffer_ok",
+                    "    test eax, eax",
+                    "    jne __dbase_wfm_runtime_ready",
                     "    mov ecx, 1",
                     "    sub rsp, 40",
                     "    call ExitProcess",
-                    "__dbase_wfm_format_buffer_ok:",
-                    "    mov qword ptr [__dbase_format_buffer], rax",
-                    *wfm_entry_debug_preamble(),
+                    "__dbase_wfm_runtime_ready:",
+                    # SET DEBUG wird bei vorhandenem Preamble-Code bereits
+                    # in dessen Quelltextreihenfolge ausgefuehrt.
+                    *([] if has_preamble else wfm_entry_debug_preamble()),
+                    *(["    sub rsp, 40",
+                       f"    call {procedure_label(preamble_name)}",
+                       "    add rsp, 40"] if has_preamble else []),
                     body.rstrip("\n"),
                     *init_call_lines,
                     f"    mov rcx, qword ptr [{form_slot}]",
@@ -116075,8 +117112,14 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                         + "\n    add rsp, 40"
                         if "__main__".casefold() in method_map else ""
                     ),
+                    # Stage 463: bmodal wird aus der optionalen Kommandozeile
+                    # gelesen (Default .F.), danach Modal/IDE/Workstation-Loop.
+                    *(["    sub rsp, 40", "    call DBaseQtWfmModalParameter", "    add rsp, 40"]
+                      if _wfm_uses_modal_parameter else [f"    mov eax, {int(_wfm_forced_modal)}"]),
+                    "    mov edx, eax",
+                    f"    mov rcx, qword ptr [{form_slot}]",
                     "    sub rsp, 40",
-                    "    call DBaseQtExec",
+                    "    call DBaseQtFormRun",
                     "    add rsp, 40",
                     (
                         "    sub rsp, 40\n    call "
@@ -116084,19 +117127,10 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                         + "\n    add rsp, 40"
                         if "__del__".casefold() in method_map else ""
                     ),
+                    "    mov rcx, __dbase_format_buffer",
                     "    sub rsp, 40",
-                    "    call DBaseQtShutdown",
+                    "    call DBaseQtRuntimeShutdown",
                     "    add rsp, 40",
-                    "    mov rcx, qword ptr [__dbase_format_buffer]",
-                    "    test rcx, rcx",
-                    "    je __dbase_wfm_format_buffer_free_done",
-                    "    xor edx, edx",
-                    "    mov r8d, 32768",
-                    "    sub rsp, 40",
-                    "    call VirtualFree",
-                    "    add rsp, 40",
-                    "    mov qword ptr [__dbase_format_buffer], 0",
-                    "__dbase_wfm_format_buffer_free_done:",
                     "    xor ecx, ecx",
                     "    sub rsp, 40",
                     "    call ExitProcess",
@@ -116105,35 +117139,26 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             else:
                 lifecycle = "\n".join([
                     "",
-                    "; Stage 127: eigener WFM-GUI-Programmeinstieg",
+                    "; Stage 462: WFM DLL-Runtime-Startup/Shutdown fuer PE32",
                     ".section .text",
                     f".entry {entry_label}",
                     f"{entry_label}:",
-                    # Stage 123: siehe PE64-Pfad oben.
                     "    mov eax, __dbase_wfm_qt_output_marker",
-                    f"    push {1 if workstation_mode else 0}",
-                    "    call DBaseQtSetWorkstationMode",
-                    "    add esp, 4",
+                    "    push __dbase_format_buffer",
+                    "    push 1",  # GUI mode
                     f"    push {debug_theme_mode}",
-                    "    call DBaseQtSetDebugTheme",
-                    "    add esp, 4",
+                    f"    push {1 if workstation_mode else 0}",
                     f"    push {title_label}",
-                    "    call DBaseQtInitializeGui",
-                    "    add esp, 4",
-                    # Stage 201: _gcvt-Ausgabepuffer fuer den eigenen
-                    # WFM-Programmeinstieg bereitstellen.
-                    "    push 4",
-                    "    push 12288",
-                    "    push 96",
-                    "    push 0",
-                    "    call VirtualAlloc",
+                    "    call DBaseQtRuntimeStartup",
+                    "    add esp, 20",
                     "    test eax, eax",
-                    "    jne __dbase_wfm_format_buffer_ok",
+                    "    jne __dbase_wfm_runtime_ready",
                     "    push 1",
                     "    call ExitProcess",
-                    "__dbase_wfm_format_buffer_ok:",
-                    "    mov dword ptr [__dbase_format_buffer], eax",
-                    *wfm_entry_debug_preamble(),
+                    "__dbase_wfm_runtime_ready:",
+                    *([] if has_preamble else wfm_entry_debug_preamble()),
+                    *([f"    call {procedure_label(preamble_name)}"]
+                      if has_preamble else []),
                     body.rstrip("\n"),
                     *init_call_lines,
                     f"    push dword ptr [{form_slot}]",
@@ -116143,21 +117168,19 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                         "    call " + procedure_label("__main__")
                         if "__main__".casefold() in method_map else ""
                     ),
-                    "    call DBaseQtExec",
+                    *(["    call DBaseQtWfmModalParameter"]
+                      if _wfm_uses_modal_parameter else [f"    mov eax, {int(_wfm_forced_modal)}"]),
+                    "    push eax",
+                    f"    push dword ptr [{form_slot}]",
+                    "    call DBaseQtFormRun",
+                    "    add esp, 8",
                     (
                         "    call " + procedure_label("__del__")
                         if "__del__".casefold() in method_map else ""
                     ),
-                    "    call DBaseQtShutdown",
-                    "    mov eax, dword ptr [__dbase_format_buffer]",
-                    "    test eax, eax",
-                    "    je __dbase_wfm_format_buffer_free_done",
-                    "    push 32768",
-                    "    push 0",
-                    "    push eax",
-                    "    call VirtualFree",
-                    "    mov dword ptr [__dbase_format_buffer], 0",
-                    "__dbase_wfm_format_buffer_free_done:",
+                    "    push __dbase_format_buffer",
+                    "    call DBaseQtRuntimeShutdown",
+                    "    add esp, 4",
                     "    push 0",
                     "    call ExitProcess",
                     "",
@@ -116168,6 +117191,8 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             # WFM-Entry, sodass der alte Shell-Einstieg nicht ausgefuehrt wird.
             assembly = assembly.rstrip() + "\n" + lifecycle
             if callback_body:
+                from d64dbase.wfm_optimizer import optimize_wfm_branches
+                callback_body = optimize_wfm_branches(callback_body)
                 assembly = (
                     assembly.rstrip()
                     + "\n\n; Stage 133: WFM Event-/Methoden-Code\n"
@@ -116175,6 +117200,40 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     + callback_body
                     + "\n"
                 )
+
+            # Stage 460: shared inline ABI helpers for dynamic WFM variants.
+            # No Qt5/DLL export or external build utility is required.
+            if dynamic_numeric_header_used or dynamic_variant_copy_used:
+                helper_lines = ["", "; Stage 460: shared dynamic variant helpers", ".section .text"]
+                if dynamic_numeric_header_used:
+                    slot_reg = "rcx" if is64 else "eax"
+                    ptr_offset = 12
+                    len_offset = 20 if is64 else 16
+                    helper_lines.extend([
+                        "__dbase_wfm_assign_numeric_header:",
+                        f"    mov dword ptr [{slot_reg}], edx",
+                        f"    mov {ptr} ptr [{slot_reg}+{ptr_offset}], 0",
+                        f"    mov dword ptr [{slot_reg}+{len_offset}], 0",
+                        "    ret",
+                    ])
+                if dynamic_variant_copy_used:
+                    src = "rcx" if is64 else "eax"
+                    dst = "rdx" if is64 else "edx"
+                    tmp = "r8" if is64 else "ecx"
+                    tmp32 = "r8d" if is64 else "ecx"
+                    helper_lines.extend([
+                        "__dbase_wfm_copy_variant:",
+                        f"    mov {tmp32}, dword ptr [{src}]",
+                        f"    mov dword ptr [{dst}], {tmp32}",
+                        f"    fld qword ptr [{src}+4]",
+                        f"    fstp qword ptr [{dst}+4]",
+                        f"    mov {tmp}, {ptr} ptr [{src}+12]",
+                        f"    mov {ptr} ptr [{dst}+12], {tmp}",
+                        f"    mov {tmp32}, dword ptr [{src}+{20 if is64 else 16}]",
+                        f"    mov dword ptr [{dst}+{20 if is64 else 16}], {tmp32}",
+                        "    ret",
+                    ])
+                assembly = assembly.rstrip() + "\n" + "\n".join(helper_lines) + "\n"
 
             # Stage 224: the compact Stage-223 property records are decoded by
             # one local helper per image.  It calls the long-established @51
@@ -116291,6 +117350,20 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     ),
                 ])
 
+            if _external_ui:
+                data_lines.extend([
+                    "", "; Stage 456: one embedded JSON document per WFM FORM",
+                    "__dbase_wfm_external_ui_slots:",
+                ])
+                data_lines.extend(
+                    f"    {'dq' if is64 else 'dd'} {slot}" for slot in external_ui_slots
+                )
+                data_lines.append("__dbase_wfm_external_ui_payload:")
+                for offset in range(0, len(external_ui_blob), 24):
+                    data_lines.append("    db " + ", ".join(
+                        str(byte) for byte in external_ui_blob[offset:offset+24]
+                    ))
+
             if property_tables:
                 data_lines.extend([
                     "",
@@ -116318,12 +117391,36 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                         "    resq 1" if is64 else "    resd 1",
                     ])
 
-            if runtime_memory_slots:
+            if runtime_memory_slots or runtime_local_slots:
                 bss_lines.extend([
+                    "",
+                    "; Stage 449: shared WFM formatter's output (ptr, length)",
+                    "__dbase_wfm_format_result:",
+                    "    resq 1" if is64 else "    resd 1",
+                    "__dbase_wfm_format_result_len:",
+                    "    resd 1",
                     "",
                     "; Stage 223: typed dBase WFM memory variables (.bss)",
                 ])
-                for memory_key, slot_name in runtime_memory_slots.items():
+                all_memory_slots = list(runtime_memory_slots.items()) + [
+                    ("LOCAL " + proc + "." + name, slot)
+                    for (proc, name), slot in runtime_local_slots.items()
+                ]
+                for memory_key, slot_name in all_memory_slots:
+                    static_type = runtime_static_numeric_slots.get(slot_name)
+                    if static_type is not None:
+                        data_lines.extend([
+                            f"; Stage 460: fixed numeric WFM internal slot ({memory_key})",
+                            f"{memory_type_label(slot_name)}:",
+                            f"    dd {static_type}",
+                            f"{memory_number_label(slot_name)}:",
+                            "    dq 0",
+                            f"{memory_pointer_label(slot_name)}:",
+                            "    dq 0" if is64 else "    dd 0",
+                            f"{memory_length_label(slot_name)}:",
+                            "    dd 0",
+                        ])
+                        continue
                     bss_lines.extend([
                         f"{memory_type_label(slot_name)}:",
                         "    resd 1",
@@ -116398,6 +117495,46 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     asm_lines[insert_at:insert_at] = [declaration + "\n"]
                     assembly = "".join(asm_lines)
 
+            # Stage 458: native Qt5 UTF-8 string operations are imported only
+            # when the WFM event code uses them. These extra name exports do
+            # not change the ordinal ABI of existing Qt5 runtime functions.
+            _wfm_string_names = (
+                "DBaseUtf8Substring", "DBaseUtf8SubstringUpper",
+                "DBaseUtf8SubstringLower", "DBaseUtf8Upper", "DBaseUtf8Lower",
+            )
+            _wfm_string_imports = [
+                f'import {name}, "libd64_qt5.dll", "{name}"'
+                for name in _wfm_string_names
+                if f'call {name}' in assembly and
+                f'import {name}, "libd64_qt5.dll", "{name}"' not in assembly
+            ]
+            if _wfm_string_imports:
+                _asm_lines = assembly.splitlines(keepends=True)
+                _import_at = next((i for i, line in enumerate(_asm_lines)
+                                   if line.lstrip().startswith('section ')), len(_asm_lines))
+                # Also accept the usual leading '.section'.
+                _import_at = next((i for i, line in enumerate(_asm_lines)
+                                   if line.lstrip().startswith(('.section ', 'section '))),
+                                  _import_at)
+                _asm_lines[_import_at:_import_at] = [s + '\n' for s in _wfm_string_imports]
+                assembly = ''.join(_asm_lines)
+
+            # Stage 448: shared character predicates are exported by the
+            # same runtime DLL as the native console functions. The WFM source
+            # may be built without the ordinary PRG import header.
+            from d64dbase.char_case_runtime import CASE_EXPORTS
+            needed_case_imports = [
+                f'import {name}, "c64_dbase_runtime.dll", "{name}"'
+                for name in CASE_EXPORTS if f'call {name}' in assembly
+                and f'import {name}, "c64_dbase_runtime.dll", "{name}"' not in assembly
+            ]
+            if needed_case_imports:
+                asm_lines = assembly.splitlines(keepends=True)
+                insert_at = next((i for i, line in enumerate(asm_lines)
+                                  if line.lstrip().startswith('section ')), len(asm_lines))
+                asm_lines[insert_at:insert_at] = [item + '\n' for item in needed_case_imports]
+                assembly = ''.join(asm_lines)
+
             if _dead_property_imports:
                 assembly = _strip_property_imports_fn(assembly)
 
@@ -116405,6 +117542,8 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 f"Stage 217: WFM Default-Property-Elision={'an' if _elide_defaults else 'aus'}; Property Defaults ABI {_property_defaults_abi}.",
                 f"Stage 217: Dead-Property-Imports={'an' if _dead_property_imports else 'aus'}, leere Standardstrings={'an' if _empty_standard_strings else 'aus'}.",
                 f"Stage 218: Cut Multiple Codes={'an' if _cut_multiple_codes else 'aus'}; Property-Setter werden ab 2 Eintraegen als DATA-Tabelle gebuendelt.",
+                f"Stage 451: Const Pool={'an' if _const_pool else 'aus'}; WFM-Spruenge und identische Property-Tabellen werden optimiert.",
+                f"Stage 460: static numeric internal slots={'an' if _static_numeric_slots else 'aus'}, dynamic typed variables={'an' if _dynamic_typed_variables else 'aus'}.",
                 "FORM/WFM: eigenstaendige GUI-Anwendung mit __d64_wfm_entry.",
                 "WFM verwendet DBaseQtInitializeGui; kein Console-Hauptfenster wird erzeugt.",
                 "Designer-Komponenten werden als echte Qt5-Widgets mit Parent/Geometrie/Properties erzeugt.",
@@ -116487,9 +117626,10 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             )
             if not ok:
                 return False
-            self._ensure_dbase_form_assembly_tab()
-            if self.dbase_form_tabs is not None and self.dbase_form_assembly_page is not None:
-                self.dbase_form_tabs.setCurrentWidget(self.dbase_form_assembly_page)
+            # Stage 467: Im Quellcode-Tab bleiben Quelle und erzeugter ASM
+            # nebeneinander im Sinne einer gemeinsamen Splitter-Ansicht sichtbar.
+            if self.dbase_form_tabs is not None:
+                self.dbase_form_tabs.setCurrentWidget(self.dbase_form_source_page)
             if document is not None:
                 document.generated_assembly_panel.hide()
 
@@ -116541,12 +117681,46 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             if machine not in {IMAGE_FILE_MACHINE_I386, IMAGE_FILE_MACHINE_AMD64}:
                 machine = IMAGE_FILE_MACHINE_I386
 
+            # Stage 459: an old DLL may match the original 64-ordinal ABI,
+            # but must not be used by an EXE importing new name-only APIs.
+            assembly_text = ""
+            document = getattr(self, "dbase_form_build_document", None)
+            if document is not None:
+                asm_editor = getattr(document, "generated_assembly_editor", None)
+                if asm_editor is not None:
+                    try:
+                        assembly_text = asm_editor.toPlainText()
+                    except RuntimeError:  # Qt editor was already destroyed
+                        pass
+                if not assembly_text:
+                    asm_path = getattr(document, "generated_assembly_path", None)
+                    if asm_path:
+                        try:
+                            assembly_text = Path(asm_path).read_text(encoding="utf-8")
+                        except (OSError, UnicodeError):
+                            pass
+            if document is not None and assembly_text:
+                _asm_path = getattr(document, "generated_assembly_path", None)
+                if _asm_path is not None:
+                    try:
+                        assembly_text = preprocess_windows_asm(
+                            assembly_text,
+                            filename=str(_asm_path),
+                            include_dirs=self._project_windows_asm_include_paths(document.build_target),
+                        ).source
+                    except WindowsAsmMacroError:
+                        pass  # actual assembler reports the include error with its source location
+            required_extensions = _d64_qt5_required_name_exports(assembly_text)
+
             def _compatible(candidate: Path) -> bool:
                 try:
                     exports = _pe_export_name_ordinals(candidate, int(machine))
                     if not exports:
                         return False
-                    return _pe_export_ordinal_map_hash(exports) == PE_D64_QT5_ORDINAL_MAP_HASH
+                    return (
+                        _pe_export_ordinal_map_hash(exports) == PE_D64_QT5_ORDINAL_MAP_HASH
+                        and required_extensions.issubset(exports)
+                    )
                 except (OSError, ValueError, TypeError):
                     return False
 
@@ -116599,6 +117773,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     return False
 
             actual_hash = ""
+            exports = {}
             if destination.is_file():
                 try:
                     exports = _pe_export_name_ordinals(destination, int(machine))
@@ -116607,9 +117782,11 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 except OSError:
                     pass
             expected_hash = PE_D64_QT5_ORDINAL_MAP_HASH.hex()
+            missing = sorted(required_extensions.difference(exports)) if destination.is_file() and actual_hash else sorted(required_extensions)
             detail = (
                 f"\n\nErwartete Ordinal-Map: {expected_hash}"
                 + (f"\nGefundene Ordinal-Map: {actual_hash}" if actual_hash else "")
+                + ("\nFehlende Runtime-Exporte: " + ", ".join(missing) if missing else "")
             )
             self.show_error(
                 "libd64_qt5.dll fehlt oder ist inkompatibel",
@@ -117306,7 +118483,12 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             ]
             lines.extend([
                 f"// Generated on {now}", "//", "PARAMETER bmodal", "LOCAL B",
-                f"B = NEW {class_name}(51,4)", "B.Init(121,2)", "B.Open()", "",
+                f"B = NEW {class_name}(51,4)",
+                "if bmodal = .T.",
+                "   B.ReadModal()",
+                "else",
+                "   B.Open()",
+                "endif", "",
                 f"CLASS {class_name} OF FORM",
             ])
             for key, value in dict(getattr(scene, "wfm_declared_properties", {}) or {}).items():
@@ -118738,8 +119920,16 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 self.document_tabs.setCurrentIndex(previous)
             elif self.document_tabs.count() > 0:
                 self.document_tabs.setCurrentIndex(0)
-            if page is not None:
-                page.deleteLater()
+            # Stage 457: removeTab() nimmt die zentrale Seite nur aus der
+            # sichtbaren Navigation. Designer, QTabWidget und geoeffnete DBF-
+            # Seiten muessen weiterleben: load_project_file() stellt spaeter
+            # die Projekt-Spaltenbreiten ueber self.dbase_table_designer_widget
+            # wieder her. deleteLater() hat das Kind-QTabWidget zerstoert,
+            # waehrend die Python-Referenz bestehen blieb (RuntimeError:
+            # wrapped C/C++ object of type QTabWidget has been deleted).
+            # Die Seite bleibt als verstecktes Kind von document_tabs erhalten
+            # und wird beim naechsten _mount_dbase_table_designer_central()
+            # wieder als Tab eingebaut.
 
         def _dbase_table_dock_top_level_changed(self, floating: bool) -> None:
             # Stage 299: Im Tabellen-Workspace wird der Designer zentral
@@ -119268,6 +120458,15 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     _target,
                     self.project_windows_output_directories.get(_target, ""),
                 )
+                panel.set_console_runtime_directory(
+                    _target, self.project_windows_console_dll_directories.get(_target, "")
+                )
+                panel.set_console_runtime_pack(
+                    _target, self.project_windows_console_dll_pack.get(_target, False)
+                )
+                panel.set_console_runtime_const_pool(
+                    _target, self.project_windows_console_const_pool.get(_target, False)
+                )
                 panel.set_link_with_ordinals(
                     _target,
                     self.project_windows_link_with_ordinals.get(_target, False),
@@ -119514,6 +120713,17 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     self.project_windows_pe_packing_enabled.get(
                         _target, PE_PACKING_DEFAULT
                     ),
+                )
+                _ui_opt = self.project_windows_dbase_visual.get(_target, {})
+                self.project_settings_panel.set_dbase_visual_settings(
+                    _target, bool(_ui_opt.get("external_ui_components", False)),
+                    bool(_ui_opt.get("compress_json", False)),
+                    bool(_ui_opt.get("store_binary_data", False)),
+                )
+                _slot_opt = self.project_windows_dbase_slots.get(_target, {})
+                self.project_settings_panel.set_dbase_slot_settings(
+                    _target, bool(_slot_opt.get("static_numeric_internal_slots", False)),
+                    bool(_slot_opt.get("dynamic_typed_variables", False)),
                 )
                 self.project_settings_panel.set_prolog_with_descriptors(
                     _target,
@@ -120697,6 +121907,56 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 if self.current_project_path is not None:
                     self.save_project()
 
+        def set_project_windows_dbase_visual_settings(
+            self, target: str, external: bool, compress: bool,
+            *, store_binary: bool = False, mark_modified: bool = True,
+        ) -> None:
+            key = self._project_windows_target_key(target)
+            options = {"external_ui_components": bool(external),
+                       "compress_json": bool(compress),
+                       "store_binary_data": bool(store_binary)}
+            changed = self.project_windows_dbase_visual.get(key) != options
+            self.project_windows_dbase_visual[key] = options
+            panel = getattr(self, "project_settings_panel", None)
+            if panel is not None and panel.dbase_visual_settings(key) != options:
+                panel.set_dbase_visual_settings(key, bool(external), bool(compress),
+                                                 bool(store_binary))
+            if changed and mark_modified:
+                document = getattr(self, "dbase_form_build_document", None)
+                if document is not None:
+                    try:
+                        document.invalidate_assembly_result("dBASE-UI-Optimierung geändert")
+                    except Exception:
+                        pass
+                self.set_project_modified(True)
+                if self.current_project_path is not None:
+                    self.save_project()
+
+        def set_project_windows_dbase_slot_settings(
+            self, target: str, static_numeric: bool, dynamic_typed: bool,
+            *, mark_modified: bool = True,
+        ) -> None:
+            key = self._project_windows_target_key(target)
+            options = {
+                "static_numeric_internal_slots": bool(static_numeric),
+                "dynamic_typed_variables": bool(dynamic_typed),
+            }
+            changed = self.project_windows_dbase_slots.get(key) != options
+            self.project_windows_dbase_slots[key] = options
+            panel = getattr(self, "project_settings_panel", None)
+            if panel is not None and panel.dbase_slot_settings(key) != options:
+                panel.set_dbase_slot_settings(key, bool(static_numeric), bool(dynamic_typed))
+            if changed and mark_modified:
+                document = getattr(self, "dbase_form_build_document", None)
+                if document is not None:
+                    try:
+                        document.invalidate_assembly_result("dBASE-Slot-Optimierung geändert")
+                    except Exception:
+                        pass
+                self.set_project_modified(True)
+                if self.current_project_path is not None:
+                    self.save_project()
+
         def set_project_windows_prolog_with_descriptors(
             self,
             target: str,
@@ -121202,6 +122462,97 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 if self.current_project_path is not None:
                     self.save_project()
 
+        def set_project_windows_console_dll_pack(
+            self, target: str, enabled: bool, *, mark_modified: bool = True,
+        ) -> None:
+            key = self._project_windows_target_key(target)
+            enabled = bool(enabled)
+            old = bool(self.project_windows_console_dll_pack.get(key, False))
+            self.project_windows_console_dll_pack[key] = enabled
+            panel = getattr(self, "project_settings_panel", None)
+            if panel is not None:
+                page = panel.page_for_target(key)
+                if page.console_runtime_pack_checkbox.isChecked() != enabled:
+                    page.set_console_runtime_pack(enabled)
+            if old != enabled and mark_modified:
+                self.set_project_modified(True)
+                if self.current_project_path is not None:
+                    self.save_project()
+
+        def set_project_windows_console_const_pool(
+            self, target: str, enabled: bool, *, mark_modified: bool = True,
+        ) -> None:
+            key = self._project_windows_target_key(target)
+            enabled = bool(enabled)
+            old = bool(self.project_windows_console_const_pool.get(key, False))
+            self.project_windows_console_const_pool[key] = enabled
+            panel = getattr(self, "project_settings_panel", None)
+            if panel is not None:
+                page = panel.page_for_target(key)
+                if page.console_runtime_const_pool_checkbox.isChecked() != enabled:
+                    page.set_console_runtime_const_pool(enabled)
+            if old != enabled and mark_modified:
+                self.set_project_modified(True)
+                if self.current_project_path is not None:
+                    self.save_project()
+
+        def set_project_windows_console_dll_directory(
+            self, target: str, value: str, *, mark_modified: bool = True,
+        ) -> None:
+            key = self._project_windows_target_key(target)
+            text = str(value or "").strip()
+            directory = self._project_windows_absolute_directory(text) if text else ""
+            old = self.project_windows_console_dll_directories.get(key, "")
+            self.project_windows_console_dll_directories[key] = directory
+            panel = getattr(self, "project_settings_panel", None)
+            if panel is not None:
+                page = panel.page_for_target(key)
+                if page.console_runtime_directory_edit.text() != directory:
+                    page.set_console_runtime_directory(directory)
+            if old != directory and mark_modified:
+                self.set_project_modified(True)
+                if self.current_project_path is not None:
+                    self.save_project()
+
+        def create_dbase_runtime_dll(self, target: str, directory: str = None) -> bool:
+            """Stage 447: actual PE32/PE32+ DLL creation using internal linker only."""
+            try:
+                from d64dbase.runtime_builder import create_runtime_dll
+                key = str(target).casefold()
+                if key not in ("pe32", "pe64"):
+                    raise ValueError(f"Ungültiges DLL-Ziel: {target}")
+                if directory is not None:
+                    self.set_project_windows_console_dll_directory(key, directory)
+                selected = self.project_windows_console_dll_directories.get(key, "")
+                if not selected:
+                    # No path configured: use current project workspace by default.
+                    selected = str(getattr(self, "current_directory", Path.cwd()))
+                destination = create_runtime_dll(
+                    key, Path(selected), get_exports=_pe_export_name_ordinals,
+                    assemble32=assemble_pe32_object_source,
+                    coff32=write_coff32_object, link32=link_coff32_objects,
+                    assemble64=assemble_pe64_object_source,
+                    coff64=write_coff64_object, link64=link_coff64_objects,
+                    pack_dll=bool(self.project_windows_console_dll_pack.get(key, False)),
+                )
+                if self.project_windows_console_dll_pack.get(key, False):
+                    from d64dbase.pe_dll_payload import is_payload_packed, parse_pe
+                    if not is_payload_packed(destination):
+                        raise ValueError('D64Z-Payload der DLL konnte nicht bestätigt werden')
+                    pack_info = (f'; D64Z/MSZIP-Payload gepackt (PE-Loader), '
+                                 f'Dateigröße {destination.stat().st_size} Bytes; '
+                                 'kein NTFS-Attribut erforderlich')
+                else:
+                    pack_info = '; nicht gepackt'
+                message = (f"dBASE Runtime DLL ({key}) erfolgreich erstellt: "
+                           f"{destination}{pack_info}")
+                self.log(message)
+                self.statusBar().showMessage(message, 10000)
+                return True
+            except (OSError, ValueError, PE32AssemblerError, PE64AssemblerError) as exc:
+                self.show_error("dBASE Runtime DLL erstellen", str(exc))
+                return False
+
         def set_project_windows_output_directory(
             self,
             target: str,
@@ -121244,6 +122595,10 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 if path not in result:
                     result.append(path)
             return tuple(result)
+
+        def _project_windows_asm_include_paths(self, target: str) -> Tuple[Path, ...]:
+            """Existing Compiler -> Eingabe-Verzeichnis, independent for PE32/PE64."""
+            return self._project_windows_link_search_paths(target)
 
         def _project_windows_ordinal_search_paths(
             self,
@@ -121632,11 +122987,15 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             tools_menu.addAction(self.windows_graphics_header_action)
             tools_menu.addAction(self.windows_graphics_build_action)
             tools_menu.addSeparator()
+            tools_menu.addAction(self.resource_editor_action)
             tools_menu.addAction(self.resource_action)
             tools_menu.addAction(self.localize_action)
             tools_menu.addAction(self.doxygen_action)
             tools_menu.addSeparator()
             tools_menu.addAction(self.html_editor_action)
+            tools_menu.addSeparator()
+            tools_menu.addAction(self.dbase_runtime_pe32_action)
+            tools_menu.addAction(self.dbase_runtime_pe64_action)
 
             learning_menu = self.main_menu_bar.addMenu("&Lernen")
             # Direkte Lernwerkzeuge.
@@ -126013,6 +127372,16 @@ border: 2px solid #2a69aa;
                 self.show_error("Ordinalimporte konnten nicht erzeugt werden", message)
                 self.statusBar().showMessage("Ordinalimport-Erzeugung fehlgeschlagen")
                 return False
+            # Stage 470: dBase-/WFM-Imports live in a separate, adjacent .inc.
+            # Keep a unique per-program/per-target filename to avoid collisions.
+            _asm_import_include = None
+            if str(language_name).startswith("dBase") and document.build_target in {"pe32", "pe64"}:
+                _small_asm, _include_path, _include_text = externalize_windows_imports(
+                    generated.assembly, assembly_path
+                )
+                if _include_path is not None:
+                    generated = replace(generated, assembly=_small_asm)
+                    _asm_import_include = (_include_path, _include_text)
             open_assembly = self._find_open_document(assembly_path)
             if open_assembly is not None and open_assembly.is_modified:
                 message = (
@@ -126030,6 +127399,9 @@ border: 2px solid #2a69aa;
                 return False
 
             try:
+                if _asm_import_include is not None:
+                    _inc_path, _inc_text = _asm_import_include
+                    self._write_assembled_program(_inc_path, _inc_text.encode("utf-8"))
                 self._write_assembled_program(
                     assembly_path,
                     generated.assembly.encode("utf-8"),
@@ -126633,12 +128005,14 @@ border: 2px solid #2a69aa;
                         unit_object_data = (
                             assemble_pe64_coff_object(
                                 generated.assembly,
-                                filename=assembly_path.name,
+                                filename=str(assembly_path),
+                                include_dirs=self._project_windows_asm_include_paths(document.build_target),
                             )
                             if document.build_target == "pe64"
                             else assemble_pe32_coff_object(
                                 generated.assembly,
-                                filename=assembly_path.name,
+                                filename=str(assembly_path),
+                                include_dirs=self._project_windows_asm_include_paths(document.build_target),
                             )
                         )
                         _write_cli_file(unit_object_path, unit_object_data)
@@ -126987,6 +128361,7 @@ border: 2px solid #2a69aa;
                         output_directory=_project_output_directory,
                     ),
                     output_directory=_project_output_directory,
+                    include_dirs=self._project_windows_asm_include_paths(document.build_target),
                 )
                 if (
                     document.is_pascal_document
@@ -127155,6 +128530,7 @@ border: 2px solid #2a69aa;
                         source_path=document.path,
                         assembly_path=assembly_path,
                         output_directory=_project_output_directory,
+                        include_dirs=self._project_windows_asm_include_paths(document.build_target),
                     )
                     # Bereits erzeugte Projektobjekte/-archive beim F2-Build
                     # eines Hauptprogramms ebenfalls an den internen Linker
@@ -127308,7 +128684,11 @@ border: 2px solid #2a69aa;
                 if (document.is_dbase_document
                     and document.build_target in {"pe32", "pe64"}
                     and output_path.suffix.casefold() in {".exe", ".dll"}
-                    and '"d64_dbase_console.dll"' in assembly_source):
+                    and (b'c64_dbase_runtime.dll' in program.executable.lower()
+                         or _windows_asm_imports_dll(
+                             assembly_source, assembly_path, 'c64_dbase_runtime.dll',
+                             self._project_windows_asm_include_paths(document.build_target)
+                         ))):
                     if not self._prepare_dbase_console_runtime(output_path, document.build_target):
                         return False
                 if document.build_target in {"pe32", "pe64"}:
@@ -127869,15 +129249,17 @@ border: 2px solid #2a69aa;
                 elif document.build_target == "pe32":
                     program = assemble_pe32_source(
                         source,
-                        filename=document.display_name,
+                        filename=str(document.path) if document.path else document.display_name,
                         gui=(normalize_windows_application_mode(document.windows_application_mode) != "Console"),
+                        include_dirs=self._project_windows_asm_include_paths(document.build_target),
                     )
                     program_data = program.executable
                 elif document.build_target == "pe64":
                     program = assemble_pe64_source(
                         source,
-                        filename=document.display_name,
+                        filename=str(document.path) if document.path else document.display_name,
                         gui=(normalize_windows_application_mode(document.windows_application_mode) != "Console"),
+                        include_dirs=self._project_windows_asm_include_paths(document.build_target),
                     )
                     program_data = program.executable
                 else:
@@ -127893,7 +129275,7 @@ border: 2px solid #2a69aa;
                 if (document.is_dbase_document
                     and document.build_target in {"pe32", "pe64"}
                     and output_path.suffix.casefold() in {".exe", ".dll"}
-                    and '"d64_dbase_console.dll"' in source):
+                    and '"c64_dbase_runtime.dll"' in source):
                     if not self._prepare_dbase_console_runtime(output_path, document.build_target):
                         return False
                 if document.build_target in {"pe32", "pe64"}:
@@ -128903,13 +130285,15 @@ border: 2px solid #2a69aa;
                     coff32=write_coff32_object, link32=link_coff32_objects,
                     assemble64=assemble_pe64_object_source,
                     coff64=write_coff64_object, link64=link_coff64_objects,
+                    pack_dll=bool(self.project_windows_console_dll_pack.get(
+                        self._project_windows_target_key(target), False)),
                 )
                 self.log(f"DBASE CONSOLE DLL ({target}): {installed}")
                 return True
             except (OSError, ValueError, PE32AssemblerError, PE64AssemblerError) as exc:
                 self.show_error(
-                    "dBASE Konsolen-DLL fehlt oder ist inkompatibel",
-                    "Die passende d64_dbase_console.dll konnte nicht neben "
+                    "dBASE Runtime-DLL fehlt oder ist inkompatibel",
+                    "Die passende c64_dbase_runtime.dll konnte nicht neben "
                     "der erzeugten EXE bereitgestellt werden.\n\n"
                     f"Ziel: {target}\nEXE: {output_path}\nFehler: {exc}\n\n"
                     "Prüfe die Datei d64dbase/bin/pe32 bzw. pe64. "
@@ -128994,6 +130378,9 @@ border: 2px solid #2a69aa;
             # CONOUT$ explizit und ist dadurch auch bei externen Launchern robust.
             options = {
                 "cwd": str(output_path.parent),
+                # Stage 463: Only IDE-launched nonmodal WFM applications keep
+                # an interactive event loop; an external direct EXE does not.
+                "env": {**os.environ, "D64_WFM_IDE_LAUNCH": "1"},
             }
             flags = 0
             if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
@@ -129324,6 +130711,7 @@ border: 2px solid #2a69aa;
                 command = [str(runner)]
                 runner_env = os.environ.copy()
                 runner_env["D64_WORKSTATION_RUNNER_PARENT"] = "d64_dism"
+                runner_env["D64_WFM_IDE_LAUNCH"] = "1"
                 options = {
                     "cwd": str(runner.parent),
                     "stdin": subprocess.DEVNULL,
@@ -129755,7 +131143,7 @@ border: 2px solid #2a69aa;
                 # Check the *actual linked binary* (not a possibly stale editor).
                 if document.is_dbase_document and output_path.suffix.casefold() == ".exe":
                     try:
-                        needs_console = b"d64_dbase_console.dll" in output_path.read_bytes().lower()
+                        needs_console = b"c64_dbase_runtime.dll" in output_path.read_bytes().lower()
                     except OSError:
                         needs_console = False
                     if needs_console and not self._prepare_dbase_console_runtime(output_path, document.build_target):
@@ -130910,7 +132298,35 @@ border: 2px solid #2a69aa;
                     ],
                     mark_modified=False,
                 )
+                _dll_values = values.get(_settings["console_dll_directory_key"], ())
+                self.set_project_windows_console_dll_directory(
+                    _target, _dll_values[0].get("path", "") if _dll_values else "",
+                    mark_modified=False,
+                )
+                self.set_project_windows_console_dll_pack(
+                    _target, _project_bool_entry(
+                        values, _settings["console_dll_pack_key"], False
+                    ), mark_modified=False,
+                )
+                self.set_project_windows_console_const_pool(
+                    _target, _project_bool_entry(
+                        values, _settings["console_const_pool_key"], False
+                    ), mark_modified=False,
+                )
                 _output_entries = values.get(_settings["output_key"], ())
+                self.set_project_windows_dbase_visual_settings(
+                    _target,
+                    _project_bool_entry(values, _settings["dbase_external_ui_key"], False),
+                    _project_bool_entry(values, _settings["dbase_compress_json_key"], False),
+                    store_binary=_project_bool_entry(values, _settings["dbase_store_binary_key"], False),
+                    mark_modified=False,
+                )
+                self.set_project_windows_dbase_slot_settings(
+                    _target,
+                    _project_bool_entry(values, _settings["dbase_static_numeric_slots_key"], False),
+                    _project_bool_entry(values, _settings["dbase_dynamic_typed_variables_key"], False),
+                    mark_modified=False,
+                )
                 self.set_project_windows_prolog_with_descriptors(
                     _target,
                     _project_bool_entry(
@@ -132230,6 +133646,17 @@ border: 2px solid #2a69aa;
                 entries[_settings["output_key"]] = (
                     [{"path": _output_value}] if _output_value else []
                 )
+                _dll_value = str(self.project_windows_console_dll_directories.get(_target, "") or "").strip()
+                entries[_settings["console_dll_directory_key"]] = (
+                    [{"path": _dll_value}] if _dll_value else []
+                )
+                entries[_settings["console_dll_pack_key"]] = [{
+                    "value": ("true" if self.project_windows_console_dll_pack.get(_target, False)
+                              else "false")
+                }]
+                entries[_settings["console_const_pool_key"]] = [{
+                    "value": "true" if self.project_windows_console_const_pool.get(_target, False) else "false"
+                }]
                 _modes = self.project_windows_relative_paths.get(
                     _target, {"input": True, "output": True}
                 )
@@ -132261,6 +133688,17 @@ border: 2px solid #2a69aa;
                         else "false"
                     )
                 }]
+                _ui_settings = self.project_windows_dbase_visual.get(_target, {})
+                for _key, _name in (("dbase_external_ui_key", "external_ui_components"),
+                                    ("dbase_compress_json_key", "compress_json"),
+                                    ("dbase_store_binary_key", "store_binary_data")):
+                    entries[_settings[_key]] = [{"value": "true" if _ui_settings.get(_name, False) else "false"}]
+                _slot_settings = self.project_windows_dbase_slots.get(_target, {})
+                for _key, _name in (
+                    ("dbase_static_numeric_slots_key", "static_numeric_internal_slots"),
+                    ("dbase_dynamic_typed_variables_key", "dynamic_typed_variables"),
+                ):
+                    entries[_settings[_key]] = [{"value": "true" if _slot_settings.get(_name, False) else "false"}]
                 entries[_settings["prolog_with_descriptors_key"]] = [{
                     "value": (
                         "true"
@@ -135463,7 +136901,9 @@ border: 2px solid #2a69aa;
             if getattr(self, "_windows_resource_editor_workspace_active", False):
                 return
 
-            keep = {resource_dock, getattr(self, "bottom_dock", None)}
+            # Stage 457: the project/information dock is the ONE workspace
+            # exception.  The protocol dock must be hidden like all others.
+            keep = {resource_dock, getattr(self, "right_dock", None)}
             self._windows_resource_editor_hidden_docks = []
             for candidate in self.findChildren(QDockWidget):
                 if candidate in keep:
@@ -135484,11 +136924,8 @@ border: 2px solid #2a69aa;
             if self._windows_resource_editor_replaced_central_widget:
                 central.hide()
 
-            bottom = getattr(self, "bottom_dock", None)
-            if bottom is not None:
-                bottom.show()
-                bottom.raise_()
-
+            # Never force previously hidden docks to become visible.  The
+            # resource dock and already-visible project dock remain untouched.
             self._windows_resource_editor_workspace_active = True
 
         def _expand_windows_resource_editor_dock(self) -> None:
@@ -138005,6 +139442,22 @@ QFileDialog QComboBox QAbstractItemView {
             return True
 
         def eventFilter(self, watched, event):
+            # Stage 467: klickbare WFM-Assembler-Quellzeilenkommentare.
+            document = getattr(self, "dbase_form_build_document", None)
+            asm_editor = getattr(document, "generated_assembly_editor", None)
+            if asm_editor is not None and watched is asm_editor.viewport():
+                if event.type() == QEvent.MouseMove:
+                    if self._dbase_form_asm_source_line_at(event.pos()):
+                        asm_editor.viewport().setCursor(Qt.PointingHandCursor)
+                        event.accept()
+                        return True
+                elif (event.type() == QEvent.MouseButtonPress
+                        and event.button() == Qt.LeftButton):
+                    line_number = self._dbase_form_asm_source_line_at(event.pos())
+                    if line_number and self._dbase_form_go_to_source_line(line_number):
+                        event.accept()
+                        return True
+
             # Stage 436: Icon-Farbe beim Hover synchron mit der grauen Fläche.
             hovered_actions = getattr(self, "_main_toolbar_hover_buttons", {})
             action_symbol = hovered_actions.get(watched)
@@ -141382,6 +142835,7 @@ def _write_pe32_generated_objects(
     assembly_path: Path,
     main_object_path: Optional[Path] = None,
     output_directory: Optional[Path | str] = None,
+    include_dirs=(),
 ) -> List[Path]:
     """Assembliert Hauptmodul und PE32-Abhängigkeiten separat zu COFF32."""
     result: List[Path] = []
@@ -141392,7 +142846,7 @@ def _write_pe32_generated_objects(
         key = str(resolved).casefold()
         if key in seen:
             return
-        data = assemble_pe32_coff_object(assembly, filename=asm_name)
+        data = assemble_pe32_coff_object(assembly, filename=str(asm_name), include_dirs=include_dirs)
         _write_cli_file(resolved, data)
         seen.add(key)
         result.append(resolved)
@@ -141417,7 +142871,7 @@ def _write_pe32_generated_objects(
         )
     else:
         main_path = source_path.with_suffix(".o").resolve()
-    add_object(main_path, generated.assembly, assembly_path.name)
+    add_object(main_path, generated.assembly, str(assembly_path))
 
     # Separat kompilierte C-Translation-Units (#pragma link).
     for module_name, module_assembly in getattr(generated, "linked_pe32_modules", ()):
@@ -141436,7 +142890,7 @@ def _write_pe32_generated_objects(
             if output_directory
             else module_source.with_suffix(".o")
         )
-        add_object(module_object, str(module_assembly), module_asm.name)
+        add_object(module_object, str(module_assembly), str(module_asm))
 
     # Bereits vorhandene ASM-Module aus Pascal-Units bzw. #pragma link.
     for module_name in getattr(generated, "linked_assembly_files", ()):
@@ -141457,7 +142911,7 @@ def _write_pe32_generated_objects(
             if output_directory
             else module_path.with_suffix(".o")
         )
-        add_object(module_object, module_assembly, module_path.name)
+        add_object(module_object, module_assembly, str(module_path))
 
     return result
 
@@ -141470,6 +142924,7 @@ def _write_pe64_generated_objects(
     assembly_path: Path,
     main_object_path: Optional[Path] = None,
     output_directory: Optional[Path | str] = None,
+    include_dirs=(),
 ) -> List[Path]:
     """Assembliert Hauptmodul und PE64-Abhängigkeiten separat zu AMD64-COFF64."""
     result: List[Path] = []
@@ -141480,7 +142935,7 @@ def _write_pe64_generated_objects(
         key = str(resolved).casefold()
         if key in seen:
             return
-        data = assemble_pe64_coff_object(assembly, filename=asm_name)
+        data = assemble_pe64_coff_object(assembly, filename=str(asm_name), include_dirs=include_dirs)
         _write_cli_file(resolved, data)
         seen.add(key)
         result.append(resolved)
@@ -141505,7 +142960,7 @@ def _write_pe64_generated_objects(
         )
     else:
         main_path = source_path.with_suffix(".o").resolve()
-    add_object(main_path, generated.assembly, assembly_path.name)
+    add_object(main_path, generated.assembly, str(assembly_path))
 
     for module_name, module_assembly in getattr(generated, "linked_pe32_modules", ()):
         module_source = Path(module_name).expanduser().resolve()
@@ -141523,7 +142978,7 @@ def _write_pe64_generated_objects(
             if output_directory
             else module_source.with_suffix(".o")
         )
-        add_object(module_object, str(module_assembly), module_asm.name)
+        add_object(module_object, str(module_assembly), str(module_asm))
 
     for module_name in getattr(generated, "linked_assembly_files", ()):
         module_path = Path(module_name).expanduser().resolve()
@@ -141543,7 +142998,7 @@ def _write_pe64_generated_objects(
             if output_directory
             else module_path.with_suffix(".o")
         )
-        add_object(module_object, module_assembly, module_path.name)
+        add_object(module_object, module_assembly, str(module_path))
     return result
 
 

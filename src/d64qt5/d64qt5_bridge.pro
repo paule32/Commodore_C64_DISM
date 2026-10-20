@@ -41,7 +41,7 @@ win32 {
         DESTDIR = release
         RUNTIME_IMPLIB = d64_qt5.dll.a
     }
-    LIBS             += -luser32 -lgdi32 -ladvapi32 -lodbc32 -lws2_32
+    LIBS             += -luser32 -lgdi32 -ladvapi32 -lodbc32 -lws2_32 -lshell32
     QMAKE_LFLAGS_DLL += "-Wl,--out-implib,$$RUNTIME_IMPLIB"
 }
 

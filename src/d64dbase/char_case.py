@@ -61,85 +61,31 @@ def _contiguous_ranges(values: list[int]) -> tuple[tuple[int, int], ...]:
 def emit_char_case_check(
     source_slot: str, *, is64: bool, label_prefix: str, upper: bool,
     temp_number: str = "__dbase_temp_number", encoding: str = "cp1252",
+    has_shadow_space: bool = False,
 ) -> list[str]:
-    """Emit a bounds-checked comparison for exactly one Windows-1252 byte.
+    """Call Stage-448 shared runtime and leave a numerical Boolean on ST(0).
 
-    Leaves a double-precision x87 value 0 or 1 on ST0, consistent with the
-    existing dBase numerical-Boolean convention.  Does not call a DLL.
+    Keeps the original frontend ABI; no long inlined character tables.
     """
-    true_label = label_prefix + "_true"
-    false_label = label_prefix + "_false"
-    done_label = label_prefix + "_done"
-    if encoding not in {"cp1252", "utf8"}:
-        raise ValueError(f"Unsupported dBase character encoding: {encoding}")
-    ptr = ("rdx" if is64 else "edx") if encoding == "utf8" else ("rax" if is64 else "eax")
+    from .char_case_runtime import export_name
+    public = export_name(upper=upper, encoding=encoding)
     ptr_type = "qword" if is64 else "dword"
-    code = [
-        f"    mov {ptr}, {ptr_type} ptr [{source_slot}_ptr]",
-        f"    test {ptr}, {ptr}",
-        f"    je {false_label}",
-    ]
-    if encoding == "utf8":
-        one = label_prefix + "_one_byte"
-        value_ready = label_prefix + "_value_ready"
-        code.extend((
-            f"    cmp dword ptr [{source_slot}_len], 1",
-            f"    je {one}",
-            f"    cmp dword ptr [{source_slot}_len], 2",
-            f"    jne {false_label}",
-            f"    movzx eax, byte ptr [{ptr}]",
-            f"    cmp eax, 194",     # Valid UTF-8 two-byte lead
-            f"    jb {false_label}",
-            f"    cmp eax, 223",
-            f"    ja {false_label}",
-            f"    and eax, 31",
-            f"    shl eax, 6",
-            f"    movzx ecx, byte ptr [{ptr}+1]",
-            f"    cmp ecx, 128",
-            f"    jb {false_label}",
-            f"    cmp ecx, 191",
-            f"    ja {false_label}",
-            f"    and ecx, 63",
-            f"    or eax, ecx",
-            f"    jmp {value_ready}",
-            f"{one}:",
-            f"    movzx eax, byte ptr [{ptr}]",
-            f"    cmp eax, 127",
-            f"    ja {false_label}",
-            f"{value_ready}:",
-        ))
-        upper_or_lower = sorted({
-            ord(bytes((byte,)).decode("cp1252"))
-            for byte in range(256)
-            if _cp1252_is_case(byte, upper)
-        })
-        case_ranges = _contiguous_ranges(upper_or_lower)
+    if is64:
+        lines = [
+            f"    mov rcx, {ptr_type} ptr [{source_slot}_ptr]",
+            f"    mov edx, dword ptr [{source_slot}_len]",
+            *([] if has_shadow_space else ["    sub rsp, 40"]),
+            f"    call {public}",
+            *([] if has_shadow_space else ["    add rsp, 40"]),
+        ]
     else:
-        code.extend((
-            f"    cmp dword ptr [{source_slot}_len], 1",
-            f"    jne {false_label}",
-            f"    movzx eax, byte ptr [{ptr}]",
-        ))
-        case_ranges = _ranges(upper)
-    for index, (lo, hi) in enumerate(case_ranges):
-        if lo == hi:
-            code.extend((f"    cmp eax, {lo}", f"    je {true_label}"))
-        else:
-            after_label = f"{label_prefix}_next_{index}"
-            code.extend((
-                f"    cmp eax, {lo}",
-                f"    jb {after_label}",
-                f"    cmp eax, {hi}",
-                f"    jbe {true_label}",
-                f"{after_label}:",
-            ))
-    code.extend((
-        f"{false_label}:",
-        f"    mov dword ptr [{temp_number}], 0",
-        f"    jmp {done_label}",
-        f"{true_label}:",
-        f"    mov dword ptr [{temp_number}], 1",
-        f"{done_label}:",
+        lines = [
+            f"    push dword ptr [{source_slot}_len]",
+            f"    push dword ptr [{source_slot}_ptr]",
+            f"    call {public}",
+            "    add esp, 8",
+        ]
+    return lines + [
+        f"    mov dword ptr [{temp_number}], eax",
         f"    fild dword ptr [{temp_number}]",
-    ))
-    return code
+    ]
