@@ -345,7 +345,7 @@ def wfm_executable_preamble(source: str, *, class_name: str) -> List[str]:
     return ["" if idx in skip else statement
             for idx, statement in enumerate(statements)]
 
-def parse_dbase_wfm(source: str, *, filename: str = "<WFM>") -> DBaseWfmForm:
+def parse_dbase_wfm(source: str, *, filename: str = "<WFM>", progress_callback=None) -> DBaseWfmForm:
     """Parse dBase CLASS ... OF FORM including Stage-120 structured properties.
 
     Nested scopes are normalized to the legacy flat designer property names so
@@ -382,6 +382,8 @@ def parse_dbase_wfm(source: str, *, filename: str = "<WFM>") -> DBaseWfmForm:
     model.class_registry = parse_dbase_class_metadata(text)
     model.base_class = model.class_registry.get(model.class_name).parent
     for line_index, raw in enumerate(raw_lines[:class_start], 1):
+        if progress_callback is not None:
+            progress_callback(line_index)
         code = raw.split("//", 1)[0].strip()
         if not code or code.startswith("**") or code.startswith("/*"):
             continue
@@ -545,6 +547,8 @@ def parse_dbase_wfm(source: str, *, filename: str = "<WFM>") -> DBaseWfmForm:
 
     idx = class_start + 1
     while idx < class_end:
+        if progress_callback is not None:
+            progress_callback(idx + 1)
         raw = raw_lines[idx]
         code = raw.split("//", 1)[0].strip()
         line_no = idx + 1

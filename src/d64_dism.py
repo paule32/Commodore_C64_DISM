@@ -33789,6 +33789,7 @@ PE32_DOS_HEADER_SIZE = 0x40  # Stage216: PE-Signatur direkt hinter IMAGE_DOS_HEA
 # Stage 470: shared pure-Python preprocessor (no NASM/external build tool).
 from windows_asm_macros import (
     WindowsAsmMacroError, preprocess_windows_asm, externalize_windows_imports,
+    externalize_windows_wfm_payload,
 )
 
 
@@ -34255,6 +34256,7 @@ def _pe32_unquote(text: str) -> str:
 
 def _parse_pe32_source_lines(
     source: str,
+    progress_callback=None,
 ) -> Tuple[
     List[Tuple[int, str, str]],
     Dict[str, int],
@@ -34391,6 +34393,8 @@ def _parse_pe32_source_lines(
         raise PE32AssemblerError(f"PE32-Assemblerbefehl nicht unterstützt: {text}", line)
 
     for line_number, raw in enumerate(str(source).splitlines(), 1):
+        if progress_callback is not None:
+            progress_callback(line_number)
         text = _x86_strip_comment(raw)
         if not text:
             continue
@@ -34575,11 +34579,12 @@ def assemble_pe32_object_source(
     *,
     filename: str = "<PE32-Assembler>",
     include_dirs=(),
+    progress_callback=None,
 ) -> PE32ObjectProgram:
     macro_result = _preprocess_windows_assembly(source, filename, PE32AssemblerError, include_dirs)
     source = macro_result.source
     try:
-        return _assemble_pe32_preprocessed(source, macro_result)
+        return _assemble_pe32_preprocessed(source, macro_result, progress_callback)
     except PE32AssemblerError as exc:
         if 1 <= exc.line <= len(macro_result.locations):
             file, origin = macro_result.locations[exc.line - 1]
@@ -34587,11 +34592,15 @@ def assemble_pe32_object_source(
         raise
 
 
-def _assemble_pe32_preprocessed(source, macro_result) -> PE32ObjectProgram:
+def _assemble_pe32_preprocessed(source, macro_result, progress_callback=None) -> PE32ObjectProgram:
     (
         lines, labels, symbol_sections, entry_symbol, declared_externals,
         declared_imports, declared_exports, dll_name, bss_size,
-    ) = _parse_pe32_source_lines(source)
+    ) = _parse_pe32_source_lines(
+        source,
+        (lambda line: progress_callback(line, len(macro_result.locations)))
+        if progress_callback is not None else None,
+    )
     buffers = {".text": bytearray(), ".data": bytearray(), ".bss": bytearray()}
     output = buffers[".text"]
     current_output_section = ".text"
@@ -36903,9 +36912,13 @@ def assemble_pe32_coff_object(
     *,
     filename: str = "<PE32-Assembler>",
     include_dirs=(),
+    progress_callback=None,
 ) -> bytes:
     return write_coff32_object(
-        assemble_pe32_object_source(source, filename=filename, include_dirs=include_dirs)
+        assemble_pe32_object_source(
+            source, filename=filename, include_dirs=include_dirs,
+            progress_callback=progress_callback,
+        )
     )
 
 
@@ -38468,8 +38481,11 @@ def write_coff64_object(obj: PE64ObjectProgram) -> bytes:
     return header+bytes(headers)+obj.code+metadata+bytes(rb)+bytes(syms)+st
 
 
-def assemble_pe64_coff_object(source: str, *, filename: str="<PE64-Assembler>", include_dirs=()) -> bytes:
-    return write_coff64_object(assemble_pe64_object_source(source,filename=filename,include_dirs=include_dirs))
+def assemble_pe64_coff_object(source: str, *, filename: str="<PE64-Assembler>", include_dirs=(), progress_callback=None) -> bytes:
+    return write_coff64_object(assemble_pe64_object_source(
+        source, filename=filename, include_dirs=include_dirs,
+        progress_callback=progress_callback,
+    ))
 
 
 def parse_coff64_object(data: bytes) -> Coff64ParsedObject:
@@ -38792,7 +38808,7 @@ def _pe64_section_from_directive(directive: str, args: str, current: str, line: 
     raise PE64AssemblerError(f"PE64-Sektion nicht unterstützt: {args}", line)
 
 
-def _parse_pe64_source(source: str):
+def _parse_pe64_source(source: str, progress_callback=None):
     lines = []
     labels: Dict[str, int] = {}
     symbol_sections: Dict[str, str] = {}
@@ -38805,6 +38821,8 @@ def _parse_pe64_source(source: str):
     offsets = {".text": 0, ".data": 0, ".bss": 0}
 
     for line_no, raw in enumerate(str(source).splitlines(), 1):
+        if progress_callback is not None:
+            progress_callback(line_no)
         text = _x86_strip_comment(raw)
         if not text:
             continue
@@ -38924,10 +38942,10 @@ def _parse_pe64_source(source: str):
     )
 
 
-def assemble_pe64_object_source(source: str, *, filename: str = "<PE64-Assembler>", include_dirs=()) -> PE64ObjectProgram:
+def assemble_pe64_object_source(source: str, *, filename: str = "<PE64-Assembler>", include_dirs=(), progress_callback=None) -> PE64ObjectProgram:
     macro_result = _preprocess_windows_assembly(source, filename, PE64AssemblerError, include_dirs)
     try:
-        return _assemble_pe64_preprocessed(macro_result.source)
+        return _assemble_pe64_preprocessed(macro_result.source, progress_callback, len(macro_result.locations))
     except PE64AssemblerError as exc:
         if 1 <= exc.line <= len(macro_result.locations):
             file, origin = macro_result.locations[exc.line - 1]
@@ -38935,8 +38953,11 @@ def assemble_pe64_object_source(source: str, *, filename: str = "<PE64-Assembler
         raise
 
 
-def _assemble_pe64_preprocessed(source: str) -> PE64ObjectProgram:
-    lines, labels, symbol_sections, entry, externals, imports, exports, dll_name, bss_size = _parse_pe64_source(source)
+def _assemble_pe64_preprocessed(source: str, progress_callback=None, total_lines=0) -> PE64ObjectProgram:
+    lines, labels, symbol_sections, entry, externals, imports, exports, dll_name, bss_size = _parse_pe64_source(
+        source,
+        (lambda line: progress_callback(line, total_lines)) if progress_callback is not None else None,
+    )
     buffers = {".text": bytearray(), ".data": bytearray(), ".bss": bytearray()}
     relocs: List[PE64Relocation] = []
 
@@ -63502,7 +63523,41 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                     lambda checked=False, value=operand_context:
                     self._open_operand_calculator(value)
                 )
-            menu.exec_(event.globalPos())
+            # Stage 474: WFM ASM editors reuse the existing editor menu,
+            # prefixed with "Neu Assembler". On an include filename the
+            # context-specific "In neuen Tab öffnen" / "Hilfe" actions follow.
+            # Keeping the QAction instances preserves the editor's original
+            # editing, calculator and language menu actions.
+            new_asm = getattr(self, "_wfm_asm_new_callback", None)
+            if callable(new_asm):
+                wrapper = QMenu(self)
+                create_action = wrapper.addAction("Neu Assembler")
+                wrapper.addSeparator()
+                open_action = help_action = None
+                include_handler = getattr(self, "_wfm_asm_include_callback", None)
+                if callable(include_handler):
+                    from wfm_asm_tab_support import include_at_position
+                    block_cursor = self.cursorForPosition(event.pos())
+                    include_name = include_at_position(
+                        block_cursor.block().text(), block_cursor.positionInBlock()
+                    )
+                    if include_name:
+                        open_action = wrapper.addAction("In neuen Tab öffnen")
+                        wrapper.addSeparator()
+                        help_action = wrapper.addAction("Hilfe")
+                        wrapper.addSeparator()
+                for existing_action in menu.actions():
+                    wrapper.addAction(existing_action)
+                selected = wrapper.exec_(event.globalPos())
+                if selected is create_action:
+                    new_asm()
+                elif selected is open_action and open_action is not None:
+                    include_handler(include_name, False)
+                elif selected is help_action and help_action is not None:
+                    include_handler(include_name, True)
+                wrapper.deleteLater()
+            else:
+                menu.exec_(event.globalPos())
             if menu is not standard_menu:
                 menu.deleteLater()
             standard_menu.deleteLater()
@@ -109252,6 +109307,13 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.dbase_form_source_outline = None
             self.dbase_form_source_splitter = None
             self.dbase_form_source_assembly_splitter = None
+            self.dbase_form_assembly_tabs = None
+            self._dbase_form_asm_paths = {}
+            self._dbase_form_asm_editors = {}
+            self._dbase_form_asm_encodings = {}
+            self._dbase_form_asm_new = set()
+            self._dbase_form_asm_new_counter = 1
+            self._dbase_form_last_focus_target = "wfm"
             self.dbase_form_assembly_page = None
             self.dbase_form_build_document = None
             self.dbase_form_compile_button = None
@@ -109259,6 +109321,9 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.dbase_form_start_button = None
             self.dbase_form_target_combo = None
             self.dbase_form_build_status = None
+            self.dbase_form_progress = None
+            self.dbase_form_progress_label = None
+            self._dbase_form_progress_last_paint = 0.0
             self._dbase_form_workspace_active = False
             self._dbase_form_workspace_state = {}
             self.dbase_table_designer_dock = None
@@ -112898,7 +112963,41 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             assembly_heading = QLabel("Assembler", assembly_host)
             assembly_heading.setObjectName("dbase_form_assembly_heading")
             assembly_heading.setContentsMargins(6, 3, 6, 3)
-            assembly_host_layout.addWidget(assembly_heading)
+            assembly_header = QWidget(assembly_host)
+            assembly_header.setObjectName("dbase_form_progress_header")
+            assembly_header_layout = QHBoxLayout(assembly_header)
+            assembly_header_layout.setContentsMargins(4, 2, 4, 2)
+            assembly_header_layout.setSpacing(8)
+            assembly_header_layout.addWidget(assembly_heading)
+            build_progress = QProgressBar(assembly_header)
+            build_progress.setObjectName("dbase_form_asm_progress")
+            build_progress.setMinimum(1)
+            build_progress.setMaximum(1)
+            build_progress.setValue(1)
+            build_progress.setTextVisible(True)
+            build_progress.setFormat("%v / %m")
+            build_progress.setMinimumWidth(160)
+            build_progress.hide()
+            assembly_header_layout.addWidget(build_progress, 1)
+            progress_label = QLabel("", assembly_header)
+            progress_label.setObjectName("dbase_form_asm_progress_label")
+            progress_label.setTextFormat(Qt.PlainText)
+            progress_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            assembly_header_layout.addWidget(progress_label)
+            assembly_host_layout.addWidget(assembly_header)
+            self.dbase_form_progress = build_progress
+            self.dbase_form_progress_label = progress_label
+
+            # Stage 472: the generated ASM editor is the permanent, non-closable
+            # first tab. Include documents are independent editor instances.
+            assembly_tabs = QTabWidget(assembly_host)
+            assembly_tabs.setObjectName("dbase_form_assembly_tabs")
+            assembly_tabs.setDocumentMode(True)
+            assembly_tabs.setTabsClosable(False)
+            assembly_tabs.setMovable(False)
+            assembly_tabs.tabBar().setExpanding(False)
+            assembly_tabs.tabCloseRequested.connect(self._dbase_form_asm_close_tab)
+            assembly_host_layout.addWidget(assembly_tabs, 1)
 
             asm_container = build_document.generated_assembly_editor_container
             assembly_layout.removeWidget(asm_container)
@@ -112906,7 +113005,8 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             asm_container.setSizePolicy(
                 QSizePolicy.Expanding, QSizePolicy.Expanding
             )
-            assembly_host_layout.addWidget(asm_container, 1)
+            assembly_tabs.addTab(asm_container, "Generierter Assembler")
+            assembly_tabs.setCurrentIndex(0)
 
             source_assembly_splitter.addWidget(source_splitter)
             source_assembly_splitter.addWidget(assembly_host)
@@ -113006,6 +113106,21 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             build_document.generated_assembly_editor.viewport().installEventFilter(
                 self
             )
+            # Stage 473: key events (Ctrl+N) reach QPlainTextEdit itself,
+            # whereas mouse navigation/context menus are handled by viewport.
+            build_document.generated_assembly_editor.installEventFilter(self)
+            build_document.raw_editor.installEventFilter(self)
+            self.dbase_form_assembly_tabs = assembly_tabs
+            self._dbase_form_asm_paths = {}  # widget -> resolved Path; first tab is generated
+            self._dbase_form_asm_editors = {} # widget -> SourceTextEdit
+            self._dbase_form_asm_encodings = {} # widget -> (original encoding, newline)
+            self._dbase_form_asm_new = set()  # widgets requiring Save As
+            self._dbase_form_asm_editors[asm_container] = (
+                build_document.generated_assembly_editor
+            )
+            self._dbase_form_asm_bind_editor(build_document.generated_assembly_editor)
+            assembly_tabs.currentChanged.connect(self._dbase_form_asm_tab_changed)
+            assembly_tabs.tabBar().setTabButton(0, QTabBar.RightSide, None)
             # F2 im eingebetteten ASM-Editor: nur assemblieren + linken.
             build_document.build_generated_requested.connect(
                 lambda _document: self.assemble_dbase_form()
@@ -113244,6 +113359,378 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             line_number = item.data(0, Qt.UserRole)
             if line_number:
                 self._dbase_form_go_to_source_line(int(line_number))
+
+        # Stage 472: multiple ASM/include files below the WFM source splitter.
+        def _dbase_form_asm_tab_changed(self, _index: int) -> None:
+            tabs = getattr(self, "dbase_form_assembly_tabs", None)
+            if tabs is not None and tabs.currentWidget() is not None:
+                self._dbase_form_last_focus_target = "asm"
+                tabs.currentWidget().show()
+
+        def _dbase_form_asm_active(self):
+            tabs = getattr(self, "dbase_form_assembly_tabs", None)
+            if tabs is None:
+                return None, None
+            widget = tabs.currentWidget()
+            return widget, getattr(self, "_dbase_form_asm_editors", {}).get(widget)
+
+        def _dbase_form_asm_has_focus(self) -> bool:
+            tabs = getattr(self, "dbase_form_assembly_tabs", None)
+            focus = QApplication.focusWidget()
+            if tabs is not None and focus is not None:
+                if tabs is focus or tabs.isAncestorOf(focus):
+                    return True
+                document = getattr(self, "dbase_form_build_document", None)
+                raw = getattr(document, "raw_editor", None)
+                if focus is raw or (raw is not None and raw.isAncestorOf(focus)):
+                    return False
+            # Opening the top menu can move Qt keyboard focus to the menu.
+            return getattr(self, "_dbase_form_last_focus_target", "wfm") == "asm"
+
+        def _dbase_form_include_under_mouse(self, editor, position):
+            from wfm_asm_tab_support import include_at_position
+            cursor = editor.cursorForPosition(position)
+            return include_at_position(cursor.block().text(), cursor.positionInBlock())
+
+        def _dbase_form_asm_bind_editor(self, editor) -> None:
+            """Apply the *generated* ASM editor's navy style to all ASM tabs."""
+            # QPalette is decisive here: an application-wide light theme must
+            # not turn secondary ASM source pages white. It also styles the
+            # gutter through SourceTextEdit's existing paint implementation.
+            original = getattr(self.dbase_form_build_document,
+                               "generated_assembly_editor", None)
+            if original is not None and editor is not original:
+                editor.setPalette(QPalette(original.palette()))
+                editor.viewport().setPalette(QPalette(original.viewport().palette()))
+            editor.set_gutter_dark_mode(True)
+            editor._wfm_asm_new_callback = self._dbase_form_asm_new_tab
+            editor._wfm_asm_include_callback = self._dbase_form_asm_include_action
+            editor.line_number_area.update()
+            editor.viewport().update()
+
+        def _dbase_form_asm_include_action(self, filename: str, help_requested: bool) -> None:
+            if help_requested:
+                self.show_chm_viewer()
+            else:
+                self._dbase_form_asm_open_include(filename)
+
+        @staticmethod
+        def _dbase_form_asm_red_close_icon():
+            """Small red X on transparent background, independent of Qt theme."""
+            pixmap = QPixmap(12, 12)
+            pixmap.fill(Qt.transparent)
+            painter = QPainter(pixmap)
+            try:
+                painter.setRenderHint(QPainter.Antialiasing, True)
+                pen = QPen(QColor("#e44646"))
+                pen.setWidth(2)
+                pen.setCapStyle(Qt.RoundCap)
+                painter.setPen(pen)
+                painter.drawLine(3, 3, 9, 9)
+                painter.drawLine(9, 3, 3, 9)
+            finally:
+                painter.end()
+            return QIcon(pixmap)
+
+        def _dbase_form_asm_open_include(self, include_name: str) -> bool:
+            from wfm_asm_tab_support import resolve_wfm_include
+            tabs = getattr(self, "dbase_form_assembly_tabs", None)
+            if tabs is None:
+                return False
+            target_name = str(self.dbase_form_target_combo.currentData() or "pe32")
+            path, attempted, error = resolve_wfm_include(
+                include_name, self.current_directory,
+                self._project_windows_asm_include_paths(target_name),
+            )
+            if path is None:
+                self.show_error(
+                    "Include-Datei konnte nicht geöffnet werden",
+                    f"Datei: {include_name}\n{error}\n\nGeprüfte Suchpfade:\n"
+                    + "\n".join(str(p) for p in attempted),
+                )
+                return False
+            # The generated file is already open in the permanent main tab.
+            generated_path = getattr(self.dbase_form_build_document, "generated_assembly_path", None)
+            if generated_path is not None and Path(generated_path).resolve() == path:
+                tabs.setCurrentIndex(0)
+                return True
+            for widget, existing in self._dbase_form_asm_paths.items():
+                if os.path.normcase(str(existing)).casefold() == os.path.normcase(str(path)).casefold():
+                    tabs.setCurrentWidget(widget)
+                    return True
+            try:
+                text, encoding, newline, _raw = self._decode_text_file(path)
+            except (OSError, UnicodeError, ValueError) as exc:
+                self.show_error("Include-Datei konnte nicht geöffnet werden",
+                                f"{path}\n\n{exc}")
+                return False
+            widget = self._dbase_form_asm_add_tab(path.name, text, path=path)
+            self._dbase_form_asm_encodings[widget] = (encoding, newline)
+            return True
+
+        def _dbase_form_asm_add_tab(self, title: str, text: str = "", *, path=None, new=False):
+            tabs = self.dbase_form_assembly_tabs
+            container = SourceEditorWithMiniMap(
+                tabs, min_viewport_height=SourceMiniMap.ASSEMBLER_MIN_VIEWPORT_HEIGHT,
+            )
+            container.setObjectName("dbase_form_include_editor_container")
+            editor = container.editor
+            editor.setObjectName("dbase_form_include_editor")
+            editor.setFont(self._make_editor_font())
+            editor.setLineWrapMode(QPlainTextEdit.NoWrap)
+            editor.set_assembler_target(str(self.dbase_form_target_combo.currentData() or "pe32"))
+            editor.set_assembler_completion_enabled(True)
+            editor.set_assembler_navigation_enabled(True)
+            highlighter = AssemblerSyntaxHighlighter(editor.document())
+            highlighter.set_enabled(True)
+            editor.set_assembler_navigation_highlighter(highlighter)
+            editor._wfm_asm_highlighter = highlighter
+            self._dbase_form_asm_bind_editor(editor)
+            editor.assembler_help_requested.connect(self.dbase_form_build_document._show_assembler_help)
+            editor.context_help_requested.connect(
+                lambda word: self.dbase_form_build_document._emit_context_help("assembler", word)
+            )
+            editor.find_requested.connect(
+                lambda found: self.dbase_form_build_document.find_requested.emit(
+                    self.dbase_form_build_document, found)
+            )
+            editor.build_requested.connect(lambda: self.assemble_dbase_form())
+            editor.setPlainText(text)
+            editor.document().setModified(False)
+            editor.viewport().installEventFilter(self)
+            editor.installEventFilter(self)
+            idx = tabs.addTab(container, title)
+            # Close icon only on secondary tabs, on the right.
+            button = QToolButton(tabs.tabBar())
+            button.setObjectName("dbase_form_include_tab_close")
+            button.setAutoRaise(True)
+            button.setIcon(self._dbase_form_asm_red_close_icon())
+            button.setIconSize(QSize(12, 12))
+            button.setFixedSize(19, 19)
+            button.setToolTip("Assembler-Tab schließen")
+            button.setStyleSheet(
+                "QToolButton {border:0; background:transparent; padding:2px;}"
+                "QToolButton:hover {background:rgba(230,65,65,50);border-radius:3px;}"
+            )
+            button.clicked.connect(lambda _checked=False, widget=container:
+                                   self._dbase_form_asm_close_widget(widget))
+            tabs.tabBar().setTabButton(idx, QTabBar.RightSide, button)
+            self._dbase_form_asm_editors[container] = editor
+            self._dbase_form_asm_encodings[container] = ("utf-8", "\n")
+            if path is not None:
+                self._dbase_form_asm_paths[container] = Path(path).resolve()
+            if new:
+                self._dbase_form_asm_new.add(container)
+                tabs.setTabToolTip(
+                    idx, "Neue Assembler-Datei – beim ersten Speichern Dateinamen wählen"
+                )
+            editor.document().modificationChanged.connect(
+                lambda changed, widget=container: self._dbase_form_asm_mark_modified(widget, changed)
+            )
+            tabs.setCurrentWidget(container)
+            container.show()
+            editor.setFocus(Qt.OtherFocusReason)
+            return container
+
+        def _dbase_form_asm_new_tab(self):
+            """Neues leeres ASM-Dokument in einem separaten, ungespeicherten Tab."""
+            self._ensure_dbase_form_designer()
+            self.dbase_form_tabs.setCurrentWidget(self.dbase_form_source_page)
+            tabs = self.dbase_form_assembly_tabs
+            existing_titles = {
+                tabs.tabText(i).removesuffix(" *").casefold()
+                for i in range(tabs.count())
+            }
+            while True:
+                number = self._dbase_form_asm_new_counter
+                self._dbase_form_asm_new_counter += 1
+                name = f"Unbenannt_{number}.asm"
+                if name.casefold() not in existing_titles:
+                    break
+            widget = self._dbase_form_asm_add_tab(name, "", new=True)
+            self.statusBar().showMessage(
+                f"Neue Assembler-Datei: {name} (Strg+S: Speichern unter)", 5000
+            )
+            return widget
+
+        def _dbase_form_asm_mark_modified(self, widget, modified: bool) -> None:
+            tabs = getattr(self, "dbase_form_assembly_tabs", None)
+            if tabs is None:
+                return
+            index = tabs.indexOf(widget)
+            if index < 0:
+                return
+            name = tabs.tabText(index).rstrip(" *")
+            tabs.setTabText(index, name + (" *" if modified else ""))
+
+        def _dbase_form_asm_close_tab(self, index: int) -> None:
+            tabs = getattr(self, "dbase_form_assembly_tabs", None)
+            if tabs is not None and index > 0:
+                self._dbase_form_asm_close_widget(tabs.widget(index))
+
+        def _dbase_form_asm_close_widget(self, widget) -> bool:
+            tabs = getattr(self, "dbase_form_assembly_tabs", None)
+            if tabs is None or tabs.indexOf(widget) <= 0:
+                return False
+            editor = self._dbase_form_asm_editors.get(widget)
+            if editor is not None and editor.document().isModified():
+                dialog = self._create_message_box(
+                    QMessageBox.Question, "Assembler-Tab schließen",
+                    f"Änderungen in {tabs.tabText(tabs.indexOf(widget)).rstrip(' *')} speichern?",
+                    buttons=QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
+                )
+                result = dialog.exec_()
+                if result == QMessageBox.Cancel:
+                    return False
+                if result == QMessageBox.Save and not self._dbase_form_asm_save_widget(widget):
+                    return False
+            tabs.removeTab(tabs.indexOf(widget))
+            self._dbase_form_asm_paths.pop(widget, None)
+            self._dbase_form_asm_new.discard(widget)
+            self._dbase_form_asm_editors.pop(widget, None)
+            self._dbase_form_asm_encodings.pop(widget, None)
+            widget.deleteLater()
+            return True
+
+        def _dbase_form_asm_path(self, widget):
+            tabs = getattr(self, "dbase_form_assembly_tabs", None)
+            if tabs is None:
+                return None
+            if tabs.indexOf(widget) == 0:
+                path = getattr(self.dbase_form_build_document, "generated_assembly_path", None)
+                return Path(path).resolve() if path is not None else None
+            return self._dbase_form_asm_paths.get(widget)
+
+        def _dbase_form_asm_save_widget(self, widget, *, save_as=False) -> bool:
+            tabs = getattr(self, "dbase_form_assembly_tabs", None)
+            if tabs is None:
+                return False
+            editor = self._dbase_form_asm_editors.get(widget)
+            if editor is None:
+                return False
+            old_path = self._dbase_form_asm_path(widget)
+            fresh = widget in self._dbase_form_asm_new or old_path is None
+            dest = old_path
+            rename = False
+            if save_as or fresh:
+                initial = old_path or (Path(self.current_directory) / tabs.tabText(tabs.indexOf(widget)).rstrip(" *"))
+                # Auch bei einem noch namenlosen Dokument wird der vorgeschlagene
+                # Dateiname in der Titelleiste des Speichern-unter-Dialogs gezeigt.
+                dialog_title = (
+                    f"Neue Assembler-Datei speichern unter – {initial.name}"
+                    if fresh else f"Assembler-Datei speichern unter – {initial.name}"
+                )
+                filename, _selected = QFileDialog.getSaveFileName(
+                    self, dialog_title, str(initial),
+                    "Assembler (*.asm *.inc *.s);;Alle Dateien (*.*)",
+                )
+                if not filename:
+                    if old_path is not None and save_as:
+                        dest = old_path  # Dialogabbruch: existierenden Tab speichern
+                    else:
+                        return False
+                else:
+                    chosen = Path(filename).expanduser().resolve()
+                    if not chosen.suffix:
+                        chosen = chosen.with_suffix(".asm")
+                    dest = chosen
+                    if old_path is not None and chosen != old_path:
+                        box = QMessageBox(self)
+                        box.setWindowTitle("Assembler-Dateiname ändern?")
+                        box.setIcon(QMessageBox.Question)
+                        box.setText("Soll der bestehende Tab-Dateiname ersetzt werden?")
+                        box.setInformativeText(f"Bisher: {old_path.name}\nNeu: {chosen.name}")
+                        b_rename = box.addButton("Umbenennen", QMessageBox.AcceptRole)
+                        b_keep = box.addButton("Beibehalten", QMessageBox.ActionRole)
+                        b_cancel = box.addButton("Abbrechen", QMessageBox.RejectRole)
+                        self._apply_message_box_theme(box)
+                        box.exec_()
+                        if box.clickedButton() is b_rename:
+                            rename = True
+                        elif box.clickedButton() in (b_keep, b_cancel):
+                            dest = old_path
+                        else:
+                            dest = old_path
+            if dest is None:
+                return False
+            # Prevent multiple tabs for the same physical file.
+            main_path = getattr(self.dbase_form_build_document, "generated_assembly_path", None)
+            if (main_path is not None and tabs.indexOf(widget) != 0
+                    and Path(main_path).resolve() == dest):
+                self.show_error("Datei bereits geöffnet", str(dest))
+                return False
+            for another, active_path in self._dbase_form_asm_paths.items():
+                if another is not widget and active_path == dest:
+                    self.show_error("Datei bereits geöffnet", str(dest))
+                    return False
+            try:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                if rename and old_path is not None and old_path != dest and dest.exists():
+                    self.show_error("Datei bereits vorhanden", str(dest))
+                    return False
+                # Same atomic write path for generated ASM and included files.
+                encoding, newline = self._dbase_form_asm_encodings.get(widget, ("utf-8", "\n"))
+                plain = editor.toPlainText().replace("\r\n", "\n").replace("\r", "\n")
+                if newline != "\n":
+                    plain = plain.replace("\n", newline)
+                data = plain.encode(encoding)
+                fd, temporary_name = tempfile.mkstemp(
+                    prefix=f".{dest.name}.", suffix=".tmp", dir=str(dest.parent))
+                try:
+                    with os.fdopen(fd, "wb") as stream:
+                        stream.write(data)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    os.replace(temporary_name, dest)
+                    # Only remove the old filename after the new file is safely written.
+                    if rename and old_path is not None and old_path != dest and old_path.exists():
+                        old_path.unlink()
+                except Exception:
+                    try:
+                        os.unlink(temporary_name)
+                    except OSError:
+                        pass
+                    raise
+            except (OSError, UnicodeError, ValueError) as exc:
+                self.show_error("Assembler-Datei konnte nicht gespeichert werden", f"{dest}\n\n{exc}")
+                return False
+            if tabs.indexOf(widget) == 0:
+                self.dbase_form_build_document.generated_assembly_path = dest
+            else:
+                self._dbase_form_asm_paths[widget] = dest
+            self._dbase_form_asm_new.discard(widget)
+            index = tabs.indexOf(widget)
+            tabs.setTabText(index, dest.name)
+            tabs.setTabToolTip(index, str(dest))
+            editor.document().setModified(False)
+            self.statusBar().showMessage(f"Assembler gespeichert: {dest.name}", 5000)
+            return True
+
+        def _dbase_form_asm_save_as(self) -> bool:
+            widget, _editor = self._dbase_form_asm_active()
+            return self._dbase_form_asm_save_widget(widget, save_as=True) if widget is not None else False
+
+        def _dbase_form_save_all_editors(self) -> bool:
+            # Save WFM source and each ASM tab, not just the selected editor.
+            if not self.save_dbase_form():
+                return False
+            tabs = getattr(self, "dbase_form_assembly_tabs", None)
+            if tabs is None:
+                return True
+            selected = tabs.currentWidget()
+            for idx in range(tabs.count()):
+                widget = tabs.widget(idx)
+                editor = self._dbase_form_asm_editors.get(widget)
+                if editor is None:
+                    continue
+                if idx == 0 and self._dbase_form_asm_path(widget) is None and not editor.toPlainText().strip():
+                    continue
+                if not self._dbase_form_asm_save_widget(widget):
+                    tabs.setCurrentWidget(widget)
+                    return False
+            if selected is not None and tabs.indexOf(selected) >= 0:
+                tabs.setCurrentWidget(selected)
+            return True
 
         def _dbase_form_asm_source_line_at(self, position) -> int:
             """Erkennt einen ; Quellcode Zeile: n -Link im WFM-Assembler."""
@@ -113638,6 +114125,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             target: str,
             workstation_mode: bool = False,
             debug_theme: str = "default",
+            progress_callback=None,
         ):
             """Kompiliert WFM/OOP additiv auf Basis der vorhandenen dBase-Runtime.
 
@@ -113653,8 +114141,28 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             except ImportError as exc:
                 raise AssemblerError(str(exc)) from exc
 
+            # Stage 475: dBASE and WFM share the same macro preprocessor.
+            # Work with a temporary source so the designer keeps the original
+            # #define/#include/#if lines for editing and saving.
+            from d64dbase.compiler import preprocess_dbase_source
+            _wfm_frontend = preprocess_dbase_source(
+                source, filename=filename, target=target,
+                include_paths=(self._project_windows_asm_include_paths(target)
+                               if callable(getattr(self, "_project_windows_asm_include_paths", None))
+                               else ()),
+            )
+            source = _wfm_frontend.preprocessed_source
+            # The number includes #include expansion and is known before parsing.
+            source_line_count = max(1, len(source.splitlines()))
+            if progress_callback is not None:
+                progress_callback(1, source_line_count)
             try:
-                model = parse_dbase_wfm(source, filename=filename)
+                model = parse_dbase_wfm(
+                    source, filename=filename, progress_callback=(
+                        (lambda line: progress_callback(line, source_line_count))
+                        if progress_callback is not None else None
+                    ),
+                )
                 # Stage 466: Oberhalb der Form-Klasse stehende Anweisungen
                 # (auch oberhalb des END HEADER-Markers) werden als echter
                 # Programmcode compiliert. Der automatisch erzeugte WFM-
@@ -117566,20 +118074,76 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 base,
                 assembly=assembly,
                 source_kind="form",
-                notes=notes,
+                notes=notes + tuple(_wfm_frontend.preprocessor_infos),
+                warnings=tuple(getattr(base, "warnings", ()) or ()) + tuple(_wfm_frontend.preprocessor_warnings),
+                frontend=_wfm_frontend,
                 statements=tuple(model.controls),
                 uses_debug_output=False,
             )
 
+        def _dbase_form_progress_begin(self, phase: str) -> None:
+            """Show a line-based build indicator in the ASM container."""
+            bar = getattr(self, "dbase_form_progress", None)
+            label = getattr(self, "dbase_form_progress_label", None)
+            if bar is None or label is None:
+                return
+            self._dbase_form_progress_last_paint = 0.0
+            bar.setRange(1, 1)
+            bar.setValue(1)
+            bar.show()
+            label.setText("Kompilieren ..." if phase == "compile" else "Assemblieren ...")
+            label.setStyleSheet("color: #ffe459; font-weight: bold;")
+            QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
+
+        def _dbase_form_progress_step(self, line: int, total: int) -> None:
+            bar = getattr(self, "dbase_form_progress", None)
+            if bar is None:
+                return
+            maximum = max(1, int(total))
+            if bar.maximum() != maximum:
+                bar.setMaximum(maximum)
+            current = min(maximum, max(1, int(line)))
+            if current < bar.value():
+                current = bar.value()
+            bar.setValue(current)
+            # Do not process mouse clicks, menu actions or further build requests
+            # reentrantly. A throttled event pump keeps the progress bar visible.
+            now = time.monotonic()
+            if current == maximum or now - self._dbase_form_progress_last_paint >= 0.035:
+                self._dbase_form_progress_last_paint = now
+                QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
+
+        def _dbase_form_progress_done(self, phase: str, ok: bool) -> None:
+            bar = getattr(self, "dbase_form_progress", None)
+            label = getattr(self, "dbase_form_progress_label", None)
+            if bar is None or label is None:
+                return
+            bar.hide()
+            if phase == "compile":
+                message = "Erfolgreich kompiliert !" if ok else "Fehler beim kompilieren !"
+            else:
+                message = "Linkvorgang erfolgreich !" if ok else "Fehler, Linken nicht möglich !"
+            label.setText(message)
+            label.setStyleSheet(
+                "color: #ffe459; font-weight: bold;" if ok
+                else "color: #ff5252; font-weight: bold;"
+            )
+            QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
+
         def compile_dbase_form(self) -> bool:
             self._ensure_dbase_form_designer()
+            if self.dbase_form_tabs is not None and self.dbase_form_source_page is not None:
+                self.dbase_form_tabs.setCurrentWidget(self.dbase_form_source_page)
+            self._dbase_form_progress_begin("compile")
             if self.dbase_form_current_path is None:
                 if not self.save_dbase_form(save_as=True):
+                    self._dbase_form_progress_done("compile", False)
                     return False
 
             source = self._sync_dbase_form_source()
             document = self.dbase_form_build_document
             if document is None:
+                self._dbase_form_progress_done("compile", False)
                 return False
             document.path = Path(self.dbase_form_current_path).resolve()
             document.custom_display_name = document.path.name
@@ -117601,6 +118165,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     filename=str(document.path),
                     target=target,
                     workstation_mode=self._project_windows_workstation_mode_for_target(target),
+                    progress_callback=self._dbase_form_progress_step,
                     debug_theme=self._project_windows_debug_theme_for_target(
                         target,
                         workstation=self._project_windows_workstation_mode_for_target(target),
@@ -117608,6 +118173,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 )
             except (ImportError, DBaseCompilerError, AssemblerError, ValueError) as exc:
                 message = str(exc)
+                self.log("dBase FORM Compilerfehler: " + message)
                 document.show_assembly_error(
                     message,
                     getattr(exc, "line", 0) or 0,
@@ -117616,6 +118182,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 self.show_error("Formular-Compilerfehler", message)
                 if self.dbase_form_build_status is not None:
                     self.dbase_form_build_status.setText("Compile fehlgeschlagen")
+                self._dbase_form_progress_done("compile", False)
                 return False
 
             ok = self._finish_compile_stage(
@@ -117625,7 +118192,12 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 "dBase FORM",
             )
             if not ok:
+                self._dbase_form_progress_done("compile", False)
                 return False
+            if self.dbase_form_progress is not None:
+                maximum = self.dbase_form_progress.maximum()
+                self._dbase_form_progress_step(maximum, maximum)
+            self._dbase_form_progress_done("compile", True)
             # Stage 467: Im Quellcode-Tab bleiben Quelle und erzeugter ASM
             # nebeneinander im Sinne einer gemeinsamen Splitter-Ansicht sichtbar.
             if self.dbase_form_tabs is not None:
@@ -117647,7 +118219,11 @@ QMenu#green_beige_popup_menu::indicator:checked {{
 
         def assemble_dbase_form(self) -> bool:
             document = self.dbase_form_build_document
+            if self.dbase_form_tabs is not None and self.dbase_form_source_page is not None:
+                self.dbase_form_tabs.setCurrentWidget(self.dbase_form_source_page)
+            self._dbase_form_progress_begin("assemble")
             if document is None:
+                self._dbase_form_progress_done("assemble", False)
                 return False
 
             # Stage 127: Ein WFM ist definitionsgemaess immer GUI.
@@ -117656,10 +118232,42 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             document.set_windows_application_mode("GUI")
             document.generated_source_kind = "form"
 
-            ok = self.assemble_generated_document(document)
+            # Count the *preprocessed* physical lines, including nested
+            # %include files. The same include roots are used by the assembler.
+            try:
+                asm_path = getattr(document, "generated_assembly_path", None)
+                if asm_path is None:
+                    asm_path = self._dbase_assembly_output_path(document)
+                expanded = preprocess_windows_asm(
+                    document.generated_assembly_editor.toPlainText(),
+                    filename=str(asm_path),
+                    include_dirs=self._project_windows_asm_include_paths(
+                        document.build_target
+                    ),
+                )
+                total = max(1, len(expanded.locations))
+                self._dbase_form_progress_step(1, total)
+            except (WindowsAsmMacroError, OSError, ValueError) as exc:
+                self.log("WFM Assembler-Präprozessor: " + str(exc))
+                self.show_error("Assemblerfehler", str(exc))
+                self._dbase_form_progress_done("assemble", False)
+                return False
+
+            # Feed actual line numbers from the internal parser rather than a
+            # fabricated timer-based animation. The progress bar remains up
+            # during COFF/link output and hides only after success/failure.
+            self._dbase_form_asm_progress_callback = self._dbase_form_progress_step
+            try:
+                ok = self.assemble_generated_document(document)
+            except Exception:
+                self._dbase_form_progress_done("assemble", False)
+                raise
+            finally:
+                self._dbase_form_asm_progress_callback = None
             if not ok:
                 if self.dbase_form_build_status is not None:
                     self.dbase_form_build_status.setText("Assemble fehlgeschlagen")
+                self._dbase_form_progress_done("assemble", False)
                 return False
             output = document.assembled_program_path
             if self.dbase_form_start_button is not None:
@@ -117671,6 +118279,10 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 self.dbase_form_build_status.setText(
                     f"EXE erzeugt: {Path(output).name}" if output else "Assembliert"
                 )
+            if self.dbase_form_progress is not None:
+                maximum = self.dbase_form_progress.maximum()
+                self._dbase_form_progress_step(maximum, maximum)
+            self._dbase_form_progress_done("assemble", True)
             return True
 
         def _prepare_dbase_form_runtime(self, output_path: Path) -> bool:
@@ -117883,6 +118495,9 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             Die bestehende visibilityChanged-Logik stellt anschließend den
             zuvor sichtbaren Arbeitsbereich wieder her.
             """
+            # Stage 474: a new form-designer session restarts the temporary
+            # naming sequence at Unbenannt_1.asm.
+            self._dbase_form_asm_new_counter = 1
             for dock in (
                 self.dbase_form_property_dock,
                 self.dbase_form_designer_dock,
@@ -117899,6 +118514,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             if property_dock is None or designer_dock is None:
                 return
             if not property_dock.isVisible() and not designer_dock.isVisible():
+                self._dbase_form_asm_new_counter = 1
                 QTimer.singleShot(0, self._restore_dbase_form_workspace)
 
         def show_dbase_form_designer(self) -> None:
@@ -124825,6 +125441,11 @@ border: 2px solid #2a69aa;
             self._apply_application_theme(self.dark_mode_enabled)
             for document in self._documents():
                 document.set_dark_mode(self.dark_mode_enabled)
+            # Stage 474: additional WFM ASM tabs keep the generated editor's
+            # navy palette and matching gutter also after live theme changes.
+            for editor in getattr(self, "_dbase_form_asm_editors", {}).values():
+                if editor is not None:
+                    self._dbase_form_asm_bind_editor(editor)
             if self.dbase_sql_builder_widget is not None:
                 self.dbase_sql_builder_widget.set_dark_mode(
                     self.dark_mode_enabled
@@ -125936,6 +126557,10 @@ border: 2px solid #2a69aa;
             *,
             use_template: bool,
         ) -> Optional[DocumentEditor]:
+            if (str(profile_key) == "assembler" and not use_template
+                    and self._dbase_form_is_active()):
+                self._dbase_form_asm_new_tab()
+                return None
             spec = self.compact_new_profiles.get(str(profile_key))
             if spec is None:
                 return None
@@ -126950,7 +127575,7 @@ border: 2px solid #2a69aa;
             if self._e_baukasten_is_active():
                 return bool(self.e_baukasten_widget.save_file(False))
             if self._dbase_form_is_active():
-                return self.save_dbase_form(save_as=False)
+                return self._dbase_form_save_all_editors()
             document = self.current_document()
             if document is None:
                 return False
@@ -126964,6 +127589,8 @@ border: 2px solid #2a69aa;
             if self._e_baukasten_is_active():
                 return bool(self.e_baukasten_widget.save_file(True))
             if self._dbase_form_is_active():
+                if self._dbase_form_asm_has_focus():
+                    return self._dbase_form_asm_save_as()
                 return self.save_dbase_form(save_as=True)
             document = self.current_document()
             if document is None:
@@ -127375,6 +128002,7 @@ border: 2px solid #2a69aa;
             # Stage 470: dBase-/WFM-Imports live in a separate, adjacent .inc.
             # Keep a unique per-program/per-target filename to avoid collisions.
             _asm_import_include = None
+            _asm_payload_include = None
             if str(language_name).startswith("dBase") and document.build_target in {"pe32", "pe64"}:
                 _small_asm, _include_path, _include_text = externalize_windows_imports(
                     generated.assembly, assembly_path
@@ -127382,6 +128010,14 @@ border: 2px solid #2a69aa;
                 if _include_path is not None:
                     generated = replace(generated, assembly=_small_asm)
                     _asm_import_include = (_include_path, _include_text)
+                # Stage 471: separate the bulky FORM-UI JSON/binary db data from
+                # the visible ASM source, preserving its address and label.
+                _small_asm, _payload_path, _payload_text = externalize_windows_wfm_payload(
+                    generated.assembly, assembly_path
+                )
+                if _payload_path is not None:
+                    generated = replace(generated, assembly=_small_asm)
+                    _asm_payload_include = (_payload_path, _payload_text)
             open_assembly = self._find_open_document(assembly_path)
             if open_assembly is not None and open_assembly.is_modified:
                 message = (
@@ -127401,6 +128037,9 @@ border: 2px solid #2a69aa;
             try:
                 if _asm_import_include is not None:
                     _inc_path, _inc_text = _asm_import_include
+                    self._write_assembled_program(_inc_path, _inc_text.encode("utf-8"))
+                if _asm_payload_include is not None:
+                    _inc_path, _inc_text = _asm_payload_include
                     self._write_assembled_program(_inc_path, _inc_text.encode("utf-8"))
                 self._write_assembled_program(
                     assembly_path,
@@ -128268,6 +128907,7 @@ border: 2px solid #2a69aa;
                     workstation_mode=self._project_windows_workstation_mode_for_target(
                         document.build_target
                     ),
+                    include_paths=self._project_windows_asm_include_paths(document.build_target),
                     debug_theme=self._project_windows_debug_theme_for_target(
                         document.build_target,
                         workstation=self._project_windows_workstation_mode_for_target(
@@ -128277,6 +128917,7 @@ border: 2px solid #2a69aa;
                 )
             except (ImportError, DBaseCompilerError, AssemblerError) as exc:
                 message = str(exc)
+                self.log("dBase Compilerfehler: " + message)
                 error_line = getattr(exc, "line", 0) or 0
                 document.show_assembly_error(message, error_line, "Compilerfehler")
                 self.show_error("dBase-Compilerfehler", message)
@@ -128518,6 +129159,10 @@ border: 2px solid #2a69aa;
                             document, "generated_linked_assembly_files", ()
                         ),
                     )
+                    is_form_build_progress = (
+                        bool(getattr(document, "is_dbase_document", False))
+                        and str(getattr(document, "generated_source_kind", "")).casefold() == "form"
+                    )
                     object_writer = (
                         _write_pe64_generated_objects if is64
                         else _write_pe32_generated_objects
@@ -128531,6 +129176,10 @@ border: 2px solid #2a69aa;
                         assembly_path=assembly_path,
                         output_directory=_project_output_directory,
                         include_dirs=self._project_windows_asm_include_paths(document.build_target),
+                        progress_callback=(
+                            getattr(self, "_dbase_form_asm_progress_callback", None)
+                            if is_form_build_progress else None
+                        ),
                     )
                     # Bereits erzeugte Projektobjekte/-archive beim F2-Build
                     # eines Hauptprogramms ebenfalls an den internen Linker
@@ -139445,6 +140094,46 @@ QFileDialog QComboBox QAbstractItemView {
             # Stage 467: klickbare WFM-Assembler-Quellzeilenkommentare.
             document = getattr(self, "dbase_form_build_document", None)
             asm_editor = getattr(document, "generated_assembly_editor", None)
+            # Stage 472/473: Tastenkombinationen gelten nur fuer ihren Editor.
+            # Der globale QAction-Shortcut fuer "Neue Textdatei" ist ebenfalls
+            # Ctrl+N; ShortcutOverride verhindert, dass er im ASM-Editor greift.
+            if self._dbase_form_is_active() and event.type() in (
+                    QEvent.ShortcutOverride, QEvent.KeyPress):
+                modifiers = event.modifiers()
+                ctrl_only = (
+                    bool(modifiers & Qt.ControlModifier)
+                    and not bool(modifiers & (Qt.AltModifier | Qt.ShiftModifier | Qt.MetaModifier))
+                )
+                if ctrl_only and event.key() in (Qt.Key_S, Qt.Key_N):
+                    raw = getattr(document, "raw_editor", None)
+                    asm_editors = getattr(self, "_dbase_form_asm_editors", {}).values()
+                    is_asm_editor = any(
+                        watched is editor or watched is editor.viewport()
+                        for editor in asm_editors
+                    )
+                    if event.type() == QEvent.ShortcutOverride:
+                        if (event.key() == Qt.Key_S and (watched is raw or is_asm_editor)
+                                or event.key() == Qt.Key_N and is_asm_editor):
+                            event.accept()
+                            return False  # KeyPress follows an accepted ShortcutOverride
+                    elif event.key() == Qt.Key_N and is_asm_editor:
+                        self._dbase_form_asm_new_tab()
+                        event.accept()
+                        return True
+                    elif event.key() == Qt.Key_S:
+                        if watched is raw:
+                            self.save_dbase_form()
+                            return True
+                        if is_asm_editor:
+                            self._dbase_form_save_all_editors()
+                            return True
+            if self._dbase_form_is_active() and event.type() in (QEvent.FocusIn, QEvent.MouseButtonPress):
+                if watched is getattr(document, "raw_editor", None):
+                    self._dbase_form_last_focus_target = "wfm"
+                elif watched in getattr(self, "_dbase_form_asm_editors", {}).values():
+                    self._dbase_form_last_focus_target = "asm"
+            # Stage 474: leave all ASM context menu events to SourceTextEdit,
+            # which now prepends "Neu Assembler" while keeping its old menu.
             if asm_editor is not None and watched is asm_editor.viewport():
                 if event.type() == QEvent.MouseMove:
                     if self._dbase_form_asm_source_line_at(event.pos()):
@@ -142836,6 +143525,7 @@ def _write_pe32_generated_objects(
     main_object_path: Optional[Path] = None,
     output_directory: Optional[Path | str] = None,
     include_dirs=(),
+    progress_callback=None,
 ) -> List[Path]:
     """Assembliert Hauptmodul und PE32-Abhängigkeiten separat zu COFF32."""
     result: List[Path] = []
@@ -142846,7 +143536,10 @@ def _write_pe32_generated_objects(
         key = str(resolved).casefold()
         if key in seen:
             return
-        data = assemble_pe32_coff_object(assembly, filename=str(asm_name), include_dirs=include_dirs)
+        data = assemble_pe32_coff_object(
+            assembly, filename=str(asm_name), include_dirs=include_dirs,
+            progress_callback=(progress_callback if not result else None),
+        )
         _write_cli_file(resolved, data)
         seen.add(key)
         result.append(resolved)
@@ -142925,6 +143618,7 @@ def _write_pe64_generated_objects(
     main_object_path: Optional[Path] = None,
     output_directory: Optional[Path | str] = None,
     include_dirs=(),
+    progress_callback=None,
 ) -> List[Path]:
     """Assembliert Hauptmodul und PE64-Abhängigkeiten separat zu AMD64-COFF64."""
     result: List[Path] = []
@@ -142935,7 +143629,10 @@ def _write_pe64_generated_objects(
         key = str(resolved).casefold()
         if key in seen:
             return
-        data = assemble_pe64_coff_object(assembly, filename=str(asm_name), include_dirs=include_dirs)
+        data = assemble_pe64_coff_object(
+            assembly, filename=str(asm_name), include_dirs=include_dirs,
+            progress_callback=(progress_callback if not result else None),
+        )
         _write_cli_file(resolved, data)
         seen.add(key)
         result.append(resolved)

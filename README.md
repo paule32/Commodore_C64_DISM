@@ -425,6 +425,10 @@ parties of Software Provider.
 I will give my best to not remove seals by, and with other Software.
 
 
+Preview - New Source Code Editor Layout for dBASE Compiler
+![Preview](img/screen00A6.png)
+
+
 Preview - Resource-Editor / Compiler
 ![Preview](img/screen0019.png)
 

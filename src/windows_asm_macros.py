@@ -303,7 +303,45 @@ def externalize_windows_imports(assembly: str, assembly_path: str | Path) -> tup
     remaining = [line for line in source_lines if not re.match(r'^\s*import\s+', line, re.I)]
     # Insert import macro near the start; no code addresses are changed.
     name = include_path.name
-    line = f'%include "<{name}>"\n'
+    line = f'%include "{name}"\n'
     # Do not touch .data/.text ordering: import directives are section-independent.
     remaining.insert(0, line)
     return ''.join(remaining), include_path, ''.join(imports)
+
+
+def externalize_windows_wfm_payload(
+    assembly: str, assembly_path: str | Path
+) -> tuple[str, Path | None, str | None]:
+    """Move the WFM UI JSON/binary payload db bytes into an adjacent include.
+
+    The payload label and the active .data section remain in the main ASM,
+    so references/relocations and alignment are preserved. Only the numeric
+    data directives *immediately* following this precise label are extracted.
+    The in-memory WFM compiler output stays unchanged until it is saved.
+    """
+    original = str(assembly)
+    source_lines = original.splitlines(keepends=True)
+    marker = '__dbase_wfm_external_ui_payload:'
+    marker_indices = [i for i, line in enumerate(source_lines)
+                      if line.strip() == marker]
+    if not marker_indices:
+        return original, None, None
+    if len(marker_indices) != 1:
+        raise ValueError(f"Mehrfaches WFM-Payload-Label: {marker}")
+    start = marker_indices[0] + 1
+    end = start
+    # Only decimal byte lists belong to the serializer's JSON/binary payload.
+    # Do not accidentally move the next label, property block or .bss section.
+    numeric_db = re.compile(r'^\s+db\s+\d+(?:\s*,\s*\d+)*\s*$', re.I)
+    while end < len(source_lines) and numeric_db.fullmatch(source_lines[end].rstrip('\r\n')):
+        end += 1
+    if end == start:
+        raise ValueError(f"Keine numerischen db-Daten hinter {marker}")
+    payload_lines = source_lines[start:end]
+    include_path = Path(assembly_path).with_suffix('.payload.inc')
+    replacement = f'    %include "{include_path.name}"\n'
+    return (
+        ''.join(source_lines[:start]) + replacement + ''.join(source_lines[end:]),
+        include_path,
+        ''.join(payload_lines),
+    )

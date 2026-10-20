@@ -742,7 +742,7 @@ def _condition_to_python(
     Objekt- und Funktionsmakros expandiert. Noch unbekannte Bezeichner haben
     wie beim C-Praeprozessor den Wert 0.
     """
-    text = str(expression or "")
+    text = re.sub(r"(?<![\w])#(?=__(?:FILE|LINE|DATE|TIME)__\b)", "", str(expression or ""), flags=re.I)
 
     def replace_defined(match: re.Match[str]) -> str:
         name = match.group(1) or match.group(2) or ""
@@ -765,21 +765,25 @@ def _condition_to_python(
         compile_time=compile_time,
     )
 
-    # dBase-/C-kompatible Schreibweisen normalisieren.
-    text = re.sub(
-        r"(?<![A-Za-z0-9_])\$([0-9A-Fa-f]+)",
-        lambda m: str(int(m.group(1), 16)),
-        text,
-    )
-    text = re.sub(
-        r"(?<![A-Za-z0-9_])([0-9][0-9A-Fa-f]*)[hH]\b",
-        lambda m: str(int(m.group(1), 16)),
-        text,
-    )
-    text = text.replace("<>", "!=")
-    text = re.sub(r"(?<![<>=!])=(?!=)", "==", text)
-    text = text.replace("&&", " and ").replace("||", " or ")
-    text = re.sub(r"!(?!=)", " not ", text)
+    # Normalize operators and numeric literals outside quoted strings only.
+    # Otherwise a #if "a=b" == "a==b" could compare equal by accident.
+    segments = re.split(r'(\"(?:\"\"|[^\"])*\"|\'(?:\'\'|[^\'])*\')', text)
+    for segment_index in range(0, len(segments), 2):
+        chunk = segments[segment_index]
+        chunk = re.sub(
+            r"(?<![A-Za-z0-9_])\$([0-9A-Fa-f]+)",
+            lambda m: str(int(m.group(1), 16)), chunk,
+        )
+        chunk = re.sub(
+            r"(?<![A-Za-z0-9_])([0-9][0-9A-Fa-f]*)[hH]\b",
+            lambda m: str(int(m.group(1), 16)), chunk,
+        )
+        chunk = chunk.replace("=>", ">=").replace("<>", "!=")
+        chunk = re.sub(r"(?<![<>=!])=(?!=)", "==", chunk)
+        chunk = chunk.replace("&&", " and ").replace("||", " or ")
+        chunk = re.sub(r"!(?!=)", " not ", chunk)
+        segments[segment_index] = chunk
+    text = "".join(segments)
 
     # Identifikatoren ausserhalb von Strings: Python-Schluesselwoerter bzw.
     # boolesche Literale behalten, alles andere wird zu 0.
@@ -846,6 +850,15 @@ def _safe_eval_macro_condition(
     try:
         tree = ast.parse(pyexpr, mode="eval")
     except SyntaxError as exc:
+        # More useful than an opaque syntax error for mistyped comparison ops.
+        unquoted = re.sub(r'(\"(?:\"\"|[^\"])*\"|\'(?:\'\'|[^\'])*\')', ' ', expression)
+        unsupported = re.search(r"===|!==|><|=<|=~|~=|<=>", unquoted)
+        if unsupported:
+            raise DBaseCompilerError(
+                f"Nicht unterstuetzter Vergleichsoperator '{unsupported.group(0)}'. "
+                "Erlaubt sind <, <=, ==, !=, >=, => und >.",
+                line=line, column=(unsupported.start() + 1), filename=filename,
+            ) from None
         raise DBaseCompilerError(
             f"Ungueltiger Makro-Ausdruck: {expression}",
             line=line,
@@ -858,7 +871,7 @@ def _safe_eval_macro_condition(
             return ev(node.body)
         if isinstance(node, ast.Constant):
             if isinstance(node.value, (bool, int, float, str)):
-                return node.value
+                return Decimal(str(node.value)) if isinstance(node.value, float) else node.value
         if isinstance(node, ast.UnaryOp):
             value = ev(node.operand)
             if isinstance(node.op, ast.Not): return not bool(value)
@@ -866,9 +879,11 @@ def _safe_eval_macro_condition(
             if isinstance(node.op, ast.USub): return -value
             if isinstance(node.op, ast.Invert): return ~int(value)
         if isinstance(node, ast.BoolOp):
-            values = [bool(ev(item)) for item in node.values]
-            if isinstance(node.op, ast.And): return all(values)
-            if isinstance(node.op, ast.Or): return any(values)
+            # Short-circuit inactive operands (e.g. #if 0 && (1/0)).
+            if isinstance(node.op, ast.And):
+                return all(bool(ev(item)) for item in node.values)
+            if isinstance(node.op, ast.Or):
+                return any(bool(ev(item)) for item in node.values)
         if isinstance(node, ast.BinOp):
             left, right = ev(node.left), ev(node.right)
             if isinstance(node.op, ast.Add): return left + right
@@ -900,7 +915,12 @@ def _safe_eval_macro_condition(
 
     try:
         return bool(ev(tree))
-    except (ValueError, TypeError, ZeroDivisionError, OverflowError):
+    except TypeError:
+        raise DBaseCompilerError(
+            f"Inkompatible Datentypen im Makro-Ausdruck: {expression} (z. B. String und Zahl)",
+            line=line, column=1, filename=filename,
+        ) from None
+    except (ValueError, ZeroDivisionError, OverflowError):
         raise DBaseCompilerError(
             f"Nicht unterstuetzter Makro-Ausdruck: {expression}",
             line=line,
@@ -1127,7 +1147,7 @@ class _DBaseConditionalFrame:
     else_seen: bool = False
 
 
-def _resolve_include_path(raw: str, *, filename: str, line: int) -> Path:
+def _resolve_include_path(raw: str, *, filename: str, line: int, include_paths=()) -> Path:
     value = str(raw or "").strip()
     match = re.fullmatch(r'"([^"]+)"', value)
     if match is None:
@@ -1138,23 +1158,25 @@ def _resolve_include_path(raw: str, *, filename: str, line: int) -> Path:
             filename=filename,
         )
     include_name = os.path.expandvars(os.path.expanduser(match.group(1)))
-    path = Path(include_name)
-    source_path = Path(filename)
-    if not path.is_absolute():
-        base = source_path.parent if filename and not str(filename).startswith("<") else Path.cwd()
-        path = base / path
-    try:
-        path = path.resolve()
-    except OSError:
-        path = path.absolute()
-    if not path.is_file():
-        raise DBaseCompilerError(
-            f'#include-Datei nicht gefunden: {path}',
-            line=line,
-            column=1,
-            filename=filename,
-        )
-    return path
+    requested = Path(include_name)
+    origin = Path(filename)
+    roots = ([origin.parent] if filename and not str(filename).startswith("<") else [Path.cwd()])
+    roots.extend(Path(entry).expanduser() for entry in (include_paths or ()) if str(entry).strip())
+    candidates = [requested] if requested.is_absolute() else [root / requested for root in roots]
+    checked = []
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except (OSError, RuntimeError):
+            resolved = candidate.absolute()
+        checked.append(str(resolved))
+        if resolved.is_file():
+            return resolved
+    raise DBaseCompilerError(
+        "#include-Datei nicht gefunden: " + include_name +
+        "\nGepruefte Pfade: " + "; ".join(checked),
+        line=line, column=1, filename=filename,
+    )
 
 
 def _read_dbase_include(path: Path, *, filename: str, line: int) -> str:
@@ -1213,6 +1235,7 @@ def _preprocess_dbase_macros(
     _include_stack: Optional[Tuple[Path, ...]] = None,
     _compile_date: str = "",
     _compile_time: str = "",
+    include_paths=(),
 ) -> Tuple[str, Tuple[DBaseMacro, ...], Tuple[DBasePragmaLink, ...], Tuple[str, ...], Tuple[str, ...]]:
     """C/C++-artiger dBase-Praeprozessor mit rekursiven Includes."""
     masked = strip_dbase_comments(source, filename=filename)
@@ -1367,7 +1390,7 @@ def _preprocess_dbase_macros(
                 macros.pop(rest.casefold(), None)
 
             elif keyword == "include":
-                include_path = _resolve_include_path(rest, filename=filename, line=line_no)
+                include_path = _resolve_include_path(rest, filename=filename, line=line_no, include_paths=include_paths)
                 if len(include_stack) >= 64:
                     raise DBaseCompilerError(
                         "Maximale #include-Verschachtelung (64) ueberschritten.",
@@ -1390,6 +1413,7 @@ def _preprocess_dbase_macros(
                     _include_stack=include_stack + (include_path,),
                     _compile_date=compile_date,
                     _compile_time=compile_time,
+                    include_paths=include_paths,
                 )
                 # Direktivenzeile selbst bleibt als Leerzeile fuer moeglichst
                 # stabile Zeilennummern; danach folgt der eingebundene Text.
@@ -1399,8 +1423,9 @@ def _preprocess_dbase_macros(
                     output.append("\n")
                 continue
 
-            elif keyword in {"error", "warning", "info"}:
+            elif keyword in {"error", "warning", "warn", "info"}:
                 message_text = rest.strip() or f"#{keyword}"
+                message_text = re.sub(r"(?<![\w])#(?=__(?:FILE|LINE|DATE|TIME)__\b)", "", message_text, flags=re.I)
                 expanded_message, _ = _expand_dbase_macro_text(
                     message_text,
                     macros,
@@ -1409,14 +1434,20 @@ def _preprocess_dbase_macros(
                     compile_date=compile_date,
                     compile_time=compile_time,
                 )
-                expanded_message = expanded_message.strip()
+                # Diagnostic messages display the basename rather than a quoted
+                # absolute __FILE__ path. Normal source expressions keep the
+                # original full path and string quotation.
+                expanded_message = expanded_message.replace(
+                    _quote_dbase_predefined_string(str(filename)), Path(filename).name
+                )
+                expanded_message = " ".join(expanded_message.split())
                 location = f"{filename}:{line_no}: #{keyword}: {expanded_message}"
                 if keyword == "error":
                     raise DBaseCompilerError(
                         f"#error: {expanded_message}",
                         line=line_no, column=1, filename=filename,
                     )
-                if keyword == "warning":
+                if keyword in {"warning", "warn"}:
                     warnings.append(location)
                 else:
                     infos.append(location)
@@ -1440,8 +1471,9 @@ def _preprocess_dbase_macros(
             output.append(_blank_directive_line(orig_line))
             continue
 
+        active_line = re.sub(r"(?<![\w])#(?=__(?:FILE|LINE|DATE|TIME)__\b)", "", orig_line, flags=re.I)
         expanded, block_state = _expand_dbase_macro_text(
-            orig_line,
+            active_line,
             macros,
             in_block_comment=block_state,
             filename=filename,
@@ -1466,12 +1498,13 @@ def preprocess_dbase_source(
     *,
     filename: str = "<dBase>",
     target: str = "pe32",
+    include_paths=(),
 ) -> DBaseFrontendResult:
     text = str(source or "")
     normalized_target = normalize_dbase_target(target)
     comments = scan_dbase_comments(text, filename=filename)
     cleaned = strip_dbase_comments(text, filename=filename)
-    preprocessed, macros, pragma_links, preprocessor_warnings, preprocessor_infos = _preprocess_dbase_macros(text, filename=filename)
+    preprocessed, macros, pragma_links, preprocessor_warnings, preprocessor_infos = _preprocess_dbase_macros(text, filename=filename, include_paths=include_paths)
     return DBaseFrontendResult(
         source=text,
         comment_free_source=cleaned,
@@ -1491,6 +1524,7 @@ def compile_dbase_frontend(
     *,
     filename: str = "<dBase>",
     target: str = "pe32",
+    include_paths=(),
 ) -> DBaseFrontendResult:
     """Öffentlicher Einstieg der ersten dBase-Compilerstufe.
 
@@ -1498,7 +1532,7 @@ def compile_dbase_frontend(
     bereits auf PE32/PE32+ festgelegt, damit spätere Parser- und Codegen-Stufen
     dieselbe API weiterverwenden können.
     """
-    return preprocess_dbase_source(source, filename=filename, target=target)
+    return preprocess_dbase_source(source, filename=filename, target=target, include_paths=include_paths)
 
 
 _NUMBER_RE = re.compile(
@@ -6315,6 +6349,7 @@ def compile_dbase_to_assembly(
     windows_application_mode: str = "Console",
     workstation_mode: bool = False,
     debug_theme: str = "default",
+    include_paths=(),
 ) -> DBaseCompileResult:
     """Kompiliert dBase mit Qt5-GUI, Membern und verschachtelten Bedingungen.
 
@@ -6339,6 +6374,7 @@ def compile_dbase_to_assembly(
         source,
         filename=filename,
         target=target,
+        include_paths=include_paths,
     )
     requested_mode = normalize_dbase_windows_mode(windows_application_mode)
     # dBase verwendet ab dieser Stufe immer die eigene Qt5-GUI-Runtime.
@@ -8263,6 +8299,7 @@ def compile_dbase_to_assembly(
     windows_application_mode: str = "Console",
     workstation_mode: bool = False,
     debug_theme: str = "default",
+    include_paths=(),
 ) -> DBaseCompileResult:
     result = _stage12_compile_dbase_to_assembly(
         source,
