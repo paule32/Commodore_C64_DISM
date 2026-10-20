@@ -23,7 +23,9 @@ def test_assembler_editor_reparented_to_visible_host_instead_of_hidden_tab():
     assert 'assembly_layout.removeWidget(asm_container)' in method
     assert 'asm_container = build_document.generated_assembly_editor_container' in method
     assert 'asm_container.setParent(assembly_host)' in method
-    assert 'assembly_host_layout.addWidget(asm_container, 1)' in method
+    # Stage 472: der permanente ASM-Editor lebt nun im TabWidget im gleichen Host.
+    assert ('assembly_host_layout.addWidget(asm_container, 1)' in method
+            or 'assembly_tabs.addTab(asm_container, "Generierter Assembler")' in method)
     assert 'source_assembly_splitter.addWidget(assembly_host)' in method
     assert 'asm_container.show()' in method
     assert 'assembly_host.show()' in method

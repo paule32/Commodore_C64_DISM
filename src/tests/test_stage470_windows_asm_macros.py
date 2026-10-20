@@ -96,7 +96,7 @@ def test_real_dbase_wfm_imports_can_be_externalized(tmp_path, target):
     assert external is not None and content is not None
     assert 'import DBaseQt' not in compact
     assert len(compact) < len(original)
-    assert compact.startswith('%include "<Form1.generated.')
+    assert compact.startswith('%include "Form1.generated.')
     external.write_text(content, encoding='utf8')
     ns = linkers()
     srcpath = tmp_path / f'Form1.generated.{target}.asm'
