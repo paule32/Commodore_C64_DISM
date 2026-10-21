@@ -86,6 +86,7 @@ class DBaseFrontendResult:
     pragma_links: Tuple[DBasePragmaLink, ...] = ()
     preprocessor_warnings: Tuple[str, ...] = ()
     preprocessor_infos: Tuple[str, ...] = ()
+    ffi_prototypes: Tuple[object, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1505,6 +1506,11 @@ def preprocess_dbase_source(
     comments = scan_dbase_comments(text, filename=filename)
     cleaned = strip_dbase_comments(text, filename=filename)
     preprocessed, macros, pragma_links, preprocessor_warnings, preprocessor_infos = _preprocess_dbase_macros(text, filename=filename, include_paths=include_paths)
+    from .ffi import extract_ffi_prototypes
+    try:
+        preprocessed, ffi_prototypes = extract_ffi_prototypes(preprocessed, filename=filename)
+    except ValueError as exc:
+        raise DBaseCompilerError(str(exc), filename=filename) from None
     return DBaseFrontendResult(
         source=text,
         comment_free_source=cleaned,
@@ -1516,6 +1522,7 @@ def preprocess_dbase_source(
         pragma_links=pragma_links,
         preprocessor_warnings=preprocessor_warnings,
         preprocessor_infos=preprocessor_infos,
+        ffi_prototypes=ffi_prototypes,
     )
 
 
@@ -2978,7 +2985,8 @@ def _routine_instance_label(definition: DBaseRoutineDefinition, signature: Tuple
 
 
 class _DBaseProgramAnalyzer:
-    def __init__(self, statements: Tuple[object, ...], *, filename: str) -> None:
+    def __init__(self, statements: Tuple[object, ...], *, filename: str, ffi_prototypes=()) -> None:
+        self.ffi_prototypes = {item.name.casefold(): item for item in ffi_prototypes}
         self.statements = statements
         self.filename = filename
         self.routines: Dict[str, DBaseRoutineDefinition] = {}
@@ -3274,6 +3282,45 @@ class _DBaseProgramAnalyzer:
                 )
                 for argument in expression.arguments
             )
+            ffi = self.ffi_prototypes.get(expression.name.casefold())
+            if ffi is not None:
+                if len(expression.arguments) != len(ffi.argument_types):
+                    raise DBaseCompilerError(
+                        f"DLL-Funktion {ffi.name} erwartet {len(ffi.argument_types)} Parameter, erhalten: {len(expression.arguments)}.",
+                        line=expression.line, column=expression.column, filename=self.filename)
+                from .ffi_types import ffi_type_info
+                for parameter_type, actual in zip(ffi.argument_types, argument_info):
+                    typ = ffi_type_info(parameter_type)
+                    if typ.is_string_input:
+                        null_pointer = (actual.kind == 'number' and actual.constant_value is not None
+                                        and Decimal(actual.constant_value.value) == 0)
+                        if typ.category == 'wide_string' and actual.kind in {'string', 'char'} and actual.constant_value is None:
+                            raise DBaseCompilerError(
+                                f"DLL-Funktion {ffi.name}: {parameter_type} braucht ein UTF-16-Literal "
+                                "oder NULL (0); dynamische Texte benoetigen einen UTF-16-Puffer.",
+                                line=expression.line, column=expression.column, filename=self.filename)
+                        if actual.kind not in {'string', 'char'} and not null_pointer:
+                            raise DBaseCompilerError(
+                                f"DLL-Funktion {ffi.name}: {parameter_type} erwartet Text oder NULL (0).",
+                                line=expression.line, column=expression.column, filename=self.filename)
+                    elif actual.kind not in {'number', 'logical'}:
+                        raise DBaseCompilerError(
+                            f"DLL-Funktion {ffi.name}: {parameter_type} erwartet eine Zahl oder "
+                            "native Speicheradresse (kein dBASE-String).",
+                            line=expression.line, column=expression.column, filename=self.filename)
+                if ffi.return_type == 'CVOID' and require_value:
+                    raise DBaseCompilerError(
+                        f"DLL-Funktion {ffi.name} liefert CVOID und kann nicht als Wert verwendet werden.",
+                        line=expression.line, column=expression.column, filename=self.filename)
+                slots = self._new_call_slots(len(expression.arguments))
+                call_bindings[expression] = _DBaseCallBinding(
+                    kind='ffi', target_label=ffi.label, result_label='',
+                    argument_slots=slots, parameter_slots=(),
+                    return_kind='void' if ffi.return_type == 'CVOID' else 'number')
+                info = _DBaseExpressionInfo(
+                    'void' if ffi.return_type == 'CVOID' else 'number', None, True)
+                expression_info[expression] = info
+                return info
             definition = self.routines.get(expression.name.casefold())
             if definition is not None:
                 if len(expression.arguments) != len(definition.parameters):
@@ -4095,8 +4142,9 @@ def _analyze_program(
     statements: Tuple[object, ...],
     *,
     filename: str,
+    ffi_prototypes=(),
 ) -> _DBaseAnalysis:
-    return _DBaseProgramAnalyzer(statements, filename=filename).run()
+    return _DBaseProgramAnalyzer(statements, filename=filename, ffi_prototypes=ffi_prototypes).run()
 
 def _evaluate_dbase_expression(
     expression: DBaseExpression,
@@ -4539,7 +4587,9 @@ class _DBaseCodeGenerator:
         filename: str,
         workstation_mode: bool = False,
         debug_theme: str = "default",
+        ffi_prototypes=(),
     ) -> None:
+        self.ffi_prototypes = {p.name.casefold(): p for p in ffi_prototypes}
         self.statements = statements
         def has_speech(seq):
             return any(isinstance(item, (DBaseSetSpeechStatement, DBaseSayStatement))
@@ -4548,6 +4598,7 @@ class _DBaseCodeGenerator:
                        for item in seq)
         self.uses_speech = has_speech(statements)
         self.speech_utf8_literals: Dict[bytes, str] = {}
+        self.ffi_string_literals: Dict[bytes, str] = {}
         self.analysis = analysis
         self.target = target
         self.filename = filename
@@ -4789,7 +4840,9 @@ class _DBaseCodeGenerator:
                 self.emit("    fldcw word ptr [__dbase_int_cw]")
                 return
             binding = self.emit_user_call(expression)
-            if binding.kind == "external":
+            if binding.kind == 'ffi':
+                self.emit('    fild qword ptr [__dbase_ffi_return]')
+            elif binding.kind == "external":
                 if self.is64:
                     self.emit("    movsd qword ptr [__dbase_call_number], xmm0")
                     self.emit("    fld qword ptr [__dbase_call_number]")
@@ -6144,6 +6197,8 @@ class _DBaseCodeGenerator:
             self.emit('import VirtualFree, "kernel32.dll", "VirtualFree"')
         for function in self.analysis.external_functions:
             self.emit(f"extern {function}")
+        for ffi in self.ffi_prototypes.values():
+            self.emit(ffi.import_line)
         self.emit("global _start")
         self.emit("entry _start")
         self.emit()
@@ -6235,6 +6290,8 @@ class _DBaseCodeGenerator:
         self.data_lines = ["", "section .data", ""]
         for payload, label in self.speech_utf8_literals.items():
             self.data_lines.extend(_db_lines(label, payload, nul_terminate=True))
+        for payload, label in self.ffi_string_literals.items():
+            self.data_lines.extend(_db_lines(label, payload))
         if self.uses_speech:
             for key, default in (("backend", 0), ("mix", 55), ("pitch", 125), ("speed", 100),
                                  ("expression", 60), ("articulation", 65), ("fluency", 75)):
@@ -6266,6 +6323,7 @@ class _DBaseCodeGenerator:
         # contributes VirtualSize but no SizeOfRawData to the PE image.
         self.bss_lines = [
             "", "section .bss", "",
+            "__dbase_ffi_return:", "    resq 1",
             "__dbase_temp_number:", "    resd 1",
             "__dbase_temp_number_hi:", "    resd 1",
             "__dbase_int_cw:", "    resw 1",
@@ -6395,7 +6453,7 @@ def compile_dbase_to_assembly(
             "SET SPEECH und SAY benoetigen derzeit PE32: retro_speech.dll ist eine 32-Bit-DLL.",
             filename=filename,
         )
-    analysis = _analyze_program(statements, filename=filename)
+    analysis = _analyze_program(statements, filename=filename, ffi_prototypes=frontend.ffi_prototypes)
     assembly = _DBaseCodeGenerator(
         statements,
         analysis,
@@ -6403,6 +6461,7 @@ def compile_dbase_to_assembly(
         filename=filename,
         workstation_mode=workstation_mode,
         debug_theme=debug_theme,
+        ffi_prototypes=frontend.ffi_prototypes,
     ).build()
     target_label = (
         "Windows PE32+ (AMD64)"
@@ -7807,8 +7866,8 @@ class _DBaseProgramAnalyzer(_Stage12ProgramAnalyzer):
         return super()._preview_top_sequence(self._without_menu(tuple(sequence)), **kwargs)
 
 
-def _analyze_program(statements: Tuple[object, ...], *, filename: str) -> _DBaseAnalysis:
-    return _DBaseProgramAnalyzer(statements, filename=filename).run()
+def _analyze_program(statements: Tuple[object, ...], *, filename: str, ffi_prototypes=()) -> _DBaseAnalysis:
+    return _DBaseProgramAnalyzer(statements, filename=filename, ffi_prototypes=ffi_prototypes).run()
 
 
 class _DBaseCodeGenerator(_Stage12CodeGenerator):
@@ -7843,6 +7902,89 @@ class _DBaseCodeGenerator(_Stage12CodeGenerator):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.object_slots: Dict[Tuple[str, ...], str] = {}
+
+    def emit_user_call(self, expression: DBaseCallExpression) -> _DBaseCallBinding:
+        binding = self._binding(expression)
+        if binding.kind != 'ffi':
+            return super().emit_user_call(expression)
+        ffi = self.ffi_prototypes[expression.name.casefold()]
+        # Materialize all arguments before touching the Win64 shadow space;
+        # nested FUNCTION calls then preserve the normal stack alignment.
+        from .ffi_types import ffi_type_info, ffi_return_instructions
+        # Materialize arguments before modifying the Win64 shadow space.
+        # String literals get their own zero-terminated native encoding; the
+        # dBASE string storage is length-based and NOT necessarily C-terminated.
+        native_string_labels = {}
+        for index, (arg, slot, type_name) in enumerate(zip(expression.arguments, binding.argument_slots, ffi.argument_types)):
+            typ = ffi_type_info(type_name)
+            info = self.current_expression_info[arg]
+            if typ.is_string_input and info.kind in ('string', 'char') and info.constant_value is not None:
+                value = str(info.constant_value.value)
+                data = (value.encode('utf-16-le') + b'\0\0') if typ.category == 'wide_string' else (value.encode('cp1252', errors='replace') + b'\0')
+                label = self.ffi_string_literals.get(data)
+                if label is None:
+                    label = f'__dbase_ffi_text_{len(self.ffi_string_literals)}'
+                    self.ffi_string_literals[data] = label
+                native_string_labels[index] = label
+            else:
+                self.emit_store_expression_to_slot(arg, slot)
+        if self.is64:
+            count = len(binding.argument_slots)
+            allocated = max(4, count) * 8
+            allocated += 8 if allocated % 16 == 0 else 0
+            self.emit(f'    sub rsp, {allocated}')
+            for index, (arg_type, slot) in enumerate(zip(ffi.argument_types, binding.argument_slots)):
+                register = ('rcx', 'rdx', 'r8', 'r9')[index] if index < 4 else 'rax'
+                typ = ffi_type_info(arg_type)
+                info = self.current_expression_info[expression.arguments[index]]
+                if index in native_string_labels:
+                    self.emit(f'    mov {register}, {native_string_labels[index]}')
+                elif typ.is_string_input:
+                    if info.kind == 'number':
+                        self.emit(f'    xor {register}, {register}')
+                    else:
+                        self.emit(f'    mov {register}, qword ptr [{slot}_ptr]')
+                else:
+                    self.emit(f'    fld qword ptr [{slot}_num]')
+                    self.emit('    fistp qword ptr [__dbase_ffi_return]')
+                    # UINT/DWORD on Win64 must not sign-extend bit 31. Using
+                    # a 32-bit destination automatically clears upper bits.
+                    if typ.bits('pe64') == 32 and not typ.signed:
+                        dest32 = ('ecx', 'edx', 'r8d', 'r9d')[index] if index < 4 else 'eax'
+                        self.emit(f'    mov {dest32}, dword ptr [__dbase_ffi_return]')
+                    else:
+                        self.emit(f'    mov {register}, qword ptr [__dbase_ffi_return]')
+                if index >= 4:
+                    self.emit(f'    mov qword ptr [rsp+{index * 8}], rax')
+            self.emit(f'    call {ffi.label}')
+            self.emit(f'    add rsp, {allocated}')
+        else:
+            for index in range(len(binding.argument_slots) - 1, -1, -1):
+                arg_type, slot = ffi.argument_types[index], binding.argument_slots[index]
+                typ = ffi_type_info(arg_type)
+                info = self.current_expression_info[expression.arguments[index]]
+                if index in native_string_labels:
+                    self.emit(f'    push {native_string_labels[index]}')
+                elif typ.is_string_input:
+                    if info.kind == 'number':
+                        self.emit('    push 0')
+                    else:
+                        self.emit(f'    push dword ptr [{slot}_ptr]')
+                else:
+                    self.emit(f'    fld qword ptr [{slot}_num]')
+                    if typ.bits('pe32') == 64:
+                        # On x86 WINAPI an explicit int64 argument occupies
+                        # two stack slots, pushed high DWORD before low DWORD.
+                        self.emit('    fistp qword ptr [__dbase_ffi_return]')
+                        self.emit('    push dword ptr [__dbase_ffi_return+4]')
+                        self.emit('    push dword ptr [__dbase_ffi_return]')
+                    else:
+                        self.emit('    fistp dword ptr [__dbase_temp_number]')
+                        self.emit('    push dword ptr [__dbase_temp_number]')
+            self.emit(f'    call {ffi.label}')  # WINAPI/stdcall cleans arguments.
+        for instruction in ffi_return_instructions(ffi.return_type, is64=self.is64):
+            self.emit(instruction)
+        return binding
 
     def _object_slot(self, path: DBaseObjectPath) -> str:
         parts = path.canonical_parts
@@ -8308,6 +8450,7 @@ def compile_dbase_to_assembly(
         windows_application_mode=windows_application_mode,
         workstation_mode=workstation_mode,
         debug_theme=debug_theme,
+        include_paths=include_paths,
     )
     stage13_notes = (
         "dBase-Ausbaustufe 13: globales APPLICATION-Objekt _app und eingebaute MENU-Klasse.",

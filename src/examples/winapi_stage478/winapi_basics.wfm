@@ -1,0 +1,7 @@
+#include "winapi_basics.h"
+
+? "Win32:"
+? GetCurrentProcessId()
+
+CLASS Form1 OF FORM
+ENDCLASS

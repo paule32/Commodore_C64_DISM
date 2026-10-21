@@ -13,7 +13,7 @@ from typing import Mapping, Iterable
 
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z_0-9]*$")
 _TOKEN = re.compile(r"(?<![A-Za-z0-9_])([A-Za-z_][A-Za-z_0-9]*)(?![A-Za-z0-9_])")
-_DIRECTIVE = re.compile(r"^\s*%(\w+)\b(.*)$", re.IGNORECASE)
+_DIRECTIVE = re.compile(r"^\s*(?:%(\w+)|(\.include)\b)(.*)$", re.IGNORECASE)
 _INC = re.compile(r'^\s*(?:"([^"\r\n]+)"|\x27([^\x27\r\n]+)\x27|<([^>\r\n]+)>)\s*$')
 _MAX_INCLUDE_DEPTH = 32
 _MAX_LINES = 700000
@@ -186,7 +186,7 @@ def preprocess_windows_asm(source: str, *, filename: str = '<Assembler>',
                 else:
                     emit('', file, number)
                 continue
-            kind, arg = directive[1].lower(), directive[2].strip()
+            kind, arg = (directive[1] or directive[2]).lstrip('.').lower(), directive[3].strip()
             if kind in ('if', 'ifdef', 'ifndef'):
                 parent = active
                 try:

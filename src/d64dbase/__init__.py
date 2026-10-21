@@ -110,3 +110,7 @@ __all__ = [
 
 # Stage 334: dBase TObject inheritance metadata
 from .class_model import DBaseClassError, DBaseClassInfo, DBaseClassRegistry, parse_dbase_class_metadata
+
+# Stage 477: strongly typed Win32/Win64 DLL declarations.
+from .ffi import DBaseFFIPrototype, FFI_TYPES, ffi_type_info, WinAPIType
+__all__.extend(["DBaseFFIPrototype", "FFI_TYPES", "ffi_type_info", "WinAPIType"])

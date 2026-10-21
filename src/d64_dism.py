@@ -33795,9 +33795,20 @@ from windows_asm_macros import (
 
 def _preprocess_windows_assembly(source: str, filename: str, error_class, include_dirs=()):
     try:
-        return preprocess_windows_asm(source, filename=filename, include_dirs=include_dirs)
+        expanded = preprocess_windows_asm(source, filename=filename, include_dirs=include_dirs)
     except WindowsAsmMacroError as exc:
         raise error_class(str(exc), exc.line) from exc
+    # Stage 480: compile generated GNU AT&T source through the same internal
+    # COFF backend as Intel source.  Expand %include/%define FIRST, preserving
+    # original source locations and excluding macros from the syntax rewrite.
+    from windows_asm_att import contains_att_syntax, att_to_intel
+    if contains_att_syntax(expanded.source):
+        try:
+            converted = att_to_intel(expanded.source)
+        except ValueError as exc:
+            raise error_class(str(exc)) from exc
+        return type(expanded)(source=converted, locations=expanded.locations)
+    return expanded
 
 
 class PE32AssemblerError(Exception):
@@ -48510,13 +48521,37 @@ def _project_document_output_path(document, filename: str) -> Path:
     override = getattr(
         document, "project_tree_compile_output_directory", None
     )
-    if override:
-        return Path(override).expanduser().resolve() / str(filename)
     source_path = getattr(document, "path", None)
     if source_path is None:
         raise AssemblerError(
             "Der Quelltext muss vor dem Erzeugen einer Ausgabe gespeichert werden."
         )
+    # Stage479: project-configured assembler cache and final executable directories.
+    if str(getattr(document, "build_target", "")) in {"pe32", "pe64"}:
+        owner = getattr(document, "window", lambda: None)()
+        if owner is not None:
+            target = document.build_target
+            suffix = Path(str(filename)).suffix.casefold()
+            if suffix == ".asm":
+                setting = getattr(owner, "project_windows_assembler_cache", {})
+            elif suffix in {".exe", ".dll", ".o", ".obj"}:
+                setting = getattr(owner, "project_windows_output_directories", {})
+            else:
+                setting = {}
+            value = str(setting.get(target, "") or "").strip()
+            if value:
+                destination = Path(value).expanduser().resolve()
+                relative = getattr(owner, "project_windows_relative_paths", {}).get(target, {}).get("output", True)
+                project_base_fn = getattr(owner, "_project_windows_base_directory", None)
+                if relative and callable(project_base_fn):
+                    try:
+                        rel = os.path.relpath(str(destination), str(project_base_fn()))
+                        destination = (Path(source_path).resolve().parent / rel).resolve()
+                    except (OSError, ValueError):
+                        pass
+                return destination / str(filename)
+    if override:
+        return Path(override).expanduser().resolve() / str(filename)
     return Path(source_path).with_name(str(filename))
 
 
@@ -48772,6 +48807,8 @@ PROJECT_WINDOWS_TARGET_SETTINGS = {
     "pe32": {
         "input_key": PROJECT_WINDOWS_PE32_LINK_SEARCH_PATHS_KEY,
         "output_key": PROJECT_WINDOWS_PE32_OUTPUT_DIRECTORY_KEY,
+        "asm_cache_key": "__windows_pe32_assembler_cache__",
+        "asm_mode_key": "__windows_pe32_assembler_syntax__",
         "input_relative_key": PROJECT_WINDOWS_PE32_INPUT_RELATIVE_PATHS_KEY,
         "output_relative_key": PROJECT_WINDOWS_PE32_OUTPUT_RELATIVE_PATHS_KEY,
         "link_with_ordinals_key": PROJECT_WINDOWS_PE32_LINK_WITH_ORDINALS_KEY,
@@ -48821,6 +48858,8 @@ PROJECT_WINDOWS_TARGET_SETTINGS = {
     "pe64": {
         "input_key": PROJECT_WINDOWS_PE64_LINK_SEARCH_PATHS_KEY,
         "output_key": PROJECT_WINDOWS_PE64_OUTPUT_DIRECTORY_KEY,
+        "asm_cache_key": "__windows_pe64_assembler_cache__",
+        "asm_mode_key": "__windows_pe64_assembler_syntax__",
         "input_relative_key": PROJECT_WINDOWS_PE64_INPUT_RELATIVE_PATHS_KEY,
         "output_relative_key": PROJECT_WINDOWS_PE64_OUTPUT_RELATIVE_PATHS_KEY,
         "link_with_ordinals_key": PROJECT_WINDOWS_PE64_LINK_WITH_ORDINALS_KEY,
@@ -49860,6 +49899,17 @@ def format_project_ini(
                     relative=_output_relative,
                 )
 
+        _cache_entries = entries.get(_settings["asm_cache_key"], ())
+        if _cache_entries:
+            _cache_path = str(_cache_entries[0].get("path", "")).strip()
+            if _cache_path:
+                parser[_output_section]["AssemblerCache"] = _project_storage_path_mode(
+                    _cache_path, project_path, relative=_output_relative
+                )
+        _mode_entries = entries.get(_settings["asm_mode_key"], ())
+        parser[_output_section]["AssemblerSyntax"] = (
+            str(_mode_entries[0].get("value", "intel")) if _mode_entries else "intel"
+        )
         _prolog_with_descriptors = _project_bool_entry(
             entries, _settings["prolog_with_descriptors_key"], False
         )
@@ -50731,6 +50781,14 @@ def parse_project_ini(text: str, project_path: Path) -> Dict[str, List[Dict[str,
                         _output_value, Path(project_path)
                     ),
                 })
+        if parser.has_section(_output_section):
+            _cache = parser.get(_output_section, "AssemblerCache", fallback="").strip()
+            entries[_settings["asm_cache_key"]] = (
+                [{"path": _project_loaded_path(_cache, Path(project_path))}]
+                if _cache else []
+            )
+            _mode = parser.get(_output_section, "AssemblerSyntax", fallback="intel").strip().lower()
+            entries[_settings["asm_mode_key"]] = [{"value": "att" if _mode == "att" else "intel"}]
         if parser.has_section(_environment_section):
             _have_arch_settings = True
             _dll_path = str(parser.get(
@@ -104222,6 +104280,7 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self._input_relative = True
             self._output_relative = True
             self._output_absolute = ""
+            self._assembler_cache_absolute = ""
             target_tag = "64" if self.target == "pe64" else "32"
 
             page_layout = QVBoxLayout(self)
@@ -104763,6 +104822,16 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.output_relative_checkbox.setChecked(True)
             output_layout.addWidget(self.output_relative_checkbox)
 
+            output_layout.addWidget(QLabel("Assembler-Zwischenspeicherung", self.output_directory_page))
+            cache_row = QHBoxLayout()
+            self.assembler_cache_edit = QLineEdit(self.output_directory_page)
+            self.assembler_cache_edit.setObjectName(f"project_windows_{target_tag}_assembler_cache_edit")
+            self.assembler_cache_button = QPushButton("...", self.output_directory_page)
+            self.assembler_cache_button.setFixedWidth(42)
+            cache_row.addWidget(self.assembler_cache_edit, 1)
+            cache_row.addWidget(self.assembler_cache_button)
+            output_layout.addLayout(cache_row)
+            output_layout.addWidget(QLabel("ausführbare Datei", self.output_directory_page))
             output_row = QHBoxLayout()
             self.output_directory_edit = QLineEdit(self.output_directory_page)
             self.output_directory_edit.setObjectName(
@@ -104787,6 +104856,20 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             )
             output_layout.addStretch(1)
             self.stack.addWidget(self.output_directory_page)
+
+            # Stage 479: Zielarchitektur-spezifische Syntaxwahl.
+            self.assembler_mode_page = QWidget(self.stack)
+            assembler_mode_layout = QVBoxLayout(self.assembler_mode_page)
+            self.assembler_mode_group = QGroupBox("Assembler Modus:", self.assembler_mode_page)
+            choices = QVBoxLayout(self.assembler_mode_group)
+            self.assembler_intel_radio = QRadioButton("Intel Syntax", self.assembler_mode_group)
+            self.assembler_att_radio = QRadioButton("AT & T  (GNU kompatibel)", self.assembler_mode_group)
+            self.assembler_intel_radio.setChecked(True)
+            choices.addWidget(self.assembler_intel_radio)
+            choices.addWidget(self.assembler_att_radio)
+            assembler_mode_layout.addWidget(self.assembler_mode_group)
+            assembler_mode_layout.addStretch(1)
+            self.stack.addWidget(self.assembler_mode_page)
 
             # Stage 456: Compiler -> dBASE -> Optimierung / Visuelle Elemente.
             self.dbase_optimization_page = QWidget(self.stack)
@@ -105462,6 +105545,10 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.directory_up_button.clicked.connect(self._move_directory_up)
             self.directory_down_button.clicked.connect(self._move_directory_down)
             self.directory_edit.returnPressed.connect(self._add_directory)
+            self.assembler_cache_button.clicked.connect(self._choose_assembler_cache_directory)
+            self.assembler_cache_edit.editingFinished.connect(self._assembler_cache_edited)
+            self.assembler_intel_radio.toggled.connect(lambda enabled: self._assembler_mode_changed("intel", enabled))
+            self.assembler_att_radio.toggled.connect(lambda enabled: self._assembler_mode_changed("att", enabled))
             self.output_directory_button.clicked.connect(self._choose_output_directory)
             self.output_directory_edit.editingFinished.connect(self._output_directory_edited)
             self.input_relative_checkbox.toggled.connect(self._input_relative_toggled)
@@ -105913,6 +106000,8 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 page = self.input_directories_page
             elif key == "compiler.output_directory":
                 page = self.output_directory_page
+            elif key == "assembler":
+                page = self.assembler_mode_page
             elif key == "compiler.dbase.optimization":
                 page = self.dbase_optimization_page
             elif key == "compiler.dbase":
@@ -106357,6 +106446,57 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             finally:
                 self._syncing = False
 
+        def assembler_cache_directory(self) -> str:
+            return self._assembler_cache_absolute
+
+        def set_assembler_cache_directory(self, value: Optional[Path | str]) -> None:
+            self._syncing = True
+            try:
+                self._assembler_cache_absolute = (
+                    self._absolute_path(value) if str(value or "").strip() else ""
+                )
+                self.assembler_cache_edit.setText(
+                    self._display_path(self._assembler_cache_absolute, relative=self._output_relative)
+                    if self._assembler_cache_absolute else ""
+                )
+            finally:
+                self._syncing = False
+
+        def set_assembler_syntax(self, value: str) -> None:
+            self._syncing = True
+            try:
+                (self.assembler_att_radio if value == "att" else self.assembler_intel_radio).setChecked(True)
+            finally:
+                self._syncing = False
+
+        def _assembler_mode_changed(self, mode: str, enabled: bool) -> None:
+            if self._syncing or not enabled:
+                return
+            self.owner.set_project_windows_assembler_syntax(self.target, mode)
+
+        def _assembler_cache_edited(self) -> None:
+            text = self.assembler_cache_edit.text().strip()
+            self._assembler_cache_absolute = self._absolute_path(text) if text else ""
+            self.assembler_cache_edit.setText(
+                self._display_path(self._assembler_cache_absolute, relative=self._output_relative)
+                if self._assembler_cache_absolute else ""
+            )
+            if not self._syncing:
+                self.owner.set_project_windows_assembler_cache(self.target, self._assembler_cache_absolute)
+
+        def _choose_assembler_cache_directory(self) -> None:
+            current = self.assembler_cache_edit.text().strip()
+            start = self._absolute_path(current) if current else str(getattr(self.owner, "current_directory", Path.cwd()))
+            selected = QFileDialog.getExistingDirectory(
+                self, "Assembler-Zwischenspeicherung wählen", start,
+                QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks,
+            )
+            if selected:
+                self.assembler_cache_edit.setText(self._display_path(
+                    self._absolute_path(selected), relative=self._output_relative
+                ))
+                self._assembler_cache_edited()
+
         def output_directory(self) -> str:
             return self._output_absolute
 
@@ -106620,6 +106760,10 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                     "relative Pfade" if self._output_relative else "absolute Pfade"
                 )
                 self._refresh_input_display()
+                if self._assembler_cache_absolute:
+                    self.assembler_cache_edit.setText(self._display_path(
+                        self._assembler_cache_absolute, relative=self._output_relative
+                    ))
                 if self._output_absolute:
                     self.output_directory_edit.setText(
                         self._display_path(
@@ -106708,7 +106852,14 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             current_text = self.output_directory_edit.text().strip()
             if current_text:
                 self._output_absolute = self._absolute_path(current_text)
+            cache_text = self.assembler_cache_edit.text().strip()
+            if cache_text:
+                self._assembler_cache_absolute = self._absolute_path(cache_text)
             self._output_relative = bool(checked)
+            self.assembler_cache_edit.setText(
+                self._display_path(self._assembler_cache_absolute, relative=self._output_relative)
+                if self._assembler_cache_absolute else ""
+            )
             self.output_relative_checkbox.setText(
                 "relative Pfade" if checked else "absolute Pfade"
             )
@@ -107671,6 +107822,12 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
 
         def set_output_directory(self, target: str, value: Optional[Path | str]) -> None:
             self.page_for_target(target).set_output_directory(value)
+
+        def set_assembler_cache_directory(self, target: str, path: str) -> None:
+            self.page_for_target(target).set_assembler_cache_directory(path)
+
+        def set_assembler_syntax(self, target: str, mode: str) -> None:
+            self.page_for_target(target).set_assembler_syntax(mode)
 
         def link_with_ordinals(self, target: str = "pe32") -> bool:
             return self.page_for_target(target).link_with_ordinals()
@@ -109386,8 +109543,13 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 "pe64": [],
             }
             self.project_windows_output_directories: Dict[str, str] = {
-                "pe32": "",
-                "pe64": "",
+                "pe32": "", "pe64": "",
+            }
+            self.project_windows_assembler_cache: Dict[str, str] = {
+                "pe32": "", "pe64": "",
+            }
+            self.project_windows_assembler_syntax: Dict[str, str] = {
+                "pe32": "intel", "pe64": "intel",
             }
             self.project_windows_console_dll_directories: Dict[str, str] = {
                 "pe32": "",
@@ -113740,7 +113902,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             editor = document.generated_assembly_editor
             line = editor.cursorForPosition(position).block().text()
             match = re.fullmatch(
-                r"\s*;\s*Quellcode Zeile:\s*(\d+)\s*",
+                r"\s*[;#]\s*Quellcode Zeile:\s*(\d+)\s*",
                 line,
                 re.IGNORECASE,
             )
@@ -114087,6 +114249,9 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             document.set_build_target(target)
             document.set_windows_application_mode("GUI")
             document.invalidate_assembly_result("Ziel geändert")
+            self._build_menu_form_ready_source = None
+            self._build_menu_form_ready_path = None
+            self._build_menu_form_ready_target = None
             if self.dbase_form_assemble_button is not None:
                 self.dbase_form_assemble_button.setVisible(False)
             if self.dbase_form_start_button is not None:
@@ -114094,6 +114259,8 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 self.dbase_form_start_button.setEnabled(False)
             if self.dbase_form_build_status is not None:
                 self.dbase_form_build_status.setText("Ziel geändert – neu kompilieren")
+            if getattr(self, "build_menu", None) is not None:
+                self._build_menu_sync_target()
 
         @staticmethod
         def _dbase_wfm_asm_bytes(value: object) -> str:
@@ -114340,6 +114507,16 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     declaration = f'import {api}, "kernel32.dll", "{api}"'
                     if declaration not in assembly:
                         missing_imports.append(declaration + "\n")
+
+            # Stage 477: FFI prototypes from the WFM preprocessor (including
+            # #include .h files and #define DLL aliases) are real PE imports.
+            ffi_prototypes = {
+                item.name.casefold(): item
+                for item in _wfm_frontend.ffi_prototypes
+            }
+            for ffi in ffi_prototypes.values():
+                if ffi.import_line not in assembly:
+                    missing_imports.append(ffi.import_line + "\n")
 
             if missing_imports:
                 asm_lines = assembly.splitlines(keepends=True)
@@ -115983,6 +116160,15 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 destination = memory_slot(destination_name)
                 expression_text = str(expression_text or "").strip()
 
+                # Stage 477: native DLL call as a numeric WFM STORE/assignment.
+                if re.match(r'(?i)^[A-Za-z_]\w*\s*\(', expression_text):
+                    node = parse_wfm_condition(expression_text)
+                    if (isinstance(node, DBaseCallExpression) and
+                            node.name.casefold() in ffi_prototypes):
+                        emit_wfm_ffi_call(out, node, destination)
+                        runtime_memory_kinds[destination_key] = 'integer'
+                        return True
+
                 # Stage 464: native WFM variant type inspection; the answer
                 # is a one-byte string and is never mistaken for a Qt import.
                 if re.match(r"(?i)^(?:type|vartype)\s*\(", expression_text):
@@ -116678,6 +116864,11 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     emit_wfm_ismouse_numeric(out)
                     return
                 if isinstance(node, DBaseCallExpression):
+                    if node.name.casefold() in ffi_prototypes:
+                        result_slot = memory_slot(wfm_flow_label('ffi_cond'))
+                        emit_wfm_ffi_call(out, node, result_slot)
+                        out.append(f"    fld qword ptr [{memory_number_label(result_slot)}]")
+                        return
                     builtin = emit_wfm_stage443_string_builtin(out, node)
                     if builtin is not None:
                         if node.name.casefold() != "len":
@@ -116811,6 +117002,116 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                             f"    mov {ptr} ptr [{memory_pointer_label(destination)}], {'rax' if is64 else 'eax'}",
                             f"    mov dword ptr [{memory_length_label(destination)}], 1",
                             f"    mov dword ptr [{memory_type_label(destination)}], {WFM_VALUE_STRING}"])
+
+            def emit_wfm_ffi_call(out, node, destination=None):
+                """Call typed WinAPI imports in a WFM method (Win32 stdcall/x64)."""
+                from d64dbase.ffi_types import ffi_type_info, ffi_return_instructions
+                if not isinstance(node, DBaseCallExpression):
+                    return False
+                ffi = ffi_prototypes.get(node.name.casefold())
+                if ffi is None:
+                    return False
+                if len(node.arguments) != len(ffi.argument_types):
+                    raise AssemblerError(
+                        f"{filename}: DLL-Funktion {ffi.name} erwartet {len(ffi.argument_types)} "
+                        f"Parameter, erhalten: {len(node.arguments)}")
+                if ffi.return_type == 'CVOID' and destination is not None:
+                    raise AssemblerError(f"{filename}: DLL-Funktion {ffi.name} liefert CVOID.")
+                arg_slots = []
+                for index, (arg_type, arg) in enumerate(zip(ffi.argument_types, node.arguments)):
+                    arg_slot = memory_slot(wfm_flow_label('ffi_arg'))
+                    arg_slots.append(arg_slot)
+                    if ffi_type_info(arg_type).is_string_input:
+                        if isinstance(arg, DBaseLiteralExpression) and arg.value_type in ('string', 'char'):
+                            data = (str(arg.value).encode('utf-16-le') + b'\0\0') if ffi_type_info(arg_type).category == 'wide_string' else (str(arg.value).encode('cp1252', errors='replace') + b'\0')
+                            label_name = wfm_flow_label('ffi_ansi')
+                            console_labels.append((label_name, data))
+                            out.append(f"    mov {'rax' if is64 else 'eax'}, {label_name}")
+                            out.append(f"    mov {'qword' if is64 else 'dword'} ptr [{memory_pointer_label(arg_slot)}], {'rax' if is64 else 'eax'}")
+                        elif (isinstance(arg, DBaseLiteralExpression) and arg.value_type == 'number'
+                              and float(arg.value) == 0):
+                            out.append(f"    mov {'qword' if is64 else 'dword'} ptr [{memory_pointer_label(arg_slot)}], 0")
+                        elif isinstance(arg, DBaseIdentifierExpression):
+                            if ffi_type_info(arg_type).category == 'wide_string':
+                                raise AssemblerError(f'{filename}: {ffi.name}: {arg_type} braucht einen UTF-16-Puffer (nur Literale und NULL).')
+                            source = memory_slot(arg.name)
+                            if runtime_memory_kinds.get(arg.name.casefold()) in ('integer', 'float', 'object'):
+                                raise AssemblerError(f'{filename}: {ffi.name}: LPCSTR erwartet String: {arg.name}')
+                            out.append(f"    mov {'rax' if is64 else 'eax'}, {'qword' if is64 else 'dword'} ptr [{memory_pointer_label(source)}]")
+                            out.append(f"    mov {'qword' if is64 else 'dword'} ptr [{memory_pointer_label(arg_slot)}], {'rax' if is64 else 'eax'}")
+                        else:
+                            raise AssemblerError(f'{filename}: {ffi.name}: LPCSTR erwartet Zeichenliteral, Textvariable oder NULL (0).')
+                    elif isinstance(arg, DBaseLiteralExpression) and arg.value_type in ('char', 'string'):
+                        raise AssemblerError(f'{filename}: {ffi.name}: {arg_type} erwartet Zahl/Pointer, kein String.')
+                    else:
+                        object_slot = (resolve_wfm_object_slot(arg.name)
+                                       if isinstance(arg, DBaseIdentifierExpression) else None)
+                        if object_slot is not None:
+                            raise AssemblerError(
+                                f"{filename}: {ffi.name}: {arg_type} erwartet ein natives Windows-Handle. "
+                                "THIS/Formular-Control ist ein Qt-Objektzeiger und kein HWND; "
+                                "verwende 0 oder ein echtes Windows-Handle.")
+                        emit_wfm_numeric_condition_value(out, arg)
+                        out.append(f"    fstp qword ptr [{memory_number_label(arg_slot)}]")
+                if is64:
+                    count = len(arg_slots)
+                    size = ((max(4, count) * 8 + 15) // 16) * 16
+                    out.append(f'    sub rsp, {size}')
+                    for index, (arg_type, arg_slot) in enumerate(zip(ffi.argument_types, arg_slots)):
+                        register = ('rcx', 'rdx', 'r8', 'r9')[index] if index < 4 else 'rax'
+                        if ffi_type_info(arg_type).is_string_input:
+                            out.append(f'    mov {register}, qword ptr [{memory_pointer_label(arg_slot)}]')
+                        else:
+                            out.append(f'    cmp dword ptr [{memory_type_label(arg_slot)}], {WFM_VALUE_OBJECT}')
+                            jump = wfm_flow_label('ffi_numeric')
+                            done = wfm_flow_label('ffi_loaded')
+                            out.append(f'    jne {jump}')
+                            out.append(f'    mov {register}, qword ptr [{memory_pointer_label(arg_slot)}]')
+                            out.append(f'    jmp {done}')
+                            out.append(f'{jump}:')
+                            out.append(f'    fld qword ptr [{memory_number_label(arg_slot)}]')
+                            out.append('    fistp qword ptr [__dbase_ffi_return]')
+                            if ffi_type_info(arg_type).bits('pe64') == 32 and not ffi_type_info(arg_type).signed:
+                                dest32 = ('ecx', 'edx', 'r8d', 'r9d')[index] if index < 4 else 'eax'
+                                out.append(f'    mov {dest32}, dword ptr [__dbase_ffi_return]')
+                            else:
+                                out.append(f'    mov {register}, qword ptr [__dbase_ffi_return]')
+                            out.append(f'{done}:')
+                        if index >= 4:
+                            out.append(f'    mov qword ptr [rsp+{index * 8}], rax')
+                    out.extend([f'    call {ffi.label}', f'    add rsp, {size}'])
+                else:
+                    for arg_type, arg_slot in reversed(tuple(zip(ffi.argument_types, arg_slots))):
+                        if ffi_type_info(arg_type).is_string_input:
+                            out.append(f'    push dword ptr [{memory_pointer_label(arg_slot)}]')
+                        else:
+                            pointer = wfm_flow_label('ffi_pointer')
+                            done = wfm_flow_label('ffi_push_done')
+                            out.append(f'    cmp dword ptr [{memory_type_label(arg_slot)}], {WFM_VALUE_OBJECT}')
+                            out.append(f'    je {pointer}')
+                            out.append(f'    fld qword ptr [{memory_number_label(arg_slot)}]')
+                            if ffi_type_info(arg_type).bits('pe32') == 64:
+                                out.append('    fistp qword ptr [__dbase_ffi_return]')
+                                out.append('    push dword ptr [__dbase_ffi_return+4]')
+                                out.append('    push dword ptr [__dbase_ffi_return]')
+                            else:
+                                out.append('    fistp dword ptr [__dbase_temp_number]')
+                                out.append('    push dword ptr [__dbase_temp_number]')
+                            out.append(f'    jmp {done}')
+                            out.append(f'{pointer}:')
+                            if ffi_type_info(arg_type).bits('pe32') == 64:
+                                out.append('    push 0')
+                            out.append(f'    push dword ptr [{memory_pointer_label(arg_slot)}]')
+                            out.append(f'{done}:')
+                    out.append(f'    call {ffi.label}')
+                if destination is not None:
+                    out.extend(ffi_return_instructions(ffi.return_type, is64=is64))
+                    out.extend([
+                        '    fild qword ptr [__dbase_ffi_return]',
+                        f'    fstp qword ptr [{memory_number_label(destination)}]',
+                    ])
+                    emit_wfm_numeric_header(out, destination, WFM_VALUE_INTEGER)
+                return True
 
             def emit_wfm_condition_true(out, node, true_label):
                 not_true = wfm_flow_label('not_true')
@@ -117314,6 +117615,15 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     )
                     if print_match:
                         print_expression = str(print_match.group(2) or "").strip()
+                        if re.match(r'(?i)^[A-Za-z_]\w*\s*\(', print_expression):
+                            ffi_node = parse_wfm_condition(print_expression)
+                            if (isinstance(ffi_node, DBaseCallExpression) and
+                                    ffi_node.name.casefold() in ffi_prototypes):
+                                result_slot = memory_slot(wfm_flow_label('ffi_print'))
+                                emit_wfm_ffi_call(callback_lines, ffi_node, result_slot)
+                                emit_wfm_memory_print(callback_lines, result_slot, statement,
+                                                      print_match.group(1) != '??')
+                                continue
                         if re.match(r"(?i)^(?:type|vartype)\s*\(", print_expression):
                             type_expr = parse_wfm_condition(print_expression)
                             if not (isinstance(type_expr, DBaseCallExpression) and
@@ -117422,6 +117732,14 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                         emit_wfm_console_buffer(
                             callback_lines, out_label, out_len, newline
                         )
+                        continue
+
+                    # Stage 477: a declared DLL function may also be used as a
+                    # standalone statement, without assigning its result.
+                    _ffi_head = re.match(r'(?i)^([A-Za-z_]\w*)\s*\(', statement)
+                    if (_ffi_head is not None and
+                            _ffi_head.group(1).casefold() in ffi_prototypes):
+                        emit_wfm_ffi_call(callback_lines, parse_wfm_condition(statement))
                         continue
 
                     # Stage 135: Win32 Beep(freq,duration).
@@ -118135,6 +118453,14 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             if self.dbase_form_tabs is not None and self.dbase_form_source_page is not None:
                 self.dbase_form_tabs.setCurrentWidget(self.dbase_form_source_page)
             self._dbase_form_progress_begin("compile")
+            self._build_menu_form_ready_source = None
+            self._build_menu_form_ready_path = None
+            self._build_menu_form_ready_target = None
+            # A new compile invalidates the previously linked executable.
+            if getattr(self, "dbase_form_start_button", None) is not None:
+                self.dbase_form_start_button.setEnabled(False)
+            if getattr(self, "build_menu", None) is not None:
+                self._build_menu_sync_target()
             if self.dbase_form_current_path is None:
                 if not self.save_dbase_form(save_as=True):
                     self._dbase_form_progress_done("compile", False)
@@ -118283,6 +118609,14 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 maximum = self.dbase_form_progress.maximum()
                 self._dbase_form_progress_step(maximum, maximum)
             self._dbase_form_progress_done("assemble", True)
+            self._build_menu_form_ready_source = self._serialize_dbase_form_wfm()
+            self._build_menu_form_ready_path = (
+                Path(self.dbase_form_current_path).resolve()
+                if self.dbase_form_current_path is not None else None
+            )
+            self._build_menu_form_ready_target = str(document.build_target)
+            if getattr(self, "build_menu", None) is not None:
+                self._build_menu_sync_target()
             return True
 
         def _prepare_dbase_form_runtime(self, output_path: Path) -> bool:
@@ -121074,6 +121408,12 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     _target,
                     self.project_windows_output_directories.get(_target, ""),
                 )
+                panel.set_assembler_cache_directory(
+                    _target, self.project_windows_assembler_cache.get(_target, ""),
+                )
+                panel.set_assembler_syntax(
+                    _target, self.project_windows_assembler_syntax.get(_target, "intel"),
+                )
                 panel.set_console_runtime_directory(
                     _target, self.project_windows_console_dll_directories.get(_target, "")
                 )
@@ -123169,6 +123509,32 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 self.show_error("dBASE Runtime DLL erstellen", str(exc))
                 return False
 
+        def set_project_windows_assembler_cache(self, target: str, value: str, *, mark_modified=True) -> None:
+            target_key = self._project_windows_target_key(target)
+            normalized = self._project_windows_absolute_directory(value) if str(value or "").strip() else ""
+            changed = self.project_windows_assembler_cache.get(target_key, "") != normalized
+            self.project_windows_assembler_cache[target_key] = normalized
+            panel = getattr(self, "project_settings_panel", None)
+            if panel is not None:
+                panel.set_assembler_cache_directory(target_key, normalized)
+            if changed and mark_modified:
+                self.set_project_modified(True)
+                if self.current_project_path is not None:
+                    self.save_project()
+
+        def set_project_windows_assembler_syntax(self, target: str, value: str, *, mark_modified=True) -> None:
+            target_key = self._project_windows_target_key(target)
+            mode = "att" if str(value or "").lower() == "att" else "intel"
+            changed = self.project_windows_assembler_syntax.get(target_key, "intel") != mode
+            self.project_windows_assembler_syntax[target_key] = mode
+            panel = getattr(self, "project_settings_panel", None)
+            if panel is not None:
+                panel.set_assembler_syntax(target_key, mode)
+            if changed and mark_modified:
+                self.set_project_modified(True)
+                if self.current_project_path is not None:
+                    self.save_project()
+
         def set_project_windows_output_directory(
             self,
             target: str,
@@ -123299,12 +123665,21 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             override = getattr(
                 document, "project_tree_compile_output_directory", None
             )
-            if override:
+            output = self._project_windows_output_path(document.build_target)
+            # Configured link destination takes priority over the old project-tree
+            # generic output; if unset, preserve the legacy per-tree override.
+            if output is None and override:
                 try:
                     return Path(override).expanduser().resolve()
                 except (OSError, RuntimeError, ValueError):
                     return Path(override).expanduser().absolute()
-            return self._project_windows_output_path(document.build_target)
+            if output is not None and document.path is not None and self.project_windows_relative_paths.get(document.build_target, {}).get("output", True):
+                try:
+                    sub = os.path.relpath(str(output), str(self._project_windows_base_directory()))
+                    return (Path(document.path).resolve().parent / sub).resolve()
+                except (OSError, ValueError):
+                    pass
+            return output
 
         def _project_generated_object_path(
             self,
@@ -123556,6 +123931,82 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             self.project_menu.addAction(self.project_close_action)
             self.project_menu.addSeparator()
             self.project_menu.addAction(self.project_settings_action)
+
+            # Stage 480: zentraler Build-Einstieg neben Projekt. Alle Aktionen
+            # benutzen exakt die bereits vorhandenen Dokument-/Compilerpfade.
+            self.build_menu = self.main_menu_bar.addMenu("&Erstellen")
+            self.build_menu.setObjectName("build_menu")
+            self.build_compile_link_action = QAction("Kompilieren + Linken", self)
+            self.build_compile_link_action.setObjectName("build_compile_link_action")
+            self.build_compile_link_action.setStatusTip(
+                "Quelltext nach ASM kompilieren und anschließend für das gewählte Ziel assemblieren/linken"
+            )
+            self.build_compile_link_action.triggered.connect(
+                lambda _checked=False: self._build_menu_compile(link=True)
+            )
+            self.build_compile_action = QAction("Kompilieren", self)
+            self.build_compile_action.setObjectName("build_compile_action")
+            self.build_compile_action.setStatusTip(
+                "Nur ASM-Quelltext erzeugen, ohne Objekt oder Programm zu linken"
+            )
+            self.build_compile_action.triggered.connect(
+                lambda _checked=False: self._build_menu_compile(link=False)
+            )
+            self.build_menu.addAction(self.build_compile_link_action)
+            self.build_menu.addAction(self.build_compile_action)
+            self.build_menu.addSeparator()
+            self.build_target_action_group = QActionGroup(self)
+            self.build_target_action_group.setExclusive(True)
+            self.build_target_actions = {}
+            for target_key, caption in (
+                ("pe32", "Windows PE 32-Bit"),
+                ("pe64", "Windows PE 64-Bit"),
+            ):
+                action = QAction(caption, self)
+                action.setObjectName("build_target_" + target_key + "_action")
+                action.setCheckable(True)
+                action.setData(target_key)
+                self.build_target_action_group.addAction(action)
+                self.build_menu.addAction(action)
+                self.build_target_actions[target_key] = action
+                action.triggered.connect(
+                    lambda _checked=False, target=target_key: self._build_menu_select_target(target)
+                )
+            self.build_menu.addSeparator()
+            for target_key, caption in (
+                ("c64", "Commodore C= 64"),
+                ("amiga", "AMIGA 500"),
+            ):
+                action = QAction(caption, self)
+                action.setObjectName("build_target_" + target_key + "_action")
+                action.setCheckable(True)
+                action.setData(target_key)
+                self.build_target_action_group.addAction(action)
+                self.build_menu.addAction(action)
+                self.build_target_actions[target_key] = action
+                action.triggered.connect(
+                    lambda _checked=False, target=target_key: self._build_menu_select_target(target)
+                )
+            # Stage 481: Start is available only for an actually linked build.
+            self.build_menu.addSeparator()
+            self.build_start_action = QAction("Starten", self)
+            self.build_start_action.setObjectName("build_start_action")
+            self.build_start_action.setStatusTip(
+                "Erfolgreich erstelltes Programm ohne erneute Kompilierung starten"
+            )
+            self.build_start_action.setEnabled(False)
+            self.build_start_action.triggered.connect(
+                lambda _checked=False: self._build_menu_start()
+            )
+            self.build_menu.addAction(self.build_start_action)
+            self._build_menu_ready_document = None
+            self._build_menu_ready_path = None
+            self._build_menu_ready_target = None
+            self._build_menu_form_ready_source = None
+            self._build_menu_form_ready_path = None
+            self._build_menu_form_ready_target = None
+            self.build_menu.aboutToShow.connect(self._build_menu_sync_target)
+            self._build_menu_sync_target()
 
             # Stage 155: native Server-Verwaltung als eigener Hauptmenüpunkt.
             self.server_menu = self.main_menu_bar.addMenu("&Server")
@@ -127440,6 +127891,8 @@ border: 2px solid #2a69aa;
         def _current_document_changed(self, _index: int) -> None:
             self._update_document_actions()
             document = self.current_document()
+            if hasattr(self, "build_target_actions"):
+                self._build_menu_sync_target()
 
             # Stage ASM 68: Der temporaere Dockzustand gehoert ausschliesslich
             # zum aktuell sichtbaren BASIC-Editor. Beim Tabwechsel oder wenn der
@@ -127519,6 +127972,8 @@ border: 2px solid #2a69aa;
             )
             self.close_document_action.setEnabled(has_document)
             self._update_edit_actions()
+            if getattr(self, "build_menu", None) is not None:
+                self._build_menu_sync_target()
 
         def renumber_c64_basic_document(self, document: DocumentEditor) -> None:
             """Stage ASM 58: Gutter neu nummerieren und Quelle direkt speichern."""
@@ -128018,6 +128473,23 @@ border: 2px solid #2a69aa;
                 if _payload_path is not None:
                     generated = replace(generated, assembly=_small_asm)
                     _asm_payload_include = (_payload_path, _payload_text)
+            # Stage 480: the setting now controls generated ASM output rather
+            # than merely accepting AT&T entered by hand.  Keep Stage 470/471
+            # import and UI-payload sidecars intact; those are included through
+            # the original %include directives in both syntax modes.
+            if (document.build_target in {"pe32", "pe64"}
+                    and self.project_windows_assembler_syntax.get(document.build_target, "intel") == "att"):
+                from windows_asm_att import intel_to_att
+                try:
+                    generated = replace(
+                        generated,
+                        assembly=intel_to_att(generated.assembly, target=document.build_target),
+                    )
+                except ValueError as exc:
+                    message = str(exc)
+                    document.show_assembly_error(message, status_text="AT&T-Ausgabefehler")
+                    self.show_error("AT&T-Assemblercode konnte nicht erzeugt werden", message)
+                    return False
             open_assembly = self._find_open_document(assembly_path)
             if open_assembly is not None and open_assembly.is_modified:
                 message = (
@@ -129119,7 +129591,8 @@ border: 2px solid #2a69aa;
                     and document.build_target in {"pe32", "pe64"}
                     and getattr(document, "generated_source_kind", "program") != "library"
                 ):
-                    output_path = (self.current_directory / output_path.name).resolve()
+                    if not self.project_windows_output_directories.get(document.build_target):
+                        output_path = (self.current_directory / output_path.name).resolve()
                 assembly_path = document.generated_assembly_path
                 if assembly_path is None:
                     if document.is_basic_document:
@@ -129136,6 +129609,8 @@ border: 2px solid #2a69aa;
                         assembly_path = self._dbase_assembly_output_path(document)
                     else:
                         assembly_path = self._c_assembly_output_path(document)
+                # Stage 480: the shared PE32/PE64 preprocessor handles AT&T
+                # source directly, including nested %include files.
                 if document.build_target == "amiga":
                     assembler = (
                         assemble_amiga_boot_source
@@ -129685,6 +130160,204 @@ border: 2px solid #2a69aa;
                             add(object_item.data(0, Qt.UserRole + 302))
             return tuple(result)
 
+        def _build_menu_active_document(self):
+            """The fullscreen WFM designer owns its own hidden build document."""
+            if self._dbase_form_is_active():
+                return getattr(self, "dbase_form_build_document", None)
+            return self.current_document() if hasattr(self, "document_tabs") else None
+
+        def _build_menu_can_start(self, document=None) -> bool:
+            """Do not enable Start based on a stale path from an earlier build."""
+            document = document or self._build_menu_active_document()
+            if document is None:
+                return False
+            output = getattr(document, "assembled_program_path", None)
+            if output is None:
+                return False
+            try:
+                output = Path(output).resolve()
+                if not output.is_file():
+                    return False
+            except (OSError, ValueError, TypeError):
+                return False
+            if self._dbase_form_is_active():
+                button = getattr(self, "dbase_form_start_button", None)
+                return bool(
+                    document is getattr(self, "dbase_form_build_document", None)
+                    and button is not None and button.isEnabled()
+                    and getattr(self, "_build_menu_form_ready_source", None) is not None
+                    and self._serialize_dbase_form_wfm() == self._build_menu_form_ready_source
+                    and getattr(self, "_build_menu_form_ready_path", None) == (
+                        Path(self.dbase_form_current_path).resolve()
+                        if self.dbase_form_current_path is not None else None
+                    )
+                    and str(document.build_target) == getattr(self, "_build_menu_form_ready_target", None)
+                    and document.build_target in {"pe32", "pe64"}
+                )
+            return bool(
+                document is getattr(self, "_build_menu_ready_document", None)
+                and output == getattr(self, "_build_menu_ready_path", None)
+                and str(document.build_target) == getattr(self, "_build_menu_ready_target", None)
+                and not bool(getattr(document, "is_modified", False))
+            )
+
+        def _build_menu_sync_target(self) -> None:
+            """Select the active source, including an open WFM form designer."""
+            actions = getattr(self, "build_target_actions", {})
+            if not actions:
+                return
+            document = self._build_menu_active_document()
+            target = str(getattr(document, "build_target", "pe32") or "pe32").casefold()
+            if self._dbase_form_is_active():
+                combo = getattr(self, "dbase_form_target_combo", None)
+                if combo is not None:
+                    target = str(combo.currentData() or target).casefold()
+            if target not in actions:
+                target = "pe32"
+            for key, action in actions.items():
+                blocked = action.blockSignals(True)
+                try:
+                    action.setChecked(key == target)
+                finally:
+                    action.blockSignals(blocked)
+            can_build = bool(document is not None and document.is_build_document)
+            self.build_compile_action.setEnabled(can_build)
+            self.build_compile_link_action.setEnabled(can_build)
+            start_action = getattr(self, "build_start_action", None)
+            if start_action is not None:
+                start_action.setEnabled(self._build_menu_can_start(document))
+
+        @staticmethod
+        def _build_menu_target_supported(document: DocumentEditor, target: str) -> bool:
+            """Keine stille Rücksetzung des per Menü ausgewählten Architekturprofils."""
+            if document.is_basic_document:
+                return target == "c64"
+            if document.is_dbase_document or document.is_prolog_document or document.is_lisp_document:
+                return target in {"pe32", "pe64"}
+            if document.is_logo_document:
+                return target == "pe32"
+            return target in {"pe32", "pe64", "c64", "amiga"}
+
+        def _build_menu_select_target(self, target: str) -> None:
+            document = self._build_menu_active_document()
+            if document is None or not document.is_build_document:
+                self.statusBar().showMessage("Erstellen: zuerst ein Quelldokument öffnen", 6000)
+                self._build_menu_sync_target()
+                return
+            if not self._build_menu_target_supported(document, target):
+                self.show_error(
+                    "Compilerziel nicht verfügbar",
+                    f"Die Sprache der Datei {document.display_name} unterstützt "
+                    f"das Ziel {target.upper()} derzeit nicht. Das bisherige Ziel bleibt erhalten.",
+                )
+                self._build_menu_sync_target()
+                return
+            if self._dbase_form_is_active():
+                combo = getattr(self, "dbase_form_target_combo", None)
+                index = combo.findData(target) if combo is not None else -1
+                if index < 0:
+                    self.show_error("Compilerziel nicht verfügbar", "Formular-Designer unterstützt nur Windows PE32/PE64.")
+                    self._build_menu_sync_target()
+                    return
+                combo.setCurrentIndex(index)  # updates the designer's compiler, too
+            else:
+                document.set_build_target(target)
+                self._build_menu_ready_document = None
+                self._build_menu_ready_path = None
+                self._build_menu_ready_target = None
+            self._build_menu_sync_target()
+            self.statusBar().showMessage(
+                f"Compilerziel für {document.display_name}: "
+                + self.build_target_actions[target].text(), 5000
+            )
+
+        def _build_menu_compile(self, *, link: bool) -> bool:
+            """Compile-only or Compile+Link; never auto-start from here."""
+            form_active = self._dbase_form_is_active()
+            document = self._build_menu_active_document()
+            if document is None or not document.is_build_document:
+                self.show_error("Erstellen", "Bitte zuerst eine kompilierbare Quelldatei öffnen.")
+                return False
+            target = str(document.build_target).casefold()
+            if not self._build_menu_target_supported(document, target):
+                self.show_error("Compilerziel nicht verfügbar", f"{target.upper()} ist für diese Sprache nicht verfügbar.")
+                return False
+
+            # A compile-only operation must never leave Start enabled for an
+            # older binary. Form designer actions follow its own GUI pipeline.
+            self._build_menu_ready_document = None
+            self._build_menu_ready_path = None
+            self._build_menu_ready_target = None
+            start_action = getattr(self, "build_start_action", None)
+            if start_action is not None:
+                start_action.setEnabled(False)
+            if form_active:
+                start_button = getattr(self, "dbase_form_start_button", None)
+                if start_button is not None:
+                    start_button.setEnabled(False)
+                if not self.compile_dbase_form():
+                    self._build_menu_sync_target()
+                    return False
+                if not link:
+                    self.log("ERSTELLEN: WFM-Assemblerquelltext erzeugt")
+                    self.statusBar().showMessage("Erstellen: WFM-ASM erzeugt", 7000)
+                    self._build_menu_sync_target()
+                    return True
+                ok = self.assemble_dbase_form()
+            else:
+                self.document_tabs.setCurrentWidget(document)
+                if document.is_assembler_document:
+                    if not link:
+                        self.statusBar().showMessage("Erstellen: Assembler-Quelltext liegt bereits vor (nicht gelinkt)", 7000)
+                        self.log("ERSTELLEN: ASM-Quelldatei – kein Compilerlauf notwendig")
+                        self._build_menu_sync_target()
+                        return True
+                    ok = self.assemble_document(document)
+                else:
+                    if not self.assemble_document(document):
+                        self._build_menu_sync_target()
+                        return False
+                    if not link:
+                        self.statusBar().showMessage("Erstellen: ASM-Quelltext erfolgreich erzeugt", 7000)
+                        self._build_menu_sync_target()
+                        return True
+                    if not self._f2_document_is_main_program(document) and target in {"pe32", "pe64"}:
+                        ok = self.create_coff32_object_document(document)
+                    else:
+                        ok = self.assemble_generated_document(
+                            document,
+                            extra_link_inputs=self._project_link_inputs_for_document(document),
+                        )
+            if ok:
+                artifact = getattr(document, "assembled_program_path", None)
+                name = str(getattr(artifact, "name", "")) or "Objekt/Programm"
+                if not form_active and artifact is not None:
+                    try:
+                        if Path(artifact).is_file() and Path(artifact).suffix.casefold() not in {".o", ".obj", ".a", ".lib"}:
+                            self._build_menu_ready_document = document
+                            self._build_menu_ready_path = Path(artifact).resolve()
+                            self._build_menu_ready_target = str(document.build_target)
+                    except (OSError, ValueError, TypeError):
+                        pass
+                self.statusBar().showMessage("Erstellen: Build erfolgreich – " + name, 7000)
+                self.log("ERSTELLEN: Compile + Link abgeschlossen: " + name)
+            self._build_menu_sync_target()
+            return bool(ok)
+
+        def _build_menu_start(self) -> bool:
+            """Run the previously built artifact, never compile implicitly."""
+            document = self._build_menu_active_document()
+            if not self._build_menu_can_start(document):
+                self._build_menu_sync_target()
+                self.show_error(
+                    "Programm noch nicht erstellt",
+                    "Bitte zuerst 'Kompilieren + Linken' erfolgreich ausführen.",
+                )
+                return False
+            if self._dbase_form_is_active():
+                return self.start_dbase_form()
+            return self._launch_assembled_document(document)
+
         def build_and_run_source_document(self, document: DocumentEditor) -> bool:
             """F2: Compile -> Assemble/Object -> Link -> Start vereinheitlichen.
 
@@ -129896,6 +130569,8 @@ border: 2px solid #2a69aa;
                         else program.executable
                     )
                 elif document.build_target == "pe32":
+                    # Stage 480: centralized AT&T detection/conversion in
+                    # _preprocess_windows_assembly, for both build entrypoints.
                     program = assemble_pe32_source(
                         source,
                         filename=str(document.path) if document.path else document.display_name,
@@ -129904,6 +130579,8 @@ border: 2px solid #2a69aa;
                     )
                     program_data = program.executable
                 elif document.build_target == "pe64":
+                    # Stage 480: centralized AT&T detection/conversion in
+                    # _preprocess_windows_assembly, for both build entrypoints.
                     program = assemble_pe64_source(
                         source,
                         filename=str(document.path) if document.path else document.display_name,
@@ -132989,6 +133666,16 @@ border: 2px solid #2a69aa;
                     if _output_entries else "",
                     mark_modified=False,
                 )
+                _cache_entries = values.get(_settings["asm_cache_key"], ())
+                self.set_project_windows_assembler_cache(
+                    _target, _cache_entries[0].get("path", "") if _cache_entries else "",
+                    mark_modified=False,
+                )
+                _syntax_entries = values.get(_settings["asm_mode_key"], ())
+                self.set_project_windows_assembler_syntax(
+                    _target, _syntax_entries[0].get("value", "intel") if _syntax_entries else "intel",
+                    mark_modified=False,
+                )
                 self.set_project_windows_link_with_ordinals(
                     _target,
                     _project_bool_entry(
@@ -134295,6 +134982,9 @@ border: 2px solid #2a69aa;
                 entries[_settings["output_key"]] = (
                     [{"path": _output_value}] if _output_value else []
                 )
+                _cache = str(self.project_windows_assembler_cache.get(_target, "") or "").strip()
+                entries[_settings["asm_cache_key"]] = [{"path": _cache}] if _cache else []
+                entries[_settings["asm_mode_key"]] = [{"value": self.project_windows_assembler_syntax.get(_target, "intel")}]
                 _dll_value = str(self.project_windows_console_dll_directories.get(_target, "") or "").strip()
                 entries[_settings["console_dll_directory_key"]] = (
                     [{"path": _dll_value}] if _dll_value else []

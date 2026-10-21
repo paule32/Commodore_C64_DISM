@@ -1,0 +1,8 @@
+#include "winapi_shell.h"
+
+** END HEADER -- do not remove this line
+Result = ShellExecute(0, "open", "notepad.exe", 0, 0, 1)
+? Result
+
+CLASS Form1 OF FORM
+ENDCLASS
