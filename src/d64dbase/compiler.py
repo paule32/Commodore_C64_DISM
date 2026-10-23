@@ -1236,6 +1236,7 @@ def _preprocess_dbase_macros(
     _include_stack: Optional[Tuple[Path, ...]] = None,
     _compile_date: str = "",
     _compile_time: str = "",
+    target: str = "pe32",
     include_paths=(),
 ) -> Tuple[str, Tuple[DBaseMacro, ...], Tuple[DBasePragmaLink, ...], Tuple[str, ...], Tuple[str, ...]]:
     """C/C++-artiger dBase-Praeprozessor mit rekursiven Includes."""
@@ -1244,6 +1245,12 @@ def _preprocess_dbase_macros(
     masked_lines = masked.splitlines(keepends=True)
 
     macros = _macros if _macros is not None else {}
+    if _macros is None:
+        # Platform macros are a per-compilation state, shared with nested includes.
+        # Explicit #undef/#define in user source remains possible.
+        selected = str(target).casefold().strip()
+        platform_macro = 'LINUX' if selected.startswith(('linux', 'elf')) else 'WINDOWS'
+        macros[platform_macro.casefold()] = DBaseMacro(platform_macro, None, '1', 0, 0)
     links = _links if _links is not None else []
     warnings = _warnings if _warnings is not None else []
     infos = _infos if _infos is not None else []
@@ -1414,6 +1421,7 @@ def _preprocess_dbase_macros(
                     _include_stack=include_stack + (include_path,),
                     _compile_date=compile_date,
                     _compile_time=compile_time,
+                    target=target,
                     include_paths=include_paths,
                 )
                 # Direktivenzeile selbst bleibt als Leerzeile fuer moeglichst
@@ -1505,7 +1513,7 @@ def preprocess_dbase_source(
     normalized_target = normalize_dbase_target(target)
     comments = scan_dbase_comments(text, filename=filename)
     cleaned = strip_dbase_comments(text, filename=filename)
-    preprocessed, macros, pragma_links, preprocessor_warnings, preprocessor_infos = _preprocess_dbase_macros(text, filename=filename, include_paths=include_paths)
+    preprocessed, macros, pragma_links, preprocessor_warnings, preprocessor_infos = _preprocess_dbase_macros(text, filename=filename, include_paths=include_paths, target=normalized_target)
     from .ffi import extract_ffi_prototypes
     try:
         preprocessed, ffi_prototypes = extract_ffi_prototypes(preprocessed, filename=filename)

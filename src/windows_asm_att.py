@@ -175,7 +175,16 @@ def intel_to_att(source: str, *, target: str = 'pe32') -> str:
         if not inst:
             raise ValueError(f'Intel->AT&T Zeile {no}: nicht unterstuetzte Syntax: {line.strip()}')
         indent,mnemonic,rest=inst.groups();name=mnemonic.casefold();args=rest.strip()
-        if name=='bits' and args.strip() in ('32','64'):
+        # WFM emits ".entry <symbol>" (with a leading dot).  This is
+        # internal COFF metadata, not a real x86 instruction.  Stage 480
+        # accidentally generated ".entry $<symbol>" and made AT&T listings
+        # impossible to assemble.  Keep the entry symbol as plain text.
+        if name in ('entry', '.entry', '.d64_entry'):
+            symbol = args.strip().lstrip('$')
+            if not re.fullmatch(r'[A-Za-z_.$?@][\w.$?@]*', symbol):
+                raise ValueError(f'Intel->AT&T Zeile {no}: ungueltiges Einstiegssymbol: {args}')
+            out = '.d64_entry ' + symbol
+        elif name=='bits' and args.strip() in ('32','64'):
             out='.code'+args.strip()
         elif name in ('section', 'segment', '.section', '.segment'):
             # Internal dBase/WFM output uses BOTH 'section .text' and
@@ -232,11 +241,17 @@ def intel_to_att(source: str, *, target: str = 'pe32') -> str:
                     if not suffix:
                         suffix=next((_reg_size(arg) for arg in reversed(converted) if arg.startswith('%')),'')
                     if suffix:gnu_name+=suffix
-            if name in ('fld','fstp','fild','fistp') and sizes:
-                float_width={'word':'s','dword':'s','qword':'l'}.get(sizes[0], '')
-                if float_width:out_name = name + float_width
-                else:out_name = gnu_name
-                gnu_name = out_name
+            if name in ('fld', 'fstp', 'fild', 'fistp') and sizes:
+                # The GNU x87 size suffix is different for INTEGER and
+                # FLOAT memory operands. In particular, FISTPL is a 32-bit
+                # integer store, while FISTPLL is a 64-bit integer store.
+                # The older stage incorrectly used FISTPS for DWORD data.
+                kind = sizes[0]
+                suffixes = (
+                    {'dword': 's', 'qword': 'l'} if name in ('fld', 'fstp')
+                    else {'word': 's', 'dword': 'l', 'qword': 'll'}
+                )
+                gnu_name = name + suffixes[kind] if kind in suffixes else gnu_name
             if name in ('call','jmp') and converted and converted[0].startswith(('%','(')):
                 converted[0]='*'+converted[0]
             out=gnu_name+(' '+', '.join(converted) if converted else '')
@@ -271,7 +286,11 @@ def _att_operand_to_intel(op, mnemonic, role, width):
     if mem is None and mnemonic not in _NO_SWAP:
         # In AT&T, only '$expr' is immediate; bare expression = memory.
         # The built-in COFF backend supports symbols and integer addresses.
-        if re.fullmatch(r'[A-Za-z_.?$@][\w.$?@]*',op) or re.fullmatch(r'[+-]?(?:0x[0-9A-Fa-f]+|\d+)', op):
+        # GNU direct addressing may include a constant displacement, for
+        # example "name+4" or "name-8". It is still MEMORY, not an
+        # immediate. Without brackets the internal COFF writer rejects it.
+        if (re.fullmatch(r'[A-Za-z_.?$@][\w.$?@]*(?:\s*[+-]\s*(?:0x[0-9A-Fa-f]+|\d+))*', op)
+                or re.fullmatch(r'[+-]?(?:0x[0-9A-Fa-f]+|\d+)', op)):
             mem='['+op+']'
     if mem is not None:
         return (dict(b='byte',w='word',l='dword',q='qword').get(width,'')+' ptr '+mem).strip() if width else mem
@@ -380,6 +399,14 @@ def att_to_intel(source: str) -> str:
             if section not in ('.text','.data','.bss'):
                 raise ValueError(f'AT&T-Zeile {no}: COFF-Sektion nicht unterstützt: {section}')
             out.append('section '+section+comment+newline);continue
+        # Also accept old Stage-480 output and hand-edited WFM files.
+        # GNU x86 immediates use $, but entry metadata names NEVER do.
+        if name in ('.entry', '.d64_entry'):
+            symbol = arg.strip().lstrip('$')
+            if not re.fullmatch(r'[A-Za-z_.$?@][\w.$?@]*', symbol):
+                raise ValueError(f'AT&T-Zeile {no}: ungueltiges Einstiegssymbol: {arg}')
+            out.append(indent+'entry '+symbol+comment+newline)
+            continue
         if name in _DIRECTIVES_ATT_TO_INTEL:
             out.append(indent+_DIRECTIVES_ATT_TO_INTEL[name]+(' '+arg if arg else '')+comment+newline);continue
         # A .extern.inc emitted by Stage 470 can contain private COFF import
@@ -418,10 +445,24 @@ def att_to_intel(source: str) -> str:
             if name == 'movabs': name = 'mov'
         if name == 'cltd': name = 'cdq'
         if name == 'cqto': name = 'cqo'
-        float_width=''
-        if name in ('fldl','fstpl','flds','fstps','fildl','fistpl'):
-            float_width='q' if name.endswith('l') else 'l'
-            name=name[:-1]
+        # FNSTCW / FLDCW always access a 16-bit x87 control word.  GNU
+        # spells this without a size suffix (e.g. 'fnstcw (%esp)'), while
+        # the built-in PE32/PE64 COFF encoders require 'word ptr [esp]'.
+        # The missing width made generated WFM AT&T assemblies fail.
+        x87_ptr = 'word' if name in ('fnstcw', 'fldcw') else ''
+        # GNU AT&T x87 floating-point widths and integer widths are NOT
+        # interchangeable: FLDL=64-bit floating point, FISTPL=32-bit integer,
+        # FISTPLL=64-bit integer. Restore the exact internal pointer width.
+        x87_widths = {
+            'flds': ('fld', 'dword'), 'fldl': ('fld', 'qword'),
+            'fstps': ('fstp', 'dword'), 'fstpl': ('fstp', 'qword'),
+            'filds': ('fild', 'word'), 'fildl': ('fild', 'dword'),
+            'fildll': ('fild', 'qword'),
+            'fistps': ('fistp', 'word'), 'fistpl': ('fistp', 'dword'),
+            'fistpll': ('fistp', 'qword'),
+        }
+        if name in x87_widths:
+            name, x87_ptr = x87_widths[name]
         if name in {'movzbl','movzwl','movzbq','movzwq','movsbw','movsbl','movsbq','movswl','movswq','movslq'}:
             if name=='movslq': name='movsxd';width='l'
             else:width=name[4];name='movzx' if name.startswith('movz') else 'movsx'
@@ -442,8 +483,14 @@ def att_to_intel(source: str) -> str:
         # GNU operand size provides memory width.  Omit redundant prefixes
         # where the destination register determines width, but keep byte/word
         # memory widths for widening MOVZX and memory-only operations.
-        if float_width and len(args)==1 and '[' in args[0] and ' ptr ' not in args[0]:
-            args[0]=('qword' if float_width=='q' else 'dword')+' ptr '+args[0]
+        if x87_ptr and len(args) == 1:
+            operand = args[0].strip()
+            if (re.fullmatch(r'[A-Za-z_.$?@][\w.$?@]*', operand)
+                    or re.fullmatch(r'[+-]?(?:0x[0-9A-Fa-f]+|\d+)', operand)):
+                operand = '[' + operand + ']'
+            if '[' in operand and ' ptr ' not in operand:
+                operand = x87_ptr + ' ptr ' + operand
+            args[0] = operand
         if name in ('movzx','movsx') and len(args)==2:
             if args[1].startswith(('byte ptr','word ptr')):pass
             elif '[' in args[1]:args[1]='byte ptr '+args[1]

@@ -8,7 +8,11 @@
 #    define D64QT5_API __declspec(dllimport)
 #  endif
 #else
-#  define D64QT5_API
+#  if defined(__GNUC__) || defined(__clang__)
+#    define D64QT5_API __attribute__((visibility("default")))
+#  else
+#    define D64QT5_API
+#  endif
 #endif
 
 #ifdef __cplusplus
@@ -34,6 +38,20 @@ typedef struct D64RuntimeAbiInfo {
 #pragma pack(pop)
 
 D64QT5_API const D64RuntimeAbiInfo *D64GetRuntimeAbiInfo(void);
+/* Stage 488: Linux ELF dynamic linker entrypoint (UTF-8 WFM JSON). */
+D64QT5_API int DBaseQtRunFormJson(const char *utf8Json);
+/* Stage 490: native Qt5 output terminal for .prg, no Python subprocess. */
+D64QT5_API int DBaseQtRunConsoleJson(const char *utf8Json);
+/* Stage 491: Linux-native Win32-compatible Qt message boxes. A HWND is an
+ * X11 XID (via DBaseQtGetX11WindowId), not a QWidget pointer. On Wayland
+ * use 0/null; the native dialog has no foreign parent. */
+#ifndef _WIN32
+#include <stdint.h>
+D64QT5_API int MessageBoxA(uintptr_t hwnd, const char *message,
+                           const char *caption, unsigned int type);
+D64QT5_API int MessageBoxW(uintptr_t hwnd, const uint16_t *message,
+                           const uint16_t *caption, unsigned int type);
+#endif
 
 /* Stage 208/209: immutable lookup tables remain private inside the DLL. */
 typedef struct DBaseRuntimeContext {

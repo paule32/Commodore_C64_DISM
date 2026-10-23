@@ -12080,7 +12080,7 @@ _SOURCE_EDITOR_CONTEXT_TRANSLATIONS = {
     "copy": ("Kopieren", "STRG + C"),
     "paste": ("Einfügen", "STRG + V"),
     "delete": ("Löschen", ""),
-    "select all": ("Alles auswählen", "STRG + A"),
+    "select all": ("Alles markieren", "STRG + A"),
 }
 
 
@@ -38186,6 +38186,8 @@ def _encode_pe64_instruction(text: str, line: int, offset: int, *, relocs: Optio
     out=bytearray()
     def rel32(symbol, prefix=b""):
         out.extend(prefix); out.extend(b"\0\0\0\0"); relocs.append(PE64Relocation(offset+len(out)-4, symbol.casefold(), IMAGE_REL_AMD64_REL32))
+    if mnemonic == "syscall" and not ops: return b"\x0f\x05"
+    if mnemonic == "sysenter" and not ops: return b"\x0f\x34"
     if mnemonic == "nop": return b"\x90"
     if mnemonic == "int3": return b"\xCC"
     if mnemonic == "cdq": return b"\x99"
@@ -48534,7 +48536,11 @@ def _project_document_output_path(document, filename: str) -> Path:
             suffix = Path(str(filename)).suffix.casefold()
             if suffix == ".asm":
                 setting = getattr(owner, "project_windows_assembler_cache", {})
-            elif suffix in {".exe", ".dll", ".o", ".obj"}:
+            elif suffix in {".pui", ".o", ".obj"}:
+                unit_paths = getattr(owner, "project_windows_pascal_unit_output_directories", {})
+                setting = (unit_paths if unit_paths.get(target) else
+                           getattr(owner, "project_windows_output_directories", {}))
+            elif suffix in {".exe", ".dll"}:
                 setting = getattr(owner, "project_windows_output_directories", {})
             else:
                 setting = {}
@@ -48808,6 +48814,7 @@ PROJECT_WINDOWS_TARGET_SETTINGS = {
         "input_key": PROJECT_WINDOWS_PE32_LINK_SEARCH_PATHS_KEY,
         "output_key": PROJECT_WINDOWS_PE32_OUTPUT_DIRECTORY_KEY,
         "asm_cache_key": "__windows_pe32_assembler_cache__",
+        "pascal_unit_output_key": "__windows_pe32_pascal_unit_output__",
         "asm_mode_key": "__windows_pe32_assembler_syntax__",
         "input_relative_key": PROJECT_WINDOWS_PE32_INPUT_RELATIVE_PATHS_KEY,
         "output_relative_key": PROJECT_WINDOWS_PE32_OUTPUT_RELATIVE_PATHS_KEY,
@@ -48859,6 +48866,7 @@ PROJECT_WINDOWS_TARGET_SETTINGS = {
         "input_key": PROJECT_WINDOWS_PE64_LINK_SEARCH_PATHS_KEY,
         "output_key": PROJECT_WINDOWS_PE64_OUTPUT_DIRECTORY_KEY,
         "asm_cache_key": "__windows_pe64_assembler_cache__",
+        "pascal_unit_output_key": "__windows_pe64_pascal_unit_output__",
         "asm_mode_key": "__windows_pe64_assembler_syntax__",
         "input_relative_key": PROJECT_WINDOWS_PE64_INPUT_RELATIVE_PATHS_KEY,
         "output_relative_key": PROJECT_WINDOWS_PE64_OUTPUT_RELATIVE_PATHS_KEY,
@@ -49329,6 +49337,7 @@ def empty_project_entries() -> Dict[str, List[Dict[str, str]]]:
     for _settings in PROJECT_WINDOWS_TARGET_SETTINGS.values():
         entries[_settings["input_key"]] = []
         entries[_settings["output_key"]] = []
+        entries[_settings["pascal_unit_output_key"]] = []
         # Stage 197: relative Darstellung/Speicherung ist standardmäßig aktiv.
         entries[_settings["input_relative_key"]] = [{"value": "true"}]
         entries[_settings["output_relative_key"]] = [{"value": "true"}]
@@ -49905,6 +49914,13 @@ def format_project_ini(
             if _cache_path:
                 parser[_output_section]["AssemblerCache"] = _project_storage_path_mode(
                     _cache_path, project_path, relative=_output_relative
+                )
+        _unit_entries = entries.get(_settings["pascal_unit_output_key"], ())
+        if _unit_entries:
+            _unit_path = str(_unit_entries[0].get("path", "")).strip()
+            if _unit_path:
+                parser[_output_section]["PascalUnitOutput"] = _project_storage_path_mode(
+                    _unit_path, project_path, relative=_output_relative
                 )
         _mode_entries = entries.get(_settings["asm_mode_key"], ())
         parser[_output_section]["AssemblerSyntax"] = (
@@ -50786,6 +50802,11 @@ def parse_project_ini(text: str, project_path: Path) -> Dict[str, List[Dict[str,
             entries[_settings["asm_cache_key"]] = (
                 [{"path": _project_loaded_path(_cache, Path(project_path))}]
                 if _cache else []
+            )
+            _unit_dir = parser.get(_output_section, "PascalUnitOutput", fallback="").strip()
+            entries[_settings["pascal_unit_output_key"]] = (
+                [{"path": _project_loaded_path(_unit_dir, Path(project_path))}]
+                if _unit_dir else []
             )
             _mode = parser.get(_output_section, "AssemblerSyntax", fallback="intel").strip().lower()
             entries[_settings["asm_mode_key"]] = [{"value": "att" if _mode == "att" else "intel"}]
@@ -62472,6 +62493,10 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 self._assembler_target = "pe64"
             elif normalized in {"pe32", "windows", "windows pe32"}:
                 self._assembler_target = "pe32"
+            elif normalized == "linux32":
+                self._assembler_target = "pe32"
+            elif normalized == "linux64":
+                self._assembler_target = "pe64"
             elif normalized == "amiga":
                 self._assembler_target = "amiga"
             else:
@@ -69749,9 +69774,9 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             # dynamisch ein-/ausgeblendet.
             self.build_target_combo = QComboBox(self.assembler_panel)
             self.build_target_combo.setObjectName("build_target_combo")
-            self.build_target_combo.addItems(("C= 64", "Amiga", "Windows PE32", "Windows PE32+"))
+            self.build_target_combo.addItems(("C= 64", "Amiga", "Windows PE32", "Windows PE32+", "Linux Ubuntu 22.04 32-Bit", "Linux Ubuntu 22.04 64-Bit"))
             self.build_target_combo.setCurrentIndex(0)
-            self.build_target_combo.setFixedWidth(145)
+            self.build_target_combo.setFixedWidth(215)
             self.build_target_combo.setToolTip(
                 "Compiler-/Assemblerziel auswählen"
             )
@@ -70232,10 +70257,10 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 "generated_build_target_combo"
             )
             self.generated_build_target_combo.addItems(
-                ("C= 64", "Amiga", "Windows PE32", "Windows PE32+")
+                ("C= 64", "Amiga", "Windows PE32", "Windows PE32+", "Linux Ubuntu 22.04 32-Bit", "Linux Ubuntu 22.04 64-Bit")
             )
             self.generated_build_target_combo.setCurrentIndex(0)
-            self.generated_build_target_combo.setFixedWidth(145)
+            self.generated_build_target_combo.setFixedWidth(215)
             self.generated_build_target_combo.setToolTip(
                 "Compiler-/Assemblerziel auswählen"
             )
@@ -71708,6 +71733,10 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 normalized = "pe64"
             elif value in {"pe32", "windows", "windows pe32", "windowspe32"}:
                 normalized = "pe32"
+            elif value in {"linux32", "elf32", "linux ubuntu 22.04 32-bit", "linux ubuntu 22.04  32-bit"}:
+                normalized = "linux32"
+            elif value in {"linux64", "elf64", "linux ubuntu 22.04 64-bit", "linux ubuntu 22.04  64-bit"}:
+                normalized = "linux64"
             elif value == "amiga":
                 normalized = "amiga"
             elif value in {"c64", "c-64", "c=64", "c= 64", "c 64"}:
@@ -71727,6 +71756,8 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                     "amiga": "Amiga",
                     "pe32": "Windows PE32",
                     "pe64": "Windows PE32+",
+                    "linux32": "Linux Ubuntu 22.04 32-Bit",
+                    "linux64": "Linux Ubuntu 22.04 64-Bit",
                 }[normalized]
                 self.build_target_combo.setCurrentText(display_name)
                 self.generated_build_target_combo.setCurrentText(display_name)
@@ -71907,6 +71938,10 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 return "Windows PE32+"
             if self.build_target == "pe32":
                 return "Windows PE32"
+            if self.build_target == "linux32":
+                return "Linux ELF32 (i386)"
+            if self.build_target == "linux64":
+                return "Linux ELF64 (AMD64)"
             return "C-64"
 
         def _build_emulator_name(self) -> str:
@@ -71914,6 +71949,8 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 return "WinUAE"
             if self.build_target in {"pe32", "pe64"}:
                 return "Windows"
+            if self.build_target in {"linux32", "linux64"}:
+                return "Linux"
             return "VICE"
 
         def _build_output_name(self) -> str:
@@ -71923,6 +71960,10 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 return "PE64-EXE"
             if self.build_target == "pe32":
                 return "PE32-EXE"
+            if self.build_target == "linux32":
+                return "ELF32-Programm"
+            if self.build_target == "linux64":
+                return "ELF64-Programm"
             return "C64-PRG"
 
         def update_syntax_highlighting(self) -> None:
@@ -72067,13 +72108,20 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                         item.setEnabled(index == 0)
                     elif is_logo:
                         item.setEnabled(index == 2)
-                    elif is_lisp or is_prolog or is_dbase:
+                    elif is_lisp or is_prolog:
                         item.setEnabled(index in {2, 3})
+                    elif is_dbase:
+                        # Stage 493: dBASE PRG/WFM also has native Linux ELF
+                        # frontends.  Do not disable these choices or force a
+                        # freshly compiled Linux document back to Windows PE32.
+                        item.setEnabled(index in {2, 3, 4, 5})
                     else:
                         item.setEnabled(True)
             if is_basic and self.build_target != "c64":
                 self.set_build_target("c64")
-            if (is_lisp or is_prolog or is_dbase) and self.build_target not in {"pe32", "pe64"}:
+            if (is_lisp or is_prolog) and self.build_target not in {"pe32", "pe64"}:
+                self.set_build_target("pe32")
+            if is_dbase and self.build_target not in {"pe32", "pe64", "linux32", "linux64", "c64", "amiga"}:
                 self.set_build_target("pe32")
             if is_logo and self.build_target != "pe32":
                 self.set_build_target("pe32")
@@ -79010,7 +79058,7 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             "copy": "Kopieren",
             "paste": "Einfügen",
             "delete": "Löschen",
-            "select all": "Alles auswählen",
+            "select all": "Alles markieren",
         }
 
         for action in menu.actions():
@@ -104848,12 +104896,27 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             output_row.addWidget(self.output_directory_edit, 1)
             output_row.addWidget(self.output_directory_button)
             output_layout.addLayout(output_row)
-            output_layout.addWidget(
-                QLabel(
-                    f"Erzeugte {target_tag}-Bit *.pui- und *.o-Dateien werden in diesem Verzeichnis abgelegt.",
-                    self.output_directory_page,
-                )
+            # Stage 482: eigener Zielordner fuer Pascal-Unit-Interfaces und
+            # architekturspezifische Unit-COFF-Dateien (nicht das EXE-Verzeichnis).
+            output_layout.addWidget(QLabel(
+                f"{target_tag}-Bit *.pui und *.o Dateien", self.output_directory_page
+            ))
+            pui_row = QHBoxLayout()
+            self.pascal_unit_output_edit = QLineEdit(self.output_directory_page)
+            self.pascal_unit_output_edit.setObjectName(
+                f"project_windows_{target_tag}_pascal_unit_output_edit"
             )
+            self.pascal_unit_output_button = QPushButton("...", self.output_directory_page)
+            self.pascal_unit_output_button.setObjectName(
+                f"project_windows_{target_tag}_pascal_unit_output_choose"
+            )
+            self.pascal_unit_output_button.setToolTip(
+                f"{target_tag}-Bit *.pui und *.o Ausgabe-Verzeichnis waehlen"
+            )
+            self.pascal_unit_output_button.setFixedWidth(42)
+            pui_row.addWidget(self.pascal_unit_output_edit, 1)
+            pui_row.addWidget(self.pascal_unit_output_button)
+            output_layout.addLayout(pui_row)
             output_layout.addStretch(1)
             self.stack.addWidget(self.output_directory_page)
 
@@ -105551,6 +105614,8 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.assembler_att_radio.toggled.connect(lambda enabled: self._assembler_mode_changed("att", enabled))
             self.output_directory_button.clicked.connect(self._choose_output_directory)
             self.output_directory_edit.editingFinished.connect(self._output_directory_edited)
+            self.pascal_unit_output_button.clicked.connect(self._choose_pascal_unit_output_directory)
+            self.pascal_unit_output_edit.editingFinished.connect(self._pascal_unit_output_edited)
             self.input_relative_checkbox.toggled.connect(self._input_relative_toggled)
             self.output_relative_checkbox.toggled.connect(self._output_relative_toggled)
             self.dbase_external_ui_checkbox.toggled.connect(self._dbase_visual_changed)
@@ -106497,6 +106562,50 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 ))
                 self._assembler_cache_edited()
 
+        def pascal_unit_output_directory(self) -> str:
+            return getattr(self, "_pascal_unit_output_absolute", "")
+
+        def set_pascal_unit_output_directory(self, value: Optional[Path | str]) -> None:
+            self._syncing = True
+            try:
+                self._pascal_unit_output_absolute = (
+                    self._absolute_path(value) if str(value or "").strip() else ""
+                )
+                self.pascal_unit_output_edit.setText(
+                    self._display_path(self._pascal_unit_output_absolute, relative=self._output_relative)
+                    if self._pascal_unit_output_absolute else ""
+                )
+            finally:
+                self._syncing = False
+
+        def _pascal_unit_output_edited(self) -> None:
+            text = self.pascal_unit_output_edit.text().strip()
+            self._pascal_unit_output_absolute = self._absolute_path(text) if text else ""
+            self.pascal_unit_output_edit.setText(
+                self._display_path(self._pascal_unit_output_absolute, relative=self._output_relative)
+                if self._pascal_unit_output_absolute else ""
+            )
+            if not self._syncing:
+                callback = getattr(self.owner, "set_project_windows_pascal_unit_output_directory", None)
+                if callable(callback):
+                    callback(self.target, self._pascal_unit_output_absolute)
+
+        def _choose_pascal_unit_output_directory(self) -> None:
+            current = self.pascal_unit_output_edit.text().strip()
+            start = self._absolute_path(current) if current else str(
+                getattr(self.owner, "current_directory", Path.cwd())
+            )
+            selected = QFileDialog.getExistingDirectory(
+                self, f"{self.target.upper()} *.pui und *.o Verzeichnis waehlen", start,
+                QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks,
+            )
+            if selected:
+                self.pascal_unit_output_edit.setText(
+                    self._display_path(self._absolute_path(selected), relative=self._output_relative)
+                )
+                self._pascal_unit_output_edited()
+                self.pascal_unit_output_edit.setFocus(Qt.OtherFocusReason)
+
         def output_directory(self) -> str:
             return self._output_absolute
 
@@ -106770,6 +106879,10 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                             self._output_absolute, relative=self._output_relative
                         )
                     )
+                self.pascal_unit_output_edit.setText(
+                    self._display_path(self._pascal_unit_output_absolute, relative=self._output_relative)
+                    if getattr(self, "_pascal_unit_output_absolute", "") else ""
+                )
             finally:
                 self._syncing = False
 
@@ -106855,10 +106968,17 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             cache_text = self.assembler_cache_edit.text().strip()
             if cache_text:
                 self._assembler_cache_absolute = self._absolute_path(cache_text)
+            unit_text = self.pascal_unit_output_edit.text().strip()
+            if unit_text:
+                self._pascal_unit_output_absolute = self._absolute_path(unit_text)
             self._output_relative = bool(checked)
             self.assembler_cache_edit.setText(
                 self._display_path(self._assembler_cache_absolute, relative=self._output_relative)
                 if self._assembler_cache_absolute else ""
+            )
+            self.pascal_unit_output_edit.setText(
+                self._display_path(self._pascal_unit_output_absolute, relative=self._output_relative)
+                if getattr(self, "_pascal_unit_output_absolute", "") else ""
             )
             self.output_relative_checkbox.setText(
                 "relative Pfade" if checked else "absolute Pfade"
@@ -107825,6 +107945,12 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
 
         def set_assembler_cache_directory(self, target: str, path: str) -> None:
             self.page_for_target(target).set_assembler_cache_directory(path)
+
+        def pascal_unit_output_directory(self, target: str = "pe32") -> str:
+            return self.page_for_target(target).pascal_unit_output_directory()
+
+        def set_pascal_unit_output_directory(self, target: str, path: str) -> None:
+            self.page_for_target(target).set_pascal_unit_output_directory(path)
 
         def set_assembler_syntax(self, target: str, mode: str) -> None:
             self.page_for_target(target).set_assembler_syntax(mode)
@@ -109548,6 +109674,9 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.project_windows_assembler_cache: Dict[str, str] = {
                 "pe32": "", "pe64": "",
             }
+            self.project_windows_pascal_unit_output_directories: Dict[str, str] = {
+                "pe32": "", "pe64": "",
+            }
             self.project_windows_assembler_syntax: Dict[str, str] = {
                 "pe32": "intel", "pe64": "intel",
             }
@@ -109813,10 +109942,12 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.setWindowIcon(
                 self.style().standardIcon(QStyle.SP_ComputerIcon)
             )
-            # Stage 75: unter Windows ersetzt ein eigener Green-&-Beige-
-            # Titelbalken den nativen Rahmen. Die vorhandene CloseEvent-/
-            # Speicherlogik bleibt dadurch unveraendert.
-            if sys.platform == "win32":
+            # Stage 485: Die eigene Titelleiste ist ausschliesslich auf
+            # Windows aktiv. Unter Linux (auch Wayland/X11) bleibt das
+            # QMainWindow ein reguläres, vom Window-Manager dekoriertes
+            # Fenster; die bisherige Windows-Gestaltung bleibt unveraendert.
+            self._use_custom_main_title_bar = sys.platform == "win32"
+            if self._use_custom_main_title_bar:
                 self.setWindowFlags(
                     self.windowFlags()
                     | Qt.FramelessWindowHint
@@ -109825,6 +109956,11 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 )
                 border = int(self.FRAMELESS_VISIBLE_BORDER)
                 self.setContentsMargins(border, border, border, border)
+            else:
+                # Auch falls ein zukuenftiger Basiskonstruktor Frameless setzt:
+                # beim nativen Titelbalken muss dieses Flag geloescht sein.
+                self.setWindowFlag(Qt.FramelessWindowHint, False)
+                self.setContentsMargins(0, 0, 0, 0)
 
             # Stage 240: WM_NCHITTEST allein ist bei einem Qt-Frameless-
             # QMainWindow nicht auf allen Windows/Qt5-Kombinationen stabil.
@@ -109845,7 +109981,7 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             # Stage 148: Die gewünschte sichtbare Starthöhe ist 800 px.
             self.resize(1360, self.DEFAULT_WINDOW_HEIGHT)
             self.setMaximumHeight(self.MAX_WINDOW_HEIGHT)
-            if sys.platform == "win32":
+            if self._use_custom_main_title_bar:
                 self._update_frameless_corner_mask()
             self.setDockNestingEnabled(True)
             self.setAnimated(True)
@@ -109861,7 +109997,7 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self._create_right_dock()
             self._create_bottom_dock()
             self._create_status_panels()
-            if sys.platform == "win32":
+            if self._use_custom_main_title_bar:
                 self._create_frameless_resize_overlays()
 
             # Stage 130: kein Light-Mode-Start/Flicker. Die gespeicherte
@@ -109892,7 +110028,11 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
         # ----- Aufbau ------------------------------------------------------
 
         def _create_green_beige_window_chrome(self) -> None:
-            """Create the custom title row and the matching beige menu row."""
+            """Use Windows custom titlebar, Linux native titlebar, shared menu.
+
+            Only the Qt menu row belongs to the client area on Linux: no
+            invisible titlebar widget, blank spacer or custom window buttons.
+            """
             self.main_top_chrome = QWidget(self)
             self.main_top_chrome.setObjectName("green_beige_top_chrome")
             self.main_top_chrome.setSizePolicy(
@@ -109902,10 +110042,11 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             chrome_layout.setContentsMargins(0, 0, 0, 0)
             chrome_layout.setSpacing(0)
 
-            self.main_title_bar = GreenBeigeTitleBar(
-                self, self.main_top_chrome
-            )
-            chrome_layout.addWidget(self.main_title_bar)
+            if self._use_custom_main_title_bar:
+                self.main_title_bar = GreenBeigeTitleBar(
+                    self, self.main_top_chrome
+                )
+                chrome_layout.addWidget(self.main_title_bar)
 
             self.main_menu_bar = QMenuBar(self.main_top_chrome)
             self.main_menu_bar.setObjectName("green_beige_menu_bar")
@@ -113208,6 +113349,12 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             target_combo.setObjectName("dbase_form_target_combo")
             target_combo.addItem("Windows PE32", "pe32")
             target_combo.addItem("Windows PE32+", "pe64")
+            target_combo.addItem("Linux Ubuntu 22.04 32-Bit", "linux32")
+            target_combo.addItem("Linux Ubuntu 22.04 64-Bit", "linux64")
+            # Allow selecting all targets in the menu/form selector, even when
+            # a platform-specific dBASE/WFM backend is still missing.
+            target_combo.addItem("Commodore C= 64", "c64")
+            target_combo.addItem("AMIGA 500", "amiga")
             target_combo.setCurrentIndex(0)
             target_combo.setFixedWidth(150)
             target_combo.setToolTip("Zielplattform des Formularprogramms")
@@ -114247,8 +114394,13 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 return
             target = str(combo.currentData() or "pe32")
             document.set_build_target(target)
+            document.build_menu_requested_target = target
             document.set_windows_application_mode("GUI")
             document.invalidate_assembly_result("Ziel geändert")
+            # A target switch invalidates the old ASM filename and provenance.
+            # This is not a rename: the compiler must regenerate the code.
+            document.generated_assembly_build_target = None
+            document.generated_assembly_path = None
             self._build_menu_form_ready_source = None
             self._build_menu_form_ready_path = None
             self._build_menu_form_ready_target = None
@@ -118471,32 +118623,63 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             if document is None:
                 self._dbase_form_progress_done("compile", False)
                 return False
+            # Stage 493: the old generated ASM belongs to the previous build
+            # until a complete compile has succeeded for the selected target.
+            document.generated_assembly_build_target = None
             document.path = Path(self.dbase_form_current_path).resolve()
             document.custom_display_name = document.path.name
             target = str(self.dbase_form_target_combo.currentData() or "pe32")
             document.set_build_target(target)
+            document.build_menu_requested_target = target
             document.set_windows_application_mode("GUI")
+            if target not in {"pe32", "pe64", "linux32", "linux64"}:
+                message = (
+                    f"Das ausgewählte Ziel {target.upper()} ist vorgemerkt, "
+                    "aber der dBASE/WFM-Compiler dafür ist noch nicht implementiert."
+                )
+                self.log("dBase FORM Compilerziel: " + message)
+                self.show_error("Compilerziel nicht verfügbar", message)
+                self._dbase_form_progress_done("compile", False)
+                return False
 
             try:
                 from d64dbase import DBaseCompilerError
                 assembly_path = self._dbase_assembly_output_path(document)
+                expected_filename = f"{document.path.stem}.generated.{target}.asm"
+                if assembly_path.name != expected_filename or document.build_target != target:
+                    raise AssemblerError(
+                        "WFM-Compilerziel wurde unerwartet umgeschaltet: "
+                        f"ausgewählt={target}, Dokument={document.build_target}, "
+                        f"ASM-Datei={assembly_path.name}; erwartet={expected_filename}"
+                    )
 
                 # Stage 121: Designer-WFM ist bereits eindeutig CLASS ... OF FORM.
                 # Es wird daher nicht zuerst durch den allgemeinen dBase-WITH/
                 # MENU-Parser geschickt. Dieser kennt nur MENU-Properties wie
                 # text/onClick/shortCut/separator und würde Form-Properties wie
                 # Left/Top fälschlich als MENU-Properties auslegen.
-                generated = self._compile_dbase_wfm_fallback(
-                    source,
-                    filename=str(document.path),
-                    target=target,
-                    workstation_mode=self._project_windows_workstation_mode_for_target(target),
-                    progress_callback=self._dbase_form_progress_step,
-                    debug_theme=self._project_windows_debug_theme_for_target(
-                        target,
-                        workstation=self._project_windows_workstation_mode_for_target(target),
-                    ),
-                )
+                if target in {"linux32", "linux64"}:
+                    from d64dbase.linux_frontend import compile_linux_wfm
+                    self._dbase_form_progress_step(1, max(1, len(source.splitlines())))
+                    generated = compile_linux_wfm(
+                        source,
+                        bits=64 if target == "linux64" else 32,
+                        filename=str(document.path),
+                        include_paths=(str(document.path.parent),),
+                    )
+                    self._dbase_form_progress_step(max(1, len(source.splitlines())), max(1, len(source.splitlines())))
+                else:
+                    generated = self._compile_dbase_wfm_fallback(
+                        source,
+                        filename=str(document.path),
+                        target=target,
+                        workstation_mode=self._project_windows_workstation_mode_for_target(target),
+                        progress_callback=self._dbase_form_progress_step,
+                        debug_theme=self._project_windows_debug_theme_for_target(
+                            target,
+                            workstation=self._project_windows_workstation_mode_for_target(target),
+                        ),
+                    )
             except (ImportError, DBaseCompilerError, AssemblerError, ValueError) as exc:
                 message = str(exc)
                 self.log("dBase FORM Compilerfehler: " + message)
@@ -118520,6 +118703,8 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             if not ok:
                 self._dbase_form_progress_done("compile", False)
                 return False
+            # The Assemble button may only consume output from this target.
+            document.generated_assembly_build_target = target
             if self.dbase_form_progress is not None:
                 maximum = self.dbase_form_progress.maximum()
                 self._dbase_form_progress_step(maximum, maximum)
@@ -118549,6 +118734,38 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 self.dbase_form_tabs.setCurrentWidget(self.dbase_form_source_page)
             self._dbase_form_progress_begin("assemble")
             if document is None:
+                self._dbase_form_progress_done("assemble", False)
+                return False
+            # Stage 493: never send Linux x86-64 instructions to the PE32
+            # encoder (nor vice versa), even after changing tabs, menus or
+            # targets after the last compile.  Reusing an old .pe32.asm path
+            # was the cause of 'PE32-Assemblerbefehl nicht unterstützt: mov rdi'.
+            selected_target = str(
+                self.dbase_form_target_combo.currentData()
+                if self.dbase_form_target_combo is not None
+                else document.build_target
+            ).casefold()
+            generated_target = getattr(document, "generated_assembly_build_target", None)
+            generated_path = getattr(document, "generated_assembly_path", None)
+            expected_filename = (
+                f"{document.path.stem}.generated.{selected_target}.asm"
+                if document.path is not None else ""
+            )
+            if (selected_target not in {"pe32", "pe64", "linux32", "linux64"}
+                    or document.build_target != selected_target
+                    or (generated_target is not None and generated_target != selected_target)
+                    or generated_path is None
+                    or Path(generated_path).name != expected_filename):
+                message = (
+                    "Assemblerdatei und ausgewählte Zielarchitektur stimmen nicht überein. "
+                    "Bitte mit der gewünschten Architektur erneut 'Kompilieren' ausführen.\n"
+                    f"Ausgewählt: {selected_target}\n"
+                    f"Kompiliert für: {generated_target or 'unbekannt'}\n"
+                    f"ASM-Datei: {Path(generated_path).name if generated_path else 'keine'}\n"
+                    f"Erwartet: {expected_filename}"
+                )
+                self.log("WFM ARCHITEKTURFEHLER: " + message)
+                self.show_error("Assemblerziel stimmt nicht überein", message)
                 self._dbase_form_progress_done("assemble", False)
                 return False
 
@@ -118618,6 +118835,60 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             if getattr(self, "build_menu", None) is not None:
                 self._build_menu_sync_target()
             return True
+
+        def _prepare_linux_form_runtime(self, output_path: Path, bits: int) -> bool:
+            """Install the matching native Qt5 .so next to the linked ELF.
+
+            Never substitute the host x86-64 library for a target ELF32 .so.
+            The executable's DT_RUNPATH=$ORIGIN resolves only its own sibling.
+            """
+            import shutil
+            import struct
+            destination = Path(output_path).resolve().parent / "libd64_qt5.so"
+            if destination.is_file():
+                candidates = [destination]
+            else:
+                base = Path(__file__).resolve().parent
+                candidates = [
+                    base / "d64qt5" / ("release32" if bits == 32 else "release") / "libd64_qt5.so",
+                    base / "d64qt5" / "release" / "libd64_qt5.so",
+                    Path(self.current_directory) / "libd64_qt5.so",
+                ]
+            for candidate in candidates:
+                try:
+                    if not candidate.is_file():
+                        continue
+                    header = candidate.open("rb").read(20)
+                    if (len(header) < 20 or header[:4] != b"\x7fELF"
+                            or header[4] != (1 if bits == 32 else 2)
+                            or int.from_bytes(header[18:20], "little") != (3 if bits == 32 else 62)):
+                        continue
+                    if candidate.resolve() != destination:
+                        shutil.copy2(candidate, destination)
+                    # Only aliases built alongside the Qt5 Linux runtime are
+                    # deployed. Never substitute an unrelated system library.
+                    for alias in ("shell32.so", "user32.so"):
+                        alias_source = candidate.parent / alias
+                        alias_destination = destination.parent / alias
+                        try:
+                            if (alias_source.is_file()
+                                    and alias_source.resolve() == candidate.resolve()
+                                    and alias_source.resolve() != alias_destination.resolve()):
+                                shutil.copy2(candidate, alias_destination)
+                        except OSError as alias_exc:
+                            self.log(f"Linux {alias}-Kompatibilitaetsalias: {alias_exc}")
+                    self.log(f"LINUX QT5 RUNTIME: {destination}")
+                    return True
+                except OSError as exc:
+                    self.log(f"Linux Qt5-Runtime: {exc}")
+            self.show_error(
+                "Linux Qt5-Runtime fehlt",
+                f"Passende ELF{bits}-Bibliothek libd64_qt5.so fehlt.\n"
+                "Unter Ubuntu im Verzeichnis d64qt5/build_linux.sh ausfuehren "
+                "(Qt5-Entwicklungspaket erforderlich).\n"
+                f"Die .so muss neben der Anwendung liegen: {destination}",
+            )
+            return False
 
         def _prepare_dbase_form_runtime(self, output_path: Path) -> bool:
             """Stage 224: nur eine zum Compilervertrag passende Qt5-Runtime verwenden."""
@@ -118754,8 +119025,9 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     "Klicke zuerst auf Compile und danach auf Assemble.",
                 )
                 return False
-            if not self._prepare_dbase_form_runtime(Path(output)):
-                return False
+            if document.build_target in {"pe32", "pe64"}:
+                if not self._prepare_dbase_form_runtime(Path(output)):
+                    return False
             ok = self._launch_assembled_document(document)
             if ok and self.dbase_form_build_status is not None:
                 self.dbase_form_build_status.setText(
@@ -119277,6 +119549,16 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             self.dbase_form_current_path = path
             self.dbase_form_modified = False
             if self.dbase_form_build_document is not None:
+                # Opening Form2 must not leave Form1's generated ASM/ELF
+                # available for Assemble or Start.
+                self.dbase_form_build_document.generated_assembly_path = None
+                self.dbase_form_build_document.generated_assembly_build_target = None
+                self.dbase_form_build_document.invalidate_assembly_result("Formular geöffnet")
+                if self.dbase_form_assemble_button is not None:
+                    self.dbase_form_assemble_button.setVisible(False)
+                if self.dbase_form_start_button is not None:
+                    self.dbase_form_start_button.setVisible(False)
+                    self.dbase_form_start_button.setEnabled(False)
                 self.dbase_form_build_document.assembler_panel.hide()
                 # Der noch geöffnete alte WFM-Quelltext darf beim Einlesen
                 # einer anderen Form nicht als neue, editierte Quelle über
@@ -121411,6 +121693,9 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 panel.set_assembler_cache_directory(
                     _target, self.project_windows_assembler_cache.get(_target, ""),
                 )
+                panel.set_pascal_unit_output_directory(
+                    _target, self.project_windows_pascal_unit_output_directories.get(_target, ""),
+                )
                 panel.set_assembler_syntax(
                     _target, self.project_windows_assembler_syntax.get(_target, "intel"),
                 )
@@ -121659,6 +121944,12 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 self.project_settings_panel.set_output_directory(
                     _target,
                     self.project_windows_output_directories.get(_target, ""),
+                )
+                self.project_settings_panel.set_assembler_cache_directory(
+                    _target, self.project_windows_assembler_cache.get(_target, ""),
+                )
+                self.project_settings_panel.set_pascal_unit_output_directory(
+                    _target, self.project_windows_pascal_unit_output_directories.get(_target, ""),
                 )
                 self.project_settings_panel.set_link_with_ordinals(
                     _target,
@@ -123522,6 +123813,22 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 if self.current_project_path is not None:
                     self.save_project()
 
+        def set_project_windows_pascal_unit_output_directory(
+            self, target: str, value: Optional[Path | str], *, mark_modified: bool = True,
+        ) -> None:
+            target_key = self._project_windows_target_key(target)
+            text = str(value or "").strip()
+            normalized = self._project_windows_absolute_directory(text) if text else ""
+            before = self.project_windows_pascal_unit_output_directories.get(target_key, "")
+            self.project_windows_pascal_unit_output_directories[target_key] = normalized
+            panel = getattr(self, "project_settings_panel", None)
+            if panel is not None and panel.pascal_unit_output_directory(target_key) != normalized:
+                panel.set_pascal_unit_output_directory(target_key, normalized)
+            if before != normalized and mark_modified:
+                self.set_project_modified(True)
+                if self.current_project_path is not None:
+                    self.save_project()
+
         def set_project_windows_assembler_syntax(self, target: str, value: str, *, mark_modified=True) -> None:
             target_key = self._project_windows_target_key(target)
             mode = "att" if str(value or "").lower() == "att" else "intel"
@@ -123589,9 +123896,12 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             candidates: List[Path] = []
             if document.path is not None:
                 candidates.append(Path(document.path).expanduser().resolve().parent)
-            output = self._document_windows_output_path(document)
+            output = self._project_windows_output_path(document.build_target)
             if output is not None:
                 candidates.append(output)
+            unit_output = self._document_windows_pascal_unit_output_path(document)
+            if unit_output is not None:
+                candidates.append(unit_output)
             candidates.append(self._project_windows_base_directory())
             candidates.extend(
                 self._project_windows_link_search_paths(document.build_target)
@@ -123681,6 +123991,22 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     pass
             return output
 
+        def _document_windows_pascal_unit_output_path(self, document) -> Optional[Path]:
+            """PUI und Pascal-UNIT-COFF: drittes Ausgabefeld; ansonsten alter Zielpfad."""
+            key = self._project_windows_target_key(document.build_target)
+            raw = str(self.project_windows_pascal_unit_output_directories.get(key, "") or "").strip()
+            if not raw:
+                return self._document_windows_output_path(document)
+            destination = Path(raw).expanduser().resolve()
+            if (document.path is not None and
+                    self.project_windows_relative_paths.get(key, {}).get("output", True)):
+                try:
+                    sub = os.path.relpath(str(destination), str(self._project_windows_base_directory()))
+                    destination = (Path(document.path).resolve().parent / sub).resolve()
+                except (OSError, ValueError):
+                    pass
+            return destination
+
         def _project_generated_object_path(
             self,
             source_path: Path,
@@ -123693,6 +124019,18 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 if output_directory is not None
                 else self._project_windows_output_path(target)
             )
+            if output_directory is None:
+                raw = str(self.project_windows_pascal_unit_output_directories.get(
+                    self._project_windows_target_key(target), "") or "").strip()
+                if raw:
+                    output = Path(raw).expanduser().resolve()
+                    if self.project_windows_relative_paths.get(
+                        self._project_windows_target_key(target), {}).get("output", True):
+                        try:
+                            sub = os.path.relpath(str(output), str(self._project_windows_base_directory()))
+                            output = (source.parent / sub).resolve()
+                        except (OSError, ValueError):
+                            pass
             return (
                 (output / source.with_suffix(".o").name).resolve()
                 if output is not None
@@ -123723,6 +124061,18 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     candidates.append(self.current_project_path.parent / candidate)
             # Die Reihenfolge der aktiven 32-/64-Bit-ListBox wird 1:1
             # eingehalten; die andere Architektur wird niemals durchsucht.
+            _raw_units = str(self.project_windows_pascal_unit_output_directories.get(
+                self._project_windows_target_key(target), "") or "").strip()
+            if _raw_units:
+                _candidate_dir = Path(_raw_units).expanduser().resolve()
+                candidates.append(_candidate_dir / leaf)
+                if source_path is not None and self.project_windows_relative_paths.get(
+                    self._project_windows_target_key(target), {}).get("output", True):
+                    try:
+                        _rel = os.path.relpath(str(_candidate_dir), str(self._project_windows_base_directory()))
+                        candidates.append(Path(source_path).resolve().parent / _rel / leaf)
+                    except (OSError, ValueError):
+                        pass
             for directory in self._project_windows_link_search_paths(target):
                 candidates.append(directory / leaf)
             for path in candidates:
@@ -123958,6 +124308,10 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             self.build_target_action_group = QActionGroup(self)
             self.build_target_action_group.setExclusive(True)
             self.build_target_actions = {}
+            # Stage 489: The selected target is independent of whether a given
+            # frontend can already compile for it. All six choices stay marked.
+            self._build_menu_selected_target = "pe32"
+            self.build_target_action_labels = {}
             for target_key, caption in (
                 ("pe32", "Windows PE 32-Bit"),
                 ("pe64", "Windows PE 64-Bit"),
@@ -123969,6 +124323,24 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 self.build_target_action_group.addAction(action)
                 self.build_menu.addAction(action)
                 self.build_target_actions[target_key] = action
+                self.build_target_action_labels[target_key] = caption
+                action.triggered.connect(
+                    lambda _checked=False, target=target_key: self._build_menu_select_target(target)
+                )
+            self.build_menu.addSeparator()
+            # Stage 486: Native Linux ELF32/ELF64 targets, same exclusive group.
+            for target_key, caption in (
+                ("linux32", "Linux Ubuntu 22.04  32-Bit"),
+                ("linux64", "Linux Ubuntu 22.04  64-Bit"),
+            ):
+                action = QAction(caption, self)
+                action.setObjectName("build_target_" + target_key + "_action")
+                action.setCheckable(True)
+                action.setData(target_key)
+                self.build_target_action_group.addAction(action)
+                self.build_menu.addAction(action)
+                self.build_target_actions[target_key] = action
+                self.build_target_action_labels[target_key] = caption
                 action.triggered.connect(
                     lambda _checked=False, target=target_key: self._build_menu_select_target(target)
                 )
@@ -123984,6 +124356,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 self.build_target_action_group.addAction(action)
                 self.build_menu.addAction(action)
                 self.build_target_actions[target_key] = action
+                self.build_target_action_labels[target_key] = caption
                 action.triggered.connect(
                     lambda _checked=False, target=target_key: self._build_menu_select_target(target)
                 )
@@ -128320,6 +128693,8 @@ border: 2px solid #2a69aa;
                     if getattr(document, "generated_source_kind", "program") == "library"
                     else ".exe"
                 )
+            elif document.build_target in {"linux32", "linux64"}:
+                suffix = ".elf32" if document.build_target == "linux32" else ".elf64"
             elif document.build_target == "amiga":
                 suffix = ".amiga"
                 if assembly_source:
@@ -128651,9 +129026,9 @@ border: 2px solid #2a69aa;
         def _dbase_assembly_output_path(document: DocumentEditor) -> Path:
             if document.path is None:
                 raise AssemblerError("Der dBase-Quelltext muss zuerst gespeichert werden.")
-            if document.build_target not in {"pe32", "pe64"}:
-                raise AssemblerError("dBase unterstützt nur Windows PE32 und Windows PE32+/PE64.")
-            suffix = ".generated.pe64.asm" if document.build_target == "pe64" else ".generated.pe32.asm"
+            if document.build_target not in {"pe32", "pe64", "linux32", "linux64"}:
+                raise AssemblerError("dBase benötigt PE32/PE64 oder Linux ELF32/ELF64.")
+            suffix = ".generated." + document.build_target + ".asm"
             return _project_document_output_path(
                 document, document.path.stem + suffix
             )
@@ -128961,11 +129336,14 @@ border: 2px solid #2a69aa;
                     if document.build_target in {"pe32", "pe64"}
                     else None
                 )
-                if (
-                    _project_output_directory is not None
-                    and _project_output_directory not in include_paths
-                ):
-                    include_paths.append(_project_output_directory)
+                _pascal_unit_output_directory = (
+                    self._document_windows_pascal_unit_output_path(document)
+                    if document.build_target in {"pe32", "pe64"}
+                    else None
+                )
+                for _build_path in (_project_output_directory, _pascal_unit_output_directory):
+                    if _build_path is not None and _build_path not in include_paths:
+                        include_paths.append(_build_path)
                 compiler_kwargs = {
                     "filename": str(document.path),
                     "include_paths": include_paths,
@@ -129045,8 +129423,8 @@ border: 2px solid #2a69aa;
                     )
                 if "output_directory" in parameter_map:
                     compiler_kwargs["output_directory"] = (
-                        str(_project_output_directory)
-                        if _project_output_directory is not None
+                        str(_pascal_unit_output_directory)
+                        if _pascal_unit_output_directory is not None
                         else None
                     )
                 self.log(
@@ -129110,7 +129488,7 @@ border: 2px solid #2a69aa;
                     unit_object_path = _pascal_unit_coff_output_path(
                         document.path,
                         document.build_target,
-                        output_directory=_project_output_directory,
+                        output_directory=_pascal_unit_output_directory,
                     )
                     try:
                         unit_object_data = (
@@ -129363,15 +129741,30 @@ border: 2px solid #2a69aa;
 
         def _compile_dbase_document(self, document: DocumentEditor) -> bool:
             """dBase -> IA-32/AMD64-Assembler mit eigener Qt5-GUI-Runtime."""
-            if document.build_target not in {"pe32", "pe64"}:
-                document.set_build_target("pe32")
-            # dBase besitzt ab dieser Stufe immer eine eigene Qt5-GUI.
-            document.set_windows_application_mode("GUI")
+            if document.build_target not in {"pe32", "pe64", "linux32", "linux64"}:
+                self.show_error(
+                    "Compilerziel nicht verfügbar",
+                    f"Für dBASE ist das ausgewählte Ziel {document.build_target.upper()} "
+                    "noch nicht implementiert; es wird nicht nach PE32 umgeschaltet.",
+                )
+                return False
+            document.set_windows_application_mode(
+                "GUI"
+            )
             source = document.raw_editor.toPlainText()
             try:
                 from d64dbase import DBaseCompilerError, compile_dbase_to_assembly
+                from d64dbase.linux_frontend import LinuxDBaseError, compile_linux_prg
                 assembly_path = self._dbase_assembly_output_path(document)
-                generated = compile_dbase_to_assembly(
+                if document.build_target in {"linux32", "linux64"}:
+                    generated = compile_linux_prg(
+                        source, bits=32 if document.build_target == "linux32" else 64,
+                        filename=str(document.path),
+                        include_paths=(str(document.path.parent),),
+                        qt_terminal=True,
+                    )
+                else:
+                    generated = compile_dbase_to_assembly(
                     source,
                     filename=str(document.path),
                     target=document.build_target,
@@ -129387,7 +129780,7 @@ border: 2px solid #2a69aa;
                         ),
                     ),
                 )
-            except (ImportError, DBaseCompilerError, AssemblerError) as exc:
+            except (ImportError, DBaseCompilerError, AssemblerError, LinuxDBaseError) as exc:
                 message = str(exc)
                 self.log("dBase Compilerfehler: " + message)
                 error_line = getattr(exc, "line", 0) or 0
@@ -129462,7 +129855,7 @@ border: 2px solid #2a69aa;
             )
             writer = _write_pe64_generated_objects if is64 else _write_pe32_generated_objects
             error_type = PE64AssemblerError if is64 else PE32AssemblerError
-            _project_output_directory = self._document_windows_output_path(document)
+            _project_output_directory = self._document_windows_pascal_unit_output_path(document)
             try:
                 object_paths = writer(
                     proxy,
@@ -129535,7 +129928,11 @@ border: 2px solid #2a69aa;
             """
             if not isinstance(document, DocumentEditor):
                 return False
-            self.document_tabs.setCurrentWidget(document)
+            # WFM uses a hidden DocumentEditor whose source/ASM widgets are
+            # embedded in the form designer rather than in document_tabs.
+            # setCurrentWidget() with that hidden page can disturb menu focus.
+            if self.document_tabs.indexOf(document) >= 0:
+                self.document_tabs.setCurrentWidget(document)
             if not (
                 document.is_basic_document
                 or document.is_pascal_document
@@ -129568,6 +129965,7 @@ border: 2px solid #2a69aa;
                 document.set_prolog_build_progress(12, "Assembler analysieren")
 
             packer_stats = None
+            from linux_elf import LinuxELFError
             try:
                 #from amiga500 import (
                 #    AmigaAssemblerError,
@@ -129623,6 +130021,30 @@ border: 2px solid #2a69aa;
                         cpu_model=document.amiga_cpu_model,
                         fpu_model=document.amiga_fpu_model,
                     )
+                elif document.build_target in {"linux32", "linux64"}:
+                    from linux_elf import assemble_linux_elf
+                    _bits = 32 if document.build_target == "linux32" else 64
+                    _elf_object, _elf_program = assemble_linux_elf(
+                        assembly_source, bits=_bits, filename=str(assembly_path),
+                        assembler32=assemble_pe32_object_source,
+                        assembler64=assemble_pe64_object_source,
+                        include_dirs=(str(assembly_path.parent), str(document.path.parent)),
+                        progress_callback=getattr(self, "_dbase_form_asm_progress_callback", None),
+                        shared_library=("libd64_qt5.so" if
+                            getattr(document, "is_dbase_document", False)
+                            and str(getattr(document, "generated_source_kind", "")).casefold() in {"form", "program"}
+                            else None),
+                        imported_symbols=(("DBaseQtRunFormJson",) if
+                            str(getattr(document, "generated_source_kind", "")).casefold() == "form"
+                            else ("DBaseQtRunConsoleJson",) if
+                            getattr(document, "is_dbase_document", False)
+                            else ()),
+                    )
+                    _elf_object_path = output_path.with_name(
+                        document.path.stem + (".linux32.o" if _bits == 32 else ".linux64.o")
+                    )
+                    self._write_assembled_program(_elf_object_path, _elf_object)
+                    program = argparse.Namespace(executable=_elf_program, entry_offset=0, code=b'')
                 elif document.build_target in {"pe32", "pe64"}:
                     is64 = document.build_target == "pe64"
                     proxy = argparse.Namespace(
@@ -129644,7 +130066,9 @@ border: 2px solid #2a69aa;
                     )
                     if is_prolog_build:
                         document.set_prolog_build_progress(32, "COFF-Objekte erzeugen")
-                    _project_output_directory = self._document_windows_output_path(document)
+                    # .o/.obj use the third output field, whereas the linked
+                    # .exe/.dll keeps the separately configured executable path.
+                    _project_output_directory = self._document_windows_pascal_unit_output_path(document)
                     object_paths = object_writer(
                         proxy,
                         source_path=document.path,
@@ -129758,7 +130182,7 @@ border: 2px solid #2a69aa;
                     )
                     if not bool(getattr(document, "d64pack_generated_source", False)):
                         program, packer_stats = self._apply_c64_image_packer(program)
-            except (AssemblerError, AmigaAssemblerError, PE32AssemblerError, PE64AssemblerError) as exc:
+            except (AssemblerError, AmigaAssemblerError, PE32AssemblerError, PE64AssemblerError, LinuxELFError, ValueError) as exc:
                 if is_prolog_build:
                     document.finish_prolog_build_progress(False, "Assemblieren / Linken fehlgeschlagen")
                 message = str(exc)
@@ -129799,10 +130223,18 @@ border: 2px solid #2a69aa;
                     program.adf
                     if amiga_bootable
                     else program.executable
-                    if document.build_target in {"amiga", "pe32", "pe64"}
+                    if document.build_target in {"amiga", "pe32", "pe64", "linux32", "linux64"}
                     else program.prg
                 )
                 self._write_assembled_program(output_path, program_data)
+                if (document.build_target in {"linux32", "linux64"}
+                        and getattr(document, "is_dbase_document", False)
+                        and str(getattr(document, "generated_source_kind", "")).casefold() in {"form", "program"}):
+                    if not self._prepare_linux_form_runtime(
+                            output_path, 32 if document.build_target == "linux32" else 64):
+                        return False
+                if document.build_target in {"linux32", "linux64"} and sys.platform.startswith("linux"):
+                    output_path.chmod(output_path.stat().st_mode | 0o111)
                 # Stage 446: before a linked EXE is reported successful, its
                 # architecture-matched console DLL must be in the same folder.
                 if (document.is_dbase_document
@@ -129916,6 +130348,24 @@ border: 2px solid #2a69aa;
                         f"{assembly_path.name} -> {output_path.name}, "
                         f"{len(program.executable)} Bytes"
                     )
+            elif document.build_target in {"linux32", "linux64"}:
+                document.hints_editor.setPlainText(
+                    "Linux ELF erfolgreich assembliert und gelinkt\n\n"
+                    f"Ziel         : {document.build_target}\n"
+                    f"Programm     : {output_path}\n"
+                    f"Groeße       : {len(program_data)} Bytes\n"
+                    "Linkmodus    : Statisches ELF (ohne libc)\n"
+                )
+                self.log(f"ASSEMBLE LINUX ELF: {document.display_name} -> {output_path}")
+            elif document.build_target in {"linux32", "linux64"}:
+                document.hints_editor.setPlainText(
+                    "Linux ELF-Assembler/Linker erfolgreich\n\n"
+                    f"Quelle        : {document.display_name}\n"
+                    f"ELF-Ausgabe   : {output_path}\n"
+                    f"Groesse       : {len(program.executable)} Bytes\n"
+                    "ELF-Modus     : statischer ELF-Startprozess\n"
+                )
+                self.log(f"ASSEMBLE LINUX: {document.display_name} -> {output_path}")
             elif document.build_target in {"pe32", "pe64"}:
                 target_label = "PE64" if document.build_target == "pe64" else "PE32"
                 document.hints_editor.setPlainText(
@@ -130172,6 +130622,8 @@ border: 2px solid #2a69aa;
             if document is None:
                 return False
             output = getattr(document, "assembled_program_path", None)
+            if getattr(document, "build_target", None) in {"linux32", "linux64"} and not sys.platform.startswith("linux"):
+                return False
             if output is None:
                 return False
             try:
@@ -130192,7 +130644,7 @@ border: 2px solid #2a69aa;
                         if self.dbase_form_current_path is not None else None
                     )
                     and str(document.build_target) == getattr(self, "_build_menu_form_ready_target", None)
-                    and document.build_target in {"pe32", "pe64"}
+                    and document.build_target in {"pe32", "pe64", "linux32", "linux64"}
                 )
             return bool(
                 document is getattr(self, "_build_menu_ready_document", None)
@@ -130202,22 +130654,44 @@ border: 2px solid #2a69aa;
             )
 
         def _build_menu_sync_target(self) -> None:
-            """Select the active source, including an open WFM form designer."""
+            """Display the requested target, even if its backend is unavailable.
+
+            A checked QAction is a radio marker in Qt. The additional tick in
+            the caption makes the choice visible with themes that suppress Qt's
+            native radio indicator. Each document remembers its own selection.
+            """
             actions = getattr(self, "build_target_actions", {})
             if not actions:
                 return
             document = self._build_menu_active_document()
-            target = str(getattr(document, "build_target", "pe32") or "pe32").casefold()
-            if self._dbase_form_is_active():
-                combo = getattr(self, "dbase_form_target_combo", None)
-                if combo is not None:
-                    target = str(combo.currentData() or target).casefold()
+            target = str(getattr(self, "_build_menu_selected_target", "pe32") or "pe32").casefold()
+            if document is not None:
+                target = str(
+                    getattr(document, "build_menu_requested_target", None)
+                    or getattr(document, "build_target", target)
+                    or target
+                ).casefold()
+                # Changes made via the WFM target selector must also update
+                # the menu selection (the form callback clears its request).
+                if self._dbase_form_is_active():
+                    combo = getattr(self, "dbase_form_target_combo", None)
+                    if combo is not None:
+                        target = str(combo.currentData() or target).casefold()
             if target not in actions:
                 target = "pe32"
+            self._build_menu_selected_target = target
+            captions = getattr(self, "build_target_action_labels", {})
             for key, action in actions.items():
+                is_selected = key == target
                 blocked = action.blockSignals(True)
                 try:
-                    action.setChecked(key == target)
+                    action.setChecked(is_selected)
+                    if hasattr(action, "setText"):
+                        caption = captions.get(key)
+                        if caption is not None:
+                            action.setText(("✓ " if is_selected else "") + caption)
+                    if hasattr(action, "setProperty"):
+                        action.setProperty("compiler_target_selected", is_selected)
                 finally:
                     action.blockSignals(blocked)
             can_build = bool(document is not None and document.is_build_document)
@@ -130230,6 +130704,9 @@ border: 2px solid #2a69aa;
         @staticmethod
         def _build_menu_target_supported(document: DocumentEditor, target: str) -> bool:
             """Keine stille Rücksetzung des per Menü ausgewählten Architekturprofils."""
+            if target in {"linux32", "linux64"}:
+                # Stage 487: Linux dBASE/FORM uses its own ELF source generators.
+                return bool(document.is_assembler_document or document.is_dbase_document)
             if document.is_basic_document:
                 return target == "c64"
             if document.is_dbase_document or document.is_prolog_document or document.is_lisp_document:
@@ -130239,37 +130716,44 @@ border: 2px solid #2a69aa;
             return target in {"pe32", "pe64", "c64", "amiga"}
 
         def _build_menu_select_target(self, target: str) -> None:
+            """Allow all six targets to be marked; validate support at build time."""
+            target = str(target or "").casefold()
+            if target not in getattr(self, "build_target_actions", {}):
+                return
+            self._build_menu_selected_target = target
             document = self._build_menu_active_document()
-            if document is None or not document.is_build_document:
-                self.statusBar().showMessage("Erstellen: zuerst ein Quelldokument öffnen", 6000)
-                self._build_menu_sync_target()
-                return
-            if not self._build_menu_target_supported(document, target):
-                self.show_error(
-                    "Compilerziel nicht verfügbar",
-                    f"Die Sprache der Datei {document.display_name} unterstützt "
-                    f"das Ziel {target.upper()} derzeit nicht. Das bisherige Ziel bleibt erhalten.",
-                )
-                self._build_menu_sync_target()
-                return
-            if self._dbase_form_is_active():
-                combo = getattr(self, "dbase_form_target_combo", None)
-                index = combo.findData(target) if combo is not None else -1
-                if index < 0:
-                    self.show_error("Compilerziel nicht verfügbar", "Formular-Designer unterstützt nur Windows PE32/PE64.")
-                    self._build_menu_sync_target()
-                    return
-                combo.setCurrentIndex(index)  # updates the designer's compiler, too
-            else:
-                document.set_build_target(target)
+            if document is not None and document.is_build_document:
+                if self._dbase_form_is_active():
+                    combo = getattr(self, "dbase_form_target_combo", None)
+                    index = combo.findData(target) if combo is not None else -1
+                    if index >= 0:
+                        combo.setCurrentIndex(index)
+                    else:
+                        document.set_build_target(target)
+                elif self._build_menu_target_supported(document, target) or document.is_dbase_document:
+                    # dBASE also remembers prospective Amiga/C64 targets;
+                    # unsupported backends must never silently revert to PE32.
+                    document.set_build_target(target)
+                document.build_menu_requested_target = target
                 self._build_menu_ready_document = None
                 self._build_menu_ready_path = None
                 self._build_menu_ready_target = None
+                self._build_menu_form_ready_source = None
+                self._build_menu_form_ready_path = None
+                self._build_menu_form_ready_target = None
             self._build_menu_sync_target()
-            self.statusBar().showMessage(
-                f"Compilerziel für {document.display_name}: "
-                + self.build_target_actions[target].text(), 5000
-            )
+            caption = getattr(self, "build_target_action_labels", {}).get(target, target)
+            if document is None or not document.is_build_document:
+                self.statusBar().showMessage(f"Compilerziel vorgemerkt: {caption}", 6000)
+            elif not self._build_menu_target_supported(document, target):
+                self.statusBar().showMessage(
+                    f"Ziel für {document.display_name}: {caption} – Compilerbackend noch nicht verfügbar",
+                    9000,
+                )
+            else:
+                self.statusBar().showMessage(
+                    f"Compilerziel für {document.display_name}: {caption}", 5000
+                )
 
         def _build_menu_compile(self, *, link: bool) -> bool:
             """Compile-only or Compile+Link; never auto-start from here."""
@@ -130278,9 +130762,19 @@ border: 2px solid #2a69aa;
             if document is None or not document.is_build_document:
                 self.show_error("Erstellen", "Bitte zuerst eine kompilierbare Quelldatei öffnen.")
                 return False
-            target = str(document.build_target).casefold()
+            target = str(
+                getattr(document, "build_menu_requested_target", None)
+                or document.build_target
+            ).casefold()
             if not self._build_menu_target_supported(document, target):
-                self.show_error("Compilerziel nicht verfügbar", f"{target.upper()} ist für diese Sprache nicht verfügbar.")
+                caption = getattr(self, "build_target_action_labels", {}).get(target, target)
+                self.show_error(
+                    "Compilerziel nicht verfügbar",
+                    f"{caption} ist für {document.display_name} ausgewählt, "
+                    "aber der Compiler für diese Sprache und Architektur "
+                    "ist noch nicht implementiert. Die Zielmarkierung bleibt erhalten.",
+                )
+                self._build_menu_sync_target()
                 return False
 
             # A compile-only operation must never leave Start enabled for an
@@ -130539,6 +131033,7 @@ border: 2px solid #2a69aa;
                 source.encode("utf-8")
             ).hexdigest()
             packer_stats = None
+            from linux_elf import LinuxELFError
             try:
                 #from amiga500 import (
                 #    AmigaAssemblerError,
@@ -130568,6 +131063,23 @@ border: 2px solid #2a69aa;
                         if amiga_bootable
                         else program.executable
                     )
+                elif document.build_target in {"linux32", "linux64"}:
+                    from linux_elf import LinuxELFError, LinuxELFProgram, assemble_linux_elf
+                    bits = 32 if document.build_target == "linux32" else 64
+                    linux_obj, linux_exe = assemble_linux_elf(
+                        source,
+                        bits=bits,
+                        filename=str(document.path),
+                        assembler32=assemble_pe32_object_source,
+                        assembler64=assemble_pe64_object_source,
+                        include_dirs=(str(document.path.parent),),
+                    )
+                    object_path = output_path.with_name(
+                        document.path.stem + (".linux32.o" if bits == 32 else ".linux64.o")
+                    )
+                    self._write_assembled_program(object_path, linux_obj)
+                    program_data = linux_exe
+                    program = LinuxELFProgram(linux_exe, b"", 0, 0)
                 elif document.build_target == "pe32":
                     # Stage 480: centralized AT&T detection/conversion in
                     # _preprocess_windows_assembly, for both build entrypoints.
@@ -130618,7 +131130,7 @@ border: 2px solid #2a69aa;
                     )
                     if not self._sign_windows_output_if_enabled(output_path, document.build_target):
                         return False
-            except (AssemblerError, AmigaAssemblerError, PE32AssemblerError, PE64AssemblerError) as exc:
+            except (AssemblerError, AmigaAssemblerError, PE32AssemblerError, PE64AssemblerError, LinuxELFError) as exc:
                 message = str(exc)
                 document.show_assembly_error(message, exc.line or 0)
                 self.show_error("Assemblerfehler", message)
@@ -132464,6 +132976,21 @@ border: 2px solid #2a69aa;
                 return False
             if document.build_target == "amiga":
                 return self._launch_amiga_document(document, output_path)
+            if document.build_target in {"linux32", "linux64"}:
+                if not sys.platform.startswith("linux"):
+                    self.show_error("Linux-ELF-Start", "ELF kann unter Windows erzeugt und gelinkt werden, aber nur auf einem passenden Linux-System gestartet werden.")
+                    return False
+                try:
+                    process = subprocess.Popen([str(output_path)], cwd=str(output_path.parent))
+                except OSError as exc:
+                    self.show_error("Linux-ELF-Start", str(exc))
+                    return False
+                self._linux_elf_processes = [
+                    item for item in getattr(self, "_linux_elf_processes", [])
+                    if item.poll() is None
+                ] + [process]
+                self.log(f"LINUX ELF START: {output_path}")
+                return True
             if document.build_target in {"pe32", "pe64"}:
                 # Start remains build-free: only the DLL is verified/deployed.
                 # Check the *actual linked binary* (not a possibly stale editor).
@@ -133669,6 +134196,11 @@ border: 2px solid #2a69aa;
                 _cache_entries = values.get(_settings["asm_cache_key"], ())
                 self.set_project_windows_assembler_cache(
                     _target, _cache_entries[0].get("path", "") if _cache_entries else "",
+                    mark_modified=False,
+                )
+                _unit_output_entries = values.get(_settings["pascal_unit_output_key"], ())
+                self.set_project_windows_pascal_unit_output_directory(
+                    _target, _unit_output_entries[0].get("path", "") if _unit_output_entries else "",
                     mark_modified=False,
                 )
                 _syntax_entries = values.get(_settings["asm_mode_key"], ())
@@ -134984,6 +135516,8 @@ border: 2px solid #2a69aa;
                 )
                 _cache = str(self.project_windows_assembler_cache.get(_target, "") or "").strip()
                 entries[_settings["asm_cache_key"]] = [{"path": _cache}] if _cache else []
+                _unit_out = str(self.project_windows_pascal_unit_output_directories.get(_target, "") or "").strip()
+                entries[_settings["pascal_unit_output_key"]] = [{"path": _unit_out}] if _unit_out else []
                 entries[_settings["asm_mode_key"]] = [{"value": self.project_windows_assembler_syntax.get(_target, "intel")}]
                 _dll_value = str(self.project_windows_console_dll_directories.get(_target, "") or "").strip()
                 entries[_settings["console_dll_directory_key"]] = (
@@ -135451,6 +135985,7 @@ border: 2px solid #2a69aa;
                 or any(
                     bool(entries.get(_settings["input_key"]))
                     or bool(entries.get(_settings["output_key"]))
+                    or bool(entries.get(_settings["pascal_unit_output_key"]))
                     or _project_bool_entry(
                         entries,
                         _settings["link_with_ordinals_key"],
@@ -137246,7 +137781,7 @@ border: 2px solid #2a69aa;
             companion = _pascal_unit_coff_output_path(
                 resolved,
                 target,
-                output_directory=self._project_windows_output_path(target),
+                output_directory=self._document_windows_pascal_unit_output_path(document),
             )
             if companion.is_file():
                 return companion.resolve()
@@ -140781,6 +141316,26 @@ QFileDialog QComboBox QAbstractItemView {
             return True
 
         def eventFilter(self, watched, event):
+            # Stage 483: Qt zeigt fuer normale QLineEdit-Eingabefelder noch
+            # Undo/Redo/Cut/Copy/Paste/Delete/Select All auf Englisch an.
+            # Das Qt-Standardmenue liefert die bereits verdrahteten Aktionen
+            # samt Undo-Stack, Enabled-Zustand und realen Tastenkombinationen.
+            # Wir aendern nur deren Beschriftungen. Spezielle Kontextmenues
+            # (z.B. DBF-Grid, ASM-Editor, CustomContextMenu) bleiben unberuehrt.
+            if (
+                event.type() == QEvent.ContextMenu
+                and (
+                    isinstance(watched, QLineEdit)
+                    or type(watched) in (QPlainTextEdit, QTextEdit)
+                )
+                and watched.contextMenuPolicy() == Qt.DefaultContextMenu
+            ):
+                _execute_german_source_editor_context_menu(
+                    watched, event.globalPos()
+                )
+                event.accept()
+                return True
+
             # Stage 467: klickbare WFM-Assembler-Quellzeilenkommentare.
             document = getattr(self, "dbase_form_build_document", None)
             asm_editor = getattr(document, "generated_assembly_editor", None)

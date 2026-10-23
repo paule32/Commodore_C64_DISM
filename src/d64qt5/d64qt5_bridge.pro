@@ -46,3 +46,14 @@ win32 {
 }
 
 DISTFILES += generate_runtime_abi.py
+
+# Stage 488: native Linux .so (Qt5), without Windows import libraries.
+unix:!macx {
+    TARGET = d64_qt5
+    DESTDIR = release
+    SOURCES = d64qt5_linux_form.cpp
+    HEADERS = d64qt5_bridge.h
+    QMAKE_LFLAGS_SONAME = -Wl,-soname,libd64_qt5.so
+    CONFIG -= dll
+    CONFIG += shared
+}

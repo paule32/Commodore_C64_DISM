@@ -1,0 +1,15 @@
+CLASS Form1 OF FORM
+    THIS.Caption = "dBASE unter Linux - Qt5"
+    THIS.Width = 480
+    THIS.Height = 240
+    THIS.Button1 = NEW BUTTON()
+    THIS.Button1.Left = 30
+    THIS.Button1.Top = 40
+    THIS.Button1.Width = 180
+    THIS.Button1.Height = 35
+    THIS.Button1.Text = "Klicken"
+    THIS.Button1.OnClick = CLASS::Button1_onClick
+    PROCEDURE Button1_onClick()
+        ? "Hallo von Linux Qt5!"
+        RETURN
+ENDCLASS

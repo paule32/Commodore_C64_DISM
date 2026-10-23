@@ -35,7 +35,7 @@ class DBaseFFIPrototype:
         return f'import {self.label}, "{self.dll}", "{self.entry}"'
 
 
-def extract_ffi_prototypes(source: str, *, filename: str = '<dBase>'):
+def extract_ffi_prototypes(source: str, *, filename: str = '<dBase>', allow_so: bool = False):
     """Strip extern prototypes without changing source line numbers.
 
     Returns ``(masked_source, prototypes)``. ValueError messages include the
@@ -79,7 +79,7 @@ def extract_ffi_prototypes(source: str, *, filename: str = '<dBase>'):
             if arg not in FFI_TYPES or arg == 'CVOID':
                 raise ValueError(f'{filename}:{start + 1}: Ungueltiger DLL-Parametertyp {arg}.')
         dll = raw_dll.strip('"')
-        if not dll.casefold().endswith('.dll') or any(c in dll for c in '\\/:'):
+        if not (dll.casefold().endswith('.dll') or (allow_so and dll.casefold().endswith('.so'))) or any(c in dll for c in '\\/:'):
             raise ValueError(f'{filename}:{start + 1}: DLL erwartet einen Dateinamen wie "shell32.dll": {dll}.')
         if not re.fullmatch(r'[#A-Za-z_][\w@#]*', entry):
             raise ValueError(f'{filename}:{start + 1}: Ungueltiger DLL-Exportname {entry}.')

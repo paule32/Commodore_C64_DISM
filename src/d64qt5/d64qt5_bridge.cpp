@@ -159,6 +159,10 @@ int  g_debug_theme_mode             = 0;
 // Ausgabefenster auf demselben D64Workstation-Desktop wie das Formular.
 QDialog         * g_wfm_output_dialog = nullptr;
 QPlainTextEdit  * g_wfm_output_edit   = nullptr;
+// Stage 490: a separate user-facing Qt terminal, independent of DEBUG ON/OFF.
+QDialog         * g_dbase_qt_terminal_dialog = nullptr;
+QPlainTextEdit  * g_dbase_qt_terminal_editor = nullptr;
+
 
 QMainWindow     * g_window          = nullptr;
 
@@ -8554,9 +8558,12 @@ extern "C" D64QT5_API void DBaseQtAppendConsole(const char *text, int length)
     // Stage 320: Bei einem eigenstaendigen WFM-Workstation-OWNER existiert
     // kein g_console und kein zentraler Runner. Den lokalen QDialog nutzen.
     if (g_wfm_gui_mode && text && length > 0) {
-        append_wfm_output(QString::fromUtf8(text, length), false);
+        append_dbase_qt_terminal(QString::fromUtf8(text, length), false);
+        if (g_debug_visible) append_wfm_output(QString::fromUtf8(text, length), false);
         return;
     }
+    if (text && length > 0)
+        append_dbase_qt_terminal(QString::fromUtf8(text, length), false);
     select_console();
     append_text(g_console, text, length);
 }
@@ -9908,6 +9915,39 @@ static void append_wfm_output(const QString &value, bool newline)
         show_wfm_output_dialog(nullptr);
 }
 
+// Cross-platform Qt terminal contract: WFM question-mark output is always
+// visible in this separate non-modal QDialog, even if the DEBUG pane is hidden.
+// Workstation Runner routing remains unchanged where it owns the output.
+static void append_dbase_qt_terminal(const QString &text, bool newline)
+{
+    if (!g_app || g_shutdown_requested) return;
+    if (!g_dbase_qt_terminal_dialog) {
+        g_dbase_qt_terminal_dialog = new QDialog(nullptr);
+        g_dbase_qt_terminal_dialog->setWindowTitle(QStringLiteral("dBASE Qt5 Terminal"));
+        g_dbase_qt_terminal_dialog->setObjectName(QStringLiteral("dbaseTerminalDialog"));
+        g_dbase_qt_terminal_dialog->setWindowFlags(
+            Qt::Window | Qt::WindowSystemMenuHint | Qt::WindowCloseButtonHint);
+        g_dbase_qt_terminal_dialog->resize(700, 360);
+        auto *layout = new QVBoxLayout(g_dbase_qt_terminal_dialog);
+        g_dbase_qt_terminal_editor = new QPlainTextEdit(g_dbase_qt_terminal_dialog);
+        g_dbase_qt_terminal_editor->setObjectName(QStringLiteral("dbaseTerminalOutput"));
+        g_dbase_qt_terminal_editor->setReadOnly(true);
+        g_dbase_qt_terminal_editor->setLineWrapMode(QPlainTextEdit::NoWrap);
+        g_dbase_qt_terminal_editor->setStyleSheet(QStringLiteral(
+            "QPlainTextEdit { background: #000080; color: #ffff00; "
+            "font-family: monospace; border: 1px solid #7272b0; }"));
+        layout->addWidget(g_dbase_qt_terminal_editor);
+    }
+    QTextCursor cursor = g_dbase_qt_terminal_editor->textCursor();
+    cursor.movePosition(QTextCursor::End);
+    if (!text.isEmpty()) cursor.insertText(text);
+    if (newline) cursor.insertText(QStringLiteral("\n"));
+    g_dbase_qt_terminal_editor->setTextCursor(cursor);
+    g_dbase_qt_terminal_editor->ensureCursorVisible();
+    if (!g_dbase_qt_terminal_dialog->isVisible())
+        g_dbase_qt_terminal_dialog->show();
+}
+
 extern "C" D64QT5_API void DBaseQtConsoleWrite(
     const char *text,
     int textLength,
@@ -9925,7 +9965,8 @@ extern "C" D64QT5_API void DBaseQtConsoleWrite(
 #endif
         // Fallback fuer direkten Start ausserhalb der Workstation: derselbe
         // nicht modale Qt5/QPlainTextEdit-Dialog, aber lokal im WFM-Prozess.
-        append_wfm_output(value, newline != 0);
+        append_dbase_qt_terminal(value, newline != 0);
+        if (g_debug_visible) append_wfm_output(value, newline != 0);
         // Eine dBase-Verkettung wie ? "4: " + SpeicherVar wird als mehrere
         // Teilwrites emittiert. Zwischen diesen Fragmenten darf die Qt-
         // Eventqueue nicht abgearbeitet werden: sonst kann derselbe Event-
@@ -9937,7 +9978,9 @@ extern "C" D64QT5_API void DBaseQtConsoleWrite(
         return;
     }
 
-    // Nicht-WFM-Runtime behaelt den vorhandenen internen Console-Tab.
+    // Normal .prg keeps the original Qt console tab, while the same output
+    // is also visible in the independent QDialog/QPlainTextEdit terminal.
+    append_dbase_qt_terminal(value, newline != 0);
     if (g_console) {
         const QByteArray bytes = value.toUtf8();
         append_text(g_console, bytes.constData(), bytes.size());
@@ -10738,6 +10781,9 @@ extern "C" D64QT5_API void DBaseQtShutdown(void)
     // in close_runtime_application_windows() zerstoert. Expliziter Shutdown
     // benutzt denselben Helfer.
     destroy_wfm_output_dialog();
+    delete g_dbase_qt_terminal_dialog;
+    g_dbase_qt_terminal_dialog = nullptr;
+    g_dbase_qt_terminal_editor = nullptr;
 
     // Stage 34: Top-Level-WFM-Forms besitzen keinen g_window-Parent und
     // werden deshalb explizit vor QApplication abgebaut.

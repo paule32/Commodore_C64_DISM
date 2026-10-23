@@ -1,0 +1,16 @@
+#include "linux_windows_compat.h"
+? TYPE("xyz")  && U
+CLASS Form1 OF FORM
+THIS.Caption = "FFI-Demonstration"
+THIS.Width = 460
+THIS.Height = 240
+THIS.Button1 = NEW BUTTON()
+THIS.Button1.Text = "MessageBoxA"
+THIS.Button1.Left = 20
+THIS.Button1.Top = 20
+THIS.Button1.Width = 150
+THIS.Button1.OnClick = CLASS::OnClick1
+PROCEDURE OnClick1()
+    MessageBoxA(THIS.HWND, "Hallo aus Qt5!", "Dialog", 0x40)
+    RETURN
+ENDCLASS

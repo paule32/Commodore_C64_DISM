@@ -19,7 +19,7 @@ class WinAPIType:
     signed: bool = False
 
     def bits(self, target: str) -> int:
-        return self.size or (64 if str(target).casefold() in ('pe64', 'pe32+', 'x64') else 32)
+        return self.size or (64 if str(target).casefold() in ('pe64', 'pe32+', 'x64', 'linux64', 'elf64', 'amd64') else 32)
 
     @property
     def is_string_input(self) -> bool:

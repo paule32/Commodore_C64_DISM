@@ -1,0 +1,17 @@
+#define user32 "user32.dll"
+* Unter Linux erlaubt: unbenutzter Windows-Prototyp.
+extern CINT MessageBoxA(HWND,LPCSTR,LPCSTR,UINT) user32 from "MessageBoxA"
+
+? "Hallo aus dem WFM-Startprogramm"
+? TYPE("xyz")   && U – undefinierte Variable
+CLASS Form1 OF FORM
+THIS.Caption = "dBASE Qt5 Terminal"
+THIS.Width = 420
+THIS.Height = 200
+THIS.Button1 = NEW BUTTON()
+THIS.Button1.Text = "Hallo ausgeben"
+THIS.Button1.OnClick = CLASS::Ausgeben
+PROCEDURE Ausgeben()
+    ? "Hallo aus dem onClick-Ereignis!"
+    RETURN
+ENDCLASS
