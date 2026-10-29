@@ -39,6 +39,9 @@
 #include <QVariant>
 #include <QMetaObject>
 #include <QAbstractButton>
+#include <QEvent>
+#include <functional>
+#include <utility>
 #include <QString>
 #include <QVector>
 #include <cstdio>
@@ -318,6 +321,31 @@ QVariant runDBaseActions(const QJsonArray &actions, DBaseTerminalDialog *termina
     return QVariant();
 }
 
+// Installed on each QWidget with an explicitly bound focus handler.
+// Qt emits FocusIn/FocusOut on real focus transitions. Do not consume the
+// event; the original Qt widget continues to handle keyboard/mouse focus.
+class DBaseLinuxWfmFocusFilter final : public QObject {
+public:
+    DBaseLinuxWfmFocusFilter(QWidget *target, QEvent::Type type,
+                            std::function<void()> handler)
+        : QObject(target), target_(target), type_(type), handler_(std::move(handler)) {}
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override {
+        if (watched == target_ && event && event->type() == type_ && !dispatching_) {
+            // Guard against nested Qt dialogs (e.g. MessageBoxA in an event).
+            dispatching_ = true;
+            handler_();
+            dispatching_ = false;
+        }
+        return QObject::eventFilter(watched, event);
+    }
+private:
+    QWidget *target_ = nullptr;
+    QEvent::Type type_;
+    std::function<void()> handler_;
+    bool dispatching_ = false;
+};
+
 void applyProperties(QWidget *w, const QJsonObject &props, bool root=false) {
     QJsonValue text=property(props,"Caption",property(props,"Text"));
     if (!text.isUndefined()) setText(w,str(text));
@@ -444,58 +472,82 @@ extern "C" D64QT5_API int DBaseQtRunFormJson(const char *utf8Json) {
     if (!startup.isEmpty()) runDBaseActions(startup,&terminal,form.get(),widgets);
     else appendJsonOutput(&terminal, property(formJson,"startup_output").toArray());
     QJsonObject methods=property(formJson,"methods").toObject();
+    // Focus handlers are also valid on the form, not only on child controls.
+    // Event names are case-insensitive; keep OnGetFocus as a legacy alias.
+    auto bindEvents = [&](QWidget *widget, const QJsonObject &events, const QString &path) -> bool {
+        if (!widget) return false;
+        for (auto it=events.constBegin(); it!=events.constEnd(); ++it) {
+            const QString eventName=it.key().toLower();
+            const QString handler=str(it.value());
+            if (handler.isEmpty()) continue;
+            const bool click=eventName==QLatin1String("onclick");
+            const bool gotFocus=eventName==QLatin1String("ongotfocus") ||
+                                eventName==QLatin1String("ongetfocus");
+            const bool lostFocus=eventName==QLatin1String("onlostfocus");
+            if (!click && !gotFocus && !lostFocus) {
+                qCritical().noquote() << "dBASE WFM Linux: Ereignis nicht implementiert:" << eventName;
+                return false;
+            }
+            const QString method=handler.split("::").last().trimmed().toLower();
+            QJsonArray actions;
+            QJsonArray parameters;
+            bool found=false;
+            for (auto methodIt=methods.constBegin(); methodIt!=methods.constEnd(); ++methodIt) {
+                if (methodIt.key().compare(method,Qt::CaseInsensitive)!=0) continue;
+                found=true;
+                if (methodIt.value().isObject()) {
+                    const QJsonObject specification=methodIt.value().toObject();
+                    actions=specification.value(QStringLiteral("actions")).toArray();
+                    parameters=specification.value(QStringLiteral("parameters")).toArray();
+                } else {
+                    actions=methodIt.value().toArray();
+                }
+                break;
+            }
+            if (!found) {
+                qCritical().noquote() << "dBASE WFM Linux: Ereignismethode fehlt:" << method;
+                return false;
+            }
+            if (click && !qobject_cast<QAbstractButton*>(widget)) {
+                qCritical().noquote() << "dBASE WFM Linux: onClick fuer Steuerelement nicht implementiert:" << path;
+                return false;
+            }
+            // Capture the widget and form, never an ephemeral QModelIndex or
+            // stack-local event binding. Sender is the widget's X11 WId only
+            // under xcb; under Wayland it is zero rather than a fictitious XID.
+            auto invoke = [actions, parameters, widgets, widget, formWidget=form.get(),
+                           &terminal, click](bool checked) {
+                QHash<QString,QVariant> eventVariables;
+                if (!parameters.isEmpty()) {
+                    const QString name=parameters.at(0).toString().toLower();
+                    const QVariant sender=QVariant::fromValue(
+                        static_cast<qulonglong>(nativeX11Id(widget)));
+                    eventVariables.insert(name, click && name==QLatin1String("checked")
+                                          ? QVariant(checked) : sender);
+                }
+                if (click && parameters.size()>1)
+                    eventVariables.insert(parameters.at(1).toString().toLower(),checked);
+                (void)runDBaseActions(actions,&terminal,formWidget,widgets,eventVariables);
+            };
+            if (click) {
+                QObject::connect(qobject_cast<QAbstractButton*>(widget),
+                                 &QAbstractButton::clicked, form.get(), invoke);
+            } else {
+                if (widget->focusPolicy() == Qt::NoFocus)
+                    widget->setFocusPolicy(Qt::StrongFocus);
+                auto *filter = new DBaseLinuxWfmFocusFilter(
+                    widget, gotFocus ? QEvent::FocusIn : QEvent::FocusOut,
+                    [invoke]() { invoke(false); });
+                widget->installEventFilter(filter);
+            }
+        }
+        return true;
+    };
+    if (!bindEvents(form.get(),property(formJson,"events").toObject(),formName)) return 78;
     for (const auto &item: controls) {
         auto control=item.toObject();
-        QString path=str(property(control,"path")).toLower();
-        QWidget *widget=widgets.value(path);
-        QJsonObject events=property(control,"events").toObject();
-        QString handler=str(property(events,"onClick"));
-        if (handler.isEmpty()) continue;
-        QString method=handler.split("::").last().trimmed().toLower();
-        QJsonArray actions;
-        QJsonArray parameters;
-        bool found=false;
-        for (auto it=methods.constBegin(); it!=methods.constEnd(); ++it) {
-            if (it.key().compare(method,Qt::CaseInsensitive)!=0) continue;
-            found=true;
-            // Stage 492: parameterless procedures retain the old JSON array
-            // schema. Parameterized procedures/functions contain metadata.
-            if (it.value().isObject()) {
-                const QJsonObject specification=it.value().toObject();
-                actions=specification.value(QStringLiteral("actions")).toArray();
-                parameters=specification.value(QStringLiteral("parameters")).toArray();
-            } else {
-                actions=it.value().toArray();
-            }
-            break;
-        }
-        if (!found) {
-            qCritical().noquote() << "dBASE WFM Linux: Ereignismethode fehlt:" << method;
-            return 78;
-        }
-        auto *button=qobject_cast<QAbstractButton*>(widget);
-        if (!button) {
-            qCritical().noquote() << "dBASE WFM Linux: onClick fuer Steuerelement nicht implementiert:" << path;
-            return 78;
-        }
-        // Form and control pointers stay valid until QApplication::exec exits.
-        QObject::connect(button, &QAbstractButton::clicked, form.get(),
-                         [actions,parameters,widgets,button,&terminal](bool checked) {
-            QHash<QString,QVariant> eventVariables;
-            if (!parameters.isEmpty()) {
-                const QString name=parameters.at(0).toString().toLower();
-                // Qt onClick sends the control as Sender. On xcb this is its
-                // native XID; Wayland never receives a fabricated X11 handle.
-                const QVariant sender=QVariant::fromValue(
-                    static_cast<qulonglong>(nativeX11Id(button)));
-                eventVariables.insert(name, name==QLatin1String("checked")
-                                      ? QVariant(checked) : sender);
-            }
-            if (parameters.size()>1)
-                eventVariables.insert(parameters.at(1).toString().toLower(),checked);
-            // Qt clicked(bool) ignores return values from FUNCTION handlers.
-            (void)runDBaseActions(actions,&terminal,widgets.value("this"),widgets,eventVariables);
-        });
+        const QString path=str(property(control,"path")).toLower();
+        if (!bindEvents(widgets.value(path),property(control,"events").toObject(),path)) return 78;
     }
     form->show();
     // Existing QApplication instance can be an embedding host; do not own it.

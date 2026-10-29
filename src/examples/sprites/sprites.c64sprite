@@ -1,0 +1,101 @@
+{
+  "format": "d64-c64-sprites",
+  "version": 1,
+  "palette": [
+    [
+      "Schwarz",
+      "#000000"
+    ],
+    [
+      "Weiß",
+      "#FFFFFF"
+    ],
+    [
+      "Rot",
+      "#883932"
+    ],
+    [
+      "Cyan",
+      "#67B6BD"
+    ],
+    [
+      "Violett",
+      "#8B3F96"
+    ],
+    [
+      "Grün",
+      "#55A049"
+    ],
+    [
+      "Blau",
+      "#40318D"
+    ],
+    [
+      "Gelb",
+      "#BFCE72"
+    ],
+    [
+      "Orange",
+      "#8B5429"
+    ],
+    [
+      "Braun",
+      "#574200"
+    ],
+    [
+      "Hellrot",
+      "#B86962"
+    ],
+    [
+      "Dunkelgrau",
+      "#505050"
+    ],
+    [
+      "Grau",
+      "#787878"
+    ],
+    [
+      "Hellgrün",
+      "#94E089"
+    ],
+    [
+      "Hellblau",
+      "#7869C4"
+    ],
+    [
+      "Hellgrau",
+      "#9F9F9F"
+    ]
+  ],
+  "record_size": 64,
+  "sprites": [
+    {
+      "data_hex": "0000000000002080003F80002080002080002080003F80002084002084002084003F87002083002083002083003F800020800020800020800000000000000000",
+      "settings": {
+        "mode": "multicolor",
+        "width": 12,
+        "height": 21,
+        "sprite_color": 2,
+        "multicolor_1": 6,
+        "multicolor_2": 7,
+        "background": 0,
+        "expand_x": false,
+        "expand_y": false
+      }
+    },
+    {
+      "data_hex": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "settings": {
+        "mode": "hires",
+        "width": 24,
+        "height": 21,
+        "sprite_color": 1,
+        "multicolor_1": 6,
+        "multicolor_2": 7,
+        "background": 0,
+        "expand_x": false,
+        "expand_y": false
+      }
+    }
+  ]
+}

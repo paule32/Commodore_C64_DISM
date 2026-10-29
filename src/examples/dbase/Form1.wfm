@@ -1,14 +1,42 @@
+#include "shellapi32.h"
+
+? shell32
+
+result = ShellExecute(0, "open", "notepad.exe", 0, 0, 1)
+
+? result
+
 local A = 9
 local C = 4
 
+
+STORE 123.45 TO xyz
+
+? TYPE("xyz")       && N
+? VARTYPE(xyz)      && N
+
+IF TYPE("xyz") == "N"
+    ? "xyz ist numerisch"
+ENDIF
+
+STORE "Hallo" TO xyz
+
+? TYPE("xyz")       && C
+? VARTYPE(xyz)      && C
+
+? TYPE("unbekannt") && U
+
 ** END HEADER -- do not remove this line
-// Generated on 10.10.2026
+// Generated on 24.10.2026
 //
 PARAMETER bmodal
 LOCAL B
 B = NEW Form1(51,4)
-B.Init(121,2)
-B.Open()
+if bmodal = .T.
+   B.ReadModal()
+else
+   B.Open()
+endif
 
 CLASS Form1 OF FORM
 
@@ -27,6 +55,10 @@ CLASS Form1 OF FORM
 
             WITH (THIS.Style)
                 Pattern = 7
+                CustomWidth = 16
+                CustomHeight = 16
+                CustomFile = ""
+                CustomId = ""
                 CutWidth = 65
                 CutHeight = 45
             ENDWITH
@@ -120,6 +152,10 @@ CLASS Form1 OF FORM
 
             WITH (THIS.Style)
                 Pattern = 0
+                CustomWidth = 16
+                CustomHeight = 16
+                CustomFile = ""
+                CustomId = ""
                 CutWidth = 80
                 CutHeight = 90
             ENDWITH
@@ -170,11 +206,307 @@ CLASS Form1 OF FORM
             ENDWITH
         ENDWITH
         OnClick = CLASS::PushButton1_onClick
+        OnGotFocus = CLASS::PushButton1_onGotFocus
+        OnLostFocus = CLASS::PushButton1_onLostFocus
+    ENDWITH
+
+    THIS.Button1 = NEW PUSHBUTTON(THIS, "Button1")
+    WITH (THIS.Button1)
+        Name = "Button1"
+        Left = 225
+        Top = 39
+        Width = 120
+        Height = 34
+
+        WITH (THIS.Font)
+            Name = "MS Shell Dlg 2"
+            Size = 8
+            Bold = .F.
+            Cursive = .F.
+            Stroke = .F.
+            Underline = .F.
+            Alpha = 255
+            Background = "#2d3542"
+            Foreground = "#ebeef2"
+        ENDWITH
+
+        WITH (THIS.Brush)
+            Background = "#2d3542"
+            Foreground = "#ebeef2"
+            Gradient = "none"
+
+            WITH (THIS.Style)
+                Pattern = 0
+                CustomWidth = 16
+                CustomHeight = 16
+                CustomFile = ""
+                CustomId = ""
+                CutWidth = 100
+                CutHeight = 100
+            ENDWITH
+        ENDWITH
+
+        WITH (THIS.Border)
+            Style = "none"
+            Size = 1
+            Color = "#7a7a7a"
+
+            WITH (THIS.Shadow)
+                Color = "#000000"
+            ENDWITH
+
+            WITH (THIS.Rounded)
+                TopLeft = 0
+                TopRight = 0
+                BottomLeft = 0
+                BottomRight = 0
+            ENDWITH
+
+            WITH (THIS.Left)
+                Enabled = .T.
+                Style = "none"
+                Size = 1
+                Color = "#7a7a7a"
+            ENDWITH
+
+            WITH (THIS.Top)
+                Enabled = .T.
+                Style = "none"
+                Size = 1
+                Color = "#7a7a7a"
+            ENDWITH
+
+            WITH (THIS.Right)
+                Enabled = .T.
+                Style = "none"
+                Size = 1
+                Color = "#7a7a7a"
+            ENDWITH
+
+            WITH (THIS.Bottom)
+                Enabled = .T.
+                Style = "none"
+                Size = 1
+                Color = "#7a7a7a"
+            ENDWITH
+        ENDWITH
+        OnLostFocus = CLASS::Button1_onLostFocus
+        OnGotFocus = CLASS::Button1_onGotFocus
+    ENDWITH
+
+    THIS.Button2 = NEW PUSHBUTTON(THIS, "Button2")
+    WITH (THIS.Button2)
+        Name = "Button2"
+        Left = 385
+        Top = 41
+        Width = 120
+        Height = 34
+
+        WITH (THIS.Font)
+            Name = "MS Shell Dlg 2"
+            Size = 8
+            Bold = .F.
+            Cursive = .F.
+            Stroke = .F.
+            Underline = .F.
+            Alpha = 255
+            Background = "#2d3542"
+            Foreground = "#ebeef2"
+        ENDWITH
+
+        WITH (THIS.Brush)
+            Background = "#2d3542"
+            Foreground = "#ebeef2"
+            Gradient = "none"
+
+            WITH (THIS.Style)
+                Pattern = 0
+                CustomWidth = 16
+                CustomHeight = 16
+                CustomFile = ""
+                CustomId = ""
+                CutWidth = 100
+                CutHeight = 100
+            ENDWITH
+        ENDWITH
+
+        WITH (THIS.Border)
+            Style = "none"
+            Size = 1
+            Color = "#7a7a7a"
+
+            WITH (THIS.Shadow)
+                Color = "#000000"
+            ENDWITH
+
+            WITH (THIS.Rounded)
+                TopLeft = 0
+                TopRight = 0
+                BottomLeft = 0
+                BottomRight = 0
+            ENDWITH
+
+            WITH (THIS.Left)
+                Enabled = .T.
+                Style = "none"
+                Size = 1
+                Color = "#7a7a7a"
+            ENDWITH
+
+            WITH (THIS.Top)
+                Enabled = .T.
+                Style = "none"
+                Size = 1
+                Color = "#7a7a7a"
+            ENDWITH
+
+            WITH (THIS.Right)
+                Enabled = .T.
+                Style = "none"
+                Size = 1
+                Color = "#7a7a7a"
+            ENDWITH
+
+            WITH (THIS.Bottom)
+                Enabled = .T.
+                Style = "none"
+                Size = 1
+                Color = "#7a7a7a"
+            ENDWITH
+        ENDWITH
+        OnLostFocus = CLASS::Button2_onLostFocus
+        OnGotFocus = CLASS::Button2_onGotFocus
+    ENDWITH
+
+    THIS.TableGrid1 = NEW TABLEGRID(THIS)
+    WITH (THIS.TableGrid1)
+        Name = "TableGrid1"
+        Left = 39
+        Top = 147
+        Width = 380
+        Height = 182
+
+        WITH (THIS.Font)
+            Name = "MS Shell Dlg 2"
+            Size = 8
+            Bold = .F.
+            Cursive = .F.
+            Stroke = .F.
+            Underline = .F.
+            Alpha = 255
+            Background = "#202630"
+            Foreground = "#ebeef2"
+        ENDWITH
+
+        WITH (THIS.Brush)
+            Background = "#202630"
+            Foreground = "#ebeef2"
+            Gradient = "none"
+
+            WITH (THIS.Style)
+                Pattern = 0
+                CustomWidth = 16
+                CustomHeight = 16
+                CustomFile = ""
+                CustomId = ""
+                CutWidth = 100
+                CutHeight = 100
+            ENDWITH
+        ENDWITH
+
+        WITH (THIS.Border)
+            Style = "none"
+            Size = 1
+            Color = "#7a7a7a"
+
+            WITH (THIS.Shadow)
+                Color = "#000000"
+            ENDWITH
+
+            WITH (THIS.Rounded)
+                TopLeft = 0
+                TopRight = 0
+                BottomLeft = 0
+                BottomRight = 0
+            ENDWITH
+
+            WITH (THIS.Left)
+                Enabled = .T.
+                Style = "none"
+                Size = 1
+                Color = "#7a7a7a"
+            ENDWITH
+
+            WITH (THIS.Top)
+                Enabled = .T.
+                Style = "none"
+                Size = 1
+                Color = "#7a7a7a"
+            ENDWITH
+
+            WITH (THIS.Right)
+                Enabled = .T.
+                Style = "none"
+                Size = 1
+                Color = "#7a7a7a"
+            ENDWITH
+
+            WITH (THIS.Bottom)
+                Enabled = .T.
+                Style = "none"
+                Size = 1
+                Color = "#7a7a7a"
+            ENDWITH
+        ENDWITH
+    ENDWITH
+
+    THIS.Session1 = NEW SESSION(THIS)
+    WITH (THIS.Session1)
+        Name = "Session1"
+        Left = 19
+        Top = 409
+        Width = 42
+        Height = 42
+        Active = .F.
+    ENDWITH
+
+    THIS.DataSource1 = NEW DATASOURCE(THIS)
+    WITH (THIS.DataSource1)
+        Name = "DataSource1"
+        Left = 73
+        Top = 411
+        Width = 42
+        Height = 42
+        Active = .F.
+    ENDWITH
+
+    THIS.Database1 = NEW DATABASE(THIS)
+    WITH (THIS.Database1)
+        Name = "Database1"
+        Left = 131
+        Top = 411
+        Width = 42
+        Height = 42
+        Active = .F.
+    ENDWITH
+
+    THIS.Table1 = NEW TABLE(THIS)
+    WITH (THIS.Table1)
+        Name = "Table1"
+        Left = 197
+        Top = 412
+        Width = 42
+        Height = 42
+        Active = .F.
     ENDWITH
 
     procedure __init__(p1, p2)
-        ? "p1 = " + p1
-        ? "p2 = " + p2
+        ? "p1 = " + int(p1)
+        ? "p2 = " + int(p2)
+
+        ? TYPE("xyz")       && C
+        ? VARTYPE(xyz)      && C
+        
         return
 
     procedure __del__
@@ -245,9 +577,51 @@ CLASS Form1 OF FORM
         IF CheckLower('z')
             ? "Kleinbuchstabe erkannt"
         ENDIF
+
+        ? LEN("Ein String")
+        ** Ergebnis: 10
+        
+        STORE "   Hallo Welt   " TO Text
+        
+        ? LEN(Text)
+        ** Ergebnis: 16
+        
+        ? "[" + LTRIM(Text) + "]"
+        ** Ergebnis: [Hallo Welt   ]
+        
+        ? "[" + TRIM(Text) + "]"
+        ** Ergebnis: [Hallo Welt]
+
+        STORE TRIM(Text) TO Ergebnis
+        ? LEN(Ergebnis)
+        ** Ergebnis: 10
     return
 
     FUNCTION CheckLower(c)
     RETURN ISLOWER(c)
+
+    procedure PushButton1_onGotFocus(Sender)
+        ? "Button onGotFocus"
+        return
+
+    procedure PushButton1_onLostFocus(Sender)
+        ? "Button onLostFocus"
+        return
+
+    procedure Button1_onLostFocus(Sender)
+        ? "Button zweier lost focus"
+        return
+
+    procedure Button1_onGotFocus(Sender)
+        ? "zweier Button on got Focus"
+        return
+
+    procedure Button2_onLostFocus(Sender)
+        ? "dreier Button on lost focus"
+        return
+
+    procedure Button2_onGotFocus(Sender)
+        ? "got focus on Button dreier"
+        return
 
 ENDCLASS

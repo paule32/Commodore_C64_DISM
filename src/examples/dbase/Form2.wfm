@@ -1,0 +1,37 @@
+** END HEADER -- do not remove this line
+// Generated on 21.10.2026
+//
+PARAMETER bmodal
+LOCAL B
+B = NEW Form2()
+if bmodal = .T.
+   B.ReadModal()
+else
+   B.Open()
+endif
+
+CLASS Form1 OF FORM
+
+    WITH (THIS)
+        Left   = 10
+        Top    = 20
+        Width  = 640
+        Height = 480
+        Text   = "Demo"
+        Name   = "Form2"
+    ENDWITH
+
+    THIS.PushButton1 = NEW BUTTON()
+    THIS.PushButton1.Text = "Klicken"
+    THIS.PushButton1.OnClick = CLASS::PushButton1_onClick
+
+    PROCEDURE PushButton1_onClick(Sender, Checked)
+        ? "Hallo aus dem Qt5-Terminal"
+        ? Sender
+
+        LOCAL Zustand = Checked
+        ? Zustand
+
+    RETURN
+
+ENDCLASS

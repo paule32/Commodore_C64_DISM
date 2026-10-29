@@ -508,28 +508,42 @@ def compile_linux_wfm(source: str, *, bits: int, filename: str, include_paths=()
         'lineedit','textbox','memo','textedit','checkbox','radiobutton',
         'combobox','listbox','groupbox','progressbar',
     }
+    supported_events = {'onclick', 'ongotfocus', 'ongetfocus', 'onlostfocus'}
+    event_bindings = [('this', model.events)]
     for control in model.controls:
         if control.class_name.casefold() not in supported_controls:
             raise LinuxDBaseError(
                 f'Linux-Qt5-Steuerelement noch nicht implementiert: {control.class_name}',
                 filename=filename,
             )
-        for key in control.events:
-            if key.casefold() != 'onclick':
+        event_bindings.append((control.path, control.events))
+    for path, events in event_bindings:
+        for key in events:
+            if key.casefold() not in supported_events:
                 raise LinuxDBaseError(
-                    f'Linux-Qt5-Ereignis {key} noch nicht implementiert: {control.path}',
+                    f'Linux-Qt5-Ereignis {key} noch nicht implementiert: {path}',
                     filename=filename,
                 )
     methods = {method.name.casefold(): method for method in model.methods}
     method_map = {}
-    for control in model.controls:
-        for key, value in control.events.items():
+    for path, events in event_bindings:
+        for key, value in events.items():
             name = str(value).split('::')[-1].strip().casefold()
             method = methods.get(name)
             if method is None:
                 raise LinuxDBaseError(
                     f'Linux-Qt5-Ereignisprozedur nicht gefunden: {value}',
                     filename=filename,
+                )
+            is_click = key.casefold() == 'onclick'
+            max_parameters = 2 if is_click else 1
+            if len(method.parameters) > max_parameters or any(
+                param.startswith('**') for param in method.parameters
+            ):
+                raise LinuxDBaseError(
+                    f'Linux-Qt5-{key} {method.name}: erwartet hoechstens ' +
+                    ('zwei Ereignisparameter (Sender, Checked).' if is_click else 'einen Ereignisparameter (Sender).'),
+                    line=method.source_start_line, filename=filename,
                 )
             if name in method_map:
                 continue
@@ -538,12 +552,6 @@ def compile_linux_wfm(source: str, *, bits: int, filename: str, include_paths=()
             # compile-time constants; the native Qt5 runtime binds them when
             # the event is delivered. In particular, Sender is a native X11
             # WId on xcb, never a Windows HWND nor a fabricated XID on Wayland.
-            if len(method.parameters) > 2 or any(param.startswith('**') for param in method.parameters):
-                raise LinuxDBaseError(
-                    f'Linux-Qt5-onClick {method.name}: erwartet hoechstens zwei '
-                    'Ereignisparameter (Sender, Checked); variadische Parameter sind nicht verfuegbar.',
-                    line=method.source_start_line, filename=filename,
-                )
             runtime_vars = {param.casefold(): _RUNTIME for param in method.parameters}
             actions = []
             saw_return = False
@@ -638,8 +646,8 @@ def compile_linux_wfm(source: str, *, bits: int, filename: str, include_paths=()
                 )
             if method.kind == 'function':
                 warnings = tuple(warnings) + (
-                    f'Linux-Qt5: FUNCTION {method.name} liefert einen Wert; Qt clicked(bool) '
-                    'wertet den Rueckgabewert nicht aus.',)
+                    f'Linux-Qt5: FUNCTION {method.name} liefert einen Wert; Qt5-Klick- und '
+                    'Fokusereignisse werten den Rueckgabewert nicht aus.',)
             if method.parameters or method.kind == 'function':
                 method_map[name] = {'parameters': list(method.parameters),
                                     'kind': method.kind, 'actions': actions}
@@ -647,7 +655,7 @@ def compile_linux_wfm(source: str, *, bits: int, filename: str, include_paths=()
                 # Preserve the compact Stage-487/490 JSON for old procedures.
                 method_map[name] = actions
     payload = json.dumps({'name':model.class_name, 'properties':model.properties,
-                          'controls': controls, 'methods':method_map,
+                          'controls': controls, 'events': model.events, 'methods':method_map,
                           'startup_output': [str(action[1])+('\n' if action[2] else '') for action in startup_actions if action[0]=='print'],
                           'startup_actions': startup_actions},
                          ensure_ascii=False, default=str).encode('utf-8')
@@ -657,7 +665,7 @@ def compile_linux_wfm(source: str, *, bits: int, filename: str, include_paths=()
         assembly=assembly, target='linux64' if bits == 64 else 'linux32',
         windows_application_mode='GUI', source_kind='form',
         notes=('Linux Stage 490: native Qt5-Form und Qt5-Terminal via ELF DT_NEEDED.',
-               'WFM-Basiskomponenten, statischer Top-Level-dBASE-Code inklusive TYPE/VARTYPE und einfache onClick/?-Methoden.',
+               'WFM-Basiskomponenten, statischer Top-Level-dBASE-Code inklusive TYPE/VARTYPE, onClick, OnGotFocus und OnLostFocus.',
                'Komplexe native WFM-Methoden noch nicht implementiert.',) + tuple(infos),
         warnings=tuple(warnings) + unused_ffi,
     )

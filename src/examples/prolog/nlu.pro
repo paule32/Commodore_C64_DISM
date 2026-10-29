@@ -1,26 +1,29 @@
 [Project]
 Format = dBase2Many Project
 Version = 2
-WorkingDirectory = .
+WorkingDirectory = ../dbase
 WorkspaceRoot = ../..
-ViewState = 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
+ViewState = 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
 
 [Session.Geometry]
 Version = 2
 MainWindow = {"x":269,"y":87,"width":1009,"height":800,"maximized":false,"fullscreen":false,"qt_geometry":"AdnQywADAAAAAAENAAAAVwAABP0AAAN2AAABDQAAAFcAAAT9AAADdgAAAAAAAAAAB4AAAAENAAAAVwAABP0AAAN2"}
-CentralArea = {"x":3,"y":110,"width":747,"height":667}
-FileSystemDock = {"visible":false,"floating":false,"area":2,"x":0,"y":0,"width":320,"height":296}
-ProjectDock = {"visible":true,"floating":false,"area":2,"x":754,"y":110,"width":252,"height":667}
-ProtocolDock = {"visible":false,"floating":false,"area":8,"x":0,"y":0,"width":225,"height":190}
+CentralArea = {"x":3,"y":110,"width":1003,"height":667}
+FileSystemDock = {"visible":false,"floating":false,"area":2,"x":0,"y":0,"width":320,"height":294}
+ProjectDock = {"visible":false,"floating":false,"area":2,"x":754,"y":110,"width":252,"height":667}
+ProtocolDock = {"visible":false,"floating":false,"area":8,"x":3,"y":666,"width":225,"height":190}
+
+[Session.C64]
+LastBasicFile = ../SpeedTest_A_Block.bas
 
 [Session.C64.Editors]
 Title = Offene C64 BASIC Editoren
 
-[Category.c64]
-Title = Commodore C= 64
-
 [Category.basic]
 Title = BASIC - Programme
+
+[Category.c64]
+Title = Commodore C= 64
 
 [Category.assembler]
 Title = Assembler-Programme
@@ -70,6 +73,21 @@ Title = Bilder
 
 [Category.other]
 Title = Sonstiges
+
+[Category.basic.c64.resources]
+Title = C64 Ressourcen
+
+[Category.c64.sprites]
+Title = C= 64 Sprites
+
+[Category.assembler.c64]
+Title = Commodore C= 64 (assembler)
+
+[Category.pascal.c64]
+Title = Commodore C= 64 (pascal)
+
+[Category.c.c64]
+Title = Commodore C= 64 (c)
 
 [Category.dbase.forms]
 Title = Formulare
@@ -220,7 +238,7 @@ ImportPackerFormat = D64I/MSZIP
 ImportResolver = Bootstrap-IAT
 
 [Settings.Windows.32Bit.Linker.Manifest]
-Data = {"identity": {"type": "win32", "name": "", "language": "*", "processorArchitecture": "*", "version": "6.0.0.0", "publicKeyToken": ""}, "compatibility": {"Windows 12": {"checked": false, "id": ""}, "Windows 11": {"checked": false, "id": "{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"}, "Windows 10": {"checked": false, "id": "{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"}, "Windows Vista": {"checked": false, "id": "{e2011457-1546-43c5-a5fe-008deee3d3f0}"}, "Windows 8.1": {"checked": false, "id": "{1f676c76-80e1-4239-95bb-83d0f6d0da78}"}, "Windows 8": {"checked": false, "id": "{4a2f28e3-53b9-4441-ba9c-d69d4a4a6e38}"}, "Windows 7": {"checked": false, "id": "{35138b9a-5d96-4fbd-8e2d-a2440225f93a}"}, "Windows XP": {"checked": false, "id": ""}}, "longPathAware": true}
+Data = {"identity": {"type": "win32", "name": "", "language": "*", "processorArchitecture": "*", "version": "6.0.0.0", "publicKeyToken": ""}, "compatibility": {"Windows 12": {"checked": false, "id": ""}, "Windows 11": {"checked": false, "id": "{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"}, "Windows 10": {"checked": false, "id": "{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"}, "Windows Vista": {"checked": false, "id": "{e2011457-1546-43c5-a5fe-008deee3d3f0}"}, "Windows 8.1": {"checked": false, "id": "{1f676c76-80e1-4239-95bb-83d0f6d0da78}"}, "Windows 8": {"checked": false, "id": "{4a2f28e3-53b9-4441-ba9c-d69d4a4a6e38}"}, "Windows 7": {"checked": false, "id": "{35138b9a-5d96-4fbd-8e2d-a2440225f93a}"}, "Windows XP": {"checked": false, "id": ""}}, "longPathAware": true, "linkEnabled": false, "linkFile": ""}
 
 [Settings.Windows.32Bit.Linker.Signierung]
 Data = {"enabled": false, "sign_exe": true, "sign_dll": true, "certificate_source": "openssl_ca", "openssl_certificate": "S:\\CA\\Clients\\user1\\user_1.cert.pem", "openssl_private_key": "S:\\CA\\Clients\\user1\\user_1.key.pem", "pfx_file": "S:\\CA\\Clients\\user1\\user_1.pfx", "store_location": "CurrentUser", "store_name": "My", "thumbprint": "", "file_digest": "SHA256", "timestamp_enabled": true, "timestamp_url": "http://timestamp.digicert.com", "timestamp_digest": "SHA256", "description": "", "description_url": "", "signtool_path": "T:/GitHub/dBase2Many/src/asmjit/compiler/frontend/c64/tools/x86/signtool.exe", "verify_after_sign": true, "fail_build_on_error": true}
@@ -281,7 +299,7 @@ ImportPackerFormat = D64I/MSZIP
 ImportResolver = Bootstrap-IAT
 
 [Settings.Windows.64Bit.Linker.Manifest]
-Data = {"identity": {"type": "win32", "name": "", "language": "*", "processorArchitecture": "*", "version": "6.0.0.0", "publicKeyToken": ""}, "compatibility": {"Windows 12": {"checked": false, "id": ""}, "Windows 11": {"checked": false, "id": "{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"}, "Windows 10": {"checked": false, "id": "{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"}, "Windows Vista": {"checked": false, "id": "{e2011457-1546-43c5-a5fe-008deee3d3f0}"}, "Windows 8.1": {"checked": false, "id": "{1f676c76-80e1-4239-95bb-83d0f6d0da78}"}, "Windows 8": {"checked": false, "id": "{4a2f28e3-53b9-4441-ba9c-d69d4a4a6e38}"}, "Windows 7": {"checked": false, "id": "{35138b9a-5d96-4fbd-8e2d-a2440225f93a}"}, "Windows XP": {"checked": false, "id": ""}}, "longPathAware": true}
+Data = {"identity": {"type": "win32", "name": "", "language": "*", "processorArchitecture": "*", "version": "6.0.0.0", "publicKeyToken": ""}, "compatibility": {"Windows 12": {"checked": false, "id": ""}, "Windows 11": {"checked": false, "id": "{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"}, "Windows 10": {"checked": false, "id": "{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"}, "Windows Vista": {"checked": false, "id": "{e2011457-1546-43c5-a5fe-008deee3d3f0}"}, "Windows 8.1": {"checked": false, "id": "{1f676c76-80e1-4239-95bb-83d0f6d0da78}"}, "Windows 8": {"checked": false, "id": "{4a2f28e3-53b9-4441-ba9c-d69d4a4a6e38}"}, "Windows 7": {"checked": false, "id": "{35138b9a-5d96-4fbd-8e2d-a2440225f93a}"}, "Windows XP": {"checked": false, "id": ""}}, "longPathAware": true, "linkEnabled": false, "linkFile": ""}
 
 [Settings.Windows.64Bit.Linker.Signierung]
 Data = {"enabled": false, "sign_exe": true, "sign_dll": true, "certificate_source": "openssl_ca", "openssl_certificate": "", "openssl_private_key": "", "pfx_file": "", "store_location": "CurrentUser", "store_name": "My", "thumbprint": "", "file_digest": "SHA256", "timestamp_enabled": true, "timestamp_url": "http://timestamp.digicert.com", "timestamp_digest": "SHA256", "description": "", "description_url": "", "signtool_path": "", "verify_after_sign": true, "fail_build_on_error": true}
@@ -294,6 +312,10 @@ Foreground = #FFFFFF
 Background = #000080
 ColorProfiles = {"assembler": {"comment": {"background": "#000080", "foreground": "#A0A0A0"}, "float": {"background": "#000080", "foreground": "#FF87FF"}, "instruction": {"background": "#000080", "foreground": "#FFD84D"}, "keyword": {"background": "#000080", "foreground": "#6ED2FF"}, "operand": {"background": "#000080", "foreground": "#FFFFFF"}, "string": {"background": "#000080", "foreground": "#FFBE5A"}, "text": {"background": "#000080", "foreground": "#FFFFFF"}}, "c_cpp": {"comment": {"background": "#000080", "foreground": "#A0A0A0"}, "float": {"background": "#000080", "foreground": "#FF87FF"}, "instruction": {"background": "#000080", "foreground": "#FFD84D"}, "keyword": {"background": "#000080", "foreground": "#6ED2FF"}, "operand": {"background": "#000080", "foreground": "#FFFFFF"}, "string": {"background": "#000080", "foreground": "#FFBE5A"}, "text": {"background": "#000080", "foreground": "#FFFFFF"}}, "dbase": {"comment": {"background": "#000080", "foreground": "#A0A0A0"}, "float": {"background": "#000080", "foreground": "#FF87FF"}, "instruction": {"background": "#000080", "foreground": "#FFD84D"}, "keyword": {"background": "#000080", "foreground": "#6ED2FF"}, "operand": {"background": "#000080", "foreground": "#FFFFFF"}, "string": {"background": "#000080", "foreground": "#FFBE5A"}, "text": {"background": "#000080", "foreground": "#FFFFFF"}}, "elan": {"comment": {"background": "#000080", "foreground": "#A0A0A0"}, "float": {"background": "#000080", "foreground": "#FF87FF"}, "instruction": {"background": "#000080", "foreground": "#FFD84D"}, "keyword": {"background": "#000080", "foreground": "#6ED2FF"}, "operand": {"background": "#000080", "foreground": "#FFFFFF"}, "string": {"background": "#000080", "foreground": "#FFBE5A"}, "text": {"background": "#000080", "foreground": "#FFFFFF"}}, "lisp": {"comment": {"background": "#000080", "foreground": "#A0A0A0"}, "float": {"background": "#000080", "foreground": "#FF87FF"}, "instruction": {"background": "#000080", "foreground": "#FFD84D"}, "keyword": {"background": "#000080", "foreground": "#6ED2FF"}, "operand": {"background": "#000080", "foreground": "#FFFFFF"}, "string": {"background": "#000080", "foreground": "#FFBE5A"}, "text": {"background": "#000080", "foreground": "#FFFFFF"}}, "logo": {"comment": {"background": "#000080", "foreground": "#A0A0A0"}, "float": {"background": "#000080", "foreground": "#FF87FF"}, "instruction": {"background": "#000080", "foreground": "#FFD84D"}, "keyword": {"background": "#000080", "foreground": "#6ED2FF"}, "operand": {"background": "#000080", "foreground": "#FFFFFF"}, "string": {"background": "#000080", "foreground": "#FFBE5A"}, "text": {"background": "#000080", "foreground": "#FFFFFF"}}, "pascal": {"comment": {"background": "#000080", "foreground": "#A0A0A0"}, "float": {"background": "#000080", "foreground": "#FF87FF"}, "instruction": {"background": "#000080", "foreground": "#FFD84D"}, "keyword": {"background": "#000080", "foreground": "#6ED2FF"}, "operand": {"background": "#000080", "foreground": "#FFFFFF"}, "string": {"background": "#000080", "foreground": "#FFBE5A"}, "text": {"background": "#000080", "foreground": "#FFFFFF"}}, "prolog": {"comment": {"background": "#000080", "foreground": "#A0A0A0"}, "float": {"background": "#000080", "foreground": "#FF87FF"}, "instruction": {"background": "#000080", "foreground": "#FFD84D"}, "keyword": {"background": "#000080", "foreground": "#6ED2FF"}, "operand": {"background": "#000080", "foreground": "#FFFFFF"}, "string": {"background": "#000080", "foreground": "#FFBE5A"}, "text": {"background": "#000080", "foreground": "#FFFFFF"}}, "text": {"comment": {"background": "#000080", "foreground": "#A0A0A0"}, "float": {"background": "#000080", "foreground": "#FF87FF"}, "instruction": {"background": "#000080", "foreground": "#FFD84D"}, "keyword": {"background": "#000080", "foreground": "#6ED2FF"}, "operand": {"background": "#000080", "foreground": "#FFFFFF"}, "string": {"background": "#000080", "foreground": "#FFBE5A"}, "text": {"background": "#000080", "foreground": "#FFFFFF"}}}
 
+[Settings.Windows.Environment.Input]
+Title = Windows Umgebung Eingabe
+AssemblerToolTipps = true
+
 [Settings.C64]
 Title = C=64 Projekteinstellungen
 ActiveProfile = 68000
@@ -302,19 +324,53 @@ ActiveProfile = 68000
 Title = C=64 68000 Compiler Optimizer
 Enabled = true
 Strategy = direct
+STAReducer = false
+CALLReducer = false
+
+[Settings.C64.68010.Compiler.Optimizer]
+Title = C=64 68010 Compiler Optimizer
+Enabled = true
+Strategy = direct
+STAReducer = false
+CALLReducer = false
 
 [Settings.C64.68020.Compiler.Optimizer]
 Title = C=64 68020 Compiler Optimizer
 Enabled = true
 Strategy = direct
+STAReducer = false
+CALLReducer = false
 
 [Settings.C64.68030.Compiler.Optimizer]
 Title = C=64 68030 Compiler Optimizer
 Enabled = true
 Strategy = direct
+STAReducer = false
+CALLReducer = false
+
+[Settings.C64.68000.Compiler.BASIC]
+Title = C=64 68000 BASIC Dialekt
+Dialect = basic_v2
+
+[Settings.C64.68010.Compiler.BASIC]
+Title = C=64 68010 BASIC Dialekt
+Dialect = basic_v2
+
+[Settings.C64.68020.Compiler.BASIC]
+Title = C=64 68020 BASIC Dialekt
+Dialect = basic_v2
+
+[Settings.C64.68030.Compiler.BASIC]
+Title = C=64 68030 BASIC Dialekt
+Dialect = basic_v2
 
 [Settings.C64.68000.Environment]
 Title = C=64 68000 Umgebung
+ScreenKeyboard = false
+KeyboardLayout = qwertz
+
+[Settings.C64.68010.Environment]
+Title = C=64 68010 Umgebung
 ScreenKeyboard = false
 KeyboardLayout = qwertz
 
@@ -330,6 +386,15 @@ KeyboardLayout = qwertz
 
 [Settings.C64.68000.Environment.SpeechOutput]
 Title = C=64 68000 Sprachausgabe
+Mode = internal_samples
+SampleRate = 8000
+Quality = 4
+VICEInterface = turbo232
+Host = localhost
+Port = 6464
+
+[Settings.C64.68010.Environment.SpeechOutput]
+Title = C=64 68010 Sprachausgabe
 Mode = internal_samples
 SampleRate = 8000
 Quality = 4
@@ -357,6 +422,13 @@ Port = 6464
 
 [Settings.C64.68000.Compiler.ImagePacker]
 Title = C=64 68000 Compiler Image Packer
+Enabled = false
+Mode = none
+Search = balanced
+IncludeDecruncherSource = true
+
+[Settings.C64.68010.Compiler.ImagePacker]
+Title = C=64 68010 Compiler Image Packer
 Enabled = false
 Mode = none
 Search = balanced

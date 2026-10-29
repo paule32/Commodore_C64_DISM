@@ -32982,6 +32982,7 @@ VICE_BINARY_MONITOR_MEMORY_SET = 0x02
 VICE_BINARY_MONITOR_KEYBOARD_FEED = 0x72
 VICE_BINARY_MONITOR_PING = 0x81
 VICE_BINARY_MONITOR_EXIT = 0xAA
+VICE_BINARY_MONITOR_RESET = 0xCC  # VICE: 0=Soft-Reset, 1=Power-Cycle
 # Stage 395: official VICE binary monitor commands (API v2).
 VICE_BINARY_MONITOR_REGISTERS_AVAILABLE = 0x83
 VICE_BINARY_MONITOR_REGISTERS_SET = 0x32
@@ -33412,6 +33413,10 @@ class ViceBinaryMonitorClient:
 
     def resume(self) -> None:
         self.command(VICE_BINARY_MONITOR_EXIT)
+
+    def reset_system(self, *, power_cycle: bool = False) -> None:
+        """C64 ueber den VICE Binary Monitor zuruecksetzen (ohne Quit)."""
+        self.command(VICE_BINARY_MONITOR_RESET, b"\x01" if power_cycle else b"\x00")
 
     def feed_basic_line(self, text: str) -> None:
         data = c64_basic_text_to_petscii(str(text).rstrip("\r\n") + "\r")
@@ -63558,9 +63563,14 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                     "Programm übertragen + START" if is_asm
                     else "Programm übertragen + RUN"
                 )
+                # Stage 500: echtes Maschinen-Reset (nicht Monitor-EXIT).
+                # Das bisherige Monitor-Fortsetzen bleibt als eigene Aktion.
                 reset_action = menu.addAction(
-                    "VICE Monitor fortsetzen" if is_asm
+                    "VICE zurücksetzen" if is_asm
                     else "VICE BASIC zurücksetzen"
+                )
+                resume_action = (
+                    menu.addAction("VICE Monitor fortsetzen") if is_asm else None
                 )
 
                 line_action.setEnabled(bool(self.textCursor().block().text().strip()))
@@ -63569,14 +63579,17 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                     self.assembler_vice_requested if is_asm
                     else self.basic_vice_requested
                 )
-                for action, operation in (
+                actions = [
                     (run_action, "run" if is_asm else "program_run"),
                     (line_action, "line"),
                     (selection_action, "selection"),
                     (program_action, "program"),
                     (program_run_action, "run" if is_asm else "program_run"),
-                    (reset_action, "resume" if is_asm else "reset"),
-                ):
+                    (reset_action, "reset_system" if is_asm else "reset"),
+                ]
+                if resume_action is not None:
+                    actions.append((resume_action, "resume"))
+                for action, operation in actions:
                     action.triggered.connect(
                         lambda checked=False, op=operation, sig=emitter: sig.emit(op)
                     )
@@ -63585,7 +63598,8 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                     selection_action.setToolTip("Markierte MOS6510-Instruktionen in VICE schrittweise ausführen")
                     program_action.setToolTip("Erzeugte PRG-Nutzbytes direkt in den C64-RAM übertragen")
                     program_run_action.setToolTip("PRG-Bytes übertragen, PC auf den Einsprung setzen und C64 starten")
-                    reset_action.setToolTip("VICE-Monitor verlassen und CPU-Lauf fortsetzen")
+                    reset_action.setToolTip("C64 ueber den VICE Binary Monitor neu starten (Soft-Reset)")
+                    resume_action.setToolTip("VICE-Monitor verlassen und CPU-Lauf fortsetzen")
                 else:
                     line_action.setToolTip("Aktuelle BASIC-Zeile über VICE Binary Remote Monitor ausführen")
                     selection_action.setToolTip("Markierten BASIC-Text über VICE Binary Remote Monitor ausführen")
@@ -74283,7 +74297,7 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
     DBASE_FORM_STANDARD_EVENTS = (
         "OnClick",
         "OnLostFocus",
-        "OnGetFocus",
+        "OnGotFocus",
         "OnHover",
         "OnMouseEnter",
         "OnMouseLeave",
@@ -77292,7 +77306,9 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
 
         def mouseDoubleClickEvent(self, event) -> None:
             super().mouseDoubleClickEvent(event)
-            if self.text().strip():
+            # Der Placeholder ist ebenfalls ein gueltiger Event-Vorschlag:
+            # beim ersten Doppelklick ist das Eingabefeld noch leer.
+            if self.text().strip() or self.placeholderText().strip():
                 self.doubleClicked.emit()
 
 
@@ -78194,10 +78210,36 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             edit: QLineEdit,
             *,
             create: bool,
+            button=None,
         ) -> None:
-            procedure = edit.text().strip()
-            if not procedure or self._selected_item is None:
+            if self._selected_item is None:
                 return
+            from d64dbase.form_event_handlers import resolve_event_procedure
+            try:
+                procedure = resolve_event_procedure(
+                    edit.text(), edit.placeholderText()
+                )
+            except ValueError as exc:
+                host = self._event_host()
+                if host is not None and hasattr(host, "show_error"):
+                    host.show_error("Ungueltiger Prozedurname", str(exc))
+                return
+            if not edit.text().strip() and create:
+                # Der Placeholder wird zur echten Eventbindung, bevor der
+                # Formular-Quelltext neu serialisiert wird.
+                edit.setText(procedure)
+                for event_key in list(self._selected_item.wfm_events):
+                    if str(event_key).casefold() == str(event_name).casefold():
+                        self._selected_item.wfm_events.pop(event_key, None)
+                self._selected_item.wfm_events[str(event_name)] = (
+                    "CLASS::" + procedure
+                )
+                host = self._event_host()
+                if host is not None:
+                    host.dbase_form_modified = True
+                edit.setToolTip("Doppelklick: Prozedur im WFM-Quellcode öffnen")
+                if button is not None:
+                    button.setEnabled(True)
             host = self._event_host()
             if host is None or not hasattr(
                 host, "_open_dbase_form_event_procedure"
@@ -78218,7 +78260,11 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                 grid.setRowCount(0)
                 if item is None:
                     return
-                events = dict(getattr(item, "wfm_events", {}) or {})
+                from d64dbase.form_event_handlers import normalized_focus_events
+                events = normalized_focus_events(
+                    getattr(item, "wfm_events", {}) or {}
+                )
+                item.wfm_events = events
                 event_names = self._event_names_for_item(item)
                 grid.setRowCount(len(event_names))
                 for row, event_name in enumerate(event_names):
@@ -78245,10 +78291,18 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                         suffix = suffix_match.group(1) if suffix_match else "1"
                         placeholder = "OnTimer" + suffix
                     else:
+                        # Prozedurnamen in der dBASE-Konvention mit
+                        # kleingeschriebenem on-Praefix vorschlagen.
+                        event_suffix = str(event_name)
+                        event_suffix = event_suffix[:1].lower() + event_suffix[1:]
                         placeholder = (
-                            f"{getattr(item, 'component_name', 'Control')}_{event_name}"
+                            f"{getattr(item, 'component_name', 'Control')}_{event_suffix}"
                         )
                     edit.setPlaceholderText(placeholder)
+                    edit.setToolTip(
+                        "Doppelklick: vorhandene Prozedur öffnen oder "
+                        "den vorgeschlagenen Namen anlegen"
+                    )
 
                     nav = QPushButton("→", grid)
                     nav.setObjectName("dbase_form_event_source_button")
@@ -78261,8 +78315,10 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                             self._event_value_changed(e, w, b)
                     )
                     edit.doubleClicked.connect(
-                        lambda e=event_name, w=edit:
-                            self._event_create_or_navigate(e, w, create=True)
+                        lambda e=event_name, w=edit, b=nav:
+                            self._event_create_or_navigate(
+                                e, w, create=True, button=b
+                            )
                     )
                     nav.clicked.connect(
                         lambda _checked=False, e=event_name, w=edit:
@@ -113597,6 +113653,9 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 func_root.setExpanded(True)
                 global_root.setExpanded(True)
 
+                # Stage 499: positions remain true source line numbers even
+                # when the outline is displayed in alphabetic order.
+                outline_methods = {"procedure": [], "function": []}
                 first_method_line = None
                 for line_number, line in enumerate(source.splitlines(), start=1):
                     method_match = re.match(
@@ -113608,10 +113667,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                             first_method_line = line_number
                         kind = method_match.group(1).casefold()
                         name = method_match.group(2)
-                        parent = proc_root if kind == "procedure" else func_root
-                        child = QTreeWidgetItem(parent, [name])
-                        child.setData(0, Qt.UserRole, int(line_number))
-                        child.setToolTip(0, f"Zeile {line_number}")
+                        outline_methods[kind].append((name, line_number))
                         continue
 
                     # Globale/Class-Variablen nur vor dem ersten METHOD-Block.
@@ -113636,6 +113692,16 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                                 names.append(token.group(1))
                     for name in names:
                         child = QTreeWidgetItem(global_root, [name])
+                        child.setData(0, Qt.UserRole, int(line_number))
+                        child.setToolTip(0, f"Zeile {line_number}")
+
+                from d64dbase.form_method_order import source_outline_sort_key
+                for kind, parent in (("procedure", proc_root), ("function", func_root)):
+                    for name, line_number in sorted(
+                        outline_methods[kind],
+                        key=lambda entry: source_outline_sort_key(entry[0], kind),
+                    ):
+                        child = QTreeWidgetItem(parent, [name])
                         child.setData(0, Qt.UserRole, int(line_number))
                         child.setToolTip(0, f"Zeile {line_number}")
             finally:
@@ -114222,7 +114288,8 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             from d64dbase.source_roundtrip import wfm_header_lines
             scene.wfm_source_header = "\n".join(wfm_header_lines(source))
             scene.wfm_methods = list(getattr(parsed, "methods", []) or [])
-            scene.form_window_item.wfm_events = dict(
+            from d64dbase.form_event_handlers import normalized_focus_events
+            scene.form_window_item.wfm_events = normalized_focus_events(
                 getattr(parsed, "events", {}) or {}
             )
 
@@ -114266,7 +114333,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                                 events.pop(event_key, None)
                         if timer_value is None and legacy_value is not None:
                             events["OnTimer"] = legacy_value
-                    item.wfm_events = events
+                    item.wfm_events = normalized_focus_events(events)
 
             if self.dbase_form_property_panel is not None:
                 self.dbase_form_property_panel._refresh_event_grid()
@@ -114304,6 +114371,33 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             # Bereits im Editor geschriebene Methoden zuerst übernehmen.
             self._merge_dbase_form_source_methods_events(strict=False)
             method = self._find_dbase_form_method(procedure_name)
+            document = self.dbase_form_build_document
+            from d64dbase.form_event_handlers import find_event_procedure_offset
+            # A partially edited WFM source must not be overwritten or
+            # duplicated even if its parser temporarily reports an error.
+            current_source = (
+                document.raw_editor.toPlainText() if document is not None else ""
+            )
+            existing_offset = find_event_procedure_offset(
+                current_source, procedure_name
+            )
+            if create and method is None and existing_offset is not None:
+                self.show_error(
+                    "Prozedur bereits im Quelltext vorhanden",
+                    "Die Prozedur ist bereits im Editor vorhanden, konnte "
+                    "aber noch nicht vollständig eingelesen werden. "
+                    "Der Quelltext wird nicht überschrieben.",
+                )
+                if self.dbase_form_tabs is not None:
+                    self.dbase_form_tabs.setCurrentWidget(
+                        self.dbase_form_source_page
+                    )
+                cursor = QTextCursor(document.raw_editor.document())
+                cursor.setPosition(existing_offset)
+                document.raw_editor.setTextCursor(cursor)
+                document.raw_editor.centerCursor()
+                document.raw_editor.setFocus(Qt.OtherFocusReason)
+                return
 
             if create and isinstance(
                 item, (DBaseFormControlItem, DBaseFormWindowItem)
@@ -114320,6 +114414,11 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                             item.wfm_events.pop(event_key, None)
                 item.wfm_events[str(event_name)] = "CLASS::" + procedure_name
                 self.dbase_form_modified = True
+                # Die Eventbindung wurde nach dem Import des editierbaren
+                # Textes am Designer-Modell geaendert. Beim gleich folgenden
+                # Rendern darf der vorherige Text sie nicht wieder ersetzen.
+                if document is not None:
+                    document.raw_editor.document().setModified(False)
 
             if method is None and create:
                 try:
@@ -114347,8 +114446,29 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                         ]
                     ),
                 )
-                methods.append(method)
+                # Stage 499: add the event among the existing WFM event
+                # handlers, not after __main__/other handwritten methods.
+                # Custom handler names are recognized from event bindings.
+                from d64dbase.form_method_order import insert_event_method_sorted
+                bound_names = set()
+                event_items = [getattr(self.dbase_form_scene, "form_window_item", None)]
+                if callable(getattr(self.dbase_form_scene, "items", None)):
+                    event_items.extend(
+                        candidate for candidate in self.dbase_form_scene.items()
+                        if isinstance(candidate, DBaseFormControlItem)
+                    )
+                for event_item in event_items:
+                    for event_reference in (getattr(event_item, "wfm_events", {}) or {}).values():
+                        bound_names.add(self._dbase_form_method_name_from_event(event_reference))
+                self.dbase_form_scene.wfm_methods = insert_event_method_sorted(
+                    methods, method, bound_names=bound_names,
+                )
                 self.dbase_form_modified = True
+                # Changes from the editable source were imported by the
+                # previous _merge call. Do not re-import the old editor text
+                # during serialization and accidentally drop this new method.
+                if document is not None:
+                    document.raw_editor.document().setModified(False)
 
             if method is None:
                 self.show_error(
@@ -114371,14 +114491,10 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 return
             document.assembler_panel.hide()
             editor = document.raw_editor
-            match = re.search(
-                rf"(?im)^\s*(?:procedure|function)\s+"
-                rf"{re.escape(procedure_name)}\b",
-                source,
-            )
-            if match:
+            match_offset = find_event_procedure_offset(source, procedure_name)
+            if match_offset is not None:
                 cursor = QTextCursor(editor.document())
-                cursor.setPosition(match.start())
+                cursor.setPosition(match_offset)
                 cursor.movePosition(
                     QTextCursor.EndOfLine,
                     QTextCursor.KeepAnchor,
@@ -119132,7 +119248,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             self.dbase_form_designer_dock.raise_()
             self.resizeDocks(
                 [self.dbase_form_property_dock, self.dbase_form_designer_dock],
-                [330, 100000],
+                [340, 100000],  # Stage 499: components/property panel +10 px
                 Qt.Horizontal,
             )
             self.resizeDocks(
@@ -119375,7 +119491,10 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 item.wfm_class_name = str(getattr(control, "class_name", ""))
             elif isinstance(item, DBaseFormWindowItem):
                 item.wfm_class_name = str(getattr(control, "class_name", item.component_name))
-            item.wfm_events = dict(getattr(control, "events", {}) or {})
+            from d64dbase.form_event_handlers import normalized_focus_events
+            item.wfm_events = normalized_focus_events(
+                getattr(control, "events", {}) or {}
+            )
             if (
                 isinstance(item, DBaseFormControlItem)
                 and item.component_type == "Timer"
@@ -131422,7 +131541,7 @@ border: 2px solid #2a69aa;
                 self.show_error("VICE Assembler", "VICE kann hier nur C64-MOS6510-Assembler ausfuehren.")
                 return
             operation = str(operation or "").strip().casefold()
-            if operation not in {"line", "selection", "program", "run", "resume"}:
+            if operation not in {"line", "selection", "program", "run", "resume", "reset_system"}:
                 self.show_error("VICE Assembler", f"Unbekannte Aktion: {operation}")
                 return
             # Alles, was Qt-Objekte beruehrt, findet im Hauptthread statt.
@@ -131433,7 +131552,7 @@ border: 2px solid #2a69aa;
                     prg_data, entry_address, step_count = self._assembler_vice_step_plan(
                         document.raw_editor.toPlainText(), operation, document.raw_editor
                     )
-                elif operation == "resume":
+                elif operation in {"resume", "reset_system"}:
                     prg_data, entry_address = b"", 0
                 else:
                     current_digest = hashlib.sha256(
@@ -131453,7 +131572,7 @@ border: 2px solid #2a69aa;
                         raise ViceBinaryMonitorError("Kein assembliertes C64-Programm verfuegbar.")
                     prg_data = path.read_bytes()
                     entry_address = document.assembled_program.entry_address
-                if operation != "resume":
+                if operation not in {"resume", "reset_system"}:
                     load_address, payload, entry_address = c64_vice_prg_memory_image(
                         prg_data, entry_address
                     )
@@ -131477,13 +131596,17 @@ border: 2px solid #2a69aa;
                 "program": "PRG-Bytes an VICE übertragen",
                 "run": "PRG-Bytes übertragen und ausführen",
                 "resume": "VICE Monitor fortsetzen",
+                "reset_system": "C64 in VICE zurücksetzen",
             }
             description = labels[operation]
             self.statusBar().showMessage(f"VICE ASM: {description} ...")
-            self.log(
-                f"VICE ASM: {description}; "
-                f"{len(payload)} Bytes ab ${load_address:04X}; PC ${entry_address:04X}"
-            )
+            if operation in {"resume", "reset_system"}:
+                self.log(f"VICE ASM: {description}")
+            else:
+                self.log(
+                    f"VICE ASM: {description}; "
+                    f"{len(payload)} Bytes ab ${load_address:04X}; PC ${entry_address:04X}"
+                )
 
             def worker():
                 spawned_process = None
@@ -131523,6 +131646,9 @@ border: 2px solid #2a69aa;
                     with ViceBinaryMonitorClient(timeout=2.5) as client:
                         if operation == "resume":
                             client.resume()
+                        elif operation == "reset_system":
+                            client.reset_system()
+                            client.resume()
                         else:
                             client.write_memory(load_address, payload)
                             if operation in {"run", "line", "selection"}:
@@ -131536,7 +131662,10 @@ border: 2px solid #2a69aa;
                         f"${load_address + len(payload) - 1:04X}; "
                         f"Einsprung ${entry_address:04X}; "
                         + (f"{step_count} Step(s), Monitor angehalten" if step_count else "OK")
-                    ) if operation != "resume" else "VICE Monitor fortgesetzt"
+                    ) if operation not in {"resume", "reset_system"} else (
+                        "C64 in VICE zurückgesetzt" if operation == "reset_system"
+                        else "VICE Monitor fortgesetzt"
+                    )
                     self.vice_debug_finished.emit(document, True, result, spawned_process)
                 except (OSError, ViceBinaryMonitorError) as exc:
                     self.vice_debug_finished.emit(document, False, str(exc), spawned_process)
@@ -139262,10 +139391,13 @@ QFileDialog QComboBox QAbstractItemView {
                 return
             if kind == PROJECT_NODE_C64_TARGET:
                 language = str(item.data(0, Qt.UserRole + 305) or "basic").casefold()
-                # Stage 399: der erste Kontextmenueeintrag erstellt eine
-                # ungespeicherte C64-BASIC-Vorlage direkt in diesem Zweig.
+                # Stage 500: Beide C64-Quellsprachen koennen direkt unter
+                # ihrem Zielknoten ungespeicherte Dokumente anlegen.
+                # Der neue Eintrag steht immer VOR Hinzufuegen/Oeffnen.
                 new_basic = (menu.addAction("Neues BASIC Programm")
                              if language == "basic" else None)
+                new_assembler = (menu.addAction("Neu: Assembler-Programm")
+                                 if language == "assembler" else None)
                 if language == "basic":
                     add = menu.addAction("C64 BASIC-Programm hinzufügen …")
                 else:
@@ -139275,6 +139407,9 @@ QFileDialog QComboBox QAbstractItemView {
                 if new_basic is not None and action is new_basic:
                     self._new_unsaved_c64_source_document(
                         "basic", use_template=True, under_c64_target=True)
+                elif new_assembler is not None and action is new_assembler:
+                    self._new_unsaved_c64_source_document(
+                        "assembler", use_template=True, under_c64_target=True)
                 elif action is add:
                     if language == "basic":
                         self.add_project_entries(item)

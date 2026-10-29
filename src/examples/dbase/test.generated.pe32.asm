@@ -39,11 +39,13 @@ import DBaseQtDatabaseOpen, "libd64_qt5.dll", "#31"
 import DBaseQtDatabaseClose, "libd64_qt5.dll", "#32"
 import DBaseQtDatabaseCommit, "libd64_qt5.dll", "#33"
 import SpeechInitialize, "retro_speech.dll", "SpeechInitialize"
+import SpeechSetBackend, "retro_speech.dll", "SpeechSetBackend"
 import SpeechSetMix, "retro_speech.dll", "SpeechSetMix"
 import SpeechSetPitch, "retro_speech.dll", "SpeechSetPitch"
 import SpeechSetSpeed, "retro_speech.dll", "SpeechSetSpeed"
 import SpeechSetExpression, "retro_speech.dll", "SpeechSetExpression"
 import SpeechSetArticulation, "retro_speech.dll", "SpeechSetArticulation"
+import SpeechSetFluency, "retro_speech.dll", "SpeechSetFluency"
 import SpeechSpeak, "retro_speech.dll", "SpeechSpeak"
 import SpeechSpeakCP1252, "retro_speech.dll", "SpeechSpeakCP1252"
 import SpeechShutdown, "retro_speech.dll", "SpeechShutdown"
@@ -74,7 +76,7 @@ entry _start
 section .text
 
 _start:
-    push 1
+    push 0
     call DBaseQtSetWorkstationMode
     add esp, 4
     push 0
@@ -265,6 +267,8 @@ __dbase_output_done_24:
     mov dword ptr [__dbase_speech_ready], eax
     test eax, eax
     je __dbase_speech_on_done_26
+    push dword ptr [__dbase_speech_backend]
+    call SpeechSetBackend
     push dword ptr [__dbase_speech_mix]
     call SpeechSetMix
     push dword ptr [__dbase_speech_pitch]
@@ -275,75 +279,89 @@ __dbase_output_done_24:
     call SpeechSetExpression
     push dword ptr [__dbase_speech_articulation]
     call SpeechSetArticulation
+    push dword ptr [__dbase_speech_fluency]
+    call SpeechSetFluency
 __dbase_speech_on_done_26:
     call DBaseQtShutdownRequested
     test eax, eax
     jne __dbase_program_cleanup_1
+    mov dword ptr [__dbase_speech_backend], 0
+    cmp dword ptr [__dbase_speech_ready], 0
+    je __dbase_speech_backend_skip_27
+    push 0
+    call SpeechSetBackend
+__dbase_speech_backend_skip_27:
     mov dword ptr [__dbase_speech_mix], 55
     cmp dword ptr [__dbase_speech_ready], 0
-    je __dbase_speech_setting_skip_27
+    je __dbase_speech_setting_skip_28
     push 55
     call SpeechSetMix
-__dbase_speech_setting_skip_27:
+__dbase_speech_setting_skip_28:
     mov dword ptr [__dbase_speech_pitch], 125
     cmp dword ptr [__dbase_speech_ready], 0
-    je __dbase_speech_setting_skip_28
+    je __dbase_speech_setting_skip_29
     push 125
     call SpeechSetPitch
-__dbase_speech_setting_skip_28:
+__dbase_speech_setting_skip_29:
     mov dword ptr [__dbase_speech_speed], 100
     cmp dword ptr [__dbase_speech_ready], 0
-    je __dbase_speech_setting_skip_29
+    je __dbase_speech_setting_skip_30
     push 100
     call SpeechSetSpeed
-__dbase_speech_setting_skip_29:
-    mov dword ptr [__dbase_speech_expression], 65
-    cmp dword ptr [__dbase_speech_ready], 0
-    je __dbase_speech_setting_skip_30
-    push 65
-    call SpeechSetExpression
 __dbase_speech_setting_skip_30:
-    mov dword ptr [__dbase_speech_articulation], 65
+    mov dword ptr [__dbase_speech_expression], 65
     cmp dword ptr [__dbase_speech_ready], 0
     je __dbase_speech_setting_skip_31
     push 65
-    call SpeechSetArticulation
+    call SpeechSetExpression
 __dbase_speech_setting_skip_31:
-    call DBaseQtShutdownRequested
-    test eax, eax
-    jne __dbase_program_cleanup_1
-    mov dword ptr [__dbase_speech_mix], 55
+    mov dword ptr [__dbase_speech_articulation], 60
     cmp dword ptr [__dbase_speech_ready], 0
     je __dbase_speech_setting_skip_32
-    push 55
-    call SpeechSetMix
+    push 60
+    call SpeechSetArticulation
 __dbase_speech_setting_skip_32:
-    call DBaseQtShutdownRequested
-    test eax, eax
-    jne __dbase_program_cleanup_1
-    mov dword ptr [__dbase_speech_pitch], 125
+    mov dword ptr [__dbase_speech_fluency], 75
     cmp dword ptr [__dbase_speech_ready], 0
     je __dbase_speech_setting_skip_33
-    push 125
-    call SpeechSetPitch
+    push 75
+    call SpeechSetFluency
 __dbase_speech_setting_skip_33:
     call DBaseQtShutdownRequested
     test eax, eax
     jne __dbase_program_cleanup_1
-    mov dword ptr [__dbase_speech_speed], 100
+    mov dword ptr [__dbase_speech_mix], 55
     cmp dword ptr [__dbase_speech_ready], 0
     je __dbase_speech_setting_skip_34
-    push 100
-    call SpeechSetSpeed
+    push 55
+    call SpeechSetMix
 __dbase_speech_setting_skip_34:
     call DBaseQtShutdownRequested
     test eax, eax
     jne __dbase_program_cleanup_1
+    mov dword ptr [__dbase_speech_pitch], 125
     cmp dword ptr [__dbase_speech_ready], 0
-    je __dbase_speech_say_done_35
-    push __dbase_speech_utf8_36
+    je __dbase_speech_setting_skip_35
+    push 125
+    call SpeechSetPitch
+__dbase_speech_setting_skip_35:
+    call DBaseQtShutdownRequested
+    test eax, eax
+    jne __dbase_program_cleanup_1
+    mov dword ptr [__dbase_speech_speed], 100
+    cmp dword ptr [__dbase_speech_ready], 0
+    je __dbase_speech_setting_skip_36
+    push 100
+    call SpeechSetSpeed
+__dbase_speech_setting_skip_36:
+    call DBaseQtShutdownRequested
+    test eax, eax
+    jne __dbase_program_cleanup_1
+    cmp dword ptr [__dbase_speech_ready], 0
+    je __dbase_speech_say_done_37
+    push __dbase_speech_utf8_38
     call SpeechSpeak
-__dbase_speech_say_done_35:
+__dbase_speech_say_done_37:
     call DBaseQtShutdownRequested
     test eax, eax
     jne __dbase_program_cleanup_1
@@ -352,20 +370,20 @@ __dbase_speech_say_done_35:
     mov dword ptr [__dbase_exit_code], eax
 __dbase_program_cleanup_1:
     cmp dword ptr [__dbase_speech_ready], 0
-    je __dbase_speech_shutdown_done_37
+    je __dbase_speech_shutdown_done_39
     call SpeechShutdown
     mov dword ptr [__dbase_speech_ready], 0
-__dbase_speech_shutdown_done_37:
+__dbase_speech_shutdown_done_39:
     call DBaseQtShutdown
     call __dbase_console_shutdown
     mov eax, dword ptr [__dbase_format_buffer]
     test eax, eax
-    je __dbase_format_buffer_free_done_38
+    je __dbase_format_buffer_free_done_40
     push 32768
     push 0
     push eax
     call VirtualFree
-__dbase_format_buffer_free_done_38:
+__dbase_format_buffer_free_done_40:
     mov dword ptr [__dbase_format_buffer], 0
     push dword ptr [__dbase_exit_code]
     call ExitProcess
@@ -470,9 +488,11 @@ __dbase_console_shutdown_done:
 
 section .data
 
-__dbase_speech_utf8_36:
+__dbase_speech_utf8_38:
     db 72, 97, 108, 108, 111, 44, 32, 105, 99, 104, 32, 98, 105, 110, 32, 100, 101, 105, 110, 32, 83, 112, 114, 97
     db 99, 104, 99, 111, 109, 112, 117, 116, 101, 114, 46, 0
+__dbase_speech_backend:
+    dd 0
 __dbase_speech_mix:
     dd 55
 __dbase_speech_pitch:
@@ -483,6 +503,8 @@ __dbase_speech_expression:
     dd 60
 __dbase_speech_articulation:
     dd 65
+__dbase_speech_fluency:
+    dd 75
 __dbase_text_0:
     db 100, 66, 97, 115, 101, 32, 81, 116, 53, 32, 67, 111, 110, 115, 111, 108, 101, 32, 47, 32, 68, 69, 66, 85
     db 71, 0

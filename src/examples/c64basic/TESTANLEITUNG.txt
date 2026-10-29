@@ -1,0 +1,5 @@
+Sprite_A.prg wurde mit dem korrigierten Stage-408-Compiler erzeugt.
+Das Host-Verzeichnis drive8 in VICE als Geraet 8 einbinden.
+Die enthaltene sprites.spr ist bereits ein 130-Byte-Image mit Header $3000.
+Das Programm selbst braucht den Dateinamen sprites.spr auf Geraet 8.
+Ein echter VICE-Laufzeittest konnte nicht ausgefuehrt werden.
