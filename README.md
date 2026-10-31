@@ -8,13 +8,16 @@ A Commodore C-64 Disassembler and Disk-Image Information Viewer and de-packer
 ### [Link](https://kallup.net/downloads) to download a ZIP Archive for ready to run Windows 64-Bit Pro execution binary and all needed DLL file's.
 ---
 
+[STAGES - Deutsch](docs/stages/STAGE393_C64_HEX_BUILD_PETSCII_JSON.md)<br>
+[STAGES - English](docs/stages/STAGE393_C64_HEX_BUILD_PETSCII_JSON.en.md)
+
 # d64_dism – Illustrierter Projektatlas
 
 **Integrierte Entwicklungsumgebung, Retro-Compiler, Werkzeuge und 
 Lernmodule**
 **Stand:** 15. Oktober 2026
 
-![Architektur des d64_dism-Projekts](d64_dism_Projektuebersicht_Stage420_assets/architektur.png)
+![Architektur des d64_dism-Projekts](img/architektur.png)
 
 ## Projektidee
 
@@ -74,7 +77,7 @@ Arbeitszweig.
 
 ### Zwei Wege zur VICE-Ausführung
 
-![Zwei Wege zur VICE-Ausführung](d64_dism_Projektuebersicht_Stage420_assets/vice_ausfuehrungswege.png)
+![Zwei Wege zur VICE-Ausführung](img/vice_ausfuehrungswege.png)
 
 - **BASIC direkt → VICE:** Hostdaten per Remote Monitor; `LOAD SPRITE` -> RAM `$3000`.
 - **BASIC → Compiler → VICE:** Spritebytes im PRG eingebettet; `SCREEN / DRAW / ERASE`.
@@ -101,7 +104,7 @@ Retro-Grafikdesigner und neue Software-Sprite-Arbeit.
 
 Palette schematisch; die Farbdarstellung ist hardware-/emulatorabhängig.
 
-![16 C64-Farbindexwerte](d64_dism_Projektuebersicht_Stage420_assets/c64_farbpalette.png)
+![16 C64-Farbindexwerte](img/c64_farbpalette.png)
 
 ### Hardware-Sprite-Editor
 
@@ -300,7 +303,7 @@ generierten MOS6510-Programmcodes.
 
 ### Beispielmessung: C64-Bitmap-Sprite-Programm
 
-![Größenvergleich mit Reducern](d64_dism_Projektuebersicht_Stage420_assets/optimierung_groessenvergleich.png)
+![Größenvergleich mit Reducern](img/optimierung_groessenvergleich.png)
 
 | Optimierung | PRG-Größe |
 |---|---:|
@@ -313,7 +316,7 @@ generierten MOS6510-Programmcodes.
 
 ### Entwicklungsschritte (Auswahl)
 
-![Entwicklungsschritte von Stage 393 bis Stage 420](d64_dism_Projektuebersicht_Stage420_assets/stage_zeitstrahl.png)
+![Entwicklungsschritte von Stage 393 bis Stage 420](img/stage_zeitstrahl.png)
 
 | Stage | Entwicklung |
 |---|---|

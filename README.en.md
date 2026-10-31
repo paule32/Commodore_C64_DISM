@@ -6,15 +6,18 @@ A Commodore C64 disassembler, disk-image information viewer, and unpacking tool.
 
 ### [Sponsor donation](https://www.paypal.com/ncp/payment/CUBXY9QPTPHRU)
 ### [Download a ZIP archive](https://kallup.net/downloads) containing a ready-to-run Windows 11 Pro 64-bit executable and the required DLL files.
-
 ---
+
+[STAGES - Deutsch](docs/stages/STAGE393_C64_HEX_BUILD_PETSCII_JSON.md)<br>
+[STAGES - English](docs/stages/STAGE393_C64_HEX_BUILD_PETSCII_JSON.en.md)
+
 
 # d64_dism – Illustrated Project Atlas
 
 **Integrated development environment, retro compilers, tools, and educational modules**  
 **Status:** October 15, 2026
 
-![Architecture of the d64_dism project](d64_dism_Projektuebersicht_Stage420_assets/architektur.png)
+![Architecture of the d64_dism project](img/architektur.png)
 
 ## Project Concept
 
@@ -68,7 +71,7 @@ The original retro-computing functionality remains a development area in its own
 
 ### Two Paths to Execution in VICE
 
-![Two paths to execution in VICE](d64_dism_Projektuebersicht_Stage420_assets/vice_ausfuehrungswege.png)
+![Two paths to execution in VICE](img/vice_ausfuehrungswege.png)
 
 - **BASIC directly → VICE:** Transfer host data through the remote monitor; `LOAD SPRITE` loads into RAM at `$3000`.
 - **BASIC → Compiler → VICE:** Sprite bytes embedded in the PRG; `SCREEN / DRAW / ERASE`.
@@ -92,7 +95,7 @@ Retro graphics designers and newer software-sprite functionality.
 
 Schematic palette; exact color rendering depends on the hardware or emulator.
 
-![The 16 C64 color indices](d64_dism_Projektuebersicht_Stage420_assets/c64_farbpalette.png)
+![The 16 C64 color indices](img/c64_farbpalette.png)
 
 ### Hardware Sprite Editor
 
@@ -257,7 +260,7 @@ The latest stages focus on reducing generated MOS 6510 program code.
 
 ### Example Measurement: C64 Bitmap Sprite Program
 
-![Size comparison with reducers](d64_dism_Projektuebersicht_Stage420_assets/optimierung_groessenvergleich.png)
+![Size comparison with reducers](img/optimierung_groessenvergleich.png)
 
 | Optimization | PRG Size |
 |---|---:|
@@ -270,7 +273,7 @@ The latest stages focus on reducing generated MOS 6510 program code.
 
 ### Selected Development Milestones
 
-![Development milestones from Stage 393 to Stage 420](d64_dism_Projektuebersicht_Stage420_assets/stage_zeitstrahl.png)
+![Development milestones from Stage 393 to Stage 420](img/stage_zeitstrahl.png)
 
 | Stage | Development |
 |---|---|
