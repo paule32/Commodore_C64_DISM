@@ -102,7 +102,7 @@ class TestContext(unittest.TestCase):
         self.assertEqual(Menu.history[1], 'C64 BASIC-Programm hinzufügen …')
         self.assertEqual(called, [(('basic',), {'use_template': True, 'under_c64_target': True})])
 
-    def test_old_assembler_menu_unchanged(self):
+    def test_assembler_menu_add_command_still_works(self):
         root = Item(titles=['Commodore C= 64'])
         root.setData(0, 1305, 'assembler')
         called=[]
@@ -118,7 +118,8 @@ class TestContext(unittest.TestCase):
             def add_project_c64_files(self, lang): called.append(lang)
         Menu.requested_label = 'C64-Quellprogramm hinzufügen …'
         func(Owner(), root, (0,0))
-        self.assertEqual(Menu.history[0], 'C64-Quellprogramm hinzufügen …')
+        self.assertEqual(Menu.history[0], 'Neu: Assembler-Programm')
+        self.assertEqual(Menu.history[1], 'C64-Quellprogramm hinzufügen …')
         self.assertNotIn('Neues BASIC Programm', Menu.history)
         self.assertEqual(called, ['assembler'])
 

@@ -1480,6 +1480,211 @@ RESOURCE_CODEPAGES = (
 )
 
 
+def _resource_text_codec(codepage: int) -> str:
+    """Codec for raw RC string data and the text column of the hex viewer.
+
+    Windows structures (STRINGTABLE, DIALOG, MENU, VERSIONINFO) still have
+    mandatory UTF-16LE fields regardless of their PE CodePage metadata.
+    """
+    page = int(codepage)
+    if page == 1200:
+        return "utf-16le"
+    if page == 65001:
+        return "utf-8"
+    if page == 20127:
+        return "ascii"
+    if page in (0, 1252):
+        return "cp1252"
+    try:
+        import codecs
+        codecs.lookup(f"cp{page}")
+        return f"cp{page}"
+    except LookupError:
+        return "cp1252"  # unsupported metadata: show bytes with ANSI fallback
+
+
+def _resource_encode_string(text: str, codepage: int, *, wide: bool = False) -> bytes:
+    """Encode RC raw strings with exactly one terminator in the chosen codec.
+
+    WSTRING literals explicitly require UTF-16LE and do not follow code_page.
+    Unrepresentable ASCII characters raise an error rather than lose data.
+    """
+    codec = "utf-16le" if wide else _resource_text_codec(codepage)
+    raw = str(text).encode(codec, errors="strict")
+    return raw + (b"\x00\x00" if codec.startswith("utf-16") else b"\x00")
+
+
+def _resource_has_native_utf16_fields(resource_type) -> bool:
+    """These Microsoft resource formats contain structural UTF-16LE fields."""
+    return resource_type in (RT_STRING, RT_DIALOG, RT_MENU, RT_VERSION)
+
+
+def _resource_stringtable_text_preview(data: bytes, codepage: int) -> tuple[list, int]:
+    """Extract UTF-16LE STRINGTABLE text for a virtual ASCII/UTF-8 hex view.
+
+    Each element is (resource_text_offset, encoded_text, source_byte_offsets).
+    Every emitted byte is mapped back to the beginning of the original
+    UTF-16LE character. This makes a string beginning at native offset 0x150
+    appear at offset 0x150 even though its virtual ASCII text is shorter.
+    Length prefixes and unused STRINGTABLE slots are never interpreted as
+    characters or included as virtual text bytes. Underlying data is intact.
+    """
+    import struct
+    raw = bytes(data)
+    offset = 0
+    entries = []
+    replacements = 0
+    codec = _resource_text_codec(codepage)
+    for _ in range(16):
+        if offset + 2 > len(raw):
+            raise ValueError("STRINGTABLE: Längenfeld unvollständig")
+        length = struct.unpack_from("<H", raw, offset)[0]
+        offset += 2
+        byte_length = length * 2
+        if byte_length > len(raw) - offset:
+            raise ValueError("STRINGTABLE: UTF-16LE-String unvollständig")
+        start = offset
+        try:
+            decoded = raw[start:start + byte_length].decode("utf-16le", "strict")
+        except UnicodeDecodeError as exc:
+            raise ValueError("STRINGTABLE: ungültiges UTF-16LE") from exc
+        offset += byte_length
+        if not decoded:
+            continue
+        encoded = bytearray()
+        source_offsets = []
+        source_offset = start
+        for ch in decoded:
+            if int(codepage) == 20127:
+                if ord(ch) > 127:
+                    replacements += 1
+                part = ch.encode("ascii", "replace")
+            else:
+                part = ch.encode(codec, "strict")
+            encoded.extend(part)
+            source_offsets.extend([source_offset] * len(part))
+            source_offset += len(ch.encode("utf-16le"))
+        entries.append((start, bytes(encoded), source_offsets))
+    if offset != len(raw):
+        raise ValueError("STRINGTABLE: zusätzliche Bytes hinter Block")
+    return entries, replacements
+
+
+
+def format_resource_hex(data: bytes, codepage: int = 0, *, bytes_per_line: int = 16,
+                        resource_type=None) -> str:
+    """Format original bytes or a codepage-encoded STRINGTABLE text view.
+
+    Native Windows STRINGTABLE entries contain UTF-16LE, regardless of RC
+    code_page. If ASCII/UTF-8 is selected, transcode the *displayed bytes*
+    for each string without rewriting the valid native resource. The hex
+    offset column in this preview refers to the original resource address.
+    """
+    import codecs
+    if bytes_per_line <= 0:
+        raise ValueError("bytes_per_line muss positiv sein")
+    native = bytes(data)
+    selected_page = int(codepage)
+    fixed_unicode = _resource_has_native_utf16_fields(resource_type)
+    label = next((name for name, value in RESOURCE_CODEPAGES if value == selected_page),
+                 f"CP {codepage}" if codepage else "ANSI / CP1252")
+    group_at = 8
+    full_hex_width = bytes_per_line * 3 - 1 + (3 if bytes_per_line > group_at else 0)
+
+    # Display a STRINGTABLE's *text*, not its Windows length prefix/UTF16LE
+    # structure, when the user selects a one-byte or UTF8 codepage.
+    if resource_type == RT_STRING and selected_page in (20127, 65001):
+        try:
+            text_entries, replaced = _resource_stringtable_text_preview(native, selected_page)
+        except ValueError:
+            # Not a valid full 16-string block: stay in byte-exact raw mode.
+            pass
+        else:
+            # Bucket the new codepage bytes by the ORIGINAL 16-byte line.
+            # The last native UTF-16LE line at 0x150 therefore shows
+            # "61 62 65 6E 2E" (ASCII) under the same 0x150 offset.
+            from collections import defaultdict
+            grouped_bytes = defaultdict(bytearray)
+            view_length = 0
+            for _, encoded, source_offsets in text_entries:
+                for byte, original_offset in zip(encoded, source_offsets):
+                    grouped_bytes[(original_offset // bytes_per_line) * bytes_per_line].append(byte)
+                    view_length += 1
+            title = (f"Text ({label}) [STRINGTABLE-Textvorschau, nur Zeichen; "
+                     "Offsets der originalen Windows-UTF-16LE-Ressource; "
+                     f"Ansicht {view_length} B / Ressource {len(native)} B]")
+            if replaced:
+                title += f" [ASCII: {replaced} nicht darstellbare Zeichen als ?]"
+            lines = [f"Offset    {'Hex-Bytes':<{full_hex_width}}  {title}"]
+            decoder = codecs.getincrementaldecoder(_resource_text_codec(selected_page))(errors="replace")
+            offsets = sorted(grouped_bytes)
+            for bucket_index, source_position in enumerate(offsets):
+                bucket = bytes(grouped_bytes[source_position])
+                for part_index in range(0, len(bucket), bytes_per_line):
+                    chunk = bucket[part_index:part_index + bytes_per_line]
+                    left = " ".join(f"{b:02X}" for b in chunk[:group_at])
+                    right = " ".join(f"{b:02X}" for b in chunk[group_at:])
+                    hexpart = left + (" | " + right if right else "")
+                    is_final = (bucket_index == len(offsets)-1 and
+                                part_index + bytes_per_line >= len(bucket))
+                    decoded = decoder.decode(chunk, final=is_final)
+                    shown = "".join(ch if ch.isprintable() else "." for ch in decoded)
+                    lines.append(f"{source_position:08X}  {hexpart:<{full_hex_width}}  {shown}")
+            return "\n".join(lines)
+
+    effective_page = 1200 if fixed_unicode else selected_page
+    is_unicode = effective_page == 1200
+    decoder = codecs.getincrementaldecoder(_resource_text_codec(effective_page))(errors="replace")
+    if fixed_unicode:
+        label = f"Windows-UTF-16LE; gewählte Codepage: {label} (Metadaten)"
+    title = (f"Text ({label}) [Byteansicht: 00 = .]  Unicode-Text (dekodiert)"
+             if is_unicode else f"Text ({label})")
+    lines = [f"Offset    {'Hex-Bytes':<{full_hex_width}}  {title}"]
+    for offset in range(0, len(native), bytes_per_line):
+        chunk = native[offset:offset + bytes_per_line]
+        left = " ".join(f"{b:02X}" for b in chunk[:group_at])
+        right = " ".join(f"{b:02X}" for b in chunk[group_at:])
+        hexpart = left + (" | " + right if right else "")
+        decoded = decoder.decode(chunk, final=(offset + bytes_per_line >= len(native)))
+        decoded_text = "".join(ch if ch.isprintable() else "." for ch in decoded)
+        if is_unicode:
+            byte_text = "".join(chr(b) if chr(b).isprintable() else "." for b in chunk)
+            shown = f"{byte_text:<{bytes_per_line}}  {decoded_text}"
+        else:
+            shown = decoded_text
+        lines.append(f"{offset:08X}  {hexpart:<{full_hex_width}}  {shown}")
+    return "\n".join(lines)
+
+
+
+
+def format_resource_collection_hex(entries, *, resource_type_label=None) -> str:
+    """Show every compiled resource (or one type) as a separate hex block.
+
+    The offsets inside each block are relative to that resource payload, not
+    offsets inside the RC file or the .res wrapper. The bytes are never merged
+    or silently converted: `format_resource_hex` handles the selected codepage
+    as a display-only STRINGTABLE preview, retaining valid native payloads.
+    """
+    visible = [entry for entry in entries if resource_type_label is None or
+               describe_resource_id(entry.type_id) == resource_type_label]
+    if not visible:
+        return "Keine kompilierten Ressourcen vorhanden."
+    count = len(visible)
+    size = sum(len(entry.data) for entry in visible)
+    lines = [f"Ressourcen-Hexansicht: {count} Einträge, {size} Bytes Nutzdaten",
+             "Offsets beginnen je Ressource bei 00000000; RES/COFF-Header nicht enthalten."]
+    for number, entry in enumerate(visible, 1):
+        type_label = describe_resource_id(entry.type_id)
+        lines.append("")
+        lines.append(f"{'=' * 12} [{number}/{count}] {type_label} | ID {entry.name_id} | "
+                     f"LANGID 0x{entry.language & 0xffff:04X} | "
+                     f"{len(entry.data)} Bytes | Codepage {int(entry.codepage)} {'=' * 12}")
+        lines.append(format_resource_hex(entry.data, entry.codepage,
+                                         resource_type=entry.type_id))
+    return "\n".join(lines)
+
+
 RESOURCE_TYPES: Dict[str, int] = {
     "CURSOR"        : RT_CURSOR,
     "BITMAP"        : RT_BITMAP,
@@ -10951,6 +11156,564 @@ def save_resource_coff(path: Union[str, os.PathLike], entries: Iterable[Resource
 
 
 # ---------------------------------------------------------------------------
+# Stage 512: self-contained resource-only Windows DLL builder (PE32/PE32+).
+# The same resource directory and payloads are used by the COFF .o writer.
+# No MinGW/MSVC/LLD installation is needed for the user's RC-only DLL.
+# ---------------------------------------------------------------------------
+def write_resource_dll(
+    entries: Iterable[ResourceEntry], *, machine: Union[str, int] = "x86"
+) -> bytes:
+    """Create a loadable PE resource-only DLL with no executable entry point.
+
+    RESOURCE_DIRECTORY entries contain RVAs, not relocated virtual addresses.
+    We therefore link the COFF .rsrc$01/.rsrc$02 data together and resolve
+    their ADDR32NB/DIR32NB relocation sites directly against the final RVA.
+    The result contains a genuine .rsrc section and has IMAGE_FILE_DLL set.
+    """
+    items = list(entries)
+    if not items:
+        raise ResourceCompilerError("Eine Ressourcen-DLL benötigt mindestens eine Ressource.")
+    if isinstance(machine, str):
+        arch = machine.strip().lower().replace("-", "")
+        if arch in {"x86", "i386", "386", "pe32", "win32"}:
+            is64 = False
+        elif arch in {"x64", "amd64", "x8664", "pe64", "pe32+", "win64"}:
+            is64 = True
+        else:
+            raise ResourceCompilerError(f"Unbekanntes Ressourcen-DLL-Ziel: {machine}")
+    elif int(machine) in (IMAGE_FILE_MACHINE_I386, IMAGE_FILE_MACHINE_AMD64):
+        is64 = int(machine) == IMAGE_FILE_MACHINE_AMD64
+    else:
+        raise ResourceCompilerError(f"Nicht unterstützte Ressourcen-DLL-Machine: {machine!r}")
+
+    file_alignment = 0x200
+    section_alignment = 0x1000
+    resource_rva = section_alignment
+    directory, payload, relocation_sites = _build_resource_sections(items)
+    payload_offset = _align(len(directory), 4)
+    rsrc = bytearray(directory)
+    rsrc.extend(bytes(payload_offset - len(rsrc)))
+    rsrc.extend(payload)
+    for offset in relocation_sites:
+        # The COFF writer stores an offset into .rsrc$02 at each site. For a
+        # PE resource data entry this needs to become a *relative* RVA.
+        raw_offset = struct.unpack_from("<I", rsrc, offset)[0]
+        struct.pack_into("<I", rsrc, offset, resource_rva + payload_offset + raw_offset)
+    raw_size = _align(len(rsrc), file_alignment)
+    image_size = _align(resource_rva + len(rsrc), section_alignment)
+
+    opt_size = 0xF0 if is64 else 0xE0
+    headers_length = 0x80 + 4 + 20 + opt_size + 40
+    headers_size = _align(headers_length, file_alignment)
+    dos = bytearray(0x80)
+    dos[:2] = b"MZ"
+    struct.pack_into("<I", dos, 0x3C, 0x80)
+
+    pe = bytearray(b"PE\x00\x00")
+    characteristics = 0x0002 | 0x2000 | (0x0020 if is64 else 0x0100)
+    pe.extend(struct.pack(
+        "<HHIIIHH", IMAGE_FILE_MACHINE_AMD64 if is64 else IMAGE_FILE_MACHINE_I386,
+        1, 0, 0, 0, opt_size, characteristics,
+    ))
+    opt = bytearray(opt_size)
+    struct.pack_into("<HBB", opt, 0, 0x20B if is64 else 0x10B, 1, 0)
+    struct.pack_into("<I", opt, 8, raw_size)     # initialized data
+    # EntryPoint = 0; there is intentionally no DllMain or .text section.
+    if is64:
+        struct.pack_into("<Q", opt, 0x18, 0x180000000)
+        struct.pack_into("<IIII", opt, 0x20, section_alignment, file_alignment, 0, 0)
+        struct.pack_into("<HHHH", opt, 0x28, 6, 0, 0, 0)
+        struct.pack_into("<HH", opt, 0x30, 6, 0)
+        struct.pack_into("<II", opt, 0x38, image_size, headers_size)
+        struct.pack_into("<HH", opt, 0x44, 2, 0x0100)  # GUI / NX_COMPAT
+        struct.pack_into("<QQQQ", opt, 0x48, 0x400000, 0x4000, 0x100000, 0x2000)
+        struct.pack_into("<II", opt, 0x68, 0, 16)
+        resource_dir_offset = 0x70 + 2 * 8
+    else:
+        struct.pack_into("<I", opt, 0x18, resource_rva)  # BaseOfData
+        struct.pack_into("<I", opt, 0x1C, 0x10000000)    # ImageBase
+        struct.pack_into("<II", opt, 0x20, section_alignment, file_alignment)
+        struct.pack_into("<HHHH", opt, 0x28, 6, 0, 0, 0)
+        struct.pack_into("<HH", opt, 0x30, 6, 0)
+        struct.pack_into("<II", opt, 0x38, image_size, headers_size)
+        struct.pack_into("<HH", opt, 0x44, 2, 0x0100)
+        struct.pack_into("<IIII", opt, 0x48, 0x100000, 0x1000, 0x100000, 0x1000)
+        struct.pack_into("<II", opt, 0x58, 0, 16)
+        resource_dir_offset = 0x60 + 2 * 8
+    # IMAGE_DIRECTORY_ENTRY_RESOURCE = 2
+    struct.pack_into("<II", opt, resource_dir_offset, resource_rva, len(rsrc))
+    pe.extend(opt)
+    section = bytearray(40)
+    section[:8] = b".rsrc\x00\x00\x00"
+    struct.pack_into("<IIII", section, 8, len(rsrc), resource_rva, raw_size, headers_size)
+    struct.pack_into("<I", section, 36, 0x40000040)  # readable initialized data
+    pe.extend(section)
+
+    headers = dos + pe
+    if len(headers) > headers_size:
+        raise ResourceCompilerError("Interner Fehler: PE-Ressourcenheader zu groß.")
+    return bytes(headers) + bytes(headers_size - len(headers)) + bytes(rsrc) + bytes(raw_size - len(rsrc))
+
+
+def save_resource_dll(
+    path: Union[str, os.PathLike], entries: Iterable[ResourceEntry], *, machine="x86"
+) -> Path:
+    target = Path(path)
+    payload = write_resource_dll(entries, machine=machine)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(payload)
+    return target
+
+
+def resource_dll_codepage_directory(codepage: Union[str, int]) -> str:
+    """Name of the architecture's codepage subfolder for DLL build artifacts.
+
+    ResourceEntry.codepage is the RC encoding/PE resource-data metadata;
+    mandatory native UTF-16LE resource structures are NOT re-encoded here.
+    A legacy .res input has no CodePage field (0), so Unicode is its default.
+    """
+    text = str(codepage).strip().lower().replace("-", "").replace("_", "")
+    if text in ("1200", "unicode", "utf16", "utf16le", "0"):
+        return "unicode"
+    if text in ("65001", "utf8"):
+        return "utf8"
+    if text in ("20127", "ascii", "usascii"):
+        return "ascii"
+    raise ResourceCompilerError(
+        f"Nicht unterstützte Codepage für Ressourcen-DLL-Ausgabe: {codepage!r} "
+        "(erlaubt: Unicode/1200, UTF-8/65001, ASCII/20127)."
+    )
+
+
+def _rc_source_with_build_codepage(source: str, codepage: int) -> str:
+    """Apply the requested build codepage, independently of a stale RC pragma.
+
+    This is an in-memory build override; it does not change the user's .rc.
+    Multiple existing pragmas are normalized so there is only one active
+    codepage for the entire generated artifact.
+    """
+    normalized = str(source).lstrip("\ufeff")
+    normalized = re.sub(
+        r"(?mi)^[ \t]*#\s*pragma\s+code_page\s*\([^\r\n)]*\)[ \t]*\r?\n?",
+        "", normalized,
+    )
+    return f"#pragma code_page({int(codepage)})\n" + normalized
+
+
+# Stage 515: ordinal-only resource types used by non-Unicode DLL builds.
+# No names are stored in the PE/.res resource directory as UTF-16LE.
+D64_CP_MENU = 0xF004
+D64_CP_DIALOG = 0xF005
+D64_CP_STRING = 0xF006
+D64_CP_VERSION = 0xF010
+
+
+def _codepage_stringtable_resource(entry: ResourceEntry, codepage: int) -> ResourceEntry:
+    """Emit an extra, explicitly non-Win32 STRINGTABLE in the selected codec.
+
+    This compact resource REPLACES (rather than supplements) the Unicode
+    Windows STRINGTABLE in ASCII and UTF-8 DLL builds. It is available via
+    FindResource with numeric resource type D64_CP_STRING, not LoadString.
+
+    D64STR01 format: magic[8], codepage uint32, then 16 repetitions of
+    byte_length uint32 + encoded text bytes (no terminator). In ASCII the
+    preview-compatible replacement '?' is used for unmappable Unicode.
+    """
+    raw = bytes(entry.data)
+    offset = 0
+    codec = _resource_text_codec(codepage)
+    body = bytearray(b"D64STR01" + struct.pack("<I", int(codepage)))
+    for _ in range(16):
+        if offset + 2 > len(raw):
+            raise ResourceCompilerError("Ungültige STRINGTABLE: fehlender Längeneintrag")
+        count = struct.unpack_from("<H", raw, offset)[0]
+        offset += 2
+        if offset + count * 2 > len(raw):
+            raise ResourceCompilerError("Ungültige STRINGTABLE: Text über Blockende")
+        text = raw[offset:offset + count * 2].decode("utf-16le", "strict")
+        offset += count * 2
+        payload = text.encode(codec, "replace" if int(codepage) == 20127 else "strict")
+        body += struct.pack("<I", len(payload)) + payload
+    if offset != len(raw):
+        raise ResourceCompilerError("Ungültige STRINGTABLE: überzählige Daten")
+    return ResourceEntry(
+        D64_CP_STRING, entry.name_id, bytes(body), entry.language,
+        memory_flags=entry.memory_flags, codepage=int(codepage), source=entry.source,
+    )
+
+
+
+def _codepage_menu_resource(entry: ResourceEntry, codepage: int) -> ResourceEntry:
+    """Add a codepage-encoded text inventory for a native MENU or MENUEX.
+
+    For ASCII and UTF-8 builds this resource REPLACES the native Unicode
+    Win32 MENU template. The menu captions are accessible via FindResource;
+    LoadMenu cannot consume this custom payload.
+    """
+    blob = bytes(entry.data)
+    if len(blob) < 4:
+        raise ResourceCompilerError("Ungültige MENU-Daten")
+    version, offset = struct.unpack_from("<HH", blob, 0)
+    if version not in (0, 1):
+        raise ResourceCompilerError("Nicht unterstütztes Menüformat")
+    pos = 4 + offset if version else 4
+    codec = _resource_text_codec(codepage)
+    captions = []
+
+    def text_at(pos):
+        start = pos
+        while pos + 1 < len(blob):
+            word, = struct.unpack_from("<H", blob, pos)
+            pos += 2
+            if word == 0:
+                return blob[start:pos - 2].decode("utf-16le", "strict"), pos
+        raise ResourceCompilerError("MENU: Nicht terminierter UTF-16LE-Text")
+
+    def walk(pos, depth=0):
+        if depth > 32:
+            raise ResourceCompilerError("MENU: Verschachtelung zu tief")
+        for _ in range(10000):
+            if version == 0:
+                if pos + 2 > len(blob):
+                    raise ResourceCompilerError("MENU: Fehlende Flags")
+                flags, = struct.unpack_from("<H", blob, pos)
+                pos += 2
+                popup = bool(flags & 0x10)
+                last = bool(flags & 0x80)
+                if not popup:
+                    pos += 2
+            else:
+                pos = _align(pos, 4)
+                if pos + 14 > len(blob):
+                    raise ResourceCompilerError("MENUEX: Header unvollständig")
+                flags, = struct.unpack_from("<H", blob, pos + 12)
+                popup = bool(flags & 0x01)
+                last = bool(flags & 0x80)
+                pos += 14
+            label, pos = text_at(pos)
+            captions.append(label)
+            if version == 1:
+                pos = _align(pos, 4)
+            if popup:
+                if version == 1:
+                    pos += 4
+                pos = walk(pos, depth + 1)
+            if pos > len(blob):
+                raise ResourceCompilerError("MENU: Daten unvollständig")
+            if last:
+                return pos
+        raise ResourceCompilerError("MENU: Ungültige Elementanzahl")
+
+    end = walk(pos)
+    if end != len(blob):
+        raise ResourceCompilerError("MENU: Zusätzliche Binärdaten")
+    body = bytearray(b"D64MENU1" + struct.pack("<II", int(codepage), len(captions)))
+    for caption in captions:
+        encoded = caption.encode(codec, "replace" if int(codepage) == 20127 else "strict")
+        body += struct.pack("<I", len(encoded)) + encoded
+    return ResourceEntry(
+        D64_CP_MENU, entry.name_id, bytes(body), entry.language,
+        memory_flags=entry.memory_flags, codepage=int(codepage), source=entry.source,
+    )
+
+
+def _codepage_rc_source_resource(entry: ResourceEntry, codepage: int,
+                                 source: Path, *, resource_type: int) -> ResourceEntry:
+    """Preserve dialogue/version declarations as encoded RC text, never UTF-16.
+
+    The Windows DIALOG and VERSIONINFO binary structures intrinsically store
+    UTF-16LE. For a strict non-Unicode build, preserve the full RC source as a
+    codepage-encoded, custom DATA payload. This is not a native DIALOG or
+    VERSIONINFO and callers must use FindResource. Unicode builds are unchanged.
+    """
+    if source.suffix.lower() != ".rc" or not source.is_file():
+        raise ResourceCompilerError(
+            "DIALOG/VERSIONINFO ohne Unicode benötigt die ursprüngliche .rc-Datei"
+        )
+    content = _rc_source_with_build_codepage(source.read_text(encoding="utf-8-sig"), codepage)
+    codec = _resource_text_codec(codepage)
+    data = content.encode(codec, "replace" if codepage == 20127 else "strict")
+    payload = b"D64SRC01" + struct.pack("<II", int(codepage), len(data)) + data
+    return ResourceEntry(
+        resource_type, entry.name_id, payload, entry.language,
+        memory_flags=entry.memory_flags, codepage=int(codepage), source=entry.source,
+    )
+
+
+def _resource_contains_utf16_text(data: bytes) -> bool:
+    """Conservative guard against hidden UTF-16 text in raw RC payloads.
+
+    Zero bytes alone are *not* proof of Unicode (binary resources contain
+    plenty). A UTF-16 BOM or four consecutive printable LE characters with
+    zero high bytes are strong text indicators. This is deliberately not a
+    detector for arbitrary opaque binaries, only for recognisable text.
+    """
+    raw = bytes(data)
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return True
+    return any(re.search(pattern, raw) for pattern in (
+        rb"(?:[\x20-\x7e]\x00){4,}",        # UTF-16LE
+        rb"(?:\x00[\x20-\x7e]){4,}",        # UTF-16BE
+        rb"(?:[\x20-\x7e]\x00\x00\x00){4,}",  # UTF-32LE
+        rb"(?:\x00\x00\x00[\x20-\x7e]){4,}",  # UTF-32BE
+    ))
+
+
+def _resource_dll_codepage_entries(
+    source_path: Union[str, os.PathLike], entries: Iterable[ResourceEntry],
+    codepage: Optional[Union[str, int]], *, include_native_utf16: bool = False,
+) -> Tuple[List[ResourceEntry], int]:
+    """Recompile in requested codepage; optionally retain Windows-native copies.
+
+    Non-Unicode output never contains native RT_STRING/RT_MENU/RT_DIALOG/
+    RT_VERSION binary data. The custom types are ordinal-only, since even
+    named resource directory entries would be UTF-16LE in Windows .res/PE.
+    """
+    items = list(entries)
+    if not items:
+        raise ResourceCompilerError("Es wurden keine Ressourcen zum Linken gefunden.")
+    selected = items[0].codepage if codepage is None else codepage
+    folder = resource_dll_codepage_directory(selected)
+    page = {"unicode": 1200, "utf8": 65001, "ascii": 20127}[folder]
+    source = Path(source_path)
+    needs_compile = any(int(entry.codepage) != page for entry in items)
+    legacy_res_without_codepage = (
+        source.suffix.lower() == ".res" and page == 1200 and codepage is None
+        and all(int(e.codepage) == 0 for e in items)
+    )
+    if needs_compile and not legacy_res_without_codepage:
+        if source.suffix.lower() != ".rc" or not source.is_file():
+            raise ResourceCompilerError(
+                "Die Codepage der binären Ressource kann nicht verlustfrei geändert werden. "
+                "Bitte die ursprüngliche .rc-Datei öffnen."
+            )
+        rc_text = source.read_text(encoding="utf-8-sig")
+        rc_text = _rc_source_with_build_codepage(rc_text, page)
+        items = compile_rc(source, include_dirs=[source.parent], source_text=rc_text).entries
+    if any(int(e.codepage) != page for e in items) and not legacy_res_without_codepage:
+        raise ResourceCompilerError("Build-Dateien enthalten eine abweichende Codepage")
+    if page in (20127, 65001):
+        # Explicit wide RCDATA strings also need to be refused rather than
+        # quietly contaminating the requested single-codepage output.
+        if source.suffix.lower() == ".rc" and source.is_file():
+            rc_source = source.read_text(encoding="utf-8-sig")
+            if any(match.lastgroup == "WSTRING" for match in _TOKEN_RE.finditer(rc_source)):
+                raise ResourceCompilerError(
+                    "Explizite Unicode-Literale L\"...\" sind in ASCII-/UTF-8-Builds "
+                    "nicht erlaubt. Bitte normale RC-Strings verwenden."
+                )
+        converted = []
+        for entry in items:
+            # Named resource type/name identifiers require UTF-16LE in Win32
+            # resource metadata, even when the payload is ASCII. Fail before
+            # creating any files rather than silently embedding Unicode.
+            if not isinstance(entry.type_id, int) or not isinstance(entry.name_id, int):
+                raise ResourceCompilerError(
+                    "ASCII-/UTF-8-Ausgaben dürfen keine Unicode-Ressourcennamen enthalten. "
+                    "Bitte numerische Ressourcen-IDs verwenden."
+                )
+            if entry.type_id == RT_STRING:
+                converted.append(_codepage_stringtable_resource(entry, page))
+            elif entry.type_id == RT_MENU:
+                converted.append(_codepage_menu_resource(entry, page))
+            elif entry.type_id == RT_DIALOG:
+                converted.append(_codepage_rc_source_resource(
+                    entry, page, source, resource_type=D64_CP_DIALOG))
+            elif entry.type_id == RT_VERSION:
+                converted.append(_codepage_rc_source_resource(
+                    entry, page, source, resource_type=D64_CP_VERSION))
+            else:
+                # Ordinary RCDATA is byte-exact. Explicit wide text embedded in
+                # a raw resource would still carry Unicode even though the RC
+                # codepage says ASCII/UTF-8: refuse recognizable UTF-16LE here.
+                if entry.type_id in (RT_RCDATA, RT_DLGINCLUDE, RT_HTML, RT_MANIFEST, RT_MESSAGETABLE):
+                    if _resource_contains_utf16_text(entry.data):
+                        raise ResourceCompilerError(
+                            f"Ressource {entry.name_id}: UTF-16-/UTF-32-Text in binären Nutzdaten "
+                            "gefunden; ASCII-/UTF-8-Build abgebrochen."
+                        )
+                converted.append(entry)
+        if include_native_utf16:
+            # Dual-format mapping: custom codepage payloads plus original
+            # Windows-native RT_STRING/MENU/DIALOG/VERSION records. LoadStringA
+            # and LoadStringW both read RT_STRING; the A API converts to ANSI.
+            # The custom records remain accessible via FindResource.
+            converted.extend(entry for entry in items if entry.type_id in (
+                RT_STRING, RT_MENU, RT_DIALOG, RT_VERSION))
+        keys = [e.key() for e in converted]
+        if len(keys) != len(set(keys)):
+            raise ResourceCompilerError("Doppelte Typ-/ID-/Sprache-Kombination nach Codepage-Umwandlung")
+        items = converted
+    return items, page
+
+
+# Stage 518: Standalone EXE and optional native DLL decoder for D64PK001:
+# native/d64resource/d64resource.c + .h, cdecl C ABI; also native Windows
+# resource lookup by original type/id/lang. Kept separate from the packed DLL.
+# Stage 517: zlib/DEFLATE-compressed custom resource records inside PE .rsrc.
+# Type 0xF117 cannot be read with the ordinary resource-type API; callers use
+# FindResourceW(..., MAKEINTRESOURCEW(0xF117)) and unpack_resource_dll_record.
+D64_PACKED_RESOURCE_TYPE = 0xF117
+D64_PACKED_RESOURCE_MAGIC = b"D64PK001"
+
+
+def unpack_resource_dll_record(payload: bytes) -> Tuple[int, int, int, int, bytes]:
+    """Decode a custom packed resource; return (type, id, lang, codepage, raw).
+
+    Format: magic[8], type/id/lang[3*u16], codepage/length/crc32[3*u32],
+    zlib/DEFLATE data. A strict size and CRC check protects callers from
+    accidentally accepting truncated or corrupted resource data.
+    """
+    import zlib
+    raw = bytes(payload)
+    header_length = 8 + struct.calcsize("<HHHIII")
+    if len(raw) <= header_length or not raw.startswith(D64_PACKED_RESOURCE_MAGIC):
+        raise ResourceCompilerError("Ungültige komprimierte D64-Ressource")
+    typ, name, lang, page, length, crc = struct.unpack_from("<HHHIII", raw, 8)
+    if length > 128 * 1024 * 1024:
+        raise ResourceCompilerError("D64-Ressource überschreitet das sichere Entpacklimit (128 MiB)")
+    try:
+        decoder = zlib.decompressobj()
+        # Bound decompression to the declared original length.
+        decoded = decoder.decompress(raw[header_length:], length + 1)
+        if len(decoded) != length or not decoder.eof or decoder.unused_data:
+            raise ValueError("Abweichende entpackte Länge oder Restdaten")
+    except (zlib.error, ValueError) as exc:
+        raise ResourceCompilerError(f"Defekte komprimierte D64-Ressource: {exc}") from exc
+    if zlib.crc32(decoded) & 0xFFFFFFFF != crc:
+        raise ResourceCompilerError("CRC32-Prüfsumme der D64-Ressource stimmt nicht")
+    return typ, name, lang, page, decoded
+
+
+def pack_resource_dll_entries(entries: Iterable[ResourceEntry]) -> List[ResourceEntry]:
+    """Pack sizeable custom/RCDATA payloads, never native Win32 templates.
+
+    The original resource is *replaced* only if the D64PK001 wrapper saves
+    actual bytes. .res/.o remain ordinary linkable records; the DLL's .rsrc
+    stores packed copies at numeric type 0xF117 and sequential numeric IDs.
+    Standard RT_STRING, MENU, DIALOG, VERSION, ICON, etc. remain readable by
+    Windows, including optional native Unicode mapping copies.
+    """
+    import zlib
+    items = list(entries)
+    packed = []
+    sequence = 1
+    occupied = {(int(e.name_id), int(e.language) & 0xFFFF)
+                for e in items if e.type_id == D64_PACKED_RESOURCE_TYPE
+                and isinstance(e.name_id, int)}
+    for entry in items:
+        # RT_RCDATA and D64_CP_* types are opt-in to the private read protocol.
+        # Other resource types are left byte-exact for standard Windows APIs.
+        eligible = entry.type_id in (
+            RT_RCDATA, D64_CP_STRING, D64_CP_MENU, D64_CP_DIALOG, D64_CP_VERSION,
+        )
+        if (not eligible or not isinstance(entry.type_id, int)
+                or not isinstance(entry.name_id, int)
+                or len(entry.data) < 64):
+            packed.append(entry)
+            continue
+        while (sequence, int(entry.language) & 0xFFFF) in occupied:
+            sequence += 1
+        if sequence > 0xFFFF:
+            raise ResourceCompilerError("Zu viele komprimierte D64-Ressourcen")
+        compressed = zlib.compress(bytes(entry.data), level=9)
+        header = D64_PACKED_RESOURCE_MAGIC + struct.pack(
+            "<HHHIII", int(entry.type_id), int(entry.name_id),
+            int(entry.language) & 0xFFFF, int(entry.codepage) & 0xFFFFFFFF,
+            len(entry.data), zlib.crc32(entry.data) & 0xFFFFFFFF)
+        if len(header) + len(compressed) >= len(entry.data):
+            packed.append(entry)
+            continue
+        packed.append(ResourceEntry(
+            D64_PACKED_RESOURCE_TYPE, sequence, header + compressed,
+            entry.language, memory_flags=entry.memory_flags,
+            codepage=entry.codepage, source=entry.source))
+        occupied.add((sequence, int(entry.language) & 0xFFFF))
+        sequence += 1
+    return packed
+
+
+def compress_resource_dll_transparent(path: Union[str, os.PathLike]) -> None:
+    """NTFS/LZX Windows filesystem compression; PE bytes stay unchanged.
+
+    This requires Windows 10+ and an NTFS volume that supports CompactOS/LZX.
+    Do not pretend to compress when running on Linux or unsupported storage.
+    """
+    if os.name != "nt":
+        raise ResourceCompilerError(
+            "transparent: NTFS-/LZX-Komprimierung benötigt Windows und NTFS")
+    import subprocess
+    command = ["compact.exe", "/C", "/EXE:LZX", "/F", "/I", str(Path(path))]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True,
+                                errors="replace", timeout=120, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ResourceCompilerError(f"NTFS-Komprimierung fehlgeschlagen: {exc}") from exc
+    if result.returncode:
+        details = (result.stderr or result.stdout or "").strip()
+        raise ResourceCompilerError(
+            f"compact.exe (LZX) fehlgeschlagen (Exit {result.returncode}): {details}")
+
+
+def build_resource_dll_files(
+    source_path: Union[str, os.PathLike], entries: Iterable[ResourceEntry], *,
+    machine="x86", codepage: Optional[Union[str, int]] = None,
+    include_native_utf16: bool = False,
+    compress_enabled: bool = False, compress_mode: str = "transparent",
+) -> Tuple[Path, Path, Path]:
+    """Emit codepage-specific RES/COFF/DLL; optionally include Windows-native copies.
+
+    With dual mapping, ASCII/UTF-8 custom types coexist with normal UTF-16LE
+    Windows resources. LoadStringA/W access RT_STRING only; the custom bytes
+    are available via FindResource. Unicode builds always use native format.
+    """
+    mode = str(compress_mode).strip().lower()
+    if mode not in ("transparent", "custom"):
+        raise ResourceCompilerError(f"Unbekannter Ressourcen-DLL-Kompressionsmodus: {compress_mode}")
+    if compress_enabled and mode == "transparent" and os.name != "nt":
+        raise ResourceCompilerError(
+            "transparent benötigt Windows/NTFS; es wurde keine DLL erzeugt")
+    source = Path(source_path)
+    machine_name = str(machine).lower().replace("-", "")
+    if machine_name in {"x86", "i386", "386", "pe32", "win32"}:
+        target_machine, folder = "x86", "win32"
+    elif machine_name in {"x64", "amd64", "x8664", "pe64", "pe32+", "win64"}:
+        target_machine, folder = "x64", "win64"
+    else:
+        raise ResourceCompilerError(f"Unbekannte Ressourcen-DLL-Architektur: {machine}")
+    items, page = _resource_dll_codepage_entries(
+        source, entries, codepage, include_native_utf16=include_native_utf16)
+    page_folder = resource_dll_codepage_directory(page)
+    # Generate all binary files before creating output folders.
+    res_blob = write_res(items)
+    obj_blob = write_resource_coff(items, machine=target_machine)
+    dll_entries = (pack_resource_dll_entries(items)
+                   if compress_enabled and mode == "custom" else items)
+    dll_blob = write_resource_dll(dll_entries, machine=target_machine)
+    directory = source.parent / folder / page_folder
+    directory.mkdir(parents=True, exist_ok=True)
+    targets = (directory / (source.stem + ".res"),
+               directory / (source.stem + ".o"),
+               directory / (source.stem + ".dll"))
+    targets[0].write_bytes(res_blob)
+    targets[1].write_bytes(obj_blob)
+    # Always replace a *fresh* file. Writing into a previously NTFS-compressed
+    # DLL could retain its compression attribute even when enable is unchecked.
+    temp_dll = directory / ("." + source.stem + ".build.dll")
+    try:
+        if temp_dll.exists():
+            temp_dll.unlink()
+        temp_dll.write_bytes(dll_blob)
+        if compress_enabled and mode == "transparent":
+            compress_resource_dll_transparent(temp_dll)
+        temp_dll.replace(targets[2])
+    finally:
+        if temp_dll.exists():
+            temp_dll.unlink()
+    return targets
+
+
+# ---------------------------------------------------------------------------
 # RC preprocessor / lexer
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
@@ -11082,6 +11845,7 @@ def _preprocess_file(
     defines: Optional[MutableMapping[str, Union[int, str]]] = None,
     include_dirs: Sequence[Union[str, os.PathLike]] = (),
     stack: Optional[List[Path]] = None,
+    source_override: Optional[str] = None,
 ) -> Tuple[str, Dict[str, Union[int, str]], List[str]]:
     path = Path(path).expanduser().resolve()
     symbols: Dict[str, Union[int, str]] = dict(RC_CONSTANTS)
@@ -11107,16 +11871,19 @@ def _preprocess_file(
             return Path("__d64_builtin__") / Path(name).name
         raise ResourceCompilerError(f"Include-Datei nicht gefunden: {name}", source=str(path))
 
-    raw_source = path.read_bytes()
-    if raw_source.startswith((b"\xff\xfe", b"\xfe\xff")):
-        source = raw_source.decode("utf-16")
-    elif raw_source.startswith(b"\xef\xbb\xbf"):
-        source = raw_source.decode("utf-8-sig")
+    if source_override is not None:
+        source = str(source_override)
     else:
-        try:
-            source = raw_source.decode("utf-8")
-        except UnicodeDecodeError:
-            source = raw_source.decode("cp1252")
+        raw_source = path.read_bytes()
+        if raw_source.startswith((b"\xff\xfe", b"\xfe\xff")):
+            source = raw_source.decode("utf-16")
+        elif raw_source.startswith(b"\xef\xbb\xbf"):
+            source = raw_source.decode("utf-8-sig")
+        else:
+            try:
+                source = raw_source.decode("utf-8")
+            except UnicodeDecodeError:
+                source = raw_source.decode("cp1252")
     source = re.sub(r"\\\r?\n", "", source)  # C preprocessor continuation
     output: List[str] = []
     active_stack: List[Tuple[bool, bool]] = []  # parent-active, branch-taken/current helper
@@ -11435,9 +12202,9 @@ class ResourceScriptCompiler:
         self._next_icon_id=1
         self._next_cursor_id=1
 
-    def compile_file(self,path: Union[str,os.PathLike]) -> ResourceCompilation:
+    def compile_file(self,path: Union[str,os.PathLike], *, source_text: Optional[str] = None) -> ResourceCompilation:
         self.source_path=Path(path).expanduser().resolve(); self.entries=[]; self.dependencies=[]; self.warnings=[]; self.language=self.default_language; self.codepage=0
-        text,symbols,deps=_preprocess_file(self.source_path,defines=dict(self.defines),include_dirs=self.include_dirs)
+        text,symbols,deps=_preprocess_file(self.source_path,defines=dict(self.defines),include_dirs=self.include_dirs,source_override=source_text)
         self.dependencies=[str(self.source_path),*deps]
         self.stream=_Stream(_tokenize(text,str(self.source_path)),symbols,str(self.source_path))
         self._parse_top()
@@ -11503,7 +12270,10 @@ class ResourceScriptCompiler:
         s.skip_nl()
         if filename is not None:
             if typ_name == "DLGINCLUDE":
-                blob = filename.encode("cp1252", errors="replace") + b"\0"
+                try:
+                    blob = _resource_encode_string(filename, self.codepage)
+                except UnicodeEncodeError as exc:
+                    s.error(f"Zeichen in Codepage {self.codepage} nicht darstellbar: {exc}")
                 self.entries.append(ResourceEntry(typ,name,blob,self.language,memory_flags=mem,codepage=self.codepage,source=str(self.source_path)))
                 return
             blob=self._resolve_asset(filename).read_bytes()
@@ -11531,8 +12301,11 @@ class ResourceScriptCompiler:
             if s.peek().kind=="EOF": s.error("Nicht abgeschlossener RCDATA-Block")
             tok=s.pop()
             if tok.value==",": continue
-            if tok.kind=="STRING": out += tok.value.encode("cp1252",errors="replace") + b"\0"
-            elif tok.kind=="WSTRING": out += tok.value.encode("utf-16le") + b"\0\0"
+            if tok.kind in {"STRING", "WSTRING"}:
+                try:
+                    out += _resource_encode_string(tok.value, self.codepage, wide=tok.kind == "WSTRING")
+                except UnicodeEncodeError as exc:
+                    s.error(f"Zeichen in Codepage {self.codepage} nicht darstellbar: {exc}", tok)
             else:
                 value=s.id_value(tok)
                 if not isinstance(value,int): s.error("Numerischer RCDATA-Wert erwartet",tok)
@@ -11781,8 +12554,11 @@ class ResourceScriptCompiler:
 # ---------------------------------------------------------------------------
 # Public convenience API / small command line frontend
 # ---------------------------------------------------------------------------
-def compile_rc(path: Union[str,os.PathLike], *, include_dirs=(), defines=None, default_language: int=0x0409) -> ResourceCompilation:
-    return ResourceScriptCompiler(include_dirs=include_dirs,defines=defines,default_language=default_language).compile_file(path)
+def compile_rc(path: Union[str,os.PathLike], *, include_dirs=(), defines=None, default_language: int=0x0409,
+               source_text: Optional[str] = None) -> ResourceCompilation:
+    return ResourceScriptCompiler(include_dirs=include_dirs,defines=defines,default_language=default_language).compile_file(
+        path, source_text=source_text
+    )
 
 def compile_rc_to_res(path: Union[str,os.PathLike], output: Optional[Union[str,os.PathLike]]=None, *, include_dirs=(), defines=None, default_language: int=0x0409) -> Path:
     source=Path(path); target=Path(output) if output else source.with_suffix(".res")
@@ -12387,11 +13163,22 @@ class WindowsResourceEditorWidget(QWidget):
                 ("DEU", "German", "deu", 0x0407),
             ]
         self.current_target = "pe32"
+        self.resource_mapping_provider = None  # callable(target)-> {ascii, utf8}
+        self.resource_compression_provider = None  # callable(target)-> {enabled, mode}
+        self.resource_build_settings_provider = None  # callable(target)-> {ascii, utf8, enabled, mode}
         self.entries: list[ResourceEntry] = []
         self._loading = False
         self._dirty = False
         self._dark_mode = True
         self._build_ui()
+        # Stage 506: Quelltext, Codepage-Auswahl und Hex-Tab gemeinsam halten.
+        # Keine Dateischreibzugriffe beim Live-Preview.
+        self._preview_source_text = None
+        self._source_preview_timer = QTimer(self)
+        self._source_preview_timer.setSingleShot(True)
+        self._source_preview_timer.setInterval(180)
+        self._source_preview_timer.timeout.connect(self._refresh_source_preview)
+        self.tabs.currentChanged.connect(self._resource_tab_changed)
         self.set_dark_mode(True)
 
     @staticmethod
@@ -12482,6 +13269,35 @@ class WindowsResourceEditorWidget(QWidget):
         self.act_coff64 = add_action("COFF64", lambda: self.compile_to_coff("x64"), "PE32+-Resource-COFF erzeugen")
         self.toolbar.addSeparator()
         self.act_refresh = add_action("Aktualisieren", self.refresh_resources, "Ressourcen neu einlesen")
+        self.act_win32_dll = add_action("win32 DLL", lambda: self.compile_to_resource_dll("x86"),
+                                        "Ressourcen als native 32-Bit Windows-DLL erzeugen")
+        self.act_win64_dll = add_action("win64 DLL", lambda: self.compile_to_resource_dll("x64"),
+                                        "Ressourcen als native 64-Bit Windows-DLL erzeugen")
+        # Stage 512: group three buttons to guarantee precisely 14 logical
+        # pixels from the right edge of Aktualisieren to win32 DLL.  A plain
+        # QToolBar spacer would add its native style's item spacing as well.
+        for action in (self.act_refresh, self.act_win32_dll, self.act_win64_dll):
+            self.toolbar.removeAction(action)
+        self.dll_build_controls = QWidget(self.toolbar)
+        self.dll_build_controls.setObjectName("resource_dll_build_controls")
+        dll_button_layout = QHBoxLayout(self.dll_build_controls)
+        dll_button_layout.setContentsMargins(0, 0, 0, 0)
+        dll_button_layout.setSpacing(0)
+        self.refresh_toolbutton = QToolButton(self.dll_build_controls)
+        self.refresh_toolbutton.setDefaultAction(self.act_refresh)
+        self.refresh_toolbutton.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        dll_button_layout.addWidget(self.refresh_toolbutton)
+        dll_button_layout.addSpacing(14)
+        self.win32_dll_button = QToolButton(self.dll_build_controls)
+        self.win32_dll_button.setDefaultAction(self.act_win32_dll)
+        self.win32_dll_button.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        dll_button_layout.addWidget(self.win32_dll_button)
+        dll_button_layout.addSpacing(3)
+        self.win64_dll_button = QToolButton(self.dll_build_controls)
+        self.win64_dll_button.setDefaultAction(self.act_win64_dll)
+        self.win64_dll_button.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        dll_button_layout.addWidget(self.win64_dll_button)
+        self.toolbar.addWidget(self.dll_build_controls)
 
         # Stage 457: the six RC source templates live BELOW the existing
         # compiler actions and always insert at the current source cursor.
@@ -12490,7 +13306,7 @@ class WindowsResourceEditorWidget(QWidget):
         self.template_toolbar.setMovable(False)
         self.template_toolbar.setFloatable(False)
         self.resource_template_actions = {}
-        for label in ("Dialog", "Text", "Icon", "Bitmap", "Cursor", "RCDATA"):
+        for label in ("Dialog", "Menu", "Text", "Icon", "Bitmap", "Cursor", "RCDATA"):
             action = QAction(label, self)
             action.setObjectName("resource_template_" + label.casefold())
             action.setStatusTip(f"{label}-Vorlage in den RC-Quelltext einfügen")
@@ -12506,6 +13322,9 @@ class WindowsResourceEditorWidget(QWidget):
         info.addWidget(QLabel("Datei:"))
         self.file_label = QLabel("(keine)")
         self.file_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        # Stage 520: a long .rc path must not raise the dock's minimum width.
+        self.file_label.setMinimumWidth(0)
+        self.file_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         info.addWidget(self.file_label, 1)
         self.target_label = QLabel("Ziel: Windows PE32")
         info.addWidget(self.target_label)
@@ -12532,6 +13351,9 @@ class WindowsResourceEditorWidget(QWidget):
         self.resource_tree.header().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self.resource_tree.header().setSectionResizeMode(2, QHeaderView.ResizeToContents)
         self.resource_tree.itemSelectionChanged.connect(self._resource_selected)
+        # Stage 509: source editing and resource insertion from the left tree.
+        self.resource_tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.resource_tree.customContextMenuRequested.connect(self._show_resource_tree_context_menu)
         left_lay.addWidget(self.resource_tree, 1)
         splitter.addWidget(left)
 
@@ -12569,7 +13391,19 @@ class WindowsResourceEditorWidget(QWidget):
         self.properties.setSelectionBehavior(QTableWidget.SelectRows)
         self.tabs.addTab(self.properties, "Eigenschaften")
 
-        self.hex_edit = QPlainTextEdit(self.tabs)
+        # Stage 511: all compiled resources by default, not just the first
+        # STRINGTABLE entry. The user can disable the overview to inspect one
+        # resource (or an entire group) from the tree.
+        hex_page = QWidget(self.tabs)
+        hex_layout = QVBoxLayout(hex_page)
+        hex_layout.setContentsMargins(0, 0, 0, 0)
+        hex_layout.setSpacing(2)
+        self.hex_all_resources = QCheckBox("Alle Ressourcen anzeigen", hex_page)
+        self.hex_all_resources.setObjectName("resource_hex_all_resources")
+        self.hex_all_resources.setChecked(True)
+        self.hex_all_resources.toggled.connect(self._refresh_hex_scope)
+        hex_layout.addWidget(self.hex_all_resources)
+        self.hex_edit = QPlainTextEdit(hex_page)
         self.hex_edit.setObjectName("resource_hex_editor")
         self.hex_edit.setReadOnly(True)
         self.hex_edit.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -12580,7 +13414,8 @@ class WindowsResourceEditorWidget(QWidget):
         )
         self.hex_edit.setLineWrapMode(QPlainTextEdit.NoWrap)
         self.hex_edit.setFont(self._editor_font())
-        self.tabs.addTab(self.hex_edit, "Hex")
+        hex_layout.addWidget(self.hex_edit, 1)
+        self.tabs.addTab(hex_page, "Hex")
 
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 4)
@@ -12588,6 +13423,11 @@ class WindowsResourceEditorWidget(QWidget):
 
         bottom = QHBoxLayout()
         self.status = QLabel("Bereit")
+        self.status.setObjectName("resource_build_status")
+        # A full path plus mapping/compression description can be arbitrarily
+        # long.  Keep the editor/dock minimum width independent of that text.
+        self.status.setMinimumWidth(0)
+        self.status.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         bottom.addWidget(self.status, 1)
         compile_button = QPushButton("Ressourcen neu einlesen")
         compile_button.setObjectName("resource_refresh_button")
@@ -12596,6 +13436,108 @@ class WindowsResourceEditorWidget(QWidget):
         root.addLayout(bottom)
 
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+    def _show_resource_tree_context_menu(self, position) -> None:
+        """Right-click on a resource or empty tree space, edit RC source."""
+        item = self.resource_tree.itemAt(position)
+        if item is not None:
+            self.resource_tree.setCurrentItem(item)
+        menu = QMenu(self.resource_tree)
+        # Stage 510: reuse the same save/save-as routes as the main File menu.
+        # The main window already routes Ctrl+S to this resource editor while
+        # its workspace is active; showing the key here keeps the menu in sync.
+        save_action = menu.addAction("Speichern")
+        save_action.setObjectName("resource_tree_save")
+        save_action.setShortcut(QKeySequence.Save)
+        save_action.triggered.connect(lambda _checked=False: self.save())
+        save_as_action = menu.addAction("Speichern unter ...")
+        save_as_action.setObjectName("resource_tree_save_as")
+        save_as_action.triggered.connect(lambda _checked=False: self.save_as())
+        menu.addSeparator()
+        read_only = self.source_edit.isReadOnly()
+        for kind in ("Dialog", "Menü", "Text", "Icon", "Bitmap", "Cursor", "RCDATA"):
+            action = menu.addAction(f"Neu:  {kind}")
+            action.setObjectName("resource_tree_new_" + kind.casefold())
+            action.setEnabled(not read_only)
+            internal_kind = "Menu" if kind == "Menü" else kind
+            action.triggered.connect(
+                lambda _checked=False, resource_kind=internal_kind: self._insert_tree_resource_template(resource_kind)
+            )
+        menu.addSeparator()
+        select_all = menu.addAction("Alles auswählen")
+        select_all.triggered.connect(self._resource_source_select_all)
+        copy = menu.addAction("Kopieren")
+        copy.setEnabled(bool(self.source_edit.textCursor().hasSelection()))
+        copy.triggered.connect(self._resource_source_copy)
+        paste = menu.addAction("Einfügen")
+        paste.setEnabled(not read_only)
+        paste.triggered.connect(self._resource_source_paste)
+        delete = menu.addAction("Löschen")
+        delete.setEnabled(not read_only and self.source_edit.textCursor().hasSelection())
+        delete.triggered.connect(self._resource_source_delete)
+        try:
+            menu.exec_(self.resource_tree.viewport().mapToGlobal(position))
+        finally:
+            menu.deleteLater()
+
+    def _resource_source_select_all(self) -> None:
+        self.tabs.setCurrentWidget(self.source_edit.parentWidget())
+        self.source_edit.selectAll()
+        self.source_edit.setFocus(Qt.OtherFocusReason)
+
+    def _resource_source_copy(self) -> None:
+        self.source_edit.copy()
+
+    def _resource_source_paste(self) -> None:
+        if self.source_edit.isReadOnly():
+            return
+        self.tabs.setCurrentIndex(0)
+        self.source_edit.paste()
+        self.source_edit.setFocus(Qt.OtherFocusReason)
+        self._refresh_source_preview()
+
+    def _resource_source_delete(self) -> None:
+        if self.source_edit.isReadOnly():
+            return
+        cursor = self.source_edit.textCursor()
+        if not cursor.hasSelection():
+            return
+        self.tabs.setCurrentIndex(0)
+        cursor.removeSelectedText()
+        self.source_edit.setTextCursor(cursor)
+        self.source_edit.setFocus(Qt.OtherFocusReason)
+        self._refresh_source_preview()
+
+    def _insert_tree_resource_template(self, kind: str) -> bool:
+        """Tree creation appends a declaration, preserving current source text."""
+        if self.source_edit.isReadOnly():
+            return False
+        cursor = self.source_edit.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        self.source_edit.setTextCursor(cursor)
+        return self.insert_resource_template(kind)
+
+    def _show_uncompiled_template_outline(self, source: str) -> None:
+        """Keep newly inserted declarations visible if referenced assets lack files.
+
+        These items are *not* stored in self.entries: RES/COFF may only use
+        successfully compiled resources, never placeholders.
+        """
+        from resource_rc_templates import uncompiled_rc_template_markers
+        for index in reversed(range(self.resource_tree.topLevelItemCount())):
+            item = self.resource_tree.topLevelItem(index)
+            if item.data(0, Qt.UserRole) == "uncompiled_resource_templates":
+                self.resource_tree.takeTopLevelItem(index)
+        markers = uncompiled_rc_template_markers(source)
+        if not markers:
+            return
+        group = QTreeWidgetItem(self.resource_tree, ["RC-Vorlagen (nicht kompiliert)", "", ""])
+        group.setData(0, Qt.UserRole, "uncompiled_resource_templates")
+        group.setExpanded(True)
+        for kind, name in markers:
+            child = QTreeWidgetItem(group, [f"{kind}: {name}", "", "Datei/RC prüfen"])
+            child.setData(0, Qt.UserRole, ("pending", kind, name))
+            child.setToolTip(0, "Quelltextvorlage: Noch keine gültigen Binärdaten; Dateien/RC prüfen.")
 
     def insert_resource_template(self, kind: str) -> bool:
         """Insert an RC template into the source editor without discarding text."""
@@ -12607,16 +13549,23 @@ class WindowsResourceEditorWidget(QWidget):
         self.tabs.setCurrentIndex(0)
         cursor = self.source_edit.textCursor()
         source = self.source_edit.toPlainText()
-        # If the user selected text, replace that selection as a normal editor
-        # operation; the inserted declaration still gets its own RC lines.
-        position = cursor.selectionStart() if cursor.hasSelection() else cursor.position()
+        # Never overwrite an existing source selection when adding resources.
+        # Keep the old source and insert at the end of the selected range.
         if cursor.hasSelection():
-            cursor.removeSelectedText()
-            source = self.source_edit.toPlainText()
+            cursor.setPosition(cursor.selectionEnd())
+        position = cursor.position()
         cursor.insertText(insertable_rc_template(kind, source, position))
         self.source_edit.setTextCursor(cursor)
         self.source_edit.setFocus(Qt.OtherFocusReason)
         self._dirty = True
+        # The tree must reflect a new resource without waiting for the timer
+        # or requiring the user to click "Aktualisieren".
+        timer = getattr(self, "_source_preview_timer", None)
+        if timer is not None:
+            timer.stop()
+        refresh = getattr(self, "_refresh_source_preview", None)
+        if callable(refresh):
+            refresh()
         self._set_status(f"{kind}-Vorlage in RC-Quelltext eingefügt")
         return True
 
@@ -12692,15 +13641,103 @@ QWidget#resource_source_minimap { border-left:1px solid #3A3A3A; }
         self.update()
 
     def _set_status(self, text: str):
-        self.status.setText(text)
+        # Stage 520: only the DISPLAY text is shortened; the entire message
+        # remains available through the tooltip and the main status bar.
+        # Do not let QLabel.sizeHint() grow and push the QDockWidget/MainWindow
+        # outside their existing geometry when a resource DLL is compiled.
+        text = str(text)
+        self.status.setToolTip(text)
+        available = max(24, self.status.contentsRect().width() - 4)
+        self.status.setText(self.status.fontMetrics().elidedText(
+            text, Qt.ElideMiddle, available))
         self.status_message.emit(text)
 
     def _source_changed(self):
         if self._loading:
             return
-        # New, not-yet-saved projects are dirty as well.
         if self.current_path is None or self.current_path.suffix.lower() == ".rc":
             self._dirty = True
+            # Auch ein manuell geändertes #pragma code_page(...) muss den
+            # Hex-Viewer neu speisen. Während des Tippens entprellen.
+            timer = getattr(self, "_source_preview_timer", None)
+            if timer is not None:
+                timer.start()
+
+    def _resource_tab_changed(self, tab_index: int) -> None:
+        """Beim Öffnen von Eigenschaften/Hex ausstehende Änderungen übernehmen."""
+        if tab_index not in (1, 2) or self._loading:
+            return
+        if self.current_path is not None and self.current_path.suffix.lower() == ".res":
+            return
+        timer = getattr(self, "_source_preview_timer", None)
+        if timer is not None:
+            timer.stop()
+        self._refresh_source_preview()
+
+    def _sync_codepage_combo(self, index: int) -> None:
+        """Source-Pragma -> ComboBox, ohne erneut _codepage_changed auszulösen."""
+        if not (0 <= index < len(self.entries)):
+            return
+        combo = self.properties.cellWidget(8, 1)
+        if combo is None:
+            return
+        codepage = int(self.entries[index].codepage)
+        pos = combo.findData(codepage)
+        was_blocked = combo.blockSignals(True)
+        try:
+            if pos < 0:
+                combo.addItem(f"Benutzerdefiniert ({codepage})", codepage)
+                pos = combo.findData(codepage)
+            combo.setCurrentIndex(pos)
+        finally:
+            combo.blockSignals(was_blocked)
+
+    def _refresh_source_preview(self) -> bool:
+        """Aktuellen, auch ungespeicherten RC-Text zu echten Resource-Bytes compilieren.
+
+        Vorher war textChanged nur ein Dirty-Flag. Nach händischem Ändern
+        von #pragma code_page blieb die Hex-Anzeige deshalb bei alten Daten.
+        """
+        if self._loading:
+            return False
+        if self.current_path is not None and self.current_path.suffix.lower() == ".res":
+            return False
+        source = self.source_edit.toPlainText()
+        if source == getattr(self, "_preview_source_text", None):
+            return True
+        path = self.current_path or (Path.cwd() / "untitled.rc")
+        previous_entries = self.entries
+        item = self.resource_tree.currentItem()
+        old_index = item.data(0, Qt.UserRole) if item is not None else None
+        if not isinstance(old_index, int) or not (0 <= old_index < len(previous_entries)):
+            old_index = 0
+        old_key = previous_entries[old_index].key() if previous_entries else None
+        try:
+            compiled = compile_rc(path, include_dirs=[path.parent], source_text=source)
+        except Exception as exc:
+            # Bei noch fehlenden .ico/.bmp/.cur Dateien keine Ressourcen
+            # erfinden. Die neuen Deklarationen nur als Quelltext-Outline
+            # anzeigen; die letzte gültige Binärvorschau bleibt erhalten.
+            outline = getattr(self, "_show_uncompiled_template_outline", None)
+            if callable(outline):
+                outline(source)
+            self._set_status(f"RC-Vorschau nicht aktualisiert: {exc}")
+            return False
+        self.entries = compiled.entries
+        outline = getattr(self, "_show_uncompiled_template_outline", None)
+        if callable(outline):
+            outline("")
+        self._preview_source_text = source
+        index = next((i for i, ent in enumerate(self.entries) if ent.key() == old_key),
+                     min(old_index, len(self.entries) - 1))
+        if self.entries and self._update_resource_tree_in_place(previous_entries) and index == old_index:
+            # Die ComboBox nicht neu erzeugen: nur Wert, Bytes und Länge ändern.
+            self._sync_codepage_combo(index)
+            self._update_resource_hex_and_size(index)
+        else:
+            self._populate_tree(selected_index=index if self.entries else None)
+        self._set_status("RC-Vorschau aktualisiert (Codepage/Hex)")
+        return True
 
     def _dialog_host(self):
         host = self.window()
@@ -12784,6 +13821,8 @@ QWidget#resource_source_minimap { border-left:1px solid #3A3A3A; }
             self.set_target(target)
         self.current_path = None
         self.entries = []
+        self._preview_source_text = ""
+        self._source_preview_timer.stop()
         self._loading = True
         self.source_edit.clear()
         self.source_edit.setReadOnly(False)
@@ -12821,6 +13860,8 @@ QWidget#resource_source_minimap { border-left:1px solid #3A3A3A; }
             self._warning("Resourcen-Editor", f"Datei nicht gefunden:\n{p}")
             return False
         self.current_path = p
+        self._source_preview_timer.stop()
+        self._preview_source_text = None
         self.file_label.setText(str(p))
         self._dirty = False
         suffix = p.suffix.lower()
@@ -12903,6 +13944,8 @@ QWidget#resource_source_minimap { border-left:1px solid #3A3A3A; }
             raise ResourceCompilerError("Speichern der RC-Datei wurde abgebrochen")
         compilation = compile_rc(self.current_path, include_dirs=[self.current_path.parent])
         self.entries = compilation.entries
+        self._preview_source_text = self.source_edit.toPlainText()
+        self._source_preview_timer.stop()
         self._populate_tree()
         return compilation
 
@@ -12926,19 +13969,151 @@ QWidget#resource_source_minimap { border-left:1px solid #3A3A3A; }
 
     def compile_to_res(self):
         try:
+            selected_page = self._selected_dll_codepage()
             self._compile_current_rc()
             suggested = self.current_path.with_suffix(".res")
             path = self._file_dialog("RES schreiben", str(suggested), "RES Dateien (*.res)", save=True)
             if not path:
                 return
-            out = save_res(path, self.entries)
+            export_entries = self.entries
+            if (callable(getattr(self, "resource_mapping_provider", None))
+                    or callable(getattr(self, "resource_build_settings_provider", None))):
+                effective_page = (selected_page if selected_page is not None
+                                  else self.entries[0].codepage if self.entries else 1200)
+                options = self._resource_build_options(self.current_target, effective_page)
+                export_entries, _page = _resource_dll_codepage_entries(
+                    self.current_path, self.entries, selected_page,
+                    include_native_utf16=options["include_native_utf16"])
+            out = save_res(path, export_entries)
             self._set_status(f"RES erzeugt: {out}")
         except Exception as exc:
             self._critical("RC → RES", str(exc))
 
+    def _selected_dll_codepage(self) -> Optional[int]:
+        """Read the active Codepage property's value before rebuilding the tree.
+
+        _compile_current_rc() recreates the properties widgets, therefore the
+        selected value must be captured before that operation. Without a
+        selected property the compiled resource entry supplies the codepage.
+        """
+        props = getattr(self, "properties", None)
+        if props is None:
+            return None
+        combo = props.cellWidget(8, 1)
+        if combo is None or combo.objectName() != "resource_codepage_combo":
+            return None
+        data = combo.currentData()
+        return int(data) if data is not None else None
+
+    def _resource_build_options(self, machine: str, codepage: Optional[int]) -> dict:
+        """Resolve the *clicked* DLL architecture and all environment options.
+
+        Mapping and compression must be read together from the same Windows
+        project-settings page.  This also works if the dock was opened before
+        the project settings were edited, or when settings change at runtime.
+        """
+        target = "pe64" if str(machine).lower() in (
+            "x64", "amd64", "pe64", "win64", "pe32+"
+        ) else "pe32"
+        provider = getattr(self, "resource_build_settings_provider", None)
+        if callable(provider):
+            settings = dict(provider(target) or {})
+        else:
+            # Backward compatible for an independently instantiated RC editor.
+            mapping = getattr(self, "resource_mapping_provider", None)
+            compression = getattr(self, "resource_compression_provider", None)
+            settings = dict(mapping(target) or {}) if callable(mapping) else {}
+            if callable(compression):
+                settings.update(compression(target) or {})
+        page = int(codepage) if codepage is not None else 1200
+        mode = str(settings.get("mode", "transparent")).lower()
+        if mode not in ("transparent", "custom"):
+            raise ResourceCompilerError(f"Unbekannter DLL-Kompressionsmodus: {mode}")
+        return {
+            "target": target,
+            "include_native_utf16": (bool(settings.get(
+                "ascii" if page == 20127 else "utf8", False))
+                if page in (20127, 65001) else False),
+            "compress_enabled": bool(settings.get("enabled", False)),
+            "compress_mode": mode,
+        }
+
+    def _resource_with_native_copy(self, machine: str, codepage: Optional[int]) -> bool:
+        if codepage not in (20127, 65001):
+            return False
+        provider = getattr(self, "resource_mapping_provider", None)
+        if not callable(provider):
+            return False
+        target = "pe64" if machine in ("x64", "pe64", "win64") else "pe32"
+        settings = provider(target) or {}
+        return bool(settings.get("ascii" if codepage == 20127 else "utf8", False))
+
+    def _resource_dll_source_entries(self) -> list:
+        """Compile source for DLL build without changing any dock/editor layout.
+
+        "Aktualisieren" is the explicit action for refreshing the resource tree,
+        properties and hex views. Building an output file must not recreate
+        these widgets or change the selected editor tab and splitter sizes.
+        """
+        if self.current_path is None:
+            raise ResourceCompilerError("Bitte zuerst eine .rc- oder .res-Datei öffnen und speichern.")
+        if self.current_path.suffix.lower() == ".res":
+            return read_res(self.current_path)
+        if self.current_path.suffix.lower() != ".rc":
+            raise ResourceCompilerError("Für diese Aktion ist eine .rc- oder .res-Datei erforderlich")
+        if self._dirty and not self.save():
+            raise ResourceCompilerError("Speichern der RC-Datei wurde abgebrochen")
+        return compile_rc(self.current_path, include_dirs=[self.current_path.parent]).entries
+
+    def compile_to_resource_dll(self, machine: str) -> bool:
+        """Build a DLL without resizing the main window or resource dock."""
+        arch = "win64" if machine == "x64" else "win32"
+        try:
+            if self.current_path is None:
+                raise ResourceCompilerError("Bitte zuerst eine .rc- oder .res-Datei öffnen und speichern.")
+            selected_page = self._selected_dll_codepage()
+            # The live widget uses a UI-neutral source compiler.  Preserve the
+            # existing method for independently hosted Stage-519 integrations.
+            compile_source = getattr(self, "_resource_dll_source_entries", None)
+            if callable(compile_source):
+                build_entries = compile_source()
+            elif self.current_path.suffix.lower() == ".res":
+                build_entries = read_res(self.current_path)
+            else:
+                self._compile_current_rc()
+                build_entries = self.entries
+            effective_page = (selected_page if selected_page is not None
+                              else build_entries[0].codepage if build_entries else 1200)
+            options = self._resource_build_options(machine, effective_page)
+            files = build_resource_dll_files(
+                self.current_path, build_entries, machine=machine, codepage=selected_page,
+                include_native_utf16=options["include_native_utf16"],
+                compress_enabled=options["compress_enabled"],
+                compress_mode=options["compress_mode"],
+            )
+            # The clicked architecture is build-local.  Do not call set_target:
+            # changing the target label can recalculate the QDockWidget layout.
+            mapping_label = (
+                "Unicode: Windows-Standard UTF-16LE" if effective_page == 1200 else
+                "mit UTF-16LE-Kopie" if options["include_native_utf16"] else
+                "ohne UTF-16LE-Kopie"
+            )
+            compression_label = (options["compress_mode"] if options["compress_enabled"]
+                                 else "aus")
+            self._set_status(
+                f"{arch}-Ressourcen-DLL erzeugt: {files[2]} "
+                f"(Mapping: {mapping_label}; Compress DLL: {compression_label}; "
+                "RES, COFF .o, DLL)")
+            return True
+        except Exception as exc:
+            self._critical(f"{arch}-Ressourcen-DLL", str(exc))
+            self._set_status(str(exc))
+            return False
+
     def compile_to_coff(self, machine: str):
         arch = "64" if machine == "x64" else "32"
         try:
+            selected_page = self._selected_dll_codepage()
             if self.current_path and self.current_path.suffix.lower() == ".res":
                 self.entries = read_res(self.current_path)
             else:
@@ -12949,43 +14124,167 @@ QWidget#resource_source_minimap { border-left:1px solid #3A3A3A; }
             path = self._file_dialog(f"COFF{arch} schreiben", str(suggested), "COFF Objekt (*.obj *.o)", save=True)
             if not path:
                 return
-            out = save_resource_coff(path, self.entries, machine=machine)
+            export_entries = self.entries
+            if (callable(getattr(self, "resource_mapping_provider", None))
+                    or callable(getattr(self, "resource_build_settings_provider", None))):
+                effective_page = (selected_page if selected_page is not None
+                                  else self.entries[0].codepage if self.entries else 1200)
+                options = self._resource_build_options(machine, effective_page)
+                export_entries, _page = _resource_dll_codepage_entries(
+                    self.current_path, self.entries, selected_page,
+                    include_native_utf16=options["include_native_utf16"])
+            out = save_resource_coff(path, export_entries, machine=machine)
             self._set_status(f"COFF{arch} erzeugt: {out}")
         except Exception as exc:
             self._critical(f"COFF{arch}", str(exc))
 
     def _populate_tree(self, selected_index: Optional[int] = None):
-        self.resource_tree.clear()
-        groups = {}
-        wanted = None
-        for index, entry in enumerate(self.entries):
-            type_label = describe_resource_id(entry.type_id)
-            parent = groups.get(type_label)
-            if parent is None:
-                parent = QTreeWidgetItem(self.resource_tree, [type_label, "", ""])
-                parent.setExpanded(True)
-                groups[type_label] = parent
-            code, _title, flag_path, lang_id = self._language_info(entry.language)
-            language_text = f"{code}  0x{lang_id:04X}" if code != "---" else f"0x{lang_id:04X}"
-            child = QTreeWidgetItem(parent, [str(entry.name_id), language_text, str(len(entry.data))])
-            if flag_path:
-                child.setIcon(1, self._flag_icon(flag_path))
-            child.setData(0, Qt.UserRole, index)
-            if selected_index is not None and index == selected_index:
-                wanted = child
-        if wanted is not None:
-            self.resource_tree.setCurrentItem(wanted)
-        elif self.entries:
-            first_group = self.resource_tree.topLevelItem(0)
-            if first_group and first_group.childCount():
-                self.resource_tree.setCurrentItem(first_group.child(0))
+        """Rebuild the tree and ALWAYS synchronize the selected resource view.
+
+        QTreeWidget does not guarantee itemSelectionChanged when its contents
+        are replaced and the first item ends up selected again.  Do not rely
+        on that signal to update the hex and properties tabs.
+        """
+        self.resource_tree.blockSignals(True)
+        try:
+            self.resource_tree.clear()
+            groups = {}
+            wanted = None
+            for index, entry in enumerate(self.entries):
+                type_label = describe_resource_id(entry.type_id)
+                parent = groups.get(type_label)
+                if parent is None:
+                    parent = QTreeWidgetItem(self.resource_tree, [type_label, "", ""])
+                    parent.setData(0, Qt.UserRole, ("group", type_label))
+                    parent.setExpanded(True)
+                    groups[type_label] = parent
+                code, _title, flag_path, lang_id = self._language_info(entry.language)
+                language_text = f"{code}  0x{lang_id:04X}" if code != "---" else f"0x{lang_id:04X}"
+                child = QTreeWidgetItem(parent, [str(entry.name_id), language_text, str(len(entry.data))])
+                if flag_path:
+                    child.setIcon(1, self._flag_icon(flag_path))
+                child.setData(0, Qt.UserRole, index)
+                if selected_index is not None and index == selected_index:
+                    wanted = child
+            if wanted is not None:
+                self.resource_tree.setCurrentItem(wanted)
+            elif self.entries:
+                first_group = self.resource_tree.topLevelItem(0)
+                if first_group and first_group.childCount():
+                    self.resource_tree.setCurrentItem(first_group.child(0))
+        finally:
+            self.resource_tree.blockSignals(False)
+        if self.entries:
+            self._resource_selected()
+        else:
+            self.properties.setRowCount(0)
+            self.hex_edit.clear()
+
+    def _refresh_hex_scope(self, checked=None) -> None:
+        """Repaint the Hex tab for the selected entry, group, or all entries.
+
+        Kept separate from the properties table: toggling the overview must
+        never destroy a live Codepage combo while it emits a Qt signal.
+        """
+        if not getattr(self, "entries", None):
+            self.hex_edit.clear()
+            return
+        toggle = getattr(self, "hex_all_resources", None)
+        if toggle is not None and toggle.isChecked():
+            self.hex_edit.setPlainText(format_resource_collection_hex(self.entries))
+            return
+        item = self.resource_tree.currentItem()
+        key = item.data(0, Qt.UserRole) if item is not None else None
+        if isinstance(key, (tuple, list)) and key and key[0] == "pending":
+            self.hex_edit.setPlainText(
+                "Diese RC-Vorlage wurde noch nicht kompiliert.\n"
+                "Bitte referenzierte Dateien ergänzen oder den RC-Quelltext korrigieren.")
+        elif isinstance(key, (tuple, list)) and key and key[0] == "group":
+            self.hex_edit.setPlainText(format_resource_collection_hex(
+                self.entries, resource_type_label=key[1]))
+        elif isinstance(key, int) and 0 <= key < len(self.entries):
+            entry = self.entries[key]
+            self.hex_edit.setPlainText(format_resource_hex(
+                entry.data, entry.codepage, resource_type=entry.type_id))
+        else:
+            self.hex_edit.setPlainText(format_resource_collection_hex(self.entries))
+
+    def _update_resource_tree_in_place(self, previous_entries) -> bool:
+        """Update sizes without destroying the active Codepage combo widget.
+
+        Deleting/recreating a QTableWidget cell widget from its own
+        currentIndexChanged signal is unsafe.  In the normal case the entry
+        structure is unchanged by a #pragma code_page switch, so only update
+        the changed sizes and hex text synchronously.
+        """
+        if (len(previous_entries) != len(self.entries) or
+                [e.key() for e in previous_entries] != [e.key() for e in self.entries]):
+            return False
+        visible = {}
+        for group_index in range(self.resource_tree.topLevelItemCount()):
+            parent = self.resource_tree.topLevelItem(group_index)
+            for child_index in range(parent.childCount()):
+                child = parent.child(child_index)
+                entry_index = child.data(0, Qt.UserRole)
+                if isinstance(entry_index, int):
+                    visible[entry_index] = child
+        if len(visible) != len(self.entries):
+            return False
+        for entry_index, entry in enumerate(self.entries):
+            visible[entry_index].setText(2, str(len(entry.data)))
+        return True
+
+    def _update_resource_hex_and_size(self, index: int) -> None:
+        """Refresh the visible resource immediately, independent of Qt signals."""
+        if not 0 <= index < len(self.entries):
+            self.hex_edit.clear()
+            return
+        entry = self.entries[index]
+        if hasattr(self, "hex_all_resources"):
+            self._refresh_hex_scope()
+        else:
+            self.hex_edit.setPlainText(format_resource_hex(
+                entry.data, entry.codepage, resource_type=entry.type_id
+            ))
+        size_cell = self.properties.item(3, 1)
+        if size_cell is not None:
+            size_cell.setText(str(len(entry.data)))
+
+    def _reset_codepage_combo(self, old_codepage: int) -> None:
+        """Leave the combo consistent if recompilation cannot encode text."""
+        combo = self.properties.cellWidget(8, 1)
+        if combo is None:
+            return
+        old_index = combo.findData(int(old_codepage))
+        if old_index >= 0:
+            was_blocked = combo.blockSignals(True)
+            try:
+                combo.setCurrentIndex(old_index)
+            finally:
+                combo.blockSignals(was_blocked)
 
     def _resource_selected(self):
         item = self.resource_tree.currentItem()
         if item is None:
             return
         index = item.data(0, Qt.UserRole)
+        if isinstance(index, (tuple, list)) and index and index[0] == "group":
+            self.properties.setRowCount(0)
+            if hasattr(self, "hex_all_resources"):
+                self._refresh_hex_scope()
+            return
         if index is None:
+            if hasattr(self, "hex_all_resources"):
+                self._refresh_hex_scope()
+            return
+        if isinstance(index, (tuple, list)) and index and index[0] == "pending":
+            self.properties.setRowCount(0)
+            if hasattr(self, "hex_all_resources"):
+                self._refresh_hex_scope()
+            else:
+                self.hex_edit.setPlainText(
+                    "Diese RC-Vorlage wurde noch nicht kompiliert.\n"
+                    "Bitte referenzierte Dateien ergänzen oder den RC-Quelltext korrigieren.")
             return
         try:
             index = int(index)
@@ -13003,6 +14302,11 @@ QWidget#resource_source_minimap { border-left:1px solid #3A3A3A; }
             ("Version", f"0x{entry.version:08X}"),
             ("Characteristics", f"0x{entry.characteristics:08X}"),
             ("Codepage", None),
+            ("Datenformat", (
+                "UTF-16LE-Felder gemäß Windows-Ressourcenformat (Codepage als Metadatum)"
+                if _resource_has_native_utf16_fields(entry.type_id) else
+                "Binärdaten; Textliterale nach Codepage (externe Dateien unverändert)"
+            )),
         ]
         self.properties.clearContents()
         self.properties.setRowCount(len(rows))
@@ -13014,14 +14318,12 @@ QWidget#resource_source_minimap { border-left:1px solid #3A3A3A; }
         self._install_language_property(2, index, entry)
         self._install_codepage_property(8, index, entry)
 
-        data = entry.data
-        lines = []
-        for off in range(0, len(data), 16):
-            chunk = data[off:off + 16]
-            hexpart = " ".join(f"{b:02X}" for b in chunk)
-            asciipart = "".join(chr(b) if 32 <= b < 127 else "." for b in chunk)
-            lines.append(f"{off:08X}  {hexpart:<47}  {asciipart}")
-        self.hex_edit.setPlainText("\n".join(lines))
+        if hasattr(self, "hex_all_resources"):
+            self._refresh_hex_scope()
+        else:
+            self.hex_edit.setPlainText(format_resource_hex(
+                entry.data, entry.codepage, resource_type=entry.type_id
+            ))
 
     def _install_language_property(self, row: int, index: int, entry: ResourceEntry) -> None:
         host = QWidget(self.properties)
@@ -13107,16 +14409,89 @@ QWidget#resource_source_minimap { border-left:1px solid #3A3A3A; }
         self._set_status(f"Sprache geändert: LANGID 0x{lang_id:04X}")
 
     def _codepage_changed(self, index: int, codepage: int) -> None:
+        """Transcode RC literal payloads and refresh the active hex view NOW.
+
+        Unlike PE metadata, .rc raw-string data must really be recompiled
+        with the new codec.  Binary files and native Windows UTF-16 resource
+        structures retain their prescribed byte layouts.
+        """
         if not (0 <= index < len(self.entries)):
             return
         codepage &= 0xFFFFFFFF
-        if self.current_path is not None and self.current_path.suffix.lower() == ".rc":
+        old_page = int(self.entries[index].codepage)
+        if codepage == old_page:
+            return
+        if self.current_path is None or self.current_path.suffix.lower() == ".rc":
+            old_text = self.source_edit.toPlainText()
+            old_dirty = self._dirty
+            previous_entries = self.entries
+            path = self.current_path or (Path.cwd() / "untitled.rc")
             self._write_rc_codepage(codepage)
-            for entry in self.entries:
-                entry.codepage = codepage
+            try:
+                compiled = compile_rc(
+                    path,
+                    include_dirs=[path.parent],
+                    source_text=self.source_edit.toPlainText(),
+                )
+                if not compiled.entries:
+                    raise ResourceCompilerError("Die RC-Datei enthält keine Ressourcen")
+            except Exception as exc:
+                # Do not leave an ASCII selection selected while the binary
+                # data is still UTF-8/UTF-16 (or lose unsaved editor changes).
+                self._set_source_text_preserve_cursor(old_text)
+                self._dirty = old_dirty
+                timer = getattr(self, "_source_preview_timer", None)
+                if timer is not None:
+                    timer.stop()
+                if hasattr(self, "properties"):
+                    self._reset_codepage_combo(old_page)
+                self._set_status(f"Codepage nicht geändert: {exc}")
+                return
+            self.entries = compiled.entries
+            self._preview_source_text = self.source_edit.toPlainText()
+            timer = getattr(self, "_source_preview_timer", None)
+            if timer is not None:
+                timer.stop()
+            # The preprocessor can reorder resources. Follow their identity,
+            # not merely the old index, if that happens.
+            old_key = previous_entries[index].key()
+            selection = next((n for n, entry in enumerate(self.entries)
+                              if entry.key() == old_key),
+                             min(index, len(self.entries) - 1))
+            if hasattr(self, "resource_tree") and hasattr(self, "properties"):
+                if self._update_resource_tree_in_place(previous_entries) and selection == index:
+                    # Rebuilding the table here would destroy the combo whose
+                    # signal is currently being processed.  Refresh explicitly.
+                    self._update_resource_hex_and_size(selection)
+                else:
+                    # Defer structural changes until the sender has finished
+                    # emitting currentIndexChanged, then rebuild both panes.
+                    QTimer.singleShot(0, lambda idx=selection: self._populate_tree(selected_index=idx))
+            else:
+                # Preserve support for headless tests of the editor callback.
+                self._populate_tree(selected_index=selection)
+                if hasattr(self, "hex_edit"):
+                    if hasattr(self, "hex_all_resources"):
+                        self._refresh_hex_scope()
+                    else:
+                        self.hex_edit.setPlainText(format_resource_hex(
+                            self.entries[selection].data, self.entries[selection].codepage,
+                            resource_type=self.entries[selection].type_id,
+                        ))
         else:
+            # For uncompiled in-memory resources the chosen page changes the
+            # interpretation, not the original binary data.  .res files have
+            # this combo disabled because they store no CodePage field.
             self.entries[index].codepage = codepage
             self._dirty = True
+            if hasattr(self, "hex_edit"):
+                if hasattr(self, "hex_all_resources"):
+                    self._refresh_hex_scope()
+                else:
+                    self.hex_edit.setPlainText(format_resource_hex(
+                        self.entries[index].data, codepage,
+                        resource_type=self.entries[index].type_id,
+                    ))
         self._set_status(f"Codepage geändert: {codepage} / 0x{codepage:04X}")
 
 
@@ -40849,6 +42224,7 @@ D64_QT5_OPTIONAL_NAME_EXPORTS = frozenset({
     "DBaseQtRuntimeShutdown",
     "DBaseQtWfmModalParameter",
     "DBaseQtFormRun",
+    "DBaseQtWfmSessionInvoke",  # Stage 503: opt-in per WFM source
 })
 
 def _d64_qt5_optional_name_export(name: str) -> bool:
@@ -48855,6 +50231,10 @@ PROJECT_WINDOWS_TARGET_SETTINGS = {
         "console_dll_directory_key": "__windows_pe32_console_dll_directory__",
         "console_dll_pack_key": "__windows_pe32_console_dll_pack__",
         "console_const_pool_key": "__windows_pe32_console_const_pool__",
+        "resource_ascii_copy_key": "__windows_pe32_resource_ascii_utf16_copy__",
+        "resource_utf8_copy_key": "__windows_pe32_resource_utf8_utf16_copy__",
+        "resource_compress_enabled_key": "__windows_pe32_resource_compress_enabled__",
+        "resource_compress_mode_key": "__windows_pe32_resource_compress_mode__",
         "environment_section": "Settings.Windows.32Bit.Environment",
         "input_section": "Settings.Windows.32Bit.Compiler.InputDirectories",
         "output_section": "Settings.Windows.32Bit.Compiler.OutputDirectory",
@@ -48907,6 +50287,10 @@ PROJECT_WINDOWS_TARGET_SETTINGS = {
         "console_dll_directory_key": "__windows_pe64_console_dll_directory__",
         "console_dll_pack_key": "__windows_pe64_console_dll_pack__",
         "console_const_pool_key": "__windows_pe64_console_const_pool__",
+        "resource_ascii_copy_key": "__windows_pe64_resource_ascii_utf16_copy__",
+        "resource_utf8_copy_key": "__windows_pe64_resource_utf8_utf16_copy__",
+        "resource_compress_enabled_key": "__windows_pe64_resource_compress_enabled__",
+        "resource_compress_mode_key": "__windows_pe64_resource_compress_mode__",
         "environment_section": "Settings.Windows.64Bit.Environment",
         "input_section": "Settings.Windows.64Bit.Compiler.InputDirectories",
         "output_section": "Settings.Windows.64Bit.Compiler.OutputDirectory",
@@ -49368,6 +50752,10 @@ def empty_project_entries() -> Dict[str, List[Dict[str, str]]]:
         entries[_settings["console_dll_directory_key"]] = []
         entries[_settings["console_dll_pack_key"]] = [{"value": "false"}]
         entries[_settings["console_const_pool_key"]] = [{"value": "false"}]
+        entries[_settings["resource_ascii_copy_key"]] = [{"value": "false"}]
+        entries[_settings["resource_utf8_copy_key"]] = [{"value": "false"}]
+        entries[_settings["resource_compress_enabled_key"]] = [{"value": "false"}]
+        entries[_settings["resource_compress_mode_key"]] = [{"value": "transparent"}]
         entries[_settings["debug_theme_normal_key"]] = [{"value": "default"}]
         entries[_settings["debug_theme_workstation_key"]] = [{"value": "default"}]
         entries[_settings["prolog_with_descriptors_key"]] = [{"value": "false"}]
@@ -49981,6 +51369,21 @@ def format_project_ini(
             "DBaseRuntimeConstPool": "true" if _project_bool_entry(
                 entries, _settings["console_const_pool_key"], False
             ) else "false",
+            "ResourceASCIINativeUTF16Copy": "true" if _project_bool_entry(
+                entries, _settings["resource_ascii_copy_key"], False
+            ) else "false",
+            "ResourceUTF8NativeUTF16Copy": "true" if _project_bool_entry(
+                entries, _settings["resource_utf8_copy_key"], False
+            ) else "false",
+            "ResourceDLLCompressEnabled": "true" if _project_bool_entry(
+                entries, _settings["resource_compress_enabled_key"], False
+            ) else "false",
+            "ResourceDLLCompressMode": (
+                str(entries.get(_settings["resource_compress_mode_key"],
+                                [{"value": "transparent"}])[0].get("value", "transparent"))
+                if str(entries.get(_settings["resource_compress_mode_key"],
+                                   [{"value": "transparent"}])[0].get("value", "transparent"))
+                   in ("transparent", "custom") else "transparent"),
         }
 
         _pe_packing_enabled_value = _project_bool_entry(
@@ -50837,6 +52240,23 @@ def parse_project_ini(text: str, project_path: Path) -> Dict[str, List[Dict[str,
             entries[_settings["console_const_pool_key"]] = [{
                 "value": "true" if _const_pool else "false"
             }]
+            for _page, _ini_key, _entry_key in (
+                ("ascii", "ResourceASCIINativeUTF16Copy", "resource_ascii_copy_key"),
+                ("utf8", "ResourceUTF8NativeUTF16Copy", "resource_utf8_copy_key"),
+            ):
+                _enabled = _parse_project_bool(
+                    parser.get(_environment_section, _ini_key, fallback="false"), False)
+                entries[_settings[_entry_key]] = [{"value": "true" if _enabled else "false"}]
+            _resource_compress = _parse_project_bool(
+                parser.get(_environment_section, "ResourceDLLCompressEnabled", fallback="false"), False)
+            _resource_mode = parser.get(
+                _environment_section, "ResourceDLLCompressMode", fallback="transparent"
+            ).strip().lower()
+            entries[_settings["resource_compress_enabled_key"]] = [{
+                "value": "true" if _resource_compress else "false"}]
+            entries[_settings["resource_compress_mode_key"]] = [{
+                "value": _resource_mode if _resource_mode in ("transparent", "custom")
+                else "transparent"}]
             _workstation_mode = _parse_project_bool(
                 parser.get(
                     _environment_section,
@@ -75768,6 +77188,10 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                 "foreground": self._color_text(
                     getattr(item, "foreground_color", QColor("#000000")), "#FF000000"
                 ),
+                "wfm_events": dict(getattr(item, "wfm_events", {}) or {}),
+                "wfm_extra_properties": dict(getattr(item, "wfm_extra_properties", {}) or {}),
+                "session_lock_retry_count": int(getattr(item, "session_lock_retry_count", 3)),
+                "session_lock_retry_interval": int(getattr(item, "session_lock_retry_interval", 1000)),
                 "brush_style": int(getattr(item, "brush_style", 0)),
                 "brush_custom_width": int(getattr(item, "brush_custom_width", 16)),
                 "brush_custom_height": int(getattr(item, "brush_custom_height", 16)),
@@ -75838,6 +77262,11 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                 width=int(geometry.get("width", current_width)),
                 height=int(geometry.get("height", current_height)),
             )
+            if isinstance(item, DBaseFormControlItem) and item.component_type == "Session":
+                item.session_lock_retry_count = max(0, int(payload.get("session_lock_retry_count", 3)))
+                item.session_lock_retry_interval = max(0, int(payload.get("session_lock_retry_interval", 1000)))
+            item.wfm_events = dict(payload.get("wfm_events") or {})
+            item.wfm_extra_properties = dict(payload.get("wfm_extra_properties") or {})
             copied_name = str(payload.get("component_name", "") or "").strip()
             if copied_name and hasattr(item, "set_component_name"):
                 item.set_component_name(copied_name)
@@ -76221,6 +77650,9 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             # Stage 164: alle nicht-visuellen Komponenten besitzen Active / Enabled.
             # timer_active bleibt als kompatibler Alias für bestehende WFM-Timer.
             self.component_active = False
+            if self.component_type == "Session":
+                self.session_lock_retry_count = 3
+                self.session_lock_retry_interval = 1000
             if self.component_type in DBASE_FORM_FIXED_42_COMPONENTS:
                 self._width = 42.0
                 self._height = 42.0
@@ -76380,6 +77812,15 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                 widget = QMenuBar()
                 widget.addMenu("Datei")
                 widget.addMenu("Bearbeiten")
+                return widget
+            if t == "Session":
+                from d64dbase.session_designer import session_icon_png_bytes
+                pixmap = QPixmap()
+                pixmap.loadFromData(session_icon_png_bytes(), "PNG")
+                widget = QLabel()
+                widget.setPixmap(pixmap)
+                widget.setAlignment(Qt.AlignCenter)
+                widget.setToolTip("Session – nicht-visuelle Designer-Komponente")
                 return widget
             if t in DBASE_FORM_FIXED_42_COMPONENTS:
                 labels = {
@@ -77379,6 +78820,64 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             self.hwnd_edit = self._add_line_property("HWND", read_only=True)
             self.name_edit = self._add_line_property("Name")
 
+            # Stage 501: SESSION besitzt eine eigene Identifikation-Gruppe.
+            self.session_identification_root = QTreeWidgetItem(
+                self.property_tree, ["Identifikation", ""]
+            )
+            self.session_identification_root.setExpanded(True)
+            self.session_base_class_edit = self._add_line_property(
+                "baseClassName", read_only=True,
+                parent_item=self.session_identification_root,
+            )
+            self.session_class_edit = self._add_line_property(
+                "className", read_only=True,
+                parent_item=self.session_identification_root,
+            )
+            self.session_name_edit = self._add_line_property(
+                "name", parent_item=self.session_identification_root,
+            )
+            self.session_name_edit.setObjectName("dbase_form_session_name_edit")
+            self.session_parent_edit = DBaseFormEventLineEdit(self.property_tree)
+            self.session_parent_edit.setObjectName("dbase_form_session_parent_edit")
+            self.session_parent_edit.setReadOnly(True)
+            self._add_widget_property(
+                "parent", self.session_parent_edit,
+                parent_item=self.session_identification_root,
+            )
+            self.session_parent_item = self.session_parent_edit._dbase_form_property_item
+            self.session_misc_root = QTreeWidgetItem(
+                self.property_tree, ["Verschiedenes", ""]
+            )
+            self.session_misc_root.setExpanded(True)
+            self.session_lock_retry_count_spin = QSpinBox(self.property_tree)
+            self.session_lock_retry_count_spin.setObjectName(
+                "dbase_form_session_lock_retry_count_spinbox"
+            )
+            self.session_lock_retry_count_spin.setRange(0, 2147483647)
+            self.session_lock_retry_count_spin.setValue(3)
+            self._add_widget_property(
+                "lockRetryCount", self.session_lock_retry_count_spin,
+                parent_item=self.session_misc_root,
+            )
+            self.session_lock_retry_interval_spin = QSpinBox(self.property_tree)
+            self.session_lock_retry_interval_spin.setObjectName(
+                "dbase_form_session_lock_retry_interval_spinbox"
+            )
+            self.session_lock_retry_interval_spin.setRange(0, 2147483647)
+            self.session_lock_retry_interval_spin.setValue(1000)
+            self._add_widget_property(
+                "lockRetryInterval", self.session_lock_retry_interval_spin,
+                parent_item=self.session_misc_root,
+            )
+            self.session_name_edit.editingFinished.connect(self._session_name_changed)
+            self.session_parent_edit.doubleClicked.connect(self._navigate_to_session_parent)
+            self.session_lock_retry_count_spin.valueChanged.connect(
+                lambda value: self._session_lock_changed("lockRetryCount", value)
+            )
+            self.session_lock_retry_interval_spin.valueChanged.connect(
+                lambda value: self._session_lock_changed("lockRetryInterval", value)
+            )
+
             # Stage 158: Beim Timer werden ausschließlich Name,
             # Active/Enabled und Interval angezeigt. Interval ist Millisekunden.
             self.timer_interval_spin = QSpinBox(self.property_tree)
@@ -77740,7 +79239,22 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             )
             events_layout.addWidget(self.event_grid, 1)
             self.upper_tabs.addTab(events_page, "Ereignisse")
-            self.upper_tabs.addTab(QWidget(self.upper_tabs), "Methoden")
+            # Stage 501: bislang leerer Methoden-Tab wird für Session aktiv.
+            methods_page = QWidget(self.upper_tabs)
+            methods_layout = QVBoxLayout(methods_page)
+            methods_layout.setContentsMargins(0, 0, 0, 0)
+            self.method_grid = QTableWidget(0, 2, methods_page)
+            self.method_grid.setObjectName("dbase_form_method_grid")
+            self.method_grid.setHorizontalHeaderLabels(("Methode", "Wert"))
+            self.method_grid.verticalHeader().setVisible(False)
+            self.method_grid.setSelectionMode(QAbstractItemView.SingleSelection)
+            self.method_grid.setSelectionBehavior(QAbstractItemView.SelectRows)
+            self.method_grid.setEditTriggers(QAbstractItemView.NoEditTriggers)
+            self.method_grid.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+            self.method_grid.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+            self.method_grid.cellDoubleClicked.connect(self._session_method_double_clicked)
+            methods_layout.addWidget(self.method_grid, 1)
+            self.upper_tabs.addTab(methods_page, "Methoden")
 
             self.lower_tabs = QTabWidget(self.vertical_splitter)
             self.lower_tabs.setObjectName("dbase_form_component_tabs")
@@ -77998,10 +79512,36 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                         "QTableWidget#dbase_form_event_grid QHeaderView::section{"
                         "background:#e7e7e7;color:#000000;border:1px solid #b0b0b0;padding:4px;}"
                     )
+            # Session-Methodentabelle in beiden Themes lesbar halten.
+            if bool(enabled):
+                self.method_grid.setStyleSheet(
+                    "QTableWidget#dbase_form_method_grid{background:#000000;"
+                    "color:#ffffff;gridline-color:#4a4a4a;}"
+                    "QTableWidget#dbase_form_method_grid QHeaderView::section{"
+                    "background:#242424;color:#ffffff;"
+                    "border:1px solid #505050;padding:4px;}"
+                )
+            else:
+                self.method_grid.setStyleSheet(
+                    "QTableWidget#dbase_form_method_grid{background:#ffffff;"
+                    "color:#000000;gridline-color:#b8b8b8;}"
+                    "QTableWidget#dbase_form_method_grid QHeaderView::section{"
+                    "background:#e7e7e7;color:#000000;"
+                    "border:1px solid #b0b0b0;padding:4px;}"
+                )
             self._style_position_root()
             self._style_brush_root()
             self._style_font_root()
             self._style_border_root()
+            for root_item in (self.session_identification_root, self.session_misc_root):
+                color = QColor("#2A2A2A" if enabled else "#E7E7E7")
+                ink = QColor("#FFFFFF" if enabled else "#000000")
+                font = QFont(self.property_tree.font())
+                font.setBold(True)
+                root_item.setFont(0, font)
+                for col in (0, 1):
+                    root_item.setBackground(col, QBrush(color))
+                    root_item.setForeground(col, QBrush(ink))
 
             # Stage 103: Die "..."-Farbschalter werden explizit neu gestylt,
             # weil ihre Swatch-QSS sonst die globale Dark-Mode-QSS ueberlagert.
@@ -78048,6 +79588,16 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                     self._update_color_dialog_button(button, side_color)
 
         def _palette_icon(self, component_type: str) -> QIcon:
+            if str(component_type) == "Session":
+                from d64dbase.session_designer import session_icon_png_bytes
+                icon_pixmap = QPixmap()
+                icon_pixmap.loadFromData(session_icon_png_bytes(), "PNG")
+                canvas = QPixmap(48, 48)
+                canvas.fill(Qt.transparent)
+                icon_painter = QPainter(canvas)
+                icon_painter.drawPixmap(6, 6, icon_pixmap)
+                icon_painter.end()
+                return QIcon(canvas)
             pix = QPixmap(48, 48)
             pix.fill(Qt.transparent)
             painter = QPainter(pix)
@@ -78176,6 +79726,9 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             if isinstance(item, DBaseFormControlItem):
                 if item.component_type == "Timer":
                     return DBASE_FORM_TIMER_EVENTS
+                if item.component_type == "Session":
+                    from d64dbase.session_designer import SESSION_EVENTS
+                    return SESSION_EVENTS
                 if item.component_type in DBASE_FORM_DATABASE_COMPONENTS:
                     return ()
             return DBASE_FORM_STANDARD_EVENTS
@@ -78329,6 +79882,75 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             finally:
                 self._syncing = False
 
+        def _refresh_session_methods(self) -> None:
+            from d64dbase.session_designer import SESSION_METHODS
+            self.method_grid.setRowCount(0)
+            item = self._selected_item
+            if not isinstance(item, DBaseFormControlItem) or item.component_type != "Session":
+                return
+            self.method_grid.setRowCount(len(SESSION_METHODS))
+            for row, name in enumerate(SESSION_METHODS):
+                method_item = QTableWidgetItem(name)
+                method_item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+                value_item = QTableWidgetItem("SESSION::" + name.upper())
+                value_item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+                self.method_grid.setItem(row, 0, method_item)
+                self.method_grid.setItem(row, 1, value_item)
+
+        def _session_method_double_clicked(self, row: int, column: int) -> None:
+            del column
+            item = self._selected_item
+            if not isinstance(item, DBaseFormControlItem) or item.component_type != "Session":
+                return
+            method = self.method_grid.item(row, 0)
+            if method is None:
+                return
+            host = self._event_host()
+            if host is not None and hasattr(host, "_open_dbase_form_session_method"):
+                host._open_dbase_form_session_method(item, method.text())
+
+        def _session_name_changed(self) -> None:
+            if self._syncing or not isinstance(self._selected_item, DBaseFormControlItem):
+                return
+            if self._selected_item.component_type != "Session":
+                return
+            name = self.session_name_edit.text().strip()
+            if name:
+                self._selected_item.set_component_name(name)
+            else:
+                self._update_property_values()
+
+        def _navigate_to_session_parent(self) -> None:
+            child = self._selected_item
+            if not isinstance(child, DBaseFormControlItem) or child.component_type != "Session":
+                return
+            parent = child.parentItem()
+            if not isinstance(parent, (DBaseFormControlItem, DBaseFormWindowItem)):
+                return
+            scene = getattr(self, "scene", None)
+            if scene is None or self._scene_disposed:
+                return
+            scene.clearSelection()
+            parent.setSelected(True)
+            parent.setFocus(Qt.OtherFocusReason)
+            self._selection_changed()
+
+        def _session_lock_changed(self, key: str, value: int) -> None:
+            if self._syncing or not isinstance(self._selected_item, DBaseFormControlItem):
+                return
+            if self._selected_item.component_type != "Session":
+                return
+            if key == "lockRetryCount":
+                self._selected_item.session_lock_retry_count = int(value)
+            elif key == "lockRetryInterval":
+                self._selected_item.session_lock_retry_interval = int(value)
+            else:
+                return
+            self._selected_item.properties_changed.emit(self._selected_item)
+            host = self._event_host()
+            if host is not None:
+                host.dbase_form_modified = True
+
         def _timer_interval_changed(self, value: int) -> None:
             if self._syncing or not isinstance(
                 self._selected_item, DBaseFormControlItem
@@ -78376,6 +79998,7 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                 self._selected_item = item
                 self._update_property_values()
                 self._refresh_event_grid()
+                self._refresh_session_methods()
 
         def _selected_control(self):
             scene = getattr(self, "scene", None)
@@ -78410,6 +80033,7 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                 return
             self._update_property_values()
             self._refresh_event_grid()
+            self._refresh_session_methods()
 
         def _geometry_changed(self, item) -> None:
             if item is self._selected_item:
@@ -78441,6 +80065,9 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                 is_timer = bool(
                     is_nonvisual and item.component_type == "Timer"
                 )
+                is_session = bool(
+                    is_nonvisual and item.component_type == "Session"
+                )
 
                 # Stage 164: Nicht-visuelle Komponenten zeigen ausschließlich
                 # Position, Name und Active/Enabled; Timer zusätzlich Interval.
@@ -78458,15 +80085,22 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                 timer_items = nonvisual_items + (
                     self.timer_interval_item,
                 )
+                session_items = (
+                    self.position_root, self.timer_active_item,
+                    self.session_identification_root, self.session_misc_root,
+                )
                 fixed_only_items = (
-                    self.timer_interval_item,
-                    self.timer_active_item,
+                    self.timer_interval_item, self.timer_active_item,
+                    self.session_identification_root, self.session_misc_root,
                 )
 
                 for row in range(self.property_tree.topLevelItemCount()):
                     top_item = self.property_tree.topLevelItem(row)
                     if is_nonvisual:
-                        allowed_items = timer_items if is_timer else nonvisual_items
+                        allowed_items = (
+                            session_items if is_session
+                            else timer_items if is_timer else nonvisual_items
+                        )
                         top_item.setHidden(
                             not any(
                                 top_item is candidate
@@ -78502,6 +80136,25 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                 if is_timer:
                     self.timer_interval_spin.setValue(
                         max(10, int(getattr(item, "timer_interval", 1000)))
+                    )
+                if is_session:
+                    from d64dbase.session_designer import (
+                        DEFAULT_LOCK_RETRY_COUNT, DEFAULT_LOCK_RETRY_INTERVAL,
+                    )
+                    self.session_base_class_edit.setText("SESSION")
+                    self.session_class_edit.setText(
+                        str(getattr(item, "wfm_class_name", "") or "SESSION")
+                    )
+                    self.session_name_edit.setText(item.component_name)
+                    parent = item.parentItem()
+                    self.session_parent_edit.setText(
+                        str(getattr(parent, "component_name", "") or "")
+                    )
+                    self.session_lock_retry_count_spin.setValue(
+                        int(getattr(item, "session_lock_retry_count", DEFAULT_LOCK_RETRY_COUNT))
+                    )
+                    self.session_lock_retry_interval_spin.setValue(
+                        int(getattr(item, "session_lock_retry_interval", DEFAULT_LOCK_RETRY_INTERVAL))
                     )
                 if item is None:
                     self.hwnd_edit.clear()
@@ -78628,6 +80281,10 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             del column
             if item is self.position_root:
                 self.position_root.setExpanded(not self.position_root.isExpanded())
+            elif item is self.session_parent_item:
+                self._navigate_to_session_parent()
+            elif item in (self.session_identification_root, self.session_misc_root):
+                item.setExpanded(not item.isExpanded())
             elif hasattr(self, "style_root") and item is self.style_root:
                 self.style_root.setExpanded(not self.style_root.isExpanded())
             elif hasattr(self, "font_root") and item is self.font_root:
@@ -104419,6 +106076,12 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.environment_editor_item.setData(
                 0, Qt.UserRole, "environment.editor"
             )
+            self.environment_resources_item = QTreeWidgetItem(
+                self.nodes["umgebung"], ["Ressourcen"]
+            )
+            self.environment_resources_item.setData(
+                0, Qt.UserRole, "environment.resources"
+            )
             self.environment_workstation_item = QTreeWidgetItem(
                 self.nodes["umgebung"], ["Workstation"]
             )
@@ -104574,6 +106237,73 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.console_runtime_build_button.clicked.connect(self._build_console_runtime_dll)
             self.console_runtime_pack_checkbox.toggled.connect(self._console_runtime_pack_changed)
             self.console_runtime_const_pool_checkbox.toggled.connect(self._console_runtime_const_pool_changed)
+
+            # Stage 516: Windows -> 32/64-Bit -> Umgebung -> Ressourcen.
+            self.resource_mapping_scroll = QScrollArea(self.stack)
+            self.resource_mapping_scroll.setObjectName(
+                f"project_windows_{target_tag}_resource_mapping_scroll")
+            self.resource_mapping_scroll.setWidgetResizable(True)
+            self.resource_mapping_scroll.setFrameShape(QFrame.NoFrame)
+            resource_body = QWidget(self.resource_mapping_scroll)
+            resource_layout = QVBoxLayout(resource_body)
+            resource_group = QGroupBox("Mapping:", resource_body)
+            resource_grid = QGridLayout(resource_group)
+            self.resource_mapping_ascii_combo = QComboBox(resource_group)
+            self.resource_mapping_ascii_combo.setObjectName(
+                f"project_windows_{target_tag}_resource_ascii_mapping")
+            self.resource_mapping_ascii_combo.addItem(
+                "ASCII, without UTF - 16 LE Copy", False)
+            self.resource_mapping_ascii_combo.addItem(
+                "ASCII with UTF - 16 LE Copy", True)
+            self.resource_mapping_utf8_combo = QComboBox(resource_group)
+            self.resource_mapping_utf8_combo.setObjectName(
+                f"project_windows_{target_tag}_resource_utf8_mapping")
+            self.resource_mapping_utf8_combo.addItem(
+                "UTF - 8, without UTF - 16 LE Copy", False)
+            self.resource_mapping_utf8_combo.addItem(
+                "UTF - 8, with UTF - 16 LE Copy", True)
+            resource_grid.addWidget(QLabel("ASCII", resource_group), 0, 0)
+            resource_grid.addWidget(self.resource_mapping_ascii_combo, 0, 1)
+            resource_grid.addWidget(QLabel("UTF - 8", resource_group), 1, 0)
+            resource_grid.addWidget(self.resource_mapping_utf8_combo, 1, 1)
+            resource_grid.addWidget(QLabel("Unicode", resource_group), 2, 0)
+            resource_grid.addWidget(QLabel("UTF-16 LE Windows Standard", resource_group), 2, 1)
+            resource_grid.setColumnStretch(1, 1)
+            resource_layout.addWidget(resource_group)
+            compress_group = QGroupBox("Compress DLL:", resource_body)
+            compress_layout = QVBoxLayout(compress_group)
+            self.resource_compress_checkbox = QCheckBox("enable", compress_group)
+            self.resource_compress_checkbox.setObjectName(
+                f"project_windows_{target_tag}_resource_compress_enable")
+            self.resource_compress_transparent_radio = QRadioButton("transparent", compress_group)
+            self.resource_compress_transparent_radio.setObjectName(
+                f"project_windows_{target_tag}_resource_compress_transparent")
+            self.resource_compress_custom_radio = QRadioButton("custom", compress_group)
+            self.resource_compress_custom_radio.setObjectName(
+                f"project_windows_{target_tag}_resource_compress_custom")
+            self.resource_compress_transparent_radio.setToolTip(
+                "NTFS/LZX: die DLL bleibt PE-kompatibel; Windows und NTFS erforderlich")
+            self.resource_compress_custom_radio.setToolTip(
+                "Komprimiert geeignete eigene Ressourcen (zlib). Zugriff über D64-Entpacker; "
+                "Windows-Standardressourcen bleiben im Originalformat")
+            compress_layout.addWidget(self.resource_compress_checkbox)
+            compress_layout.addWidget(self.resource_compress_transparent_radio)
+            compress_layout.addWidget(self.resource_compress_custom_radio)
+            resource_layout.addWidget(compress_group)
+            resource_layout.addStretch(1)
+            self.resource_mapping_scroll.setWidget(resource_body)
+            self.stack.addWidget(self.resource_mapping_scroll)
+            self.set_resource_mapping(getattr(self.owner, "project_windows_resource_mapping", {}).get(
+                self.target, {}))
+            self.resource_mapping_ascii_combo.currentIndexChanged.connect(
+                lambda _index: self._resource_mapping_changed("ascii"))
+            self.resource_mapping_utf8_combo.currentIndexChanged.connect(
+                lambda _index: self._resource_mapping_changed("utf8"))
+            self.set_resource_compression(getattr(
+                self.owner, "project_windows_resource_compression", {}).get(self.target, {}))
+            self.resource_compress_checkbox.toggled.connect(self._resource_compression_changed)
+            self.resource_compress_transparent_radio.toggled.connect(self._resource_compression_changed)
+            self.resource_compress_custom_radio.toggled.connect(self._resource_compression_changed)
 
             # Umgebung -> Workstation (Stage 198: eigene ScrollArea)
             self.workstation_scroll = QScrollArea(self.stack)
@@ -105764,6 +107494,69 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.tree.setCurrentItem(self.compiler_input_directories_item)
             self._tree_changed(self.compiler_input_directories_item, None)
 
+        def resource_build_settings(self) -> dict:
+            """Live snapshot for the resource editor (including unsaved UI changes).
+
+            The project owns separate Windows 32/64 pages.  Reading the
+            controls here prevents a stale project cache or an editor created
+            before the settings panel from silently overriding user choices.
+            """
+            return {
+                "ascii": bool(self.resource_mapping_ascii_combo.currentData()),
+                "utf8": bool(self.resource_mapping_utf8_combo.currentData()),
+                "enabled": bool(self.resource_compress_checkbox.isChecked()),
+                "mode": ("custom" if self.resource_compress_custom_radio.isChecked()
+                         else "transparent"),
+            }
+
+        def set_resource_mapping(self, settings) -> None:
+            for key, combo in (("ascii", self.resource_mapping_ascii_combo),
+                               ("utf8", self.resource_mapping_utf8_combo)):
+                enabled = bool((settings or {}).get(key, False))
+                previous = combo.blockSignals(True)
+                try:
+                    combo.setCurrentIndex(1 if enabled else 0)
+                finally:
+                    combo.blockSignals(previous)
+
+        def _resource_mapping_changed(self, key: str) -> None:
+            if self._syncing:
+                return
+            combo = (self.resource_mapping_ascii_combo if key == "ascii"
+                     else self.resource_mapping_utf8_combo)
+            callback = getattr(self.owner, "set_project_windows_resource_mapping", None)
+            if callable(callback):
+                callback(self.target, key, bool(combo.currentData()))
+
+        def set_resource_compression(self, settings) -> None:
+            settings = settings or {}
+            enabled = bool(settings.get("enabled", False))
+            mode = str(settings.get("mode", "transparent"))
+            controls = (self.resource_compress_checkbox,
+                        self.resource_compress_transparent_radio,
+                        self.resource_compress_custom_radio)
+            previous = [widget.blockSignals(True) for widget in controls]
+            try:
+                self.resource_compress_checkbox.setChecked(enabled)
+                self.resource_compress_transparent_radio.setChecked(mode != "custom")
+                self.resource_compress_custom_radio.setChecked(mode == "custom")
+                self.resource_compress_transparent_radio.setEnabled(enabled)
+                self.resource_compress_custom_radio.setEnabled(enabled)
+            finally:
+                for widget, old in zip(controls, previous):
+                    widget.blockSignals(old)
+
+        def _resource_compression_changed(self, *_args) -> None:
+            if self._syncing:
+                return
+            enabled = self.resource_compress_checkbox.isChecked()
+            mode = "custom" if self.resource_compress_custom_radio.isChecked() else "transparent"
+            self.resource_compress_transparent_radio.setEnabled(enabled)
+            self.resource_compress_custom_radio.setEnabled(enabled)
+            callback = getattr(self.owner, "set_project_windows_resource_compression", None)
+            if callable(callback):
+                callback(self.target, enabled, mode)
+
         def set_console_runtime_directory(self, directory: str) -> None:
             field = self.console_runtime_directory_edit
             blocked = field.blockSignals(True)
@@ -106115,6 +107908,8 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 page = self.editor_scroll
             elif key == "environment.workstation":
                 page = self.workstation_scroll
+            elif key == "environment.resources":
+                page = self.resource_mapping_scroll
             elif key == "umgebung":
                 page = self._overview_widgets["umgebung"]
             elif key == "compiler.input_directories":
@@ -107978,6 +109773,12 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
         def page_for_target(self, target: str):
             return self.windows_pages[self._target_key(target)]
 
+        def set_resource_mapping(self, target: str, mapping) -> None:
+            self.page_for_target(target).set_resource_mapping(mapping)
+
+        def set_resource_compression(self, target: str, settings) -> None:
+            self.page_for_target(target).set_resource_compression(settings)
+
         def set_console_runtime_directory(self, target: str, directory: str) -> None:
             self.page_for_target(target).set_console_runtime_directory(directory)
 
@@ -109746,6 +111547,15 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             }
             self.project_windows_console_const_pool: Dict[str, bool] = {
                 "pe32": False, "pe64": False,
+            }
+            # Stage 516: native UTF-16LE copies are opt-in per ABI and codepage.
+            self.project_windows_resource_mapping = {
+                "pe32": {"ascii": False, "utf8": False},
+                "pe64": {"ascii": False, "utf8": False},
+            }
+            self.project_windows_resource_compression = {
+                "pe32": {"enabled": False, "mode": "transparent"},
+                "pe64": {"enabled": False, "mode": "transparent"},
             }
             self.project_windows_relative_paths: Dict[str, Dict[str, bool]] = {
                 "pe32": {"input": True, "output": True},
@@ -114355,6 +116165,91 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     return method
             return None
 
+        def _open_dbase_form_session_method(self, item, method_name: str) -> None:
+            """Bind a Session method to CLASS and open its forwarding function."""
+            from d64dbase.session_designer import (
+                SESSION_METHODS, bind_session_method, session_method_source,
+            )
+            if (
+                not isinstance(item, DBaseFormControlItem)
+                or item.component_type != "Session"
+                or method_name not in SESSION_METHODS
+            ):
+                return
+            self._ensure_dbase_form_designer()
+            document = self.dbase_form_build_document
+            scene = self.dbase_form_scene
+            if document is None or scene is None:
+                return
+            from d64dbase.form_event_handlers import find_event_procedure_offset
+            procedure_name = f"{item.component_name.upper()}_{method_name}"
+            try:
+                source_lines = session_method_source(item.component_name, method_name)
+            except ValueError as exc:
+                self.show_error("Ungültiger Session-Name", str(exc))
+                return
+
+            # Take in *all* valid handwritten WFM changes before modifying
+            # the live designer model. If the editor is unfinished/malformed,
+            # never replace its contents or silently discard user edits.
+            if not self._merge_dbase_form_source_methods_events(strict=False):
+                self.show_error(
+                    "WFM-Quellcode noch nicht synchronisiert",
+                    "Bitte den Quellcode korrigieren, bevor eine Session-Methode erzeugt wird.",
+                )
+                return
+            current_source = document.raw_editor.toPlainText()
+            offset = find_event_procedure_offset(current_source, procedure_name)
+            method = self._find_dbase_form_method(procedure_name)
+            if method is None and offset is not None:
+                # A function visible only in the editor is not necessarily a
+                # complete parsed method. Do not insert a duplicate or reset.
+                self.show_error(
+                    "Prozedur bereits im Quelltext vorhanden",
+                    "Die Prozedur existiert im Editor, wurde aber nicht "
+                    "als vollständige WFM-Methode übernommen.",
+                )
+                return
+
+            if method is None:
+                from d64dbase.wfm import DBaseWfmMethod
+                methods = scene.wfm_methods
+                order = max(
+                    [int(getattr(m, "order", 0)) for m in methods] + [0]
+                ) + 1
+                methods.append(DBaseWfmMethod(
+                    name=procedure_name,
+                    kind="function",
+                    parameters=("param",),
+                    body=[f"return SESSION::{method_name}(param)"],
+                    order=order,
+                    source_lines=source_lines,
+                ))
+                self.dbase_form_modified = True
+
+            # Add (or update) the selected SESSION object's *own* CLASS
+            # handler assignment, e.g. deleteAlias = CLASS::SESSION1_DELETEALIAS.
+            # The WFM serializer writes it within WITH (THIS.SESSION1), before
+            # the object's existing Left/Top properties. No extra component.
+            if bind_session_method(item.wfm_events, item.component_name, method_name):
+                self.dbase_form_modified = True
+            # Editor changes have already been merged; don't merge the old
+            # editor text once again over the newly bound event or method.
+            document.raw_editor.document().setModified(False)
+            source = self._sync_dbase_form_source()
+            if self.dbase_form_tabs is not None:
+                self.dbase_form_tabs.setCurrentWidget(self.dbase_form_source_page)
+            document.assembler_panel.hide()
+            editor = document.raw_editor
+            offset = find_event_procedure_offset(source, procedure_name)
+            if offset is not None:
+                cursor = QTextCursor(editor.document())
+                cursor.setPosition(offset)
+                cursor.movePosition(QTextCursor.EndOfLine, QTextCursor.KeepAnchor)
+                editor.setTextCursor(cursor)
+                editor.centerCursor()
+            editor.setFocus(Qt.OtherFocusReason)
+
         def _open_dbase_form_event_procedure(
             self,
             item,
@@ -114746,6 +116641,19 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             # eingefügt; wenn keiner existiert, direkt hinter die bits-Zeile.
             missing_imports = []
             for name in imports:
+                declaration = f'import {name}, "libd64_qt5.dll", "{name}"'
+                if declaration not in assembly:
+                    missing_imports.append(declaration + "\n")
+
+            # Stage 503: the generated SESSION::method(param) wrappers need
+            # a native Qt5 runtime entrypoint to retain their object identity.
+            uses_session_invoke = any(
+                re.search(r"(?i)\breturn\s+SESSION\s*::", str(line or ""))
+                for _method in list(getattr(model, "methods", []) or [])
+                for line in list(getattr(_method, "body", []) or [])
+            )
+            if uses_session_invoke:
+                name = "DBaseQtWfmSessionInvoke"
                 declaration = f'import {name}, "libd64_qt5.dll", "{name}"'
                 if declaration not in assembly:
                     missing_imports.append(declaration + "\n")
@@ -115215,6 +117123,15 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             for lifecycle_name in ("__init__", "__main__", "__del__"):
                 if lifecycle_name.casefold() in method_map:
                     required_procedures.add(lifecycle_name)
+
+            # Stage 503: CLASS::SESSION1_DELETEALIAS and the declaration
+            # SESSION1_deleteAlias have the same case-insensitive identity.
+            # Canonicalize to the declared spelling before emitting labels;
+            # otherwise the PE assembler encounters a duplicate symbol.
+            required_procedures = {
+                str(getattr(method_map.get(str(name).casefold()), "name", name))
+                for name in required_procedures
+            }
 
             lines = []
             form_slot = "__dbase_wfm_form"
@@ -117843,6 +119760,86 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                             return_match.group(1) or ""
                         ).strip()
                         if return_expr:
+                            # Stage 503: a SESSION::method(param) wrapper is an
+                            # object call, *not* an arithmetic expression.
+                            # The Stage-502 path wrongly tokenized ':' and
+                            # reported 'WFM-Bedingung: unerwartetes Zeichen'.
+                            from d64dbase.session_designer import parse_session_return_call
+                            try:
+                                session_call = parse_session_return_call(return_expr)
+                            except ValueError as exc:
+                                raise AssemblerError(
+                                    f"{filename}:{source_line_number}: "
+                                    f"WFM-Funktion {procedure}: {exc}"
+                                ) from exc
+                            if session_call is not None:
+                                session_method, arg_name = session_call
+                                params = wfm_method_parameters(method)
+                                if (str(getattr(method, 'kind', '')).casefold() != 'function'
+                                        or len(params) != 1
+                                        or params[0].casefold() != arg_name.casefold()):
+                                    raise AssemblerError(
+                                        f"{filename}:{source_line_number}: "
+                                        f"SESSION::{session_method} erwartet eine FUNCTION "
+                                        "mit genau einem gleichnamigen Parameter."
+                                    )
+                                # Session1_deleteAlias belongs to THIS.Session1.
+                                # Do not silently dispatch to a different object.
+                                qualified = re.fullmatch(
+                                    rf"(?i)([A-Za-z_]\w*)_{re.escape(session_method)}",
+                                    procedure,
+                                )
+                                if qualified is None:
+                                    raise AssemblerError(
+                                        f"{filename}:{source_line_number}: "
+                                        f"SESSION::{session_method} muss in "
+                                        f"SESSIONNAME_{session_method}(param) stehen."
+                                    )
+                                session_name = qualified.group(1)
+                                matched_sessions = [
+                                    ctrl for ctrl in list(model.controls)
+                                    if str(ctrl.class_name).casefold() == 'session'
+                                    and str(ctrl.path).rsplit('.', 1)[-1].casefold()
+                                    == session_name.casefold()
+                                ]
+                                if len(matched_sessions) != 1:
+                                    raise AssemblerError(
+                                        f"{filename}:{source_line_number}: "
+                                        f"SESSION-Objekt {session_name} nicht eindeutig gefunden."
+                                    )
+                                handle = resolve_wfm_object_slot(matched_sessions[0].path)
+                                if handle is None:
+                                    raise AssemblerError(
+                                        f"{filename}:{source_line_number}: "
+                                        f"SESSION-Handle {session_name} fehlt."
+                                    )
+                                argument_slot = wfm_function_text_slot(method)
+                                method_label, method_length = text_label(session_method)
+                                callback_lines.append(f"    ; {statement}")
+                                if is64:
+                                    callback_lines.extend([
+                                        f"    mov rcx, qword ptr [{handle}]",
+                                        f"    mov rdx, {method_label}",
+                                        f"    mov r8d, {method_length}",
+                                        f"    mov r9, qword ptr [{memory_pointer_label(argument_slot)}]",
+                                        "    sub rsp, 48",
+                                        f"    mov eax, dword ptr [{memory_length_label(argument_slot)}]",
+                                        "    mov dword ptr [rsp+32], eax",
+                                        "    call DBaseQtWfmSessionInvoke",
+                                        "    add rsp, 48",
+                                    ])
+                                else:
+                                    callback_lines.extend([
+                                        f"    push dword ptr [{memory_length_label(argument_slot)}]",
+                                        f"    push dword ptr [{memory_pointer_label(argument_slot)}]",
+                                        f"    push {method_length}",
+                                        f"    push {method_label}",
+                                        f"    push dword ptr [{handle}]",
+                                        "    call DBaseQtWfmSessionInvoke",
+                                        "    add esp, 20",
+                                    ])
+                                callback_lines.append(f"    jmp {procedure_exit_label}")
+                                continue
                             value = None
                             if re.match(r"^[+-]?\d+$", return_expr):
                                 value = int(return_expr, 10)
@@ -119356,6 +121353,13 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     )
                 )
                 item.component_active = active_value
+                if item.component_type == "Session":
+                    item.session_lock_retry_count = max(0, int(
+                        self._wfm_prop_ci(props, "lockRetryCount", 3)
+                    ))
+                    item.session_lock_retry_interval = max(0, int(
+                        self._wfm_prop_ci(props, "lockRetryInterval", 1000)
+                    ))
                 if item.component_type == "Timer":
                     item.timer_interval = max(
                         10,
@@ -119364,6 +121368,31 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                         ))),
                     )
                     item.timer_active = active_value
+
+                # Stage 501: Der fruehe Nicht-Visual-Return darf WFM-Events
+                # nicht verwerfen (insbesondere beforeRelease/onPregress).
+                item.wfm_class_name = str(getattr(control, "class_name", item.component_type.upper()))
+                from d64dbase.form_event_handlers import normalized_focus_events
+                item.wfm_events = normalized_focus_events(
+                    getattr(control, "events", {}) or {}
+                )
+                if item.component_type == "Timer":
+                    legacy = None
+                    for event_key in list(item.wfm_events):
+                        if str(event_key).casefold() == "oninterval":
+                            legacy = item.wfm_events.pop(event_key)
+                    if legacy is not None and not any(
+                        str(key).casefold() == "ontimer" for key in item.wfm_events
+                    ):
+                        item.wfm_events["OnTimer"] = legacy
+                item.wfm_extra_properties = {
+                    k: v for k, v in props.items()
+                    if str(k).casefold() not in {
+                        "name", "left", "top", "width", "height",
+                        "active", "enabled", "interval", "text",
+                        "lockretrycount", "lockretryinterval",
+                    }
+                }
 
                 # Stage 164: nicht-visuelle Komponenten besitzen keine Brush-,
                 # Font- oder Border-Designer-Eigenschaften. Geometry/Name/Active
@@ -119513,6 +121542,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             known = {
                 "name", "left", "top", "width", "height", "text",
                 "active", "enabled", "interval",
+                "lockretrycount", "lockretryinterval",
                 "backcolor", "forecolor",
                 "brushgradient", "brushstyle", "brushcutwidth", "brushcutheight",
                 "fontbackground", "fontforeground", "fontalpha",
@@ -119936,6 +121966,14 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                     lines.extend([
                         f"    {path} = NEW {class_value}({parent_path})",
                         f"    WITH ({path})",
+                    ])
+                    if item.component_type == "Session":
+                        from d64dbase.session_designer import session_method_assignments
+                        for key, value in session_method_assignments(item.wfm_events):
+                            lines.append(
+                                f"        {key} = {canonical_event_reference(value)}"
+                            )
+                    lines.extend([
                         "        Name = " + self._wfm_quote(item.component_name),
                         f"        Left = {left}",
                         f"        Top = {top}",
@@ -119946,13 +121984,26 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                         lines.append(
                             f"        Interval = {max(10, int(getattr(item, 'timer_interval', 1000)))}"
                         )
+                    if item.component_type == "Session":
+                        lines.append(
+                            f"        lockRetryCount = {max(0, int(getattr(item, 'session_lock_retry_count', 3)))}"
+                        )
+                        lines.append(
+                            f"        lockRetryInterval = {max(0, int(getattr(item, 'session_lock_retry_interval', 1000)))}"
+                        )
                     lines.append(
                         f"        Active = {self._wfm_bool(active_value)}"
                     )
-                    if item.component_type == "Timer":
+                    if item.component_type in ("Timer", "Session"):
+                        from d64dbase.session_designer import SESSION_METHODS
+                        session_methods = {
+                            method.casefold() for method in SESSION_METHODS
+                        } if item.component_type == "Session" else set()
                         for key, value in dict(
                             getattr(item, "wfm_events", {}) or {}
                         ).items():
+                            if str(key).casefold() in session_methods:
+                                continue  # already emitted before geometry
                             lines.append(
                                 f"        {key} = {canonical_event_reference(value)}"
                             )
@@ -121826,6 +123877,12 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 )
                 panel.set_console_runtime_const_pool(
                     _target, self.project_windows_console_const_pool.get(_target, False)
+                )
+                panel.set_resource_mapping(
+                    _target, self.project_windows_resource_mapping.get(_target, {})
+                )
+                panel.set_resource_compression(
+                    _target, self.project_windows_resource_compression.get(_target, {})
                 )
                 panel.set_link_with_ordinals(
                     _target,
@@ -123823,6 +125880,74 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             panel = getattr(self, "project_settings_panel", None)
             if panel is not None and tuple(panel.paths(target_key)) != tuple(normalized):
                 panel.set_paths(target_key, normalized)
+            if changed and mark_modified:
+                self.set_project_modified(True)
+                if self.current_project_path is not None:
+                    self.save_project()
+
+        def project_windows_resource_build_settings(self, target: str) -> dict:
+            """Authoritative ABI-specific resource settings at build time.
+
+            Read the current visible controls rather than trusting only the
+            persisted project dictionary.  Normal UI changes are saved by the
+            existing setters; this also covers still-uncommitted edit states.
+            """
+            key = self._project_windows_target_key(target)
+            mapping = self.project_windows_resource_mapping.get(key, {})
+            compression = self.project_windows_resource_compression.get(key, {})
+            settings = {
+                "ascii": bool(mapping.get("ascii", False)),
+                "utf8": bool(mapping.get("utf8", False)),
+                "enabled": bool(compression.get("enabled", False)),
+                "mode": str(compression.get("mode", "transparent")),
+            }
+            panel = getattr(self, "project_settings_panel", None)
+            if panel is not None:
+                page = panel.page_for_target(key)
+                snapshot = getattr(page, "resource_build_settings", None)
+                if callable(snapshot):
+                    settings.update(snapshot())
+            if settings["mode"] not in ("transparent", "custom"):
+                settings["mode"] = "transparent"
+            return settings
+
+        def set_project_windows_resource_mapping(
+            self, target: str, codepage: str, with_utf16_copy: bool,
+            *, mark_modified: bool = True,
+        ) -> None:
+            key = self._project_windows_target_key(target)
+            page = str(codepage).casefold().replace("-", "")
+            if page not in ("ascii", "utf8"):
+                raise ValueError("Ressourcen-Mapping: nur ASCII und UTF-8 sind wählbar")
+            value = bool(with_utf16_copy)
+            settings = self.project_windows_resource_mapping.setdefault(
+                key, {"ascii": False, "utf8": False})
+            changed = settings.get(page, False) != value
+            settings[page] = value
+            panel = getattr(self, "project_settings_panel", None)
+            if panel is not None:
+                panel.page_for_target(key).set_resource_mapping(settings)
+            if changed and mark_modified:
+                self.set_project_modified(True)
+                if self.current_project_path is not None:
+                    self.save_project()
+
+        def set_project_windows_resource_compression(
+            self, target: str, enabled: bool, mode: str,
+            *, mark_modified: bool = True,
+        ) -> None:
+            key = self._project_windows_target_key(target)
+            choice = str(mode or "transparent").strip().lower()
+            if choice not in ("transparent", "custom"):
+                raise ValueError("Resourcen-Kompression: transparent oder custom erwartet")
+            value = {"enabled": bool(enabled), "mode": choice}
+            previous = self.project_windows_resource_compression.get(
+                key, {"enabled": False, "mode": "transparent"})
+            changed = value != previous
+            self.project_windows_resource_compression[key] = value
+            panel = getattr(self, "project_settings_panel", None)
+            if panel is not None:
+                panel.page_for_target(key).set_resource_compression(value)
             if changed and mark_modified:
                 self.set_project_modified(True)
                 if self.current_project_path is not None:
@@ -134295,6 +136420,23 @@ border: 2px solid #2a69aa;
                         values, _settings["console_const_pool_key"], False
                     ), mark_modified=False,
                 )
+                for _page, _entry_key in (
+                    ("ascii", "resource_ascii_copy_key"),
+                    ("utf8", "resource_utf8_copy_key"),
+                ):
+                    self.set_project_windows_resource_mapping(
+                        _target, _page,
+                        _project_bool_entry(values, _settings[_entry_key], False),
+                        mark_modified=False,
+                    )
+                _compression_items = values.get(_settings["resource_compress_mode_key"], ())
+                self.set_project_windows_resource_compression(
+                    _target,
+                    enabled=_project_bool_entry(
+                        values, _settings["resource_compress_enabled_key"], False),
+                    mode=_compression_items[0].get("value", "transparent") if _compression_items else "transparent",
+                    mark_modified=False,
+                )
                 _output_entries = values.get(_settings["output_key"], ())
                 self.set_project_windows_dbase_visual_settings(
                     _target,
@@ -135658,6 +137800,20 @@ border: 2px solid #2a69aa;
                 }]
                 entries[_settings["console_const_pool_key"]] = [{
                     "value": "true" if self.project_windows_console_const_pool.get(_target, False) else "false"
+                }]
+                _resource_mapping = self.project_windows_resource_mapping.get(_target, {})
+                entries[_settings["resource_ascii_copy_key"]] = [{
+                    "value": "true" if _resource_mapping.get("ascii", False) else "false"
+                }]
+                entries[_settings["resource_utf8_copy_key"]] = [{
+                    "value": "true" if _resource_mapping.get("utf8", False) else "false"
+                }]
+                _resource_compress = self.project_windows_resource_compression.get(_target, {})
+                entries[_settings["resource_compress_enabled_key"]] = [{
+                    "value": "true" if _resource_compress.get("enabled", False) else "false"
+                }]
+                entries[_settings["resource_compress_mode_key"]] = [{
+                    "value": str(_resource_compress.get("mode", "transparent"))
                 }]
                 _modes = self.project_windows_relative_paths.get(
                     _target, {"input": True, "output": True}
@@ -138977,6 +141133,7 @@ border: 2px solid #2a69aa;
             dock = getattr(self, "windows_resource_editor_dock", None)
             editor = getattr(self, "windows_resource_editor_widget", None)
             if dock is not None and editor is not None:
+                editor.resource_build_settings_provider = self.project_windows_resource_build_settings
                 return dock, editor
 
             dock = QDockWidget("Resourcen-Editor", self)
@@ -138993,7 +141150,21 @@ border: 2px solid #2a69aa;
                 | QDockWidget.DockWidgetFloatable
             )
             dock.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            # Stage 512: the app's DockTitleBar draws white float/close glyphs
+            # in dark mode and black glyphs in light mode (unlike native title
+            # buttons, which may remain low-contrast under Qt stylesheets).
+            dock.setTitleBarWidget(DockTitleBar(dock))
+            dock.titleBarWidget().set_dark_mode(self.dark_mode_enabled)
             editor = WindowsResourceEditorWidget(dock, language_codes=LANGUAGE_CODES)
+            # Resolve at every button click, never capture the settings of the
+            # currently displayed project or a different architecture.
+            editor.resource_build_settings_provider = self.project_windows_resource_build_settings
+            # Legacy editor hooks remain available for independently hosted
+            # instances; the combined provider above is authoritative.
+            editor.resource_mapping_provider = lambda target: dict(
+                self.project_windows_resource_mapping.get(target, {}))
+            editor.resource_compression_provider = lambda target: dict(
+                self.project_windows_resource_compression.get(target, {}))
             editor.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
             editor.set_dark_mode(self.dark_mode_enabled)
             editor.status_message.connect(

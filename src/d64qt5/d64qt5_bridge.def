@@ -78,3 +78,4 @@ EXPORTS
     DBaseQtPrologWrite @1002
     DBaseQtPrologReadLine @1003
     DBaseQtPrologShutdown @1004
+    DBaseQtWfmSessionInvoke @1015

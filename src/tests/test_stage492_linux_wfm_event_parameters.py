@@ -79,7 +79,7 @@ def test_runtime_consumes_method_parameter_metadata():
     assert 'initialVariables' in cpp
     assert 'parameters=specification.value(QStringLiteral("parameters")).toArray();' in cpp
     assert 'const QVariant sender=QVariant::fromValue(' in cpp
-    assert 'nativeX11Id(button)' in cpp
+    assert 'nativeX11Id(widget)' in cpp
     assert 'eventVariables.insert(parameters.at(1).toString().toLower(),checked);' in cpp
     assert 'QVariant runDBaseActions(' in cpp
     assert 'return args.size()>1 ? compatArgument(args.at(1),variables,form) : QVariant();' in cpp

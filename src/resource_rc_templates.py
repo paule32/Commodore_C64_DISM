@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 
-RESOURCE_TEMPLATE_KINDS = ("Dialog", "Text", "Icon", "Bitmap", "Cursor", "RCDATA")
+RESOURCE_TEMPLATE_KINDS = ("Dialog", "Menu", "Text", "Icon", "Bitmap", "Cursor", "RCDATA")
 
 
 def _next_suffix(source: str, prefix: str) -> int:
@@ -37,6 +37,24 @@ def rc_template(kind: str, source: str = "") -> str:
             '    LTEXT "Dialogvorlage", -1, 12, 12, 190, 14\n'
             f'    DEFPUSHBUTTON "OK", {base + 1}, 105, 92, 50, 14\n'
             f'    PUSHBUTTON "Abbrechen", {base + 2}, 161, 92, 50, 14\n'
+            "END\n"
+        )
+    if key in {"menu", "menü"}:
+        index = _next_suffix(source, "IDM_MENU")
+        base = 3000 + 10 * index
+        return (
+            f"IDM_MENU_{index} MENU\n"
+            "BEGIN\n"
+            '    POPUP "Datei"\n'
+            "    BEGIN\n"
+            f'        MENUITEM "Öffnen", {base + 1}\n'
+            "        MENUITEM SEPARATOR\n"
+            f'        MENUITEM "Beenden", {base + 2}\n'
+            "    END\n"
+            '    POPUP "Hilfe"\n'
+            "    BEGIN\n"
+            f'        MENUITEM "Über ...", {base + 3}\n'
+            "    END\n"
             "END\n"
         )
     if key == "text":
@@ -82,3 +100,23 @@ def insertable_rc_template(kind: str, source: str, cursor_position: int) -> str:
         prefix += "\n"
     suffix = "\n" if after.strip() and not after.startswith("\n") else ""
     return prefix + text + suffix
+
+
+def uncompiled_rc_template_markers(source: str) -> list[tuple[str, str]]:
+    """Report recognizable generated declarations without claiming compiled data.
+
+    This outline is used only when live compilation fails (for example, an
+    ICON template references an .ico file that has not yet been supplied).
+    It never feeds RES/COFF output.
+    """
+    result = []
+    for line in source.splitlines():
+        match = re.match(
+            r"^\s*(ID[DBICMR]_[A-Za-z0-9_]+)\s+(DIALOGEX?|MENU|ICON|BITMAP|CURSOR|RCDATA)\b",
+            line, re.I,
+        )
+        if match:
+            result.append((match.group(2).upper(), match.group(1)))
+    if re.search(r"(?mi)^\s*STRINGTABLE\s*$", source):
+        result.append(("STRINGTABLE", "Text (STRINGTABLE)"))
+    return result

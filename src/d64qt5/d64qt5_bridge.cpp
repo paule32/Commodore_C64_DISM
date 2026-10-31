@@ -9451,6 +9451,76 @@ extern "C" D64QT5_API int DBaseQtObjectBindEvent(
     return 1;
 }
 
+// Stage 503: ABI boundary for generated WFM SESSION::<method>(param).
+// A designer SESSION is a QObject (not the Console SessionNode). Validate
+// the instance and never treat an arbitrary pointer as a SessionNode.
+// Alias operations currently affect only this WFM SESSION object's local
+// alias registry; external BDE providers/credentials are separate work.
+extern "C" D64QT5_API int DBaseQtWfmSessionInvoke(
+    void *handle, const char *methodName, int methodNameLength,
+    const char *argument, int argumentLength)
+{
+    if (g_shutdown_requested || !handle || !methodName ||
+        methodNameLength <= 0 || methodNameLength > 64 ||
+        argumentLength < 0 || argumentLength > 4096 ||
+        (argumentLength > 0 && !argument))
+        return 0;
+
+    QObject *object = static_cast<QObject *>(handle);
+    if (object->property("dbaseNonVisualClass").toString().compare(
+            QStringLiteral("SESSION"), Qt::CaseInsensitive) != 0)
+        return 0;
+
+    const QString name = QString::fromLatin1(methodName, methodNameLength)
+        .trimmed().toCaseFolded();
+    const QString value = argumentLength > 0
+        ? QString::fromUtf8(argument, argumentLength).trimmed()
+        : QString();
+
+    // These operations are initially a LOCAL per-object alias registry only.
+    // They must not claim to configure a real DBF/BDE connection.
+    if (name == QStringLiteral("addalias") ||
+        name == QStringLiteral("deletealias") ||
+        name == QStringLiteral("isalias")) {
+        if (value.isEmpty())
+            return 0;
+        QStringList aliases = object->property("dbaseSessionLocalAliases").toStringList();
+        const bool found = aliases.contains(value, Qt::CaseInsensitive);
+        if (name == QStringLiteral("isalias"))
+            return found ? 1 : 0;
+        if (name == QStringLiteral("addalias")) {
+            if (!found) {
+                aliases.append(value);
+                object->setProperty("dbaseSessionLocalAliases", aliases);
+            }
+            return 1;
+        }
+        if (found) {
+            for (int i = aliases.size() - 1; i >= 0; --i) {
+                if (aliases.at(i).compare(value, Qt::CaseInsensitive) == 0)
+                    aliases.removeAt(i);
+            }
+            object->setProperty("dbaseSessionLocalAliases", aliases);
+            return 1;
+        }
+        return 0;
+    }
+
+    // Do not fabricate credentials or claim that a login succeeded. These
+    // names compile, but the actual native SESSION semantics remain pending.
+    if (name == QStringLiteral("access") ||
+        name == QStringLiteral("addpassword") ||
+        name == QStringLiteral("login") ||
+        name == QStringLiteral("user")) {
+        show_runtime_warning(
+            QStringLiteral("SESSION::%1 ist noch nicht als native WFM-Methode implementiert.")
+                .arg(name));
+        return 0;
+    }
+    show_runtime_warning(QStringLiteral("Unbekannte WFM-SESSION-Methode: %1").arg(name));
+    return 0;
+}
+
 extern "C" D64QT5_API void *DBaseQtNonVisualCreate(
     const char *className,
     int classNameLength,

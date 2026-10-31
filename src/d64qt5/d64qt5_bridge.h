@@ -145,6 +145,10 @@ D64QT5_API int DBaseQtObjectBindEvent(
     void *handle, const char *eventName, int eventNameLength,
     void *callbackHandle
 );
+// Stage 503: method dispatch for designer-created WFM SESSION objects.
+D64QT5_API int DBaseQtWfmSessionInvoke(
+    void *handle, const char *methodName, int methodNameLength,
+    const char *argument, int argumentLength);
 D64QT5_API void *DBaseQtNonVisualCreate(
     const char *className, int classNameLength, void *parentHandle
 );

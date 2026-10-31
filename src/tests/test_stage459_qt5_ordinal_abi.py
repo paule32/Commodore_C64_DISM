@@ -20,6 +20,7 @@ OPTIONAL = {
     'DBaseUtf8Upper', 'DBaseUtf8Lower',
     'DBaseQtRuntimeStartup', 'DBaseQtRuntimeShutdown',
     'DBaseQtWfmModalParameter', 'DBaseQtFormRun',
+    'DBaseQtWfmSessionInvoke',
 }
 
 
@@ -52,7 +53,7 @@ def _exports():
 def test_original_64_export_abi_remains_unchanged():
     env=_load()
     exports=_exports()
-    assert len(exports)==78
+    assert len(exports)==79
     assert env['_pe_export_ordinal_map_hash'](exports)==EXPECTED
     assert env['_d64_qt5_source_ordinal_map_hash']()==EXPECTED
     assert env['D64_QT5_OPTIONAL_NAME_EXPORTS']==OPTIONAL

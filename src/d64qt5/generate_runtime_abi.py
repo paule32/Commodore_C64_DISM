@@ -55,6 +55,7 @@ def main() -> int:
         "DBaseUtf8Upper", "DBaseUtf8Lower",
         "DBaseQtRuntimeStartup", "DBaseQtRuntimeShutdown",
         "DBaseQtWfmModalParameter", "DBaseQtFormRun",
+        "DBaseQtWfmSessionInvoke",
     }
     core_rows = [
         (ordinal, name) for ordinal, name in rows

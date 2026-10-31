@@ -499,7 +499,17 @@ def parse_dbase_wfm(source: str, *, filename: str = "<WFM>", progress_callback=N
             props[mapped] = _wfm_value(rhs)
             return True
         if not sub:
-            if key.startswith("on"):
+            # Stage 502: SESSION::method assignments bind CLASS handlers just
+            # like event references. They must survive the WFM round trip in
+            # control.events rather than becoming ordinary string properties.
+            if (isinstance(owner, DBaseWfmControl)
+                    and owner.class_name.casefold() == "session"
+                    and re.fullmatch(r"(?i)CLASS\*?::\s*[A-Za-z_]\w*", rhs.strip())):
+                from .session_designer import SESSION_METHODS
+                if key in {method.casefold() for method in SESSION_METHODS}:
+                    events[prop] = "CLASS::" + rhs.rsplit("::", 1)[-1].strip()
+                    return True
+            if key.startswith("on") or key == "beforerelease":
                 event_value = rhs.strip()
                 legacy_event = re.match(
                     r"(?i)^CLASS\*?::\s*([A-Za-z_]\w*)$",

@@ -99,10 +99,10 @@ int DBaseQtRunConsoleJson(const char *p) {
     assert b'Qt5-Terminal-ABI-OK' in result.stdout
 
 def test_windows_runtime_qt_terminal_preserves_debug_and_existing_console():
+    # Stage 498 supersedes the Stage-490 Windows extra-dialog contract.
     cpp=(ROOT/'d64qt5/d64qt5_bridge.cpp').read_text(encoding='utf-8')
-    assert 'append_dbase_qt_terminal(const QString &text, bool newline)' in cpp
-    assert 'new QDialog(nullptr)' in cpp
-    assert 'new QPlainTextEdit(g_dbase_qt_terminal_dialog)' in cpp
-    assert 'if (g_debug_visible) append_wfm_output' in cpp
-    assert 'append_dbase_qt_terminal(value, newline != 0);' in cpp
-    assert 'delete g_dbase_qt_terminal_dialog;' in cpp
+    assert 'append_dbase_qt_terminal' not in cpp
+    assert 'dbaseTerminalDialog' not in cpp
+    assert 'append_wfm_output(value, newline != 0);' in cpp
+    assert 'append_text(g_console, bytes.constData(), bytes.size());' in cpp
+    assert 'send_wfm_output_to_workstation(' in cpp
