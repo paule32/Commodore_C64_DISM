@@ -1,4 +1,4 @@
-[**Deutsch**](CODE_OF_CONDUCT.de.md) | [English](CODE_OF_CONDUCT.md)
+[**Deutsch**](/.github/CODE_OF_CONDUCT.de.md) | [English](/.github/CODE_OF_CONDUCT.md)
 
 # Verhaltenskodex – dBase2Many / d64_dism
 
