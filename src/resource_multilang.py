@@ -41,7 +41,7 @@ def _declarations(source: str) -> list[tuple[int, int]]:
     result = []
     i = 0
     while i < len(lines):
-        if not _HEADER.match(_clean(lines[i])):
+        if not _HEADER.match(lines[i]):
             i += 1
             continue
         start = i
@@ -65,7 +65,7 @@ def _declarations(source: str) -> list[tuple[int, int]]:
                 if opened and depth == 0:
                     end = j + 1
                     break
-                if j > i and not opened and _HEADER.match(_clean(lines[j])):
+                if j > i and not opened and _HEADER.match(lines[j]):
                     break
                 j += 1
         result.append((start, end))
