@@ -242,6 +242,9 @@ def main() -> int:
     # -----------------------------------------------------------------------
     try:
         import d64_dism
+        # Stage 527: add per-resource LANGID editing before the main GUI is built.
+        from resource_multilang_integration import install_resource_editor
+        install_resource_editor(d64_dism.WindowsResourceEditorWidget, d64_dism.compile_rc)
     except BaseException:
         APP_SPLASH.close()
         raise

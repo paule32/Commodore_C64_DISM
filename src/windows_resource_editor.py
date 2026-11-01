@@ -1198,3 +1198,8 @@ class WindowsResourceEditorWidget(QWidget):
             self.entries[index].codepage = codepage
             self._dirty = True
         self._set_status(f"Codepage geändert: {codepage} / 0x{codepage:04X}")
+
+
+# Stage 527: multi-language actions and per-resource LANGID handling.
+from resource_multilang_integration import install_resource_editor
+install_resource_editor(WindowsResourceEditorWidget, compile_rc)
