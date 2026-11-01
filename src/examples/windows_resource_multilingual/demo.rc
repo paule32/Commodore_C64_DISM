@@ -1,0 +1,34 @@
+// Stage 527 – dieselbe Ressourcen-ID mit zwei Windows LANGIDs.
+#pragma code_page(1200)
+
+LANGUAGE 0x0007, 0x01 // Deutsch (Deutschland), 0x0407
+STRINGTABLE
+BEGIN
+    100 "Willkommen"
+    101 "Datei öffnen"
+END
+
+200 MENU
+BEGIN
+    POPUP "Datei"
+    BEGIN
+        MENUITEM "Öffnen", 3001
+        MENUITEM "Beenden", 3002
+    END
+END
+
+LANGUAGE 0x0009, 0x01 // English (United States), 0x0409
+STRINGTABLE
+BEGIN
+    100 "Welcome"
+    101 "Open file"
+END
+
+200 MENU
+BEGIN
+    POPUP "File"
+    BEGIN
+        MENUITEM "Open", 3001
+        MENUITEM "Exit", 3002
+    END
+END

@@ -681,6 +681,7 @@ def _preprocess_file(
     defines: Optional[MutableMapping[str, Union[int, str]]] = None,
     include_dirs: Sequence[Union[str, os.PathLike]] = (),
     stack: Optional[List[Path]] = None,
+    source_override: Optional[str] = None,
 ) -> Tuple[str, Dict[str, Union[int, str]], List[str]]:
     path = Path(path).expanduser().resolve()
     symbols: Dict[str, Union[int, str]] = dict(RC_CONSTANTS)
@@ -706,7 +707,8 @@ def _preprocess_file(
             return Path("__d64_builtin__") / Path(name).name
         raise ResourceCompilerError(f"Include-Datei nicht gefunden: {name}", source=str(path))
 
-    raw_source = path.read_bytes()
+    raw_source = (path.read_bytes() if source_override is None
+                  else source_override.encode('utf-8'))
     if raw_source.startswith((b"\xff\xfe", b"\xfe\xff")):
         source = raw_source.decode("utf-16")
     elif raw_source.startswith(b"\xef\xbb\xbf"):
@@ -1053,9 +1055,9 @@ class ResourceScriptCompiler:
         self._next_icon_id=1
         self._next_cursor_id=1
 
-    def compile_file(self,path: Union[str,os.PathLike]) -> ResourceCompilation:
+    def compile_file(self,path: Union[str,os.PathLike], *, source_text: Optional[str] = None) -> ResourceCompilation:
         self.source_path=Path(path).expanduser().resolve(); self.entries=[]; self.dependencies=[]; self.warnings=[]; self.language=self.default_language; self.codepage=0
-        text,symbols,deps=_preprocess_file(self.source_path,defines=dict(self.defines),include_dirs=self.include_dirs)
+        text,symbols,deps=_preprocess_file(self.source_path,defines=dict(self.defines),include_dirs=self.include_dirs,source_override=source_text)
         self.dependencies=[str(self.source_path),*deps]
         self.stream=_Stream(_tokenize(text,str(self.source_path)),symbols,str(self.source_path))
         self._parse_top()
@@ -1399,8 +1401,9 @@ class ResourceScriptCompiler:
 # ---------------------------------------------------------------------------
 # Public convenience API / small command line frontend
 # ---------------------------------------------------------------------------
-def compile_rc(path: Union[str,os.PathLike], *, include_dirs=(), defines=None, default_language: int=0x0409) -> ResourceCompilation:
-    return ResourceScriptCompiler(include_dirs=include_dirs,defines=defines,default_language=default_language).compile_file(path)
+def compile_rc(path: Union[str,os.PathLike], *, include_dirs=(), defines=None, default_language: int=0x0409,
+               source_text: Optional[str] = None) -> ResourceCompilation:
+    return ResourceScriptCompiler(include_dirs=include_dirs,defines=defines,default_language=default_language).compile_file(path, source_text=source_text)
 
 
 def compile_rc_to_res(path: Union[str,os.PathLike], output: Optional[Union[str,os.PathLike]]=None, *, include_dirs=(), defines=None, default_language: int=0x0409) -> Path:
