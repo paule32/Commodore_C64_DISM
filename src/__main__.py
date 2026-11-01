@@ -32,7 +32,17 @@ from watchdog.gui_errors      import install_exception_handler, show_traceback
 from watchdog.native_watchdog import start_watchdog
 
 install_exception_handler(app_name = APP_NAME )
-start_watchdog(           app_name = APP_NAME )
+_WATCHDOG_ACTIVE = start_watchdog(app_name = APP_NAME )
+
+# Stage 528: opt-in diagnostic for the frozen onefile package.  Only the
+# explicitly requested test process is terminated (never silently the IDE).
+if "--watchdog-self-test" in sys.argv:
+    if not _WATCHDOG_ACTIVE:
+        print("D64 watchdog: test unavailable; inspect the error log.", file=sys.stderr)
+        raise SystemExit(2)
+    import os
+    print("D64 watchdog: native monitor ready; exit code 33 follows.", flush=True)
+    os._exit(33)
 
 try:
     from PyQt5.QtCore    import QCoreApplication, Qt

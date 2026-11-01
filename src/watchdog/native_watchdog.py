@@ -7,6 +7,7 @@ external crash dialogs if both start mechanisms are used.
 from __future__ import annotations
 
 import faulthandler
+import hashlib
 import os
 from pathlib import Path
 import shutil
@@ -36,14 +37,54 @@ def project_directory() -> Path:
 
 
 def bundled_executable(architecture=None, root=None) -> Path:
-    base = Path(root) if root is not None else project_directory()
-    return base / "watchdog" / "win32" / f"watchdog.exe"
+    """Find the native watchdog for this Python interpreter, including ONEFILE."""
+    arch = architecture or watchdog_arch()
+    base = (Path(root) if root is not None else
+            Path(sys._MEIPASS) if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS")
+            else project_directory())
+    candidates = (
+        base / "watchdog" / "bin" / f"d64_watchdog_{arch}.exe",
+        base / "watchdog" / ("win64" if arch == "x64" else "win32") / "watchdog.exe",
+    )
+    return next((candidate for candidate in candidates if candidate.is_file()), candidates[0])
 
 
 def cached_executable(architecture=None, env=None) -> Path:
+    arch = architecture or watchdog_arch()
     env = os.environ if env is None else env
     base = env.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
-    return Path(base) / "Commodore_C64_DISM" / "watchdog" / f"watchdog.exe"
+    return Path(base) / "Commodore_C64_DISM" / "watchdog" / f"d64_watchdog_{arch}.exe"
+
+
+def _onefile_watchdog_copy(source: Path, arch: str) -> Path:
+    """Cache the bundled EXE outside _MEIPASS to avoid Windows file locks.
+
+    The content hash makes a rebuilt ONEFILE use a new executable without
+    replacing a still-running watcher from an older application instance.
+    """
+    if not getattr(sys, "frozen", False):
+        return source
+    try:
+        with source.open("rb") as handle:
+            digest = hashlib.file_digest(handle, "sha256").hexdigest()[:16]
+        base = cached_executable(arch)
+        target = base.with_name(f"d64_watchdog_{arch}_{digest}.exe")
+        if target.is_file() and target.stat().st_size == source.stat().st_size:
+            return target
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(f".{target.stem}_{uuid.uuid4().hex}.exe")
+        try:
+            shutil.copy2(source, temporary)
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return target
+    except OSError as exc:
+        append_error_log(
+            f"Watchdog: Schreiben in den Benutzer-Cache fehlgeschlagen: {exc}. "
+            "Der Watchdog wird direkt aus dem Bundle gestartet."
+        )
+        return source
 
 
 def hidden_process_kwargs(*, gui_executable=False) -> dict:
@@ -172,11 +213,14 @@ def start_watchdog(*, app_name="Commodore C64 DISM", executable=None) -> bool:
         if _STARTED:
             return True
         install_faulthandler()
-        binary = Path(executable) if executable is not None else bundled_executable()
+        arch = watchdog_arch()
+        binary = Path(executable) if executable is not None else bundled_executable(arch)
+        if binary.is_file() and executable is None:
+            binary = _onefile_watchdog_copy(binary, arch)
         if not binary.is_file() and executable is None:
-            binary = cached_executable()
-        if not binary.is_file() and executable is None:
-            binary = build_if_available()
+            binary = cached_executable(arch)
+        if not binary.is_file() and executable is None and not getattr(sys, "frozen", False):
+            binary = build_if_available(architecture=arch)
         if binary is None or not Path(binary).is_file():
             append_error_log("Watchdog: keine native EXE vorhanden; GUI startet ohne externen Watchdog.")
             return False
