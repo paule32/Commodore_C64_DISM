@@ -27,7 +27,7 @@ STORE "Hallo" TO xyz
 ? TYPE("unbekannt") && U
 
 ** END HEADER -- do not remove this line
-// Generated on 24.10.2026
+// Generated on 30.10.2026
 //
 PARAMETER bmodal
 LOCAL B
@@ -467,6 +467,8 @@ CLASS Form1 OF FORM
         Top = 409
         Width = 42
         Height = 42
+        lockRetryCount = 3
+        lockRetryInterval = 1000
         Active = .F.
     ENDWITH
 
@@ -623,5 +625,8 @@ CLASS Form1 OF FORM
     procedure Button2_onGotFocus(Sender)
         ? "got focus on Button dreier"
         return
+
+    function SESSION1_login(param)
+        return SESSION::login(param)
 
 ENDCLASS

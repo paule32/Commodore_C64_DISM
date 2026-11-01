@@ -496,3 +496,5 @@ src/speech/piper/espeak-ng-data/voices/\!v/whisperf
 src/speech/piper/espeak-ng-data/voices/\!v/zac
 src/speech/piper/espeak-ng-data/yue_dict
 src/speech/bin/libretro_speech.dll.a
+src/C64_BASIC_Schultafel_3D.mp4
+/src/dist

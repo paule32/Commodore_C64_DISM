@@ -234,7 +234,7 @@
 #
 #  * PROLOG Wissen-Browser Stage 71: Stage-70 Multi-Scroll bleibt erhalten;
 #    Alternativen-ComboBox als Viewport-Overlay exakt unter dem Parent-Button,
-#    Dropdown beim ▼-Klick sofort geöffnet, lokaler Button "Prüfen +" darunter.
+#    Dropdown beim Klick sofort geöffnet, lokaler Button "Prüfen +" darunter.
 #    Layout-Verhalten orientiert sich am hochgeladenen Stage-62-Referenzstand.
 #  * PROLOG Wissen-Browser Stage 70: festes Overlay-Panel unter dem Parent-Button
 #  * Stage 69: sichtbare Alternativen-ComboBox durch explizite FlowLayout-Hoehe
@@ -278,6 +278,7 @@ import inspect
 import importlib
 import gc
 import random
+import platform
 import secrets
 
 from ctypes import wintypes
@@ -299,11 +300,13 @@ from collections import defaultdict, deque
 from contextlib  import redirect_stderr, redirect_stdout
 
 import io
+import csv
 import copy
 import json
 import math
 import uuid
 import os
+import stat
 import re
 import shutil
 import socket
@@ -338,22 +341,186 @@ import base64    as _d64info_base64
 # ---------------------------------------------------------------------------
 try:
     import pyodbc as _d64_pyodbc
-except ImportError:
-    _d64_pyodbc = None
+except ModuleNotFoundError as exc:
+    from   __main__ import APP_INIT, APP_SPLASH
+    import __main__
+    if  APP_SPLASH is None:
+        print("eeee")
+    if  APP_SPLASH is not None:
+        APP_SPLASH.close()
 
-from dataclasses import dataclass, field, replace
-from decimal     import Decimal, localcontext
-from fractions   import Fraction
-from fraction_math_help import FractionHelpWidget  # Stage 368: QPainter-Bruchhilfen
-from rotation_matrix_fact import RotationMatrixFactWidget  # Stage 421/422: Matrix-Rotationsseite
-from multiplication_matrix_fact import MultiplicationMatrixFactWidget  # Stage 422: Matrix-Multiplikation
-from number_sets_fact import NumberSetsFactWidget  # Stage 425: Zahlen-Mengen
-from roman_numerals_fact import RomanNumeralsFactWidget  # Stage 442: römische Zahlentafel als Qt-Text
-from trigonometry_right_triangle_fact import TrigonometryRightTriangleFactWidget  # Stage 426: Rechtwinkliges Dreieck
-from dbase_project_new import DBASE_NEW_MENU, DBASE_GROUP_NEW_MENU, is_dbase_program_text, create_dbase_project_file, can_open_dbase_project_file
-from d64_about_dialog import D64AboutDialog  # Stage 437: gemeinsame gerahmte Über-Dialoge
-from pathlib     import Path
-from typing      import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
+    if not APP_INIT:
+        print("Error: Qt5 is not installed.",
+        file=sys.stderr)
+        sys.exit(1)
+        
+    from PyQt5.QtWidgets import QApplication
+    if QApplication.instance() is None:
+        print("Error: Qt5 is not installed.")
+        sys.exit(1)
+    
+    if platform.machine() == "AMD64":
+        if platform.system() == "Windows":
+            try:
+                import win32api
+                import win32con
+            except ImportError as exc:
+                print("pywin32 is not installed. Install it with:\n"
+                "    python -m pip install pywin32\n\n",
+                file=sys.stderr)
+                sys.exit(1)
+            
+            result = win32api.MessageBox(0,
+            "pyodbc is not installed.\n"
+            "Install the 64 bit PyODBC Package with:\n\n"
+            "    py -m pip install pyodbc\n\n"
+            f"Internal Error: {exc}",
+            "Application Error",
+            win32con.MB_OK |
+            win32con.MB_ICONEXCLAMATION)
+            
+            sys.exit(1)
+        else:
+            print("supported platform: only Windows.",
+            file=sys.stderr)
+            sys.exit(1)
+    else:
+        if platform.system() == "Windows":
+            try:
+                import win32api
+                import win32con
+            except ImportError:
+                print("pywin32 is not installed. Install it with:\n"
+                "    python -m pip install pywin32\n\n",
+                file=sys.stderr)
+                sys.exit(1)
+            
+            result = win32api.MessageBox(0,
+            "PyQt5 is not installed.\n"
+            "Install the 32 bit PyODBC Package with:\n\n"
+            "    py -m pip install pyodbc\n\n"
+            f"Internal Error: {exc}",
+            "Application Error",
+            win32con.MB_OK |
+            win32con.MB_ICONEXCLAMATION)
+            
+            sys.exit(1)
+        else:
+            print("supported platform: only Windows.",
+            file=sys.stderr)
+            sys.exit(1)
+    raise SystemExit(2)
+    
+except ImportError as exc:
+    from __main__ import APP_INIT
+    if not APP_INIT:
+        print("Error: Qt5 is not installed.",
+        file=sys.stderr)
+        sys.exit(1)
+    
+    if  APP_SPLASH is not None:
+        APP_SPLASH.close()
+    
+    from PyQt5.QtWidgets import QApplication
+    if QApplication.instance() is None:
+        print("Error: Qt5 is not installed.")
+        sys.exit(1)
+    
+    if platform.machine() == "AMD64":
+        if platform.system() == "Windows":
+            try:
+                import win32api
+                import win32con
+            except ImportError as exc:
+                print("pywin32 is not installed. Install it with:\n"
+                "    python -m pip install pywin32\n\n",
+                file=sys.stderr)
+                sys.exit(1)
+                
+            result = win32api.MessageBox(0,
+            "pyodbc is not installed.\n"
+            "Install the 64 bit PyODBC Package with:\n\n"
+            "    py -m pip install pyodbc\n\n"
+            f"Internal Error: {exc}",
+            "Application Error",
+            win32con.MB_OK |
+            win32con.MB_ICONEXCLAMATION)
+            
+            sys.exit(1)
+        else:
+            print("supported platform: only Windows.",
+            file=sys.stderr)
+            sys.exit(1)
+    else:
+        if platform.system() == "Windows":
+            try:
+                import win32api
+                import win32con
+            except ImportError:
+                print("pywin32 is not installed. Install it with:\n"
+                "    python -m pip install pywin32\n\n",
+                file=sys.stderr)
+                sys.exit(1)
+            
+            result = win32api.MessageBox(0,
+            "PyQt5 is not installed.\n"
+            "Install the 32 bit PyODBC Package with:\n\n"
+            "    py -m pip install pyodbc\n\n"
+            f"Internal Error: {exc}",
+            "Application Error",
+            win32con.MB_OK |
+            win32con.MB_ICONEXCLAMATION)
+            
+            sys.exit(1)
+        else:
+            print("supported platform: only Windows.",
+            file=sys.stderr)
+            sys.exit(1)
+    raise SystemExit(2)
+
+except Exception as exc:
+    if  APP_SPLASH is not None:
+        APP_SPLASH.close()
+
+    print("Common Exception.")
+    sys.exit(1)
+
+# ---------------------------------------------------------------------------
+# lazy load, and use.
+# ---------------------------------------------------------------------------
+_d64_pyodbc = None
+
+from dataclasses  import dataclass, field, replace
+from decimal      import Decimal, localcontext
+
+from fractions                          import Fraction
+from fraction_math_help                 import FractionHelpWidget                   # Stage 368: QPainter-Bruchhilfen
+from rotation_matrix_fact               import RotationMatrixFactWidget             # Stage 421/422: Matrix-Rotationsseite
+from multiplication_matrix_fact         import MultiplicationMatrixFactWidget       # Stage 422: Matrix-Multiplikation
+from number_sets_fact                   import NumberSetsFactWidget                 # Stage 425: Zahlen-Mengen
+from roman_numerals_fact                import RomanNumeralsFactWidget              # Stage 442: römische Zahlentafel als Qt-Text
+from trigonometry_right_triangle_fact   import TrigonometryRightTriangleFactWidget  # Stage 426: Rechtwinkliges Dreieck
+from d64_about_dialog                   import D64AboutDialog                       # Stage 437: gemeinsame gerahmte Über-Dialoge
+
+from dbase_project_new import (
+    DBASE_NEW_MENU,
+    DBASE_GROUP_NEW_MENU,
+    is_dbase_program_text,
+    create_dbase_project_file,
+    can_open_dbase_project_file
+)
+
+from pathlib import Path
+from typing  import (
+    Any,
+    Dict,
+    Iterable,
+    List,
+    Optional,
+    Sequence,
+    Tuple,
+    Union
+)
 
 # ---------------------------------------------------------------------------
 # c++ documenting interpreter lexer + parser ...
@@ -18476,31 +18643,40 @@ QMessageBox = _DoxygenMessageBoxProxy
 _GLOBAL_EXCEPTION_DISPATCHER = None
 _GLOBAL_EXCEPTION_DIALOG_ACTIVE = False
 _GLOBAL_FAULT_LOG_STREAM = None
-# Stage 233: Während des Qt-Shutdowns dürfen keine neuen modalen
-# Exception-Dialoge mehr über bereits zerlegte QObject-Instanzen ausgelöst werden.
-_GLOBAL_EXCEPTION_SHUTTING_DOWN = False
-_ORIGINAL_SYS_EXCEPTHOOK = sys.excepthook
-_ORIGINAL_THREADING_EXCEPTHOOK = getattr(threading, "excepthook", None)
-_ORIGINAL_UNRAISABLEHOOK = getattr(sys, "unraisablehook", None)
 
+# ---------------------------------------------------------------------------
+# Stage 233: Während des Qt-Shutdowns dürfen keine neuen modalen
+# Exception-Dialoge mehr über bereits zerlegte QObject-Instanzen ausgelöst
+# werden.
+# ---------------------------------------------------------------------------
+_GLOBAL_EXCEPTION_SHUTTING_DOWN = False
+_ORIGINAL_SYS_EXCEPTHOOK        = sys.excepthook
+_ORIGINAL_THREADING_EXCEPTHOOK  = getattr(threading, "excepthook", None)
+_ORIGINAL_UNRAISABLEHOOK        = getattr(sys, "unraisablehook", None)
+
+# ---------------------------------------------------------------------------
 # Stage 139: interner Anwendungs-Watchdog + Heartbeat fuer den externen
 # Win32-Launcher. Der GUI-Thread schreibt den Heartbeat. Ein separater
-# Python-Thread beobachtet diesen Zeitstempel und kann dadurch einen blockierten
-# Qt-Eventloop erkennen, ohne selbst Qt-Widgets aufzurufen.
+# Python-Thread beobachtet diesen Zeitstempel und kann dadurch einen
+# blockierten Qt-Eventloop erkennen, ohne selbst Qt-Widgets aufzurufen.
+# ---------------------------------------------------------------------------
 _INTERNAL_APPLICATION_WATCHDOG = None
 
+# ---------------------------------------------------------------------------
 # Stage 155: d64_dism.exe accepts a GUI/CLI launch only from start.exe.
 # The launcher creates an inheritable anonymous file mapping and places a
-# random token plus its PID inside that memory.  A directly started frozen EXE
-# does not own that handle and therefore fails this check.  Running the Python
-# source remains possible for development/tests.
+# random token plus its PID inside that memory.  A directly started frozen
+# EXE does not own that handle and therefore fails this check.  Running the
+# Python source remains possible for development/tests.
+# ---------------------------------------------------------------------------
 _D64_LAUNCH_GUARD_VERSION = 0x00010001
 
 
 class _D64LaunchGuardBlock(ctypes.Structure):
     _fields_ = [
-        ("version", wintypes.DWORD),
+        ("version"     , wintypes.DWORD),
         ("launcher_pid", wintypes.DWORD),
+        
         ("token", ctypes.c_wchar * 128),
     ]
 
@@ -18519,16 +18695,18 @@ def _show_launcher_guard_error(message: str) -> None:
             pass
     print(message, file=sys.stderr)
 
-
+# ---------------------------------------------------------------------------
+# Return True when a frozen Windows EXE inherited start.exe's guard.
+# ---------------------------------------------------------------------------
 def _validate_frozen_launcher_guard() -> bool:
-    """Return True when a frozen Windows EXE inherited start.exe's guard."""
     if os.name != "nt" or not bool(getattr(sys, "frozen", False)):
         return True
 
-    handle_text = str(os.environ.get("D64_LAUNCH_GUARD_HANDLE", "")).strip()
-    expected_token = str(os.environ.get("D64_LAUNCH_GUARD_TOKEN", "")).strip()
-    expected_pid = str(os.environ.get("D64_LAUNCHER_PID", "")).strip()
-    watchdog_flag = str(os.environ.get("D64_LAUNCHED_BY_WATCHDOG", "")).strip()
+    handle_text    = str(os.environ.get("D64_LAUNCH_GUARD_HANDLE" , "")).strip()
+    expected_token = str(os.environ.get("D64_LAUNCH_GUARD_TOKEN"  , "")).strip()
+    expected_pid   = str(os.environ.get("D64_LAUNCHER_PID"        , "")).strip()
+    watchdog_flag  = str(os.environ.get("D64_LAUNCHED_BY_WATCHDOG", "")).strip()
+    
     if not handle_text or not expected_token or not expected_pid or watchdog_flag != "1":
         _show_launcher_guard_error(
             "d64_dism.exe darf nur über start.exe gestartet werden.\n\n"
@@ -18544,15 +18722,18 @@ def _validate_frozen_launcher_guard() -> bool:
         return False
 
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.MapViewOfFile.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, ctypes.c_size_t]
-    kernel32.MapViewOfFile.restype = ctypes.c_void_p
+    kernel32.MapViewOfFile.argtypes   = [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, ctypes.c_size_t]
+    kernel32.MapViewOfFile.restype    = ctypes.c_void_p
+    
     kernel32.UnmapViewOfFile.argtypes = [ctypes.c_void_p]
-    kernel32.UnmapViewOfFile.restype = wintypes.BOOL
-    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-    kernel32.CloseHandle.restype = wintypes.BOOL
-
+    kernel32.UnmapViewOfFile.restype  = wintypes.BOOL
+    
+    kernel32.CloseHandle.argtypes     = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype      = wintypes.BOOL
+    # ---------------------------------------------------------------------------
     # FILE_MAP_READ = 0x0004.  The numeric HANDLE value is meaningful in the
     # child only because CreateProcessW inherited the launcher mapping handle.
+    # ---------------------------------------------------------------------------
     view = kernel32.MapViewOfFile(
         wintypes.HANDLE(raw_handle), 0x0004, 0, 0, ctypes.sizeof(_D64LaunchGuardBlock)
     )
@@ -18572,8 +18753,10 @@ def _validate_frozen_launcher_guard() -> bool:
         )
     finally:
         kernel32.UnmapViewOfFile(view)
+        # -------------------------------------------------------------------
         # The child does not need its copy after validation; start.exe keeps
         # the original mapping alive for the entire application lifetime.
+        # -------------------------------------------------------------------
         kernel32.CloseHandle(wintypes.HANDLE(raw_handle))
 
     if not valid:
@@ -18612,19 +18795,23 @@ class _InternalApplicationWatchdog(QObject):
 
     def __init__(self, application, host=None):
         super().__init__(host if isinstance(host, QObject) else None)
-        self.application = application
-        self.host = host
-        self.directory = _watchdog_directory()
-        self.token = str(os.environ.get("D64_WATCHDOG_TOKEN", "")).strip()
-        self.heartbeat_path = self.directory / "heartbeat.txt"
-        self.status_path = self.directory / "status.txt"
-        self.pid_path = self.directory / "app.pid"
-        self.exception_path = self.directory / "exception.txt"
+        self.application     = application
+        self.host            = host
+        self.directory       = _watchdog_directory()
+        self.token           = str(os.environ.get("D64_WATCHDOG_TOKEN", "")).strip()
+        
+        self.heartbeat_path  = self.directory / "heartbeat.txt"
+        self.status_path     = self.directory / "status.txt"
+        self.pid_path        = self.directory / "app.pid"
+        self.exception_path  = self.directory / "exception.txt"
+        
         self._last_gui_pulse = time.monotonic()
         self._stall_reported = False
         self._clean_shutdown = False
-        self._stop_event = threading.Event()
-        self._timer = QTimer(self)
+        
+        self._stop_event     = threading.Event()
+        
+        self._timer          = QTimer(self)
         self._timer.setInterval(self.HEARTBEAT_INTERVAL_MS)
         self._timer.timeout.connect(self._pulse)
         self._thread = threading.Thread(
@@ -18711,7 +18898,7 @@ class _InternalApplicationWatchdog(QObject):
 
 def start_internal_application_watchdog(application, host=None):
     global _INTERNAL_APPLICATION_WATCHDOG
-    if _INTERNAL_APPLICATION_WATCHDOG is None:
+    if  _INTERNAL_APPLICATION_WATCHDOG is None:
         _INTERNAL_APPLICATION_WATCHDOG = _InternalApplicationWatchdog(application, host)
         _INTERNAL_APPLICATION_WATCHDOG.start()
     else:
@@ -18782,7 +18969,9 @@ class GlobalExceptionDialog(QDialog):
         self.details_edit.setReadOnly(True)
         self.details_edit.setPlainText(str(details))
         self.details_edit.setLineWrapMode(QPlainTextEdit.NoWrap)
+        
         fixed_font = QFontDatabase.systemFont(QFontDatabase.FixedFont)
+        
         self.details_edit.setFont(fixed_font)
         root.addWidget(self.details_edit, 1)
 
@@ -18792,8 +18981,8 @@ class GlobalExceptionDialog(QDialog):
 
         buttons = QHBoxLayout()
         buttons.addStretch(1)
-        copy_button = QPushButton("Kopieren", self)
-        save_button = QPushButton("Speichern unter ...", self)
+        copy_button  = QPushButton("Kopieren", self)
+        save_button  = QPushButton("Speichern unter ...", self)
         close_button = QPushButton("Schließen", self)
         close_button.setDefault(True)
         buttons.addWidget(copy_button)
@@ -18811,13 +19000,11 @@ class GlobalExceptionDialog(QDialog):
 QDialog#global_exception_dialog { background:#202630; color:#ffffff; }
 QDialog#global_exception_dialog QLabel { color:#ffffff; background:transparent; }
 QDialog#global_exception_dialog QPlainTextEdit {
-    background:#111820; color:#f0f6fc; border:1px solid #596779;
-    selection-background-color:#264f78;
-}
+background:#111820; color:#f0f6fc; border:1px solid #596779;
+selection-background-color:#264f78;}
 QDialog#global_exception_dialog QPushButton {
-    min-width:86px; color:#ffffff; background:#343e4d;
-    border:1px solid #596779; border-radius:3px; padding:5px 10px;
-}
+min-width:86px; color:#ffffff; background:#343e4d;
+border:1px solid #596779; border-radius:3px; padding:5px 10px;}
 QDialog#global_exception_dialog QPushButton:hover { background:#414d5f; border-color:#7fa7d8; }
 QDialog#global_exception_dialog QPushButton:pressed { background:#27313e; }
 """)
@@ -18826,13 +19013,11 @@ QDialog#global_exception_dialog QPushButton:pressed { background:#27313e; }
 QDialog#global_exception_dialog { background:#f0f0f0; color:#000000; }
 QDialog#global_exception_dialog QLabel { color:#000000; background:transparent; }
 QDialog#global_exception_dialog QPlainTextEdit {
-    background:#ffffff; color:#000000; border:1px solid #9b9b9b;
-    selection-background-color:#cfe8ff;
-}
+background:#ffffff; color:#000000; border:1px solid #9b9b9b;
+selection-background-color:#cfe8ff;}
 QDialog#global_exception_dialog QPushButton {
-    min-width:86px; color:#000000; background:#f5f5f5;
-    border:1px solid #9b9b9b; border-radius:3px; padding:5px 10px;
-}
+min-width:86px; color:#000000; background:#f5f5f5;
+border:1px solid #9b9b9b; border-radius:3px; padding:5px 10px;}
 QDialog#global_exception_dialog QPushButton:hover { background:#e4f1fb; border-color:#5b9bd5; }
 QDialog#global_exception_dialog QPushButton:pressed { background:#d5e8f6; }
 """)
@@ -18857,7 +19042,6 @@ QDialog#global_exception_dialog QPushButton:pressed { background:#d5e8f6; }
                 "Fehlerbericht",
                 f"Die Datei konnte nicht gespeichert werden:\n\n{exc}",
             )
-
 
 class _GlobalExceptionDispatcher(QObject):
     exception_raised = pyqtSignal(str, str, str, str)
@@ -18910,9 +19094,12 @@ class _GlobalExceptionDispatcher(QObject):
             print(formatted, file=sys.stderr, flush=True)
         except Exception:
             pass
+        
+        # -----------------------------------------------------------------------
         # Stage 233: QApplication kann beim Beenden den C++-Teil dieses
         # QObject bereits zerlegt haben, obwohl die Python-Referenz noch lebt.
         # Ein Fehlerdialog ist in dieser Phase ohnehin nicht mehr sinnvoll.
+        # -----------------------------------------------------------------------
         if _GLOBAL_EXCEPTION_SHUTTING_DOWN:
             return
         try:
@@ -18953,9 +19140,10 @@ class _GlobalExceptionDispatcher(QObject):
         finally:
             _GLOBAL_EXCEPTION_DIALOG_ACTIVE = False
 
-
+# ---------------------------------------------------------------------------
+# Stage 233: Exception-GUI vor dem QObject-Abbau stilllegen.
+# ---------------------------------------------------------------------------
 def begin_global_exception_shutdown() -> None:
-    """Stage 233: Exception-GUI vor dem QObject-Abbau stilllegen."""
     global _GLOBAL_EXCEPTION_SHUTTING_DOWN
     _GLOBAL_EXCEPTION_SHUTTING_DOWN = True
     dispatcher = _GLOBAL_EXCEPTION_DISPATCHER
@@ -18966,9 +19154,10 @@ def begin_global_exception_shutdown() -> None:
             # Der C++-QObject kann in der Qt-Abbauphase bereits gelöscht sein.
             pass
 
-
+# ---------------------------------------------------------------------------
+# Report an exception without cascading on a deleted Qt dispatcher.
+# ---------------------------------------------------------------------------
 def _dispatch_global_exception(exc_type, exc_value, exc_tb, context: str) -> None:
-    """Report an exception without cascading on a deleted Qt dispatcher."""
     dispatcher = _GLOBAL_EXCEPTION_DISPATCHER
     if dispatcher is None:
         if not _GLOBAL_EXCEPTION_SHUTTING_DOWN:
@@ -18977,8 +19166,10 @@ def _dispatch_global_exception(exc_type, exc_value, exc_tb, context: str) -> Non
     try:
         dispatcher.report(exc_type, exc_value, exc_tb, context)
     except RuntimeError as dispatcher_error:
+        # -----------------------------------------------------------------------
         # PyQt keeps the Python wrapper slightly longer than its C++ QObject.
         # During shutdown this is a normal lifetime boundary, not a second crash.
+        # -----------------------------------------------------------------------
         if _GLOBAL_EXCEPTION_SHUTTING_DOWN or "has been deleted" in str(dispatcher_error):
             return
         raise
@@ -33585,6 +33776,81 @@ def _dbase_dbf_field_bytes(value: str, field_type: str, length: int) -> bytes:
             first = "F"
         return first.encode("ascii").ljust(length, b" ")
     return text.encode("cp1252", errors="replace")[:length].ljust(length, b" ")
+
+
+def rename_dbase_table_files(source: Path, new_name: str) -> Path:
+    """Stage 521: benennt eine DBF ohne Ueberschreiben samt Sidecars um.
+
+    Geprueft werden Quell-/Ziel-Dateien, Verzeichnisrechte, NTFS-typische
+    Kollisionen ohne Beachtung der Grossschreibung und eventuelle OS-Fehler.
+    Bei einem Fehler werden bereits umbenannte Dateien zurueckgerollt.
+    """
+    source = Path(source).expanduser().absolute()
+    name = str(new_name or "").strip()
+    if (not name or name in {".", ".."}
+            or Path(name).name != name
+            or any(ord(ch) < 32 or ch in '<>:"/\\|?*' for ch in name)
+            or name.endswith((".", " "))):
+        raise ValueError("Bitte einen gueltigen Dateinamen ohne Pfadangabe eingeben.")
+    if not Path(name).suffix:
+        name += ".dbf"
+    if Path(name).suffix.casefold() != ".dbf":
+        raise ValueError("Tabellendateien muessen die Endung .dbf besitzen.")
+    if Path(name).stem.upper().split(".", 1)[0] in {
+        "CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)),
+        *(f"LPT{i}" for i in range(1, 10)),
+    }:
+        raise ValueError("Der Dateiname ist unter Windows reserviert.")
+    if not source.is_file():
+        raise FileNotFoundError(f"Die DBF-Datei existiert nicht: {source}")
+    if not source.parent.is_dir():
+        raise NotADirectoryError(f"Das Quellverzeichnis fehlt: {source.parent}")
+    if name == source.name:
+        return source.resolve()
+
+    destination = source.with_name(name)
+    auxiliary = (
+        (source.with_suffix(".dbt"), destination.with_suffix(".dbt")),
+        (source.with_suffix(source.suffix + ".d64meta.json"),
+         destination.with_suffix(destination.suffix + ".d64meta.json")),
+    )
+    plan = [(source, destination)] + [(a, b) for a, b in auxiliary if a.is_file()]
+    for old_file, new_file in plan:
+        if not old_file.is_file():
+            raise FileNotFoundError(f"Die Quelldatei fehlt: {old_file}")
+        if (not os.access(old_file, os.W_OK)
+                or not old_file.stat().st_mode & stat.S_IWUSR):
+            raise PermissionError(f"Keine Schreibrechte fuer: {old_file}")
+        if (not os.access(old_file.parent, os.W_OK)
+                or not old_file.parent.stat().st_mode & 0o222):
+            raise PermissionError(f"Keine Schreibrechte fuer: {old_file.parent}")
+        # Auch symbolische Links und Gross-/Kleinschreibkollisionen verhindern.
+        for existing in old_file.parent.iterdir():
+            if existing.name.casefold() != new_file.name.casefold():
+                continue
+            if existing.name.casefold() != old_file.name.casefold():
+                raise FileExistsError(f"Zieldatei existiert bereits: {existing}")
+        if new_file.exists() or new_file.is_symlink():
+            if not new_file.exists() or not new_file.samefile(old_file):
+                raise FileExistsError(f"Zieldatei existiert bereits: {new_file}")
+
+    moved = []
+    try:
+        # DBF als letztes verschieben: solange alle Sidecars nicht bereit sind,
+        # bleibt die Originaltabelle an ihrem bekannten Ort.
+        for old_file, new_file in plan[1:] + plan[:1]:
+            old_file.rename(new_file)
+            moved.append((old_file, new_file))
+    except OSError as exc:
+        rollback_errors = []
+        for old_file, new_file in reversed(moved):
+            try:
+                new_file.rename(old_file)
+            except OSError as rollback_exc:
+                rollback_errors.append(str(rollback_exc))
+        suffix = ("; Ruecknahme fehlgeschlagen: " + "; ".join(rollback_errors)) if rollback_errors else ""
+        raise OSError(f"DBF-Umbenennung fehlgeschlagen: {exc}{suffix}") from exc
+    return destination.resolve()
 
 
 def read_dbase_dbf(path: Path) -> DBaseDBFTable:
@@ -52941,6 +53207,16 @@ def run_gui(
     application=None,
     window_shown_callback=None,
 ) -> int:
+    # Stage 525: vor jedem GUI-Start echtes DBF-PACK + NDX/MDX mit
+    # ausschliesslich temporaeren Dateien testen. Sowohl direkter Start als
+    # auch der Splash-Launcher erreichen diesen zentralen GUI-Einstieg.
+    from dbase_mdx_startup_check import check_mdx_at_startup
+    _mdx_startup = check_mdx_at_startup()
+    print(
+        '[DBF/MDX-Starttest] ' + _mdx_startup.message,
+        file=sys.stderr if _mdx_startup.executed and not _mdx_startup.success else sys.stdout,
+        flush=True,
+    )
     # Stage 258: Muss vor dem Import/Initialisieren von QtWebEngine und vor
     # jeder neu erzeugten QApplication gesetzt sein. Bei Start über
     # __main__.py ist das Attribut dort bereits gesetzt; der Aufruf hier ist
@@ -86032,20 +86308,28 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                     int(field_spec.length)
                     - decimals
                     - (1 if decimals > 0 else 0)
-                    - 1,  # optionales Vorzeichen
+                    # Kein Zeichen fuer ein nur *moegliches* Minus reservieren:
+                    # Feldbreite 3 muss z.B. die positive Zahl 891 erlauben.
+                    # Das tatsaechliche '-' zaehlt bereits bei setMaxLength.
                 )
-                safe_digits = min(integer_digits, 15)
-                maximum = (10.0 ** safe_digits) - (
-                    10.0 ** (-decimals)
-                    if decimals > 0
-                    else 1.0
-                )
-                validator.setRange(
-                    -maximum,
-                    maximum,
-                    decimals,
-                )
-                editor.setValidator(validator)
+                if integer_digits > 15:
+                    # QDoubleValidator besitzt nur Double-Praezision. Die
+                    # erlaubten 16-20 DBF-Stellen deshalb als Ziffern validieren,
+                    # ohne den zulaessigen Bereich auf 15 Stellen zu kuerzen.
+                    fraction = (
+                        rf"(?:\.[0-9]{{0,{decimals}}})?"
+                        if decimals > 0 else ""
+                    )
+                    pattern = rf"-?[0-9]{{0,{integer_digits}}}{fraction}"
+                    editor.setValidator(QRegularExpressionValidator(
+                        QRegularExpression(pattern), editor
+                    ))
+                else:
+                    maximum = (10.0 ** integer_digits) - (
+                        10.0 ** (-decimals) if decimals > 0 else 1.0
+                    )
+                    validator.setRange(-maximum, maximum, decimals)
+                    editor.setValidator(validator)
                 return editor
 
             if code == "D":
@@ -86138,6 +86422,10 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             self._dark_mode = False
             self._delete_confirmation_active = False
             self.auto_id_allocator = None
+            # Stage 521: Rueckruf der Tabelle. Persistenz vor jeder Grid-Mutation.
+            self.record_delete_persister = None
+            # Stage 522: persistiert importierte Excel-Datensaetze vor Grid-Aenderung.
+            self.record_import_persister = None
             # Stage 303: Nur ein tatsaechlicher Mausklick/-zug am Header
             # darf Spaltenbreiten als Benutzerpraeferenz speichern.
             self._user_resizing_column = False
@@ -86224,6 +86512,14 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                     selection_model.clear()
                 else:
                     self.clearSelection()
+                event.accept()
+                return
+
+            # Ctrl+V aus Excel: bei TSV-Tabellenblock neue Datensaetze anlegen.
+            if (event.matches(QKeySequence.Paste)
+                    and self._clipboard_contains_excel_range()
+                    and self.columnCount() > 0):
+                self.paste_excel_records()
                 event.accept()
                 return
 
@@ -86851,6 +87147,161 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
 
             return [line.split("\t") for line in lines]
 
+        @staticmethod
+        def _excel_clipboard_matrix(text: str):
+            """Excel/LibreOffice TSV, inklusive quoted Tabs und Zeilenumbruechen."""
+            source = str(text or "")
+            if not source:
+                return []
+            try:
+                matrix = list(csv.reader(io.StringIO(source, newline=""),
+                                         delimiter="\t", quotechar='"',
+                                         doublequote=True, strict=True))
+            except csv.Error as exc:
+                raise ValueError(tr("Ungueltiger Excel-Zwischenablageinhalt: {error}")
+                                 .format(error=exc)) from exc
+            # Ein abschliessendes CRLF des Windows-Clipboards ist KEIN Record.
+            while matrix and not matrix[-1]:
+                matrix.pop()
+            return matrix
+
+        def _clipboard_contains_excel_range(self) -> bool:
+            clipboard = QApplication.clipboard()
+            text = clipboard.text()
+            try:
+                matrix = self._excel_clipboard_matrix(text)
+            except ValueError:
+                return bool(text and ("\t" in text or "\n" in text))
+            if len(matrix) > 1 or any(len(row) > 1 for row in matrix):
+                return True
+            # Excel liefert fuer eine einzige kopierte Zelle oft zusaetzlich
+            # eine HTML-Tabelle; reiner Plaintext soll dagegen eine bestehende
+            # Zelle editieren duerfen (Rueckwaertskompatibilitaet).
+            if matrix:
+                try:
+                    mime = clipboard.mimeData()
+                    return bool(mime is not None and mime.hasHtml()
+                                and re.search(r"<table(?:\s|>)", mime.html(), re.I))
+                except (AttributeError, TypeError):
+                    pass
+            return False
+
+        @staticmethod
+        def _excel_date_value(field_spec, value: str) -> str:
+            """Excel-Datum beim TSV-Import in das 8-stellige DBF-Datum wandeln."""
+            text = str(value or "").strip()
+            if str(field_spec.field_type).upper()[:1] != "D" or not text:
+                return str(value or "")
+            if re.fullmatch(r"\d{8}", text):
+                return text
+            for fmt in ("%d.%m.%Y", "%d.%m.%y", "%Y-%m-%d", "%d/%m/%Y"):
+                try:
+                    return dt.datetime.strptime(text, fmt).strftime("%Y%m%d")
+                except ValueError:
+                    continue
+            return text  # _normalize_value zeigt den Feldfehler an.
+
+        def _validated_excel_record_rows(self, matrix, start_column: int):
+            """Validiert ALLE Zellen, ohne Grid oder DBF zu veraendern."""
+            if not matrix:
+                return []
+            if len(matrix) > 50000:
+                raise ValueError(tr("Maximal 50000 Excel-Zeilen pro Einfuegevorgang."))
+            fields = list(self._fields)
+            if not fields or not 0 <= start_column < len(fields):
+                raise ValueError(tr("Bitte zuerst eine gueltige Zielspalte waehlen."))
+            auto_field = _dbase_auto_id_field(fields)
+            prepared = []
+            for row_number, cells in enumerate(matrix, 1):
+                values = {field.name: self._default_value_for_field(field)
+                          for field in fields}
+                for offset, raw_value in enumerate(cells):
+                    column = start_column + offset
+                    if column >= len(fields):
+                        if str(raw_value or "").strip():
+                            raise ValueError(tr("Excel-Zeile {row}: zu viele Spalten fuer die Tabelle.")
+                                             .format(row=row_number))
+                        continue
+                    field = fields[column]
+                    if auto_field is not None and field.name.casefold() == "id" \
+                            and str(field.field_type).upper()[:1] == "N":
+                        continue  # Projekt-ID wird immer neu reserviert.
+                    raw_value = self._excel_date_value(field, raw_value)
+                    try:
+                        values[field.name] = self._normalize_value(field, raw_value)
+                    except ValueError as exc:
+                        raise ValueError(tr("Excel-Zeile {row}, Spalte {column}: {error}")
+                                         .format(row=row_number, column=column + 1, error=exc)) from exc
+                prepared.append((False, values))
+            return prepared
+
+        def paste_excel_records(self) -> bool:
+            """Stage 522: Excel-TSV als NEUE Records, alles-oder-nichts-Persistenz."""
+            if self.columnCount() <= 0:
+                return False
+            try:
+                matrix = self._excel_clipboard_matrix(QApplication.clipboard().text())
+                if not matrix:
+                    return False
+                coordinates = self._selection_coordinates()
+                start_column = (min(column for _row, column in coordinates)
+                                if coordinates else self.currentColumn())
+                if start_column < 0:
+                    # Leere Tabelle: das automatisch vergebene ID-Feld
+                    # ueberspringen, damit importierter Text nicht verlorengeht.
+                    auto_first = _dbase_auto_id_field(self._fields)
+                    start_column = (1 if auto_first is not None
+                                    and self._fields[0].name.casefold() == "id"
+                                    and len(self._fields) > 1 else 0)
+                prepared = self._validated_excel_record_rows(matrix, start_column)
+                if not prepared:
+                    return False
+                # IDs ausschliesslich NACH erfolgreicher Typpruefung reservieren.
+                auto_field = _dbase_auto_id_field(self._fields)
+                existing = list(self.records())
+                if auto_field is not None:
+                    staged = list(existing)
+                    for _deleted, values in prepared:
+                        if callable(self.auto_id_allocator):
+                            value = int(self.auto_id_allocator(auto_field, staged))
+                        else:
+                            value = _dbase_max_existing_id(self._fields, staged) + 1
+                        if value <= 0 or len(str(value)) > int(auto_field.length):
+                            raise ValueError(tr("ID-Feld reicht fuer neue Excel-Datensaetze nicht aus."))
+                        values[auto_field.name] = str(value)
+                        staged.append((False, values))
+
+                # Vor der aktuellen Zielzeile einfuegen, sonst am Tabellenende.
+                insertion = self.currentRow()
+                if insertion < 0 or insertion >= len(existing):
+                    insertion = len(existing)
+                candidates = (existing[:insertion] + prepared + existing[insertion:])
+                persisted = False
+                if callable(self.record_import_persister):
+                    persisted = bool(self.record_import_persister(candidates))
+                    if not persisted:
+                        raise OSError(tr("Der Excel-Import konnte nicht gespeichert werden."))
+
+                self._updating = True
+                try:
+                    self.clearSelection()
+                    for offset, (_deleted, values) in enumerate(prepared):
+                        row = insertion + offset
+                        self.insertRow(row)
+                        for column, field in enumerate(self._fields):
+                            self.setItem(row, column,
+                                         self._new_item(values[field.name], field))
+                    self._refresh_vertical_headers()
+                    self.setCurrentCell(insertion, start_column)
+                finally:
+                    self._updating = False
+                if not persisted:
+                    self.records_changed.emit()
+                return True
+            except (ValueError, OSError, TypeError) as exc:
+                self.validation_failed.emit(str(exc))
+                return False
+
         def _set_cell_value_without_signal(
             self,
             row: int,
@@ -86973,7 +87424,19 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             return plan
 
         def paste_selection(self) -> None:
-            if not self._selection_coordinates():
+            coordinates = self._selection_coordinates()
+            # Bei einer leeren Tabelle gibt es noch keine Zielzelle. Excel-
+            # Bloecke koennen trotzdem in neue DBF-Datensaetze uebernommen werden.
+            if not coordinates:
+                if self._clipboard_contains_excel_range():
+                    self.paste_excel_records()
+                return
+
+            # Einzelzelle + Excel-Block = neue Datensaetze statt Ueberschreiben.
+            # Mehrfachselektion behaelt das vorhandene Bereichs-Paste-Verhalten.
+            if (len(coordinates) == 1
+                    and self._clipboard_contains_excel_range()):
+                self.paste_excel_records()
                 return
 
             matrix = self._clipboard_matrix(
@@ -87158,56 +87621,91 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             if item is not None:
                 self.editItem(item)
 
-        def delete_current_record(self) -> None:
-            row = self.currentRow()
-            if (
-                row < 0
-                or row >= self.rowCount()
-                or self._delete_confirmation_active
-            ):
-                return
+        def _selected_record_rows(self) -> List[int]:
+            """Jede markierte Zelle zaehlt fuer ihren gesamten DBF-Datensatz.
 
-            # Stage 301: Ein DBF-Datensatz darf niemals allein aufgrund
-            # eines Tastenkürzels entfernt werden. Die Bestätigung sitzt
-            # hier (nicht beim Ctrl+D-Handler), damit auch zukünftige
-            # Record-Delete-Buttons/Callbacks diese Sicherung verwenden.
+            Header-Zeilen, Mehrfachauswahl und ganze Spalten werden ebenfalls
+            beruecksichtigt. Es gibt keine implizite Loeschung unmarkierter Zeilen.
+            """
+            return sorted({index.row() for index in self.selectedIndexes()
+                           if 0 <= index.row() < self.rowCount()})
+
+        def delete_selected_records(self, rows=None) -> bool:
+            """Stage 521: markierte DBF-Datensaetze nach Bestaetigung entfernen.
+
+            Ein moeglicher Schreibfehler muss VOR den Qt-Zeilenmutationen
+            auftreten. Bereits bestehende Auto-ID-Reservierungen bleiben erhalten.
+            """
+            if self._delete_confirmation_active:
+                return False
+            if rows is None:
+                rows = self._selected_record_rows()
+            # Sicher gegen doppelt ausgewaehlte Zellen/Zeilen und stale Indices.
+            rows = sorted({int(row) for row in rows
+                           if 0 <= int(row) < self.rowCount()})
+            if not rows:
+                return False
+            count_before = self.rowCount()
             self._delete_confirmation_active = True
             try:
                 dialog = DBaseTableDeleteConfirmDialog(
                     dark_mode=self._dark_mode,
+                    record_count=len(rows),
                     parent=self,
                 )
                 if dialog.exec_() != QDialog.Accepted:
-                    return
+                    return False
             finally:
                 self._delete_confirmation_active = False
 
-            # Der Dialog ist modal. Bei veränderten Daten/Selektion wird
-            # aus Sicherheitsgründen nicht versehentlich eine andere Zeile
-            # als die ursprünglich bestätigte entfernt.
-            if row >= self.rowCount() or self.currentRow() != row:
-                return
+            # Das modale Dialogfenster kann zwischenzeitlich GUI-Aktionen
+            # ausloesen: keine Loeschung mit veralteten Zeilenpositionen.
+            if count_before != self.rowCount():
+                return False
+            selected_after = self._selected_record_rows()
+            if selected_after and rows != selected_after:
+                # Bei expliziter Zeile (Ctrl+D) darf eine umfassendere
+                # Markierung nicht zum Loeschen anderer Records fuehren.
+                if not (len(rows) == 1 and rows[0] == self.currentRow()):
+                    return False
+
+            selected_set = set(rows)
+            candidates = [record for index, record in enumerate(self.records())
+                          if index not in selected_set]
+            persisted = False
+            if callable(self.record_delete_persister):
+                try:
+                    # Schlaegt Schreiben/Permission-Pruefung fehl, bleibt
+                    # die sichtbare Tabelle vollstaendig unveraendert.
+                    persisted = bool(self.record_delete_persister(candidates))
+                except (OSError, ValueError) as exc:
+                    self.validation_failed.emit(
+                        tr("Datensaetze konnten nicht geloescht werden: {error}")
+                        .format(error=exc)
+                    )
+                    return False
 
             self._updating = True
             try:
-                self.removeRow(row)
+                self.clearSelection()
+                for row in reversed(rows):
+                    self.removeRow(row)
                 self._refresh_vertical_headers()
-
-                if self.rowCount() > 0:
-                    self.setCurrentCell(
-                        min(
-                            row,
-                            self.rowCount() - 1,
-                        ),
-                        max(
-                            0,
-                            self.currentColumn(),
-                        ),
-                    )
+                if self.rowCount() > 0 and self.columnCount() > 0:
+                    self.setCurrentCell(min(rows[0], self.rowCount() - 1),
+                                        max(0, min(self.currentColumn(), self.columnCount() - 1)))
             finally:
                 self._updating = False
 
-            self.records_changed.emit()
+            if not persisted:
+                self.records_changed.emit()
+            return True
+
+        def delete_current_record(self) -> None:
+            """Der vorhandene Ctrl+D-Einzelrecord-Weg bleibt kompatibel."""
+            row = self.currentRow()
+            if row >= 0:
+                self.delete_selected_records(rows=[row])
 
         def _goto_row(self, row: int) -> None:
             if self.rowCount() <= 0:
@@ -87474,8 +87972,12 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             menu = QMenu(self)
 
             add_record_action = menu.addAction(
-                tr("Datensatz hinzufügen")
+                tr("Datensatz hinzufügen ...")
             )
+            delete_record_action = menu.addAction(
+                tr("Datensatz löschen")
+            )
+            delete_record_action.setEnabled(bool(self._selected_record_rows()))
             menu.addSeparator()
 
             copy_action = menu.addAction(
@@ -87487,6 +87989,9 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             cut_action = menu.addAction(
                 tr("Ausschneiden")
             )
+            excel_action = menu.addAction(tr("Excel-Datensaetze einfuegen ..."))
+            excel_action.setEnabled(bool(QApplication.clipboard().text())
+                                    and self.columnCount() > 0)
 
             menu.addSeparator()
 
@@ -87510,10 +88015,19 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
 
             if chosen is add_record_action:
                 self.new_record()
+            elif chosen is delete_record_action:
+                # Ein offener Zell-Editor darf seine alte Zeile nicht erst
+                # NACH dem Loeschen in das DBF-Modell zurueckschreiben.
+                self.setFocus(Qt.OtherFocusReason)
+                rows_to_delete = self._selected_record_rows()
+                QTimer.singleShot(0, lambda selected=rows_to_delete:
+                                  self.delete_selected_records(rows=selected))
             elif chosen is copy_action:
                 self.copy_selection()
             elif chosen is paste_action:
                 self.paste_selection()
+            elif chosen is excel_action:
+                self.paste_excel_records()
             elif chosen is cut_action:
                 self.cut_selection()
             elif chosen is delete_action:
@@ -87950,9 +88464,10 @@ QFileDialog QComboBox QAbstractItemView {{
     class DBaseTableDeleteConfirmDialog(QDialog):
         """Stage 301: modale, abbrechbare Löschbestätigung für DBF-Records."""
 
-        def __init__(self, *, dark_mode=False, parent=None):
+        def __init__(self, *, dark_mode=False, record_count=1, parent=None):
             super().__init__(parent)
             self._dark_mode = bool(dark_mode)
+            self.record_count = max(1, int(record_count))
             self.setWindowTitle(tr("Datensatz löschen"))
             self.setObjectName("dbase_table_delete_confirm_dialog")
             self.setModal(True)
@@ -87977,7 +88492,11 @@ QFileDialog QComboBox QAbstractItemView {{
             layout.setContentsMargins(16, 14, 16, 12)
             layout.setSpacing(10)
 
-            self.question_label = QLabel(tr("Datensatz wirklich löschen?"), content)
+            question = (tr("Datensatz wirklich löschen?")
+                        if self.record_count == 1 else
+                        tr("Wirklich {count} markierte Datensätze löschen?")
+                        .format(count=self.record_count))
+            self.question_label = QLabel(question, content)
             self.question_label.setObjectName("dbase_table_delete_confirm_question")
             self.question_label.setAlignment(Qt.AlignCenter)
             layout.addWidget(self.question_label, 1)
@@ -88634,6 +89153,11 @@ QFileDialog QComboBox QAbstractItemView {{
                 tr("Suchen"),
                 navigation,
             )
+            # Stage 524: DBF PACK und externe NDX-/MDX-Indizes.
+            self.pack_record_button = QPushButton(tr("Pack"), navigation)
+            self.pack_record_button.setToolTip(
+                tr("Physisch geloeschte DBF-Datensaetze entfernen und NDX/MDX-Indizes neu aufbauen")
+            )
             self.up_sort_button.setToolTip(
                 tr("Datensätze nach dem aktuellen Feld aufwärts sortieren")
             )
@@ -88668,6 +89192,9 @@ QFileDialog QComboBox QAbstractItemView {{
             self.search_record_button.setObjectName(
                 "dbase_table_data_search_button"
             )
+            self.pack_record_button.setObjectName(
+                "dbase_table_data_pack_button"
+            )
 
             nav_layout.addWidget(
                 self.first_record_button
@@ -88696,6 +89223,9 @@ QFileDialog QComboBox QAbstractItemView {{
             nav_layout.addWidget(
                 self.search_record_button
             )
+            nav_layout.addWidget(
+                self.pack_record_button
+            )
             nav_layout.addStretch(1)
             page_layout.addWidget(navigation)
 
@@ -88722,6 +89252,8 @@ QFileDialog QComboBox QAbstractItemView {{
             self.data_page = page
             self.data_grid = data_grid
             data_grid.auto_id_allocator = self._reserve_auto_id
+            data_grid.record_delete_persister = self._persist_deleted_records
+            data_grid.record_import_persister = self._persist_imported_records
             self.data_navigation_panel = navigation
 
             self.first_record_button.clicked.connect(
@@ -88748,6 +89280,7 @@ QFileDialog QComboBox QAbstractItemView {{
             self.search_record_button.clicked.connect(
                 self._show_data_search_dialog
             )
+            self.pack_record_button.clicked.connect(self._pack_dbf_records)
 
             data_grid.records_changed.connect(
                 self._data_grid_changed
@@ -88821,6 +89354,65 @@ QFileDialog QComboBox QAbstractItemView {{
             self._show_data_status(
                 tr("Eintrag in Datensatz {row} gefunden.").format(row=row + 1),
                 3000,
+            )
+
+        def _pack_dbf_records(self) -> None:
+            """Stage 524: PACK entfernt ausschliesslich physische DBF-Loeschmarker.
+
+            Vorhandene aktive Records werden 1:1 bytegenau uebernommen; der
+            externe MDX-Treiber und neue NDX-Dateien werden zuerst vorbereitet.
+            """
+            if self.dbf_path is None:
+                QMessageBox.information(
+                    self, tr("DBF Pack"),
+                    tr("Die Tabelle muss vor dem Packen gespeichert werden."),
+                )
+                return
+            if self.data_grid is not None:
+                try:
+                    self.data_grid.closePersistentEditor(
+                        self.data_grid.currentItem()
+                    ) if self.data_grid.currentItem() is not None else None
+                except (RuntimeError, TypeError):
+                    pass
+            path = Path(self.dbf_path)
+            if not path.is_file():
+                self._show_error(tr("DBF Pack"), tr("DBF-Datei wurde nicht gefunden."))
+                return
+            try:
+                from dbase_pack_index import _parse_dbf, pack_dbf_with_indexes
+                _fields, _header_len, _record_len, _records, deleted = _parse_dbf(path.read_bytes())
+                fields = self._current_field_definitions()
+                indexed_names = [f.name for f in fields if f.indexed]
+                # Wenn es keine geloeschten Records gibt, kann ein erneuter
+                # Indexaufbau dennoch gewollt sein.
+                question = tr(
+                    "{count} als geloescht markierte Datensaetze dauerhaft entfernen?\n"
+                    "Die externen NDX-/MDX-Indexdateien werden neu aufgebaut."
+                ).format(count=deleted)
+                if QMessageBox.question(
+                    self, tr("DBF Pack"), question,
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+                ) != QMessageBox.Yes:
+                    return
+                result = pack_dbf_with_indexes(path, indexed_names)
+            except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
+                self._show_error(tr("DBF Pack fehlgeschlagen"), exc)
+                return
+            # Erst nach erfolgreichem Dateitausch die Ansicht aktualisieren.
+            try:
+                self.load_table(path)
+            except (OSError, ValueError) as exc:
+                self._show_error(tr("DBF nach Pack laden"), exc)
+                return
+            self._show_data_status(
+                tr("Pack abgeschlossen: {deleted} Datensaetze entfernt, {remaining} verbleiben; "
+                   "{ndx} NDX-Indizes{mdx}.").format(
+                    deleted=result.removed, remaining=result.remaining,
+                    ndx=len(result.ndx_files),
+                    mdx=(", MDX erstellt" if result.mdx_file is not None else ""),
+                ),
+                6500,
             )
 
         def _current_field_definitions(self):
@@ -88935,6 +89527,58 @@ QFileDialog QComboBox QAbstractItemView {{
                 ),
                 2500,
             )
+
+        def _persist_deleted_records(self, remaining_records) -> bool:
+            """Stage 521: DBF atomar vor der visuellen Record-Loeschung sichern.
+
+            Kein Python/Qt-Datenmodell wird modifiziert, bevor der OS-Write
+            erfolgreich war. Bei ungespeicherten Tabellen erledigt weiterhin
+            der bestehende records_changed-Mechanismus die Aktualisierung.
+            """
+            if self.dbf_path is None:
+                return False
+            fields = self._current_field_definitions()
+            path = Path(self.dbf_path)
+            if not path.is_file():
+                raise FileNotFoundError(f"DBF-Datei nicht gefunden: {path}")
+            # Windows-Dateisperren, ACLs und RO-Attribute werden letztlich
+            # durch den atomaren OS-Replace geprüft (nicht nur os.access).
+            if (not os.access(path, os.W_OK)
+                    or not os.access(path.parent, os.W_OK)
+                    or not (path.stat().st_mode & stat.S_IWUSR)
+                    or not (path.parent.stat().st_mode & 0o222)):
+                raise PermissionError(f"Keine Schreibrechte fuer die DBF-Tabelle: {path}")
+            write_dbase_dbf(path, fields, remaining_records,
+                            code_page_mark=self.code_page_mark,
+                            source_path=path)
+            self.loaded_records = list(remaining_records)
+            self._report_saved_id_counter(fields, self.loaded_records)
+            self._show_data_status(
+                tr("{count} Datensatz/Datensätze gelöscht und gespeichert.")
+                .format(count=len(self.data_grid.records()) - len(remaining_records)),
+                3500,
+            )
+            return True
+
+        def _persist_imported_records(self, imported_records) -> bool:
+            """Stage 522: komplette DBF vor Excel-Grid-Mutation speichern."""
+            if self.dbf_path is None:
+                return False
+            fields = self._current_field_definitions()
+            path = Path(self.dbf_path)
+            if not path.is_file():
+                raise FileNotFoundError(f"DBF-Datei nicht gefunden: {path}")
+            if (not os.access(path, os.W_OK)
+                    or not os.access(path.parent, os.W_OK)
+                    or not (path.stat().st_mode & stat.S_IWUSR)
+                    or not (path.parent.stat().st_mode & 0o222)):
+                raise PermissionError(f"Keine Schreibrechte fuer die DBF-Tabelle: {path}")
+            write_dbase_dbf(path, fields, imported_records,
+                            code_page_mark=self.code_page_mark, source_path=path)
+            self.loaded_records = list(imported_records)
+            self._report_saved_id_counter(fields, self.loaded_records)
+            self._show_data_status(tr("Excel-Datensaetze gespeichert."), 3500)
+            return True
 
         def _data_grid_changed(self) -> None:
             if (
@@ -126425,9 +127069,21 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             file_menu.addSeparator()
             file_menu.addAction(self.quit_action)
 
-            # Stage 166: Hauptmenü fuer die gaengigen Textoperationen.
+            # Stage 166/523: Bei aktiver dBASE-Datenansicht stehen die beiden
+            # Datensatzaktionen ganz oben. Außerhalb des Tabellen-Designers
+            # werden beide Aktionen und ihr Separator vollständig versteckt;
+            # die ursprünglichen Textaktionen beginnen dann wieder bei Undo.
             self.edit_menu = self.main_menu_bar.addMenu("&Bearbeiten")
             self.edit_menu.setObjectName("edit_menu")
+            self.table_record_menu_add = self.edit_menu.addAction(tr("Datensatz hinzufügen ..."))
+            self.table_record_menu_add.triggered.connect(self._table_edit_menu_add_record)
+            self.table_record_menu_delete = self.edit_menu.addAction(tr("Datensatz löschen"))
+            self.table_record_menu_delete.triggered.connect(self._table_edit_menu_delete_records)
+            self.table_record_menu_separator_after = self.edit_menu.addSeparator()
+            for item in (self.table_record_menu_add,
+                         self.table_record_menu_delete,
+                         self.table_record_menu_separator_after):
+                item.setVisible(False)
             self.edit_menu.addAction(self.undo_action)
             self.edit_menu.addAction(self.redo_action)
             self.edit_menu.addSeparator()
@@ -128626,7 +129282,46 @@ border: 2px solid #2a69aa;
             dock = getattr(controller, "dock", None) if controller is not None else None
             return dock.designer if dock is not None and dock.isVisible() else None
 
+        def _active_table_edit_page(self):
+            """Aktive Datenansicht des zentralen dBASE-Tabellen-Workspaces."""
+            designer = getattr(self, "dbase_table_designer_widget", None)
+            workspace = getattr(self, "_dbase_table_central_page", None)
+            tabs = getattr(self, "document_tabs", None)
+            if (designer is None or workspace is None or tabs is None
+                    or not bool(getattr(self, "_dbase_table_centralized", False))
+                    or tabs.currentWidget() is not workspace):
+                return None
+            page = designer.table_tabs.currentWidget()
+            if (not isinstance(page, DBaseTablePage) or page.data_grid is None
+                    or page.inner_tabs.currentWidget() is not page.data_page):
+                return None
+            return page
+
+        def _table_edit_menu_add_record(self, _checked=False):
+            page = self._active_table_edit_page()
+            if page is not None:
+                page._shortcut_new_record()
+
+        def _table_edit_menu_delete_records(self, _checked=False):
+            page = self._active_table_edit_page()
+            if page is None:
+                return
+            grid = page.data_grid
+            rows = grid._selected_record_rows()
+            if not rows:
+                return
+            page._run_after_data_editor_commit(
+                lambda selected=rows: grid.delete_selected_records(rows=selected))
+
         def _run_current_text_command(self, command: str) -> None:
+            table_page = self._active_table_edit_page()
+            if table_page is not None and command in {"copy", "paste", "cut"}:
+                grid = table_page.data_grid
+                {"copy": grid.copy_selection,
+                 "paste": grid.paste_selection,
+                 "cut": grid.cut_selection}[command]()
+                self._update_edit_actions()
+                return
             formula = self._active_formula_designer()
             if formula is not None:
                 commands = {
@@ -128672,6 +129367,24 @@ border: 2px solid #2a69aa;
         def _update_edit_actions(self) -> None:
             """Bearbeiten-Aktionen passend zum aktuellen Editorzustand setzen."""
             if not hasattr(self, "undo_action"):
+                return
+            table_page = self._active_table_edit_page()
+            for action in (getattr(self, "table_record_menu_add", None),
+                           getattr(self, "table_record_menu_delete", None),
+                           getattr(self, "table_record_menu_separator_after", None)):
+                if action is not None:
+                    action.setVisible(table_page is not None)
+            if table_page is not None:
+                grid = table_page.data_grid
+                has_selection = bool(grid._selection_coordinates())
+                self.undo_action.setEnabled(False)
+                self.redo_action.setEnabled(False)
+                self.copy_action.setEnabled(has_selection)
+                self.cut_action.setEnabled(has_selection)
+                self.paste_action.setEnabled(bool(QApplication.clipboard().text())
+                                             and grid.columnCount() > 0)
+                self.table_record_menu_add.setEnabled(grid.columnCount() > 0)
+                self.table_record_menu_delete.setEnabled(bool(grid._selected_record_rows()))
                 return
             formula = self._active_formula_designer()
             if formula is not None:
@@ -140761,6 +141474,10 @@ border: 2px solid #2a69aa;
             # gewünschte kurze Aktion "Hinzufügen". Die übrigen dBase-
             # Ressourcenknoten behalten ihre bisherige Beschriftung.
             add_action = menu.addAction("Hinzufügen" if role == "labels" else "Hinzufügen …")
+            rename_action = menu.addAction("Umbenennen") if role == "tables" else None
+            if rename_action is not None:
+                rename_action.setEnabled(item.childCount() > 0)
+                menu.addSeparator()
             clear_action = None
             if role != "labels":
                 clear_action = menu.addAction("Einträge löschen")
@@ -140779,6 +141496,8 @@ border: 2px solid #2a69aa;
                 item.setExpanded(True)
             elif selected is add_action:
                 self.add_project_dbase_entries(item)
+            elif rename_action is not None and selected is rename_action:
+                self._choose_dbase_table_to_rename(item)
             elif clear_action is not None and selected is clear_action:
                 self.clear_project_dbase_group(item)
             elif selected is toggle_action:
@@ -140822,16 +141541,40 @@ border: 2px solid #2a69aa;
             outer.addSpacing(8)
             dialog.exec_()
 
+        def _choose_dbase_table_to_rename(self, group_item: QTreeWidgetItem) -> None:
+            """Wahl einer Tabelle im geschuetzten dBASE-Tabellenknoten."""
+            children = [group_item.child(i) for i in range(group_item.childCount())
+                        if str(group_item.child(i).data(0, Qt.UserRole + 306) or "").casefold() == "tables"]
+            if not children:
+                self.show_error("Umbenennen", "Unter Tabellen ist keine DBF-Datei eingetragen.")
+                return
+            if len(children) == 1:
+                self._begin_dbase_program_rename(children[0])
+                return
+            choices = [f"{child.text(0)}  —  {str(child.data(0, Qt.UserRole + 302) or '')}"
+                       for child in children]
+            selection, accepted = QInputDialog.getItem(
+                self, "Tabelle umbenennen", "Tabelle auswählen:", choices, 0, False
+            )
+            if accepted:
+                index = choices.index(selection)
+                self._begin_dbase_program_rename(children[index])
+
         def _begin_dbase_program_rename(
             self, item: QTreeWidgetItem, *, c64_language: str = "",
         ) -> None:
             """Gemeinsamer vorhandener Umbenennen-Dialog für dBase / C64."""
-            if not c64_language and str(item.data(0, Qt.UserRole + 306) or "").casefold() != "programs":
+            item_role = str(item.data(0, Qt.UserRole + 306) or "").casefold()
+            if not c64_language and item_role not in {"programs", "tables"}:
                 return
+            table_rename = not c64_language and item_role == "tables"
+            rename_title = ("C64-Programm umbenennen" if c64_language else
+                            "dBase-Tabelle umbenennen" if table_rename else
+                            "dBase-Programm umbenennen")
             old_name = item.text(0)
             dialog = QDialog(self)
             dialog.setObjectName("dbaseProgramRenameDialog")
-            dialog.setWindowTitle("C64-Programm umbenennen" if c64_language else "dBase-Programm umbenennen")
+            dialog.setWindowTitle(rename_title)
             dialog.setModal(True)
             dialog.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
             dialog.setMinimumWidth(440)
@@ -140863,7 +141606,7 @@ border: 2px solid #2a69aa;
             layout = QVBoxLayout(dialog)
             layout.setContentsMargins(3, 3, 3, 12)
             layout.setSpacing(12)
-            layout.addWidget(DBaseTableDialogTitleBar(dialog, "Programm umbenennen", dark_mode=dark))
+            layout.addWidget(DBaseTableDialogTitleBar(dialog, "Tabelle umbenennen" if table_rename else "Programm umbenennen", dark_mode=dark))
             label = QLabel("Dateiname:", dialog)
             label.setObjectName("dbaseProgramRenameLabel")
             layout.addWidget(label)
@@ -140888,6 +141631,8 @@ border: 2px solid #2a69aa;
             if dialog.exec_() == QDialog.Accepted:
                 if c64_language:
                     self._commit_c64_program_rename(item, name_edit.text())
+                elif table_rename:
+                    self._commit_dbase_table_rename(item, name_edit.text())
                 else:
                     self._commit_dbase_program_rename(item, name_edit.text(), old_name)
 
@@ -140953,6 +141698,57 @@ border: 2px solid #2a69aa;
             self.log(f"C64-Programm umbenannt: {old_path} -> {target}")
             return True
 
+        def _commit_dbase_table_rename(self, item: QTreeWidgetItem, proposed_name: str) -> bool:
+            """DBF samt Memo/Designer-Metadaten umbenennen und GUI nachziehen."""
+            source_text = str(item.data(0, Qt.UserRole + 302) or "").strip()
+            if not source_text:
+                self.show_error("Umbenennen nicht möglich", "Keine Tabellendatei ausgewählt.")
+                return False
+            old_path = Path(source_text).expanduser().resolve()
+            old_key = _dbase_table_width_key(old_path)
+            try:
+                target = rename_dbase_table_files(old_path, proposed_name)
+            except (OSError, ValueError) as exc:
+                self.show_error("Tabelle umbenennen fehlgeschlagen", str(exc))
+                return False
+            if target == old_path:
+                return True
+            self._replace_project_path_reference(old_path, target)
+            # Referenzen auf offene Tabellenblätter und ihre Daten-Tab-Titel.
+            designer = getattr(self, "dbase_table_designer_widget", None)
+            if designer is not None:
+                tabs = getattr(designer, "table_tabs", None)
+                if tabs is not None:
+                    for i in range(tabs.count()):
+                        page = tabs.widget(i)
+                        candidate = getattr(page, "dbf_path", None)
+                        if candidate is not None and _dbase_table_width_key(candidate) == old_key:
+                            page.dbf_path = target
+                            tabs.setTabText(i, page.display_name())
+            new_key = _dbase_table_width_key(target)
+            if old_key != new_key:
+                for storage in (getattr(self, "project_dbase_data_column_widths", {}),
+                                getattr(self, "project_dbase_id_counters", {})):
+                    if old_key in storage:
+                        storage[new_key] = storage.pop(old_key)
+            document = self._find_open_document(old_path)
+            if document is not None:
+                document.path = target
+                document.custom_display_name = None
+                self._update_document_tab(document)
+            item.setText(0, target.name)
+            item.setData(0, Qt.UserRole + 302, str(target))
+            item.setToolTip(0, str(target))
+            item.setIcon(0, self.icon_provider.icon(QFileInfo(str(target))))
+            self.set_project_modified(True)
+            if self.current_project_path is not None:
+                self.save_project()
+            if old_path.parent == self.current_directory:
+                self.populate_file_list()
+            self.statusBar().showMessage(f"dBase-Tabelle umbenannt: {old_path.name} → {target.name}", 6000)
+            self.log(f"dBase-Tabelle umbenannt: {old_path} -> {target}")
+            return True
+
         def _commit_dbase_program_rename(
             self, item: QTreeWidgetItem, proposed_name: str, old_name: str
         ) -> None:
@@ -141013,7 +141809,7 @@ border: 2px solid #2a69aa;
             role = str(item.data(0, Qt.UserRole + 306) or "").casefold()
             menu = QMenu(self.project_tree)
             open_action = menu.addAction("Öffnen")
-            rename_action = menu.addAction("Umbenennen") if role == "programs" else None
+            rename_action = menu.addAction("Umbenennen") if role in {"programs", "tables"} else None
             add_action = None
             if role == "labels":
                 # Auch auf einem Etiketten-Blatt kann direkt ein weiteres
@@ -145001,6 +145797,19 @@ QFileDialog QComboBox QAbstractItemView {
             window_shown_callback(window)
         except Exception:
             pass
+    if _mdx_startup.executed and not _mdx_startup.success:
+        # Nach dem Splash-Finish anzeigen, damit das Always-on-Top-Splash
+        # den Fehlerdialog nicht verdeckt. Keine Blockade der gesamten IDE.
+        def _show_mdx_startup_warning(message=_mdx_startup.message):
+            QMessageBox.warning(
+                window,
+                'DBF/MDX-Starttest fehlgeschlagen',
+                'Der automatische DBF-PACK-/Index-Test ist fehlgeschlagen.\n\n'
+                + message + '\n\n'
+                'Die IDE kann weiter verwendet werden. PACK mit externen '
+                'MDX-Indizes ist auf diesem System möglicherweise nicht verfügbar.',
+            )
+        QTimer.singleShot(0, _show_mdx_startup_warning)
     return app.exec_()
 
 

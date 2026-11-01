@@ -1,0 +1,39 @@
+#pragma code_page(1200)
+
+LANGUAGE 0x0007, 0x01
+
+// Text-Ressource 1
+STRINGTABLE
+BEGIN
+     1 "Deutsch Form"
+     2 "Drück mich"
+	 3 "Schließen"
+	 4 "Name"
+	 5 "Vorname"
+	 6 "Auswahl 1"
+	 7 "Auswahl 2"
+	 8 "Blau"
+	 9 "Rot"
+	10 "Rot"
+	11 "Gelb"
+	12 "Grün"
+	13 "Kreis"
+	14 "Quadrat"
+	15 "Dies ist kein Fehler. Ich wette, das Sie den Button gedrückt haben."
+	16 "Alaram !"
+	17 "OK"
+END
+
+100 MENU
+BEGIN
+    POPUP "Datei"
+    BEGIN
+        MENUITEM "Öffnen", 3011
+        MENUITEM SEPARATOR
+        MENUITEM "Beenden", 3012
+    END
+    POPUP "Hilfe"
+    BEGIN
+        MENUITEM "Über ...", 3013
+    END
+END

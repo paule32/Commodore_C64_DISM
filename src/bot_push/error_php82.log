@@ -1,0 +1,14 @@
+[04-Oct-2026 02:39:03 Europe/Berlin] PHP Fatal error:  Uncaught Error: Failed opening required '/home/webpages/lima-city/paule32/myBB/gh0st/global.php' (include_path='.') in /home/webpages/lima-city/paule32/myBB/gh0st/fix.php:5
+Stack trace:
+#0 {main}
+  thrown in /home/webpages/lima-city/paule32/myBB/gh0st/fix.php on line 5
+[04-Oct-2026 03:14:31 Europe/Berlin] PHP Fatal error:  Uncaught mysqli_sql_exception: Unknown column 'id' in 'field list' in /home/webpages/lima-city/paule32/myBB/inc/db_mysqli.php:327
+Stack trace:
+#0 /home/webpages/lima-city/paule32/myBB/inc/db_mysqli.php(327): mysqli_query(Object(mysqli), 'SELECT id FROM ...')
+#1 /home/webpages/lima-city/paule32/myBB/inc/db_mysqli.php(793): DB_MySQLi->query('SELECT id FROM ...')
+#2 /home/webpages/lima-city/paule32/myBB/inc/tasks/ip_history_logs.php(16): DB_MySQLi->simple_select('ip_history', 'id', 'date < '1783300...')
+#3 /home/webpages/lima-city/paule32/myBB/inc/functions_task.php(90): task_ip_history_logs(Array)
+#4 /home/webpages/lima-city/paule32/myBB/inc/functions.php(243): run_task()
+#5 [internal function]: run_shutdown()
+#6 {main}
+  thrown in /home/webpages/lima-city/paule32/myBB/inc/db_mysqli.php on line 327

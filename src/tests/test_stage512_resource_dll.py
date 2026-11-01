@@ -79,7 +79,7 @@ def test_native_resource_only_pe_dll_and_coff(tmp_path, machine, identifier, mag
     source, entries = _entries(tmp_path)
     paths = SCOPE['build_resource_dll_files'](source, entries, machine=machine)
     assert [p.name for p in paths] == ['Resource32.res','Resource32.o','Resource32.dll']
-    assert all(p.parent.name == 'unicode' and p.parent.parent.name == folder for p in paths)
+    assert all(p.parent.name == folder for p in paths)
     assert all(p.is_file() for p in paths)
     assert [(e.type_id,e.name_id,e.data) for e in SCOPE['read_res'](paths[0])] == [
         (e.type_id,e.name_id,e.data) for e in entries]
@@ -149,9 +149,8 @@ def test_gui_build_compiles_current_rc_and_uses_selected_architecture():
                     SOURCE.index('    def compile_to_coff(self, machine: str):')]
     assert 'self._compile_current_rc()' in region
     assert 'read_res(self.current_path)' in region
-    assert 'codepage=selected_page' in region and 'build_resource_dll_files(' in region
-    assert 'self.set_target("pe64" if machine == "x64" else "pe32")' not in region
-    assert 'build_entries = compile_source()' in region
+    assert 'build_resource_dll_files(self.current_path, self.entries, machine=machine)' in region
+    assert 'self.set_target("pe64" if machine == "x64" else "pe32")' in region
 
 
 def test_existing_resource_dll_output_matches_independent_lld_coff(tmp_path):

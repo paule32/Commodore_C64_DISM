@@ -118,8 +118,8 @@
         "underline": false
       },
       "geometry": [
-        64,
-        146,
+        225,
+        39,
         120,
         34
       ],
@@ -172,8 +172,8 @@
         "underline": false
       },
       "geometry": [
-        177,
-        212,
+        385,
+        41,
         120,
         34
       ],
@@ -214,6 +214,59 @@
         "Name": "Button2",
         "ShadowColor": "#000000",
         "Text": "Button2"
+      }
+    },
+    {
+      "font": {
+        "bold": false,
+        "family": "MS Shell Dlg 2",
+        "italic": false,
+        "size": 8,
+        "strikeout": false,
+        "underline": false
+      },
+      "geometry": [
+        39,
+        147,
+        380,
+        182
+      ],
+      "path": "THIS.TableGrid1",
+      "properties": {
+        "BackColor": "#202630",
+        "BorderBottom": ".T.",
+        "BorderBottomColor": "#7a7a7a",
+        "BorderBottomSize": "1",
+        "BorderBottomStyle": "none",
+        "BorderColor": "#7a7a7a",
+        "BorderLeft": ".T.",
+        "BorderLeftColor": "#7a7a7a",
+        "BorderLeftSize": "1",
+        "BorderLeftStyle": "none",
+        "BorderRight": ".T.",
+        "BorderRightColor": "#7a7a7a",
+        "BorderRightSize": "1",
+        "BorderRightStyle": "none",
+        "BorderRoundedBL": "0",
+        "BorderRoundedBR": "0",
+        "BorderRoundedTL": "0",
+        "BorderRoundedTR": "0",
+        "BorderStyle": "none",
+        "BorderTop": ".T.",
+        "BorderTopColor": "#7a7a7a",
+        "BorderTopSize": "1",
+        "BorderTopStyle": "none",
+        "BorderWidth": "1",
+        "BrushCutHeight": "100",
+        "BrushCutWidth": "100",
+        "BrushGradient": "none",
+        "BrushStyle": "0",
+        "FontAlpha": "255",
+        "FontBackground": "#202630",
+        "FontForeground": "#ebeef2",
+        "ForeColor": "#ebeef2",
+        "Name": "TableGrid1",
+        "ShadowColor": "#000000"
       }
     }
   ],

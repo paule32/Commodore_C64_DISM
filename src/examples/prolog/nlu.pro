@@ -1,17 +1,28 @@
 [Project]
 Format = dBase2Many Project
 Version = 2
-WorkingDirectory = ../dbase
+WorkingDirectory = .
 WorkspaceRoot = ../..
-ViewState = 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
+ViewState = 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
+PrimaryDockLayout = {"paired":true,"area":1,"orientation":1,"first":"left_dock","second":"right_dock","sizes":[448,252],"area_width":448,"central_width":747,"separator_x":450}
 
 [Session.Geometry]
 Version = 2
-MainWindow = {"x":269,"y":87,"width":1009,"height":800,"maximized":false,"fullscreen":false,"qt_geometry":"AdnQywADAAAAAAENAAAAVwAABP0AAAN2AAABDQAAAFcAAAT9AAADdgAAAAAAAAAAB4AAAAENAAAAVwAABP0AAAN2"}
-CentralArea = {"x":3,"y":110,"width":1003,"height":667}
-FileSystemDock = {"visible":false,"floating":false,"area":2,"x":0,"y":0,"width":320,"height":294}
-ProjectDock = {"visible":false,"floating":false,"area":2,"x":754,"y":110,"width":252,"height":667}
-ProtocolDock = {"visible":false,"floating":false,"area":8,"x":3,"y":666,"width":225,"height":190}
+MainWindow = {"x":295,"y":68,"width":1009,"height":800,"maximized":false,"fullscreen":false,"qt_geometry":"AdnQywADAAAAAAEnAAAARAAABRcAAANjAAABJwAAAEQAAAUXAAADYwAAAAAAAAAAB4AAAAEnAAAARAAABRcAAANj"}
+CentralArea = {"x":259,"y":110,"width":747,"height":667}
+PrimaryDockArea = {"area":1,"orientation":1,"first":"left_dock","second":"right_dock","sizes":[448,252],"area_width":448,"central_width":747,"separator_x":450}
+FileSystemDock = {"visible":false,"floating":false,"area":1,"x":3,"y":110,"width":448,"height":667}
+ProjectDock = {"visible":true,"floating":false,"area":1,"x":3,"y":110,"width":252,"height":667}
+ProtocolDock = {"visible":false,"floating":false,"area":8,"x":0,"y":0,"width":225,"height":190}
+
+[Session.DBase.ColumnWidths]
+Title = Daten-Spaltenbreiten nach DBF und Feldname
+Item0001 = {"path":"../data/laender.dbf","widths":{"NAME":267,"ID":53,"CODE":80,"ISOALPHA3":74,"ISOALPHA2":69}}
+
+[Session.DBase.IDCounters]
+Title = Letzte verwendete Auto-Increment-ID je DBF
+Item0001 = {"path":"../data/woerter.dbf","last_id":13}
+Item0002 = {"path":"../data/laender.dbf","last_id":711}
 
 [Session.C64]
 LastBasicFile = ../SpeedTest_A_Block.bas
@@ -94,6 +105,8 @@ Title = Formulare
 
 [Category.dbase.tables]
 Title = Tabellen
+Item0001 = {"title":"woerter.dbf","path":"../data/woerter.dbf"}
+Item0002 = {"title":"laender.dbf","path":"../data/laender.dbf"}
 
 [Category.dbase.queries]
 Title = Abfragen
@@ -189,6 +202,15 @@ RelativePaths = true
 [Settings.Windows.32Bit.Compiler.OutputDirectory]
 Title = Windows 32-Bit Compiler Ausgabe-Verzeichnis
 RelativePaths = true
+AssemblerSyntax = intel
+
+[Settings.Windows.32Bit.Compiler.dBASE.Optimierung]
+Title = Windows 32-Bit Compiler dBASE Optimierung
+ExternalUIComponents = false
+CompressJson = false
+StoreBinaryData = false
+StaticNumericInternalSlots = false
+DynamicTypedVariables = false
 
 [Settings.Windows.32Bit.Compiler.Prolog.Optimierung]
 Title = Windows 32-Bit Compiler Prolog Optimierung
@@ -199,6 +221,13 @@ Title = Windows 32-Bit Umgebung
 WorkstationMode = false
 DebugThemeNormal = default
 DebugThemeWorkstation = default
+DBaseRuntimeDLLDirectory = 
+DBaseRuntimeDLLPack = false
+DBaseRuntimeConstPool = false
+ResourceASCIINativeUTF16Copy = false
+ResourceUTF8NativeUTF16Copy = false
+ResourceDLLCompressEnabled = false
+ResourceDLLCompressMode = transparent
 
 [Settings.Windows.32Bit.Linker]
 Title = Windows 32-Bit Linker
@@ -250,6 +279,15 @@ RelativePaths = true
 [Settings.Windows.64Bit.Compiler.OutputDirectory]
 Title = Windows 64-Bit Compiler Ausgabe-Verzeichnis
 RelativePaths = true
+AssemblerSyntax = intel
+
+[Settings.Windows.64Bit.Compiler.dBASE.Optimierung]
+Title = Windows 64-Bit Compiler dBASE Optimierung
+ExternalUIComponents = false
+CompressJson = false
+StoreBinaryData = false
+StaticNumericInternalSlots = false
+DynamicTypedVariables = false
 
 [Settings.Windows.64Bit.Compiler.Prolog.Optimierung]
 Title = Windows 64-Bit Compiler Prolog Optimierung
@@ -260,6 +298,13 @@ Title = Windows 64-Bit Umgebung
 WorkstationMode = false
 DebugThemeNormal = default
 DebugThemeWorkstation = default
+DBaseRuntimeDLLDirectory = 
+DBaseRuntimeDLLPack = false
+DBaseRuntimeConstPool = false
+ResourceASCIINativeUTF16Copy = false
+ResourceUTF8NativeUTF16Copy = false
+ResourceDLLCompressEnabled = false
+ResourceDLLCompressMode = transparent
 
 [Settings.Windows.64Bit.Linker]
 Title = Windows 64-Bit Linker
