@@ -137084,7 +137084,7 @@ border: 2px solid #2a69aa;
                 self._add_project_c64_sprite_entry(Path(filename))
 
         def _show_project_c64_sprites_menu(self, item: QTreeWidgetItem, position) -> None:
-            menu = QMenu(self.project_tree)
+            menu = self._project_popup_menu()
             kind = self._project_item_kind(item)
             if kind == PROJECT_NODE_C64_SPRITES_ROOT:
                 bitmap_action = menu.addAction("Neues Bitmap Sprite")
@@ -139678,7 +139678,7 @@ border: 2px solid #2a69aa;
             item: QTreeWidgetItem,
             position,
         ) -> None:
-            menu = QMenu(self.project_tree)
+            menu = self._project_popup_menu()
             add_action = menu.addAction("Hinzufügen …")
             menu.addSeparator()
             clear_action = menu.addAction("Einträge löschen")
@@ -139696,7 +139696,7 @@ border: 2px solid #2a69aa;
             item: QTreeWidgetItem,
             position,
         ) -> None:
-            menu = QMenu(self.project_tree)
+            menu = self._project_popup_menu()
             open_action = menu.addAction("Öffnen")
             menu.addSeparator()
             remove_action = menu.addAction("Aus Knoten entfernen")
@@ -140160,7 +140160,7 @@ border: 2px solid #2a69aa;
             target = str(item.data(0, Qt.UserRole + 305) or "").casefold()
             if target not in {"pe32", "pe64"}:
                 return
-            menu = QMenu(self.project_tree)
+            menu = self._project_popup_menu()
             program_action = menu.addAction("Programm erstellen")
             dll_action = menu.addAction("DLL erstellen")
             menu.addSeparator()
@@ -140234,7 +140234,7 @@ border: 2px solid #2a69aa;
             item: QTreeWidgetItem,
             position,
         ) -> None:
-            menu = QMenu(self.project_tree)
+            menu = self._project_popup_menu()
             add_action = menu.addAction("Hinzufügen …")
             clear_action = menu.addAction("Einträge löschen")
             clear_action.setEnabled(item.childCount() > 0)
@@ -140264,12 +140264,13 @@ border: 2px solid #2a69aa;
             item: QTreeWidgetItem,
             position,
         ) -> None:
-            menu = QMenu(self.project_tree)
+            menu = self._project_popup_menu()
             compile_action = menu.addAction("Kompilieren")
             compile_action.setShortcut(QKeySequence("F2"))
             open_action = menu.addAction("Öffnen")
+            rename_action = menu.addAction("Umbenennen")
             menu.addSeparator()
-            remove_action = menu.addAction("Aus Knoten entfernen")
+            remove_action = menu.addAction("Aus Projekt entnehmen")
             selected = menu.exec_(
                 self.project_tree.viewport().mapToGlobal(position)
             )
@@ -140277,6 +140278,8 @@ border: 2px solid #2a69aa;
                 self.compile_selected_project_sources(preferred_item=item)
             elif selected is open_action:
                 self.open_project_item(item)
+            elif selected is rename_action:
+                self._project_rename_pascal_leaf(item)
             elif selected is remove_action:
                 self.remove_project_pascal_target_entry(item)
 
@@ -140406,7 +140409,7 @@ border: 2px solid #2a69aa;
             item: QTreeWidgetItem,
             position,
         ) -> None:
-            menu = QMenu(self.project_tree)
+            menu = self._project_popup_menu()
             compile_action = menu.addAction("Kompilieren")
             compile_action.setShortcut(QKeySequence("F2"))
             open_action = menu.addAction("Öffnen")
@@ -140603,7 +140606,7 @@ border: 2px solid #2a69aa;
             self.statusBar().showMessage(f"dBASE-Projektdatei: {path.name}", 6000)
 
         def _show_project_dbase_root_menu(self, item: QTreeWidgetItem, position) -> None:
-            menu = QMenu(self.project_tree)
+            menu = self._project_popup_menu()
             actions = {}
             for caption, role, _extensions, _default, target in DBASE_NEW_MENU:
                 actions[menu.addAction(caption)] = (role, target)
@@ -140620,7 +140623,7 @@ border: 2px solid #2a69aa;
 
         def _show_project_dbase_group_menu(self, item: QTreeWidgetItem, position) -> None:
             role = str(item.data(0, Qt.UserRole + 306) or "").casefold()
-            menu = QMenu(self.project_tree)
+            menu = self._project_popup_menu()
             # Stage 433: Neue Datei muss jeweils die erste Kontextmenüaktion
             # sein; die bestehenden Hinzufügen-/Löschen-Aktionen bleiben.
             new_file_action = None
@@ -140968,7 +140971,7 @@ border: 2px solid #2a69aa;
 
         def _show_project_dbase_file_menu(self, item: QTreeWidgetItem, position) -> None:
             role = str(item.data(0, Qt.UserRole + 306) or "").casefold()
-            menu = QMenu(self.project_tree)
+            menu = self._project_popup_menu()
             open_action = menu.addAction("Öffnen")
             rename_action = menu.addAction("Umbenennen") if role in {"programs", "tables"} else None
             add_action = None
@@ -141414,7 +141417,7 @@ QFileDialog QComboBox QAbstractItemView {
         def _show_project_resource_root_menu(
             self, item: QTreeWidgetItem, position
         ) -> None:
-            menu = QMenu(self.project_tree)
+            menu = self._project_popup_menu()
             open_action = menu.addAction("Resourcen-Editor öffnen")
             menu.addSeparator()
             new_action = menu.addAction("Neue RC-Datei …")
@@ -141435,7 +141438,7 @@ QFileDialog QComboBox QAbstractItemView {
         def _show_project_resource_file_menu(
             self, item: QTreeWidgetItem, position
         ) -> None:
-            menu = QMenu(self.project_tree)
+            menu = self._project_popup_menu()
             open_action = menu.addAction("Im Resourcen-Editor öffnen")
             res_action = menu.addAction("RC → RES kompilieren")
             obj_action = menu.addAction("COFF-Objekt für Projektziel schreiben")
@@ -141503,7 +141506,7 @@ QFileDialog QComboBox QAbstractItemView {
 
         def _show_project_c64_menu(self, item: QTreeWidgetItem, position) -> None:
             kind = self._project_item_kind(item)
-            menu = QMenu(self.project_tree)
+            menu = self._project_popup_menu()
             if kind == PROJECT_NODE_C64_RESOURCE_ROOT:
                 adding = menu.addMenu("Hinzufügen")
                 actions = {
@@ -141577,6 +141580,11 @@ QFileDialog QComboBox QAbstractItemView {
         # ---------------------------------------------------------------------------
         def _on_project_item_double_clicked(self, item: QTreeWidgetItem, column: int = 0) -> None:
             kind = self._project_item_kind(item)
+            if kind in {PROJECT_NODE_PASCAL_TARGET_SOURCE, PROJECT_NODE_PASCAL_TABLE_FILE} or (
+                kind == PROJECT_NODE_RESOURCE_FILE
+                and str(item.data(0, Qt.UserRole + 301) or "").casefold() == "pascal"
+            ):
+                return
             if kind == PROJECT_NODE_DBASE_FILE or (
                 kind == PROJECT_NODE_RESOURCE_FILE
                 and str(item.data(0, Qt.UserRole + 301) or "").casefold() == "dbase"
@@ -141601,6 +141609,12 @@ QFileDialog QComboBox QAbstractItemView {
                 return
                 
             kind = self._project_item_kind(item)
+            if kind in {PROJECT_NODE_PASCAL_TARGET_SOURCE, PROJECT_NODE_PASCAL_TABLE_FILE} or (
+                kind == PROJECT_NODE_RESOURCE_FILE
+                and str(item.data(0, Qt.UserRole + 301) or "").casefold() == "pascal"
+            ):
+                self.open_project_item(item)
+                return
             if kind in {
                 PROJECT_NODE_C64_RESOURCE_FILE, PROJECT_NODE_C64_SOURCE_FILE,
                 PROJECT_NODE_DBASE_FILE,
@@ -141643,6 +141657,254 @@ QFileDialog QComboBox QAbstractItemView {
             if handler is not None:
                 handler(initial_path=path)
 
+        # Stage Pascal-Projekt-Kontext 2026-11-05: Projekt-Popup-Menues
+        # verwenden das gleiche green_beige-Design wie das Hauptmenue.
+        def _project_popup_menu(self) -> QMenu:
+            menu = QMenu(self.project_tree)
+            menu.setObjectName("green_beige_popup_menu")
+            menu.setAttribute(Qt.WA_StyledBackground, True)
+            menu.setStyleSheet(self._green_beige_menu_stylesheet())
+            return menu
+
+        def _project_restore_current_editor(self, document: DocumentEditor) -> None:
+            # QTreeWidget hat die Auswahl beim Mausklick schon umgestellt.
+            # Daher das Blatt der bisher geoeffneten Datei wieder selektieren.
+            previous = getattr(self, "_project_last_active_leaf", None)
+            old_path = getattr(document, "path", None)
+            if old_path is not None:
+                wanted = os.path.normcase(str(Path(old_path).resolve())).casefold()
+                iterator = QTreeWidgetItemIterator(self.project_tree)
+                while iterator.value() is not None:
+                    candidate = iterator.value()
+                    path_text = str(candidate.data(0, Qt.UserRole + 302) or "")
+                    if (path_text and self._project_item_kind(candidate) == PROJECT_NODE_PASCAL_TARGET_SOURCE
+                            and os.path.normcase(str(Path(path_text).resolve())).casefold() == wanted):
+                        previous = candidate
+                        break
+                    iterator += 1
+            if previous is not None:
+                was_blocked = self.project_tree.blockSignals(True)
+                try:
+                    self.project_tree.clearSelection()
+                    self.project_tree.setCurrentItem(previous)
+                    previous.setSelected(True)
+                    self.project_tree.scrollToItem(previous)
+                finally:
+                    self.project_tree.blockSignals(was_blocked)
+            self.document_tabs.setCurrentWidget(document)
+            document.focus_preferred_editor()
+            QTimer.singleShot(0, document.focus_preferred_editor)
+
+        def _project_confirm_leave_document(self, next_item: Optional[QTreeWidgetItem]) -> bool:
+            document = self.current_document()
+            if not isinstance(document, DocumentEditor) or not document.is_modified:
+                return True
+            next_path = str(next_item.data(0, Qt.UserRole + 302) or "") if next_item is not None else ""
+            if next_path and document.path is not None:
+                old_key = os.path.normcase(str(Path(document.path).resolve())).casefold()
+                next_key = os.path.normcase(str(Path(next_path).resolve())).casefold()
+                if old_key == next_key:
+                    return True
+            dialog = self._create_message_box(
+                QMessageBox.Question,
+                "Änderungen speichern",
+                "Es wurden Änderungen an der Datei vorgenommen. Sollen diese Änderungen gespeichert werden ?",
+                buttons=QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+                default_button=QMessageBox.Yes,
+            )
+            for kind, text in (
+                (QMessageBox.Yes, "Ja"),
+                (QMessageBox.No, "Nein"),
+                (QMessageBox.Cancel, "Abbrechen"),
+            ):
+                button = dialog.button(kind)
+                if button is not None:
+                    button.setText(text)
+            answer = dialog.exec_()
+            if answer == QMessageBox.Yes:
+                if self._save_document(document, save_as=False):
+                    return True
+                self._project_restore_current_editor(document)
+                return False
+            if answer == QMessageBox.No:
+                # Kein Dateischreibzugriff; die ungespeicherten Aenderungen
+                # bleiben im bisherigen, weiter geoeffneten Editor erhalten.
+                return True
+            self._project_restore_current_editor(document)
+            return False
+
+        def _project_new_pascal_leaf(
+            self, kind: str, target: str = "pe32"
+        ) -> Optional[QTreeWidgetItem]:
+            if not self._project_confirm_leave_document(None):
+                return None
+            if target not in {"pe32", "pe64"} or kind not in {"unit", "module", "resource", "table"}:
+                return None
+            self._ensure_project_for_new_document()
+            directory = self._project_new_file_directory()
+            suffix = ".dbf" if kind == "table" else ".rc" if kind == "resource" else ".pas"
+            path = directory / ("Unbenannt" + suffix)
+            counter = 2
+            while path.exists() or any(
+                sibling.name.casefold() == path.name.casefold()
+                for sibling in directory.iterdir()
+            ):
+                path = directory / (f"Unbenannt_{counter}" + suffix)
+                counter += 1
+            try:
+                if kind == "table":
+                    write_dbase_dbf(path, [DBaseDBFField("ID", "N", 10, 0)])
+                else:
+                    if kind == "unit":
+                        initial_text = (
+                            f"unit {path.stem};\n\n"
+                            "interface\n\nimplementation\n\nend.\n"
+                        )
+                    elif kind == "module":
+                        initial_text = f"program {path.stem};\n\nbegin\nend.\n"
+                    else:
+                        initial_text = "// Neue Windows-Resource-Datei\n"
+                    with path.open("x", encoding="utf-8", newline="\n") as stream:
+                        stream.write(initial_text)
+            except (OSError, ValueError) as exc:
+                self.show_error("Pascal-Projektdatei konnte nicht erstellt werden", str(exc))
+                return None
+
+            if kind in {"unit", "module"}:
+                role = "units" if kind == "unit" else "modules"
+                group = self.project_pascal_group_nodes.get((target, role))
+                item = (self._add_project_pascal_target_entry(group, path, title=path.name)
+                        if group is not None else None)
+            elif kind == "resource":
+                item = self._add_project_resource_entry("pascal", target, path, title=path.name)
+            else:
+                group = self.project_pascal_table_nodes.get(target)
+                item = (self._add_project_pascal_table_entry(group, path, title=path.name)
+                        if group is not None else None)
+            if item is None:
+                self.show_error("Projektknoten nicht gefunden", f"Die Datei wurde erstellt, aber nicht eingebunden:\n{path}")
+                return None
+            if self.current_project_path is not None:
+                self.save_project()
+            self.project_tree.setCurrentItem(item)
+            item.setSelected(True)
+            self.project_tree.scrollToItem(item)
+            # Die Speicherfrage wurde VOR dem Erstellen schon beantwortet.
+            self._project_skip_pascal_save_question = True
+            try:
+                self.open_project_item(item)
+            finally:
+                self._project_skip_pascal_save_question = False
+            self.statusBar().showMessage(f"Projektdatei erstellt: {path.name}", 6000)
+            return item
+
+        def _project_rename_pascal_leaf(self, item: QTreeWidgetItem) -> bool:
+            if self._project_item_kind(item) != PROJECT_NODE_PASCAL_TARGET_SOURCE:
+                return False
+            old_text = str(item.data(0, Qt.UserRole + 302) or "").strip()
+            if not old_text:
+                return False
+            old_path = Path(old_text).expanduser().resolve()
+            if not old_path.is_file():
+                self.show_error("Umbenennen", f"Datei nicht gefunden:\n{old_path}")
+                return False
+            name, accepted = QInputDialog.getText(
+                self, "Pascal-Datei umbenennen", "Neuer Dateiname:",
+                QLineEdit.Normal, old_path.name,
+            )
+            if not accepted:
+                return False
+            name = name.strip()
+            if not name or name in {".", ".."} or name != Path(name).name or any(
+                char in name for char in '<>:"/\\|?*'
+            ) or name.endswith((".", " ")):
+                self.show_error("Ungültiger Dateiname", "Bitte nur einen gültigen Dateinamen eingeben.")
+                return False
+            if not Path(name).suffix:
+                name += old_path.suffix
+            if Path(name).suffix.casefold() not in {".pas", ".pp"}:
+                self.show_error("Ungültige Dateiendung", "Erlaubt sind .pas und .pp")
+                return False
+            if Path(name).stem.split(".")[0].upper() in {
+                "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4",
+                "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2",
+                "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+            }:
+                self.show_error("Ungültiger Dateiname", "Dieser Name ist unter Windows reserviert.")
+                return False
+            new_path = old_path.with_name(name)
+            if old_path == new_path:
+                return True
+            try:
+                collision = any(
+                    sibling.name.casefold() == name.casefold()
+                    and sibling.name.casefold() != old_path.name.casefold()
+                    for sibling in old_path.parent.iterdir()
+                )
+                if collision or (new_path.exists() and not new_path.samefile(old_path)):
+                    self.show_error("Datei bereits vorhanden", f"Die Zieldatei existiert bereits:\n{new_path}")
+                    return False
+                document = self._find_open_document(old_path)
+                if isinstance(document, DocumentEditor) and document.is_modified:
+                    if not self._save_document(document, save_as=False):
+                        return False
+                old_path.rename(new_path)
+            except OSError as exc:
+                self.show_error("Umbenennen fehlgeschlagen", str(exc))
+                return False
+            new_path = new_path.resolve()
+            self._replace_project_path_reference(old_path, new_path)
+            item.setData(0, Qt.UserRole + 309, new_path.name)
+            item.setText(0, new_path.name)
+            item.setToolTip(0, str(new_path))
+            item.setIcon(0, self.icon_provider.icon(QFileInfo(str(new_path))))
+            if isinstance(document, DocumentEditor):
+                document.path = new_path
+                document.custom_display_name = None
+                document.update_syntax_highlighting()
+                document.invalidate_assembly_result("Pascal-Datei umbenannt")
+                self._update_document_tab(document)
+            self.set_project_modified(True)
+            if self.current_project_path is not None:
+                self.save_project()
+            if old_path.parent == self.current_directory:
+                self.populate_file_list()
+            self.statusBar().showMessage(f"Pascal-Datei umbenannt: {old_path.name} -> {new_path.name}", 6000)
+            return True
+
+        def _show_project_pascal_root_menu(self, item: QTreeWidgetItem, position) -> None:
+            menu = self._project_popup_menu()
+            actions = {}
+            specs = (
+                ("Neu:  MS Windows 64 Bit Unit", "unit", "pe32"),
+                ("Neu:  MS Windows 32 Bit Unit", "unit", "pe32"),
+                ("Neu:  MS Windows 16 Bit Unit", "", ""),
+                None,
+                ("Neu:  MS Windows 64 Bit Resource", "resource", "pe64"),
+                ("Neu:  MS Windows 32 Bit Resource", "resource", "pe32"),
+                None,
+                ("Neu:  Commodore C= 64 Unit", "", ""),
+                None,
+                ("Neu:  Module 64 Bit", "module", "pe64"),
+                ("Neu:  Module 64 Bit", "module", "pe64"),
+                ("Neu:  Tabelle", "table", "pe32"),
+            )
+            for spec in specs:
+                if spec is None:
+                    menu.addSeparator()
+                    continue
+                label, kind, target = spec
+                action = menu.addAction(label)
+                if not kind:
+                    # Noch kein 16-Bit-/C64-Pascal-Zielknoten/Backend vorhanden.
+                    action.setEnabled(False)
+                else:
+                    actions[action] = (kind, target)
+            selected = menu.exec_(self.project_tree.viewport().mapToGlobal(position))
+            if selected in actions:
+                kind, target = actions[selected]
+                self._project_new_pascal_leaf(kind, target)
+
         def show_project_context_menu(self, position) -> None:
             item = self.project_tree.itemAt(position)
             if item is None:
@@ -141657,13 +141919,17 @@ QFileDialog QComboBox QAbstractItemView {
                 self.project_tree.clearSelection()
                 item.setSelected(True)
             kind = self._project_item_kind(item)
+            if (item.parent() is None
+                    and str(item.data(0, Qt.UserRole + 301) or "").casefold() == "pascal"):
+                self._show_project_pascal_root_menu(item, position)
+                return
             if self._project_item_kind(item) in {
                 PROJECT_NODE_C64_SPRITES_ROOT, PROJECT_NODE_C64_SPRITE_FILE,
             }:
                 self._show_project_c64_sprites_menu(item, position)
                 return
             if bool(item.data(0, Qt.UserRole + 307)):
-                menu = QMenu(self.project_tree)
+                menu = self._project_popup_menu()
                 edit_action = menu.addAction("Im Editor öffnen")
                 save_action = menu.addAction("Speichern unter …")
                 action = menu.exec_(self.project_tree.viewport().mapToGlobal(position))
@@ -141673,7 +141939,7 @@ QFileDialog QComboBox QAbstractItemView {
                     self.save_current_document()
                 return
             if kind in {PROJECT_NODE_MARKER_ROOT, PROJECT_NODE_MARKER_FILE, PROJECT_NODE_MARKER_LINE}:
-                menu = QMenu(self.project_tree)
+                menu = self._project_popup_menu()
                 if kind == PROJECT_NODE_MARKER_LINE:
                     goto_action = menu.addAction("Zu Zeile gehen")
                     remove_action = menu.addAction("Marker entfernen")
@@ -141725,7 +141991,7 @@ QFileDialog QComboBox QAbstractItemView {
                 self._show_project_c64_menu(item, position)
                 return
             if kind == PROJECT_NODE_WINDOWS_TARGET:
-                menu = QMenu(self.project_tree)
+                menu = self._project_popup_menu()
                 language = str(item.data(0, Qt.UserRole + 301) or "").casefold()
                 target = str(item.data(0, Qt.UserRole + 305) or "").casefold()
                 # Nur die Windows-Zielknoten unter dBASE bekommen die neue
@@ -141792,7 +142058,7 @@ QFileDialog QComboBox QAbstractItemView {
                 self._show_project_dbase_root_menu(item, position)
                 return
             if kind == PROJECT_NODE_PASCAL_UNIT_NAMESPACE:
-                menu = QMenu(self.project_tree)
+                menu = self._project_popup_menu()
                 add_action = menu.addAction("Unit hinzufügen …")
                 toggle_action = menu.addAction(
                     "Knoten schließen" if item.isExpanded() else "Knoten öffnen"
@@ -141824,7 +142090,7 @@ QFileDialog QComboBox QAbstractItemView {
                 self._show_project_archive_item_menu(item, position)
                 return
 
-            menu = QMenu(self.project_tree)
+            menu = self._project_popup_menu()
             help_action = menu.addAction("Hilfe")
             add_action = menu.addAction("Hinzufügen")
             clear_action = menu.addAction("Einträge löschen")
@@ -142092,7 +142358,7 @@ QFileDialog QComboBox QAbstractItemView {
         def _show_project_prolog_knowledge_root_menu(
             self, item: QTreeWidgetItem, position
         ) -> None:
-            menu = QMenu(self.project_tree)
+            menu = self._project_popup_menu()
             add_action = menu.addAction("Wissensdatenbank hinzufügen …")
             browser_action = menu.addAction("Wissensdatenbank-Browser öffnen")
             menu.addSeparator()
@@ -142123,7 +142389,7 @@ QFileDialog QComboBox QAbstractItemView {
         def _show_project_prolog_knowledge_file_menu(
             self, item: QTreeWidgetItem, position
         ) -> None:
-            menu = QMenu(self.project_tree)
+            menu = self._project_popup_menu()
             compile_action = menu.addAction("Kompilieren")
             compile_action.setShortcut(QKeySequence("F2"))
             browser_action = menu.addAction("Im Wissensdatenbank-Browser öffnen")
@@ -142147,7 +142413,7 @@ QFileDialog QComboBox QAbstractItemView {
         def _show_project_archive_root_menu(
             self, item: QTreeWidgetItem, position
         ) -> None:
-            menu = QMenu(self.project_tree)
+            menu = self._project_popup_menu()
             new_action = menu.addAction("Neues Archiv …")
             remove_action = menu.addAction("Ausgewählte entfernen")
             remove_action.setEnabled(self._archive_scope_has_checked_items(item))
@@ -142172,7 +142438,7 @@ QFileDialog QComboBox QAbstractItemView {
             )
             if archive_item is None:
                 return
-            menu = QMenu(self.project_tree)
+            menu = self._project_popup_menu()
             add_objects_action = menu.addAction("Objektdateien hinzufügen …")
             build_action = menu.addAction("Archiv erstellen")
             rename_action = menu.addAction("Umbenennen")
@@ -142777,6 +143043,14 @@ QFileDialog QComboBox QAbstractItemView {
             _column: int = 0,
         ) -> None:
             kind = self._project_item_kind(item)
+            if not getattr(self, "_project_skip_pascal_save_question", False) and (
+                kind in {PROJECT_NODE_PASCAL_TARGET_SOURCE, PROJECT_NODE_PASCAL_TABLE_FILE}
+                or (kind == PROJECT_NODE_RESOURCE_FILE
+                    and str(item.data(0, Qt.UserRole + 301) or "").casefold() == "pascal")
+            ) and not self._project_confirm_leave_document(item):
+                return
+            if kind == PROJECT_NODE_PASCAL_TARGET_SOURCE:
+                self._project_last_active_leaf = item
             if kind == PROJECT_NODE_C64_SPRITES_ROOT:
                 item.setExpanded(not item.isExpanded())
                 return
