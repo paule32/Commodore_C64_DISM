@@ -6832,6 +6832,7 @@ class FormulaDesignerWidget(QWidget):
 
     def show_formula_context_menu(self, screen_pos):
         menu = QMenu(self)
+        _style_editor_context_menu(menu, self)
 
         # Stage 269: Farbe ist bewusst der ERSTE Eintrag.
         color_menu = menu.addMenu("Farbe")
@@ -12915,10 +12916,35 @@ def _translate_source_editor_context_menu(menu):
         action.setText(translated + (("\t" + key) if key else ""))
 
 
+def _style_editor_context_menu(menu, editor=None):
+    """Style an editor menu like the main menu without rebuilding its actions."""
+    window = editor if isinstance(editor, QWidget) else menu.parentWidget()
+    while isinstance(window, QWidget):
+        if callable(getattr(window, "_green_beige_menu_stylesheet", None)):
+            break
+        window = window.parentWidget()
+    else:
+        window = next(
+            (w for w in QApplication.topLevelWidgets()
+             if callable(getattr(w, "_green_beige_menu_stylesheet", None))),
+            None,
+        )
+    if window is None:
+        return menu
+    stylesheet = window._green_beige_menu_stylesheet()
+    for popup in (menu, *menu.findChildren(QMenu)):
+        popup.setObjectName("green_beige_popup_menu")
+        popup.setAttribute(Qt.WA_StyledBackground, True)
+        popup.setStyleSheet(stylesheet)
+    return menu
+
+
+
 def _execute_german_source_editor_context_menu(editor, global_position):
     menu = editor.createStandardContextMenu()
     try:
         _translate_source_editor_context_menu(menu)
+        _style_editor_context_menu(menu, editor)
         menu.exec_(global_position)
     finally:
         menu.deleteLater()
@@ -13479,6 +13505,7 @@ class WindowsResourceEditorWidget(QWidget):
         if item is not None:
             self.resource_tree.setCurrentItem(item)
         menu = QMenu(self.resource_tree)
+        _style_editor_context_menu(menu, self)
         # Stage 510: reuse the same save/save-as routes as the main File menu.
         # The main window already routes Ctrl+S to this resource editor while
         # its workspace is active; showing the key here keeps the menu in sync.
@@ -58478,6 +58505,7 @@ def run_gui(
 
         def _on_icon_view_context_menu(self, pos):
             menu = QMenu(self.icon_view)
+            _style_editor_context_menu(menu, self)
 
             act_icon   = menu.addAction(tr("Icon"   ))
             act_list   = menu.addAction(tr("List"   ))
@@ -58649,6 +58677,7 @@ def run_gui(
             sender = self.sender()
 
             menu = QMenu(self)
+            _style_editor_context_menu(menu, self)
 
             act_icon   = menu.addAction(tr("Icon"  ))
             act_list   = menu.addAction(tr("List"  ))
@@ -64243,6 +64272,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }""")
             operand_context = self._assembler_operand_context_at_point(event.pos())
             standard_menu = self.createStandardContextMenu()
             _translate_source_editor_context_menu(standard_menu)
+            _style_editor_context_menu(standard_menu, self)
             is_basic = bool(self._basic_line_number_mode)
             is_asm = bool(
                 self._c64_assembler_vice_menu_enabled
@@ -64349,6 +64379,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }""")
                         wrapper.addSeparator()
                 for existing_action in menu.actions():
                     wrapper.addAction(existing_action)
+                _style_editor_context_menu(wrapper, self)
                 selected = wrapper.exec_(event.globalPos())
                 if selected is create_action:
                     new_asm()
@@ -64358,6 +64389,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }""")
                     include_handler(include_name, True)
                 wrapper.deleteLater()
             else:
+                _style_editor_context_menu(menu, self)
                 menu.exec_(event.globalPos())
             if menu is not standard_menu:
                 menu.deleteLater()
@@ -68605,6 +68637,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }""")
 
         def contextMenuEvent(self, event) -> None:
             menu = QMenu(self)
+            _style_editor_context_menu(menu, self)
             selection_exists = self._selection_range() is not None
             byte_index = self._index_at_position(event.pos())
 
@@ -76823,6 +76856,7 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             self._context_scene_pos = QPointF(event.scenePos())
 
             menu = QMenu()
+            _style_editor_context_menu(menu)
             action_help = menu.addAction("Hilfe")
             menu.addSeparator()
             action_copy = menu.addAction("Kopieren")
@@ -80137,6 +80171,7 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
         def show_menu(pos: QPoint, widget=line_edit) -> None:
             menu = widget.createStandardContextMenu()
             _dbase_translate_grid_editor_context_menu(menu)
+            _style_editor_context_menu(menu, widget)
             menu.exec_(widget.mapToGlobal(pos))
             menu.deleteLater()
 
@@ -80253,6 +80288,7 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             Beziehungen dieses Widgets und baut den SQL-Ausdruck neu auf.
             """
             menu = QMenu(self)
+            _style_editor_context_menu(menu, self)
             close_action = menu.addAction("Schließen")
             chosen = menu.exec_(event.globalPos())
             if chosen is close_action:
@@ -80388,6 +80424,7 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             Dieses Menü deckt zusätzlich freie Proxy-/Rahmenbereiche ab.
             """
             menu = QMenu()
+            _style_editor_context_menu(menu)
             close_action = menu.addAction("Schließen")
             chosen = menu.exec_(event.screenPos())
             if chosen is close_action:
@@ -80479,6 +80516,7 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
         def contextMenuEvent(self, event) -> None:
             self.setSelected(True)
             menu = QMenu()
+            _style_editor_context_menu(menu)
             delete_action = menu.addAction("Löschen")
             delete_all_action = menu.addAction("Alle Löschen")
             chosen = menu.exec_(event.screenPos())
@@ -83581,6 +83619,7 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                 self.scene.clearSelection()
                 item.setSelected(True)
             menu = QMenu(self)
+            _style_editor_context_menu(menu, self)
             cut_action = menu.addAction("Ausschneiden")
             paste_action = menu.addAction("Einfügen")
             paste_action.setEnabled(self._clipboard_has_report_element())
@@ -85281,6 +85320,7 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                 self.setCurrentCell(index.row(), index.column())
 
             menu = QMenu(self)
+            _style_editor_context_menu(menu, self)
             add_action = menu.addAction("Hinzufügen")
             copy_action = menu.addAction("Kopieren")
             cut_action = menu.addAction("Ausschneiden")
@@ -87012,6 +87052,7 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             global_pos: QPoint,
         ) -> None:
             menu = QMenu(self)
+            _style_editor_context_menu(menu, self)
 
             add_record_action = menu.addAction(
                 tr("Datensatz hinzufügen ...")
@@ -91794,6 +91835,7 @@ background:{field};color:{foreground};selection-background-color:{selection};
 
         def _show_context_menu(self, position) -> None:
             menu = QMenu(self)
+            _style_editor_context_menu(menu, self)
             delete_action = menu.addAction(
                 "Diesen Level und alle folgenden Level löschen"
             )
@@ -103885,6 +103927,7 @@ QStackedWidget#learning_content_stack {{
         def contextMenuEvent(self, event) -> None:
             staff, slot, step = self._position_from_point(event.pos())
             menu = QMenu(self)
+            _style_editor_context_menu(menu, self)
             menu.setTitle('Noten')
             header = menu.addAction('Note auswählen')
             header.setEnabled(False)
@@ -136765,7 +136808,7 @@ border: 2px solid #2a69aa;
 
                         for _role, _role_title, _role_kind in (
                             ("modules", "Module", PROJECT_NODE_PASCAL_MODULE_ROOT),
-                            ("units", "Units", PROJECT_NODE_PASCAL_UNIT_ROOT),
+                            ("units", "Unit", PROJECT_NODE_PASCAL_UNIT_ROOT),
                         ):
                             _group = QTreeWidgetItem(_target_item, [_role_title])
                             _group.setData(0, Qt.UserRole + 301, "pascal")
@@ -139536,17 +139579,8 @@ border: 2px solid #2a69aa;
 
             parent_item = group_item
             display_title = title.strip() or resolved.name or path_text
-            if role == "units":
-                namespace, leaf_title = project_pascal_unit_tree_parts(
-                    resolved, display_title
-                )
-                namespace_item = self._project_pascal_unit_namespace_item(
-                    group_item, namespace
-                )
-                if namespace_item is None:
-                    return None
-                parent_item = namespace_item
-                display_title = leaf_title
+            # Pascal-Units und -Module sind direkte Dateiblaetter unter
+            # dem jeweiligen Zielknoten; keine Namespace-Unterordner anlegen.
 
             child = QTreeWidgetItem(parent_item, [display_title])
             child.setData(0, Qt.UserRole + 301, "pascal")
@@ -141596,6 +141630,18 @@ QFileDialog QComboBox QAbstractItemView {
         # Stage 387: C64-Blaetter bereits per einfachem Linksklick oeffnen.
         # Mehrfachauswahl mit Shift/Strg bleibt davon unberuehrt.
         # ---------------------------------------------------------------------------
+        @staticmethod
+        def _is_unsaved_c64_project_leaf(item: QTreeWidgetItem) -> bool:
+            """Check only actual unsaved C64 files, never Pascal namespace folders."""
+            return (
+                bool(item.data(0, Qt.UserRole + 307))
+                and str(item.data(0, Qt.UserRole + 301) or "").casefold()
+                    in {"basic", "assembler"}
+                and str(item.data(0, Qt.UserRole + 305) or "").casefold() == "c64"
+                and item.parent() is not None
+            )
+
+
         def _on_project_c64_leaf_clicked(self, item: QTreeWidgetItem, _column: int = 0) -> None:
             if QApplication.keyboardModifiers() & (Qt.ShiftModifier | Qt.ControlModifier):
                 return
@@ -141604,7 +141650,7 @@ QFileDialog QComboBox QAbstractItemView {
                 self.open_project_item(item)
                 return
                 
-            if bool(item.data(0, Qt.UserRole + 307)):
+            if self._is_unsaved_c64_project_leaf(item):
                 self._activate_unsaved_c64_leaf(item)
                 return
                 
@@ -141624,7 +141670,7 @@ QFileDialog QComboBox QAbstractItemView {
                 self.open_project_item(item)
 
         def _activate_unsaved_c64_leaf(self, item: QTreeWidgetItem) -> bool:
-            if not bool(item.data(0, Qt.UserRole + 307)):
+            if not self._is_unsaved_c64_project_leaf(item):
                 return False
             for index in range(self.document_tabs.count()):
                 document = self.document_tabs.widget(index)
@@ -141876,7 +141922,7 @@ QFileDialog QComboBox QAbstractItemView {
             menu = self._project_popup_menu()
             actions = {}
             specs = (
-                ("Neu:  MS Windows 64 Bit Unit", "unit", "pe32"),
+                ("Neu:  MS Windows 64 Bit Unit", "unit", "pe64"),
                 ("Neu:  MS Windows 32 Bit Unit", "unit", "pe32"),
                 ("Neu:  MS Windows 16 Bit Unit", "", ""),
                 None,
@@ -141886,7 +141932,7 @@ QFileDialog QComboBox QAbstractItemView {
                 ("Neu:  Commodore C= 64 Unit", "", ""),
                 None,
                 ("Neu:  Module 64 Bit", "module", "pe64"),
-                ("Neu:  Module 64 Bit", "module", "pe64"),
+                ("Neu:  Module 32 Bit", "module", "pe32"),
                 ("Neu:  Tabelle", "table", "pe32"),
             )
             for spec in specs:
@@ -141928,7 +141974,7 @@ QFileDialog QComboBox QAbstractItemView {
             }:
                 self._show_project_c64_sprites_menu(item, position)
                 return
-            if bool(item.data(0, Qt.UserRole + 307)):
+            if self._is_unsaved_c64_project_leaf(item):
                 menu = self._project_popup_menu()
                 edit_action = menu.addAction("Im Editor öffnen")
                 save_action = menu.addAction("Speichern unter …")
@@ -143077,7 +143123,7 @@ QFileDialog QComboBox QAbstractItemView {
                     if dock is not None:
                         dock.editor_widget._c64_sprite_tree_item = item
                 return
-            if bool(item.data(0, Qt.UserRole + 307)):
+            if self._is_unsaved_c64_project_leaf(item):
                 self._activate_unsaved_c64_leaf(item)
                 return
             kind = self._project_item_kind(item)
@@ -144132,6 +144178,7 @@ QFileDialog QComboBox QAbstractItemView {
             self.document_tabs.setCurrentIndex(index)
 
             menu = QMenu(tab_bar)
+            _style_editor_context_menu(menu, self)
             new_menu = menu.addMenu("Neu")
             self._populate_new_document_menu(new_menu)
             menu.addSeparator()
