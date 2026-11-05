@@ -83852,15 +83852,16 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             self._selection_changed()
             return True
 
+        # ------------------------------------------------------------------
+        # Normalisiert DBF/ODBC-Feldnamen fuer die Report-Datenbindung.
+        #
+        # SQL-Builder-Abfragen koennen Feldnamen z.B. als ``TABLE.FIELD`` oder
+        # ``[FIELD]`` liefern, waehrend DBF-Datensaetze nur ``FIELD`` als Key
+        # besitzen. Die Bindung soll deshalb nicht an Gross/Kleinschreibung,
+        # Qualifiern oder SQL-Klammern scheitern.
+        # ------------------------------------------------------------------
         @staticmethod
         def _normalized_report_field_name(name: str) -> str:
-            """Normalisiert DBF/ODBC-Feldnamen fuer die Report-Datenbindung.
-
-            SQL-Builder-Abfragen koennen Feldnamen z.B. als ``TABLE.FIELD`` oder
-            ``[FIELD]`` liefern, waehrend DBF-Datensaetze nur ``FIELD`` als Key
-            besitzen. Die Bindung soll deshalb nicht an Gross/Kleinschreibung,
-            Qualifiern oder SQL-Klammern scheitern.
-            """
             value = str(name or "").strip()
             if "." in value:
                 value = value.rsplit(".", 1)[-1]
@@ -83899,13 +83900,14 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                 return context.get(key, "")
             return re.sub(r"\{([^{}]+)\}", repl, str(text or ""))
 
+        # ------------------------------------------------------------------
+        # Liest *.d64sql als echte Query-Datenquelle.
+        #
+        # Stage 43 versucht zuerst den integrierten lokalen DBF-SQL-Parser.
+        # Nur fuer SQL, das ueber dessen Dialekt hinausgeht, wird eine aktive
+        # ODBC-Verbindung des SQL Builders als Fallback verwendet.
+        # ------------------------------------------------------------------
         def _load_sql_report_records(self, path: Path) -> Tuple[List[str], List[Dict[str, str]]]:
-            """Liest *.d64sql als echte Query-Datenquelle.
-
-            Stage 43 versucht zuerst den integrierten lokalen DBF-SQL-Parser.
-            Nur fuer SQL, das ueber dessen Dialekt hinausgeht, wird eine aktive
-            ODBC-Verbindung des SQL Builders als Fallback verwendet.
-            """
             payload = json.loads(Path(path).read_text(encoding="utf-8"))
             sql = str(payload.get("sql", "") or "").strip()
             if not sql:
@@ -83961,13 +83963,14 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                 })
             return headers, records
 
+        # ------------------------------------------------------------------
+        # Laedt die Datenquelle unmittelbar vor PDF/Druck erneut.
+        #
+        # Damit werden geaenderte DBF-Daten sofort ausgegeben und ein Bericht
+        # kann nicht versehentlich mit einer leeren/stale ``data_records``-Liste
+        # gerendert werden.
+        # ------------------------------------------------------------------
         def _refresh_report_records_for_output(self) -> bool:
-            """Laedt die Datenquelle unmittelbar vor PDF/Druck erneut.
-
-            Damit werden geaenderte DBF-Daten sofort ausgegeben und ein Bericht
-            kann nicht versehentlich mit einer leeren/stale ``data_records``-Liste
-            gerendert werden.
-            """
             path = self.data_source_path
             if path is None:
                 raw = self.source_edit.text().strip()
@@ -84031,20 +84034,21 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                            record: Dict[str, str], x: float, y: float,
                            printer_scale: float = 1.0,
                            page_number: int = 1, page_count: int = 1) -> None:
-            """Ein Berichtselement in Scene-Koordinaten ausgeben.
-
-            Die Report-Seite ist mit 794 x 1123 Punkten als 96-DPI-Scene
-            modelliert. Beim Druck/PDF wird der Painter auf die deutlich
-            hoehere QPrinter-Aufloesung skaliert. QFont-Punktgroessen werden
-            von Qt bereits auf die Drucker-DPI umgerechnet und duerfen deshalb
-            nicht ein zweites Mal mit dieser World-Transformation vergroessert
-            werden.
-
-            ``printer_scale`` kompensiert nur diesen World-Scale fuer den
-            Font. Dadurch bleiben z.B. 10 pt im Designer auch physische 10 pt
-            im PDF bzw. auf dem Drucker. Geometrie und Bilder werden weiterhin
-            normal mit der Seite skaliert.
-            """
+            # ------------------------------------------------------------------
+            # Ein Berichtselement in Scene-Koordinaten ausgeben.
+            #
+            # Die Report-Seite ist mit 794 x 1123 Punkten als 96-DPI-Scene
+            # modelliert. Beim Druck/PDF wird der Painter auf die deutlich
+            # hoehere QPrinter-Aufloesung skaliert. QFont-Punktgroessen werden
+            # von Qt bereits auf die Drucker-DPI umgerechnet und duerfen deshalb
+            # nicht ein zweites Mal mit dieser World-Transformation vergroessert
+            # werden.
+            #
+            # ``printer_scale`` kompensiert nur diesen World-Scale fuer den
+            # Font. Dadurch bleiben z.B. 10 pt im Designer auch physische 10 pt
+            # im PDF bzw. auf dem Drucker. Geometrie und Bilder werden weiterhin
+            # normal mit der Seite skaliert.
+            # ------------------------------------------------------------------
             rect = QRectF(x, y, item.item_width, item.item_height)
             if item.item_type == "image":
                 pixmap = QPixmap(item.image_path) if item.image_path else QPixmap()
@@ -87442,30 +87446,30 @@ QFileDialog#dbase_project_file_chooser {{ background:{background};color:{foregro
 QFileDialog QLabel, QFileDialog QCheckBox {{ color:{foreground};background:transparent; }}
 QFileDialog QLineEdit, QFileDialog QComboBox, QFileDialog QListView,
 QFileDialog QTreeView {{
-    background:{field};color:{foreground};alternate-background-color:{alternate};
-    selection-background-color:{selection};selection-color:{foreground};
-    border:1px solid {header_edge};
+background:{field};color:{foreground};alternate-background-color:{alternate};
+selection-background-color:{selection};selection-color:{foreground};
+border:1px solid {header_edge};
 }}
 QFileDialog QTreeView::item:selected, QFileDialog QListView::item:selected {{
-    background:{selection};color:{foreground};
+background:{selection};color:{foreground};
 }}
 QFileDialog QHeaderView, QFileDialog QHeaderView::section {{
-    background:{header};color:{foreground};
+background:{header};color:{foreground};
 }}
 QFileDialog QHeaderView::section {{
-    border:0;border-right:1px solid {header_edge};
-    border-bottom:1px solid {header_edge};padding:5px 8px;font-weight:600;
+border:0;border-right:1px solid {header_edge};
+border-bottom:1px solid {header_edge};padding:5px 8px;font-weight:600;
 }}
 QFileDialog QTableCornerButton::section {{ background:{header};border:1px solid {header_edge}; }}
 QFileDialog QPushButton, QFileDialog QToolButton {{
-    background:{button};color:{foreground};border:1px solid {header_edge};
-    border-radius:3px;padding:5px 8px;
+background:{button};color:{foreground};border:1px solid {header_edge};
+border-radius:3px;padding:5px 8px;
 }}
 QFileDialog QPushButton:hover, QFileDialog QToolButton:hover {{
-    background:{button_hover};
+background:{button_hover};
 }}
 QFileDialog QComboBox QAbstractItemView {{
-    background:{field};color:{foreground};selection-background-color:{selection};
+background:{field};color:{foreground};selection-background-color:{selection};
 }}
 """)
             self.findChild(QWidget, "dbase_project_file_actions").setStyleSheet(
@@ -88394,12 +88398,13 @@ QFileDialog QComboBox QAbstractItemView {{
                 3000,
             )
 
+        # ------------------------------------------------------------------
+        # Stage 524: PACK entfernt ausschliesslich physische DBF-Loeschmarker.
+        #
+        # Vorhandene aktive Records werden 1:1 bytegenau uebernommen; der
+        # externe MDX-Treiber und neue NDX-Dateien werden zuerst vorbereitet.
+        # ------------------------------------------------------------------
         def _pack_dbf_records(self) -> None:
-            """Stage 524: PACK entfernt ausschliesslich physische DBF-Loeschmarker.
-
-            Vorhandene aktive Records werden 1:1 bytegenau uebernommen; der
-            externe MDX-Treiber und neue NDX-Dateien werden zuerst vorbereitet.
-            """
             if self.dbf_path is None:
                 QMessageBox.information(
                     self, tr("DBF Pack"),
@@ -88566,13 +88571,14 @@ QFileDialog QComboBox QAbstractItemView {{
                 2500,
             )
 
+        # ------------------------------------------------------------------
+        # Stage 521: DBF atomar vor der visuellen Record-Loeschung sichern.
+        #
+        # Kein Python/Qt-Datenmodell wird modifiziert, bevor der OS-Write
+        # erfolgreich war. Bei ungespeicherten Tabellen erledigt weiterhin
+        # der bestehende records_changed-Mechanismus die Aktualisierung.
+        # ------------------------------------------------------------------
         def _persist_deleted_records(self, remaining_records) -> bool:
-            """Stage 521: DBF atomar vor der visuellen Record-Loeschung sichern.
-
-            Kein Python/Qt-Datenmodell wird modifiziert, bevor der OS-Write
-            erfolgreich war. Bei ungespeicherten Tabellen erledigt weiterhin
-            der bestehende records_changed-Mechanismus die Aktualisierung.
-            """
             if self.dbf_path is None:
                 return False
             fields = self._current_field_definitions()
@@ -90279,21 +90285,20 @@ QFileDialog QComboBox QAbstractItemView {{
         def _help(self):
             QMessageBox.information(self, tr("Help"), "Hier könnte deine Hilfe stehen :)")
 
-
+    # ------------------------------------------------------------------
+    # Stage ASM 67: kompakte 3-Zonen-Einrastvorschau.
+    #
+    # Beim Ziehen von Projekt- oder Dateisystem-Dock werden exakt drei
+    # Zielbereiche gezeigt: oben, unten und eine seitliche Zone. Die gesamte
+    # Dreiergruppe kann links oder rechts neben dem Editor erscheinen.
+    #
+    # Stage ASM 66: Einrast-Vorschau fuer Projekt- und Dateisystem-Dock
+    # (in Stage 67 auf drei sichtbare Zielzonen reduziert).
+    # Stage-66-Legacy-IDs (nur Dokumentation, nicht mehr als Zielzonen):
+    # f"{side}:h:before", f"{side}:h:after",
+    # f"{side}:v:before", f"{side}:v:after"
+    # ------------------------------------------------------------------
     class DockSnapOverlay(QWidget):
-        """Stage ASM 67: kompakte 3-Zonen-Einrastvorschau.
-
-        Beim Ziehen von Projekt- oder Dateisystem-Dock werden exakt drei
-        Zielbereiche gezeigt: oben, unten und eine seitliche Zone. Die gesamte
-        Dreiergruppe kann links oder rechts neben dem Editor erscheinen.
-
-        Stage ASM 66: Einrast-Vorschau fuer Projekt- und Dateisystem-Dock
-        (in Stage 67 auf drei sichtbare Zielzonen reduziert).
-        Stage-66-Legacy-IDs (nur Dokumentation, nicht mehr als Zielzonen):
-        f"{side}:h:before", f"{side}:h:after",
-        f"{side}:v:before", f"{side}:v:after"
-        """
-
         def __init__(self, host: QMainWindow):
             super().__init__(host)
             self.setObjectName("dock_snap_overlay")
@@ -90753,15 +90758,14 @@ QFileDialog QComboBox QAbstractItemView {{
                 return True
             return Path(name).suffix.casefold() in self._extensions
 
-
+    # ------------------------------------------------------------------
+    # Eigener Datei-Öffnen-Dialog für die Python-Anwendung.
+    #
+    # ``fileName`` wird unmittelbar vor ``accept()`` mit dem vollständigen
+    # Pfad belegt. Die Navigation ist unabhängig vom nativen QFileDialog,
+    # damit Filter- und Projektlogik später erweitert werden können.
+    # ------------------------------------------------------------------
     class ProjectOpenFileDialog(QDialog):
-        """Eigener Datei-Öffnen-Dialog für die Python-Anwendung.
-
-        ``fileName`` wird unmittelbar vor ``accept()`` mit dem vollständigen
-        Pfad belegt. Die Navigation ist unabhängig vom nativen QFileDialog,
-        damit Filter- und Projektlogik später erweitert werden können.
-        """
-
         def __init__(
             self,
             parent,
@@ -91837,18 +91841,17 @@ QFileDialog QComboBox QAbstractItemView {{
                 f"QToolButton:hover{{border:2px solid {hover};border-left:0;}}"
             )
 
-
+    # ------------------------------------------------------------------
+    # Eine unabhängige Wissens-Abfrage innerhalb der Haupt-ScrollArea.
+    #
+    # Stage 65: Jede Lane besitzt ihren eigenen Query-Zustand und ihre eigene
+    # innere QScrollArea. Links davon stehen die Verwaltungsbuttons
+    # ``Hinzufügen`` und ``Löschen``. Die Höhe der inneren ScrollArea folgt
+    # ihrem Inhalt bis zu einer sinnvollen Obergrenze; erst danach scrollt
+    # die innere Fläche selbst. Mehrere Lanes werden von einer äußeren
+    # Haupt-ScrollArea aufgenommen.
+    # ------------------------------------------------------------------
     class KnowledgeQueryLane(QWidget):
-        """Eine unabhängige Wissens-Abfrage innerhalb der Haupt-ScrollArea.
-
-        Stage 65: Jede Lane besitzt ihren eigenen Query-Zustand und ihre eigene
-        innere QScrollArea. Links davon stehen die Verwaltungsbuttons
-        ``Hinzufügen`` und ``Löschen``. Die Höhe der inneren ScrollArea folgt
-        ihrem Inhalt bis zu einer sinnvollen Obergrenze; erst danach scrollt
-        die innere Fläche selbst. Mehrere Lanes werden von einer äußeren
-        Haupt-ScrollArea aufgenommen.
-        """
-
         MIN_SCROLL_HEIGHT = 170
         MAX_SCROLL_HEIGHT = 430
 
@@ -92046,14 +92049,13 @@ QFileDialog QComboBox QAbstractItemView {{
                 f"border:{width} solid {border};border-radius:6px;}}"
             )
 
-
+    # ------------------------------------------------------------------
+    # GUI zum schrittweisen Durchsuchen einer PROLOG-Wissensdatenbank.
+    #
+    # Stage 66: Der Browser kann weiterhin als Dialog verwendet werden, wird
+    # im Hauptprogramm aber als Widget in ein QDockWidget eingebettet.
+    # ------------------------------------------------------------------
     class PrologKnowledgeDialog(QDialog):
-        """GUI zum schrittweisen Durchsuchen einer PROLOG-Wissensdatenbank.
-
-        Stage 66: Der Browser kann weiterhin als Dialog verwendet werden, wird
-        im Hauptprogramm aber als Widget in ein QDockWidget eingebettet.
-        """
-
         dock_close_requested = pyqtSignal()
         ROLE_NAME = Qt.UserRole + 701
         ROLE_ARITY = Qt.UserRole + 702
@@ -93109,14 +93111,15 @@ QFileDialog QComboBox QAbstractItemView {{
             )
             self.alternative_status_label.setVisible(True)
 
+        # ------------------------------------------------------------------
+        # Return normalized texts of all buttons already visible in the path.
+        #
+        # Stage 63 deliberately treats the current decision path as a set for
+        # alternative selection.  A value already shown as predicate/root or
+        # argument button must not be offered again until that button (and its
+        # dependent sub-levels) has been removed.
+        # ------------------------------------------------------------------
         def _used_decision_texts(self):
-            """Return normalized texts of all buttons already visible in the path.
-
-            Stage 63 deliberately treats the current decision path as a set for
-            alternative selection.  A value already shown as predicate/root or
-            argument button must not be offered again until that button (and its
-            dependent sub-levels) has been removed.
-            """
             used = set()
             if self.selected_predicate is not None:
                 used.add(str(self.selected_predicate.name).strip().casefold())
@@ -93237,16 +93240,17 @@ QFileDialog QComboBox QAbstractItemView {{
             # an item is selected and "Prüfen +" stays directly below it.
             QTimer.singleShot(0, self.alternative_combo.showPopup)
 
+        # ------------------------------------------------------------------
+        # Anchor ComboBox + Prüfen+ under the clicked button in the viewport.
+        #
+        # Stage 71 deliberately uses the QScrollArea viewport as parent.  The
+        # Stage-62 reference showed that the selector itself is reliable; the
+        # later invisible variants were caused by clipping in the custom flow
+        # hierarchy.  Mapping the parent button into viewport coordinates
+        # keeps the Stage-70 multi-lane/scroll model while making the selector
+        # a top-level visible child of the actual painted scroll viewport.
+        # ------------------------------------------------------------------
         def _refresh_alternative_overlay_position(self, parent_button=None) -> None:
-            """Anchor ComboBox + Prüfen+ under the clicked button in the viewport.
-
-            Stage 71 deliberately uses the QScrollArea viewport as parent.  The
-            Stage-62 reference showed that the selector itself is reliable; the
-            later invisible variants were caused by clipping in the custom flow
-            hierarchy.  Mapping the parent button into viewport coordinates
-            keeps the Stage-70 multi-lane/scroll model while making the selector
-            a top-level visible child of the actual painted scroll viewport.
-            """
             if not hasattr(self, "alternative_overlay") or not self.alternative_overlay.isVisible():
                 return
             if parent_button is None:
@@ -93380,13 +93384,14 @@ QFileDialog QComboBox QAbstractItemView {{
             self.query_edit.setText(value)
             self.add_query_level()
 
+        # ------------------------------------------------------------------
+        # Validate the ComboBox selection and insert it as the next level.
+        #
+        # On success ``add_query_level`` clears ComboBox + local Prüfen+ button
+        # before rebuilding the level flow. On failure both controls stay below
+        # their parent so another alternative can be selected immediately.
+        # ------------------------------------------------------------------
         def _check_selected_alternative(self) -> None:
-            """Validate the ComboBox selection and insert it as the next level.
-
-            On success ``add_query_level`` clears ComboBox + local Prüfen+ button
-            before rebuilding the level flow. On failure both controls stay below
-            their parent so another alternative can be selected immediately.
-            """
             if self._alternative_parent_level is None:
                 self._set_status(
                     "Zuerst den ▼-Pfeil eines Parent-Levels öffnen.",
@@ -94070,26 +94075,26 @@ QFileDialog QComboBox QAbstractItemView {{
             self.graphics_view.setBackgroundBrush(scene_background)
             self.setStyleSheet(
                 f'''QWidget {{
-    background: {background};
-    color: {text};
+background: {background};
+color: {text};
 }}
 QLabel {{
-    background: transparent;
-    color: {text};
+background: transparent;
+color: {text};
 }}
 QPushButton {{
-    min-width: 120px;
-    padding: 6px 14px;
+min-width: 120px;
+padding: 6px 14px;
 }}
 QLineEdit#numbers_wall_input {{
-    background: {input_background};
-    color: {text};
-    border: 1px solid {input_border};
-    border-radius: 6px;
-    padding: 2px 4px;
+background: {input_background};
+color: {text};
+border: 1px solid {input_border};
+border-radius: 6px;
+padding: 2px 4px;
 }}
 QLineEdit#numbers_wall_input:disabled {{
-    color: #777777;
+color: #777777;
 }}
 '''
             )
@@ -94338,11 +94343,11 @@ QLineEdit#numbers_wall_input:disabled {{
                             border = bad_border
                 edit.setStyleSheet(
                     f'''QLineEdit#numbers_wall_input {{
-    background: {background};
-    color: {foreground};
-    border: 2px solid {border};
-    border-radius: 6px;
-    padding: 2px 4px;
+background: {background};
+color: {foreground};
+border: 2px solid {border};
+border-radius: 6px;
+padding: 2px 4px;
 }}
 '''
                 )
@@ -94567,17 +94572,17 @@ QPushButton {{ min-width: 120px; padding: 6px 14px; }}'''
                 border = wrong
             entry['card'].setStyleSheet(
                 f'''QFrame#math_task_card {{
-    background: {base};
-    border: 2px solid {border};
-    border-radius: 10px;
+background: {base};
+border: 2px solid {border};
+border-radius: 10px;
 }}
 QLabel {{ background: transparent; color: {foreground}; }}
 QLineEdit {{
-    background: {'#0b1f33' if self._dark_mode else '#ffffff'};
-    color: {foreground};
-    border: 1px solid {border};
-    border-radius: 6px;
-    padding: 5px;
+background: {'#0b1f33' if self._dark_mode else '#ffffff'};
+color: {foreground};
+border: 1px solid {border};
+border-radius: 6px;
+padding: 5px;
 }}'''
             )
 
@@ -94994,17 +94999,17 @@ QLineEdit {{
 
             edit.setStyleSheet(
                 f'''QLineEdit#sudoku_cell {{
-    background: {background};
-    color: {foreground};
-    border-top: {top_width}px solid {border_color};
-    border-left: {left_width}px solid {border_color};
-    border-bottom: {bottom_width}px solid {border_color};
-    border-right: {right_width}px solid {border_color};
-    padding: 0px;
-    font-weight: {'700' if given else '600'};
+background: {background};
+color: {foreground};
+border-top: {top_width}px solid {border_color};
+border-left: {left_width}px solid {border_color};
+border-bottom: {bottom_width}px solid {border_color};
+border-right: {right_width}px solid {border_color};
+padding: 0px;
+font-weight: {'700' if given else '600'};
 }}
 QLineEdit#sudoku_cell:focus {{
-    background: {'#244c70' if self._dark_mode else '#d9ecff'};
+background: {'#244c70' if self._dark_mode else '#d9ecff'};
 }}
 '''
             )
@@ -95031,16 +95036,16 @@ QLineEdit#sudoku_cell:focus {{
     color: {foreground};
 }}
 QLabel {{
-    background: transparent;
-    color: {foreground};
+background: transparent;
+color: {foreground};
 }}
 QFrame#sudoku_board_frame {{
-    border: 2px solid {frame_border};
-    background: transparent;
+border: 2px solid {frame_border};
+background: transparent;
 }}
 QPushButton {{
-    min-width: 110px;
-    padding: 6px 12px;
+min-width: 110px;
+padding: 6px 12px;
 }}
 '''
             )
@@ -95333,20 +95338,20 @@ QPushButton {{
                 f"""
 QWidget {{ background: {background}; color: {text}; }}
 QGroupBox {{
-    background: {panel};
-    color: {text};
-    border: 1px solid {border};
-    border-radius: 7px;
-    margin-top: 8px;
-    padding-top: 7px;
+background: {panel};
+color: {text};
+border: 1px solid {border};
+border-radius: 7px;
+margin-top: 8px;
+padding-top: 7px;
 }}
 QGroupBox::title {{ subcontrol-origin: margin; left: 9px; padding: 0 4px; }}
 QLineEdit, QSpinBox {{
-    background: {edit};
-    color: {text};
-    border: 1px solid {border};
-    border-radius: 5px;
-    padding: 4px;
+background: {edit};
+color: {text};
+border: 1px solid {border};
+border-radius: 5px;
+padding: 4px;
 }}
 QPushButton {{ padding: 6px 8px; }}
 """
@@ -96057,16 +96062,14 @@ QPushButton {{ padding: 6px 8px; }}
                 f"Bank: {self.bank_deposit} · offene Zinsen: {self.bank_pending_interest}"
             )
 
-
-
+    # ------------------------------------------------------------------
+    # Eigenständiges Retro-Parabelspiel mit zwei Gorillas und Wolkenkratzern.
+    #
+    # Die Grafik ist neu gezeichnet und verwendet keine Original-Gorillas-
+    # Assets. Das Spielprinzip verbindet Rechenaufgaben mit einer
+    # parabelförmigen Wurfbewegung, Wind und persistenten Gebäudeschäden.
+    # ------------------------------------------------------------------
     class GorillaParabolaMathGameWidget(QWidget):
-        """Eigenständiges Retro-Parabelspiel mit zwei Gorillas und Wolkenkratzern.
-
-        Die Grafik ist neu gezeichnet und verwendet keine Original-Gorillas-
-        Assets. Das Spielprinzip verbindet Rechenaufgaben mit einer
-        parabelförmigen Wurfbewegung, Wind und persistenten Gebäudeschäden.
-        """
-
         SCENE_WIDTH = 1080.0
         SCENE_HEIGHT = 640.0
         STREET_Y = 585.0
@@ -96872,31 +96875,31 @@ QPushButton {{ padding: 6px 8px; }}
             self.setStyleSheet(
                 f"""
 QWidget {{
-    background: {background};
-    color: {text};
+background: {background};
+color: {text};
 }}
 QGroupBox {{
-    background: {panel};
-    border: 1px solid {border};
-    border-radius: 7px;
-    margin-top: 9px;
-    padding-top: 8px;
+background: {panel};
+border: 1px solid {border};
+border-radius: 7px;
+margin-top: 9px;
+padding-top: 8px;
 }}
 QGroupBox::title {{
-    subcontrol-origin: margin;
-    left: 8px;
-    padding: 0 4px;
+subcontrol-origin: margin;
+left: 8px;
+padding: 0 4px;
 }}
 QLineEdit {{
-    min-height: 28px;
-    background: {panel};
-    color: {text};
-    border: 1px solid {border};
-    border-radius: 5px;
+min-height: 28px;
+background: {panel};
+color: {text};
+border: 1px solid {border};
+border-radius: 5px;
 }}
 QPushButton {{
-    min-height: 28px;
-    padding: 4px 10px;
+min-height: 28px;
+padding: 4px 10px;
 }}
 """
             )
@@ -97120,30 +97123,30 @@ QPushButton {{
             self.setStyleSheet(
                 f"""
 QWidget {{
-    background: {background};
-    color: {text};
+background: {background};
+color: {text};
 }}
 QSpinBox {{
-    min-width: 90px;
-    min-height: 27px;
-    background: {panel};
-    color: {text};
-    border: 1px solid {border};
-    border-radius: 4px;
-    padding: 2px 5px;
+min-width: 90px;
+min-height: 27px;
+background: {panel};
+color: {text};
+border: 1px solid {border};
+border-radius: 4px;
+padding: 2px 5px;
 }}
 QPushButton {{
-    min-height: 28px;
-    padding: 4px 12px;
+min-height: 28px;
+padding: 4px 12px;
 }}
 QListWidget#cantor_diagonal_value_list {{
-    background: {panel};
-    color: {text};
-    border: 1px solid {border};
+background: {panel};
+color: {text};
+border: 1px solid {border};
 }}
 QListWidget#cantor_diagonal_value_list::item:selected {{
-    background: {selected};
-    color: {text};
+background: {selected};
+color: {text};
 }}
 """
             )
@@ -98019,29 +98022,29 @@ QListWidget#cantor_diagonal_value_list::item:selected {{
             self.setStyleSheet(
                 f"""
 QWidget {{
-    background: {background};
-    color: {text};
+background: {background};
+color: {text};
 }}
 QSpinBox,
 QLineEdit {{
-    min-height: 28px;
-    background: {panel};
-    color: {text};
-    border: 1px solid {border};
-    border-radius: 4px;
-    padding: 2px 5px;
+min-height: 28px;
+background: {panel};
+color: {text};
+border: 1px solid {border};
+border-radius: 4px;
+padding: 2px 5px;
 }}
 QPushButton {{
-    min-height: 28px;
-    padding: 4px 12px;
+min-height: 28px;
+padding: 4px 12px;
 }}
 QGraphicsView#fibonacci_graphics_view {{
-    background: {background};
-    border: 1px solid {border};
+background: {background};
+border: 1px solid {border};
 }}
 QScrollBar:vertical,
 QScrollBar:horizontal {{
-    background: {panel};
+background: {panel};
 }}
 """
             )
@@ -98124,18 +98127,18 @@ QScrollBar:horizontal {{
                 hover = '#c7e3fb'
             bg = solved_bg if self.solved else (back_bg if self.face_up else front_bg)
             self.setStyleSheet(
-                f'''QToolButton#math_memory_card {{
-    background: {bg};
-    color: {text};
-    border: 2px solid {border};
-    border-radius: 9px;
-    padding: 5px;
+f'''QToolButton#math_memory_card {{
+background: {bg};
+color: {text};
+border: 2px solid {border};
+border-radius: 9px;
+padding: 5px;
 }}
 QToolButton#math_memory_card:hover {{
-    background: {hover};
+background: {hover};
 }}
 QToolButton#math_memory_card:disabled {{
-    color: {text};
+color: {text};
 }}'''
             )
 
@@ -98241,12 +98244,12 @@ QToolButton#math_memory_card:disabled {{
 QLabel {{ background: transparent; color: {text}; }}
 QScrollArea {{ background: {background}; border: 1px solid {border}; }}
 QLineEdit#math_memory_answer {{
-    min-height: 30px;
-    background: {panel};
-    color: {text};
-    border: 1px solid {border};
-    border-radius: 5px;
-    padding: 3px 7px;
+min-height: 30px;
+background: {panel};
+color: {text};
+border: 1px solid {border};
+border-radius: 5px;
+padding: 3px 7px;
 }}
 QPushButton {{ min-height: 28px; padding: 4px 12px; }}'''
             )
@@ -98517,13 +98520,14 @@ QPushButton {{ min-height: 28px; padding: 4px 12px; }}'''
         'volume_triangular_prism': (('b', 'Dreiecksgrundseite b'), ('h', 'Dreieckshöhe h'), ('l', 'Prismenlänge l'), ('p', 'Dreiecksumfang p'), ('G', 'Grundfläche G'), ('M', 'Mantelfläche M'), ('O', 'Oberfläche O'), ('V', 'Volumen V')),
     }
 
+    # ------------------------------------------------------------------
+    # Löst eindeutig bestimmbaren Größen aus beliebigen Teilangaben.
+    #
+    # Gibt (Größen, vom Benutzer vorgegebene Symbolmenge) zurück.
+    # Überbestimmte widersprüchliche Angaben, negative Radikanden,
+    # ungültige Werte und unzureichende Angaben werden abgelehnt.
+    # ------------------------------------------------------------------
     def _solve_geometry_fact(fact_key: str, raw_inputs: dict):
-        """Löst eindeutig bestimmbaren Größen aus beliebigen Teilangaben.
-
-        Gibt (Größen, vom Benutzer vorgegebene Symbolmenge) zurück.
-        Überbestimmte widersprüchliche Angaben, negative Radikanden,
-        ungültige Werte und unzureichende Angaben werden abgelehnt.
-        """
         import re
         specs = _GEOMETRY_INPUTS.get(fact_key)
         if specs is None:
@@ -100820,16 +100824,16 @@ QToolButton:hover {{ background: {selection}; }}"""
                 worker.request_stop()
                 worker.wait(5000)
 
+    # ------------------------------------------------------------------
+    # Animierter Einheitskreis fuer Lernen -> Mathe -> Geometrie.
+    #
+    # Die komplette Darstellung wird mit QPainter erzeugt. Die Animation
+    # bewegt den Radius gleichmaessig ueber den kompletten Einheitskreis:
+    # (1,0) -> (0,1) -> (-1,0) -> (0,-1) -> (1,0). Sinus und Kosinus
+    # werden gleichzeitig als Projektionen am Kreis und als zwei synchron
+    # laufende Kurven unterhalb des Kreises dargestellt.
+    # ------------------------------------------------------------------
     class UnitCircleLearningWidget(QWidget):
-        """Animierter Einheitskreis fuer Lernen -> Mathe -> Geometrie.
-
-        Die komplette Darstellung wird mit QPainter erzeugt. Die Animation
-        bewegt den Radius gleichmaessig ueber den kompletten Einheitskreis:
-        (1,0) -> (0,1) -> (-1,0) -> (0,-1) -> (1,0). Sinus und Kosinus
-        werden gleichzeitig als Projektionen am Kreis und als zwei synchron
-        laufende Kurven unterhalb des Kreises dargestellt.
-        """
-
         GRAPH_WIDTH_FRACTION = 0.25
         # Kompatibilitaet mit Stage 276: alter Name bezeichnet weiterhin
         # den vertikalen Anteil des Graphenbereichs.
@@ -101428,15 +101432,14 @@ QToolButton:hover {{ background: {selection}; }}"""
         def shutdown(self) -> None:
             self.stop_animation()
 
-
+    # ------------------------------------------------------------------
+    # Stage 360: eigenstaendige STATISCHE QPainter-Einheitskreis-Tafel.
+    #
+    # Diese Klasse zeichnet die 16 Winkel mitsamt Gradzahl, Bogenmass und
+    # exakten Sinus-/Kosinus-Koordinaten. Weder Referenzbild noch QPixmap
+    # werden benutzt. Die animierte UnitCircleLearningWidget bleibt separat.
+    # ------------------------------------------------------------------
     class UnitCircleReferenceWidget(QWidget):
-        """Stage 360: eigenstaendige STATISCHE QPainter-Einheitskreis-Tafel.
-
-        Diese Klasse zeichnet die 16 Winkel mitsamt Gradzahl, Bogenmass und
-        exakten Sinus-/Kosinus-Koordinaten. Weder Referenzbild noch QPixmap
-        werden benutzt. Die animierte UnitCircleLearningWidget bleibt separat.
-        """
-
         CANVAS_WIDTH = 1200.0
         CANVAS_HEIGHT = 1060.0
         CENTER_X = 600.0
@@ -110838,16 +110841,15 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                     "QWidget#html_editor_status_widget{background:#f5f5f5;color:#555;border-top:1px solid #c8c8c8;}"
                 )
 
-
+    # ------------------------------------------------------------------
+    # Topmost mouse catcher for the frameless main-window resize frame.
+    #
+    # Stage 134 deliberately uses real child widgets instead of relying only
+    # on the QApplication event filter.  A dock, editor viewport or other
+    # child widget can therefore never steal a press which lands on one of
+    # the resize overlays.
+    # ------------------------------------------------------------------
     class FramelessMainResizeOverlay(QFrame):
-        """Topmost mouse catcher for the frameless main-window resize frame.
-
-        Stage 134 deliberately uses real child widgets instead of relying only
-        on the QApplication event filter.  A dock, editor viewport or other
-        child widget can therefore never steal a press which lands on one of
-        the resize overlays.
-        """
-
         _CURSORS = {
             "n": Qt.SizeVerCursor,
             "s": Qt.SizeVerCursor,
@@ -110932,15 +110934,14 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             super().mouseReleaseEvent(event)
 
 
-
+    # ------------------------------------------------------------------
+    # Stage 324: Wiederverwendbarer, nicht-blockierend geöffneter Vorspann.
+    #
+    # Der Aufrufer beginnt die eigentliche GUI-Arbeit mit QTimer.singleShot,
+    # NACHDEM dieses Fenster in einem Event-Loop-Durchlauf gezeichnet wurde.
+    # Qt-Widgets/QGraphicsScenes bleiben ausschließlich im GUI-Thread.
+    # ------------------------------------------------------------------
     class D64OperationPreludeDialog(QDialog):
-        """Stage 324: Wiederverwendbarer, nicht-blockierend geöffneter Vorspann.
-
-        Der Aufrufer beginnt die eigentliche GUI-Arbeit mit QTimer.singleShot,
-        NACHDEM dieses Fenster in einem Event-Loop-Durchlauf gezeichnet wurde.
-        Qt-Widgets/QGraphicsScenes bleiben ausschließlich im GUI-Thread.
-        """
-
         def __init__(self, parent: QWidget, title: str, message: str, *, dark: bool = True):
             super().__init__(parent)
             self.setObjectName("d64OperationPreludeDialog")
@@ -111013,15 +111014,14 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 self.move(center.x() - self.width() // 2,
                           center.y() - self.height() // 2)
 
-
+    # ------------------------------------------------------------------
+    # Stage 388: Dock-Host fuer C64-Editoren und den Resource Alias Builder.
+    #
+    # Die Editor-Widgets bleiben reines QWidget. Insbesondere beim Schliessen
+    # ueber die benutzerdefinierte Dock-Titelleiste wird andernfalls das
+    # closeEvent des eingebetteten Widgets *nicht* aufgerufen.
+    # ------------------------------------------------------------------
     class C64ToolEditorDock(QDockWidget):
-        """Stage 388: Dock-Host fuer C64-Editoren und den Resource Alias Builder.
-
-        Die Editor-Widgets bleiben reines QWidget. Insbesondere beim Schliessen
-        ueber die benutzerdefinierte Dock-Titelleiste wird andernfalls das
-        closeEvent des eingebetteten Widgets *nicht* aufgerufen.
-        """
-
         def closeEvent(self, event: QCloseEvent) -> None:
             editor = getattr(self, "editor_widget", None)
             confirm = getattr(editor, "_confirm_discard", None)
@@ -111635,14 +111635,15 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             chrome_layout.addWidget(self.main_menu_bar)
             self.setMenuWidget(self.main_top_chrome)
             self._apply_green_beige_chrome_style()
-
+            
+        # ------------------------------------------------------------------
+        # Theme-sensitive Green-&-Beige menu chrome (Stage 76).
+        #
+        # Dark mode uses a navy surface with yellow Arial text. Light mode
+        # returns to the beige surface with black Arial text. Selected items
+        # deliberately remain green with white text in both modes.
+        # ------------------------------------------------------------------
         def _green_beige_menu_stylesheet(self) -> str:
-            """Theme-sensitive Green-&-Beige menu chrome (Stage 76).
-
-            Dark mode uses a navy surface with yellow Arial text. Light mode
-            returns to the beige surface with black Arial text. Selected items
-            deliberately remain green with white text in both modes.
-            """
             if self.dark_mode_enabled:
                 surface = "#0B1F33"
                 text = "#FFD84D"
@@ -111658,72 +111659,60 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
 
             return f"""
 QMenuBar#green_beige_menu_bar {{
-    background: {surface};
-    color: {text};
-    border: 0px;
-    border-bottom: 1px solid {border};
-    padding: 3px 7px;
-    spacing: 2px;
-    font-family: "Arial";
-    font-size: 9pt;
-    font-weight: 600;
-}}
+background: {surface};
+color: {text};
+border: 0px;
+border-bottom: 1px solid {border};
+padding: 3px 7px;
+spacing: 2px;
+font-family: "Arial";
+font-size: 9pt;
+font-weight: 600;}}
 QMenuBar#green_beige_menu_bar::item {{
-    background: {surface};
-    color: {text};
-    border: 0px;
-    border-radius: 8px;
-    padding: 5px 10px;
-    margin: 0px 1px;
-}}
+background: {surface};
+color: {text};
+border: 0px;
+border-radius: 8px;
+padding: 5px 10px;
+margin: 0px 1px;}}
 QMenuBar#green_beige_menu_bar::item:selected,
 QMenuBar#green_beige_menu_bar::item:pressed {{
-    background: #2E7D32;
-    color: #FFFFFF;
-}}
+background: #2E7D32;
+color: #FFFFFF;}}
 QMenuBar#green_beige_menu_bar::item:disabled {{
-    background: {surface};
-    color: {disabled};
-}}
+background: {surface};
+color: {disabled};}}
 QMenu#green_beige_popup_menu {{
-    background: {surface};
-    color: {text};
-    border: 1px solid {border};
-    border-radius: 10px;
-    padding: 6px;
-    font-family: "Arial";
-    font-size: 9pt;
-}}
+background: {surface};
+color: {text};
+border: 1px solid {border};
+border-radius: 10px;
+padding: 6px;
+font-family: "Arial";
+font-size: 9pt;}}
 QMenu#green_beige_popup_menu::item {{
-    background: {surface};
-    color: {text};
-    border-radius: 7px;
-    padding: 6px 30px 6px 12px;
-    margin: 1px 2px;
-}}
+background: {surface};
+color: {text};
+border-radius: 7px;
+padding: 6px 30px 6px 12px;
+margin: 1px 2px;}}
 QMenu#green_beige_popup_menu::item:selected {{
-    background: #2E7D32;
-    color: #FFFFFF;
-}}
+background: #2E7D32;
+color: #FFFFFF;}}
 QMenu#green_beige_popup_menu::item:disabled {{
-    background: {surface};
-    color: {disabled};
-}}
+background: {surface};
+color: {disabled};}}
 QMenu#green_beige_popup_menu::separator {{
-    height: 1px;
-    background: {separator};
-    margin: 5px 10px;
-}}
+height: 1px;
+background: {separator};
+margin: 5px 10px;}}
 QMenu#green_beige_popup_menu::indicator {{
-    width: 14px;
-    height: 14px;
-}}
+width: 14px;
+height: 14px;}}
 QMenu#green_beige_popup_menu::indicator:checked {{
-    background: #2E7D32;
-    border: 2px solid {surface};
-    border-radius: 7px;
-}}
-"""
+background: #2E7D32;
+border: 2px solid {surface};
+border-radius: 7px;}}"""
 
         def _apply_green_beige_chrome_style(self) -> None:
             """Apply the reference palette to menu bar and all popup menus."""
