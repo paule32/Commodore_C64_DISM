@@ -126362,46 +126362,26 @@ border-radius: 7px;}}"""
             self.build_target_action_group.setExclusive(True)
             self.build_target_actions = {}
             # Stage 489: The selected target is independent of whether a given
-            # frontend can already compile for it. All six choices stay marked.
+            # frontend can already compile for it. All nine choices stay marked.
             self._build_menu_selected_target = "pe32"
             self.build_target_action_labels = {}
             for target_key, caption in (
-                ("pe32", "Windows PE 32-Bit"),
-                ("pe64", "Windows PE 64-Bit"),
-            ):
-                action = QAction(caption, self)
-                action.setObjectName("build_target_" + target_key + "_action")
-                action.setCheckable(True)
-                action.setData(target_key)
-                self.build_target_action_group.addAction(action)
-                self.build_menu.addAction(action)
-                self.build_target_actions[target_key] = action
-                self.build_target_action_labels[target_key] = caption
-                action.triggered.connect(
-                    lambda _checked=False, target=target_key: self._build_menu_select_target(target)
-                )
-            self.build_menu.addSeparator()
-            # Stage 486: Native Linux ELF32/ELF64 targets, same exclusive group.
-            for target_key, caption in (
-                ("linux32", "Linux Ubuntu 22.04  32-Bit"),
-                ("linux64", "Linux Ubuntu 22.04  64-Bit"),
-            ):
-                action = QAction(caption, self)
-                action.setObjectName("build_target_" + target_key + "_action")
-                action.setCheckable(True)
-                action.setData(target_key)
-                self.build_target_action_group.addAction(action)
-                self.build_menu.addAction(action)
-                self.build_target_actions[target_key] = action
-                self.build_target_action_labels[target_key] = caption
-                action.triggered.connect(
-                    lambda _checked=False, target=target_key: self._build_menu_select_target(target)
-                )
-            self.build_menu.addSeparator()
-            for target_key, caption in (
+                ("pe64", "MS Windows 64 Bit"),
+                ("pe32", "MS Windows 32 Bit"),
+                ("win16", "MS Windows 16 Bit"),
+                (None, None),
+                ("dos32", "MS DOS 32 Bit"),
+                ("dos16", "MS DOS 16 Bit"),
+                (None, None),
+                ("linux64", "Linux Ubuntu 22.04 64 Bit"),
+                ("linux32", "Linux Ubuntu 22.04 32 Bit"),
+                (None, None),
+                ("amiga", "Amiga 500"),
                 ("c64", "Commodore C= 64"),
-                ("amiga", "AMIGA 500"),
             ):
+                if target_key is None:
+                    self.build_menu.addSeparator()
+                    continue
                 action = QAction(caption, self)
                 action.setObjectName("build_target_" + target_key + "_action")
                 action.setCheckable(True)
@@ -126414,7 +126394,6 @@ border-radius: 7px;}}"""
                     lambda _checked=False, target=target_key: self._build_menu_select_target(target)
                 )
             # Stage 481: Start is available only for an actually linked build.
-            self.build_menu.addSeparator()
             self.build_start_action = QAction("Starten", self)
             self.build_start_action.setObjectName("build_start_action")
             self.build_start_action.setStatusTip(
@@ -132793,9 +132772,8 @@ border: 2px solid #2a69aa;
         def _build_menu_sync_target(self) -> None:
             """Display the requested target, even if its backend is unavailable.
 
-            A checked QAction is a radio marker in Qt. The additional tick in
-            the caption makes the choice visible with themes that suppress Qt's
-            native radio indicator. Each document remembers its own selection.
+            Qt uses the native radio/check indicator of each checkable
+            QAction. Each document remembers its own selection.
             """
             actions = getattr(self, "build_target_actions", {})
             if not actions:
@@ -132810,7 +132788,7 @@ border: 2px solid #2a69aa;
                 ).casefold()
                 # Changes made via the WFM target selector must also update
                 # the menu selection (the form callback clears its request).
-                if self._dbase_form_is_active():
+                if self._dbase_form_is_active() and target not in {"win16", "dos32", "dos16"}:
                     combo = getattr(self, "dbase_form_target_combo", None)
                     if combo is not None:
                         target = str(combo.currentData() or target).casefold()
@@ -132826,7 +132804,7 @@ border: 2px solid #2a69aa;
                     if hasattr(action, "setText"):
                         caption = captions.get(key)
                         if caption is not None:
-                            action.setText(("✓ " if is_selected else "") + caption)
+                            action.setText(caption)
                     if hasattr(action, "setProperty"):
                         action.setProperty("compiler_target_selected", is_selected)
                 finally:
@@ -132853,14 +132831,17 @@ border: 2px solid #2a69aa;
             return target in {"pe32", "pe64", "c64", "amiga"}
 
         def _build_menu_select_target(self, target: str) -> None:
-            """Allow all six targets to be marked; validate support at build time."""
+            """Allow all nine targets to be marked; validate support at build time."""
             target = str(target or "").casefold()
             if target not in getattr(self, "build_target_actions", {}):
                 return
             self._build_menu_selected_target = target
             document = self._build_menu_active_document()
             if document is not None and document.is_build_document:
-                if self._dbase_form_is_active():
+                if target in {"win16", "dos32", "dos16"}:
+                    # Kein C64-Fallback für noch nicht implementierte Ziele.
+                    pass
+                elif self._dbase_form_is_active():
                     combo = getattr(self, "dbase_form_target_combo", None)
                     index = combo.findData(target) if combo is not None else -1
                     if index >= 0:
